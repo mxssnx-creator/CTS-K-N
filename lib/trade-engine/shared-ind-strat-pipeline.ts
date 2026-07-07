@@ -428,7 +428,7 @@ export async function runIndStratCycle(
     // disables the Promise.race in the caller.
     const PHASE3_TIMEOUT_MS = Infinity
     const apiStrategyFlowEnabled =
-      process.env.NODE_ENV !== "production" ||
+      process.env.VERCEL !== "1" ||
       process.env.ENABLE_API_STRATEGY_FLOW === "1" ||
       process.env.ENABLE_API_STRATEGY_FLOW === "true" ||
       deps.enableStrategyFlow === true

@@ -542,7 +542,7 @@ export class IndicationSetsProcessor {
       }
 
       const apiSetFillEnabled =
-        process.env.NODE_ENV !== "production" ||
+        process.env.VERCEL !== "1" ||
         process.env.ENABLE_API_INDICATION_SET_FILL === "1" ||
         process.env.ENABLE_API_INDICATION_SET_FILL === "true"
       if (!apiSetFillEnabled) {
