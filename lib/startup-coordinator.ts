@@ -19,6 +19,7 @@ import {
 import { validateDatabase } from "@/lib/database-validator"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { consolidateDatabase } from "@/lib/database-consolidation"
+import { getMigrationStatus } from "@/lib/redis-migrations"
 
 function getPositionConnectionId(pos: any): string {
   return String(pos?.connectionId ?? pos?.connection_id ?? "").trim()
@@ -198,6 +199,28 @@ export async function completeStartup() {
     const volatileCleanup = await cleanupVolatileRuntimeState({ reason: "completeStartup" })
     console.log(`[v0] [Startup] ✓ Volatile runtime cleanup complete (deleted ${volatileCleanup.deleted}, preserved ${volatileCleanup.preserved})\n`)
 
+    // Report migration status deterministically. PRODUCTION strips console.log
+    // from the server bundle (next.config.mjs removeConsole), so the per-migration
+    // console.log lines never reach prod logs and a healthy boot looks silent.
+    // console.warn survives the strip, so this is the authoritative "did migrations
+    // run?" signal in production. Dev keeps console.log and shows the full 65-step
+    // output; prod only needs this one-line, always-present status.
+    let migrationReport = "unknown"
+    try {
+      const migStatus = await getMigrationStatus()
+      migrationReport = migStatus.isMigrated
+        ? `UP TO DATE (v${migStatus.currentVersion}/${migStatus.latestVersion})`
+        : `PENDING ${migStatus.pendingMigrations?.length ?? 0} migrations (v${migStatus.currentVersion} -> v${migStatus.latestVersion})`
+      console.warn(
+        `[v0] [Startup] Migration status — current=v${migStatus.currentVersion} ` +
+        `target=v${migStatus.latestVersion} ` +
+        `${migStatus.isMigrated ? "UP TO DATE" : `PENDING (${migStatus.pendingMigrations?.length ?? 0})`} ` +
+        `(${migStatus.message})`,
+      )
+    } catch (e) {
+      console.warn(`[v0] [Startup] Could not read migration status (non-fatal):`, e instanceof Error ? e.message : e)
+    }
+
     // Initialize memory management for long-term stability
     try {
       const { initMemoryManager } = await import("@/lib/memory-manager")
@@ -331,6 +354,13 @@ export async function completeStartup() {
     console.log(`[v0] [Startup] Engines resume when operator intent is running or unattended default allows continuity`)
     console.log(`[v0] [Startup] User must enable/start connections in Dashboard`)
     console.log(`[v0] [Startup] ========================================\n`)
+    // Authoritative production-visible boot confirmation (console.warn survives
+    // the prod console-strip). Confirms the startup coordinator actually ran and
+    // reports migration state + that background cleanup/reconcile are scheduled.
+    console.warn(
+      `[v0] [Startup] ✓ Boot complete — migrations: ${migrationReport}; ` +
+      `orphan cleanup + stranded-position reconciliation scheduled`,
+    )
   } catch (error) {
     console.error(`[v0] [Startup] ✗ Fatal error during startup:`, error)
     throw error

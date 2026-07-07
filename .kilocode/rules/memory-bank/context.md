@@ -98,3 +98,4 @@ export async function GET() {
 |------|---------|
 | Initial | Template created with base setup |
 | 2026-07-07 | Consolidated CTS-V-yd trading system as the main project; committed to `main` and pushed to `origin/main` (CTS-K-N). Removed starter template + `ctsv-dev` symlinks. |
+| 2026-07-07 | ROOT CAUSE: production logs show no migration output because `next.config.mjs` `removeConsole` strips all `console.log` from the prod server bundle (only `error`/`warn` survive), and once migrated `runMigrations()` fast-paths silently. Migrations DO run in prod. FIX: `startup-coordinator.completeStartup()` + `runMigrations()` now emit migration/boot status via `console.warn` (survives strip). Added `scripts/verify-migration-status.mjs` to query `/api/install/database/migrations-info` on dev + prod and compare `current_version` vs `target_version` (verified: 65 migrations run, schema reaches v65, `isMigrated=true`). |

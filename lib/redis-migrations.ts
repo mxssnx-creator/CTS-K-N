@@ -4324,7 +4324,7 @@ async function runMigrationsInternal(): Promise<{ success: boolean; message: str
     const currentVersion = versionStr ? parseInt(versionStr as string) : 0
     const finalVersion = Math.max(...migrations.map((m) => m.version))
 
-    console.log(`[v0] [Migrations] Current: v${currentVersion}, Target: v${finalVersion}`)
+    console.warn(`[v0] [Migrations] Current: v${currentVersion}, Target: v${finalVersion}`)
 
     // Get migrations that need to run (version > currentVersion)
     const pendingMigrations = migrations.filter((m) => m.version > currentVersion)
@@ -4361,7 +4361,7 @@ async function runMigrationsInternal(): Promise<{ success: boolean; message: str
     // bodies; this runner remains the single place that stamps durable per-step
     // progress after each migration completes.
     const MIGRATION_DEADLINE_MS = Math.max(30_000, pendingMigrations.length * 30_000)
-    console.log(`[v0] [Migrations] Running ${pendingMigrations.length} pending migrations as a combined batch...`)
+    console.warn(`[v0] [Migrations] Running ${pendingMigrations.length} pending migrations as a combined batch...`)
     await runPendingMigrationBatch({ client, pendingMigrations, deadlineMs: MIGRATION_DEADLINE_MS })
 
     // Ensure schema version reflects the final target (defensive; the loop
@@ -4374,8 +4374,8 @@ async function runMigrationsInternal(): Promise<{ success: boolean; message: str
     await client.set("_migration_total_runs", newRunCount)
     await client.set("_migration_last_run", new Date().toISOString())
 
-    console.log(`[v0] [Migrations] ✓ Successfully migrated v${currentVersion} -> v${finalVersion}`)
-    console.log(`[v0] [Migrations] ${pendingMigrations.length} migrations executed`)
+    console.warn(`[v0] [Migrations] ✓ Successfully migrated v${currentVersion} -> v${finalVersion}`)
+    console.warn(`[v0] [Migrations] ${pendingMigrations.length} migrations executed`)
     
     // Verify final state
     const finalVersionCheck = await client.get("_schema_version")
