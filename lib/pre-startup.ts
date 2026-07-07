@@ -28,8 +28,8 @@ async function initializeDefaultSettings() {
 
 async function seedPredefinedConnections() {
   // Base connections are seeded by redis-db and migrations.
-  // In dev environments, configure trading symbols for enabled connections
-  if (process.env.NODE_ENV !== "production") {
+  // In non-Vercel environments, configure trading symbols for enabled connections
+  if (process.env.VERCEL !== "1") {
     try {
       const allConnections = await getAllConnections()
       const { getRedisClient } = await import("@/lib/redis-db")

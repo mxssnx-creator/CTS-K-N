@@ -242,13 +242,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         triggerControlOrderRebuild()
       } else {
         // Engine is not running. Queue by default in production so API workers
-        // remain responsive; foreground start is allowed only in development
-        // or with explicit production opt-in.
+        // remain responsive; foreground start is allowed only for non-Vercel
+        // or explicit flag opt-in.
         try {
           const localStartAllowed =
             process.env.DISABLE_TRADE_ENGINE_IN_PROCESS !== "1" &&
             process.env.NEXT_RUNTIME !== "edge" &&
-            (process.env.NODE_ENV !== "production" ||
+            (process.env.VERCEL !== "1" ||
               (process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1" &&
                 process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"))
 
