@@ -579,8 +579,14 @@ export async function POST(request: Request) {
     // so that the full pipeline (prehistoric → indications → strategies base/main/real → real/live)
     // is ready faster for Dev Mode testing (3-symbol minimal volume etc.).
     // This makes "ReRun Dev Mode Test" show loaded data and non-zero counts much sooner.
-    if (!quickstartEngineAlreadyRunning && symbols.length > 0) {
-      (async () => {
+    // Keep this dev-only by default: production starts the real engine below,
+    // and a second detached SymbolDataProcessor can duplicate the same
+    // prehistoric/progression writes, causing coordinator lock noise, stalled
+    // counters, and lower-quality prod results that do not reproduce in dev.
+    const quickstartPreloadAllowed =
+      process.env.NODE_ENV === "development" || process.env.ENABLE_QUICKSTART_PREHISTORIC_PRELOAD === "1"
+    if (quickstartPreloadAllowed && !quickstartEngineAlreadyRunning && symbols.length > 0) {
+      const quickstartPreload = (async () => {
         try {
            const { SymbolDataProcessor } = await import('@/lib/symbol-data-processor')
            const processor = new SymbolDataProcessor(connectionId)
@@ -590,6 +596,9 @@ export async function POST(request: Request) {
           console.warn(`${LOG_PREFIX}: Prehistoric preload for quickstart symbols failed (non-fatal):`, e)
         }
       })()
+      if (process.env.NODE_ENV === "test") {
+        await quickstartPreload
+      }
     }
     
      const isAssigned = updated.is_assigned === "1" || updated.is_assigned === true
