@@ -608,6 +608,37 @@ describe("requested regression guardrails", () => {
   })
 
 
+
+
+
+  test("symbol cache compares dev-capped force symbols to prevent per-tick invalidation churn", () => {
+    const source = read("lib/trade-engine/engine-manager.ts")
+
+    expect(source).toContain("effectiveForceSymbols = effectiveForceSymbols.slice(0, devCap)")
+    expect(source).toContain("localSymbolCapActive")
+    expect(source).toContain("process.env.V0_DEV_SYMBOL_COUNT")
+    expect(source).toContain("force_symbols=[BTC,ETH,...] vs cache=[BTC] invalidates")
+  })
+
+  test("engine manager heap telemetry avoids Node v8 import warnings in Next dev", () => {
+    const source = read("lib/trade-engine/engine-manager.ts")
+
+    expect(source).toContain("process.memoryUsage().heapTotal")
+    expect(source).not.toContain('require("v8")')
+    expect(source).not.toContain('from "v8"')
+    expect(source).not.toContain("from 'v8'")
+  })
+
+  test("production build cleanup respects NEXT_DIST_DIR for parallel dev/prod verification", () => {
+    const pkg = JSON.parse(read("package.json"))
+
+    expect(pkg.scripts.prebuild).toContain('rm -rf "${NEXT_DIST_DIR:-.next}"')
+    expect(pkg.scripts["prevercel-build"]).toContain('rm -rf "${NEXT_DIST_DIR:-.next}"')
+    expect(pkg.scripts.prebuild).not.toContain("rm -rf .next")
+    expect(pkg.scripts["prevercel-build"]).not.toContain("rm -rf .next")
+    expect(read("eslint.config.mjs")).toContain('".next-*/**"')
+  })
+
   test("production status routes merge raw and settings-prefixed engine heartbeat state", () => {
     const systemStatus = read("app/api/system/status/route.ts")
     const tradeStatus = read("app/api/trade-engine/status/route.ts")
