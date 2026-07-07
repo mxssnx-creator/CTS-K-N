@@ -1199,6 +1199,23 @@ describe("requested regression guardrails", () => {
 
 
 
+
+  test("live progression verification scripts remain runnable and phase-aware", () => {
+    const liveScript = read("scripts/test-progression-live.mjs")
+    const stabilityScript = read("scripts/verify-stability.sh")
+
+    expect(liveScript).toContain("const baseUrl = process.env.BASE_URL || `http://localhost:${port}`")
+    expect(liveScript).toContain("'starting'")
+    expect(liveScript).toContain("const historicTotal = Number(stats.historic?.symbolsTotal ?? 0)")
+    expect(liveScript).not.toContain("const activeIndications = stats.activeCounts?.indications || {};\n  const activeIndications")
+    expect(liveScript).toContain("const openPositionsList = Array.isArray(openPositionsValue) ? openPositionsValue : []")
+
+    expect(stabilityScript).toContain("PASSED=$((PASSED+1))")
+    expect(stabilityScript).toContain("FAILED=$((FAILED+1))")
+    expect(stabilityScript).not.toContain("((PASSED++))")
+    expect(stabilityScript).not.toContain("((FAILED++))")
+  })
+
   test("progression stats timeout timer is cleared after successful polls", () => {
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
 
