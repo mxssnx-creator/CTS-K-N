@@ -1201,6 +1201,23 @@ describe("requested regression guardrails", () => {
 
 
 
+
+  test("live-stage system-close-only is per-connection cached and honors connection settings", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const cacheStart = liveStage.indexOf("const SYSTEM_CLOSE_TTL_MS")
+    const cacheEnd = liveStage.indexOf("async function updateProtectionOrders", cacheStart)
+    const cacheBlock = liveStage.slice(cacheStart, cacheEnd)
+
+    expect(cacheBlock).toContain("systemCloseCacheByConnection")
+    expect(cacheBlock).toContain("function parseSystemCloseFlag")
+    expect(cacheBlock).toContain("getCachedSystemCloseOnly(connectionId: string)")
+    expect(cacheBlock).toContain("settings:connection_settings:${connectionId}")
+    expect(cacheBlock).toContain("connection_settings:${connectionId}")
+    expect(cacheBlock).toContain("Per-connection settings win over global app settings")
+    expect(liveStage).toContain("getCachedSystemCloseOnly(pos.connectionId)")
+    expect(liveStage).toContain("parseSystemCloseFlag((pos as any)?.use_system_close_only)")
+  })
+
   test("recoordination stamps missing or anonymous progression snapshots", () => {
     const source = read("lib/progression-state-manager.ts")
     const start = source.indexOf("static async recoordinateForActualOne")
