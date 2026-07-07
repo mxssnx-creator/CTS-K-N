@@ -14,3 +14,9 @@ node_modules
 .next/
 .DS_Store.v0-data/redis-snapshot.json
 .v0-data/redis-snapshot.json
+
+# Build outputs and local runtime snapshots (never commit)
+.next/
+.next-prod/
+.v0-dev/
+.v0-prod/

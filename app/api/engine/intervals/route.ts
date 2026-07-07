@@ -4,12 +4,15 @@ import { initRedis, getSettings } from "@/lib/redis-db"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest) {
   try {
-    const { id } = await params
+    const id = req.nextUrl.searchParams.get("id") || ""
     
     await initRedis()
     
+    if (!id) {
+      return NextResponse.json({ error: "Missing id query parameter" }, { status: 400 })
+    }
     // Canonical sources (see audit plan item 5):
     //   • last_*_run        → trade_engine_state:{id}  (heartbeat)
     //   • *_cycle_count     → progression:{id}         (atomic hincrby)

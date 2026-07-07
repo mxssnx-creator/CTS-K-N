@@ -1,18 +1,18 @@
 import { type NextRequest, NextResponse } from "next/server"
 
-let globalTradeEngine: any = null
-
 export const dynamic = "force-dynamic"
-export function setGlobalTradeEngine(engine: any) {
-  globalTradeEngine = engine
-}
 
+/**
+ * POST /api/trade-engine/restart
+ *
+ * NOTE: Route handlers are isolated modules and cannot be injected with a live
+ * engine instance at runtime, so a hard restart must be performed through the
+ * global coordinator (see /api/trade-engine/stop + /api/trade-engine/start).
+ * This endpoint therefore delegates to the global coordinator singleton when
+ * available, and reports a clear error otherwise.
+ */
 export async function POST(request: NextRequest) {
   try {
-    if (!globalTradeEngine) {
-      return NextResponse.json({ success: false, error: "Trade engine not initialized" }, { status: 503 })
-    }
-
     let force = false
     let clearCache = false
     try {
@@ -26,22 +26,17 @@ export async function POST(request: NextRequest) {
       // Empty body - use defaults
     }
 
-    console.log("[v0] Restarting trade engine...", { force, clearCache })
-
-    // Stop the engine first
-    await globalTradeEngine.stop()
-
-    // Optional: Clear cache if requested
-    if (clearCache) {
-      console.log("[v0] Clearing engine cache...")
-      // Clear any cached data if needed
+    const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
+    const coordinator = getGlobalTradeEngineCoordinator()
+    if (!coordinator) {
+      return NextResponse.json({ success: false, error: "Trade engine not initialized" }, { status: 503 })
     }
 
-    // Wait a moment before restart
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+    console.log("[v0] Restarting trade engine via global coordinator...", { force, clearCache })
 
-    // Start the engine again
-    await globalTradeEngine.start()
+    await coordinator.stopAll()
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    await coordinator.startAll()
 
     console.log("[v0] Trade engine restarted successfully")
 

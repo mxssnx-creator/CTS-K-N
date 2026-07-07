@@ -1,9 +1,9 @@
 import { type NextRequest, NextResponse } from "next/server"
 
 interface RouteParams {
-  params: {
+  params: Promise<{
     step: string
-  }
+  }>
 }
 
 export const dynamic = "force-dynamic"

@@ -32,6 +32,11 @@ function getServerActionAllowedOrigins() {
 }
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Allow a separate build output directory (e.g. for running a production
+  // `next start` alongside a `next dev` on the same project). Defaults to
+  // ".next". Set NEXT_DIST_DIR only when building/starting production so the
+  // dev server keeps using the default ".next".
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   reactStrictMode: false,
   typescript: {
     // Production deployments must fail on type or syntax drift instead of
