@@ -178,7 +178,11 @@ export async function GET() {
           
           const positionsCount = await client.scard(positionsKey)
           const tradesCount = await client.scard(tradesKey)
-          const engineState = await client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>))
+          const [rawEngineState, settingsEngineState] = await Promise.all([
+            client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
+            client.hgetall(`settings:trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
+          ])
+          const engineState = { ...(rawEngineState || {}), ...(settingsEngineState || {}) }
           const processorHeartbeat = Number((engineState as any)?.last_processor_heartbeat || 0)
           const hasFreshDistributedHeartbeat =
             Number.isFinite(processorHeartbeat) && processorHeartbeat > 0 && Date.now() - processorHeartbeat < 90_000
