@@ -1,10 +1,22 @@
-# Active Context: Next.js Starter Template
+# Active Context: CTS-V-yd Trading System (main project)
 
 ## Current State
 
-**Template Status**: ✅ Ready for development
+**Project Status**: ✅ Consolidated as the main project on `main`
 
-The template is a clean Next.js 16 starter with TypeScript and Tailwind CSS 4. It's ready for AI-assisted expansion to build any type of application.
+The starter template was replaced with the full CTS-V-yd trading system
+(strategy engine, analytics UI, API routes, tests). The code now lives in
+this repo's `main` branch and is pushed to `origin/main` on
+`github.com/mxssnx-creator/CTS-K-N.git`. The bot token (`kilo-code-bot`)
+can push to `CTS-K-N` but NOT to `CTS-V-yd`.
+
+## Source Provenance
+
+- Source code originated in `agent_b15e3c2a/ctsv` (branch `kilo`, remote
+  `CTS-V-yd.git` — no push access). Its 2 unpushed commits (prod/dev engine
+  alignment) are included in the consolidated `main`.
+- The previous `ctsv-dev/` symlink tree and empty `ctsv/` placeholder were
+  removed during consolidation.
 
 ## Recently Completed
 
@@ -85,3 +97,4 @@ export async function GET() {
 | Date | Changes |
 |------|---------|
 | Initial | Template created with base setup |
+| 2026-07-07 | Consolidated CTS-V-yd trading system as the main project; committed to `main` and pushed to `origin/main` (CTS-K-N). Removed starter template + `ctsv-dev` symlinks. |
