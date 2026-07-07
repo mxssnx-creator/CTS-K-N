@@ -1218,6 +1218,83 @@ describe("requested regression guardrails", () => {
     expect(liveStage).toContain("parseSystemCloseFlag((pos as any)?.use_system_close_only)")
   })
 
+
+  test("inline Redis memory cleanup protects durable engine state and evicts volatile progression data", () => {
+    const source = read("lib/redis-db.ts")
+    const cleanupStart = source.indexOf("private startTTLCleanup")
+    const cleanupEnd = source.indexOf("private describeKeyFamilies", cleanupStart)
+    const cleanupBlock = source.slice(cleanupStart, cleanupEnd)
+    const evictionStart = source.indexOf("private evictOldRecords")
+    const evictionEnd = source.indexOf("private cleanupVolatileRuntimeState", evictionStart)
+    const evictionBlock = source.slice(evictionStart, evictionEnd)
+
+    expect(cleanupBlock).toContain("process.memoryUsage?.()")
+    expect(cleanupBlock).toContain("const isCritical = rssMB > CMEM.rssHardMB")
+    expect(cleanupBlock).toContain("const isWarm")
+    expect(cleanupBlock).toContain("FULL_CLEANUP_INTERVAL_MS")
+    expect(cleanupBlock).toContain('cleanupVolatileRuntimeState({ reason: "critical-rss" })')
+    expect(cleanupBlock).toContain("ttlCleanupTimer.unref?.()")
+
+    for (const durablePrefix of [
+      'k.startsWith("live:position:")',
+      'k.startsWith("live:positions:")',
+      'k.startsWith("progression:")',
+      'k.startsWith("connection:")',
+      'k.startsWith("trade_engine:")',
+      'k.startsWith("app_settings")',
+    ]) {
+      expect(evictionBlock).toContain(durablePrefix)
+    }
+
+    expect(evictionBlock).toContain("settings:pseudo_position")
+    expect(evictionBlock).toContain("settings:strategies")
+    expect(evictionBlock).toContain("transient pipeline data")
+    expect(source).toContain("async cleanupVolatileRuntimeState")
+  })
+
+  test("hot-path performance guards cover stats, real overlays, strategy top-k, and heap telemetry", () => {
+    const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
+    const coordinator = read("lib/strategy-coordinator.ts")
+    const setsProcessor = read("lib/strategy-sets-processor.ts")
+    const engineManager = read("lib/trade-engine/engine-manager.ts")
+
+    expect(statsRoute).toContain("let timeoutHandle: ReturnType<typeof setTimeout> | null = null")
+    expect(statsRoute).toContain("if (timeoutHandle) clearTimeout(timeoutHandle)")
+    expect(coordinator).toContain("PositionContext")
+    expect(coordinator).toContain("perSymbolOpenByDir")
+    expect(coordinator).toContain("posCtx?.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 }")
+    expect(setsProcessor).toContain("Memory-safe top-K selection")
+    expect(setsProcessor).toContain("const heap: any[] = []")
+    expect(setsProcessor).toContain("sinkDown")
+    expect(engineManager).toContain("process.memoryUsage().heapTotal")
+    expect(engineManager).not.toContain('require("v8")')
+    expect(engineManager).not.toContain("JSON.stringify(effectiveForceSymbols)")
+  })
+
+  test("live control-order system-close mode is scoped, cached, and order-limit safe", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const cacheStart = liveStage.indexOf("const SYSTEM_CLOSE_TTL_MS")
+    const cacheEnd = liveStage.indexOf("async function updateProtectionOrders", cacheStart)
+    const cacheBlock = liveStage.slice(cacheStart, cacheEnd)
+    const protectionStart = liveStage.indexOf("async function updateProtectionOrders")
+    const protectionEnd = liveStage.indexOf("async function", protectionStart + 1)
+    const protectionBlock = liveStage.slice(protectionStart, protectionEnd)
+
+    expect(cacheBlock).toContain("systemCloseCacheByConnection")
+    expect(cacheBlock).toContain("Promise.all")
+    expect(cacheBlock).toContain("getAppSettings().catch")
+    expect(cacheBlock).toContain("settings:connection_settings:${connectionId}")
+    expect(cacheBlock).toContain("connection_settings:${connectionId}")
+    expect(cacheBlock).toContain("const merged = { ...(appSettings || {}), ...(prefixedConnSettings || {}), ...(connSettings || {}) }")
+    expect(cacheBlock).not.toContain("_systemCloseCacheValue")
+    expect(cacheBlock).not.toContain("_systemCloseInflight")
+
+    expect(protectionBlock).toContain("getCachedSystemCloseOnly(pos.connectionId)")
+    expect(protectionBlock).toContain("cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId")
+    expect(protectionBlock).toContain("cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId")
+    expect(protectionBlock).toContain("return result")
+  })
+
   test("recoordination stamps missing or anonymous progression snapshots", () => {
     const source = read("lib/progression-state-manager.ts")
     const start = source.indexOf("static async recoordinateForActualOne")
