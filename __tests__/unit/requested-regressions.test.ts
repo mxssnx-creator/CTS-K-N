@@ -637,6 +637,9 @@ describe("requested regression guardrails", () => {
     expect(pkg.scripts.prebuild).not.toContain("rm -rf .next")
     expect(pkg.scripts["prevercel-build"]).not.toContain("rm -rf .next")
     expect(read("eslint.config.mjs")).toContain('".next-*/**"')
+    expect(pkg.scripts.postbuild).toBe("node scripts/normalize-next-env.mjs")
+    expect(pkg.scripts["postvercel-build"]).toBe("node scripts/normalize-next-env.mjs")
+    expect(read("scripts/normalize-next-env.mjs")).toContain('./.next/types/routes.d.ts')
   })
 
   test("production status routes merge raw and settings-prefixed engine heartbeat state", () => {
