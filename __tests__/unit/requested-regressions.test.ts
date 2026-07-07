@@ -1198,6 +1198,29 @@ describe("requested regression guardrails", () => {
   })
 
 
+
+  test("progression stats timeout timer is cleared after successful polls", () => {
+    const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
+
+    expect(statsRoute).toContain("let timeoutHandle: ReturnType<typeof setTimeout> | null = null")
+    expect(statsRoute).toContain("timeoutHandle = setTimeout")
+    expect(statsRoute).toContain("finally {")
+    expect(statsRoute).toContain("if (timeoutHandle) clearTimeout(timeoutHandle)")
+  })
+
+  test("real-stage active block overlays reuse per-cycle direction indexes", () => {
+    const coordinator = read("lib/strategy-coordinator.ts")
+    const fnStart = coordinator.indexOf("private async buildActiveRealBlockOverlaysForReal")
+    const fnEnd = coordinator.indexOf("private async createLiveSets", fnStart)
+    const blockFn = coordinator.slice(fnStart, fnEnd)
+
+    expect(blockFn).toContain("activeByDirSnapshot?: { long: number; short: number }")
+    expect(blockFn).toContain("Use the PositionContext snapshot built once per cycle")
+    expect(blockFn).toContain("activeByDirSnapshot")
+    expect(blockFn).toContain("if (!activeByDirSnapshot)")
+    expect(coordinator).toContain("posCtx?.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 }")
+  })
+
   test("dashboard footer shows session instance and running time", () => {
     const source = read("components/dashboard/dashboard.tsx")
 
