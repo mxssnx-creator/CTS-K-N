@@ -407,6 +407,8 @@ export class AnalyticsEngine {
   }
 
   private calculateVolatility(positions: TradingPosition[]): number {
+    if (positions.length === 0) return 0
+
     const returns = positions.map((p) => (p.current_price - p.entry_price) / p.entry_price)
     const avgReturn = returns.reduce((sum, r) => sum + r, 0) / returns.length
     const variance = returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / returns.length

@@ -469,19 +469,19 @@ export default function StatisticsPage() {
       {
         condition: 'High Volatility',
         periodCount: volatilityPeriods.length,
-        avgPerformance: volatilityPeriods.reduce((sum, p) => sum + (p.daily_pnl || 0), 0) / volatilityPeriods.length,
+        avgPerformance: safeAvg(volatilityPeriods.reduce((sum, p) => sum + (p.daily_pnl || 0), 0), volatilityPeriods.length),
         bestSymbols: symbols.filter(s => s.volatility > 0.03).sort((a, b) => b.total_pnl - a.total_pnl).slice(0, 3),
       },
       {
         condition: 'Strong Trend',
         periodCount: trendingPeriods.length,
-        avgPerformance: trendingPeriods.reduce((sum, p) => sum + (p.daily_pnl || 0), 0) / trendingPeriods.length,
+        avgPerformance: safeAvg(trendingPeriods.reduce((sum, p) => sum + (p.daily_pnl || 0), 0), trendingPeriods.length),
         bestSymbols: symbols.sort((a, b) => Math.abs(b.total_pnl) - Math.abs(a.total_pnl)).slice(0, 3),
       },
       {
         condition: 'Range Bound',
         periodCount: rangingPeriods.length,
-        avgPerformance: rangingPeriods.reduce((sum, p) => sum + (p.daily_pnl || 0), 0) / rangingPeriods.length,
+        avgPerformance: safeAvg(rangingPeriods.reduce((sum, p) => sum + (p.daily_pnl || 0), 0), rangingPeriods.length),
         bestSymbols: symbols.filter(s => s.volatility <= 0.02).sort((a, b) => b.total_pnl - a.total_pnl).slice(0, 3),
       },
     ]
@@ -582,6 +582,9 @@ export default function StatisticsPage() {
   }
 
   const COLORS = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#06b6d4"]
+
+  // Safe average — guards against divide-by-zero (NaN) when a dataset is empty.
+  const safeAvg = (sum: number, count: number): number => (count > 0 ? sum / count : 0)
 
   const overviewStats = {
     totalStrategies: strategyAnalytics.length,
@@ -706,7 +709,7 @@ export default function StatisticsPage() {
 
         <div className="lg:col-span-3">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-8">
+            <TabsList className="grid w-full grid-cols-5">
               <TabsTrigger value="overview" className="flex items-center gap-2">
                 <BarChart3 className="h-4 w-4" />
                 Overview
@@ -718,6 +721,14 @@ export default function StatisticsPage() {
               <TabsTrigger value="strategies" className="flex items-center gap-2">
                 <TrendingUp className="h-4 w-4" />
                 Strategies
+              </TabsTrigger>
+              <TabsTrigger value="symbols" className="flex items-center gap-2">
+                <Star className="h-4 w-4" />
+                Symbols
+              </TabsTrigger>
+              <TabsTrigger value="charts" className="flex items-center gap-2">
+                <LineChartIcon className="h-4 w-4" />
+                Charts
               </TabsTrigger>
               <TabsTrigger value="coordination" className="flex items-center gap-2">
                 <Network className="h-4 w-4" />
@@ -785,7 +796,7 @@ export default function StatisticsPage() {
                       </div>
                       <div>
                         <div className="text-2xl font-bold text-blue-600">
-                          {(optimalStrategies.reduce((sum, s) => sum + s.riskAdjustedReturn, 0) / optimalStrategies.length * 100).toFixed(1)}%
+                          {(safeAvg(optimalStrategies.reduce((sum, s) => sum + s.riskAdjustedReturn, 0), optimalStrategies.length) * 100).toFixed(1)}%
                         </div>
                         <div className="text-sm text-muted-foreground">Avg Risk-Adjusted</div>
                       </div>
@@ -979,7 +990,7 @@ export default function StatisticsPage() {
                       </div>
                       <div>
                         <div className="text-2xl font-bold">
-                          {(coordinationAnalysis.reduce((sum, c) => sum + c.performanceBoost, 0) / coordinationAnalysis.length * 100).toFixed(1)}%
+                          {(safeAvg(coordinationAnalysis.reduce((sum, c) => sum + c.performanceBoost, 0), coordinationAnalysis.length) * 100).toFixed(1)}%
                         </div>
                         <div className="text-sm text-muted-foreground">Avg Performance Boost</div>
                       </div>
@@ -995,7 +1006,7 @@ export default function StatisticsPage() {
                       </div>
                       <div>
                         <div className="text-2xl font-bold">
-                          {(coordinationAnalysis.reduce((sum, c) => sum + c.riskReduction, 0) / coordinationAnalysis.length * 100).toFixed(1)}%
+                          {(safeAvg(coordinationAnalysis.reduce((sum, c) => sum + c.riskReduction, 0), coordinationAnalysis.length) * 100).toFixed(1)}%
                         </div>
                         <div className="text-sm text-muted-foreground">Avg Risk Reduction</div>
                       </div>
@@ -1011,7 +1022,7 @@ export default function StatisticsPage() {
                       </div>
                       <div>
                         <div className="text-2xl font-bold">
-                          {Math.abs(coordinationAnalysis.reduce((sum, c) => sum + c.correlation, 0) / coordinationAnalysis.length).toFixed(2)}
+                          {Math.abs(safeAvg(coordinationAnalysis.reduce((sum, c) => sum + c.correlation, 0), coordinationAnalysis.length)).toFixed(2)}
                         </div>
                         <div className="text-sm text-muted-foreground">Avg Correlation</div>
                       </div>
@@ -1435,7 +1446,7 @@ export default function StatisticsPage() {
 
                       <div className="text-center p-4 border rounded-lg">
                         <div className="text-2xl font-bold text-yellow-600">
-                          {(strategyAnalytics.reduce((sum, s) => sum + (s.drawdown_time || 0), 0) / strategyAnalytics.length * 100).toFixed(1)}%
+                          {(safeAvg(strategyAnalytics.reduce((sum, s) => sum + (s.drawdown_time || 0), 0), strategyAnalytics.length) * 100).toFixed(1)}%
                         </div>
                         <div className="text-sm text-muted-foreground">Avg Max Drawdown</div>
                         <div className="text-xs text-muted-foreground mt-1">Peak-to-trough decline</div>
@@ -1451,7 +1462,7 @@ export default function StatisticsPage() {
 
                       <div className="text-center p-4 border rounded-lg">
                         <div className="text-2xl font-bold text-green-600">
-                          {(optimalStrategies.reduce((sum, s) => sum + s.sharpeRatio, 0) / optimalStrategies.length).toFixed(2)}
+                           {(safeAvg(optimalStrategies.reduce((sum, s) => sum + s.sharpeRatio, 0), optimalStrategies.length)).toFixed(2)}
                         </div>
                         <div className="text-sm text-muted-foreground">Avg Sharpe Ratio</div>
                         <div className="text-xs text-muted-foreground mt-1">Risk-adjusted returns</div>
