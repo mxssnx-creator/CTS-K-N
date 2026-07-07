@@ -1,5 +1,17 @@
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
-import { getHeapStatistics } from "node:v8"
+// NOTE: v8 is Node.js built-in; webpack in Next.js may not recognize `node:v8`.
+// Use dynamic import with fallback for bundler compatibility.
+let getHeapStatistics: (() => { heap_size_limit?: number; heap_total_size?: number }) | null = null
+if (typeof process !== "undefined" && process.versions?.node) {
+  try {
+    // @ts-ignore - v8 is a Node built-in
+    const v8 = require("v8")
+    getHeapStatistics = v8.getHeapStatistics.bind(v8)
+  } catch {
+    // fallback: use process.memoryUsage approximation
+    getHeapStatistics = () => ({ heap_size_limit: process.memoryUsage().heapTotal * 4 })
+  }
+}
 /**
  * Trade Engine Manager V11
  * Manages asynchronous processing for symbols, indications, pseudo positions, and strategies
@@ -83,7 +95,7 @@ function checkMemoryAndTriggerGC(): void {
     // launching the server via Bun) it produced a self-defeating GC death-loop
     // that starved the engine cycle. Trigger GC only when we genuinely approach
     // the configured heap ceiling.
-    const heapLimitMB = Math.round((getHeapStatistics().heap_size_limit || memUsage.heapTotal) / 1024 / 1024)
+    const heapLimitMB = Math.round(((getHeapStatistics?.()?.heap_size_limit || memUsage.heapTotal) / 1024 / 1024))
     if (heapUsedMB > heapLimitMB * 0.8) {
       if (global.gc) {
         global.gc()
