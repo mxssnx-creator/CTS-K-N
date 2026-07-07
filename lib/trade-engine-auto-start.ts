@@ -150,15 +150,28 @@ async function initializeTradeEngineAutoStartInternal(): Promise<void> {
     await initRedis()
     await ensureUniqueSiteInstance().catch(() => {})
 
-    // LIVE TRADING FIX: Clear stale operator_intent from previous runs
-    // If intent is explicitly "stopped", delete it so it defaults to "running"
-    // This ensures engines start automatically on each new deployment/restart
+    // LIVE TRADING FIX: Clear stale "stopped" intent from previous runs so the
+    // engine autostarts on each new deployment/restart. A prior process shutting
+    // down leaves runtime/desired fields as "stopped"; treating those as an
+    // explicit operator stop blocks autostart forever. Only an explicit
+    // operator_intent:"stopped" or the sticky operator_stopped veto is honored.
     try {
       const client = getRedisClient()
       const state = await client.hgetall("trade_engine:global")
-      if (state?.operator_intent === "stopped") {
-        console.log("[v0] [Auto-Start] Clearing stale operator_intent='stopped' to enable autostart")
-        await client.hdel("trade_engine:global", "operator_intent")
+      const explicitStop =
+        state?.operator_intent === "stopped" ||
+        state?.operator_stopped === "1" ||
+        state?.operator_stopped === "true"
+      if (!explicitStop) {
+        const staleFields = ["operator_intent", "desired_status", "status"].filter(
+          (field) => state?.[field] === "stopped",
+        )
+        if (staleFields.length > 0) {
+          console.log(
+            `[v0] [Auto-Start] Clearing stale stopped intent fields ${staleFields.join(", ")} to enable autostart`,
+          )
+          await client.hdel("trade_engine:global", ...staleFields)
+        }
       }
     } catch (redisErr) {
       console.warn("[v0] [Auto-Start] Failed to clear stale intent:", redisErr)

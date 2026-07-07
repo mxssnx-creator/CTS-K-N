@@ -306,12 +306,14 @@ export async function completeStartup() {
       const existingGlobalState = (await client.hgetall("trade_engine:global")) as Record<string, string> | null
       const operatorStopped =
         existingGlobalState?.operator_stopped === "1" || existingGlobalState?.operator_stopped === "true"
+      // Only an explicit operator_intent (or the sticky operator_stopped veto)
+      // should keep the engine stopped. desired_status/status are runtime/shadow
+      // fields written by this same step and by engine heartbeats; falling through
+      // to them re-poisoned operator_intent with a stale "stopped" on every boot.
+      // Anything else (including a missing operator_intent) defaults to "running".
       const preservedIntent = operatorStopped
         ? "stopped"
-        : existingGlobalState?.operator_intent ||
-          existingGlobalState?.desired_status ||
-          existingGlobalState?.status ||
-          "running"
+        : existingGlobalState?.operator_intent || "running"
 
       await client.hset("trade_engine:global", {
         // Fresh installs and restored snapshots default to desired_status: "running"
