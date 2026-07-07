@@ -25,7 +25,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Power, Trash2, Download, Upload } from "lucide-react"
+import { Activity, Database, Power, Trash2, Download, Upload } from "lucide-react"
 import { toast } from "sonner"
 
 export interface ExchangeConnection {
@@ -84,10 +84,19 @@ export function ConnectionSettings({
 
   return (
     <div className="space-y-6">
-      <div className="space-y-4">
-        <div className="flex justify-between items-center">
-          <h3 className="text-lg font-semibold">Base Connections</h3>
-          <div className="flex gap-2">
+      <div className="rounded-2xl border bg-gradient-to-br from-primary/10 via-background to-background p-5 shadow-sm">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-2">
+            <div className="inline-flex items-center gap-2 rounded-full border bg-background/80 px-3 py-1 text-xs font-medium text-muted-foreground">
+              <Database className="h-3.5 w-3.5 text-primary" />
+              Connection Settings
+            </div>
+            <h3 className="text-xl font-semibold tracking-tight">Base Connections</h3>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Manage exchange API connections, activation state, and quick recovery actions from one control panel.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="outline" onClick={onImportUserConnections}>
               <Upload className="h-3 w-3 mr-2" />
               Import User Connections
@@ -98,14 +107,11 @@ export function ConnectionSettings({
             </Button>
           </div>
         </div>
-        <p className="text-xs text-muted-foreground">
-          Manage your base exchange API connections. Enable/disable connections or delete them.
-        </p>
       </div>
 
       <div className="grid gap-4">
         {connections.length === 0 ? (
-          <Card className="p-8 text-center">
+          <Card className="border-dashed p-10 text-center shadow-sm">
             <p className="text-muted-foreground">No connections configured</p>
             <Button className="mt-4 bg-transparent" variant="outline" onClick={onImportUserConnections}>
               Import User Connections
@@ -113,10 +119,13 @@ export function ConnectionSettings({
           </Card>
         ) : (
           connections.map((conn) => (
-            <Card key={conn.id} className="p-4">
-              <div className="flex items-center justify-between">
+            <Card key={conn.id} className="overflow-hidden border-muted-foreground/15 p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div className="flex-1 space-y-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10">
+                      <Activity className="h-4 w-4 text-primary" />
+                    </div>
                     <h4 className="font-semibold">{conn.name}</h4>
                     {conn.is_active && (
                       <Badge variant="default" className="text-xs">
@@ -134,7 +143,7 @@ export function ConnectionSettings({
                       </Badge>
                     )}
                   </div>
-                  <div className="text-xs text-muted-foreground space-y-0.5">
+                  <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-3">
                     <div>Exchange: {conn.exchange}</div>
                     <div>Type: {conn.api_type}</div>
                     <div>
@@ -143,16 +152,15 @@ export function ConnectionSettings({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                  <div className="flex items-center gap-2 rounded-full border bg-muted/40 px-3 py-1.5">
                     <Label htmlFor={`enabled-${conn.id}`} className="text-xs">
                       Enabled
                     </Label>
                     <Switch
                       id={`enabled-${conn.id}`}
                       checked={conn.is_enabled}
-                      onCheckedChange={(checked) => {
-                        console.log("[v0] Toggle connection:", conn.id, "to:", checked)
+                      onCheckedChange={() => {
                         onConnectionToggle(conn.id)
                       }}
                     />
@@ -173,6 +181,7 @@ export function ConnectionSettings({
                   <Button
                     size="sm"
                     variant="outline"
+                    className="border-destructive/30 text-destructive hover:bg-destructive hover:text-destructive-foreground"
                     onClick={() => handleDeleteClick(conn.id)}
                   >
                     <Trash2 className="h-3 w-3" />
@@ -185,16 +194,16 @@ export function ConnectionSettings({
       </div>
 
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <AlertDialogContent>
+        <AlertDialogContent className="border-destructive/20 sm:max-w-md">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Connection</AlertDialogTitle>
+            <AlertDialogTitle className="flex items-center gap-2 text-destructive"><Trash2 className="h-4 w-4" /> Delete Connection</AlertDialogTitle>
             <AlertDialogDescription>
               Are you sure you want to delete this connection? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDeleteConfirm}>Delete</AlertDialogAction>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={handleDeleteConfirm}>Delete</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

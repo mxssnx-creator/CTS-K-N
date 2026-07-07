@@ -253,7 +253,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
               onChange={(e) => setFormData({ ...formData, api_key: e.target.value })}
               placeholder="Enter your API Key"
               disabled={loading}
-              className="pr-10 bg-white"
+              className="pr-10 bg-background"
             />
             <button
               type="button"
@@ -276,7 +276,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
             onChange={(e) => setFormData({ ...formData, api_secret: e.target.value })}
             placeholder="Enter your API Secret"
             disabled={loading}
-            className="bg-white"
+            className="bg-background"
           />
         </div>
 
@@ -288,7 +288,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
             onChange={(e) => setFormData({ ...formData, api_passphrase: e.target.value })}
             placeholder="Leave blank if not required"
             disabled={loading}
-            className="bg-white"
+            className="bg-background"
           />
         </div>
       </TabsContent>
@@ -301,7 +301,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
             <div className="space-y-2">
               <Label className="font-medium text-xs">API Subtype</Label>
               <Select value={formData.api_subtype} onValueChange={(value) => setFormData({ ...formData, api_subtype: value })}>
-                <SelectTrigger disabled={loading} className="bg-white text-sm">
+                <SelectTrigger disabled={loading} className="bg-background text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -317,7 +317,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
             <div className="space-y-2">
               <Label className="font-medium text-xs">Connection Method</Label>
               <Select value={formData.connection_method} onValueChange={(value) => setFormData({ ...formData, connection_method: value })}>
-                <SelectTrigger disabled={loading} className="bg-white text-sm">
+                <SelectTrigger disabled={loading} className="bg-background text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -333,7 +333,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
             <div className="space-y-2">
               <Label className="font-medium text-xs">Connection Library</Label>
               <Select value={formData.connection_library} onValueChange={(value) => setFormData({ ...formData, connection_library: value })}>
-                <SelectTrigger disabled={loading} className="bg-white text-sm">
+                <SelectTrigger disabled={loading} className="bg-background text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -354,7 +354,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
             <div className="space-y-2">
               <Label className="font-medium">Margin Type</Label>
               <Select value={formData.margin_type} onValueChange={(value) => setFormData({ ...formData, margin_type: value })}>
-                <SelectTrigger disabled={loading} className="bg-white">
+                <SelectTrigger disabled={loading} className="bg-background">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -367,7 +367,7 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
             <div className="space-y-2">
               <Label className="font-medium">Position Mode</Label>
               <Select value={formData.position_mode} onValueChange={(value) => setFormData({ ...formData, position_mode: value })}>
-                <SelectTrigger disabled={loading} className="bg-white">
+                <SelectTrigger disabled={loading} className="bg-background">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

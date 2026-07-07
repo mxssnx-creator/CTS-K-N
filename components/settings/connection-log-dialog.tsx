@@ -385,7 +385,7 @@ export function ConnectionLogDialog({ open, onOpenChange, connectionId, connecti
               ) : (
                 <div className="space-y-2">
                   {logs.map((log, index) => (
-                    <div key={index} className="p-3 border rounded-lg space-y-1 bg-white/90">
+                    <div key={index} className="p-3 border rounded-lg space-y-1 bg-background/90">
                       <div className="flex items-center gap-2 justify-between">
                         {getLevelBadge(log.level)}
                         <span className="text-xs text-muted-foreground">
