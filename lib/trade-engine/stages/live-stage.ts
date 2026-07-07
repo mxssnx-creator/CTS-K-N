@@ -2564,10 +2564,37 @@ export async function executeLivePosition(
     const { getConnection: _getConn } = await import("@/lib/redis-db")
     const { isTruthyFlag } = await import("@/lib/connection-state-utils")
     const connSettings = (await _getConn(connectionId)) || {}
-    const isLiveTradeEnabled =
+    const isLiveTradeEnabledRaw =
       !hasRealTradeBlock(connSettings) &&
       (isTruthyFlag(connSettings.is_live_trade) ||
         isTruthyFlag(connSettings.live_trade_enabled))
+
+    // ── CREDENTIAL GATE (production robustness) ────────────────────────────
+    // `is_live_trade` can be force-set to "1" by migrations/seeders even when
+    // the connection has NO valid API credentials (e.g. a fresh production
+    // deploy with empty/placeholder keys). Without this gate the engine
+    // attempts REAL exchange order execution every cycle and every attempt
+    // fails with an auth error — which surfaces as coordinator error messages,
+    // progression failures, and "unsuccessful" trades in production, while dev
+    // (configured with real local credentials) works fine. When credentials
+    // are absent we deliberately fall through to the existing paper/simulation
+    // branch instead of failing, so the connection still progresses safely.
+    const hasValidLiveCredentials = (() => {
+      const key = connSettings?.api_key
+      const secret = connSettings?.api_secret
+      if (!key || String(key).length < 16) return false
+      if (!secret || String(secret).length < 16) return false
+      const banned = /PLACEHOLDER|00998877|^test/i
+      if (banned.test(String(key)) || banned.test(String(secret))) return false
+      return true
+    })()
+    const isLiveTradeEnabled = isLiveTradeEnabledRaw && hasValidLiveCredentials
+    if (isLiveTradeEnabledRaw && !hasValidLiveCredentials) {
+      console.warn(
+        `${LOG_PREFIX} live_trade enabled on ${connectionId} but connection has no valid API credentials — ` +
+          `executing in simulation (paper) mode instead of real exchange orders`,
+      )
+    }
 
     // isBlockVariant and _lockDirSuffix are hoisted to function scope (before
     // the try block) so the catch handler can also release the correct key.
