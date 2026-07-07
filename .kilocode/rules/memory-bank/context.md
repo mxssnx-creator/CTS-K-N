@@ -27,6 +27,8 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Memory bank documentation
 - [x] Recipe system for common features
 - [x] Fix route handlers `localStartAllowed` pattern (NODE_ENV → VERCEL) for self-hosted production
+- [x] Fixed `pre-startup.ts` symbol seeding to preserve existing snapshot values (no overwrite of `force_symbols`)
+- [x] Updated redis-snapshot.json with complete bingx-x01 configuration: API credentials, 5 symbols (BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT, ADAUSDT), live_volume_factor=0.1, market data placeholder entries
 
 ## Current Structure
 
@@ -106,3 +108,4 @@ export async function GET() {
 | 2026-07-07 | NOTE: the app's in-memory `InlineLocalRedis` is per-process — multi-instance/serverless production still needs a shared durable Redis (`REDIS_URL`/`KV_URL`/Upstash); the silent inline-local fallback only guarantees consistency for a single `next start` process. |
 | 2026-07-07 | Fixed route handler `localStartAllowed` checks using `NODE_ENV !== "production"` instead of `VERCEL !== "1"` pattern. The wrong pattern blocked self-hosted production (`NODE_ENV=production` but `VERCEL≠"1"`) from starting engines via dashboard toggle. Fixed in: `app/api/settings/connections/[id]/toggle-dashboard/route.ts`, `app/api/settings/connections/[id]/enable/route.ts`, `app/api/settings/connections/[id]/live-trade/route.ts`. |
 | 2026-07-07 | Fixed `pre-startup.ts` and `startup-coordinator.ts` to use `VERCEL !== "1"` instead of `NODE_ENV !== "production"` for non-Vercel production compatibility. This ensures symbol seeding and proper coordination for self-hosted production deployments. |
+| 2026-07-07 | BingX credentials now preserved across startup — `pre-startup.ts:seedPredefinedConnections()` now checks all Redis locations (`settings:trade_engine_state:{id}`, `settings:connection:{id}`, raw `trade_engine_state:{id}`) before writing symbols, preventing overwrite of snapshot values. Updated `redis-snapshot.json` with complete bingx-x01 state including `force_symbols` in all required locations and market data placeholders for 5 symbols. |

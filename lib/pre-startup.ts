@@ -32,30 +32,55 @@ async function seedPredefinedConnections() {
   if (process.env.VERCEL !== "1") {
     try {
       const allConnections = await getAllConnections()
-      const { getRedisClient } = await import("@/lib/redis-db")
+      const { getRedisClient, getSettings } = await import("@/lib/redis-db")
       const client = getRedisClient()
-      
-      // Configuration: 8 high-liquidity trading symbols for BingX
-      const devSymbols = ["BTCUSDT", "ETHUSDT", "TAIKO", "VELVET", "BEAT", "ZROU", "WLD", "JTO"]
-      
+
+      // Configuration: 5 symbols for BingX (matching redis-snapshot.json)
+      const devSymbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
+
       for (const conn of allConnections) {
         if (conn.exchange === "bingx") {
-          // Write symbols to BOTH locations:
-          // 1. Main connection:{id} hash (where getConnection() reads symbol_count from)
-          await client.hset(`connection:${conn.id}`, {
-            symbol_count: String(devSymbols.length),
-            symbols: devSymbols.join(","),
-            force_symbols: JSON.stringify(devSymbols),
-          })
-          
-          // 2. trade_engine_state:{id} hash (where getSymbols() reads force_symbols from)
-          await client.hset(`trade_engine_state:${conn.id}`, {
-            symbols: JSON.stringify(devSymbols),
-            force_symbols: JSON.stringify(devSymbols),
-            symbol_count: String(devSymbols.length),
-          })
-          
-          console.log(`[v0] [PreStartup] Configured ${devSymbols.length} trading symbols for ${conn.id}`)
+          // Check if force_symbols already exists in ANY location (preserves snapshot values)
+          // getSymbols() reads from settings:trade_engine_state:{id} and settings:connection:{id}
+          const [existingState, existingConnSettings, existingTradeState] = await Promise.all([
+            getSettings(`trade_engine_state:${conn.id}`),
+            getSettings(`connection:${conn.id}`),
+            client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({}))
+          ])
+
+          const hasExistingSymbols =
+            (existingState as any)?.force_symbols || (existingState as any)?.symbols ||
+            (existingTradeState as any)?.force_symbols || (existingConnSettings as any)?.force_symbols
+
+          if (!hasExistingSymbols) {
+            // Write symbols to BOTH locations:
+            // 1. Main connection:{id} hash (where getConnection() reads symbol_count from)
+            await client.hset(`connection:${conn.id}`, {
+              symbol_count: String(devSymbols.length),
+              symbols: devSymbols.join(","),
+              force_symbols: JSON.stringify(devSymbols),
+            })
+
+            // 2. trade_engine_state:{id} hash (where getSymbols() reads force_symbols from)
+            await client.hset(`trade_engine_state:${conn.id}`, {
+              symbols: JSON.stringify(devSymbols),
+              force_symbols: JSON.stringify(devSymbols),
+              symbol_count: String(devSymbols.length),
+            })
+
+            // 3. settings: prefixed hashes (getSettings() adds this prefix)
+            await client.hset(`settings:trade_engine_state:${conn.id}`, {
+              force_symbols: JSON.stringify(devSymbols),
+              symbol_count: String(devSymbols.length),
+            })
+
+            await client.hset(`settings:connection:${conn.id}`, {
+              force_symbols: JSON.stringify(devSymbols),
+              symbol_count: String(devSymbols.length),
+            })
+
+            console.log(`[v0] [PreStartup] Seeded ${devSymbols.length} trading symbols for ${conn.id}`)
+          }
         }
       }
     } catch (e) {
@@ -65,31 +90,31 @@ async function seedPredefinedConnections() {
 }
 
 async function seedMarketData() {
-  // Only seed placeholder prices when the canonical key for BTCUSDT does not
-  // already exist. This prevents overwriting real market data that was fetched
-  // by the live-price loader on a previous run (e.g. after a hot-reload in dev
-  // or after a cold start where the Redis snapshot was already restored from disk).
+  // Only seed placeholder prices when market data does not already exist.
+  // This prevents overwriting real market data that was fetched or restored from snapshot.
   try {
     const { getRedisClient } = await import("@/lib/redis-db")
     const client = getRedisClient()
-    const existing = await client.exists("market_data:BTCUSDT")
-    if (existing) {
+    // Check if ANY of the target symbols have existing market data
+    const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
+    const existingKeys = await Promise.all(
+      symbols.map(s => client.exists(`market_data:${s}:1s`))
+    )
+    if (existingKeys.some(Boolean)) {
       console.log("[v0] [PreStartup] seedMarketData: real data present — skipping placeholder seed")
       return
     }
   } catch {
-    // If the Redis check fails, fall through and seed anyway so the engine has
-    // something to work with on a completely fresh DB.
+    // If the Redis check fails, fall through and seed anyway
   }
 
-  const symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "SOLUSDT"]
+  const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
   const basePrices: Record<string, number> = {
     BTCUSDT: 100000,
     ETHUSDT: 3500,
-    BNBUSDT: 700,
+    SOLUSDT: 180,
     XRPUSDT: 0.6,
     ADAUSDT: 0.8,
-    SOLUSDT: 180,
   }
 
   // ── Parallel seeding ────────────────────────────────────────────
@@ -109,7 +134,7 @@ async function seedMarketData() {
         // runs. Timestamps step at 1s instead of 60s.
         return saveMarketData(symbol, "1s", {
           symbol,
-          exchange: "bybit",
+          exchange: "bingx",
           interval: "1s",
           price: close,
           open: base,
