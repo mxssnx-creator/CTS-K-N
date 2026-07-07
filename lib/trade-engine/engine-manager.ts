@@ -1,4 +1,5 @@
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
+import { getHeapStatistics } from "node:v8"
 /**
  * Trade Engine Manager V11
  * Manages asynchronous processing for symbols, indications, pseudo positions, and strategies
@@ -68,23 +69,29 @@ function checkMemoryAndTriggerGC(): void {
   try {
     const memUsage = process.memoryUsage()
     const heapUsedMB = Math.round(memUsage.heapUsed / 1024 / 1024)
-    const heapTotalMB = Math.round(memUsage.heapTotal / 1024 / 1024)
-    
+
     // Update high water mark
     if (!globalThis.__memory_monitor__) globalThis.__memory_monitor__ = {}
     if (heapUsedMB > (globalThis.__memory_monitor__.highWaterMark ?? 0)) {
       globalThis.__memory_monitor__.highWaterMark = heapUsedMB
     }
-    
-    // If heap usage exceeds 80% of total, trigger GC and log warning
-    if (heapUsedMB > heapTotalMB * 0.8) {
+
+    // Compare against the ACTUAL V8 heap limit, not the transient current
+    // allocation (heapTotal). heapTotal grows over time, so the old check
+    // (heapUsed > heapTotal * 0.8) fired GC constantly even when gigabytes of
+    // headroom remained — and under runtimes that ignore NODE_OPTIONS (e.g.
+    // launching the server via Bun) it produced a self-defeating GC death-loop
+    // that starved the engine cycle. Trigger GC only when we genuinely approach
+    // the configured heap ceiling.
+    const heapLimitMB = Math.round((getHeapStatistics().heap_size_limit || memUsage.heapTotal) / 1024 / 1024)
+    if (heapUsedMB > heapLimitMB * 0.8) {
       if (global.gc) {
         global.gc()
         globalThis.__memory_monitor__.lastGC = Date.now()
       }
       console.warn(
-        `[v0] Memory pressure: ${heapUsedMB}MB / ${heapTotalMB}MB ` +
-        `(${Math.round((heapUsedMB / heapTotalMB) * 100)}%) - GC triggered`
+        `[v0] Memory pressure: ${heapUsedMB}MB / ${heapLimitMB}MB ` +
+        `(${Math.round((heapUsedMB / heapLimitMB) * 100)}%) - GC triggered`
       )
     }
   } catch (err) {
@@ -2149,8 +2156,14 @@ export class TradeEngineManager {
 
         attemptedCycles++
 
+        // Self-hosted production (standalone `next start`, i.e. VERCEL !== "1")
+        // owns the runtime and must run realtime progression by default, exactly
+        // like dev — only Vercel/serverless request workers stay opt-in (they have
+        // no durable loop and must not do heavy per-tick work unless the operator
+        // explicitly enables it). This is what makes the progress counters
+        // (cycles_completed) advance in production instead of appearing frozen.
         const apiRealtimeProgressionEnabled =
-          process.env.NODE_ENV !== "production" ||
+          process.env.VERCEL !== "1" ||
           process.env.ENABLE_API_REALTIME_PROGRESSION === "1" ||
           process.env.ENABLE_API_REALTIME_PROGRESSION === "true"
         if (!apiRealtimeProgressionEnabled) {
@@ -3001,8 +3014,12 @@ export class TradeEngineManager {
         // position sync can be CPU/REST heavy and is opt-in for API-owned
         // coordinators; the realtime indication/strategy progression still
         // runs, and dedicated engine workers may enable the sync explicitly.
+        // Self-hosted production (VERCEL !== "1") owns the runtime and runs the
+        // exchange-side live position sync by default like dev; only Vercel/
+        // serverless request workers keep it opt-in (CPU/REST heavy, no durable
+        // loop). This keeps the UI's live position/interactivity in sync in prod.
         const apiLiveSyncEnabled =
-          process.env.NODE_ENV !== "production" ||
+          process.env.VERCEL !== "1" ||
           process.env.ENABLE_API_LIVE_POSITIONS_SYNC === "1" ||
           process.env.ENABLE_API_LIVE_POSITIONS_SYNC === "true"
         if (!apiLiveSyncEnabled) {
