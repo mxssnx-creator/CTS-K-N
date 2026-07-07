@@ -1,1 +1,0 @@
-/workspace/6995fed7-bbea-4273-9cb0-04a70d5daeb4/sessions/agent_b15e3c2a-bd16-4293-8bfd-daf466eb0157/ctsv/PRODUCTION_DEPLOYMENT_CHECKLIST.md

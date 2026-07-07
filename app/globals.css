@@ -1,0 +1,301 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Modern Professional Color Scheme - CTS Trading Dashboard */
+  /* Primary: Dark Navy Blue (#1a1a2e) - Trustworthy, Professional */
+  /* Secondary: Bright Green (#10b981) - Success, Growth, Profit */
+  /* Accent: Slate Blue (#64748b) - Neutral Balance */
+  
+  /* Backgrounds */
+  --background: 0 0% 100%;
+  --foreground: 220 13% 14%;
+  --card: 0 0% 100%;
+  --card-foreground: 220 13% 14%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 220 13% 14%;
+  
+  /* Primary - Dark Navy Blue */
+  --primary: 220 20% 16%;
+  --primary-foreground: 0 0% 100%;
+  
+  /* Secondary - Bright Green */
+  --secondary: 160 84% 39%;
+  --secondary-foreground: 0 0% 100%;
+  
+  /* Muted - Slate Gray */
+  --muted: 220 13% 91%;
+  --muted-foreground: 220 10% 40%;
+  
+  /* Accent - Professional Slate */
+  --accent: 220 13% 25%;
+  --accent-foreground: 0 0% 100%;
+  
+  /* Status Colors */
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  
+  /* Borders & Inputs */
+  --border: 220 13% 88%;
+  --input: 220 13% 92%;
+  --ring: 160 84% 39%;
+  --radius: 0.5rem;
+  
+  /* Chart Colors - Professional Palette */
+  --chart-1: 160 84% 39%;
+  --chart-2: 220 20% 16%;
+  --chart-3: 0 84% 60%;
+  --chart-4: 50 97% 50%;
+  --chart-5: 220 13% 50%;
+  
+  /* Sidebar */
+  --sidebar-background: 220 20% 16%;
+  --sidebar-foreground: 0 0% 90%;
+  --sidebar-primary: 160 84% 39%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 220 13% 25%;
+  --sidebar-accent-foreground: 0 0% 100%;
+  --sidebar-border: 220 20% 20%;
+  --sidebar-ring: 160 84% 39%;
+  --sidebar-width: 16rem;
+  --sidebar-width-icon: 3rem;
+}
+
+* {
+  border-color: hsl(var(--border));
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  padding: 0;
+  margin: 0;
+}
+
+html {
+  background: hsl(var(--background));
+  color-scheme: light;
+}
+
+/* Ensure pages have proper overflow handling */
+main {
+  overflow-x: auto;
+  width: 100%;
+}
+
+/* Page content wrapper */
+.page-content {
+  padding: 1.5rem;
+  width: 100%;
+  min-height: calc(100vh - 3.5rem);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--muted) / 0.3);
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* Sidebar Styles */
+.bg-sidebar {
+  background-color: hsl(var(--sidebar-background));
+}
+
+.text-sidebar-foreground {
+  color: hsl(var(--sidebar-foreground));
+}
+
+.border-sidebar-border {
+  border-color: hsl(var(--sidebar-border));
+}
+
+/* Status Styles */
+.status-active {
+  background-color: hsl(160 84% 39%);
+  color: hsl(0 0% 100%);
+}
+
+.status-success {
+  background-color: hsl(160 84% 39%);
+  color: hsl(0 0% 100%);
+}
+
+.status-warning {
+  background-color: hsl(50 97% 50%);
+  color: hsl(220 20% 16%);
+}
+
+.status-error {
+  background-color: hsl(0 84% 60%);
+  color: hsl(0 0% 100%);
+}
+
+.status-inactive {
+  background-color: hsl(220 13% 88%);
+  color: hsl(220 13% 25%);
+}
+
+.status-inactive {
+  background-color: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+}
+
+.status-error {
+  background-color: hsl(var(--destructive));
+  color: hsl(var(--destructive-foreground));
+}
+
+.profit-positive {
+  color: hsl(142 76% 36%);
+}
+
+.profit-negative {
+  color: hsl(var(--destructive));
+}
+
+.profit-neutral {
+  color: hsl(var(--muted-foreground));
+}
+
+.pulse-slow {
+  animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Settings Page Styles */
+.settings-card {
+  background: white;
+  border-color: hsl(var(--border));
+}
+
+.settings-card-header {
+  padding: 1.5rem;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.settings-section {
+  margin-bottom: 1.5rem;
+}
+
+.settings-description {
+  color: hsl(var(--muted-foreground));
+  font-size: 0.875rem;
+}
+
+.settings-divider {
+  border-color: hsl(var(--border));
+}
+
+.settings-tab-trigger {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  border-radius: calc(var(--radius) - 2px);
+  transition: all 0.2s;
+}
+
+.settings-tab-trigger[data-state="active"] {
+  background: white;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Theme variants controlled by next-themes */
+.dark {
+  --background: 222 47% 11%;
+  --foreground: 0 0% 98%;
+  --card: 222 47% 14%;
+  --card-foreground: 0 0% 98%;
+  --popover: 222 47% 14%;
+  --popover-foreground: 0 0% 98%;
+  --secondary: 217 33% 18%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 217 33% 18%;
+  --muted-foreground: 215 20% 70%;
+  --accent: 217 33% 22%;
+  --accent-foreground: 0 0% 98%;
+  --border: 217 33% 24%;
+  --input: 217 33% 24%;
+  --sidebar-background: 222 47% 10%;
+  --sidebar-foreground: 210 20% 92%;
+  --sidebar-accent: 217 33% 18%;
+  --sidebar-border: 217 33% 24%;
+}
+
+.white {
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+}
+
+.grey {
+  --background: 220 16% 94%;
+  --foreground: 224 20% 20%;
+  --card: 0 0% 100%;
+  --muted: 220 13% 89%;
+}
+
+.blackwhite {
+  --background: 0 0% 100%;
+  --foreground: 0 0% 8%;
+  --card: 0 0% 100%;
+  --secondary: 0 0% 92%;
+  --muted: 0 0% 92%;
+  --accent: 0 0% 86%;
+  --border: 0 0% 80%;
+}
+
+.whiteactive {
+  --background: 210 40% 98%;
+  --foreground: 222 47% 14%;
+  --card: 0 0% 100%;
+  --accent: 210 60% 92%;
+  --border: 210 40% 85%;
+}
+
+/* Style variants controlled by style switcher */
+.style-default {
+  --radius: 0.75rem;
+}
+
+.style-new-york {
+  --radius: 0.35rem;
+}
+
+.style-minimal {
+  --radius: 0.2rem;
+}
+
+.style-rounded {
+  --radius: 1.2rem;
+}
+
+.style-compact {
+  --radius: 0.45rem;
+}
+
+.style-compact [data-slot="card"],
+.style-compact [data-slot="sidebar-header"],
+.style-compact [data-slot="sidebar-content"] {
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}

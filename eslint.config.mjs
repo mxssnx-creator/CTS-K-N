@@ -1,10 +1,31 @@
-import nextConfig from "eslint-config-next";
+import tsParser from "@typescript-eslint/parser"
 
-const eslintConfig = [
-  ...nextConfig,
+export default [
   {
-    ignores: ["node_modules/**"],
+    ignores: [
+      ".next/**",
+      "node_modules/**",
+      "dist/**",
+      "build/**",
+      "coverage/**",
+      "backups/**",
+      "**/*.tmp",
+      "**/*_backup*",
+      "**/*.backup-experimental",
+      ".turbopack-cache-bust.ts",
+      "next-env.d.ts",
+    ],
   },
-];
-
-export default eslintConfig;
+  {
+    files: ["**/*.{js,jsx,mjs,cjs,ts,tsx}"],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        ecmaVersion: "latest",
+        sourceType: "module",
+        ecmaFeatures: { jsx: true },
+        project: false,
+      },
+    },
+  },
+]

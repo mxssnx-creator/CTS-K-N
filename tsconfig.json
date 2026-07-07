@@ -1,22 +1,25 @@
 {
   "compilerOptions": {
-    "target": "ES2017",
     "lib": [
       "dom",
       "dom.iterable",
       "esnext"
     ],
     "allowJs": true,
+    "target": "ES6",
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
+    "ignoreDeprecations": "5.0",
+    "baseUrl": ".",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "react-jsx",
-    "incremental": true,
+    "jsx": "preserve",
+    "incremental": false,
+    "composite": false,
     "plugins": [
       {
         "name": "next"
@@ -24,7 +27,7 @@
     ],
     "paths": {
       "@/*": [
-        "./src/*"
+        "./*"
       ]
     }
   },
@@ -36,6 +39,16 @@
     ".next/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "backups/**/*",
+    "**/*.tmp",
+    "**/*_backup*",
+    ".next",
+    "dist",
+    "build",
+    "scripts/**/*.js",
+    ".turbopack-cache-bust.ts",
+    "**/*.backup-experimental",
+    "__tests__/**/*"
   ]
 }
