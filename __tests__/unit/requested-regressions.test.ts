@@ -1200,6 +1200,23 @@ describe("requested regression guardrails", () => {
 
 
 
+
+  test("recoordination stamps missing or anonymous progression snapshots", () => {
+    const source = read("lib/progression-state-manager.ts")
+    const start = source.indexOf("static async recoordinateForActualOne")
+    const end = source.indexOf("static async ensureJustUniqueProgression", start)
+    const block = source.slice(start, end)
+
+    expect(block).toContain("let initializedMissingProgression = false")
+    expect(block).toContain("Keep going after creation so we immediately stamp")
+    expect(block).toContain("initializedMissingProgression = true")
+    expect(block).toContain('const settingsMismatch = storedFingerprint === "" || storedFingerprint !== liveFingerprint')
+    expect(block).toContain("if (initializedMissingProgression)")
+    expect(block).toContain("progress_settings_snapshot: JSON.stringify(liveSnapshot)")
+    expect(block).toContain("client.del(`realtime:${connectionId}`)")
+    expect(block).toContain('reason: "no active progression"')
+  })
+
   test("live progression verification scripts remain runnable and phase-aware", () => {
     const liveScript = read("scripts/test-progression-live.mjs")
     const stabilityScript = read("scripts/verify-stability.sh")

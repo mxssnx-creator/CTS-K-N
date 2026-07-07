@@ -891,16 +891,23 @@ export class ProgressionStateManager {
       if (!client) return { changed: false, reason: "redis-unavailable" }
 
       const key = `progression:${connectionId}`
-      const existing = await client.hgetall(key).catch(() => null)
+      let existing = await client.hgetall(key).catch(() => null)
+      let initializedMissingProgression = false
+      let initializedEpoch: number | undefined
       if (!existing || Object.keys(existing).length === 0) {
         // No active progression yet — initialise a fresh one so the engine
         // starts prehistoric processing on the next cycle instead of silently
-        // sitting idle. This covers the "enable connection → nothing starts"
-        // bug where the engine saw no progression and returned early without
-        // beginning the prehistoric phase.
-        const epoch = Date.now()
-        await this.archiveAndStartNewProgression(connectionId, epoch)
-        return { changed: true, reason: "no active progression", newEpoch: epoch }
+        // sitting idle. Keep going after creation so we immediately stamp the
+        // new progression with the current live symbol/settings fingerprint;
+        // otherwise the next settings save sees an empty snapshot and cannot
+        // determine which unique progress belongs to this engine type.
+        initializedEpoch = Date.now()
+        await this.archiveAndStartNewProgression(connectionId, initializedEpoch)
+        existing = await client.hgetall(key).catch(() => null)
+        initializedMissingProgression = true
+      }
+      if (!existing || Object.keys(existing).length === 0) {
+        return { changed: false, reason: "progression-initialization-failed" }
       }
 
       // Resolve current live state
@@ -1099,9 +1106,11 @@ export class ProgressionStateManager {
       }
 
       const symbolMismatch = storedSymbolCount !== liveSymbolCount || storedHash !== liveSymbolsHash
-      // Only compare fingerprints when a stored snapshot exists (empty stored
-      // fingerprint = first ever start, not yet solidified — not a mismatch).
-      const settingsMismatch = storedFingerprint !== "" && storedFingerprint !== liveFingerprint
+      // Empty stored fingerprint means the active progress is not solid for
+      // any concrete settings state. Treat it as a mismatch (or stamp it below
+      // when we just created the missing progression) so settings changes do
+      // not attach forever to an anonymous/stale progress hash.
+      const settingsMismatch = storedFingerprint === "" || storedFingerprint !== liveFingerprint
       const missingPrehistoricSymbols = currentSymbols.filter((symbol) => !storedSymbolSet.has(symbol))
       const additiveSymbolChange =
         symbolMismatch &&
@@ -1111,6 +1120,34 @@ export class ProgressionStateManager {
         storedSymbols.every((symbol) => currentSymbols.includes(symbol)) &&
         missingPrehistoricSymbols.length === liveSymbolCount - storedSymbols.length
       const mismatch = symbolMismatch || settingsMismatch
+
+      if (initializedMissingProgression) {
+        await Promise.all([
+          client.del(`prehistoric:${connectionId}:done`).catch(() => {}),
+          client.del(`prehistoric:${connectionId}:firstpass:done`).catch(() => {}),
+          client.del(`prehistoric_loaded:${connectionId}`).catch(() => {}),
+          client.del(`prehistoric_loaded:${connectionId}:verified`).catch(() => {}),
+          client.del(`prehistoric:progress:${connectionId}`).catch(() => {}),
+          client.del(`realtime:${connectionId}`).catch(() => {}),
+        ])
+        await client.hset(key, {
+          symbol_count: String(liveSymbolCount),
+          active_symbols_hash: liveSymbolsHash,
+          started_for_settings_version: new Date().toISOString(),
+          progress_settings_snapshot: JSON.stringify(liveSnapshot),
+          engine_type: engineType || "main",
+          prehistoric_phase_active: liveSymbolCount > 0 ? "true" : "false",
+          last_update: new Date().toISOString(),
+        }).catch(() => {})
+        await client.hset(`settings:trade_engine_state:${connectionId}`, {
+          config_set_symbols_total: String(liveSymbolCount > 0 ? liveSymbolCount : 1),
+          config_set_symbols_processed: "0",
+          config_set_candles_processed: "0",
+          config_set_indication_results: "0",
+          updated_at: new Date().toISOString(),
+        }).catch(() => {})
+        return { changed: true, reason: "no active progression", newEpoch: initializedEpoch }
+      }
 
       if (additiveSymbolChange) {
         const reason = `symbols added (stored=${storedSymbolCount} vs live=${liveSymbolCount})`
