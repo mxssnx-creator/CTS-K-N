@@ -994,7 +994,8 @@ export class ProgressionStateManager {
         "minimal_step_count", "minimalStepCount", "minStep",
         "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
         "live_volume_factor", "preset_volume_factor", "volume_factor_live", "volume_factor_preset",
-        "volume_step_ratio", "volume_factor",
+        "volume_step_ratio", "volume_factor", "leveragePercentage", "useMaximalLeverage",
+        "maxLeverage", "margin_type", "position_mode", "useSystemCloseOnly", "use_system_close_only",
         "coordination_settings", "strategies", "indications", "active_indications",
       ]
 

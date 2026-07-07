@@ -1271,6 +1271,37 @@ describe("requested regression guardrails", () => {
     expect(engineManager).not.toContain("JSON.stringify(effectiveForceSymbols)")
   })
 
+
+  test("settings recoordination fingerprints live sizing, leverage, margin, and control-order settings", () => {
+    const recoordinator = read("lib/connection-recoordinator.ts")
+    const progression = read("lib/progression-state-manager.ts")
+    const settingsCoordinator = read("lib/settings-coordinator.ts")
+
+    for (const field of [
+      "live_volume_factor",
+      "preset_volume_factor",
+      "volume_step_ratio",
+      "leveragePercentage",
+      "useMaximalLeverage",
+      "maxLeverage",
+      "margin_type",
+      "position_mode",
+      "useSystemCloseOnly",
+      "use_system_close_only",
+    ]) {
+      expect(recoordinator).toContain(`"${field}"`)
+      expect(progression).toContain(`"${field}"`)
+      expect(settingsCoordinator).toContain(`"${field}"`)
+    }
+
+    expect(recoordinator).toContain("const requiresProgressRecoordination = symbolsChanged || strategyOrCoordinationChanged || progressAffectingChange")
+    expect(recoordinator).toContain("if (requiresProgressRecoordination)")
+    expect(recoordinator).toContain("Progress-affecting settings changed for ${id} → recoordinated progression")
+    expect(recoordinator).toContain("restarted against the same fingerprint the engine will use")
+    expect(settingsCoordinator).toContain("PROGRESSION_RESTART_FIELDS")
+    expect(settingsCoordinator).toContain("HOT_RELOAD_FIELDS")
+  })
+
   test("live control-order system-close mode is scoped, cached, and order-limit safe", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const cacheStart = liveStage.indexOf("const SYSTEM_CLOSE_TTL_MS")
