@@ -9,6 +9,7 @@
  */
 
 const writes: Array<{ key: string; value: unknown }> = []
+const redisSets: Array<{ key: string; value: string; options?: unknown }> = []
 const hsets: Array<{ key: string; value: unknown }> = []
 const store = new Map<string, unknown>()
 
@@ -21,6 +22,11 @@ jest.mock("@/lib/redis-db", () => ({
     store.set(key, value)
   }),
   getRedisClient: jest.fn(() => ({
+    set: jest.fn(async (key: string, value: string, options?: unknown) => {
+      redisSets.push({ key, value, options })
+      store.set(key, value)
+      return "OK"
+    }),
     hset: jest.fn(async (key: string, value: unknown) => {
       hsets.push({ key, value })
       return 1
@@ -32,6 +38,7 @@ jest.mock("@/lib/redis-db", () => ({
 describe("settings propagation", () => {
   beforeEach(() => {
     writes.length = 0
+    redisSets.length = 0
     hsets.length = 0
     store.clear()
     store.set("trade_engine_state:conn-main", { status: "running" })
@@ -50,12 +57,16 @@ describe("settings propagation", () => {
     expect(writes.map((w) => w.key)).toEqual(
       expect.arrayContaining([
         "settings_change:conn-main",
-        "settings:dirty:conn-main",
         "settings_change_counter:conn-main",
         "trade_engine_state:conn-main",
       ]),
     )
-    expect(writes.find((w) => w.key === "settings:dirty:conn-main")?.value).toBe("1")
+    expect(writes.some((w) => w.key === "settings:dirty:conn-main")).toBe(false)
+    expect(redisSets).toContainEqual({
+      key: "settings:dirty:conn-main",
+      value: "1",
+      options: { EX: 300 },
+    })
     expect(writes.find((w) => w.key === "settings_change:conn-main")?.value).toMatchObject({
       connectionId: "conn-main",
       changeType: "reload",
@@ -108,6 +119,20 @@ describe("settings propagation", () => {
     expect(writes.some((w) => w.key === "settings_change:conn-main")).toBe(true)
     expect(writes.some((w) => w.key === "trade_engine_state:conn-main")).toBe(true)
   })
+
+  test("notifySettingsChanged writes dirty flags through raw Redis instead of setSettings", () => {
+    const fs = require("fs")
+    const path = require("path")
+    const source = fs.readFileSync(
+      path.join(process.cwd(), "lib/settings-coordinator.ts"),
+      "utf8",
+    )
+    const notifyBody = source.match(/export async function notifySettingsChanged[\s\S]*?\n}\n\n\/\*\*/)
+
+    expect(notifyBody?.[0]).toContain('client.set(`settings:dirty:${connectionId}`, "1"')
+    expect(notifyBody?.[0]).not.toContain('setSettings(`settings:dirty:${connectionId}`')
+  })
+
 })
 
 describe("System tab capacity controls", () => {

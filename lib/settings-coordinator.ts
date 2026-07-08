@@ -166,12 +166,16 @@ export async function notifySettingsChanged(
 
   // Write both durable signals before the API handler returns success:
   // 1. `settings_change:{id}` is the reload/restart envelope consumed by
-  //    engine-owning processes (possibly in a different worker).
+  //    engine-owning processes (possibly in a different worker). Keep this
+  //    envelope on the settings namespace so existing consumers retain the
+  //    durable structured event contract.
   // 2. `settings:dirty:{id}` is the low-latency dirty flag consumed by
-  //    processor-level caches. It is intentionally mandatory: a settings
-  //    PATCH response must not report success until both signals are persisted.
+  //    processor-level caches as a raw Redis string key. It is intentionally
+  //    mandatory: a settings PATCH response must not report success until both
+  //    signals are persisted.
   await setSettings(`settings_change:${connectionId}`, event)
-  await setSettings(`settings:dirty:${connectionId}`, "1")
+  const client = getRedisClient()
+  await client.set(`settings:dirty:${connectionId}`, "1", { EX: 300 })
   console.log(
     `[v0] [SettingsCoordinator] Dirty flag set for ${connectionId}: key=settings:dirty:${connectionId}, fields=[${changedFields.join(",")}]`,
   )
