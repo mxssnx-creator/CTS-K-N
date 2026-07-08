@@ -50,11 +50,17 @@ export async function createExchangeConnector(
     )
   }
 
-  // DEV/TEST: prefer simulated connector when API key is a placeholder or FORCE_SIMULATED set
+  // DEV/TEST: prefer simulated connector when API key is a placeholder or FORCE_SIMULATED set.
+  // Production must never silently swap a real exchange connector for simulation
+  // when real credentials are configured; that is how QuickStart ended up
+  // showing "sim" instead of placing live exchange orders.
   try {
     const forceSim = process.env.FORCE_SIMULATED === "1"
+    const allowProdSim = process.env.ALLOW_PROD_SIMULATED === "1"
+    const isProduction = process.env.NODE_ENV === "production"
     const keyStr = String(credentials.apiKey || "")
-    if (forceSim || keyStr.includes("PLACEHOLDER") || keyStr === "") {
+    const shouldUseSim = keyStr.includes("PLACEHOLDER") || keyStr === "" || forceSim
+    if (shouldUseSim && (!isProduction || allowProdSim)) {
       const { SimulatedConnector } = await import("./simulated-connector")
       return new SimulatedConnector(credentials, "simulated")
     }
@@ -95,13 +101,18 @@ export async function createExchangeConnector(
       return new OKXConnector(credentials, "okx")
     }
     default:
-      // Unknown exchange — fallback to SimulatedConnector in test/dev environments
-      try {
-        const { SimulatedConnector } = await import("./simulated-connector")
-        return new SimulatedConnector(credentials, "simulated")
-      } catch {
-        throw new Error(`Unsupported exchange: ${exchange}. Supported exchanges: bybit, bingx, pionex, orangex, binance, okx`)
+      // Unknown exchange — fallback to SimulatedConnector only outside production.
+      // In production, fail closed so operators see the unsupported exchange
+      // instead of believing live exchange orders were placed.
+      if (process.env.NODE_ENV !== "production" || process.env.ALLOW_PROD_SIMULATED === "1") {
+        try {
+          const { SimulatedConnector } = await import("./simulated-connector")
+          return new SimulatedConnector(credentials, "simulated")
+        } catch {
+          // fall through to explicit unsupported error
+        }
       }
+      throw new Error(`Unsupported exchange: ${exchange}. Supported exchanges: bybit, bingx, pionex, orangex, binance, okx`)
   }
 }
 
