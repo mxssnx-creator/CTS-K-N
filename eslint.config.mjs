@@ -1,3 +1,4 @@
+import nextPlugin from "@next/eslint-plugin-next"
 import tsParser from "@typescript-eslint/parser"
 
 export default [
@@ -19,6 +20,8 @@ export default [
   },
   {
     files: ["**/*.{js,jsx,mjs,cjs,ts,tsx}"],
+    ...nextPlugin.flatConfig.recommended,
+    ...nextPlugin.flatConfig.coreWebVitals,
     languageOptions: {
       parser: tsParser,
       parserOptions: {
@@ -26,6 +29,11 @@ export default [
         sourceType: "module",
         ecmaFeatures: { jsx: true },
         project: false,
+      },
+    },
+    settings: {
+      next: {
+        rootDir: ["./"],
       },
     },
   },
