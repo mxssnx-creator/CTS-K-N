@@ -3983,17 +3983,21 @@ export class TradeEngineManager {
         // True Vercel deployments always have VERCEL="1" so they are unaffected.
         //
         // Behaviour:
-        //   V0_DEV_SYMBOL_COUNT=1  → always ["BTCUSDT"] (minimum safe, default)
-        //   V0_DEV_SYMBOL_COUNT=10 → normal resolution below, then slice to 10
+        //   V0_DEV_SYMBOL_COUNT=1  → resolve operator symbols, then slice to 1
+        //   V0_DEV_SYMBOL_COUNT=10 → resolve operator symbols, then slice to 10
         //   unset                  → default 1
         const _isLocalRun = process.env.NODE_ENV === "development" ||
           (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")
         if (_isLocalRun) {
           const devCapSource = (connState as any)?.dev_symbol_count_override ?? process.env.V0_DEV_SYMBOL_COUNT ?? "1"
           const devCap = Math.max(1, parseInt(String(devCapSource), 10) || 1)
-          if (devCap === 1) return ["BTCUSDT"]
-          // Fall through to the full resolution chain (force_symbols → active_symbols
-          // → volatility fetch). The resolved list is sliced to devCap at the end.
+          // IMPORTANT: never short-circuit to ["BTCUSDT"] here. That made
+          // local/self-hosted production ignore operator-selected force_symbols
+          // / active_symbols before the ownership guard ran, so ConfigSetProcessor
+          // saw active symbols [BTCUSDT] while the canonical selection still held
+          // the user's list and refused to write progress. The dashboard then
+          // stayed at 0/N symbols with no indication/strategy calculations.
+          // Resolve the real list first, then slice it at the end if needed.
           ;(resolve as any)._devCap = devCap
         }
 
