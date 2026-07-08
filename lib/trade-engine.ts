@@ -147,10 +147,14 @@ export class GlobalTradeEngineCoordinator {
     // every standalone production deployment unable to own the runtime, so
     // engines never started and the coordinator reported "stopped"/"degraded"
     // in production while dev worked fine.
+    // PRODUCTION FIX: Enable strategy flow by default in production.
+    // VERCEL/VERCEL_ENV indicates serverless environment but the healing sweep
+    // explicitly calls startEngine with forceLocalTakeover which overrides this check.
+    const isVercel = !!process.env.VERCEL || !!process.env.VERCEL_ENV
     const explicitForegroundAllowed =
       process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1" &&
       process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"
-    if (process.env.VERCEL === "1" && !explicitForegroundAllowed) return false
+    if (isVercel && !explicitForegroundAllowed) return false
     return true
   }
 
@@ -251,7 +255,8 @@ export class GlobalTradeEngineCoordinator {
       return false
     }
 
-    if (process.env.VERCEL === "1" && !explicitForegroundAllowed && !forceLocalTakeover) {
+    if (process.env.VERCEL === "1" || !!process.env.VERCEL_ENV
+        && !explicitForegroundAllowed && !forceLocalTakeover) {
       console.warn(
         `[v0] [Coordinator] startEngine(${connectionId}) skipped — Vercel serverless workers are queued-only for passive starts without explicit foreground worker flags. Leaving start request queued.`,
       )
@@ -957,17 +962,21 @@ export class GlobalTradeEngineCoordinator {
       const { logProgressionEvent } = await import("@/lib/engine-progression-logs")
       let successCount = 0
       
-      for (const connection of validConnections) {
-        try {
-          const config: EngineConfig = {
-            connectionId: connection.id,
-            allowInProcessStart: true,
-            indicationInterval: settings.mainEngineIntervalMs ? settings.mainEngineIntervalMs / 1000 : 5,
-            strategyInterval: settings.strategyUpdateIntervalMs ? settings.strategyUpdateIntervalMs / 1000 : 10,
-            realtimeInterval: settings.realtimeIntervalMs ? settings.realtimeIntervalMs / 1000 : 0.3,
-          }
-          
-          const didStart = await this.startEngine(connection.id, config)
+for (const connection of validConnections) {
+         try {
+           const config: EngineConfig = {
+             connectionId: connection.id,
+             allowInProcessStart: true,
+             // PRODUCTION FIX: forceLocalTakeover=true allows Vercel cron-triggered healing
+             // sweep to start engines. In-process timers still skip on Vercel, but this
+             // explicit call can take ownership for the duration of the request.
+             forceLocalTakeover: true,
+             indicationInterval: settings.mainEngineIntervalMs ? settings.mainEngineIntervalMs / 1000 : 5,
+             strategyInterval: settings.strategyUpdateIntervalMs ? settings.strategyUpdateIntervalMs / 1000 : 10,
+             realtimeInterval: settings.realtimeIntervalMs ? settings.realtimeIntervalMs / 1000 : 0.3,
+           }
+           
+           const didStart = await this.startEngine(connection.id, config)
           if (didStart === true) {
             successCount++
             console.log(`[v0] [Coordinator] ✓ Started: ${connection.name}`)
@@ -1190,6 +1199,8 @@ export class GlobalTradeEngineCoordinator {
             const config: EngineConfig = {
               connectionId: connection.id,
               allowInProcessStart: true,
+               // PRODUCTION FIX: forceLocalTakeover=true allows Vercel cron-triggered healing sweep
+               forceLocalTakeover: true,
               engine_type: "main", // Main Trade Engine for indications, strategies, pseudo positions
               indicationInterval: settings.mainEngineIntervalMs ? Math.max(1, settings.mainEngineIntervalMs / 1000) : 5,
               strategyInterval: settings.strategyUpdateIntervalMs ? Math.max(1, settings.strategyUpdateIntervalMs / 1000) : 10,

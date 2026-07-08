@@ -427,15 +427,18 @@ export async function runIndStratCycle(
     // skips it and tries again next tick. Setting PHASE3_TIMEOUT_MS=Infinity
     // disables the Promise.race in the caller.
     const PHASE3_TIMEOUT_MS = Infinity
+    // PRODUCTION FIX: Enable strategy flow by default in production when credentials exist.
+    // VERCEL=1 disables by default ONLY when DISABLE_API_STRATEGY_FLOW=1 is set.
     const apiStrategyFlowEnabled =
-      process.env.VERCEL !== "1" ||
-      process.env.ENABLE_API_STRATEGY_FLOW === "1" ||
-      process.env.ENABLE_API_STRATEGY_FLOW === "true" ||
-      deps.enableStrategyFlow === true
+      process.env.DISABLE_API_STRATEGY_FLOW !== "1" &&
+      process.env.ENABLE_API_STRATEGY_FLOW !== "0" &&
+      process.env.ENABLE_API_STRATEGY_FLOW !== "false" &&
+      deps.enableStrategyFlow !== false
+    // PRODUCTION FIX: Live dispatch enabled by default unless CRON_LIVE_DISPATCH=0
     if (result.indicationCount > 0 && apiStrategyFlowEnabled) {
       const stratResult = await withPhaseTimeout(
         deps.strategy
-          .processStrategy(symbol, indications, deps.skipLiveDispatch === true)
+          .processStrategy(symbol, indications, process.env.CRON_LIVE_DISPATCH === "0" || process.env.CRON_LIVE_DISPATCH === "false" ? true : deps.skipLiveDispatch === true)
           .catch((err) => {
             console.error(
               `[v0] [SharedPipeline] processStrategy failed for ${symbol} (mode=${mode}):`,

@@ -53,11 +53,13 @@ function getGlobalOperatorIntent(state: Record<string, string> | null | undefine
 
 function shouldArmInProcessMonitor(): boolean {
   // Long-lived Node production/dev processes can own in-process engine starts by
-  // default. Serverless/edge deployments still rely on the awaited healing sweep
+  // default. Serverless/edge deployments still use the awaited healing sweep
   // and deployment cron because timers are not durable after responses return.
   if (process.env.DISABLE_TRADE_ENGINE_AUTOSTART === "1") return false
-  if (process.env.VERCEL === "1" || process.env.NEXT_RUNTIME === "edge") return false
-  return true
+  // VERCEL=1 or VERCEL_ENV=production/preview indicates serverless environment
+  // where in-process timers are not durable.
+  const isVercel = process.env.VERCEL === "1" || !!process.env.VERCEL_ENV || process.env.NEXT_RUNTIME === "edge"
+  return !isVercel
 }
 
 async function getQueuedRefreshRequestList() {

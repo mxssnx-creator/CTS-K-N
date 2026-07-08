@@ -40,7 +40,9 @@ function shouldSkipInProcessTimers(): boolean {
   // default. Serverless/edge deployments still use deployment cron because
   // in-process timers are not durable after responses return.
   if (process.env.DISABLE_IN_PROCESS_CONTINUITY === "1") return true
-  return process.env.VERCEL === "1" || process.env.NEXT_RUNTIME === "edge"
+  // VERCEL=1 or VERCEL_ENV=production/preview indicates serverless environment
+  const isVercel = process.env.VERCEL === "1" || !!process.env.VERCEL_ENV || process.env.NEXT_RUNTIME === "edge"
+  return isVercel
 }
 
 async function runIndicationTick(): Promise<void> {

@@ -251,19 +251,20 @@ async function runCronPipelineForSymbol(
     indication: IndicationProcessor
     realtime: RealtimeProcessor
     strategy: StrategyProcessor
-    setsProcessor: IndicationSetsProcessor
-  },
-): Promise<PipelineCycleResult> {
-  await ensureCurrentMarketDataCandle(symbol, client)
-  return runIndStratCycle(connectionId, symbol, "realtime", {
-    indication: deps.indication,
-    realtime: deps.realtime,
-    strategy: deps.strategy,
-    setsProcessor: deps.setsProcessor,
-    skipLiveDispatch: process.env.CRON_LIVE_DISPATCH === "1" || process.env.CRON_LIVE_DISPATCH === "true" ? false : true,
-    enableStrategyFlow: process.env.DISABLE_CRON_STRATEGIES !== "1",
-  })
-}
+setsProcessor: IndicationSetsProcessor
+   },
+ ): Promise<PipelineCycleResult> {
+   await ensureCurrentMarketDataCandle(symbol, client)
+   return runIndStratCycle(connectionId, symbol, "realtime", {
+     indication: deps.indication,
+     realtime: deps.realtime,
+     strategy: deps.strategy,
+     setsProcessor: deps.setsProcessor,
+     // PRODUCTION FIX: Live dispatch enabled by default unless explicitly disabled
+     skipLiveDispatch: process.env.CRON_LIVE_DISPATCH === "0" || process.env.CRON_LIVE_DISPATCH === "false" ? true : false,
+     enableStrategyFlow: process.env.DISABLE_API_STRATEGY_FLOW === "1" ? false : true,
+   })
+ }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value || "", 10)

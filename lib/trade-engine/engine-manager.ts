@@ -471,6 +471,7 @@ export interface EngineConfig {
   exchange?: string
   engine_type?: string
   allowInProcessStart?: boolean
+  forceLocalTakeover?: boolean
   indicationInterval?: number // seconds, default 1
   strategyInterval?: number // seconds, default 1
   realtimeInterval?: number // seconds, default 1
