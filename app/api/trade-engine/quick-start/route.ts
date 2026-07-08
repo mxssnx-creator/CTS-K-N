@@ -145,10 +145,11 @@ export async function POST(request: Request) {
     // credentials are absent when the caller explicitly picked a connection.
     const isBingXConnection = connection && normalizeQuickstartExchange(connection) === "bingx"
     const hasRequestedCredentials = connection ? hasUsableExchangeCredentials(connection) : false
-    const isSimulated = connection && !isBingXConnection &&
-      (connection.connector_type === "simulated" ||
-       connection.exchange_type === "simulated" ||
-       !hasRequestedCredentials)
+    const isExplicitSimulated = connection && (
+      connection.connector_type === "simulated" ||
+      connection.exchange_type === "simulated"
+    )
+    const isSimulated = connection && (isExplicitSimulated || (!isBingXConnection && !hasRequestedCredentials))
     if (!connection || (!isSimulated && !hasRequestedCredentials)) {
       if (requestedConnectionId && connection) {
         console.log(`${LOG_PREFIX}: Requested connection ${requestedConnectionId} has no credentials — falling back to auto-discovery`)
