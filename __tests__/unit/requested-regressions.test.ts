@@ -1416,4 +1416,60 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("<DashboardRuntimeFooter />")
   })
 
+  test("getConnection merges credentials and exchange settings from settings connection hash", async () => {
+    jest.resetModules()
+    jest.unmock("@/lib/redis-db")
+    jest.doMock("@/lib/redis-migrations", () => ({
+      getLatestMigrationVersion: jest.fn(() => 0),
+      runMigrations: jest.fn(async () => undefined),
+      resetMigrationRunState: jest.fn(),
+    }))
+
+    const redisDb = await import("@/lib/redis-db")
+    await redisDb.initRedis()
+    const client = redisDb.getRedisClient()
+    await client.flushDb()
+
+    await client.hset("connection:bingx-x01", {
+      id: "bingx-x01",
+      name: "BingX X01",
+      exchange: "",
+      updated_at: "2026-07-07T00:00:00.000Z",
+    })
+    await client.hset("settings:connection:bingx-x01", {
+      api_key: "settings-api-key",
+      api_secret: "settings-api-secret",
+      api_passphrase: "settings-passphrase",
+      exchange: "bingx",
+      api_type: "swap",
+      contract_type: "perpetual",
+      margin_type: "cross",
+      position_mode: "one_way",
+      is_testnet: "0",
+      live_volume_factor: "0.1",
+      force_symbols: JSON.stringify(["BTCUSDT", "ETHUSDT"]),
+      updated_at: "2026-07-08T00:00:00.000Z",
+    })
+
+    const connection = await redisDb.getConnection("bingx-x01")
+
+    expect(connection).toMatchObject({
+      id: "bingx-x01",
+      name: "BingX X01",
+      api_key: "settings-api-key",
+      api_secret: "settings-api-secret",
+      api_passphrase: "settings-passphrase",
+      exchange: "bingx",
+      api_type: "swap",
+      contract_type: "perpetual",
+      margin_type: "cross",
+      position_mode: "one_way",
+      is_testnet: false,
+      live_volume_factor: 0.1,
+      force_symbols: ["BTCUSDT", "ETHUSDT"],
+    })
+
+    await client.flushDb()
+  })
+
 })
