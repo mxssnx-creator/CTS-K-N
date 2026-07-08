@@ -19,6 +19,7 @@ const checks = [
 ]
 
 const syntaxFiles = [
+  "app/api/trade-engine/quick-start/route.ts",
   "app/api/trade-engine/start/route.ts",
   "lib/detailed-tracking.ts",
 ]
