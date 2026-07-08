@@ -99,6 +99,7 @@ export async function GET() {
 
 | Date | Changes |
 |------|---------|
+| 2026-07-08 | Whole-codebase health pass: lint, typecheck, Jest suite, and production build were re-run. Addressed the only surfaced project warning by wiring the official Next.js ESLint flat recommended/core-web-vitals plugin into `eslint.config.mjs`, so `next build` detects the Next plugin while preserving existing TypeScript parser settings and generated-directory ignores. |
 | 2026-07-08 | Settings propagation dirty flag fix: `notifySettingsChanged()` now preserves the durable `settings_change:{connectionId}` envelope via `setSettings()` but writes `settings:dirty:{connectionId}` directly as a raw Redis string through `getRedisClient().set(..., { EX: 300 })`, matching processor cache expectations and avoiding accidental hash/settings namespace writes. Added unit assertions for the raw client write and a source-level regression guard against using `setSettings()` for dirty flags. |
 | Initial | Template created with base setup |
 | 2026-07-07 | Consolidated CTS-V-yd trading system as the main project; committed to `main` and pushed to `origin/main` (CTS-K-N). Removed starter template + `ctsv-dev` symlinks. |
