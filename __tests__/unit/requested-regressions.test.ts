@@ -610,6 +610,35 @@ describe("requested regression guardrails", () => {
   })
 
 
+  test("production status routes merge raw and settings-prefixed engine heartbeat state", () => {
+    const systemStatus = read("app/api/system/status/route.ts")
+    const tradeStatus = read("app/api/trade-engine/status/route.ts")
+    const engineSystemStatus = read("app/api/engine/system-status/route.ts")
+
+    for (const source of [systemStatus, tradeStatus, engineSystemStatus]) {
+      expect(source).toContain("settings:trade_engine_state")
+    }
+    expect(systemStatus).toContain("rawState")
+    expect(systemStatus).toContain("settingsState")
+    expect(systemStatus).toContain("return { ...(rawState || {}), ...(settingsState || {}) }")
+    expect(tradeStatus).toContain("rawEngineState")
+    expect(tradeStatus).toContain("settingsEngineState")
+    expect(tradeStatus).toContain("const engineState = { ...(rawEngineState || {}), ...(settingsEngineState || {}) }")
+    expect(engineSystemStatus).toContain("rawEngineState")
+    expect(engineSystemStatus).toContain("settingsEngineState")
+    expect(engineSystemStatus).toContain("production status pages do not report false")
+  })
+
+  test("QuickStart prehistoric preload is dev-only by default to avoid duplicate production processors", () => {
+    const source = read("app/api/trade-engine/quick-start/route.ts")
+
+    expect(source).toContain("const quickstartPreloadAllowed =")
+    expect(source).toContain('process.env.NODE_ENV === "development"')
+    expect(source).toContain('process.env.ENABLE_QUICKSTART_PREHISTORIC_PRELOAD === "1"')
+    expect(source).toContain("const quickstartPreload = (async () =>")
+    expect(source).toContain('if (process.env.NODE_ENV === "test")')
+  })
+
 
 
 
