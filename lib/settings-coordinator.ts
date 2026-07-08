@@ -38,7 +38,7 @@ const PROGRESSION_RESTART_FIELDS = [
   "coordination_settings", "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
-  "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio",
+  "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled",
   "minimal_step_count", "minimalStepCount", "minStep",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
 ]
@@ -59,7 +59,7 @@ const HOT_RELOAD_FIELDS = [
   "coordination_settings", "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
-  "blockVolumeRatio", "blockMaxStack", "minimal_step_count", "minimalStepCount", "minStep",
+  "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled", "minimal_step_count", "minimalStepCount", "minStep",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
 ]
 

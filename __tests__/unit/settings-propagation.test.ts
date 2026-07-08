@@ -133,6 +133,35 @@ describe("settings propagation", () => {
     expect(notifyBody?.[0]).not.toContain('setSettings(`settings:dirty:${connectionId}`')
   })
 
+  test("continuous and block coordination settings are reload/progress affecting", async () => {
+    const { classifyChange } = await import("@/lib/settings-coordinator")
+
+    for (const field of [
+      "axisContEnabled",
+      "axisContMaxWindow",
+      "blockPauseCountRatio",
+      "blockActiveRealEnabled",
+      "blockActiveLiveEnabled",
+    ]) {
+      expect(classifyChange([field])).toBe("reload")
+    }
+  })
+
+  test("engine hot reload treats continuous and block knobs as strategy-affecting", async () => {
+    const { hasStrategyAffectingChange } = await import("@/lib/trade-engine/settings-change-fields")
+
+    for (const field of [
+      "axisContEnabled",
+      "axisContMaxWindow",
+      "blockPauseCountRatio",
+      "blockActiveRealEnabled",
+      "blockActiveLiveEnabled",
+    ]) {
+      expect(hasStrategyAffectingChange([field])).toBe(true)
+      expect(hasStrategyAffectingChange([`connection_settings.${field}`])).toBe(true)
+    }
+  })
+
 })
 
 describe("System tab capacity controls", () => {
