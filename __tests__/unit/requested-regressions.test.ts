@@ -1052,6 +1052,30 @@ describe("requested regression guardrails", () => {
     expect(helper).toContain('memory.rss')
   })
 
+
+  test("migration status repairs and reports database health metadata", () => {
+    const migrations = read("lib/redis-migrations.ts")
+    const route = read("app/api/install/database/migrations-info/route.ts")
+    const verifyScript = read("scripts/verify-migration-status.mjs")
+
+    expect(migrations).toContain("interface MigrationRunResult")
+    expect(migrations).toContain("getMigrationBundleHealth")
+    expect(migrations).toContain("ensureDatabaseHealthMetadata")
+    expect(migrations).toContain('client.hgetall("system:database:health")')
+    expect(migrations).toContain("healthUpToDate")
+    expect(migrations).toContain("isMigrated: currentVersion === latestVersion && healthUpToDate")
+    expect(migrations).toContain("Schema latest but database health metadata needs repair")
+    expect(migrations).toContain('return { success: true, message: "Already run in this process", version: finalVer, databaseHealth }')
+    expect(migrations).toContain("return { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }")
+
+    expect(route).toContain("database_health: status.databaseHealth ?? {}")
+    expect(route).toContain("health_up_to_date: status.healthUpToDate === true")
+    expect(route).toContain("migrations_sequential: status.migrationsSequential === true")
+    expect(verifyScript).toContain("health_up_to_date=true")
+    expect(verifyScript).toContain("STALE/MISSING")
+    expect(verifyScript).toContain("migrations and database health metadata UP TO DATE")
+  })
+
   test("Redis migrations remain sequential for production schema upgrades", () => {
     const source = read("lib/redis-migrations.ts")
     const versions = Array.from(source.matchAll(/version:\s*(\d+)/g), (match) => Number(match[1]))
@@ -1066,7 +1090,7 @@ describe("requested regression guardrails", () => {
     expect(source).toContain('name: "065-dev-prod-database-health-metadata"')
     expect(source).toContain("export function getLatestMigrationVersion")
     expect(source).toContain('"system:database:health"')
-    expect(source).toContain('migrations_bundle_version: String(finalVersion)')
+    expect(source).toContain('migrations_bundle_version: String(latestVersion)')
   })
 
   test("Redis init rechecks stale global readiness before skipping migrations", () => {
