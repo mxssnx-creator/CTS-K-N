@@ -531,7 +531,7 @@ export function SystemSettings() {
                 type="text"
                 value={riskSettings.maxOpenPositions}
                 disabled
-                className="bg-white"
+                className="bg-background"
               />
               <p className="text-xs text-muted-foreground">
                 Limit: <span className="font-mono font-bold">{riskSettings.maxOpenPositions}</span>
@@ -545,7 +545,7 @@ export function SystemSettings() {
                 type="number"
                 value={riskSettings.dailyLossLimitPercent}
                 disabled
-                className="bg-white"
+                className="bg-background"
               />
               <p className="text-xs text-muted-foreground">
                 Default: <span className="font-mono font-bold">{riskSettings.dailyLossLimitPercent}%</span> of account
@@ -559,7 +559,7 @@ export function SystemSettings() {
                 type="number"
                 value={riskSettings.maxDrawdownPercent}
                 disabled
-                className="bg-white"
+                className="bg-background"
               />
               <p className="text-xs text-muted-foreground">
                 Default: <span className="font-mono font-bold">{riskSettings.maxDrawdownPercent}%</span> of account
@@ -573,7 +573,7 @@ export function SystemSettings() {
                 type="number"
                 value={riskSettings.positionSizeLimit}
                 disabled
-                className="bg-white"
+                className="bg-background"
               />
               <p className="text-xs text-muted-foreground">
                 Maximum: <span className="font-mono font-bold">${riskSettings.positionSizeLimit.toLocaleString()}</span>
@@ -751,7 +751,7 @@ value={timings.normalizeMaxPerDirection}
                 .replace(/^./, (c) => c.toUpperCase())
                 .replace(/\bMs\b/, "(ms)")
               return (
-                <div key={key} className="space-y-2 p-3 border rounded-lg bg-white">
+                <div key={key} className="space-y-2 p-3 border rounded-lg bg-background">
                   <div className="flex items-center justify-between gap-2">
                     <Label className="text-sm font-medium leading-tight">{labelText}</Label>
                     <Badge variant="secondary" className="bg-orange-100 text-orange-700 text-[10px]">Live</Badge>
@@ -844,7 +844,7 @@ value={timings.normalizeMaxPerDirection}
                         setTimings({ ...timings, [key]: n })
                       }
                     }}
-                    className="bg-white font-mono"
+                    className="bg-background font-mono"
                   />
                   <p className="text-xs text-muted-foreground leading-snug">{b.help}</p>
                   <p className="text-[10px] text-muted-foreground font-mono">

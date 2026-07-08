@@ -329,12 +329,14 @@ describe("requested regression guardrails", () => {
     expect(source).toContain('"simulate_skip"')
   })
 
-  test("dev symbol cap honors QuickStart multi-symbol override", () => {
+  test("dev symbol cap honors operator-selected symbols before slicing", () => {
     const source = read("lib/trade-engine/engine-manager.ts")
 
     expect(source).toContain("dev_symbol_count_override")
     expect(source).toContain('process.env.V0_DEV_SYMBOL_COUNT ?? "1"')
-    expect(source).toContain('if (devCap === 1) return ["BTCUSDT"]')
+    expect(source).toContain("resolve operator symbols, then slice to 1")
+    expect(source).toContain('never short-circuit to ["BTCUSDT"] here')
+    expect(source).not.toContain('if (devCap === 1) return ["BTCUSDT"]')
   })
 
   test("progression trade counters clamp impossible success rates after resets", () => {
@@ -607,6 +609,78 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain("Math.max(coordinatorEngineCount, summary.running)")
   })
 
+
+  test("production status routes merge raw and settings-prefixed engine heartbeat state", () => {
+    const systemStatus = read("app/api/system/status/route.ts")
+    const tradeStatus = read("app/api/trade-engine/status/route.ts")
+    const engineSystemStatus = read("app/api/engine/system-status/route.ts")
+
+    for (const source of [systemStatus, tradeStatus, engineSystemStatus]) {
+      expect(source).toContain("settings:trade_engine_state")
+    }
+    expect(systemStatus).toContain("rawState")
+    expect(systemStatus).toContain("settingsState")
+    expect(systemStatus).toContain("return { ...(rawState || {}), ...(settingsState || {}) }")
+    expect(tradeStatus).toContain("rawEngineState")
+    expect(tradeStatus).toContain("settingsEngineState")
+    expect(tradeStatus).toContain("const engineState = { ...(rawEngineState || {}), ...(settingsEngineState || {}) }")
+    expect(engineSystemStatus).toContain("rawEngineState")
+    expect(engineSystemStatus).toContain("settingsEngineState")
+    expect(engineSystemStatus).toContain("production status pages do not report false")
+  })
+
+  test("QuickStart prehistoric preload is dev-only by default to avoid duplicate production processors", () => {
+    const source = read("app/api/trade-engine/quick-start/route.ts")
+
+    expect(source).toContain("const quickstartPreloadAllowed =")
+    expect(source).toContain('process.env.NODE_ENV === "development"')
+    expect(source).toContain('process.env.ENABLE_QUICKSTART_PREHISTORIC_PRELOAD === "1"')
+    expect(source).toContain("const quickstartPreload = (async () =>")
+    expect(source).toContain('if (process.env.NODE_ENV === "test")')
+  })
+
+
+
+
+  test("symbol cache compares dev-capped force symbols to prevent per-tick invalidation churn", () => {
+    const source = read("lib/trade-engine/engine-manager.ts")
+
+    expect(source).toContain("effectiveForceSymbols = effectiveForceSymbols.slice(0, devCap)")
+    expect(source).toContain("localSymbolCapActive")
+    expect(source).toContain("process.env.V0_DEV_SYMBOL_COUNT")
+    expect(source).toContain("force_symbols=[BTC,ETH,...] vs cache=[BTC] invalidates")
+  })
+
+  test("local symbol cap preserves operator-selected symbols before slicing", () => {
+    const source = read("lib/trade-engine/engine-manager.ts")
+
+    expect(source).toContain('never short-circuit to ["BTCUSDT"] here')
+    expect(source).toContain("stayed at 0/N symbols with no indication/strategy calculations")
+    expect(source).toContain("Resolve the real list first, then slice it at the end if needed")
+    expect(source).not.toContain('if (devCap === 1) return ["BTCUSDT"]')
+  })
+
+  test("engine manager heap telemetry avoids Node v8 import warnings in Next dev", () => {
+    const source = read("lib/trade-engine/engine-manager.ts")
+
+    expect(source).toContain("process.memoryUsage().heapTotal")
+    expect(source).not.toContain('require("v8")')
+    expect(source).not.toContain('from "v8"')
+    expect(source).not.toContain("from 'v8'")
+  })
+
+  test("production build cleanup respects NEXT_DIST_DIR for parallel dev/prod verification", () => {
+    const pkg = JSON.parse(read("package.json"))
+
+    expect(pkg.scripts.prebuild).toContain('rm -rf "${NEXT_DIST_DIR:-.next}"')
+    expect(pkg.scripts["prevercel-build"]).toContain('rm -rf "${NEXT_DIST_DIR:-.next}"')
+    expect(pkg.scripts.prebuild).not.toContain("rm -rf .next")
+    expect(pkg.scripts["prevercel-build"]).not.toContain("rm -rf .next")
+    expect(read("eslint.config.mjs")).toContain('".next-*/**"')
+    expect(pkg.scripts.postbuild).toBe("node scripts/normalize-next-env.mjs")
+    expect(pkg.scripts["postvercel-build"]).toBe("node scripts/normalize-next-env.mjs")
+    expect(read("scripts/normalize-next-env.mjs")).toContain('./.next/types/routes.d.ts')
+  })
 
   test("production status routes merge raw and settings-prefixed engine heartbeat state", () => {
     const systemStatus = read("app/api/system/status/route.ts")
@@ -1018,6 +1092,32 @@ describe("requested regression guardrails", () => {
     expect(helper).toContain('memory.rss')
   })
 
+
+  test("migration status repairs and reports database health metadata", () => {
+    const migrations = read("lib/redis-migrations.ts")
+    const route = read("app/api/install/database/migrations-info/route.ts")
+    const verifyScript = read("scripts/verify-migration-status.mjs")
+
+    expect(migrations).toContain("interface MigrationRunResult")
+    expect(migrations).toContain("getMigrationBundleHealth")
+    expect(migrations).toContain("ensureDatabaseHealthMetadata")
+    expect(migrations).toContain("ensureMigrationHealthMetadata")
+    expect(migrations).toContain('client.hgetall("system:database:health")')
+    expect(migrations).toContain("healthUpToDate")
+    expect(migrations).toContain("currentVersion === latestVersion && !healthUpToDate")
+    expect(migrations).toContain("isMigrated: currentVersion === latestVersion && healthUpToDate")
+    expect(migrations).toContain("Schema latest but database health metadata needs repair")
+    expect(migrations).toContain('return { success: true, message: "Already run in this process", version: finalVer, databaseHealth }')
+    expect(migrations).toContain("return { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }")
+
+    expect(route).toContain("database_health: status.databaseHealth ?? {}")
+    expect(route).toContain("health_up_to_date: status.healthUpToDate === true")
+    expect(route).toContain("migrations_sequential: status.migrationsSequential === true")
+    expect(verifyScript).toContain("health_up_to_date=true")
+    expect(verifyScript).toContain("STALE/MISSING")
+    expect(verifyScript).toContain("migrations and database health metadata UP TO DATE")
+  })
+
   test("Redis migrations remain sequential for production schema upgrades", () => {
     const source = read("lib/redis-migrations.ts")
     const versions = Array.from(source.matchAll(/version:\s*(\d+)/g), (match) => Number(match[1]))
@@ -1032,7 +1132,7 @@ describe("requested regression guardrails", () => {
     expect(source).toContain('name: "065-dev-prod-database-health-metadata"')
     expect(source).toContain("export function getLatestMigrationVersion")
     expect(source).toContain('"system:database:health"')
-    expect(source).toContain('migrations_bundle_version: String(finalVersion)')
+    expect(source).toContain('migrations_bundle_version: String(latestVersion)')
   })
 
   test("Redis init rechecks stale global readiness before skipping migrations", () => {
@@ -1164,6 +1264,201 @@ describe("requested regression guardrails", () => {
   })
 
 
+
+
+
+
+  test("live exchange dispatch does not block testnet exchange positions", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const injector = read("app/api/system/inject-credentials/route.ts")
+    const liveTradeRoute = read("app/api/settings/connections/[id]/live-trade/route.ts")
+
+    expect(liveStage).toContain("testnet connection — routing order through testnet connector endpoint")
+    expect(liveStage).toContain("Live order proceeding on exchange testnet endpoint")
+    expect(liveStage).not.toContain("Testnet connection detected — live order placement blocked")
+    expect(injector).toContain("Preserve the operator-selected exchange environment")
+    expect(injector).not.toContain("connectionId === 'bingx-x01' ? \"1\"")
+    expect(liveTradeRoute).toContain("isTestnet: isTruthyFlag(connection.is_testnet)")
+  })
+
+  test("live-stage system-close-only is per-connection cached and honors connection settings", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const cacheStart = liveStage.indexOf("const SYSTEM_CLOSE_TTL_MS")
+    const cacheEnd = liveStage.indexOf("async function updateProtectionOrders", cacheStart)
+    const cacheBlock = liveStage.slice(cacheStart, cacheEnd)
+
+    expect(cacheBlock).toContain("systemCloseCacheByConnection")
+    expect(cacheBlock).toContain("function parseSystemCloseFlag")
+    expect(cacheBlock).toContain("getCachedSystemCloseOnly(connectionId: string)")
+    expect(cacheBlock).toContain("settings:connection_settings:${connectionId}")
+    expect(cacheBlock).toContain("connection_settings:${connectionId}")
+    expect(cacheBlock).toContain("Per-connection settings win over global app settings")
+    expect(liveStage).toContain("getCachedSystemCloseOnly(pos.connectionId)")
+    expect(liveStage).toContain("parseSystemCloseFlag((pos as any)?.use_system_close_only)")
+  })
+
+
+  test("inline Redis memory cleanup protects durable engine state and evicts volatile progression data", () => {
+    const source = read("lib/redis-db.ts")
+    const cleanupStart = source.indexOf("private startTTLCleanup")
+    const cleanupEnd = source.indexOf("private describeKeyFamilies", cleanupStart)
+    const cleanupBlock = source.slice(cleanupStart, cleanupEnd)
+    const evictionStart = source.indexOf("private evictOldRecords")
+    const evictionEnd = source.indexOf("private cleanupVolatileRuntimeState", evictionStart)
+    const evictionBlock = source.slice(evictionStart, evictionEnd)
+
+    expect(cleanupBlock).toContain("process.memoryUsage?.()")
+    expect(cleanupBlock).toContain("const isCritical = rssMB > CMEM.rssHardMB")
+    expect(cleanupBlock).toContain("const isWarm")
+    expect(cleanupBlock).toContain("FULL_CLEANUP_INTERVAL_MS")
+    expect(cleanupBlock).toContain('cleanupVolatileRuntimeState({ reason: "critical-rss" })')
+    expect(cleanupBlock).toContain("ttlCleanupTimer.unref?.()")
+
+    for (const durablePrefix of [
+      'k.startsWith("live:position:")',
+      'k.startsWith("live:positions:")',
+      'k.startsWith("progression:")',
+      'k.startsWith("connection:")',
+      'k.startsWith("trade_engine:")',
+      'k.startsWith("app_settings")',
+    ]) {
+      expect(evictionBlock).toContain(durablePrefix)
+    }
+
+    expect(evictionBlock).toContain("settings:pseudo_position")
+    expect(evictionBlock).toContain("settings:strategies")
+    expect(evictionBlock).toContain("transient pipeline data")
+    expect(source).toContain("async cleanupVolatileRuntimeState")
+  })
+
+  test("hot-path performance guards cover stats, real overlays, strategy top-k, and heap telemetry", () => {
+    const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
+    const coordinator = read("lib/strategy-coordinator.ts")
+    const setsProcessor = read("lib/strategy-sets-processor.ts")
+    const engineManager = read("lib/trade-engine/engine-manager.ts")
+
+    expect(statsRoute).toContain("let timeoutHandle: ReturnType<typeof setTimeout> | null = null")
+    expect(statsRoute).toContain("if (timeoutHandle) clearTimeout(timeoutHandle)")
+    expect(coordinator).toContain("PositionContext")
+    expect(coordinator).toContain("perSymbolOpenByDir")
+    expect(coordinator).toContain("posCtx?.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 }")
+    expect(setsProcessor).toContain("Memory-safe top-K selection")
+    expect(setsProcessor).toContain("const heap: any[] = []")
+    expect(setsProcessor).toContain("sinkDown")
+    expect(engineManager).toContain("process.memoryUsage().heapTotal")
+    expect(engineManager).not.toContain('require("v8")')
+    expect(engineManager).not.toContain("JSON.stringify(effectiveForceSymbols)")
+  })
+
+
+  test("settings recoordination fingerprints live sizing, leverage, margin, and control-order settings", () => {
+    const recoordinator = read("lib/connection-recoordinator.ts")
+    const progression = read("lib/progression-state-manager.ts")
+    const settingsCoordinator = read("lib/settings-coordinator.ts")
+
+    for (const field of [
+      "live_volume_factor",
+      "preset_volume_factor",
+      "volume_step_ratio",
+      "leveragePercentage",
+      "useMaximalLeverage",
+      "maxLeverage",
+      "margin_type",
+      "position_mode",
+      "useSystemCloseOnly",
+      "use_system_close_only",
+    ]) {
+      expect(recoordinator).toContain(`"${field}"`)
+      expect(progression).toContain(`"${field}"`)
+      expect(settingsCoordinator).toContain(`"${field}"`)
+    }
+
+    expect(recoordinator).toContain("const requiresProgressRecoordination = symbolsChanged || strategyOrCoordinationChanged || progressAffectingChange")
+    expect(recoordinator).toContain("if (requiresProgressRecoordination)")
+    expect(recoordinator).toContain("Progress-affecting settings changed for ${id} → recoordinated progression")
+    expect(recoordinator).toContain("restarted against the same fingerprint the engine will use")
+    expect(settingsCoordinator).toContain("PROGRESSION_RESTART_FIELDS")
+    expect(settingsCoordinator).toContain("HOT_RELOAD_FIELDS")
+  })
+
+  test("live control-order system-close mode is scoped, cached, and order-limit safe", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const cacheStart = liveStage.indexOf("const SYSTEM_CLOSE_TTL_MS")
+    const cacheEnd = liveStage.indexOf("async function updateProtectionOrders", cacheStart)
+    const cacheBlock = liveStage.slice(cacheStart, cacheEnd)
+    const protectionStart = liveStage.indexOf("async function updateProtectionOrders")
+    const protectionEnd = liveStage.indexOf("async function", protectionStart + 1)
+    const protectionBlock = liveStage.slice(protectionStart, protectionEnd)
+
+    expect(cacheBlock).toContain("systemCloseCacheByConnection")
+    expect(cacheBlock).toContain("Promise.all")
+    expect(cacheBlock).toContain("getAppSettings().catch")
+    expect(cacheBlock).toContain("settings:connection_settings:${connectionId}")
+    expect(cacheBlock).toContain("connection_settings:${connectionId}")
+    expect(cacheBlock).toContain("const merged = { ...(appSettings || {}), ...(prefixedConnSettings || {}), ...(connSettings || {}) }")
+    expect(cacheBlock).not.toContain("_systemCloseCacheValue")
+    expect(cacheBlock).not.toContain("_systemCloseInflight")
+
+    expect(protectionBlock).toContain("getCachedSystemCloseOnly(pos.connectionId)")
+    expect(protectionBlock).toContain("cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId")
+    expect(protectionBlock).toContain("cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId")
+    expect(protectionBlock).toContain("return result")
+  })
+
+  test("recoordination stamps missing or anonymous progression snapshots", () => {
+    const source = read("lib/progression-state-manager.ts")
+    const start = source.indexOf("static async recoordinateForActualOne")
+    const end = source.indexOf("static async ensureJustUniqueProgression", start)
+    const block = source.slice(start, end)
+
+    expect(block).toContain("let initializedMissingProgression = false")
+    expect(block).toContain("Keep going after creation so we immediately stamp")
+    expect(block).toContain("initializedMissingProgression = true")
+    expect(block).toContain('const settingsMismatch = storedFingerprint === "" || storedFingerprint !== liveFingerprint')
+    expect(block).toContain("if (initializedMissingProgression)")
+    expect(block).toContain("progress_settings_snapshot: JSON.stringify(liveSnapshot)")
+    expect(block).toContain("client.del(`realtime:${connectionId}`)")
+    expect(block).toContain('reason: "no active progression"')
+  })
+
+  test("live progression verification scripts remain runnable and phase-aware", () => {
+    const liveScript = read("scripts/test-progression-live.mjs")
+    const stabilityScript = read("scripts/verify-stability.sh")
+
+    expect(liveScript).toContain("const baseUrl = process.env.BASE_URL || `http://localhost:${port}`")
+    expect(liveScript).toContain("'starting'")
+    expect(liveScript).toContain("const historicTotal = Number(stats.historic?.symbolsTotal ?? 0)")
+    expect(liveScript).not.toContain("const activeIndications = stats.activeCounts?.indications || {};\n  const activeIndications")
+    expect(liveScript).toContain("const openPositionsList = Array.isArray(openPositionsValue) ? openPositionsValue : []")
+
+    expect(stabilityScript).toContain("PASSED=$((PASSED+1))")
+    expect(stabilityScript).toContain("FAILED=$((FAILED+1))")
+    expect(stabilityScript).not.toContain("((PASSED++))")
+    expect(stabilityScript).not.toContain("((FAILED++))")
+  })
+
+  test("progression stats timeout timer is cleared after successful polls", () => {
+    const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
+
+    expect(statsRoute).toContain("let timeoutHandle: ReturnType<typeof setTimeout> | null = null")
+    expect(statsRoute).toContain("timeoutHandle = setTimeout")
+    expect(statsRoute).toContain("finally {")
+    expect(statsRoute).toContain("if (timeoutHandle) clearTimeout(timeoutHandle)")
+  })
+
+  test("real-stage active block overlays reuse per-cycle direction indexes", () => {
+    const coordinator = read("lib/strategy-coordinator.ts")
+    const fnStart = coordinator.indexOf("private async buildActiveRealBlockOverlaysForReal")
+    const fnEnd = coordinator.indexOf("private async createLiveSets", fnStart)
+    const blockFn = coordinator.slice(fnStart, fnEnd)
+
+    expect(blockFn).toContain("activeByDirSnapshot?: { long: number; short: number }")
+    expect(blockFn).toContain("Use the PositionContext snapshot built once per cycle")
+    expect(blockFn).toContain("activeByDirSnapshot")
+    expect(blockFn).toContain("if (!activeByDirSnapshot)")
+    expect(coordinator).toContain("posCtx?.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 }")
+  })
+
   test("dashboard footer shows session instance and running time", () => {
     const source = read("components/dashboard/dashboard.tsx")
 
@@ -1172,6 +1467,62 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("createSessionInstanceId")
     expect(source).toContain("Running: {formatDuration")
     expect(source).toContain("<DashboardRuntimeFooter />")
+  })
+
+  test("getConnection merges credentials and exchange settings from settings connection hash", async () => {
+    jest.resetModules()
+    jest.unmock("@/lib/redis-db")
+    jest.doMock("@/lib/redis-migrations", () => ({
+      getLatestMigrationVersion: jest.fn(() => 0),
+      runMigrations: jest.fn(async () => undefined),
+      resetMigrationRunState: jest.fn(),
+    }))
+
+    const redisDb = await import("@/lib/redis-db")
+    await redisDb.initRedis()
+    const client = redisDb.getRedisClient()
+    await client.flushDb()
+
+    await client.hset("connection:bingx-x01", {
+      id: "bingx-x01",
+      name: "BingX X01",
+      exchange: "",
+      updated_at: "2026-07-07T00:00:00.000Z",
+    })
+    await client.hset("settings:connection:bingx-x01", {
+      api_key: "settings-api-key",
+      api_secret: "settings-api-secret",
+      api_passphrase: "settings-passphrase",
+      exchange: "bingx",
+      api_type: "swap",
+      contract_type: "perpetual",
+      margin_type: "cross",
+      position_mode: "one_way",
+      is_testnet: "0",
+      live_volume_factor: "0.1",
+      force_symbols: JSON.stringify(["BTCUSDT", "ETHUSDT"]),
+      updated_at: "2026-07-08T00:00:00.000Z",
+    })
+
+    const connection = await redisDb.getConnection("bingx-x01")
+
+    expect(connection).toMatchObject({
+      id: "bingx-x01",
+      name: "BingX X01",
+      api_key: "settings-api-key",
+      api_secret: "settings-api-secret",
+      api_passphrase: "settings-passphrase",
+      exchange: "bingx",
+      api_type: "swap",
+      contract_type: "perpetual",
+      margin_type: "cross",
+      position_mode: "one_way",
+      is_testnet: false,
+      live_volume_factor: 0.1,
+      force_symbols: ["BTCUSDT", "ETHUSDT"],
+    })
+
+    await client.flushDb()
   })
 
 })

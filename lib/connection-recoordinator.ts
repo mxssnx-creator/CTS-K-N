@@ -143,15 +143,17 @@ export async function recoordinateAfterSettingsChange(
     "variantDcaEnabled",
     "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
     "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
-    "blockVolumeRatio", "blockMaxStack",
+    "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled",
     // Minimal step count affects pseudo position placement
     "minimal_step_count", "minimalStepCount", "minStep",
     // Eval thresholds affect strategy/set progression
     "profitFactorMin", "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
     "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
     "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
-    // Volume/leverage affects position sizing and entry counts
-    "volume_factor", "leveragePercentage", "useMaximalLeverage",
+    // Volume/leverage/control-order settings affect live sizing, exchange handling, and stats
+    "volume_factor", "live_volume_factor", "preset_volume_factor", "volume_factor_live",
+    "volume_factor_preset", "volume_step_ratio", "leveragePercentage", "useMaximalLeverage",
+    "maxLeverage", "margin_type", "position_mode", "useSystemCloseOnly", "use_system_close_only",
     // Position window/count settings affect prehistoric calculations
     "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
   ]
@@ -190,10 +192,20 @@ export async function recoordinateAfterSettingsChange(
       normalized.includes("PosMinCount") ||
       normalized === "minimal_step_count" ||
       normalized === "minimalStepCount" ||
-      normalized === "minStep"
+      normalized === "minStep" ||
+      normalized === "leveragePercentage" ||
+      normalized === "useMaximalLeverage" ||
+      normalized === "maxLeverage" ||
+      normalized === "margin_type" ||
+      normalized === "position_mode" ||
+      normalized === "useSystemCloseOnly" ||
+      normalized === "use_system_close_only" ||
+      normalized.includes("volume") ||
+      normalized.includes("Volume")
     )
   })
-  if (symbolsChanged || strategyOrCoordinationChanged) {
+  const requiresProgressRecoordination = symbolsChanged || strategyOrCoordinationChanged || progressAffectingChange
+  if (requiresProgressRecoordination) {
     try {
       const { ProgressionStateManager } = await import("@/lib/progression-state-manager")
       // Use the COUPLED recoordinate path (not the bare archive). It
@@ -221,34 +233,9 @@ export async function recoordinateAfterSettingsChange(
     }
   }
 
-  // ── PROGRESS INVALIDATION FOR SIGNIFICANT SETTINGS ──────────────────────
-  // When progress-affecting settings change, we need to clear cached progress
-  // data so the UI shows fresh prehistoric/realtime stats on next fetch.
-  // This ensures the stats endpoint returns up-to-date progress reflecting
-  // the new settings (not stale cached values from before the change).
-  if (progressAffectingChange && !(symbolsChanged || strategyOrCoordinationChanged)) {
-    // For non-symbol changes, we don't archive (symbol changes do that above).
-    // But we DO want to clear any cached progress data so the UI refreshes.
-    // The progression data is persisted in Redis but won't auto-recalculate
-    // for parameter changes (e.g., PF threshold), so we can't archive it.
-    // Instead, we rely on the UI's settings-change listener to force-refresh
-    // the stats endpoint, which will re-read Redis and compute new breakdowns.
-    try {
-      // If we need to invalidate progress cache in Redis for parameter changes,
-      // we can clear specific keys that should be recomputed. For now, the
-      // UI-side event listener (connection-settings-updated) is the main
-      // refresh trigger, and the stats endpoint always computes fresh.
-      console.log(
-        `[v0] [${opts.logTag}] Progress-affecting settings changed for ${id} (${changedFields.join(", ")}) — UI will refresh stats`
-      )
-    } catch (progressErr) {
-      console.warn(
-        `[v0] [${opts.logTag}] Failed to handle progress invalidation for ${id}:`,
-        progressErr instanceof Error ? progressErr.message : String(progressErr),
-      )
-      // Non-fatal — UI refresh will still happen via event listener
-    }
-  }
+  // Any progress-affecting setting now goes through the coupled
+  // recoordination path above, so stats/progression hashes are stamped or
+  // restarted against the same fingerprint the engine will use.
 
   // Steps 2 & 3 — coordinator-level actions. Bundled in one try block
   // because they all need the same `coordinator` reference, and a

@@ -518,14 +518,14 @@ export function ConnectionCard({
                     value={editFormData.name}
                     onChange={(e) => setEditFormData((prev) => ({ ...prev, name: e.target.value }))}
                     placeholder="e.g., My Bybit Connection"
-                    className="bg-white h-8 text-sm"
+                    className="bg-background h-8 text-sm"
                   />
                 </div>
 
                 <div className="space-y-2">
                   <Label htmlFor="edit-api-type" className="font-medium text-xs">API Type</Label>
                   <Select value={editFormData.api_type} onValueChange={(value) => setEditFormData(prev => ({ ...prev, api_type: value }))}>
-                    <SelectTrigger id="edit-api-type" className="bg-white h-8 text-sm">
+                    <SelectTrigger id="edit-api-type" className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -546,7 +546,7 @@ export function ConnectionCard({
                   <div className="space-y-2">
                     <Label htmlFor="edit-api-subtype" className="font-medium text-xs">Trading Type (Unified Account)</Label>
                     <Select value={editFormData.api_subtype || "perpetual"} onValueChange={(value) => setEditFormData(prev => ({ ...prev, api_subtype: value }))}>
-                      <SelectTrigger id="edit-api-subtype" className="bg-white h-8 text-sm">
+                      <SelectTrigger id="edit-api-subtype" className="bg-background h-8 text-sm">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -561,7 +561,7 @@ export function ConnectionCard({
                 <div className="space-y-2">
                   <Label htmlFor="edit-connection-method" className="font-medium text-xs">Connection Method</Label>
                   <Select value={editFormData.connection_method} onValueChange={(value) => setEditFormData(prev => ({ ...prev, connection_method: value }))}>
-                    <SelectTrigger id="edit-connection-method" className="bg-white h-8 text-sm">
+                    <SelectTrigger id="edit-connection-method" className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -580,7 +580,7 @@ export function ConnectionCard({
                 <div className="space-y-2">
                   <Label htmlFor="edit-connection-library" className="font-medium text-xs">Library</Label>
                   <Select value={editFormData.connection_library || "native"} onValueChange={(value) => setEditFormData(prev => ({ ...prev, connection_library: value }))}>
-                    <SelectTrigger id="edit-connection-library" className="bg-white h-8 text-sm">
+                    <SelectTrigger id="edit-connection-library" className="bg-background h-8 text-sm">
                       <SelectValue placeholder="Select library..." />
                     </SelectTrigger>
                     <SelectContent>
@@ -619,7 +619,7 @@ export function ConnectionCard({
                 <div className="space-y-2">
                   <Label htmlFor="edit-margin" className="font-medium text-xs">Margin Type</Label>
                   <Select value={editFormData.margin_type} onValueChange={(value) => setEditFormData(prev => ({ ...prev, margin_type: value }))}>
-                    <SelectTrigger id="edit-margin" className="bg-white h-8 text-sm">
+                    <SelectTrigger id="edit-margin" className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -632,7 +632,7 @@ export function ConnectionCard({
                 <div className="space-y-2">
                   <Label htmlFor="edit-position" className="font-medium text-xs">Position Mode</Label>
                   <Select value={editFormData.position_mode} onValueChange={(value) => setEditFormData(prev => ({ ...prev, position_mode: value }))}>
-                    <SelectTrigger id="edit-position" className="bg-white h-8 text-sm">
+                    <SelectTrigger id="edit-position" className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -645,7 +645,7 @@ export function ConnectionCard({
                 <div className="space-y-2">
                   <Label htmlFor="edit-order-type" className="font-medium text-xs">Order Type (Default)</Label>
                   <Select value={editFormData.order_type} onValueChange={(value) => setEditFormData(prev => ({ ...prev, order_type: value }))}>
-                    <SelectTrigger id="edit-order-type" className="bg-white h-8 text-sm">
+                    <SelectTrigger id="edit-order-type" className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -666,7 +666,7 @@ export function ConnectionCard({
                       step="10"
                       value={editFormData.order_volume_usdt}
                       onChange={(e) => setEditFormData(prev => ({ ...prev, order_volume_usdt: Math.max(10, Number(e.target.value)) }))}
-                      className="bg-white h-8 text-sm flex-1"
+                      className="bg-background h-8 text-sm flex-1"
                     />
                     <span className="text-xs font-medium text-muted-foreground">USDT</span>
                   </div>
@@ -710,7 +710,7 @@ export function ConnectionCard({
                       value={editFormData.api_key}
                       onChange={(e) => setEditFormData((prev) => ({ ...prev, api_key: e.target.value }))}
                       placeholder="Enter your API key"
-                      className="pr-10 bg-white"
+                      className="pr-10 bg-background"
                     />
                     <button
                       type="button"
@@ -733,7 +733,7 @@ export function ConnectionCard({
                     value={editFormData.api_secret}
                     onChange={(e) => setEditFormData((prev) => ({ ...prev, api_secret: e.target.value }))}
                     placeholder="Enter your API secret"
-                    className="bg-white"
+                    className="bg-background"
                   />
                 </div>
 
@@ -746,7 +746,7 @@ export function ConnectionCard({
                       value={editFormData.api_passphrase}
                       onChange={(e) => setEditFormData((prev) => ({ ...prev, api_passphrase: e.target.value }))}
                       placeholder="Enter your API passphrase"
-                      className="bg-white"
+                      className="bg-background"
                     />
                   </div>
                 )}

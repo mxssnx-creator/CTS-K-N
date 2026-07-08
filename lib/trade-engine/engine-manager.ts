@@ -1,17 +1,14 @@
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
-// NOTE: v8 is Node.js built-in; webpack in Next.js may not recognize `node:v8`.
-// Use dynamic import with fallback for bundler compatibility.
-let getHeapStatistics: (() => { heap_size_limit?: number; heap_total_size?: number }) | null = null
-if (typeof process !== "undefined" && process.versions?.node) {
-  try {
-    // @ts-ignore - v8 is a Node built-in
-    const v8 = require("v8")
-    getHeapStatistics = v8.getHeapStatistics.bind(v8)
-  } catch {
-    // fallback: use process.memoryUsage approximation
-    getHeapStatistics = () => ({ heap_size_limit: process.memoryUsage().heapTotal * 4 })
-  }
-}
+import { hasStrategyAffectingChange, hasSymbolAffectingChange, isGenericConnectionSettingsReload } from "@/lib/trade-engine/settings-change-fields"
+// Keep heap telemetry bundler-safe. Importing/requiring the Node `v8` built-in
+// from this hot server module makes Next dev's webpack resolver emit repeated
+// "Can't resolve 'v8'" warnings when the trade engine is pulled into route
+// graphs. The memory manager only needs an approximate ceiling here, so use
+// process.memoryUsage() and avoid a Node-only import entirely.
+const getHeapStatistics: (() => { heap_size_limit?: number; heap_total_size?: number }) | null =
+  typeof process !== "undefined" && process.versions?.node
+    ? () => ({ heap_size_limit: process.memoryUsage().heapTotal * 4, heap_total_size: process.memoryUsage().heapTotal })
+    : null
 /**
  * Trade Engine Manager V11
  * Manages asynchronous processing for symbols, indications, pseudo positions, and strategies
@@ -485,92 +482,6 @@ export interface ComponentHealth {
   errorCount: number
   successRate: number
   cycleCount: number
-}
-
-const SYMBOL_AFFECTING_SETTING_FIELDS = new Set([
-  "active_symbols",
-  "activeSymbols",
-  "symbols",
-  "symbol_mode",
-  "symbolMode",
-  "exchange_order_by",
-  "exchangeOrderBy",
-  "symbol_limit",
-  "symbolLimit",
-  "symbol_count",
-  "symbolCount",
-  "symbol_order",
-  "force_symbols",
-  "useMainSymbols",
-  "mainSymbols",
-])
-
-const STRATEGY_AFFECTING_SETTING_FIELDS = new Set([
-  "profitFactorMin",
-  "baseProfitFactor",
-  "mainProfitFactor",
-  "realProfitFactor",
-  "liveProfitFactor",
-  "maxDrawdownTimeMainHours",
-  "maxDrawdownTimeRealHours",
-  "maxDrawdownTimeLiveHours",
-  "stageMinPosCountBase",
-  "stageMinPosCountMain",
-  "stageMinPosCountReal",
-  "variantTrailingEnabled",
-  "variantBlockEnabled",
-  "variantDcaEnabled",
-  "axisPrevEnabled",
-  "axisLastEnabled",
-  "axisContEnabled",
-  "axisPauseEnabled",
-  "axisPrevMaxWindow",
-  "axisLastMaxWindow",
-  "axisContMaxWindow",
-  "axisPauseMaxWindow",
-  "blockVolumeRatio",
-  "blockMaxStack",
-  "minimal_step_count",
-  "minimalStepCount",
-  "minStep",
-  "trailingMinStep",
-  "prevPosWindow",
-  "prevPosMinCount",
-  "mainEvalPosCount",
-  "realEvalPosCount",
-  "volume_factor",
-  "volume_factor_live",
-  "volume_factor_preset",
-  "volume_step_ratio",
-  "leveragePercentage",
-  "useMaximalLeverage",
-])
-
-function isGenericConnectionSettingsReload(fields: readonly string[]): boolean {
-  return fields.length === 0 || fields.some((field) => field === "connection_settings")
-}
-
-function hasSymbolAffectingChange(fields: readonly string[]): boolean {
-  return fields.some((field) => {
-    if (SYMBOL_AFFECTING_SETTING_FIELDS.has(field)) return true
-    if (field.startsWith("connection_settings.")) {
-      const nested = field.slice("connection_settings.".length)
-      return SYMBOL_AFFECTING_SETTING_FIELDS.has(nested)
-    }
-    return false
-  })
-}
-
-function hasStrategyAffectingChange(fields: readonly string[]): boolean {
-  return fields.some((field) => {
-    if (field === "strategies" || field === "coordination_settings") return true
-    if (STRATEGY_AFFECTING_SETTING_FIELDS.has(field)) return true
-    if (field.startsWith("connection_settings.")) {
-      const nested = field.slice("connection_settings.".length)
-      return nested === "strategies" || nested === "coordination_settings" || STRATEGY_AFFECTING_SETTING_FIELDS.has(nested)
-    }
-    return false
-  })
 }
 
 export class TradeEngineManager {
@@ -3928,9 +3839,22 @@ export class TradeEngineManager {
           try { forceSymbols = JSON.parse(forceSymbols) } catch { /* ignore */ }
         }
         
-        // If force_symbols exists but differs from cache, invalidate
+        // If force_symbols exists but differs from cache, invalidate. In dev
+        // and self-hosted local-prod, getSymbols() applies V0_DEV_SYMBOL_COUNT
+        // after resolving force_symbols. Compare the same effective symbol list
+        // here; otherwise force_symbols=[BTC,ETH,...] vs cache=[BTC] invalidates
+        // on every tick and causes noisy coordinator/progression churn.
         if (Array.isArray(forceSymbols) && forceSymbols.length > 0) {
-          const sortedForce = [...forceSymbols].map(String).filter(Boolean).sort()
+          let effectiveForceSymbols = forceSymbols.map(String).filter(Boolean)
+          const localSymbolCapActive =
+            process.env.NODE_ENV === "development" ||
+            (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")
+          if (localSymbolCapActive) {
+            const devCapSource = (connState as any)?.dev_symbol_count_override ?? process.env.V0_DEV_SYMBOL_COUNT ?? "1"
+            const devCap = Math.max(1, parseInt(String(devCapSource), 10) || 1)
+            effectiveForceSymbols = effectiveForceSymbols.slice(0, devCap)
+          }
+          const sortedForce = [...effectiveForceSymbols].sort()
           const sortedCache = [...this._symbolsCache].sort()
           // CRITICAL FIX: Use efficient array comparison instead of JSON.stringify
           // which causes CPU overload when called frequently (every cycle).
@@ -3974,17 +3898,21 @@ export class TradeEngineManager {
         // True Vercel deployments always have VERCEL="1" so they are unaffected.
         //
         // Behaviour:
-        //   V0_DEV_SYMBOL_COUNT=1  → always ["BTCUSDT"] (minimum safe, default)
-        //   V0_DEV_SYMBOL_COUNT=10 → normal resolution below, then slice to 10
+        //   V0_DEV_SYMBOL_COUNT=1  → resolve operator symbols, then slice to 1
+        //   V0_DEV_SYMBOL_COUNT=10 → resolve operator symbols, then slice to 10
         //   unset                  → default 1
         const _isLocalRun = process.env.NODE_ENV === "development" ||
           (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")
         if (_isLocalRun) {
           const devCapSource = (connState as any)?.dev_symbol_count_override ?? process.env.V0_DEV_SYMBOL_COUNT ?? "1"
           const devCap = Math.max(1, parseInt(String(devCapSource), 10) || 1)
-          if (devCap === 1) return ["BTCUSDT"]
-          // Fall through to the full resolution chain (force_symbols → active_symbols
-          // → volatility fetch). The resolved list is sliced to devCap at the end.
+          // IMPORTANT: never short-circuit to ["BTCUSDT"] here. That made
+          // local/self-hosted production ignore operator-selected force_symbols
+          // / active_symbols before the ownership guard ran, so ConfigSetProcessor
+          // saw active symbols [BTCUSDT] while the canonical selection still held
+          // the user's list and refused to write progress. The dashboard then
+          // stayed at 0/N symbols with no indication/strategy calculations.
+          // Resolve the real list first, then slice it at the end if needed.
           ;(resolve as any)._devCap = devCap
         }
 

@@ -37,7 +37,7 @@ import { getRedisClient, ensureCoreRedis, setMigrationsRun, haveMigrationsRun } 
  * runMigrations() always intended.
  */
 const globalMigrationGuard = globalThis as unknown as {
-  __migration_run_promise?: Promise<{ success: boolean; message: string; version: number }> | null
+  __migration_run_promise?: Promise<MigrationRunResult> | null
   __coverage_repair_done?: boolean
 }
 
@@ -45,7 +45,7 @@ function getMigrationRunPromise() {
   return globalMigrationGuard.__migration_run_promise ?? null
 }
 function setMigrationRunPromise(
-  p: Promise<{ success: boolean; message: string; version: number }> | null,
+  p: Promise<MigrationRunResult> | null,
 ) {
   globalMigrationGuard.__migration_run_promise = p
 }
@@ -72,6 +72,13 @@ interface Migration {
   version: number
   up: (client: any) => Promise<void>
   down: (client: any) => Promise<void>
+}
+
+interface MigrationRunResult {
+  success: boolean
+  message: string
+  version: number
+  databaseHealth?: Record<string, string>
 }
 
 // NOTE: the in-flight coalescing promise now lives on globalThis (see
@@ -3421,24 +3428,9 @@ const migrations: Migration[] = [
     version: 65,
     name: "065-dev-prod-database-health-metadata",
     up: async (client: any) => {
-      const mode = process.env.NODE_ENV === "production" ? "production" : "development"
-      const now = new Date().toISOString()
-      const finalVersion = Math.max(...migrations.map((m) => m.version))
-
-      // This migration is intentionally environment-neutral. Development and
-      // production both need a single lightweight, queryable health record so
-      // startup/status routes can verify that the Redis schema on disk matches
-      // the migration bundle that booted the process. Keep this metadata small:
-      // no key scans, no progression resets, no strategy rewrites.
-      await client.hset("system:database:health", {
-        mode,
-        schema_version: String(finalVersion),
-        migrations_bundle_version: String(finalVersion),
-        migrations_sequential: "1",
-        last_verified_at: now,
-      })
+      const health = await ensureDatabaseHealthMetadata(client)
       await client.set("_migrations_run", "true")
-      console.log(`[v0] Migration 065: recorded ${mode} database health metadata at schema v${finalVersion}`)
+      console.log(`[v0] Migration 065: recorded ${health.mode} database health metadata at schema v${health.schema_version}`)
     },
     down: async (client: any) => {
       await client.hdel(
@@ -3446,6 +3438,7 @@ const migrations: Migration[] = [
         "mode",
         "schema_version",
         "migrations_bundle_version",
+        "total_migrations",
         "migrations_sequential",
         "last_verified_at",
       ).catch(() => 0)
@@ -3456,6 +3449,41 @@ const migrations: Migration[] = [
 
 export function getLatestMigrationVersion(): number {
   return Math.max(...migrations.map((m) => m.version))
+}
+
+export function getMigrationBundleHealth(): { latestVersion: number; totalMigrations: number; sequential: boolean } {
+  const versions = migrations.map((m) => m.version).sort((a, b) => a - b)
+  const latestVersion = versions.length > 0 ? versions[versions.length - 1] : 0
+  const sequential = versions.every((version, index) => version === index + 1)
+  return { latestVersion, totalMigrations: versions.length, sequential }
+}
+
+async function ensureDatabaseHealthMetadata(client: any): Promise<Record<string, string>> {
+  const mode = process.env.NODE_ENV === "production" ? "production" : "development"
+  const { latestVersion, totalMigrations, sequential } = getMigrationBundleHealth()
+  const now = new Date().toISOString()
+  const existing = ((await client.hgetall("system:database:health").catch(() => ({}))) || {}) as Record<string, string>
+  const expected = {
+    mode,
+    schema_version: String(latestVersion),
+    migrations_bundle_version: String(latestVersion),
+    total_migrations: String(totalMigrations),
+    migrations_sequential: sequential ? "1" : "0",
+  }
+  const needsRepair = Object.entries(expected).some(([key, value]) => existing[key] !== value)
+  if (needsRepair) {
+    await client.hset("system:database:health", {
+      ...expected,
+      last_verified_at: now,
+    })
+    return { ...existing, ...expected, last_verified_at: now }
+  }
+  return existing
+}
+
+export async function ensureMigrationHealthMetadata(): Promise<Record<string, string>> {
+  await ensureCoreRedis()
+  return ensureDatabaseHealthMetadata(getRedisClient())
 }
 
 const BASE_CONNECTION_CONFIG: Array<{
@@ -4232,7 +4260,7 @@ async function runPendingMigrationBatch({
 /**
  * Run all pending migrations
  */
-export async function runMigrations(): Promise<{ success: boolean; message: string; version: number }> {
+export async function runMigrations(): Promise<MigrationRunResult> {
   // If a run is already in-flight (or completed), return the same promise so
   // concurrent callers coalesce onto a single execution and never re-enter
   // runMigrationsInternal(). The promise is intentionally kept after resolution —
@@ -4258,7 +4286,7 @@ export async function runMigrations(): Promise<{ success: boolean; message: stri
   return promise
 }
 
-async function runMigrationsInternal(): Promise<{ success: boolean; message: string; version: number }> {
+async function runMigrationsInternal(): Promise<MigrationRunResult> {
   try {
     // Check if migrations have already run in this process
     if (haveMigrationsRun()) {
@@ -4287,7 +4315,10 @@ async function runMigrationsInternal(): Promise<{ success: boolean; message: str
         setMigrationsRun(false)
         console.log(`[v0] [Migrations] Hot-reload detected new migrations: Redis v${currentVersion} < code v${finalVer}`)
       } else {
-        // Redis is at latest — fast-path return.
+        // Redis is at latest — fast-path return. Keep health metadata repaired
+        // even when the version key is already current (e.g. a previous deploy
+        // wrote _schema_version but missed the lightweight health hash).
+        const databaseHealth = await ensureDatabaseHealthMetadata(client)
         const ensured = await ensureBaseConnections(client)
         // Only log when something actually changed; otherwise the "ensured=0,
         // credentialsInjected=0" line spams every HTTP request because the
@@ -4308,7 +4339,7 @@ async function runMigrationsInternal(): Promise<{ success: boolean; message: str
           await ensureCompleteProductionCoverage(client)
         }
 
-        return { success: true, message: "Already run in this process", version: finalVer }
+        return { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
       }
     }
 
@@ -4337,6 +4368,7 @@ async function runMigrationsInternal(): Promise<{ success: boolean; message: str
         ensureBootstrapDiag.add("already_latest")
         console.log(`[v0] [Migrations] Already at latest version ${finalVersion}`)
       }
+      const databaseHealth = await ensureDatabaseHealthMetadata(client)
       const ensured = await ensureBaseConnections(client)
       // Only log when something actually changed (see same-pattern note above).
       if (ensured.createdOrUpdated > 0 || ensured.credentialsInjected > 0) {
@@ -4353,7 +4385,7 @@ async function runMigrationsInternal(): Promise<{ success: boolean; message: str
         await ensureCompleteProductionCoverage(client)
       }
 
-      return { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion }
+      return { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
     }
 
     // Run pending migrations as one optimized batch. The batch client suppresses
@@ -4367,6 +4399,7 @@ async function runMigrationsInternal(): Promise<{ success: boolean; message: str
     // Ensure schema version reflects the final target (defensive; the loop
     // already stamped the last migration's version).
     await client.set("_schema_version", finalVersion.toString())
+    const databaseHealth = await ensureDatabaseHealthMetadata(client)
     
     // Track migration runs
     const runCount = await client.get("_migration_total_runs")
@@ -4390,7 +4423,7 @@ async function runMigrationsInternal(): Promise<{ success: boolean; message: str
     // PRODUCTION: INTENSIVE coverage after migrations (no holes, complete processings)
     await ensureCompleteProductionCoverage(client)
     
-    return { success: true, message: `Migrated from v${currentVersion} to v${finalVersion}`, version: finalVersion }
+    return { success: true, message: `Migrated from v${currentVersion} to v${finalVersion}`, version: finalVersion, databaseHealth }
   } catch (error) {
     console.error("[v0] [Migrations] ✗ Migration failed:", error)
     throw error
@@ -4431,21 +4464,39 @@ export async function getMigrationStatus(): Promise<any> {
     const client = getRedisClient()
     const versionStr = await client.get("_schema_version")
     const currentVersion = versionStr ? parseInt(versionStr as string) : 0
-    const latestVersion = Math.max(...migrations.map((m) => m.version))
+    const { latestVersion, totalMigrations, sequential } = getMigrationBundleHealth()
+    let databaseHealth = ((await client.hgetall("system:database:health").catch(() => ({}))) || {}) as Record<string, string>
+    let healthUpToDate =
+      databaseHealth.schema_version === String(latestVersion) &&
+      databaseHealth.migrations_bundle_version === String(latestVersion) &&
+      databaseHealth.total_migrations === String(totalMigrations) &&
+      databaseHealth.migrations_sequential === (sequential ? "1" : "0")
+    if (currentVersion === latestVersion && !healthUpToDate) {
+      databaseHealth = await ensureDatabaseHealthMetadata(client)
+      healthUpToDate =
+        databaseHealth.schema_version === String(latestVersion) &&
+        databaseHealth.migrations_bundle_version === String(latestVersion) &&
+        databaseHealth.total_migrations === String(totalMigrations) &&
+        databaseHealth.migrations_sequential === (sequential ? "1" : "0")
+    }
     return {
       currentVersion,
       latestVersion,
-      isMigrated: currentVersion === latestVersion,
+      totalMigrations,
+      migrationsSequential: sequential,
+      databaseHealth,
+      healthUpToDate,
+      isMigrated: currentVersion === latestVersion && healthUpToDate,
       pendingMigrations: migrations.filter((m) => m.version > currentVersion),
       message: currentVersion === latestVersion
-        ? `Already at latest version ${currentVersion}`
+        ? healthUpToDate ? `Already at latest version ${currentVersion}` : `Schema latest but database health metadata needs repair`
         : `${latestVersion - currentVersion} pending migrations`,
     }
   } catch (error) {
     console.error("[v0] Could not get migration status:", error)
     return {
       currentVersion: 0,
-      latestVersion: Math.max(...migrations.map((m) => m.version)),
+      latestVersion: getMigrationBundleHealth().latestVersion,
       isMigrated: false,
       message: "Failed to check status",
       error: error instanceof Error ? error.message : "Unknown error",

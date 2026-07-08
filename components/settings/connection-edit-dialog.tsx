@@ -213,7 +213,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                     onChange={(e) => handleChange("name", e.target.value)}
                     placeholder="e.g., Main Account"
                     disabled={isSaving}
-                    className={`bg-white text-sm h-8 ${errors.name ? "border-red-500" : ""}`}
+                    className={`bg-background text-sm h-8 ${errors.name ? "border-red-500" : ""}`}
                   />
                   {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
                 </div>
@@ -221,7 +221,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                 <div className="space-y-1.5">
                   <Label htmlFor="exchange" className="font-medium text-xs">Exchange</Label>
                   <Select value={formData.exchange} onValueChange={(value) => handleChange("exchange", value)}>
-                    <SelectTrigger id="exchange" disabled={isSaving} className="bg-white h-8 text-sm">
+                    <SelectTrigger id="exchange" disabled={isSaving} className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -237,7 +237,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                 <div className="space-y-1.5">
                   <Label htmlFor="api-type" className="font-medium text-xs">API Type</Label>
                   <Select value={formData.api_type} onValueChange={(value) => handleChange("api_type", value)}>
-                    <SelectTrigger id="api-type" disabled={isSaving} className="bg-white h-8 text-sm">
+                    <SelectTrigger id="api-type" disabled={isSaving} className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -259,7 +259,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                   <div className="space-y-1.5 col-span-2">
                     <Label htmlFor="api-subtype" className="font-medium text-xs">Trading Type (Unified Account)</Label>
                     <Select value={formData.api_subtype} onValueChange={(value) => handleChange("api_subtype", value)}>
-                      <SelectTrigger id="api-subtype" disabled={isSaving} className="bg-white h-8 text-sm">
+                      <SelectTrigger id="api-subtype" disabled={isSaving} className="bg-background h-8 text-sm">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -282,7 +282,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                 <div className="space-y-1.5">
                   <Label htmlFor="connection-method" className="font-medium text-xs">Connection</Label>
                   <Select value={formData.connection_method} onValueChange={(value) => handleChange("connection_method", value)}>
-                    <SelectTrigger id="connection-method" disabled={isSaving} className="bg-white h-8 text-sm">
+                    <SelectTrigger id="connection-method" disabled={isSaving} className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -301,7 +301,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                 <div className="space-y-1.5">
                   <Label htmlFor="connection-library" className="font-medium text-xs">Library</Label>
                   <Select value={formData.connection_library || "native"} onValueChange={(value) => handleChange("connection_library", value)}>
-                    <SelectTrigger id="connection-library" disabled={isSaving} className="bg-white h-8 text-sm">
+                    <SelectTrigger id="connection-library" disabled={isSaving} className="bg-background h-8 text-sm">
                       <SelectValue placeholder="Select library..." />
                     </SelectTrigger>
                     <SelectContent>
@@ -320,7 +320,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                 <div className="space-y-1.5">
                   <Label htmlFor="margin-type" className="font-medium text-xs">Margin Type</Label>
                   <Select value={formData.margin_type} onValueChange={(value) => handleChange("margin_type", value)}>
-                    <SelectTrigger id="margin-type" disabled={isSaving} className="bg-white h-8 text-sm">
+                    <SelectTrigger id="margin-type" disabled={isSaving} className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -333,7 +333,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                 <div className="space-y-1.5">
                   <Label htmlFor="position-mode" className="font-medium text-xs">Position Mode</Label>
                   <Select value={formData.position_mode} onValueChange={(value) => handleChange("position_mode", value)}>
-                    <SelectTrigger id="position-mode" disabled={isSaving} className="bg-white h-8 text-sm">
+                    <SelectTrigger id="position-mode" disabled={isSaving} className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -354,7 +354,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                     onChange={(e) => handleChange("volume_factor", parseFloat(e.target.value))}
                     placeholder="1.0"
                     disabled={isSaving}
-                    className={`bg-white h-8 text-sm ${errors.volume_factor ? "border-red-500" : ""}`}
+                    className={`bg-background h-8 text-sm ${errors.volume_factor ? "border-red-500" : ""}`}
                   />
                   {errors.volume_factor && <p className="text-xs text-red-500">{errors.volume_factor}</p>}
                   <p className="text-xs text-muted-foreground">Multiplier for order volume (1.0 = 100%)</p>
@@ -400,7 +400,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                       onChange={(e) => handleChange("api_key", e.target.value)}
                       placeholder="Enter your API Key"
                       disabled={isSaving}
-                      className={`pr-10 bg-white ${errors.api_key ? "border-red-500" : ""}`}
+                      className={`pr-10 bg-background ${errors.api_key ? "border-red-500" : ""}`}
                     />
                     <button
                       type="button"
@@ -425,7 +425,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                     onChange={(e) => handleChange("api_secret", e.target.value)}
                     placeholder="Enter your API Secret"
                     disabled={isSaving}
-                    className={`bg-white ${errors.api_secret ? "border-red-500" : ""}`}
+                    className={`bg-background ${errors.api_secret ? "border-red-500" : ""}`}
                   />
                   {errors.api_secret && <p className="text-xs text-red-500">{errors.api_secret}</p>}
                 </div>
@@ -439,7 +439,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                     onChange={(e) => handleChange("api_passphrase", e.target.value)}
                     placeholder="Leave blank if not required"
                     disabled={isSaving}
-                    className="bg-white"
+                    className="bg-background"
                   />
                   <p className="text-xs text-muted-foreground">Required only for some exchanges (e.g., OKX, Coinbase)</p>
                 </div>

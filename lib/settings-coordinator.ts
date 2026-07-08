@@ -28,16 +28,17 @@ const RESTART_REQUIRED_FIELDS = [
 const PROGRESSION_RESTART_FIELDS = [
   "connection_settings", "strategies", "indications", "active_indications",
   "symbols", "active_symbols", "force_symbols", "symbol_count", "symbol_order",
-  "is_live_trade", "is_preset_trade", "connection_method",
+  "is_live_trade", "is_preset_trade", "connection_method", "margin_type", "position_mode",
   "live_volume_factor", "preset_volume_factor", "volume_factor_live",
   "volume_factor_preset", "volume_step_ratio", "volume_factor",
+  "leveragePercentage", "useMaximalLeverage", "maxLeverage", "useSystemCloseOnly", "use_system_close_only",
   "profitFactorMin", "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
   "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
   "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
   "coordination_settings", "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
-  "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio",
+  "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled",
   "minimal_step_count", "minimalStepCount", "minStep",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
 ]
@@ -50,14 +51,15 @@ const HOT_RELOAD_FIELDS = [
   "symbols", "active_symbols", "force_symbols", "symbol_count", "symbol_order",
   "is_enabled", "is_enabled_dashboard", "is_live_trade", "is_preset_trade", "connection_method",
   "live_volume_factor", "preset_volume_factor", "volume_factor_live",
-  "volume_factor_preset", "volume_step_ratio",
+  "volume_factor_preset", "volume_step_ratio", "leveragePercentage",
+  "useMaximalLeverage", "maxLeverage", "useSystemCloseOnly", "use_system_close_only",
   "profitFactorMin", "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
   "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
   "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
   "coordination_settings", "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
-  "blockVolumeRatio", "blockMaxStack", "minimal_step_count", "minimalStepCount", "minStep",
+  "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled", "minimal_step_count", "minimalStepCount", "minStep",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
 ]
 
@@ -164,12 +166,16 @@ export async function notifySettingsChanged(
 
   // Write both durable signals before the API handler returns success:
   // 1. `settings_change:{id}` is the reload/restart envelope consumed by
-  //    engine-owning processes (possibly in a different worker).
+  //    engine-owning processes (possibly in a different worker). Keep this
+  //    envelope on the settings namespace so existing consumers retain the
+  //    durable structured event contract.
   // 2. `settings:dirty:{id}` is the low-latency dirty flag consumed by
-  //    processor-level caches. It is intentionally mandatory: a settings
-  //    PATCH response must not report success until both signals are persisted.
+  //    processor-level caches as a raw Redis string key. It is intentionally
+  //    mandatory: a settings PATCH response must not report success until both
+  //    signals are persisted.
   await setSettings(`settings_change:${connectionId}`, event)
-  await setSettings(`settings:dirty:${connectionId}`, "1")
+  const client = getRedisClient()
+  await client.set(`settings:dirty:${connectionId}`, "1", { EX: 300 })
   console.log(
     `[v0] [SettingsCoordinator] Dirty flag set for ${connectionId}: key=settings:dirty:${connectionId}, fields=[${changedFields.join(",")}]`,
   )

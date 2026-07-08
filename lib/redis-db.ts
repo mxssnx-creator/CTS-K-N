@@ -2637,11 +2637,78 @@ export async function assertDatabaseWriteBudget(
 
 // ========== Connection Operations ==========
 
+const CONNECTION_SETTINGS_CANONICAL_FIELDS = new Set([
+  "api_key",
+  "api_secret",
+  "api_passphrase",
+  "api_type",
+  "connection_method",
+  "connection_library",
+  "contract_type",
+  "exchange",
+  "exchange_type",
+  "force_symbols",
+  "is_live_trade",
+  "is_preset_trade",
+  "is_testnet",
+  "leverage_percentage",
+  "live_volume_factor",
+  "margin_mode",
+  "margin_type",
+  "position_mode",
+  "preset_volume_factor",
+  "symbol_count",
+  "symbol_order",
+  "symbols",
+  "volume_factor",
+  "volume_type",
+])
+
+function hasConnectionValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false
+  if (typeof value === "string") return value.trim().length > 0
+  if (Array.isArray(value)) return value.length > 0
+  return true
+}
+
+function isNewerConnectionSettings(settings: Record<string, any>, raw: Record<string, any>): boolean {
+  const settingsTime = Date.parse(String(settings.updated_at ?? settings.updatedAt ?? settings.saved_at ?? ""))
+  const rawTime = Date.parse(String(raw.updated_at ?? raw.updatedAt ?? ""))
+  return Number.isFinite(settingsTime) && (!Number.isFinite(rawTime) || settingsTime > rawTime)
+}
+
+function mergeConnectionHashes(
+  rawConnection: Record<string, any> | null,
+  settingsConnection: Record<string, any> | null,
+): Record<string, any> | null {
+  if (!rawConnection && !settingsConnection) return null
+  if (!rawConnection) return { ...(settingsConnection || {}) }
+  if (!settingsConnection) return { ...rawConnection }
+
+  const merged: Record<string, any> = { ...rawConnection }
+  const settingsAreNewer = isNewerConnectionSettings(settingsConnection, rawConnection)
+
+  for (const [key, value] of Object.entries(settingsConnection)) {
+    const rawValue = merged[key]
+    const rawMissing = !hasConnectionValue(rawValue)
+    if (rawMissing || (settingsAreNewer && CONNECTION_SETTINGS_CANONICAL_FIELDS.has(key))) {
+      merged[key] = value
+    }
+  }
+
+  return merged
+}
+
 export async function getConnection(id: string): Promise<any | null> {
   await initRedis()
   const client = getClient()
-  const hash = await client.hgetall(`connection:${id}`)
-  return parseHash(hash)
+  const [rawHash, settingsHash] = await Promise.all([
+    client.hgetall(`connection:${id}`),
+    client.hgetall(`settings:connection:${id}`),
+  ])
+  const rawConnection = parseHash(rawHash)
+  const settingsConnection = parseHash(settingsHash)
+  return mergeConnectionHashes(rawConnection, settingsConnection)
 }
 
 // ──────────�������─────────────────────────────────────────────��───────────────────
@@ -2672,26 +2739,39 @@ export async function getAllConnections(): Promise<any[]> {
     try {
       await initRedis()
       const client = getClient()
-      const keys = await client.keys("connection:*")
+      const [rawKeys, settingsKeys] = await Promise.all([
+        client.keys("connection:*"),
+        client.keys("settings:connection:*"),
+      ])
 
       // Filter out special sibling keys up-front so we don't fan out HGETALLs
       // for them (reduces Redis roundtrips in large deployments).
-      const realKeys = keys.filter(
+      const realKeys = rawKeys.filter(
         (k) =>
           !k.includes(":settings:") &&
           !k.includes(":stats:") &&
           !k.includes(":logs:")
       )
+      const idSet = new Set<string>()
+      for (const key of realKeys) idSet.add(key.replace(/^connection:/, ""))
+      for (const key of settingsKeys) idSet.add(key.replace(/^settings:connection:/, ""))
 
-      // Parallelize HGETALL across all connection keys. Previously ran
-      // sequentially in a for-loop, which scaled linearly with connection count.
+      // Parallelize HGETALL across all connection ids and merge raw + settings
+      // hashes the same way getConnection(id) does. Production credential edits
+      // are often persisted under settings:connection:{id}; returning only the
+      // raw connection hash made QuickStart and live connector creation see old
+      // placeholder credentials and route orders through simulation.
       const hashes = await Promise.all(
-        realKeys.map(async (key) => {
+        Array.from(idSet).map(async (id) => {
           try {
-            return await client.hgetall(key)
+            const [rawHash, settingsHash] = await Promise.all([
+              client.hgetall(`connection:${id}`),
+              client.hgetall(`settings:connection:${id}`),
+            ])
+            return mergeConnectionHashes(parseHash(rawHash), parseHash(settingsHash))
           } catch (err) {
             console.warn(
-              `[v0] [redis-db] getAllConnections: hgetall failed for ${key}`,
+              `[v0] [redis-db] getAllConnections: hgetall failed for ${id}`,
               err instanceof Error ? err.message : err
             )
             return null
@@ -2701,7 +2781,6 @@ export async function getAllConnections(): Promise<any[]> {
 
       const connections = hashes
         .filter((h): h is Record<string, any> => !!h && Object.keys(h).length > 0)
-        .map(parseHash)
         .filter((conn) => {
           const id = String(conn?.id ?? "").trim()
           const name = String(conn?.name ?? "").trim()
