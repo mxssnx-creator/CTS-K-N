@@ -19,10 +19,17 @@ export async function POST() {
     const injectForConnection = async (connectionId: keyof typeof BASE_CONNECTION_CREDENTIALS) => {
       const { apiKey, apiSecret } = BASE_CONNECTION_CREDENTIALS[connectionId]
       const existing = await client.hgetall(`connection:${connectionId}`)
+      const existingSettings = await client.hgetall(`settings:connection:${connectionId}`).catch(() => ({} as Record<string, string>))
+      const effectiveKey = apiKey || existing?.api_key || existingSettings?.api_key || ""
+      const effectiveSecret = apiSecret || existing?.api_secret || existingSettings?.api_secret || ""
+      if (!effectiveKey || !effectiveSecret) {
+        results[connectionId] = "Skipped: no credentials found in env or database"
+        return
+      }
       const dashboardEnabled = existing?.is_enabled_dashboard === "1" || existing?.is_enabled_dashboard === "true"
       await client.hset(`connection:${connectionId}`, {
-        api_key: apiKey,
-        api_secret: apiSecret,
+        api_key: effectiveKey,
+        api_secret: effectiveSecret,
         // Preserve the operator-selected exchange environment. Forcing BingX
         // to testnet here made production credential injection silently route
         // later live orders away from the intended mainnet account.
@@ -35,6 +42,11 @@ export async function POST() {
         updated_at: new Date().toISOString(),
       })
       await client.sadd("connections", connectionId)
+      await client.hset(`settings:connection:${connectionId}`, {
+        api_key: effectiveKey,
+        api_secret: effectiveSecret,
+        updated_at: new Date().toISOString(),
+      })
       results[connectionId] = "Credentials injected successfully"
     }
 
@@ -47,7 +59,7 @@ export async function POST() {
     
     return NextResponse.json({
       success: true,
-      message: `Predefined credentials injection complete: ${successCount}/4 exchanges configured`,
+      message: `Predefined credentials injection complete: ${successCount}/${Object.keys(results).length} exchanges configured`,
       results,
       timestamp: new Date().toISOString(),
     })
@@ -74,9 +86,14 @@ export async function GET() {
     // Check which connections have credentials in database
     const dbStatus: Record<string, boolean> = {}
     for (const connId of ["bingx-x01", "pionex-x01", "orangex-x01"]) {
-      const conn = await client.hgetall(`connection:${connId}`)
-      const hasKey = !!(conn?.api_key && conn.api_key.length > 10)
-      const hasSecret = !!(conn?.api_secret && conn.api_secret.length > 10)
+      const [conn, settingsConn] = await Promise.all([
+        client.hgetall(`connection:${connId}`),
+        client.hgetall(`settings:connection:${connId}`).catch(() => ({} as Record<string, string>)),
+      ])
+      const key = conn?.api_key || settingsConn?.api_key || ""
+      const secret = conn?.api_secret || settingsConn?.api_secret || ""
+      const hasKey = !!(key && key.length > 10)
+      const hasSecret = !!(secret && secret.length > 10)
       dbStatus[connId] = hasKey && hasSecret
     }
     

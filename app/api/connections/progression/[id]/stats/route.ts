@@ -271,11 +271,18 @@ export async function GET(
     // Primary: prehistoric:{connId} hash (written by trackPrehistoricStats)
     // Secondary: progression hash mirror fields
     // Tertiary: trade_engine_state fields (config_set_*)
+    const engineProgressSubCurrent = ep?.phase === "prehistoric_data" ? n(ep?.sub_current) : 0
     const historicSymbolsProcessed = pick(
       n(prehistoricHash.symbols_processed),
       prehistoricSymbolCount,
       n(progHash.prehistoric_symbols_processed_count),
-      n(es.config_set_symbols_processed)
+      n(es.config_set_symbols_processed),
+      // Last-resort live progress fallback. During prehistoric processing the
+      // per-symbol worker updates engine_progression:{id}.sub_current before
+      // some hash mirrors are visible to this stats route. Reading that value
+      // prevents the dashboard from falsely showing prehistoric 0/N while the
+      // worker is actively advancing through symbols.
+      engineProgressSubCurrent
     )
 
     // Total user-selected symbols: canonical source is
@@ -304,12 +311,16 @@ export async function GET(
     const prehistoricTotalIsActive = !activeSelectionEpoch || !prehistoricSelectionEpoch || activeSelectionEpoch === prehistoricSelectionEpoch
     const canonicalSelectedSymbols = normalizeSymbolList(es.selected_symbols)
     const activeQuickstartTotal = Math.max(quickstartCount, quickstartSymbols.length)
+    const engineProgressSubTotal = ep?.phase === "prehistoric_data" ? n(ep?.sub_total) : 0
     const canonicalCurrentTotal = activeQuickstartTotal > 0
       ? activeQuickstartTotal
       : Math.max(
         n(es.config_set_symbols_total),
         canonicalSelectedSymbols.length,
         symbolsFromArray,
+        // Same fallback as sub_current above: this is the active worker-owned
+        // denominator for the current prehistoric run.
+        engineProgressSubTotal,
       )
     const historicSymbolsTotal = canonicalCurrentTotal > 0
       ? Math.max(Math.min(historicSymbolsProcessed, canonicalCurrentTotal), canonicalCurrentTotal)
