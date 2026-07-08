@@ -72,6 +72,7 @@ export async function createExchangeConnector(
       !/PLACEHOLDER|00998877|^test/i.test(keyStr) &&
       !/PLACEHOLDER|00998877|^test/i.test(secretStr)
     const shouldUseSim = !hasRealCredentials || (forceSim && normalizedExchange !== "bingx")
+    const shouldUseSim = keyStr.includes("PLACEHOLDER") || keyStr === "" || forceSim
     if (shouldUseSim && (!isProduction || allowProdSim)) {
       const { SimulatedConnector } = await import("./simulated-connector")
       return new SimulatedConnector(credentials, "simulated")
