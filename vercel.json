@@ -26,4 +26,6 @@
   },
   "installCommand": "corepack enable && corepack prepare pnpm@10.28.1 --activate && pnpm install --frozen-lockfile",
   "buildCommand": "corepack enable && corepack prepare pnpm@10.28.1 --activate && pnpm run vercel-build"
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm run vercel-build"
 }
