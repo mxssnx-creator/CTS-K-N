@@ -143,7 +143,7 @@ export async function recoordinateAfterSettingsChange(
     "variantDcaEnabled",
     "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
     "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
-    "blockVolumeRatio", "blockMaxStack",
+    "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled",
     // Minimal step count affects pseudo position placement
     "minimal_step_count", "minimalStepCount", "minStep",
     // Eval thresholds affect strategy/set progression
