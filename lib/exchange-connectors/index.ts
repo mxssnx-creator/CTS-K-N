@@ -46,7 +46,6 @@ export async function createExchangeConnector(
   const supported = EXCHANGE_API_TYPES[normalizedExchange]
   
   // Convert API type to what this exchange accepts
-  const originalType = credentials.apiType
   credentials.apiType = convertApiType(credentials.apiType, supported)
   
   // Validate
@@ -72,7 +71,6 @@ export async function createExchangeConnector(
       !/PLACEHOLDER|00998877|^test/i.test(keyStr) &&
       !/PLACEHOLDER|00998877|^test/i.test(secretStr)
     const shouldUseSim = !hasRealCredentials || (forceSim && normalizedExchange !== "bingx")
-    const shouldUseSim = keyStr.includes("PLACEHOLDER") || keyStr === "" || forceSim
     if (shouldUseSim && (!isProduction || allowProdSim)) {
       const { SimulatedConnector } = await import("./simulated-connector")
       return new SimulatedConnector(credentials, "simulated")
