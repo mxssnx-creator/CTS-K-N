@@ -36,6 +36,9 @@ export default function InstallManager() {
   const [installing, setInstalling] = useState(false)
   const [installLog, setInstallLog] = useState<string[]>([])
   const [activeTab, setActiveTab] = useState("status")
+  const [remoteForm, setRemoteForm] = useState({ host: "", port: "22", username: "root", password: "", sshKey: "", repoUrl: "", branch: "main", installDir: "/opt/cts-k-n", appPort: "3002", redisUrl: "" })
+  const [remoteInstalling, setRemoteInstalling] = useState(false)
+  const [remoteLog, setRemoteLog] = useState<string[]>([])
   
   const loadStatus = async () => {
     setLoading(true)
@@ -190,6 +193,46 @@ export default function InstallManager() {
     }
   }
 
+  const updateRemoteForm = (key: keyof typeof remoteForm, value: string) => {
+    setRemoteForm(prev => ({ ...prev, [key]: value }))
+  }
+
+  const runRemoteInstall = async () => {
+    if (!remoteForm.host.trim() || !remoteForm.username.trim()) {
+      toast.error("Remote host and SSH username are required")
+      return
+    }
+
+    setRemoteInstalling(true)
+    setRemoteLog(["Connecting over SSH and starting production deployment..."])
+
+    try {
+      const response = await fetch("/api/install/remote-postgres", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...remoteForm,
+          port: Number(remoteForm.port || 22),
+          appPort: Number(remoteForm.appPort || 3002),
+          repoUrl: remoteForm.repoUrl || undefined,
+          redisUrl: remoteForm.redisUrl || undefined,
+          password: remoteForm.password || undefined,
+          sshKey: remoteForm.sshKey || undefined,
+        }),
+      })
+      const data = await response.json()
+      setRemoteLog(prev => [...prev, ...(data.logs || []), data.message || data.error || "Remote install finished"])
+      if (!response.ok || !data.success) throw new Error(data.error || "Remote install failed")
+      toast.success(`Remote service started: ${data.url}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Remote install failed"
+      setRemoteLog(prev => [...prev, `✗ ${message}`])
+      toast.error(message)
+    } finally {
+      setRemoteInstalling(false)
+    }
+  }
+
   useEffect(() => {
     loadStatus()
   }, [])
@@ -236,9 +279,10 @@ export default function InstallManager() {
   return (
     <div className="space-y-6">
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-2">
+        <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="status">Status & Install</TabsTrigger>
           <TabsTrigger value="configure">Database Configuration</TabsTrigger>
+          <TabsTrigger value="remote">Remote SSH Install</TabsTrigger>
         </TabsList>
 
         <TabsContent value="status">
@@ -575,54 +619,81 @@ export default function InstallManager() {
           </Card>
         </TabsContent>
 
-        {/* Configuration Tab */}
-        <TabsContent value="configure" className="space-y-4">
+        {/* Remote SSH Installation Tab */}
+        <TabsContent value="remote" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>Redis Configuration</CardTitle>
-              <CardDescription>Configure Redis connection for production deployment</CardDescription>
+              <CardTitle>Install Remote on Server through SSH</CardTitle>
+              <CardDescription>Deploy, build, install a systemd service, start it, and keep it running continuously on a remote Linux server.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-                <p className="text-sm text-blue-900 dark:text-blue-100">
-                  <strong>Note:</strong> Redis is the only database engine supported. For production, use Upstash Redis or deploy your own Redis instance.
-                </p>
+              <Alert>
+                <Server className="h-4 w-4" />
+                <AlertDescription className="text-xs">
+                  The remote server needs sudo rights. SSH private-key auth is recommended; password auth requires sshpass on this web server.
+                </AlertDescription>
+              </Alert>
+
+              <div className="grid md:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="remote-host">Host</Label>
+                  <Input id="remote-host" value={remoteForm.host} onChange={(e) => updateRemoteForm("host", e.target.value)} placeholder="203.0.113.10" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="remote-port">SSH Port</Label>
+                  <Input id="remote-port" value={remoteForm.port} onChange={(e) => updateRemoteForm("port", e.target.value)} placeholder="22" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="remote-user">SSH Username</Label>
+                  <Input id="remote-user" value={remoteForm.username} onChange={(e) => updateRemoteForm("username", e.target.value)} placeholder="root" />
+                </div>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="remote-password">SSH Password (optional)</Label>
+                  <Input id="remote-password" type="password" value={remoteForm.password} onChange={(e) => updateRemoteForm("password", e.target.value)} placeholder="Use only when sshpass is available" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="remote-key">SSH Private Key (recommended)</Label>
+                  <textarea id="remote-key" className="min-h-24 w-full rounded-md border bg-background px-3 py-2 text-xs font-mono" value={remoteForm.sshKey} onChange={(e) => updateRemoteForm("sshKey", e.target.value)} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" />
+                </div>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="remote-repo">Repository URL</Label>
+                  <Input id="remote-repo" value={remoteForm.repoUrl} onChange={(e) => updateRemoteForm("repoUrl", e.target.value)} placeholder="https://github.com/your-org/CTS-K-N.git" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="remote-branch">Branch</Label>
+                  <Input id="remote-branch" value={remoteForm.branch} onChange={(e) => updateRemoteForm("branch", e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="remote-dir">Install Directory</Label>
+                  <Input id="remote-dir" value={remoteForm.installDir} onChange={(e) => updateRemoteForm("installDir", e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="remote-app-port">App Port</Label>
+                  <Input id="remote-app-port" value={remoteForm.appPort} onChange={(e) => updateRemoteForm("appPort", e.target.value)} />
+                </div>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="redis-url">Redis URL</Label>
-                <Input
-                  id="redis-url"
-                  placeholder="redis://localhost:6379 or rediss://..."
-                  defaultValue={process.env.REDIS_URL || ""}
-                  className="font-mono text-xs"
-                />
+                <Label htmlFor="remote-redis">Redis URL</Label>
+                <Input id="remote-redis" value={remoteForm.redisUrl} onChange={(e) => updateRemoteForm("redisUrl", e.target.value)} placeholder="redis://127.0.0.1:6379" />
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="redis-password">Redis Password (Optional)</Label>
-                <Input
-                  id="redis-password"
-                  type="password"
-                  placeholder="Leave empty if no password required"
-                  className="font-mono text-xs"
-                />
-              </div>
+              <Button onClick={runRemoteInstall} disabled={remoteInstalling} className="w-full">
+                {remoteInstalling ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Server className="h-4 w-4 mr-2" />}
+                {remoteInstalling ? "Installing and starting remote service..." : "Install Remote on Server through SSH"}
+              </Button>
 
-              <div className="flex gap-2">
-                <Button className="flex-1">
-                  <Database className="h-4 w-4 mr-2" />
-                  Test Connection
-                </Button>
-                <Button variant="outline" className="flex-1">
-                  Save Configuration
-                </Button>
-              </div>
-
-              <div className="text-sm text-muted-foreground space-y-2">
-                <p><strong>Development:</strong> Leave Redis URL empty to use in-memory fallback store.</p>
-                <p><strong>Production:</strong> Provide a valid Redis connection string for persistent data storage.</p>
-              </div>
+              {remoteLog.length > 0 && (
+                <div className="bg-muted/50 p-4 rounded-lg space-y-1 text-xs font-mono max-h-72 overflow-y-auto">
+                  {remoteLog.map((line, i) => <div key={i} className={line.startsWith("✗") ? "text-red-600" : line.includes("running") || line.includes("completed") ? "text-green-600" : ""}>{line}</div>)}
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
