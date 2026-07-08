@@ -46,7 +46,6 @@ export async function createExchangeConnector(
   const supported = EXCHANGE_API_TYPES[normalizedExchange]
   
   // Convert API type to what this exchange accepts
-  const originalType = credentials.apiType
   credentials.apiType = convertApiType(credentials.apiType, supported)
   
   // Validate
