@@ -3481,6 +3481,11 @@ async function ensureDatabaseHealthMetadata(client: any): Promise<Record<string,
   return existing
 }
 
+export async function ensureMigrationHealthMetadata(): Promise<Record<string, string>> {
+  await ensureCoreRedis()
+  return ensureDatabaseHealthMetadata(getRedisClient())
+}
+
 const BASE_CONNECTION_CONFIG: Array<{
   id: string
   name: string
@@ -4460,12 +4465,20 @@ export async function getMigrationStatus(): Promise<any> {
     const versionStr = await client.get("_schema_version")
     const currentVersion = versionStr ? parseInt(versionStr as string) : 0
     const { latestVersion, totalMigrations, sequential } = getMigrationBundleHealth()
-    const databaseHealth = ((await client.hgetall("system:database:health").catch(() => ({}))) || {}) as Record<string, string>
-    const healthUpToDate =
+    let databaseHealth = ((await client.hgetall("system:database:health").catch(() => ({}))) || {}) as Record<string, string>
+    let healthUpToDate =
       databaseHealth.schema_version === String(latestVersion) &&
       databaseHealth.migrations_bundle_version === String(latestVersion) &&
       databaseHealth.total_migrations === String(totalMigrations) &&
       databaseHealth.migrations_sequential === (sequential ? "1" : "0")
+    if (currentVersion === latestVersion && !healthUpToDate) {
+      databaseHealth = await ensureDatabaseHealthMetadata(client)
+      healthUpToDate =
+        databaseHealth.schema_version === String(latestVersion) &&
+        databaseHealth.migrations_bundle_version === String(latestVersion) &&
+        databaseHealth.total_migrations === String(totalMigrations) &&
+        databaseHealth.migrations_sequential === (sequential ? "1" : "0")
+    }
     return {
       currentVersion,
       latestVersion,
