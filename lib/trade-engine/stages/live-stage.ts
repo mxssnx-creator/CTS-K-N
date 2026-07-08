@@ -3132,12 +3132,12 @@ export async function executeLivePosition(
     // BingX's one-way-mode accounts auto-retry without positionSide if the
     // exchange rejects it (code 80014), so this is safe for both modes.
     //
-    // ── CRITICAL: Re-check is_live_trade + is_testnet gate RIGHT BEFORE order placement ──────
-    // The flag is checked once at entry (line 1959), but if the operator toggles
-    // Control Orders off during preflight, we must catch it here before sending
-    // the order to the exchange. This is a defensive second gate.
-    // ALSO check if the connection is pointing to a testnet exchange to prevent
-    // accidental real orders on testnet accounts (critical safety guard).
+    // ── CRITICAL: Re-check is_live_trade RIGHT BEFORE order placement ──────
+    // The flag is checked once at entry, but if the operator toggles Live Trade
+    // off during preflight, we must catch it here before sending the order to
+    // the exchange. This is a defensive second gate. Testnet is still an
+    // exchange environment, so do NOT block it here; the connector routes to
+    // the testnet endpoint when is_testnet is true.
     const { getConnection: reCheckConn } = await import("@/lib/redis-db")
     const { isTruthyFlag: reCheckTruthy } = await import("@/lib/connection-state-utils")
     const freshSettings = (await reCheckConn(connectionId)) || {}
@@ -3151,23 +3151,16 @@ export async function executeLivePosition(
       (reCheckTruthy(freshSettings.is_live_trade) ||
         reCheckTruthy(freshSettings.live_trade_enabled))
     
-    // CRITICAL: Prevent order placement on testnet connections
     const isTestnetConnection = reCheckTruthy(freshSettings.is_testnet)
     if (isTestnetConnection) {
-      livePosition.status = "rejected"
-      livePosition.statusReason =
-        `Testnet connection detected — live order placement blocked for safety. Use a production exchange connection for real trading.`
-      pushStep(livePosition, "entry", false, livePosition.statusReason)
-      await savePosition(livePosition)
-      await incrementMetric(connectionId, "live_orders_blocked_count")
+      pushStep(livePosition, "entry_environment", true, "testnet connection — routing order through testnet connector endpoint")
       await logProgressionEvent(
         connectionId,
         "live_trading",
-        "warning",
-        livePosition.statusReason,
+        "info",
+        "Live order proceeding on exchange testnet endpoint",
         { symbol: realPosition.symbol, direction: realPosition.direction, exchangeApi: freshSettings.exchange },
       ).catch(() => {})
-      return livePosition
     }
 
     if (!isStillLive) {

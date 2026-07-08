@@ -1239,6 +1239,19 @@ describe("requested regression guardrails", () => {
 
 
 
+  test("live exchange dispatch does not block testnet exchange positions", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const injector = read("app/api/system/inject-credentials/route.ts")
+    const liveTradeRoute = read("app/api/settings/connections/[id]/live-trade/route.ts")
+
+    expect(liveStage).toContain("testnet connection — routing order through testnet connector endpoint")
+    expect(liveStage).toContain("Live order proceeding on exchange testnet endpoint")
+    expect(liveStage).not.toContain("Testnet connection detected — live order placement blocked")
+    expect(injector).toContain("Preserve the operator-selected exchange environment")
+    expect(injector).not.toContain("connectionId === 'bingx-x01' ? \"1\"")
+    expect(liveTradeRoute).toContain("isTestnet: isTruthyFlag(connection.is_testnet)")
+  })
+
   test("live-stage system-close-only is per-connection cached and honors connection settings", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const cacheStart = liveStage.indexOf("const SYSTEM_CLOSE_TTL_MS")

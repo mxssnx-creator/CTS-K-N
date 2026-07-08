@@ -4,6 +4,7 @@ import { initRedis, getConnection, updateConnection, persistNow, getRedisClient 
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { parseBooleanInput, toRedisFlag } from "@/lib/boolean-utils"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { BASE_CONNECTION_CREDENTIALS } from "@/lib/base-connection-credentials"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
@@ -208,7 +209,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             apiSecret,
             apiType: connection.api_type,
             contractType: connection.contract_type,
-            isTestnet: connection.is_testnet === true || connection.is_testnet === "true",
+            isTestnet: isTruthyFlag(connection.is_testnet),
           })
           if (!connector) return
           const { syncWithExchange } = await import("@/lib/trade-engine/stages/live-stage")
