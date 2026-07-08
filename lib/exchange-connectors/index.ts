@@ -36,7 +36,13 @@ export async function createExchangeConnector(
   exchange: string,
   credentials: ExchangeCredentials
 ): Promise<BaseExchangeConnector> {
-  const normalizedExchange = exchange.toLowerCase().replace(/[^a-z]/g, "")
+  const rawExchange = String(exchange || "").toLowerCase()
+  let normalizedExchange = rawExchange.replace(/[^a-z]/g, "")
+  // Treat any BingX-labelled connection (e.g. "BingX X01", "bingx-main")
+  // as the real BingX connector. Production operators often name their base
+  // connection after the display label; falling through to the default branch
+  // could otherwise create a simulated connector in non-prod or fail in prod.
+  if (normalizedExchange.includes("bingx")) normalizedExchange = "bingx"
   const supported = EXCHANGE_API_TYPES[normalizedExchange]
   
   // Convert API type to what this exchange accepts
@@ -50,11 +56,23 @@ export async function createExchangeConnector(
     )
   }
 
-  // DEV/TEST: prefer simulated connector when API key is a placeholder or FORCE_SIMULATED set
+  // DEV/TEST: prefer simulated connector when API key is a placeholder or FORCE_SIMULATED set.
+  // Production must never silently swap a real exchange connector for simulation
+  // when real credentials are configured; that is how QuickStart ended up
+  // showing "sim" instead of placing live exchange orders.
   try {
     const forceSim = process.env.FORCE_SIMULATED === "1"
+    const allowProdSim = process.env.ALLOW_PROD_SIMULATED === "1"
+    const isProduction = process.env.NODE_ENV === "production"
     const keyStr = String(credentials.apiKey || "")
-    if (forceSim || keyStr.includes("PLACEHOLDER") || keyStr === "") {
+    const secretStr = String(credentials.apiSecret || "")
+    const hasRealCredentials =
+      keyStr.length >= 10 &&
+      secretStr.length >= 10 &&
+      !/PLACEHOLDER|00998877|^test/i.test(keyStr) &&
+      !/PLACEHOLDER|00998877|^test/i.test(secretStr)
+    const shouldUseSim = !hasRealCredentials || (forceSim && normalizedExchange !== "bingx")
+    if (shouldUseSim && (!isProduction || allowProdSim)) {
       const { SimulatedConnector } = await import("./simulated-connector")
       return new SimulatedConnector(credentials, "simulated")
     }
@@ -95,13 +113,18 @@ export async function createExchangeConnector(
       return new OKXConnector(credentials, "okx")
     }
     default:
-      // Unknown exchange — fallback to SimulatedConnector in test/dev environments
-      try {
-        const { SimulatedConnector } = await import("./simulated-connector")
-        return new SimulatedConnector(credentials, "simulated")
-      } catch {
-        throw new Error(`Unsupported exchange: ${exchange}. Supported exchanges: bybit, bingx, pionex, orangex, binance, okx`)
+      // Unknown exchange — fallback to SimulatedConnector only outside production.
+      // In production, fail closed so operators see the unsupported exchange
+      // instead of believing live exchange orders were placed.
+      if (process.env.NODE_ENV !== "production" || process.env.ALLOW_PROD_SIMULATED === "1") {
+        try {
+          const { SimulatedConnector } = await import("./simulated-connector")
+          return new SimulatedConnector(credentials, "simulated")
+        } catch {
+          // fall through to explicit unsupported error
+        }
       }
+      throw new Error(`Unsupported exchange: ${exchange}. Supported exchanges: bybit, bingx, pionex, orangex, binance, okx`)
   }
 }
 

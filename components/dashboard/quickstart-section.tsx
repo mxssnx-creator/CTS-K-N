@@ -1056,7 +1056,11 @@ export function QuickstartSection() {
   // zeros while the first polling fetch is in-flight (~3-5 s).
   useEffect(() => {
     try {
-      if (localStorage.getItem("qs:isRunning") === "1") setIsRunning(true)
+      // Do not restore qs:isRunning from localStorage. In production this stale
+      // UI-only flag can survive a previous session/deploy and make QuickStart
+      // look auto-started even when Redis/coordinator says stopped. fetchStats()
+      // below is the authoritative source and will set isRunning from server truth.
+      localStorage.removeItem("qs:isRunning")
       if (localStorage.getItem("qs:expanded") === "1") setExpanded(true)
       const sc = localStorage.getItem("qs:symbolCount")
       if (sc) {
@@ -1110,7 +1114,8 @@ export function QuickstartSection() {
   }, [symbolCount])
   useEffect(() => {
     if (!qsIsRunningReady.current) { qsIsRunningReady.current = true; return }
-    try { localStorage.setItem("qs:isRunning", isRunning ? "1" : "0") } catch {}
+    // Running state is server-authoritative; never persist it as a UI hint.
+    try { localStorage.removeItem("qs:isRunning") } catch {}
   }, [isRunning])
   useEffect(() => {
     if (!qsActiveConnReady.current) { qsActiveConnReady.current = true; return }

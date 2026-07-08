@@ -14,6 +14,21 @@ function toNumber(value: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
+function hasUsableExchangeCredentials(connection: any): boolean {
+  const key = String(connection?.api_key || connection?.apiKey || "")
+  const secret = String(connection?.api_secret || connection?.apiSecret || "")
+  if (key.length < 10 || secret.length < 10) return false
+  const banned = /PLACEHOLDER|00998877|^test/i
+  return !banned.test(key) && !banned.test(secret)
+}
+
+function normalizeQuickstartExchange(connection: any): string {
+  const raw = String(connection?.exchange || connection?.exchange_type || connection?.exchange_name || "bingx").toLowerCase()
+  const compact = raw.replace(/[^a-z]/g, "")
+  if (compact.includes("bingx") || String(connection?.id || "").toLowerCase().startsWith("bingx")) return "bingx"
+  return compact || raw || "bingx"
+}
+
 // RUNTIME FIX: Patch IndicationProcessor cache
 // This fixes the "Cannot read properties of undefined (reading 'get')" error
 function patchIndicationProcessorCaches(coordinator: any) {
@@ -128,37 +143,38 @@ export async function POST(request: Request) {
     // entirely. Simulated / template connections intentionally have no API
     // credentials — do not fall through to auto-discovery just because
     // credentials are absent when the caller explicitly picked a connection.
-    const isSimulated = connection &&
+    const isBingXConnection = connection && normalizeQuickstartExchange(connection) === "bingx"
+    const hasRequestedCredentials = connection ? hasUsableExchangeCredentials(connection) : false
+    const isSimulated = connection && !isBingXConnection &&
       (connection.connector_type === "simulated" ||
        connection.exchange_type === "simulated" ||
-       String(connection.api_key || "").length < 10)
-    if (!connection || (!isSimulated && !(connection.api_key && connection.api_secret &&
-        connection.api_key.length >= 10 && connection.api_secret.length >= 10))) {
+       !hasRequestedCredentials)
+    if (!connection || (!isSimulated && !hasRequestedCredentials)) {
       if (requestedConnectionId && connection) {
         console.log(`${LOG_PREFIX}: Requested connection ${requestedConnectionId} has no credentials — falling back to auto-discovery`)
       } else if (requestedConnectionId) {
         console.log(`${LOG_PREFIX}: Requested connection ${requestedConnectionId} not found — falling back to auto-discovery`)
       }
       connection = allConnections.find((c: any) => {
-      const exch = (c.exchange || "").toLowerCase()
-      const hasCredentials = !!(c.api_key && c.api_secret && c.api_key.length >= 10 && c.api_secret.length >= 10)
+      const exch = normalizeQuickstartExchange(c)
+      const hasCredentials = hasUsableExchangeCredentials(c)
       const isUserCreated = !(c.is_predefined === true || c.is_predefined === "1" || c.is_predefined === "true")
       return exch === "bingx" && isUserCreated && hasCredentials
     }) || allConnections.find((c: any) => {
-      const exch = (c.exchange || "").toLowerCase()
-      const hasCredentials = !!(c.api_key && c.api_secret && c.api_key.length >= 10 && c.api_secret.length >= 10)
+      const exch = normalizeQuickstartExchange(c)
+      const hasCredentials = hasUsableExchangeCredentials(c)
       const isUserCreated = !(c.is_predefined === true || c.is_predefined === "1" || c.is_predefined === "true")
       return false
     }) || allConnections.find((c: any) => {
-      const exch = (c.exchange || "").toLowerCase()
-      const hasCredentials = !!(c.api_key && c.api_secret && c.api_key.length >= 10 && c.api_secret.length >= 10)
+      const exch = normalizeQuickstartExchange(c)
+      const hasCredentials = hasUsableExchangeCredentials(c)
       return exch === "bingx" && hasCredentials
     }) || allConnections.find((c: any) => {
-      const exch = (c.exchange || "").toLowerCase()
-      const hasCredentials = !!(c.api_key && c.api_secret && c.api_key.length >= 10 && c.api_secret.length >= 10)
+      const exch = normalizeQuickstartExchange(c)
+      const hasCredentials = hasUsableExchangeCredentials(c)
       return false
     }) || allConnections.find((c: any) => {
-      const exch = (c.exchange || "").toLowerCase()
+      const exch = normalizeQuickstartExchange(c)
       // QuickStart startup relies on Main Connections assignment state.
       const isAssigned = c.is_assigned === "1" || c.is_assigned === true
       const isBase = exch === "bingx" || exch === "pionex" || exch === "orangex"
@@ -183,7 +199,7 @@ export async function POST(request: Request) {
             name: c.name,
             id: c.id,
             exchange: c.exchange,
-            hasCredentials: !!(c.api_key && c.api_secret && c.api_key.length >= 10),
+            hasCredentials: hasUsableExchangeCredentials(c),
             isMainAssigned: c.is_assigned === "1" || c.is_assigned === true,
           })),
           logs: await getProgressionLogs("global"),
@@ -192,28 +208,65 @@ export async function POST(request: Request) {
       )
     }
     
-    const hasCredentials = !!(connection.api_key && connection.api_secret && 
-      connection.api_key.length >= 10 && connection.api_secret.length >= 10)
+    const hasCredentials = hasUsableExchangeCredentials(connection)
     
-    const exchangeName = (connection.exchange || "").toLowerCase()
+    const exchangeName = normalizeQuickstartExchange(connection)
     const connectionId = connection.id
     console.log(`${LOG_PREFIX}: Found ${connection.name} (${connectionId}) on ${exchangeName}`)
     
     // DISABLE ACTION
     if (action === "disable") {
       console.log(`${LOG_PREFIX}: Disabling ${connection.name}...`)
+      const stopAt = new Date().toISOString()
+      let stopWarning = ""
+      try {
+        const coordinator = getGlobalTradeEngineCoordinator()
+        await coordinator.stopEngine(connectionId, { operatorRequested: true })
+        await client.hset("trade_engine:global", {
+          status: "stopped",
+          desired_status: "stopped",
+          operator_intent: "stopped",
+          actual_status: "stopped",
+          operator_stopped: "1",
+          operator_stopped_at: stopAt,
+          stopped_at: stopAt,
+          updated_at: stopAt,
+          coordinator_ready: "false",
+        }).catch(() => {})
+        await setSettings(`trade_engine_state:${connectionId}`, {
+          status: "stopped",
+          engineRunning: false,
+          stopped_at: stopAt,
+          updated_at: stopAt,
+        }).catch(() => {})
+        await setSettings(`engine_progression:${connectionId}`, {
+          phase: "stopped",
+          status: "stopped",
+          progress: 0,
+          detail: "Stopped by QuickStart",
+          updated_at: stopAt,
+        }).catch(() => {})
+      } catch (stopErr) {
+        stopWarning = stopErr instanceof Error ? stopErr.message : String(stopErr)
+        console.warn(`${LOG_PREFIX}: Stop engine warning during disable:`, stopErr)
+      }
+
       const disabled = {
         ...connection,
         is_dashboard_inserted: "0",
         is_enabled_dashboard: "0",
         is_assigned: "0",
         is_enabled: "0",
-        updated_at: new Date().toISOString(),
+        is_live_trade: "0",
+        live_trade_requested: "0",
+        live_trade_blocked_reason: "",
+        updated_at: stopAt,
       }
       await updateConnection(connectionId, disabled)
       
-      await logProgressionEvent(connectionId, "quickstart_disabled", "info", "Connection disabled via QuickStart", {
+      await logProgressionEvent(connectionId, "quickstart_disabled", stopWarning ? "warning" : "info", "Connection stopped via QuickStart", {
         connectionName: connection.name,
+        stopWarning: stopWarning || undefined,
       })
       
       console.log(`${LOG_PREFIX}: Disabled ${connection.name}`)
@@ -222,6 +275,8 @@ export async function POST(request: Request) {
       return NextResponse.json({
         success: true,
         action: "disable",
+        stopped: !stopWarning,
+        warning: stopWarning || undefined,
         connection: { id: connectionId, name: connection.name, exchange: exchangeName },
         logs: disableLogs,
         logsCount: disableLogs.length,
@@ -405,9 +460,13 @@ export async function POST(request: Request) {
     const symbolSelectionEpoch = `${Date.now()}:${Math.random().toString(36).slice(2)}`
 
     const liveTradeRequested = body.liveTrade !== false && body.is_live_trade !== false
-    const liveTradeEnabled = liveTradeRequested && hasCredentials && testPassed
+    // Production QuickStart should not silently fall back to paper/sim just
+    // because the lightweight connection test endpoint is flaky or rate-limited.
+    // Credentials are the real live-order gate; the live stage will still record
+    // exchange placement errors if the venue rejects the order.
+    const liveTradeEnabled = liveTradeRequested && hasCredentials
     const liveTradeBlockedReason = liveTradeRequested && !liveTradeEnabled
-      ? (hasCredentials ? `Connection test failed: ${testError || "exchange transport unavailable"}` : "No API credentials configured")
+      ? "No API credentials configured"
       : ""
 
     await logProgressionEvent(connectionId, "quickstart_symbols", "info", "Trading symbols configured", {

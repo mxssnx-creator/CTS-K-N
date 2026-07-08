@@ -2592,10 +2592,14 @@ export async function executeLivePosition(
     // are absent we deliberately fall through to the existing paper/simulation
     // branch instead of failing, so the connection still progresses safely.
     const hasValidLiveCredentials = (() => {
-      const key = connSettings?.api_key
-      const secret = connSettings?.api_secret
-      if (!key || String(key).length < 16) return false
-      if (!secret || String(secret).length < 16) return false
+      const key = connSettings?.api_key || connSettings?.apiKey
+      const secret = connSettings?.api_secret || connSettings?.apiSecret
+      // Keep this threshold aligned with QuickStart/live-trade routes. Some
+      // production exchange keys are shorter than 16 chars; treating them as
+      // invalid here made the live stage record simulated positions even though
+      // the operator had real credentials saved.
+      if (!key || String(key).length < 10) return false
+      if (!secret || String(secret).length < 10) return false
       const banned = /PLACEHOLDER|00998877|^test/i
       if (banned.test(String(key)) || banned.test(String(secret))) return false
       return true
