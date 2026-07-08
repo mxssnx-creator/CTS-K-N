@@ -202,18 +202,56 @@ export async function POST(request: Request) {
     // DISABLE ACTION
     if (action === "disable") {
       console.log(`${LOG_PREFIX}: Disabling ${connection.name}...`)
+      const stopAt = new Date().toISOString()
+      let stopWarning = ""
+      try {
+        const coordinator = getGlobalTradeEngineCoordinator()
+        await coordinator.stopEngine(connectionId, { operatorRequested: true })
+        await client.hset("trade_engine:global", {
+          status: "stopped",
+          desired_status: "stopped",
+          operator_intent: "stopped",
+          actual_status: "stopped",
+          operator_stopped: "1",
+          operator_stopped_at: stopAt,
+          stopped_at: stopAt,
+          updated_at: stopAt,
+          coordinator_ready: "false",
+        }).catch(() => {})
+        await setSettings(`trade_engine_state:${connectionId}`, {
+          status: "stopped",
+          engineRunning: false,
+          stopped_at: stopAt,
+          updated_at: stopAt,
+        }).catch(() => {})
+        await setSettings(`engine_progression:${connectionId}`, {
+          phase: "stopped",
+          status: "stopped",
+          progress: 0,
+          detail: "Stopped by QuickStart",
+          updated_at: stopAt,
+        }).catch(() => {})
+      } catch (stopErr) {
+        stopWarning = stopErr instanceof Error ? stopErr.message : String(stopErr)
+        console.warn(`${LOG_PREFIX}: Stop engine warning during disable:`, stopErr)
+      }
+
       const disabled = {
         ...connection,
         is_dashboard_inserted: "0",
         is_enabled_dashboard: "0",
         is_assigned: "0",
         is_enabled: "0",
-        updated_at: new Date().toISOString(),
+        is_live_trade: "0",
+        live_trade_requested: "0",
+        live_trade_blocked_reason: "",
+        updated_at: stopAt,
       }
       await updateConnection(connectionId, disabled)
       
-      await logProgressionEvent(connectionId, "quickstart_disabled", "info", "Connection disabled via QuickStart", {
+      await logProgressionEvent(connectionId, "quickstart_disabled", stopWarning ? "warning" : "info", "Connection stopped via QuickStart", {
         connectionName: connection.name,
+        stopWarning: stopWarning || undefined,
       })
       
       console.log(`${LOG_PREFIX}: Disabled ${connection.name}`)
@@ -222,6 +260,8 @@ export async function POST(request: Request) {
       return NextResponse.json({
         success: true,
         action: "disable",
+        stopped: !stopWarning,
+        warning: stopWarning || undefined,
         connection: { id: connectionId, name: connection.name, exchange: exchangeName },
         logs: disableLogs,
         logsCount: disableLogs.length,
@@ -405,9 +445,13 @@ export async function POST(request: Request) {
     const symbolSelectionEpoch = `${Date.now()}:${Math.random().toString(36).slice(2)}`
 
     const liveTradeRequested = body.liveTrade !== false && body.is_live_trade !== false
-    const liveTradeEnabled = liveTradeRequested && hasCredentials && testPassed
+    // Production QuickStart should not silently fall back to paper/sim just
+    // because the lightweight connection test endpoint is flaky or rate-limited.
+    // Credentials are the real live-order gate; the live stage will still record
+    // exchange placement errors if the venue rejects the order.
+    const liveTradeEnabled = liveTradeRequested && hasCredentials
     const liveTradeBlockedReason = liveTradeRequested && !liveTradeEnabled
-      ? (hasCredentials ? `Connection test failed: ${testError || "exchange transport unavailable"}` : "No API credentials configured")
+      ? "No API credentials configured"
       : ""
 
     await logProgressionEvent(connectionId, "quickstart_symbols", "info", "Trading symbols configured", {
