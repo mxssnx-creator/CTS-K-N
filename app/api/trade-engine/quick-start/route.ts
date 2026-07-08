@@ -114,6 +114,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}))
     const action = body.action || "enable"
+    const liveTradeRequested = body.liveTrade !== false && body.is_live_trade !== false
     
     await initRedis()
     const client = getRedisClient()
@@ -151,6 +152,15 @@ export async function POST(request: Request) {
     const canUseRequestedConnection = (c: any) => {
       if (!c) return false
       if (hasUsableExchangeCredentials(c)) return true
+      // In production live-trade mode, a credentialless simulated/template
+      // selection must not become the active QuickStart connection unless the
+      // operator explicitly allows production simulation. Otherwise a stale UI
+      // selection can leave the engine running in paper mode while the operator
+      // expects real exchange orders.
+      if (isExplicitSimulatedConnection(c)) {
+        return !liveTradeRequested || process.env.ALLOW_PROD_SIMULATED === "1" || process.env.NODE_ENV !== "production"
+      }
+      return normalizeQuickstartExchange(c) !== "bingx" && !liveTradeRequested
       if (isExplicitSimulatedConnection(c)) return true
       return normalizeQuickstartExchange(c) !== "bingx"
     }
@@ -465,7 +475,6 @@ export async function POST(request: Request) {
 
     const symbolSelectionEpoch = `${Date.now()}:${Math.random().toString(36).slice(2)}`
 
-    const liveTradeRequested = body.liveTrade !== false && body.is_live_trade !== false
     // Production QuickStart should not silently fall back to paper/sim just
     // because the lightweight connection test endpoint is flaky or rate-limited.
     // Credentials are the real live-order gate; the live stage will still record
