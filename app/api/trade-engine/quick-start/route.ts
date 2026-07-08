@@ -14,6 +14,21 @@ function toNumber(value: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
+function hasUsableExchangeCredentials(connection: any): boolean {
+  const key = String(connection?.api_key || connection?.apiKey || "")
+  const secret = String(connection?.api_secret || connection?.apiSecret || "")
+  if (key.length < 10 || secret.length < 10) return false
+  const banned = /PLACEHOLDER|00998877|^test/i
+  return !banned.test(key) && !banned.test(secret)
+}
+
+function normalizeQuickstartExchange(connection: any): string {
+  const raw = String(connection?.exchange || connection?.exchange_type || connection?.exchange_name || "bingx").toLowerCase()
+  const compact = raw.replace(/[^a-z]/g, "")
+  if (compact.includes("bingx") || String(connection?.id || "").toLowerCase().startsWith("bingx")) return "bingx"
+  return compact || raw || "bingx"
+}
+
 // RUNTIME FIX: Patch IndicationProcessor cache
 // This fixes the "Cannot read properties of undefined (reading 'get')" error
 function patchIndicationProcessorCaches(coordinator: any) {
@@ -128,37 +143,38 @@ export async function POST(request: Request) {
     // entirely. Simulated / template connections intentionally have no API
     // credentials — do not fall through to auto-discovery just because
     // credentials are absent when the caller explicitly picked a connection.
-    const isSimulated = connection &&
+    const isBingXConnection = connection && normalizeQuickstartExchange(connection) === "bingx"
+    const hasRequestedCredentials = connection ? hasUsableExchangeCredentials(connection) : false
+    const isSimulated = connection && !isBingXConnection &&
       (connection.connector_type === "simulated" ||
        connection.exchange_type === "simulated" ||
-       String(connection.api_key || "").length < 10)
-    if (!connection || (!isSimulated && !(connection.api_key && connection.api_secret &&
-        connection.api_key.length >= 10 && connection.api_secret.length >= 10))) {
+       !hasRequestedCredentials)
+    if (!connection || (!isSimulated && !hasRequestedCredentials)) {
       if (requestedConnectionId && connection) {
         console.log(`${LOG_PREFIX}: Requested connection ${requestedConnectionId} has no credentials — falling back to auto-discovery`)
       } else if (requestedConnectionId) {
         console.log(`${LOG_PREFIX}: Requested connection ${requestedConnectionId} not found — falling back to auto-discovery`)
       }
       connection = allConnections.find((c: any) => {
-      const exch = (c.exchange || "").toLowerCase()
-      const hasCredentials = !!(c.api_key && c.api_secret && c.api_key.length >= 10 && c.api_secret.length >= 10)
+      const exch = normalizeQuickstartExchange(c)
+      const hasCredentials = hasUsableExchangeCredentials(c)
       const isUserCreated = !(c.is_predefined === true || c.is_predefined === "1" || c.is_predefined === "true")
       return exch === "bingx" && isUserCreated && hasCredentials
     }) || allConnections.find((c: any) => {
-      const exch = (c.exchange || "").toLowerCase()
-      const hasCredentials = !!(c.api_key && c.api_secret && c.api_key.length >= 10 && c.api_secret.length >= 10)
+      const exch = normalizeQuickstartExchange(c)
+      const hasCredentials = hasUsableExchangeCredentials(c)
       const isUserCreated = !(c.is_predefined === true || c.is_predefined === "1" || c.is_predefined === "true")
       return false
     }) || allConnections.find((c: any) => {
-      const exch = (c.exchange || "").toLowerCase()
-      const hasCredentials = !!(c.api_key && c.api_secret && c.api_key.length >= 10 && c.api_secret.length >= 10)
+      const exch = normalizeQuickstartExchange(c)
+      const hasCredentials = hasUsableExchangeCredentials(c)
       return exch === "bingx" && hasCredentials
     }) || allConnections.find((c: any) => {
-      const exch = (c.exchange || "").toLowerCase()
-      const hasCredentials = !!(c.api_key && c.api_secret && c.api_key.length >= 10 && c.api_secret.length >= 10)
+      const exch = normalizeQuickstartExchange(c)
+      const hasCredentials = hasUsableExchangeCredentials(c)
       return false
     }) || allConnections.find((c: any) => {
-      const exch = (c.exchange || "").toLowerCase()
+      const exch = normalizeQuickstartExchange(c)
       // QuickStart startup relies on Main Connections assignment state.
       const isAssigned = c.is_assigned === "1" || c.is_assigned === true
       const isBase = exch === "bingx" || exch === "pionex" || exch === "orangex"
@@ -183,7 +199,7 @@ export async function POST(request: Request) {
             name: c.name,
             id: c.id,
             exchange: c.exchange,
-            hasCredentials: !!(c.api_key && c.api_secret && c.api_key.length >= 10),
+            hasCredentials: hasUsableExchangeCredentials(c),
             isMainAssigned: c.is_assigned === "1" || c.is_assigned === true,
           })),
           logs: await getProgressionLogs("global"),
@@ -192,10 +208,9 @@ export async function POST(request: Request) {
       )
     }
     
-    const hasCredentials = !!(connection.api_key && connection.api_secret && 
-      connection.api_key.length >= 10 && connection.api_secret.length >= 10)
+    const hasCredentials = hasUsableExchangeCredentials(connection)
     
-    const exchangeName = (connection.exchange || "").toLowerCase()
+    const exchangeName = normalizeQuickstartExchange(connection)
     const connectionId = connection.id
     console.log(`${LOG_PREFIX}: Found ${connection.name} (${connectionId}) on ${exchangeName}`)
     

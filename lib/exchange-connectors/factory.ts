@@ -26,6 +26,15 @@ export class ExchangeConnectorFactory {
     return ExchangeConnectorFactory.getInstance().connectors.get(connectionId) || null
   }
   
+  private resolveExchangeName(connection: Connection): string {
+    const raw = String(connection.exchange || "")
+    const compact = raw.toLowerCase().replace(/[^a-z]/g, "")
+    if (compact.includes("bingx") || String(connection.id || "").toLowerCase().startsWith("bingx")) {
+      return "bingx"
+    }
+    return raw
+  }
+
   private buildCredentials(connection: Connection): ExchangeCredentials {
     return {
       apiKey: connection.api_key || "",
@@ -53,7 +62,7 @@ export class ExchangeConnectorFactory {
       position_mode: connection.position_mode || "",
       connection_method: connection.connection_method || "",
       connection_library: connection.connection_library || "",
-      exchange: connection.exchange || "",
+      exchange: this.resolveExchangeName(connection) || "",
     })
   }
 
@@ -63,7 +72,7 @@ export class ExchangeConnectorFactory {
       const fingerprint = this.buildFingerprint(connection)
       
       try {
-        const connector = await createExchangeConnector(connection.exchange, credentials)
+        const connector = await createExchangeConnector(this.resolveExchangeName(connection), credentials)
         this.connectors.set(connection.id, connector)
         this.connectorFingerprints.set(connection.id, fingerprint)
         return connector

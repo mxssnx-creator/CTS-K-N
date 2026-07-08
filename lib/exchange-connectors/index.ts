@@ -36,7 +36,13 @@ export async function createExchangeConnector(
   exchange: string,
   credentials: ExchangeCredentials
 ): Promise<BaseExchangeConnector> {
-  const normalizedExchange = exchange.toLowerCase().replace(/[^a-z]/g, "")
+  const rawExchange = String(exchange || "").toLowerCase()
+  let normalizedExchange = rawExchange.replace(/[^a-z]/g, "")
+  // Treat any BingX-labelled connection (e.g. "BingX X01", "bingx-main")
+  // as the real BingX connector. Production operators often name their base
+  // connection after the display label; falling through to the default branch
+  // could otherwise create a simulated connector in non-prod or fail in prod.
+  if (normalizedExchange.includes("bingx")) normalizedExchange = "bingx"
   const supported = EXCHANGE_API_TYPES[normalizedExchange]
   
   // Convert API type to what this exchange accepts
@@ -59,6 +65,13 @@ export async function createExchangeConnector(
     const allowProdSim = process.env.ALLOW_PROD_SIMULATED === "1"
     const isProduction = process.env.NODE_ENV === "production"
     const keyStr = String(credentials.apiKey || "")
+    const secretStr = String(credentials.apiSecret || "")
+    const hasRealCredentials =
+      keyStr.length >= 10 &&
+      secretStr.length >= 10 &&
+      !/PLACEHOLDER|00998877|^test/i.test(keyStr) &&
+      !/PLACEHOLDER|00998877|^test/i.test(secretStr)
+    const shouldUseSim = !hasRealCredentials || (forceSim && normalizedExchange !== "bingx")
     const shouldUseSim = keyStr.includes("PLACEHOLDER") || keyStr === "" || forceSim
     if (shouldUseSim && (!isProduction || allowProdSim)) {
       const { SimulatedConnector } = await import("./simulated-connector")
