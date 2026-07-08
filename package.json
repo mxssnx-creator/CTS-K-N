@@ -23,11 +23,13 @@
     "post-deploy-verify": "bash scripts/post-deploy-verify.sh",
     "deploy:local": "vercel",
     "deploy:prod": "vercel --prod",
-    "prebuild": "node scripts/verify-source-syntax.mjs && rm -rf .next",
-    "prevercel-build": "node scripts/verify-source-syntax.mjs && rm -rf .next",
+    "prebuild": "node scripts/verify-source-syntax.mjs && rm -rf \"${NEXT_DIST_DIR:-.next}\"",
+    "prevercel-build": "node scripts/verify-source-syntax.mjs && rm -rf \"${NEXT_DIST_DIR:-.next}\"",
     "setup:github-cli": "bash scripts/setup-github-cli.sh",
     "maintain:github-origin": "bash scripts/maintain-github-origin.sh",
-    "test:volatile-cleanup": "node scripts/verify-volatile-cleanup.mjs"
+    "test:volatile-cleanup": "node scripts/verify-volatile-cleanup.mjs",
+    "postbuild": "node scripts/normalize-next-env.mjs",
+    "postvercel-build": "node scripts/normalize-next-env.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

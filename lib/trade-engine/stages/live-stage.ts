@@ -22,7 +22,7 @@
  * records a "simulated" live position without touching the exchange.
  */
 
-import { getConnection, getRedisClient, initRedis, setSettings } from "@/lib/redis-db"
+import { getAppSettings, getConnection, getRedisClient, initRedis, setSettings } from "@/lib/redis-db"
 import { nanoid } from "@/lib/trade-engine/pseudo-position-manager"
 import { getVenueMinQty } from "@/lib/exchange-min-qty"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
@@ -1864,37 +1864,48 @@ const TRAILING_REARM_MS = 5_000
 // within one reconcile cycle, long enough to collapse a whole burst
 // of position-level calls into one Redis round-trip.
 const SYSTEM_CLOSE_TTL_MS = 2000
-let _systemCloseCacheValue: boolean | null = null
-let _systemCloseCacheAt = 0
-let _systemCloseInflight: Promise<boolean> | null = null
+const systemCloseCacheByConnection = new Map<string, { value: boolean; at: number; inflight?: Promise<boolean> }>()
 
-async function getCachedSystemCloseOnly(): Promise<boolean> {
+function parseSystemCloseFlag(value: unknown): boolean {
+  return value === true || value === "true" || value === "1" || value === 1
+}
+
+async function getCachedSystemCloseOnly(connectionId: string): Promise<boolean> {
   const now = Date.now()
-  if (_systemCloseCacheValue !== null && now - _systemCloseCacheAt < SYSTEM_CLOSE_TTL_MS) {
-    return _systemCloseCacheValue
-  }
-  if (_systemCloseInflight) return _systemCloseInflight
-  _systemCloseInflight = (async () => {
+  const cacheKey = connectionId || "global"
+  const cached = systemCloseCacheByConnection.get(cacheKey)
+  if (cached && now - cached.at < SYSTEM_CLOSE_TTL_MS) return cached.value
+  if (cached?.inflight) return cached.inflight
+
+  const inflight = (async () => {
     try {
-      const { getAppSettings } = await import("@/lib/redis-db")
-      const appSettings: any = (await getAppSettings().catch(() => null)) || {}
-      const v =
-        appSettings.useSystemCloseOnly === true ||
-        appSettings.use_system_close_only === true
-      _systemCloseCacheValue = v
-      _systemCloseCacheAt = Date.now()
-      return v
+      const client = getRedisClient()
+      const [appSettings, prefixedConnSettings, connSettings] = await Promise.all([
+        getAppSettings().catch(() => ({} as Record<string, any>)),
+        connectionId
+          ? client?.hgetall(`settings:connection_settings:${connectionId}`).catch(() => ({} as Record<string, string>)) ?? Promise.resolve({})
+          : Promise.resolve({}),
+        connectionId
+          ? client?.hgetall(`connection_settings:${connectionId}`).catch(() => ({} as Record<string, string>)) ?? Promise.resolve({})
+          : Promise.resolve({}),
+      ])
+      // Per-connection settings win over global app settings so the operator
+      // can disable exchange-side SL/TP for one noisy connection without
+      // forcing every other connection into system-close-only mode.
+      const merged = { ...(appSettings || {}), ...(prefixedConnSettings || {}), ...(connSettings || {}) }
+      const value = parseSystemCloseFlag((merged as any).useSystemCloseOnly) ||
+        parseSystemCloseFlag((merged as any).use_system_close_only)
+      systemCloseCacheByConnection.set(cacheKey, { value, at: Date.now() })
+      return value
     } catch {
       // Fail closed: assume venue control orders (the default) on read
       // failure rather than incorrectly arming system-close-only mode.
-      _systemCloseCacheValue = false
-      _systemCloseCacheAt = Date.now()
+      systemCloseCacheByConnection.set(cacheKey, { value: false, at: Date.now() })
       return false
-    } finally {
-      _systemCloseInflight = null
     }
   })()
-  return _systemCloseInflight
+  systemCloseCacheByConnection.set(cacheKey, { value: cached?.value ?? false, at: cached?.at ?? 0, inflight })
+  return inflight
 }
 
 async function updateProtectionOrders(
@@ -1936,7 +1947,7 @@ async function updateProtectionOrders(
     return result
   }
 
-  // ── System-close-only mode (cached) ────────────────────────────��──�������
+  // ── System-close-only mode (cached) ───────────────────────────────
   // Reconcile fans out across every live position on every tick, so
   // calling `getAppSettings()` here would issue one HGETALL per
   // position per tick — at 50 positions × 1 Hz that's 50 round-trips
@@ -1948,8 +1959,9 @@ async function updateProtectionOrders(
   // threshold) and long enough to collapse a whole tick's worth of
   // reads into one.
   try {
-    const systemCloseOnly = await getCachedSystemCloseOnly() ||
-      (pos as any)?.useSystemCloseOnly === true
+    const systemCloseOnly = await getCachedSystemCloseOnly(pos.connectionId) ||
+      parseSystemCloseFlag((pos as any)?.useSystemCloseOnly) ||
+      parseSystemCloseFlag((pos as any)?.use_system_close_only)
     if (systemCloseOnly) {
       const cancels: Array<Promise<unknown>> = []
       if (pos.stopLossOrderId) cancels.push(cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "SystemCloseSweep-SL").catch(() => false))

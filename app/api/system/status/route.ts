@@ -53,11 +53,13 @@ export async function GET(request: NextRequest) {
         client
           .hgetall("trade_engine:global")
           .catch(() => ({}) as Record<string, string>),
-        ...allConnections.map((conn) =>
-          client
-            .hgetall(`trade_engine_state:${conn.id}`)
-            .catch(() => ({}) as Record<string, string>),
-        ),
+        ...allConnections.map(async (conn) => {
+          const [rawState, settingsState] = await Promise.all([
+            client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({}) as Record<string, string>),
+            client.hgetall(`settings:trade_engine_state:${conn.id}`).catch(() => ({}) as Record<string, string>),
+          ])
+          return { ...(rawState || {}), ...(settingsState || {}) }
+        }),
       ]);
       databaseInfo = {
         status: "available",

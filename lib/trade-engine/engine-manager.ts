@@ -1,17 +1,13 @@
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
-// NOTE: v8 is Node.js built-in; webpack in Next.js may not recognize `node:v8`.
-// Use dynamic import with fallback for bundler compatibility.
-let getHeapStatistics: (() => { heap_size_limit?: number; heap_total_size?: number }) | null = null
-if (typeof process !== "undefined" && process.versions?.node) {
-  try {
-    // @ts-ignore - v8 is a Node built-in
-    const v8 = require("v8")
-    getHeapStatistics = v8.getHeapStatistics.bind(v8)
-  } catch {
-    // fallback: use process.memoryUsage approximation
-    getHeapStatistics = () => ({ heap_size_limit: process.memoryUsage().heapTotal * 4 })
-  }
-}
+// Keep heap telemetry bundler-safe. Importing/requiring the Node `v8` built-in
+// from this hot server module makes Next dev's webpack resolver emit repeated
+// "Can't resolve 'v8'" warnings when the trade engine is pulled into route
+// graphs. The memory manager only needs an approximate ceiling here, so use
+// process.memoryUsage() and avoid a Node-only import entirely.
+const getHeapStatistics: (() => { heap_size_limit?: number; heap_total_size?: number }) | null =
+  typeof process !== "undefined" && process.versions?.node
+    ? () => ({ heap_size_limit: process.memoryUsage().heapTotal * 4, heap_total_size: process.memoryUsage().heapTotal })
+    : null
 /**
  * Trade Engine Manager V11
  * Manages asynchronous processing for symbols, indications, pseudo positions, and strategies
@@ -3928,9 +3924,22 @@ export class TradeEngineManager {
           try { forceSymbols = JSON.parse(forceSymbols) } catch { /* ignore */ }
         }
         
-        // If force_symbols exists but differs from cache, invalidate
+        // If force_symbols exists but differs from cache, invalidate. In dev
+        // and self-hosted local-prod, getSymbols() applies V0_DEV_SYMBOL_COUNT
+        // after resolving force_symbols. Compare the same effective symbol list
+        // here; otherwise force_symbols=[BTC,ETH,...] vs cache=[BTC] invalidates
+        // on every tick and causes noisy coordinator/progression churn.
         if (Array.isArray(forceSymbols) && forceSymbols.length > 0) {
-          const sortedForce = [...forceSymbols].map(String).filter(Boolean).sort()
+          let effectiveForceSymbols = forceSymbols.map(String).filter(Boolean)
+          const localSymbolCapActive =
+            process.env.NODE_ENV === "development" ||
+            (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")
+          if (localSymbolCapActive) {
+            const devCapSource = (connState as any)?.dev_symbol_count_override ?? process.env.V0_DEV_SYMBOL_COUNT ?? "1"
+            const devCap = Math.max(1, parseInt(String(devCapSource), 10) || 1)
+            effectiveForceSymbols = effectiveForceSymbols.slice(0, devCap)
+          }
+          const sortedForce = [...effectiveForceSymbols].sort()
           const sortedCache = [...this._symbolsCache].sort()
           // CRITICAL FIX: Use efficient array comparison instead of JSON.stringify
           // which causes CPU overload when called frequently (every cycle).

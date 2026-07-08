@@ -51,12 +51,20 @@ export async function GET() {
 
     // Read counters from the authoritative Redis keys:
     //   progression:{id}      — atomic hincrby counters (ProgressionStateManager)
-    //   trade_engine_state:{id} — heartbeat snapshot written each cycle
-    // getSettings() uses a "settings:" prefix so it is the wrong read path
-    // for these keys — use hgetall directly.
+    //   trade_engine_state:{id} and settings:trade_engine_state:{id}
+    //     — heartbeat/config snapshots written by different engine paths.
+    // Merge both forms so production status pages do not report false
+    // coordinator/progression failures when the live heartbeat is on the
+    // canonical settings-prefixed hash.
     const client = getRedisClient()
     const progression = (connectionId !== "unknown" ? await client.hgetall(`progression:${connectionId}`) : null) || {}
-    const engineState = (connectionId !== "unknown" ? await client.hgetall(`trade_engine_state:${connectionId}`) : null) || {}
+    const [rawEngineState, settingsEngineState] = connectionId !== "unknown"
+      ? await Promise.all([
+          client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
+          client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
+        ])
+      : [{} as Record<string, string>, {} as Record<string, string>]
+    const engineState = { ...(rawEngineState || {}), ...(settingsEngineState || {}) }
 
     const indicationCycles =
       Number((progression as any).indication_cycle_count) ||

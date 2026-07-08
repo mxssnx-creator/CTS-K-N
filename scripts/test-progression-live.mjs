@@ -9,7 +9,8 @@
 import fetch from 'node-fetch';
 
 const connectionId = process.argv[2] || 'bingx-x01';
-const baseUrl = 'http://localhost:3002';
+const port = process.env.PORT || '3002';
+const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
 const testLabel = (label) => `\n${'='.repeat(70)}\n${label}\n${'='.repeat(70)}`;
 
 let passCount = 0;
@@ -45,21 +46,12 @@ const configuredSymbolCount = (stats) => {
     ...(Array.isArray(stats.metadata?.activeSymbols) ? stats.metadata.activeSymbols : []),
   ].filter((symbol) => typeof symbol === 'string' && symbol.length > 0);
   if (activeSymbols.length > 0) return new Set(activeSymbols).size;
-  const activeIndications = stats.activeCounts?.indications || {};
-  const activeIndications = stats.activeCounts?.indications || {};
-  const activeStrategies = stats.activeCounts?.strategies || {};
+  const historicTotal = Number(stats.historic?.symbolsTotal ?? 0);
+  if (historicTotal > 0) return historicTotal;
+  const realtimeSymbols = Array.isArray(stats.realtime?.symbols) ? stats.realtime.symbols : [];
+  if (realtimeSymbols.length > 0) return new Set(realtimeSymbols.filter(Boolean)).size;
   const activeIndicationSets = Number(stats.activeProgressing?.indications?.total ?? 0);
-  const numericValues = [
-    activeIndicationSets,
-    ...Object.values(activeIndications),
-    ...Object.values(activeStrategies),
-  ]
-    .map((value) => Number(value))
-    .filter((value) => Number.isFinite(value));
-  return Math.max(
-    metadataSymbols,
-    ...numericValues,
-  );
+  return Math.max(metadataSymbols, activeIndicationSets);
 };
 
 const run = async () => {
@@ -79,7 +71,7 @@ const run = async () => {
     const phase = stats.metadata?.phase;
     console.log(`Current phase: ${phase}`);
     assert(
-      ['idle', 'prehistoric_loading', 'realtime', 'live_trading', 'stopped'].includes(phase),
+      ['idle', 'starting', 'prehistoric_loading', 'realtime', 'live_trading', 'stopped'].includes(phase),
       `Valid phase: ${phase}`
     );
 
@@ -148,9 +140,11 @@ const run = async () => {
     // Live execution
     console.log(testLabel('9. LIVE EXECUTION STATE'));
     const liveExec = stats.liveExecution || {};
-    const placed = liveExec.ordersPlaced || 0;
-    const filled = liveExec.ordersFilled || 0;
-    const openPos = liveExec.openPositions || 0;
+    const placed = Number(liveExec.ordersPlaced || 0);
+    const filled = Number(liveExec.ordersFilled || 0);
+    const openPositionsValue = liveExec.openPositions;
+    const openPositionsList = Array.isArray(openPositionsValue) ? openPositionsValue : [];
+    const openPos = Array.isArray(openPositionsValue) ? openPositionsValue.length : Number(openPositionsValue || 0);
     console.log(`Orders placed: ${placed}, filled: ${filled}, open positions: ${openPos}`);
 
     // PF cascade check
@@ -187,12 +181,12 @@ const run = async () => {
 
     // Live positions
     console.log(testLabel('12. LIVE POSITIONS'));
-    const livePos = stats.liveExecution?.openPositions || [];
+    const livePos = openPositionsList;
     console.log(`Live positions count: ${livePos.length}`);
     
     const liveIds = new Set();
     let liveDuplicates = 0;
-    for (const pos of Array.isArray(livePos) ? livePos : []) {
+    for (const pos of livePos) {
       if (pos.id && liveIds.has(pos.id)) liveDuplicates++;
       liveIds.add(pos.id);
     }

@@ -12,9 +12,9 @@ FAILED=0
 
 # Test endpoints
 echo "1. Testing Endpoint Availability..."
-curl -s "$BASE_URL" > /dev/null && echo "✓ Dashboard" && ((PASSED++)) || echo "✗ Dashboard" && ((FAILED++))
-curl -s "$BASE_URL/api/connections" > /dev/null && echo "✓ API" && ((PASSED++)) || echo "✗ API" && ((FAILED++))
-curl -s "$BASE_URL/api/connections/progression/$CONNECTION_ID/stats" > /dev/null && echo "✓ Stats" && ((PASSED++)) || echo "✗ Stats" && ((FAILED++))
+if curl -s "$BASE_URL" > /dev/null; then echo "✓ Dashboard"; PASSED=$((PASSED+1)); else echo "✗ Dashboard"; FAILED=$((FAILED+1)); fi
+if curl -s "$BASE_URL/api/connections" > /dev/null; then echo "✓ API"; PASSED=$((PASSED+1)); else echo "✗ API"; FAILED=$((FAILED+1)); fi
+if curl -s "$BASE_URL/api/connections/progression/$CONNECTION_ID/stats" > /dev/null; then echo "✓ Stats"; PASSED=$((PASSED+1)); else echo "✗ Stats"; FAILED=$((FAILED+1)); fi
 
 # Test response times
 echo ""
@@ -26,10 +26,10 @@ for i in {1..5}; do
   ELAPSED=$(( (END - START) / 1000000 ))
   if [ $ELAPSED -lt 5000 ]; then
     echo "✓ Request $i: ${ELAPSED}ms"
-    ((PASSED++))
+    PASSED=$((PASSED+1))
   else
     echo "✗ Request $i: ${ELAPSED}ms (slow)"
-    ((FAILED++))
+    FAILED=$((FAILED+1))
   fi
 done
 
@@ -38,14 +38,14 @@ echo ""
 echo "3. Testing Concurrent Requests..."
 success=0
 for i in {1..10}; do
-  curl -s "$BASE_URL/api/connections/progression/$CONNECTION_ID/stats" > /dev/null 2>&1 && ((success++))
+  curl -s "$BASE_URL/api/connections/progression/$CONNECTION_ID/stats" > /dev/null 2>&1 && success=$((success+1))
 done
 if [ $success -eq 10 ]; then
   echo "✓ All 10 concurrent requests succeeded"
-  ((PASSED++))
+  PASSED=$((PASSED+1))
 else
   echo "✗ Only $success/10 concurrent requests succeeded"
-  ((FAILED++))
+  FAILED=$((FAILED+1))
 fi
 
 # Report

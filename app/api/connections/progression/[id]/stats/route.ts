@@ -174,10 +174,15 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  // Add request timeout: if this endpoint takes >15 seconds, abort
-  const timeoutPromise = new Promise<Response>((_, reject) =>
-    setTimeout(() => reject(new Error("Stats endpoint timeout (15s exceeded)")), 15000)
-  )
+  // Add request timeout: if this endpoint takes >15 seconds, abort.
+  // Keep the timer handle and clear it in `finally`; otherwise every successful
+  // poll leaves a pending 15s timer behind. During frequent dashboard refreshes
+  // those orphan timers create the exact hanging/stuck behavior Jest and the UI
+  // were reporting even though the endpoint had already returned.
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+  const timeoutPromise = new Promise<Response>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error("Stats endpoint timeout (15s exceeded)")), 15000)
+  })
 
   const mainLogic = async () => {
     try {
@@ -3390,5 +3395,7 @@ export async function GET(
       { error: error instanceof Error ? error.message : "Stats request failed" },
       { status: 500 }
     )
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle)
   }
 }

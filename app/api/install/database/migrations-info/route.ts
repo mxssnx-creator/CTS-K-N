@@ -10,12 +10,14 @@ export async function GET() {
 
     return NextResponse.json({
       // currentVersion = version actually applied in Redis;
-      // latestVersion = highest migration the code defines (currently 22).
-      // Both are derived dynamically so this never drifts from the real
-      // migration set the way the previously hardcoded "11" did.
+      // latestVersion = highest migration the code defines. Both values are
+      // derived dynamically so this never drifts from the real migration set.
       current_version: status.currentVersion,
       target_version: status.latestVersion,
-      total_migrations: status.latestVersion,
+      total_migrations: status.totalMigrations ?? status.latestVersion,
+      migrations_sequential: status.migrationsSequential === true,
+      database_health: status.databaseHealth ?? {},
+      health_up_to_date: status.healthUpToDate === true,
       pending: Array.isArray(status.pendingMigrations) ? status.pendingMigrations.length : 0,
       message: status.message,
       is_up_to_date: status.isMigrated,

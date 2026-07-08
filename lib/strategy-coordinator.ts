@@ -1629,7 +1629,7 @@ export class StrategyCoordinator {
       // additional related variants flow uniformly through this filter).
       // CoordIndex.validRealKeys is populated here; Real tuner writes sizeDelta
       // / tunedAvgPF onto each record for O(1) access at Live dispatch.
-      const { result: realResult, sets: realSets } = await this.evaluateRealSets(symbol, mainSets, coordIndex)
+      const { result: realResult, sets: realSets } = await this.evaluateRealSets(symbol, mainSets, coordIndex, posCtx)
       results.push(realResult)
 
       // STAGE 4: LIVE — best 500 Sets for execution (skip in prehistoric mode).
@@ -3106,6 +3106,7 @@ export class StrategyCoordinator {
     sourceSets: StrategySet[],
     metrics: EvaluationMetrics,
     coordIndex?: CoordIndex,
+    activeByDirSnapshot?: { long: number; short: number },
   ): Promise<StrategySet[]> {
     if (
       !this._coordinationSettings.variants.block ||
@@ -3118,12 +3119,21 @@ export class StrategyCoordinator {
     const blockConfig = blockProfile?.configs.slice().sort((a, b) => b.pfBias - a.pfBias)[0]
     if (!blockConfig) return []
 
-    const activePositions = await new PseudoPositionManager(this.connectionId).getActivePositions()
-    const activeByDir = { long: 0, short: 0 }
-    for (const pos of activePositions) {
-      if (String(pos.symbol || "").toUpperCase() !== symbol.toUpperCase()) continue
-      const dir = String(pos.direction || pos.side || "").toLowerCase() === "short" ? "short" : "long"
-      activeByDir[dir]++
+    // Use the PositionContext snapshot built once per cycle. The old path
+    // re-read *all* active pseudo positions for every symbol at Real stage
+    // (symbols × open positions), which was a major source of UI/API stalls
+    // when many connections and block coordinations were active. If a legacy
+    // caller does not pass the snapshot, fall back to one bounded read.
+    const activeByDir = activeByDirSnapshot
+      ? { long: activeByDirSnapshot.long || 0, short: activeByDirSnapshot.short || 0 }
+      : { long: 0, short: 0 }
+    if (!activeByDirSnapshot) {
+      const activePositions = await new PseudoPositionManager(this.connectionId).getActivePositions()
+      for (const pos of activePositions) {
+        if (String(pos.symbol || "").toUpperCase() !== symbol.toUpperCase()) continue
+        const dir = String(pos.direction || pos.side || "").toLowerCase() === "short" ? "short" : "long"
+        activeByDir[dir]++
+      }
     }
 
     const maxStack = Math.max(1, Math.min(10, this._coordinationSettings.blockMaxStack | 0))
@@ -3195,6 +3205,7 @@ export class StrategyCoordinator {
     symbol: string,
     inputSets?: StrategySet[],
     coordIndex?: CoordIndex,
+    posCtx?: PositionContext,
   ): Promise<{ result: StrategyEvaluation; sets: StrategySet[] }> {
     let mainSets: StrategySet[]
     if (inputSets) {
@@ -3580,6 +3591,7 @@ export class StrategyCoordinator {
         realPostHedge,
         metrics,
         coordIndex,
+        posCtx?.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 },
       )
       if (activePositionBlockOverlays.length > 0) {
         realStageRelatedCreated += activePositionBlockOverlays.length

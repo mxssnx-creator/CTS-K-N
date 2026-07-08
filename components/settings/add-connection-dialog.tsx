@@ -398,17 +398,22 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-4xl max-h-[95vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Add New Exchange Connection</DialogTitle>
-          <DialogDescription>
-            Configure and test a new exchange API connection. Select a template or enter custom details.
-          </DialogDescription>
+      <DialogContent className="sm:max-w-5xl max-h-[92dvh] overflow-hidden flex flex-col p-0 [&>button]:z-10">
+        <DialogHeader className="border-b bg-gradient-to-r from-primary/10 via-background to-background px-6 py-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <DialogTitle className="text-xl font-semibold tracking-tight">Add New Exchange Connection</DialogTitle>
+              <DialogDescription>
+                Configure, test, and save an exchange API connection with safer defaults and clearer setup steps.
+              </DialogDescription>
+            </div>
+            <Badge variant="outline" className="hidden shrink-0 sm:inline-flex">Secure setup</Badge>
+          </div>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
+        <form onSubmit={handleSubmit} className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
           {/* Template Selection */}
-          <Card className="border border-blue-200 bg-blue-50/50">
+          <Card className="overflow-hidden border-primary/20 bg-gradient-to-br from-primary/10 via-background to-background shadow-sm">
             <CardHeader className="pb-3">
               <CardTitle className="text-base flex items-center gap-2">
                 <Zap className="h-4 w-4 text-blue-600" />
@@ -421,7 +426,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                 const template = CONNECTION_PREDEFINITIONS.find(t => t.id === templateId)
                 if (template) handleSelectTemplate(template)
               }}>
-                <SelectTrigger className="w-full bg-white">
+                <SelectTrigger className="w-full bg-background">
                   <SelectValue placeholder="Select a predefined template..." />
                 </SelectTrigger>
                 <SelectContent>
@@ -440,7 +445,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
 
           {/* Tabs for Configuration */}
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-            <TabsList className="grid w-full grid-cols-3">
+            <TabsList className="grid h-11 w-full grid-cols-3 rounded-xl bg-muted/70 p-1">
               <TabsTrigger value="basic">Basic Info</TabsTrigger>
               <TabsTrigger value="api">API Credentials</TabsTrigger>
               <TabsTrigger value="advanced">Advanced</TabsTrigger>
@@ -457,14 +462,14 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                     placeholder="e.g., Main Account"
                     disabled={loading}
-                    className="bg-white text-sm h-8"
+                    className="bg-background text-sm h-8"
                   />
                 </div>
 
                 <div className="space-y-1.5">
                   <Label htmlFor="exchange" className="font-medium text-xs">Exchange</Label>
                   <Select value={formData.exchange} onValueChange={(value) => setFormData({ ...formData, exchange: value })}>
-                    <SelectTrigger id="exchange" disabled={loading} className="bg-white h-8 text-sm">
+                    <SelectTrigger id="exchange" disabled={loading} className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -480,7 +485,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                 <div className="space-y-1.5">
                   <Label htmlFor="api-type" className="font-medium text-xs">API Type</Label>
                   <Select value={formData.api_type} onValueChange={(value) => setFormData({ ...formData, api_type: value })}>
-                    <SelectTrigger id="api-type" disabled={loading} className="bg-white h-8 text-sm">
+                    <SelectTrigger id="api-type" disabled={loading} className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -502,7 +507,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                   <div className="space-y-1.5 col-span-2">
                     <Label htmlFor="api-subtype" className="font-medium text-xs">Trading Type (Unified Account)</Label>
                     <Select value={formData.api_subtype} onValueChange={(value) => setFormData({ ...formData, api_subtype: value })}>
-                      <SelectTrigger id="api-subtype" disabled={loading} className="bg-white h-8 text-sm">
+                      <SelectTrigger id="api-subtype" disabled={loading} className="bg-background h-8 text-sm">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -525,7 +530,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                 <div className="space-y-1.5">
                   <Label htmlFor="connection-method" className="font-medium text-xs">Connection</Label>
                   <Select value={formData.connection_method} onValueChange={(value) => setFormData({ ...formData, connection_method: value })}>
-                    <SelectTrigger id="connection-method" disabled={loading} className="bg-white h-8 text-sm">
+                    <SelectTrigger id="connection-method" disabled={loading} className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -544,7 +549,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                 <div className="space-y-1.5">
                   <Label htmlFor="connection-library" className="font-medium text-xs">Library</Label>
                   <Select value={formData.connection_library || "native"} onValueChange={(value) => setFormData({ ...formData, connection_library: value })}>
-                    <SelectTrigger id="connection-library" disabled={loading} className="bg-white h-8 text-sm">
+                    <SelectTrigger id="connection-library" disabled={loading} className="bg-background h-8 text-sm">
                       <SelectValue placeholder="Select library..." />
                     </SelectTrigger>
                     <SelectContent>
@@ -583,7 +588,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                 <div className="space-y-1.5">
                   <Label htmlFor="margin-type" className="font-medium text-xs">Margin Type</Label>
                   <Select value={formData.margin_type} onValueChange={(value) => setFormData({ ...formData, margin_type: value })}>
-                    <SelectTrigger id="margin-type" disabled={loading} className="bg-white h-8 text-sm">
+                    <SelectTrigger id="margin-type" disabled={loading} className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -596,7 +601,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                 <div className="space-y-1.5">
                   <Label htmlFor="position-mode" className="font-medium text-xs">Position Mode</Label>
                   <Select value={formData.position_mode} onValueChange={(value) => setFormData({ ...formData, position_mode: value })}>
-                    <SelectTrigger id="position-mode" disabled={loading} className="bg-white h-8 text-sm">
+                    <SelectTrigger id="position-mode" disabled={loading} className="bg-background h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -705,7 +710,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                       onChange={(e) => setFormData({ ...formData, api_key: e.target.value })}
                       placeholder="Enter your API Key"
                       disabled={loading}
-                      className="pr-10 bg-white"
+                      className="pr-10 bg-background"
                     />
                     <button
                       type="button"
@@ -729,7 +734,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                     onChange={(e) => setFormData({ ...formData, api_secret: e.target.value })}
                     placeholder="Enter your API Secret"
                     disabled={loading}
-                    className="bg-white"
+                    className="bg-background"
                   />
                 </div>
 
@@ -742,7 +747,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                     onChange={(e) => setFormData({ ...formData, api_passphrase: e.target.value })}
                     placeholder="Leave blank if not required"
                     disabled={loading}
-                    className="bg-white"
+                    className="bg-background"
                   />
                   <p className="text-xs text-muted-foreground">Required only for some exchanges (e.g., OKX, Coinbase)</p>
                 </div>
@@ -754,7 +759,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
               <div className="space-y-2">
                 <Label htmlFor="connection-library" className="font-medium">Connection Library</Label>
                 <Select value={formData.connection_library} onValueChange={(value) => setFormData({ ...formData, connection_library: value })}>
-                  <SelectTrigger id="connection-library" disabled={loading} className="bg-white">
+                  <SelectTrigger id="connection-library" disabled={loading} className="bg-background">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
