@@ -161,12 +161,26 @@ export async function POST(request: Request) {
         return !liveTradeRequested || process.env.ALLOW_PROD_SIMULATED === "1" || process.env.NODE_ENV !== "production"
       }
       return normalizeQuickstartExchange(c) !== "bingx" && !liveTradeRequested
+      if (isExplicitSimulatedConnection(c)) return true
+      return normalizeQuickstartExchange(c) !== "bingx"
     }
 
     // Fall back to auto-discovery only when the requested connection is missing
     // or unusable. Explicit simulated/template selections intentionally have no
     // API credentials and must not be replaced by a credentialed BingX account.
     if (!canUseRequestedConnection(connection)) {
+    // Fall back to auto-discovery only if the requested connection is MISSING
+    // entirely. Simulated / template connections intentionally have no API
+    // credentials — do not fall through to auto-discovery just because
+    // credentials are absent when the caller explicitly picked a connection.
+    const isBingXConnection = connection && normalizeQuickstartExchange(connection) === "bingx"
+    const hasRequestedCredentials = connection ? hasUsableExchangeCredentials(connection) : false
+    const isExplicitSimulated = connection && (
+      connection.connector_type === "simulated" ||
+      connection.exchange_type === "simulated"
+    )
+    const isSimulated = connection && (isExplicitSimulated || (!isBingXConnection && !hasRequestedCredentials))
+    if (!connection || (!isSimulated && !hasRequestedCredentials)) {
       if (requestedConnectionId && connection) {
         console.log(`${LOG_PREFIX}: Requested connection ${requestedConnectionId} is not usable for QuickStart — falling back to auto-discovery`)
       } else if (requestedConnectionId) {
