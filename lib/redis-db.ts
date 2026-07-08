@@ -2637,11 +2637,78 @@ export async function assertDatabaseWriteBudget(
 
 // ========== Connection Operations ==========
 
+const CONNECTION_SETTINGS_CANONICAL_FIELDS = new Set([
+  "api_key",
+  "api_secret",
+  "api_passphrase",
+  "api_type",
+  "connection_method",
+  "connection_library",
+  "contract_type",
+  "exchange",
+  "exchange_type",
+  "force_symbols",
+  "is_live_trade",
+  "is_preset_trade",
+  "is_testnet",
+  "leverage_percentage",
+  "live_volume_factor",
+  "margin_mode",
+  "margin_type",
+  "position_mode",
+  "preset_volume_factor",
+  "symbol_count",
+  "symbol_order",
+  "symbols",
+  "volume_factor",
+  "volume_type",
+])
+
+function hasConnectionValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false
+  if (typeof value === "string") return value.trim().length > 0
+  if (Array.isArray(value)) return value.length > 0
+  return true
+}
+
+function isNewerConnectionSettings(settings: Record<string, any>, raw: Record<string, any>): boolean {
+  const settingsTime = Date.parse(String(settings.updated_at ?? settings.updatedAt ?? settings.saved_at ?? ""))
+  const rawTime = Date.parse(String(raw.updated_at ?? raw.updatedAt ?? ""))
+  return Number.isFinite(settingsTime) && (!Number.isFinite(rawTime) || settingsTime > rawTime)
+}
+
+function mergeConnectionHashes(
+  rawConnection: Record<string, any> | null,
+  settingsConnection: Record<string, any> | null,
+): Record<string, any> | null {
+  if (!rawConnection && !settingsConnection) return null
+  if (!rawConnection) return { ...(settingsConnection || {}) }
+  if (!settingsConnection) return { ...rawConnection }
+
+  const merged: Record<string, any> = { ...rawConnection }
+  const settingsAreNewer = isNewerConnectionSettings(settingsConnection, rawConnection)
+
+  for (const [key, value] of Object.entries(settingsConnection)) {
+    const rawValue = merged[key]
+    const rawMissing = !hasConnectionValue(rawValue)
+    if (rawMissing || (settingsAreNewer && CONNECTION_SETTINGS_CANONICAL_FIELDS.has(key))) {
+      merged[key] = value
+    }
+  }
+
+  return merged
+}
+
 export async function getConnection(id: string): Promise<any | null> {
   await initRedis()
   const client = getClient()
-  const hash = await client.hgetall(`connection:${id}`)
-  return parseHash(hash)
+  const [rawHash, settingsHash] = await Promise.all([
+    client.hgetall(`connection:${id}`),
+    client.hgetall(`settings:connection:${id}`),
+  ])
+  const rawConnection = parseHash(rawHash)
+  const settingsConnection = parseHash(settingsHash)
+  return mergeConnectionHashes(rawConnection, settingsConnection)
 }
 
 // ──────────�������─────────────────────────────────────────────��───────────────────
