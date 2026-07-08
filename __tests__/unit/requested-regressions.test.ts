@@ -329,12 +329,14 @@ describe("requested regression guardrails", () => {
     expect(source).toContain('"simulate_skip"')
   })
 
-  test("dev symbol cap honors QuickStart multi-symbol override", () => {
+  test("dev symbol cap honors operator-selected symbols before slicing", () => {
     const source = read("lib/trade-engine/engine-manager.ts")
 
     expect(source).toContain("dev_symbol_count_override")
     expect(source).toContain('process.env.V0_DEV_SYMBOL_COUNT ?? "1"')
-    expect(source).toContain('if (devCap === 1) return ["BTCUSDT"]')
+    expect(source).toContain("resolve operator symbols, then slice to 1")
+    expect(source).toContain('never short-circuit to ["BTCUSDT"] here')
+    expect(source).not.toContain('if (devCap === 1) return ["BTCUSDT"]')
   })
 
   test("progression trade counters clamp impossible success rates after resets", () => {
@@ -618,6 +620,15 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("localSymbolCapActive")
     expect(source).toContain("process.env.V0_DEV_SYMBOL_COUNT")
     expect(source).toContain("force_symbols=[BTC,ETH,...] vs cache=[BTC] invalidates")
+  })
+
+  test("local symbol cap preserves operator-selected symbols before slicing", () => {
+    const source = read("lib/trade-engine/engine-manager.ts")
+
+    expect(source).toContain('never short-circuit to ["BTCUSDT"] here')
+    expect(source).toContain("stayed at 0/N symbols with no indication/strategy calculations")
+    expect(source).toContain("Resolve the real list first, then slice it at the end if needed")
+    expect(source).not.toContain('if (devCap === 1) return ["BTCUSDT"]')
   })
 
   test("engine manager heap telemetry avoids Node v8 import warnings in Next dev", () => {
