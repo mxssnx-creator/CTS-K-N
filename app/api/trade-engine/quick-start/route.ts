@@ -114,6 +114,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}))
     const action = body.action || "enable"
+    const liveTradeRequested = body.liveTrade !== false && body.is_live_trade !== false
     
     await initRedis()
     const client = getRedisClient()
@@ -133,54 +134,55 @@ export async function POST(request: Request) {
     // Previously this route ignored body.connectionId entirely and always
     // picked the first BingX connection, silently overriding the user's
     // selection from the Exchange context. Now we prefer the requested
-    // connection when it exists and has credentials.
+    // connection when it exists and is either credentialed or explicitly
+    // simulated/template-backed.
     const requestedConnectionId: string | undefined = body.connectionId
     let connection: any = requestedConnectionId
       ? allConnections.find((c: any) => c.id === requestedConnectionId)
       : null
 
-    // Fall back to auto-discovery only if the requested connection is MISSING
-    // entirely. Simulated / template connections intentionally have no API
-    // credentials — do not fall through to auto-discovery just because
-    // credentials are absent when the caller explicitly picked a connection.
-    const isBingXConnection = connection && normalizeQuickstartExchange(connection) === "bingx"
-    const hasRequestedCredentials = connection ? hasUsableExchangeCredentials(connection) : false
-    const isSimulated = connection && !isBingXConnection &&
-      (connection.connector_type === "simulated" ||
-       connection.exchange_type === "simulated" ||
-       !hasRequestedCredentials)
-    if (!connection || (!isSimulated && !hasRequestedCredentials)) {
+    const isPredefinedConnection = (c: any) => c?.is_predefined === true || c?.is_predefined === "1" || c?.is_predefined === "true"
+    const isAssignedConnection = (c: any) => c?.is_assigned === "1" || c?.is_assigned === true
+    const isExplicitSimulatedConnection = (c: any) =>
+      c?.connector_type === "simulated" || c?.exchange_type === "simulated"
+    const isQuickStartBaseExchange = (c: any) => {
+      const exch = normalizeQuickstartExchange(c)
+      return exch === "bingx" || exch === "pionex" || exch === "orangex"
+    }
+    const canUseRequestedConnection = (c: any) => {
+      if (!c) return false
+      if (hasUsableExchangeCredentials(c)) return true
+      // In production live-trade mode, a credentialless simulated/template
+      // selection must not become the active QuickStart connection unless the
+      // operator explicitly allows production simulation. Otherwise a stale UI
+      // selection can leave the engine running in paper mode while the operator
+      // expects real exchange orders.
+      if (isExplicitSimulatedConnection(c)) {
+        return !liveTradeRequested || process.env.ALLOW_PROD_SIMULATED === "1" || process.env.NODE_ENV !== "production"
+      }
+      return normalizeQuickstartExchange(c) !== "bingx" && !liveTradeRequested
+    }
+
+    // Fall back to auto-discovery only when the requested connection is missing
+    // or unusable. Explicit simulated/template selections intentionally have no
+    // API credentials and must not be replaced by a credentialed BingX account.
+    if (!canUseRequestedConnection(connection)) {
       if (requestedConnectionId && connection) {
-        console.log(`${LOG_PREFIX}: Requested connection ${requestedConnectionId} has no credentials — falling back to auto-discovery`)
+        console.log(`${LOG_PREFIX}: Requested connection ${requestedConnectionId} is not usable for QuickStart — falling back to auto-discovery`)
       } else if (requestedConnectionId) {
         console.log(`${LOG_PREFIX}: Requested connection ${requestedConnectionId} not found — falling back to auto-discovery`)
       }
-      connection = allConnections.find((c: any) => {
-      const exch = normalizeQuickstartExchange(c)
-      const hasCredentials = hasUsableExchangeCredentials(c)
-      const isUserCreated = !(c.is_predefined === true || c.is_predefined === "1" || c.is_predefined === "true")
-      return exch === "bingx" && isUserCreated && hasCredentials
-    }) || allConnections.find((c: any) => {
-      const exch = normalizeQuickstartExchange(c)
-      const hasCredentials = hasUsableExchangeCredentials(c)
-      const isUserCreated = !(c.is_predefined === true || c.is_predefined === "1" || c.is_predefined === "true")
-      return false
-    }) || allConnections.find((c: any) => {
-      const exch = normalizeQuickstartExchange(c)
-      const hasCredentials = hasUsableExchangeCredentials(c)
-      return exch === "bingx" && hasCredentials
-    }) || allConnections.find((c: any) => {
-      const exch = normalizeQuickstartExchange(c)
-      const hasCredentials = hasUsableExchangeCredentials(c)
-      return false
-    }) || allConnections.find((c: any) => {
-      const exch = normalizeQuickstartExchange(c)
-      // QuickStart startup relies on Main Connections assignment state.
-      const isAssigned = c.is_assigned === "1" || c.is_assigned === true
-      const isBase = exch === "bingx" || exch === "pionex" || exch === "orangex"
-      return isBase && isAssigned
-    })
-    }  // ← close the body.connectionId preference block
+
+      connection = allConnections.find((c: any) =>
+        normalizeQuickstartExchange(c) === "bingx" &&
+        !isPredefinedConnection(c) &&
+        hasUsableExchangeCredentials(c)
+      ) || allConnections.find((c: any) =>
+        normalizeQuickstartExchange(c) === "bingx" && hasUsableExchangeCredentials(c)
+      ) || allConnections.find((c: any) =>
+        isQuickStartBaseExchange(c) && isAssignedConnection(c)
+      )
+    }
 
     if (!connection) {
       console.log(`${LOG_PREFIX}: No BingX connections found in Main Connections`)
@@ -459,7 +461,6 @@ export async function POST(request: Request) {
 
     const symbolSelectionEpoch = `${Date.now()}:${Math.random().toString(36).slice(2)}`
 
-    const liveTradeRequested = body.liveTrade !== false && body.is_live_trade !== false
     // Production QuickStart should not silently fall back to paper/sim just
     // because the lightweight connection test endpoint is flaky or rate-limited.
     // Credentials are the real live-order gate; the live stage will still record
