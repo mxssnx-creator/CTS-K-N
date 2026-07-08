@@ -3626,15 +3626,17 @@ async function ensureBaseConnections(client: any): Promise<{ createdOrUpdated: n
     // dashboard-enable defaults so a fresh DB still surfaces Bybit/BingX
     // ready to go.
 
-    if (!hasExisting) {
-      // First-time seed. Apply full canonical defaults.
-      const seedData: Record<string, string> = {
-        id: cfg.id,
-        name: cfg.name,
-        exchange: cfg.exchange,
-        is_predefined: "0",
-        is_inserted: "1",
-        // AUTO-START DISABLED: never seed connections as dashboard-enabled.
+if (!hasExisting) {
+       // First-time seed. Apply full canonical defaults.
+       const seedData: Record<string, string> = {
+         id: cfg.id,
+         name: cfg.name,
+         exchange: cfg.exchange,
+         is_predefined: "0",
+         is_inserted: "1",
+         // is_testnet=false = PRODUCTION MAINNET (real exchange orders)
+         is_testnet: "0",
+         // AUTO-START DISABLED: never seed connections as dashboard-enabled.
         // `autoActive` now only controls insertion + symbol/live-trade seeding;
         // the operator must explicitly enable the connection via the dashboard.
         // autoActive connections (bingx-x01) are inserted and visible in the
@@ -3772,6 +3774,7 @@ async function ensureBaseConnections(client: any): Promise<{ createdOrUpdated: n
     //   1. Credentials (rotate from env when available).
     //   2. The connection-set membership (in case a manual SREM ever
     //      desyncs the index from the hash — defensive only).
+    //   3. is_testnet: forced to "0" (mainnet) when real credentials are present.
     const updates: Record<string, string> = {}
     let didChange = false
 
@@ -3784,6 +3787,11 @@ async function ensureBaseConnections(client: any): Promise<{ createdOrUpdated: n
         updates.updated_at = now
         didChange = true
         credentialsInjected++
+      }
+      // FORCE MAINNET when real credentials are available
+      if (existing.is_testnet === "1" || existing.is_testnet === "true" || existing.is_testnet === true) {
+        updates.is_testnet = "0"
+        didChange = true
       }
     }
 

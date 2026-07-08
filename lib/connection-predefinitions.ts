@@ -153,7 +153,7 @@ export const CONNECTION_PREDEFINITIONS: ConnectionPredefinition[] = [
     id: "bingx-x01",
     name: "BingX X01",
     displayName: "BingX X01 (Perpetual Futures)",
-    description: "BingX USDT Perpetual Futures with up to 150x leverage - Demo Mode for Testing. Use your BingX account to generate API keys from https://bingx.com/en/account/api",
+    description: "BingX USDT Perpetual Futures with up to 150x leverage - PRODUCTION MAINNET. Use your BingX account to generate API keys from https://bingx.com/en/account/api",
     exchange: "bingx",
     apiTypes: ["perpetual_futures", "spot"],
     apiType: "perpetual_futures",
