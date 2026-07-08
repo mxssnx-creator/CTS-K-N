@@ -288,6 +288,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             })
             engineStatus = "queued"
             engineStartedNow = false
+            try {
+              const { runTradeEngineHealingSweep } = await import("@/lib/trade-engine-auto-start")
+              const sweep = await runTradeEngineHealingSweep({ isStartup: false })
+              if ((sweep.startedCount || 0) > 0 || coordinator.isEngineRunning(connectionId)) {
+                engineStatus = "running"
+                engineStartedNow = true
+                await logProgressionEvent(connectionId, "engine_start_reconciled", "info", "Queued live-trade start was reconciled immediately by the healing sweep", {
+                  connectionId,
+                  startedCount: sweep.startedCount,
+                  eligibleCount: sweep.eligibleCount,
+                })
+              }
+            } catch (sweepErr) {
+              console.warn(
+                `[v0] [LiveTrade] Immediate healing sweep after queued start failed for ${connName}:`,
+                sweepErr instanceof Error ? sweepErr.message : String(sweepErr),
+              )
+            }
             console.warn(`[v0] [LiveTrade] Engine start queued for ${connName}; foreground start was unavailable`)
           }
           triggerControlOrderRebuild()

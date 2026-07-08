@@ -303,6 +303,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             const workerDiagnostic = buildMissingTradeEngineWorkerDiagnostic(queuedGlobalState)
             engineWarning = workerDiagnostic.error
             engineStatus = "queued"
+            try {
+              const { runTradeEngineHealingSweep } = await import("@/lib/trade-engine-auto-start")
+              const sweep = await runTradeEngineHealingSweep({ isStartup: false })
+              if ((sweep.startedCount || 0) > 0 || coordinator.isEngineRunning(resolvedId)) {
+                engineStatus = "started"
+                engineWarning = null
+                await logProgressionEvent(resolvedId, "engine_start_reconciled", "info", "Queued start was reconciled immediately by the healing sweep", {
+                  connectionId: resolvedId,
+                  startedCount: sweep.startedCount,
+                  eligibleCount: sweep.eligibleCount,
+                })
+              }
+            } catch (sweepErr) {
+              console.warn(
+                `[v0] [Toggle] Immediate healing sweep after queued start failed for ${connection.name}:`,
+                sweepErr instanceof Error ? sweepErr.message : String(sweepErr),
+              )
+            }
             console.warn(
               `[v0] [Toggle] Engine start queued for ${connection.name}; foreground start was unavailable`,
             )
