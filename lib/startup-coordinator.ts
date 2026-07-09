@@ -15,10 +15,13 @@ import {
   getRedisClient,
   setSettings,
   cleanupVolatileRuntimeState,
+  isProductionEnvironment,
 } from "@/lib/redis-db"
 import { validateDatabase } from "@/lib/database-validator"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { isProcessorHeartbeatFresh } from "@/lib/engine-heartbeat"
+import { readTradeEngineWorkerHeartbeat } from "@/lib/trade-engine-worker-heartbeat"
+import { getFreshestProcessorHeartbeat, isProcessorHeartbeatFresh } from "@/lib/engine-heartbeat"
 import { consolidateDatabase } from "@/lib/database-consolidation"
 import { getMigrationStatus, runProductionCoverageRepair } from "@/lib/redis-migrations"
 import {
@@ -128,6 +131,105 @@ async function reconcileStrandedPositions() {
   }
 }
 
+
+export async function buildGlobalTradeEngineBootMetadata(
+  existingGlobalState: Record<string, string> | null | undefined,
+  connectionIds: string[],
+  now: string,
+  isConnectionHeartbeatFresh: (connectionId: string) => Promise<boolean> = isProcessorHeartbeatFresh,
+): Promise<Record<string, string>> {
+  const operatorStopped =
+    existingGlobalState?.operator_stopped === "1" || existingGlobalState?.operator_stopped === "true"
+  // Only an explicit operator_intent (or the sticky operator_stopped veto)
+  // should keep the engine stopped. desired_status/status are runtime/shadow
+  // fields written by this same step and by engine heartbeats; falling through
+  // to them re-poisoned operator_intent with a stale "stopped" on every boot.
+  // Anything else (including a missing operator_intent) defaults to "running".
+  const preservedIntent = operatorStopped
+    ? "stopped"
+    : existingGlobalState?.operator_intent || "running"
+
+  const globalWorkerHeartbeat = readTradeEngineWorkerHeartbeat(existingGlobalState)
+  const activeWorkerId = globalWorkerHeartbeat.activeWorkerId || ""
+  const thisProcessOwnsGlobalHeartbeat =
+    activeWorkerId === `engine-manager:${process.pid}` ||
+    activeWorkerId.startsWith(`${process.pid}:`) ||
+    activeWorkerId.startsWith(`engine-manager:${process.pid}:`)
+  const hasFreshProcessorHeartbeat = await Promise.all(
+    connectionIds.map(connectionId => isConnectionHeartbeatFresh(connectionId).catch(() => false)),
+  ).then(results => results.some(Boolean))
+  const preserveRuntimeLiveness =
+    !thisProcessOwnsGlobalHeartbeat && (globalWorkerHeartbeat.fresh || hasFreshProcessorHeartbeat)
+
+  return {
+    // Fresh installs and restored snapshots default to desired_status: "running"
+    // and operator_intent: "running" so unattended continuity can resume;
+    // a sticky operator_stopped flag above remains an explicit stop veto.
+    desired_status: preservedIntent,
+    operator_intent: preservedIntent,
+    boot_status: "initialized",
+    ...(preserveRuntimeLiveness
+      ? {
+          actual_status: existingGlobalState?.actual_status || "running",
+          active_worker_id: existingGlobalState?.active_worker_id || "",
+          last_heartbeat_at: existingGlobalState?.last_heartbeat_at || "",
+          ...(existingGlobalState?.last_heartbeat_iso
+            ? { last_heartbeat_iso: existingGlobalState.last_heartbeat_iso }
+            : {}),
+        }
+      : {
+          actual_status: "stopped",
+          active_worker_id: "",
+          last_heartbeat_at: "",
+        }),
+    initialized_at: now,
+    process_version: "1.0",
+  }
+}
+
+/**
+ * PHASE 4 FIX 4.1: Clean up orphaned progress from incomplete shutdowns
+ */
+const STARTUP_ORPHAN_PROGRESS_GRACE_MS = Number(process.env.STARTUP_ORPHAN_PROGRESS_GRACE_MS || 120_000)
+const ORPHAN_PROGRESS_SECOND_CONFIRM_MS = Number(process.env.ORPHAN_PROGRESS_SECOND_CONFIRM_MS || 30_000)
+const WORKER_HEARTBEAT_FRESH_MS = 90_000
+
+function toEpochMs(value: unknown): number {
+  if (value == null || value === "") return 0
+  const numeric = Number(value)
+  if (Number.isFinite(numeric) && numeric > 0) return numeric
+  const parsed = new Date(String(value)).getTime()
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+function isFreshTimestamp(timestamp: number, now: number, freshnessMs = WORKER_HEARTBEAT_FRESH_MS): boolean {
+  return timestamp > 0 && now - timestamp < freshnessMs
+}
+
+async function getFreshestWorkerHeartbeat(client: any): Promise<number> {
+  try {
+    const globalState = await client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>))
+    return Math.max(
+      toEpochMs(globalState?.last_heartbeat_at),
+      toEpochMs(globalState?.last_heartbeat_iso),
+    )
+  } catch {
+    return 0
+  }
+}
+
+async function markOrphanCleanupPending(client: any, connectionId: string, reason: string, now: number) {
+  await setSettings(`engine_progression:${connectionId}`, {
+    orphan_cleanup_pending: true,
+    needs_reconcile: true,
+    orphan_cleanup_reason: reason,
+    orphan_cleanup_marked_at: new Date(now).toISOString(),
+    updated_at: new Date(now).toISOString(),
+    detail: "Engine owner heartbeat missing; waiting for confirmation before resetting progress",
+  })
+  await client.set(`engine_orphan_cleanup_pending:${connectionId}`, String(now)).catch(() => undefined)
+}
+
 /**
  * PHASE 4 FIX 4.1: Clean up orphaned progress from incomplete shutdowns
  */
@@ -142,6 +244,8 @@ export async function cleanupOrphanedProgress() {
     const coordinator = getGlobalTradeEngineCoordinator()
 
     let cleanedUp = 0
+    const now = Date.now()
+    const startupGraceActive = typeof process.uptime === "function" && process.uptime() * 1000 < STARTUP_ORPHAN_PROGRESS_GRACE_MS
 
     for (const conn of allConnections) {
       // Use client.get to match setRunningFlag which writes string values ("1"/"0")
@@ -153,29 +257,52 @@ export async function cleanupOrphanedProgress() {
       // alive; clearing its `engine_is_running:*` flag from a non-owner worker
       // is the exact race that makes the UI show phantom stops/restarts.
       if (runningFlag === "true" || runningFlag === "1") {
-          if (!coordinator.isEngineRunning(conn.id)) {
-            // Reconcile RAW + `settings:` engine-state hashes — the live engine
-            // only refreshes `settings:trade_engine_state:{id}`, so reading the
-            // raw hash alone made a healthy engine look "stalled" and caused the
-            // boot cleanup to wrongly clear its running flag and reset
-            // progression (the "multiple reinits / stalling stats" symptom).
-            const remoteHeartbeatFresh = await isProcessorHeartbeatFresh(conn.id)
+        if (!coordinator.isEngineRunning(conn.id)) {
+          // Reconcile RAW + `settings:` engine-state hashes and the global
+          // trade-engine worker heartbeat. A healthy engine may publish one or
+          // more of these depending on startup phase and deployment topology.
+          const [remoteHeartbeatFresh, freshestEngineHeartbeat, freshestWorkerHeartbeat] = await Promise.all([
+            isProcessorHeartbeatFresh(conn.id),
+            getFreshestProcessorHeartbeat(conn.id),
+            getFreshestWorkerHeartbeat(client),
+          ])
+          const workerHeartbeatFresh = isFreshTimestamp(freshestWorkerHeartbeat, now)
 
-            if (remoteHeartbeatFresh) {
+          if (remoteHeartbeatFresh || workerHeartbeatFresh) {
+            await client.del(`engine_orphan_cleanup_pending:${conn.id}`).catch(() => 0)
             console.log(
               `[v0] [Startup] Preserving running flag for ${conn.id} — fresh distributed heartbeat present`,
             )
             continue
           }
 
+          const pendingKey = `engine_orphan_cleanup_pending:${conn.id}`
+          const pendingSince = toEpochMs(await client.get(pendingKey).catch(() => null))
+          const secondConfirmationReady = pendingSince > 0 && now - pendingSince >= ORPHAN_PROGRESS_SECOND_CONFIRM_MS
+          const hasAnyOwnerHeartbeat = freshestEngineHeartbeat > 0 || freshestWorkerHeartbeat > 0
+          const explicitStaleLockBreak = hasAnyOwnerHeartbeat && !startupGraceActive
+
+          if (startupGraceActive || (!secondConfirmationReady && !explicitStaleLockBreak)) {
+            const reason = startupGraceActive
+              ? "startup_grace_waiting_for_owner_heartbeat"
+              : "awaiting_second_stale_owner_confirmation"
+            console.log(`[v0] [Startup] Marking ${conn.id} orphan cleanup pending (${reason})`)
+            await markOrphanCleanupPending(client, conn.id, reason, now)
+            continue
+          }
+
           console.log(`[v0] [Startup] Cleaning orphaned running flag for ${conn.id}`)
 
-          // Clear orphaned flags using client.set to match setRunningFlag
+          // Clear orphaned flags using client.set to match setRunningFlag only
+          // after a second stale confirmation or an explicit stale heartbeat break.
           await client.set(`engine_is_running:${conn.id}`, "0")
+          await client.del(pendingKey).catch(() => 0)
           await setSettings(`engine_progression:${conn.id}`, {
             phase: "idle",
             progress: 0,
-            detail: "Cleaned up after unclean shutdown",
+            orphan_cleanup_pending: false,
+            needs_reconcile: true,
+            detail: "Cleaned up after confirmed stale engine owner",
             updated_at: new Date().toISOString(),
           })
 
@@ -217,7 +344,10 @@ export async function completeStartup() {
     )
     console.log(`[v0] [Startup] ✓ Production coverage repair scheduled in background`)
 
-    const volatileCleanup = await cleanupVolatileRuntimeState({ reason: "completeStartup" })
+    const volatileCleanup = isProductionEnvironment() && (globalThis as any).__redis_volatile_startup_cleanup_ran
+      ? { deleted: 0, preserved: 0 }
+      : await cleanupVolatileRuntimeState({ mode: "activeOwnerSafe", reason: "completeStartup" })
+    if (isProductionEnvironment()) (globalThis as any).__redis_volatile_startup_cleanup_ran = true
     console.log(`[v0] [Startup] ✓ Volatile runtime cleanup complete (deleted ${volatileCleanup.deleted}, preserved ${volatileCleanup.preserved})\n`)
 
     // Report migration status deterministically. PRODUCTION strips console.log
@@ -318,30 +448,13 @@ export async function completeStartup() {
       const client = getRedisClient()
       const now = String(Date.now())
       const existingGlobalState = (await client.hgetall("trade_engine:global")) as Record<string, string> | null
-      const operatorStopped =
-        existingGlobalState?.operator_stopped === "1" || existingGlobalState?.operator_stopped === "true"
-      // Only an explicit operator_intent (or the sticky operator_stopped veto)
-      // should keep the engine stopped. desired_status/status are runtime/shadow
-      // fields written by this same step and by engine heartbeats; falling through
-      // to them re-poisoned operator_intent with a stale "stopped" on every boot.
-      // Anything else (including a missing operator_intent) defaults to "running".
-      const preservedIntent = operatorStopped
-        ? "stopped"
-        : existingGlobalState?.operator_intent || "running"
+      const bootMetadata = await buildGlobalTradeEngineBootMetadata(
+        existingGlobalState,
+        allConnections.map(conn => conn.id),
+        now,
+      )
 
-      await client.hset("trade_engine:global", {
-        // Fresh installs and restored snapshots default to desired_status: "running"
-        // and operator_intent: "running" so unattended continuity can resume;
-        // a sticky operator_stopped flag above remains an explicit stop veto.
-        desired_status: preservedIntent,
-        operator_intent: preservedIntent,
-        boot_status: "initialized",
-        actual_status: "stopped",
-        active_worker_id: "",
-        last_heartbeat_at: "",
-        initialized_at: now,
-        process_version: "1.0",
-      })
+      await client.hset("trade_engine:global", bootMetadata)
       console.log(`[v0] [Startup] ✓ Global trade engine boot metadata initialized\n`)
     } catch (err) {
       console.warn(`[v0] [Startup] ⚠ Failed to initialize global trade engine boot metadata (non-fatal):`, err)

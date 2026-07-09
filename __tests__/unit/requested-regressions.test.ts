@@ -144,15 +144,19 @@ describe("requested regression guardrails", () => {
     expect(source).toContain('engineStatus = "queued"')
   })
 
-  test("production healing sweep drains queued engine refresh requests", () => {
-    const source = read("lib/trade-engine-auto-start.ts")
+  test("production healing sweep drains queued engine refresh requests through shared claim helper", () => {
+    const autoStartSource = read("lib/trade-engine-auto-start.ts")
+    const queueSource = read("lib/engine-refresh-queue.ts")
 
-    expect(source).toContain("processQueuedEngineRefreshRequests")
-    expect(source).toContain("getQueuedEngineRefreshRequests")
-    expect(source).toContain("currentVersion !== requestedVersion")
-    expect(source).toContain("await coordinator.stopEngine(request.connectionId, { operatorRequested: true })")
-    expect(source).toContain("await coordinator.startMissingEngines([connection])")
-    expect(source).toContain("queuedRefreshProcessedCount")
+    expect(autoStartSource).toContain("processQueuedEngineRefreshRequests")
+    expect(autoStartSource).toContain("processQueuedEngineRefreshRequests: consumeQueuedEngineRefreshRequests")
+    expect(queueSource).toContain("getQueuedEngineRefreshRequests")
+    expect(queueSource).toContain("currentVersion !== requestedVersion")
+    expect(queueSource).toContain("ENGINE_REFRESH_CLAIM_PREFIX")
+    expect(queueSource).toContain("NX: true, PX: ENGINE_REFRESH_CLAIM_TTL_MS")
+    expect(autoStartSource).toContain("await coordinator.stopEngine(request.connectionId, { operatorRequested: true })")
+    expect(autoStartSource).toContain("await coordinator.startMissingEngines([connection])")
+    expect(autoStartSource).toContain("queuedRefreshProcessedCount")
   })
 
   test("live-trade enable preserves requested state when credentials are missing", () => {
@@ -969,14 +973,35 @@ describe("requested regression guardrails", () => {
       startup.indexOf("Step 7/8", startup.indexOf("Initializing global trade engine boot metadata")),
     )
 
-    expect(bootBlock).toContain('desired_status: "running"')
-    expect(bootBlock).toContain('operator_intent: "running"')
+    expect(bootBlock).toContain("const existingGlobalState = (await client.hgetall")
+    expect(bootBlock).toContain('desired_status: preservedIntent')
+    expect(bootBlock).toContain('operator_intent: preservedIntent')
     expect(bootBlock).toContain('actual_status: "stopped"')
     expect(bootBlock).not.toMatch(/^\s*status: "running"/m)
 
     expect(statusRoute).toContain("const effectivelyRunning = isGloballyRunning && !isGloballyPaused && (hasLocalEngineRuntime || hasRuntimeProof || distributedEngineCount > 0)")
     expect(statusRoute).toContain('actualStatus: effectivelyRunning ? "running" : (isGloballyPaused ? "paused" : "degraded")')
     expect(statusRoute).toContain("last_heartbeat_at")
+  })
+
+  test("startup boot metadata preserves existing fresh runtime heartbeat ownership", () => {
+    const startup = read("lib/startup-coordinator.ts")
+    const bootBlock = startup.slice(
+      startup.indexOf("Initializing global trade engine boot metadata"),
+      startup.indexOf("Step 7/8", startup.indexOf("Initializing global trade engine boot metadata")),
+    )
+
+    expect(bootBlock).toContain("const existingGlobalState = (await client.hgetall")
+    expect(startup).toContain("readTradeEngineWorkerHeartbeat(existingGlobalState)")
+    expect(startup).toContain("isProcessorHeartbeatFresh")
+    expect(startup).toContain("const preserveRuntimeLiveness =")
+    expect(startup).toContain("!thisProcessOwnsGlobalHeartbeat && (globalWorkerHeartbeat.fresh || hasFreshProcessorHeartbeat)")
+    expect(startup).toContain("actual_status: existingGlobalState?.actual_status || \"running\"")
+    expect(startup).toContain("active_worker_id: existingGlobalState?.active_worker_id || \"\"")
+    expect(startup).toContain("last_heartbeat_at: existingGlobalState?.last_heartbeat_at || \"\"")
+    expect(bootBlock.indexOf("const existingGlobalState = (await client.hgetall")).toBeLessThan(
+      bootBlock.indexOf('await client.hset("trade_engine:global"'),
+    )
   })
 
   test.each([
@@ -1749,7 +1774,7 @@ describe("requested regression guardrails", () => {
 
     expect(source).toContain("Refresh request for ${request.connectionId} is not local; leaving queued for owner")
     expect(source).toContain("if (!this.isEngineRunning(request.connectionId))")
-    expect(source).toMatch(/if \(!this\.isEngineRunning\(request\.connectionId\)\) {[\s\S]*?continue[\s\S]*?await this\.applyPendingChangesNow\(request\.connectionId\)/)
+    expect(source).toMatch(/if \(!this\.isEngineRunning\(request\.connectionId\)\) {[\s\S]*?return "defer"[\s\S]*?await this\.applyPendingChangesNow\(request\.connectionId\)/)
   })
 
 })

@@ -4488,6 +4488,46 @@ export class TradeEngineManager {
     await this.applyPendingSettingsChange()
   }
 
+  private async stampSettingsRecoordinationApplied(
+    event: import("@/lib/settings-coordinator").SettingsChangeEvent,
+  ): Promise<void> {
+    try {
+      const completedAt = new Date().toISOString()
+      const appliedVersion = String(event.timestamp || completedAt)
+      await getRedisClient().hset(`progression:${this.connectionId}`, {
+        settings_recoordination_pending: "0",
+        strategy_recompute_requested: "0",
+        settings_recoordination_completed_at: completedAt,
+        settings_recoordination_applied_at: completedAt,
+        settings_recoordination_applied_version: appliedVersion,
+        settings_recoordination_applied_event_id: appliedVersion,
+        settings_recoordination_applied_fields: JSON.stringify(event.changedFields || []),
+      })
+      await getRedisClient().hdel?.(`progression:${this.connectionId}`, "settings_recoordination_last_error")
+    } catch (stampErr) {
+      console.warn(
+        `[v0] [Engine ${this.connectionId}] settings recoordination completion stamp failed:`,
+        stampErr instanceof Error ? stampErr.message : String(stampErr),
+      )
+    }
+  }
+
+  private async stampSettingsRecoordinationFailed(error: unknown): Promise<void> {
+    try {
+      await getRedisClient().hset(`progression:${this.connectionId}`, {
+        settings_recoordination_pending: "1",
+        strategy_recompute_requested: "1",
+        settings_recoordination_last_error: error instanceof Error ? error.message : String(error),
+        settings_recoordination_failed_at: new Date().toISOString(),
+      })
+    } catch (stampErr) {
+      console.warn(
+        `[v0] [Engine ${this.connectionId}] settings recoordination failure stamp failed:`,
+        stampErr instanceof Error ? stampErr.message : String(stampErr),
+      )
+    }
+  }
+
   /**
    * Consumes the pending change event, dispatches to reload-or-restart,
    * and clears the event. Wrapped in a `settingsApplying` mutex so a
@@ -4508,34 +4548,30 @@ export class TradeEngineManager {
       )
 
       if (changeType === "restart") {
-        // Hand off to the coordinator's stop+start path. We MUST clear
-        // the pending event BEFORE the restart so the freshly-started
-        // engine doesn't immediately re-apply the same change (it
-        // would just be a no-op, but cleaner this way).
+        // Hand off to the coordinator's stop+start path. Clear and completion-stamp
+        // only after restart succeeds; otherwise the durable pending envelope and
+        // progression flags must remain visible for retry/debugging.
+        const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
+        const coordinator = getGlobalTradeEngineCoordinator()
+        await coordinator.restartEngine(this.connectionId)
         await clearPendingChanges(this.connectionId)
-        try {
-          const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
-          const coordinator = getGlobalTradeEngineCoordinator()
-          await coordinator.restartEngine(this.connectionId)
-        } catch (restartErr) {
-          console.error(
-            `[v0] [Engine ${this.connectionId}] settings-driven restart failed:`,
-            restartErr instanceof Error ? restartErr.message : String(restartErr),
-          )
-        }
+        await this.stampSettingsRecoordinationApplied(event)
         return
       }
 
       if (changeType === "reload") {
         await this.applyHotReload(fields)
         await clearPendingChanges(this.connectionId)
+        await this.stampSettingsRecoordinationApplied(event)
         return
       }
 
       // `cosmetic` — name change, label, etc. Nothing to do for the
       // engine, just clear the marker.
       await clearPendingChanges(this.connectionId)
+      await this.stampSettingsRecoordinationApplied(event)
     } catch (err) {
+      await this.stampSettingsRecoordinationFailed(err)
       console.warn(
         `[v0] [Engine ${this.connectionId}] applyPendingSettingsChange failed:`,
         err instanceof Error ? err.message : String(err),
@@ -4725,6 +4761,7 @@ export class TradeEngineManager {
         `[v0] [Engine ${this.connectionId}] applyHotReload failed:`,
         err instanceof Error ? err.message : String(err),
       )
+      throw err
     }
   }
 

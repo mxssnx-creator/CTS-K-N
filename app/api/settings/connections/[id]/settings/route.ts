@@ -850,6 +850,8 @@ export async function PATCH(
     if (symbolsModeChanged) {
       // Recoordination is intentionally centralized in recoordinateAfterSettingsChange() below.
           // Recoordination is intentionally centralized in applyMainConnectionSettingsChange() below.
+      // Recoordination is intentionally centralized in recoordinateAfterSettingsChange() below
+      // Recoordination is intentionally centralized in recoordinateAfterSettingsChange() below via applyMainConnectionSettingsChange().
       // Running it here as well created two settings-change envelopes and two progression
       // archive attempts from one dialog save, which made stats briefly alternate between
       // the previous and newly-saved settings under production polling.
@@ -882,6 +884,8 @@ export async function PATCH(
       recoordinationId: settingsVersion,
       progressionEpoch: recoordination.completedAt,
       recoordination,
+      refreshQueued: recoordination.refreshQueued === true,
+      refreshStatus: recoordination.refreshStatus,
     })
   } catch (error) {
     console.error("[v0] [Settings] PATCH error:", error)

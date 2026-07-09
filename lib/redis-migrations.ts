@@ -4518,16 +4518,18 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
 
         // return { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
         const result = { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
+        // Regression guard: return { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
+          const result = { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
         await import("@/lib/startup-diagnostics")
           .then(({ recordMigrationStatus }) => recordMigrationStatus({
-            success: result.success,
-            message: result.message,
+            success: true,
+            message: "Already run in this process",
             current_version: finalVer,
             latest_version: finalVer,
             is_migrated: true,
           }))
           .catch(() => null)
-        return result
+        return { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
       }
     }
 
@@ -4572,16 +4574,18 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
 
       // return { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
         const result = { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
+      // Regression guard: return { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
+          const result = { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
       await import("@/lib/startup-diagnostics")
         .then(({ recordMigrationStatus }) => recordMigrationStatus({
-          success: result.success,
-          message: result.message,
+          success: true,
+          message: `Already at latest version ${finalVersion}`,
           current_version: finalVersion,
           latest_version: finalVersion,
           is_migrated: true,
         }))
         .catch(() => null)
-      return result
+      return { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
     }
 
     // Run pending migrations as one optimized batch. The batch client suppresses

@@ -53,6 +53,7 @@ import {
   type LockHandle,
 } from "./trade-engine/progression-lock"
 import { clearEngineRefreshRequest, ENGINE_REFRESH_REQUEST_TTL_MS, getQueuedEngineRefreshRequests, recordEngineRefreshRequestFailure } from "./engine-refresh-queue"
+import { processQueuedEngineRefreshRequests } from "./engine-refresh-queue"
 import { onEngineEvent, publishEngineEvent } from "./engine-event-bus"
 
 // Re-export TradeEngine class and config from subdirectory for convenient imports
@@ -733,13 +734,6 @@ export class GlobalTradeEngineCoordinator {
    * as a safety net for requests written by other processes/serverless calls.
    */
   public async drainQueuedRefreshRequestsNow(connectionId?: string): Promise<void> {
-    const refreshRequests = await getQueuedEngineRefreshRequests()
-    const targetedRequests = connectionId
-      ? refreshRequests.filter(({ request }) => request.connectionId === connectionId)
-      : refreshRequests
-
-    if (targetedRequests.length === 0) return
-
     const { getConnection } = await import("@/lib/redis-db")
     const now = Date.now()
 
@@ -767,57 +761,46 @@ export class GlobalTradeEngineCoordinator {
         continue
       }
 
-      console.log(
-        `[v0] [Coordinator] Refresh requested for ${request.connectionId}: ${request.action} ` +
-          `(state_switch_version=${requestedVersion}, reason=${request.reason})`,
-      )
-
-      try {
+    await processQueuedEngineRefreshRequests({
+      consumerName: "Coordinator",
+      targetConnectionId: connectionId,
+      staleAfterMs: 30_000,
+      getConnection,
+      act: async (request) => {
         if (request.action === "stop") {
           await this.stopEngine(request.connectionId, { operatorRequested: true })
-        } else if (request.action === "start") {
+          return "processed"
+        }
+
+        if (request.action === "start") {
           if (!this.isEngineRunning(request.connectionId)) {
             await this.startEngineFromConnectionConfig(request.connectionId)
           }
-        } else if (request.action === "restart") {
+          return "processed"
+        }
+
+        if (request.action === "restart") {
           if (!this.isEngineRunning(request.connectionId)) {
-            // A different production worker may own this engine. Leave the
-            // durable restart request queued so the owning coordinator's
-            // health-monitor drain can consume it instead of letting an API
-            // worker clear the request without restarting anything.
             console.log(
               `[v0] [Coordinator] Restart request for ${request.connectionId} is not local; leaving queued for owner`,
             )
-            continue
+            return "defer"
           }
           await this.restartEngine(request.connectionId)
-        } else {
-          // Settings/progression refresh requests must be hot-applied to the
-          // target connection only. Calling refreshEngines() here performed
-          // a full eligible-connection reconciliation every 10s and caused
-          // repeated reinitializations right after progress started.
-          // If this process is not the engine owner, do NOT clear the durable
-          // request: a serverless/API worker can import the coordinator without
-          // owning the running manager, and clearing here would hide the refresh
-          // from the cross-process owner that still needs to consume it.
-          if (!this.isEngineRunning(request.connectionId)) {
-            console.log(
-              `[v0] [Coordinator] Refresh request for ${request.connectionId} is not local; leaving queued for owner`,
-            )
-            continue
-          }
-          await this.applyPendingChangesNow(request.connectionId)
+          return "processed"
         }
-        await clearEngineRefreshRequest(request.connectionId)
-      } catch (error) {
-        console.warn(
-          `[v0] [Coordinator] Refresh request failed for ${request.connectionId}; ` +
-            `leaving queued for retry until expiry (attempt=${Number(request.retryCount ?? 0) + 1}):`,
-          error instanceof Error ? error.message : String(error),
-        )
-        await recordEngineRefreshRequestFailure(request, error)
-      }
-    }
+
+        if (!this.isEngineRunning(request.connectionId)) {
+          console.log(
+            `[v0] [Coordinator] Refresh request for ${request.connectionId} is not local; leaving queued for owner`,
+          )
+          return "defer"
+        }
+
+        await this.applyPendingChangesNow(request.connectionId)
+        return "processed"
+      },
+    })
   }
 
   /**
@@ -1753,6 +1736,7 @@ for (const connection of validConnections) {
   private escalatingEngines: Set<string> = new Set()
 
   private startGlobalHealthMonitoring(): void {
+    if (process.env.NODE_ENV === "test") return
     if (this.healthMonitoringSubscriptionsStarted && this.healthCheckTimer) return
     console.log("[v0] Starting event-triggered trade engine health monitoring (refresh + stall watchdog)")
     if (process.env.NODE_ENV === "test") return
