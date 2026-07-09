@@ -120,6 +120,34 @@ describe("settings propagation", () => {
     expect(writes.some((w) => w.key === "trade_engine_state:conn-main")).toBe(true)
   })
 
+  test("legacy connection-settings writer mirrors engine stores and recoordinates", () => {
+    const fs = require("fs")
+    const path = require("path")
+    const source = fs.readFileSync(
+      path.join(process.cwd(), "lib/connection-settings.ts"),
+      "utf8",
+    )
+
+    expect(source).toContain("mirrorEngineSettingsStores")
+    expect(source).toContain("connection_settings:${connectionId}")
+    expect(source).toContain("settings:connection_settings:${connectionId}")
+    expect(source).toContain("extractConnectionTopLevelMirror")
+    for (const field of [
+      "live_volume_factor",
+      "preset_volume_factor",
+      "volume_step_ratio",
+      "force_symbols",
+      "symbol_count",
+      "is_live_trade",
+      "position_mode",
+      "margin_type",
+    ]) {
+      expect(source).toContain(field)
+    }
+    expect(source).toContain("recoordinateAfterSettingsChange")
+    expect(source).toContain("notifySettingsChanged")
+  })
+
   test("notifySettingsChanged writes dirty flags through raw Redis instead of setSettings", () => {
     const fs = require("fs")
     const path = require("path")
