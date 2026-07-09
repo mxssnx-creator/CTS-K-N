@@ -281,7 +281,9 @@ export async function GET(
       // step-1 windows documented in StrategySet.axisWindows.
       client.hgetall(`axis_windows:${connectionId}`).catch(() => null),
       // Per-symbol/direction order counters written by live-stage.ts via
-      // `incrementOrdersBySymbol`. Hash field layout is
+      // `incrementOrdersBySymbol`. Simulated live-stage entries are folded
+      // into placed and filled because paper execution immediately creates an
+      // open position with synthetic fill data. Hash field layout is
       // `{SYMBOL}:{direction}:{kind}` so a single HGETALL recovers the
       // entire breakdown for the dashboard's "Orders BTCUSDT L:3 / S:2"
       // chip strip. Stays in lock-step with the global
@@ -3078,7 +3080,9 @@ export async function GET(
       })(),
 
       liveExecution: {
-        // Orders
+        // Orders. Simulated/paper orders are included in placed+filled because
+        // they immediately create an open position with synthetic fill data;
+        // ordersSimulated remains an audit-only subset counter.
         ordersPlaced:     n(progHash.live_orders_placed_count),
         ordersFilled:     n(progHash.live_orders_filled_count),
         ordersFailed:     n(progHash.live_orders_failed_count),
@@ -3148,7 +3152,8 @@ export async function GET(
         // `live_orders_by_symbol:{id}` HGETALL into an array of
         // `{ symbol, long: { placed, filled }, short: { placed, filled } }`
         // rows so the UI can render "BTCUSDT L:3/2 S:1/1" chips after the
-        // global totals. Empty array when no orders have been placed yet.
+        // global totals. Simulated entries are included in placed/filled.
+        // Empty array when no orders have been placed yet.
         ordersBySymbol: (() => {
           const map = new Map<string, {
             long:  { placed: number; filled: number }

@@ -125,7 +125,8 @@ export function validateLiveOrderQuantity(input: { quantity: number; price?: num
 
 export async function recordPerSymbolOrderCounter(connectionId: string, symbol: string, direction: LiveOrderDirection, metric: "placed" | "filled" | "failed"): Promise<void> {
   const client = getRedisClient() as any
-  await client.hincrby(`live_orders_by_symbol:${connectionId}`, `${symbol}:${direction}:${metric}`, 1)
+  const symbolKey = String(symbol || "").trim().toUpperCase()
+  await client.hincrby(`live_orders_by_symbol:${connectionId}`, `${symbolKey}:${direction}:${metric}`, 1)
 }
 
 export async function recordLiveOrderProgression(connectionId: string, symbol: string, direction: LiveOrderDirection, event: "placed" | "filled" | "failed" | "simulated", volumeUsd = 0): Promise<void> {
@@ -141,11 +142,25 @@ export async function recordLiveOrderProgression(connectionId: string, symbol: s
     }
   }
   if (event === "failed") await client.hincrby(progKey, "live_orders_failed_count", 1)
-  if (event === "simulated") await client.hincrby(progKey, "live_orders_simulated_count", 1)
+  if (event === "simulated") {
+    // Canonical paper execution: simulated orders immediately create/open an
+    // executable position, so expose them in the same placed+filled counters
+    // dashboards and accounting code already consume while retaining the
+    // simulated-specific audit counter.
+    await client.hincrby(progKey, "live_orders_simulated_count", 1)
+    await client.hincrby(progKey, "live_orders_placed_count", 1)
+    await client.hincrby(progKey, "live_orders_filled_count", 1)
+    await client.hincrby(progKey, "live_positions_created_count", 1)
+    if (volumeUsd) {
+      if (typeof client.hincrbyfloat === "function") await client.hincrbyfloat(progKey, "live_volume_usd_total", volumeUsd)
+      else await client.hincrby(progKey, "live_volume_usd_total", Math.round(volumeUsd))
+    }
+  }
   if (event !== "simulated") {
     await recordPerSymbolOrderCounter(connectionId, symbol, direction, event)
   } else {
     await recordPerSymbolOrderCounter(connectionId, symbol, direction, "placed")
+    await recordPerSymbolOrderCounter(connectionId, symbol, direction, "filled")
   }
 }
 
@@ -205,7 +220,8 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
   const fill = parseOrderFill(result, input.quantity, input.price || 0)
   let position: any = null
   if (!willUseRealExchange) {
-    if (input.updateCounters !== false) await recordLiveOrderProgression(input.connectionId, symbol, direction, "simulated")
+    if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: input.quantity, leverage: input.leverage, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId, status: "simulated" })
+    if (input.updateCounters !== false) await recordLiveOrderProgression(input.connectionId, symbol, direction, "simulated", position?.volumeUsd || (fill.filledQty * fill.filledPrice))
   } else {
     if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: input.quantity, leverage: input.leverage, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId })
     if (input.updateCounters !== false) {

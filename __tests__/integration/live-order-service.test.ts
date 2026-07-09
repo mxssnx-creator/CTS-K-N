@@ -86,6 +86,23 @@ describe("live-order-service integration accounting", () => {
     })
   })
 
+  test("simulated progression folds into placed and filled counters", async () => {
+    const { recordLiveOrderProgression } = await import("@/lib/live-order-service")
+
+    await recordLiveOrderProgression("conn-sim", "solusdt", "short", "simulated")
+
+    expect(hashStore.get("progression:conn-sim")).toMatchObject({
+      live_orders_simulated_count: "1",
+      live_orders_placed_count: "1",
+      live_orders_filled_count: "1",
+      live_positions_created_count: "1",
+    })
+    expect(hashStore.get("live_orders_by_symbol:conn-sim")).toEqual({
+      "SOLUSDT:short:placed": "1",
+      "SOLUSDT:short:filled": "1",
+    })
+  })
+
   test("live-stage per-symbol primitive writes the same counter key format", async () => {
     const { recordPerSymbolOrderCounter } = await import("@/lib/live-order-service")
 
