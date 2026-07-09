@@ -69,11 +69,36 @@ describe("requested regression guardrails", () => {
     expect(liveOrderService).toContain('"live_orders_simulated_count"')
     expect(liveOrderService).toContain('return sideKey === "short" || sideKey === "sell" ? "short" : "long"')
     expect(liveOrderService).toContain('return direction === "long" ? "buy" : "sell"')
-    expect(liveOrderService).toContain('`${symbol}:${direction}:${metric}`')
+    expect(liveOrderService).toContain('`${symbolKey}:${direction}:${metric}`')
     expect(placeOrder).not.toContain('JSON.stringify(existing)')
     expect(placeOrder).not.toContain("symbol,\n          side,")
     expect(liveOrdersTest).toContain('getLiveOrderSafetyFailure(body)')
     expect(liveOrdersTest).toContain('mode: "blocked_live_order_safety"')
+  })
+
+  test("live-stage reconcile fill accounting is marker-guarded", () => {
+    const source = read("lib/trade-engine/stages/live-stage.ts")
+
+    expect(source).toContain("fillCounterRecordedAt?: number")
+    expect(source).toContain("function hasFillCounterRecorded")
+    expect(source).toContain("if (hasFillCounterRecorded(position)) return false")
+    expect(source).toContain("position.fillCounterRecordedAt = Date.now()")
+
+    const fallbackBlock = source.slice(
+      source.indexOf("confirmed_position_fallback: reconcile saw exchange position"),
+      source.indexOf("if (pos.orderId)", source.indexOf("confirmed_position_fallback: reconcile saw exchange position")),
+    )
+    expect(fallbackBlock).toContain("await recordFillCountersOnce(connectionId, pos")
+    expect(fallbackBlock).not.toContain('incrementMetric(connectionId, "live_orders_filled_count")')
+    expect(fallbackBlock).not.toContain('incrementOrdersBySymbol(connectionId, pos.symbol')
+
+    const orderBlock = source.slice(
+      source.indexOf('statusLower === "filled" || statusLower === "partially_filled"'),
+      source.indexOf('} else if (statusLower === "cancelled"', source.indexOf('statusLower === "filled" || statusLower === "partially_filled"')),
+    )
+    expect(orderBlock).toContain("await recordFillCountersOnce(connectionId, pos")
+    expect(orderBlock).not.toContain('incrementMetric(connectionId, "live_orders_filled_count")')
+    expect(orderBlock).not.toContain('incrementOrdersBySymbol(connectionId, pos.symbol')
   })
 
   test("live order statistics keep long and short buckets independent", () => {
@@ -1453,6 +1478,29 @@ describe("requested regression guardrails", () => {
     expect(envExample).toContain("ALLOW_PROD_INLINE_REDIS=1")
   })
 
+  test("simulated live-stage orders increment directional per-symbol counters", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const simStart = liveStage.indexOf("if (!isLiveTradeEnabled) {")
+    const simEnd = liveStage.indexOf("if (!exchangeConnector || typeof exchangeConnector.placeOrder !== \"function\")", simStart)
+    const simBlock = liveStage.slice(simStart, simEnd)
+
+    expect(simBlock).toContain("await savePosition(livePosition)")
+    expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_placed_count")')
+    expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_filled_count")')
+    expect(simBlock).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")')
+    expect(simBlock).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "filled")')
+    const liveOrderService = read("lib/live-order-service.ts")
+    expect(liveOrderService).toContain('if (event === "simulated")')
+    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_orders_placed_count", 1)')
+    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_orders_filled_count", 1)')
+    expect(liveOrderService).toContain('await recordPerSymbolOrderCounter(connectionId, symbol, direction, "filled")')
+    const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
+    expect(statsRoute).toContain("ordersSimulated remains an audit-only subset counter")
+    expect(simBlock.indexOf("await savePosition(livePosition)")).toBeLessThan(
+      simBlock.indexOf('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")'),
+    )
+  })
+
   test("live-stage save path maintains production reconciliation indexes", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const saveStart = liveStage.indexOf("async function savePosition(position: LivePosition")
@@ -1950,6 +1998,32 @@ describe("requested regression guardrails", () => {
         useMaximalLeverage: "false",
       }))
     }
+  test("live order failure paths update global and per-symbol failed counters", () => {
+    const source = read("lib/trade-engine/stages/live-stage.ts")
+    const failedMetric = 'await incrementMetric(connectionId, "live_orders_failed_count")'
+    const failedBySymbol = 'await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")'
+
+    const failedMetricCount = source.split(failedMetric).length - 1
+    const failedBySymbolCount = source.split(failedBySymbol).length - 1
+
+    expect(failedMetricCount).toBeGreaterThanOrEqual(5)
+    expect(failedBySymbolCount).toBe(failedMetricCount)
+
+    for (const marker of [
+      'Exchange connector not available or missing placeOrder',
+      '`No current price available for ${realPosition.symbol}`',
+      '`Exchange circuit breaker active for ${realPosition.symbol} — retrying in <5min`',
+      'Entry order rejected for ${realPosition.symbol}',
+      '`Live pipeline unhandled error for ${realPosition.symbol}`',
+    ]) {
+      const markerIndex = source.indexOf(marker)
+      expect(markerIndex).toBeGreaterThanOrEqual(0)
+      const block = source.slice(markerIndex, markerIndex + 2500)
+      expect(block).toContain('incrementMetric(connectionId, "live_orders_failed_count")')
+      expect(block).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")')
+    }
+
+    expect(source).toMatch(/async function incrementOrdersBySymbol[\s\S]*?catch \{[\s\S]*?best-effort/)
   })
 
 })

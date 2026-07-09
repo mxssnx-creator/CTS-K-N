@@ -27,6 +27,110 @@ function throttledStatsWarn(key: string, msg: string): void {
     return Number.isFinite(x) && x >= 0 ? x : 0
   }
 
+type OrderDirection = "long" | "short"
+type OrderKind = "placed" | "filled" | "failed"
+type OrderDirectionStats = Record<OrderKind, number>
+type OrdersBySymbolRow = {
+  symbol: string
+  long: OrderDirectionStats
+  short: OrderDirectionStats
+}
+type OrdersBySymbolAggregation = {
+  rows: OrdersBySymbolRow[]
+  totals: Record<OrderDirection, OrderDirectionStats>
+}
+
+function emptyOrderDirectionStats(): OrderDirectionStats {
+  return { placed: 0, filled: 0, failed: 0 }
+}
+
+function emptyOrdersBySymbolRow(symbol: string): OrdersBySymbolRow {
+  return {
+    symbol,
+    long: emptyOrderDirectionStats(),
+    short: emptyOrderDirectionStats(),
+  }
+}
+
+function aggregateOrdersBySymbol(
+  ordersBySymbolHash: Record<string, string> | null | undefined,
+): OrdersBySymbolAggregation {
+  const fields = ordersBySymbolHash && typeof ordersBySymbolHash === "object" ? ordersBySymbolHash : {}
+  const map = new Map<string, OrdersBySymbolRow>()
+
+  const getEntry = (symbol: string): OrdersBySymbolRow => {
+    const existing = map.get(symbol)
+    if (existing) return existing
+    const created = emptyOrdersBySymbolRow(symbol)
+    map.set(symbol, created)
+    return created
+  }
+
+  for (const [field, raw] of Object.entries(fields)) {
+    // Legacy/testing route compatibility: older simulated order helpers stored
+    // one JSON object under `{SYMBOL}` instead of the canonical
+    // `{SYMBOL}:{direction}:{kind}` fields. Fold those into the same
+    // independent long/short buckets, including failed counts when present.
+    if (!field.includes(":") && typeof raw === "string" && raw.trim().startsWith("{")) {
+      try {
+        const parsed = JSON.parse(raw)
+        const rawSide = String(parsed?.side ?? parsed?.direction ?? "").trim().toLowerCase()
+        const legacyDirection: OrderDirection =
+          rawSide.includes("short") || rawSide === "sell" ? "short" : "long"
+        const entry = getEntry(field)
+        const legacyCount = n(parsed?.count ?? 0)
+        entry[legacyDirection].placed += n(parsed?.placed ?? parsed?.ordersPlaced ?? legacyCount)
+        // Old test-order rows were written only after a successful endpoint
+        // response and did not carry a separate filled field. Mirror `count`
+        // into filled when no explicit fill count exists so restored snapshots
+        // reconcile with global filled counters.
+        entry[legacyDirection].filled += n(parsed?.filled ?? parsed?.ordersFilled ?? legacyCount)
+        entry[legacyDirection].failed += n(parsed?.failed ?? parsed?.ordersFailed ?? 0)
+      } catch {
+        // Ignore malformed legacy values; canonical fields remain authoritative.
+      }
+      continue
+    }
+
+    // Field format: `{SYMBOL}:{direction}:{kind}`. Direction must be long|short
+    // and kind one of placed|filled|failed — anything else is malformed.
+    const lastColon = field.lastIndexOf(":")
+    const midColon = field.lastIndexOf(":", lastColon - 1)
+    if (lastColon < 0 || midColon < 0) continue
+    const symbol = field.slice(0, midColon)
+    const direction = field.slice(midColon + 1, lastColon) as OrderDirection
+    const kind = field.slice(lastColon + 1) as OrderKind
+    if (!symbol) continue
+    if (direction !== "long" && direction !== "short") continue
+    if (kind !== "placed" && kind !== "filled" && kind !== "failed") continue
+    const value = n(raw)
+    if (value <= 0) continue
+    const entry = getEntry(symbol)
+    // Accumulate rather than assign so canonical counters and legacy backfilled
+    // rows can coexist without overwriting independent long/short totals.
+    entry[direction][kind] += value
+  }
+
+  const rows = Array.from(map.values()).sort((a, b) =>
+    (b.long.placed + b.short.placed + b.long.filled + b.short.filled + b.long.failed + b.short.failed) -
+    (a.long.placed + a.short.placed + a.long.filled + a.short.filled + a.long.failed + a.short.failed),
+  )
+
+  const totals: Record<OrderDirection, OrderDirectionStats> = {
+    long: emptyOrderDirectionStats(),
+    short: emptyOrderDirectionStats(),
+  }
+  for (const row of rows) {
+    for (const direction of ["long", "short"] as const) {
+      totals[direction].placed += row[direction].placed
+      totals[direction].filled += row[direction].filled
+      totals[direction].failed += row[direction].failed
+    }
+  }
+
+  return { rows, totals }
+}
+
   function pick(...values: unknown[]): number {
     for (const v of values) {
       const x = n(v)
@@ -281,7 +385,9 @@ export async function GET(
       // step-1 windows documented in StrategySet.axisWindows.
       client.hgetall(`axis_windows:${connectionId}`).catch(() => null),
       // Per-symbol/direction order counters written by live-stage.ts via
-      // `incrementOrdersBySymbol`. Hash field layout is
+      // `incrementOrdersBySymbol`. Simulated live-stage entries are folded
+      // into placed and filled because paper execution immediately creates an
+      // open position with synthetic fill data. Hash field layout is
       // `{SYMBOL}:{direction}:{kind}` so a single HGETALL recovers the
       // entire breakdown for the dashboard's "Orders BTCUSDT L:3 / S:2"
       // chip strip. Stays in lock-step with the global
@@ -316,6 +422,7 @@ export async function GET(
     const strategyDetailMainHash: Record<string, string> = (strategyDetailMainHashRaw as Record<string, string>) || {}
     const strategyDetailRealHash: Record<string, string> = (strategyDetailRealHashRaw as Record<string, string>) || {}
     const strategyDetailLiveHash: Record<string, string> = (strategyDetailLiveHashRaw as Record<string, string>) || {}
+    const ordersBySymbolAggregation = aggregateOrdersBySymbol(ordersBySymbolHash)
 
     const es = (engineState as Record<string, any>) || {}
     const ep = (engineProgression as Record<string, any>) || {}
@@ -3078,7 +3185,9 @@ export async function GET(
       })(),
 
       liveExecution: {
-        // Orders
+        // Orders. Simulated/paper orders are included in placed+filled because
+        // they immediately create an open position with synthetic fill data;
+        // ordersSimulated remains an audit-only subset counter.
         ordersPlaced:     n(progHash.live_orders_placed_count),
         ordersFilled:     n(progHash.live_orders_filled_count),
         ordersFailed:     n(progHash.live_orders_failed_count),
@@ -3146,9 +3255,10 @@ export async function GET(
         })(),
         // Per-symbol/direction order counters — folds the
         // `live_orders_by_symbol:{id}` HGETALL into an array of
-        // `{ symbol, long: { placed, filled }, short: { placed, filled } }`
+        // `{ symbol, long: { placed, filled, failed }, short: { placed, filled, failed } }`
         // rows so the UI can render "BTCUSDT L:3/2 S:1/1" chips after the
-        // global totals. Empty array when no orders have been placed yet.
+        // global totals. Simulated entries are included in placed/filled.
+        // Empty array when no orders have been placed yet.
         ordersBySymbol: (() => {
           const map = new Map<string, {
             long:  { placed: number; filled: number }
@@ -3216,6 +3326,9 @@ export async function GET(
               (a.long.placed + a.short.placed + a.long.filled + a.short.filled),
             )
         })(),
+        // global totals. Empty array when no orders have been placed yet.
+        ordersByDirection: ordersBySymbolAggregation.totals,
+        ordersBySymbol: ordersBySymbolAggregation.rows,
       },
 
       // Prehistoric processing metadata — range, timeframe, interval progress
