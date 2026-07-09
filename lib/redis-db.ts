@@ -1842,11 +1842,20 @@ export class InlineLocalRedis implements RedisClientLike {
 
 
 function hasSharedRedisConfig(): boolean {
-  return !!(
+  return Boolean(
     process.env.REDIS_URL ||
-    (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
-    process.env.KV_URL ||
-    (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN)
+      process.env.KV_URL ||
+      (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
+      (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN),
+  )
+}
+
+function getMissingProductionRedisError(): string {
+  return (
+    "Production/preview Redis configuration missing: configure one shared Redis option " +
+    "(REDIS_URL, KV_URL, UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN, or " +
+    "KV_REST_API_URL + KV_REST_API_TOKEN). InlineLocalRedis is process-local and is disabled " +
+    "for production/preview by default; set ALLOW_PROD_INLINE_REDIS=1 only for explicit local/demo overrides."
   )
 }
 
@@ -2074,20 +2083,21 @@ function createRedisInstance(): RedisClientLike {
     globalForRedis.__redis_backend = "redis-network"
     return new NodeRedisClientAdapter(url)
   }
-  const restUrl = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL
-  const restToken = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN
-  if (restUrl && restToken) {
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
     globalForRedis.__redis_backend = "redis-network"
-    return new UpstashRestRedisClient(restUrl, restToken)
+    return new UpstashRestRedisClient(process.env.UPSTASH_REDIS_REST_URL, process.env.UPSTASH_REDIS_REST_TOKEN)
+  }
+  if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
+    globalForRedis.__redis_backend = "redis-network"
+    return new UpstashRestRedisClient(process.env.KV_REST_API_URL, process.env.KV_REST_API_TOKEN)
   }
   if (isProductionEnvironment() && !hasSharedRedisConfig()) {
-    const strict = process.env.STRICT_REDIS_REQUIRED === "1" || process.env.REQUIRE_SHARED_REDIS === "1"
-    if (strict) {
-      throw new Error("Production Redis configuration missing: set REDIS_URL, KV_URL, or Upstash REST env vars for shared Redis")
+    if (process.env.ALLOW_PROD_INLINE_REDIS !== "1") {
+      throw new Error(getMissingProductionRedisError())
     }
     console.warn(
-      "[v0] [Redis] Production Redis configuration missing; falling back to InlineLocalRedis. " +
-        "Set REDIS_URL/KV_URL/Upstash env vars for shared durable storage, or STRICT_REDIS_REQUIRED=1 to fail fast.",
+      "[v0] [Redis] ALLOW_PROD_INLINE_REDIS=1 is set; using InlineLocalRedis in production/preview. " +
+        "This is only safe for explicit local/demo overrides and is not shared or durable across deployments.",
     )
   }
   globalForRedis.__redis_backend = "inline-local"
@@ -2096,6 +2106,15 @@ function createRedisInstance(): RedisClientLike {
 
 export function getRedisBackend(): RedisBackend {
   return globalForRedis.__redis_backend || (redisInstance instanceof InlineLocalRedis ? "inline-local" : "redis-network")
+}
+
+async function persistRedisBackendDiagnostic(): Promise<void> {
+  try {
+    const { recordRedisBackend } = await import("@/lib/startup-diagnostics")
+    await recordRedisBackend(getRedisBackend())
+  } catch {
+    // Diagnostics must never make Redis initialization fail.
+  }
 }
 
 let redisInstance: RedisClientLike | null = null
@@ -2169,6 +2188,7 @@ export async function ensureCoreRedis(): Promise<void> {
     if (pong !== "PONG") {
       console.error("[v0] [Redis] Connection test failed")
     }
+    await persistRedisBackendDiagnostic()
     coreInitialized = true
   })()
 
@@ -2249,6 +2269,7 @@ export async function initRedis(): Promise<void> {
     if (!redisInstance) {
       globalForRedis.__redis_backend = "inline-local"
       redisInstance = new InlineLocalRedis()
+      await persistRedisBackendDiagnostic()
     }
     isConnected = true
     coreInitialized = true
@@ -2296,10 +2317,6 @@ export async function initRedis(): Promise<void> {
   }
   if (isConnected) return
 
-  // Startup volatile cleanup: clear stale locks, transient indexes, and
-  // rebuildable pipeline families so the engine starts with a clean baseline.
-  await cleanupVolatileRuntimeState({ reason: "initRedis" }).catch(() => null)
-
   if (globalForRedis.__redis_init_promise) return globalForRedis.__redis_init_promise
 
   globalForRedis.__redis_init_promise = (async () => {
@@ -2319,18 +2336,19 @@ export async function initRedis(): Promise<void> {
       const { runMigrations, resetMigrationRunState } = await import("@/lib/redis-migrations")
       const MIGRATIONS_DEADLINE_MS = isProductionEnvironment() ? 180_000 : 60_000
       let migrationTimer: ReturnType<typeof setTimeout> | undefined
-      // SAFETY: Wrap with a 90-second deadline. Production coverage repair can
-      // legitimately scan/seed every connection on cold start; 35s caused false
-      // deadline errors even when routes recovered. Keep a deadline for real
-      // deadlocks, but allow complete establishment to finish cleanly.
-      // (e.g. by calling initRedis() internally, which awaits THIS very
-      // promise), the race rejects after 90 s so the server becomes
-      // responsive. The underlying migration may still resolve later, but
-      // the server is unblocked. The migration runner also has its own
+      // SAFETY: Wrap blocking schema migrations with a runtime deadline. Heavy
+      // production coverage repair is scheduled after initRedis() succeeds and
+      // no longer counts against this critical startup path. Keep a deadline for
+      // real migration deadlocks (e.g. by calling initRedis() internally, which awaits THIS very
+      // promise), the race rejects at the configured deadline so the next
+      // request can retry from a clean migration state. The migration runner also has its own
       // per-migration 30-second deadline for individual migrations.
       try {
         await Promise.race([
-          runMigrations(),
+          import("@/lib/startup-diagnostics")
+            .then(({ recordStartupPhase }) => recordStartupPhase("migrations_running"))
+            .catch(() => null)
+            .then(() => runMigrations()),
           new Promise<never>((_, reject) => {
             migrationTimer = setTimeout(
               () => reject(new Error(`runMigrations() exceeded ${MIGRATIONS_DEADLINE_MS}ms global deadline — retrying on next request`)),
@@ -2338,8 +2356,14 @@ export async function initRedis(): Promise<void> {
             )
           }),
         ])
+        await import("@/lib/startup-diagnostics")
+          .then(({ recordStartupPhase }) => recordStartupPhase("migrations_complete"))
+          .catch(() => null)
         migrationsRan = true
       } catch (migErr) {
+        await import("@/lib/startup-diagnostics")
+          .then(({ recordStartupError }) => recordStartupError(migErr, "runMigrations"))
+          .catch(() => null)
         console.error("[v0] [Redis] runMigrations deadline/error:", migErr instanceof Error ? migErr.message : migErr)
         resetMigrationRunState()
         migrationsRan = false
@@ -2350,6 +2374,12 @@ export async function initRedis(): Promise<void> {
     }
 
     connectionsInitialized = true
+
+    // Startup volatile cleanup: clear stale locks, transient indexes, and
+    // rebuildable pipeline families after the official core init + successful
+    // migration path has completed, but before exposing Redis as fully ready.
+    await cleanupVolatileRuntimeState({ reason: "initRedis" }).catch(() => null)
+
     isConnected = true
     globalForRedis.__redis_fully_connected = true
   })()

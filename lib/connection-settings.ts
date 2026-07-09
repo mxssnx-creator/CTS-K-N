@@ -7,8 +7,10 @@
 // Deep-merge nested objects so partial updates don't clobber unrelated
 // nested fields. Returns a new object with recursively merged nested
 // sub-objects (strategy, indication, trading, advanced).
-import { getRedisClient } from "./redis-db"
+import { getConnection, getRedisClient, initRedis, updateConnection } from "./redis-db"
 import { notifySettingsChanged } from "./settings-coordinator"
+import { recoordinateAfterSettingsChange } from "./connection-recoordinator"
+import { toRedisFlag } from "./boolean-utils"
 
 function deepMergeSettings(
   current: ConnectionSettings,
@@ -62,6 +64,128 @@ export interface ConnectionSettings {
   }
 }
 
+export const DEFAULT_CONNECTION_SETTINGS: Omit<ConnectionSettings, "connectionId"> = {
+
+function stringifyHashValue(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (Array.isArray(value) || (typeof value === "object" && value !== null)) return JSON.stringify(value)
+  return String(value)
+}
+
+function extractEngineSettingsMirror(settings: Record<string, unknown>): Record<string, string> {
+  const flat: Record<string, string> = {}
+
+  const liveVolume = Number(settings.live_volume_factor ?? settings.volume_factor_live)
+  if (Number.isFinite(liveVolume) && liveVolume > 0) {
+    const value = String(Math.max(0.1, Math.min(10, liveVolume)))
+    flat.live_volume_factor = value
+    flat.volume_factor_live = value
+  }
+
+  const presetVolume = Number(settings.preset_volume_factor ?? settings.volume_factor_preset)
+  if (Number.isFinite(presetVolume) && presetVolume > 0) {
+    const value = String(Math.max(0.1, Math.min(10, presetVolume)))
+    flat.preset_volume_factor = value
+    flat.volume_factor_preset = value
+  }
+
+  const volumeStep = Number(settings.volume_step_ratio ?? settings.volumeStepRatio)
+  if (Number.isFinite(volumeStep) && volumeStep > 0) {
+    flat.volume_step_ratio = String(Math.max(0.2, Math.min(1.8, volumeStep)))
+  }
+
+  const symbolCount = Number(settings.symbol_count ?? settings.symbolCount)
+  if (Number.isFinite(symbolCount) && symbolCount > 0) {
+    flat.symbol_count = String(Math.floor(symbolCount))
+  }
+
+  const forceSymbols = settings.force_symbols ?? settings.symbols
+  const forceSymbolsValue = stringifyHashValue(forceSymbols)
+  if (forceSymbolsValue !== undefined) {
+    flat.force_symbols = forceSymbolsValue
+    if (settings.symbols !== undefined) flat.symbols = forceSymbolsValue
+    if (Array.isArray(forceSymbols) && forceSymbols.length > 0) flat.symbol_count = String(forceSymbols.length)
+  }
+
+  if (settings.is_live_trade !== undefined) flat.is_live_trade = toRedisFlag(settings.is_live_trade)
+
+  const positionMode = stringifyHashValue(settings.position_mode)
+  if (positionMode !== undefined) flat.position_mode = positionMode
+
+  const marginType = stringifyHashValue(settings.margin_type ?? settings.margin_mode)
+  if (marginType !== undefined) {
+    flat.margin_type = marginType
+    if (settings.margin_mode !== undefined) flat.margin_mode = marginType
+  }
+
+  return flat
+}
+
+function extractConnectionTopLevelMirror(flat: Record<string, string>): Record<string, string> {
+  const patch: Record<string, string> = {}
+  for (const key of [
+    "live_volume_factor",
+    "preset_volume_factor",
+    "volume_step_ratio",
+    "force_symbols",
+    "symbol_count",
+    "is_live_trade",
+    "position_mode",
+    "margin_type",
+  ]) {
+    if (flat[key] !== undefined) patch[key] = flat[key]
+  }
+  return patch
+}
+
+async function mirrorEngineSettingsStores(
+  connectionId: string,
+  previousSettings: Record<string, unknown>,
+  updatedSettings: Record<string, unknown>,
+  changedFields: string[],
+): Promise<void> {
+  const flat = extractEngineSettingsMirror(updatedSettings)
+  const topLevelPatch = extractConnectionTopLevelMirror(flat)
+  const beforeConnection = await getConnection(connectionId).catch(() => null)
+  let afterConnection = beforeConnection ? { ...beforeConnection } : null
+
+  if (Object.keys(flat).length > 0) {
+    const client = await getRedisClient()
+    await Promise.all([
+      client.hset(`connection_settings:${connectionId}`, flat),
+      client.hset(`settings:connection_settings:${connectionId}`, flat).catch(() => 0),
+    ])
+  }
+
+  if (beforeConnection && Object.keys(topLevelPatch).length > 0) {
+    afterConnection = (await updateConnection(connectionId, topLevelPatch)) || {
+      ...beforeConnection,
+      ...topLevelPatch,
+      updated_at: new Date().toISOString(),
+    }
+  }
+
+  const notifyFields = Array.from(new Set([
+    ...changedFields,
+    ...Object.keys(flat),
+    ...(Object.keys(flat).length > 0 ? ["connection_settings"] : []),
+  ]))
+
+  if (beforeConnection && afterConnection) {
+    await recoordinateAfterSettingsChange(
+      connectionId,
+      { ...beforeConnection, connection_settings: previousSettings },
+      { ...afterConnection, connection_settings: updatedSettings },
+      {
+        logTag: "legacy connection-settings",
+        changedFieldsOverride: notifyFields,
+      },
+    )
+  } else if (notifyFields.length > 0) {
+    await notifySettingsChanged(connectionId, notifyFields, previousSettings, updatedSettings)
+  }
+}
+
 const DEFAULT_SETTINGS: Omit<ConnectionSettings, "connectionId"> = {
   strategy: {
     takeProfit: 8,
@@ -95,6 +219,7 @@ const DEFAULT_SETTINGS: Omit<ConnectionSettings, "connectionId"> = {
  */
 export async function getConnectionSettings(connectionId: string): Promise<ConnectionSettings> {
   try {
+    await initRedis()
     const client = await getRedisClient()
     const key = `settings:connection:${connectionId}`
     
@@ -106,7 +231,7 @@ export async function getConnectionSettings(connectionId: string): Promise<Conne
     // Initialize with defaults for this connection
     const newSettings: ConnectionSettings = {
       connectionId,
-      ...DEFAULT_SETTINGS,
+      ...DEFAULT_CONNECTION_SETTINGS,
     }
     
     await client.set(key, JSON.stringify(newSettings))
@@ -115,7 +240,7 @@ export async function getConnectionSettings(connectionId: string): Promise<Conne
     console.error(`Failed to get connection settings for ${connectionId}:`, error)
     return {
       connectionId,
-      ...DEFAULT_SETTINGS,
+      ...DEFAULT_CONNECTION_SETTINGS,
     }
   }
 }
@@ -126,11 +251,12 @@ export async function getConnectionSettings(connectionId: string): Promise<Conne
  */
 export async function updateConnectionSettings(
   connectionId: string,
-  settings: Partial<ConnectionSettings>
+  settings: Partial<ConnectionSettings> & Record<string, unknown>
 ): Promise<ConnectionSettings> {
   const lockKey = `settings:lock:${connectionId}`
   const LOCK_TTL = 5
   try {
+    await initRedis()
     const client = await getRedisClient()
     const key = `settings:connection:${connectionId}`
     // Acquire a short-lived write lock to prevent two concurrent saves
@@ -151,16 +277,14 @@ export async function updateConnectionSettings(
 
       // Save to Redis
       await client.set(key, JSON.stringify(updated))
-      // Unify: write settings_change envelope so the engine-manager's 3s
-      // watcher picks up hot-reload or restart flags (previously only the
-      // dirty flag was set here — the envelope was written by a different
-      // code path leaving disjoint coverage).
+      // Mirror engine-consumed settings into the same Redis stores and
+      // connection top-level fields used by /api/settings/connections/[id]/settings.
       const changed: string[] = []
       for (const k of Object.keys(settings) as Array<keyof typeof settings>) {
         if (settings[k] !== undefined) changed.push(k as string)
       }
       if (changed.length > 0) {
-        await notifySettingsChanged(connectionId, changed, current as any, updated as any)
+        await mirrorEngineSettingsStores(connectionId, current as any, updated as any, changed)
       }
 
       // ── CRITICAL: Invalidate all related caches ──────────────────────────────
@@ -242,9 +366,10 @@ export async function resetConnectionSettings(connectionId: string): Promise<Con
   const LOCK_TTL = 5
   const newSettings: ConnectionSettings = {
     connectionId,
-    ...DEFAULT_SETTINGS,
+    ...DEFAULT_CONNECTION_SETTINGS,
   }
   try {
+    await initRedis()
     const client = await getRedisClient()
     const key = `settings:connection:${connectionId}`
     const locked = await client.set(lockKey, String(Date.now()), { NX: true, EX: LOCK_TTL })
@@ -255,11 +380,12 @@ export async function resetConnectionSettings(connectionId: string): Promise<Con
     }
 
     try {
+      const previousSettings = await getConnectionSettings(connectionId).catch(() => ({ connectionId, ...DEFAULT_SETTINGS }))
       await client.set(key, JSON.stringify(newSettings))
       // Notify running engines — reset is a full config change. Await this
       // before releasing the settings lock so API success means the durable
       // settings_change and dirty signals have also been written.
-      await notifySettingsChanged(connectionId, ["strategy", "indication", "trading", "advanced"])
+      await mirrorEngineSettingsStores(connectionId, previousSettings as any, newSettings as any, ["strategy", "indication", "trading", "advanced", "connection_settings"])
     } finally {
       await client.del(lockKey).catch(() => {})
     }
@@ -275,6 +401,7 @@ export async function resetConnectionSettings(connectionId: string): Promise<Con
  */
 export async function deleteConnectionSettings(connectionId: string): Promise<void> {
   try {
+    await initRedis()
     const client = await getRedisClient()
     const key = `settings:connection:${connectionId}`
     await client.del(key)

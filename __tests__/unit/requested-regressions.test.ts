@@ -1470,9 +1470,11 @@ describe("requested regression guardrails", () => {
     }
 
     expect(recoordinator).toContain("const destructiveProgressionChange = symbolsChanged || modeChanged")
-    expect(recoordinator).toContain("const requiresProgressRecoordination = destructiveProgressionChange || strategyOrCoordinationChanged || progressAffectingChange")
+    expect(recoordinator).toContain("const liveOrderSettingsChanged = hasAnyChangedField(normalizedChangedFields, LIVE_ORDER_SETTING_FIELDS)")
+    expect(recoordinator).toContain("const requiresProgressRecoordination = destructiveProgressionChange || strategyOrCoordinationChanged")
     expect(recoordinator).toContain("if (requiresProgressRecoordination)")
-    expect(recoordinator).toContain("Progress-affecting hot-reload for ${id} stamped without destructive progression reset")
+    expect(recoordinator).toContain("strategy_recompute_requested")
+    expect(recoordinator).toContain('reason: "live-sizing-order-protection-settings"')
     expect(recoordinator).toContain("Strategy/coordination changes deliberately stay hot-reload-only")
     expect(settingsCoordinator).toContain("PROGRESSION_RESTART_FIELDS")
     expect(settingsCoordinator).toContain("HOT_RELOAD_FIELDS")
@@ -1740,6 +1742,14 @@ describe("requested regression guardrails", () => {
     expect(liveStage).toContain("const [slOrderId, tpOrderId] = await Promise.all")
     expect(migrations).toContain("066-bingx-sdk-fast-order-default")
     expect(migrations).toContain('connection_library: "sdk"')
+  })
+
+  test("queued refresh requests stay durable when drained by a non-owner process", () => {
+    const source = read("lib/trade-engine.ts")
+
+    expect(source).toContain("Refresh request for ${request.connectionId} is not local; leaving queued for owner")
+    expect(source).toContain("if (!this.isEngineRunning(request.connectionId))")
+    expect(source).toMatch(/if \(!this\.isEngineRunning\(request\.connectionId\)\) {[\s\S]*?continue[\s\S]*?await this\.applyPendingChangesNow\(request\.connectionId\)/)
   })
 
 })

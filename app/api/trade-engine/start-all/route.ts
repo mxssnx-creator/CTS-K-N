@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { initRedis, getAssignedAndEnabledConnections, getAllConnections, getSettings, getRedisClient } from "@/lib/redis-db"
+import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 
 async function handleStartAll() {
   try {
@@ -15,6 +16,10 @@ async function handleStartAll() {
     }
 
     await initRedis()
+    const readiness = await checkProductionReadiness()
+    if (!readiness.ready) {
+      return NextResponse.json({ ...productionReadinessJson(readiness), results: [] }, { status: 503 })
+    }
     const client = getRedisClient()
     const globalState = (await client.hgetall("trade_engine:global").catch(() => null)) as Record<string, string> | null
     if (globalState?.status !== "running") {
