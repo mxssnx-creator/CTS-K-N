@@ -62,6 +62,7 @@ const globalForRedis = globalThis as unknown as {
   // see the real connected state without re-running initRedis/migrations.
   __redis_fully_connected?: boolean
   __redis_backend?: RedisBackend
+  __redis_volatile_startup_cleanup_ran?: boolean
 }
 
 export type RedisBackend = "inline-local" | "redis-network"
@@ -470,12 +471,16 @@ export class InlineLocalRedis implements RedisClientLike {
   
 
   async cleanupVolatileRuntimeState({
+    mode,
     reason = "startup",
-  }: { mode?: string; reason?: string } = {}): Promise<{ deleted: number; preserved: number }> {
+  }: { mode?: "activeOwnerSafe" | string; reason?: string } = {}): Promise<{ deleted: number; preserved: number }> {
     const staleMs = Number(process.env.VOLATILE_STATE_STALE_MS || process.env.REDIS_VOLATILE_STALE_MS || 6 * 60 * 60 * 1000)
+    const ownerFreshMs = Number(process.env.VOLATILE_STATE_OWNER_FRESH_MS || process.env.PROCESSOR_HEARTBEAT_FRESH_MS || 90_000)
     const now = Date.now()
     let deleted = 0
     let preserved = 0
+    const activeOwnerSafe = mode === "activeOwnerSafe"
+    const activeOwnerCache = new Map<string, boolean>()
 
     const deleteKey = (key: string) => {
       const before = this.data.strings.has(key) || this.data.hashes.has(key) || this.data.sets.has(key) || this.data.lists.has(key) || this.data.sorted_sets.has(key)
@@ -489,6 +494,51 @@ export class InlineLocalRedis implements RedisClientLike {
       if (Number.isFinite(timestamp) && timestamp > 0 && now - timestamp > staleMs) return true
       return !ttl && !timestamp
     }
+    const extractPipelineConnectionId = (key: string): string | null => {
+      const prefixes = [
+        "pseudo_position:",
+        "pseudo_positions:",
+        "settings:pseudo_position:",
+        "settings:pseudo_positions:",
+        "strategies:",
+        "settings:strategies:",
+        "indication_set:",
+        "indication_outcomes_pending:",
+      ]
+      for (const prefix of prefixes) {
+        if (!key.startsWith(prefix)) continue
+        const rest = key.slice(prefix.length)
+        const connectionId = rest.split(":")[0]
+        return connectionId && connectionId !== "all" && connectionId !== "active" && connectionId !== "counter" && connectionId !== "metadata"
+          ? connectionId
+          : null
+      }
+      return null
+    }
+    const hasFreshOwner = (connectionId: string): boolean => {
+      if (activeOwnerCache.has(connectionId)) return activeOwnerCache.get(connectionId)!
+      const heartbeatFields = ["last_processor_heartbeat", "last_indication_run"]
+      let freshest = 0
+      for (const stateKey of [`trade_engine_state:${connectionId}`, `settings:trade_engine_state:${connectionId}`]) {
+        const state = this.data.hashes.get(stateKey)
+        if (!state) continue
+        for (const field of heartbeatFields) {
+          const raw = state[field]
+          const numeric = Number(raw || "")
+          const parsed = Number.isFinite(numeric) && numeric > 0 ? numeric : new Date(String(raw || "")).getTime()
+          if (Number.isFinite(parsed) && parsed > freshest) freshest = parsed
+        }
+      }
+      const fresh = freshest > 0 && now - freshest < ownerFreshMs
+      activeOwnerCache.set(connectionId, fresh)
+      return fresh
+    }
+    const isPipelineFamily = (key: string): boolean => {
+      return key.startsWith("pseudo_position:") || key.startsWith("pseudo_positions:") ||
+        key.startsWith("settings:pseudo_position") || key.startsWith("settings:pseudo_positions:") ||
+        key.startsWith("indication_set:") || key.startsWith("indication_outcomes_pending:") ||
+        key.startsWith("strategies:") || key.startsWith("settings:strategies")
+    }
     const shouldDelete = (key: string, raw?: string | null): boolean => {
       // Volatile-state cleanup policy — same in all modes:
       // live:position:tracking:* and :moved: are transient indexes; always safe to drop.
@@ -499,11 +549,13 @@ export class InlineLocalRedis implements RedisClientLike {
       if (key.startsWith("live:lock:")) return olderThanThreshold(key, raw)
       // Prehistoric gates/progress are boot cache gates, not authoritative data.
       if (key.startsWith("prehistoric_loaded:") || key.startsWith("prehistoric:progress:")) return olderThanThreshold(key, raw)
-      // Pipeline families are rebuilt each cycle — safe to evict on startup.
-      if (key.startsWith("pseudo_position:") || key.startsWith("pseudo_positions:")) return true
-      if (key.startsWith("settings:pseudo_position") || key.startsWith("settings:pseudo_positions:")) return true
-      if (key.startsWith("indication_set:") || key.startsWith("indication_outcomes_pending:")) return true
-      if (key.startsWith("strategies:") || key.startsWith("settings:strategies")) return true
+      // Pipeline families are rebuilt each cycle. In production startup cleanup,
+      // preserve them for connections with a fresh distributed processor owner.
+      if (isPipelineFamily(key)) {
+        const connectionId = extractPipelineConnectionId(key)
+        if (activeOwnerSafe && connectionId && hasFreshOwner(connectionId)) return false
+        return true
+      }
       return false
     }
 
@@ -583,7 +635,7 @@ export class InlineLocalRedis implements RedisClientLike {
 
     // Run an immediate targeted flush at startup to clear volatile key families
     // that accumulate across hot-reload cycles.
-    void this.cleanupVolatileRuntimeState({ reason: "inline-startup" })
+    void this.cleanupVolatileRuntimeState({ mode: "activeOwnerSafe", reason: "inline-startup" })
 
     // Keep the once-per-second timer cheap: memoryUsage() and Map.size reads are
     // O(1), while TTL expiry and eviction each scan key maps. Run those full
@@ -2203,18 +2255,22 @@ export async function ensureCoreRedis(): Promise<void> {
 
 
 export async function cleanupVolatileRuntimeState({
+  mode,
   reason = "startup",
-}: { mode?: string; reason?: string } = {}): Promise<{ deleted: number; preserved: number }> {
+}: { mode?: "activeOwnerSafe" | string; reason?: string } = {}): Promise<{ deleted: number; preserved: number }> {
   const client = getRedisClient()
   if (typeof (client as any).cleanupVolatileRuntimeState === "function") {
-    return (client as any).cleanupVolatileRuntimeState({ reason })
+    return (client as any).cleanupVolatileRuntimeState({ mode, reason })
   }
 
   const staleMs = Number(process.env.VOLATILE_STATE_STALE_MS || process.env.REDIS_VOLATILE_STALE_MS || 6 * 60 * 60 * 1000)
+  const ownerFreshMs = Number(process.env.VOLATILE_STATE_OWNER_FRESH_MS || process.env.PROCESSOR_HEARTBEAT_FRESH_MS || 90_000)
   const now = Date.now()
   const allKeys = await client.keys("*").catch(() => [] as string[])
   const toDelete: string[] = []
   let preserved = 0
+  const activeOwnerSafe = mode === "activeOwnerSafe"
+  const activeOwnerCache = new Map<string, boolean>()
 
   const staleStringKey = async (key: string) => {
     const [raw, ttl] = await Promise.all([
@@ -2223,6 +2279,47 @@ export async function cleanupVolatileRuntimeState({
     ])
     const ts = Number(raw || "")
     return ttl === -2 || (!Number.isFinite(ts) || ts <= 0 ? ttl < 0 : now - ts > staleMs)
+  }
+  const extractPipelineConnectionId = (key: string): string | null => {
+    const prefixes = [
+      "pseudo_position:",
+      "pseudo_positions:",
+      "settings:pseudo_position:",
+      "settings:pseudo_positions:",
+      "strategies:",
+      "settings:strategies:",
+      "indication_set:",
+      "indication_outcomes_pending:",
+    ]
+    for (const prefix of prefixes) {
+      if (!key.startsWith(prefix)) continue
+      const rest = key.slice(prefix.length)
+      const connectionId = rest.split(":")[0]
+      return connectionId && connectionId !== "all" && connectionId !== "active" && connectionId !== "counter" && connectionId !== "metadata"
+        ? connectionId
+        : null
+    }
+    return null
+  }
+  const hasFreshOwner = async (connectionId: string): Promise<boolean> => {
+    if (activeOwnerCache.has(connectionId)) return activeOwnerCache.get(connectionId)!
+    const heartbeatFields = ["last_processor_heartbeat", "last_indication_run"]
+    const [raw, settings] = await Promise.all([
+      client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>)),
+    ])
+    let freshest = 0
+    for (const src of [raw, settings]) {
+      for (const field of heartbeatFields) {
+        const value = src?.[field]
+        const numeric = Number(value || "")
+        const parsed = Number.isFinite(numeric) && numeric > 0 ? numeric : new Date(String(value || "")).getTime()
+        if (Number.isFinite(parsed) && parsed > freshest) freshest = parsed
+      }
+    }
+    const fresh = freshest > 0 && now - freshest < ownerFreshMs
+    activeOwnerCache.set(connectionId, fresh)
+    return fresh
   }
 
   for (const key of allKeys) {
@@ -2237,7 +2334,8 @@ export async function cleanupVolatileRuntimeState({
       key.startsWith("indication_set:") || key.startsWith("indication_outcomes_pending:") ||
       key.startsWith("strategies:") || key.startsWith("settings:strategies")
     ) {
-      del = true
+      const connectionId = extractPipelineConnectionId(key)
+      del = !(activeOwnerSafe && connectionId && await hasFreshOwner(connectionId))
     }
     if (del) toDelete.push(key)
     else preserved++
@@ -2378,7 +2476,10 @@ export async function initRedis(): Promise<void> {
     // Startup volatile cleanup: clear stale locks, transient indexes, and
     // rebuildable pipeline families after the official core init + successful
     // migration path has completed, but before exposing Redis as fully ready.
-    await cleanupVolatileRuntimeState({ reason: "initRedis" }).catch(() => null)
+    if (!isProductionEnvironment() || !globalForRedis.__redis_volatile_startup_cleanup_ran) {
+      await cleanupVolatileRuntimeState({ mode: "activeOwnerSafe", reason: "initRedis" }).catch(() => null)
+      if (isProductionEnvironment()) globalForRedis.__redis_volatile_startup_cleanup_ran = true
+    }
 
     isConnected = true
     globalForRedis.__redis_fully_connected = true
