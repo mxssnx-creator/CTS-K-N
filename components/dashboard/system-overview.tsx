@@ -1,9 +1,10 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Settings, Zap, Database, Network, Activity, TrendingUp, Wifi, WifiOff } from "lucide-react"
+import { useDashboardEvents } from "@/lib/dashboard-events"
 
 interface SystemStats {
   tradeEngines: {
@@ -85,6 +86,15 @@ export function SystemOverview() {
       topConnections: [],
     },
   })
+  const [eventRefreshKey, setEventRefreshKey] = useState(0)
+  const dashboardEventHandlers = useMemo(() => ({
+    "connection.updated": () => setEventRefreshKey((key) => key + 1),
+    "settings.recoordinated": () => setEventRefreshKey((key) => key + 1),
+    "engine.stage.changed": () => setEventRefreshKey((key) => key + 1),
+    "monitoring.updated": () => setEventRefreshKey((key) => key + 1),
+  }), [])
+  useDashboardEvents("*", dashboardEventHandlers)
+
 
   const toNumber = (value: unknown, fallback = 0): number => {
     if (typeof value === "number" && Number.isFinite(value)) return value
@@ -134,6 +144,7 @@ export function SystemOverview() {
     },
   })
 
+
   useEffect(() => {
     const loadPerConnectionInfo = async () => {
       try {
@@ -178,9 +189,6 @@ export function SystemOverview() {
 
     loadStats()
     loadPerConnectionInfo()
-    // Real-time refresh every 5 seconds for active monitoring
-    const interval = setInterval(() => { loadStats(); loadPerConnectionInfo() }, 5000)
-
     // Listen for connection and live trade toggle events and refresh immediately
     const handleConnectionToggled = () => { loadStats(); loadPerConnectionInfo() }
     const handleLiveTradeToggled = () => { loadStats(); loadPerConnectionInfo() }
@@ -192,14 +200,13 @@ export function SystemOverview() {
     }
 
     return () => {
-      clearInterval(interval)
       if (typeof window !== 'undefined') {
         window.removeEventListener('connection-toggled', handleConnectionToggled)
         window.removeEventListener('live-trade-toggled', handleLiveTradeToggled)
         window.removeEventListener('connection-settings-updated', handleConnectionToggled)
       }
     }
-  }, [])
+  }, [eventRefreshKey])
 
   const getStatusColor = (status: string) => {
     switch (status) {

@@ -1,6 +1,8 @@
 "use client"
 
 import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } from "@/lib/connection-events"
+import { useDashboardEvents } from "@/lib/dashboard-events"
+import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { isCanonicalEventFresh, mergeFreshEventCursor, type CanonicalEvent, type EventFreshnessCursor } from "@/lib/events/schema"
 import { useState, useEffect, useCallback, useRef } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -167,6 +169,7 @@ export function ActiveConnectionCard({
   // Ref to current phase — used inside stable interval callback to avoid recreating on every phase change
   const canonicalCursorRef = useRef<EventFreshnessCursor>({})
   const phaseRef = useRef<string>("idle")
+  const [dashboardEventRefreshKey, setDashboardEventRefreshKey] = useState(0)
   const [liveStats, setLiveStats] = useState<{
     indicationCycles: number
     strategyCycles: number
@@ -524,6 +527,16 @@ export function ActiveConnectionCard({
     }
   }, [connection.connectionId])
 
+
+  const dashboardEventHandlers = useMemo(() => ({
+    "connection.updated": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
+    "settings.recoordinated": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
+    "engine.stage.changed": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
+    "progression.updated": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
+    "live.summary.updated": () => setDashboardEventRefreshKey((key) => key + 1),
+    "monitoring.updated": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
+  }), [fetchProgression])
+  useDashboardEvents(connection.connectionId, dashboardEventHandlers)
   // Keep phaseRef current so the stable interval can read it without recreating
   useEffect(() => {
     phaseRef.current = progression?.phase || "idle"
@@ -549,26 +562,7 @@ export function ActiveConnectionCard({
   useEffect(() => {
     fetchProgression()
 
-    // Single stable interval — reads phaseRef.current on each tick to decide the next delay.
-    // Using a self-scheduling timeout so interval length adapts without recreating the effect.
-    let timeoutId: ReturnType<typeof setTimeout>
-    const scheduleNext = () => {
-      const phase = phaseRef.current
-      // Poll at 2 s during any actively-progressing or live phase.
-      // live_trading needs fast refresh for order/position updates.
-      // "unknown" means the engine just started — keep polling fast.
-      const isActivePhase = phase &&
-        phase !== "idle" &&
-        phase !== "stopped" &&
-        phase !== "disabled"
-      const delay = isActivePhase ? 2000 : 5000
-      timeoutId = setTimeout(async () => {
-        await fetchProgression()
-        scheduleNext()
-      }, delay)
-    }
-    scheduleNext()
-
+    // Steady-state progression updates arrive via dashboard SSE events.
     const handleConnectionToggled = () => { fetchProgression() }
     const handleLiveTradeToggled = (event: Event) => {
       const customEvent = event as CustomEvent
@@ -633,7 +627,6 @@ export function ActiveConnectionCard({
     }
 
     return () => {
-      clearTimeout(timeoutId)
       if (typeof window !== "undefined") {
         window.removeEventListener("connection-toggled", handleConnectionToggled)
         window.removeEventListener("live-trade-toggled", handleLiveTradeToggled)
@@ -854,9 +847,7 @@ export function ActiveConnectionCard({
     }
 
     fetchLiveStats()
-    const interval = setInterval(fetchLiveStats, 4000)
-    return () => clearInterval(interval)
-  }, [globalEngineRunning, connection.connectionId, connection.isActive])
+  }, [globalEngineRunning, connection.connectionId, connection.isActive, dashboardEventRefreshKey])
 
   // Handle Live Trade toggle ��� no longer gated on connection.isActive:
   // the /live-trade route auto-starts the engine when Live is turned on,

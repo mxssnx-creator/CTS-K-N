@@ -16,6 +16,13 @@ export type SSEEventType =
   | 'error'
   | 'connected'
   | 'history'
+  | 'connection.updated'
+  | 'settings.recoordinated'
+  | 'engine.stage.changed'
+  | 'progression.updated'
+  | 'live.summary.updated'
+  | 'logs.appended'
+  | 'monitoring.updated'
 
 export interface SSEMessage {
   type: SSEEventType
@@ -93,6 +100,13 @@ export class SSEClient {
           'processing-progress',
           'error',
           'history',
+          'connection.updated',
+          'settings.recoordinated',
+          'engine.stage.changed',
+          'progression.updated',
+          'live.summary.updated',
+          'logs.appended',
+          'monitoring.updated',
         ]
 
         eventTypes.forEach((eventType) => {
