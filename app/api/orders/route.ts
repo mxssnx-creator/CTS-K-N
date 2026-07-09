@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
+import { getRedisClient, getSettings } from "@/lib/redis-db"
 import { getMarketData, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
 import { auditLogger } from "@/lib/audit-logger"
 import { apiErrorHandler, ApiError } from "@/lib/api-error-handler"
@@ -15,13 +16,52 @@ const ORDER_LIMITS = {
   MAX_ORDERS_PER_MINUTE: 500, // Maximum rate limit - no practical limit
 }
 
+const ORDER_INDEX_KEY = "orders:index"
+const orderKey = (orderId: string) => `order:${orderId}`
+const connectionIndexKey = (connectionId: string) => `orders:connection:${connectionId}`
+const statusIndexKey = (status: string) => `orders:status:${status}`
+
 // Settings hashes flatten arrays into index-keyed fields ("0","1",...), so
-// a stored order list round-trips back as an OBJECT, not an array. Coerce
-// either shape into a real array so .filter/.slice/.push never crash.
+// a legacy stored order list round-trips back as an OBJECT, not an array. Coerce
+// either shape into a real array for GET fallback compatibility only; POST no
+// longer rewrites this shared list because concurrent handlers can lose writes.
 function toOrderArray(raw: unknown): any[] {
   if (Array.isArray(raw)) return raw
   if (raw && typeof raw === "object") return Object.values(raw)
   return []
+}
+
+function parseOrder(raw: string | null): any | null {
+  if (!raw) return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+async function readIndexedOrders({ status, connectionId, limit }: { status?: string | null; connectionId?: string | null; limit: number }) {
+  const redis = getRedisClient()
+  const indexKey = status ? statusIndexKey(status) : connectionId ? connectionIndexKey(connectionId) : ORDER_INDEX_KEY
+  const orderIds = await redis.zrange(indexKey, 0, Math.max(limit - 1, 0))
+  if (orderIds.length === 0) return []
+
+  const values = await redis.mget(...orderIds.map(orderKey))
+  return values.map(parseOrder).filter(Boolean)
+}
+
+async function writeOrder(newOrder: any) {
+  const redis = getRedisClient()
+  const createdScore = Date.parse(newOrder.created_at)
+  const score = Number.isFinite(createdScore) ? createdScore : Date.now()
+
+  await redis
+    .multi()
+    .set(orderKey(newOrder.id), JSON.stringify(newOrder))
+    .zadd(ORDER_INDEX_KEY, score, newOrder.id)
+    .zadd(connectionIndexKey(newOrder.connection_id), score, newOrder.id)
+    .zadd(statusIndexKey(newOrder.status), score, newOrder.id)
+    .exec()
 }
 
 // Simple per-user rate limiter for order creation
@@ -140,21 +180,26 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get("status")
     const limit = Math.min(Number.parseInt(searchParams.get("limit") || "50"), 500)
 
-    const allOrders = toOrderArray(await getSettings("orders"))
-    let filtered = allOrders
+    const connectionId = searchParams.get("connection_id")
 
-    if (status) {
-      if (!["pending", "filled", "partially_filled", "cancelled", "rejected"].includes(status)) {
-        throw new ApiError("Invalid status filter", {
-          statusCode: 400,
-          code: "VALIDATION_ERROR",
-          details: { status },
-        })
-      }
-      filtered = filtered.filter((o: any) => o.status === status)
+    if (status && !["pending", "filled", "partially_filled", "cancelled", "rejected"].includes(status)) {
+      throw new ApiError("Invalid status filter", {
+        statusCode: 400,
+        code: "VALIDATION_ERROR",
+        details: { status },
+      })
     }
 
-    filtered = filtered.slice(0, limit)
+    let filtered = await readIndexedOrders({ status, connectionId, limit })
+
+    // Legacy compatibility for deployments that still only have the old
+    // settings-backed list. New POST writes never use this path.
+    if (filtered.length === 0) {
+      filtered = toOrderArray(await getSettings("orders"))
+      if (status) filtered = filtered.filter((o: any) => o.status === status)
+      if (connectionId) filtered = filtered.filter((o: any) => o.connection_id === connectionId)
+      filtered = filtered.slice(0, limit)
+    }
 
     return NextResponse.json({
       success: true,
@@ -235,7 +280,6 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const existing = toOrderArray(await getSettings("orders"))
     const newOrder = {
       id: `order:${Date.now()}:${Math.random().toString(36).substr(2, 9)}`,
       user_id: "system",
@@ -273,8 +317,7 @@ export async function POST(request: NextRequest) {
       `[v0] [Audit] Order created: ${symbol} ${side} ${quantity}@${price || "market"}`
     )
 
-    existing.push(newOrder)
-    await setSettings("orders", existing)
+    await writeOrder(newOrder)
 
     return NextResponse.json({
       success: true,
