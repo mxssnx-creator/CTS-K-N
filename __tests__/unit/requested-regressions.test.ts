@@ -1358,6 +1358,21 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("async cleanupVolatileRuntimeState")
   })
 
+  test("live positions route does not use production KEYS fallback", () => {
+    const route = read("app/api/trading/live-positions/route.ts")
+    const altIndex = read("lib/live-position-alt-index.ts")
+
+    expect(route).toContain("getAlternateLivePositionKeys")
+    expect(route).toContain("partialLegacyScan")
+    expect(route).not.toMatch(/\.keys\s*\(/)
+    expect(route).not.toContain("export async function indexAlternateLivePositionKey")
+
+    expect(altIndex).toContain("live:position:live:${connectionId}:index")
+    expect(altIndex).toContain("client.scan")
+    expect(altIndex).toContain("LEGACY_SCAN_MAX_KEYS")
+    expect(altIndex).toContain("indexAlternateLivePositionKey")
+  })
+
   test("hot-path performance guards cover stats, real overlays, strategy top-k, and heap telemetry", () => {
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
     const coordinator = read("lib/strategy-coordinator.ts")
