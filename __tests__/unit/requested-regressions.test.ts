@@ -744,17 +744,18 @@ describe("requested regression guardrails", () => {
       source.indexOf("export async function completeStartup"),
     )
 
+    // Fresh-owner detection must reconcile BOTH the raw and `settings:` engine-state
+    // hashes via the shared helper, not read the raw hash alone.
     expect(cleanupBlock).toContain("fresh distributed heartbeat present")
-    expect(cleanupBlock).toContain("last_processor_heartbeat")
-    expect(cleanupBlock).toContain("Date.now() - remoteHeartbeat < 90_000")
+    expect(cleanupBlock).toContain("isProcessorHeartbeatFresh(conn.id)")
     expect(cleanupBlock.indexOf("remoteHeartbeatFresh")).toBeLessThan(cleanupBlock.indexOf("Cleaning orphaned running flag"))
   })
 
   test("startup lock preserves a fresh remote engine owner instead of clearing its Redis flag", () => {
     const source = read("lib/trade-engine.ts")
 
-    expect(source).toContain("const remoteHeartbeatFresh")
-    expect(source).toContain("Date.now() - remoteHeartbeat < 90_000")
+    // Fresh-owner detection now reconciles RAW + `settings:` hashes via the helper.
+    expect(source).toContain("isProcessorHeartbeatFresh(connectionId)")
     expect(source).toContain("is owned by another worker with a fresh heartbeat")
     expect(source).toContain("not clearing distributed running flag")
   })
@@ -785,7 +786,9 @@ describe("requested regression guardrails", () => {
       source.indexOf("async applyPendingChangesNow"),
     )
 
-    expect(markerBlock).toContain("Date.now() - remoteHeartbeat < 90_000")
+    // Fresh-owner detection must reconcile BOTH the raw and `settings:` engine-state
+    // hashes via the shared helper, not read the raw hash alone.
+    expect(markerBlock).toContain("isProcessorHeartbeatFresh(connectionId)")
     expect(markerBlock).toContain("restart_request")
     expect(markerBlock).toContain("settings_change_marker")
     expect(markerBlock).not.toContain("forceBreakProgressionLock")

@@ -18,6 +18,7 @@ import {
 } from "@/lib/redis-db"
 import { validateDatabase } from "@/lib/database-validator"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
+import { isProcessorHeartbeatFresh } from "@/lib/engine-heartbeat"
 import { consolidateDatabase } from "@/lib/database-consolidation"
 import { getMigrationStatus } from "@/lib/redis-migrations"
 
@@ -147,13 +148,15 @@ export async function cleanupOrphanedProgress() {
       // alive; clearing its `engine_is_running:*` flag from a non-owner worker
       // is the exact race that makes the UI show phantom stops/restarts.
       if (runningFlag === "true" || runningFlag === "1") {
-        if (!coordinator.isEngineRunning(conn.id)) {
-          const remoteState = await client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)) as Record<string, string>
-          const remoteHeartbeat = Number(remoteState?.last_processor_heartbeat || 0)
-          const remoteHeartbeatFresh =
-            Number.isFinite(remoteHeartbeat) && remoteHeartbeat > 0 && Date.now() - remoteHeartbeat < 90_000
+          if (!coordinator.isEngineRunning(conn.id)) {
+            // Reconcile RAW + `settings:` engine-state hashes — the live engine
+            // only refreshes `settings:trade_engine_state:{id}`, so reading the
+            // raw hash alone made a healthy engine look "stalled" and caused the
+            // boot cleanup to wrongly clear its running flag and reset
+            // progression (the "multiple reinits / stalling stats" symptom).
+            const remoteHeartbeatFresh = await isProcessorHeartbeatFresh(conn.id)
 
-          if (remoteHeartbeatFresh) {
+            if (remoteHeartbeatFresh) {
             console.log(
               `[v0] [Startup] Preserving running flag for ${conn.id} — fresh distributed heartbeat present`,
             )

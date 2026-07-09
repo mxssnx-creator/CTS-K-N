@@ -41,6 +41,7 @@ console.log(`[v0] Global Trade Engine V${COORDINATOR_VERSION} loading with cache
 
 import { TradeEngineManager, type EngineConfig } from "./trade-engine/engine-manager"
 import { getSettings, setSettings } from "./redis-db"
+import { isProcessorHeartbeatFresh, getFreshestProcessorHeartbeat } from "./engine-heartbeat"
 import {
   // Cross-process ownership primitive. The coordinator acquires the
   // per-connection lock BEFORE constructing or reusing the manager;
@@ -320,10 +321,11 @@ export class GlobalTradeEngineCoordinator {
           console.log(`[v0] [STARTUP LOCK] Engine already running for ${connectionId}, skipping...`)
           return true
         }
-        const remoteState = await client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>))
-        const remoteHeartbeat = Number((remoteState as any)?.last_processor_heartbeat || 0)
-        const remoteHeartbeatFresh =
-          Number.isFinite(remoteHeartbeat) && remoteHeartbeat > 0 && Date.now() - remoteHeartbeat < 90_000
+        // Reconcile the RAW and `settings:` engine-state hashes — the live
+        // engine only refreshes `settings:trade_engine_state:{id}`, so reading
+        // the raw hash alone made a healthy engine look "stalled" and triggered
+        // spurious stop+restart cycles (multiple reinits / doubled progression).
+        const remoteHeartbeatFresh = await isProcessorHeartbeatFresh(connectionId)
         if (remoteHeartbeatFresh && !forceLocalTakeover) {
           console.warn(
             `[v0] [STARTUP LOCK] Engine ${connectionId} is owned by another worker with a fresh heartbeat; not clearing distributed running flag`,
@@ -374,15 +376,9 @@ export class GlobalTradeEngineCoordinator {
       })
       if (!acquired.acquired || !acquired.handle) {
         const ownerHeartbeatFreshnessMs = 90_000
-        let ownerHeartbeatFresh = false
-        try {
-          const { getRedisClient } = await import("@/lib/redis-db")
-          const client = getRedisClient()
-          const ownerState = await client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>))
-          const ownerHeartbeat = Number((ownerState as any)?.last_processor_heartbeat || 0)
-          ownerHeartbeatFresh =
-            Number.isFinite(ownerHeartbeat) && ownerHeartbeat > 0 && Date.now() - ownerHeartbeat < ownerHeartbeatFreshnessMs
-        } catch { /* heartbeat read is best-effort */ }
+        // Reconcile RAW + `settings:` hashes (see startEngine Step 2) so a live
+        // owner is never misclassified as stale and force-restarted.
+        const ownerHeartbeatFresh = await isProcessorHeartbeatFresh(connectionId, ownerHeartbeatFreshnessMs).catch(() => false)
 
         if (ownerHeartbeatFresh) {
           if (!forceLocalTakeover) {
@@ -676,13 +672,13 @@ export class GlobalTradeEngineCoordinator {
 
   private async markRemoteRestartRequestIfFresh(connectionId: string): Promise<boolean> {
     try {
-      const { getRedisClient } = await import("@/lib/redis-db")
-      const client = getRedisClient()
-      const remoteState = await client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, string>))
-      const remoteHeartbeat = Number((remoteState as any)?.last_processor_heartbeat || 0)
-      if (!(Number.isFinite(remoteHeartbeat) && remoteHeartbeat > 0 && Date.now() - remoteHeartbeat < 90_000)) {
+      // Reconcile RAW + `settings:` hashes (see startEngine Step 2) so a live
+      // owner is not misclassified as stale and needlessly pinged to restart.
+      if (!(await isProcessorHeartbeatFresh(connectionId))) {
         return false
       }
+      const { getRedisClient } = await import("@/lib/redis-db")
+      const client = getRedisClient()
       await client.hset(`trade_engine_state:${connectionId}`, {
         restart_request: "1",
         settings_change_marker: new Date().toISOString(),
@@ -1783,12 +1779,10 @@ for (const connection of validConnections) {
           try {
             const state = (await getSettings(`trade_engine_state:${connectionId}`)) || {}
             // Prefer the unified processor heartbeat; fall back to
-            // last_indication_run for engines that haven't been upgraded
-            // yet (heartbeat key is added in this same change-set).
-            const lastHb =
-              Number(state.last_processor_heartbeat) ||
-              (state.last_processor_heartbeat ? new Date(state.last_processor_heartbeat).getTime() : 0) ||
-              (state.last_indication_run ? new Date(state.last_indication_run).getTime() : 0)
+            // Reconcile RAW + `settings:` hashes — the engine only refreshes
+            // `settings:trade_engine_state:{id}`, so reading one hash alone
+            // could miss a fresh heartbeat and spuriously flag a stall.
+            const lastHb = await getFreshestProcessorHeartbeat(connectionId)
             if (lastHb === 0) {
               // lastHb=0 can mean "engine just started, no heartbeat yet"
               // OR "engine was running but Redis was down so heartbeats

@@ -20,8 +20,11 @@ describe("GlobalTradeEngineCoordinator.startEngine lock contention", () => {
     )
 
     expect(failedAcquireBranch).toContain("trade_engine_state:${connectionId}")
-    expect(failedAcquireBranch).toContain("last_processor_heartbeat")
-    expect(failedAcquireBranch).toContain("Date.now() - ownerHeartbeat < ownerHeartbeatFreshnessMs")
+    // Fresh-owner detection must reconcile BOTH the raw and `settings:` engine-state
+    // hashes via the shared helper — reading only the raw hash made a live engine look
+    // stalled and triggered spurious restarts (multiple reinits / doubled progression).
+    expect(failedAcquireBranch).toContain("isProcessorHeartbeatFresh")
+    expect(failedAcquireBranch).toContain("isProcessorHeartbeatFresh(connectionId, ownerHeartbeatFreshnessMs)")
     expect(failedAcquireBranch).toContain("const ownerHeartbeatFreshnessMs = 90_000")
 
     expect(freshOwnerBranch).toContain("return true")
