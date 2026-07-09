@@ -279,6 +279,10 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
         }
 
         const quickStartBody = buildQuickStartBodyFromSavedSettings(selectedConnectionId, selectedSettingsPayload)
+      // STEP 5: Enable the selected connection with its saved symbol selection (REQUIRED)
+      let quickStartResponse: any = null
+      await runStep("enable", "STEP 5: Enable Selected Connection", async () => {
+        const requestBody: Record<string, unknown> = { action: "enable" }
         const selectedName = displayConnectionName()
         const symbolSource = Array.isArray(quickStartBody.symbols) && quickStartBody.symbols.length > 0
           ? `${quickStartBody.symbols.length} saved symbol${quickStartBody.symbols.length === 1 ? "" : "s"}`
@@ -318,6 +322,12 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
               ? `auto (${quickStartBody.symbolOrder})`
               : quickStartBody.symbolCount
                 ? `auto (${quickStartBody.symbolCount})`
+          : Array.isArray(requestBody.symbols) && requestBody.symbols.length > 0
+            ? requestBody.symbols.join(", ")
+            : requestBody.symbolOrder
+              ? `auto (${requestBody.symbolOrder})`
+              : requestBody.symbolCount
+                ? `auto (${requestBody.symbolCount})`
                 : "auto"
         return `${d.connection?.name ?? selectedName} enabled | ${syms}`
       }, true)

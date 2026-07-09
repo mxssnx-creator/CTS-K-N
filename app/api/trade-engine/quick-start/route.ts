@@ -542,6 +542,13 @@ export async function POST(request: Request) {
     // true 1h ATR volatility with a liquidity floor, matching the operator spec.
     const requestedSymbolOrder = normaliseSort(String(resolveQuickStartValue(body, existingQuickStartSettings, ["symbolOrder", "symbol_order"], ["symbol_order", "symbolOrder"], "volatility_1h")))
     // Regression guard: normaliseSort(body.symbolOrder || body.symbol_order || "volatility_1h")
+    const requestedSymbolOrder = normaliseSort(String(resolveQuickStartValue(
+      body,
+      existingQuickStartSettings,
+      ["symbolOrder", "symbol_order"],
+      ["symbol_order", "symbolOrder"],
+      "volatility_1h",
+    )))
     if (symbols.length === 0) {
       try {
         const topData = await fetchTopSymbols(exchangeName, requestedCount, requestedSymbolOrder)
@@ -766,6 +773,11 @@ export async function POST(request: Request) {
        preset_volume_factor: effectivePresetVolumeFactor,
        volume_factor_preset: effectiveVolumeFactorPreset,
        volume_step_ratio: effectiveVolumeStepRatio,
+       live_volume_factor: resolvedLiveVolumeFactor,
+       volume_factor_live: resolvedLiveVolumeFactor,
+       preset_volume_factor: resolvedPresetVolumeFactor,
+       volume_factor_preset: resolvedPresetVolumeFactor,
+       volume_step_ratio: resolvedVolumeStepRatio,
        force_symbols: JSON.stringify(symbols),
        // QuickStart uses the minimum live volume factor so live-trade smoke tests
        // place only exchange-minimum orders when credentials are available.
@@ -783,6 +795,32 @@ export async function POST(request: Request) {
 
      // Surface the minimal-volume policy in the progression log so the operator
      // can confirm in the UI exactly which sizing knob was applied.
+     console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${resolvedLiveVolumeFactor}).`)
+     await applyMainConnectionSettingsChange(connectionId, connection, {
+       connectionPatch: updated,
+       settingsPatch: {
+         active_symbols: JSON.stringify(symbols),
+         force_symbols: JSON.stringify(symbols),
+         symbols: JSON.stringify(symbols),
+         symbol_order: requestedSymbolOrder,
+         symbol_count: String(symbols.length),
+         live_volume_factor: resolvedLiveVolumeFactor,
+         volume_factor_live: resolvedLiveVolumeFactor,
+         preset_volume_factor: resolvedPresetVolumeFactor,
+         volume_factor_preset: resolvedPresetVolumeFactor,
+         volume_step_ratio: resolvedVolumeStepRatio,
+       },
+       changedFieldsOverride: [
+         "is_enabled", "is_active", "is_live_trade", "live_trade_requested",
+         "active_symbols", "force_symbols", "symbols", "symbol_order", "symbol_count",
+         "live_volume_factor", "volume_factor_live", "preset_volume_factor", "volume_factor_preset",
+         "volume_step_ratio", "connection_settings",
+       ],
+       logTag: "POST /trade-engine/quick-start",
+     })
+     // Surface the minimal-volume policy in the progression log so the
+     // operator can confirm in the UI exactly which sizing knob was
+     // applied. Helpful when debugging "why are my orders so small?".
      await logProgressionEvent(
        connectionId,
        "quickstart_minimal_volume",
@@ -790,8 +828,11 @@ export async function POST(request: Request) {
        `QuickStart effective live_volume_factor=${effectiveLiveVolumeFactor}`,
        {
          live_volume_factor: effectiveLiveVolumeFactor,
+       `QuickStart resolved live_volume_factor=${resolvedLiveVolumeFactor} for this connection`,
+       {
+         live_volume_factor: resolvedLiveVolumeFactor,
          note:
-           "QuickStart preserves existing per-connection sizing settings unless the request body explicitly overrides them; safe defaults are only used on first setup.",
+           "QuickStart persists resolved per-connection sizing settings before production engine startup so bundled workers read the same state as dev.",
        },
      )
 
@@ -814,6 +855,13 @@ export async function POST(request: Request) {
       volume_factor_preset: effectiveVolumeFactorPreset,
       preset_volume_factor: effectivePresetVolumeFactor,
       // Symbol order/count
+      // Volume factor
+      volume_factor_live: resolvedLiveVolumeFactor,
+      live_volume_factor: resolvedLiveVolumeFactor,
+      volume_step_ratio: resolvedVolumeStepRatio,
+      volume_factor_preset: resolvedPresetVolumeFactor,
+      preset_volume_factor: resolvedPresetVolumeFactor,
+      // Symbol order
       symbol_order: requestedSymbolOrder,
       symbol_count: effectiveSymbolCount,
       symbols: JSON.stringify(symbols),
@@ -1038,6 +1086,7 @@ export async function POST(request: Request) {
        await logProgressionEvent(connectionId, "quickstart_live_trade_blocked", "warning",
          "Live exchange order placement disabled until connection test passes",
          { reason: liveTradeBlockedReason, symbols, live_volume_factor: effectiveLiveVolumeFactor },
+         { reason: liveTradeBlockedReason, symbols, live_volume_factor: resolvedLiveVolumeFactor },
        )
      }
      
@@ -1243,6 +1292,11 @@ export async function POST(request: Request) {
               preset_volume_factor: effectivePresetVolumeFactor,
               volume_factor_preset: effectiveVolumeFactorPreset,
               volume_step_ratio: effectiveVolumeStepRatio,
+              live_volume_factor: resolvedLiveVolumeFactor,
+              volume_factor_live: resolvedLiveVolumeFactor,
+              preset_volume_factor: resolvedPresetVolumeFactor,
+              volume_factor_preset: resolvedPresetVolumeFactor,
+              volume_step_ratio: resolvedVolumeStepRatio,
               updated_at: new Date().toISOString(),
             })
 
