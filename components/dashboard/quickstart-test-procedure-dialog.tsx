@@ -11,6 +11,37 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { AlertCircle, CheckCircle2, Clock, Play, RefreshCw, Terminal, Zap, Activity } from "lucide-react"
 import { useExchange } from "@/lib/exchange-context"
 
+type EngineStageAckStage = "startup" | "market_data" | "prehistoric_data" | "base_sets" | "main_sets" | "real_sets" | "live_dispatch" | "live_sync" | "recoordination_complete"
+
+function waitForStageAck(stages: EngineStageAckStage | EngineStageAckStage[], timeoutMs: number, connectionId = "*"): Promise<any> {
+  const wanted = new Set(Array.isArray(stages) ? stages : [stages])
+  return new Promise((resolve, reject) => {
+    const source = new EventSource(`/api/ws?connectionId=${encodeURIComponent(connectionId)}`)
+    const timer = setTimeout(() => {
+      source.close()
+      reject(new Error(`timeout waiting for stage acknowledgement: ${Array.from(wanted).join(", ")}`))
+    }, timeoutMs)
+    source.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data)
+        const payloads = message?.type === "history" && Array.isArray(message.data)
+          ? message.data.filter((item: any) => item?.type === "engine-stage-ack").map((item: any) => item.data)
+          : [message?.type === "engine-stage-ack" ? message.data : null]
+        const payload = payloads.find((candidate: any) => candidate && wanted.has(candidate.stage))
+        if (!payload) return
+        clearTimeout(timer)
+        source.close()
+        payload.status === "ack" ? resolve(payload) : reject(new Error(payload.message || `${payload.stage} ${payload.status}`))
+      } catch { /* heartbeat/history */ }
+    }
+    source.onerror = () => {
+      clearTimeout(timer)
+      source.close()
+      reject(new Error("stage acknowledgement stream error"))
+    }
+  })
+}
+
 interface TestStep {
   id: string
   name: string
@@ -279,7 +310,24 @@ export function QuickstartTestProcedureDialog() {
 
     for (let i = 0; i < TEST_STEPS.length; i++) {
       setCurrentStepIndex(i)
-      const result = await runStep(TEST_STEPS[i], i)
+      let result = await runStep(TEST_STEPS[i], i)
+
+      if (["quickstart", "coordinator", "prehistoric_progress", "indications_active", "strategies_active"].includes(TEST_STEPS[i].id)) {
+        const stages: EngineStageAckStage[] = TEST_STEPS[i].id === "quickstart" ? ["startup", "recoordination_complete"] :
+          TEST_STEPS[i].id === "coordinator" ? ["recoordination_complete"] :
+          TEST_STEPS[i].id === "prehistoric_progress" ? ["prehistoric_data"] :
+          TEST_STEPS[i].id === "indications_active" ? ["live_dispatch"] : ["base_sets", "main_sets", "real_sets"]
+        try {
+          const ack = await waitForStageAck(stages, 30000, selectedConnection?.id || "*")
+          result = { ...result, result: { ...(result.result || {}), stageAck: ack } }
+        } catch (err) {
+          result = {
+            ...result,
+            status: "error",
+            error: err instanceof Error ? err.message : String(err),
+          }
+        }
+      }
 
       setSteps((prev) => {
         const next = [...prev]
@@ -296,8 +344,6 @@ export function QuickstartTestProcedureDialog() {
             }
           : prev,
       )
-
-      await new Promise((resolve) => setTimeout(resolve, 600))
     }
 
     setReport((prev) =>
