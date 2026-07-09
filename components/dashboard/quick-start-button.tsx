@@ -163,7 +163,6 @@ const buildQuickStartBodyFromSavedSettings = (
 }
 
 export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps) {
-  const { selectedConnectionId, setSelectedConnectionId } = useExchange()
   const { selectedConnectionId, selectedConnection, selectedExchange, setSelectedConnectionId } = useExchange()
   const [isRunning, setIsRunning] = useState(false)
   const [functionalOverview, setFunctionalOverview] = useState<FunctionalOverview | null>(null)
@@ -174,7 +173,6 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
     { id: "test",    name: "Verify BingX Credentials",       status: "pending" },
     { id: "start",   name: "Start Global Trade Engine",      status: "pending" },
     { id: "enable",  name: ENABLE_STEP_LABEL,                status: "pending" },
-    { id: "enable",  name: "Enable Selected Connection", status: "pending" },
     { id: "engine",  name: "Launch Engine + Progression",    status: "pending" },
   ])
 
@@ -284,21 +282,6 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
         return `Coordinator running${n > 0 ? ` | Resumed ${n}` : ""}`
       }, true)
 
-      // STEP 5: Enable selected main connection using saved symbol/live-trade settings (REQUIRED)
-      let quickStartResponse: any = null
-      await runStep("enable", "STEP 5: Enable selected Main Connection", async () => {
-        let selectedSettingsPayload: { settings?: any; connection?: any } | null = null
-        if (selectedConnectionId) {
-          const settingsRes = await timedFetch(`/api/settings/connections/${selectedConnectionId}/settings`, { method: "GET" }, 12000)
-          if (settingsRes.ok) {
-            selectedSettingsPayload = await settingsRes.json().catch(() => null)
-          }
-        }
-        const quickStartBody = buildQuickStartBodyFromSavedSettings(selectedConnectionId, selectedSettingsPayload)
-        const res = await timedFetch("/api/trade-engine/quick-start", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(quickStartBody),
       // STEP 5: Enable the selected connection with its saved symbol selection (REQUIRED)
       let quickStartResponse: any = null
       await runStep("enable", "STEP 5: Enable Selected Connection", async () => {
@@ -366,17 +349,13 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
         }))
         const syms = Array.isArray(d.connection?.symbols)
           ? d.connection.symbols.join(", ")
-          : Array.isArray(quickStartBody.symbols) && quickStartBody.symbols.length > 0
-            ? quickStartBody.symbols.join(", ")
-            : quickStartBody.symbolOrder
-              ? `auto (${quickStartBody.symbolOrder})`
-              : quickStartBody.symbolCount
-                ? `auto (${quickStartBody.symbolCount})`
-                : "auto"
-        return `${d.connection?.name} enabled | ${syms}`
-          : Array.isArray(requestBody.symbols)
+          : Array.isArray(requestBody.symbols) && requestBody.symbols.length > 0
             ? requestBody.symbols.join(", ")
-            : `${requestBody.symbolOrder ?? "symbol order"} (${requestBody.symbolCount ?? "default"})`
+            : requestBody.symbolOrder
+              ? `auto (${requestBody.symbolOrder})`
+              : requestBody.symbolCount
+                ? `auto (${requestBody.symbolCount})`
+                : "auto"
         return `${d.connection?.name ?? selectedName} enabled | ${syms}`
       }, true)
 
