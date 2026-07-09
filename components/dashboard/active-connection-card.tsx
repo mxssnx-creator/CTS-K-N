@@ -1,6 +1,7 @@
 "use client"
 
 import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } from "@/lib/connection-events"
+import { isCanonicalEventFresh, mergeFreshEventCursor, type CanonicalEvent, type EventFreshnessCursor } from "@/lib/events/schema"
 import { useState, useEffect, useCallback, useRef } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -164,6 +165,7 @@ export function ActiveConnectionCard({
   const [presetTradeStatus, setPresetTradeStatus] = useState<"idle" | "active" | "paused" | "stopped">("idle")
   // Live engine-stats counters displayed under the progress bar
   // Ref to current phase — used inside stable interval callback to avoid recreating on every phase change
+  const canonicalCursorRef = useRef<EventFreshnessCursor>({})
   const phaseRef = useRef<string>("idle")
   const [liveStats, setLiveStats] = useState<{
     indicationCycles: number
@@ -583,6 +585,23 @@ export function ActiveConnectionCard({
         fetchProgression()
       }
     }
+    const handleCanonicalEvent = (event: Event) => {
+      const canonical = (event as CustomEvent<CanonicalEvent>).detail
+      if (!canonical || canonical.connectionId !== connection.connectionId) return
+      const cursor = canonicalCursorRef.current
+      if (!isCanonicalEventFresh(canonical, cursor)) return
+      canonicalCursorRef.current = mergeFreshEventCursor(cursor, canonical)
+      if (
+        canonical.type === "progression.epochStarted" ||
+        canonical.type === "progression.stageChanged" ||
+        canonical.type === "connection.recoordinated" ||
+        canonical.type === "strategy.stageChanged" ||
+        canonical.type === "live.stageChanged"
+      ) {
+        fetchProgression()
+      }
+    }
+
     const handleSettingsUpdated = (event: Event) => {
       const customEvent = event as CustomEvent
       if (customEvent.detail?.connectionId === connection.connectionId) {
@@ -610,6 +629,7 @@ export function ActiveConnectionCard({
       window.addEventListener("live-trade-toggled", handleLiveTradeToggled)
       window.addEventListener("engine-state-changed", handleConnectionToggled)
       window.addEventListener("connection-settings-updated", handleSettingsUpdated)
+      window.addEventListener("canonical-event", handleCanonicalEvent)
     }
 
     return () => {
@@ -619,6 +639,7 @@ export function ActiveConnectionCard({
         window.removeEventListener("live-trade-toggled", handleLiveTradeToggled)
         window.removeEventListener("engine-state-changed", handleConnectionToggled)
         window.removeEventListener("connection-settings-updated", handleSettingsUpdated)
+        window.removeEventListener("canonical-event", handleCanonicalEvent)
       }
     }
   }, [fetchProgression, connection.connectionId])

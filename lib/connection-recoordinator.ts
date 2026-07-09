@@ -40,6 +40,7 @@
  */
 
 import { notifySettingsChanged, detectChangedFields } from "@/lib/settings-coordinator"
+import { emitCanonicalEvent } from "@/lib/events/emitter"
 
 const inFlightRecoordinations = new Map<string, Promise<void>>()
 
@@ -134,9 +135,25 @@ export async function recoordinateAfterSettingsChange(
     )
   }
 
+  const settingsEvent = emitCanonicalEvent({
+    type: "settings.saved",
+    connectionId: id,
+    stage: "settings",
+    settingsVersion: (after as any).settings_version || (after as any).updated_at || new Date().toISOString(),
+    data: { changedFields, logTag: opts.logTag },
+  })
+
   // Step 1 — durable notify (Redis envelope read by all running engines).
   try {
     await notifySettingsChanged(id, changedFields, before, after)
+    emitCanonicalEvent({
+      type: "settings.hotReloaded",
+      connectionId: id,
+      stage: "settings",
+      settingsVersion: (after as any).settings_version || (after as any).updated_at || settingsEvent.settingsVersion,
+      parentEventId: settingsEvent.id,
+      data: { changedFields },
+    })
   } catch (notifyErr) {
     console.error(
       `[v0] [${opts.logTag}] notifySettingsChanged failed for ${id}:`,
@@ -245,6 +262,30 @@ export async function recoordinateAfterSettingsChange(
   const requiresProgressRecoordination = destructiveProgressionChange || strategyOrCoordinationChanged || progressAffectingChange
   if (requiresProgressRecoordination) {
     try {
+      const { ProgressionStateManager } = await import("@/lib/progression-state-manager")
+      // Use the COUPLED recoordinate path (not the bare archive). It
+      // clears the `progression:{id}` hash, the `prehistoric:{id}` stats
+      // hash + `prehistoric:{id}:symbols`/`:done` gates, AND the
+      // `realtime:{id}` cycle counters together — the stats route reads
+      // its primary progress numbers from those sibling namespaces, so a
+      // bare `progression:{id}` reset left them stale (0/N forever or a
+      // mismatched total). recoordinateForActualOne is idempotent: it
+      // no-ops (logs `changed:false`) when the persisted symbol set
+      // already matches, which neutralizes the previous double-archive
+      // churn when the PATCH route also recoordinates.
+      const result = await ProgressionStateManager.recoordinateForActualOne(id)
+      console.log(
+        `[v0] [${opts.logTag}] Progress-affecting settings changed for ${id} → recoordinated progression (changed:${result?.changed ?? "?"}, reason:${result?.reason ?? "?"})`,
+      )
+      emitCanonicalEvent({
+        type: "connection.recoordinated",
+        connectionId: id,
+        stage: "connection",
+        epoch: result?.newEpoch,
+        settingsVersion: (after as any).settings_version || (after as any).updated_at || settingsEvent.settingsVersion,
+        parentEventId: settingsEvent.id,
+        data: { changed: result?.changed ?? false, reason: result?.reason, changedFields },
+      })
       const client = (await import("@/lib/redis-db")).getRedisClient()
       if (destructiveProgressionChange) {
         await runSerializedForConnection(id, async () => {

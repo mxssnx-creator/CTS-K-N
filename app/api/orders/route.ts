@@ -54,6 +54,7 @@ async function writeOrder(newOrder: any) {
   const createdScore = Date.parse(newOrder.created_at)
   const score = Number.isFinite(createdScore) ? createdScore : Date.now()
 
+  if (redis && typeof redis.multi === "function") {
   if (typeof redis.multi === "function") {
     await redis
       .multi()
@@ -65,6 +66,11 @@ async function writeOrder(newOrder: any) {
     return
   }
 
+  // Test and lightweight Redis shims may not implement transactions. Keep the
+  // legacy settings list in sync as a compatibility fallback instead of failing
+  // order creation outright.
+  const existing = toOrderArray(await getSettings("orders").catch(() => []))
+  await setSettings("orders", [...existing, newOrder])
   // Test/minimal Redis clients may not expose MULTI/ZADD. Keep the legacy
   // settings-list fallback so order creation remains functional in those
   // environments while production still uses indexed atomic writes above.
