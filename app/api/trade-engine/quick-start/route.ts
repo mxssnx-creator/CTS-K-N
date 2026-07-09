@@ -878,6 +878,10 @@ export async function POST(request: Request) {
        connectionId,
        "quickstart_minimal_volume",
        "info",
+       `QuickStart effective live_volume_factor=${effectiveLiveVolumeFactor}`,
+       {
+         live_volume_factor: effectiveLiveVolumeFactor,
+         resolved_live_volume_factor: resolvedLiveVolumeFactor,
        `QuickStart effective live_volume_factor=${resolvedLiveVolumeFactor}`,
        `QuickStart effective live_volume_factor=${effectiveLiveVolumeFactor}`,
        {
@@ -921,6 +925,9 @@ export async function POST(request: Request) {
       symbols: JSON.stringify(symbols),
       force_symbols: JSON.stringify(symbols),
       // Strategy PF thresholds
+      baseProfitFactor: String(effectiveBaseMinProfitFactor),
+      mainProfitFactor: String(effectiveMainMinProfitFactor),
+      realProfitFactor: String(effectiveRealMinProfitFactor),
       baseProfitFactor: resolvedBaseProfitFactor,
       mainProfitFactor: resolvedMainProfitFactor,
       realProfitFactor: resolvedRealProfitFactor,
@@ -928,6 +935,9 @@ export async function POST(request: Request) {
       main_min_profit_factor: effectiveMainMinProfitFactor,
       real_min_profit_factor: effectiveRealMinProfitFactor,
       // Variant toggles
+      variantTrailingEnabled: effectiveVariantTrailing,
+      variantBlockEnabled: effectiveVariantBlock,
+      variantDcaEnabled: effectiveVariantDca,
       variantTrailingEnabled: resolvedVariantTrailing,
       variantBlockEnabled: resolvedVariantBlock,
       variantDcaEnabled: resolvedVariantDca,
@@ -1044,6 +1054,13 @@ export async function POST(request: Request) {
 
     const quickstartRecoordinationApplied = quickstartRecoordination.appliedLocally === true
     await client.hset(`progression:${connectionId}`, {
+      // QuickStart keeps its explicit completion audit, but it no longer clears
+      // the generic pending/recompute flags for a running engine; the owning
+      // EngineManager clears those only after applyPendingChangesNow()/watcher
+      // successfully consumes the durable settings_change envelope. This avoids
+      // hiding later hot-reload failures behind a route-level success stamp.
+      ...(quickstartEngineAlreadyRunning ? {} : { settings_recoordination_pending: "0" }),
+      quickstart_recoordination_completed_at: quickstartRecoordination.completedAt,
       settings_recoordination_pending: quickstartRecoordinationApplied ? "0" : "1",
       quickstart_recoordination_completed_at: quickstartRecoordinationApplied ? quickstartRecoordination.completedAt : "",
       quickstart_recoordination_queued_at: quickstartRecoordination.refreshStatus?.refresh_queued_at || quickstartRecoordination.completedAt,
