@@ -9,6 +9,7 @@ import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
+import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 import { recoordinateAfterSettingsChange } from "@/lib/connection-recoordinator"
 
 function toNumber(value: unknown): number {
@@ -133,6 +134,12 @@ export async function POST(request: Request) {
     const liveTradeRequested = body.liveTrade !== false && body.is_live_trade !== false
     
     await initRedis()
+    if (action !== "disable") {
+      const readiness = await checkProductionReadiness()
+      if (!readiness.ready) {
+        return NextResponse.json(productionReadinessJson(readiness), { status: 503 })
+      }
+    }
     const client = getRedisClient()
     const allConnections = await getAllConnections()
     
