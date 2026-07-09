@@ -848,7 +848,7 @@ export async function PATCH(
       scalarChanged("is_preset_trade", (connection as Record<string, unknown>).is_preset_trade, (updated as Record<string, unknown>).is_preset_trade) ||
       scalarChanged("connection_method", (connection as Record<string, unknown>).connection_method, (updated as Record<string, unknown>).connection_method)
     if (symbolsModeChanged) {
-      // Recoordination is intentionally centralized in applyMainConnectionSettingsChange() below.
+      // Recoordination is intentionally centralized in recoordinateAfterSettingsChange() below
       // Running it here as well created two settings-change envelopes and two progression
       // archive attempts from one dialog save, which made stats briefly alternate between
       // the previous and newly-saved settings under production polling.

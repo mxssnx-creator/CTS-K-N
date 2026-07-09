@@ -21,7 +21,6 @@ import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { isProcessorHeartbeatFresh } from "@/lib/engine-heartbeat"
 import { consolidateDatabase } from "@/lib/database-consolidation"
 import { getMigrationStatus, runProductionCoverageRepair } from "@/lib/redis-migrations"
-import { getMigrationStatus } from "@/lib/redis-migrations"
 import {
   recordMigrationStatus,
   recordStartupError,

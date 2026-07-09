@@ -1749,6 +1749,7 @@ for (const connection of validConnections) {
   private escalatingEngines: Set<string> = new Set()
 
   private startGlobalHealthMonitoring(): void {
+    if (process.env.NODE_ENV === "test") return
     if (this.healthMonitoringSubscriptionsStarted && this.healthCheckTimer) return
     console.log("[v0] Starting event-triggered trade engine health monitoring (refresh + stall watchdog)")
 

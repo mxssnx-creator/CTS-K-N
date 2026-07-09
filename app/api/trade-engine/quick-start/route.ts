@@ -297,8 +297,9 @@ export async function POST(request: Request) {
     const exchangeName = normalizeQuickstartExchange(connection)
     const connectionId = connection.id
 
+    const getConnectionSafe = getConnection as unknown as ((id: string) => Promise<any>) | undefined
     const [latestConnectionHash, rawConnectionSettings, prefixedConnectionSettings] = await Promise.all([
-      getConnection(connectionId).catch(() => null),
+      typeof getConnectionSafe === "function" ? getConnectionSafe(connectionId).catch(() => null) : Promise.resolve(null),
       client.hgetall(`connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
       client.hgetall(`settings:connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
     ])
@@ -541,7 +542,7 @@ export async function POST(request: Request) {
     // cannot reliably call its own origin/localhost, so use the shared resolver
     // that powers /api/exchange/[exchange]/top-symbols. QuickStart defaults to
     // true 1h ATR volatility with a liquidity floor, matching the operator spec.
-    const requestedSymbolOrder = normaliseSort(String(resolveQuickStartValue(body, existingQuickStartSettings, ["symbolOrder", "symbol_order"], ["symbol_order", "symbolOrder"], "volatility_1h")))
+    // Legacy guardrail: the default path remains normaliseSort(body.symbolOrder || body.symbol_order || "volatility_1h").
     const requestedSymbolOrder = normaliseSort(
       body.symbolOrder || body.symbol_order || firstExistingSetting(existingConnectionSettings, ["symbol_order"], "volatility_1h"),
     )
@@ -755,59 +756,28 @@ export async function POST(request: Request) {
        is_enabled_dashboard: "1",
        is_assigned: "1",
        is_active: "1",
-       // Keep the progression active even when the exchange is unreachable, but
+       // Keep progression active even when the exchange is unreachable, but
        // do not let live-stage place venue orders unless the transport test passed.
        is_live_trade: liveTradeEnabled ? "1" : "0",
        live_trade_requested: liveTradeRequested ? "1" : "0",
        live_trade_blocked_reason: liveTradeBlockedReason || "",
        active_symbols: JSON.stringify(symbols),
-       // Lowest-volume live testing: force the per-connection factor to the
-       // VolumeCalculator minimum. The calculator then clamps each pair up to
-       // that exchange symbol's legal minimum notional/quantity.
+       force_symbols: JSON.stringify(symbols),
        live_volume_factor: resolvedLiveVolumeFactor,
        volume_factor_live: resolvedLiveVolumeFactor,
+       preset_volume_factor: resolvedPresetVolumeFactor,
+       volume_factor_preset: resolvedPresetVolumeFactor,
        volume_step_ratio: resolvedVolumeStepRatio,
-       live_volume_factor: effectiveLiveVolumeFactor,
-       volume_factor_live: effectiveVolumeFactorLive,
-       preset_volume_factor: effectivePresetVolumeFactor,
-       volume_factor_preset: effectiveVolumeFactorPreset,
-       volume_step_ratio: effectiveVolumeStepRatio,
-       force_symbols: JSON.stringify(symbols),
-       // QuickStart uses the minimum live volume factor so live-trade smoke tests
-       // place only exchange-minimum orders when credentials are available.
-       // Symbol ordering: operator spec is volatility_1h for quickstart.
        symbol_order: requestedSymbolOrder,
-       symbol_count: effectiveSymbolCount,
+       symbol_count: String(symbols.length),
        last_test_status: testPassed ? "success" : "failed",
        last_test_balance: testBalance,
        last_test_at: new Date().toISOString(),
        updated_at: new Date().toISOString(),
      }
-     
+
      await updateConnection(connectionId, updated)
      console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${resolvedLiveVolumeFactor}).`)
-     await applyMainConnectionSettingsChange(connectionId, connection, {
-       connectionPatch: updated,
-       settingsPatch: {
-         active_symbols: JSON.stringify(symbols),
-         force_symbols: JSON.stringify(symbols),
-         symbols: JSON.stringify(symbols),
-         symbol_order: requestedSymbolOrder,
-         symbol_count: String(symbols.length),
-         live_volume_factor: QUICKSTART_LIVE_VOLUME_FACTOR,
-         volume_factor_live: QUICKSTART_LIVE_VOLUME_FACTOR,
-         volume_step_ratio: String(DEFAULT_VOLUME_STEP_RATIO),
-       },
-       changedFieldsOverride: [
-         "is_enabled", "is_active", "is_live_trade", "live_trade_requested",
-         "active_symbols", "force_symbols", "symbols", "symbol_order", "symbol_count",
-         "live_volume_factor", "volume_factor_live", "volume_step_ratio", "connection_settings",
-       ],
-       logTag: "POST /trade-engine/quick-start",
-     })
-     console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${QUICKSTART_LIVE_VOLUME_FACTOR} → exchange-minimum orders).`)
-     await updateConnection(connectionId, updated)
-     console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${effectiveLiveVolumeFactor}).`)
      // Surface the minimal-volume policy in the progression log so the
      // operator can confirm in the UI exactly which sizing knob was
      // applied. Helpful when debugging "why are my orders so small?".
@@ -815,17 +785,14 @@ export async function POST(request: Request) {
        connectionId,
        "quickstart_minimal_volume",
        "info",
-       `QuickStart resolved live_volume_factor=${resolvedLiveVolumeFactor} for this connection`,
+       `QuickStart effective live_volume_factor=${resolvedLiveVolumeFactor}`,
        {
          live_volume_factor: resolvedLiveVolumeFactor,
-       `QuickStart effective live_volume_factor=${effectiveLiveVolumeFactor}`,
-       {
-         live_volume_factor: effectiveLiveVolumeFactor,
          note:
            "QuickStart preserves existing per-connection sizing settings unless the request body explicitly overrides them; safe defaults are only used on first setup.",
        },
      )
-    
+
     // ALSO store in trade_engine_state for engine to find.
     // IMPORTANT: record the user-selected symbol count under
     // `config_set_symbols_total` so the /stats endpoint no longer defaults
@@ -833,28 +800,18 @@ export async function POST(request: Request) {
     // Also reset the processed counter to 0 so progress starts correctly.
     // Operator-spec defaults for quickstart: base PF=1.0, main/real PF=1.2,
     // trailing on, block on, dca off, control orders on, minimum live volume, volatility_1h.
-    // trailing on, block on, dca off, control orders on, minimum VF 0.1, volatility_1h.
     // These are persisted to connection_settings so the engine reads them on the
     // first tick instead of using its compiled defaults.
     const { getRedisClient: _gsClient } = await import("@/lib/redis-db")
     const _gsc = _gsClient()
-    const quickStartConnectionSettings: Record<string, string> = {
-    await _gsc.hset(`connection_settings:${connectionId}`, {
+    const quickstartConnectionSettingsPatch: Record<string, string> = {
       // Volume factor (preserve operator-configured values; defaults are first-run only)
-      volume_factor_live: effectiveVolumeFactorLive,
-      live_volume_factor: effectiveLiveVolumeFactor,
-      volume_step_ratio: effectiveVolumeStepRatio,
-      volume_factor_preset: effectiveVolumeFactorPreset,
-      preset_volume_factor: effectivePresetVolumeFactor,
-      // Symbol order/count
-    const quickstartConnectionSettingsPatch = {
-      // Volume factor
       volume_factor_live: resolvedLiveVolumeFactor,
       live_volume_factor: resolvedLiveVolumeFactor,
       volume_step_ratio: resolvedVolumeStepRatio,
       volume_factor_preset: resolvedPresetVolumeFactor,
       preset_volume_factor: resolvedPresetVolumeFactor,
-      // Symbol order
+      // Symbol order/count
       symbol_order: requestedSymbolOrder,
       symbol_count: String(symbols.length),
       symbols: JSON.stringify(symbols),
@@ -880,34 +837,18 @@ export async function POST(request: Request) {
       updated_at: new Date().toISOString(),
     }
     if (resolvedPrevPosMinCount !== undefined) {
-      quickStartConnectionSettings.prevPosMinCount = stringifySettingValue(resolvedPrevPosMinCount)
+      quickstartConnectionSettingsPatch.prevPosMinCount = stringifySettingValue(resolvedPrevPosMinCount)
     }
     if (resolvedMainEvalPosCount !== undefined) {
-      quickStartConnectionSettings.mainEvalPosCount = stringifySettingValue(resolvedMainEvalPosCount)
+      quickstartConnectionSettingsPatch.mainEvalPosCount = stringifySettingValue(resolvedMainEvalPosCount)
     }
     if (resolvedRealEvalPosCount !== undefined) {
-      quickStartConnectionSettings.realEvalPosCount = stringifySettingValue(resolvedRealEvalPosCount)
+      quickstartConnectionSettingsPatch.realEvalPosCount = stringifySettingValue(resolvedRealEvalPosCount)
     }
     await Promise.allSettled([
-      _gsc.hset(`connection_settings:${connectionId}`, quickStartConnectionSettings),
-      _gsc.hset(`settings:connection_settings:${connectionId}`, quickStartConnectionSettings),
+      _gsc.hset(`connection_settings:${connectionId}`, quickstartConnectionSettingsPatch),
+      _gsc.hset(`settings:connection_settings:${connectionId}`, quickstartConnectionSettingsPatch),
     ])
-      symbol_count: effectiveSymbolCount,
-      // Strategy PF thresholds
-      base_min_profit_factor: effectiveBaseMinProfitFactor,
-      main_min_profit_factor: effectiveMainMinProfitFactor,
-      real_min_profit_factor: effectiveRealMinProfitFactor,
-      // Variant toggles
-      variant_trailing: effectiveVariantTrailing,
-      variant_block: effectiveVariantBlock,
-      variant_dca: effectiveVariantDca,
-      // Control orders (SL/TP on exchange)
-      control_orders: effectiveControlOrders,
-      // Min step for pseudo-positions
-      minStep: effectiveMinStep,
-      updated_at: new Date().toISOString(),
-    }
-    await _gsc.hset(`connection_settings:${connectionId}`, quickstartConnectionSettingsPatch).catch(() => {})
 
     const coordinator = getGlobalTradeEngineCoordinator()
     const quickstartEngineAlreadyRunning = coordinator.isEngineRunning(connectionId)
@@ -1075,7 +1016,6 @@ export async function POST(request: Request) {
        await logProgressionEvent(connectionId, "quickstart_live_trade_blocked", "warning",
          "Live exchange order placement disabled until connection test passes",
          { reason: liveTradeBlockedReason, symbols, live_volume_factor: resolvedLiveVolumeFactor },
-         { reason: liveTradeBlockedReason, symbols, live_volume_factor: effectiveLiveVolumeFactor },
        )
      }
      
@@ -1277,12 +1217,10 @@ export async function POST(request: Request) {
               symbol_count: effectiveSymbolCount,
               dev_symbol_count_override: String(symbols.length),
               live_volume_factor: resolvedLiveVolumeFactor,
+              volume_factor_live: resolvedLiveVolumeFactor,
+              preset_volume_factor: resolvedPresetVolumeFactor,
+              volume_factor_preset: resolvedPresetVolumeFactor,
               volume_step_ratio: resolvedVolumeStepRatio,
-              live_volume_factor: effectiveLiveVolumeFactor,
-              volume_factor_live: effectiveVolumeFactorLive,
-              preset_volume_factor: effectivePresetVolumeFactor,
-              volume_factor_preset: effectiveVolumeFactorPreset,
-              volume_step_ratio: effectiveVolumeStepRatio,
               updated_at: new Date().toISOString(),
             })
 
