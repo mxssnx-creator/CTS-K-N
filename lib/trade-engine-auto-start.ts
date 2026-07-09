@@ -80,6 +80,20 @@ async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnTyp
         await coordinator.stopEngine(request.connectionId, { operatorRequested: true })
         return "processed"
       }
+  const { getQueuedEngineRefreshRequests, clearEngineRefreshRequest, recordEngineRefreshRequestFailure } = await import("./engine-refresh-queue")
+  const { getConnection } = await loadRedisDb()
+
+  const refreshRequests = await getQueuedEngineRefreshRequests()
+  let processed = 0
+
+  for (const { request } of refreshRequests) {
+    const requestTime = new Date(request.timestamp).getTime()
+    if (!Number.isFinite(requestTime) || Date.now() - requestTime >= 30_000) {
+      console.log(`[v0] [AutoStart] Dropping expired refresh request for ${request.connectionId}`)
+      await clearEngineRefreshRequest(request.connectionId)
+      processed++
+      continue
+    }
 
       if (request.action === "start") {
         if (!coordinator.isEngineRunning?.(request.connectionId)) {
@@ -98,6 +112,32 @@ async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnTyp
         }
         return "processed"
       }
+    console.log(
+      `[v0] [AutoStart] Processing queued refresh request for ${request.connectionId}: ${request.action} ` +
+        `(state_switch_version=${requestedVersion}, reason=${request.reason})`,
+    )
+
+    try {
+      if (request.action === "stop") {
+        await coordinator.stopEngine(request.connectionId, { operatorRequested: true })
+      } else if (request.action === "start") {
+        if (!coordinator.isEngineRunning?.(request.connectionId)) {
+          await coordinator.startMissingEngines([connection])
+        }
+      } else {
+        await coordinator.applyPendingChangesNow?.(request.connectionId)
+      }
+      await clearEngineRefreshRequest(request.connectionId)
+      processed++
+    } catch (error) {
+      console.warn(
+        `[v0] [AutoStart] Refresh request failed for ${request.connectionId}; ` +
+          `leaving queued for retry until expiry (attempt=${Number(request.retryCount ?? 0) + 1}):`,
+        error instanceof Error ? error.message : String(error),
+      )
+      await recordEngineRefreshRequestFailure(request, error)
+    }
+  }
 
       await coordinator.applyPendingChangesNow?.(request.connectionId)
       return "processed"
