@@ -258,6 +258,7 @@ interface LivePosition {
   setKey?: string
   exchangeData?: Record<string, unknown>
   orderId?: string
+  liveLockToken?: string
   connection_id?: string
   entry_price?: number
   current_price?: number
@@ -665,25 +666,81 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
   }
   return existing
 }
-async function refreshLockTTL(connId: string, symbol: string, direction: string, ttlMs: number = 300000): Promise<void> {
+const REFRESH_LOCK_TTL_LUA = `
+  if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+  end
+  return 0
+`
+
+const RELEASE_LOCK_LUA = `
+  if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+  end
+  return 0
+`
+
+async function evalLockLua(client: any, script: string, key: string, args: string[]): Promise<number> {
+  if (typeof client.eval === "function") {
+    try {
+      return Number(await client.eval(script, { keys: [key], arguments: args })) || 0
+    } catch (err) {
+      // Some Redis adapters still expose the legacy node-redis signature.
+      return Number(await client.eval(script, 1, key, ...args)) || 0
+    }
+  }
+
+  // Test/dummy-client fallback that preserves the same token semantics.
+  const current = typeof client.get === "function" ? await client.get(key) : null
+  if (current !== args[0]) return 0
+  if (script === REFRESH_LOCK_TTL_LUA) {
+    if (typeof client.pExpire === "function") return Number(await client.pExpire(key, Number(args[1]))) || 0
+    if (typeof client.pexpire === "function") return Number(await client.pexpire(key, Number(args[1]))) || 0
+    if (typeof client.expire === "function") return Number(await client.expire(key, Math.ceil(Number(args[1]) / 1000))) || 0
+    return 1
+  }
+  return typeof client.del === "function" ? Number(await client.del(key)) || 0 : 0
+}
+
+function logLockCoordinationWarning(action: "refresh" | "release", connId: string, symbol: string, direction: string): void {
+  console.warn(
+    `${LOG_PREFIX} [lock-coordination] ${action} skipped; token no longer owns live lock ` +
+      `${connId}/${symbol}/${direction}`,
+  )
+}
+
+async function refreshLockTTL(
+  connId: string,
+  symbol: string,
+  direction: string,
+  token: string,
+  ttlMs: number = 300000,
+): Promise<boolean> {
   const { getRedisClient } = await import("@/lib/redis-db")
   const client = getRedisClient()
+  const key = `live:lock:${connId}:${symbol}:${direction}`
   try {
-    // Uppercase `EX` is the only TTL key the client honours; the prior
-    // lowercase `ex` was dropped, so the refreshed key lived forever and
-    // a crashed engine left the slot locked permanently.
-    await client.set(`live:lock:${connId}:${symbol}:${direction}`, String(Date.now()), { EX: Math.ceil(ttlMs / 1000) })
+    const refreshed = (await evalLockLua(client, REFRESH_LOCK_TTL_LUA, key, [token, String(ttlMs)])) === 1
+    if (!refreshed) logLockCoordinationWarning("refresh", connId, symbol, direction)
+    return refreshed
   } catch {
-    // best-effort
+    // best-effort; do not assume ownership if Redis cannot verify the token.
+    logLockCoordinationWarning("refresh", connId, symbol, direction)
+    return false
   }
 }
-async function releaseLock(connId: string, symbol: string, direction: string): Promise<void> {
+async function releaseLock(connId: string, symbol: string, direction: string, token: string): Promise<boolean> {
   const { getRedisClient } = await import("@/lib/redis-db")
   const client = getRedisClient()
+  const key = `live:lock:${connId}:${symbol}:${direction}`
   try {
-    await client.del(`live:lock:${connId}:${symbol}:${direction}`)
+    const released = (await evalLockLua(client, RELEASE_LOCK_LUA, key, [token])) === 1
+    if (!released) logLockCoordinationWarning("release", connId, symbol, direction)
+    return released
   } catch {
-    // best-effort
+    // best-effort; failed token verification must not delete another worker's lock.
+    logLockCoordinationWarning("release", connId, symbol, direction)
+    return false
   }
 }
 function resolveMaxHoldMs(connId: string): number {
@@ -2536,6 +2593,7 @@ export async function executeLivePosition(
   // Hoisted before the try/catch so the catch block can release the
   // correct variant-scoped dedup lock on unhandled errors.
   const _lockDirSuffix = realPosition.setVariant === "block" ? ":block" : ""
+  let liveOrderLockToken: string | null = null
 
   try {
     // ── Step 1: Pre-flight validation ──────────────�������──────────────────────
@@ -2745,9 +2803,11 @@ export async function executeLivePosition(
         // by the 300 s window. Lock value remains the original entry's
         // timestamp (intentional — debuggers see the original entry's
         // wall-clock, not the accumulation's).
-        await refreshLockTTL(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix).catch(() => {})
+        /* Do not refresh: this worker did not acquire the lock token. */
         return merged
       }
+      liveOrderLockToken = acquired
+      livePosition.liveLockToken = acquired
       // acquired === true: we own the slot. Continue to fresh-entry
       // path below. The historical `await acquireLock(...)` after order
       // placement is now redundant and has been removed (see Step 5).
@@ -2887,7 +2947,7 @@ export async function executeLivePosition(
       // the next signal isn't blocked for the full 5-min TTL on a non-
       // recoverable connector failure (operator likely didn't configure a
       // connector — they need to be able to retry once they do).
-      await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix).catch(() => {})
+      if (liveOrderLockToken) await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix, liveOrderLockToken).catch(() => {})
       return livePosition
     }
 
@@ -2909,7 +2969,7 @@ export async function executeLivePosition(
       // condition (typically a fresh symbol whose ticker hasn't streamed
       // yet). Without releasing, the next cycle's signal would defer for
       // 5 minutes even though the price arrives within seconds.
-      await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix).catch(() => {})
+      if (liveOrderLockToken) await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix, liveOrderLockToken).catch(() => {})
       return livePosition
     }
     livePosition.entryPrice = currentPrice
@@ -3379,7 +3439,7 @@ export async function executeLivePosition(
         symbol: realPosition.symbol,
         error: orderResult?.error,
       })
-      await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix).catch(() => {})
+      if (liveOrderLockToken) await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix, liveOrderLockToken).catch(() => {})
       await logLiveOrderFinal(orderTrace, {
         status: "rejected",
         livePositionId: livePosition.id,
@@ -3508,7 +3568,7 @@ export async function executeLivePosition(
         
         await incrementMetric(connectionId, "live_orders_failed_count")
         await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")
-        await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix).catch(() => {})
+        if (liveOrderLockToken) await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix, liveOrderLockToken).catch(() => {})
         await logProgressionEvent(connectionId, "live_trading", "error", `Entry order rejected for ${realPosition.symbol}`, {
           symbol: realPosition.symbol,
           direction: realPosition.direction,
@@ -3545,11 +3605,21 @@ export async function executeLivePosition(
     // TTL refresh, a slow venue + SL/TP placement could push past the
     // lock's 90s window, letting another tick place a duplicate position.
     // Re-stamp the lock here so the slot stays owned through fill + protect.
-    await refreshLockTTL(
-      connectionId,
-      realPosition.symbol,
-      realPosition.direction + _lockDirSuffix,
-    ).catch(() => {})
+    if (liveOrderLockToken) {
+      const stillOwnsLock = await refreshLockTTL(
+        connectionId,
+        realPosition.symbol,
+        realPosition.direction + _lockDirSuffix,
+        liveOrderLockToken,
+      ).catch(() => false)
+      if (!stillOwnsLock) {
+        livePosition.status = "error"
+        livePosition.statusReason = "Lost live-order lock ownership before fill confirmation"
+        pushStep(livePosition, "lock_refresh", false, livePosition.statusReason)
+        await savePosition(livePosition)
+        return livePosition
+      }
+    }
     await logProgressionEvent(connectionId, "live_trading", "info", `Entry order placed for ${realPosition.symbol}`, {
       orderId: livePosition.orderId,
       side: exchangeSide,
@@ -4044,7 +4114,7 @@ export async function executeLivePosition(
     } catch {
       /* logging must never throw */
     }
-    await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix).catch(() => {})
+    if (liveOrderLockToken) await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix, liveOrderLockToken).catch(() => {})
     return livePosition
   }
 }
@@ -4440,7 +4510,11 @@ export async function closeLivePosition(
     await savePosition(position)
 
     // ── 5. Release dedup lock + counters + audit log ────────────────────
-    await releaseLock(connectionId, position.symbol, position.direction!)
+    if (position.liveLockToken) {
+      await releaseLock(connectionId, position.symbol, position.direction!, position.liveLockToken)
+    } else {
+      console.warn(`${LOG_PREFIX} [lock-coordination] close skipped live lock release for ${connectionId}/${position.symbol}/${position.direction} because no owner token is available`)
+    }
     if (!wasAlreadyClosed) {
       await incrementMetric(connectionId, "live_positions_closed_count")
       if (pnl > 0) await incrementMetric(connectionId, "live_wins_count")
@@ -7065,6 +7139,12 @@ export async function syncLiveFromPseudo(
 }
 
 export const __liveStageTest = {
+  async refreshLockTTLWithClient(client: any, key: string, token: string, ttlMs: number) {
+    return (await evalLockLua(client, REFRESH_LOCK_TTL_LUA, key, [token, String(ttlMs)])) === 1
+  },
+  async releaseLockWithClient(client: any, key: string, token: string) {
+    return (await evalLockLua(client, RELEASE_LOCK_LUA, key, [token])) === 1
+  },
   computeDesiredProtectionPrices,
   readAbsoluteProtectionPrices(pos: LivePosition) {
     return computeDesiredProtectionPrices(pos)
