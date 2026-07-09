@@ -3143,9 +3143,15 @@ export async function executeLivePosition(
       livePosition.statusReason = "live_trade disabled — no exchange execution"
       pushStep(livePosition, "simulate", true, `qty=${simQty} @ ${simEntryPrice}`)
       await savePosition(livePosition)
-      // Run counters in parallel �� they're independent.
+      // Run counters in parallel — they're independent. Simulated orders are
+      // canonicalized as both placed and filled because this branch immediately
+      // creates an open position with executed quantity and a synthetic fill.
       await Promise.all([
         incrementMetric(connectionId, "live_orders_simulated_count"),
+        incrementMetric(connectionId, "live_orders_placed_count"),
+        incrementMetric(connectionId, "live_orders_filled_count"),
+        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed"),
+        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "filled"),
         // Track simulated positions in created counter as well so the
         // openPositions.live.open = created - closed math works for
         // paper trades (the close-counter is bumped by

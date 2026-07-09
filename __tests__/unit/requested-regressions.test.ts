@@ -1453,6 +1453,22 @@ describe("requested regression guardrails", () => {
     expect(envExample).toContain("ALLOW_PROD_INLINE_REDIS=1")
   })
 
+  test("simulated live-stage orders increment directional per-symbol counters", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const simStart = liveStage.indexOf("if (!isLiveTradeEnabled) {")
+    const simEnd = liveStage.indexOf("if (!exchangeConnector || typeof exchangeConnector.placeOrder !== \"function\")", simStart)
+    const simBlock = liveStage.slice(simStart, simEnd)
+
+    expect(simBlock).toContain("await savePosition(livePosition)")
+    expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_placed_count")')
+    expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_filled_count")')
+    expect(simBlock).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")')
+    expect(simBlock).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "filled")')
+    expect(simBlock.indexOf("await savePosition(livePosition)")).toBeLessThan(
+      simBlock.indexOf('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")'),
+    )
+  })
+
   test("live-stage save path maintains production reconciliation indexes", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const saveStart = liveStage.indexOf("async function savePosition(position: LivePosition")
