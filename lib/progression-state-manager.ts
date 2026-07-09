@@ -88,6 +88,7 @@
  */
 
 import { getRedisClient, initRedis, setSettings } from "@/lib/redis-db"
+import { emitCanonicalEvent } from "@/lib/events/emitter"
 
 export interface ProgressionRecoordinationResult {
   changed: boolean
@@ -673,6 +674,7 @@ export class ProgressionStateManager {
       }
       const key = `progression:${connectionId}`
       await client.del(key)
+      emitCanonicalEvent({ type: "progression.stageChanged", connectionId, stage: "prehistoric", data: { action: "reset" } })
       console.log(`[v0] [Progression] State reset for ${connectionId}`)
     } catch (error) {
       console.error(`[v0] Failed to reset progression state for ${connectionId}:`, error)
@@ -723,6 +725,7 @@ export class ProgressionStateManager {
         engine_started: "false",
         last_update: new Date(now).toISOString(),
       })
+      emitCanonicalEvent({ type: "progression.stageChanged", connectionId, stage: "engine", epoch, data: { engineStarted: false, endedAt: now } })
       console.log(`[v0] [Progression] Ended progression for ${connectionId} at epoch ${epoch}`)
     } catch (error) {
       console.error(`[v0] Failed to end progression for ${connectionId}:`, error)
@@ -1157,6 +1160,7 @@ export class ProgressionStateManager {
           config_set_indication_results: "0",
           updated_at: new Date().toISOString(),
         }).catch(() => {})
+        emitCanonicalEvent({ type: "progression.epochStarted", connectionId, stage: "prehistoric", epoch: initializedEpoch, settingsVersion: liveSnapshot.updated_at, data: { reason: "no active progression", symbolCount: liveSymbolCount } })
         return { changed: true, reason: "no active progression", newEpoch: initializedEpoch }
       }
 
@@ -1308,6 +1312,7 @@ export class ProgressionStateManager {
           })
           .catch(() => {})
 
+        emitCanonicalEvent({ type: "progression.epochStarted", connectionId, stage: "prehistoric", epoch: newEpoch, settingsVersion: liveSnapshot.updated_at, data: { reason, symbolCount: liveSymbolCount } })
         return { changed: true, reason, newEpoch }
       }
 

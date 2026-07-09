@@ -18,6 +18,7 @@
 
 import { initRedis, getSettings, setSettings, getRedisClient } from "@/lib/redis-db"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
+import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { PositionThresholdManager } from "@/lib/position-threshold-manager"
 import { PseudoPositionManager, nanoid } from "@/lib/trade-engine/pseudo-position-manager"
 import {
@@ -1643,12 +1644,14 @@ export class StrategyCoordinator {
       // STAGE 1: BASE — one Set per (indication_type × direction)
       const { result: baseResult, sets: baseSets, coordIndex } = await this.createBaseSets(symbol, indications)
       results.push(baseResult)
+      emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "base", data: baseResult })
 
       // STAGE 2: MAIN — validate Base Sets AND create additional related
       // variant Sets (Default / Trailing / Block / DCA) gated by posCtx.
       // CoordIndex receives a SetCoordRecord per built set (O(1) per set).
       const { result: mainResult, sets: mainSets } = await this.createMainSets(symbol, baseSets, posCtx, coordIndex, isPrehistoric)
       results.push(mainResult)
+      emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "main", data: mainResult })
 
       // STAGE 3: REAL ��� promote Sets with avgPF >= 1.4 (base-promoted AND
       // additional related variants flow uniformly through this filter).
@@ -1656,6 +1659,7 @@ export class StrategyCoordinator {
       // / tunedAvgPF onto each record for O(1) access at Live dispatch.
       const { result: realResult, sets: realSets } = await this.evaluateRealSets(symbol, mainSets, coordIndex, posCtx)
       results.push(realResult)
+      emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "real", data: realResult })
 
       // STAGE 4: LIVE — best 500 Sets for execution (skip in prehistoric mode).
       // Axis-entry hydration uses coordIndex.base.byKey.get(parentKey) — O(1)
@@ -1663,6 +1667,7 @@ export class StrategyCoordinator {
       if (!isPrehistoric) {
         const { result: liveResult } = await this.createLiveSets(symbol, realSets, coordIndex, skipLiveDispatch)
         results.push(liveResult)
+        emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "live", data: liveResult })
 
         // DEV/SIM bounded rolling lifecycle. The simulated connector marks a
         // constant price so live positions never hit TP/SL and pile up

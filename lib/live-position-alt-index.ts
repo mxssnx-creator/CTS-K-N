@@ -52,10 +52,12 @@ async function scanLegacyAlternateLivePositionKeys(client: any, connectionId: st
 
 export async function getAlternateLivePositionKeys(client: any, connectionId: string) {
   const indexKey = alternateLivePositionIndexKey(connectionId)
-  const indexedKeys = ((await client.lrange(indexKey, 0, ALT_LIVE_POSITION_PAGE_SIZE - 1).catch(() => [])) || []) as string[]
+  const indexedKeys = typeof client?.lrange === "function"
+    ? (((await client.lrange(indexKey, 0, ALT_LIVE_POSITION_PAGE_SIZE - 1).catch(() => [])) || []) as string[])
+    : []
   if (indexedKeys.length > 0) return { keys: indexedKeys, partialLegacyScan: false }
 
-  if (typeof client.scan !== "function") return { keys: [] as string[], partialLegacyScan: false }
+  if (typeof client?.scan !== "function") return { keys: [] as string[], partialLegacyScan: false }
 
   const legacy = await scanLegacyAlternateLivePositionKeys(client, connectionId)
   if (legacy.keys.length > 0) {

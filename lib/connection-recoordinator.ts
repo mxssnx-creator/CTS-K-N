@@ -40,6 +40,7 @@
  */
 
 import { notifySettingsChanged, detectChangedFields } from "@/lib/settings-coordinator"
+import { emitCanonicalEvent } from "@/lib/events/emitter"
 
 interface RecoordinateOptions {
   /**
@@ -115,9 +116,25 @@ export async function recoordinateAfterSettingsChange(
     )
   }
 
+  const settingsEvent = emitCanonicalEvent({
+    type: "settings.saved",
+    connectionId: id,
+    stage: "settings",
+    settingsVersion: (after as any).settings_version || (after as any).updated_at || new Date().toISOString(),
+    data: { changedFields, logTag: opts.logTag },
+  })
+
   // Step 1 — durable notify (Redis envelope read by all running engines).
   try {
     await notifySettingsChanged(id, changedFields, before, after)
+    emitCanonicalEvent({
+      type: "settings.hotReloaded",
+      connectionId: id,
+      stage: "settings",
+      settingsVersion: (after as any).settings_version || (after as any).updated_at || settingsEvent.settingsVersion,
+      parentEventId: settingsEvent.id,
+      data: { changedFields },
+    })
   } catch (notifyErr) {
     console.error(
       `[v0] [${opts.logTag}] notifySettingsChanged failed for ${id}:`,
@@ -235,6 +252,15 @@ export async function recoordinateAfterSettingsChange(
       console.log(
         `[v0] [${opts.logTag}] Progress-affecting settings changed for ${id} → recoordinated progression (changed:${result?.changed ?? "?"}, reason:${result?.reason ?? "?"})`,
       )
+      emitCanonicalEvent({
+        type: "connection.recoordinated",
+        connectionId: id,
+        stage: "connection",
+        epoch: result?.newEpoch,
+        settingsVersion: (after as any).settings_version || (after as any).updated_at || settingsEvent.settingsVersion,
+        parentEventId: settingsEvent.id,
+        data: { changed: result?.changed ?? false, reason: result?.reason, changedFields },
+      })
     } catch (archiveErr) {
       console.warn(
         `[v0] [${opts.logTag}] Failed to recoordinate progression after settings change for ${id}:`,

@@ -26,6 +26,7 @@ import { getAppSettings, getConnection, getRedisClient, initRedis, setSettings }
 import { nanoid } from "@/lib/trade-engine/pseudo-position-manager"
 import { getVenueMinQty } from "@/lib/exchange-min-qty"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
+import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import { SystemLogger } from "@/lib/system-logger"
 import type { RealPosition } from "./real-stage"
@@ -6745,6 +6746,13 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
 
         const key = `live:position:${position.id}`
         await client.setex(key, 604800, JSON.stringify(position))
+        emitCanonicalEvent({
+          type: "live.stageChanged",
+          connectionId: position.connectionId || connectionId,
+          symbol: position.symbol,
+          stage: "live",
+          data: { positionId: position.id, status: position.status, action: "synced" },
+        })
         await client.lpush(`live:positions:${position.connectionId}`, position.id)
         await client.ltrim(`live:positions:${position.connectionId}`, 0, 999)
         await client.expire(`live:positions:${position.connectionId}`, 604800)

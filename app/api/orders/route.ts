@@ -54,13 +54,22 @@ async function writeOrder(newOrder: any) {
   const createdScore = Date.parse(newOrder.created_at)
   const score = Number.isFinite(createdScore) ? createdScore : Date.now()
 
-  await redis
-    .multi()
-    .set(orderKey(newOrder.id), JSON.stringify(newOrder))
-    .zadd(ORDER_INDEX_KEY, score, newOrder.id)
-    .zadd(connectionIndexKey(newOrder.connection_id), score, newOrder.id)
-    .zadd(statusIndexKey(newOrder.status), score, newOrder.id)
-    .exec()
+  if (redis && typeof redis.multi === "function") {
+    await redis
+      .multi()
+      .set(orderKey(newOrder.id), JSON.stringify(newOrder))
+      .zadd(ORDER_INDEX_KEY, score, newOrder.id)
+      .zadd(connectionIndexKey(newOrder.connection_id), score, newOrder.id)
+      .zadd(statusIndexKey(newOrder.status), score, newOrder.id)
+      .exec()
+    return
+  }
+
+  // Test and lightweight Redis shims may not implement transactions. Keep the
+  // legacy settings list in sync as a compatibility fallback instead of failing
+  // order creation outright.
+  const existing = toOrderArray(await getSettings("orders").catch(() => []))
+  await setSettings("orders", [...existing, newOrder])
 }
 
 // Simple per-user rate limiter for order creation
