@@ -49,9 +49,15 @@ export async function register(): Promise<void> {
   // (or crash the server). The pre-startup sequence is the most important part
   // — it runs migrations and cleans orphaned state from the previous process.
   try {
+    const { recordStartupPhase } = await import("@/lib/startup-diagnostics")
+    await recordStartupPhase("startup_coordinator_running")
     const { completeStartup } = await import("@/lib/startup-coordinator")
     await completeStartup()
+    const { recordInstrumentationRegistered } = await import("@/lib/startup-diagnostics")
+    await recordInstrumentationRegistered()
   } catch (err) {
+    const { recordStartupError } = await import("@/lib/startup-diagnostics")
+    await recordStartupError(err, "completeStartup").catch(() => {})
     console.error("[v0] [Instrumentation] completeStartup failed (continuing):", err instanceof Error ? err.message : err)
   }
 
@@ -61,9 +67,13 @@ export async function register(): Promise<void> {
   // Serverless/edge safety is handled inside the imported runners.
   if (process.env.DISABLE_TRADE_ENGINE_AUTOSTART !== "1") {
     try {
+      const { recordStartupPhase } = await import("@/lib/startup-diagnostics")
+      await recordStartupPhase("auto_start_running")
       const { initializeTradeEngineAutoStart } = await import("@/lib/trade-engine-auto-start")
       await initializeTradeEngineAutoStart()
     } catch (err) {
+      const { recordStartupError } = await import("@/lib/startup-diagnostics")
+      await recordStartupError(err, "initializeTradeEngineAutoStart").catch(() => {})
       console.error("[v0] [Instrumentation] auto-start init failed (continuing):", err instanceof Error ? err.message : err)
     }
   } else {
@@ -75,7 +85,11 @@ export async function register(): Promise<void> {
     try {
       const { startServerContinuityRunner } = await import("@/lib/server-continuity-runner")
       startServerContinuityRunner()
+      const { recordStartupPhase } = await import("@/lib/startup-diagnostics")
+      await recordStartupPhase("continuity_runner_started")
     } catch (err) {
+      const { recordStartupError } = await import("@/lib/startup-diagnostics")
+      await recordStartupError(err, "startServerContinuityRunner").catch(() => {})
       console.error("[v0] [Instrumentation] continuity runner failed (continuing):", err instanceof Error ? err.message : err)
     }
   } else {
@@ -84,4 +98,8 @@ export async function register(): Promise<void> {
   }
 
   console.log("[v0] [Instrumentation] ✓ Server boot complete")
+  try {
+    const { recordStartupPhase } = await import("@/lib/startup-diagnostics")
+    await recordStartupPhase("ready")
+  } catch {}
 }
