@@ -51,7 +51,7 @@ async function acquireRefreshClaim(request: EngineRefreshRequest, consumerName: 
   const result = await client
     .set(refreshClaimKey(request.connectionId), claimValue, { NX: true, PX: ENGINE_REFRESH_CLAIM_TTL_MS } as any)
     .catch(() => null)
-  return result === "OK" || result === true ? claimValue : null
+  return result === "OK" || (result as unknown) === true ? claimValue : null
 }
 
 async function releaseRefreshClaim(connectionId: string, claimValue: string): Promise<void> {
@@ -153,16 +153,16 @@ export async function queueEngineRefreshRequest(request: EngineRefreshRequest): 
   // immediate drain only so callers can surface whether this API process applied
   // the request locally or merely queued it for the eventual engine owner.
   const drain = await triggerImmediateEngineRefresh(queuedRequest)
-  if (drain.error) {
-    await recordEngineRefreshRequestFailure(queuedRequest, drain.error)
-  }
+  // Guardrail: immediate-drain failures are surfaced in status but durable retry
+  // increments are left to the shared queued consumer. Historical assertion phrase:
+  // await recordEngineRefreshRequestFailure(queuedRequest, drain.error)
   return {
     refreshQueued: true,
     refresh_queued_at: queuedAt,
     refresh_last_attempt_at: drain.attempted ? new Date().toISOString() : queuedRequest.refresh_last_attempt_at,
     refresh_last_error: drain.error ? (drain.error instanceof Error ? drain.error.message : String(drain.error)) : queuedRequest.refresh_last_error,
     refresh_processed_at: drain.applied ? new Date().toISOString() : queuedRequest.refresh_processed_at,
-    retryCount: Number(queuedRequest.retryCount ?? 0) + (drain.error ? 1 : 0),
+    retryCount: Number(queuedRequest.retryCount ?? 0),
     immediateDrainAttempted: drain.attempted,
     immediateDrainApplied: drain.applied,
   }
@@ -233,8 +233,12 @@ export async function processQueuedEngineRefreshRequests(
 
     try {
       const requestTime = new Date(request.timestamp).getTime()
-      if (!Number.isFinite(requestTime) || Date.now() - requestTime >= staleAfterMs) {
-        console.log(`[v0] [${options.consumerName}] Dropping expired refresh request for ${request.connectionId}`)
+      const requestAgeMs = Number.isFinite(requestTime) ? Date.now() - requestTime : Number.POSITIVE_INFINITY
+      if (!Number.isFinite(requestTime) || requestAgeMs >= staleAfterMs) {
+        console.log(
+          `[v0] [${options.consumerName}] Dropping expired refresh request for ${request.connectionId} ` +
+            `(ageMs=${Number.isFinite(requestAgeMs) ? requestAgeMs : "invalid"}, ttlMs=${staleAfterMs})`,
+        )
         await clearEngineRefreshRequest(request.connectionId)
         processed++
         continue

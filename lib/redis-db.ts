@@ -1906,9 +1906,18 @@ function getMissingProductionRedisError(): string {
   return (
     "Production/preview Redis configuration missing: configure one shared Redis option " +
     "(REDIS_URL, KV_URL, UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN, or " +
-    "KV_REST_API_URL + KV_REST_API_TOKEN). InlineLocalRedis is process-local and is disabled " +
-    "for production/preview by default; set ALLOW_PROD_INLINE_REDIS=1 only for explicit local/demo overrides."
+    "KV_REST_API_URL + KV_REST_API_TOKEN). InlineLocalRedis is now allowed by default " +
+    "for this deployment profile; set ALLOW_PROD_INLINE_REDIS=0 to force a hard failure instead."
   )
+}
+
+function isProdInlineRedisAllowed(): boolean {
+  // User-requested deployment profile: InlineLocalRedis is available in
+  // production/preview by default so single-process deployments can always
+  // boot. Operators can still set ALLOW_PROD_INLINE_REDIS=0 to require a
+  // shared Redis backend. This does NOT opt into live exchange order placement;
+  // that remains gated separately by ALLOW_INLINE_REDIS_LIVE_TRADING.
+  return process.env.ALLOW_PROD_INLINE_REDIS !== "0"
 }
 
 function normalizeScanOptions(args: any[]): { MATCH?: string; COUNT?: number } {
@@ -2144,12 +2153,13 @@ function createRedisInstance(): RedisClientLike {
     return new UpstashRestRedisClient(process.env.KV_REST_API_URL, process.env.KV_REST_API_TOKEN)
   }
   if (isProductionEnvironment() && !hasSharedRedisConfig()) {
-    if (process.env.ALLOW_PROD_INLINE_REDIS !== "1") {
+    if (!isProdInlineRedisAllowed()) {
       throw new Error(getMissingProductionRedisError())
     }
+    if (process.env.ALLOW_PROD_INLINE_REDIS !== "1") process.env.ALLOW_PROD_INLINE_REDIS = "1"
     console.warn(
-      "[v0] [Redis] ALLOW_PROD_INLINE_REDIS=1 is set; using InlineLocalRedis in production/preview. " +
-        "This is only safe for explicit local/demo overrides and is not shared or durable across deployments.",
+      "[v0] [Redis] ALLOW_PROD_INLINE_REDIS=1 default is active; using InlineLocalRedis in production/preview. " +
+        "This is intended for single-process/local deployments and is not shared across multiple workers.",
     )
   }
   globalForRedis.__redis_backend = "inline-local"

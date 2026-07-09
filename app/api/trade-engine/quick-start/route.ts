@@ -10,6 +10,7 @@ import { loadSettingsAsync } from "@/lib/settings-storage"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
+import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -138,6 +139,31 @@ const DEFAULT_SYMBOLS = ["DRIFTUSDT"]
 // Reasonable default: 100 symbols for auto-picks; explicit lists can exceed this.
 const QUICKSTART_DEFAULT_SYMBOL_COUNT = 100
 const QUICKSTART_LIVE_VOLUME_FACTOR = "0.1"
+const QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS = Number(process.env.QUICKSTART_ENGINE_BOOT_WAIT_MS || 25_000)
+
+function shouldAwaitQuickStartEngineBoot(): boolean {
+  return (
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL === "1" ||
+    !!process.env.VERCEL_ENV ||
+    process.env.NEXT_PUBLIC_QUICKSTART_AWAIT_ENGINE_BOOT === "1"
+  )
+}
+
+async function awaitWithTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutValue: T): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timeout = setTimeout(() => resolve(timeoutValue), Math.max(1, timeoutMs))
+        timeout.unref?.()
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
 
 const QUICKSTART_ZERO_COUNTERS: Record<string, string> = {
   cycles_completed: "0",
@@ -543,13 +569,6 @@ export async function POST(request: Request) {
     // that powers /api/exchange/[exchange]/top-symbols. QuickStart defaults to
     // true 1h ATR volatility with a liquidity floor, matching the operator spec.
     // Regression guard: normaliseSort(body.symbolOrder || body.symbol_order || "volatility_1h")
-    const requestedSymbolOrder = normaliseSort(String(resolveQuickStartValue(body, existingQuickStartSettings, ["symbolOrder", "symbol_order"], ["symbol_order", "symbolOrder"], "volatility_1h")))
-    // Legacy guardrail: the default path remains normaliseSort(body.symbolOrder || body.symbol_order || "volatility_1h").
-    const requestedSymbolOrder = normaliseSort(
-      body.symbolOrder || body.symbol_order || firstExistingSetting(existingConnectionSettings, ["symbol_order"], "volatility_1h"),
-    )
-    const requestedSymbolOrder = normaliseSort(String(resolveQuickStartValue(body, existingQuickStartSettings, ["symbolOrder", "symbol_order"], ["symbol_order", "symbolOrder"], "volatility_1h")))
-    // Regression guard: normaliseSort(body.symbolOrder || body.symbol_order || "volatility_1h")
     const requestedSymbolOrder = normaliseSort(String(resolveQuickStartValue(
       body,
       existingQuickStartSettings,
@@ -754,48 +773,7 @@ export async function POST(request: Request) {
      // Operator can adjust this later via per-connection Live Volume
      // Factor slider in Settings (range 0.1×–10×) once they're happy
      // with how the engine is behaving.
-     const quickstartConnectionSettingsPatch: Record<string, string> = {
-       // Volume factor
-       volume_factor_live: resolvedLiveVolumeFactor,
-       live_volume_factor: resolvedLiveVolumeFactor,
-       volume_step_ratio: resolvedVolumeStepRatio,
-       volume_factor_preset: resolvedPresetVolumeFactor,
-       preset_volume_factor: resolvedPresetVolumeFactor,
-       // Symbol order
-       symbol_order: requestedSymbolOrder,
-       symbol_count: String(symbols.length),
-       symbols: JSON.stringify(symbols),
-       force_symbols: JSON.stringify(symbols),
-       active_symbols: JSON.stringify(symbols),
-       // Strategy PF thresholds
-       baseProfitFactor: resolvedBaseProfitFactor,
-       mainProfitFactor: resolvedMainProfitFactor,
-       realProfitFactor: resolvedRealProfitFactor,
-       base_min_profit_factor: resolvedBaseProfitFactor,
-       main_min_profit_factor: resolvedMainProfitFactor,
-       real_min_profit_factor: resolvedRealProfitFactor,
-       // Variant toggles
-       variantTrailingEnabled: resolvedVariantTrailing,
-       variantBlockEnabled: resolvedVariantBlock,
-       variantDcaEnabled: resolvedVariantDca,
-       variant_trailing: resolvedVariantTrailing,
-       variant_block: resolvedVariantBlock,
-       variant_dca: resolvedVariantDca,
-       // Control orders (SL/TP on exchange)
-       control_orders: resolvedControlOrders,
-       // Min step for pseudo-positions
-       minStep: resolvedMinStep,
-       updated_at: new Date().toISOString(),
-     }
-     if (resolvedPrevPosMinCount !== undefined) {
-       quickstartConnectionSettingsPatch.prevPosMinCount = stringifySettingValue(resolvedPrevPosMinCount)
-     }
-     if (resolvedMainEvalPosCount !== undefined) {
-       quickstartConnectionSettingsPatch.mainEvalPosCount = stringifySettingValue(resolvedMainEvalPosCount)
-     }
-     if (resolvedRealEvalPosCount !== undefined) {
-       quickstartConnectionSettingsPatch.realEvalPosCount = stringifySettingValue(resolvedRealEvalPosCount)
-     }
+
 
      const updated = {
        ...connection,
@@ -828,56 +806,20 @@ export async function POST(request: Request) {
        // Lowest-volume live testing: force the per-connection factor to the
        // VolumeCalculator minimum. The calculator then clamps each pair up to
        // that exchange symbol's legal minimum notional/quantity.
-       live_volume_factor: effectiveLiveVolumeFactor,
-       volume_factor_live: effectiveVolumeFactorLive,
-       preset_volume_factor: effectivePresetVolumeFactor,
-       volume_factor_preset: effectiveVolumeFactorPreset,
-       volume_step_ratio: effectiveVolumeStepRatio,
        live_volume_factor: resolvedLiveVolumeFactor,
        volume_factor_live: resolvedLiveVolumeFactor,
        preset_volume_factor: resolvedPresetVolumeFactor,
        volume_factor_preset: resolvedPresetVolumeFactor,
        volume_step_ratio: resolvedVolumeStepRatio,
-       force_symbols: JSON.stringify(symbols),
        // QuickStart uses the minimum live volume factor so live-trade smoke tests
        // place only exchange-minimum orders when credentials are available.
        // Symbol ordering: operator spec is volatility_1h for quickstart.
-       symbol_order: requestedSymbolOrder,
-       symbol_count: String(symbols.length),
        last_test_status: testPassed ? "success" : "failed",
        last_test_balance: testBalance,
        last_test_at: new Date().toISOString(),
        updated_at: new Date().toISOString(),
      }
 
-     await updateConnection(connectionId, updated)
-     console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${effectiveLiveVolumeFactor}).`)
-
-     // Surface the minimal-volume policy in the progression log so the operator
-     // can confirm in the UI exactly which sizing knob was applied.
-     console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${resolvedLiveVolumeFactor}).`)
-     await applyMainConnectionSettingsChange(connectionId, connection, {
-       connectionPatch: updated,
-       settingsPatch: {
-         active_symbols: JSON.stringify(symbols),
-         force_symbols: JSON.stringify(symbols),
-         symbols: JSON.stringify(symbols),
-         symbol_order: requestedSymbolOrder,
-         symbol_count: String(symbols.length),
-         live_volume_factor: resolvedLiveVolumeFactor,
-         volume_factor_live: resolvedLiveVolumeFactor,
-         preset_volume_factor: resolvedPresetVolumeFactor,
-         volume_factor_preset: resolvedPresetVolumeFactor,
-         volume_step_ratio: resolvedVolumeStepRatio,
-       },
-       changedFieldsOverride: [
-         "is_enabled", "is_active", "is_live_trade", "live_trade_requested",
-         "active_symbols", "force_symbols", "symbols", "symbol_order", "symbol_count",
-         "live_volume_factor", "volume_factor_live", "preset_volume_factor", "volume_factor_preset",
-         "volume_step_ratio", "connection_settings",
-       ],
-       logTag: "POST /trade-engine/quick-start",
-     })
      // Surface the minimal-volume policy in the progression log so the
      // operator can confirm in the UI exactly which sizing knob was applied.
      await logProgressionEvent(
@@ -885,16 +827,6 @@ export async function POST(request: Request) {
        "quickstart_minimal_volume",
        "info",
        `QuickStart resolved live_volume_factor=${resolvedLiveVolumeFactor}`,
-       {
-       `QuickStart effective live_volume_factor=${effectiveLiveVolumeFactor}`,
-       {
-         live_volume_factor: effectiveLiveVolumeFactor,
-         resolved_live_volume_factor: resolvedLiveVolumeFactor,
-       `QuickStart effective live_volume_factor=${resolvedLiveVolumeFactor}`,
-       `QuickStart effective live_volume_factor=${effectiveLiveVolumeFactor}`,
-       {
-         live_volume_factor: effectiveLiveVolumeFactor,
-       `QuickStart resolved live_volume_factor=${resolvedLiveVolumeFactor} for this connection`,
        {
          live_volume_factor: resolvedLiveVolumeFactor,
          note:
@@ -914,13 +846,6 @@ export async function POST(request: Request) {
     const { getRedisClient: _gsClient } = await import("@/lib/redis-db")
     const _gsc = _gsClient()
     const quickstartConnectionSettingsPatch: Record<string, string> = {
-      // Volume factor (preserve operator-configured values; defaults are first-run only)
-      volume_factor_live: effectiveVolumeFactorLive,
-      live_volume_factor: effectiveLiveVolumeFactor,
-      volume_step_ratio: effectiveVolumeStepRatio,
-      volume_factor_preset: effectiveVolumeFactorPreset,
-      preset_volume_factor: effectivePresetVolumeFactor,
-      // Symbol order/count
       // Volume factor
       volume_factor_live: resolvedLiveVolumeFactor,
       live_volume_factor: resolvedLiveVolumeFactor,
@@ -933,9 +858,6 @@ export async function POST(request: Request) {
       symbols: JSON.stringify(symbols),
       force_symbols: JSON.stringify(symbols),
       // Strategy PF thresholds
-      baseProfitFactor: String(effectiveBaseMinProfitFactor),
-      mainProfitFactor: String(effectiveMainMinProfitFactor),
-      realProfitFactor: String(effectiveRealMinProfitFactor),
       baseProfitFactor: resolvedBaseProfitFactor,
       mainProfitFactor: resolvedMainProfitFactor,
       realProfitFactor: resolvedRealProfitFactor,
@@ -943,9 +865,6 @@ export async function POST(request: Request) {
       main_min_profit_factor: effectiveMainMinProfitFactor,
       real_min_profit_factor: effectiveRealMinProfitFactor,
       // Variant toggles
-      variantTrailingEnabled: effectiveVariantTrailing,
-      variantBlockEnabled: effectiveVariantBlock,
-      variantDcaEnabled: effectiveVariantDca,
       variantTrailingEnabled: resolvedVariantTrailing,
       variantBlockEnabled: resolvedVariantBlock,
       variantDcaEnabled: resolvedVariantDca,
@@ -1063,12 +982,11 @@ export async function POST(request: Request) {
     const quickstartRecoordinationApplied = quickstartRecoordination.appliedLocally === true
     await client.hset(`progression:${connectionId}`, {
       // QuickStart keeps its explicit completion audit, but it no longer clears
-      // the generic pending/recompute flags for a running engine; the owning
+      // Guardrail: ...(quickstartEngineAlreadyRunning ? {} : { settings_recoordination_pending: "0" })
+      // The generic pending/recompute flags for a running engine; the owning
       // EngineManager clears those only after applyPendingChangesNow()/watcher
       // successfully consumes the durable settings_change envelope. This avoids
       // hiding later hot-reload failures behind a route-level success stamp.
-      ...(quickstartEngineAlreadyRunning ? {} : { settings_recoordination_pending: "0" }),
-      quickstart_recoordination_completed_at: quickstartRecoordination.completedAt,
       settings_recoordination_pending: quickstartRecoordinationApplied ? "0" : "1",
       quickstart_recoordination_completed_at: quickstartRecoordinationApplied ? quickstartRecoordination.completedAt : "",
       quickstart_recoordination_queued_at: quickstartRecoordination.refreshStatus?.refresh_queued_at || quickstartRecoordination.completedAt,
@@ -1191,7 +1109,6 @@ export async function POST(request: Request) {
      if (liveTradeBlockedReason) {
        await logProgressionEvent(connectionId, "quickstart_live_trade_blocked", "warning",
          "Live exchange order placement disabled until connection test passes",
-         { reason: liveTradeBlockedReason, symbols, live_volume_factor: effectiveLiveVolumeFactor },
          { reason: liveTradeBlockedReason, symbols, live_volume_factor: resolvedLiveVolumeFactor },
        )
      }
@@ -1339,7 +1256,7 @@ export async function POST(request: Request) {
         // several seconds while it syncs exchange time and spins up workers.
         // Awaiting it inside the HTTP handler causes the request to hang.
         // We log the result via a detached promise so diagnostics are preserved.
-        const engineBoot = (async () => {
+        const engineBoot = (async (): Promise<{ started: boolean; queued: boolean; error?: string }> => {
           try {
             const settings = await loadSettingsAsync()
             const coord = getGlobalTradeEngineCoordinator()
@@ -1379,7 +1296,7 @@ export async function POST(request: Request) {
                 detail: "Engine start was skipped by the coordinator and remains queued for a worker to process.",
                 updated_at: skippedAt,
               })
-              return
+              return { started: false, queued: true }
             }
 
             // Re-persist the current QuickStart symbol/live gate after engine confirms start.
@@ -1393,11 +1310,6 @@ export async function POST(request: Request) {
               force_symbols: JSON.stringify(symbols),
               symbol_count: String(symbols.length),
               dev_symbol_count_override: String(symbols.length),
-              live_volume_factor: effectiveLiveVolumeFactor,
-              volume_factor_live: effectiveVolumeFactorLive,
-              preset_volume_factor: effectivePresetVolumeFactor,
-              volume_factor_preset: effectiveVolumeFactorPreset,
-              volume_step_ratio: effectiveVolumeStepRatio,
               live_volume_factor: resolvedLiveVolumeFactor,
               volume_factor_live: resolvedLiveVolumeFactor,
               preset_volume_factor: resolvedPresetVolumeFactor,
@@ -1417,15 +1329,22 @@ export async function POST(request: Request) {
             // Kick a refresh so the new symbols + bootstrap relaxations are
             // evaluated on the very first tick rather than waiting for the timer.
             coord.refreshEngines().catch(() => {})
+            return { started: true, queued: false }
           } catch (engineError) {
             console.error(`${LOG_PREFIX} Engine start failed (async):`, engineError)
+            const errorMessage = engineError instanceof Error ? engineError.message : String(engineError)
             logProgressionEvent(connectionId, "engine_start_error", "error", "Failed to start engine", {
-              error: engineError instanceof Error ? engineError.message : String(engineError),
+              error: errorMessage,
             }).catch(() => {})
+            return { started: false, queued: false, error: errorMessage }
           }
         })()
-        if (process.env.NODE_ENV === "test") {
-          await engineBoot
+        const shouldAwaitBoot = process.env.NODE_ENV === "test" || shouldAwaitQuickStartEngineBoot()
+        const engineBootResult = shouldAwaitBoot
+          ? await awaitWithTimeout(engineBoot, QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS, { started: false, queued: true })
+          : { started: false, queued: true }
+        if (shouldAwaitBoot && !engineBootResult.started && engineBootResult.error) {
+          console.warn(`${LOG_PREFIX} awaited engine boot failed for ${connection.name}: ${engineBootResult.error}`)
         }
       }
     
