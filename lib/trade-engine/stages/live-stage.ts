@@ -3204,6 +3204,7 @@ export async function executeLivePosition(
       pushStep(livePosition, "connector_check", false, livePosition.statusReason)
       await savePosition(livePosition)
       await incrementMetric(connectionId, "live_orders_failed_count")
+      await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")
       await logProgressionEvent(connectionId, "live_trading", "error", "Live order failed — no connector", {
         symbol: realPosition.symbol,
       })
@@ -3226,6 +3227,7 @@ export async function executeLivePosition(
       pushStep(livePosition, "price_fetch", false, livePosition.statusReason)
       await savePosition(livePosition)
       await incrementMetric(connectionId, "live_orders_failed_count")
+      await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")
       await logProgressionEvent(connectionId, "live_trading", "error", "Live order failed — no market price", {
         symbol: realPosition.symbol,
       })
@@ -3699,6 +3701,7 @@ export async function executeLivePosition(
       pushStep(livePosition, "place_order", false, livePosition.statusReason)
       await savePosition(livePosition)
       await incrementMetric(connectionId, "live_orders_failed_count")
+      await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")
       await logProgressionEvent(connectionId, "live_trading", "warning", livePosition.statusReason, {
         symbol: realPosition.symbol,
         error: orderResult?.error,
@@ -4353,6 +4356,7 @@ export async function executeLivePosition(
     pushStep(livePosition, "unhandled_error", false, errMsg)
     await savePosition(livePosition)
     await incrementMetric(connectionId, "live_orders_failed_count")
+    await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")
     await logProgressionEvent(
       connectionId,
       "live_trading",
