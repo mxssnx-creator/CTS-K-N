@@ -20,7 +20,7 @@ import { validateDatabase } from "@/lib/database-validator"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { isProcessorHeartbeatFresh } from "@/lib/engine-heartbeat"
 import { consolidateDatabase } from "@/lib/database-consolidation"
-import { getMigrationStatus } from "@/lib/redis-migrations"
+import { getMigrationStatus, runProductionCoverageRepair } from "@/lib/redis-migrations"
 
 function getPositionConnectionId(pos: any): string {
   return String(pos?.connectionId ?? pos?.connection_id ?? "").trim()
@@ -199,6 +199,16 @@ export async function completeStartup() {
     console.log(`[v0] [Startup] Step 1/8: Initializing Redis...`)
     await initRedis()
     console.log(`[v0] [Startup] ✓ Redis initialized`)
+
+    // Heavy coverage repair is intentionally background-only. initRedis() has
+    // already completed the blocking schema migrations and base-connection
+    // creation, so normal API routes can start while this non-critical repair
+    // records its own Redis status/progress keys.
+    runProductionCoverageRepair().catch(err =>
+      console.warn(`[v0] [Startup] Background production coverage repair error:`, err instanceof Error ? err.message : err),
+    )
+    console.log(`[v0] [Startup] ✓ Production coverage repair scheduled in background`)
+
     const volatileCleanup = await cleanupVolatileRuntimeState({ reason: "completeStartup" })
     console.log(`[v0] [Startup] ✓ Volatile runtime cleanup complete (deleted ${volatileCleanup.deleted}, preserved ${volatileCleanup.preserved})\n`)
 
@@ -350,7 +360,7 @@ export async function completeStartup() {
     // reports migration state + that background cleanup/reconcile are scheduled.
     console.warn(
       `[v0] [Startup] ✓ Boot complete — migrations: ${migrationReport}; ` +
-      `orphan cleanup + stranded-position reconciliation scheduled`,
+      `production coverage repair + orphan cleanup + stranded-position reconciliation scheduled`,
     )
   } catch (error) {
     console.error(`[v0] [Startup] ✗ Fatal error during startup:`, error)
