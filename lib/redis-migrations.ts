@@ -39,6 +39,7 @@ import { getRedisClient, ensureCoreRedis, setMigrationsRun, haveMigrationsRun } 
 const globalMigrationGuard = globalThis as unknown as {
   __migration_run_promise?: Promise<MigrationRunResult> | null
   __coverage_repair_done?: boolean
+  __coverage_repair_promise?: Promise<void> | null
 }
 
 function getMigrationRunPromise() {
@@ -58,6 +59,7 @@ export function resetMigrationRunState(): void {
   // Allow coverage repair to run again after a DB flush so fresh connections
   // get their metadata scaffolding.
   globalMigrationGuard.__coverage_repair_done = false
+  globalMigrationGuard.__coverage_repair_promise = null
   try {
     setMigrationsRun(false)
   } catch {
@@ -4306,6 +4308,78 @@ async function ensureCompleteProductionCoverage(client: any): Promise<void> {
   }
 }
 
+const COVERAGE_REPAIR_STATUS_KEY = "database:coverage_repair:status"
+const COVERAGE_REPAIR_LAST_STARTED_KEY = "database:coverage_repair:last_started_at"
+const COVERAGE_REPAIR_LAST_COMPLETED_KEY = "database:coverage_repair:last_completed_at"
+const COVERAGE_REPAIR_LAST_ERROR_KEY = "database:coverage_repair:last_error"
+
+async function setCoverageRepairStatus(
+  client: any,
+  status: "running" | "completed" | "failed",
+  fields: { startedAt?: string; completedAt?: string; error?: string } = {},
+): Promise<void> {
+  await client.set(COVERAGE_REPAIR_STATUS_KEY, status).catch(() => null)
+  if (fields.startedAt) {
+    await client.set(COVERAGE_REPAIR_LAST_STARTED_KEY, fields.startedAt).catch(() => null)
+  }
+  if (fields.completedAt) {
+    await client.set(COVERAGE_REPAIR_LAST_COMPLETED_KEY, fields.completedAt).catch(() => null)
+  }
+  if (fields.error !== undefined) {
+    if (fields.error) {
+      await client.set(COVERAGE_REPAIR_LAST_ERROR_KEY, fields.error).catch(() => null)
+    } else {
+      await client.del(COVERAGE_REPAIR_LAST_ERROR_KEY).catch(() => null)
+    }
+  }
+}
+
+/**
+ * Run the heavy production coverage repair outside the blocking migration path.
+ *
+ * Schema migrations, health metadata, and base connection creation remain
+ * synchronous in runMigrationsInternal()/initRedis(). This repair is deliberately
+ * exported so startup can schedule it after initRedis() has succeeded, allowing
+ * normal routes to serve while non-critical production coverage scaffolding is
+ * still being checked/repaired.
+ */
+export async function runProductionCoverageRepair(): Promise<void> {
+  if (globalMigrationGuard.__coverage_repair_done) {
+    await ensureCoreRedis()
+    const client = getRedisClient()
+    await setCoverageRepairStatus(client, "completed")
+    return
+  }
+
+  const existing = globalMigrationGuard.__coverage_repair_promise
+  if (existing) return existing
+
+  let promise!: Promise<void>
+  promise = (async () => {
+    await ensureCoreRedis()
+    const client = getRedisClient()
+    const startedAt = new Date().toISOString()
+    await setCoverageRepairStatus(client, "running", { startedAt, error: "" })
+    try {
+      await ensureCompleteProductionCoverage(client)
+      globalMigrationGuard.__coverage_repair_done = true
+      await setCoverageRepairStatus(client, "completed", { completedAt: new Date().toISOString(), error: "" })
+    } catch (error) {
+      globalMigrationGuard.__coverage_repair_done = false
+      const message = error instanceof Error ? error.message : String(error)
+      await setCoverageRepairStatus(client, "failed", { error: message })
+      throw error
+    } finally {
+      if (globalMigrationGuard.__coverage_repair_promise === promise) {
+        globalMigrationGuard.__coverage_repair_promise = null
+      }
+    }
+  })()
+
+  globalMigrationGuard.__coverage_repair_promise = promise
+  return promise
+}
+
 function createMigrationExecutionClient(client: any): any {
   return new Proxy(client, {
     get(target, prop, receiver) {
@@ -4438,14 +4512,9 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
           )
         }
 
-        // Coverage repair runs at most ONCE per process (one-shot guard on
-        // globalThis). On every subsequent fast-path call (= every API request)
-        // we skip it entirely — it iterates all connections and was the primary
-        // cause of slow startup on repeated requests.
-        if (!globalMigrationGuard.__coverage_repair_done) {
-          globalMigrationGuard.__coverage_repair_done = true
-          await ensureCompleteProductionCoverage(client)
-        }
+        // Heavy production coverage repair is intentionally not run here. It is
+        // scheduled as a background task after initRedis() succeeds so schema
+        // readiness remains the only blocking migration requirement.
 
         const result = { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
         await import("@/lib/startup-diagnostics")
@@ -4497,11 +4566,8 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
       }
        await setMigrationsRun(true)
 
-      // Coverage repair: once per process only (same guard as the fast-path above).
-      if (!globalMigrationGuard.__coverage_repair_done) {
-        globalMigrationGuard.__coverage_repair_done = true
-        await ensureCompleteProductionCoverage(client)
-      }
+      // Heavy production coverage repair is scheduled outside the blocking
+      // migration path by startup code after initRedis() succeeds.
 
       const result = { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
       await import("@/lib/startup-diagnostics")
@@ -4548,8 +4614,9 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
      // Mark migrations as run in this process
      await setMigrationsRun(true)
 
-    // PRODUCTION: INTENSIVE coverage after migrations (no holes, complete processings)
-    await ensureCompleteProductionCoverage(client)
+    // Do not run intensive production coverage repair in the blocking schema
+    // migration path. Startup schedules runProductionCoverageRepair() in the
+    // background after initRedis() succeeds.
     
     const result = { success: true, message: `Migrated from v${currentVersion} to v${finalVersion}`, version: finalVersion, databaseHealth }
     await import("@/lib/startup-diagnostics")
