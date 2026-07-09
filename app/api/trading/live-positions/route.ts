@@ -39,13 +39,17 @@ function normalizePosition(pos: any) {
   }
 }
 
+function isMissingNumericValue(value: unknown): boolean {
+  return value === undefined || value === null || Number.isNaN(Number(value))
+}
+
 function enrichPnl(pos: any) {
   const exchangePnl = Number(pos.exchangeData?.unrealizedPnl ?? pos.exchangeData?.unrealizedPnL)
   if (Number.isFinite(exchangePnl) && pos.status !== "closed") {
     pos.unrealizedPnL = Math.round(exchangePnl * 100) / 100
   }
 
-  if (!pos.unrealizedPnL && pos.status !== "closed" && pos.exchangeData?.markPrice && pos.averageExecutionPrice && pos.executedQuantity) {
+  if (isMissingNumericValue(pos.unrealizedPnL) && pos.status !== "closed" && !isMissingNumericValue(pos.exchangeData?.markPrice) && !isMissingNumericValue(pos.averageExecutionPrice) && !isMissingNumericValue(pos.executedQuantity)) {
     const markPrice = Number(pos.exchangeData.markPrice)
     const entryPrice = Number(pos.averageExecutionPrice || pos.entryPrice || 0)
     const qty = Number(pos.executedQuantity || 0)
@@ -56,7 +60,7 @@ function enrichPnl(pos: any) {
   }
 
   const realized = Number(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl)
-  if (pos.status === "closed" && Number.isFinite(realized)) {
+  if (pos.status === "closed" && !isMissingNumericValue(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl) && Number.isFinite(realized)) {
     pos.realizedPnL = Math.round(realized * 100) / 100
   }
 
