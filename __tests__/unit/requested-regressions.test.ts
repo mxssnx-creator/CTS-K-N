@@ -1437,6 +1437,23 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("async cleanupVolatileRuntimeState")
   })
 
+
+  test("live-stage save path maintains production reconciliation indexes", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const saveStart = liveStage.indexOf("async function savePosition(position: LivePosition")
+    const saveEnd = liveStage.indexOf(`/**
+ * Batch save multiple positions`, saveStart)
+    const saveBlock = liveStage.slice(saveStart, saveEnd)
+
+    expect(saveBlock).toContain("live:position:tracking:${position.connectionId}:${trackingId}")
+    expect(saveBlock).toContain("exchangeData.clientOrderIds")
+    expect(saveBlock).toContain("exchangeData.exchangePositionId")
+    expect(saveBlock).toContain("const liveSetIndexKey = `live_set_keys:${position.connectionId}`")
+    expect(saveBlock).toContain("await client.sadd(liveSetIndexKey, position.setKey)")
+    expect(saveBlock).toContain("await client.srem(liveSetIndexKey, position.setKey)")
+    expect(saveBlock).toContain("await client.expire(liveSetIndexKey, 24 * 60 * 60)")
+  })
+
   test("live positions route does not use production KEYS fallback", () => {
     const route = read("app/api/trading/live-positions/route.ts")
     const altIndex = read("lib/live-position-alt-index.ts")

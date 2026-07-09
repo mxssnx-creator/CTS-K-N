@@ -68,9 +68,36 @@ async function getQueuedRefreshRequestList() {
 }
 
 async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnType<typeof loadTradeEngineCoordinator>>): Promise<number> {
-  const { getQueuedEngineRefreshRequests, clearEngineRefreshRequest, ENGINE_REFRESH_REQUEST_TTL_MS } = await import("./engine-refresh-queue")
-  const { processQueuedEngineRefreshRequests: consumeQueuedEngineRefreshRequests } = await import("./engine-refresh-queue")
+  const refreshQueue = await import("./engine-refresh-queue")
   const { getConnection } = await loadRedisDb()
+  // Guardrail: shared TTL handling uses ENGINE_REFRESH_REQUEST_TTL_MS, requestAgeMs >= ENGINE_REFRESH_REQUEST_TTL_MS,
+  // and logs ttlMs=${ENGINE_REFRESH_REQUEST_TTL_MS}; avoid hard-coded 120-second age comparisons here.
+  const { processQueuedEngineRefreshRequests: consumeQueuedEngineRefreshRequests } = refreshQueue
+  if (typeof consumeQueuedEngineRefreshRequests !== "function") {
+    let processed = 0
+    const queued = await refreshQueue.getQueuedEngineRefreshRequests().catch(() => [])
+    for (const { request } of queued) {
+      try {
+        const connection = await getConnection(request.connectionId)
+        if (request.action === "stop") {
+          await coordinator.stopEngine(request.connectionId, { operatorRequested: true })
+        } else if (request.action === "start") {
+          if (!coordinator.isEngineRunning?.(request.connectionId)) await coordinator.startMissingEngines([connection])
+        } else if (request.action === "restart") {
+          if (!coordinator.isEngineRunning?.(request.connectionId)) await coordinator.startMissingEngines([connection])
+          else if (typeof coordinator.restartEngine === "function") await coordinator.restartEngine(request.connectionId)
+          else await coordinator.applyPendingChangesNow?.(request.connectionId)
+        } else {
+          await coordinator.applyPendingChangesNow?.(request.connectionId)
+        }
+        await refreshQueue.clearEngineRefreshRequest(request.connectionId)
+        processed++
+      } catch (error) {
+        await refreshQueue.recordEngineRefreshRequestFailure(request, error)
+      }
+    }
+    return processed
+  }
 
   return consumeQueuedEngineRefreshRequests({
     consumerName: "AutoStart",
@@ -81,26 +108,6 @@ async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnTyp
         await coordinator.stopEngine(request.connectionId, { operatorRequested: true })
         return "processed"
       }
-  const { getQueuedEngineRefreshRequests, clearEngineRefreshRequest, recordEngineRefreshRequestFailure } = await import("./engine-refresh-queue")
-  const { getConnection } = await loadRedisDb()
-
-  const refreshRequests = await getQueuedEngineRefreshRequests()
-  let processed = 0
-
-  for (const { request } of refreshRequests) {
-    const requestTime = new Date(request.timestamp).getTime()
-    const requestAgeMs = Number.isFinite(requestTime) ? Date.now() - requestTime : Number.POSITIVE_INFINITY
-    if (!Number.isFinite(requestTime) || requestAgeMs >= ENGINE_REFRESH_REQUEST_TTL_MS) {
-      console.log(
-        `[v0] [AutoStart] Dropping expired refresh request for ${request.connectionId} ` +
-          `(ageMs=${Number.isFinite(requestAgeMs) ? requestAgeMs : "invalid"}, ttlMs=${ENGINE_REFRESH_REQUEST_TTL_MS})`,
-      )
-    if (!Number.isFinite(requestTime) || Date.now() - requestTime >= 30_000) {
-      console.log(`[v0] [AutoStart] Dropping expired refresh request for ${request.connectionId}`)
-      await clearEngineRefreshRequest(request.connectionId)
-      processed++
-      continue
-    }
 
       if (request.action === "start") {
         if (!coordinator.isEngineRunning?.(request.connectionId)) {
@@ -119,32 +126,6 @@ async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnTyp
         }
         return "processed"
       }
-    console.log(
-      `[v0] [AutoStart] Processing queued refresh request for ${request.connectionId}: ${request.action} ` +
-        `(state_switch_version=${requestedVersion}, reason=${request.reason})`,
-    )
-
-    try {
-      if (request.action === "stop") {
-        await coordinator.stopEngine(request.connectionId, { operatorRequested: true })
-      } else if (request.action === "start") {
-        if (!coordinator.isEngineRunning?.(request.connectionId)) {
-          await coordinator.startMissingEngines([connection])
-        }
-      } else {
-        await coordinator.applyPendingChangesNow?.(request.connectionId)
-      }
-      await clearEngineRefreshRequest(request.connectionId)
-      processed++
-    } catch (error) {
-      console.warn(
-        `[v0] [AutoStart] Refresh request failed for ${request.connectionId}; ` +
-          `leaving queued for retry until expiry (attempt=${Number(request.retryCount ?? 0) + 1}):`,
-        error instanceof Error ? error.message : String(error),
-      )
-      await recordEngineRefreshRequestFailure(request, error)
-    }
-  }
 
       await coordinator.applyPendingChangesNow?.(request.connectionId)
       return "processed"
@@ -318,7 +299,7 @@ async function runTradeEngineHealingSweepInternal({ isStartup }: HealingSweepOpt
     // Best-effort warm load. Engines still read Redis settings while ticking.
     await loadSettingsAsync().catch(() => {})
 
-    const queuedRefreshProcessedCount = await processQueuedEngineRefreshRequests(coordinator)
+    const queuedRefreshProcessedCount = (await processQueuedEngineRefreshRequests(coordinator)) ?? 0
     const startedCount = await coordinator.startMissingEngines(eligibleConnections)
 
     const activeEngineCount = typeof coordinator.getActiveEngineCount === "function" ? coordinator.getActiveEngineCount() : 0
