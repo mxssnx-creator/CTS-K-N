@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getSettings, setSettings } from "@/lib/redis-db"
-import { notifySettingsChanged } from "@/lib/settings-coordinator"
+import { getConnection, getSettings } from "@/lib/redis-db"
+import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 
 // ── Channel-aware indication settings ──────────────────────────────
 // Each connection holds two profiles: `main` (the active config the
@@ -143,15 +143,18 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       ...profileToFlat(nextPreset, "_preset"),
       updated_at: new Date().toISOString(),
     }
-    await setSettings(`active_indications:${id}`, flat)
+    const connection = await getConnection(id)
+    if (!connection) {
+      return NextResponse.json({ error: "Connection not found" }, { status: 404 })
+    }
 
-    // Signal the running engine to immediately reload its indication
-    // configuration — new channels take effect on the very next cycle.
-    try {
-      await notifySettingsChanged(id, ["active_indications", "indications"])
-      const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
-      await getGlobalTradeEngineCoordinator().applyPendingChangesNow(id)
-    } catch { /* non-critical — watcher will pick it up */ }
+    await applyMainConnectionSettingsChange(id, connection, {
+      settingsKey: `active_indications:${id}`,
+      mirrorSettingsKey: false,
+      settingsPatch: flat,
+      changedFieldsOverride: ["active_indications", "indications"],
+      logTag: "PUT /settings/active-indications",
+    })
 
     return NextResponse.json({
       success: true,
