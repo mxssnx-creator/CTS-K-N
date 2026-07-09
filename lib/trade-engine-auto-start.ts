@@ -68,6 +68,18 @@ async function getQueuedRefreshRequestList() {
 }
 
 async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnType<typeof loadTradeEngineCoordinator>>): Promise<number> {
+  const { processQueuedEngineRefreshRequests: consumeQueuedEngineRefreshRequests } = await import("./engine-refresh-queue")
+  const { getConnection } = await loadRedisDb()
+
+  return consumeQueuedEngineRefreshRequests({
+    consumerName: "AutoStart",
+    staleAfterMs: 120_000,
+    getConnection,
+    act: async (request, connection) => {
+      if (request.action === "stop") {
+        await coordinator.stopEngine(request.connectionId, { operatorRequested: true })
+        return "processed"
+      }
   const { getQueuedEngineRefreshRequests, clearEngineRefreshRequest, recordEngineRefreshRequestFailure } = await import("./engine-refresh-queue")
   const { getConnection } = await loadRedisDb()
 
@@ -83,19 +95,23 @@ async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnTyp
       continue
     }
 
-    const connection = await getConnection(request.connectionId)
-    const currentVersion = String(connection?.state_switch_version ?? 0)
-    const requestedVersion = String(request.state_switch_version ?? "")
-    if (!connection || currentVersion !== requestedVersion) {
-      console.log(
-        `[v0] [AutoStart] Ignoring stale refresh request for ${request.connectionId}: ` +
-          `requested state_switch_version=${requestedVersion}, current=${currentVersion}`,
-      )
-      await clearEngineRefreshRequest(request.connectionId)
-      processed++
-      continue
-    }
+      if (request.action === "start") {
+        if (!coordinator.isEngineRunning?.(request.connectionId)) {
+          await coordinator.startMissingEngines([connection])
+        }
+        return "processed"
+      }
 
+      if (request.action === "restart") {
+        if (!coordinator.isEngineRunning?.(request.connectionId)) {
+          await coordinator.startMissingEngines([connection])
+        } else if (typeof coordinator.restartEngine === "function") {
+          await coordinator.restartEngine(request.connectionId)
+        } else {
+          await coordinator.applyPendingChangesNow?.(request.connectionId)
+        }
+        return "processed"
+      }
     console.log(
       `[v0] [AutoStart] Processing queued refresh request for ${request.connectionId}: ${request.action} ` +
         `(state_switch_version=${requestedVersion}, reason=${request.reason})`,
@@ -123,7 +139,10 @@ async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnTyp
     }
   }
 
-  return processed
+      await coordinator.applyPendingChangesNow?.(request.connectionId)
+      return "processed"
+    },
+  })
 }
 
 /**
