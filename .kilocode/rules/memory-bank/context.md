@@ -99,6 +99,7 @@ export async function GET() {
 
 | Date | Changes |
 |------|---------|
+| 2026-07-09 | QuickStart button now reads the selected Main Connection from exchange context, fetches its saved settings before enabling, builds the request from saved symbols/symbol_order/symbol_count and live-trade intent, and removes the hard-coded BTCUSDT UI/default except for the emergency no-selection fallback. |
 | 2026-07-09 | Live production audit hardening: production fallback to InlineLocalRedis now blocks real exchange order placement unless explicitly allowed, live position mutation/version helpers emulate required token checks without Redis EVAL for minimal clients, and a prod server audit exercised pages, health/monitoring APIs, settings PATCH/restore, and progression stats successfully. |
 | 2026-07-09 | Connection settings save stabilization: dialog PATCH now mirrors flat coordination/settings knobs to both connection-settings namespaces, removes stale delayed symbol reassert timers, centralizes settings-change recoordination into one pass, serializes destructive symbol/mode progression recoordination, and keeps strategy/coordination edits as hot reloads so progress does not stall or flip between old/new snapshots. |
 | 2026-07-09 | Validation rerun after configurable SL/trailing/dashboard changes: typecheck, lint, full Jest suite, and production Next build were rerun successfully; no additional code errors were reproduced under the local environment, aside from the known Node 24 engine warning against the project's >=20 <23 range. |
