@@ -52,7 +52,7 @@ import {
   forceBreakProgressionLock,
   type LockHandle,
 } from "./trade-engine/progression-lock"
-import { clearEngineRefreshRequest, getQueuedEngineRefreshRequests, recordEngineRefreshRequestFailure } from "./engine-refresh-queue"
+import { clearEngineRefreshRequest, ENGINE_REFRESH_REQUEST_TTL_MS, getQueuedEngineRefreshRequests, recordEngineRefreshRequestFailure } from "./engine-refresh-queue"
 import { onEngineEvent, publishEngineEvent } from "./engine-event-bus"
 
 // Re-export TradeEngine class and config from subdirectory for convenient imports
@@ -745,8 +745,12 @@ export class GlobalTradeEngineCoordinator {
 
     for (const { request } of targetedRequests) {
       const requestTime = new Date(request.timestamp).getTime()
-      if (!Number.isFinite(requestTime) || now - requestTime >= 30000) {
-        console.log(`[v0] [Coordinator] Dropping expired refresh request for ${request.connectionId}`)
+      const requestAgeMs = Number.isFinite(requestTime) ? now - requestTime : Number.POSITIVE_INFINITY
+      if (!Number.isFinite(requestTime) || requestAgeMs >= ENGINE_REFRESH_REQUEST_TTL_MS) {
+        console.log(
+          `[v0] [Coordinator] Dropping expired refresh request for ${request.connectionId} ` +
+            `(ageMs=${Number.isFinite(requestAgeMs) ? requestAgeMs : "invalid"}, ttlMs=${ENGINE_REFRESH_REQUEST_TTL_MS})`,
+        )
         await clearEngineRefreshRequest(request.connectionId)
         continue
       }
@@ -1751,6 +1755,7 @@ for (const connection of validConnections) {
   private startGlobalHealthMonitoring(): void {
     if (this.healthMonitoringSubscriptionsStarted && this.healthCheckTimer) return
     console.log("[v0] Starting event-triggered trade engine health monitoring (refresh + stall watchdog)")
+    if (process.env.NODE_ENV === "test") return
 
     const pendingHealthCheckScopes = new Set<string>()
     let healthCheckRunning = false
@@ -1807,7 +1812,8 @@ for (const connection of validConnections) {
       } finally {
         healthCheckRunning = false
         if (pendingHealthCheckScopes.size > 0) {
-          setTimeout(() => void runEventHealthCheck(), 0)
+          const retryTimer = setTimeout(() => void runEventHealthCheck(), 0)
+          retryTimer.unref?.()
         }
       }
     }

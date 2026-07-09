@@ -64,8 +64,6 @@ export interface ConnectionSettings {
   }
 }
 
-export const DEFAULT_CONNECTION_SETTINGS: Omit<ConnectionSettings, "connectionId"> = {
-
 function stringifyHashValue(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined
   if (Array.isArray(value) || (typeof value === "object" && value !== null)) return JSON.stringify(value)
@@ -186,7 +184,7 @@ async function mirrorEngineSettingsStores(
   }
 }
 
-const DEFAULT_SETTINGS: Omit<ConnectionSettings, "connectionId"> = {
+export const DEFAULT_CONNECTION_SETTINGS: Omit<ConnectionSettings, "connectionId"> = {
   strategy: {
     takeProfit: 8,
     stopLoss: 0.5,
@@ -380,7 +378,7 @@ export async function resetConnectionSettings(connectionId: string): Promise<Con
     }
 
     try {
-      const previousSettings = await getConnectionSettings(connectionId).catch(() => ({ connectionId, ...DEFAULT_SETTINGS }))
+      const previousSettings = await getConnectionSettings(connectionId).catch(() => ({ connectionId, ...DEFAULT_CONNECTION_SETTINGS }))
       await client.set(key, JSON.stringify(newSettings))
       // Notify running engines — reset is a full config change. Await this
       // before releasing the settings lock so API success means the durable

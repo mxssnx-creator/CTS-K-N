@@ -45,8 +45,8 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
   const latestMigrationVersion = getLatestMigrationVersion()
   const bundleHealth = getMigrationBundleHealth()
 
-  const backend = getRedisBackend()
-  if (process.env.NODE_ENV === "production" && backend === "inline-local") {
+  const backend = process.env.NODE_ENV === "production" ? getRedisBackend() : null
+  if (backend === "inline-local") {
     missingFields.push({
       field: "redis_backend",
       expected: "redis-network",
