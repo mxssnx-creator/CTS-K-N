@@ -27,65 +27,68 @@ async function initializeDefaultSettings() {
 }
 
 async function seedPredefinedConnections() {
-  // Base connections are seeded by redis-db and migrations.
-  // In non-Vercel environments, configure trading symbols for enabled connections
-  if (process.env.VERCEL !== "1") {
-    try {
-      const allConnections = await getAllConnections()
-      const { getRedisClient, getSettings } = await import("@/lib/redis-db")
-      const client = getRedisClient()
+  // In Vercel serverless functions (NEXT_RUNTIME !== "nodejs"), the
+  // migrations handle symbol seeding. In Node.js runtimes (dev/local prod),
+  // we also ensure symbols are seeded (in case migration didn't run).
+  if (process.env.VERCEL === "1" && process.env.NEXT_RUNTIME !== "nodejs") {
+    // Migrations handle this in Vercel serverless functions
+    return
+  }
+  try {
+    const allConnections = await getAllConnections()
+    const { getRedisClient, getSettings } = await import("@/lib/redis-db")
+    const client = getRedisClient()
 
-      // Configuration: 5 symbols for BingX (matching redis-snapshot.json)
-      const devSymbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
+    // Configuration: 20 symbols for BingX (matching migration 040 canonical state)
+    const devSymbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "BNBUSDT", "DOGEUSDT", "TRXUSDT", "SHIBUSDT", "LINKUSDT", "LTCUSDT", "MATICUSDT", "AVAXUSDT", "DOTUSDT", "ATOMUSDT", "GALAUSDT", "PEPEUSDT", "WIFUSDT", "JUPUSDT", "POLUSDT"]
 
-      for (const conn of allConnections) {
-        if (conn.exchange === "bingx") {
-          // Check if force_symbols already exists in ANY location (preserves snapshot values)
-          // getSymbols() reads from settings:trade_engine_state:{id} and settings:connection:{id}
-          const [existingState, existingConnSettings, existingTradeState] = await Promise.all([
-            getSettings(`trade_engine_state:${conn.id}`),
-            getSettings(`connection:${conn.id}`),
-            client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({}))
-          ])
+    for (const conn of allConnections) {
+      if (conn.exchange === "bingx") {
+        // Check if force_symbols already exists in ANY location (preserves snapshot values)
+        // getSymbols() reads from settings:trade_engine_state:{id} and settings:connection:{id}
+        const [existingState, existingConnSettings, existingTradeState] = await Promise.all([
+          getSettings(`trade_engine_state:${conn.id}`),
+          getSettings(`connection:${conn.id}`),
+          client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({}))
+        ])
 
-          const hasExistingSymbols =
-            (existingState as any)?.force_symbols || (existingState as any)?.symbols ||
-            (existingTradeState as any)?.force_symbols || (existingConnSettings as any)?.force_symbols
+        const hasExistingSymbols =
+          (existingState as any)?.force_symbols || (existingState as any)?.symbols ||
+          (existingTradeState as any)?.force_symbols || (existingConnSettings as any)?.force_symbols
 
-          if (!hasExistingSymbols) {
-            // Write symbols to BOTH locations:
-            // 1. Main connection:{id} hash (where getConnection() reads symbol_count from)
-            await client.hset(`connection:${conn.id}`, {
-              symbol_count: String(devSymbols.length),
-              symbols: devSymbols.join(","),
-              force_symbols: JSON.stringify(devSymbols),
-            })
+        if (!hasExistingSymbols) {
+          // Write symbols to BOTH locations:
+          // 1. Main connection:{id} hash (where getConnection() reads symbol_count from)
+          await client.hset(`connection:${conn.id}`, {
+            symbol_count: String(devSymbols.length),
+            symbols: JSON.stringify(devSymbols),
+            force_symbols: JSON.stringify(devSymbols),
+          })
 
-            // 2. trade_engine_state:{id} hash (where getSymbols() reads force_symbols from)
-            await client.hset(`trade_engine_state:${conn.id}`, {
-              symbols: JSON.stringify(devSymbols),
-              force_symbols: JSON.stringify(devSymbols),
-              symbol_count: String(devSymbols.length),
-            })
+          // 2. trade_engine_state:{id} hash (where getSymbols() reads force_symbols from)
+          await client.hset(`trade_engine_state:${conn.id}`, {
+            symbols: JSON.stringify(devSymbols),
+            force_symbols: JSON.stringify(devSymbols),
+            symbol_count: String(devSymbols.length),
+          })
 
-            // 3. settings: prefixed hashes (getSettings() adds this prefix)
-            await client.hset(`settings:trade_engine_state:${conn.id}`, {
-              force_symbols: JSON.stringify(devSymbols),
-              symbol_count: String(devSymbols.length),
-            })
+          // 3. settings: prefixed hashes (getSettings() adds this prefix)
+          await client.hset(`settings:trade_engine_state:${conn.id}`, {
+            force_symbols: JSON.stringify(devSymbols),
+            symbol_count: String(devSymbols.length),
+          })
 
-            await client.hset(`settings:connection:${conn.id}`, {
-              force_symbols: JSON.stringify(devSymbols),
-              symbol_count: String(devSymbols.length),
-            })
+          await client.hset(`settings:connection:${conn.id}`, {
+            force_symbols: JSON.stringify(devSymbols),
+            symbol_count: String(devSymbols.length),
+          })
 
-            console.log(`[v0] [PreStartup] Seeded ${devSymbols.length} trading symbols for ${conn.id}`)
-          }
+          console.log(`[v0] [PreStartup] Seeded ${devSymbols.length} trading symbols for ${conn.id}`)
         }
       }
-    } catch (e) {
-      console.warn(`[v0] [PreStartup] Warning during symbol seeding (non-fatal): ${e instanceof Error ? e.message : e}`)
     }
+  } catch (e) {
+    console.warn(`[v0] [PreStartup] Warning during symbol seeding (non-fatal): ${e instanceof Error ? e.message : e}`)
   }
 }
 

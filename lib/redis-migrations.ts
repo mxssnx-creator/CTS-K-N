@@ -2382,8 +2382,8 @@ const migrations: Migration[] = [
       if (!connExisting["symbol_count"]   || connExisting["symbol_count"]   === "0")  connSymWrites["symbol_count"]   = symCount
 
       await Promise.all([
-        Object.keys(engSymWrites).length  > 0 ? client.hset(`settings:trade_engine_state:${CONN_ID}`, engSymWrites).catch(() => {}) : Promise.resolve(),
-        Object.keys(connSymWrites).length > 0 ? client.hset(`settings:connection:${CONN_ID}`, connSymWrites).catch(() => {})        : Promise.resolve(),
+        Object.keys(engSymWrites).length  > 0 ? client.hset(`settings:trade_engine_state:${CONN_ID}`, { ...engSymWrites, updated_at: now }).catch(() => {}) : Promise.resolve(),
+        Object.keys(connSymWrites).length > 0 ? client.hset(`settings:connection:${CONN_ID}`, { ...connSymWrites, updated_at: now }).catch(() => {}) : Promise.resolve(),
         // Always write non-symbol fields to connection hash (volume, order, timestamp)
         client.hset(`connection:${CONN_ID}`, {
           ...(Object.keys(connSymWrites).length > 0 ? connSymWrites : {}),
