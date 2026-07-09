@@ -223,6 +223,7 @@ export async function PATCH(
   try {
     const { id } = await params
     const settings = await request.json()
+    const settingsVersion = `${id}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`
 
     await initRedis()
     const connection = await getConnection(id)
@@ -769,7 +770,7 @@ export async function PATCH(
     // would report zero changes — pass an explicit override listing the
     // settings keys the caller touched, so the recoordinator knows
     // something inside `connection_settings` actually changed.
-    await recoordinateAfterSettingsChange(
+    const recoordination = await recoordinateAfterSettingsChange(
       id,
       { ...connection, connection_settings: current },
       { ...effectiveConnection, connection_settings: merged, updated_at: effectiveConnection.updated_at || updated.updated_at },
@@ -778,12 +779,20 @@ export async function PATCH(
         changedFieldsOverride: Object.keys(settings).length > 0
           ? Array.from(new Set([...Object.keys(settings), "connection_settings"]))
           : [],
+        settingsVersion,
       },
     )
 
     await SystemLogger.logConnection(`Patched settings`, id, "info")
 
-    return NextResponse.json({ success: true, settings: merged })
+    return NextResponse.json({
+      success: true,
+      settings: merged,
+      settingsVersion,
+      recoordinationId: settingsVersion,
+      progressionEpoch: recoordination.completedAt,
+      recoordination,
+    })
   } catch (error) {
     console.error("[v0] [Settings] PATCH error:", error)
     await SystemLogger.logError(error, "api", "PATCH /api/settings/connections/[id]/settings")

@@ -46,6 +46,8 @@ export function DashboardActiveConnectionsManager() {
   // Connections in this set are preserved in loadConnections even if Redis
   // temporarily shows is_active_inserted=0.
   const savingRef = React.useRef<Set<string>>(new Set())
+  const pendingSettingsVersionsRef = React.useRef<Map<string, string | undefined>>(new Map())
+  const settingsSafetyTimersRef = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   React.useEffect(() => { togglingRef.current = togglingIds }, [togglingIds])
   React.useEffect(() => { removingRef.current = removingIds }, [removingIds])
 
@@ -193,30 +195,59 @@ export function DashboardActiveConnectionsManager() {
       checkGlobalEngine()
     }
 
-    // After settings are saved via the ConnectionSettingsDialog, force-refresh
-    // the connections list after a short delay so the updated flags (symbols,
-    // is_enabled_dashboard, etc.) are reflected without waiting for the 8s poll.
+    // Settings saves now complete through an explicit event emitted after the
+    // PATCH route has awaited recoordinateAfterSettingsChange and persisted the
+    // authoritative progression/connection hashes. Until that versioned event
+    // arrives, keep the affected card pinned across background polls.
     const handleSettingsUpdated = (e: Event) => {
       const detail = (e as CustomEvent).detail
       const connId: string | undefined = detail?.connectionId
-      if (connId) {
-        // Guard this connection against transient disappearance during the
-        // recoordination window (PATCH → archiveProgression → Redis writes).
-        // The card stays pinned in the list even if a background poll fires
-        // before the flags are stable.
-        savingRef.current.add(connId)
-        // Release the guard after 4s — well past the ~1s recoordination window.
-        setTimeout(() => { savingRef.current.delete(connId) }, 4000)
-      }
-      // Small delay so the PATCH write + recoordination settle before we re-fetch.
-      setTimeout(() => loadConnections({ force: true }), 800)
-      // Also check the global engine state in case a restart was triggered.
-      setTimeout(checkGlobalEngine, 1200)
+      if (!connId) return
+
+      const settingsVersion = typeof detail?.settingsVersion === "string" ? detail.settingsVersion : undefined
+      savingRef.current.add(connId)
+      pendingSettingsVersionsRef.current.set(connId, settingsVersion)
+
+      const existingTimer = settingsSafetyTimersRef.current.get(connId)
+      if (existingTimer) clearTimeout(existingTimer)
+
+      const safetyTimer = setTimeout(() => {
+        if (!savingRef.current.has(connId)) return
+        savingRef.current.delete(connId)
+        pendingSettingsVersionsRef.current.delete(connId)
+        settingsSafetyTimersRef.current.delete(connId)
+        toast.error("Settings recoordination did not confirm", {
+          description: "Refreshed the connection list as a fallback. Check engine logs if the card state looks stale.",
+        })
+        loadConnections({ force: true })
+        checkGlobalEngine()
+      }, 15000)
+      settingsSafetyTimersRef.current.set(connId, safetyTimer)
+    }
+
+    const handleSettingsRecoordinationComplete = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      const connId: string | undefined = detail?.connectionId
+      if (!connId) return
+
+      const expectedVersion = pendingSettingsVersionsRef.current.get(connId)
+      const observedVersion = typeof detail?.settingsVersion === "string" ? detail.settingsVersion : undefined
+      if (expectedVersion && observedVersion && expectedVersion !== observedVersion) return
+
+      const existingTimer = settingsSafetyTimersRef.current.get(connId)
+      if (existingTimer) clearTimeout(existingTimer)
+      settingsSafetyTimersRef.current.delete(connId)
+      pendingSettingsVersionsRef.current.delete(connId)
+      savingRef.current.delete(connId)
+
+      loadConnections({ force: true })
+      checkGlobalEngine()
     }
     
     if (typeof window !== 'undefined') {
       window.addEventListener('engine-state-changed', handleEngineStateChange)
       window.addEventListener('connection-settings-updated', handleSettingsUpdated)
+      window.addEventListener('connection-settings-recoordination-complete', handleSettingsRecoordinationComplete)
     }
     
     return () => {
@@ -225,6 +256,9 @@ export function DashboardActiveConnectionsManager() {
       if (typeof window !== 'undefined') {
         window.removeEventListener('engine-state-changed', handleEngineStateChange)
         window.removeEventListener('connection-settings-updated', handleSettingsUpdated)
+        window.removeEventListener('connection-settings-recoordination-complete', handleSettingsRecoordinationComplete)
+        settingsSafetyTimersRef.current.forEach(timer => clearTimeout(timer))
+        settingsSafetyTimersRef.current.clear()
       }
     }
   }, [])
@@ -365,7 +399,7 @@ export function DashboardActiveConnectionsManager() {
         description: `${connectionName} has been removed from active connections`
       })
 
-      setTimeout(() => loadConnections({ force: true }), 500)
+      void loadConnections({ force: true })
     } catch (error) {
       console.error(`[Manager] Remove error for ${connectionName}:`, error)
       toast.error("Failed to remove connection", {
@@ -398,7 +432,7 @@ export function DashboardActiveConnectionsManager() {
       })
       
       // Reload connections
-      setTimeout(() => loadConnections({ force: true }), 300)
+      void loadConnections({ force: true })
     } catch (error) {
       toast.error("Failed to reset dashboard", {
         description: error instanceof Error ? error.message : "Unknown error"

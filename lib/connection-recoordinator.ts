@@ -61,6 +61,17 @@ async function runSerializedForConnection(connectionId: string, work: () => Prom
   await current
 }
 
+export interface RecoordinationCompletion {
+  connectionId: string
+  settingsVersion?: string
+  recoordinationId?: string
+  completedAt: string
+  changedFields: string[]
+  progressRecoordinationRequired: boolean
+  progressionChanged?: boolean
+  progressionReason?: string
+}
+
 interface RecoordinateOptions {
   /**
    * When the caller already knows the changed-fields list (e.g. PATCH
@@ -76,6 +87,7 @@ interface RecoordinateOptions {
    * recoordination. e.g. "PATCH /settings", "PUT /connections/[id]".
    */
   logTag: string
+  settingsVersion?: string
 }
 
 /**
@@ -89,15 +101,25 @@ export async function recoordinateAfterSettingsChange(
   before: Record<string, any>,
   after: Record<string, any>,
   opts: RecoordinateOptions,
-): Promise<void> {
+): Promise<RecoordinationCompletion> {
   const detected = detectChangedFields(before, after)
   const changedFields =
     opts.changedFieldsOverride && opts.changedFieldsOverride.length > 0
       ? opts.changedFieldsOverride
       : detected
 
+  const makeCompletion = (extra?: Partial<RecoordinationCompletion>): RecoordinationCompletion => ({
+    connectionId: id,
+    settingsVersion: opts.settingsVersion,
+    recoordinationId: opts.settingsVersion,
+    completedAt: new Date().toISOString(),
+    changedFields: [...changedFields],
+    progressRecoordinationRequired: false,
+    ...extra,
+  })
+
   if (changedFields.length === 0) {
-    return
+    return makeCompletion()
   }
 
   // If the operator previously requested Live Trade while credentials were
@@ -259,6 +281,9 @@ export async function recoordinateAfterSettingsChange(
       normalized.includes("Volume")
     )
   })
+  const requiresProgressRecoordination = symbolsChanged || strategyOrCoordinationChanged || progressAffectingChange
+  let progressionChanged: boolean | undefined
+  let progressionReason: string | undefined
   const requiresProgressRecoordination = destructiveProgressionChange || strategyOrCoordinationChanged || progressAffectingChange
   if (requiresProgressRecoordination) {
     try {
@@ -274,6 +299,8 @@ export async function recoordinateAfterSettingsChange(
       // already matches, which neutralizes the previous double-archive
       // churn when the PATCH route also recoordinates.
       const result = await ProgressionStateManager.recoordinateForActualOne(id)
+      progressionChanged = result?.changed
+      progressionReason = result?.reason
       console.log(
         `[v0] [${opts.logTag}] Progress-affecting settings changed for ${id} → recoordinated progression (changed:${result?.changed ?? "?"}, reason:${result?.reason ?? "?"})`,
       )
@@ -336,7 +363,11 @@ export async function recoordinateAfterSettingsChange(
       console.warn(
         `[v0] [${opts.logTag}] Global coordinator is null/undefined for ${id} — skipping recoordination`
       )
-      return
+      return makeCompletion({
+        progressRecoordinationRequired: requiresProgressRecoordination,
+        progressionChanged,
+        progressionReason,
+      })
     }
 
     // ── Invalidate in-memory caches if significant settings changed ─────
@@ -444,4 +475,10 @@ export async function recoordinateAfterSettingsChange(
       coordErr instanceof Error ? coordErr.message : String(coordErr),
     )
   }
+
+  return makeCompletion({
+    progressRecoordinationRequired: requiresProgressRecoordination,
+    progressionChanged,
+    progressionReason,
+  })
 }
