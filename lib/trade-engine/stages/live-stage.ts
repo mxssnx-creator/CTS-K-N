@@ -257,6 +257,12 @@ interface LivePosition {
   setKey?: string
   exchangeData?: Record<string, unknown>
   orderId?: string
+  // Durable marker proving the live fill counters were already recorded for
+  // this entry order. Reconcile may observe the same exchange fill via both
+  // position fallback and getOrder(), and across multiple ticks/restarts; this
+  // marker prevents double-counting live_orders_filled_count and the per-symbol
+  // filled bucket.
+  fillCounterRecordedAt?: number
   liveLockToken?: string
   connection_id?: string
   entry_price?: number
@@ -283,6 +289,28 @@ interface LivePosition {
   prevPos?: { count: number; successRate: number; profitFactor: number; avgDDT: number }
 
   progression?: { step: string; timestamp: number; success: boolean; details: string }[]
+}
+
+
+function hasFillCounterRecorded(position: Pick<LivePosition, "fillCounterRecordedAt">): boolean {
+  return Number(position.fillCounterRecordedAt || 0) > 0
+}
+
+async function recordFillCountersOnce(
+  connectionId: string,
+  position: LivePosition,
+  symbol: string,
+  side: string,
+): Promise<boolean> {
+  if (hasFillCounterRecorded(position)) return false
+
+  // Mark first, before incrementing, so the same in-memory reconcile pass cannot
+  // double-count if both exchange-position fallback and getOrder() observe the
+  // fill. The caller persists the position in the same save batch/tick.
+  position.fillCounterRecordedAt = Date.now()
+  await incrementMetric(connectionId, "live_orders_filled_count")
+  await incrementOrdersBySymbol(connectionId, symbol, side, "filled")
+  return true
 }
 
 function makeConnectionTrackingId(connectionId: string): string {
@@ -3143,9 +3171,15 @@ export async function executeLivePosition(
       livePosition.statusReason = "live_trade disabled — no exchange execution"
       pushStep(livePosition, "simulate", true, `qty=${simQty} @ ${simEntryPrice}`)
       await savePosition(livePosition)
-      // Run counters in parallel �� they're independent.
+      // Run counters in parallel — they're independent. Simulated orders are
+      // canonicalized as both placed and filled because this branch immediately
+      // creates an open position with executed quantity and a synthetic fill.
       await Promise.all([
         incrementMetric(connectionId, "live_orders_simulated_count"),
+        incrementMetric(connectionId, "live_orders_placed_count"),
+        incrementMetric(connectionId, "live_orders_filled_count"),
+        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed"),
+        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "filled"),
         // Track simulated positions in created counter as well so the
         // openPositions.live.open = created - closed math works for
         // paper trades (the close-counter is bumped by
@@ -3962,8 +3996,7 @@ export async function executeLivePosition(
         ? `confirmed_position_fallback: exchange position size=${fill.filledQty} avg=${fill.filledPrice || currentPrice}`
         : `confirmed_fill: order fill status=${fill.status} qty=${fill.filledQty}`
       pushStep(livePosition, "poll_fill", true, `filled=${fill.filledQty} @ ${fill.filledPrice} via=${fill.status} reason=${livePosition.statusReason}`)
-      await incrementMetric(connectionId, "live_orders_filled_count")
-      await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "filled")
+      await recordFillCountersOnce(connectionId, livePosition, realPosition.symbol, realPosition.direction)
       await logProgressionEvent(connectionId, "live_trading", "info", `Entry filled for ${realPosition.symbol}`, {
         orderId: livePosition.orderId,
         filledQty: fill.filledQty,
@@ -5543,8 +5576,7 @@ export async function reconcileLivePositions(
               pushStep(pos, "reconcile_fill_detected", true, pos.statusReason)
               pos.updatedAt = Date.now()
               justFilled = true
-              await incrementMetric(connectionId, "live_orders_filled_count")
-              await incrementOrdersBySymbol(connectionId, pos.symbol, pos.direction!, "filled")
+              await recordFillCountersOnce(connectionId, pos, pos.symbol, pos.direction || pos.side || "long")
             }
 
             if (pos.orderId) {
@@ -5564,8 +5596,7 @@ export async function reconcileLivePositions(
                   pos.updatedAt = Date.now()
                   if (!justFilled) {
                     justFilled = true
-                    await incrementMetric(connectionId, "live_orders_filled_count")
-                    await incrementOrdersBySymbol(connectionId, pos.symbol, pos.direction!, "filled")
+                    await recordFillCountersOnce(connectionId, pos, pos.symbol, pos.direction || pos.side || "long")
                   }
                 } else if (statusLower === "cancelled" || statusLower === "canceled" || statusLower === "rejected") {
                   pos.status = "rejected"
@@ -6621,8 +6652,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
             position.statusReason = `confirmed_position_fallback: sync saw exchange position size=${exSize} avg=${position.averageExecutionPrice}`
             position.updatedAt = Date.now()
             justFilled = true
-            incrementMetric(connectionId, "live_orders_filled_count").catch(() => {})
-            incrementOrdersBySymbol(connectionId, position.symbol, position.direction || position.side || "long", "filled").catch(() => {})
+            await recordFillCountersOnce(connectionId, position, position.symbol, position.direction || position.side || "long")
             pushStep(position, "sync_fill_detected", true, position.statusReason)
           }
         }
@@ -6656,18 +6686,18 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
               EXCHANGE_TIMEOUT_GET_ORDER_MS,
               `getOrder(${position.symbol} ${position.orderId})`,
             )
-            if (order?.status === "filled") {
-              position.executedQuantity = order.filledQty || position.quantity
+            const statusLower = String(order?.status ?? "").toLowerCase()
+            const orderFilledQty = parseFloat(String(order?.filledQty ?? order?.executedQty ?? "0")) || 0
+            if (order && (statusLower === "filled" || statusLower === "partially_filled" || orderFilledQty > 0)) {
+              position.executedQuantity = orderFilledQty || order.filledQty || position.quantity
               position.remainingQuantity = Math.max(0, position.quantity! - position.executedQuantity)
               position.averageExecutionPrice = order.filledPrice || position.entryPrice
               position.status = "open"
-              position.statusReason = `confirmed_fill: sync order status=${order.status} qty=${position.executedQuantity}`
+              position.statusReason = `confirmed_fill: sync order status=${statusLower} qty=${position.executedQuantity}`
               pushStep(position, "sync_fill_detected", true, position.statusReason)
               position.updatedAt = Date.now()
               justFilled = true
-              // Fire-and-forget metric + log — don't block the fast path.
-              incrementMetric(connectionId, "live_orders_filled_count").catch(() => {})
-              incrementOrdersBySymbol(connectionId, position.symbol, position.direction || position.side || "long", "filled").catch(() => {})
+              await recordFillCountersOnce(connectionId, position, position.symbol, position.direction || position.side || "long")
               logProgressionEvent(
                 connectionId,
                 "live_trading",

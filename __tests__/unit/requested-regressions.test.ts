@@ -76,6 +76,31 @@ describe("requested regression guardrails", () => {
     expect(liveOrdersTest).toContain('mode: "blocked_live_order_safety"')
   })
 
+  test("live-stage reconcile fill accounting is marker-guarded", () => {
+    const source = read("lib/trade-engine/stages/live-stage.ts")
+
+    expect(source).toContain("fillCounterRecordedAt?: number")
+    expect(source).toContain("function hasFillCounterRecorded")
+    expect(source).toContain("if (hasFillCounterRecorded(position)) return false")
+    expect(source).toContain("position.fillCounterRecordedAt = Date.now()")
+
+    const fallbackBlock = source.slice(
+      source.indexOf("confirmed_position_fallback: reconcile saw exchange position"),
+      source.indexOf("if (pos.orderId)", source.indexOf("confirmed_position_fallback: reconcile saw exchange position")),
+    )
+    expect(fallbackBlock).toContain("await recordFillCountersOnce(connectionId, pos")
+    expect(fallbackBlock).not.toContain('incrementMetric(connectionId, "live_orders_filled_count")')
+    expect(fallbackBlock).not.toContain('incrementOrdersBySymbol(connectionId, pos.symbol')
+
+    const orderBlock = source.slice(
+      source.indexOf('statusLower === "filled" || statusLower === "partially_filled"'),
+      source.indexOf('} else if (statusLower === "cancelled"', source.indexOf('statusLower === "filled" || statusLower === "partially_filled"')),
+    )
+    expect(orderBlock).toContain("await recordFillCountersOnce(connectionId, pos")
+    expect(orderBlock).not.toContain('incrementMetric(connectionId, "live_orders_filled_count")')
+    expect(orderBlock).not.toContain('incrementOrdersBySymbol(connectionId, pos.symbol')
+  })
+
   test("live order statistics keep long and short buckets independent", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
@@ -1451,6 +1476,22 @@ describe("requested regression guardrails", () => {
     expect(readiness).toContain('process.env.ALLOW_PROD_INLINE_REDIS !== "0"')
     expect(readiness).toContain("ALLOW_PROD_INLINE_REDIS=0")
     expect(envExample).toContain("ALLOW_PROD_INLINE_REDIS=1")
+  })
+
+  test("simulated live-stage orders increment directional per-symbol counters", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const simStart = liveStage.indexOf("if (!isLiveTradeEnabled) {")
+    const simEnd = liveStage.indexOf("if (!exchangeConnector || typeof exchangeConnector.placeOrder !== \"function\")", simStart)
+    const simBlock = liveStage.slice(simStart, simEnd)
+
+    expect(simBlock).toContain("await savePosition(livePosition)")
+    expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_placed_count")')
+    expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_filled_count")')
+    expect(simBlock).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")')
+    expect(simBlock).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "filled")')
+    expect(simBlock.indexOf("await savePosition(livePosition)")).toBeLessThan(
+      simBlock.indexOf('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")'),
+    )
   })
 
   test("live-stage save path maintains production reconciliation indexes", () => {
