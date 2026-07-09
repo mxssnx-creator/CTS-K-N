@@ -49,6 +49,90 @@ function normalizeChangedField(field: string): string {
   return f.startsWith("connection_settings.") ? f.slice("connection_settings.".length) : f
 }
 
+const SYMBOL_BASKET_SETTING_FIELDS = new Set([
+  "symbols",
+  "force_symbols",
+  "active_symbols",
+  "symbol_order",
+  "symbol_count",
+])
+
+const STRATEGY_COORDINATION_SETTING_FIELDS = new Set([
+  "strategies",
+  "coordination_settings",
+  "profitFactorMin",
+  "baseProfitFactor",
+  "mainProfitFactor",
+  "realProfitFactor",
+  "liveProfitFactor",
+  "variantTrailingEnabled",
+  "variantBlockEnabled",
+  "variantDcaEnabled",
+  "strategyBaseTrailingEnabled",
+  "strategyBaseTrailingVariants",
+  "trailingMinStep",
+  "axisPrevEnabled",
+  "axisLastEnabled",
+  "axisContEnabled",
+  "axisPauseEnabled",
+  "axisPrevMaxWindow",
+  "axisLastMaxWindow",
+  "axisContMaxWindow",
+  "axisPauseMaxWindow",
+  "minimal_step_count",
+  "minimalStepCount",
+  "minStep",
+  "maxStopLossRatio",
+  "max_stoploss_ratio",
+  "stageMinPosCountBase",
+  "stageMinPosCountMain",
+  "stageMinPosCountReal",
+  "prevPosWindow",
+  "prevPosMinCount",
+  "mainEvalPosCount",
+  "realEvalPosCount",
+  "maxDrawdownTimeMainHours",
+  "maxDrawdownTimeRealHours",
+  "maxDrawdownTimeLiveHours",
+])
+
+const LIVE_ORDER_SETTING_FIELDS = new Set([
+  "volume_factor",
+  "live_volume_factor",
+  "preset_volume_factor",
+  "volume_factor_live",
+  "volume_factor_preset",
+  "volume_step_ratio",
+  "blockVolumeRatio",
+  "leveragePercentage",
+  "useMaximalLeverage",
+  "maxLeverage",
+  "margin_type",
+  "position_mode",
+  "control_orders_enabled",
+  "controlOrdersEnabled",
+  "useSystemCloseOnly",
+  "use_system_close_only",
+])
+
+function hasAnyChangedField(fields: readonly string[], candidates: ReadonlySet<string>): boolean {
+  return fields.some((field) => candidates.has(normalizeChangedField(field)))
+}
+
+function isStrategyCoordinationField(field: string): boolean {
+  const normalized = normalizeChangedField(field)
+  return (
+    STRATEGY_COORDINATION_SETTING_FIELDS.has(normalized) ||
+    normalized.includes("ProfitFactor") ||
+    normalized.includes("Drawdown") ||
+    normalized.startsWith("variant") ||
+    normalized.startsWith("axis") ||
+    normalized.includes("EvalPosCount") ||
+    normalized.includes("PosWindow") ||
+    normalized.includes("PosMinCount")
+  )
+}
+
 async function runSerializedForConnection(connectionId: string, work: () => Promise<void>): Promise<void> {
   const previous = inFlightRecoordinations.get(connectionId)
   if (previous) {
@@ -305,50 +389,11 @@ export async function recoordinateAfterSettingsChange(
   }
 
   // ── SETTINGS CHANGES THAT AFFECT PROGRESS VISIBILITY ──────────────────
-  // Detect which types of setting changes require progress cache invalidation:
-  // 1. Symbol/mode changes (symbol_count, force_symbols, live/testnet mode) → new progression
-  // 2. Strategy/coordination changes → hot-reload stamp + cache invalidation
-  // 3. Eval threshold changes → realtime progress/settings affected
-  const significantChanges = [
-    // Symbols — prehistoric must restart with new symbol list
-    "symbol_count", "force_symbols", "symbols",
-    // Strategy coordination — variants, block/dca, axis settings
-    "strategies", "coordination_settings", "variantTrailingEnabled", "variantBlockEnabled",
-    "variantDcaEnabled", "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep",
-    "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
-    "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
-    "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled",
-    // Minimal step count affects pseudo position placement
-    "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
-    // Eval thresholds affect strategy/set progression
-    "profitFactorMin", "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
-    "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
-    "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
-    // Volume/leverage/control-order settings affect live sizing, exchange handling, and stats
-    "volume_factor", "live_volume_factor", "preset_volume_factor", "volume_factor_live",
-    "volume_factor_preset", "volume_step_ratio", "leveragePercentage", "useMaximalLeverage",
-    "maxLeverage", "margin_type", "position_mode", "useSystemCloseOnly", "use_system_close_only",
-    // Position window/count settings affect prehistoric calculations
-    "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
-  ]
+  // Classify settings into explicit buckets so a PF/axis/min-step edit never
+  // deletes prehistoric data and a live sizing/order-protection edit never
+  // resets indication progress. Only symbol-basket changes are destructive.
   const normalizedChangedFields = changedFields.map(normalizeChangedField)
-  const progressAffectingChange = normalizedChangedFields.some(f => significantChanges.includes(f))
-
-  // ── SYMBOL COUNT OR FORCE_SYMBOLS CHANGED: Archive and invalidate cache ──
-  // If the operator changed the symbol list or forced symbols, the current
-  // progression becomes semantically invalid. Trigger a full archive + new
-  // progression so the UI shows progress against the CORRECT new symbol count.
-  // ALSO invalidate the engine's symbol cache so it re-reads from Redis immediately.
-  // Broadened detection: the symbol list can be persisted under any of
-  // these field names depending on which dialog/route saved it. Missing
-  // `active_symbols`/`symbols`/`symbol_order` here is exactly why a symbol
-  // change sometimes failed to reset progress telemetry.
-  const symbolsChanged =
-    normalizedChangedFields.includes("symbol_count") ||
-    normalizedChangedFields.includes("force_symbols") ||
-    normalizedChangedFields.includes("active_symbols") ||
-    normalizedChangedFields.includes("symbols") ||
-    normalizedChangedFields.includes("symbol_order")
+  const symbolsChanged = hasAnyChangedField(normalizedChangedFields, SYMBOL_BASKET_SETTING_FIELDS)
   const modeChanged = [
     "is_live_trade",
     "is_testnet",
@@ -356,87 +401,69 @@ export async function recoordinateAfterSettingsChange(
     "connection_method",
   ].some((field) => normalizedChangedFields.includes(field))
   const destructiveProgressionChange = symbolsChanged || modeChanged
-  const strategyOrCoordinationChanged = changedFields.some((field) => {
-    const normalized = normalizeChangedField(field)
-    return (
-      field === "connection_settings" ||
-      normalized === "strategies" ||
-      normalized === "coordination_settings" ||
-      normalized.includes("ProfitFactor") ||
-      normalized.includes("Drawdown") ||
-      normalized.startsWith("variant") ||
-      normalized.startsWith("axis") ||
-      normalized.startsWith("block") ||
-      normalized.includes("EvalPosCount") ||
-      normalized.includes("PosWindow") ||
-      normalized.includes("PosMinCount") ||
-      normalized === "minimal_step_count" ||
-      normalized === "minimalStepCount" ||
-      normalized === "minStep" ||
-      normalized === "leveragePercentage" ||
-      normalized === "useMaximalLeverage" ||
-      normalized === "maxLeverage" ||
-      normalized === "margin_type" ||
-      normalized === "position_mode" ||
-      normalized === "useSystemCloseOnly" ||
-      normalized === "use_system_close_only" ||
-      normalized.includes("volume") ||
-      normalized.includes("Volume")
-    )
-  })
+  const strategyOrCoordinationChanged = changedFields.some(isStrategyCoordinationField)
+  const liveOrderSettingsChanged = hasAnyChangedField(normalizedChangedFields, LIVE_ORDER_SETTING_FIELDS)
+  const requiresProgressRecoordination = destructiveProgressionChange || strategyOrCoordinationChanged
+
   let progressionChanged: boolean | undefined
   let progressionReason: string | undefined
-  const requiresProgressRecoordination = destructiveProgressionChange || strategyOrCoordinationChanged || progressAffectingChange
   if (requiresProgressRecoordination) {
     try {
-      const { ProgressionStateManager } = await import("@/lib/progression-state-manager")
-      // Use the COUPLED recoordinate path (not the bare archive). It
-      // clears the `progression:{id}` hash, the `prehistoric:{id}` stats
-      // hash + `prehistoric:{id}:symbols`/`:done` gates, AND the
-      // `realtime:{id}` cycle counters together — the stats route reads
-      // its primary progress numbers from those sibling namespaces, so a
-      // bare `progression:{id}` reset left them stale (0/N forever or a
-      // mismatched total). recoordinateForActualOne is idempotent: it
-      // no-ops (logs `changed:false`) when the persisted symbol set
-      // already matches, which neutralizes the previous double-archive
-      // churn when the PATCH route also recoordinates.
-      const result = await ProgressionStateManager.recoordinateForActualOne(id)
-      progressionChanged = result?.changed
-      progressionReason = result?.reason
-      console.log(
-        `[v0] [${opts.logTag}] Progress-affecting settings changed for ${id} → recoordinated progression (changed:${result?.changed ?? "?"}, reason:${result?.reason ?? "?"})`,
-      )
-      emitCanonicalEvent({
-        type: "connection.recoordinated",
-        connectionId: id,
-        stage: "connection",
-        epoch: result?.newEpoch,
-        settingsVersion: (after as any).settings_version || (after as any).updated_at || settingsEvent.settingsVersion,
-        parentEventId: settingsEvent.id,
-        data: { changed: result?.changed ?? false, reason: result?.reason, changedFields },
-      })
       const client = (await import("@/lib/redis-db")).getRedisClient()
       if (destructiveProgressionChange) {
         await runSerializedForConnection(id, async () => {
+          const nextEpoch = `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+          await Promise.all([
+            client.hset(`trade_engine_state:${id}`, {
+              symbol_selection_epoch: nextEpoch,
+              quickstart_symbol_generation: nextEpoch,
+              updated_at: new Date().toISOString(),
+            }).catch(() => 0),
+            client.hdel(
+              `trade_engine_state:${id}`,
+              "config_set_symbols_total",
+              "config_set_symbols_processed",
+            ).catch(() => 0),
+            client.hset(`settings:trade_engine_state:${id}`, {
+              symbol_selection_epoch: nextEpoch,
+              quickstart_symbol_generation: nextEpoch,
+              updated_at: new Date().toISOString(),
+            }).catch(() => 0),
+            client.hdel(
+              `settings:trade_engine_state:${id}`,
+              "config_set_symbols_total",
+              "config_set_symbols_processed",
+            ).catch(() => 0),
+            client.del(`prehistoric:${id}`).catch(() => 0),
+            client.del(`prehistoric:${id}:symbols`).catch(() => 0),
+          ])
           const { ProgressionStateManager } = await import("@/lib/progression-state-manager")
-          // Use the coupled destructive path only when the actual symbol set or
-          // engine mode changed. Coordination/PF/trailing/min-step edits are
-          // hot-reloaded and cache-invalidated below; deleting progression for
-          // every dialog save made production stats flap between the old and
-          // new snapshots while the engine kept running.
           const result = await ProgressionStateManager.recoordinateForActualOne(id)
+          progressionChanged = result?.changed
+          progressionReason = result?.reason || "symbol-basket-or-mode-change"
           console.log(
-            `[v0] [${opts.logTag}] Symbol/mode settings changed for ${id} → recoordinated progression (changed:${result?.changed ?? "?"}, reason:${result?.reason ?? "?"})`,
+            `[v0] [${opts.logTag}] Symbol basket/mode settings changed for ${id} → epoch bumped and progression recoordinated (changed:${result?.changed ?? "?"}, reason:${result?.reason ?? "?"})`,
           )
+          emitCanonicalEvent({
+            type: "connection.recoordinated",
+            connectionId: id,
+            stage: "connection",
+            epoch: result?.newEpoch,
+            settingsVersion: (after as any).settings_version || (after as any).updated_at || settingsEvent.settingsVersion,
+            parentEventId: settingsEvent.id,
+            data: { changed: result?.changed ?? false, reason: result?.reason, changedFields },
+          })
         })
-      } else {
+      } else if (strategyOrCoordinationChanged) {
         await client.hset(`progression:${id}`, {
           settings_changed_at: new Date().toISOString(),
           settings_recoordination_pending: "1",
           settings_recoordination_fields: JSON.stringify(normalizedChangedFields),
+          strategy_recompute_requested: "1",
         }).catch(() => 0)
+        progressionReason = "strategy-config-cache-invalidated"
         console.log(
-          `[v0] [${opts.logTag}] Progress-affecting hot-reload for ${id} stamped without destructive progression reset`,
+          `[v0] [${opts.logTag}] Strategy/coordination settings changed for ${id} → cache invalidation/recompute requested without prehistoric reset`,
         )
       }
     } catch (archiveErr) {
@@ -444,9 +471,18 @@ export async function recoordinateAfterSettingsChange(
         `[v0] [${opts.logTag}] Failed to coordinate progression after settings change for ${id}:`,
         archiveErr instanceof Error ? archiveErr.message : String(archiveErr),
       )
-      // Continue — the durable reload event and cache invalidation still let
-      // the running engine pick up the new settings on its next cycle.
     }
+  }
+
+  if (liveOrderSettingsChanged) {
+    emitCanonicalEvent({
+      type: "live.stageChanged",
+      connectionId: id,
+      stage: "live",
+      settingsVersion: (after as any).settings_version || (after as any).updated_at || settingsEvent.settingsVersion,
+      parentEventId: settingsEvent.id,
+      data: { changedFields, reason: "live-sizing-order-protection-settings" },
+    })
   }
 
   // Symbol/mode changes use the coupled destructive progression path above.
@@ -495,7 +531,7 @@ export async function recoordinateAfterSettingsChange(
     // Symbol changes need the symbol cache; PF/DDT/coordination/variant
     // changes need strategy + coordination caches too. Do both before the
     // pending-change fast path so the next tick cannot reuse stale values.
-    if ((symbolsChanged || strategyOrCoordinationChanged) && (coordinator as any).getEngineManager) {
+    if ((symbolsChanged || strategyOrCoordinationChanged || liveOrderSettingsChanged) && (coordinator as any).getEngineManager) {
       try {
         const manager = (coordinator as any).getEngineManager(id)
         if (symbolsChanged && manager && typeof (manager as any).invalidateSymbolsCache === "function") {
@@ -508,6 +544,15 @@ export async function recoordinateAfterSettingsChange(
           typeof (manager as any).invalidateStrategyAndCoordinationCaches === "function"
         ) {
           ;(manager as any).invalidateStrategyAndCoordinationCaches(changedFields, `${opts.logTag}:settings-save`)
+          if (typeof (manager as any).triggerImmediateStrategyReevaluation === "function") {
+            ;(manager as any).triggerImmediateStrategyReevaluation(`${opts.logTag}:settings-save`)
+          }
+        }
+        if (liveOrderSettingsChanged && manager) {
+          if (typeof (manager as any).invalidateLiveSizingAndProtectionCaches === "function") {
+            ;(manager as any).invalidateLiveSizingAndProtectionCaches(changedFields, `${opts.logTag}:settings-save`)
+          }
+          console.log(`[v0] [${opts.logTag}] Live sizing/order-protection refresh requested for ${id}`)
         }
       } catch (cacheErr) {
         console.warn(

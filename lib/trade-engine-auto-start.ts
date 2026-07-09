@@ -146,6 +146,8 @@ export async function initializeTradeEngineAutoStart(): Promise<void> {
 
 async function initializeTradeEngineAutoStartInternal(): Promise<void> {
   try {
+    const { assertProductionReadiness } = await import("./production-readiness")
+    await assertProductionReadiness()
     console.log("[v0] [Auto-Start] Initializing trade-engine synchronization...")
 
     const { initRedis, ensureUniqueSiteInstance, getRedisClient } = await loadRedisDb()
@@ -217,6 +219,13 @@ export async function runTradeEngineHealingSweep(
 
 async function runTradeEngineHealingSweepInternal({ isStartup }: HealingSweepOptions): Promise<HealingSweepResult> {
   try {
+    const { checkProductionReadiness } = await import("./production-readiness")
+    const readiness = await checkProductionReadiness()
+    if (!readiness.ready) {
+      const fields = readiness.missingFields.map((item) => item.field).join(", ")
+      console.warn(`[v0] [AutoStart] Healing sweep skipped: production readiness failed (${fields})`)
+      return { startedCount: 0, eligibleCount: 0, skipped: "production_readiness_failed", error: fields }
+    }
     const { initRedis, getRedisClient, getAssignedAndEnabledConnections, getConnection } = await loadRedisDb()
     const { loadSettingsAsync } = await import("./settings-storage")
     const { writeTradeEngineWorkerHeartbeat } = await import("./trade-engine-worker-heartbeat")
