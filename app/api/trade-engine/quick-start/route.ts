@@ -31,6 +31,20 @@ function normalizeQuickstartExchange(connection: any): string {
   return compact || raw || "bingx"
 }
 
+function hasExistingSetting(settings: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(settings, key) &&
+    settings[key] !== undefined &&
+    settings[key] !== null &&
+    String(settings[key]).length > 0
+}
+
+function firstExistingSetting(settings: Record<string, unknown>, keys: string[], fallback: string): string {
+  for (const key of keys) {
+    if (hasExistingSetting(settings, key)) return String(settings[key])
+  }
+  return fallback
+}
+
 // RUNTIME FIX: Patch IndicationProcessor cache
 // This fixes the "Cannot read properties of undefined (reading 'get')" error
 function patchIndicationProcessorCaches(coordinator: any) {
@@ -217,6 +231,48 @@ export async function POST(request: Request) {
     const exchangeName = normalizeQuickstartExchange(connection)
     const connectionId = connection.id
     console.log(`${LOG_PREFIX}: Found ${connection.name} (${connectionId}) on ${exchangeName}`)
+
+    const [existingRawConnectionSettings, existingPrefixedConnectionSettings] = await Promise.all([
+      client.hgetall(`connection_settings:${connectionId}`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`settings:connection_settings:${connectionId}`).catch(() => ({} as Record<string, string>)),
+    ])
+    const existingConnectionSettings: Record<string, unknown> = {
+      ...(existingPrefixedConnectionSettings ?? {}),
+      ...(existingRawConnectionSettings ?? {}),
+    }
+    const effectiveVolumeFactorLive = firstExistingSetting(
+      existingConnectionSettings,
+      ["volume_factor_live", "live_volume_factor"],
+      QUICKSTART_LIVE_VOLUME_FACTOR,
+    )
+    const effectiveLiveVolumeFactor = firstExistingSetting(
+      existingConnectionSettings,
+      ["live_volume_factor", "volume_factor_live"],
+      QUICKSTART_LIVE_VOLUME_FACTOR,
+    )
+    const effectiveVolumeFactorPreset = firstExistingSetting(
+      existingConnectionSettings,
+      ["volume_factor_preset", "preset_volume_factor"],
+      "1.0",
+    )
+    const effectivePresetVolumeFactor = firstExistingSetting(
+      existingConnectionSettings,
+      ["preset_volume_factor", "volume_factor_preset"],
+      "1.0",
+    )
+    const effectiveVolumeStepRatio = firstExistingSetting(
+      existingConnectionSettings,
+      ["volume_step_ratio"],
+      String(DEFAULT_VOLUME_STEP_RATIO),
+    )
+    const effectiveBaseMinProfitFactor = firstExistingSetting(existingConnectionSettings, ["base_min_profit_factor"], "1.0")
+    const effectiveMainMinProfitFactor = firstExistingSetting(existingConnectionSettings, ["main_min_profit_factor"], "1.2")
+    const effectiveRealMinProfitFactor = firstExistingSetting(existingConnectionSettings, ["real_min_profit_factor"], "1.2")
+    const effectiveVariantTrailing = firstExistingSetting(existingConnectionSettings, ["variant_trailing"], "true")
+    const effectiveVariantBlock = firstExistingSetting(existingConnectionSettings, ["variant_block"], "true")
+    const effectiveVariantDca = firstExistingSetting(existingConnectionSettings, ["variant_dca"], "false")
+    const effectiveControlOrders = firstExistingSetting(existingConnectionSettings, ["control_orders"], "true")
+    const effectiveMinStep = firstExistingSetting(existingConnectionSettings, ["minStep"], "5")
     
     // DISABLE ACTION
     if (action === "disable") {
@@ -408,7 +464,9 @@ export async function POST(request: Request) {
     // cannot reliably call its own origin/localhost, so use the shared resolver
     // that powers /api/exchange/[exchange]/top-symbols. QuickStart defaults to
     // true 1h ATR volatility with a liquidity floor, matching the operator spec.
-    const requestedSymbolOrder = normaliseSort(body.symbolOrder || body.symbol_order || "volatility_1h")
+    const requestedSymbolOrder = normaliseSort(
+      body.symbolOrder || body.symbol_order || firstExistingSetting(existingConnectionSettings, ["symbol_order"], "volatility_1h"),
+    )
     if (symbols.length === 0) {
       try {
         const topData = await fetchTopSymbols(exchangeName, requestedCount, requestedSymbolOrder)
@@ -460,6 +518,8 @@ export async function POST(request: Request) {
     }
 
     console.log(`${LOG_PREFIX}: [2/4] Final symbol: ${symbols.join(", ")}`)
+
+    const effectiveSymbolCount = firstExistingSetting(existingConnectionSettings, ["symbol_count"], String(symbols.length))
 
     const symbolSelectionEpoch = `${Date.now()}:${Math.random().toString(36).slice(2)}`
 
@@ -527,14 +587,17 @@ export async function POST(request: Request) {
        // Lowest-volume live testing: force the per-connection factor to the
        // VolumeCalculator minimum. The calculator then clamps each pair up to
        // that exchange symbol's legal minimum notional/quantity.
-       live_volume_factor: QUICKSTART_LIVE_VOLUME_FACTOR,
-       volume_step_ratio: String(DEFAULT_VOLUME_STEP_RATIO),
+       live_volume_factor: effectiveLiveVolumeFactor,
+       volume_factor_live: effectiveVolumeFactorLive,
+       preset_volume_factor: effectivePresetVolumeFactor,
+       volume_factor_preset: effectiveVolumeFactorPreset,
+       volume_step_ratio: effectiveVolumeStepRatio,
        force_symbols: JSON.stringify(symbols),
        // QuickStart uses the minimum live volume factor so live-trade smoke tests
        // place only exchange-minimum orders when credentials are available.
        // Symbol ordering: operator spec is volatility_1h for quickstart.
        symbol_order: requestedSymbolOrder,
-       symbol_count: String(symbols.length),
+       symbol_count: effectiveSymbolCount,
        last_test_status: testPassed ? "success" : "failed",
        last_test_balance: testBalance,
        last_test_at: new Date().toISOString(),
@@ -542,7 +605,7 @@ export async function POST(request: Request) {
      }
      
      await updateConnection(connectionId, updated)
-     console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${QUICKSTART_LIVE_VOLUME_FACTOR} → exchange-minimum orders).`)
+     console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${effectiveLiveVolumeFactor}).`)
      // Surface the minimal-volume policy in the progression log so the
      // operator can confirm in the UI exactly which sizing knob was
      // applied. Helpful when debugging "why are my orders so small?".
@@ -550,9 +613,9 @@ export async function POST(request: Request) {
        connectionId,
        "quickstart_minimal_volume",
        "info",
-       `QuickStart applied minimal-volume policy: live_volume_factor=${QUICKSTART_LIVE_VOLUME_FACTOR} (exchange-minimum orders)`,
+       `QuickStart effective live_volume_factor=${effectiveLiveVolumeFactor}`,
        {
-         live_volume_factor: QUICKSTART_LIVE_VOLUME_FACTOR,
+         live_volume_factor: effectiveLiveVolumeFactor,
          note:
            "Per-connection override. Order size will be clamped UP to the per-pair exchange minimum (or the universal $5 notional floor). Adjust via Settings → Connection → Live Volume Factor (0.1×–10×) when ready to scale.",
        },
@@ -570,6 +633,14 @@ export async function POST(request: Request) {
     // first tick instead of using its compiled defaults.
     const { getRedisClient: _gsClient } = await import("@/lib/redis-db")
     const _gsc = _gsClient()
+    await _gsc.hset(`connection_settings:${connectionId}`, {
+      // Volume factor (preserve operator-configured values; defaults are first-run only)
+      volume_factor_live: effectiveVolumeFactorLive,
+      live_volume_factor: effectiveLiveVolumeFactor,
+      volume_step_ratio: effectiveVolumeStepRatio,
+      volume_factor_preset: effectiveVolumeFactorPreset,
+      preset_volume_factor: effectivePresetVolumeFactor,
+      // Symbol order/count
     const quickstartConnectionSettingsPatch = {
       // Volume factor
       volume_factor_live:   QUICKSTART_LIVE_VOLUME_FACTOR,
@@ -578,19 +649,19 @@ export async function POST(request: Request) {
       volume_factor_preset: "1.0",
       // Symbol order
       symbol_order: requestedSymbolOrder,
-      symbol_count: String(symbols.length),
+      symbol_count: effectiveSymbolCount,
       // Strategy PF thresholds
-      base_min_profit_factor:  "1.0",
-      main_min_profit_factor:  "1.2",
-      real_min_profit_factor:  "1.2",
+      base_min_profit_factor: effectiveBaseMinProfitFactor,
+      main_min_profit_factor: effectiveMainMinProfitFactor,
+      real_min_profit_factor: effectiveRealMinProfitFactor,
       // Variant toggles
-      variant_trailing: "true",
-      variant_block:    "true",
-      variant_dca:      "false",
+      variant_trailing: effectiveVariantTrailing,
+      variant_block: effectiveVariantBlock,
+      variant_dca: effectiveVariantDca,
       // Control orders (SL/TP on exchange)
-      control_orders: "true",
+      control_orders: effectiveControlOrders,
       // Min step for pseudo-positions
-      minStep: "5",
+      minStep: effectiveMinStep,
       updated_at: new Date().toISOString(),
     }
     await _gsc.hset(`connection_settings:${connectionId}`, quickstartConnectionSettingsPatch).catch(() => {})
@@ -760,7 +831,7 @@ export async function POST(request: Request) {
      if (liveTradeBlockedReason) {
        await logProgressionEvent(connectionId, "quickstart_live_trade_blocked", "warning",
          "Live exchange order placement disabled until connection test passes",
-         { reason: liveTradeBlockedReason, symbols, live_volume_factor: "0.1" },
+         { reason: liveTradeBlockedReason, symbols, live_volume_factor: effectiveLiveVolumeFactor },
        )
      }
      
@@ -959,10 +1030,13 @@ export async function POST(request: Request) {
               live_trade_blocked_reason: liveTradeBlockedReason || "",
               active_symbols: JSON.stringify(symbols),
               force_symbols: JSON.stringify(symbols),
-              symbol_count: String(symbols.length),
+              symbol_count: effectiveSymbolCount,
               dev_symbol_count_override: String(symbols.length),
-              live_volume_factor: "0.1",
-              volume_step_ratio: String(DEFAULT_VOLUME_STEP_RATIO),
+              live_volume_factor: effectiveLiveVolumeFactor,
+              volume_factor_live: effectiveVolumeFactorLive,
+              preset_volume_factor: effectivePresetVolumeFactor,
+              volume_factor_preset: effectiveVolumeFactorPreset,
+              volume_step_ratio: effectiveVolumeStepRatio,
               updated_at: new Date().toISOString(),
             })
 
