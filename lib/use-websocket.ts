@@ -55,6 +55,15 @@ export function useRealTime(connectionId: string) {
     const sseClient = getSSEClient(connectionId)
     sseClientRef.current = sseClient
 
+    const handleError = (error: any) => {
+      setConnectionError(error.message || 'Connection error occurred')
+    }
+
+    const handleConnected = () => {
+      setIsConnected(true)
+      setConnectionError(null)
+    }
+
     const unsubError = sseClient.subscribe('error', handleError)
     const unsubConnected = sseClient.subscribe('connected', handleConnected)
 
