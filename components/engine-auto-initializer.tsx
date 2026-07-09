@@ -32,21 +32,49 @@ export function EngineAutoInitializer() {
       seedingRef.current = true
 
       try {
-        console.log("[v0] [EngineAutoInitializer] Starting production initialization...")
+        const allowAggressiveBrowserBootstrap =
+          process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_ALLOW_BROWSER_BOOTSTRAP === "1"
 
-        // Trigger server-side initialization endpoint which performs the
-        // unique site instance guarantee, seeds production data, and starts
-        // the background coordinator. This avoids importing server-only
-        // modules into a client component, which breaks the client bundle.
-        try {
-          await fetch("/api/system/initialize", { method: "POST", cache: "no-store" })
-        } catch {
-          /* non-critical */
+        console.log(
+          `[v0] [EngineAutoInitializer] Checking server initialization status (aggressive=${allowAggressiveBrowserBootstrap})...`,
+        )
+
+        if (allowAggressiveBrowserBootstrap) {
+          // Development (and explicitly opted-in deployments) keep the old
+          // aggressive browser bootstrap behavior so local reloads recover all
+          // loops immediately while debugging.
+          await fetch("/api/system/initialize", { method: "POST", cache: "no-store" }).catch(() => {})
+          await fetch("/api/trade-engine/auto-start", { method: "POST", cache: "no-store" }).catch(() => {})
+          console.log("[v0] [EngineAutoInitializer] ✅ Aggressive browser bootstrap requested")
+          return
         }
 
-        // Also call auto-start to ensure coordinator loops are running
-        await fetch("/api/trade-engine/auto-start", { method: "POST", cache: "no-store" }).catch(() => {})
-        console.log("[v0] [EngineAutoInitializer] ✅ Production initialization (server-side) requested")
+        // Production should normally be booted by Next.js instrumentation and
+        // continuity. Use a lightweight read-only status route first and only
+        // fall back to full initialization when the server explicitly reports
+        // incomplete startup or unhealthy state.
+        const statusResponse = await fetch("/api/system/init-status", { method: "GET", cache: "no-store" })
+        const status = await statusResponse.json().catch(() => null)
+        const startup = status?.system?.startup || status?.startup
+        const instrumentationBootCompleted = Boolean(startup?.instrumentationBootCompletedAt || startup?.completed_at)
+        const startupIncomplete =
+          !statusResponse.ok ||
+          status?.status === "error" ||
+          status?.status === "unhealthy" ||
+          status?.initialized === false ||
+          status?.ready === false ||
+          startup?.completed === false ||
+          (startup && instrumentationBootCompleted === false)
+
+        if (startupIncomplete) {
+          console.warn(
+            "[v0] [EngineAutoInitializer] Server startup status is incomplete/unhealthy; requesting system initialization",
+            status,
+          )
+          await fetch("/api/system/initialize", { method: "POST", cache: "no-store" }).catch(() => {})
+        } else {
+          console.log("[v0] [EngineAutoInitializer] ✅ Server startup already complete; browser bootstrap skipped")
+        }
       } catch (error) {
         console.error("[v0] [EngineAutoInitializer] ❌ Production initialization failed:", error)
         // Don't throw - allow app to continue even if seeding fails

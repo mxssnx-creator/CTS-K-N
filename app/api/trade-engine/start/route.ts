@@ -4,6 +4,7 @@ import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
 import { createExchangeConnector } from "@/lib/exchange-connectors"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
+import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 
 export const dynamic = "force-dynamic"
 
@@ -98,8 +99,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Coordinator not initialized" }, { status: 503 })
     }
 
-    // Initialize Redis
+    // Initialize Redis and verify production readiness before any engine start intent is committed.
     await initRedis()
+    const readiness = await checkProductionReadiness()
+    if (!readiness.ready) {
+      return NextResponse.json(productionReadinessJson(readiness), { status: 503 })
+    }
     const client = getRedisClient()
     
     // DOUBLE-START GUARD: Check if already running to prevent concurrent startup issues.

@@ -2098,6 +2098,15 @@ export function getRedisBackend(): RedisBackend {
   return globalForRedis.__redis_backend || (redisInstance instanceof InlineLocalRedis ? "inline-local" : "redis-network")
 }
 
+async function persistRedisBackendDiagnostic(): Promise<void> {
+  try {
+    const { recordRedisBackend } = await import("@/lib/startup-diagnostics")
+    await recordRedisBackend(getRedisBackend())
+  } catch {
+    // Diagnostics must never make Redis initialization fail.
+  }
+}
+
 let redisInstance: RedisClientLike | null = null
 let isConnected = false          // FULLY ready: core + migrations complete
 let coreInitialized = false      // core ready: client constructed + snapshot loaded + ping ok
@@ -2169,6 +2178,7 @@ export async function ensureCoreRedis(): Promise<void> {
     if (pong !== "PONG") {
       console.error("[v0] [Redis] Connection test failed")
     }
+    await persistRedisBackendDiagnostic()
     coreInitialized = true
   })()
 
@@ -2249,6 +2259,7 @@ export async function initRedis(): Promise<void> {
     if (!redisInstance) {
       globalForRedis.__redis_backend = "inline-local"
       redisInstance = new InlineLocalRedis()
+      await persistRedisBackendDiagnostic()
     }
     isConnected = true
     coreInitialized = true
@@ -2315,18 +2326,19 @@ export async function initRedis(): Promise<void> {
       const { runMigrations, resetMigrationRunState } = await import("@/lib/redis-migrations")
       const MIGRATIONS_DEADLINE_MS = isProductionEnvironment() ? 180_000 : 60_000
       let migrationTimer: ReturnType<typeof setTimeout> | undefined
-      // SAFETY: Wrap with a 90-second deadline. Production coverage repair can
-      // legitimately scan/seed every connection on cold start; 35s caused false
-      // deadline errors even when routes recovered. Keep a deadline for real
-      // deadlocks, but allow complete establishment to finish cleanly.
-      // (e.g. by calling initRedis() internally, which awaits THIS very
-      // promise), the race rejects after 90 s so the server becomes
-      // responsive. The underlying migration may still resolve later, but
-      // the server is unblocked. The migration runner also has its own
+      // SAFETY: Wrap blocking schema migrations with a runtime deadline. Heavy
+      // production coverage repair is scheduled after initRedis() succeeds and
+      // no longer counts against this critical startup path. Keep a deadline for
+      // real migration deadlocks (e.g. by calling initRedis() internally, which awaits THIS very
+      // promise), the race rejects at the configured deadline so the next
+      // request can retry from a clean migration state. The migration runner also has its own
       // per-migration 30-second deadline for individual migrations.
       try {
         await Promise.race([
-          runMigrations(),
+          import("@/lib/startup-diagnostics")
+            .then(({ recordStartupPhase }) => recordStartupPhase("migrations_running"))
+            .catch(() => null)
+            .then(() => runMigrations()),
           new Promise<never>((_, reject) => {
             migrationTimer = setTimeout(
               () => reject(new Error(`runMigrations() exceeded ${MIGRATIONS_DEADLINE_MS}ms global deadline — retrying on next request`)),
@@ -2334,8 +2346,14 @@ export async function initRedis(): Promise<void> {
             )
           }),
         ])
+        await import("@/lib/startup-diagnostics")
+          .then(({ recordStartupPhase }) => recordStartupPhase("migrations_complete"))
+          .catch(() => null)
         migrationsRan = true
       } catch (migErr) {
+        await import("@/lib/startup-diagnostics")
+          .then(({ recordStartupError }) => recordStartupError(migErr, "runMigrations"))
+          .catch(() => null)
         console.error("[v0] [Redis] runMigrations deadline/error:", migErr instanceof Error ? migErr.message : migErr)
         resetMigrationRunState()
         migrationsRan = false
