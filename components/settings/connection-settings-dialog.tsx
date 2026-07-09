@@ -482,6 +482,14 @@ export function ConnectionSettingsDialog({
               if (Number.isFinite(nested) && nested >= 2) return Math.min(30, Math.max(2, Math.round(nested)))
               return DEFAULT_COORDINATION_SETTINGS.minStep ?? 5
             })(),
+            maxStopLossRatio: (() => {
+              const snap = (n: number) => Math.min(2.5, Math.max(0.25, Math.round(n / 0.25) * 0.25))
+              const flat = Number((settings as Record<string, unknown>).maxStopLossRatio ?? (settings as Record<string, unknown>).max_stoploss_ratio)
+              if (Number.isFinite(flat) && flat >= 0.25) return snap(flat)
+              const nested = Number((coord as Record<string, unknown>).maxStopLossRatio ?? (coord as Record<string, unknown>).max_stoploss_ratio)
+              if (Number.isFinite(nested) && nested >= 0.25) return snap(nested)
+              return DEFAULT_COORDINATION_SETTINGS.maxStopLossRatio ?? 2.5
+            })(),
             trailingMinStep: (() => {
               const flat = Number((settings as Record<string, unknown>).trailingMinStep)
               if (Number.isFinite(flat) && flat >= 2) return Math.min(30, Math.max(2, Math.round(flat)))
@@ -958,6 +966,22 @@ export function ConnectionSettingsDialog({
                     />
                     <div className="flex justify-between text-[10px] text-muted-foreground">
                       <span>2 — fastest</span><span className="text-muted-foreground/60">default 5</span><span>30 — smooth</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs">Max StopLoss Ratio (0.25–2.5)</Label>
+                      <span className="text-xs font-mono tabular-nums font-semibold">{(coordination.maxStopLossRatio ?? 2.5).toFixed(2)}</span>
+                    </div>
+                    <Slider
+                      min={0.25} max={2.5} step={0.25}
+                      value={[coordination.maxStopLossRatio ?? 2.5]}
+                      onValueChange={([v]) => setCoordination(p => ({ ...p, maxStopLossRatio: v }))}
+                      className="py-2"
+                    />
+                    <div className="flex justify-between text-[10px] text-muted-foreground">
+                      <span>0.25 — tight SL Sets</span><span className="text-muted-foreground/60">default 2.5 (max)</span><span>2.5 — full range</span>
                     </div>
                   </div>
 

@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
+import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 
 interface RouteParams {
   params: Promise<{
@@ -14,11 +15,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const { connectionId, useTestnet, minVolume, symbol } = body
 
     console.log(`[v0] Running engine test step: ${step}`)
+    const testConnectionId = connectionId || "testing-engine"
 
     // Simulate different engine test steps
     switch (step) {
       case "init":
-        await new Promise((resolve) => setTimeout(resolve, 600))
+        emitEngineStageAck(testConnectionId, "startup", "ack", "Testing engine initialized")
         return NextResponse.json({
           success: true,
           message: "Engine initialized",
@@ -26,7 +28,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
 
       case "market_data":
-        await new Promise((resolve) => setTimeout(resolve, 800))
+        emitEngineStageAck(testConnectionId, "market_data", "ack", "Testing market data loaded", { symbol })
         return NextResponse.json({
           success: true,
           message: "Market data loaded",
@@ -39,7 +41,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
 
       case "indicators":
-        await new Promise((resolve) => setTimeout(resolve, 1000))
+        emitEngineStageAck(testConnectionId, "prehistoric_data", "ack", "Testing indicators calculated")
         return NextResponse.json({
           success: true,
           message: "Indicators calculated",
@@ -51,7 +53,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
 
       case "strategy":
-        await new Promise((resolve) => setTimeout(resolve, 700))
+        emitEngineStageAck(testConnectionId, "base_sets", "ack", "Testing strategy signal generated")
         return NextResponse.json({
           success: true,
           message: "Strategy signal generated",
@@ -63,7 +65,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
 
       case "order":
-        await new Promise((resolve) => setTimeout(resolve, 1200))
+        emitEngineStageAck(testConnectionId, "live_dispatch", "ack", "Testing order placed")
         return NextResponse.json({
           success: true,
           message: "Test order placed",
@@ -79,7 +81,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
 
       case "position":
-        await new Promise((resolve) => setTimeout(resolve, 800))
+        emitEngineStageAck(testConnectionId, "live_sync", "ack", "Testing position monitored")
         return NextResponse.json({
           success: true,
           message: "Position monitored",
@@ -94,7 +96,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
 
       case "update_tp_sl":
-        await new Promise((resolve) => setTimeout(resolve, 900))
         return NextResponse.json({
           success: true,
           message: "TP/SL updated",
@@ -106,7 +107,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
 
       case "close":
-        await new Promise((resolve) => setTimeout(resolve, 1000))
         return NextResponse.json({
           success: true,
           message: "Position closed",
@@ -119,7 +119,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
 
       case "rate_limits":
-        await new Promise((resolve) => setTimeout(resolve, 500))
         return NextResponse.json({
           success: true,
           message: "Rate limits verified",
@@ -132,7 +131,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
 
       case "batch":
-        await new Promise((resolve) => setTimeout(resolve, 1500))
+        emitEngineStageAck(testConnectionId, "recoordination_complete", "ack", "Testing batch completed")
         return NextResponse.json({
           success: true,
           message: "Batch processing completed",

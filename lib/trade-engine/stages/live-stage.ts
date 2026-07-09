@@ -26,6 +26,7 @@ import { getAppSettings, getConnection, getRedisClient, initRedis, setSettings }
 import { nanoid } from "@/lib/trade-engine/pseudo-position-manager"
 import { getVenueMinQty } from "@/lib/exchange-min-qty"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
+import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import { SystemLogger } from "@/lib/system-logger"
 import type { RealPosition } from "./real-stage"
@@ -420,6 +421,36 @@ async function evalRedis(client: any, script: string, keys: string[], args: stri
       return await client.eval(script, keys.length, ...keys, ...args)
     }
   }
+
+  // InlineLocalRedis / minimal test clients may not expose EVAL. Preserve the
+  // two token/version semantics this file needs so production fallback audits
+  // do not crash while still failing closed on mismatched ownership/state.
+  if (script.includes('redis.call("GET", KEYS[1])') && script.includes('redis.call("DEL", KEYS[1])')) {
+    const current = typeof client.get === "function" ? await client.get(keys[0]) : null
+    if (current !== args[0]) return 0
+    return typeof client.del === "function" ? await client.del(keys[0]) : 0
+  }
+
+  if (script.includes('redis.call("HGET", KEYS[1], "version")') && script.includes('redis.call("HSET", KEYS[1]')) {
+    const hash = typeof client.hgetall === "function" ? await client.hgetall(keys[0]).catch(() => null) : null
+    if (!hash || Object.keys(hash).length === 0) return 0
+    const currentVersion = String(hash.version ?? "0")
+    const currentStatus = String(hash.status ?? "")
+    if (currentVersion !== args[0]) return 0
+    let allowed: string[] = []
+    try { allowed = JSON.parse(args[1]) } catch { allowed = [] }
+    if (!allowed.includes(currentStatus)) return 0
+    const fields: Record<string, string> = {}
+    for (let i = 3; i < args.length; i += 2) {
+      const field = args[i]
+      const value = args[i + 1]
+      if (field !== undefined && value !== undefined) fields[field] = value
+    }
+    if (Object.keys(fields).length === 0) return 0
+    await client.hset(keys[0], fields)
+    return 1
+  }
+
   throw new Error("Redis client does not support EVAL")
 }
 
@@ -6745,6 +6776,13 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
 
         const key = `live:position:${position.id}`
         await client.setex(key, 604800, JSON.stringify(position))
+        emitCanonicalEvent({
+          type: "live.stageChanged",
+          connectionId: position.connectionId || connectionId,
+          symbol: position.symbol,
+          stage: "live",
+          data: { positionId: position.id, status: position.status, action: "synced" },
+        })
         await client.lpush(`live:positions:${position.connectionId}`, position.id)
         await client.ltrim(`live:positions:${position.connectionId}`, 0, 999)
         await client.expire(`live:positions:${position.connectionId}`, 604800)

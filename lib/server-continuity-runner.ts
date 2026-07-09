@@ -16,24 +16,12 @@
 type ContinuityGlobal = typeof globalThis & {
   __cts_continuity_runner?: {
     started: boolean
-    indicationTimer?: NodeJS.Timeout
-    autoStartTimer?: NodeJS.Timeout
     indicationInFlight: boolean
     autoStartInFlight: boolean
   }
 }
 
 const g = globalThis as ContinuityGlobal
-
-const DEFAULT_INDICATION_INTERVAL_MS = 3_000
-const DEFAULT_AUTOSTART_INTERVAL_MS = 30_000
-
-function parseInterval(name: string, fallback: number, min: number, max: number): number {
-  const raw = process.env[name]
-  const n = raw ? Number(raw) : fallback
-  if (!Number.isFinite(n)) return fallback
-  return Math.max(min, Math.min(max, Math.round(n)))
-}
 
 function shouldSkipInProcessTimers(): boolean {
   // Long-lived Node production/dev processes should keep continuity alive by
@@ -45,11 +33,13 @@ function shouldSkipInProcessTimers(): boolean {
   return isVercel
 }
 
-async function runIndicationTick(): Promise<void> {
+export async function enqueueContinuityIndicationJob(): Promise<void> {
   const state = g.__cts_continuity_runner
   if (!state || state.indicationInFlight) return
   state.indicationInFlight = true
   try {
+    const { publishEngineEvent } = await import("@/lib/engine-event-bus")
+    await publishEngineEvent("engine.intent.changed", { intent: "continuity.generate-indications", reason: "in-process-runner", timestamp: new Date().toISOString() })
     const mod = await import("@/app/api/cron/generate-indications/route")
     await mod.GET()
   } catch (err) {
@@ -62,11 +52,13 @@ async function runIndicationTick(): Promise<void> {
   }
 }
 
-async function runAutoStartTick(): Promise<void> {
+export async function enqueueContinuityAutoStartJob(): Promise<void> {
   const state = g.__cts_continuity_runner
   if (!state || state.autoStartInFlight) return
   state.autoStartInFlight = true
   try {
+    const { publishEngineEvent } = await import("@/lib/engine-event-bus")
+    await publishEngineEvent("engine.intent.changed", { intent: "continuity.autostart", reason: "in-process-runner", timestamp: new Date().toISOString() })
     const { initializeTradeEngineAutoStart } = await import("@/lib/trade-engine-auto-start")
     await initializeTradeEngineAutoStart()
   } catch (err) {
@@ -101,42 +93,17 @@ export function startServerContinuityRunner(): void {
     return
   }
 
-  const indicationIntervalMs = parseInterval(
-    "SERVER_CONTINUITY_INDICATION_MS",
-    DEFAULT_INDICATION_INTERVAL_MS,
-    1_000,
-    60_000,
-  )
-  const autoStartIntervalMs = parseInterval(
-    "SERVER_CONTINUITY_AUTOSTART_MS",
-    DEFAULT_AUTOSTART_INTERVAL_MS,
-    5_000,
-    120_000,
-  )
+  // Enqueue one idempotent event job on startup. External cron remains the durable
+  // scheduler; the in-process runner no longer owns continuous local intervals.
+  void enqueueContinuityAutoStartJob()
+  void enqueueContinuityIndicationJob()
 
-  // Kick once immediately after startup, then continue on intervals. These
-  // calls are guarded by Redis locks inside the cron/auto-start paths, so they
-  // are safe alongside browser tabs, external crons, and multiple workers.
-  void runAutoStartTick()
-  void runIndicationTick()
-
-  state.autoStartTimer = setInterval(() => void runAutoStartTick(), autoStartIntervalMs)
-  state.indicationTimer = setInterval(() => void runIndicationTick(), indicationIntervalMs)
-  state.autoStartTimer.unref?.()
-  state.indicationTimer.unref?.()
-
-  console.log(
-    `[v0] [Continuity] Server runner active: indications=${indicationIntervalMs}ms, autoStart=${autoStartIntervalMs}ms`,
-  )
+  console.log("[v0] [Continuity] Server runner enqueued startup continuity jobs; external cron remains scheduler")
 }
 
 export function stopServerContinuityRunner(): void {
   const state = g.__cts_continuity_runner
   if (!state) return
-  if (state.indicationTimer) clearInterval(state.indicationTimer)
-  if (state.autoStartTimer) clearInterval(state.autoStartTimer)
-  state.indicationTimer = undefined
-  state.autoStartTimer = undefined
   state.started = false
   state.indicationInFlight = false
   state.autoStartInFlight = false

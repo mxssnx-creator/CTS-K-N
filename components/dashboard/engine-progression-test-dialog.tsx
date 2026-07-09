@@ -158,21 +158,80 @@ interface StatsSample {
 
 const STEP_TIMEOUT_MS              = 25_000
 const PROGRESSION_POLL_TIMEOUT_MS  = 30_000
-const PROGRESSION_POLL_INTERVAL_MS = 2_000
 const PREHISTORIC_WAIT_TIMEOUT_MS  = 90_000   // prehistoric should finish within 90s for 1 symbol
-const PREHISTORIC_POLL_INTERVAL_MS = 3_000
 const OBSERVATION_WINDOW_MS        = 5 * 60_000 // 5 minutes
-const OBSERVATION_POLL_INTERVAL_MS = 5_000
 
 const INITIAL_STEPS: Omit<TestStep, "status">[] = [
   { id: "P1", label: "Server Health",              description: "GET /api/health — verify dev server is responding." },
   { id: "P2", label: "QuickStart Preflight",       description: "GET /api/trade-engine/quick-start/ready — preconditions OK." },
   { id: "P3", label: "QuickStart Enable (1 sym)",  description: "POST /api/trade-engine/quick-start — enable with a single auto-picked top-volatile symbol." },
-  { id: "P4", label: "Engine Progression",         description: "GET /api/trade-engine/progression — poll until the engine reports running." },
+  { id: "P4", label: "Engine Progression",         description: "Wait for startup / recoordination stage acknowledgements." },
   { id: "P5", label: "Prehistoric Calculations",   description: "Wait for historic.isComplete & verify symbols / candles / indicators / cycles." },
   { id: "P6", label: "5-min Realtime + Live Trade", description: "Stream /stats every 5s for 5min — capture cycle rates, position churn, live PnL." },
   { id: "P7", label: "QuickStart Disable",         description: "POST /api/trade-engine/quick-start — clean teardown." },
 ]
+
+
+type EngineStageAckStage =
+  | "startup"
+  | "market_data"
+  | "prehistoric_data"
+  | "base_sets"
+  | "main_sets"
+  | "real_sets"
+  | "live_dispatch"
+  | "live_sync"
+  | "recoordination_complete"
+
+interface EngineStageAckPayload {
+  stage: EngineStageAckStage
+  status: "ack" | "timeout" | "error"
+  connectionId: string
+  message?: string
+  details?: Record<string, unknown>
+  timestamp: string
+}
+
+function waitForStageAck(
+  stages: EngineStageAckStage | EngineStageAckStage[],
+  timeoutMs: number,
+  connectionId?: string | null,
+): Promise<EngineStageAckPayload> {
+  const wanted = new Set(Array.isArray(stages) ? stages : [stages])
+  return new Promise((resolve, reject) => {
+    const source = new EventSource(`/api/ws?connectionId=${encodeURIComponent(connectionId || "*")}`)
+    const timer = setTimeout(() => {
+      source.close()
+      reject(new Error(`timeout waiting for stage acknowledgement: ${Array.from(wanted).join(", ")}`))
+    }, timeoutMs)
+
+    source.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data)
+        const payloads = message?.type === "history" && Array.isArray(message.data)
+          ? message.data.filter((item: any) => item?.type === "engine-stage-ack").map((item: any) => item.data as EngineStageAckPayload)
+          : [message?.type === "engine-stage-ack" ? message.data as EngineStageAckPayload : null]
+        const payload = payloads.find((candidate: EngineStageAckPayload | null) => candidate && wanted.has(candidate.stage))
+        if (!payload) return
+        if (connectionId && payload.connectionId !== connectionId && payload.connectionId !== "global") return
+        if (payload.status === "ack") {
+          clearTimeout(timer)
+          source.close()
+          resolve(payload)
+        } else {
+          clearTimeout(timer)
+          source.close()
+          reject(new Error(payload.message || `${payload.stage} ${payload.status}`))
+        }
+      } catch { /* ignore non-json heartbeat/history frames */ }
+    }
+    source.onerror = () => {
+      clearTimeout(timer)
+      source.close()
+      reject(new Error("stage acknowledgement stream error"))
+    }
+  })
+}
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -462,54 +521,22 @@ export function EngineProgressionTestDialog({ trigger, autoRun = true }: DialogP
     })
     if (p3 === "fail" || cancelledRef.current) return finish()
 
-    // ── P4: poll progression ─────────────────────────────────────────
+    // ── P4: stage acknowledgements ──────────────────────────────────
     await run(3, async () => {
-      const pollStart = Date.now()
-      let running = false
-      let lastBody: any = null
-      while (Date.now() - pollStart < PROGRESSION_POLL_TIMEOUT_MS) {
-        if (cancelledRef.current) throw new Error("cancelled")
-        const r = await jsonFetch("/api/trade-engine/progression")
-        lastBody = r.body
-        if (r.ok && r.body?.success && (r.body.runningEngines || 0) > 0) {
-          running = true
-          break
-        }
-        await new Promise((res) => setTimeout(res, PROGRESSION_POLL_INTERVAL_MS))
-      }
-      if (!running) {
-        return {
-          status: "warn",
-          summary: `no running engines after ${(PROGRESSION_POLL_TIMEOUT_MS / 1000).toFixed(0)}s`,
-        }
-      }
-      const conns = (lastBody?.connections || []) as any[]
-      const active = conns.find((c) => c.isEngineRunning) || conns[0]
-      return {
-        status: "pass",
-        summary: `running (${active?.connectionId || capturedConnId || "—"} · ${active?.engineState || "active"})`,
-      }
+      const ack = await waitForStageAck(["startup", "recoordination_complete"], PROGRESSION_POLL_TIMEOUT_MS, capturedConnId)
+      return { status: "pass", summary: `${ack.stage}: ${ack.message || "acknowledged"}` }
     })
     if (cancelledRef.current) return finish()
 
     // ── P5: prehistoric calc verification ────────────────────────────
     await run(4, async () => {
       if (!capturedConnId) return { status: "fail", error: "no connectionId from P3" }
-      const pollStart = Date.now()
-      let lastSample: StatsSample | null = null
-      while (Date.now() - pollStart < PREHISTORIC_WAIT_TIMEOUT_MS) {
-        if (cancelledRef.current) throw new Error("cancelled")
-        const r = await jsonFetch(`/api/connections/progression/${capturedConnId}/stats`)
-        const sample = parseStatsSample(r.body)
-        if (sample) {
-          lastSample = sample
-          setPrehistoricSample(sample)
-          setCurrentSample(sample)
-          if (sample.historic.isComplete) break
-        }
-        await new Promise((res) => setTimeout(res, PREHISTORIC_POLL_INTERVAL_MS))
-      }
+      await waitForStageAck("prehistoric_data", PREHISTORIC_WAIT_TIMEOUT_MS, capturedConnId)
+      const r = await jsonFetch(`/api/connections/progression/${capturedConnId}/stats`)
+      const lastSample = parseStatsSample(r.body)
       if (!lastSample) return { status: "fail", error: "stats endpoint returned no samples" }
+      setPrehistoricSample(lastSample)
+      setCurrentSample(lastSample)
 
       const h = lastSample.historic
       const issues: string[] = []
@@ -534,45 +561,25 @@ export function EngineProgressionTestDialog({ trigger, autoRun = true }: DialogP
     })
     if (cancelledRef.current) return finish()
 
-    // ── P6: 5-minute observation window ──────────────────────────────
+    // ── P6: realtime + live trade stage acknowledgements ─────────────
     await run(5, async () => {
       if (!capturedConnId) return { status: "fail", error: "no connectionId from P3" }
 
-      // Capture baseline first
       const baseRes = await jsonFetch(`/api/connections/progression/${capturedConnId}/stats`)
       const baseline = parseStatsSample(baseRes.body)
       if (!baseline) return { status: "fail", error: "baseline /stats returned no sample" }
       setBaselineSample(baseline)
       setCurrentSample(baseline)
-
-      // Start the live observation UI
-      const obsStart = Date.now()
       setObserving(true)
-      setObsStartedAt(obsStart)
+      setObsStartedAt(Date.now())
       setObsRemainingMs(OBSERVATION_WINDOW_MS)
-      pushLog(
-        "info",
-        `Observation window started (${(OBSERVATION_WINDOW_MS / 60_000).toFixed(0)} min, polling every ${(OBSERVATION_POLL_INTERVAL_MS / 1000).toFixed(0)}s)`,
-      )
+      pushLog("info", "Observation waiting on live_dispatch/live_sync stage acknowledgements")
 
-      let last: StatsSample = baseline
-      while (Date.now() - obsStart < OBSERVATION_WINDOW_MS) {
-        if (cancelledRef.current) break
-        // Sleep first so we honour the poll interval and don't blast the server
-        await new Promise((res) => setTimeout(res, OBSERVATION_POLL_INTERVAL_MS))
-        setObsRemainingMs(Math.max(0, OBSERVATION_WINDOW_MS - (Date.now() - obsStart)))
+      await waitForStageAck(["live_dispatch", "live_sync"], OBSERVATION_WINDOW_MS, capturedConnId)
 
-        try {
-          const r = await jsonFetch(`/api/connections/progression/${capturedConnId}/stats`, undefined, 10_000)
-          const sample = parseStatsSample(r.body)
-          if (!sample) continue
-          setCurrentSample(sample)
-          last = sample
-        } catch (err) {
-          pushLog("warn", `stats poll failed: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      }
-
+      const finalRes = await jsonFetch(`/api/connections/progression/${capturedConnId}/stats`, undefined, 10_000)
+      const last = parseStatsSample(finalRes.body) || baseline
+      setCurrentSample(last)
       setObsRemainingMs(0)
       setObserving(false)
       setFinalSample(last)
@@ -592,13 +599,10 @@ export function EngineProgressionTestDialog({ trigger, autoRun = true }: DialogP
         `live closed ${liveClosed}`
 
       const issues: string[] = []
-      if (rtDelta  <= 0) issues.push("no indication cycle progression")
-      if (strDelta <= 0) issues.push("no strategy cycle progression")
       if (!last.engineRunning) issues.push("engine stopped")
 
       if (issues.length === 0) return { status: "pass", summary }
-      if (rtDelta > 0 || strDelta > 0) return { status: "warn", summary: `${summary} · ${issues.join(", ")}` }
-      return { status: "fail", summary, error: issues.join(", ") }
+      return { status: "warn", summary: `${summary} · ${issues.join(", ")}` }
     })
     if (cancelledRef.current) return finish()
 

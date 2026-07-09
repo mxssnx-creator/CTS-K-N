@@ -98,7 +98,7 @@ export const DEFAULT_ADVANCED_CONFIG: AdvancedEngineConfig = {
   pseudoPosition: {
     timeoutSeconds: { min: 0, max: 5, default: 1, step: 0.2 },
     takeProfitSteps: { min: 2, max: 20, default: 5, step: 1 },
-    stopLossRatio: { min: 0.1, max: 2.5, default: 0.5, step: 0.1 },
+    stopLossRatio: { min: 0.25, max: 2.5, default: 0.5, step: 0.25 },
     trailingStart: { min: 0.2, max: 1.0, default: 0.5, step: 0.2 },
     trailingStop: { min: 0.1, max: 0.5, default: 0.2, step: 0.1 },
     databaseLength: 250,

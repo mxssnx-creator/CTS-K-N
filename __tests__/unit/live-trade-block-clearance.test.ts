@@ -51,10 +51,21 @@ jest.mock("@/lib/engine-progression-logs", () => ({
 }))
 
 describe("live-trade block clearance", () => {
+  const originalRedisUrl = process.env.REDIS_URL
+
   beforeEach(() => {
     jest.clearAllMocks()
     store.clear()
     store.set(mockConnection.id, { ...mockConnection })
+    process.env.REDIS_URL = "redis://test-shared-redis"
+  })
+
+  afterEach(() => {
+    if (originalRedisUrl === undefined) {
+      delete process.env.REDIS_URL
+    } else {
+      process.env.REDIS_URL = originalRedisUrl
+    }
   })
 
   test("clears stale live_trade_blocked_reason when enabling live trade after credential confirmation", async () => {

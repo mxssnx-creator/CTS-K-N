@@ -5,6 +5,7 @@
 
 import type { IndicatorConfig } from "./indicators"
 import { db } from "@/lib/database"
+import { buildStopLossRatios } from "@/lib/stoploss-ratio-range"
 
 export interface PresetConfiguration {
   id: string
@@ -113,7 +114,7 @@ export class PresetConfigGenerator {
     const configurations: PresetConfiguration[] = []
     const timeframes = ["4h", "8h", "12h"]
     const takeprofitFactors = [2, 3, 4, 6, 8, 12]
-    const stoplossRatios = [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5]
+    const stoplossRatios = buildStopLossRatios()
     const trailStarts = [0.3, 0.6, 1.0]
     const trailStops = [0.1, 0.2, 0.3]
 

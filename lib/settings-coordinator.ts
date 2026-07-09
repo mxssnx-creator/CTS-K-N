@@ -1,5 +1,6 @@
 import { EventEmitter } from "events"
 import { initRedis, getSettings, setSettings, getConnection, getRedisClient } from "@/lib/redis-db"
+import { publishEngineEvent } from "@/lib/engine-event-bus"
 
 /**
  * Settings Coordinator
@@ -36,10 +37,11 @@ const PROGRESSION_RESTART_FIELDS = [
   "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
   "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
   "coordination_settings", "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
+  "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep",
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
   "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled",
-  "minimal_step_count", "minimalStepCount", "minStep",
+  "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
 ]
 
@@ -57,9 +59,10 @@ const HOT_RELOAD_FIELDS = [
   "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
   "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
   "coordination_settings", "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
+  "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep",
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
-  "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled", "minimal_step_count", "minimalStepCount", "minStep",
+  "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled", "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
 ]
 
@@ -174,6 +177,7 @@ export async function notifySettingsChanged(
   //    mandatory: a settings PATCH response must not report success until both
   //    signals are persisted.
   await setSettings(`settings_change:${connectionId}`, event)
+  await publishEngineEvent("settings.changed", { connectionId, changedFields, changeType, timestamp: event.timestamp })
   const client = getRedisClient()
   await client.set(`settings:dirty:${connectionId}`, "1", { EX: 300 })
   console.log(
