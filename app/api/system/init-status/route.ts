@@ -84,6 +84,14 @@ export async function GET(request: NextRequest) {
     // Get actual key count directly (most reliable)
     const { getRedisClient } = await import("@/lib/redis-db")
     const client = getRedisClient()
+    const [startupHash, startupCompletedAtKey] = await Promise.all([
+      client.hgetall("system:startup").catch(() => ({} as Record<string, string>)),
+      client.get("system:startup:completed_at").catch(() => null),
+    ])
+    const instrumentationBootCompletedAt =
+      (startupHash as Record<string, string>)?.instrumentation_boot_completed_at ||
+      (startupHash as Record<string, string>)?.completed_at ||
+      (typeof startupCompletedAtKey === "string" ? startupCompletedAtKey : null)
     const allKeys = await client.keys("*").catch(() => [])
     const actualKeyCount = Array.isArray(allKeys) ? allKeys.length : 0
 
@@ -146,6 +154,12 @@ export async function GET(request: NextRequest) {
           version: "3.2",
           environment: process.env.NODE_ENV || "development",
           timestamp: new Date().toISOString(),
+          startup: {
+            completed: Boolean(instrumentationBootCompletedAt),
+            completed_at: instrumentationBootCompletedAt,
+            instrumentationBootCompletedAt,
+            redis_key: "system:startup:completed_at",
+          },
         },
       },
       { status: 200 }

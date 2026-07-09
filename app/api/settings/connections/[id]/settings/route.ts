@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
 import { updateConnection, initRedis, getConnection, getRedisClient, setSettings, getSettings, persistNow } from "@/lib/redis-db"
 import { RedisTrades, RedisPositions } from "@/lib/redis-operations"
-import { recoordinateAfterSettingsChange } from "@/lib/connection-recoordinator"
+import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 import { getTradeEngine } from "@/lib/trade-engine"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
 import { toRedisFlag } from "@/lib/boolean-utils"
@@ -239,7 +239,11 @@ export async function PUT(
     // Full propagation: notify + fast-path apply + recoordinate
     // (start/stop/hot-reload as the new state dictates). See
     // lib/connection-recoordinator.ts for the design rationale.
-    await recoordinateAfterSettingsChange(id, connection, effectiveConnection, {
+    await applyMainConnectionSettingsChange(id, connection, {
+      connectionPatch: {},
+      changedFieldsOverride: Object.keys(body.settings || {}).length > 0
+        ? Array.from(new Set([...Object.keys(body.settings || {}), "connection_settings"]))
+        : undefined,
       logTag: "PUT /settings",
     })
 
@@ -844,7 +848,7 @@ export async function PATCH(
       scalarChanged("is_preset_trade", (connection as Record<string, unknown>).is_preset_trade, (updated as Record<string, unknown>).is_preset_trade) ||
       scalarChanged("connection_method", (connection as Record<string, unknown>).connection_method, (updated as Record<string, unknown>).connection_method)
     if (symbolsModeChanged) {
-      // Recoordination is intentionally centralized in recoordinateAfterSettingsChange() below.
+      // Recoordination is intentionally centralized in applyMainConnectionSettingsChange() below.
       // Running it here as well created two settings-change envelopes and two progression
       // archive attempts from one dialog save, which made stats briefly alternate between
       // the previous and newly-saved settings under production polling.
@@ -855,16 +859,16 @@ export async function PATCH(
     // would report zero changes — pass an explicit override listing the
     // settings keys the caller touched, so the recoordinator knows
     // something inside `connection_settings` actually changed.
-    const recoordination = await recoordinateAfterSettingsChange(
+    const { completion: recoordination } = await applyMainConnectionSettingsChange(
       id,
       { ...connection, connection_settings: current },
-      { ...effectiveConnection, connection_settings: merged, updated_at: effectiveConnection.updated_at || updated.updated_at },
       {
-        logTag: "PATCH /settings",
+        connectionPatch: {},
         changedFieldsOverride: Object.keys(settings).length > 0
           ? Array.from(new Set([...Object.keys(settings), "connection_settings"]))
           : [],
         settingsVersion,
+        logTag: "PATCH /settings",
       },
     )
 
