@@ -6,6 +6,7 @@ import {
 } from "@/lib/trade-engine/stages/live-stage"
 import { initRedis, getRedisClient, getConnection } from "@/lib/redis-db"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import { getAlternateLivePositionKeys } from "@/lib/live-position-alt-index"
 
 export const dynamic = "force-dynamic"
 
@@ -122,11 +123,11 @@ export async function GET(request: Request) {
       getConnection(connectionId).catch(() => null),
     ])
 
-    // Fallback: also scan for any positions stored under alternate key patterns
+    // Fallback: also read positions stored under alternate key patterns.
+    // New writers should maintain live:position:live:{connectionId}:index so this path
+    // remains bounded; legacy unindexed data falls back to bounded SCAN only.
     const client = getRedisClient()
-    const altKeys = await client
-      .keys(`live:position:live:${connectionId}:*`)
-      .catch(() => [] as string[])
+    const { keys: altKeys, partialLegacyScan } = await getAlternateLivePositionKeys(client, connectionId)
     const altPositions: any[] = []
     const seenIds = new Set<string>([...open.map((p) => p.id!).filter(Boolean), ...closed.map((p) => p.id!).filter(Boolean)])
     for (const key of altKeys) {
@@ -199,6 +200,7 @@ export async function GET(request: Request) {
         real: computeStats(realPositions),
         simulated: computeStats(simulatedPositions),
       },
+      partialLegacyScan,
       dataIntegrity: {
         liveTradeEnabled,
         liveTradeRequested,

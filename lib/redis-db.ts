@@ -103,6 +103,7 @@ export interface RedisClientLike {
   eval?(script: string, options: { keys: string[]; arguments: string[] }): Promise<any>
   dbSize(): Promise<number>
   keys(pattern: string): Promise<string[]>
+  scan?(cursor: string | number, ...args: any[]): Promise<{ cursor: string; keys: string[] } | [string, string[]]>
   zadd(key: string, score: number, member: string): Promise<number>
   zrangebyscore(key: string, min: number | string, max: number | string): Promise<string[]>
   zremrangebyscore(key: string, min: number | string, max: number | string): Promise<number>
@@ -1576,7 +1577,7 @@ export class InlineLocalRedis implements RedisClientLike {
     return this.data.strings.size + this.data.hashes.size + this.data.sets.size + this.data.lists.size + this.data.sorted_sets.size
   }
 
-  async keys(pattern: string): Promise<string[]> {
+  private matchKeys(pattern: string): string[] {
     const regexPattern = pattern
       .replace(/\*/g, ".*")
       .replace(/\?/g, ".")
@@ -1599,6 +1600,20 @@ export class InlineLocalRedis implements RedisClientLike {
     }
 
     return Array.from(uniqueKeys)
+  }
+
+  async keys(pattern: string): Promise<string[]> {
+    return this.matchKeys(pattern)
+  }
+
+  async scan(cursor: string | number, ...args: any[]): Promise<[string, string[]]> {
+    const options = normalizeScanOptions(args)
+    const offset = Math.max(0, Number(cursor) || 0)
+    const count = Math.max(1, Number(options.COUNT || 10))
+    const all = this.matchKeys(options.MATCH || "*")
+    const keys = all.slice(offset, offset + count)
+    const next = offset + count >= all.length ? "0" : String(offset + count)
+    return [next, keys]
   }
 
   async zadd(key: string, score: number, member: string): Promise<number> {
@@ -1835,6 +1850,25 @@ function hasSharedRedisConfig(): boolean {
   )
 }
 
+function normalizeScanOptions(args: any[]): { MATCH?: string; COUNT?: number } {
+  if (args.length === 1 && args[0] && typeof args[0] === "object" && !Array.isArray(args[0])) {
+    const options = args[0] as { MATCH?: string; match?: string; COUNT?: number; count?: number }
+    return {
+      MATCH: options.MATCH ?? options.match,
+      COUNT: Number(options.COUNT ?? options.count) || undefined,
+    }
+  }
+
+  const options: { MATCH?: string; COUNT?: number } = {}
+  for (let i = 0; i < args.length; i += 2) {
+    const name = String(args[i] ?? "").toUpperCase()
+    const value = args[i + 1]
+    if (name === "MATCH") options.MATCH = String(value)
+    if (name === "COUNT") options.COUNT = Number(value) || undefined
+  }
+  return options
+}
+
 class NodeRedisClientAdapter implements RedisClientLike {
   private client: any | null = null
   private connectPromise: Promise<any> | null = null
@@ -1888,6 +1922,10 @@ class NodeRedisClientAdapter implements RedisClientLike {
   async eval(script: string, options: { keys: string[]; arguments: string[] }) { return await (await this.c()).eval(script, options) }
   async dbSize() { return await (await this.c()).dbSize() }
   async keys(pattern: string) { return await (await this.c()).keys(pattern) }
+  async scan(cursor: string | number, ...args: any[]) {
+    const options = normalizeScanOptions(args)
+    return await (await this.c()).scan(String(cursor), options)
+  }
   async zadd(key: string, score: number, member: string) { return await (await this.c()).zAdd(key, { score, value: member }) }
   async zrangebyscore(key: string, min: number | string, max: number | string) { return await (await this.c()).zRangeByScore(key, min as any, max as any) }
   async zremrangebyscore(key: string, min: number | string, max: number | string) { return await (await this.c()).zRemRangeByScore(key, min as any, max as any) }
@@ -1983,6 +2021,14 @@ class UpstashRestRedisClient implements RedisClientLike {
   async eval(script: string, options: { keys: string[]; arguments: string[] }) { return await this.command<any>(["EVAL", script, options.keys.length, ...options.keys, ...options.arguments]) }
   async dbSize() { return await this.command<number>(["DBSIZE"]) }
   async keys(pattern: string) { return await this.command<string[]>(["KEYS", pattern]) }
+  async scan(cursor: string | number, ...args: any[]) {
+    const options = normalizeScanOptions(args)
+    const cmd: Array<string | number> = ["SCAN", cursor]
+    if (options.MATCH) cmd.push("MATCH", options.MATCH)
+    if (options.COUNT) cmd.push("COUNT", options.COUNT)
+    const result = await this.command<any>(cmd)
+    return Array.isArray(result) ? [String(result[0] ?? "0"), (result[1] || []) as string[]] : result
+  }
   async zadd(key: string, score: number, member: string) { return await this.command<number>(["ZADD", key, score, member]) }
   async zrangebyscore(key: string, min: number | string, max: number | string) { return await this.command<string[]>(["ZRANGEBYSCORE", key, min, max]) }
   async zremrangebyscore(key: string, min: number | string, max: number | string) { return await this.command<number>(["ZREMRANGEBYSCORE", key, min, max]) }
