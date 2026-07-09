@@ -83,5 +83,23 @@ export async function register(): Promise<void> {
     console.warn("[v0] [Instrumentation] background in-process continuity skipped; deployment cron or UI-triggered reconciliation remains available")
   }
 
+  try {
+    const { getRedisClient } = await import("@/lib/redis-db")
+    const client = getRedisClient()
+    const completedAt = new Date().toISOString()
+    await client.hset("system:startup", {
+      completed_at: completedAt,
+      instrumentation_boot_completed_at: completedAt,
+      runtime: process.env.NEXT_RUNTIME || "nodejs",
+      node_env: process.env.NODE_ENV || "development",
+    })
+    await client.set("system:startup:completed_at", completedAt).catch(() => {})
+  } catch (err) {
+    console.error(
+      "[v0] [Instrumentation] failed to persist boot completion status (continuing):",
+      err instanceof Error ? err.message : err,
+    )
+  }
+
   console.log("[v0] [Instrumentation] ✓ Server boot complete")
 }

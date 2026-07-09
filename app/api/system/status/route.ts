@@ -44,15 +44,19 @@ export async function GET(request: NextRequest) {
     // Get database and runtime heartbeat info from Redis
     let databaseInfo: any = { status: "available", type: "redis" };
     let engineGlobalState: Record<string, string> = {};
+    let startupState: Record<string, string> = {};
+    let startupCompletedAtKey: string | null = null;
     const engineStatesByConnection: Record<string, Record<string, string>> = {};
     try {
       const { getRedisClient } = await import("@/lib/redis-db");
       const client = getRedisClient();
-      const [dbSize, globalState, ...connectionStates] = await Promise.all([
+      const [dbSize, globalState, startupHash, completedAtKey, ...connectionStates] = await Promise.all([
         client.dbSize(),
         client
           .hgetall("trade_engine:global")
           .catch(() => ({}) as Record<string, string>),
+        client.hgetall("system:startup").catch(() => ({}) as Record<string, string>),
+        client.get("system:startup:completed_at").catch(() => null),
         ...allConnections.map(async (conn) => {
           const [rawState, settingsState] = await Promise.all([
             client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({}) as Record<string, string>),
@@ -67,6 +71,8 @@ export async function GET(request: NextRequest) {
         keys_count: dbSize,
       };
       engineGlobalState = globalState || {};
+      startupState = startupHash || {};
+      startupCompletedAtKey = typeof completedAtKey === "string" ? completedAtKey : null;
       allConnections.forEach((conn, index) => {
         engineStatesByConnection[conn.id] = connectionStates[index] || {};
       });
@@ -114,6 +120,9 @@ export async function GET(request: NextRequest) {
 
     // Batch processor status
     const batchStatus = batchProcessor.getQueueStatus();
+
+    const instrumentationBootCompletedAt =
+      startupState.instrumentation_boot_completed_at || startupState.completed_at || startupCompletedAtKey || null;
 
     const now = Date.now();
     const globalOperatorStatus =
@@ -173,6 +182,12 @@ export async function GET(request: NextRequest) {
       timestamp: new Date().toISOString(),
       status: tradeEngineWorkerDiagnostic.missingFreshWorkerHeartbeat ? "degraded" : (activeConnections.length > 0 ? "healthy" : "degraded"),
       database: databaseInfo,
+      startup: {
+        completed: Boolean(instrumentationBootCompletedAt),
+        completed_at: instrumentationBootCompletedAt,
+        instrumentationBootCompletedAt,
+        redis_key: "system:startup:completed_at",
+      },
       connectionInventory: {
         total: allConnections.length,
         active: activeConnections.length,
