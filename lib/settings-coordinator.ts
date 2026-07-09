@@ -1,5 +1,6 @@
 import { EventEmitter } from "events"
 import { initRedis, getSettings, setSettings, getConnection, getRedisClient } from "@/lib/redis-db"
+import { publishEngineEvent } from "@/lib/engine-event-bus"
 
 /**
  * Settings Coordinator
@@ -176,6 +177,7 @@ export async function notifySettingsChanged(
   //    mandatory: a settings PATCH response must not report success until both
   //    signals are persisted.
   await setSettings(`settings_change:${connectionId}`, event)
+  await publishEngineEvent("settings.changed", { connectionId, changedFields, changeType, timestamp: event.timestamp })
   const client = getRedisClient()
   await client.set(`settings:dirty:${connectionId}`, "1", { EX: 300 })
   console.log(
