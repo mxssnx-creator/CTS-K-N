@@ -459,6 +459,8 @@ export async function recoordinateAfterSettingsChange(
           settings_changed_at: new Date().toISOString(),
           settings_recoordination_pending: "1",
           settings_recoordination_fields: JSON.stringify(normalizedChangedFields),
+          settings_recoordination_requested_version: String(opts.settingsVersion || settingsEvent.settingsVersion || settingsEvent.id),
+          settings_recoordination_requested_event_id: settingsEvent.id,
           strategy_recompute_requested: "1",
         }).catch(() => 0)
         progressionReason = "strategy-config-cache-invalidated"

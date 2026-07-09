@@ -815,12 +815,10 @@ export async function POST(request: Request) {
        connectionId,
        "quickstart_minimal_volume",
        "info",
-       `QuickStart resolved live_volume_factor=${resolvedLiveVolumeFactor} for this connection`,
-       {
-         live_volume_factor: resolvedLiveVolumeFactor,
        `QuickStart effective live_volume_factor=${effectiveLiveVolumeFactor}`,
        {
          live_volume_factor: effectiveLiveVolumeFactor,
+         resolved_live_volume_factor: resolvedLiveVolumeFactor,
          note:
            "QuickStart preserves existing per-connection sizing settings unless the request body explicitly overrides them; safe defaults are only used on first setup.",
        },
@@ -838,8 +836,7 @@ export async function POST(request: Request) {
     // first tick instead of using its compiled defaults.
     const { getRedisClient: _gsClient } = await import("@/lib/redis-db")
     const _gsc = _gsClient()
-    const quickStartConnectionSettings: Record<string, string> = {
-    await _gsc.hset(`connection_settings:${connectionId}`, {
+    const quickstartConnectionSettingsPatch: Record<string, string> = {
       // Volume factor (preserve operator-configured values; defaults are first-run only)
       volume_factor_live: effectiveVolumeFactorLive,
       live_volume_factor: effectiveLiveVolumeFactor,
@@ -847,57 +844,21 @@ export async function POST(request: Request) {
       volume_factor_preset: effectiveVolumeFactorPreset,
       preset_volume_factor: effectivePresetVolumeFactor,
       // Symbol order/count
-    const quickstartConnectionSettingsPatch = {
-      // Volume factor
-      volume_factor_live: resolvedLiveVolumeFactor,
-      live_volume_factor: resolvedLiveVolumeFactor,
-      volume_step_ratio: resolvedVolumeStepRatio,
-      volume_factor_preset: resolvedPresetVolumeFactor,
-      preset_volume_factor: resolvedPresetVolumeFactor,
-      // Symbol order
       symbol_order: requestedSymbolOrder,
-      symbol_count: String(symbols.length),
+      symbol_count: effectiveSymbolCount,
       symbols: JSON.stringify(symbols),
       force_symbols: JSON.stringify(symbols),
       // Strategy PF thresholds
-      baseProfitFactor: resolvedBaseProfitFactor,
-      mainProfitFactor: resolvedMainProfitFactor,
-      realProfitFactor: resolvedRealProfitFactor,
-      base_min_profit_factor: resolvedBaseProfitFactor,
-      main_min_profit_factor: resolvedMainProfitFactor,
-      real_min_profit_factor: resolvedRealProfitFactor,
-      // Variant toggles
-      variantTrailingEnabled: resolvedVariantTrailing,
-      variantBlockEnabled: resolvedVariantBlock,
-      variantDcaEnabled: resolvedVariantDca,
-      variant_trailing: resolvedVariantTrailing,
-      variant_block: resolvedVariantBlock,
-      variant_dca: resolvedVariantDca,
-      // Control orders (SL/TP on exchange)
-      control_orders: resolvedControlOrders,
-      // Min step for pseudo-positions
-      minStep: resolvedMinStep,
-      updated_at: new Date().toISOString(),
-    }
-    if (resolvedPrevPosMinCount !== undefined) {
-      quickStartConnectionSettings.prevPosMinCount = stringifySettingValue(resolvedPrevPosMinCount)
-    }
-    if (resolvedMainEvalPosCount !== undefined) {
-      quickStartConnectionSettings.mainEvalPosCount = stringifySettingValue(resolvedMainEvalPosCount)
-    }
-    if (resolvedRealEvalPosCount !== undefined) {
-      quickStartConnectionSettings.realEvalPosCount = stringifySettingValue(resolvedRealEvalPosCount)
-    }
-    await Promise.allSettled([
-      _gsc.hset(`connection_settings:${connectionId}`, quickStartConnectionSettings),
-      _gsc.hset(`settings:connection_settings:${connectionId}`, quickStartConnectionSettings),
-    ])
-      symbol_count: effectiveSymbolCount,
-      // Strategy PF thresholds
+      baseProfitFactor: String(effectiveBaseMinProfitFactor),
+      mainProfitFactor: String(effectiveMainMinProfitFactor),
+      realProfitFactor: String(effectiveRealMinProfitFactor),
       base_min_profit_factor: effectiveBaseMinProfitFactor,
       main_min_profit_factor: effectiveMainMinProfitFactor,
       real_min_profit_factor: effectiveRealMinProfitFactor,
       // Variant toggles
+      variantTrailingEnabled: effectiveVariantTrailing,
+      variantBlockEnabled: effectiveVariantBlock,
+      variantDcaEnabled: effectiveVariantDca,
       variant_trailing: effectiveVariantTrailing,
       variant_block: effectiveVariantBlock,
       variant_dca: effectiveVariantDca,
@@ -907,7 +868,19 @@ export async function POST(request: Request) {
       minStep: effectiveMinStep,
       updated_at: new Date().toISOString(),
     }
-    await _gsc.hset(`connection_settings:${connectionId}`, quickstartConnectionSettingsPatch).catch(() => {})
+    if (resolvedPrevPosMinCount !== undefined) {
+      quickstartConnectionSettingsPatch.prevPosMinCount = stringifySettingValue(resolvedPrevPosMinCount)
+    }
+    if (resolvedMainEvalPosCount !== undefined) {
+      quickstartConnectionSettingsPatch.mainEvalPosCount = stringifySettingValue(resolvedMainEvalPosCount)
+    }
+    if (resolvedRealEvalPosCount !== undefined) {
+      quickstartConnectionSettingsPatch.realEvalPosCount = stringifySettingValue(resolvedRealEvalPosCount)
+    }
+    await Promise.allSettled([
+      _gsc.hset(`connection_settings:${connectionId}`, quickstartConnectionSettingsPatch),
+      _gsc.hset(`settings:connection_settings:${connectionId}`, quickstartConnectionSettingsPatch),
+    ])
 
     const coordinator = getGlobalTradeEngineCoordinator()
     const quickstartEngineAlreadyRunning = coordinator.isEngineRunning(connectionId)
@@ -971,7 +944,12 @@ export async function POST(request: Request) {
       settingsVersion: updated.updated_at,
     })
     await client.hset(`progression:${connectionId}`, {
-      settings_recoordination_pending: "0",
+      // QuickStart keeps its explicit completion audit, but it no longer clears
+      // the generic pending/recompute flags for a running engine; the owning
+      // EngineManager clears those only after applyPendingChangesNow()/watcher
+      // successfully consumes the durable settings_change envelope. This avoids
+      // hiding later hot-reload failures behind a route-level success stamp.
+      ...(quickstartEngineAlreadyRunning ? {} : { settings_recoordination_pending: "0" }),
       quickstart_recoordination_completed_at: quickstartRecoordination.completedAt,
       quickstart_recoordination_id: quickstartRecoordination.recoordinationId || quickstartRecoordination.completedAt,
       updated_at: quickstartRecoordination.completedAt,
