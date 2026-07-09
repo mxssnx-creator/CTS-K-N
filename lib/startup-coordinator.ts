@@ -19,9 +19,9 @@ import {
 import { validateDatabase } from "@/lib/database-validator"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { isProcessorHeartbeatFresh } from "@/lib/engine-heartbeat"
+import { readTradeEngineWorkerHeartbeat } from "@/lib/trade-engine-worker-heartbeat"
 import { consolidateDatabase } from "@/lib/database-consolidation"
 import { getMigrationStatus, runProductionCoverageRepair } from "@/lib/redis-migrations"
-import { getMigrationStatus } from "@/lib/redis-migrations"
 import {
   recordMigrationStatus,
   recordStartupError,
@@ -126,6 +126,62 @@ async function reconcileStrandedPositions() {
     }
   } catch (err) {
     console.warn("[v0] [Startup] reconcileStrandedPositions error:", err)
+  }
+}
+
+
+export async function buildGlobalTradeEngineBootMetadata(
+  existingGlobalState: Record<string, string> | null | undefined,
+  connectionIds: string[],
+  now: string,
+  isConnectionHeartbeatFresh: (connectionId: string) => Promise<boolean> = isProcessorHeartbeatFresh,
+): Promise<Record<string, string>> {
+  const operatorStopped =
+    existingGlobalState?.operator_stopped === "1" || existingGlobalState?.operator_stopped === "true"
+  // Only an explicit operator_intent (or the sticky operator_stopped veto)
+  // should keep the engine stopped. desired_status/status are runtime/shadow
+  // fields written by this same step and by engine heartbeats; falling through
+  // to them re-poisoned operator_intent with a stale "stopped" on every boot.
+  // Anything else (including a missing operator_intent) defaults to "running".
+  const preservedIntent = operatorStopped
+    ? "stopped"
+    : existingGlobalState?.operator_intent || "running"
+
+  const globalWorkerHeartbeat = readTradeEngineWorkerHeartbeat(existingGlobalState)
+  const activeWorkerId = globalWorkerHeartbeat.activeWorkerId || ""
+  const thisProcessOwnsGlobalHeartbeat =
+    activeWorkerId === `engine-manager:${process.pid}` ||
+    activeWorkerId.startsWith(`${process.pid}:`) ||
+    activeWorkerId.startsWith(`engine-manager:${process.pid}:`)
+  const hasFreshProcessorHeartbeat = await Promise.all(
+    connectionIds.map(connectionId => isConnectionHeartbeatFresh(connectionId).catch(() => false)),
+  ).then(results => results.some(Boolean))
+  const preserveRuntimeLiveness =
+    !thisProcessOwnsGlobalHeartbeat && (globalWorkerHeartbeat.fresh || hasFreshProcessorHeartbeat)
+
+  return {
+    // Fresh installs and restored snapshots default to desired_status: "running"
+    // and operator_intent: "running" so unattended continuity can resume;
+    // a sticky operator_stopped flag above remains an explicit stop veto.
+    desired_status: preservedIntent,
+    operator_intent: preservedIntent,
+    boot_status: "initialized",
+    ...(preserveRuntimeLiveness
+      ? {
+          actual_status: existingGlobalState?.actual_status || "running",
+          active_worker_id: existingGlobalState?.active_worker_id || "",
+          last_heartbeat_at: existingGlobalState?.last_heartbeat_at || "",
+          ...(existingGlobalState?.last_heartbeat_iso
+            ? { last_heartbeat_iso: existingGlobalState.last_heartbeat_iso }
+            : {}),
+        }
+      : {
+          actual_status: "stopped",
+          active_worker_id: "",
+          last_heartbeat_at: "",
+        }),
+    initialized_at: now,
+    process_version: "1.0",
   }
 }
 
@@ -319,30 +375,13 @@ export async function completeStartup() {
       const client = getRedisClient()
       const now = String(Date.now())
       const existingGlobalState = (await client.hgetall("trade_engine:global")) as Record<string, string> | null
-      const operatorStopped =
-        existingGlobalState?.operator_stopped === "1" || existingGlobalState?.operator_stopped === "true"
-      // Only an explicit operator_intent (or the sticky operator_stopped veto)
-      // should keep the engine stopped. desired_status/status are runtime/shadow
-      // fields written by this same step and by engine heartbeats; falling through
-      // to them re-poisoned operator_intent with a stale "stopped" on every boot.
-      // Anything else (including a missing operator_intent) defaults to "running".
-      const preservedIntent = operatorStopped
-        ? "stopped"
-        : existingGlobalState?.operator_intent || "running"
+      const bootMetadata = await buildGlobalTradeEngineBootMetadata(
+        existingGlobalState,
+        allConnections.map(conn => conn.id),
+        now,
+      )
 
-      await client.hset("trade_engine:global", {
-        // Fresh installs and restored snapshots default to desired_status: "running"
-        // and operator_intent: "running" so unattended continuity can resume;
-        // a sticky operator_stopped flag above remains an explicit stop veto.
-        desired_status: preservedIntent,
-        operator_intent: preservedIntent,
-        boot_status: "initialized",
-        actual_status: "stopped",
-        active_worker_id: "",
-        last_heartbeat_at: "",
-        initialized_at: now,
-        process_version: "1.0",
-      })
+      await client.hset("trade_engine:global", bootMetadata)
       console.log(`[v0] [Startup] ✓ Global trade engine boot metadata initialized\n`)
     } catch (err) {
       console.warn(`[v0] [Startup] ⚠ Failed to initialize global trade engine boot metadata (non-fatal):`, err)

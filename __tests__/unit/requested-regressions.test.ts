@@ -969,14 +969,35 @@ describe("requested regression guardrails", () => {
       startup.indexOf("Step 7/8", startup.indexOf("Initializing global trade engine boot metadata")),
     )
 
-    expect(bootBlock).toContain('desired_status: "running"')
-    expect(bootBlock).toContain('operator_intent: "running"')
+    expect(bootBlock).toContain("const existingGlobalState = (await client.hgetall")
+    expect(bootBlock).toContain('desired_status: preservedIntent')
+    expect(bootBlock).toContain('operator_intent: preservedIntent')
     expect(bootBlock).toContain('actual_status: "stopped"')
     expect(bootBlock).not.toMatch(/^\s*status: "running"/m)
 
     expect(statusRoute).toContain("const effectivelyRunning = isGloballyRunning && !isGloballyPaused && (hasLocalEngineRuntime || hasRuntimeProof || distributedEngineCount > 0)")
     expect(statusRoute).toContain('actualStatus: effectivelyRunning ? "running" : (isGloballyPaused ? "paused" : "degraded")')
     expect(statusRoute).toContain("last_heartbeat_at")
+  })
+
+  test("startup boot metadata preserves existing fresh runtime heartbeat ownership", () => {
+    const startup = read("lib/startup-coordinator.ts")
+    const bootBlock = startup.slice(
+      startup.indexOf("Initializing global trade engine boot metadata"),
+      startup.indexOf("Step 7/8", startup.indexOf("Initializing global trade engine boot metadata")),
+    )
+
+    expect(bootBlock).toContain("const existingGlobalState = (await client.hgetall")
+    expect(startup).toContain("readTradeEngineWorkerHeartbeat(existingGlobalState)")
+    expect(startup).toContain("isProcessorHeartbeatFresh")
+    expect(startup).toContain("const preserveRuntimeLiveness =")
+    expect(startup).toContain("!thisProcessOwnsGlobalHeartbeat && (globalWorkerHeartbeat.fresh || hasFreshProcessorHeartbeat)")
+    expect(startup).toContain("actual_status: existingGlobalState?.actual_status || \"running\"")
+    expect(startup).toContain("active_worker_id: existingGlobalState?.active_worker_id || \"\"")
+    expect(startup).toContain("last_heartbeat_at: existingGlobalState?.last_heartbeat_at || \"\"")
+    expect(bootBlock.indexOf("const existingGlobalState = (await client.hgetall")).toBeLessThan(
+      bootBlock.indexOf('await client.hset("trade_engine:global"'),
+    )
   })
 
   test.each([
