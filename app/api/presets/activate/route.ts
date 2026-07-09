@@ -46,7 +46,7 @@ export async function POST(request: Request) {
       indication_types: preset.indication_types ? JSON.parse(preset.indication_types) : ["direction", "move", "active"],
       indication_ranges: preset.indication_ranges ? JSON.parse(preset.indication_ranges) : [3, 5, 8, 12, 15, 20, 25, 30],
       takeprofit_steps: preset.takeprofit_steps ? JSON.parse(preset.takeprofit_steps) : [2, 3, 4, 6, 8, 12],
-      stoploss_ratios: preset.stoploss_ratios ? JSON.parse(preset.stoploss_ratios) : [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5],
+      stoploss_ratios: preset.stoploss_ratios ? JSON.parse(preset.stoploss_ratios) : [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
       trailing_enabled: preset.trailing_enabled === true,
       trail_starts: preset.trail_starts ? JSON.parse(preset.trail_starts) : [0.3, 0.6, 1.0],
       trail_stops: preset.trail_stops ? JSON.parse(preset.trail_stops) : [0.1, 0.2, 0.3],

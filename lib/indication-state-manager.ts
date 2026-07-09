@@ -9,6 +9,7 @@ import { getSettings, setSettings, getAppSetting } from "@/lib/redis-db"
 import { BasePseudoPositionManager } from "./base-pseudo-position-manager"
 import { DataCleanupManager } from "./data-cleanup-manager"
 import { logProgressionEvent } from "./engine-progression-logs"
+import { buildStopLossRatios, DEFAULT_MAX_STOP_LOSS_RATIO } from "@/lib/stoploss-ratio-range"
 
 export interface IndicationState {
   symbol: string
@@ -37,6 +38,17 @@ export class IndicationStateManager {
   private readonly POSITIONS_CACHE_TTL = 500 // 500 ms — refreshed each processing cycle
 
   private basePseudoManager: BasePseudoPositionManager
+
+
+  private async getStopLossRatios(): Promise<number[]> {
+    try {
+      const settings = (await getSettings(`connection_settings:${this.connectionId}`)) || {}
+      const max = (settings as any).maxStopLossRatio ?? (settings as any).max_stoploss_ratio ?? DEFAULT_MAX_STOP_LOSS_RATIO
+      return buildStopLossRatios(max)
+    } catch {
+      return buildStopLossRatios(DEFAULT_MAX_STOP_LOSS_RATIO)
+    }
+  }
 
   constructor(connectionId: string) {
     this.connectionId = connectionId
@@ -680,16 +692,8 @@ export class IndicationStateManager {
     try {
       // Define ALL possible configurations (UNLIMITED sets)
       const tpFactors = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]
-      // Stop-loss grid: operator-spec — 0.25..3.0 step 0.25 (12 values).
-      // Replaces the old 0.2..1.5/0.1 grid; extends the upper band from
-      // 1.5 to 3.0 so wide-stop / news-volatility setups get covered,
-      // and quantises to 0.25 steps so the per-direction Set count stays
-      // tractable (11 TP × 12 SL × 4 trailing = 528 Sets per symbol).
-      // Updated to new unified ranges: SL 0.2 to 2.2 with 0.1 step (21 values)
-      const slRatios: number[] = []
-      for (let sl = 0.2; sl <= 2.2 + 1e-9; sl += 0.1) {
-        slRatios.push(Number(sl.toFixed(1)))
-      }
+      // Stop-loss grid: systemwide range 0.25..maxStopLossRatio (default/max 2.5), step 0.25.
+      const slRatios = await this.getStopLossRatios()
       const trailingOptions = [
         { enabled: false, start: null, stop: null },
         { enabled: true, start: 0.3, stop: 0.1 },
@@ -784,11 +788,8 @@ export class IndicationStateManager {
     try {
       // Define ALL possible configurations (UNLIMITED sets)
       const tpFactors = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]
-      // Stop-loss grid: operator-spec — 0.25..3.0 step 0.25 (12 values).
-      // Aligns the non-optimal set with the optimal/advanced set so a
-      // single (TP, SL) point exists in both keyspaces (avoids holes
-      // where a Set is created in one keyspace but not the other).
-      const slRatios = [0.25, 0.50, 0.75, 1.00, 1.25, 1.50, 1.75, 2.00, 2.25, 2.50, 2.75, 3.00]
+      // Stop-loss grid: systemwide range 0.25..maxStopLossRatio (default/max 2.5), step 0.25.
+      const slRatios = await this.getStopLossRatios()
       const trailingOptions = [
         { enabled: false, start: null, stop: null },
         { enabled: true, start: 0.3, stop: 0.1 },
@@ -1096,14 +1097,8 @@ export class IndicationStateManager {
     lastPartRatio: number,
   ): Promise<void> {
     const tpFactors = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]
-    // Stop-loss grid: operator-spec — 0.25..3.0 step 0.25 (12 values).
-    // Same grid as the optimal/advanced and non-optimal generators so
-    // every (TP, SL) coordinate exists symmetrically across keyspaces.
-      // Updated to new unified ranges: SL 0.2 to 2.2 with 0.1 step (21 values)
-      const slRatios: number[] = []
-      for (let sl = 0.2; sl <= 2.2 + 1e-9; sl += 0.1) {
-        slRatios.push(Number(sl.toFixed(1)))
-      }
+    // Stop-loss grid: systemwide range 0.25..maxStopLossRatio (default/max 2.5), step 0.25.
+    const slRatios = await this.getStopLossRatios()
       const trailingOptions = [
         { enabled: false, start: null, stop: null },
         { enabled: true, start: 0.3, stop: 0.1 },

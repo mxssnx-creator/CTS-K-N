@@ -14,8 +14,18 @@ interface CompactMonitor {
   lastUpdate: string
 }
 
+const DEFAULT_MONITOR: CompactMonitor = {
+  engineCycles: 0,
+  activePositions: 0,
+  cpu: 0,
+  memory: 0,
+  redisKeys: 0,
+  lastUpdate: "loading…",
+}
+
 export function SystemMonitoringPanel() {
-  const [data, setData] = useState<CompactMonitor | null>(null)
+  const [data, setData] = useState<CompactMonitor>(DEFAULT_MONITOR)
+  const [status, setStatus] = useState<"loading" | "live" | "error">("loading")
 
   useEffect(() => {
     loadData()
@@ -37,13 +47,15 @@ export function SystemMonitoringPanel() {
           redisKeys: mon.database?.keys || 0,
           lastUpdate: new Date().toLocaleTimeString(),
         })
+        setStatus("live")
+      } else {
+        setStatus("error")
       }
     } catch (err) {
       console.error("[Monitor] Error:", err)
+      setStatus("error")
     }
   }
-
-  if (!data) return null
 
   return (
     <Card className="border-primary/10 bg-card/50">
@@ -79,7 +91,9 @@ export function SystemMonitoringPanel() {
             <span className="font-bold text-slate-600">{data.redisKeys}</span>
           </div>
 
-          <Badge variant="outline" className="text-xs h-5">{data.lastUpdate}</Badge>
+          <Badge variant="outline" className="text-xs h-5">
+            {status === "live" ? data.lastUpdate : status === "loading" ? "loading…" : "monitoring unavailable"}
+          </Badge>
         </div>
       </CardContent>
     </Card>
