@@ -41,6 +41,25 @@
 
 import { notifySettingsChanged, detectChangedFields } from "@/lib/settings-coordinator"
 
+const inFlightRecoordinations = new Map<string, Promise<void>>()
+
+function normalizeChangedField(field: string): string {
+  const f = String(field || "")
+  return f.startsWith("connection_settings.") ? f.slice("connection_settings.".length) : f
+}
+
+async function runSerializedForConnection(connectionId: string, work: () => Promise<void>): Promise<void> {
+  const previous = inFlightRecoordinations.get(connectionId)
+  if (previous) {
+    try { await previous } catch { /* prior save already logged its own failure */ }
+  }
+  const current = work().finally(() => {
+    if (inFlightRecoordinations.get(connectionId) === current) inFlightRecoordinations.delete(connectionId)
+  })
+  inFlightRecoordinations.set(connectionId, current)
+  await current
+}
+
 interface RecoordinateOptions {
   /**
    * When the caller already knows the changed-fields list (e.g. PATCH
@@ -145,20 +164,20 @@ export async function recoordinateAfterSettingsChange(
 
   // ── SETTINGS CHANGES THAT AFFECT PROGRESS VISIBILITY ──────────────────
   // Detect which types of setting changes require progress cache invalidation:
-  // 1. Symbol changes (symbol_count, force_symbols) → new progression
-  // 2. Strategy/coordination changes → prehistoric recalc needed
-  // 3. Eval threshold changes → realtime progress affected
+  // 1. Symbol/mode changes (symbol_count, force_symbols, live/testnet mode) → new progression
+  // 2. Strategy/coordination changes → hot-reload stamp + cache invalidation
+  // 3. Eval threshold changes → realtime progress/settings affected
   const significantChanges = [
     // Symbols — prehistoric must restart with new symbol list
     "symbol_count", "force_symbols", "symbols",
     // Strategy coordination — variants, block/dca, axis settings
     "strategies", "coordination_settings", "variantTrailingEnabled", "variantBlockEnabled",
-    "variantDcaEnabled",
+    "variantDcaEnabled", "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep",
     "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
     "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
     "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled",
     // Minimal step count affects pseudo position placement
-    "minimal_step_count", "minimalStepCount", "minStep",
+    "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
     // Eval thresholds affect strategy/set progression
     "profitFactorMin", "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
     "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
@@ -170,7 +189,8 @@ export async function recoordinateAfterSettingsChange(
     // Position window/count settings affect prehistoric calculations
     "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
   ]
-  const progressAffectingChange = changedFields.some(f => significantChanges.includes(f))
+  const normalizedChangedFields = changedFields.map(normalizeChangedField)
+  const progressAffectingChange = normalizedChangedFields.some(f => significantChanges.includes(f))
 
   // ── SYMBOL COUNT OR FORCE_SYMBOLS CHANGED: Archive and invalidate cache ──
   // If the operator changed the symbol list or forced symbols, the current
@@ -182,15 +202,20 @@ export async function recoordinateAfterSettingsChange(
   // `active_symbols`/`symbols`/`symbol_order` here is exactly why a symbol
   // change sometimes failed to reset progress telemetry.
   const symbolsChanged =
-    changedFields.includes("symbol_count") ||
-    changedFields.includes("force_symbols") ||
-    changedFields.includes("active_symbols") ||
-    changedFields.includes("symbols") ||
-    changedFields.includes("symbol_order")
+    normalizedChangedFields.includes("symbol_count") ||
+    normalizedChangedFields.includes("force_symbols") ||
+    normalizedChangedFields.includes("active_symbols") ||
+    normalizedChangedFields.includes("symbols") ||
+    normalizedChangedFields.includes("symbol_order")
+  const modeChanged = [
+    "is_live_trade",
+    "is_testnet",
+    "is_preset_trade",
+    "connection_method",
+  ].some((field) => normalizedChangedFields.includes(field))
+  const destructiveProgressionChange = symbolsChanged || modeChanged
   const strategyOrCoordinationChanged = changedFields.some((field) => {
-    const normalized = field.startsWith("connection_settings.")
-      ? field.slice("connection_settings.".length)
-      : field
+    const normalized = normalizeChangedField(field)
     return (
       field === "connection_settings" ||
       normalized === "strategies" ||
@@ -217,38 +242,46 @@ export async function recoordinateAfterSettingsChange(
       normalized.includes("Volume")
     )
   })
-  const requiresProgressRecoordination = symbolsChanged || strategyOrCoordinationChanged || progressAffectingChange
+  const requiresProgressRecoordination = destructiveProgressionChange || strategyOrCoordinationChanged || progressAffectingChange
   if (requiresProgressRecoordination) {
     try {
-      const { ProgressionStateManager } = await import("@/lib/progression-state-manager")
-      // Use the COUPLED recoordinate path (not the bare archive). It
-      // clears the `progression:{id}` hash, the `prehistoric:{id}` stats
-      // hash + `prehistoric:{id}:symbols`/`:done` gates, AND the
-      // `realtime:{id}` cycle counters together — the stats route reads
-      // its primary progress numbers from those sibling namespaces, so a
-      // bare `progression:{id}` reset left them stale (0/N forever or a
-      // mismatched total). recoordinateForActualOne is idempotent: it
-      // no-ops (logs `changed:false`) when the persisted symbol set
-      // already matches, which neutralizes the previous double-archive
-      // churn when the PATCH route also recoordinates.
-      const result = await ProgressionStateManager.recoordinateForActualOne(id)
-      console.log(
-        `[v0] [${opts.logTag}] Progress-affecting settings changed for ${id} → recoordinated progression (changed:${result?.changed ?? "?"}, reason:${result?.reason ?? "?"})`,
-      )
+      const client = (await import("@/lib/redis-db")).getRedisClient()
+      if (destructiveProgressionChange) {
+        await runSerializedForConnection(id, async () => {
+          const { ProgressionStateManager } = await import("@/lib/progression-state-manager")
+          // Use the coupled destructive path only when the actual symbol set or
+          // engine mode changed. Coordination/PF/trailing/min-step edits are
+          // hot-reloaded and cache-invalidated below; deleting progression for
+          // every dialog save made production stats flap between the old and
+          // new snapshots while the engine kept running.
+          const result = await ProgressionStateManager.recoordinateForActualOne(id)
+          console.log(
+            `[v0] [${opts.logTag}] Symbol/mode settings changed for ${id} → recoordinated progression (changed:${result?.changed ?? "?"}, reason:${result?.reason ?? "?"})`,
+          )
+        })
+      } else {
+        await client.hset(`progression:${id}`, {
+          settings_changed_at: new Date().toISOString(),
+          settings_recoordination_pending: "1",
+          settings_recoordination_fields: JSON.stringify(normalizedChangedFields),
+        }).catch(() => 0)
+        console.log(
+          `[v0] [${opts.logTag}] Progress-affecting hot-reload for ${id} stamped without destructive progression reset`,
+        )
+      }
     } catch (archiveErr) {
       console.warn(
-        `[v0] [${opts.logTag}] Failed to recoordinate progression after settings change for ${id}:`,
+        `[v0] [${opts.logTag}] Failed to coordinate progression after settings change for ${id}:`,
         archiveErr instanceof Error ? archiveErr.message : String(archiveErr),
       )
-      // Continue — progression will still update under the old schema,
-      // but won't have the new symbol count snapshot yet. Engine start will
-      // fill it in on the next boot.
+      // Continue — the durable reload event and cache invalidation still let
+      // the running engine pick up the new settings on its next cycle.
     }
   }
 
-  // Any progress-affecting setting now goes through the coupled
-  // recoordination path above, so stats/progression hashes are stamped or
-  // restarted against the same fingerprint the engine will use.
+  // Symbol/mode changes use the coupled destructive progression path above.
+  // Strategy/coordination changes deliberately stay hot-reload-only so stats
+  // remain visible and the global coordinator does not stop while settings are saved.
 
   // Steps 2 & 3 — coordinator-level actions. Bundled in one try block
   // because they all need the same `coordinator` reference, and a

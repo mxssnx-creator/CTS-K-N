@@ -1759,14 +1759,21 @@ export class StrategyCoordinator {
     try {
       // Lazy import to avoid circular deps in legacy callers
       const { getAppSettings, getRedisClient } = await import("@/lib/redis-db")
-      const settings = (await getAppSettings()) || {}
-      let trailingMinStep = 6
+      const appSettings = (await getAppSettings()) || {}
+      let connSettings: Record<string, unknown> = {}
       try {
         const client = getRedisClient()
-        const cs = (await client.hgetall(`connection_settings:${this.connectionId}`).catch(() => null)) as Record<string, string> | null
-        const rawMin = Number(cs?.trailingMinStep ?? cs?.trailing_min_step ?? (settings as any).trailingMinStep ?? 6)
-        if (Number.isFinite(rawMin)) trailingMinStep = Math.min(30, Math.max(2, Math.round(rawMin)))
+        connSettings = ((await client.hgetall(`connection_settings:${this.connectionId}`).catch(() => null)) || {}) as Record<string, unknown>
       } catch { /* default stays */ }
+      // Connection settings override global app settings so per-connection
+      // trailing-range edits are picked up by the same recoordination
+      // fingerprint that restarts/stamps progression. This keeps the Engine
+      // Progress Sets view and live control-order SL anchoring on the exact
+      // range matrix the operator just saved.
+      const settings = { ...(appSettings as Record<string, unknown>), ...connSettings } as Record<string, unknown>
+      let trailingMinStep = 6
+      const rawMin = Number(settings.trailingMinStep ?? settings.trailing_min_step ?? 6)
+      if (Number.isFinite(rawMin)) trailingMinStep = Math.min(30, Math.max(2, Math.round(rawMin)))
       const enabledMaster = settings.strategyBaseTrailingEnabled !== false
       if (!enabledMaster) {
         ;(this as any)._trailingVariantsCache = []
@@ -1940,6 +1947,7 @@ export class StrategyCoordinator {
     const trailingVariants = await this.getEnabledTrailingVariants()
     const variantPasses: Array<{ startRatio: number; stopRatio: number; stepRatio: number; tag: string; minStep: number } | null> =
       trailingVariants.length > 0 ? trailingVariants : [null]
+    const trailingRangeProfilesEnabled = trailingVariants.length
 
     for (const variant of variantPasses) {
       for (const [baseSetKey, group] of setMap.entries()) {
@@ -2072,6 +2080,8 @@ export class StrategyCoordinator {
       // one raw indication slot ready for position coordination at Main.
       const baseEntriesTotal  = baseSets.reduce((s, st) => s + (st.entryCount || 0), 0)
       const baseAvgPosPerSet  = baseSets.length > 0 ? baseEntriesTotal / baseSets.length : 0
+      const baseTrailingSets  = baseSets.filter((st) => !!st.trailingProfile).length
+      const baseTrailingEntriesTotal = baseSets.reduce((sum, st) => sum + (st.trailingProfile ? (st.entryCount || 0) : 0), 0)
 
       // ── ACTIVELY-RUNNING NOW snapshot (canonical "alive" definition) ──
       // Per operator spec the dashboard must show counts ONLY for Sets
@@ -2110,6 +2120,15 @@ export class StrategyCoordinator {
           evaluated:         String(baseSets.length),
           passed_sets:       "0",   // will be updated by createMainSets
           entries_total:     String(baseEntriesTotal),
+          // ── Trailing range coordination metrics ───────────────────
+          // Counts the independent Base Sets created from the enabled
+          // trailing start/stop matrix. These fields let Engine Progress
+          // distinguish ordinary Standard Sets from Trailing Coordinations
+          // and verify range updates/recoordinations without inferring from
+          // set-key suffixes.
+          trailing_sets:        String(baseTrailingSets),
+          trailing_entries:     String(baseTrailingEntriesTotal),
+          trailing_profiles:    String(trailingRangeProfilesEnabled),
           // ── ACTIVELY-RUNNING metrics (operator spec) ──────────────
           //   sets_running_now         = canonical "alive" count: Sets
           //     whose setKey is in `active_config_keys` Redis Set right
@@ -2138,6 +2157,8 @@ export class StrategyCoordinator {
           // very old samples (ts older than 30 min) are pruned.
           [`s:${symbol}:created`]:    String(baseSets.length),
           [`s:${symbol}:entries`]:    String(baseEntriesTotal),
+          [`s:${symbol}:trailing`]:   String(baseTrailingSets),
+          [`s:${symbol}:trailing_entries`]: String(baseTrailingEntriesTotal),
           [`s:${symbol}:running`]:    String(baseRunningNow),
           [`s:${symbol}:progressing`]: String(
             baseSets.filter((s) => (s.entryCount || 0) > 0).length,
@@ -2179,6 +2200,7 @@ export class StrategyCoordinator {
       writes.push(
         client.hset(`strategies_active:${this.connectionId}`, {
           [`${symbol}:base`]:          String(baseSets.length),
+          [`${symbol}:base:trailing`]: String(baseTrailingSets),
           // base:evaluated = same as base (every Base Set IS evaluated at Base stage)
           [`${symbol}:base:evaluated`]: String(baseSets.length),
         }),
@@ -2476,6 +2498,9 @@ export class StrategyCoordinator {
               // legacy placeholder only; real trailing Sets are created at BASE
               if (baseSet.trailingProfile && !cached.trailingProfile) {
                 cached.trailingProfile = baseSet.trailingProfile
+              }
+              if (baseSet.trailingProfile && cached.variant === "default") {
+                cached.variant = "trailing"
               }
               cachedSet = cached
               nextFpCache[fingerprint] = fpCache[fingerprint]
@@ -5740,7 +5765,7 @@ export class StrategyCoordinator {
                 const axisSet: StrategySet = {
                   setKey:          `${parentKey}#axis:${axisKey}`,
                   parentSetKey:    parentKey,
-                  variant:         "default",
+                  variant:         baseDefault.trailingProfile ? "trailing" : "default",
                   indicationType:  baseDefault.indicationType,
                   direction:       dir,
                   avgProfitFactor: inheritedPF,
@@ -5964,7 +5989,7 @@ export class StrategyCoordinator {
     return {
       setKey:          `${baseSet.setKey}#${profile.name}`,
       parentSetKey:    baseSet.setKey,
-      variant:         profile.name,
+      variant:         (baseSet.trailingProfile && profile.name === "default") ? "trailing" : profile.name,
       axisWindows,
       indicationType:  baseSet.indicationType,
       direction:       baseSet.direction,

@@ -136,11 +136,11 @@ export class IndicationCalculator {
 
     // Strategy Configuration
     const tp_factors = 11 // 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22
-    const sl_ratios = Math.floor((2.2 - 0.2) / 0.1) + 1 // 21
+    const sl_ratios = Math.floor((2.5 - 0.25) / 0.25) + 1 // 10
     const trailing_options = 4 // None + 3 variations
 
     const configs_per_direction = total_all_indications * tp_factors * sl_ratios * trailing_options
-    // 38,000 × 11 × 21 × 4 = 35,112,000
+    // 38,000 × 11 × 10 × 4 = 16,720,000
 
     const maxPositionsPerConfigSet = 1 // Default
     const positions_per_direction = configs_per_direction * maxPositionsPerConfigSet
@@ -221,7 +221,7 @@ export class IndicationCalculator {
 ⚙️  STRATEGY CONFIGURATION:
 
 • TP Factors: 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22 = 11 options
-• SL Ratios: 0.2 to 2.2 (step 0.1) = 21 options
+• SL Ratios: 0.25 to 2.5 (step 0.25) = 10 options
 • Trailing Options: 4 (None + 3 variations)
 
 ═══════════════════════════════════════════════════════════════════

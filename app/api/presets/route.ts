@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
       takeprofit_steps: preset.takeprofit_steps ? JSON.parse(preset.takeprofit_steps) : [2, 3, 4, 6, 8, 12],
       stoploss_ratios: preset.stoploss_ratios
         ? JSON.parse(preset.stoploss_ratios)
-        : [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5],
+        : [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
       trail_starts: preset.trail_starts ? JSON.parse(preset.trail_starts) : [0.3, 0.6, 1.0],
       trail_stops: preset.trail_stops ? JSON.parse(preset.trail_stops) : [0.1, 0.2, 0.3],
       strategy_types: preset.strategy_types ? JSON.parse(preset.strategy_types) : ["base", "main", "real"],
@@ -99,7 +99,7 @@ export async function POST(request: NextRequest) {
         JSON.stringify(body.indication_types || ["direction", "move", "active"]),
         JSON.stringify(body.indication_ranges || [3, 5, 8, 12, 15, 20, 25, 30]),
         JSON.stringify(body.takeprofit_steps || [2, 3, 4, 6, 8, 12]),
-        JSON.stringify(body.stoploss_ratios || [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5]),
+        JSON.stringify(body.stoploss_ratios || [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5]),
         body.trailing_enabled !== undefined ? body.trailing_enabled : true,
         JSON.stringify(body.trail_starts || [0.3, 0.6, 1.0]),
         JSON.stringify(body.trail_stops || [0.1, 0.2, 0.3]),

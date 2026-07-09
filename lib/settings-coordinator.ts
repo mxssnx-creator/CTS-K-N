@@ -36,10 +36,11 @@ const PROGRESSION_RESTART_FIELDS = [
   "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
   "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
   "coordination_settings", "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
+  "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep",
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
   "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled",
-  "minimal_step_count", "minimalStepCount", "minStep",
+  "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
 ]
 
@@ -57,9 +58,10 @@ const HOT_RELOAD_FIELDS = [
   "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
   "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
   "coordination_settings", "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
+  "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep",
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
-  "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled", "minimal_step_count", "minimalStepCount", "minStep",
+  "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled", "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
 ]
 

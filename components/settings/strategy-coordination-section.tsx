@@ -127,6 +127,13 @@ export interface CoordinationSettings {
   minStep: number
 
   /**
+   * Maximum stop-loss ratio included when creating Base pseudo-position Sets.
+   * Range 0.25..2.5 step 0.25, default 2.5 (the max). Backed by
+   * connection_settings:{conn}.maxStopLossRatio.
+   */
+  maxStopLossRatio: number
+
+  /**
    * Minimum Base step-window size that is allowed to fan out into
    * independent trailing Sets. Default 6 keeps very noisy 2–5 step Base
    * windows on the non-trailing path while still allowing normal Base Sets
@@ -139,6 +146,7 @@ export interface CoordinationSettings {
  * Operator-spec defaults.
  * - trailing: on, block: on, dca: off (per directive)
  * - minStep: 5 (default; range 2-30)
+ * - maxStopLossRatio: 2.5 (default=max; range 0.25-2.5, step 0.25)
  * - trailingMinStep: 6 (default; range 2-30)
  * - PF defaults set in DEFAULT_STRATEGY_PROFILE (base=1.0, main/real=1.2)
  */
@@ -164,6 +172,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   mainEvalPosCount: 15,
   realEvalPosCount: 10,
   minStep:           5,
+  maxStopLossRatio:  2.5,
   trailingMinStep:   6,
 }
 

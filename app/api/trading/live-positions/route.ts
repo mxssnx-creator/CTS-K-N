@@ -51,10 +51,8 @@ function enrichPnl(pos: any) {
     pos.unrealizedPnL = Math.round(exchangePnl * 100) / 100
   }
 
-  if (!pos.unrealizedPnL && pos.status !== "closed" && (pos.markPrice || pos.exchangeData?.markPrice) && pos.averageExecutionPrice && pos.executedQuantity) {
+  if (isMissingNumericValue(pos.unrealizedPnL) && pos.status !== "closed" && !isMissingNumericValue(pos.markPrice ?? pos.exchangeData?.markPrice) && !isMissingNumericValue(pos.averageExecutionPrice) && !isMissingNumericValue(pos.executedQuantity)) {
     const markPrice = Number(pos.markPrice ?? pos.exchangeData.markPrice)
-  if (isMissingNumericValue(pos.unrealizedPnL) && pos.status !== "closed" && !isMissingNumericValue(pos.exchangeData?.markPrice) && !isMissingNumericValue(pos.averageExecutionPrice) && !isMissingNumericValue(pos.executedQuantity)) {
-    const markPrice = Number(pos.exchangeData.markPrice)
     const entryPrice = Number(pos.averageExecutionPrice || pos.entryPrice || 0)
     const qty = Number(pos.executedQuantity || 0)
     if (entryPrice > 0 && markPrice > 0 && qty > 0) {
@@ -73,8 +71,6 @@ function enrichPnl(pos: any) {
     }
   }
   if (pos.status === "closed" && Number.isFinite(realized)) {
-  const realized = Number(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl)
-  if (pos.status === "closed" && !isMissingNumericValue(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl) && Number.isFinite(realized)) {
     pos.realizedPnL = Math.round(realized * 100) / 100
   }
 
