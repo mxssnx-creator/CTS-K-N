@@ -9,6 +9,7 @@ import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
+import { recoordinateAfterSettingsChange } from "@/lib/connection-recoordinator"
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -569,7 +570,7 @@ export async function POST(request: Request) {
     // first tick instead of using its compiled defaults.
     const { getRedisClient: _gsClient } = await import("@/lib/redis-db")
     const _gsc = _gsClient()
-    await _gsc.hset(`connection_settings:${connectionId}`, {
+    const quickstartConnectionSettingsPatch = {
       // Volume factor
       volume_factor_live:   QUICKSTART_LIVE_VOLUME_FACTOR,
       live_volume_factor:   QUICKSTART_LIVE_VOLUME_FACTOR,
@@ -591,10 +592,91 @@ export async function POST(request: Request) {
       // Min step for pseudo-positions
       minStep: "5",
       updated_at: new Date().toISOString(),
-    }).catch(() => {})
+    }
+    await _gsc.hset(`connection_settings:${connectionId}`, quickstartConnectionSettingsPatch).catch(() => {})
 
     const coordinator = getGlobalTradeEngineCoordinator()
     const quickstartEngineAlreadyRunning = coordinator.isEngineRunning(connectionId)
+    const quickstartTouchedFields = [
+      "is_enabled",
+      "is_inserted",
+      "is_active_inserted",
+      "is_dashboard_inserted",
+      "is_enabled_dashboard",
+      "is_assigned",
+      "is_active",
+      "is_live_trade",
+      "live_trade_requested",
+      "live_trade_blocked_reason",
+      "active_symbols",
+      "force_symbols",
+      "symbol_order",
+      "symbol_count",
+      "last_test_status",
+      "live_volume_factor",
+      "volume_step_ratio",
+      ...Object.keys(quickstartConnectionSettingsPatch).map((field) => `connection_settings.${field}`),
+    ]
+
+    await setSettings(`engine_progression:${connectionId}`, {
+      phase: "recoordination",
+      status: "recoordinating",
+      progress: quickstartEngineAlreadyRunning ? 98 : 8,
+      connectionId,
+      connectionName: connection.name,
+      exchange: exchangeName,
+      symbols,
+      detail: quickstartEngineAlreadyRunning
+        ? "QuickStart settings saved — hot-recoordinating the running engine."
+        : "QuickStart settings saved — queuing durable engine recoordination.",
+      changed_fields: quickstartTouchedFields,
+      updated_at: new Date().toISOString(),
+    })
+    await client.hset(`progression:${connectionId}`, {
+      phase: "recoordination",
+      settings_recoordination_pending: "1",
+      settings_recoordination_fields: JSON.stringify(quickstartTouchedFields),
+      quickstart_recoordination_started_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }).catch(() => 0)
+    await logProgressionEvent(connectionId, "quickstart_recoordination_requested", "info",
+      "QuickStart saved connection/settings and requested durable recoordination",
+      {
+        changedFields: quickstartTouchedFields,
+        engineAlreadyRunning: quickstartEngineAlreadyRunning,
+      },
+    )
+    emitEngineStageAck(connectionId, "startup", "ack", "QuickStart saved settings and requested durable recoordination", {
+      changedFields: quickstartTouchedFields,
+      engineAlreadyRunning: quickstartEngineAlreadyRunning,
+    })
+
+    const quickstartRecoordination = await recoordinateAfterSettingsChange(connectionId, connection, updated, {
+      changedFieldsOverride: quickstartTouchedFields,
+      logTag: "POST /api/trade-engine/quick-start",
+      settingsVersion: updated.updated_at,
+    })
+    await client.hset(`progression:${connectionId}`, {
+      settings_recoordination_pending: "0",
+      quickstart_recoordination_completed_at: quickstartRecoordination.completedAt,
+      quickstart_recoordination_id: quickstartRecoordination.recoordinationId || quickstartRecoordination.completedAt,
+      updated_at: quickstartRecoordination.completedAt,
+    }).catch(() => 0)
+    emitEngineStageAck(connectionId, "recoordination_complete", "ack", "QuickStart durable settings recoordination applied", {
+      changedFields: quickstartTouchedFields,
+      engineAlreadyRunning: quickstartEngineAlreadyRunning,
+      progressRecoordinationRequired: quickstartRecoordination.progressRecoordinationRequired,
+    })
+    await logProgressionEvent(connectionId, "quickstart_recoordination_applied", "info",
+      "QuickStart durable settings recoordination applied",
+      {
+        changedFields: quickstartTouchedFields,
+        engineAlreadyRunning: quickstartEngineAlreadyRunning,
+        progressRecoordinationRequired: quickstartRecoordination.progressRecoordinationRequired,
+        progressionChanged: quickstartRecoordination.progressionChanged,
+        progressionReason: quickstartRecoordination.progressionReason,
+      },
+    )
 
     await setSettings(`trade_engine_state:${connectionId}`, {
       connection_id: connectionId,
