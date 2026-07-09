@@ -2307,10 +2307,6 @@ export async function initRedis(): Promise<void> {
   }
   if (isConnected) return
 
-  // Startup volatile cleanup: clear stale locks, transient indexes, and
-  // rebuildable pipeline families so the engine starts with a clean baseline.
-  await cleanupVolatileRuntimeState({ reason: "initRedis" }).catch(() => null)
-
   if (globalForRedis.__redis_init_promise) return globalForRedis.__redis_init_promise
 
   globalForRedis.__redis_init_promise = (async () => {
@@ -2368,6 +2364,12 @@ export async function initRedis(): Promise<void> {
     }
 
     connectionsInitialized = true
+
+    // Startup volatile cleanup: clear stale locks, transient indexes, and
+    // rebuildable pipeline families after the official core init + successful
+    // migration path has completed, but before exposing Redis as fully ready.
+    await cleanupVolatileRuntimeState({ reason: "initRedis" }).catch(() => null)
+
     isConnected = true
     globalForRedis.__redis_fully_connected = true
   })()
