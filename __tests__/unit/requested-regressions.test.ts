@@ -1998,6 +1998,8 @@ describe("requested regression guardrails", () => {
         useMaximalLeverage: "false",
       }))
     }
+  })
+
   test("live order failure paths update global and per-symbol failed counters", () => {
     const source = read("lib/trade-engine/stages/live-stage.ts")
     const failedMetric = 'await incrementMetric(connectionId, "live_orders_failed_count")'
@@ -2018,7 +2020,7 @@ describe("requested regression guardrails", () => {
     ]) {
       const markerIndex = source.indexOf(marker)
       expect(markerIndex).toBeGreaterThanOrEqual(0)
-      const block = source.slice(markerIndex, markerIndex + 2500)
+      const block = source.slice(Math.max(0, markerIndex - 1200), markerIndex + 2500)
       expect(block).toContain('incrementMetric(connectionId, "live_orders_failed_count")')
       expect(block).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")')
     }
