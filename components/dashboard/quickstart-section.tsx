@@ -1,7 +1,7 @@
 "use client"
 
 import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } from "@/lib/connection-events"
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import {
@@ -25,6 +25,7 @@ import { QuickstartConnectionControls } from "./quickstart-connection-controls"
 // picker so the same `useExchange` connection drives every knob.
 import { QuickstartOptionsBar } from "./quickstart-options-bar"
 import { useExchange } from "@/lib/exchange-context"
+import { useDashboardEvents } from "@/lib/dashboard-events"
 
 const toBooleanFlag = (value: unknown): boolean =>
   value === true || value === 1 || value === "1" || value === "true" || value === "yes" || value === "on"
@@ -436,9 +437,6 @@ export function QuickstartSection() {
   // `useRef<T>()` with no argument is rejected by stricter `@types/react`
   // versions ("Expected 1 arguments, but got 0"). Pass an explicit
   // `undefined` initial value so the call shape is unambiguous.
-  const pollRef       = useRef<NodeJS.Timeout | undefined>(undefined)
-  const configPollRef = useRef<NodeJS.Timeout | undefined>(undefined)
-  const livePollRef   = useRef<NodeJS.Timeout | undefined>(undefined)
   // Multiple widgets/events can trigger stats loads while the 500ms
   // prehistoric poll is already in flight. Apply only the newest response so
   // slower old requests cannot collapse fresh counters back to stale values.
@@ -762,50 +760,33 @@ export function QuickstartSection() {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [logs])
 
-  // ── poll stats always (fast when expanded/running, slow otherwise) ──��─────
+  const fetchConfigCounts = useCallback(() =>
+    fetch("/api/indications/config-counts", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: IndicationConfigCounts | null) => { if (d) setConfigCounts(d) })
+      .catch(() => { /* non-critical */ }), [])
+
+  const fetchLiveSummary = useCallback(() =>
+    fetch("/api/exchange/live-summary", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: ExchangeLiveSummary | null) => { if (d) setLiveSummary(d) })
+      .catch(() => { /* non-critical */ }), [])
+
   useEffect(() => {
-    clearInterval(pollRef.current)
     fetchStats()
-    // Poll at 500ms during prehistoric processing for real-time progress updates,
-    // else: fast (3s) when expanded or running, slower (10s) otherwise
-    const interval = (!stats.historicComplete && stats.historicSymbolsTotal > 0) 
-      ? 500  // Prehistoric processing: 500ms for per-symbol progress tracking
-      : (expanded || isRunning) ? 3000 : 10000
-    pollRef.current = setInterval(() => fetchStats(true), interval)
-    return () => clearInterval(pollRef.current)
-  }, [expanded, isRunning, fetchStats, stats.historicComplete, stats.historicSymbolsTotal])
+    fetchConfigCounts()
+    fetchLiveSummary()
+  }, [fetchStats, fetchConfigCounts, fetchLiveSummary])
 
-  // ── Poll indication config-counts (settings-derived, slow cadence) ────────
-  // 60s when expanded, 5min otherwise. This endpoint only changes when the
-  // operator edits connection settings, so aggressive polling would be waste.
-  useEffect(() => {
-    clearInterval(configPollRef.current)
-    const fetchConfig = () =>
-      fetch("/api/indications/config-counts", { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d: IndicationConfigCounts | null) => { if (d) setConfigCounts(d) })
-        .catch(() => { /* non-critical */ })
-    fetchConfig()
-    const interval = expanded ? 60_000 : 300_000
-    configPollRef.current = setInterval(fetchConfig, interval)
-    return () => clearInterval(configPollRef.current)
-  }, [expanded])
-
-  // ── Poll live exchange summary (positions + balance) ���─────────────────────
-  // 10s when expanded, 30s otherwise. Kept lightweight — this endpoint just
-  // reads already-materialised Redis hashes, so frequent polling is fine.
-  useEffect(() => {
-    clearInterval(livePollRef.current)
-    const fetchLive = () =>
-      fetch("/api/exchange/live-summary", { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d: ExchangeLiveSummary | null) => { if (d) setLiveSummary(d) })
-        .catch(() => { /* non-critical */ })
-    fetchLive()
-    const interval = expanded ? 10_000 : 30_000
-    livePollRef.current = setInterval(fetchLive, interval)
-    return () => clearInterval(livePollRef.current)
-  }, [expanded])
+  const dashboardEventHandlers = useMemo(() => ({
+    "connection.updated": () => { void fetchStats(true); void fetchLiveSummary() },
+    "settings.recoordinated": () => { void fetchStats(true); void fetchConfigCounts() },
+    "engine.stage.changed": () => { void fetchStats(true) },
+    "progression.updated": () => { void fetchStats(true) },
+    "live.summary.updated": () => { void fetchLiveSummary() },
+    "monitoring.updated": () => { void fetchStats(true) },
+  }), [fetchStats, fetchConfigCounts, fetchLiveSummary])
+  useDashboardEvents(selectedConnectionId || activeConnectionId || "*", dashboardEventHandlers)
 
   // ── log helper ──────────────────────────────────────���──────────────────────
   const addLog = (msg: string, type: LogEntry["type"] = "info") =>

@@ -12,6 +12,13 @@ export type BroadcastEventType =
   | 'engine-status'
   | 'processing-progress'
   | 'error'
+  | 'connection.updated'
+  | 'settings.recoordinated'
+  | 'engine.stage.changed'
+  | 'progression.updated'
+  | 'live.summary.updated'
+  | 'logs.appended'
+  | 'monitoring.updated'
 
 export interface BroadcastMessage {
   type: BroadcastEventType
@@ -154,6 +161,18 @@ class EventBroadcaster {
   public broadcastEngineStatus(connectionId: string, data: any): void {
     this.broadcast({
       type: 'engine-status',
+      connectionId,
+      data,
+      timestamp: new Date().toISOString(),
+    })
+  }
+
+  /**
+   * Broadcast a canonical dashboard event.
+   */
+  public broadcastDashboardEvent(type: BroadcastEventType, connectionId: string, data: any): void {
+    this.broadcast({
+      type,
       connectionId,
       data,
       timestamp: new Date().toISOString(),

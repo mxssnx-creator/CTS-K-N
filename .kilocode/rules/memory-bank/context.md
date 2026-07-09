@@ -168,3 +168,9 @@ export async function GET() {
 | 2026-07-09 | Live positions PnL zero preservation: `/api/trading/live-positions` now treats `0` as a valid numeric PnL/ROI input by using explicit missing/invalid checks before fallback PnL enrichment. Added a regression test proving exchange `unrealizedPnl: 0` is preserved and not recalculated from mark price. |
 | 2026-07-09 | Added shared `lib/live-order-service.ts` as the canonical exchange order placement/accounting service for manual/testing routes and live-stage per-symbol accounting. It centralizes safety gating, connection/connector setup, leverage setup, order validation/placement, fill parsing, live-position persistence, progression counters, and `live_orders_by_symbol` counters. Refactored `/api/testing/place-order` to use it, documented canonical Redis order/progression keys, and added integration coverage for consistent counters/live-position records. |
 | 2026-07-09 | Production coordinator attach fix: corrected the Vercel/serverless `startEngine` guard so explicit `forceLocalTakeover` starts are not blocked by `VERCEL=1` operator precedence, and made `/api/trade-engine/status` run one awaited healing sweep when Redis intent is running but no local runtime is attached. This addresses production-only degraded/no-runtime coordinator status while preserving passive queued-only serverless starts. |
+
+## 2026-07-09 Dashboard SSE Event Stream Refactor
+- Added canonical dashboard SSE event types for connection, settings recoordinator, engine stage, progression, live summary, logs, and monitoring updates.
+- Added a shared dashboard event hook around the existing SSE client and broadcaster utilities.
+- Refactored dashboard overview/connection widgets to keep initial/manual refresh paths while removing steady-state interval polling for connection/progression/live summary dashboard updates.
+- Added static Jest coverage to prevent reintroducing the removed dashboard polling patterns.
