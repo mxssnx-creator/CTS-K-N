@@ -15,6 +15,7 @@ import {
   getRedisClient,
   setSettings,
   cleanupVolatileRuntimeState,
+  isProductionEnvironment,
 } from "@/lib/redis-db"
 import { validateDatabase } from "@/lib/database-validator"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
@@ -218,7 +219,10 @@ export async function completeStartup() {
     )
     console.log(`[v0] [Startup] ✓ Production coverage repair scheduled in background`)
 
-    const volatileCleanup = await cleanupVolatileRuntimeState({ reason: "completeStartup" })
+    const volatileCleanup = isProductionEnvironment() && (globalThis as any).__redis_volatile_startup_cleanup_ran
+      ? { deleted: 0, preserved: 0 }
+      : await cleanupVolatileRuntimeState({ mode: "activeOwnerSafe", reason: "completeStartup" })
+    if (isProductionEnvironment()) (globalThis as any).__redis_volatile_startup_cleanup_ran = true
     console.log(`[v0] [Startup] ✓ Volatile runtime cleanup complete (deleted ${volatileCleanup.deleted}, preserved ${volatileCleanup.preserved})\n`)
 
     // Report migration status deterministically. PRODUCTION strips console.log
