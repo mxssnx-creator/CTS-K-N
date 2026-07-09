@@ -210,7 +210,7 @@ export type AdjustmentType = AdjustmentStrategyType
 
 export interface StrategyConfig {
   takeprofit_factor: number // 2-22
-  stoploss_ratio: number // 0.2-2.2
+  stoploss_ratio: number // 0.25-2.5
   trailing_enabled: boolean
   trail_start?: number // 0.3, 0.6, 1.0
   trail_stop?: number // 0.1, 0.2, 0.3

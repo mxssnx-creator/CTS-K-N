@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect, useRef } from "react"
+import React, { useState, useEffect, useRef, useMemo } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
@@ -21,6 +21,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ConnectionStateTabs } from "@/components/dashboard/connection-state-tabs"
 import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
+import { useDashboardEvents } from "@/lib/dashboard-events"
 import type { ExchangeConnection } from "@/lib/types"
 import { Activity, AlertCircle, CheckCircle, Trash2, Settings, Info } from "lucide-react"
 import { ConnectionDetailedLogDialog } from "./connection-detailed-log-dialog"
@@ -82,6 +83,14 @@ export function ConnectionCard({
   const [showSettings, setShowSettings] = useState(false)
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false)
   const [advancedTab, setAdvancedTab] = useState("risk")
+  const [dashboardEventRefreshKey, setDashboardEventRefreshKey] = useState(0)
+  const dashboardEventHandlers = useMemo(() => ({
+    "connection.updated": () => setDashboardEventRefreshKey((key) => key + 1),
+    "settings.recoordinated": () => setDashboardEventRefreshKey((key) => key + 1),
+    "engine.stage.changed": () => setDashboardEventRefreshKey((key) => key + 1),
+    "progression.updated": () => setDashboardEventRefreshKey((key) => key + 1),
+  }), [])
+  useDashboardEvents(connection.id, dashboardEventHandlers)
   const [showPresetDialog, setShowPresetDialog] = useState(false)
   const [showStrategyDialog, setShowStrategyDialog] = useState(false)
   const [showActivateTradeDialog, setShowActivateTradeDialog] = useState(false)
@@ -199,11 +208,8 @@ export function ConnectionCard({
       } catch { /* non-critical */ }
     }
 
-    const interval = setInterval(pollStatus, 3000) // Poll every 3 seconds
-    pollStatus() // Initial call
-
-    return () => clearInterval(interval)
-  }, [connection.is_enabled, connection.id])
+    pollStatus() // Initial call; steady-state status arrives via dashboard SSE events.
+  }, [connection.is_enabled, connection.id, dashboardEventRefreshKey])
 
   useEffect(() => {
     const loadPresetTypes = async () => {

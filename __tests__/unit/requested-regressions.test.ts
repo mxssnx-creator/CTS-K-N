@@ -302,8 +302,6 @@ describe("requested regression guardrails", () => {
 
 
 
-
-
   test("live position APIs separate real exchange data from simulated history", () => {
     const liveRoute = read("app/api/trading/live-positions/route.ts")
     const exchangeRoute = read("app/api/exchange-positions/route.ts")
@@ -1433,10 +1431,11 @@ describe("requested regression guardrails", () => {
       expect(settingsCoordinator).toContain(`"${field}"`)
     }
 
-    expect(recoordinator).toContain("const requiresProgressRecoordination = symbolsChanged || strategyOrCoordinationChanged || progressAffectingChange")
+    expect(recoordinator).toContain("const destructiveProgressionChange = symbolsChanged || modeChanged")
+    expect(recoordinator).toContain("const requiresProgressRecoordination = destructiveProgressionChange || strategyOrCoordinationChanged || progressAffectingChange")
     expect(recoordinator).toContain("if (requiresProgressRecoordination)")
-    expect(recoordinator).toContain("Progress-affecting settings changed for ${id} → recoordinated progression")
-    expect(recoordinator).toContain("restarted against the same fingerprint the engine will use")
+    expect(recoordinator).toContain("Progress-affecting hot-reload for ${id} stamped without destructive progression reset")
+    expect(recoordinator).toContain("Strategy/coordination changes deliberately stay hot-reload-only")
     expect(settingsCoordinator).toContain("PROGRESSION_RESTART_FIELDS")
     expect(settingsCoordinator).toContain("HOT_RELOAD_FIELDS")
   })
@@ -1519,14 +1518,24 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain("posCtx?.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 }")
   })
 
-  test("dashboard footer shows session instance and running time", () => {
+  test("dashboard footer and production monitoring bar stay visible at page bottom", () => {
     const source = read("components/dashboard/dashboard.tsx")
+    const monitor = read("components/dashboard/system-monitoring-panel.tsx")
 
     expect(source).toContain("function DashboardRuntimeFooter()")
     expect(source).toContain("Unique Session / Instance ID")
     expect(source).toContain("createSessionInstanceId")
     expect(source).toContain("Running: {formatDuration")
     expect(source).toContain("<DashboardRuntimeFooter />")
+    expect(source.indexOf("<DashboardRuntimeFooter />")).toBeLessThan(source.indexOf("<SystemMonitoringPanel />"))
+
+    expect(monitor).toContain("DEFAULT_MONITOR")
+    expect(monitor).toContain('useState<CompactMonitor>(DEFAULT_MONITOR)')
+    expect(monitor).not.toContain("if (!data) return null")
+    expect(monitor).toContain("monitoring unavailable")
+    expect(monitor).toContain("CPU")
+    expect(monitor).toContain("Mem")
+    expect(monitor).toContain("Redis")
   })
 
   test("getConnection merges credentials and exchange settings from settings connection hash", async () => {
@@ -1583,6 +1592,100 @@ describe("requested regression guardrails", () => {
     })
 
     await client.flushDb()
+  })
+
+  test("live position mutation helpers preserve token/version semantics without Redis EVAL", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+
+    expect(liveStage).toContain("InlineLocalRedis / minimal test clients may not expose EVAL")
+    expect(liveStage).toContain("script.includes('redis.call(\"GET\", KEYS[1])')")
+    expect(liveStage).toContain("script.includes('redis.call(\"HGET\", KEYS[1], \"version\")')")
+    expect(liveStage).toContain("if (currentVersion !== args[0]) return 0")
+    expect(liveStage).toContain("if (!allowed.includes(currentStatus)) return 0")
+    expect(liveStage).toContain('throw new Error("Redis client does not support EVAL")')
+  })
+
+  test("real live trading is blocked when shared Redis is missing in any server mode", () => {
+    const gates = read("lib/real-trade-gates.ts")
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+
+    expect(gates).toContain("getRealTradeBlockReason")
+    expect(gates).not.toContain('process.env.NODE_ENV === "production"')
+    expect(gates).toContain("!hasSharedRedisConfig()")
+    expect(gates).toContain("ALLOW_INLINE_REDIS_LIVE_TRADING")
+    expect(gates).toContain("shared Redis is not configured")
+    expect(liveStage).toContain("hasRealTradeBlock(connSettings)")
+    expect(liveStage).toContain("hasRealTradeBlock(freshSettings)")
+  })
+
+  test("settings dialog saves are single-pass and do not replay stale delayed state", () => {
+    const settingsRoute = read("app/api/settings/connections/[id]/settings/route.ts")
+    const recoordinator = read("lib/connection-recoordinator.ts")
+
+    expect(settingsRoute).toContain("Recoordination is intentionally centralized in recoordinateAfterSettingsChange() below")
+    expect(settingsRoute).not.toContain("ProgressionStateManager.recoordinateForActualOne(id)")
+    expect(settingsRoute).not.toContain("setTimeout(() =>")
+    expect(settingsRoute).toContain("redis.hset(`settings:connection_settings:${id}`, flatKnobs)")
+    expect(settingsRoute).toContain("making progression appear to switch between old and new settings")
+
+    expect(recoordinator).toContain("runSerializedForConnection")
+    expect(recoordinator).toContain("destructiveProgressionChange")
+    expect(recoordinator).toContain("settings_recoordination_pending")
+  })
+
+  test("trailing range settings drive recoordination, Set accounting, and control-order variant labels", () => {
+    const coordinator = read("lib/strategy-coordinator.ts")
+    const settingsCoordinator = read("lib/settings-coordinator.ts")
+    const recoordinator = read("lib/connection-recoordinator.ts")
+    const progression = read("lib/progression-state-manager.ts")
+
+    for (const field of ["strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep"]) {
+      expect(settingsCoordinator).toContain(`"${field}"`)
+      expect(recoordinator).toContain(`"${field}"`)
+      expect(progression).toContain(`"${field}"`)
+    }
+
+    expect(coordinator).toContain("const settings = { ...(appSettings as Record<string, unknown>), ...connSettings }")
+    expect(coordinator).toContain("trailing_sets:        String(baseTrailingSets)")
+    expect(coordinator).toContain("[`s:${symbol}:trailing`]:   String(baseTrailingSets)")
+    expect(coordinator).toContain("[`${symbol}:base:trailing`]: String(baseTrailingSets)")
+    expect(coordinator).toContain('cached.variant = "trailing"')
+    expect(coordinator).toContain('variant:         (baseSet.trailingProfile && profile.name === "default") ? "trailing" : profile.name')
+    expect(coordinator).toContain('variant:         baseDefault.trailingProfile ? "trailing" : "default"')
+  })
+
+
+  test("max stop-loss ratio setting gates Base pseudo Set SL range systemwide", () => {
+    const settingsTypes = read("components/settings/types.ts")
+    const defaults = read("components/settings/utils.ts")
+    const settingsRoute = read("app/api/settings/connections/[id]/settings/route.ts")
+    const settingsDialog = read("components/settings/connection-settings-dialog.tsx")
+    const settingsCoordinator = read("lib/settings-coordinator.ts")
+    const recoordinator = read("lib/connection-recoordinator.ts")
+    const progression = read("lib/progression-state-manager.ts")
+    const slRange = read("lib/stoploss-ratio-range.ts")
+    const basePseudo = read("lib/base-pseudo-position-manager.ts")
+    const indicationState = read("lib/indication-state-manager.ts")
+    const calculator = read("lib/indication-calculator.ts")
+
+    expect(settingsTypes).toContain("maxStopLossRatio: number")
+    expect(defaults).toContain("maxStopLossRatio: DEFAULT_MAX_STOP_LOSS_RATIO")
+    expect(settingsDialog).toContain("Max StopLoss Ratio (0.25–2.5)")
+    expect(settingsDialog).toContain("default 2.5 (max)")
+    expect(settingsRoute).toContain('"maxStopLossRatio"')
+    expect(settingsRoute).toContain('"max_stoploss_ratio"')
+
+    for (const source of [settingsCoordinator, recoordinator, progression]) {
+      expect(source).toContain('"maxStopLossRatio"')
+      expect(source).toContain('"max_stoploss_ratio"')
+    }
+
+    expect(slRange).toContain("STOP_LOSS_RATIO_MIN = 0.25")
+    expect(slRange).toContain("STOP_LOSS_RATIO_MAX = 2.5")
+    expect(slRange).toContain("STOP_LOSS_RATIO_STEP = 0.25")
+    expect(basePseudo).toContain("if (Number(slRatio) > maxStopLossRatio)")
+    expect(indicationState).toContain("const slRatios = await this.getStopLossRatios()")
+    expect(calculator).toContain("Math.floor((2.5 - 0.25) / 0.25) + 1")
   })
 
 })

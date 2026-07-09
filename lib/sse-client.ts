@@ -3,7 +3,10 @@
  * Replaces WebSocket with SSE for Next.js compatibility
  */
 
+import { isCanonicalEventFresh, mergeFreshEventCursor, type CanonicalEvent, type EventFreshnessCursor } from './events/schema'
+
 export type SSEEventType =
+  | 'canonical-event'
   | 'position-update'
   | 'strategy-update'
   | 'indication-update'
@@ -13,12 +16,20 @@ export type SSEEventType =
   | 'error'
   | 'connected'
   | 'history'
+  | 'connection.updated'
+  | 'settings.recoordinated'
+  | 'engine.stage.changed'
+  | 'progression.updated'
+  | 'live.summary.updated'
+  | 'logs.appended'
+  | 'monitoring.updated'
 
 export interface SSEMessage {
   type: SSEEventType
   connectionId: string
   data: any
   timestamp: string
+  canonicalEvent?: CanonicalEvent<any>
 }
 
 export class SSEClient {
@@ -30,6 +41,7 @@ export class SSEClient {
   private reconnectAttempts = 0
   private maxReconnectAttempts = 5
   private reconnectDelay = 3000
+  private freshnessByScope: Map<string, EventFreshnessCursor> = new Map()
 
   constructor(connectionId: string, url?: string) {
     this.connectionId = connectionId
@@ -79,6 +91,7 @@ export class SSEClient {
 
         // Listen for all custom event types
         const eventTypes: SSEEventType[] = [
+          'canonical-event',
           'position-update',
           'strategy-update',
           'indication-update',
@@ -87,6 +100,13 @@ export class SSEClient {
           'processing-progress',
           'error',
           'history',
+          'connection.updated',
+          'settings.recoordinated',
+          'engine.stage.changed',
+          'progression.updated',
+          'live.summary.updated',
+          'logs.appended',
+          'monitoring.updated',
         ]
 
         eventTypes.forEach((eventType) => {
@@ -155,7 +175,29 @@ export class SSEClient {
       return
     }
 
-    this.emit(message.type, message.data)
+    const canonical = message.canonicalEvent || (message.type === 'canonical-event' ? message.data as CanonicalEvent<any> : null)
+    if (canonical) {
+      if (!this.acceptCanonicalEvent(canonical)) return
+      this.emit('canonical-event', canonical)
+    }
+
+    // Compatibility shim: legacy subscribers still receive the old event-type
+    // payload, but only after the canonical freshness guard accepts it.
+    if (message.type !== 'canonical-event') {
+      this.emit(message.type, message.data)
+    }
+  }
+
+  public acceptCanonicalEvent(event: CanonicalEvent<any>): boolean {
+    if (event.connectionId !== this.connectionId && event.connectionId !== '*') return false
+    const scope = `${event.connectionId}:${event.symbol || '*'}:${event.stage || '*'}`
+    const cursor = this.freshnessByScope.get(scope) || {}
+    if (!isCanonicalEventFresh(event, cursor)) return false
+    this.freshnessByScope.set(scope, mergeFreshEventCursor(cursor, event))
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('canonical-event', { detail: event }))
+    }
+    return true
   }
 
   private attemptReconnect(): void {

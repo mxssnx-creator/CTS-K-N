@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from "uuid"
 import type { StrategyConfig, PseudoPosition, MainStrategyType, AdjustmentType } from "./types"
+import { buildStopLossRatios } from "@/lib/stoploss-ratio-range"
 
 export interface StrategyResult {
   id: string
@@ -471,8 +472,9 @@ export class StrategyEngine {
   private generateBaseConfigurations(): StrategyConfig[] {
     const configs: StrategyConfig[] = []
 
+    const stopLossRatios = buildStopLossRatios()
     for (let tp = 2; tp <= 22; tp++) {
-      for (let sl = 0.2; sl <= 2.2; sl += 0.1) {
+      for (const sl of stopLossRatios) {
         configs.push({
           takeprofit_factor: tp,
           stoploss_ratio: sl,

@@ -31,11 +31,11 @@ describe("live position stats and trade-history data sources", () => {
     expect(statsRoute).toContain("const unrealizedPnl = Math.round(effectiveUnrealizedPnl(pos) * 100) / 100")
   })
 
-  test("dashboard live stats poll every three seconds", () => {
+  test("dashboard live stats use the shared dashboard event stream instead of steady polling", () => {
     const overview = read("components/dashboard/statistics-overview-v2.tsx")
 
-    expect(overview).toContain("setInterval(load, 3000)")
-    expect(overview).toContain("Poll every 3s so live exchange order/position PnL")
-    expect(overview).not.toContain("setInterval(load, 5000)")
+    expect(overview).not.toContain("setInterval(load, 3000)")
+    expect(overview).toContain("Event-driven refresh")
+    expect(overview).toContain("useDashboardEvents")
   })
 })

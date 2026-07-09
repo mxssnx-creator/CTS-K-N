@@ -35,6 +35,7 @@ export interface Settings {
    * Range 2–30 step 1, default 5.
    */
   minStep: number
+  maxStopLossRatio: number
   trailingMinStep: number
 
   // Base Strategy

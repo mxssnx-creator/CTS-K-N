@@ -13,6 +13,7 @@ import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSelection, ownsCanonicalSymbolSelectionEpoch } from "@/lib/trade-engine/symbol-selection-ownership"
 import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
+import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
@@ -861,6 +862,11 @@ export class ConfigSetProcessor {
         err instanceof Error ? err.message : String(err),
       )
     }
+
+    emitEngineStageAck(this.connectionId, "prehistoric_data", "ack", "Prehistoric processing completed", { symbolsProcessed, candlesProcessed, totalIndicationResults, totalStrategyPositions })
+    emitEngineStageAck(this.connectionId, "base_sets", "ack", "Base set stage completed", { totalStrategyPositions })
+    emitEngineStageAck(this.connectionId, "main_sets", "ack", "Main set stage completed", { totalStrategyPositions })
+    emitEngineStageAck(this.connectionId, "real_sets", "ack", "Real set stage completed", { totalStrategyPositions })
 
     return result
   }

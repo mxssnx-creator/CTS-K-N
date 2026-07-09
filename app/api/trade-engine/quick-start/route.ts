@@ -8,6 +8,7 @@ import { createExchangeConnector } from "@/lib/exchange-connectors"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
+import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -682,6 +683,8 @@ export async function POST(request: Request) {
      }
      
       // Step 4: Start engine - FIRST ensure Global Coordinator is running
+      emitEngineStageAck(connectionId, "startup", "ack", "QuickStart committed startup intent", { symbols: symbols.length })
+      emitEngineStageAck(connectionId, "market_data", "ack", "QuickStart market-data symbol selection complete", { symbols })
       console.log(`${LOG_PREFIX}: [4/4] Starting Global Trade Engine Coordinator first...`)
       await setSettings(`engine_progression:${connectionId}`, {
         phase: quickstartEngineAlreadyRunning ? "live_trading" : "initializing",
@@ -795,6 +798,7 @@ export async function POST(request: Request) {
         setImmediate(() => patchIndicationProcessorCaches(coordinator))
 
         console.log(`${LOG_PREFIX} ✓ Global Coordinator intent committed and boot dispatched (fire-and-forget)`)
+        emitEngineStageAck(connectionId, "recoordination_complete", "ack", "Global coordinator intent committed and boot dispatched")
         await logProgressionEvent("global", "global_coordinator_started", "info", "Global Trade Engine Coordinator started via QuickStart")
         
       } catch (globalStartError) {

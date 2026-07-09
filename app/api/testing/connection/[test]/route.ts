@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
+import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 
 interface RouteParams {
   params: Promise<{
@@ -14,11 +15,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const { exchange, apiType, useTestnet, apiKey, apiSecret, connectionId } = body
 
     console.log(`[v0] Running connection test: ${test}`)
+    const testConnectionId = connectionId || "testing-connection"
 
     // Simulate different test scenarios
     switch (test) {
       case "init":
-        await new Promise((resolve) => setTimeout(resolve, 500))
+        emitEngineStageAck(testConnectionId, "startup", "ack", "Testing connection initialized", { exchange, apiType, useTestnet })
         return NextResponse.json({
           success: true,
           message: "Connection initialized successfully",
@@ -26,7 +28,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
 
       case "balance":
-        await new Promise((resolve) => setTimeout(resolve, 800))
+        emitEngineStageAck(testConnectionId, "live_sync", "ack", "Testing balance retrieved")
         return NextResponse.json({
           success: true,
           message: "Balance retrieved successfully",
@@ -38,7 +40,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
 
       case "market_data":
-        await new Promise((resolve) => setTimeout(resolve, 600))
+        emitEngineStageAck(testConnectionId, "market_data", "ack", "Testing connection market data fetched")
         return NextResponse.json({
           success: true,
           message: "Market data fetched successfully",
@@ -50,7 +52,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
 
       case "orderbook":
-        await new Promise((resolve) => setTimeout(resolve, 700))
+        emitEngineStageAck(testConnectionId, "market_data", "ack", "Testing order book retrieved")
         return NextResponse.json({
           success: true,
           message: "Order book retrieved successfully",
@@ -61,7 +63,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         })
 
       case "rate_limits":
-        await new Promise((resolve) => setTimeout(resolve, 400))
+        emitEngineStageAck(testConnectionId, "recoordination_complete", "ack", "Testing rate limits verified")
         return NextResponse.json({
           success: true,
           message: "Rate limits verified",

@@ -1,10 +1,11 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { useExchange } from "@/lib/exchange-context"
 import { TradeHistoryTable, type TradeHistoryRow } from "@/components/dashboard/trade-history-table"
 import { PerformanceTiers } from "@/components/dashboard/performance-tiers"
+import { useDashboardEvents } from "@/lib/dashboard-events"
 
 interface CompactStats {
   indicationCycles: number
@@ -586,10 +587,19 @@ export function StatisticsOverviewV2() {
   const { selectedConnectionId } = useExchange()
   const connectionId = selectedConnectionId || "default-bingx-001"
   const [stats, setStats] = useState<CompactStats>(EMPTY)
+  const [eventRefreshKey, setEventRefreshKey] = useState(0)
   // Event-triggered refreshes can overlap with the 3s poll. Only the newest
   // stats payload may update state, otherwise an older slow response can make
   // the dashboard appear to stall or jump backward.
   const statsFetchSeqRef = useRef(0)
+
+  const dashboardEventHandlers = useMemo(() => ({
+    "progression.updated": () => setEventRefreshKey((key) => key + 1),
+    "engine.stage.changed": () => setEventRefreshKey((key) => key + 1),
+    "live.summary.updated": () => setEventRefreshKey((key) => key + 1),
+    "monitoring.updated": () => setEventRefreshKey((key) => key + 1),
+  }), [])
+  useDashboardEvents(connectionId, dashboardEventHandlers)
 
   useEffect(() => {
     let mounted = true
@@ -871,9 +881,6 @@ export function StatisticsOverviewV2() {
     }
 
     load()
-    // Poll every 3s so live exchange order/position PnL, counts, and trade
-    // history stay aligned with the engine's exchange-sync cadence.
-    const interval = setInterval(load, 3000)
 
     // Event-driven refresh so toggles surface immediately rather than
     // waiting for the next interval tick.
@@ -887,7 +894,6 @@ export function StatisticsOverviewV2() {
 
     return () => {
       mounted = false
-      clearInterval(interval)
       if (typeof window !== "undefined") {
         window.removeEventListener("engine-state-changed", handleEngineStateChanged)
         window.removeEventListener("connection-toggled", handleEngineStateChanged)
@@ -895,7 +901,7 @@ export function StatisticsOverviewV2() {
         window.removeEventListener("connection-settings-updated", handleEngineStateChanged)
       }
     }
-  }, [connectionId])
+  }, [connectionId, eventRefreshKey])
 
   const allZero =
     stats.indicationCycles === 0 &&

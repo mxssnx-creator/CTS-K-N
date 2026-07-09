@@ -4,20 +4,32 @@
  * Since Next.js doesn't natively support WebSocket, we use SSE for simplicity
  */
 
+import { createCanonicalEvent, type CanonicalEvent, type CanonicalEventType } from './events/schema'
+
 export type BroadcastEventType =
+  | 'canonical-event'
   | 'position-update'
   | 'strategy-update'
   | 'indication-update'
   | 'settings-update'
   | 'engine-status'
   | 'processing-progress'
+  | 'engine-stage-ack'
   | 'error'
+  | 'connection.updated'
+  | 'settings.recoordinated'
+  | 'engine.stage.changed'
+  | 'progression.updated'
+  | 'live.summary.updated'
+  | 'logs.appended'
+  | 'monitoring.updated'
 
 export interface BroadcastMessage {
   type: BroadcastEventType
   connectionId: string
   data: any
   timestamp: string
+  canonicalEvent?: CanonicalEvent<any>
 }
 
 interface ClientSubscription {
@@ -80,15 +92,16 @@ class EventBroadcaster {
   /**
    * Broadcast a message to all clients for a connection
    */
-  public broadcast(message: BroadcastMessage): void {
-    const { connectionId } = message
+  public broadcast(message: BroadcastMessage | CanonicalEvent<any>): void {
+    const normalized = this.normalizeMessage(message)
+    const { connectionId } = normalized
 
     // Broadcast to all subscriptions
     this.subscriptions.forEach((subscribers) => {
       subscribers.forEach((subscription) => {
         if (subscription.connectionId === connectionId || subscription.connectionId === '*') {
           try {
-            subscription.send(message)
+            subscription.send(normalized)
           } catch (error) {
             console.error('[EventBroadcaster] Error broadcasting to client:', error)
           }
@@ -97,7 +110,57 @@ class EventBroadcaster {
     })
 
     // Store in history
-    this.addToHistory(connectionId, message)
+    this.addToHistory(connectionId, normalized)
+  }
+
+  public broadcastCanonical(event: CanonicalEvent<any>): void {
+    this.broadcast(event)
+  }
+
+  public emitCanonical(input: Parameters<typeof createCanonicalEvent>[0]): CanonicalEvent<any> {
+    const event = createCanonicalEvent(input)
+    this.broadcastCanonical(event)
+    return event
+  }
+
+  private normalizeMessage(message: BroadcastMessage | CanonicalEvent<any>): BroadcastMessage {
+    if ((message as CanonicalEvent<any>).id && (message as CanonicalEvent<any>).stage && (message as CanonicalEvent<any>).data !== undefined) {
+      const event = message as CanonicalEvent<any>
+      return {
+        type: 'canonical-event',
+        connectionId: event.connectionId,
+        data: event,
+        timestamp: event.timestamp,
+        canonicalEvent: event,
+      }
+    }
+    const legacy = message as BroadcastMessage
+    if (legacy.canonicalEvent) return legacy
+    const legacyToCanonical: Partial<Record<BroadcastEventType, CanonicalEventType>> = {
+      'position-update': 'position.updated',
+      'strategy-update': 'strategy.stageChanged',
+      'indication-update': 'indication.updated',
+      'settings-update': 'settings.saved',
+      'engine-status': 'engine.status',
+      'processing-progress': 'processing.progress',
+      error: 'error',
+    }
+    const eventType = legacyToCanonical[legacy.type] || 'engine.status'
+    return {
+      ...legacy,
+      canonicalEvent: createCanonicalEvent({
+        type: eventType,
+        connectionId: legacy.connectionId,
+        symbol: legacy.data?.symbol,
+        stage: legacy.data?.stage || legacy.data?.phase || 'unknown',
+        epoch: legacy.data?.epoch,
+        session: legacy.data?.session ?? legacy.data?.sessionNumber,
+        settingsVersion: legacy.data?.settingsVersion ?? legacy.data?.started_for_settings_version,
+        timestamp: legacy.timestamp,
+        parentEventId: legacy.data?.parentEventId,
+        data: legacy.data || {},
+      }),
+    }
   }
 
   /**
@@ -154,6 +217,18 @@ class EventBroadcaster {
   public broadcastEngineStatus(connectionId: string, data: any): void {
     this.broadcast({
       type: 'engine-status',
+      connectionId,
+      data,
+      timestamp: new Date().toISOString(),
+    })
+  }
+
+  /**
+   * Broadcast a canonical dashboard event.
+   */
+  public broadcastDashboardEvent(type: BroadcastEventType, connectionId: string, data: any): void {
+    this.broadcast({
+      type,
       connectionId,
       data,
       timestamp: new Date().toISOString(),

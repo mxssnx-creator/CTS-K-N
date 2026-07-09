@@ -52,6 +52,7 @@ import {
   type LockHandle,
 } from "./trade-engine/progression-lock"
 import { clearEngineRefreshRequest, getQueuedEngineRefreshRequests, recordEngineRefreshRequestFailure } from "./engine-refresh-queue"
+import { onEngineEvent, publishEngineEvent } from "./engine-event-bus"
 
 // Re-export TradeEngine class and config from subdirectory for convenient imports
 export { TradeEngine, type TradeEngineConfig, TRADE_SERVICE_NAME } from "./trade-engine/trade-engine"
@@ -107,7 +108,8 @@ export class GlobalTradeEngineCoordinator {
   private isGloballyRunning = false
   private isPaused = false
   private healthCheckTimer?: NodeJS.Timeout
-  private coordinationMetricsTimer?: NodeJS.Timeout
+  private eventBusUnsubscribers: Array<() => void> = []
+  private coordinationMetricsTrackingStarted = false
   private coordinationMetrics: {
     totalSymbolsProcessed: number
     totalCycles: number
@@ -1009,7 +1011,7 @@ for (const connection of validConnections) {
    * STABILITY: HMR / module-reload events historically fired in
    * production (e.g. when a settings save bounced a route handler) and
    * were observed to leave the coordinator singleton alive but with
-   * `healthCheckTimer` / `coordinationMetricsTimer` cleared. The
+   * `healthCheckTimer` / event subscriptions cleared. The
    * watchdog re-arm and refresh-request handling are *exactly* the
    * mechanisms that keep engines processing; losing them silently is
    * the worst-case stability failure.
@@ -1388,11 +1390,8 @@ for (const connection of validConnections) {
       clearInterval(this.healthCheckTimer)
       this.healthCheckTimer = undefined
     }
-    if (this.coordinationMetricsTimer) {
-      clearInterval(this.coordinationMetricsTimer)
-      this.coordinationMetricsTimer = undefined
-    }
-
+    for (const unsubscribe of this.eventBusUnsubscribers.splice(0)) unsubscribe()
+    this.coordinationMetricsTrackingStarted = false
     for (const [connectionId, manager] of this.engineManagers.entries()) {
       try {
         await manager.stop()
@@ -1737,230 +1736,53 @@ for (const connection of validConnections) {
   private escalatingEngines: Set<string> = new Set()
 
   private startGlobalHealthMonitoring(): void {
-    if (this.healthCheckTimer) {
-      // Already running — keep the existing timer.
-      return
-    }
-    const healthCheckInterval = 10000 // 10s
-    // ── Stall thresholds (relaxed from earlier 60s / 2 attempts) ───
-    // Real-world Redis pauses on cold-started serverless instances
-    // can routinely sit on 30-60s; aggressive thresholds caused the
-    // watchdog to nuke healthy engines that were just about to come
-    // back. New values give the engine generous recovery room:
-    //
-    //   • 90 s without heartbeat before we even *consider* stall.
-    //   • Automatic full stop+restart escalation is disabled by default;
-    //     repeated stalls keep re-arming in-place and preserving the active
-    //     progression/session so QuickStart stats remain continuous.
-    //
-    // Result: the watchdog can heal dropped timers without resetting UI progress.
-    const STALL_THRESHOLD_MS = 90_000
-    const ESCALATION_THRESHOLD = 4
-    const FULL_RESTART_ESCALATION_ENABLED = false
+    if (this.eventBusUnsubscribers.length > 0) return
+    console.log("[v0] Starting event-triggered trade engine health monitoring (refresh + stall watchdog)")
 
-    console.log("[v0] Starting global trade engine health monitoring (refresh detection + stall watchdog)")
-
-    this.healthCheckTimer = setInterval(async () => {
+    const runEventHealthCheck = async (connectionId?: string) => {
       try {
-        // -- 1. Refresh-request handling ----------------------------------
-        await this.drainQueuedRefreshRequestsNow()
-
-        // -- 2. Per-engine stall watchdog (in-place re-arm) ---------------
-        //
-        // Only run when the operator has explicitly enabled the global
-        // coordinator.  Settings/dashboard routes can leave local managers
-        // around briefly during stop/restart races; the watchdog must never
-        // re-arm or force-restart those managers while Redis says the global
-        // coordinator is stopped/paused.
+        await this.drainQueuedRefreshRequestsNow(connectionId)
         if (!(await this.isGlobalCoordinatorEnabled("watchdog"))) {
           this.stallEscalation.clear()
           return
         }
         const now = Date.now()
-        for (const [connectionId, manager] of this.engineManagers.entries()) {
+        const STALL_THRESHOLD_MS = 90_000
+        const managers = connectionId
+          ? Array.from(this.engineManagers.entries()).filter(([id]) => id === connectionId)
+          : Array.from(this.engineManagers.entries())
+        for (const [id, manager] of managers) {
           if (!manager.isEngineRunning) continue
-          try {
-            const state = (await getSettings(`trade_engine_state:${connectionId}`)) || {}
-            // Prefer the unified processor heartbeat; fall back to
-            // Reconcile RAW + `settings:` hashes — the engine only refreshes
-            // `settings:trade_engine_state:{id}`, so reading one hash alone
-            // could miss a fresh heartbeat and spuriously flag a stall.
-            const lastHb = await getFreshestProcessorHeartbeat(connectionId)
-            if (lastHb === 0) {
-              // lastHb=0 can mean "engine just started, no heartbeat yet"
-              // OR "engine was running but Redis was down so heartbeats
-              // couldn't be written."  If the engine state shows it was
-              // running and we're past the stall threshold since
-              // `last_state_update`, treat as a stall.
-              const stateUpdatedAt = Number(state.last_state_update) || 0
-              if (stateUpdatedAt > 0 && now - stateUpdatedAt > STALL_THRESHOLD_MS) {
-                // Fall through to stall handling below — the engine was
-                // running but Red is back and heartbeats are zero.
-                console.warn(
-                  `[v0] [Watchdog] Engine ${connectionId} has zero heartbeats but shows running for ${Math.round((now - stateUpdatedAt) / 1000)}s — treating as stalled (Redis outage recovery)`,
-                )
-                // Synthesize a lastHb so the age check below fires
-                this.stallEscalation.set(connectionId, (this.stallEscalation.get(connectionId) ?? 0) + 1)
-                const manager = this.engineManagers.get(connectionId)
-                if (manager?.rearmIfStalled) {
-                  try { await manager.rearmIfStalled() } catch {}
-                }
-                continue
-              }
-              continue // engine started but no heartbeat yet
-            }
-            const age = now - lastHb
-            if (age > STALL_THRESHOLD_MS) {
-              const consecutiveStalls = (this.stallEscalation.get(connectionId) ?? 0) + 1
-              this.stallEscalation.set(connectionId, consecutiveStalls)
-
-              if (!FULL_RESTART_ESCALATION_ENABLED || consecutiveStalls < ESCALATION_THRESHOLD) {
-                // ── Tier 1: in-place re-arm ──────────────────────────
-                // Cheapest recovery — re-attaches missing processor
-                // timers without rebuilding the manager. Most stalls
-                // are just a dropped timer (HMR race / unhandled
-                // rejection / Redis pause) and this fixes them.
-                console.warn(
-                  `[v0] [Watchdog] Engine ${connectionId} stalled (last heartbeat ${age}ms ago, attempt ${consecutiveStalls}${FULL_RESTART_ESCALATION_ENABLED ? `/${ESCALATION_THRESHOLD}` : ", restart escalation disabled"}) — re-arming in place`,
-                )
-                try {
-                  const { logProgressionEvent } = await import("@/lib/engine-progression-logs")
-                  await logProgressionEvent(
-                    connectionId,
-                    "engine_stall_recovered",
-                    "warning",
-                    `Engine stalled for ${Math.round(age / 1000)}s — watchdog re-arming in place (attempt ${consecutiveStalls}${FULL_RESTART_ESCALATION_ENABLED ? `/${ESCALATION_THRESHOLD}` : ", restart escalation disabled"})`,
-                    { ageMs: age, connectionId, attempt: consecutiveStalls, fullRestartEscalationEnabled: FULL_RESTART_ESCALATION_ENABLED },
-                  )
-                } catch {
-                  // Logging is best-effort; never block recovery on it.
-                }
-                try {
-                  await manager.rearmIfStalled()
-                } catch (rearmError) {
-                  console.error(
-                    `[v0] [Watchdog] rearmIfStalled threw for ${connectionId}:`,
-                    rearmError instanceof Error ? rearmError.message : String(rearmError),
-                  )
-                }
-              } else {
-                // ── Tier 2: full stop + restart with new epoch ───────
-                // In-place re-arm didn't bring the heartbeat back.
-                // The engine is wedged hard (e.g. stuck inside a long
-                // Redis-pipeline await, or a never-resolving await on
-                // network I/O). The ONLY safe recovery is to drop
-                // the lock, tear down the manager, and start fresh.
-                //
-                // ── Concurrency guards ────────────────────────────────
-                //   1. Mutex: if an escalation for this connection is
-                //      already in flight, skip THIS tick. The previous
-                //      escalation will complete and the next health
-                //      check will reassess.
-                //   2. Ownership: only escalate engines we actually own
-                //      in THIS process. The local manager must be
-                //      present in our map; otherwise we're looking at
-                //      a cross-process scenario and the OTHER process
-                //      owns the recovery responsibility.
-                if (this.escalatingEngines.has(connectionId)) {
-                  console.warn(
-                    `[v0] [Watchdog] Engine ${connectionId} escalation already in-flight — skipping duplicate restart`,
-                  )
-                  // Don't clear the stall counter — let the in-flight
-                  // escalation finish and the next tick re-evaluate.
-                  continue
-                }
-                const localManager = this.engineManagers.get(connectionId)
-                if (!localManager) {
-                  console.warn(
-                    `[v0] [Watchdog] Engine ${connectionId} not in local map — skipping escalation (cross-process owner)`,
-                  )
-                  this.stallEscalation.delete(connectionId)
-                  continue
-                }
-                console.error(
-                  `[v0] [Watchdog] Engine ${connectionId} STILL stalled after ${consecutiveStalls} attempts (${age}ms) — escalating to full restart`,
-                )
-                this.stallEscalation.delete(connectionId)
-                this.escalatingEngines.add(connectionId)
-                try {
-                  const { logProgressionEvent } = await import("@/lib/engine-progression-logs")
-                  await logProgressionEvent(
-                    connectionId,
-                    "engine_force_restart",
-                    "error",
-                    `Engine wedged after ${consecutiveStalls} re-arm attempts — forcing stop+restart with new generation`,
-                    { ageMs: age, connectionId, attempts: consecutiveStalls },
-                  )
-                } catch {
-                  /* best-effort */
-                }
-                // Break the lock pre-emptively so the restart can
-                // acquire a fresh slot without waiting for the TTL.
-                try {
-                  await forceBreakProgressionLock(connectionId)
-                } catch {
-                  /* TTL will reclaim */
-                }
-                // Stop + restart sequentially. The mutex above
-                // prevents this whole block from running concurrently
-                // for the same connection.
-                try {
-                  await this.stopEngine(connectionId)
-                } catch (stopErr) {
-                  console.warn(
-                    `[v0] [Watchdog] force stop threw for ${connectionId}:`,
-                    stopErr instanceof Error ? stopErr.message : String(stopErr),
-                  )
-                }
-                try {
-                  await this.startEngineFromConnectionConfig(connectionId)
-                } catch (startErr) {
-                  console.error(
-                    `[v0] [Watchdog] force restart failed for ${connectionId}:`,
-                    startErr instanceof Error ? startErr.message : String(startErr),
-                  )
-                } finally {
-                  // Mutex MUST always be released, even on failure,
-                  // so the next health-check tick can retry.
-                  this.escalatingEngines.delete(connectionId)
-                }
-              }
-            } else {
-              // Healthy heartbeat — clear any in-flight escalation
-              // counter so a future stall starts from scratch at
-              // tier 1 instead of immediately escalating.
-              if (this.stallEscalation.has(connectionId)) {
-                this.stallEscalation.delete(connectionId)
-              }
-            }
-          } catch (perEngineError) {
-            // One bad engine read must not break the whole monitor.
-            console.warn(
-              `[v0] [Watchdog] Read error for ${connectionId}:`,
-              perEngineError instanceof Error ? perEngineError.message : String(perEngineError),
-            )
+          const lastHb = await getFreshestProcessorHeartbeat(id)
+          if (!lastHb) continue
+          const age = now - lastHb
+          if (age > STALL_THRESHOLD_MS) {
+            const consecutiveStalls = (this.stallEscalation.get(id) ?? 0) + 1
+            this.stallEscalation.set(id, consecutiveStalls)
+            await publishEngineEvent("engine.heartbeat.missed", { connectionId: id, lastHeartbeatAt: lastHb, ageMs: age, reason: "event-watchdog" }).catch(() => undefined)
+            console.warn(`[v0] [Watchdog] Engine ${id} stalled (last heartbeat ${age}ms ago, attempt ${consecutiveStalls}) — re-arming in place`)
+            await manager.rearmIfStalled().catch((error: unknown) => {
+              console.error(`[v0] [Watchdog] rearmIfStalled threw for ${id}:`, error instanceof Error ? error.message : String(error))
+            })
+          } else {
+            this.stallEscalation.delete(id)
           }
         }
-
-        // -- 3. Aggregate health ------------------------------------------
-        if (!this.isGloballyRunning) return
-        const health = await this.getGlobalHealth()
-        if (health.overall !== "healthy") {
-          console.warn(`[v0] Global trade engine health: ${health.overall}`)
-        }
-        for (const [connectionId, component] of Object.entries(health.components)) {
-          if (component.status !== "healthy") {
-            console.warn(`[v0] Connection ${connectionId} is ${component.status}`)
-          }
+        if (this.isGloballyRunning) {
+          const health = await this.getGlobalHealth()
+          if (health.overall !== "healthy") console.warn(`[v0] Global trade engine health: ${health.overall}`)
         }
       } catch (error) {
-        // The monitor itself must NEVER throw out — that would silently
-        // kill the timer. Catch everything and continue on the next tick.
-        console.error("[v0] Global health monitoring error:", error)
+        console.error("[v0] Event-triggered health monitoring error:", error)
       }
-    }, healthCheckInterval)
-    // Don't keep the process alive solely for this monitor.
-    if (typeof this.healthCheckTimer.unref === "function") this.healthCheckTimer.unref()
+    }
+
+    this.eventBusUnsubscribers.push(
+      onEngineEvent("engine.heartbeat.missed", (event) => runEventHealthCheck(event.payload.connectionId)),
+      onEngineEvent("engine.heartbeat.updated", (event) => runEventHealthCheck(event.payload.connectionId)),
+      onEngineEvent("settings.changed", (event) => runEventHealthCheck(event.payload.connectionId)),
+      onEngineEvent("engine.intent.changed", (event) => runEventHealthCheck(event.payload.connectionId)),
+    )
   }
 
   /**
@@ -1985,23 +1807,15 @@ for (const connection of validConnections) {
   }
 
   private startCoordinationMetricsTracking(): void {
-    if (this.coordinationMetricsTimer) {
-      // Idempotent: don't replace an already-armed timer. (Previous
-      // behaviour cleared and re-armed, which on rapid re-init could leak
-      // listeners through the inner `getAllEnginesStatus` import chain.)
-      return
-    }
-    const metricsInterval = 60000 // Update every 60 seconds
-
-    this.coordinationMetricsTimer = setInterval(async () => {
+    if (this.coordinationMetricsTrackingStarted) return
+    this.coordinationMetricsTrackingStarted = true
+    const updateMetrics = async () => {
       try {
         const allStatus = await this.getAllEnginesStatus()
-
         let totalSymbols = 0
         let totalCycles = 0
         let totalDuration = 0
         let engineCount = 0
-
         for (const status of Object.values(allStatus)) {
           if (status.preset_symbols_processed) {
             totalSymbols += status.preset_symbols_processed
@@ -2010,23 +1824,17 @@ for (const connection of validConnections) {
             engineCount++
           }
         }
-
         this.coordinationMetrics = {
           totalSymbolsProcessed: totalSymbols,
-          totalCycles: totalCycles,
+          totalCycles,
           avgCycleDuration: engineCount > 0 ? totalDuration / engineCount : 0,
           lastMetricsUpdate: new Date(),
         }
-
-        console.log(
-          `[v0] Coordination Metrics: ${totalSymbols} symbols, ${totalCycles} cycles, ${Math.round(this.coordinationMetrics.avgCycleDuration)}ms avg`,
-        )
       } catch (error) {
-        console.error("[v0] Coordination metrics tracking error:", error)
+        console.error("[v0] Coordination metrics event update error:", error)
       }
-    }, metricsInterval)
-    // Don't keep the process alive solely for this metrics timer.
-    if (typeof this.coordinationMetricsTimer.unref === "function") this.coordinationMetricsTimer.unref()
+    }
+    this.eventBusUnsubscribers.push(onEngineEvent("progression.stage.completed", () => updateMetrics()))
   }
 
   /**
