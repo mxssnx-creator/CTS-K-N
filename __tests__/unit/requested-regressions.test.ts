@@ -69,7 +69,7 @@ describe("requested regression guardrails", () => {
     expect(liveOrderService).toContain('"live_orders_simulated_count"')
     expect(liveOrderService).toContain('return sideKey === "short" || sideKey === "sell" ? "short" : "long"')
     expect(liveOrderService).toContain('return direction === "long" ? "buy" : "sell"')
-    expect(liveOrderService).toContain('`${symbol}:${direction}:${metric}`')
+    expect(liveOrderService).toContain('`${symbolKey}:${direction}:${metric}`')
     expect(placeOrder).not.toContain('JSON.stringify(existing)')
     expect(placeOrder).not.toContain("symbol,\n          side,")
     expect(liveOrdersTest).toContain('getLiveOrderSafetyFailure(body)')
@@ -1489,6 +1489,13 @@ describe("requested regression guardrails", () => {
     expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_filled_count")')
     expect(simBlock).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")')
     expect(simBlock).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "filled")')
+    const liveOrderService = read("lib/live-order-service.ts")
+    expect(liveOrderService).toContain('if (event === "simulated")')
+    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_orders_placed_count", 1)')
+    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_orders_filled_count", 1)')
+    expect(liveOrderService).toContain('await recordPerSymbolOrderCounter(connectionId, symbol, direction, "filled")')
+    const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
+    expect(statsRoute).toContain("ordersSimulated remains an audit-only subset counter")
     expect(simBlock.indexOf("await savePosition(livePosition)")).toBeLessThan(
       simBlock.indexOf('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")'),
     )

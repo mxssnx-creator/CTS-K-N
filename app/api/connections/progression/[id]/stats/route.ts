@@ -3185,7 +3185,9 @@ export async function GET(
       })(),
 
       liveExecution: {
-        // Orders
+        // Orders. Simulated/paper orders are included in placed+filled because
+        // they immediately create an open position with synthetic fill data;
+        // ordersSimulated remains an audit-only subset counter.
         ordersPlaced:     n(progHash.live_orders_placed_count),
         ordersFilled:     n(progHash.live_orders_filled_count),
         ordersFailed:     n(progHash.live_orders_failed_count),
