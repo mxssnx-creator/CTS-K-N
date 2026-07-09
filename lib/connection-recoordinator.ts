@@ -223,6 +223,19 @@ export interface RecoordinationCompletion {
   progressRecoordinationRequired: boolean
   progressionChanged?: boolean
   progressionReason?: string
+  refreshQueued?: boolean
+  refreshStatus?: {
+    refreshQueued: true
+    refresh_queued_at: string
+    refresh_last_attempt_at?: string
+    refresh_last_error?: string
+    refresh_processed_at?: string
+    retryCount: number
+    immediateDrainAttempted: boolean
+    immediateDrainApplied: boolean
+  }
+  appliedLocally?: boolean
+  queuedForOwner?: boolean
 }
 
 export interface RecoordinateOptions {
@@ -355,13 +368,16 @@ export async function recoordinateAfterSettingsChange(
     )
   }
 
+  let refreshStatus: RecoordinationCompletion["refreshStatus"] | undefined
+  let appliedLocally = false
+
   // Queue a durable refresh request. notifySettingsChanged also queues a generic
   // settings refresh; keeping this explicit request here makes this helper the
   // single route-facing contract for serverless/remote engine owners and stamps
   // a reason tied to the caller.
   try {
     const { queueEngineRefreshRequest } = await import("@/lib/engine-refresh-queue")
-    await queueEngineRefreshRequest({
+    refreshStatus = await queueEngineRefreshRequest({
       connectionId: id,
       action: "refresh",
       state_switch_version: String((after as any).state_switch_version ?? 0),
@@ -524,6 +540,10 @@ export async function recoordinateAfterSettingsChange(
         progressRecoordinationRequired: requiresProgressRecoordination,
         progressionChanged,
         progressionReason,
+        refreshQueued: !!refreshStatus?.refreshQueued,
+        refreshStatus,
+        appliedLocally,
+        queuedForOwner: !!refreshStatus?.refreshQueued && !appliedLocally,
       })
     }
 
@@ -563,10 +583,13 @@ export async function recoordinateAfterSettingsChange(
       }
     }
 
+    const wasRunningBeforeApply = coordinator.isEngineRunning(id)
+
     // Step 2 — in-process fast-path (no-op when engine isn't running here).
     // Isolated try-catch to prevent coordinator crash from affecting other operations
     try {
       await coordinator.applyPendingChangesNow(id)
+      if (wasRunningBeforeApply) appliedLocally = true
     } catch (applyErr) {
       console.warn(
         `[v0] [${opts.logTag}] applyPendingChangesNow failed for ${id}:`,
@@ -616,6 +639,7 @@ export async function recoordinateAfterSettingsChange(
           `[v0] [${opts.logTag}] Recoordinate: starting engine for ${id} (was stopped, now should run, global intent=running)`,
         )
         await coordinator.startMissingEngines([after])
+        appliedLocally = true
       } else {
         console.log(
           `[v0] [${opts.logTag}] Recoordinate: NOT starting ${id} — global engine not running (operator stop honored); settings apply on next explicit Start or continuity tick`,
@@ -628,6 +652,7 @@ export async function recoordinateAfterSettingsChange(
         `[v0] [${opts.logTag}] Recoordinate: stopping engine for ${id} (was running, no longer should)`,
       )
       await coordinator.stopEngine(id, { operatorRequested: true })
+      appliedLocally = true
     } else if (shouldRun && isRunning) {
       // Should run and is — the hot-reload path inside
       // `applyPendingChangesNow` already handled the change. Nothing
@@ -646,5 +671,9 @@ export async function recoordinateAfterSettingsChange(
     progressRecoordinationRequired: requiresProgressRecoordination,
     progressionChanged,
     progressionReason,
+    refreshQueued: !!refreshStatus?.refreshQueued,
+    refreshStatus,
+    appliedLocally,
+    queuedForOwner: !!refreshStatus?.refreshQueued && !appliedLocally,
   })
 }

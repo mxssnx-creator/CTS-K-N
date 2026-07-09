@@ -189,21 +189,6 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
     setSteps(prev => prev.map(s => s.id === stepId ? { ...s, name } : s))
   }
 
-  const normaliseSymbols = (value: unknown): string[] => {
-    if (Array.isArray(value)) {
-      return value.map(symbol => String(symbol).trim()).filter(Boolean)
-    }
-    if (typeof value === "string" && value.trim()) {
-      try {
-        const parsed = JSON.parse(value)
-        return normaliseSymbols(parsed)
-      } catch {
-        return value.split(",").map(symbol => symbol.trim()).filter(Boolean)
-      }
-    }
-    return []
-  }
-
   const displayConnectionName = () => {
     return selectedConnection?.name || selectedConnection?.label || selectedConnectionId || selectedExchange || "BingX"
   }
@@ -282,54 +267,36 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
         return `Coordinator running${n > 0 ? ` | Resumed ${n}` : ""}`
       }, true)
 
+      // STEP 5: Enable selected main connection using saved symbol/live-trade settings (REQUIRED)
+      let quickStartResponse: any = null
+      await runStep("enable", "STEP 5: Enable selected Main Connection", async () => {
+        let selectedSettingsPayload: { settings?: any; connection?: any } | null = null
+        if (selectedConnectionId) {
+          const settingsRes = await timedFetch(`/api/settings/connections/${selectedConnectionId}/settings`, { method: "GET" }, 12000)
+          if (settingsRes.ok) {
+            selectedSettingsPayload = await settingsRes.json().catch(() => null)
+          }
+        }
+
+        const quickStartBody = buildQuickStartBodyFromSavedSettings(selectedConnectionId, selectedSettingsPayload)
       // STEP 5: Enable the selected connection with its saved symbol selection (REQUIRED)
       let quickStartResponse: any = null
       await runStep("enable", "STEP 5: Enable Selected Connection", async () => {
         const requestBody: Record<string, unknown> = { action: "enable" }
         const selectedName = displayConnectionName()
-        let symbolSource = "fallback BTCUSDT"
-
-        if (selectedConnectionId) {
-          requestBody.connectionId = selectedConnectionId
-          try {
-            const settingsRes = await timedFetch(`/api/settings/connections/${selectedConnectionId}/settings`, { method: "GET" }, 12000)
-            if (settingsRes.ok) {
-              const settingsPayload = await settingsRes.json().catch(() => ({}))
-              const settings = settingsPayload.settings || {}
-              const symbols = normaliseSymbols(settings.symbols)
-              if (symbols.length > 0) {
-                requestBody.symbols = symbols
-                symbolSource = `${symbols.length} saved symbol${symbols.length === 1 ? "" : "s"}`
-              } else {
-                const symbolOrder = settings.symbol_order || settings.symbolOrder
-                const symbolCount = settings.symbol_count ?? settings.symbolCount
-                if (symbolOrder) {
-                  requestBody.symbolOrder = symbolOrder
-                }
-                if (symbolCount !== undefined && symbolCount !== null && String(symbolCount).trim() !== "") {
-                  requestBody.symbolCount = Number(symbolCount) || symbolCount
-                }
-                if (requestBody.symbolOrder || requestBody.symbolCount) {
-                  const orderLabel = requestBody.symbolOrder ? `symbol order ${requestBody.symbolOrder}` : "settings symbol order"
-                  const countLabel = requestBody.symbolCount ? `count ${requestBody.symbolCount}` : "default count"
-                  symbolSource = `${orderLabel}, ${countLabel}`
-                }
-              }
-            }
-          } catch {
-            // Settings are helpful but not required; fall through to the final hard-coded fallback.
-          }
-        }
-
-        if (!requestBody.symbols && !requestBody.symbolOrder && !requestBody.symbolCount) {
-          requestBody.symbols = ["BTCUSDT"]
-        }
+        const symbolSource = Array.isArray(quickStartBody.symbols) && quickStartBody.symbols.length > 0
+          ? `${quickStartBody.symbols.length} saved symbol${quickStartBody.symbols.length === 1 ? "" : "s"}`
+          : quickStartBody.symbolOrder
+            ? `symbol order ${quickStartBody.symbolOrder}`
+            : quickStartBody.symbolCount
+              ? `count ${quickStartBody.symbolCount}`
+              : "saved connection defaults"
 
         updateStepName("enable", `Enable ${selectedName} (${symbolSource})`)
         const res = await timedFetch("/api/trade-engine/quick-start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBody),
+          body: JSON.stringify(quickStartBody),
         }, 25000)
         const d = await res.json().catch(() => ({}))
         quickStartResponse = d
@@ -349,6 +316,12 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
         }))
         const syms = Array.isArray(d.connection?.symbols)
           ? d.connection.symbols.join(", ")
+          : Array.isArray(quickStartBody.symbols) && quickStartBody.symbols.length > 0
+            ? quickStartBody.symbols.join(", ")
+            : quickStartBody.symbolOrder
+              ? `auto (${quickStartBody.symbolOrder})`
+              : quickStartBody.symbolCount
+                ? `auto (${quickStartBody.symbolCount})`
           : Array.isArray(requestBody.symbols) && requestBody.symbols.length > 0
             ? requestBody.symbols.join(", ")
             : requestBody.symbolOrder

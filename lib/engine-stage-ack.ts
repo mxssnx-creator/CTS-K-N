@@ -11,6 +11,7 @@ export const ENGINE_STAGE_ACK_STAGES = [
   "real_sets",
   "live_dispatch",
   "live_sync",
+  "recoordination_queued",
   "recoordination_complete",
 ] as const
 
