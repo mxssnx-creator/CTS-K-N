@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
 import { initRedis, getConnection, updateConnection, getRedisClient } from "@/lib/redis-db"
 import { createExchangeConnector } from "@/lib/exchange-connectors"
-import { notifySettingsChanged } from "@/lib/settings-coordinator"
+import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 import { nextStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
 
 /**
@@ -88,7 +88,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       updated_at: new Date().toISOString(),
     }
 
-    await updateConnection(id, updatedConnection)
+    await applyMainConnectionSettingsChange(id, connection, {
+      connectionPatch: {
+        is_enabled: shouldEnable ? "1" : "0",
+        state_switch_version: stateSwitchVersion,
+        updated_at: updatedConnection.updated_at,
+      },
+      changedFieldsOverride: ["is_enabled", "state_switch_version"],
+      logTag: "POST /settings/enable",
+    })
     console.log(`[v0] [Enable Connection] ${id} is now ${shouldEnable ? "enabled" : "disabled"}`)
 
     await SystemLogger.logConnection(
@@ -100,7 +108,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // Notify engine of enable/disable change and apply immediately
     try {
-      await notifySettingsChanged(id, ["is_enabled", "state_switch_version"], { is_enabled: connection.is_enabled, state_switch_version: (connection as any).state_switch_version }, { is_enabled: updatedConnection.is_enabled, state_switch_version: stateSwitchVersion })
       const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
       const coordinator = getGlobalTradeEngineCoordinator()
       

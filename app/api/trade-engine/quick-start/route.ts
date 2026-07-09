@@ -9,6 +9,7 @@ import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
+import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 import { recoordinateAfterSettingsChange } from "@/lib/connection-recoordinator"
 
@@ -611,6 +612,26 @@ export async function POST(request: Request) {
        updated_at: new Date().toISOString(),
      }
      
+     await applyMainConnectionSettingsChange(connectionId, connection, {
+       connectionPatch: updated,
+       settingsPatch: {
+         active_symbols: JSON.stringify(symbols),
+         force_symbols: JSON.stringify(symbols),
+         symbols: JSON.stringify(symbols),
+         symbol_order: requestedSymbolOrder,
+         symbol_count: String(symbols.length),
+         live_volume_factor: QUICKSTART_LIVE_VOLUME_FACTOR,
+         volume_factor_live: QUICKSTART_LIVE_VOLUME_FACTOR,
+         volume_step_ratio: String(DEFAULT_VOLUME_STEP_RATIO),
+       },
+       changedFieldsOverride: [
+         "is_enabled", "is_active", "is_live_trade", "live_trade_requested",
+         "active_symbols", "force_symbols", "symbols", "symbol_order", "symbol_count",
+         "live_volume_factor", "volume_factor_live", "volume_step_ratio", "connection_settings",
+       ],
+       logTag: "POST /trade-engine/quick-start",
+     })
+     console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${QUICKSTART_LIVE_VOLUME_FACTOR} → exchange-minimum orders).`)
      await updateConnection(connectionId, updated)
      console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${effectiveLiveVolumeFactor}).`)
      // Surface the minimal-volume policy in the progression log so the

@@ -145,6 +145,75 @@ async function runSerializedForConnection(connectionId: string, work: () => Prom
   await current
 }
 
+
+export interface MainConnectionSettingsChangeOptions extends RecoordinateOptions {
+  connectionPatch?: Record<string, any>
+  settingsPatch?: Record<string, any>
+  settingsKey?: string
+  mirrorSettingsKey?: boolean
+}
+
+function stringifyHashPatch(patch: Record<string, any>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue
+    out[key] = typeof value === "string" ? value : JSON.stringify(value)
+  }
+  return out
+}
+
+/**
+ * Persist and propagate a Main Connection runtime-settings change. This is the
+ * route-facing helper for settings saves that affect running engines: it writes
+ * the connection hash plus the flat settings hash mirrors first, then delegates
+ * to recoordinateAfterSettingsChange for notification, cache invalidation,
+ * forced reload generation, local application, durable remote refresh, progress
+ * stamping, and stats recalculation requests.
+ */
+export async function applyMainConnectionSettingsChange(
+  id: string,
+  before: Record<string, any>,
+  opts: MainConnectionSettingsChangeOptions,
+): Promise<{ connection: Record<string, any>; completion: RecoordinationCompletion }> {
+  const { initRedis, updateConnection, getRedisClient, getConnection, setSettings } = await import("@/lib/redis-db")
+  await initRedis()
+
+  let after = { ...before, ...(opts.connectionPatch || {}) }
+  if (opts.connectionPatch && Object.keys(opts.connectionPatch).length > 0) {
+    after = (await updateConnection(id, after)) || after
+  }
+
+  const settingsPatch = opts.settingsPatch || {}
+  if (Object.keys(settingsPatch).length > 0) {
+    const settingsKey = opts.settingsKey || `connection_settings:${id}`
+    if (settingsKey === `connection_settings:${id}`) {
+      const redis = getRedisClient()
+      const hashPatch = stringifyHashPatch(settingsPatch)
+      await redis.hset(settingsKey, hashPatch)
+      if (opts.mirrorSettingsKey !== false) {
+        await redis.hset(`settings:connection_settings:${id}`, hashPatch).catch(() => 0)
+      }
+    } else {
+      await setSettings(settingsKey, settingsPatch)
+    }
+  }
+
+  // Reload from Redis so notify envelopes and downstream predicates see exactly
+  // what was persisted, including updateConnection normalisation.
+  after = (await getConnection(id).catch(() => null)) || after
+  const explicitFields = Array.from(new Set([
+    ...Object.keys(opts.connectionPatch || {}),
+    ...Object.keys(settingsPatch),
+    ...(opts.changedFieldsOverride || []),
+  ]))
+  const completion = await recoordinateAfterSettingsChange(id, before, after, {
+    logTag: opts.logTag,
+    settingsVersion: opts.settingsVersion,
+    changedFieldsOverride: explicitFields.length > 0 ? explicitFields : opts.changedFieldsOverride,
+  })
+  return { connection: after, completion }
+}
+
 export interface RecoordinationCompletion {
   connectionId: string
   settingsVersion?: string
@@ -156,7 +225,7 @@ export interface RecoordinationCompletion {
   progressionReason?: string
 }
 
-interface RecoordinateOptions {
+export interface RecoordinateOptions {
   /**
    * When the caller already knows the changed-fields list (e.g. PATCH
    * /settings only receives a partial payload, so `detectChangedFields`
@@ -272,6 +341,40 @@ export async function recoordinateAfterSettingsChange(
     throw notifyErr
   }
 
+  // Force singleton strategy coordinators to drop any generation-gated settings
+  // reads on the next strategy cycle. This is intentionally before local
+  // apply/refresh so a hot-applied running engine cannot reuse stale strategy,
+  // volume, leverage, or symbol-derived settings.
+  try {
+    const { StrategyCoordinator } = await import("@/lib/strategy-coordinator")
+    StrategyCoordinator.forceNextSettingsReload(id)
+  } catch (reloadErr) {
+    console.warn(
+      `[v0] [${opts.logTag}] Failed to force StrategyCoordinator settings reload for ${id}:`,
+      reloadErr instanceof Error ? reloadErr.message : String(reloadErr),
+    )
+  }
+
+  // Queue a durable refresh request. notifySettingsChanged also queues a generic
+  // settings refresh; keeping this explicit request here makes this helper the
+  // single route-facing contract for serverless/remote engine owners and stamps
+  // a reason tied to the caller.
+  try {
+    const { queueEngineRefreshRequest } = await import("@/lib/engine-refresh-queue")
+    await queueEngineRefreshRequest({
+      connectionId: id,
+      action: "refresh",
+      state_switch_version: String((after as any).state_switch_version ?? 0),
+      reason: `${opts.logTag}:main_connection_settings_change`,
+      timestamp: new Date().toISOString(),
+    })
+  } catch (queueErr) {
+    console.warn(
+      `[v0] [${opts.logTag}] Failed to queue durable engine refresh for ${id}:`,
+      queueErr instanceof Error ? queueErr.message : String(queueErr),
+    )
+  }
+
   // Refresh the in-memory ConnectionCoordinator cache for this connection so
   // consumers of getConnection/getActiveConnections stop serving pre-edit
   // state (credentials, is_enabled, is_active, etc.) until a full restart.
@@ -385,6 +488,25 @@ export async function recoordinateAfterSettingsChange(
   // Symbol/mode changes use the coupled destructive progression path above.
   // Strategy/coordination changes deliberately stay hot-reload-only so stats
   // remain visible and the global coordinator does not stop while settings are saved.
+
+  // Mark affected stats dirty so UI readers and background calculators can show
+  // a fresh/recalculating state after symbol, strategy, or volume changes.
+  if (symbolsChanged || strategyOrCoordinationChanged) {
+    try {
+      const { getRedisClient } = await import("@/lib/redis-db")
+      const now = new Date().toISOString()
+      await getRedisClient().hset(`progression:${id}`, {
+        stats_recalculation_requested: "1",
+        stats_recalculation_requested_at: now,
+        stats_recalculation_fields: JSON.stringify(normalizedChangedFields),
+      }).catch(() => 0)
+    } catch (statsErr) {
+      console.warn(
+        `[v0] [${opts.logTag}] Failed to stamp stats recalculation for ${id}:`,
+        statsErr instanceof Error ? statsErr.message : String(statsErr),
+      )
+    }
+  }
 
   // Steps 2 & 3 — coordinator-level actions. Bundled in one try block
   // because they all need the same `coordinator` reference, and a
