@@ -11,6 +11,7 @@ export type BroadcastEventType =
   | 'settings-update'
   | 'engine-status'
   | 'processing-progress'
+  | 'engine-stage-ack'
   | 'error'
 
 export interface BroadcastMessage {

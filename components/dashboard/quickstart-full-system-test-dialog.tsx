@@ -10,6 +10,37 @@ import { Separator } from "@/components/ui/separator"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Activity, CheckCircle2, Clock, Play, RefreshCw, Terminal, AlertCircle } from "lucide-react"
 
+type EngineStageAckStage = "startup" | "market_data" | "prehistoric_data" | "base_sets" | "main_sets" | "real_sets" | "live_dispatch" | "live_sync" | "recoordination_complete"
+
+function waitForStageAck(stages: EngineStageAckStage | EngineStageAckStage[], timeoutMs: number, connectionId = "*"): Promise<any> {
+  const wanted = new Set(Array.isArray(stages) ? stages : [stages])
+  return new Promise((resolve, reject) => {
+    const source = new EventSource(`/api/ws?connectionId=${encodeURIComponent(connectionId)}`)
+    const timer = setTimeout(() => {
+      source.close()
+      reject(new Error(`timeout waiting for stage acknowledgement: ${Array.from(wanted).join(", ")}`))
+    }, timeoutMs)
+    source.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data)
+        const payloads = message?.type === "history" && Array.isArray(message.data)
+          ? message.data.filter((item: any) => item?.type === "engine-stage-ack").map((item: any) => item.data)
+          : [message?.type === "engine-stage-ack" ? message.data : null]
+        const payload = payloads.find((candidate: any) => candidate && wanted.has(candidate.stage))
+        if (!payload) return
+        clearTimeout(timer)
+        source.close()
+        payload.status === "ack" ? resolve(payload) : reject(new Error(payload.message || `${payload.stage} ${payload.status}`))
+      } catch { /* heartbeat/history */ }
+    }
+    source.onerror = () => {
+      clearTimeout(timer)
+      source.close()
+      reject(new Error("stage acknowledgement stream error"))
+    }
+  })
+}
+
 interface TestLogEntry {
   id: number
   timestamp: Date
@@ -99,7 +130,7 @@ export function QuickstartFullSystemTestDialog() {
       })
     }
     setOverallProgress(10)
-    await new Promise(r => setTimeout(r, 500))
+    await waitForStageAck("startup", 30000).catch((err) => addLog("error", `Startup stage acknowledgement failed: ${err}`))
 
     // Phase 2: Quickstart Initialization
     setPhases(prev => {
@@ -129,7 +160,7 @@ export function QuickstartFullSystemTestDialog() {
       })
     }
     setOverallProgress(20)
-    await new Promise(r => setTimeout(r, 500))
+    await waitForStageAck("recoordination_complete", 30000).catch((err) => addLog("error", `Recoordination acknowledgement failed: ${err}`))
 
     // Phase 3: Engine Startup
     setPhases(prev => {
@@ -159,8 +190,8 @@ export function QuickstartFullSystemTestDialog() {
       })
     }
     setOverallProgress(25)
-    addLog("info", "Waiting 8 seconds for engine warmup...")
-    await new Promise(r => setTimeout(r, 8000))
+    addLog("info", "Waiting for startup stage acknowledgement...")
+    await waitForStageAck("startup", 30000).catch((err) => addLog("error", `Engine startup acknowledgement failed: ${err}`))
 
     // Phase 4: Prehistoric Processing Monitoring
     setPhases(prev => {
@@ -201,7 +232,7 @@ export function QuickstartFullSystemTestDialog() {
         break
       }
 
-      if (i < 11) await new Promise(r => setTimeout(r, 10000))
+      if (i === 0) await waitForStageAck("prehistoric_data", 120000).catch((err) => addLog("error", `Prehistoric acknowledgement failed: ${err}`))
     }
     setOverallProgress(50)
 
@@ -226,7 +257,7 @@ export function QuickstartFullSystemTestDialog() {
     addLog("info", `   Average Cycle Time: ${finalConnLog.summary?.enginePerformance?.cycleTimeMs}ms`)
 
     setOverallProgress(60)
-    await new Promise(r => setTimeout(r, 1000))
+    await waitForStageAck(["base_sets", "main_sets", "real_sets"], 30000).catch((err) => addLog("error", `Set-stage acknowledgement failed: ${err}`))
 
     // Phase 6: Realtime Monitoring
     setPhases(prev => {
@@ -240,7 +271,7 @@ export function QuickstartFullSystemTestDialog() {
     const realtimeStart = Date.now()
 
     for (let i = 0; i < 6; i++) {
-      await new Promise(r => setTimeout(r, 10000))
+      await waitForStageAck(["live_dispatch", "live_sync"], 70000).catch((err) => addLog("error", `Realtime acknowledgement failed: ${err}`))
 
       const mon = await fetch('/api/system/monitoring', { headers: { 'Cache-Control': 'no-cache' } }).then(r => r.json()).catch(() => ({ cpu: 0, memory: 0 }))
       const connLog = await fetch('/api/settings/connections/test/log', { headers: { 'Cache-Control': 'no-cache' } }).then(r => r.json()).catch(() => ({ summary: {} }))

@@ -30,6 +30,7 @@ import { validateTrailingStopEdgeCases, logValidationWarnings, isAnomalousPrice 
 // multiple processors (indication, strategy, realtime) share the same
 // warm entries.
 import { getMarketDataCached, prefetchMarketDataBatch } from "./market-data-cache"
+import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 // Tunable cadences (heartbeat, live-sync) read at gate-evaluation time from
 // `settings:system`. See lib/engine-timings.ts. The `private static readonly`
 // constants below are kept as fallback defaults when the cache is empty on
@@ -550,6 +551,7 @@ export class RealtimeProcessor {
         // Non-critical visibility metric — never break the realtime loop.
       }
 
+      emitEngineStageAck(this.connectionId, "live_dispatch", "ack", "Realtime live dispatch cycle completed", { updates: count })
       performanceProfiler.endCycle(cycleId)
       return { updates: count }
     } catch (error) {
@@ -1184,6 +1186,7 @@ export class RealtimeProcessor {
 
       const { syncWithExchange } = await __ensureLiveStageModule()
       await syncWithExchange(this.connectionId, connector)
+      emitEngineStageAck(this.connectionId, "live_sync", "ack", "Live exchange sync completed")
     } catch (err) {
       console.warn(
         `[v0] [Realtime] live syncWithExchange error for ${this.connectionId}:`,
