@@ -6,6 +6,7 @@ import {
 } from "@/lib/trade-engine/stages/live-stage"
 import { initRedis, getRedisClient, getConnection } from "@/lib/redis-db"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import { countLiveOpenPositions, isLiveOpenStatus } from "@/lib/live-position-status"
 
 export const dynamic = "force-dynamic"
 
@@ -77,7 +78,7 @@ function enrichPnl(pos: any) {
 
 function computeStats(positions: any[]) {
   const closed = positions.filter((p) => p.status === "closed")
-  const open = positions.filter((p) => ["open", "filled", "partially_filled", "placed", "pending_fill", "placed_unconfirmed"].includes(p.status))
+  const open = positions.filter((p) => isLiveOpenStatus(p.status))
   const totalRealizedPnL = closed.reduce((sum, p) => sum + (Number(p.realizedPnL ?? p.realized_pnl ?? p.pnl) || 0), 0)
   const totalUnrealizedPnL = open.reduce((sum, p) => sum + (Number(p.unrealizedPnL ?? p.exchangeData?.unrealizedPnl ?? p.exchangeData?.unrealizedPnL) || 0), 0)
   const wins = closed.filter((p) => (Number(p.realizedPnL ?? p.realized_pnl ?? p.pnl) || 0) > 0).length
@@ -184,7 +185,7 @@ export async function GET(request: Request) {
         real: realPositions.length,
         simulated: simulatedPositions.length,
         unknown: unknownPositions.length,
-        open: all.filter((p) => p.status === "open").length,
+        open: countLiveOpenPositions(all),
         pending: all.filter((p) => p.status === "pending").length,
         placed: all.filter((p) => p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed").length,
         pending_fill: all.filter((p) => p.status === "pending_fill").length,
