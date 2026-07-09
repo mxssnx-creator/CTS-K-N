@@ -5,7 +5,6 @@ import { RedisTrades, RedisPositions } from "@/lib/redis-operations"
 import { recoordinateAfterSettingsChange } from "@/lib/connection-recoordinator"
 import { getTradeEngine } from "@/lib/trade-engine"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
-import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { toRedisFlag } from "@/lib/boolean-utils"
 
 export const dynamic = "force-dynamic"
@@ -73,7 +72,7 @@ export async function GET(
         if ([
           "symbol_count", "symbolCount", "leveragePercentage",
           "prevPosMinCount", "prevPosWindow", "mainEvalPosCount",
-          "realEvalPosCount", "minStep", "trailingMinStep",
+          "realEvalPosCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio", "trailingMinStep",
           // Volume / live trading factors
           "live_volume_factor", "volume_factor_live", "preset_volume_factor",
           "volume_step_ratio", "block_volume_step_ratio",
@@ -114,6 +113,7 @@ export async function GET(
     // connections expose stable values before the first save after upgrade.
     const settings = {
       minStep: 5,
+      maxStopLossRatio: 2.5,
       trailingMinStep: 6,
       ...jsonSettings,
       ...hashSettings,
@@ -293,6 +293,7 @@ export async function PATCH(
         "mainEvalPosCount",
         "realEvalPosCount",
         "minStep",
+        "maxStopLossRatio",
         "trailingMinStep",
       ] as const
       for (const k of knobKeys) {
@@ -518,7 +519,15 @@ export async function PATCH(
       }
 
       if (Object.keys(flatKnobs).length > 0) {
-        await getRedisClient().hset(`connection_settings:${id}`, flatKnobs)
+        const redis = getRedisClient()
+        await Promise.all([
+          redis.hset(`connection_settings:${id}`, flatKnobs),
+          // Keep the settings:-prefixed mirror in lock-step with the bare hash.
+          // Different engine/progression readers historically preferred different
+          // namespaces; writing only one let a settings-dialog save bounce between
+          // old and new values until the next migration/refresh copied it over.
+          redis.hset(`settings:connection_settings:${id}`, flatKnobs).catch(() => 0),
+        ])
         const volumeConnectionPatch: Record<string, string> = {}
         if (flatKnobs.volume_factor_live !== undefined) {
           volumeConnectionPatch.live_volume_factor = flatKnobs.volume_factor_live
@@ -700,41 +709,11 @@ export async function PATCH(
               persistErr instanceof Error ? persistErr.message : persistErr,
             )
           })
-          // Next.js dev can compile this route while another module instance is
-          // still finishing migrations. Re-assert the operator's saved symbols
-          // shortly after the response so any late migration write that raced
-          // this save cannot leave the in-memory store or snapshot on an older
-          // canonical symbol list.
-          for (const delayMs of [2_000, 6_000]) {
-            setTimeout(() => {
-              void (async () => {
-                await updateConnection(id, {
-                  active_symbols: resolvedSymbolsJson,
-                  force_symbols: resolvedSymbolsJson,
-                  symbol_count: String(resolved.length),
-                  symbol_order: order,
-                }).catch(() => null)
-                await setSettings(stateKey, {
-                  connection_id: id,
-                  symbols: resolvedSymbolsJson,
-                  active_symbols: resolvedSymbolsJson,
-                  force_symbols: resolvedSymbolsJson,
-                  config_set_symbols_total: resolved.length,
-                  updated_at: new Date().toISOString(),
-                }).catch(() => null)
-                await setSettings(settingsConnectionKey, {
-                  connection_id: id,
-                  symbols: resolvedSymbolsJson,
-                  active_symbols: resolvedSymbolsJson,
-                  force_symbols: resolvedSymbolsJson,
-                  symbol_count: resolved.length,
-                  symbol_order: order,
-                  updated_at: new Date().toISOString(),
-                }).catch(() => null)
-                await persistNow().catch(() => false)
-              })()
-            }, delayMs)
-          }
+          // The authoritative writes above are synchronous. Do not schedule
+          // delayed re-assert timers from a settings route: a second dialog save
+          // can happen before those timers fire, and the old delayed closure
+          // would then overwrite the newer active_symbols/trade_engine_state,
+          // making progression appear to switch between old and new settings.
           console.log(`[v0] [Settings] Resolved ${resolved.length} symbol(s) for ${id} (order=${order}): ${resolved.join(", ")}`)
         }
       } catch (symErr) {
@@ -778,41 +757,11 @@ export async function PATCH(
       scalarChanged("is_testnet", (connection as Record<string, unknown>).is_testnet, (updated as Record<string, unknown>).is_testnet) ||
       scalarChanged("is_preset_trade", (connection as Record<string, unknown>).is_preset_trade, (updated as Record<string, unknown>).is_preset_trade) ||
       scalarChanged("connection_method", (connection as Record<string, unknown>).connection_method, (updated as Record<string, unknown>).connection_method)
-    let progressionRestartHandled = false
     if (symbolsModeChanged) {
-      try {
-        const recoordination = await ProgressionStateManager.recoordinateForActualOne(id)
-        if (recoordination.changed) {
-          // Progression state changed, but the running engine must stay live.
-          // Publish a reload-class event so the owning process invalidates symbol
-          // and strategy caches in place instead of stopping/restarting live trade.
-          try {
-            const { notifySettingsChanged } = await import("@/lib/settings-coordinator")
-            await notifySettingsChanged(
-              id,
-              ["connection_settings", "active_symbols", "force_symbols", "symbol_count", "symbol_order"],
-              { ...connection, connection_settings: current },
-              { ...connection, connection_settings: merged, updated_at: updated.updated_at },
-            )
-          } catch (notifyErr) {
-            console.warn(
-              `[v0] [Settings PATCH] reload notify failed for ${id}:`,
-              notifyErr instanceof Error ? notifyErr.message : String(notifyErr),
-            )
-          }
-        }
-      } catch (recoordErr) {
-        console.warn(
-          `[v0] [Settings PATCH] recoordinateForActualOne failed for ${id} (non-fatal):`,
-          recoordErr instanceof Error ? recoordErr.message : String(recoordErr),
-        )
-      }
-
-      // The durable reload envelope below carries the concrete symbol/mode
-      // field names, so the engine-owning process hot-reloads in place. Do not
-      // queue a route-local restart: in production the API route can run in a
-      // different worker than the engine, and stop/start races make live trade
-      // unstable during normal settings saves.
+      // Recoordination is intentionally centralized in recoordinateAfterSettingsChange() below.
+      // Running it here as well created two settings-change envelopes and two progression
+      // archive attempts from one dialog save, which made stats briefly alternate between
+      // the previous and newly-saved settings under production polling.
     }
 
     // Full propagation. PATCH only ships a partial settings payload, so

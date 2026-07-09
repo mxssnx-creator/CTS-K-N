@@ -10,6 +10,7 @@
 import { getSettings, setSettings, getRedisClient } from "@/lib/redis-db"
 import type { PerformanceThresholds } from "./types"
 import { logProgressionEvent } from "./engine-progression-logs"
+import { DEFAULT_MAX_STOP_LOSS_RATIO, normalizeMaxStopLossRatio } from "@/lib/stoploss-ratio-range"
 
 export class BasePseudoPositionManager {
   private connectionId: string
@@ -27,6 +28,15 @@ export class BasePseudoPositionManager {
       production_max_drawdown: 0.3,
       pause_threshold_win_rate: 0.38,
       resume_threshold_win_rate: 0.43,
+    }
+  }
+
+  private async getMaxStopLossRatio(): Promise<number> {
+    try {
+      const settings = (await getSettings(`connection_settings:${this.connectionId}`)) || {}
+      return normalizeMaxStopLossRatio((settings as any).maxStopLossRatio ?? (settings as any).max_stoploss_ratio, DEFAULT_MAX_STOP_LOSS_RATIO)
+    } catch {
+      return DEFAULT_MAX_STOP_LOSS_RATIO
     }
   }
 
@@ -59,6 +69,11 @@ export class BasePseudoPositionManager {
     lastPartRatio?: number,
   ): Promise<string | null> {
     try {
+      const maxStopLossRatio = await this.getMaxStopLossRatio()
+      if (Number(slRatio) > maxStopLossRatio) {
+        return null
+      }
+
       // Load all base positions from Redis
       const basePositions = (await getSettings(`base_positions:${this.connectionId}`)) || []
 
