@@ -15,6 +15,7 @@ import {
 import { AuthGuard } from "@/components/auth-guard"
 import { useExchange } from "@/lib/exchange-context"
 import { cn } from "@/lib/utils"
+import { countLiveOpenPositions, isLiveOpenStatus } from "@/lib/live-position-status"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -58,7 +59,7 @@ interface LivePosition {
   id: string
   symbol: string
   direction: "long" | "short"
-  status: "pending" | "open" | "partially_filled" | "filled" | "closed" | "error" | "simulated"
+  status: "pending" | "open" | "partially_filled" | "filled" | "placed" | "pending_fill" | "placed_unconfirmed" | "closed" | "error" | "simulated"
   quantity: number
   executedQuantity: number
   entryPrice: number
@@ -574,15 +575,18 @@ function BotsTab() {
 // ─── Live Positions Section ───────────────────────────────────────────────────
 
 function LivePositionsSection({ positions }: { positions: LivePosition[] }) {
-  const active = positions.filter(p => p.status === "open" || p.status === "pending" || p.status === "partially_filled")
+  const activeCount = countLiveOpenPositions(positions)
   const simulated = positions.filter(p => p.status === "simulated")
+  const placed = positions.filter(p => p.status === "placed")
+  const pendingFill = positions.filter(p => p.status === "pending_fill")
+  const partiallyFilled = positions.filter(p => p.status === "partially_filled")
   const all = positions
 
   if (all.length === 0) return null
 
   const statusColor = (s: LivePosition["status"]) => {
     if (s === "open" || s === "filled") return "green"
-    if (s === "pending" || s === "partially_filled") return "orange"
+    if (isLiveOpenStatus(s)) return "orange"
     if (s === "simulated") return "blue"
     if (s === "error") return "red"
     return "default"
@@ -594,7 +598,7 @@ function LivePositionsSection({ positions }: { positions: LivePosition[] }) {
         <div className="flex items-center gap-1.5">
           <Activity className="h-3 w-3 text-emerald-400" />
           <span className="text-[11px] font-semibold uppercase tracking-wider">Live Exchange Positions</span>
-          {active.length > 0 && (
+          {activeCount > 0 && (
             <span className="relative flex h-1.5 w-1.5">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
               <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
@@ -602,7 +606,10 @@ function LivePositionsSection({ positions }: { positions: LivePosition[] }) {
           )}
         </div>
         <div className="flex items-center gap-1.5">
-          {active.length > 0 && <Tag color="green">{active.length} active</Tag>}
+          {activeCount > 0 && <Tag color="green">{activeCount} active</Tag>}
+          {placed.length > 0 && <Tag color="orange">{placed.length} placed</Tag>}
+          {pendingFill.length > 0 && <Tag color="orange">{pendingFill.length} pending fill</Tag>}
+          {partiallyFilled.length > 0 && <Tag color="orange">{partiallyFilled.length} partial</Tag>}
           {simulated.length > 0 && <Tag color="blue">{simulated.length} sim</Tag>}
           <Tag color="default">{all.length} total</Tag>
         </div>

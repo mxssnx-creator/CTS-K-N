@@ -6,6 +6,8 @@ import {
 } from "@/lib/trade-engine/stages/live-stage"
 import { initRedis, getRedisClient, getConnection } from "@/lib/redis-db"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import { getAlternateLivePositionKeys } from "@/lib/live-position-alt-index"
+import { countLiveOpenPositions, isLiveOpenStatus } from "@/lib/live-position-status"
 
 export const dynamic = "force-dynamic"
 
@@ -39,6 +41,10 @@ function normalizePosition(pos: any) {
   }
 }
 
+function isMissingNumericValue(value: unknown): boolean {
+  return value === undefined || value === null || Number.isNaN(Number(value))
+}
+
 function enrichPnl(pos: any) {
   const exchangePnl = Number(pos.unrealizedPnL ?? pos.unrealized_pnl ?? pos.exchangeData?.unrealizedPnl ?? pos.exchangeData?.unrealizedPnL)
   if (Number.isFinite(exchangePnl) && pos.status !== "closed") {
@@ -47,6 +53,8 @@ function enrichPnl(pos: any) {
 
   if (!pos.unrealizedPnL && pos.status !== "closed" && (pos.markPrice || pos.exchangeData?.markPrice) && pos.averageExecutionPrice && pos.executedQuantity) {
     const markPrice = Number(pos.markPrice ?? pos.exchangeData.markPrice)
+  if (isMissingNumericValue(pos.unrealizedPnL) && pos.status !== "closed" && !isMissingNumericValue(pos.exchangeData?.markPrice) && !isMissingNumericValue(pos.averageExecutionPrice) && !isMissingNumericValue(pos.executedQuantity)) {
+    const markPrice = Number(pos.exchangeData.markPrice)
     const entryPrice = Number(pos.averageExecutionPrice || pos.entryPrice || 0)
     const qty = Number(pos.executedQuantity || 0)
     if (entryPrice > 0 && markPrice > 0 && qty > 0) {
@@ -65,6 +73,8 @@ function enrichPnl(pos: any) {
     }
   }
   if (pos.status === "closed" && Number.isFinite(realized)) {
+  const realized = Number(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl)
+  if (pos.status === "closed" && !isMissingNumericValue(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl) && Number.isFinite(realized)) {
     pos.realizedPnL = Math.round(realized * 100) / 100
   }
 
@@ -85,7 +95,7 @@ function enrichPnl(pos: any) {
 
 function computeStats(positions: any[]) {
   const closed = positions.filter((p) => p.status === "closed")
-  const open = positions.filter((p) => ["open", "filled", "partially_filled", "placed", "pending_fill", "placed_unconfirmed"].includes(p.status))
+  const open = positions.filter((p) => isLiveOpenStatus(p.status))
   const totalRealizedPnL = closed.reduce((sum, p) => sum + (Number(p.realizedPnL ?? p.realized_pnl ?? p.pnl) || 0), 0)
   const totalUnrealizedPnL = open.reduce((sum, p) => sum + (Number(p.unrealizedPnL ?? p.unrealized_pnl ?? p.exchangeData?.unrealizedPnl ?? p.exchangeData?.unrealizedPnL) || 0), 0)
   const wins = closed.filter((p) => (Number(p.realizedPnL ?? p.realized_pnl ?? p.pnl) || 0) > 0).length
@@ -130,11 +140,11 @@ export async function GET(request: Request) {
       getConnection(connectionId).catch(() => null),
     ])
 
-    // Fallback: also scan for any positions stored under alternate key patterns
+    // Fallback: also read positions stored under alternate key patterns.
+    // New writers should maintain live:position:live:{connectionId}:index so this path
+    // remains bounded; legacy unindexed data falls back to bounded SCAN only.
     const client = getRedisClient()
-    const altKeys = await client
-      .keys(`live:position:live:${connectionId}:*`)
-      .catch(() => [] as string[])
+    const { keys: altKeys, partialLegacyScan } = await getAlternateLivePositionKeys(client, connectionId)
     const altPositions: any[] = []
     const seenIds = new Set<string>([...open.map((p) => p.id!).filter(Boolean), ...closed.map((p) => p.id!).filter(Boolean)])
     for (const key of altKeys) {
@@ -192,7 +202,7 @@ export async function GET(request: Request) {
         real: realPositions.length,
         simulated: simulatedPositions.length,
         unknown: unknownPositions.length,
-        open: all.filter((p) => p.status === "open").length,
+        open: countLiveOpenPositions(all),
         pending: all.filter((p) => p.status === "pending").length,
         placed: all.filter((p) => p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed").length,
         pending_fill: all.filter((p) => p.status === "pending_fill").length,
@@ -207,6 +217,7 @@ export async function GET(request: Request) {
         real: computeStats(realPositions),
         simulated: computeStats(simulatedPositions),
       },
+      partialLegacyScan,
       dataIntegrity: {
         liveTradeEnabled,
         liveTradeRequested,

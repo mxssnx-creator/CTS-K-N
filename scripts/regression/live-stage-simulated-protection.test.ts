@@ -64,4 +64,64 @@ assert.equal(
 )
 
 console.log("simulated live-stage protection regression passed")
-process.exit(0)
+
+class InMemoryLockRedis {
+  private entries = new Map<string, { value: string; expiresAt: number | null }>()
+
+  async set(key: string, value: string, options?: { PX?: number; EX?: number; NX?: boolean }) {
+    this.purgeExpired(key)
+    if (options?.NX && this.entries.has(key)) return null
+    const ttlMs = options?.PX ?? (options?.EX ? options.EX * 1000 : null)
+    this.entries.set(key, { value, expiresAt: ttlMs ? Date.now() + ttlMs : null })
+    return "OK"
+  }
+
+  async get(key: string) {
+    this.purgeExpired(key)
+    return this.entries.get(key)?.value ?? null
+  }
+
+  async pexpire(key: string, ttlMs: number) {
+    this.purgeExpired(key)
+    const entry = this.entries.get(key)
+    if (!entry) return 0
+    entry.expiresAt = Date.now() + ttlMs
+    return 1
+  }
+
+  async del(key: string) {
+    this.purgeExpired(key)
+    return this.entries.delete(key) ? 1 : 0
+  }
+
+  private purgeExpired(key: string) {
+    const entry = this.entries.get(key)
+    if (entry?.expiresAt && entry.expiresAt <= Date.now()) this.entries.delete(key)
+  }
+}
+
+async function runLockTokenRegression() {
+  const redis = new InMemoryLockRedis()
+  const lockKey = "live:lock:test-conn:BTCUSDT:long"
+  const workerAToken = "worker-a-token"
+  const workerBToken = "worker-b-token"
+
+  assert.equal(await redis.set(lockKey, workerAToken, { PX: 5, NX: true }), "OK")
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.equal(await redis.set(lockKey, workerBToken, { PX: 1000, NX: true }), "OK")
+  assert.equal(await __liveStageTest.releaseLockWithClient(redis, lockKey, workerAToken), false)
+  assert.equal(await redis.get(lockKey), workerBToken)
+  assert.equal(await __liveStageTest.refreshLockTTLWithClient(redis, lockKey, workerAToken, 1000), false)
+  assert.equal(await redis.get(lockKey), workerBToken)
+  assert.equal(await __liveStageTest.releaseLockWithClient(redis, lockKey, workerBToken), true)
+  assert.equal(await redis.get(lockKey), null)
+
+  console.log("live-order lock token regression passed")
+}
+
+runLockTokenRegression()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })

@@ -37,20 +37,21 @@ describe("requested regression guardrails", () => {
   test("live order test endpoints require explicit server and request safety gates", () => {
     const safety = read("lib/live-order-safety.ts")
     const placeOrder = read("app/api/testing/place-order/route.ts")
+    const liveOrderService = read("lib/live-order-service.ts")
     const liveOrdersTest = read("app/api/test/live-orders-test/route.ts")
 
     expect(safety).toContain('process.env.ALLOW_LIVE_ORDER_PLACEMENT === "1"')
     expect(safety).toContain('confirmLiveOrderPlacement === true')
     expect(safety).toContain('I understand this places real exchange orders')
-    expect(placeOrder).toContain('const willUseRealExchange = !forceSim && !!connection.api_key && !!connection.api_secret')
-    expect(placeOrder).toContain('getLiveOrderSafetyFailure(body)')
-    expect(placeOrder).toContain('mode: "blocked_live_order_safety"')
-    expect(placeOrder).toContain('const orderMode = willUseRealExchange ? "live" : "simulated"')
-    expect(placeOrder).toContain('"live_orders_simulated_count"')
-    expect(placeOrder).toContain('const direction: "long" | "short" = sideKey === "short" || sideKey === "sell" ? "short" : "long"')
-    expect(placeOrder).toContain('const exchangeSide: "buy" | "sell" = direction === "long" ? "buy" : "sell"')
-    expect(placeOrder).toContain('`${symbolKey}:${direction}:placed`')
-    expect(placeOrder).toContain('`${symbolKey}:${direction}:filled`')
+    expect(placeOrder).toContain('placeLiveOrder')
+    expect(liveOrderService).toContain('const willUseRealExchange = !forceSim && !!connection.api_key && !!connection.api_secret')
+    expect(liveOrderService).toContain('getLiveOrderSafetyFailure(payload)')
+    expect(liveOrderService).toContain('mode: "blocked_live_order_safety"')
+    expect(liveOrderService).toContain('mode: "live"')
+    expect(liveOrderService).toContain('"live_orders_simulated_count"')
+    expect(liveOrderService).toContain('return sideKey === "short" || sideKey === "sell" ? "short" : "long"')
+    expect(liveOrderService).toContain('return direction === "long" ? "buy" : "sell"')
+    expect(liveOrderService).toContain('`${symbol}:${direction}:${metric}`')
     expect(placeOrder).not.toContain('JSON.stringify(existing)')
     expect(placeOrder).not.toContain("symbol,\n          side,")
     expect(liveOrdersTest).toContain('getLiveOrderSafetyFailure(body)')
@@ -462,9 +463,9 @@ describe("requested regression guardrails", () => {
     const source = read("lib/strategy-coordinator.ts")
 
     expect(source).toContain("STRATEGY_MAIN_AXIS_SETS_CEILING")
-    expect(source).toContain(": 50")
+    expect(source).toContain("_boundedDynCeiling")
     expect(source).toContain("STRATEGY_REAL_SETS_SAFETY_CEILING")
-    expect(source).toContain(": 100")
+    expect(source).toContain("_realCapForBound")
     expect(source).toContain("private static readonly _AXIS_LRU_MAX = (() =>")
   })
 
@@ -602,7 +603,7 @@ describe("requested regression guardrails", () => {
     const source = read("app/api/trade-engine/status/route.ts")
 
     expect(source).toContain("const coordinatorEngineCount = coordinator?.getActiveEngineCount() || 0")
-    expect(source).toContain("const hasLocalEngineRuntime = coordinatorEngineCount > 0")
+    expect(source).toContain("const hasLocalEngineRuntime = effectiveCoordinatorEngineCount > 0")
     expect(source).toContain("const hasFreshDistributedHeartbeat")
     expect(source).toContain("hasLocalEngineRuntime || hasFreshDistributedHeartbeat")
     expect(source).toContain("workerAttached: hasLocalEngineRuntime")
@@ -816,6 +817,23 @@ describe("requested regression guardrails", () => {
     expect(source).toContain('engineStatus = "started"')
   })
 
+
+  test("production Vercel forceLocalTakeover can attach a local engine runtime", () => {
+    const source = read("lib/trade-engine.ts")
+
+    expect(source).toContain("const isVercelServerlessWorker = process.env.VERCEL === \"1\" || !!process.env.VERCEL_ENV")
+    expect(source).toContain("if (isVercelServerlessWorker && !explicitForegroundAllowed && !forceLocalTakeover)")
+    expect(source).not.toContain('process.env.VERCEL === "1" || !!process.env.VERCEL_ENV\n        && !explicitForegroundAllowed && !forceLocalTakeover')
+  })
+
+  test("production status poll runs awaited healing before reporting no runtime", () => {
+    const source = read("app/api/trade-engine/status/route.ts")
+
+    expect(source).toContain("runTradeEngineHealingSweep({ isStartup: false })")
+    expect(source).toContain("before reporting a degraded/no-runtime coordinator")
+    expect(source).toContain("coordinatorEngineCount = coordinator?.getActiveEngineCount() || 0")
+  })
+
   test("connection enable paths keep global coordinator intent stable when engines can run", () => {
     const enableRoute = read("app/api/settings/connections/[id]/enable/route.ts")
     const dashboardRoute = read("app/api/settings/connections/[id]/toggle-dashboard/route.ts")
@@ -902,7 +920,7 @@ describe("requested regression guardrails", () => {
     expect(bootBlock).toContain('actual_status: "stopped"')
     expect(bootBlock).not.toMatch(/^\s*status: "running"/m)
 
-    expect(statusRoute).toContain("const effectivelyRunning = isGloballyRunning && !isGloballyPaused && (hasRuntimeProof || distributedEngineCount > 0)")
+    expect(statusRoute).toContain("const effectivelyRunning = isGloballyRunning && !isGloballyPaused && (hasLocalEngineRuntime || hasRuntimeProof || distributedEngineCount > 0)")
     expect(statusRoute).toContain('actualStatus: effectivelyRunning ? "running" : (isGloballyPaused ? "paused" : "degraded")')
     expect(statusRoute).toContain("last_heartbeat_at")
   })
@@ -1338,6 +1356,21 @@ describe("requested regression guardrails", () => {
     expect(evictionBlock).toContain("settings:strategies")
     expect(evictionBlock).toContain("transient pipeline data")
     expect(source).toContain("async cleanupVolatileRuntimeState")
+  })
+
+  test("live positions route does not use production KEYS fallback", () => {
+    const route = read("app/api/trading/live-positions/route.ts")
+    const altIndex = read("lib/live-position-alt-index.ts")
+
+    expect(route).toContain("getAlternateLivePositionKeys")
+    expect(route).toContain("partialLegacyScan")
+    expect(route).not.toMatch(/\.keys\s*\(/)
+    expect(route).not.toContain("export async function indexAlternateLivePositionKey")
+
+    expect(altIndex).toContain("live:position:live:${connectionId}:index")
+    expect(altIndex).toContain("client.scan")
+    expect(altIndex).toContain("LEGACY_SCAN_MAX_KEYS")
+    expect(altIndex).toContain("indexAlternateLivePositionKey")
   })
 
   test("hot-path performance guards cover stats, real overlays, strategy top-k, and heap telemetry", () => {

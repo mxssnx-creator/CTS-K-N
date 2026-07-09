@@ -256,8 +256,8 @@ export class GlobalTradeEngineCoordinator {
       return false
     }
 
-    if (process.env.VERCEL === "1" || !!process.env.VERCEL_ENV
-        && !explicitForegroundAllowed && !forceLocalTakeover) {
+    const isVercelServerlessWorker = process.env.VERCEL === "1" || !!process.env.VERCEL_ENV
+    if (isVercelServerlessWorker && !explicitForegroundAllowed && !forceLocalTakeover) {
       console.warn(
         `[v0] [Coordinator] startEngine(${connectionId}) skipped — Vercel serverless workers are queued-only for passive starts without explicit foreground worker flags. Leaving start request queued.`,
       )
