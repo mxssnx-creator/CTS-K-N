@@ -10,6 +10,7 @@ import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
 import { nextStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
+import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 
 /**
  * POST /api/settings/connections/[id]/live-trade
@@ -54,6 +55,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       )
     }
     const isLiveTrade = parseBooleanInput(rawFlag)
+
+    if (isLiveTrade) {
+      const readiness = await checkProductionReadiness()
+      if (!readiness.ready) {
+        return NextResponse.json(productionReadinessJson(readiness), { status: 503 })
+      }
+    }
 
     console.log(`[v0] [LiveTrade] POST for ${connectionId}, is_live_trade=${isLiveTrade}`)
 

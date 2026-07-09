@@ -1744,4 +1744,12 @@ describe("requested regression guardrails", () => {
     expect(migrations).toContain('connection_library: "sdk"')
   })
 
+  test("queued refresh requests stay durable when drained by a non-owner process", () => {
+    const source = read("lib/trade-engine.ts")
+
+    expect(source).toContain("Refresh request for ${request.connectionId} is not local; leaving queued for owner")
+    expect(source).toContain("if (!this.isEngineRunning(request.connectionId))")
+    expect(source).toMatch(/if \(!this\.isEngineRunning\(request\.connectionId\)\) {[\s\S]*?continue[\s\S]*?await this\.applyPendingChangesNow\(request\.connectionId\)/)
+  })
+
 })
