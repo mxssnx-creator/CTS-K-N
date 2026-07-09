@@ -76,6 +76,31 @@ describe("requested regression guardrails", () => {
     expect(liveOrdersTest).toContain('mode: "blocked_live_order_safety"')
   })
 
+  test("live-stage reconcile fill accounting is marker-guarded", () => {
+    const source = read("lib/trade-engine/stages/live-stage.ts")
+
+    expect(source).toContain("fillCounterRecordedAt?: number")
+    expect(source).toContain("function hasFillCounterRecorded")
+    expect(source).toContain("if (hasFillCounterRecorded(position)) return false")
+    expect(source).toContain("position.fillCounterRecordedAt = Date.now()")
+
+    const fallbackBlock = source.slice(
+      source.indexOf("confirmed_position_fallback: reconcile saw exchange position"),
+      source.indexOf("if (pos.orderId)", source.indexOf("confirmed_position_fallback: reconcile saw exchange position")),
+    )
+    expect(fallbackBlock).toContain("await recordFillCountersOnce(connectionId, pos")
+    expect(fallbackBlock).not.toContain('incrementMetric(connectionId, "live_orders_filled_count")')
+    expect(fallbackBlock).not.toContain('incrementOrdersBySymbol(connectionId, pos.symbol')
+
+    const orderBlock = source.slice(
+      source.indexOf('statusLower === "filled" || statusLower === "partially_filled"'),
+      source.indexOf('} else if (statusLower === "cancelled"', source.indexOf('statusLower === "filled" || statusLower === "partially_filled"')),
+    )
+    expect(orderBlock).toContain("await recordFillCountersOnce(connectionId, pos")
+    expect(orderBlock).not.toContain('incrementMetric(connectionId, "live_orders_filled_count")')
+    expect(orderBlock).not.toContain('incrementOrdersBySymbol(connectionId, pos.symbol')
+  })
+
   test("live order statistics keep long and short buckets independent", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
@@ -1830,6 +1855,35 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("Refresh request for ${request.connectionId} is not local; leaving queued for owner")
     expect(source).toContain("if (!this.isEngineRunning(request.connectionId))")
     expect(source).toMatch(/if \(!this\.isEngineRunning\(request\.connectionId\)\) {[\s\S]*?return "defer"[\s\S]*?await this\.applyPendingChangesNow\(request\.connectionId\)/)
+  })
+
+
+  test("live order failure paths update global and per-symbol failed counters", () => {
+    const source = read("lib/trade-engine/stages/live-stage.ts")
+    const failedMetric = 'await incrementMetric(connectionId, "live_orders_failed_count")'
+    const failedBySymbol = 'await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")'
+
+    const failedMetricCount = source.split(failedMetric).length - 1
+    const failedBySymbolCount = source.split(failedBySymbol).length - 1
+
+    expect(failedMetricCount).toBeGreaterThanOrEqual(5)
+    expect(failedBySymbolCount).toBe(failedMetricCount)
+
+    for (const marker of [
+      'Exchange connector not available or missing placeOrder',
+      '`No current price available for ${realPosition.symbol}`',
+      '`Exchange circuit breaker active for ${realPosition.symbol} — retrying in <5min`',
+      'Entry order rejected for ${realPosition.symbol}',
+      '`Live pipeline unhandled error for ${realPosition.symbol}`',
+    ]) {
+      const markerIndex = source.indexOf(marker)
+      expect(markerIndex).toBeGreaterThanOrEqual(0)
+      const block = source.slice(markerIndex, markerIndex + 2500)
+      expect(block).toContain('incrementMetric(connectionId, "live_orders_failed_count")')
+      expect(block).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")')
+    }
+
+    expect(source).toMatch(/async function incrementOrdersBySymbol[\s\S]*?catch \{[\s\S]*?best-effort/)
   })
 
 })
