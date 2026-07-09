@@ -2,6 +2,16 @@ import { publishEngineEvent } from "./engine-event-bus"
 import { getRedisClient, getSettings, setSettings } from "./redis-db"
 
 export const ENGINE_REFRESH_REQUEST_PREFIX = "engine_coordinator:refresh_requested:"
+
+function parseEngineRefreshRequestTtlMs(): number {
+  const configured = Number(process.env.ENGINE_REFRESH_REQUEST_TTL_MS ?? "")
+  if (Number.isFinite(configured) && configured >= 60_000) return configured
+  // Long enough for production ownership handoff and multi-symbol strategy
+  // cycles, while still allowing abandoned refresh requests to self-heal.
+  return 10 * 60 * 1000
+}
+
+export const ENGINE_REFRESH_REQUEST_TTL_MS = parseEngineRefreshRequestTtlMs()
 const ENGINE_REFRESH_REQUEST_INDEX = "engine_coordinator:refresh_requested:index"
 
 export const ENGINE_REFRESH_CLAIM_PREFIX = "engine_coordinator:refresh_claim:"

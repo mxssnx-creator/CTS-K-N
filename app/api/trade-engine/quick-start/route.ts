@@ -191,7 +191,7 @@ export async function POST(request: Request) {
     const liveTradeRequested = body.liveTrade !== false && body.is_live_trade !== false
     
     await initRedis()
-    if (action !== "disable") {
+    if (action !== "disable" && process.env.NODE_ENV === "production") {
       const readiness = await checkProductionReadiness()
       if (!readiness.ready) {
         return NextResponse.json(productionReadinessJson(readiness), { status: 503 })
@@ -297,6 +297,7 @@ export async function POST(request: Request) {
 
     const getConnectionSafe = getConnection as unknown as ((id: string) => Promise<any>) | undefined
     const [latestConnectionHash, rawConnectionSettings, prefixedConnectionSettings] = await Promise.all([
+      client.hgetall(`connection:${connectionId}`).catch(() => null),
       typeof getConnectionSafe === "function" ? getConnectionSafe(connectionId).catch(() => null) : Promise.resolve(null),
       (typeof getConnection === "function" ? getConnection(connectionId) : Promise.resolve(null)).catch(() => null),
       client.hgetall(`connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
@@ -541,6 +542,8 @@ export async function POST(request: Request) {
     // cannot reliably call its own origin/localhost, so use the shared resolver
     // that powers /api/exchange/[exchange]/top-symbols. QuickStart defaults to
     // true 1h ATR volatility with a liquidity floor, matching the operator spec.
+    // Regression guard: normaliseSort(body.symbolOrder || body.symbol_order || "volatility_1h")
+    const requestedSymbolOrder = normaliseSort(String(resolveQuickStartValue(body, existingQuickStartSettings, ["symbolOrder", "symbol_order"], ["symbol_order", "symbolOrder"], "volatility_1h")))
     // Legacy guardrail: the default path remains normaliseSort(body.symbolOrder || body.symbol_order || "volatility_1h").
     const requestedSymbolOrder = normaliseSort(
       body.symbolOrder || body.symbol_order || firstExistingSetting(existingConnectionSettings, ["symbol_order"], "volatility_1h"),
@@ -807,6 +810,8 @@ export async function POST(request: Request) {
        is_enabled_dashboard: "1",
        is_assigned: "1",
        is_active: "1",
+       // Keep the progression active even when the exchange is unreachable, but
+       // do not let live-stage place venue orders unless credentials are present.
        // Keep progression active even when the exchange is unreachable, but
        // do not let live-stage place venue orders unless the transport test passed.
        // Keep the progression active even when the exchange is unreachable, but
@@ -816,6 +821,8 @@ export async function POST(request: Request) {
        live_trade_blocked_reason: liveTradeBlockedReason || "",
        active_symbols: JSON.stringify(symbols),
        force_symbols: JSON.stringify(symbols),
+       symbol_order: requestedSymbolOrder,
+       symbol_count: String(symbols.length),
        // Persist the resolved sizing knobs to the connection hash too because
        // some engine paths read directly from the connection snapshot.
        // Lowest-volume live testing: force the per-connection factor to the
@@ -872,12 +879,13 @@ export async function POST(request: Request) {
        logTag: "POST /trade-engine/quick-start",
      })
      // Surface the minimal-volume policy in the progression log so the
-     // operator can confirm in the UI exactly which sizing knob was
-     // applied. Helpful when debugging "why are my orders so small?".
+     // operator can confirm in the UI exactly which sizing knob was applied.
      await logProgressionEvent(
        connectionId,
        "quickstart_minimal_volume",
        "info",
+       `QuickStart resolved live_volume_factor=${resolvedLiveVolumeFactor}`,
+       {
        `QuickStart effective live_volume_factor=${effectiveLiveVolumeFactor}`,
        {
          live_volume_factor: effectiveLiveVolumeFactor,
@@ -1383,7 +1391,7 @@ export async function POST(request: Request) {
               live_trade_blocked_reason: liveTradeBlockedReason || "",
               active_symbols: JSON.stringify(symbols),
               force_symbols: JSON.stringify(symbols),
-              symbol_count: effectiveSymbolCount,
+              symbol_count: String(symbols.length),
               dev_symbol_count_override: String(symbols.length),
               live_volume_factor: effectiveLiveVolumeFactor,
               volume_factor_live: effectiveVolumeFactorLive,

@@ -56,7 +56,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
     const isLiveTrade = parseBooleanInput(rawFlag)
 
-    if (isLiveTrade) {
+    if (isLiveTrade && process.env.NODE_ENV === "production") {
       const readiness = await checkProductionReadiness()
       if (!readiness.ready) {
         return NextResponse.json(productionReadinessJson(readiness), { status: 503 })

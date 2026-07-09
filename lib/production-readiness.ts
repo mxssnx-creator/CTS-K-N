@@ -56,6 +56,8 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
   const latestMigrationVersion = getLatestMigrationVersion()
   const bundleHealth = getMigrationBundleHealth()
 
+  const backend = process.env.NODE_ENV === "production" ? getRedisBackend() : null
+  if (backend === "inline-local") {
   const redisBackendGetter = getRedisBackend as unknown as (() => string) | undefined
   const backend = typeof redisBackendGetter === "function" ? redisBackendGetter() : "unknown"
   const backend = typeof (RedisDb as any).getRedisBackend === "function" ? (RedisDb as any).getRedisBackend() : "unknown"

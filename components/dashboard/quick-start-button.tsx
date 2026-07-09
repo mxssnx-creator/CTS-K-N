@@ -270,6 +270,7 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
       // STEP 5: Enable selected main connection using saved symbol/live-trade settings (REQUIRED)
       let quickStartResponse: any = null
       await runStep("enable", "STEP 5: Enable selected Main Connection", async () => {
+        const selectedName = displayConnectionName()
         let selectedSettingsPayload: { settings?: any; connection?: any } | null = null
         if (selectedConnectionId) {
           const settingsRes = await timedFetch(`/api/settings/connections/${selectedConnectionId}/settings`, { method: "GET" }, 12000)
@@ -279,6 +280,7 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
         }
 
         const quickStartBody = buildQuickStartBodyFromSavedSettings(selectedConnectionId, selectedSettingsPayload)
+        updateStepName("enable", `Enable ${selectedName}`)
       // STEP 5: Enable the selected connection with its saved symbol selection (REQUIRED)
       let quickStartResponse: any = null
       await runStep("enable", "STEP 5: Enable Selected Connection", async () => {
@@ -355,7 +357,6 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
         return `Queued (${d.error ?? d.message ?? "coordinator processing"})`
       })
 
-      toast.success("Quick Start complete — selected main connection engine is running.")
       toast.success(`Quick Start complete — ${displayConnectionName()} engine running.`)
 
       // Fetch functional overview in background

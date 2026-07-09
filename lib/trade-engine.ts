@@ -52,6 +52,7 @@ import {
   forceBreakProgressionLock,
   type LockHandle,
 } from "./trade-engine/progression-lock"
+import { clearEngineRefreshRequest, ENGINE_REFRESH_REQUEST_TTL_MS, getQueuedEngineRefreshRequests, recordEngineRefreshRequestFailure } from "./engine-refresh-queue"
 import { processQueuedEngineRefreshRequests } from "./engine-refresh-queue"
 import { onEngineEvent, publishEngineEvent } from "./engine-event-bus"
 
@@ -734,6 +735,31 @@ export class GlobalTradeEngineCoordinator {
    */
   public async drainQueuedRefreshRequestsNow(connectionId?: string): Promise<void> {
     const { getConnection } = await import("@/lib/redis-db")
+    const now = Date.now()
+
+    for (const { request } of targetedRequests) {
+      const requestTime = new Date(request.timestamp).getTime()
+      const requestAgeMs = Number.isFinite(requestTime) ? now - requestTime : Number.POSITIVE_INFINITY
+      if (!Number.isFinite(requestTime) || requestAgeMs >= ENGINE_REFRESH_REQUEST_TTL_MS) {
+        console.log(
+          `[v0] [Coordinator] Dropping expired refresh request for ${request.connectionId} ` +
+            `(ageMs=${Number.isFinite(requestAgeMs) ? requestAgeMs : "invalid"}, ttlMs=${ENGINE_REFRESH_REQUEST_TTL_MS})`,
+        )
+        await clearEngineRefreshRequest(request.connectionId)
+        continue
+      }
+
+      const connection = await getConnection(request.connectionId)
+      const currentVersion = String(connection?.state_switch_version ?? 0)
+      const requestedVersion = String(request.state_switch_version ?? "")
+      if (!connection || currentVersion !== requestedVersion) {
+        console.log(
+          `[v0] [Coordinator] Ignoring stale refresh request for ${request.connectionId}: ` +
+            `requested state_switch_version=${requestedVersion}, current=${currentVersion}`,
+        )
+        await clearEngineRefreshRequest(request.connectionId)
+        continue
+      }
 
     await processQueuedEngineRefreshRequests({
       consumerName: "Coordinator",
@@ -1713,6 +1739,7 @@ for (const connection of validConnections) {
     if (process.env.NODE_ENV === "test") return
     if (this.healthMonitoringSubscriptionsStarted && this.healthCheckTimer) return
     console.log("[v0] Starting event-triggered trade engine health monitoring (refresh + stall watchdog)")
+    if (process.env.NODE_ENV === "test") return
 
     const pendingHealthCheckScopes = new Set<string>()
     let healthCheckRunning = false
@@ -1769,7 +1796,8 @@ for (const connection of validConnections) {
       } finally {
         healthCheckRunning = false
         if (pendingHealthCheckScopes.size > 0) {
-          setTimeout(() => void runEventHealthCheck(), 0)
+          const retryTimer = setTimeout(() => void runEventHealthCheck(), 0)
+          retryTimer.unref?.()
         }
       }
     }

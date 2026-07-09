@@ -68,6 +68,7 @@ async function getQueuedRefreshRequestList() {
 }
 
 async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnType<typeof loadTradeEngineCoordinator>>): Promise<number> {
+  const { getQueuedEngineRefreshRequests, clearEngineRefreshRequest, ENGINE_REFRESH_REQUEST_TTL_MS } = await import("./engine-refresh-queue")
   const { processQueuedEngineRefreshRequests: consumeQueuedEngineRefreshRequests } = await import("./engine-refresh-queue")
   const { getConnection } = await loadRedisDb()
 
@@ -88,6 +89,12 @@ async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnTyp
 
   for (const { request } of refreshRequests) {
     const requestTime = new Date(request.timestamp).getTime()
+    const requestAgeMs = Number.isFinite(requestTime) ? Date.now() - requestTime : Number.POSITIVE_INFINITY
+    if (!Number.isFinite(requestTime) || requestAgeMs >= ENGINE_REFRESH_REQUEST_TTL_MS) {
+      console.log(
+        `[v0] [AutoStart] Dropping expired refresh request for ${request.connectionId} ` +
+          `(ageMs=${Number.isFinite(requestAgeMs) ? requestAgeMs : "invalid"}, ttlMs=${ENGINE_REFRESH_REQUEST_TTL_MS})`,
+      )
     if (!Number.isFinite(requestTime) || Date.now() - requestTime >= 30_000) {
       console.log(`[v0] [AutoStart] Dropping expired refresh request for ${request.connectionId}`)
       await clearEngineRefreshRequest(request.connectionId)
