@@ -1840,20 +1840,116 @@ describe("requested regression guardrails", () => {
     ]) {
       expect(setBlock).toContain(`"${key}"`)
     }
+  })
 
-    const serializedWrite = route.slice(
-      route.indexOf("const progressionVisibleSettings = pickProgressionVisibleSettings(serializedMergedSettings)"),
-      route.indexOf("// ── Flat eval-knob hash mirror", route.indexOf("const progressionVisibleSettings = pickProgressionVisibleSettings(serializedMergedSettings)")),
-    )
-    const flatKnobWrite = route.slice(
-      route.indexOf("const progressionVisibleKnobs = pickProgressionVisibleSettings(flatKnobs)"),
-      route.indexOf("const volumeConnectionPatch", route.indexOf("const progressionVisibleKnobs = pickProgressionVisibleSettings(flatKnobs)")),
+  test("settings PATCH mirrors flattened progression-visible fields into both trade-engine state hashes", async () => {
+    jest.resetModules()
+
+    const hset = jest.fn().mockResolvedValue(1)
+    const connection = {
+      id: "conn-progress-visible",
+      name: "Progress Visible",
+      exchange: "bingx",
+      connection_settings: {},
+      updated_at: "2026-07-09T00:00:00.000Z",
+    }
+
+    jest.doMock("@/lib/redis-db", () => ({
+      initRedis: jest.fn().mockResolvedValue(undefined),
+      getConnection: jest.fn().mockResolvedValue(connection),
+      updateConnection: jest.fn(async (_id: string, patch: Record<string, unknown>) => ({ ...connection, ...patch })),
+      getRedisClient: jest.fn(() => ({ hset })),
+      setSettings: jest.fn().mockResolvedValue(undefined),
+      getSettings: jest.fn().mockResolvedValue({}),
+      persistNow: jest.fn().mockResolvedValue(undefined),
+    }))
+    jest.doMock("@/lib/system-logger", () => ({
+      SystemLogger: {
+        logConnection: jest.fn().mockResolvedValue(undefined),
+        logError: jest.fn().mockResolvedValue(undefined),
+      },
+    }))
+    jest.doMock("@/lib/redis-operations", () => ({
+      RedisTrades: { getTradesByConnection: jest.fn().mockResolvedValue([]) },
+      RedisPositions: { getPositionsByConnection: jest.fn().mockResolvedValue([]) },
+    }))
+    jest.doMock("@/lib/connection-recoordinator", () => ({
+      applyMainConnectionSettingsChange: jest.fn().mockResolvedValue({
+        completion: {
+          completedAt: "2026-07-09T00:00:01.000Z",
+          refreshQueued: false,
+          refreshStatus: "applied_locally",
+        },
+      }),
+    }))
+    jest.doMock("@/lib/trade-engine", () => ({ getTradeEngine: jest.fn(() => null) }))
+    jest.doMock("@/lib/top-symbols", () => ({
+      fetchTopSymbols: jest.fn(),
+      normaliseSort: jest.fn((sort: string) => sort),
+    }))
+
+    const { PATCH } = await import("../../app/api/settings/connections/[id]/settings/route")
+    const response = await PATCH(
+      {
+        json: async () => ({
+          coordination_settings: {
+            variants: { trailing: false, block: true, dca: false },
+            axes: {
+              prev: { enabled: true, maxWindow: 2 },
+              last: { enabled: false, maxWindow: 3 },
+              cont: { enabled: true, maxWindow: 4 },
+              pause: { enabled: false, maxWindow: 5 },
+            },
+            blockVolumeRatio: 1.75,
+            blockMaxStack: 6,
+            blockPauseCountRatio: 2.5,
+            blockActiveRealEnabled: true,
+            blockActiveLiveEnabled: false,
+          },
+          useSystemCloseOnly: true,
+          leveragePercentage: 42,
+          useMaximalLeverage: false,
+        }),
+      } as any,
+      { params: Promise.resolve({ id: "conn-progress-visible" }) },
     )
 
-    expect(serializedWrite).toContain("redis.hset(`trade_engine_state:${id}`")
-    expect(serializedWrite).toContain("redis.hset(`settings:trade_engine_state:${id}`")
-    expect(flatKnobWrite).toContain("redis.hset(`trade_engine_state:${id}`")
-    expect(flatKnobWrite).toContain("redis.hset(`settings:trade_engine_state:${id}`")
+    expect(response.status).toBe(200)
+
+    const stateWrites = hset.mock.calls.filter(([key]) =>
+      key === "trade_engine_state:conn-progress-visible" ||
+      key === "settings:trade_engine_state:conn-progress-visible",
+    )
+    const writesByKey = (redisKey: string) =>
+      Object.assign({}, ...stateWrites.filter(([key]) => key === redisKey).map(([, patch]) => patch))
+
+    for (const redisKey of [
+      "trade_engine_state:conn-progress-visible",
+      "settings:trade_engine_state:conn-progress-visible",
+    ]) {
+      expect(writesByKey(redisKey)).toEqual(expect.objectContaining({
+        variantTrailingEnabled: "false",
+        variantBlockEnabled: "true",
+        variantDcaEnabled: "false",
+        axisPrevEnabled: "true",
+        axisLastEnabled: "false",
+        axisContEnabled: "true",
+        axisPauseEnabled: "false",
+        axisPrevMaxWindow: "2",
+        axisLastMaxWindow: "3",
+        axisContMaxWindow: "4",
+        axisPauseMaxWindow: "5",
+        blockVolumeRatio: "1.75",
+        blockMaxStack: "6",
+        blockPauseCountRatio: "2.5",
+        blockActiveRealEnabled: "true",
+        blockActiveLiveEnabled: "false",
+        useSystemCloseOnly: "true",
+        use_system_close_only: "true",
+        leveragePercentage: "42",
+        useMaximalLeverage: "false",
+      }))
+    }
   })
 
 })
