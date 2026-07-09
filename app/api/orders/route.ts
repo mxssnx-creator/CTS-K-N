@@ -1,5 +1,4 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getRedisClient, getSettings } from "@/lib/redis-db"
 import { getMarketData, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
 import { auditLogger } from "@/lib/audit-logger"
 import { apiErrorHandler, ApiError } from "@/lib/api-error-handler"

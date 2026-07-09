@@ -4695,7 +4695,6 @@ export async function closeLivePosition(
     await savePosition(position)
 
     // ── 5. Release dedup lock + counters + audit log ────────────────────
-    await releaseLock(connectionId, position.symbol, position.direction!)
     await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
     mutationLockHeld = false
     if (position.liveLockToken) {
