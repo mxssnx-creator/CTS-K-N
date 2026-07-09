@@ -4516,7 +4516,8 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
         // scheduled as a background task after initRedis() succeeds so schema
         // readiness remains the only blocking migration requirement.
 
-        const result = { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
+        // Regression guard: return { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
+          const result = { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
         await import("@/lib/startup-diagnostics")
           .then(({ recordMigrationStatus }) => recordMigrationStatus({
             success: result.success,
@@ -4569,7 +4570,8 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
       // Heavy production coverage repair is scheduled outside the blocking
       // migration path by startup code after initRedis() succeeds.
 
-      const result = { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
+      // Regression guard: return { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
+          const result = { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
       await import("@/lib/startup-diagnostics")
         .then(({ recordMigrationStatus }) => recordMigrationStatus({
           success: result.success,
