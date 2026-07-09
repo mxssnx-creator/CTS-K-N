@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getSettings, setSettings } from "@/lib/redis-db"
+import { getMarketData, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
 import { auditLogger } from "@/lib/audit-logger"
 import { apiErrorHandler, ApiError } from "@/lib/api-error-handler"
 import { SystemLogger } from "@/lib/system-logger"
@@ -40,7 +40,47 @@ function checkOrderRateLimit(userId: string): boolean {
   return true
 }
 
-function validateOrder(order: any): { valid: boolean; error?: string } {
+function extractCurrentPrice(marketData: any): number | null {
+  if (!marketData) return null
+
+  const candidates: any[] = []
+  if (Array.isArray(marketData)) {
+    candidates.push(marketData[marketData.length - 1])
+  } else {
+    candidates.push(
+      marketData.latest,
+      Array.isArray(marketData.candles) ? marketData.candles[marketData.candles.length - 1] : null,
+      marketData,
+    )
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    const raw = Array.isArray(candidate)
+      ? candidate[4]
+      : candidate.close ?? candidate.price ?? candidate.last ?? candidate.markPrice
+    const price = Number.parseFloat(String(raw ?? ""))
+    if (Number.isFinite(price) && price > 0) return price
+  }
+
+  return null
+}
+
+async function getCurrentMarketPrice(symbol: string): Promise<number | null> {
+  const normalizedSymbol = symbol.toUpperCase()
+  const marketData = await getMarketData(normalizedSymbol, "1m").catch(() => null)
+  const cachedPrice = extractCurrentPrice(marketData)
+  if (cachedPrice) return cachedPrice
+
+  const client = getRedisClient()
+  if (!client) return null
+
+  const closeRaw = await client.hget(`market_data:${normalizedSymbol}`, "close").catch(() => null)
+  const hashPrice = Number.parseFloat(String(closeRaw ?? ""))
+  return Number.isFinite(hashPrice) && hashPrice > 0 ? hashPrice : null
+}
+
+async function validateOrder(order: any): Promise<{ valid: boolean; error?: string }> {
   if (!order.quantity || typeof order.quantity !== "number") {
     return { valid: false, error: "Invalid quantity" }
   }
@@ -62,9 +102,18 @@ function validateOrder(order: any): { valid: boolean; error?: string } {
     return { valid: false, error: "Price must be positive" }
   }
 
-  // Estimate order value for limit orders
-  if (order.price && order.quantity) {
-    const orderValue = order.price * order.quantity
+  // Estimate order value for both limit and market orders. Limit orders use
+  // the submitted price; market orders must have a current Redis price so they
+  // cannot bypass notional risk controls as unbounded or dust-sized orders.
+  const orderType = order.order_type?.toLowerCase()
+  const notionalPrice = orderType === "market" ? await getCurrentMarketPrice(order.symbol) : order.price
+
+  if (orderType === "market" && !notionalPrice) {
+    return { valid: false, error: "Current market price unavailable for market order notional validation" }
+  }
+
+  if (notionalPrice && order.quantity) {
+    const orderValue = notionalPrice * order.quantity
     if (orderValue > ORDER_LIMITS.MAX_AMOUNT_USDT) {
       return { valid: false, error: `Order value exceeds limit of $${ORDER_LIMITS.MAX_AMOUNT_USDT}` }
     }
@@ -169,7 +218,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Order validation
-    const validation = validateOrder({ quantity, price, order_type, side })
+    const validation = await validateOrder({ quantity, price, order_type, side, symbol })
     if (!validation.valid) {
       console.warn(`Order validation failed: ${validation.error}`)
       return NextResponse.json(
