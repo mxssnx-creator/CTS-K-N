@@ -1842,11 +1842,20 @@ export class InlineLocalRedis implements RedisClientLike {
 
 
 function hasSharedRedisConfig(): boolean {
-  return !!(
+  return Boolean(
     process.env.REDIS_URL ||
-    (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
-    process.env.KV_URL ||
-    (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN)
+      process.env.KV_URL ||
+      (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
+      (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN),
+  )
+}
+
+function getMissingProductionRedisError(): string {
+  return (
+    "Production/preview Redis configuration missing: configure one shared Redis option " +
+    "(REDIS_URL, KV_URL, UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN, or " +
+    "KV_REST_API_URL + KV_REST_API_TOKEN). InlineLocalRedis is process-local and is disabled " +
+    "for production/preview by default; set ALLOW_PROD_INLINE_REDIS=1 only for explicit local/demo overrides."
   )
 }
 
@@ -2074,20 +2083,21 @@ function createRedisInstance(): RedisClientLike {
     globalForRedis.__redis_backend = "redis-network"
     return new NodeRedisClientAdapter(url)
   }
-  const restUrl = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL
-  const restToken = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN
-  if (restUrl && restToken) {
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
     globalForRedis.__redis_backend = "redis-network"
-    return new UpstashRestRedisClient(restUrl, restToken)
+    return new UpstashRestRedisClient(process.env.UPSTASH_REDIS_REST_URL, process.env.UPSTASH_REDIS_REST_TOKEN)
+  }
+  if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
+    globalForRedis.__redis_backend = "redis-network"
+    return new UpstashRestRedisClient(process.env.KV_REST_API_URL, process.env.KV_REST_API_TOKEN)
   }
   if (isProductionEnvironment() && !hasSharedRedisConfig()) {
-    const strict = process.env.STRICT_REDIS_REQUIRED === "1" || process.env.REQUIRE_SHARED_REDIS === "1"
-    if (strict) {
-      throw new Error("Production Redis configuration missing: set REDIS_URL, KV_URL, or Upstash REST env vars for shared Redis")
+    if (process.env.ALLOW_PROD_INLINE_REDIS !== "1") {
+      throw new Error(getMissingProductionRedisError())
     }
     console.warn(
-      "[v0] [Redis] Production Redis configuration missing; falling back to InlineLocalRedis. " +
-        "Set REDIS_URL/KV_URL/Upstash env vars for shared durable storage, or STRICT_REDIS_REQUIRED=1 to fail fast.",
+      "[v0] [Redis] ALLOW_PROD_INLINE_REDIS=1 is set; using InlineLocalRedis in production/preview. " +
+        "This is only safe for explicit local/demo overrides and is not shared or durable across deployments.",
     )
   }
   globalForRedis.__redis_backend = "inline-local"
