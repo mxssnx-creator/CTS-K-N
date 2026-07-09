@@ -1809,4 +1809,51 @@ describe("requested regression guardrails", () => {
     expect(source).toMatch(/if \(!this\.isEngineRunning\(request\.connectionId\)\) {[\s\S]*?return "defer"[\s\S]*?await this\.applyPendingChangesNow\(request\.connectionId\)/)
   })
 
+
+  test("progression-visible settings include flattened coordination and leverage keys", () => {
+    const route = read("app/api/settings/connections/[id]/settings/route.ts")
+    const setStart = route.indexOf("const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([")
+    expect(setStart).toBeGreaterThanOrEqual(0)
+    const setBlock = route.slice(setStart, route.indexOf("])", setStart) + 2)
+
+    for (const key of [
+      "variantTrailingEnabled",
+      "variantBlockEnabled",
+      "variantDcaEnabled",
+      "axisPrevEnabled",
+      "axisLastEnabled",
+      "axisContEnabled",
+      "axisPauseEnabled",
+      "axisPrevMaxWindow",
+      "axisLastMaxWindow",
+      "axisContMaxWindow",
+      "axisPauseMaxWindow",
+      "blockVolumeRatio",
+      "blockMaxStack",
+      "blockPauseCountRatio",
+      "blockActiveRealEnabled",
+      "blockActiveLiveEnabled",
+      "useSystemCloseOnly",
+      "use_system_close_only",
+      "leveragePercentage",
+      "useMaximalLeverage",
+    ]) {
+      expect(setBlock).toContain(`"${key}"`)
+    }
+
+    const serializedWrite = route.slice(
+      route.indexOf("const progressionVisibleSettings = pickProgressionVisibleSettings(serializedMergedSettings)"),
+      route.indexOf("// ── Flat eval-knob hash mirror", route.indexOf("const progressionVisibleSettings = pickProgressionVisibleSettings(serializedMergedSettings)")),
+    )
+    const flatKnobWrite = route.slice(
+      route.indexOf("const progressionVisibleKnobs = pickProgressionVisibleSettings(flatKnobs)"),
+      route.indexOf("const volumeConnectionPatch", route.indexOf("const progressionVisibleKnobs = pickProgressionVisibleSettings(flatKnobs)")),
+    )
+
+    expect(serializedWrite).toContain("redis.hset(`trade_engine_state:${id}`")
+    expect(serializedWrite).toContain("redis.hset(`settings:trade_engine_state:${id}`")
+    expect(flatKnobWrite).toContain("redis.hset(`trade_engine_state:${id}`")
+    expect(flatKnobWrite).toContain("redis.hset(`settings:trade_engine_state:${id}`")
+  })
+
 })
