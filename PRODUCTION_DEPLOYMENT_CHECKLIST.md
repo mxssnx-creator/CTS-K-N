@@ -70,6 +70,29 @@ Orphaned cleanup: Automatic on permanent failure
 Timeout fallback: Graceful degradation to drift-only
 ```
 
+
+### Shared Redis Requirement
+
+Production and preview deployments must use shared Redis. Configure exactly one of the following supported options before deploying:
+
+```bash
+# Native Redis URL (preferred when available)
+REDIS_URL=redis://...
+
+# Vercel KV/Redis URL alternative
+KV_URL=redis://...
+
+# Upstash Redis REST pair
+UPSTASH_REDIS_REST_URL=https://...
+UPSTASH_REDIS_REST_TOKEN=...
+
+# Vercel KV REST pair
+KV_REST_API_URL=https://...
+KV_REST_API_TOKEN=...
+```
+
+Missing shared Redis now fails production/preview startup by default because `InlineLocalRedis` is process-local and not durable across serverless/preview instances. For an explicit local/demo production-mode smoke test only, set `ALLOW_PROD_INLINE_REDIS=1`; do not set this for real production trading.
+
 ### Server Actions Origin Allowlist
 
 Server Actions no longer accept wildcard origins. Production deployments should set one or more trusted origins through environment variables:

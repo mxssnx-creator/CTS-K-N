@@ -1,7 +1,7 @@
 "use client"
 
 import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } from "@/lib/connection-events"
-import React, { useState } from "react"
+import React, { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -79,8 +79,92 @@ interface OverallStats {
   totalDurationMs: number
 }
 
+const ENABLE_STEP_LABEL = "Enable selected Main Connection"
+
+type QuickStartRequestBody = {
+  action: "enable"
+  connectionId?: string
+  symbols?: string[]
+  symbolOrder?: string
+  symbolCount?: number
+  is_live_trade?: boolean
+  liveTrade?: boolean
+}
+
+const truthySetting = (value: unknown): boolean | undefined => {
+  if (typeof value === "boolean") return value
+  if (typeof value === "number") return value !== 0
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase()
+    if (["1", "true", "yes", "on"].includes(normalized)) return true
+    if (["0", "false", "no", "off", ""].includes(normalized)) return false
+  }
+  return undefined
+}
+
+const firstBoolean = (...values: unknown[]): boolean | undefined => {
+  for (const value of values) {
+    const parsed = truthySetting(value)
+    if (parsed !== undefined) return parsed
+  }
+  return undefined
+}
+
+const normalizePositiveInteger = (value: unknown): number | undefined => {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return undefined
+  return Math.floor(numeric)
+}
+
+const buildQuickStartBodyFromSavedSettings = (
+  selectedConnectionId: string | null,
+  payload: { settings?: any; connection?: any } | null,
+): QuickStartRequestBody => {
+  if (!selectedConnectionId) {
+    return { action: "enable", symbols: ["BTCUSDT"] }
+  }
+
+  const body: QuickStartRequestBody = { action: "enable", connectionId: selectedConnectionId }
+  if (!payload?.settings) {
+    return body
+  }
+
+  const { settings, connection } = payload
+
+  if (Array.isArray(settings.symbols) && settings.symbols.length > 0) {
+    body.symbols = settings.symbols.filter((symbol: unknown): symbol is string => (
+      typeof symbol === "string" && symbol.trim().length > 0
+    ))
+  }
+
+  if (!body.symbols?.length && typeof settings.symbol_order === "string" && settings.symbol_order.trim().length > 0) {
+    body.symbolOrder = settings.symbol_order
+  }
+
+  const symbolCount = normalizePositiveInteger(settings.symbol_count)
+  if (!body.symbols?.length && !body.symbolOrder && symbolCount !== undefined) {
+    body.symbolCount = symbolCount
+  }
+
+  const liveTradeIntent = firstBoolean(
+    connection?.live_trade_requested,
+    settings.live_trade_requested,
+    connection?.is_live_trade,
+    settings.is_live_trade,
+    connection?.live_trade_enabled,
+    settings.live_trade_enabled,
+  )
+  if (liveTradeIntent !== undefined) {
+    body.is_live_trade = liveTradeIntent
+    body.liveTrade = liveTradeIntent
+  }
+
+  return body
+}
+
 export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps) {
-  const { setSelectedConnectionId } = useExchange()
+  const { selectedConnectionId, setSelectedConnectionId } = useExchange()
+  const { selectedConnectionId, selectedConnection, selectedExchange, setSelectedConnectionId } = useExchange()
   const [isRunning, setIsRunning] = useState(false)
   const [functionalOverview, setFunctionalOverview] = useState<FunctionalOverview | null>(null)
   const [overallStats, setOverallStats] = useState<OverallStats | null>(null)
@@ -89,12 +173,41 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
     { id: "migrate", name: "Run Migrations",                 status: "pending" },
     { id: "test",    name: "Verify BingX Credentials",       status: "pending" },
     { id: "start",   name: "Start Global Trade Engine",      status: "pending" },
-    { id: "enable",  name: "Enable BingX (BTCUSDT)",         status: "pending" },
+    { id: "enable",  name: ENABLE_STEP_LABEL,                status: "pending" },
+    { id: "enable",  name: "Enable Selected Connection", status: "pending" },
     { id: "engine",  name: "Launch Engine + Progression",    status: "pending" },
   ])
 
+
+  useEffect(() => {
+    setSteps(prev => prev.map(s => (s.id === "enable" ? { ...s, name: ENABLE_STEP_LABEL } : s)))
+  }, [selectedConnectionId])
+
   const updateStep = (stepId: string, status: QuickStartStep["status"], message?: string) => {
     setSteps(prev => prev.map(s => s.id === stepId ? { ...s, status, message } : s))
+  }
+
+  const updateStepName = (stepId: string, name: string) => {
+    setSteps(prev => prev.map(s => s.id === stepId ? { ...s, name } : s))
+  }
+
+  const normaliseSymbols = (value: unknown): string[] => {
+    if (Array.isArray(value)) {
+      return value.map(symbol => String(symbol).trim()).filter(Boolean)
+    }
+    if (typeof value === "string" && value.trim()) {
+      try {
+        const parsed = JSON.parse(value)
+        return normaliseSymbols(parsed)
+      } catch {
+        return value.split(",").map(symbol => symbol.trim()).filter(Boolean)
+      }
+    }
+    return []
+  }
+
+  const displayConnectionName = () => {
+    return selectedConnection?.name || selectedConnection?.label || selectedConnectionId || selectedExchange || "BingX"
   }
 
   // Run a step — non-required steps never block the sequence
@@ -171,19 +284,75 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
         return `Coordinator running${n > 0 ? ` | Resumed ${n}` : ""}`
       }, true)
 
-      // STEP 5: Enable BingX with 1 symbol (REQUIRED)
+      // STEP 5: Enable selected main connection using saved symbol/live-trade settings (REQUIRED)
       let quickStartResponse: any = null
-      await runStep("enable", "STEP 5: Enable BingX (1 Symbol)", async () => {
+      await runStep("enable", "STEP 5: Enable selected Main Connection", async () => {
+        let selectedSettingsPayload: { settings?: any; connection?: any } | null = null
+        if (selectedConnectionId) {
+          const settingsRes = await timedFetch(`/api/settings/connections/${selectedConnectionId}/settings`, { method: "GET" }, 12000)
+          if (settingsRes.ok) {
+            selectedSettingsPayload = await settingsRes.json().catch(() => null)
+          }
+        }
+        const quickStartBody = buildQuickStartBodyFromSavedSettings(selectedConnectionId, selectedSettingsPayload)
         const res = await timedFetch("/api/trade-engine/quick-start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "enable", symbols: ["BTCUSDT"] }),
+          body: JSON.stringify(quickStartBody),
+      // STEP 5: Enable the selected connection with its saved symbol selection (REQUIRED)
+      let quickStartResponse: any = null
+      await runStep("enable", "STEP 5: Enable Selected Connection", async () => {
+        const requestBody: Record<string, unknown> = { action: "enable" }
+        const selectedName = displayConnectionName()
+        let symbolSource = "fallback BTCUSDT"
+
+        if (selectedConnectionId) {
+          requestBody.connectionId = selectedConnectionId
+          try {
+            const settingsRes = await timedFetch(`/api/settings/connections/${selectedConnectionId}/settings`, { method: "GET" }, 12000)
+            if (settingsRes.ok) {
+              const settingsPayload = await settingsRes.json().catch(() => ({}))
+              const settings = settingsPayload.settings || {}
+              const symbols = normaliseSymbols(settings.symbols)
+              if (symbols.length > 0) {
+                requestBody.symbols = symbols
+                symbolSource = `${symbols.length} saved symbol${symbols.length === 1 ? "" : "s"}`
+              } else {
+                const symbolOrder = settings.symbol_order || settings.symbolOrder
+                const symbolCount = settings.symbol_count ?? settings.symbolCount
+                if (symbolOrder) {
+                  requestBody.symbolOrder = symbolOrder
+                }
+                if (symbolCount !== undefined && symbolCount !== null && String(symbolCount).trim() !== "") {
+                  requestBody.symbolCount = Number(symbolCount) || symbolCount
+                }
+                if (requestBody.symbolOrder || requestBody.symbolCount) {
+                  const orderLabel = requestBody.symbolOrder ? `symbol order ${requestBody.symbolOrder}` : "settings symbol order"
+                  const countLabel = requestBody.symbolCount ? `count ${requestBody.symbolCount}` : "default count"
+                  symbolSource = `${orderLabel}, ${countLabel}`
+                }
+              }
+            }
+          } catch {
+            // Settings are helpful but not required; fall through to the final hard-coded fallback.
+          }
+        }
+
+        if (!requestBody.symbols && !requestBody.symbolOrder && !requestBody.symbolCount) {
+          requestBody.symbols = ["BTCUSDT"]
+        }
+
+        updateStepName("enable", `Enable ${selectedName} (${symbolSource})`)
+        const res = await timedFetch("/api/trade-engine/quick-start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody),
         }, 25000)
         const d = await res.json().catch(() => ({}))
         quickStartResponse = d
         if (!res.ok && !d.success) throw new Error(d.error ?? `HTTP ${res.status}`)
         if (!d.success) throw new Error(d.error ?? "Enable returned failure")
-        enabledConnectionId = d.connection?.id ?? null
+        enabledConnectionId = d.connection?.id ?? selectedConnectionId ?? null
         if (enabledConnectionId) {
           setSelectedConnectionId(enabledConnectionId)
         }
@@ -197,8 +366,18 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
         }))
         const syms = Array.isArray(d.connection?.symbols)
           ? d.connection.symbols.join(", ")
-          : "BTCUSDT"
+          : Array.isArray(quickStartBody.symbols) && quickStartBody.symbols.length > 0
+            ? quickStartBody.symbols.join(", ")
+            : quickStartBody.symbolOrder
+              ? `auto (${quickStartBody.symbolOrder})`
+              : quickStartBody.symbolCount
+                ? `auto (${quickStartBody.symbolCount})`
+                : "auto"
         return `${d.connection?.name} enabled | ${syms}`
+          : Array.isArray(requestBody.symbols)
+            ? requestBody.symbols.join(", ")
+            : `${requestBody.symbolOrder ?? "symbol order"} (${requestBody.symbolCount ?? "default"})`
+        return `${d.connection?.name ?? selectedName} enabled | ${syms}`
       }, true)
 
       // STEP 6: Launch per-connection engine (non-critical fallback)
@@ -222,7 +401,8 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
         return `Queued (${d.error ?? d.message ?? "coordinator processing"})`
       })
 
-      toast.success("Quick Start complete — BingX engine running with BTCUSDT.")
+      toast.success("Quick Start complete — selected main connection engine is running.")
+      toast.success(`Quick Start complete — ${displayConnectionName()} engine running.`)
 
       // Fetch functional overview in background
       try {
@@ -270,7 +450,7 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
               Quick Start (BingX)
             </CardTitle>
             <CardDescription>
-              Initialize system, run migrations, test connection, enable BingX, and start trade engine in one click
+              Initialize system, run migrations, test the connection, enable the selected Main Connection, and start the trade engine in one click
             </CardDescription>
           </div>
           <Badge variant="outline" className="text-xs">
@@ -352,7 +532,8 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
             <li>Run ALL database migrations (schema, indexes, TTL policies)</li>
             <li>Test BingX API connection (verify credentials & check balance)</li>
             <li>Start the trade engine</li>
-            <li>Enable BingX for active trading with BTCUSDT</li>
+            <li>Enable the selected Main Connection using saved symbols/order/count settings</li>
+            <li>Enable the selected connection using saved symbols or symbol-order settings</li>
           </ul>
         </div>
 

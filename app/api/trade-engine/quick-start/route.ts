@@ -9,6 +9,9 @@ import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
+import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
+import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
+import { recoordinateAfterSettingsChange } from "@/lib/connection-recoordinator"
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -86,6 +89,20 @@ function normalizeQuickstartExchange(connection: any): string {
   const compact = raw.replace(/[^a-z]/g, "")
   if (compact.includes("bingx") || String(connection?.id || "").toLowerCase().startsWith("bingx")) return "bingx"
   return compact || raw || "bingx"
+}
+
+function hasExistingSetting(settings: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(settings, key) &&
+    settings[key] !== undefined &&
+    settings[key] !== null &&
+    String(settings[key]).length > 0
+}
+
+function firstExistingSetting(settings: Record<string, unknown>, keys: string[], fallback: string): string {
+  for (const key of keys) {
+    if (hasExistingSetting(settings, key)) return String(settings[key])
+  }
+  return fallback
 }
 
 // RUNTIME FIX: Patch IndicationProcessor cache
@@ -176,6 +193,12 @@ export async function POST(request: Request) {
     const liveTradeRequested = body.liveTrade !== false && body.is_live_trade !== false
     
     await initRedis()
+    if (action !== "disable") {
+      const readiness = await checkProductionReadiness()
+      if (!readiness.ready) {
+        return NextResponse.json(productionReadinessJson(readiness), { status: 503 })
+      }
+    }
     const client = getRedisClient()
     const allConnections = await getAllConnections()
     
@@ -287,6 +310,48 @@ export async function POST(request: Request) {
     connection = { ...(connection || {}), ...(latestConnectionHash || {}) }
 
     console.log(`${LOG_PREFIX}: Found ${connection.name} (${connectionId}) on ${exchangeName}`)
+
+    const [existingRawConnectionSettings, existingPrefixedConnectionSettings] = await Promise.all([
+      client.hgetall(`connection_settings:${connectionId}`).catch(() => ({} as Record<string, string>)),
+      client.hgetall(`settings:connection_settings:${connectionId}`).catch(() => ({} as Record<string, string>)),
+    ])
+    const existingConnectionSettings: Record<string, unknown> = {
+      ...(existingPrefixedConnectionSettings ?? {}),
+      ...(existingRawConnectionSettings ?? {}),
+    }
+    const effectiveVolumeFactorLive = firstExistingSetting(
+      existingConnectionSettings,
+      ["volume_factor_live", "live_volume_factor"],
+      QUICKSTART_LIVE_VOLUME_FACTOR,
+    )
+    const effectiveLiveVolumeFactor = firstExistingSetting(
+      existingConnectionSettings,
+      ["live_volume_factor", "volume_factor_live"],
+      QUICKSTART_LIVE_VOLUME_FACTOR,
+    )
+    const effectiveVolumeFactorPreset = firstExistingSetting(
+      existingConnectionSettings,
+      ["volume_factor_preset", "preset_volume_factor"],
+      "1.0",
+    )
+    const effectivePresetVolumeFactor = firstExistingSetting(
+      existingConnectionSettings,
+      ["preset_volume_factor", "volume_factor_preset"],
+      "1.0",
+    )
+    const effectiveVolumeStepRatio = firstExistingSetting(
+      existingConnectionSettings,
+      ["volume_step_ratio"],
+      String(DEFAULT_VOLUME_STEP_RATIO),
+    )
+    const effectiveBaseMinProfitFactor = firstExistingSetting(existingConnectionSettings, ["base_min_profit_factor"], "1.0")
+    const effectiveMainMinProfitFactor = firstExistingSetting(existingConnectionSettings, ["main_min_profit_factor"], "1.2")
+    const effectiveRealMinProfitFactor = firstExistingSetting(existingConnectionSettings, ["real_min_profit_factor"], "1.2")
+    const effectiveVariantTrailing = firstExistingSetting(existingConnectionSettings, ["variant_trailing"], "true")
+    const effectiveVariantBlock = firstExistingSetting(existingConnectionSettings, ["variant_block"], "true")
+    const effectiveVariantDca = firstExistingSetting(existingConnectionSettings, ["variant_dca"], "false")
+    const effectiveControlOrders = firstExistingSetting(existingConnectionSettings, ["control_orders"], "true")
+    const effectiveMinStep = firstExistingSetting(existingConnectionSettings, ["minStep"], "5")
     
     // DISABLE ACTION
     if (action === "disable") {
@@ -477,6 +542,9 @@ export async function POST(request: Request) {
     // that powers /api/exchange/[exchange]/top-symbols. QuickStart defaults to
     // true 1h ATR volatility with a liquidity floor, matching the operator spec.
     const requestedSymbolOrder = normaliseSort(String(resolveQuickStartValue(body, existingQuickStartSettings, ["symbolOrder", "symbol_order"], ["symbol_order", "symbolOrder"], "volatility_1h")))
+    const requestedSymbolOrder = normaliseSort(
+      body.symbolOrder || body.symbol_order || firstExistingSetting(existingConnectionSettings, ["symbol_order"], "volatility_1h"),
+    )
     if (symbols.length === 0) {
       try {
         const topData = await fetchTopSymbols(exchangeName, requestedCount, requestedSymbolOrder)
@@ -528,6 +596,8 @@ export async function POST(request: Request) {
     }
 
     console.log(`${LOG_PREFIX}: [2/4] Final symbol: ${symbols.join(", ")}`)
+
+    const effectiveSymbolCount = firstExistingSetting(existingConnectionSettings, ["symbol_count"], String(symbols.length))
 
     const symbolSelectionEpoch = `${Date.now()}:${Math.random().toString(36).slice(2)}`
 
@@ -697,12 +767,17 @@ export async function POST(request: Request) {
        live_volume_factor: resolvedLiveVolumeFactor,
        volume_factor_live: resolvedLiveVolumeFactor,
        volume_step_ratio: resolvedVolumeStepRatio,
+       live_volume_factor: effectiveLiveVolumeFactor,
+       volume_factor_live: effectiveVolumeFactorLive,
+       preset_volume_factor: effectivePresetVolumeFactor,
+       volume_factor_preset: effectiveVolumeFactorPreset,
+       volume_step_ratio: effectiveVolumeStepRatio,
        force_symbols: JSON.stringify(symbols),
        // QuickStart uses the minimum live volume factor so live-trade smoke tests
        // place only exchange-minimum orders when credentials are available.
        // Symbol ordering: operator spec is volatility_1h for quickstart.
        symbol_order: requestedSymbolOrder,
-       symbol_count: String(symbols.length),
+       symbol_count: effectiveSymbolCount,
        last_test_status: testPassed ? "success" : "failed",
        last_test_balance: testBalance,
        last_test_at: new Date().toISOString(),
@@ -711,6 +786,28 @@ export async function POST(request: Request) {
      
      await updateConnection(connectionId, updated)
      console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${resolvedLiveVolumeFactor}).`)
+     await applyMainConnectionSettingsChange(connectionId, connection, {
+       connectionPatch: updated,
+       settingsPatch: {
+         active_symbols: JSON.stringify(symbols),
+         force_symbols: JSON.stringify(symbols),
+         symbols: JSON.stringify(symbols),
+         symbol_order: requestedSymbolOrder,
+         symbol_count: String(symbols.length),
+         live_volume_factor: QUICKSTART_LIVE_VOLUME_FACTOR,
+         volume_factor_live: QUICKSTART_LIVE_VOLUME_FACTOR,
+         volume_step_ratio: String(DEFAULT_VOLUME_STEP_RATIO),
+       },
+       changedFieldsOverride: [
+         "is_enabled", "is_active", "is_live_trade", "live_trade_requested",
+         "active_symbols", "force_symbols", "symbols", "symbol_order", "symbol_count",
+         "live_volume_factor", "volume_factor_live", "volume_step_ratio", "connection_settings",
+       ],
+       logTag: "POST /trade-engine/quick-start",
+     })
+     console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${QUICKSTART_LIVE_VOLUME_FACTOR} → exchange-minimum orders).`)
+     await updateConnection(connectionId, updated)
+     console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${effectiveLiveVolumeFactor}).`)
      // Surface the minimal-volume policy in the progression log so the
      // operator can confirm in the UI exactly which sizing knob was
      // applied. Helpful when debugging "why are my orders so small?".
@@ -721,6 +818,9 @@ export async function POST(request: Request) {
        `QuickStart resolved live_volume_factor=${resolvedLiveVolumeFactor} for this connection`,
        {
          live_volume_factor: resolvedLiveVolumeFactor,
+       `QuickStart effective live_volume_factor=${effectiveLiveVolumeFactor}`,
+       {
+         live_volume_factor: effectiveLiveVolumeFactor,
          note:
            "QuickStart preserves existing per-connection sizing settings unless the request body explicitly overrides them; safe defaults are only used on first setup.",
        },
@@ -739,6 +839,15 @@ export async function POST(request: Request) {
     const { getRedisClient: _gsClient } = await import("@/lib/redis-db")
     const _gsc = _gsClient()
     const quickStartConnectionSettings: Record<string, string> = {
+    await _gsc.hset(`connection_settings:${connectionId}`, {
+      // Volume factor (preserve operator-configured values; defaults are first-run only)
+      volume_factor_live: effectiveVolumeFactorLive,
+      live_volume_factor: effectiveLiveVolumeFactor,
+      volume_step_ratio: effectiveVolumeStepRatio,
+      volume_factor_preset: effectiveVolumeFactorPreset,
+      preset_volume_factor: effectivePresetVolumeFactor,
+      // Symbol order/count
+    const quickstartConnectionSettingsPatch = {
       // Volume factor
       volume_factor_live: resolvedLiveVolumeFactor,
       live_volume_factor: resolvedLiveVolumeFactor,
@@ -783,9 +892,105 @@ export async function POST(request: Request) {
       _gsc.hset(`connection_settings:${connectionId}`, quickStartConnectionSettings),
       _gsc.hset(`settings:connection_settings:${connectionId}`, quickStartConnectionSettings),
     ])
+      symbol_count: effectiveSymbolCount,
+      // Strategy PF thresholds
+      base_min_profit_factor: effectiveBaseMinProfitFactor,
+      main_min_profit_factor: effectiveMainMinProfitFactor,
+      real_min_profit_factor: effectiveRealMinProfitFactor,
+      // Variant toggles
+      variant_trailing: effectiveVariantTrailing,
+      variant_block: effectiveVariantBlock,
+      variant_dca: effectiveVariantDca,
+      // Control orders (SL/TP on exchange)
+      control_orders: effectiveControlOrders,
+      // Min step for pseudo-positions
+      minStep: effectiveMinStep,
+      updated_at: new Date().toISOString(),
+    }
+    await _gsc.hset(`connection_settings:${connectionId}`, quickstartConnectionSettingsPatch).catch(() => {})
 
     const coordinator = getGlobalTradeEngineCoordinator()
     const quickstartEngineAlreadyRunning = coordinator.isEngineRunning(connectionId)
+    const quickstartTouchedFields = [
+      "is_enabled",
+      "is_inserted",
+      "is_active_inserted",
+      "is_dashboard_inserted",
+      "is_enabled_dashboard",
+      "is_assigned",
+      "is_active",
+      "is_live_trade",
+      "live_trade_requested",
+      "live_trade_blocked_reason",
+      "active_symbols",
+      "force_symbols",
+      "symbol_order",
+      "symbol_count",
+      "last_test_status",
+      "live_volume_factor",
+      "volume_step_ratio",
+      ...Object.keys(quickstartConnectionSettingsPatch).map((field) => `connection_settings.${field}`),
+    ]
+
+    await setSettings(`engine_progression:${connectionId}`, {
+      phase: "recoordination",
+      status: "recoordinating",
+      progress: quickstartEngineAlreadyRunning ? 98 : 8,
+      connectionId,
+      connectionName: connection.name,
+      exchange: exchangeName,
+      symbols,
+      detail: quickstartEngineAlreadyRunning
+        ? "QuickStart settings saved — hot-recoordinating the running engine."
+        : "QuickStart settings saved — queuing durable engine recoordination.",
+      changed_fields: quickstartTouchedFields,
+      updated_at: new Date().toISOString(),
+    })
+    await client.hset(`progression:${connectionId}`, {
+      phase: "recoordination",
+      settings_recoordination_pending: "1",
+      settings_recoordination_fields: JSON.stringify(quickstartTouchedFields),
+      quickstart_recoordination_started_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }).catch(() => 0)
+    await logProgressionEvent(connectionId, "quickstart_recoordination_requested", "info",
+      "QuickStart saved connection/settings and requested durable recoordination",
+      {
+        changedFields: quickstartTouchedFields,
+        engineAlreadyRunning: quickstartEngineAlreadyRunning,
+      },
+    )
+    emitEngineStageAck(connectionId, "startup", "ack", "QuickStart saved settings and requested durable recoordination", {
+      changedFields: quickstartTouchedFields,
+      engineAlreadyRunning: quickstartEngineAlreadyRunning,
+    })
+
+    const quickstartRecoordination = await recoordinateAfterSettingsChange(connectionId, connection, updated, {
+      changedFieldsOverride: quickstartTouchedFields,
+      logTag: "POST /api/trade-engine/quick-start",
+      settingsVersion: updated.updated_at,
+    })
+    await client.hset(`progression:${connectionId}`, {
+      settings_recoordination_pending: "0",
+      quickstart_recoordination_completed_at: quickstartRecoordination.completedAt,
+      quickstart_recoordination_id: quickstartRecoordination.recoordinationId || quickstartRecoordination.completedAt,
+      updated_at: quickstartRecoordination.completedAt,
+    }).catch(() => 0)
+    emitEngineStageAck(connectionId, "recoordination_complete", "ack", "QuickStart durable settings recoordination applied", {
+      changedFields: quickstartTouchedFields,
+      engineAlreadyRunning: quickstartEngineAlreadyRunning,
+      progressRecoordinationRequired: quickstartRecoordination.progressRecoordinationRequired,
+    })
+    await logProgressionEvent(connectionId, "quickstart_recoordination_applied", "info",
+      "QuickStart durable settings recoordination applied",
+      {
+        changedFields: quickstartTouchedFields,
+        engineAlreadyRunning: quickstartEngineAlreadyRunning,
+        progressRecoordinationRequired: quickstartRecoordination.progressRecoordinationRequired,
+        progressionChanged: quickstartRecoordination.progressionChanged,
+        progressionReason: quickstartRecoordination.progressionReason,
+      },
+    )
 
     await setSettings(`trade_engine_state:${connectionId}`, {
       connection_id: connectionId,
@@ -870,6 +1075,7 @@ export async function POST(request: Request) {
        await logProgressionEvent(connectionId, "quickstart_live_trade_blocked", "warning",
          "Live exchange order placement disabled until connection test passes",
          { reason: liveTradeBlockedReason, symbols, live_volume_factor: resolvedLiveVolumeFactor },
+         { reason: liveTradeBlockedReason, symbols, live_volume_factor: effectiveLiveVolumeFactor },
        )
      }
      
@@ -1068,10 +1274,15 @@ export async function POST(request: Request) {
               live_trade_blocked_reason: liveTradeBlockedReason || "",
               active_symbols: JSON.stringify(symbols),
               force_symbols: JSON.stringify(symbols),
-              symbol_count: String(symbols.length),
+              symbol_count: effectiveSymbolCount,
               dev_symbol_count_override: String(symbols.length),
               live_volume_factor: resolvedLiveVolumeFactor,
               volume_step_ratio: resolvedVolumeStepRatio,
+              live_volume_factor: effectiveLiveVolumeFactor,
+              volume_factor_live: effectiveVolumeFactorLive,
+              preset_volume_factor: effectivePresetVolumeFactor,
+              volume_factor_preset: effectiveVolumeFactorPreset,
+              volume_step_ratio: effectiveVolumeStepRatio,
               updated_at: new Date().toISOString(),
             })
 

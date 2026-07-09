@@ -792,6 +792,16 @@ export class GlobalTradeEngineCoordinator {
           // target connection only. Calling refreshEngines() here performed
           // a full eligible-connection reconciliation every 10s and caused
           // repeated reinitializations right after progress started.
+          // If this process is not the engine owner, do NOT clear the durable
+          // request: a serverless/API worker can import the coordinator without
+          // owning the running manager, and clearing here would hide the refresh
+          // from the cross-process owner that still needs to consume it.
+          if (!this.isEngineRunning(request.connectionId)) {
+            console.log(
+              `[v0] [Coordinator] Refresh request for ${request.connectionId} is not local; leaving queued for owner`,
+            )
+            continue
+          }
           await this.applyPendingChangesNow(request.connectionId)
         }
         await clearEngineRefreshRequest(request.connectionId)
