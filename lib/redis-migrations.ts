@@ -2836,6 +2836,7 @@ const migrations: Migration[] = [
       const hashes = [
         `connection:${connId}`,
         `settings:trade_engine_state:${connId}`,
+        `settings:connection:${connId}`,
         `settings:connection_settings:${connId}`,
       ]
       for (const h of hashes) {
@@ -2870,6 +2871,7 @@ const migrations: Migration[] = [
       const hashes = [
         `connection:${connId}`,
         `settings:trade_engine_state:${connId}`,
+        `settings:connection:${connId}`,
         `settings:connection_settings:${connId}`,
       ]
       for (const h of hashes) {
