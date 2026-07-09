@@ -7,7 +7,7 @@
 'use client'
 
 import { useEffect, useCallback, useState, useRef } from 'react'
-import { getSSEClient, disconnectSSE } from './sse-client'
+import { getSSEClient, disconnectSSE, retainSSE, releaseSSE } from './sse-client'
 import type { SSEEventType, SSEMessage } from './sse-client'
 
 export type RealTimeEventType = SSEEventType
@@ -55,32 +55,21 @@ export function useRealTime(connectionId: string) {
     const sseClient = getSSEClient(connectionId)
     sseClientRef.current = sseClient
 
-    const handleError = (error: any) => {
-      setConnectionError(error.message || 'Connection error occurred')
-    }
+    const unsubError = sseClient.subscribe('error', handleError)
+    const unsubConnected = sseClient.subscribe('connected', handleConnected)
 
-    const handleConnected = () => {
-      setIsConnected(true)
-      setConnectionError(null)
-    }
-
-    sseClient.subscribe('error', handleError)
-    sseClient.subscribe('connected', handleConnected)
-
-    sseClient
-      .connect()
-      .then(() => {
-        setIsConnected(true)
-        setConnectionError(null)
-      })
-      .catch((error) => {
-        console.error('[useRealTime] Connection failed:', error)
-        setConnectionError(error.message)
-      })
+    // Acquire the shared, per-connectionId stream. Connects on the first
+    // subscriber and only disconnects once the last subscriber for this
+    // connectionId unmounts — so one component unmounting does not tear down
+    // live updates that other mounted components still rely on.
+    retainSSE(connectionId)
 
     return () => {
-      // Clean up on unmount
-      sseClient.disconnect()
+      // Clean up on unmount — release the shared stream (disconnects only
+      // when this was the last subscriber for this connectionId).
+      unsubError()
+      unsubConnected()
+      releaseSSE(connectionId)
       sseClientRef.current = null
     }
   }, [connectionId])

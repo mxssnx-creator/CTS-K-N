@@ -10,7 +10,7 @@
 const _STRATEGY_BUILD_VERSION = "2.1.0"
 import { getSettings, setSettings, getRedisClient, initRedis, getIndications } from "@/lib/redis-db"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
-import { StrategyCoordinator } from "@/lib/strategy-coordinator"
+import { StrategyCoordinator, getStrategyCoordinator } from "@/lib/strategy-coordinator"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { trackStrategyStats } from "@/lib/statistics-tracker"
 // Strategy-flow throttle values are read live from `settings:system`. The
@@ -266,7 +266,7 @@ export class StrategyProcessor {
       // still applies its own PF+DDT thresholds on derived Sets, but
       // the input to that pipeline is now pre-filtered to validated
       // indications only.
-      const coordinator = new StrategyCoordinator(this.connectionId)
+      const coordinator = getStrategyCoordinator(this.connectionId)
       const results = await coordinator.executeStrategyFlow(symbol, validIndications, false, undefined, skipLiveDispatch)
 
       // ── Pipeline-aware counting ────────────────────────────────────────
@@ -381,7 +381,7 @@ export class StrategyProcessor {
       }
 
       // Execute complete strategy coordination flow (prehistoric mode)
-      const coordinator = new StrategyCoordinator(this.connectionId)
+      const coordinator = getStrategyCoordinator(this.connectionId)
       const results = await coordinator.executeStrategyFlow(symbol, indications, true)
 
       // Track prehistoric progress

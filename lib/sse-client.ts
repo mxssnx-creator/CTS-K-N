@@ -194,22 +194,60 @@ export class SSEClient {
   }
 }
 
-// Global singleton for SSE management
-let sseClient: SSEClient | null = null
+// One SSEClient per connectionId. The previous design kept a single
+// process-wide client and hard-disconnected it whenever a component mounted
+// with a different connectionId or any component using the same connectionId
+// unmounted — which tore down streams that other mounted components still
+// depended on, silently stopping their live updates.
+const sseClients: Map<string, SSEClient> = new Map()
+// Reference count of live subscribers per connectionId. The underlying
+// EventSource is only closed once the last subscriber unmounts.
+const sseRefCounts: Map<string, number> = new Map()
 
 export function getSSEClient(connectionId: string): SSEClient {
-  if (!sseClient || sseClient['connectionId'] !== connectionId) {
-    if (sseClient) {
-      sseClient.disconnect()
-    }
-    sseClient = new SSEClient(connectionId)
+  let client = sseClients.get(connectionId)
+  if (!client) {
+    client = new SSEClient(connectionId)
+    sseClients.set(connectionId, client)
   }
-  return sseClient
+  return client
+}
+
+/**
+ * Acquire a shared SSE stream for a connectionId. Connects lazily on the
+ * first acquirer and only disconnects when the last acquirer releases it.
+ */
+export function retainSSE(connectionId: string): void {
+  const n = (sseRefCounts.get(connectionId) || 0) + 1
+  sseRefCounts.set(connectionId, n)
+  const client = getSSEClient(connectionId)
+  if (!client.isConnected()) {
+    client.connect().catch((err) => console.error(`[SSE] connect failed for ${connectionId}:`, err))
+  }
+}
+
+/**
+ * Release a previously-acquired SSE stream. Disconnects the shared client
+ * only when no other subscriber for this connectionId remains.
+ */
+export function releaseSSE(connectionId: string): void {
+  const n = (sseRefCounts.get(connectionId) || 0) - 1
+  if (n <= 0) {
+    sseRefCounts.delete(connectionId)
+    const client = sseClients.get(connectionId)
+    if (client) {
+      client.disconnect()
+      sseClients.delete(connectionId)
+    }
+  } else {
+    sseRefCounts.set(connectionId, n)
+  }
 }
 
 export function disconnectSSE(): void {
-  if (sseClient) {
-    sseClient.disconnect()
-    sseClient = null
+  for (const client of sseClients.values()) {
+    client.disconnect()
   }
+  sseClients.clear()
+  sseRefCounts.clear()
 }

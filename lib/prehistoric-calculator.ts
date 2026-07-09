@@ -321,7 +321,7 @@ export class PrehistoricCalculator {
 
     const upper = sma + (stdDev * 2)
     const lower = sma - (stdDev * 2)
-    const percentB = candles[candles.length - 1].close - lower / (upper - lower)
+    const percentB = (candles[candles.length - 1].close - lower) / (upper - lower)
 
     return { upper, middle: sma, lower, percentB }
   }

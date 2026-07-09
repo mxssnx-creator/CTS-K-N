@@ -751,6 +751,28 @@ export interface StrategyCoordinatorConfig {
 // "main:<connectionId>" and "real:<connectionId>". 60 s quiet period.
 const _bootstrapLoggedAt: Record<string, number> = {}
 
+/**
+ * Per-connection StrategyCoordinator cache.
+ *
+ * A new StrategyCoordinator used to be created on every cron tick / flow call,
+ * which reset every in-memory TTL cache (coordination settings, PF thresholds,
+ * hedge params, position-window memo, open-live-set keys, and the
+ * "skip if position+indication state unchanged" fingerprint) on each cycle —
+ * defeating the very de-dup / "97% Redis I/O reduction" logic they implement.
+ * Reusing one instance per connectionId lets those caches actually persist
+ * across cycles, and lets the skip-optimization fire. The caches are TTL- or
+ * per-flow-guarded, so sharing the instance is safe for the serial tick path.
+ */
+const _strategyCoordinatorInstances: Map<string, StrategyCoordinator> = new Map()
+export function getStrategyCoordinator(connectionId: string): StrategyCoordinator {
+  let coordinator = _strategyCoordinatorInstances.get(connectionId)
+  if (!coordinator) {
+    coordinator = new StrategyCoordinator(connectionId)
+    _strategyCoordinatorInstances.set(connectionId, coordinator)
+  }
+  return coordinator
+}
+
 export class StrategyCoordinator {
   static forceNextSettingsReload(_connectionId: string): number {
     return Date.now()
@@ -777,10 +799,11 @@ export class StrategyCoordinator {
   }
 
   // Legacy/prod-tuned constants for strategy ceiling configuration.
-  // STRATEGY_MAIN_AXIS_SETS_CEILING: env-overridable main axis set limit
-  // STRATEGY_REAL_SETS_SAFETY_CEILING: env-overridable real set safety ceiling
-  private static readonly STRATEGY_MAIN_AXIS_SETS_CEILING: 50
-  private static readonly STRATEGY_REAL_SETS_SAFETY_CEILING: 100
+  // The per-symbol Main axis fan-out ceiling is now derived/bounded dynamically
+  // (see the MAIN_AXIS_SETS_CEILING computation in executeStrategyFlow) so it
+  // stays coupled to the Real-stage funnel it feeds instead of being a second,
+  // unrelated "safety ceiling". The env vars STRATEGY_MAIN_AXIS_SETS_CEILING /
+  // STRATEGY_REAL_SETS_SAFETY_CEILING remain honoured as explicit overrides.
 
   // null = use the dynamic VM-memory-scaled default (300 × memScale).
   // Set to a number via connection settings or STRATEGY_MAIN_AXIS_SETS_CEILING env var.
@@ -2608,9 +2631,20 @@ export class StrategyCoordinator {
       // memory pressure. Now safe to expand for much richer strategy coverage.
       const _axMemScale = _axGl ? Math.max(1, _axGl.heapMB / 2_048) : 1
       const _dynAxisCeiling = Math.round(800 * _axMemScale)
+      // The per-symbol Main axis fan-out feeds the Real-stage funnel, whose
+      // safety ceiling is 100 in production (see evaluateRealSets). Materialising
+      // ~2513 full StrategySet objects per symbol every cycle that are then
+      // mostly discarded by the 100-wide Real funnel is pure CPU/memory churn
+      // and emits a perpetual "safety ceiling 2513 (OOM-protection)" warning.
+      // Bound the *dynamic default* to a modest multiple of the Real funnel so
+      // the highest-priority axis projections are retained without the burst.
+      // Explicit operator env overrides (configuredAxisCeiling / _instanceCeiling)
+      // are still honoured below and not clamped.
+      const _realCapForBound = process.env.NODE_ENV === "production" ? 100 : 60
+      const _boundedDynCeiling = Math.min(_dynAxisCeiling, Math.max(_realCapForBound * 3, 200))
       // Store on globalThis so HMR-lagged prototype instances pick up the new value.
       if (!configuredAxisCeiling) {
-        ;(globalThis as any).__axis_sets_ceiling = _dynAxisCeiling
+        ;(globalThis as any).__axis_sets_ceiling = _boundedDynCeiling
       }
       // Instance field is null when unconfigured (new code) or 50 when the
       // singleton was constructed under old code. Treat null OR the old sentinel
@@ -2624,7 +2658,7 @@ export class StrategyCoordinator {
         _instanceCeiling ??
         // Also read from globalThis so old singleton instances get the new value
         ((globalThis as any).__axis_sets_ceiling as number | undefined) ??
-        _dynAxisCeiling
+        _boundedDynCeiling
       let axisCapHit = false
       const liveCont = symbolCtx?.continuousCount ?? 0
       // Direction-specific open counts for this symbol — gives expandAxisSets

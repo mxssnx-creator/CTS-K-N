@@ -24,6 +24,24 @@ async function getCachedClient() {
   return cachedClient
 }
 
+// Per-setKey serialize lock. `saveBatchToSet` performs a read-modify-write
+// (GET the set, push entries, SET it back). When two cycles for the same
+// (connectionId, symbol, type) overlap, the later SET overwrites the earlier
+// batch and qualifying entries are silently lost. Serializing per setKey makes
+// the RMW atomic with respect to other saves for that key.
+const _setSaveLocks = new Map<string, Promise<void>>()
+async function withSetKeyLock(setKey: string, fn: () => Promise<void>): Promise<void> {
+  const prev = _setSaveLocks.get(setKey) ?? Promise.resolve()
+  const next = prev
+    .catch(() => {})
+    .then(fn)
+    .finally(() => {
+      if (_setSaveLocks.get(setKey) === next) _setSaveLocks.delete(setKey)
+    })
+  _setSaveLocks.set(setKey, next)
+  await next
+}
+
 // Default limits per strategy type (independently configurable)
 export const MAX_INPUT_MULTIPLIER = 2
 
@@ -75,7 +93,6 @@ export class StrategySetsProcessor {
    * downstream Real/Live look up is "the best signals available", not
    * "the most recent ones".
    */
-  private compactionCfgs: Partial<Record<SetCompactionType, CompactionConfig>> = {}
 
   /**
    * Resolve the compaction config for a strategy pool, with the legacy
@@ -87,8 +104,10 @@ export class StrategySetsProcessor {
     type: keyof StrategySetLimits,
   ): Promise<CompactionConfig> {
     const ckey = `strategy.${type}` as SetCompactionType
-    const cached = this.compactionCfgs[ckey]
-    if (cached) return cached
+    // Do NOT cache on the processor instance (see indication-sets-processor):
+    // `loadCompactionConfig` already keeps a 5s module-level cache, so an
+    // unbounded instance cache here only defeats that refresh and ignores
+    // operator Set-Compaction changes for the processor's lifetime.
     const cfg = await loadCompactionConfig(ckey)
     const legacyLimit = this.getLimit(type)
     // The user may have customised the legacy `strategy_sets_config`
@@ -99,7 +118,6 @@ export class StrategySetsProcessor {
       this.explicitLimitOverrides[type] || (cfg.floor === 250 && legacyLimit > 250)
         ? { floor: legacyLimit, thresholdPct: cfg.thresholdPct }
         : cfg
-    this.compactionCfgs[ckey] = finalCfg
     return finalCfg
   }
 
@@ -390,73 +408,77 @@ export class StrategySetsProcessor {
    * RACE because they all read-modify-write the SAME `setKey`. This
    * batch path avoids the race AND collapses the I/O.
    */
-  private async saveBatchToSet(
+   private async saveBatchToSet(
     setKey: string,
     strategies: Array<{ strategy: any; indicationType: string }>,
     strategyType: string,
   ): Promise<void> {
     if (strategies.length === 0) return
-    try {
-      const client = await getCachedClient()
-      let entries: any[] = []
-      const existing = await client.get(setKey)
-      if (existing) {
-        try { entries = JSON.parse(existing) } catch { entries = [] }
-      }
+    // Serialize per setKey so overlapping cycles cannot clobber each other's
+    // read-modify-write of the same set. See `withSetKeyLock`.
+    await withSetKeyLock(setKey, async () => {
+      try {
+        const client = await getCachedClient()
+        let entries: any[] = []
+        const existing = await client.get(setKey)
+        if (existing) {
+          try { entries = JSON.parse(existing) } catch { entries = [] }
+        }
 
-      const baseTs = Date.now()
-      for (let i = 0; i < strategies.length; i++) {
-        const { strategy, indicationType } = strategies[i]
-        entries.push({
-          id: `${strategyType}_${baseTs}_${i}_${Math.random().toString(36).slice(2, 6)}`,
-          timestamp: new Date().toISOString(),
-          profitFactor: strategy.profitFactor,
-          confidence: strategy.confidence,
-          indicationType,
-          strategyType,
-          metadata: strategy.metadata,
-        })
-      }
+        const baseTs = Date.now()
+        for (let i = 0; i < strategies.length; i++) {
+          const { strategy, indicationType } = strategies[i]
+          entries.push({
+            id: `${strategyType}_${baseTs}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+            timestamp: new Date().toISOString(),
+            profitFactor: strategy.profitFactor,
+            confidence: strategy.confidence,
+            indicationType,
+            strategyType,
+            metadata: strategy.metadata,
+          })
+        }
 
-      const cfg = await this.resolveCompaction(strategyType as keyof StrategySetLimits)
-      entries = compact(entries, cfg, "best")
+        const cfg = await this.resolveCompaction(strategyType as keyof StrategySetLimits)
+        entries = compact(entries, cfg, "best")
 
-      // Pipeline the writes — the set value and its stats are
-      // independent keys so they can flow concurrently.
-      const statsKey = `${setKey}:stats`
-      const [_, prevStatsRaw] = await Promise.all([
-        client.set(setKey, JSON.stringify(entries)),
-        getSettings(statsKey),
-      ])
-      const prevStats = prevStatsRaw || {}
-      const stats = {
-        maxEntries: cfg.floor,
-        currentEntries: entries.length,
-        totalCalculated: (prevStats.totalCalculated || 0) + strategies.length,
-        totalQualified: (prevStats.totalQualified || 0) + strategies.length,
-        avgProfitFactor:
-          entries.length > 0
-            ? entries.reduce((sum: number, e: any) => sum + e.profitFactor, 0) / entries.length
-            : 0,
-        lastCalculated: new Date().toISOString(),
-      }
-      await setSettings(statsKey, stats)
+        // Pipeline the writes — the set value and its stats are
+        // independent keys so they can flow concurrently.
+        const statsKey = `${setKey}:stats`
+        const [_, prevStatsRaw] = await Promise.all([
+          client.set(setKey, JSON.stringify(entries)),
+          getSettings(statsKey),
+        ])
+        const prevStats = prevStatsRaw || {}
+        const stats = {
+          maxEntries: cfg.floor,
+          currentEntries: entries.length,
+          totalCalculated: (prevStats.totalCalculated || 0) + strategies.length,
+          totalQualified: (prevStats.totalQualified || 0) + strategies.length,
+          avgProfitFactor:
+            entries.length > 0
+              ? entries.reduce((sum: number, e: any) => sum + e.profitFactor, 0) / entries.length
+              : 0,
+          lastCalculated: new Date().toISOString(),
+        }
+        await setSettings(statsKey, stats)
 
-      // Single broadcast per batch — dashboard observers debounce
-      // their own re-fetches so emitting N times per cycle would just
-      // flood without value.
-      if (entries.length > 0) {
-        emitStrategyUpdate(this.connectionId, {
-          id: entries[0].id,
-          symbol: setKey.split(":")[2],
-          profit_factor: stats.avgProfitFactor || 0,
-          win_rate: strategies[0].strategy?.confidence || 0,
-          active_positions: entries.length,
-        })
+        // Single broadcast per batch — dashboard observers debounce
+        // their own re-fetches so emitting N times per cycle would just
+        // flood without value.
+        if (entries.length > 0) {
+          emitStrategyUpdate(this.connectionId, {
+            id: entries[0].id,
+            symbol: setKey.split(":")[2],
+            profit_factor: stats.avgProfitFactor || 0,
+            win_rate: strategies[0].strategy?.confidence || 0,
+            active_positions: entries.length,
+          })
+        }
+      } catch (error) {
+        console.error(`[v0] [StrategySets] Failed to batch-save ${strategies.length} entries to ${setKey}:`, error)
       }
-    } catch (error) {
-      console.error(`[v0] [StrategySets] Failed to batch-save ${strategies.length} entries to ${setKey}:`, error)
-    }
+    })
   }
 
   /**

@@ -130,6 +130,19 @@ export async function recoordinateAfterSettingsChange(
     throw notifyErr
   }
 
+  // Refresh the in-memory ConnectionCoordinator cache for this connection so
+  // consumers of getConnection/getActiveConnections stop serving pre-edit
+  // state (credentials, is_enabled, is_active, etc.) until a full restart.
+  try {
+    const { ConnectionCoordinator } = await import("@/lib/connection-coordinator")
+    await ConnectionCoordinator.getInstance().refreshConnection(id)
+  } catch (refreshErr) {
+    console.warn(
+      `[v0] [${opts.logTag}] Failed to refresh ConnectionCoordinator cache for ${id}:`,
+      refreshErr instanceof Error ? refreshErr.message : String(refreshErr),
+    )
+  }
+
   // ── SETTINGS CHANGES THAT AFFECT PROGRESS VISIBILITY ──────────────────
   // Detect which types of setting changes require progress cache invalidation:
   // 1. Symbol changes (symbol_count, force_symbols) → new progression

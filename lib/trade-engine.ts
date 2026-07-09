@@ -279,6 +279,18 @@ export class GlobalTradeEngineCoordinator {
     // production. Re-read the per-connection operator intent immediately before
     // acquiring locks so stale queued starts cannot resurrect a disabled
     // connection or start processing with stale assignment flags.
+
+    // Synchronous startup-lock guard. This MUST run before any `await` so that
+    // two concurrent startEngine(...) calls cannot both pass the check (which
+    // previously sat after several awaits) and accidentally boot duplicate
+    // engines for the same connection. The matching `startingEngines.delete`
+    // happens in the function's `finally` block.
+    if (this.startingEngines.has(connectionId)) {
+      console.warn(`[v0] [STARTUP LOCK] Engine already starting for ${connectionId}, skipping duplicate start request`)
+      return false
+    }
+    this.startingEngines.add(connectionId)
+
     try {
       const { initRedis, getConnection } = await import("@/lib/redis-db")
       const { isConnectionReadyForEngine } = await import("@/lib/connection-state-helpers")
@@ -299,12 +311,6 @@ export class GlobalTradeEngineCoordinator {
     }
 
     if (!(await this.isGlobalCoordinatorEnabled(`startEngine(${connectionId})`))) {
-      return false
-    }
-
-    // Step 1: Check if already starting
-    if (this.startingEngines.has(connectionId)) {
-      console.warn(`[v0] [STARTUP LOCK] Engine already starting for ${connectionId}, skipping duplicate start request`)
       return false
     }
 
@@ -351,9 +357,6 @@ export class GlobalTradeEngineCoordinator {
     }
 
     // Step 3: Add to lock set
-    this.startingEngines.add(connectionId)
-    console.log(`[v0] [STARTUP LOCK] Added ${connectionId} to startup lock`)
-
     let lockHandle: LockHandle | undefined
     try {
       // ── Step 3b: Acquire the cross-process ownership lock ──────────

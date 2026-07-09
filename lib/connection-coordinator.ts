@@ -66,6 +66,7 @@ export class ConnectionCoordinator {
   private batchProcessor: BatchProcessor
   private healthCheckInterval: NodeJS.Timeout | null = null
   private initialized = false
+  private initializing = false
 
   private isEnabledFlag(value: unknown): boolean {
     return value === true || value === 1 || value === "1" || value === "true"
@@ -90,6 +91,15 @@ export class ConnectionCoordinator {
       console.log("[v0] ConnectionCoordinator already initialized")
       return
     }
+    // Synchronous re-entrancy guard. `this.initialized` is only set after the
+    // awaits below, so two concurrent callers could otherwise both pass the
+    // `if (this.initialized)` check and run the body twice — starting duplicate
+    // health-check intervals (the old timer handle is then leaked forever).
+    if (this.initializing) {
+      console.log("[v0] ConnectionCoordinator initialization already in progress")
+      return
+    }
+    this.initializing = true
 
     try {
       await initRedis()
@@ -112,7 +122,8 @@ export class ConnectionCoordinator {
       this.startHealthChecks()
     } catch (error) {
       console.error("[v0] Failed to initialize connections:", error)
-
+      // Allow a later retry if init failed.
+      this.initializing = false
     }
   }
 
@@ -149,6 +160,12 @@ export class ConnectionCoordinator {
    * Start periodic health checks
    */
   private startHealthChecks(): void {
+    // Never leak a prior interval handle (which would otherwise run duplicate
+    // health-check loops in parallel).
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval)
+      this.healthCheckInterval = null
+    }
     // Run health checks every 5 minutes
     this.healthCheckInterval = setInterval(() => {
       this.performHealthChecks()
@@ -399,6 +416,30 @@ export class ConnectionCoordinator {
   async reloadConnections(): Promise<void> {
     this.initialized = false
     await this.initializeConnections()
+  }
+
+  /**
+   * Refresh a single connection in the in-memory cache from Redis. The
+   * coordinator's map is loaded once at startup and otherwise never
+   * invalidated, so after an operator edits a connection (credentials,
+   * is_enabled, is_active, etc.) callers must explicitly refresh it here or
+   * they will keep serving stale pre-edit state until a full process restart.
+   */
+  async refreshConnection(connectionId: string): Promise<void> {
+    if (!this.initialized) {
+      await this.initializeConnections()
+      return
+    }
+    try {
+      await initRedis()
+      const fresh = await getConnectionFromRedis(connectionId)
+      if (fresh) {
+        this.connections.set(connectionId, fresh)
+        this.initializeHealth(connectionId, fresh)
+      }
+    } catch (error) {
+      console.error(`[v0] Failed to refresh connection ${connectionId}:`, error)
+    }
   }
 
   /**

@@ -358,13 +358,17 @@ export class ProgressionStateManager {
           newSuccessful = Number(successCount) || 0
           newFailed     = prev.failed
         } else {
-          const [completed, failCount] = await Promise.all([
+          const [completed, failCount, successCount] = await Promise.all([
             client.hincrby(redisKey, "cycles_completed", 1),
             client.hincrby(redisKey, "failed_cycles", 1),
+            // Read the authoritative successful count (not the possibly-stale
+            // in-process mirror) so the derived success rate is correct even
+            // when successful/failed cycles are interleaved across processors.
+            client.hget(redisKey, "successful_cycles"),
           ])
           newCompleted  = Number(completed) || 0
           newFailed     = Number(failCount) || 0
-          newSuccessful = prev.successful
+          newSuccessful = Number(successCount) || 0
         }
       } catch (e) {
         console.warn(`[v0] Failed to increment progression counters for ${connectionId}:`, e)
@@ -440,12 +444,18 @@ export class ProgressionStateManager {
       // per-connection Set for the processed symbols which deduplicates in
       // O(1) Redis-side without needing to re-read the whole hash.
       const symbolsSetKey = `${key}:prehistoric_symbols_set`
+      const canonicalSymbolsSetKey = `prehistoric:${connectionId}:symbols`
       const nowIso = new Date().toISOString()
 
       const [prehistoricCycles] = await Promise.all([
         client.hincrby(key, "prehistoric_cycles_completed", 1),
         client.sadd(symbolsSetKey, symbol).catch(() => 0),
         client.expire(symbolsSetKey, 7 * 24 * 60 * 60).catch(() => 0),
+        // Keep the canonical `prehistoric:{id}:symbols` set in sync so the
+        // progress display (which reads that key elsewhere) agrees with the
+        // processed-symbols count reported here.
+        client.sadd(canonicalSymbolsSetKey, symbol).catch(() => 0),
+        client.expire(canonicalSymbolsSetKey, 7 * 24 * 60 * 60).catch(() => 0),
       ])
 
       // Mirror the processed symbols list into the hash so existing readers

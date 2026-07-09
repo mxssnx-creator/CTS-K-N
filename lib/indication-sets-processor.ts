@@ -202,7 +202,6 @@ export class IndicationSetsProcessor {
    * hot-path append helper enforce compaction without touching the settings
    * hash on every fill.
    */
-  private compactionCfgs: Partial<Record<SetCompactionType, CompactionConfig>> = {}
   // Dev mode uses a minimal range grid so the 4-GB v0 sandbox VM can run the
   // full indication → strategy → live pipeline without OOM.
   //   Full grid: 29 ranges × 3 dd × 2 lp × 3 fm = 522 keys/type/symbol
@@ -372,12 +371,15 @@ export class IndicationSetsProcessor {
    * Cached on the processor instance — refreshed lazily via the 5s TTL
    * inside `loadCompactionConfig`.
    */
-  private async resolveCompaction(
+   private async resolveCompaction(
     type: keyof IndicationSetLimits,
   ): Promise<CompactionConfig> {
     const ckey = `indication.${type}` as SetCompactionType
-    const cached = this.compactionCfgs[ckey]
-    if (cached) return cached
+    // Do NOT cache on the processor instance. `loadCompactionConfig` already
+    // maintains its own 5s module-level cache, so a second unbounded instance
+    // cache here only defeated that refresh: operator changes to Set-Compaction
+    // floors/thresholds were ignored for the lifetime of the (often long-lived)
+    // processor. Re-resolving each call honours the 5s refresh.
     const cfg = await loadCompactionConfig(ckey)
     // If the operator never set a global / per-type floor, the helper
     // returned the hard-coded 250 default. For indication pools we want
@@ -393,7 +395,6 @@ export class IndicationSetsProcessor {
       cfg.floor === 250 && legacyLimit > 250
         ? { floor: legacyLimit, thresholdPct: cfg.thresholdPct }
         : cfg
-    this.compactionCfgs[ckey] = finalCfg
     return finalCfg
   }
 
@@ -1736,7 +1737,7 @@ export class IndicationSetsProcessor {
     const requiredPrices = this.getLargestConfiguredRange()
     if (availablePrices >= requiredPrices) return true
 
-    const warningKey = `${symbol}:${availablePrices}:${requiredPrices}`
+    const warningKey = `${symbol}:${requiredPrices}`
     if (this.shortPriceHistoryWarnings.has(warningKey)) return false
     this.shortPriceHistoryWarnings.add(warningKey)
 

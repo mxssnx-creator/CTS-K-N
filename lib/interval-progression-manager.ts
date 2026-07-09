@@ -29,6 +29,12 @@ export interface IndicationIntervals {
 export class IntervalProgressionManager {
   private intervals: Map<string, NodeJS.Timeout> = new Map()
   private progressionLocks: Map<string, boolean> = new Map()
+  // Tracks whether a callback is currently executing. The lock must only be
+  // released once the callback resolves/rejects — NOT by the watchdog timeout,
+  // otherwise a slow callback (longer than `timeout`) would have its lock
+  // force-cleared and a second concurrent callback would start on the next
+  // tick, doubling the work.
+  private progressionInFlight: Map<string, boolean> = new Map()
 
   /**
    * Get default interval configurations
@@ -110,13 +116,20 @@ export class IntervalProgressionManager {
 
       // Set progression lock
       this.progressionLocks.set(lockKey, true)
+      this.progressionInFlight.set(lockKey, true)
       config.isProgressing = true
       config.lastProgressionStart = new Date().toISOString()
       await setSettings(configKey, config)
 
-      // Set timeout to unlock after IntervalTime × 5
+      // Watchdog: only force-unlock if no callback is actually in flight.
+      // Releasing the lock purely on a timer while the callback is still
+      // running lets the next tick start a SECOND concurrent callback.
       const timeoutMs = config.timeout * 1000
       const timeoutId = setTimeout(async () => {
+        if (this.progressionInFlight.get(lockKey)) {
+          console.warn(`[v0] [${indicationType}] Progression still running past ${config.timeout}s timeout; leaving lock until callback resolves`)
+          return
+        }
         console.warn(`[v0] [${indicationType}] Progression timeout after ${config.timeout}s, forcing unlock`)
         this.progressionLocks.set(lockKey, false)
         config.isProgressing = false
@@ -131,6 +144,7 @@ export class IntervalProgressionManager {
         // Clear timeout and unlock
         clearTimeout(timeoutId)
         this.progressionLocks.set(lockKey, false)
+        this.progressionInFlight.set(lockKey, false)
         config.isProgressing = false
         config.lastProgressionEnd = new Date().toISOString()
         await setSettings(configKey, config)
@@ -138,6 +152,7 @@ export class IntervalProgressionManager {
         console.error(`[v0] [${indicationType}] Progression error:`, error)
         clearTimeout(timeoutId)
         this.progressionLocks.set(lockKey, false)
+        this.progressionInFlight.set(lockKey, false)
         config.isProgressing = false
         config.lastProgressionEnd = new Date().toISOString()
         await setSettings(configKey, config)
