@@ -271,3 +271,27 @@ describe("System tab capacity controls", () => {
     expect(source).not.toContain('handleSettingChange("capacity')
   })
 })
+
+describe("engine refresh queue status", () => {
+  test("queued refresh status and queued-vs-local application are surfaced", () => {
+    const fs = require("fs")
+    const path = require("path")
+    const queueSource = fs.readFileSync(path.join(process.cwd(), "lib/engine-refresh-queue.ts"), "utf8")
+    const recoordinatorSource = fs.readFileSync(path.join(process.cwd(), "lib/connection-recoordinator.ts"), "utf8")
+    const quickStartSource = fs.readFileSync(path.join(process.cwd(), "app/api/trade-engine/quick-start/route.ts"), "utf8")
+    const settingsRouteSource = fs.readFileSync(path.join(process.cwd(), "app/api/settings/connections/[id]/settings/route.ts"), "utf8")
+
+    expect(queueSource).toContain("refresh_queued_at")
+    expect(queueSource).toContain("refresh_last_attempt_at")
+    expect(queueSource).toContain("refresh_last_error")
+    expect(queueSource).toContain("refresh_processed_at")
+    expect(queueSource).toContain("await recordEngineRefreshRequestFailure(queuedRequest, drain.error)")
+    expect(recoordinatorSource).toContain("queuedForOwner: !!refreshStatus?.refreshQueued && !appliedLocally")
+    expect(recoordinatorSource).toContain("appliedLocally")
+    expect(quickStartSource).toContain("quickstartRecoordinationApplied ? \"0\" : \"1\"")
+    expect(quickStartSource).toContain("queued_for_owner")
+    expect(quickStartSource).toContain("applied_locally")
+    expect(settingsRouteSource).toContain("refreshQueued: recoordination.refreshQueued === true")
+    expect(settingsRouteSource).toContain("refreshStatus: recoordination.refreshStatus")
+  })
+})
