@@ -45,8 +45,8 @@ export class ExchangeConnectorFactory {
       contractType: connection.contract_type,
       marginType: connection.margin_type,
       positionMode: connection.position_mode,
-      connectionMethod: connection.connection_method,
-      connectionLibrary: connection.connection_library,
+      connectionMethod: this.resolveExchangeName(connection) === "bingx" ? "library" : connection.connection_method,
+      connectionLibrary: this.resolveExchangeName(connection) === "bingx" ? "sdk" : connection.connection_library,
     }
   }
 
@@ -60,8 +60,8 @@ export class ExchangeConnectorFactory {
       contract_type: connection.contract_type || "",
       margin_type: connection.margin_type || "",
       position_mode: connection.position_mode || "",
-      connection_method: connection.connection_method || "",
-      connection_library: connection.connection_library || "",
+      connection_method: this.resolveExchangeName(connection) === "bingx" ? "library" : (connection.connection_method || ""),
+      connection_library: this.resolveExchangeName(connection) === "bingx" ? "sdk" : (connection.connection_library || ""),
       exchange: this.resolveExchangeName(connection) || "",
     })
   }
@@ -73,6 +73,12 @@ export class ExchangeConnectorFactory {
       
       try {
         const connector = await createExchangeConnector(this.resolveExchangeName(connection), credentials)
+        await (connector as any).warmUpFastPath?.().catch((error: unknown) => {
+          console.warn(
+            `[ExchangeConnectorFactory] Fast-path SDK warmup failed for ${connection.id}:`,
+            error instanceof Error ? error.message : String(error),
+          )
+        })
         this.connectors.set(connection.id, connector)
         this.connectorFingerprints.set(connection.id, fingerprint)
         return connector

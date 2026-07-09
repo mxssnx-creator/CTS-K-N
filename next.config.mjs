@@ -131,6 +131,15 @@ const nextConfig = {
       }),
     )
 
+    // Redis v6 optionally imports native @node-rs/xxhash for faster client-side
+    // hashing. The package marks it optional, but Next dev still warns loudly
+    // when it cannot resolve it from pnpm's optional dependency layout. Stub the
+    // optional native helper in all bundles; Redis falls back to its JS path.
+    config.resolve.alias = {
+      ...(config.resolve.alias || {}),
+      "@node-rs/xxhash": false,
+    }
+
     // Browser bundle: alias Node built-ins to empty stubs.
     if (!isServer) {
       config.resolve.alias = {
@@ -151,7 +160,6 @@ const nextConfig = {
         "node:perf_hooks": false,
         events: false,
         "node:events": false,
-        "@node-rs/xxhash": false,
       }
       config.resolve.fallback = {
         ...(config.resolve.fallback || {}),
@@ -159,7 +167,6 @@ const nextConfig = {
         stream: false,
         buffer: false,
         diagnostics_channel: false,
-        "@node-rs/xxhash": false,
       }
     }
 

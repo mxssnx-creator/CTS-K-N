@@ -1,3 +1,4 @@
+import { publishEngineEvent } from "./engine-event-bus"
 import { getRedisClient, getSettings, setSettings } from "./redis-db"
 
 export const ENGINE_REFRESH_REQUEST_PREFIX = "engine_coordinator:refresh_requested:"
@@ -48,6 +49,19 @@ async function triggerImmediateEngineRefresh(request: EngineRefreshRequest): Pro
 export async function queueEngineRefreshRequest(request: EngineRefreshRequest): Promise<void> {
   await setSettings(`${ENGINE_REFRESH_REQUEST_PREFIX}${request.connectionId}`, request)
   await (getRedisClient().sadd?.(`settings:${ENGINE_REFRESH_REQUEST_INDEX}`, request.connectionId) ?? Promise.resolve(0)).catch(() => 0)
+  await publishEngineEvent("engine.refresh.requested", {
+    connectionId: request.connectionId,
+    action: String(request.action),
+    stateSwitchVersion: String(request.state_switch_version),
+    reason: request.reason,
+    timestamp: request.timestamp,
+  }).catch((error) => {
+    console.warn(
+      `[v0] [EngineRefreshQueue] refresh event publish failed (${request.reason || request.action}):`,
+      error instanceof Error ? error.message : String(error),
+    )
+  })
+
   // Do not block API/settings/progression writes on local coordinator work.
   // In long-lived production workers this runs on the next turn; in serverless
   // the durable queued request remains for the coordinator watchdog/cron.

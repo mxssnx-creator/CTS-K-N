@@ -16,6 +16,7 @@ jest.mock("@/lib/redis-db", () => {
     })),
     __list: list,
   }
+
 })
 
 describe("engine event bus", () => {
@@ -57,4 +58,23 @@ describe("engine event bus", () => {
     expect(event.type).toBe("progression.stage.completed")
     expect(event.payload).toMatchObject({ connectionId: "conn-a", stage: "cycle", cycle: 12 })
   })
+  test("refresh request events carry connection, action, version, and reason", async () => {
+    await publishEngineEvent("engine.refresh.requested", {
+      connectionId: "conn-a",
+      action: "restart",
+      stateSwitchVersion: "42",
+      reason: "settings_reload",
+      timestamp: "2026-07-09T00:00:03.000Z",
+    })
+
+    const [event] = await readEngineEvents()
+    expect(event.type).toBe("engine.refresh.requested")
+    expect(event.payload).toMatchObject({
+      connectionId: "conn-a",
+      action: "restart",
+      stateSwitchVersion: "42",
+      reason: "settings_reload",
+    })
+  })
+
 })

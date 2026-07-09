@@ -1,4 +1,5 @@
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
+import { publishEngineEvent } from "@/lib/engine-event-bus"
 import { hasStrategyAffectingChange, hasSymbolAffectingChange, isGenericConnectionSettingsReload } from "@/lib/trade-engine/settings-change-fields"
 // Keep heap telemetry bundler-safe. Importing/requiring the Node `v8` built-in
 // from this hot server module makes Next dev's webpack resolver emit repeated
@@ -4245,6 +4246,14 @@ export class TradeEngineManager {
             updated_at: new Date(now).toISOString(),
           }).catch(() => undefined),
         ])
+        if (heartbeatCount % 3 === 1) {
+          await publishEngineEvent("engine.heartbeat.updated", {
+            connectionId: this.connectionId,
+            heartbeatAt: now,
+            source: "engine-manager-heartbeat",
+            timestamp: new Date(now).toISOString(),
+          }).catch(() => undefined)
+        }
       } catch {
         // Silent fail - heartbeat is non-critical
       }
