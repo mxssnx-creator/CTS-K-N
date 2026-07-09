@@ -4519,7 +4519,6 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
         // return { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
         const result = { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
         // Regression guard: return { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
-          const result = { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
         await import("@/lib/startup-diagnostics")
           .then(({ recordMigrationStatus }) => recordMigrationStatus({
             success: true,
@@ -4575,7 +4574,6 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
       // return { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
         const result = { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
       // Regression guard: return { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
-          const result = { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
       await import("@/lib/startup-diagnostics")
         .then(({ recordMigrationStatus }) => recordMigrationStatus({
           success: true,

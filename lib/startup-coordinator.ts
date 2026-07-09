@@ -19,7 +19,6 @@ import {
 } from "@/lib/redis-db"
 import { validateDatabase } from "@/lib/database-validator"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
-import { isProcessorHeartbeatFresh } from "@/lib/engine-heartbeat"
 import { readTradeEngineWorkerHeartbeat } from "@/lib/trade-engine-worker-heartbeat"
 import { getFreshestProcessorHeartbeat, isProcessorHeartbeatFresh } from "@/lib/engine-heartbeat"
 import { consolidateDatabase } from "@/lib/database-consolidation"
@@ -453,6 +452,9 @@ export async function completeStartup() {
         allConnections.map(conn => conn.id),
         now,
       )
+      // Guardrail: buildGlobalTradeEngineBootMetadata returns desired_status: preservedIntent,
+      // operator_intent: preservedIntent, and actual_status: "stopped" unless a fresh
+      // remote worker/processor heartbeat proves an active owner.
 
       await client.hset("trade_engine:global", bootMetadata)
       console.log(`[v0] [Startup] ✓ Global trade engine boot metadata initialized\n`)

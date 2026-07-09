@@ -212,32 +212,7 @@ async function mirrorEngineSettingsStores(
 }
 
 const DEFAULT_SETTINGS: Omit<ConnectionSettings, "connectionId"> = DEFAULT_CONNECTION_SETTINGS
-export const DEFAULT_CONNECTION_SETTINGS: Omit<ConnectionSettings, "connectionId"> = {
-  strategy: {
-    takeProfit: 8,
-    stopLoss: 0.5,
-    leverage: 5,
-    volumeMultiplier: 1,
-  },
-  indication: {
-    mainType: "Direction",
-    commonType: "Momentum",
-    autoType: "Volatility",
-    optimalType: "Mean Reversion",
-  },
-  trading: {
-    maxPositions: 10,
-    riskPerTrade: 2,
-    dailyLossLimit: 5,
-    autoStopAfterLoss: true,
-  },
-  advanced: {
-    slippageTolerance: 0.0006,
-    executionSpeed: "normal",
-    useTrailingStop: true,
-    enableAutoExit: false,
-  },
-}
+
 
 /**
  * Get settings for a specific connection

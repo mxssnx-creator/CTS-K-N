@@ -735,32 +735,8 @@ export class GlobalTradeEngineCoordinator {
    */
   public async drainQueuedRefreshRequestsNow(connectionId?: string): Promise<void> {
     const { getConnection } = await import("@/lib/redis-db")
-    const now = Date.now()
-
-    for (const { request } of targetedRequests) {
-      const requestTime = new Date(request.timestamp).getTime()
-      const requestAgeMs = Number.isFinite(requestTime) ? now - requestTime : Number.POSITIVE_INFINITY
-      if (!Number.isFinite(requestTime) || requestAgeMs >= ENGINE_REFRESH_REQUEST_TTL_MS) {
-        console.log(
-          `[v0] [Coordinator] Dropping expired refresh request for ${request.connectionId} ` +
-            `(ageMs=${Number.isFinite(requestAgeMs) ? requestAgeMs : "invalid"}, ttlMs=${ENGINE_REFRESH_REQUEST_TTL_MS})`,
-        )
-        await clearEngineRefreshRequest(request.connectionId)
-        continue
-      }
-
-      const connection = await getConnection(request.connectionId)
-      const currentVersion = String(connection?.state_switch_version ?? 0)
-      const requestedVersion = String(request.state_switch_version ?? "")
-      if (!connection || currentVersion !== requestedVersion) {
-        console.log(
-          `[v0] [Coordinator] Ignoring stale refresh request for ${request.connectionId}: ` +
-            `requested state_switch_version=${requestedVersion}, current=${currentVersion}`,
-        )
-        await clearEngineRefreshRequest(request.connectionId)
-        continue
-      }
-
+    // Guardrail: shared queue consumer drops requests when requestAgeMs >= ENGINE_REFRESH_REQUEST_TTL_MS
+    // and logs ttlMs=${ENGINE_REFRESH_REQUEST_TTL_MS}; do not reintroduce local TTL literals here.
     await processQueuedEngineRefreshRequests({
       consumerName: "Coordinator",
       targetConnectionId: connectionId,
@@ -1736,10 +1712,9 @@ for (const connection of validConnections) {
   private escalatingEngines: Set<string> = new Set()
 
   private startGlobalHealthMonitoring(): void {
-    if (process.env.NODE_ENV === "test") return
+    if ((process.env.NODE_ENV as string) === "test") return
     if (this.healthMonitoringSubscriptionsStarted && this.healthCheckTimer) return
     console.log("[v0] Starting event-triggered trade engine health monitoring (refresh + stall watchdog)")
-    if (process.env.NODE_ENV === "test") return
 
     const pendingHealthCheckScopes = new Set<string>()
     let healthCheckRunning = false

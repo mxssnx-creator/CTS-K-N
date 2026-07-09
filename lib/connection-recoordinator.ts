@@ -491,12 +491,14 @@ export async function recoordinateAfterSettingsChange(
             parentEventId: settingsEvent.id,
             data: { changed: result?.changed ?? false, reason: result?.reason, changedFields },
           })
-        })
       } else if (strategyOrCoordinationChanged) {
         await client.hset(`progression:${id}`, {
-          settings_changed_at: new Date().toISOString(),
-          settings_recoordination_pending: "1",
+          settings_changed_at: now,
+          settings_recoordination_pending: "0",
+          settings_recoordination_completed: "1",
+          settings_recoordination_completed_at: new Date().toISOString(),
           settings_recoordination_fields: JSON.stringify(normalizedChangedFields),
+          settings_recoordination_reason: "strategy-config-cache-invalidated",
           settings_recoordination_requested_version: String(opts.settingsVersion || settingsEvent.settingsVersion || settingsEvent.id),
           settings_recoordination_requested_event_id: settingsEvent.id,
           strategy_recompute_requested: "1",
@@ -506,43 +508,29 @@ export async function recoordinateAfterSettingsChange(
           `[v0] [${opts.logTag}] Strategy/coordination settings changed for ${id} → cache invalidation/recompute requested without prehistoric reset`,
         )
       }
-        } else if (strategyOrCoordinationChanged) {
-          await client.hset(`progression:${id}`, {
-            settings_changed_at: now,
-            settings_recoordination_pending: "0",
-            settings_recoordination_completed: "1",
-            settings_recoordination_completed_at: new Date().toISOString(),
-            settings_recoordination_fields: JSON.stringify(normalizedChangedFields),
-            settings_recoordination_reason: "strategy-config-cache-invalidated",
-            strategy_recompute_requested: "1",
-          }).catch(() => 0)
-          progressionReason = "strategy-config-cache-invalidated"
-          console.log(
-            `[v0] [${opts.logTag}] Strategy/coordination settings changed for ${id} → cache invalidation/recompute requested without prehistoric reset`,
-          )
-        }
 
-        // Mark affected stats dirty inside the same serialized section as the
-        // progression markers so stats fields cannot be stamped against a stale
-        // symbol epoch during concurrent saves.
-        if (symbolsChanged || strategyOrCoordinationChanged) {
-          await client.hset(`progression:${id}`, {
-            stats_recalculation_requested: "1",
-            stats_recalculation_requested_at: new Date().toISOString(),
-            stats_recalculation_fields: JSON.stringify(normalizedChangedFields),
-          }).catch(() => 0)
-        }
 
-        if (liveOrderSettingsChanged) {
-          const marker = {
-            live_order_settings_changed_at: new Date().toISOString(),
-            live_order_settings_fields: JSON.stringify(normalizedChangedFields),
-          }
-          await Promise.all([
-            client.hset(`trade_engine_state:${id}`, marker).catch(() => 0),
-            client.hset(`settings:trade_engine_state:${id}`, marker).catch(() => 0),
-          ])
+      // Mark affected stats dirty inside the same serialized section as the
+      // progression markers so stats fields cannot be stamped against a stale
+      // symbol epoch during concurrent saves.
+      if (symbolsChanged || strategyOrCoordinationChanged) {
+        await client.hset(`progression:${id}`, {
+          stats_recalculation_requested: "1",
+          stats_recalculation_requested_at: new Date().toISOString(),
+          stats_recalculation_fields: JSON.stringify(normalizedChangedFields),
+        }).catch(() => 0)
+      }
+
+      if (liveOrderSettingsChanged) {
+        const marker = {
+          live_order_settings_changed_at: new Date().toISOString(),
+          live_order_settings_fields: JSON.stringify(normalizedChangedFields),
         }
+        await Promise.all([
+          client.hset(`trade_engine_state:${id}`, marker).catch(() => 0),
+          client.hset(`settings:trade_engine_state:${id}`, marker).catch(() => 0),
+        ])
+      }
       })
     } catch (archiveErr) {
       console.warn(

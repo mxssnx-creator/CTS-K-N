@@ -549,6 +549,44 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       await client.expire(jsonKey, 7 * 24 * 60 * 60).catch(() => 0)
     })
 
+    // Maintain explicit reconciliation indexes from the live-stage hot path, not
+    // only from the generic Redis DB helper. Production exchange sync, crash
+    // recovery, and operator audits need to resolve a venue/client/system id
+    // back to the exact connection-scoped live position without ambiguous
+    // symbol+direction scans after restarts or accumulation.
+    const exchangeData: any = position.exchangeData || {}
+    const trackingIds = new Set<string>()
+    for (const candidate of [
+      position.id,
+      position.orderId,
+      position.system_tracking_id,
+      position.connection_tracking_id,
+      (position as any).trackingId,
+      (position as any).clientOrderId,
+      (position as any).exchangeOrderId,
+      exchangeData.orderId,
+      exchangeData.clientOrderId,
+      exchangeData.exchangeOrderId,
+      exchangeData.positionId,
+      exchangeData.exchangePositionId,
+      exchangeData.system_tracking_id,
+      exchangeData.connection_tracking_id,
+    ]) {
+      if (candidate != null && String(candidate).trim().length > 0) trackingIds.add(String(candidate).trim())
+    }
+    if (Array.isArray(exchangeData.clientOrderIds)) {
+      for (const entry of exchangeData.clientOrderIds) {
+        const clientOrderId = entry?.clientOrderId ?? entry?.id
+        if (clientOrderId != null && String(clientOrderId).trim().length > 0) trackingIds.add(String(clientOrderId).trim())
+      }
+    }
+    for (const trackingId of trackingIds) {
+      const trackingKey = `live:position:tracking:${position.connectionId}:${trackingId}`
+      await client.set(trackingKey, position.id).catch(() => null)
+      await client.expire(trackingKey, 7 * 24 * 60 * 60).catch(() => 0)
+    }
+
+    const liveSetIndexKey = `live_set_keys:${position.connectionId}`
     if (terminalStatuses.has(String(position.status || "").toLowerCase())) {
       await client.lrem(openIndexKey, 0, position.id).catch(() => 0)
       const alreadyClosed = await client.lpos(closedIndexKey, position.id).catch(() => null)
@@ -557,9 +595,14 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       }
       await client.set(`live:positions:${position.connectionId}:moved:${position.id}`, String(Date.now())).catch(() => null)
       await client.expire(`live:positions:${position.connectionId}:moved:${position.id}`, 60 * 60).catch(() => 0)
+      if (position.setKey) await client.srem(liveSetIndexKey, position.setKey).catch(() => 0)
+      if (position.parentSetKey) await client.srem(liveSetIndexKey, position.parentSetKey).catch(() => 0)
     } else {
       await client.lrem(openIndexKey, 0, position.id).catch(() => 0)
       await client.lpush(openIndexKey, position.id).catch(() => 0)
+      if (position.setKey) await client.sadd(liveSetIndexKey, position.setKey).catch(() => 0)
+      if (position.parentSetKey) await client.sadd(liveSetIndexKey, position.parentSetKey).catch(() => 0)
+      await client.expire(liveSetIndexKey, 24 * 60 * 60).catch(() => 0)
     }
     await Promise.all([
       client.expire(posKey, 7 * 24 * 60 * 60).catch(() => 0),
