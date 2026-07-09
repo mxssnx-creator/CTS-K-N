@@ -34,6 +34,24 @@ describe("requested regression guardrails", () => {
   })
 
 
+  test("dashboard settings recoordination is event-driven without delayed refresh polling", () => {
+    const manager = read("components/dashboard/dashboard-active-connections-manager.tsx")
+    const dialog = read("components/settings/connection-settings-dialog.tsx")
+    const route = read("app/api/settings/connections/[id]/settings/route.ts")
+
+    expect(manager).not.toContain("setTimeout(() => loadConnections")
+    expect(manager).not.toContain("setTimeout(checkGlobalEngine")
+    expect(manager).toContain("connection-settings-recoordination-complete")
+    expect(manager).toContain("pendingSettingsVersionsRef")
+    expect(manager).toContain("Settings recoordination did not confirm")
+
+    expect(dialog).toContain("connection-settings-recoordination-complete")
+    expect(dialog).toContain("settingsVersion")
+    expect(route).toContain("settingsVersion")
+    expect(route).toContain("recoordinationId")
+    expect(route).toContain("progressionEpoch")
+  })
+
   test("live order test endpoints require explicit server and request safety gates", () => {
     const safety = read("lib/live-order-safety.ts")
     const placeOrder = read("app/api/testing/place-order/route.ts")

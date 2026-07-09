@@ -608,16 +608,29 @@ export function ConnectionSettingsDialog({
         }
       } catch { /* non-fatal — description falls back to connection name */ }
 
+      const savedEvent = await settingsRes.clone().json().catch(() => ({})) as Record<string, unknown>
+      const settingsVersion = typeof savedEvent.settingsVersion === "string" ? savedEvent.settingsVersion : undefined
+      const recoordinationId = typeof savedEvent.recoordinationId === "string" ? savedEvent.recoordinationId : settingsVersion
+      const progressionEpoch = typeof savedEvent.progressionEpoch === "string" ? savedEvent.progressionEpoch : undefined
+      const eventDetail = {
+        connectionId,
+        settingsVersion,
+        recoordinationId,
+        progressionEpoch,
+        settings: {
+          ...payload,
+          live_volume_factor: overview.volumeFactorLive,
+          preset_volume_factor: overview.volumeFactorPreset,
+          volume_step_ratio: overview.volumeStepRatio,
+        },
+      }
+
       toast.success("Settings saved", { description: resolvedDesc })
-      window.dispatchEvent(new CustomEvent("connection-settings-updated", {
+      window.dispatchEvent(new CustomEvent("connection-settings-updated", { detail: eventDetail }))
+      window.dispatchEvent(new CustomEvent("connection-settings-recoordination-complete", {
         detail: {
-          connectionId,
-          settings: {
-            ...payload,
-            live_volume_factor: overview.volumeFactorLive,
-            preset_volume_factor: overview.volumeFactorPreset,
-            volume_step_ratio: overview.volumeStepRatio,
-          },
+          ...eventDetail,
+          recoordination: savedEvent.recoordination,
         },
       }))
       onOpenChange(false)
