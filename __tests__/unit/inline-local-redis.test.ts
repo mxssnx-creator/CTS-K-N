@@ -79,6 +79,55 @@ describe("InlineLocalRedis compatibility and persistence", () => {
     expect(pipelineResult).toEqual(["OK", "ok", 1, { field: "value" }])
   })
 
+  it("preserves active-owner pipeline keys while deleting stale or unowned volatile keys", async () => {
+    const redis = new InlineLocalRedis()
+    const now = Date.now()
+
+    await redis.hset("settings:trade_engine_state:active-conn", {
+      last_processor_heartbeat: String(now),
+    })
+    await redis.hset("pseudo_position:active-conn:pos-1", { id: "pos-1" })
+    await redis.sadd("pseudo_positions:active-conn", "pos-1")
+    await redis.set("settings:pseudo_position:active-conn:pos-1", "present")
+    await redis.set("settings:pseudo_positions:active-conn:active_config_keys", "present")
+    await redis.set("strategies:active-conn:BTCUSDT:main:sets", "present")
+    await redis.set("settings:strategies:active-conn:BTCUSDT:sets", "present")
+    await redis.set("indication_set:active-conn:BTCUSDT:direction:cfg", "present")
+    await redis.set("indication_outcomes_pending:active-conn:BTCUSDT", "present")
+
+    await redis.hset("settings:trade_engine_state:stale-conn", {
+      last_processor_heartbeat: String(now - 120_000),
+    })
+    await redis.hset("pseudo_position:stale-conn:pos-1", { id: "pos-1" })
+    await redis.sadd("pseudo_positions:stale-conn", "pos-1")
+    await redis.set("strategies:unowned-conn:BTCUSDT:main:sets", "present")
+
+    await redis.set("live:lock:stale", String(now - 7 * 60 * 60 * 1000))
+    await redis.set("live:position:tracking:active-conn:BTCUSDT:long", "pointer")
+    await redis.set("live:position:active-conn:BTCUSDT:long:moved:flag", "1")
+    await redis.hset("live:position:active-conn:BTCUSDT:long", { id: "durable-position" })
+
+    const result = await redis.cleanupVolatileRuntimeState({ mode: "activeOwnerSafe", reason: "unit-test" })
+
+    expect(result.deleted).toBeGreaterThanOrEqual(5)
+    await expect(redis.exists("pseudo_position:active-conn:pos-1")).resolves.toBe(1)
+    await expect(redis.exists("pseudo_positions:active-conn")).resolves.toBe(1)
+    await expect(redis.exists("settings:pseudo_position:active-conn:pos-1")).resolves.toBe(1)
+    await expect(redis.exists("settings:pseudo_positions:active-conn:active_config_keys")).resolves.toBe(1)
+    await expect(redis.exists("strategies:active-conn:BTCUSDT:main:sets")).resolves.toBe(1)
+    await expect(redis.exists("settings:strategies:active-conn:BTCUSDT:sets")).resolves.toBe(1)
+    await expect(redis.exists("indication_set:active-conn:BTCUSDT:direction:cfg")).resolves.toBe(1)
+    await expect(redis.exists("indication_outcomes_pending:active-conn:BTCUSDT")).resolves.toBe(1)
+
+    await expect(redis.exists("pseudo_position:stale-conn:pos-1")).resolves.toBe(0)
+    await expect(redis.exists("pseudo_positions:stale-conn")).resolves.toBe(0)
+    await expect(redis.exists("strategies:unowned-conn:BTCUSDT:main:sets")).resolves.toBe(0)
+    await expect(redis.exists("live:lock:stale")).resolves.toBe(0)
+    await expect(redis.exists("live:position:tracking:active-conn:BTCUSDT:long")).resolves.toBe(0)
+    await expect(redis.exists("live:position:active-conn:BTCUSDT:long:moved:flag")).resolves.toBe(0)
+    await expect(redis.exists("live:position:active-conn:BTCUSDT:long")).resolves.toBe(1)
+  })
+
   it("persists and restores all supported data structures from the snapshot file", async () => {
     const dir = await mkdtemp(join(tmpdir(), "inline-redis-"))
     const snapshotPath = join(dir, "redis-snapshot.json")
