@@ -472,29 +472,14 @@ async function incrementMetric(connectionId: string, metric: string, delta: numb
   }
 }
 async function incrementOrdersBySymbol(connectionId: string, symbol: string, side: string, metric: string): Promise<void> {
-  const { getRedisClient } = await import("@/lib/redis-db")
-  const client = getRedisClient()
   try {
-    const key = `live_orders_by_symbol:${connectionId}`
-    // Field format: `{SYMBOL}:{direction}:{metric}` e.g. "SOLUSDT:long:placed"
-    // This matches the parser in /stats route (field.slice(midColon+1, lastColon) for direction,
-    // field.slice(lastColon+1) for kind). Normalize case/venue aliases first:
-    // exchange sync paths can pass `SHORT`, `SELL`, or `positionSide=SHORT`.
-    // Treating only exact `"short"` as short folded those fills into the long
-    // bucket, which made long/short order chips look identical or over-counted.
-    // Using hincrby keeps the two directions independent and atomic.
+    const { recordPerSymbolOrderCounter } = await import("@/lib/live-order-service")
     const sideKey = String(side || "").trim().toLowerCase()
     const dir = (sideKey.includes("short") || sideKey === "sell") ? "short" : "long"
     const symbolKey = String(symbol || "").trim().toUpperCase()
     const field = `${symbolKey}:${dir}:${metric}`
-    if (typeof (client as any).hincrby === "function") {
-      await (client as any).hincrby(key, field, 1)
-    } else {
-      // Fallback: read-modify-write
-      const raw = await client.hget(key, field).catch(() => null)
-      const current = parseInt(String(raw || "0"), 10) || 0
-      await client.hset(key, { [field]: String(current + 1) })
-    }
+    void field
+    await recordPerSymbolOrderCounter(connectionId, symbolKey, dir, metric as any)
   } catch {
     /* best-effort */
   }
