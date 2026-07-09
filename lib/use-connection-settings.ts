@@ -22,14 +22,14 @@ export function useConnectionSettings() {
     setError(null)
 
     try {
-      const response = await fetch(`/api/settings/connection-settings?connectionId=${selectedConnectionId}`)
+      const response = await fetch(`/api/settings/connections/${selectedConnectionId}/settings`)
 
       if (!response.ok) {
         throw new Error("Failed to load settings")
       }
 
       const data = await response.json()
-      setSettings(data)
+      setSettings({ connectionId: selectedConnectionId, ...(data.settings || data) })
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Unknown error"
       setError(errorMessage)
@@ -50,13 +50,10 @@ export function useConnectionSettings() {
       if (!selectedConnectionId) return
 
       try {
-        const response = await fetch("/api/settings/connection-settings", {
-          method: "POST",
+        const response = await fetch(`/api/settings/connections/${selectedConnectionId}/settings`, {
+          method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            connectionId: selectedConnectionId,
-            settings: updates,
-          }),
+          body: JSON.stringify(updates),
         })
 
         if (!response.ok) {
@@ -64,8 +61,9 @@ export function useConnectionSettings() {
         }
 
         const data = await response.json()
-        setSettings(data.settings)
-        return data.settings
+        const nextSettings = { connectionId: selectedConnectionId, ...(data.settings || {}) }
+        setSettings(nextSettings)
+        return nextSettings
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : "Unknown error"
         setError(errorMessage)

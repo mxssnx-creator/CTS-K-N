@@ -10,6 +10,46 @@ import { toRedisFlag } from "@/lib/boolean-utils"
 export const dynamic = "force-dynamic"
 export const maxDuration = 30
 
+function serializeConnectionSettingsHash(settings: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(settings)) {
+    if (value === undefined || value === null) continue
+    if (typeof value === "string") out[key] = value
+    else if (typeof value === "number" || typeof value === "boolean") out[key] = String(value)
+    else out[key] = JSON.stringify(value)
+  }
+  return out
+}
+
+const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
+  "symbols",
+  "active_symbols",
+  "force_symbols",
+  "symbol_order",
+  "symbol_count",
+  "is_live_trade",
+  "is_testnet",
+  "is_preset_trade",
+  "connection_method",
+  "position_mode",
+  "margin_mode",
+  "volume_factor_live",
+  "live_volume_factor",
+  "volume_factor_preset",
+  "preset_volume_factor",
+  "volume_step_ratio",
+  "block_volume_step_ratio",
+  "control_orders",
+])
+
+function pickProgressionVisibleSettings(settings: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(settings)) {
+    if (PROGRESSION_VISIBLE_SETTING_KEYS.has(key)) out[key] = value
+  }
+  return out
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -279,6 +319,36 @@ export async function PATCH(
 
     let effectiveConnection = (await updateConnection(id, updated)) || updated
 
+    // Persist the full Main Connection settings payload into both historical
+    // per-connection settings hashes. Some engine/progression readers consume
+    // the bare `connection_settings:{id}` hash while migration-seeded readers
+    // consume `settings:connection_settings:{id}`; keeping them in lock-step
+    // prevents a save from being overwritten by the other namespace later.
+    const serializedMergedSettings = serializeConnectionSettingsHash(merged as Record<string, unknown>)
+    if (Object.keys(serializedMergedSettings).length > 0) {
+      const redis = getRedisClient()
+      await Promise.all([
+        redis.hset(`connection_settings:${id}`, serializedMergedSettings),
+        redis.hset(`settings:connection_settings:${id}`, serializedMergedSettings).catch(() => 0),
+      ])
+
+      const progressionVisibleSettings = pickProgressionVisibleSettings(serializedMergedSettings)
+      if (Object.keys(progressionVisibleSettings).length > 0) {
+        await Promise.all([
+          redis.hset(`trade_engine_state:${id}`, {
+            ...progressionVisibleSettings,
+            connection_id: id,
+            updated_at: new Date().toISOString(),
+          }).catch(() => 0),
+          redis.hset(`settings:trade_engine_state:${id}`, {
+            ...progressionVisibleSettings,
+            connection_id: id,
+            updated_at: new Date().toISOString(),
+          }).catch(() => 0),
+        ])
+      }
+    }
+
     // ── Flat eval-knob hash mirror (CRITICAL) ───────────────────────────
     // The strategy coordinator and detailed-tracking read the per-eval
     // knobs straight off the `connection_settings:{id}` Redis HASH via
@@ -525,6 +595,7 @@ export async function PATCH(
 
       if (Object.keys(flatKnobs).length > 0) {
         const redis = getRedisClient()
+        const progressionVisibleKnobs = pickProgressionVisibleSettings(flatKnobs)
         await Promise.all([
           redis.hset(`connection_settings:${id}`, flatKnobs),
           // Keep the settings:-prefixed mirror in lock-step with the bare hash.
@@ -532,6 +603,12 @@ export async function PATCH(
           // namespaces; writing only one let a settings-dialog save bounce between
           // old and new values until the next migration/refresh copied it over.
           redis.hset(`settings:connection_settings:${id}`, flatKnobs).catch(() => 0),
+          Object.keys(progressionVisibleKnobs).length > 0
+            ? redis.hset(`trade_engine_state:${id}`, { ...progressionVisibleKnobs, connection_id: id, updated_at: new Date().toISOString() }).catch(() => 0)
+            : Promise.resolve(0),
+          Object.keys(progressionVisibleKnobs).length > 0
+            ? redis.hset(`settings:trade_engine_state:${id}`, { ...progressionVisibleKnobs, connection_id: id, updated_at: new Date().toISOString() }).catch(() => 0)
+            : Promise.resolve(0),
         ])
         const volumeConnectionPatch: Record<string, string> = {}
         if (flatKnobs.volume_factor_live !== undefined) {
@@ -674,15 +751,23 @@ export async function PATCH(
           const prevState = (await getSettings(stateKey)) || {}
           const settingsConnectionKey = `connection:${id}`
           const prevSettingsConnection = (await getSettings(settingsConnectionKey)) || {}
-          await setSettings(stateKey, {
-            ...prevState,
+          const resolvedStatePatch = {
             connection_id: id,
             symbols: resolvedSymbolsJson,
             active_symbols: resolvedSymbolsJson,
             force_symbols: resolvedSymbolsJson,
-            config_set_symbols_total: resolved.length,
+            symbol_count: String(resolved.length),
+            symbol_order: order,
+            config_set_symbols_total: String(resolved.length),
             updated_at: new Date().toISOString(),
-          })
+          }
+          await Promise.all([
+            setSettings(stateKey, {
+              ...prevState,
+              ...resolvedStatePatch,
+            }),
+            getRedisClient().hset(stateKey, resolvedStatePatch).catch(() => 0),
+          ])
           // 3. Fast-path only: invalidate the running engine's in-memory
           //    symbol cache in this process so the change takes effect on the
           //    next tick without waiting for the durable reload event.

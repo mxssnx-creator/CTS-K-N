@@ -64,6 +64,7 @@ export interface ConnectionSettings {
   }
 }
 
+export const DEFAULT_CONNECTION_SETTINGS: Omit<ConnectionSettings, "connectionId"> = {
 
 function stringifyHashValue(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined
@@ -230,7 +231,7 @@ export async function getConnectionSettings(connectionId: string): Promise<Conne
     // Initialize with defaults for this connection
     const newSettings: ConnectionSettings = {
       connectionId,
-      ...DEFAULT_SETTINGS,
+      ...DEFAULT_CONNECTION_SETTINGS,
     }
     
     await client.set(key, JSON.stringify(newSettings))
@@ -239,7 +240,7 @@ export async function getConnectionSettings(connectionId: string): Promise<Conne
     console.error(`Failed to get connection settings for ${connectionId}:`, error)
     return {
       connectionId,
-      ...DEFAULT_SETTINGS,
+      ...DEFAULT_CONNECTION_SETTINGS,
     }
   }
 }
@@ -365,7 +366,7 @@ export async function resetConnectionSettings(connectionId: string): Promise<Con
   const LOCK_TTL = 5
   const newSettings: ConnectionSettings = {
     connectionId,
-    ...DEFAULT_SETTINGS,
+    ...DEFAULT_CONNECTION_SETTINGS,
   }
   try {
     await initRedis()
