@@ -110,7 +110,29 @@ export async function GET() {
     // Get active connections
     const connections = await getActiveConnectionsForEngine()
     const coordinatorEngineCount = coordinator?.getActiveEngineCount() || 0
-    const hasLocalEngineRuntime = coordinatorEngineCount > 0
+    let effectiveCoordinatorEngineCount = coordinatorEngineCount
+
+    // Production repair: a status poll often is the first warm invocation after
+    // a Vercel/serverless cold start. If Redis says the operator intent is
+    // running but this process has no local manager yet, run one awaited
+    // healing sweep before reporting a degraded/no-runtime coordinator. The
+    // sweep uses forceLocalTakeover for eligible queued starts, so production
+    // progress/relation coordinations can attach immediately instead of waiting
+    // for a separate cron tick.
+    if (isGloballyRunning && !isGloballyPaused && effectiveCoordinatorEngineCount === 0) {
+      try {
+        const { runTradeEngineHealingSweep } = await import("@/lib/trade-engine-auto-start")
+        await runTradeEngineHealingSweep({ isStartup: false })
+        effectiveCoordinatorEngineCount = coordinator?.getActiveEngineCount() || 0
+      } catch (healErr) {
+        console.warn(
+          "[v0] [StatusAPI] production runtime healing sweep failed:",
+          healErr instanceof Error ? healErr.message : String(healErr),
+        )
+      }
+    }
+
+    const hasLocalEngineRuntime = effectiveCoordinatorEngineCount > 0
     
     if (connections.length === 0) {
       // Get all connections to explain why none are active
@@ -251,8 +273,8 @@ export async function GET() {
     }
 
     const distributedEngineCount = connectionStatuses.filter((c: any) => c.distributedHeartbeatFresh).length
-    const activeEngineCount = Math.max(coordinatorEngineCount, distributedEngineCount)
-    const effectivelyRunning = isGloballyRunning && !isGloballyPaused && (hasRuntimeProof || distributedEngineCount > 0)
+    const activeEngineCount = Math.max(effectiveCoordinatorEngineCount, distributedEngineCount)
+    const effectivelyRunning = isGloballyRunning && !isGloballyPaused && (hasLocalEngineRuntime || hasRuntimeProof || distributedEngineCount > 0)
 
     const responseBody = {
       success: true,

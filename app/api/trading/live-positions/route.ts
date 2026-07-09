@@ -7,6 +7,7 @@ import {
 import { initRedis, getRedisClient, getConnection } from "@/lib/redis-db"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { getAlternateLivePositionKeys } from "@/lib/live-position-alt-index"
+import { countLiveOpenPositions, isLiveOpenStatus } from "@/lib/live-position-status"
 
 export const dynamic = "force-dynamic"
 
@@ -40,13 +41,17 @@ function normalizePosition(pos: any) {
   }
 }
 
+function isMissingNumericValue(value: unknown): boolean {
+  return value === undefined || value === null || Number.isNaN(Number(value))
+}
+
 function enrichPnl(pos: any) {
   const exchangePnl = Number(pos.exchangeData?.unrealizedPnl ?? pos.exchangeData?.unrealizedPnL)
   if (Number.isFinite(exchangePnl) && pos.status !== "closed") {
     pos.unrealizedPnL = Math.round(exchangePnl * 100) / 100
   }
 
-  if (!pos.unrealizedPnL && pos.status !== "closed" && pos.exchangeData?.markPrice && pos.averageExecutionPrice && pos.executedQuantity) {
+  if (isMissingNumericValue(pos.unrealizedPnL) && pos.status !== "closed" && !isMissingNumericValue(pos.exchangeData?.markPrice) && !isMissingNumericValue(pos.averageExecutionPrice) && !isMissingNumericValue(pos.executedQuantity)) {
     const markPrice = Number(pos.exchangeData.markPrice)
     const entryPrice = Number(pos.averageExecutionPrice || pos.entryPrice || 0)
     const qty = Number(pos.executedQuantity || 0)
@@ -57,7 +62,7 @@ function enrichPnl(pos: any) {
   }
 
   const realized = Number(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl)
-  if (pos.status === "closed" && Number.isFinite(realized)) {
+  if (pos.status === "closed" && !isMissingNumericValue(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl) && Number.isFinite(realized)) {
     pos.realizedPnL = Math.round(realized * 100) / 100
   }
 
@@ -78,7 +83,7 @@ function enrichPnl(pos: any) {
 
 function computeStats(positions: any[]) {
   const closed = positions.filter((p) => p.status === "closed")
-  const open = positions.filter((p) => ["open", "filled", "partially_filled", "placed", "pending_fill", "placed_unconfirmed"].includes(p.status))
+  const open = positions.filter((p) => isLiveOpenStatus(p.status))
   const totalRealizedPnL = closed.reduce((sum, p) => sum + (Number(p.realizedPnL ?? p.realized_pnl ?? p.pnl) || 0), 0)
   const totalUnrealizedPnL = open.reduce((sum, p) => sum + (Number(p.unrealizedPnL ?? p.exchangeData?.unrealizedPnl ?? p.exchangeData?.unrealizedPnL) || 0), 0)
   const wins = closed.filter((p) => (Number(p.realizedPnL ?? p.realized_pnl ?? p.pnl) || 0) > 0).length
@@ -185,7 +190,7 @@ export async function GET(request: Request) {
         real: realPositions.length,
         simulated: simulatedPositions.length,
         unknown: unknownPositions.length,
-        open: all.filter((p) => p.status === "open").length,
+        open: countLiveOpenPositions(all),
         pending: all.filter((p) => p.status === "pending").length,
         placed: all.filter((p) => p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed").length,
         pending_fill: all.filter((p) => p.status === "pending_fill").length,
