@@ -4018,10 +4018,20 @@ const ensureBootstrapDiag = new Set<string>()
  * Dev mode intentionally skips the heavy parts (see startPersistence comments).
  */
 async function ensureCompleteProductionCoverage(client: any): Promise<void> {
+  const coverageStartedAt = new Date().toISOString()
+  try {
+    const { recordCoverageRepairStatus, recordStartupPhase } = await import("@/lib/startup-diagnostics")
+    await recordStartupPhase("coverage_repair_running")
+    await recordCoverageRepairStatus({ status: "running", started_at: coverageStartedAt })
+  } catch {
+    // Diagnostic persistence is best-effort only.
+  }
+  let repairedConnections = 0
   // ── Essential progression repair (runs in all modes) ────────────────
   try {
     const allConns = (await client.smembers("connections")) || []
     const connSet = new Set(allConns)
+    repairedConnections = Math.max(repairedConnections, connSet.size)
 
     for (const connId of connSet) {
       if (!connId) continue
@@ -4121,6 +4131,7 @@ async function ensureCompleteProductionCoverage(client: any): Promise<void> {
     const enabledConns = (await client.smembers("connections:main:enabled")) || []
     const allConns = (await client.smembers("connections")) || []
     const connSet = new Set([...enabledConns, ...allConns])
+    repairedConnections = Math.max(repairedConnections, connSet.size)
 
     for (const connId of connSet) {
       if (!connId) continue
@@ -4271,7 +4282,28 @@ async function ensureCompleteProductionCoverage(client: any): Promise<void> {
     // live-trade engine when real orders fill on the exchange.)
 
     console.log(`[v0] [Migrations] [PROD-COVERAGE] Complete coverage repair finished for ${connSet.size} connections (prehistoric containers + logistics + per-progress uniqueness; no fake completion/live positions)`)
+    try {
+      const { recordCoverageRepairStatus, recordStartupPhase } = await import("@/lib/startup-diagnostics")
+      await recordCoverageRepairStatus({
+        status: "complete",
+        started_at: coverageStartedAt,
+        completed_at: new Date().toISOString(),
+        connections: connSet.size,
+      })
+      await recordStartupPhase("coverage_repair_complete", { connections: connSet.size })
+    } catch {}
   } catch (err) {
+    try {
+      const { recordCoverageRepairStatus, recordStartupError } = await import("@/lib/startup-diagnostics")
+      await recordCoverageRepairStatus({
+        status: "error",
+        started_at: coverageStartedAt,
+        failed_at: new Date().toISOString(),
+        connections: repairedConnections,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      await recordStartupError(err, "coverage_repair")
+    } catch {}
     console.warn("[v0] [Migrations] [PROD-COVERAGE] Repair pass had non-fatal error (continuing):", err)
   }
 }
@@ -4484,7 +4516,17 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
         // scheduled as a background task after initRedis() succeeds so schema
         // readiness remains the only blocking migration requirement.
 
-        return { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
+        const result = { success: true, message: "Already run in this process", version: finalVer, databaseHealth }
+        await import("@/lib/startup-diagnostics")
+          .then(({ recordMigrationStatus }) => recordMigrationStatus({
+            success: result.success,
+            message: result.message,
+            current_version: finalVer,
+            latest_version: finalVer,
+            is_migrated: true,
+          }))
+          .catch(() => null)
+        return result
       }
     }
 
@@ -4527,7 +4569,17 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
       // Heavy production coverage repair is scheduled outside the blocking
       // migration path by startup code after initRedis() succeeds.
 
-      return { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
+      const result = { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
+      await import("@/lib/startup-diagnostics")
+        .then(({ recordMigrationStatus }) => recordMigrationStatus({
+          success: result.success,
+          message: result.message,
+          current_version: finalVersion,
+          latest_version: finalVersion,
+          is_migrated: true,
+        }))
+        .catch(() => null)
+      return result
     }
 
     // Run pending migrations as one optimized batch. The batch client suppresses
@@ -4566,8 +4618,31 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
     // migration path. Startup schedules runProductionCoverageRepair() in the
     // background after initRedis() succeeds.
     
-    return { success: true, message: `Migrated from v${currentVersion} to v${finalVersion}`, version: finalVersion, databaseHealth }
+    const result = { success: true, message: `Migrated from v${currentVersion} to v${finalVersion}`, version: finalVersion, databaseHealth }
+    await import("@/lib/startup-diagnostics")
+      .then(({ recordMigrationStatus }) => recordMigrationStatus({
+        success: result.success,
+        message: result.message,
+        current_version: finalVersion,
+        previous_version: currentVersion,
+        latest_version: finalVersion,
+        executed_count: pendingMigrations.length,
+        is_migrated: true,
+      }))
+      .catch(() => null)
+    return result
   } catch (error) {
+    await import("@/lib/startup-diagnostics")
+      .then(({ recordMigrationStatus, recordStartupError }) => Promise.all([
+        recordMigrationStatus({
+          success: false,
+          message: error instanceof Error ? error.message : String(error),
+          latest_version: getMigrationBundleHealth().latestVersion,
+          is_migrated: false,
+        }),
+        recordStartupError(error, "runMigrations"),
+      ]))
+      .catch(() => null)
     console.error("[v0] [Migrations] ✗ Migration failed:", error)
     throw error
   }

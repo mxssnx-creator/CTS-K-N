@@ -21,6 +21,12 @@ import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { isProcessorHeartbeatFresh } from "@/lib/engine-heartbeat"
 import { consolidateDatabase } from "@/lib/database-consolidation"
 import { getMigrationStatus, runProductionCoverageRepair } from "@/lib/redis-migrations"
+import { getMigrationStatus } from "@/lib/redis-migrations"
+import {
+  recordMigrationStatus,
+  recordStartupError,
+  recordStartupPhase,
+} from "@/lib/startup-diagnostics"
 
 function getPositionConnectionId(pos: any): string {
   return String(pos?.connectionId ?? pos?.connection_id ?? "").trim()
@@ -190,14 +196,17 @@ export async function cleanupOrphanedProgress() {
  * PHASE 4 FIX 4.1: Complete startup sequence (no auto-start)
  */
 export async function completeStartup() {
+  await recordStartupPhase("startup_coordinator_running")
   console.log(`[v0] [Startup] ========================================`)
   console.log(`[v0] [Startup] Beginning pre-startup sequence...`)
   console.log(`[v0] [Startup] ========================================\n`)
 
   try {
     // Step 1: Initialize Redis (runMigrations runs inside initRedis)
+    await recordStartupPhase("redis_initializing")
     console.log(`[v0] [Startup] Step 1/8: Initializing Redis...`)
     await initRedis()
+    await recordStartupPhase("redis_ready")
     console.log(`[v0] [Startup] ✓ Redis initialized`)
 
     // Heavy coverage repair is intentionally background-only. initRedis() has
@@ -221,6 +230,13 @@ export async function completeStartup() {
     let migrationReport = "unknown"
     try {
       const migStatus = await getMigrationStatus()
+      await recordMigrationStatus({
+        current_version: migStatus.currentVersion,
+        latest_version: migStatus.latestVersion,
+        is_migrated: migStatus.isMigrated,
+        pending_count: migStatus.pendingMigrations?.length ?? 0,
+        message: migStatus.message,
+      })
       migrationReport = migStatus.isMigrated
         ? `UP TO DATE (v${migStatus.currentVersion}/${migStatus.latestVersion})`
         : `PENDING ${migStatus.pendingMigrations?.length ?? 0} migrations (v${migStatus.currentVersion} -> v${migStatus.latestVersion})`
@@ -362,7 +378,9 @@ export async function completeStartup() {
       `[v0] [Startup] ✓ Boot complete — migrations: ${migrationReport}; ` +
       `production coverage repair + orphan cleanup + stranded-position reconciliation scheduled`,
     )
+    await recordStartupPhase("startup_coordinator_complete", { migration_report: migrationReport })
   } catch (error) {
+    await recordStartupError(error, "completeStartup")
     console.error(`[v0] [Startup] ✗ Fatal error during startup:`, error)
     throw error
   }
@@ -379,6 +397,7 @@ export async function getStartupStatus() {
     const schemaVersion = await client.get("_schema_version")
     const connections = await getAllConnections()
     const migrationsRun = await client.get("_migrations_run")
+    const { getStartupDiagnostics } = await import("@/lib/startup-diagnostics")
 
     return {
       redis_reachable: redisReachable === "PONG",
@@ -387,6 +406,7 @@ export async function getStartupStatus() {
       // runMigrations() persists the string "true" (not "1") for this flag —
       // accept both so the diagnostic doesn't report a false negative.
       migrations_run: migrationsRun === "true" || migrationsRun === "1",
+      startup_diagnostics: await getStartupDiagnostics(),
       timestamp: new Date().toISOString(),
     }
   } catch (error) {
