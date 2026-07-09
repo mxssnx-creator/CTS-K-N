@@ -244,12 +244,12 @@ interface LivePosition {
   statusReason?: string
   closeReason?: string
   closePrice?: number
-  // ── Race condition prevention (atomic status transitions) ──
-  // version: Incremented on every status mutation for optimistic locking
-  //   Concurrent threads detect stale data via version mismatch and retry
-  // lockedAt: Epoch-ms timestamp when position was locked for mutation
-  //   0 = not locked, >0 = locked, used to detect stale locks
-  // lockedBy: Identifier of the thread/process that holds the lock (for debugging)
+  // ── Race condition prevention (Redis-backed mutation lock) ──
+  // version: Incremented by Redis-guarded mutation helpers. Callers that need
+  // compare-and-set semantics must use mutatePositionWithVersionCheck() so the
+  // stored status/version are checked atomically before the hash is updated.
+  // lockedAt/lockedBy are persisted for observability only; lock ownership is
+  // enforced by live_position_lock:{connectionId}:{positionId} token keys.
   version?: number
   lockedAt?: number
   lockedBy?: string
@@ -346,58 +346,197 @@ function normalizeStopLossPercent(rawStopLoss: unknown): { value: number; adjust
   return { value: n, adjusted: false }
 }
 
-/**
- * Atomic guard: Prevent duplicate operations on the same position
- * Returns true if the position is safe to operate on, false if already locked
- * 
- * This prevents the race condition where multiple threads detect SL/TP crosses
- * and all call closeLivePosition() simultaneously, resulting in duplicate closes.
- * 
- * Usage:
- *   if (!tryLockPosition(position)) return null  // Someone else is already closing this
- *   try {
- *     await closeLivePosition(position, ...)
- *   } finally {
- *     unlockPosition(position)
- *   }
- */
-function tryLockPosition(position: LivePosition, lockId: string = "sync-tick"): boolean {
-  // RC5: Guard against duplicate operations
-  if (position.status === "closed" || position.status === "closing" || position.status === "closing_partial") {
-    return false  // Already closed or closing
-  }
-  if (position.lockedAt && position.lockedAt > Date.now() - 60_000) {
-    return false  // Locked within last 60s (still processing)
-  }
-  // Lock the position
-  position.lockedAt = Date.now()
-  position.lockedBy = lockId
-  position.version = (position.version || 0) + 1
-  return true
+const POSITION_MUTATION_LOCK_TTL_MS = 90_000
+
+function positionHashKey(connectionId: string, positionId: string): string {
+  return `live_positions:${connectionId}:${positionId}`
 }
 
-function unlockPosition(position: LivePosition): void {
-  position.lockedAt = 0
-  position.lockedBy = undefined
+function positionMutationLockKey(connectionId: string, positionId: string): string {
+  return `live_position_lock:${connectionId}:${positionId}`
+}
+
+function redisHashValue(value: unknown): string {
+  if (value === undefined) return ""
+  if (value === null) return ""
+  if (typeof value === "object") return JSON.stringify(value)
+  return String(value)
+}
+
+function positionToRedisHash(position: LivePosition): Record<string, string> {
+  const fields: Record<string, string> = {}
+  for (const [key, value] of Object.entries(position)) {
+    if (value !== undefined) fields[key] = redisHashValue(value)
+  }
+  return fields
+}
+
+function safeJsonParse<T>(raw: unknown, fallback: T): T {
+  if (typeof raw !== "string" || raw.length === 0) return fallback
+  try { return JSON.parse(raw) as T } catch { return fallback }
+}
+
+function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
+  return {
+    ...hash,
+    entryPrice: Number(hash.entryPrice || hash.entry_price || 0),
+    executedQuantity: Number(hash.executedQuantity || 0),
+    remainingQuantity: Number(hash.remainingQuantity || 0),
+    averageExecutionPrice: Number(hash.averageExecutionPrice || hash.entryPrice || hash.entry_price || 0),
+    quantity: Number(hash.quantity || hash.executedQuantity || 0),
+    leverage: Number(hash.leverage || 1),
+    version: Number(hash.version || 0),
+    createdAt: Number(hash.createdAt || 0),
+    updatedAt: Number(hash.updatedAt || 0),
+    closedAt: Number(hash.closedAt || 0) || undefined,
+    realizedPnL: Number(hash.realizedPnL ?? hash.realized_pnl ?? 0) || undefined,
+    unrealized_pnl: Number(hash.unrealized_pnl ?? 0) || undefined,
+    unrealized_pnl_percent: Number(hash.unrealized_pnl_percent ?? 0) || undefined,
+    fills: Array.isArray(hash.fills) ? hash.fills : safeJsonParse<FillRecord[]>(hash.fills, []),
+    progression: Array.isArray(hash.progression) ? hash.progression : safeJsonParse<any[]>(hash.progression, []),
+    exchangeData: typeof hash.exchangeData === "string" ? safeJsonParse<Record<string, unknown>>(hash.exchangeData, {}) : hash.exchangeData,
+    accumulatedSetKeys: Array.isArray(hash.accumulatedSetKeys)
+      ? hash.accumulatedSetKeys
+      : safeJsonParse<string[]>(hash.accumulatedSetKeys, []),
+  } as LivePosition
+}
+
+async function readLivePositionSnapshot(client: any, connectionId: string, positionId: string): Promise<LivePosition | null> {
+  const legacyRaw = await client.get(`live:position:${positionId}`).catch(() => null)
+  if (legacyRaw) {
+    try { return JSON.parse(legacyRaw as string) as LivePosition } catch { /* fall through */ }
+  }
+  const hash = await client.hgetall(positionHashKey(connectionId, positionId)).catch(() => null)
+  if (hash && Object.keys(hash).length > 0) return parseRedisHashPosition(hash)
+  return null
+}
+
+async function evalRedis(client: any, script: string, keys: string[], args: string[]): Promise<any> {
+  if (typeof client.eval === "function") {
+    try {
+      return await client.eval(script, { keys, arguments: args })
+    } catch {
+      return await client.eval(script, keys.length, ...keys, ...args)
+    }
+  }
+  throw new Error("Redis client does not support EVAL")
+}
+
+export async function acquirePositionMutationLock(
+  connectionId: string,
+  positionId: string,
+  lockId: string,
+  ttlMs: number = POSITION_MUTATION_LOCK_TTL_MS,
+): Promise<boolean> {
+  const client = getRedisClient()
+  const result = await client.set(positionMutationLockKey(connectionId, positionId), lockId, {
+    NX: true,
+    PX: ttlMs,
+  } as any)
+  return result === "OK" || (result as any) === true
+}
+
+export async function releasePositionMutationLock(
+  connectionId: string,
+  positionId: string,
+  lockId: string,
+): Promise<boolean> {
+  const client = getRedisClient()
+  const result = await evalRedis(
+    client,
+    `
+      if redis.call("GET", KEYS[1]) == ARGV[1] then
+        return redis.call("DEL", KEYS[1])
+      end
+      return 0
+    `,
+    [positionMutationLockKey(connectionId, positionId)],
+    [lockId],
+  )
+  return Number(result) === 1
+}
+
+export async function mutatePositionWithVersionCheck(
+  position: LivePosition,
+  allowedStatuses: string[],
+  mutation: (draft: LivePosition) => void,
+): Promise<LivePosition | null> {
+  const currentVersion = Number(position.version || 0)
+  const next: LivePosition = { ...position, version: currentVersion + 1, updatedAt: Date.now() }
+  mutation(next)
+
+  const fields = positionToRedisHash(next)
+  const argv = [
+    String(currentVersion),
+    JSON.stringify(allowedStatuses),
+    String(fields.version ?? next.version ?? currentVersion + 1),
+    ...Object.entries(fields).flat(),
+  ]
+  const client = getRedisClient()
+  const result = await evalRedis(
+    client,
+    `
+      local currentVersion = redis.call("HGET", KEYS[1], "version")
+      local currentStatus = redis.call("HGET", KEYS[1], "status")
+      if currentVersion ~= ARGV[1] then return 0 end
+      local allowed = cjson.decode(ARGV[2])
+      local ok = false
+      for _, status in ipairs(allowed) do
+        if status == currentStatus then ok = true break end
+      end
+      if not ok then return 0 end
+      redis.call("HSET", KEYS[1], unpack(ARGV, 4))
+      return 1
+    `,
+    [positionHashKey(position.connectionId, position.id)],
+    argv,
+  )
+  return Number(result) === 1 ? next : null
 }
 
 async function savePosition(position: LivePosition, retries: number = 0): Promise<void> {
-  // RC2: Atomic position update with optimistic locking
-  // Ensure version is set and increment before save
+  // Persist a position snapshot. This helper is intentionally a plain write;
+  // status-sensitive callers must use mutatePositionWithVersionCheck() before
+  // saving so Redis checks the stored status/version atomically.
   if (!position.version) position.version = 0
   position.version++
   
   const { getRedisClient } = await import("@/lib/redis-db")
   const client = getRedisClient()
   const posKey = `live_positions:${position.connectionId}:${position.id}`
+  const jsonKey = `live:position:${position.id}`
+  const openIndexKey = `live:positions:${position.connectionId}`
+  const closedIndexKey = `live:positions:${position.connectionId}:closed`
+  const terminalStatuses = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
   
   try {
-    // Atomic update: set the position data with version marker
-    // If another thread updated it concurrently, we'll detect via version mismatch
+    position.updatedAt = Date.now()
     await client.hset(posKey, {
       ...position,
-      updatedAt: Date.now(),
     } as any)
+    await client.set(jsonKey, JSON.stringify(position), { EX: 7 * 24 * 60 * 60 } as any).catch(async () => {
+      await client.set(jsonKey, JSON.stringify(position)).catch(() => null)
+      await client.expire(jsonKey, 7 * 24 * 60 * 60).catch(() => 0)
+    })
+
+    if (terminalStatuses.has(String(position.status || "").toLowerCase())) {
+      await client.lrem(openIndexKey, 0, position.id).catch(() => 0)
+      const alreadyClosed = await client.lpos(closedIndexKey, position.id).catch(() => null)
+      if (alreadyClosed === null || alreadyClosed === undefined) {
+        await client.lpush(closedIndexKey, position.id).catch(() => 0)
+      }
+      await client.set(`live:positions:${position.connectionId}:moved:${position.id}`, String(Date.now())).catch(() => null)
+      await client.expire(`live:positions:${position.connectionId}:moved:${position.id}`, 60 * 60).catch(() => 0)
+    } else {
+      await client.lrem(openIndexKey, 0, position.id).catch(() => 0)
+      await client.lpush(openIndexKey, position.id).catch(() => 0)
+    }
+    await Promise.all([
+      client.expire(posKey, 7 * 24 * 60 * 60).catch(() => 0),
+      client.expire(openIndexKey, 7 * 24 * 60 * 60).catch(() => 0),
+      client.expire(closedIndexKey, 30 * 24 * 60 * 60).catch(() => 0),
+      client.ltrim(closedIndexKey, 0, 4999).catch(() => 0),
+    ])
   } catch (err) {
     console.warn(
       `${LOG_PREFIX} [RC2] savePosition failed for ${position.symbol}/${position.id}:`,
@@ -563,6 +702,13 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
   // the venue position does not, and the very next reconcile tick sees a
   // size mismatch (or, worse, arms SL/TP for phantom contracts). The prior
   // implementation merged quantities purely in memory; this is the bug fix.
+  const lockId = `accumulate:${process.pid}:${Date.now()}:${nanoid(8)}`
+  const locked = await acquirePositionMutationLock(connId, existing.id, lockId)
+  if (!locked) {
+    pushStep(existing, "accumulate_skip", false, "position mutation lock already held — accumulation deferred")
+    return existing
+  }
+
   try {
     if (!existing.accumulatedSetKeys) existing.accumulatedSetKeys = []
 
@@ -641,17 +787,27 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     const prevExec = existing.executedQuantity || 0
     const prevAvg = existing.averageExecutionPrice || existing.entryPrice || 0
     const newExec = prevExec + filledQty
-    existing.executedQuantity = newExec
-    existing.quantity = (existing.quantity || 0) + filledQty
-    existing.remainingQuantity = Math.max(0, (existing.quantity || 0) - newExec)
-    // Notional-weighted average entry across the original fill + this merge.
-    existing.averageExecutionPrice = newExec > 0 ? (prevAvg * prevExec + filledPrice * filledQty) / newExec : prevAvg
-    existing.volumeUsd = newExec * (existing.averageExecutionPrice || filledPrice)
-    if (!existing.fills) existing.fills = []
-    existing.fills.push({ timestamp: Date.now(), quantity: filledQty, price: filledPrice, fee: 0, feeAsset: "USDT" })
-    if (real.setKey) existing.accumulatedSetKeys.push(real.setKey)
-    existing.updatedAt = Date.now()
-    pushStep(existing, "accumulate", true, `+${filledQty} @ ${filledPrice} (setKey=${real.setKey || "n/a"}, total=${newExec})`)
+    const mutated = await mutatePositionWithVersionCheck(existing, ["open", "filled", "partially_filled"], draft => {
+      draft.executedQuantity = newExec
+      draft.quantity = (draft.quantity || 0) + filledQty
+      draft.remainingQuantity = Math.max(0, (draft.quantity || 0) - newExec)
+      // Notional-weighted average entry across the original fill + this merge.
+      draft.averageExecutionPrice = newExec > 0 ? (prevAvg * prevExec + filledPrice * filledQty) / newExec : prevAvg
+      draft.volumeUsd = newExec * (draft.averageExecutionPrice || filledPrice)
+      if (!draft.fills) draft.fills = []
+      draft.fills.push({ timestamp: Date.now(), quantity: filledQty, price: filledPrice, fee: 0, feeAsset: "USDT" })
+      if (real.setKey) {
+        if (!draft.accumulatedSetKeys) draft.accumulatedSetKeys = []
+        draft.accumulatedSetKeys.push(real.setKey)
+      }
+      draft.updatedAt = Date.now()
+      pushStep(draft, "accumulate", true, `+${filledQty} @ ${filledPrice} (setKey=${real.setKey || "n/a"}, total=${newExec})`)
+    })
+    if (!mutated) {
+      pushStep(existing, "accumulate_skip", false, "stale status/version — accumulation deferred")
+      return existing
+    }
+    Object.assign(existing, mutated)
     await incrementMetric(connId, "live_orders_accumulated_count")
     await savePosition(existing)
 
@@ -677,6 +833,8 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
   } catch (err) {
     pushStep(existing, "accumulate_error", false, err instanceof Error ? err.message : String(err))
     try { await savePosition(existing) } catch { /* best-effort */ }
+  } finally {
+    await releasePositionMutationLock(connId, existing.id, lockId).catch(() => false)
   }
   return existing
 }
@@ -4133,13 +4291,26 @@ export async function closeLivePosition(
 ): Promise<LivePosition | null> {
   await initRedis()
   const client = getRedisClient()
+  const lockId = `close:${closeReason}:${process.pid}:${Date.now()}:${nanoid(8)}`
+  let mutationLockHeld = false
 
   try {
-    const key = `live:position:${livePositionId}`
-    const data = await client.get(key)
-    if (!data) return null
+    const position = await readLivePositionSnapshot(client, connectionId, livePositionId)
+    if (!position) return null
 
-    const position: LivePosition = JSON.parse(data as string)
+    const locked = await acquirePositionMutationLock(connectionId, livePositionId, lockId)
+    if (!locked) return null
+    mutationLockHeld = true
+    const transitioned = await mutatePositionWithVersionCheck(position, ["open", "filled", "partially_filled", "placed", "pending_fill"], draft => {
+      draft.status = "closing"
+      draft.lockedAt = Date.now()
+      draft.lockedBy = lockId
+    })
+    if (!transitioned) {
+      await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
+      return null
+    }
+    Object.assign(position, transitioned)
 
     // ── Ownership guard ──────────────────────────────────��─────────────
     // Derived FIRST — before building any cancellation promises — so we
@@ -4452,10 +4623,26 @@ export async function closeLivePosition(
     // Positions Created (4)" asymmetry the operator reported.
     const movedMarker = `live:positions:${connectionId}:moved:${position.id}`
     const wasAlreadyClosed = await client.get(movedMarker).catch(() => null)
+    const closedMutation = await mutatePositionWithVersionCheck(position, ["closing"], draft => {
+      Object.assign(draft, position)
+      draft.status = "closed"
+      draft.version = Number(position.version || 0) + 1
+      draft.updatedAt = Date.now()
+      draft.lockedAt = 0
+      draft.lockedBy = undefined
+    })
+    if (!closedMutation) {
+      await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
+      mutationLockHeld = false
+      return null
+    }
+    Object.assign(position, closedMutation)
     await savePosition(position)
 
     // ── 5. Release dedup lock + counters + audit log ────────────────────
     await releaseLock(connectionId, position.symbol, position.direction!)
+    await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
+    mutationLockHeld = false
     if (!wasAlreadyClosed) {
       await incrementMetric(connectionId, "live_positions_closed_count")
       if (pnl > 0) await incrementMetric(connectionId, "live_wins_count")
@@ -4505,6 +4692,9 @@ export async function closeLivePosition(
 
     return position
   } catch (err) {
+    if (mutationLockHeld) {
+      await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
+    }
     console.error(`${LOG_PREFIX} Error closing live position:`, err)
     return null
   }
@@ -4534,13 +4724,10 @@ export async function getLivePositions(connectionId: string): Promise<LivePositi
     // sequential awaits. Promise.all collapses them into one RTT window.
     const positions: LivePosition[] = []
     if (uniqueIds.length > 0) {
-      const rawValues = await Promise.all(
-        uniqueIds.map((id) => client.get(`live:position:${id}`).catch(() => null)),
+      const values = await Promise.all(
+        uniqueIds.map((id) => readLivePositionSnapshot(client, connectionId, id).catch(() => null)),
       )
-      for (const data of rawValues) {
-        if (!data) continue
-        try { positions.push(JSON.parse(data as string)) } catch { /* ignore */ }
-      }
+      for (const pos of values) if (pos) positions.push(pos)
     }
     return positions
   } catch (err) {
@@ -4585,13 +4772,10 @@ export async function getClosedLivePositions(
     const positions: LivePosition[] = []
     if (uniqueIds.length === 0) return positions
 
-    const rawValues = await Promise.all(
-      uniqueIds.map((id) => client.get(`live:position:${id}`).catch(() => null)),
+    const values = await Promise.all(
+      uniqueIds.map((id) => readLivePositionSnapshot(client, connectionId, id).catch(() => null)),
     )
-    for (const data of rawValues) {
-      if (!data) continue
-      try { positions.push(JSON.parse(data as string)) } catch { /* ignore malformed */ }
-    }
+    for (const pos of values) if (pos) positions.push(pos)
     return positions
   } catch (err) {
     console.warn(`${LOG_PREFIX} getClosedLivePositions error:`, err)
@@ -4704,11 +4888,7 @@ async function checkAndForceCloseOnSltpCross(
   if (pos.status === "closed" || pos.status === "rejected" || pos.status === "error") return null
   if (pos.closeReason || pos.closedAt) return null  // Already being closed elsewhere
   
-  // RC1: Atomic lock to prevent duplicate close operations from concurrent sync-tick cycles
-  // Only ONE thread should proceed with closing this position
-  if (!tryLockPosition(pos, "checkAndForceCloseOnSltpCross")) {
-    return null  // Another thread is already processing this close
-  }
+  // closeLivePosition owns the Redis mutation lock and status/version transition.
   if (!isSystemTrackedLivePosition(pos, connectionId)) return null
   if (pos.status === "placed") {
     // Rate-limit to once-per-minute per position by using updatedAt as
@@ -4804,9 +4984,6 @@ async function checkAndForceCloseOnSltpCross(
       `${LOG_PREFIX} force-close on ${crossReason!} failed for ${pos.id}:`,
       closeErr instanceof Error ? closeErr.message : String(closeErr),
     )
-  } finally {
-    // RC1: Always unlock, even on error, to allow retries in next cycle
-    unlockPosition(pos)
   }
   return crossReason
 }

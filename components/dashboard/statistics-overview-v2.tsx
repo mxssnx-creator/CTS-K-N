@@ -586,7 +586,7 @@ export function StatisticsOverviewV2() {
   const { selectedConnectionId } = useExchange()
   const connectionId = selectedConnectionId || "default-bingx-001"
   const [stats, setStats] = useState<CompactStats>(EMPTY)
-  // Event-triggered refreshes can overlap with the 5s poll. Only the newest
+  // Event-triggered refreshes can overlap with the 3s poll. Only the newest
   // stats payload may update state, otherwise an older slow response can make
   // the dashboard appear to stall or jump backward.
   const statsFetchSeqRef = useRef(0)
@@ -597,7 +597,7 @@ export function StatisticsOverviewV2() {
     // Single canonical loader — fetches the per-connection stats
     // endpoint, parses the `liveExecution` / `strategyDetail.live` /
     // `realtime` / `breakdown` / `metadata` branches, and pushes into
-    // local state. Called on mount, every 5s, and on global engine /
+    // local state. Called on mount, every 3s, and on global engine /
     // connection / live-trade toggle events for immediate refresh.
     const load = async () => {
       const requestSeq = ++statsFetchSeqRef.current
@@ -871,9 +871,9 @@ export function StatisticsOverviewV2() {
     }
 
     load()
-    // UI refresh stays at 5s (original cadence). The 3s cadence is reserved for
-    // the INTERNAL avg-sets/pos calcs (server-side), not the dashboard poll.
-    const interval = setInterval(load, 5000)
+    // Poll every 3s so live exchange order/position PnL, counts, and trade
+    // history stay aligned with the engine's exchange-sync cadence.
+    const interval = setInterval(load, 3000)
 
     // Event-driven refresh so toggles surface immediately rather than
     // waiting for the next interval tick.

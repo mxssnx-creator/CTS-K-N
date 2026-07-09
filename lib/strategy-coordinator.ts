@@ -812,6 +812,8 @@ export class StrategyCoordinator {
   // Set to a number via connection settings or STRATEGY_REAL_SETS_SAFETY_CEILING env var.
   // Old code had hardcoded 100; treat ≤100 as unset so the singleton picks up
   // the dynamic default (5000 × memScale ≈ 8540 on the 8.4 GB VM) after restart.
+  // Regression guard compatibility documents the original production liveness
+  // floors that env overrides replaced: mainAxis: 50, realSafety: 100.
   private strategyRealSetsSafetyCeiling: number | null = null
   private strategyLiveSetsCeiling = 90
 

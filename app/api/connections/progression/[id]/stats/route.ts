@@ -99,7 +99,7 @@ function throttledStatsWarn(key: string, msg: string): void {
     let sumPnl = 0, sumGrossProfit = 0, sumGrossLoss = 0
     let sumHoldMs = 0, sumVolumeUsd = 0, sumRoe = 0, cnt = 0
     for (const pos of positions) {
-      const pnl = Number(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl ?? 0) || 0
+      const pnl = effectiveRealizedPnl(pos)
       sumPnl += pnl
       if (pnl > 0) sumGrossProfit += pnl
       if (pnl < 0) sumGrossLoss += Math.abs(pnl)
@@ -114,6 +114,59 @@ function throttledStatsWarn(key: string, msg: string): void {
       cnt++
     }
     return { sumPnl, sumGrossProfit, sumGrossLoss, sumHoldMs, sumVolumeUsd, sumRoe, count: cnt }
+  }
+
+  function parseMaybeJson<T>(raw: unknown, fallback: T): T {
+    if (typeof raw !== "string" || raw.length === 0) return fallback
+    try { return JSON.parse(raw) as T } catch { return fallback }
+  }
+
+  async function readLivePosition(client: any, connectionId: string, id: string): Promise<Record<string, any> | null> {
+    const raw = await client.get(`live:position:${id}`).catch(() => null)
+    if (raw) {
+      try { return JSON.parse(raw as string) } catch { /* fall through to hash */ }
+    }
+    const hash = await client.hgetall(`live_positions:${connectionId}:${id}`).catch(() => null)
+    if (!hash || Object.keys(hash).length === 0) return null
+    return {
+      ...hash,
+      entryPrice: Number(hash.entryPrice || hash.entry_price || 0),
+      averageExecutionPrice: Number(hash.averageExecutionPrice || hash.entryPrice || hash.entry_price || 0),
+      executedQuantity: Number(hash.executedQuantity || 0),
+      quantity: Number(hash.quantity || hash.executedQuantity || 0),
+      leverage: Number(hash.leverage || 1),
+      createdAt: Number(hash.createdAt || 0),
+      updatedAt: Number(hash.updatedAt || 0),
+      closedAt: Number(hash.closedAt || 0) || undefined,
+      realizedPnL: Number(hash.realizedPnL ?? hash.realized_pnl ?? 0) || undefined,
+      exchangeData: typeof hash.exchangeData === "string" ? parseMaybeJson<Record<string, any>>(hash.exchangeData, {}) : hash.exchangeData,
+    }
+  }
+
+  function effectiveRealizedPnl(pos: Record<string, any>): number {
+    const stored = Number(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl)
+    if (Number.isFinite(stored) && stored !== 0) return stored
+    const qty = Number(pos.executedQuantity ?? pos.quantity ?? 0) || 0
+    const entry = Number(pos.averageExecutionPrice ?? pos.entryPrice ?? 0) || 0
+    const close = Number(pos.closePrice ?? pos.exitPrice ?? pos.lastPrice ?? 0) || 0
+    const dir = String(pos.direction || "").toLowerCase()
+    if (qty > 0 && entry > 0 && close > 0) {
+      return qty * (dir === "short" ? entry - close : close - entry)
+    }
+    return Number.isFinite(stored) ? stored : 0
+  }
+
+  function effectiveUnrealizedPnl(pos: Record<string, any>): number {
+    const stored = Number(pos.unrealizedPnL ?? pos.unrealized_pnl ?? pos.exchangeData?.unrealizedPnl ?? pos.exchangeData?.unrealizedPnL)
+    if (Number.isFinite(stored) && stored !== 0) return stored
+    const qty = Number(pos.executedQuantity ?? pos.quantity ?? 0) || 0
+    const entry = Number(pos.averageExecutionPrice ?? pos.entryPrice ?? 0) || 0
+    const mark = Number(pos.markPrice ?? pos.exchangeData?.markPrice ?? pos.current_price ?? 0) || 0
+    const dir = String(pos.direction || "").toLowerCase()
+    if (qty > 0 && entry > 0 && mark > 0) {
+      return qty * (dir === "short" ? entry - mark : mark - entry)
+    }
+    return Number.isFinite(stored) ? stored : 0
   }
 
 /**
@@ -716,14 +769,11 @@ export async function GET(
 
       if (liveOpenIds.length > 0) {
         const rawList = await Promise.all(
-          liveOpenIds.map((id) =>
-            client.get(`live:position:${id}`).catch(() => null),
-          ),
+          liveOpenIds.map((id) => readLivePosition(client, connectionId, id).catch(() => null)),
         )
-        for (const raw of rawList) {
-          if (!raw) continue
+        for (const pos of rawList) {
+          if (!pos) continue
           try {
-            const pos = JSON.parse(raw as string)
             // Exclude closed/cancelled; accept every in-flight state
             // where exchange exposure is still on the books.
             const status = String(pos.status || "").toLowerCase()
@@ -784,9 +834,7 @@ export async function GET(
             const liquidationPrice = Math.round(
               (Number(pos.exchangeData?.liquidationPrice) || 0) * 1e8,
             ) / 1e8
-            const unrealizedPnl = Math.round(
-              (Number(pos.exchangeData?.unrealizedPnl ?? pos.exchangeData?.unrealizedPnL) || 0) * 100,
-            ) / 100
+            const unrealizedPnl = Math.round(effectiveUnrealizedPnl(pos) * 100) / 100
             // Actual margin at risk = exposure / leverage (not
             // notional). This is what the operator has skin in the
             // game for; ROI is computed against it to match exchange
@@ -1670,12 +1718,11 @@ export async function GET(
         .lrange(`live:positions:${connectionId}:closed`, 0, 499)
         .catch(() => [])) || []) as string[]
       const rawList = await Promise.all(
-        closedIds.map((id) => client.get(`live:position:${id}`).catch(() => null)),
+        closedIds.map((id) => readLivePosition(client, connectionId, id).catch(() => null)),
       )
-      for (const raw of rawList) {
-        if (!raw) continue
+      for (const pos of rawList) {
+        if (!pos) continue
         try {
-          const pos = JSON.parse(raw as string)
           sharedClosedParsed.push(pos)
           if (pos.id) seenIds.add(pos.id)
         } catch { /* skip malformed */ }
@@ -1969,11 +2016,11 @@ export async function GET(
       liveClosedSumHoldMs      = closedEval.sumHoldMs
       liveClosedRoeAcc         = closedEval.sumRoe
       liveClosedHoldMinutes    = closedEval.sumHoldMs / 60_000
-      liveClosedWins           = closedParsed.filter((p: Record<string, any>) => (Number(p.realizedPnL ?? 0) || 0) > 0).length
+      liveClosedWins           = closedParsed.filter((p: Record<string, any>) => effectiveRealizedPnl(p) > 0).length
 
       // Build per-position history rows (cap at 500 for response payload)
       for (const pos of closedParsed) {
-        const pnl = Number(pos.realizedPnL ?? pos.realized_pnl ?? 0) || 0
+        const pnl = effectiveRealizedPnl(pos)
         const qty = Number(pos.executedQuantity ?? pos.quantity ?? 0) || 0
         const avgP = Number(pos.averageExecutionPrice ?? pos.entryPrice ?? 0) || 0
         // Skip rejected / zero-fill positions that have no valid entry data.

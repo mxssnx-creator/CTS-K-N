@@ -40,13 +40,13 @@ function normalizePosition(pos: any) {
 }
 
 function enrichPnl(pos: any) {
-  const exchangePnl = Number(pos.exchangeData?.unrealizedPnl ?? pos.exchangeData?.unrealizedPnL)
+  const exchangePnl = Number(pos.unrealizedPnL ?? pos.unrealized_pnl ?? pos.exchangeData?.unrealizedPnl ?? pos.exchangeData?.unrealizedPnL)
   if (Number.isFinite(exchangePnl) && pos.status !== "closed") {
     pos.unrealizedPnL = Math.round(exchangePnl * 100) / 100
   }
 
-  if (!pos.unrealizedPnL && pos.status !== "closed" && pos.exchangeData?.markPrice && pos.averageExecutionPrice && pos.executedQuantity) {
-    const markPrice = Number(pos.exchangeData.markPrice)
+  if (!pos.unrealizedPnL && pos.status !== "closed" && (pos.markPrice || pos.exchangeData?.markPrice) && pos.averageExecutionPrice && pos.executedQuantity) {
+    const markPrice = Number(pos.markPrice ?? pos.exchangeData.markPrice)
     const entryPrice = Number(pos.averageExecutionPrice || pos.entryPrice || 0)
     const qty = Number(pos.executedQuantity || 0)
     if (entryPrice > 0 && markPrice > 0 && qty > 0) {
@@ -55,7 +55,15 @@ function enrichPnl(pos: any) {
     }
   }
 
-  const realized = Number(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl)
+  let realized = Number(pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl)
+  if ((!Number.isFinite(realized) || realized === 0) && pos.status === "closed") {
+    const qty = Number(pos.executedQuantity || pos.quantity || 0)
+    const entryPrice = Number(pos.averageExecutionPrice || pos.entryPrice || 0)
+    const closePrice = Number(pos.closePrice || pos.exitPrice || 0)
+    if (qty > 0 && entryPrice > 0 && closePrice > 0) {
+      realized = qty * (pos.direction === "short" ? entryPrice - closePrice : closePrice - entryPrice)
+    }
+  }
   if (pos.status === "closed" && Number.isFinite(realized)) {
     pos.realizedPnL = Math.round(realized * 100) / 100
   }
@@ -79,7 +87,7 @@ function computeStats(positions: any[]) {
   const closed = positions.filter((p) => p.status === "closed")
   const open = positions.filter((p) => ["open", "filled", "partially_filled", "placed", "pending_fill", "placed_unconfirmed"].includes(p.status))
   const totalRealizedPnL = closed.reduce((sum, p) => sum + (Number(p.realizedPnL ?? p.realized_pnl ?? p.pnl) || 0), 0)
-  const totalUnrealizedPnL = open.reduce((sum, p) => sum + (Number(p.unrealizedPnL ?? p.exchangeData?.unrealizedPnl ?? p.exchangeData?.unrealizedPnL) || 0), 0)
+  const totalUnrealizedPnL = open.reduce((sum, p) => sum + (Number(p.unrealizedPnL ?? p.unrealized_pnl ?? p.exchangeData?.unrealizedPnl ?? p.exchangeData?.unrealizedPnL) || 0), 0)
   const wins = closed.filter((p) => (Number(p.realizedPnL ?? p.realized_pnl ?? p.pnl) || 0) > 0).length
   const losses = closed.filter((p) => (Number(p.realizedPnL ?? p.realized_pnl ?? p.pnl) || 0) < 0).length
   const winRate = wins + losses > 0 ? Math.round((wins / (wins + losses)) * 10000) / 100 : 0
