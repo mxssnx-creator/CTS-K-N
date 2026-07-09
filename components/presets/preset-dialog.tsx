@@ -35,7 +35,7 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
     indication_types: ["direction", "move", "active"],
     indication_ranges: [3, 5, 8, 12, 15, 20, 25, 30],
     takeprofit_steps: [2, 3, 4, 6, 8, 12],
-    stoploss_ratios: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5],
+    stoploss_ratios: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
     trailing_enabled: true,
     trail_starts: [0.3, 0.6, 1.0],
     trail_stops: [0.1, 0.2, 0.3],
@@ -66,7 +66,7 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
         indication_types: ["direction", "move", "active"],
         indication_ranges: [3, 5, 8, 12, 15, 20, 25, 30],
         takeprofit_steps: [2, 3, 4, 6, 8, 12],
-        stoploss_ratios: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5],
+        stoploss_ratios: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
         trailing_enabled: true,
         trail_starts: [0.3, 0.6, 1.0],
         trail_stops: [0.1, 0.2, 0.3],
@@ -169,11 +169,11 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
               <Card>
                 <CardHeader>
                   <CardTitle>Stop Loss Ratios</CardTitle>
-                  <CardDescription>SL ratios from take profit (0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5)</CardDescription>
+                  <CardDescription>SL ratios from take profit (0.25–2.5, step 0.25)</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="flex flex-wrap gap-2">
-                    {[0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5].map((ratio) => (
+                    {[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5].map((ratio) => (
                       <Badge
                         key={ratio}
                         variant={formData.stoploss_ratios?.includes(ratio) ? "default" : "outline"}

@@ -437,7 +437,7 @@ const initialSettings: Settings = {
   // Trailing Configuration
   trailingEnabled: true,
   trailingStartValues: "0.5, 1.0, 1.5",
-  trailingStopValues: "0.2, 0.4, 0.6",
+  trailingStopValues: "0.25, 0.5, 0.75",
 
   // Adjustment Strategies
   blockAdjustment: true,

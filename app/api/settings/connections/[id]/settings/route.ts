@@ -73,7 +73,7 @@ export async function GET(
         if ([
           "symbol_count", "symbolCount", "leveragePercentage",
           "prevPosMinCount", "prevPosWindow", "mainEvalPosCount",
-          "realEvalPosCount", "minStep", "trailingMinStep",
+          "realEvalPosCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio", "trailingMinStep",
           // Volume / live trading factors
           "live_volume_factor", "volume_factor_live", "preset_volume_factor",
           "volume_step_ratio", "block_volume_step_ratio",
@@ -114,6 +114,7 @@ export async function GET(
     // connections expose stable values before the first save after upgrade.
     const settings = {
       minStep: 5,
+      maxStopLossRatio: 2.5,
       trailingMinStep: 6,
       ...jsonSettings,
       ...hashSettings,
@@ -293,6 +294,7 @@ export async function PATCH(
         "mainEvalPosCount",
         "realEvalPosCount",
         "minStep",
+        "maxStopLossRatio",
         "trailingMinStep",
       ] as const
       for (const k of knobKeys) {

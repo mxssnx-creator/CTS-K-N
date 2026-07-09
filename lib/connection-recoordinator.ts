@@ -153,12 +153,12 @@ export async function recoordinateAfterSettingsChange(
     "symbol_count", "force_symbols", "symbols",
     // Strategy coordination — variants, block/dca, axis settings
     "strategies", "coordination_settings", "variantTrailingEnabled", "variantBlockEnabled",
-    "variantDcaEnabled",
+    "variantDcaEnabled", "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep",
     "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
     "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
     "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled",
     // Minimal step count affects pseudo position placement
-    "minimal_step_count", "minimalStepCount", "minStep",
+    "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
     // Eval thresholds affect strategy/set progression
     "profitFactorMin", "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
     "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",

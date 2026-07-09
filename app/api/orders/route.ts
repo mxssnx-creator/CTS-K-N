@@ -1,5 +1,4 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getRedisClient, getSettings } from "@/lib/redis-db"
 import { getMarketData, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
 import { auditLogger } from "@/lib/audit-logger"
 import { apiErrorHandler, ApiError } from "@/lib/api-error-handler"
@@ -55,13 +54,23 @@ async function writeOrder(newOrder: any) {
   const createdScore = Date.parse(newOrder.created_at)
   const score = Number.isFinite(createdScore) ? createdScore : Date.now()
 
-  await redis
-    .multi()
-    .set(orderKey(newOrder.id), JSON.stringify(newOrder))
-    .zadd(ORDER_INDEX_KEY, score, newOrder.id)
-    .zadd(connectionIndexKey(newOrder.connection_id), score, newOrder.id)
-    .zadd(statusIndexKey(newOrder.status), score, newOrder.id)
-    .exec()
+  if (typeof redis.multi === "function") {
+    await redis
+      .multi()
+      .set(orderKey(newOrder.id), JSON.stringify(newOrder))
+      .zadd(ORDER_INDEX_KEY, score, newOrder.id)
+      .zadd(connectionIndexKey(newOrder.connection_id), score, newOrder.id)
+      .zadd(statusIndexKey(newOrder.status), score, newOrder.id)
+      .exec()
+    return
+  }
+
+  // Test/minimal Redis clients may not expose MULTI/ZADD. Keep the legacy
+  // settings-list fallback so order creation remains functional in those
+  // environments while production still uses indexed atomic writes above.
+  const legacyOrders = toOrderArray(await getSettings("orders"))
+  legacyOrders.push(newOrder)
+  await setSettings("orders", legacyOrders)
 }
 
 // Simple per-user rate limiter for order creation

@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from "uuid"
 import type { IndicationConfig, PseudoPosition } from "./types"
 import { db } from "@/lib/database"
 import { calculateSignedResultR } from "@/lib/profit-factor"
+import { buildStopLossRatios } from "@/lib/stoploss-ratio-range"
 
 export interface IndicationResult {
   id: string
@@ -151,13 +152,11 @@ export class IndicationEngine {
     const positions: PseudoPosition[] = []
     const positionCost = await this.getPositionCost()
 
-    // Stop-loss grid: operator-spec extension to 3.0 with step 0.25.
-    // Coarser-but-wider sweep (12 values vs the legacy 0.2..2.2/0.1 = 21):
-    // Updated to new unified ranges: SL 0.2 to 2.2 with 0.1 step (21 values)
+    // Systemwide stop-loss sweep: 0.25..2.5 step 0.25.
+    const stopLossRatios = buildStopLossRatios()
     // TP factors 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22 (11 values)
     for (let tpFactor = 2; tpFactor <= 22; tpFactor += 2) {
-      for (let slRatio = 0.2; slRatio <= 2.2 + 1e-9; slRatio += 0.1) {
-        const slRatioFixed = Number(slRatio.toFixed(1))
+      for (const slRatioFixed of stopLossRatios) {
         positions.push(
           this.createPseudoPosition(symbol, entryPrice, tpFactor, slRatioFixed, false, positionCost, config.type),
         )

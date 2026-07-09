@@ -1567,4 +1567,60 @@ describe("requested regression guardrails", () => {
     await client.flushDb()
   })
 
+
+  test("trailing range settings drive recoordination, Set accounting, and control-order variant labels", () => {
+    const coordinator = read("lib/strategy-coordinator.ts")
+    const settingsCoordinator = read("lib/settings-coordinator.ts")
+    const recoordinator = read("lib/connection-recoordinator.ts")
+    const progression = read("lib/progression-state-manager.ts")
+
+    for (const field of ["strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep"]) {
+      expect(settingsCoordinator).toContain(`"${field}"`)
+      expect(recoordinator).toContain(`"${field}"`)
+      expect(progression).toContain(`"${field}"`)
+    }
+
+    expect(coordinator).toContain("const settings = { ...(appSettings as Record<string, unknown>), ...connSettings }")
+    expect(coordinator).toContain("trailing_sets:        String(baseTrailingSets)")
+    expect(coordinator).toContain("[`s:${symbol}:trailing`]:   String(baseTrailingSets)")
+    expect(coordinator).toContain("[`${symbol}:base:trailing`]: String(baseTrailingSets)")
+    expect(coordinator).toContain('cached.variant = "trailing"')
+    expect(coordinator).toContain('variant:         (baseSet.trailingProfile && profile.name === "default") ? "trailing" : profile.name')
+    expect(coordinator).toContain('variant:         baseDefault.trailingProfile ? "trailing" : "default"')
+  })
+
+
+  test("max stop-loss ratio setting gates Base pseudo Set SL range systemwide", () => {
+    const settingsTypes = read("components/settings/types.ts")
+    const defaults = read("components/settings/utils.ts")
+    const settingsRoute = read("app/api/settings/connections/[id]/settings/route.ts")
+    const settingsDialog = read("components/settings/connection-settings-dialog.tsx")
+    const settingsCoordinator = read("lib/settings-coordinator.ts")
+    const recoordinator = read("lib/connection-recoordinator.ts")
+    const progression = read("lib/progression-state-manager.ts")
+    const slRange = read("lib/stoploss-ratio-range.ts")
+    const basePseudo = read("lib/base-pseudo-position-manager.ts")
+    const indicationState = read("lib/indication-state-manager.ts")
+    const calculator = read("lib/indication-calculator.ts")
+
+    expect(settingsTypes).toContain("maxStopLossRatio: number")
+    expect(defaults).toContain("maxStopLossRatio: DEFAULT_MAX_STOP_LOSS_RATIO")
+    expect(settingsDialog).toContain("Max StopLoss Ratio (0.25–2.5)")
+    expect(settingsDialog).toContain("default 2.5 (max)")
+    expect(settingsRoute).toContain('"maxStopLossRatio"')
+    expect(settingsRoute).toContain('"max_stoploss_ratio"')
+
+    for (const source of [settingsCoordinator, recoordinator, progression]) {
+      expect(source).toContain('"maxStopLossRatio"')
+      expect(source).toContain('"max_stoploss_ratio"')
+    }
+
+    expect(slRange).toContain("STOP_LOSS_RATIO_MIN = 0.25")
+    expect(slRange).toContain("STOP_LOSS_RATIO_MAX = 2.5")
+    expect(slRange).toContain("STOP_LOSS_RATIO_STEP = 0.25")
+    expect(basePseudo).toContain("if (Number(slRatio) > maxStopLossRatio)")
+    expect(indicationState).toContain("const slRatios = await this.getStopLossRatios()")
+    expect(calculator).toContain("Math.floor((2.5 - 0.25) / 0.25) + 1")
+  })
+
 })
