@@ -62,7 +62,7 @@ export interface ConnectionSettings {
   }
 }
 
-const DEFAULT_SETTINGS: Omit<ConnectionSettings, "connectionId"> = {
+export const DEFAULT_CONNECTION_SETTINGS: Omit<ConnectionSettings, "connectionId"> = {
   strategy: {
     takeProfit: 8,
     stopLoss: 0.5,
@@ -106,7 +106,7 @@ export async function getConnectionSettings(connectionId: string): Promise<Conne
     // Initialize with defaults for this connection
     const newSettings: ConnectionSettings = {
       connectionId,
-      ...DEFAULT_SETTINGS,
+      ...DEFAULT_CONNECTION_SETTINGS,
     }
     
     await client.set(key, JSON.stringify(newSettings))
@@ -115,7 +115,7 @@ export async function getConnectionSettings(connectionId: string): Promise<Conne
     console.error(`Failed to get connection settings for ${connectionId}:`, error)
     return {
       connectionId,
-      ...DEFAULT_SETTINGS,
+      ...DEFAULT_CONNECTION_SETTINGS,
     }
   }
 }
@@ -242,7 +242,7 @@ export async function resetConnectionSettings(connectionId: string): Promise<Con
   const LOCK_TTL = 5
   const newSettings: ConnectionSettings = {
     connectionId,
-    ...DEFAULT_SETTINGS,
+    ...DEFAULT_CONNECTION_SETTINGS,
   }
   try {
     const client = await getRedisClient()
