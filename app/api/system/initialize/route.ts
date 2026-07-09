@@ -25,8 +25,24 @@ export async function POST(_req: NextRequest) {
     }
 
     try {
+      // Run the same authoritative startup path used by instrumentation while
+      // still holding the public initialization lock. This keeps production
+      // bootstrap side effects (migrations, pre-startup seeding, validation,
+      // cleanup scheduling, boot metadata) in one path instead of duplicating
+      // them here with subtly different behavior. `completeStartup()` throws
+      // only for fatal startup failures; controlled/non-fatal warnings are
+      // logged internally and return normally.
+      const { completeStartup } = await import("@/lib/startup-coordinator")
+      await completeStartup()
+
+      // `completeStartup()` already runs `runPreStartup()`, which handles
+      // idempotent default settings, base connection/symbol, and placeholder
+      // market-data seeding. Keep this route's extra production seeding limited
+      // to progression-state creation, whose seeder is first-boot-only and
+      // explicitly preserves existing live progression.
       const { seedProductionData } = await import("@/lib/production-seeder")
-      await seedProductionData({ seedSettings: true, seedConnections: true, seedMarketData: true, seedProgression: true })
+      await seedProductionData({ seedSettings: false, seedConnections: false, seedMarketData: false, seedProgression: true })
+
       // Start coordinator and server-side continuity directly. Avoid relative
       // self-fetch here: Node's fetch cannot resolve `/api/...` without a base
       // URL, and silently skipping this left production boot dependent on a
