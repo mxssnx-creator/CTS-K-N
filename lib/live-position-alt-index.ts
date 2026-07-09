@@ -53,6 +53,7 @@ async function scanLegacyAlternateLivePositionKeys(client: any, connectionId: st
 export async function getAlternateLivePositionKeys(client: any, connectionId: string) {
   const indexKey = alternateLivePositionIndexKey(connectionId)
   const indexedKeys = typeof client?.lrange === "function"
+  const indexedKeys = typeof client.lrange === "function"
     ? (((await client.lrange(indexKey, 0, ALT_LIVE_POSITION_PAGE_SIZE - 1).catch(() => [])) || []) as string[])
     : []
   if (indexedKeys.length > 0) return { keys: indexedKeys, partialLegacyScan: false }

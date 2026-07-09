@@ -1,4 +1,5 @@
 import { DEFAULT_VOLUME_STEP_RATIO } from "@/lib/constants"
+import { DEFAULT_MAX_STOP_LOSS_RATIO } from "@/lib/stoploss-ratio-range"
 import { Settings } from "./types"
 import { toast } from "@/lib/simple-toast"
 
@@ -37,13 +38,14 @@ export const initialSettings: Settings = {
   useMaximalLeverage: true,
   min_volume_enforcement: true, // Added missing min_volume_enforcement property
   minStep: 5, // 2-30 step 1 — minimum pseudo-position step-window size
+  maxStopLossRatio: DEFAULT_MAX_STOP_LOSS_RATIO, // 0.25-2.5 step 0.25 — max SL ratio for Base pseudo-position Sets
   trailingMinStep: 6, // 2-30 step 1 — minimum Base step allowed to fan out into trailing Sets
 
   // Base Strategy
   baseValueRangeMin: 0.5,
   baseValueRangeMax: 2.5,
-  baseRatioMin: 0.2,
-  baseRatioMax: 1,
+  baseRatioMin: 0.25,
+  baseRatioMax: DEFAULT_MAX_STOP_LOSS_RATIO,
   trailingOption: false,
 
   // Multi-step trailing — Base Strategies
@@ -68,7 +70,7 @@ export const initialSettings: Settings = {
   // Trailing Configuration
   trailingEnabled: true,
   trailingStartValues: "0.5, 1.0, 1.5",
-  trailingStopValues: "0.2, 0.4, 0.6",
+  trailingStopValues: "0.25, 0.5, 0.75",
 
   // Adjustment Strategies
   blockAdjustment: true,

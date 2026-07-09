@@ -55,6 +55,7 @@ async function writeOrder(newOrder: any) {
   const score = Number.isFinite(createdScore) ? createdScore : Date.now()
 
   if (redis && typeof redis.multi === "function") {
+  if (typeof redis.multi === "function") {
     await redis
       .multi()
       .set(orderKey(newOrder.id), JSON.stringify(newOrder))
@@ -70,6 +71,12 @@ async function writeOrder(newOrder: any) {
   // order creation outright.
   const existing = toOrderArray(await getSettings("orders").catch(() => []))
   await setSettings("orders", [...existing, newOrder])
+  // Test/minimal Redis clients may not expose MULTI/ZADD. Keep the legacy
+  // settings-list fallback so order creation remains functional in those
+  // environments while production still uses indexed atomic writes above.
+  const legacyOrders = toOrderArray(await getSettings("orders"))
+  legacyOrders.push(newOrder)
+  await setSettings("orders", legacyOrders)
 }
 
 // Simple per-user rate limiter for order creation

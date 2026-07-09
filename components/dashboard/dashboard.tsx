@@ -138,11 +138,11 @@ export function Dashboard() {
           <StatisticsOverviewV2 />
         </ErrorBoundary>
 
+        <DashboardRuntimeFooter />
+
         <ErrorBoundary name="System Monitoring">
           <SystemMonitoringPanel />
         </ErrorBoundary>
-
-        <DashboardRuntimeFooter />
       </div>
     </div>
   )
