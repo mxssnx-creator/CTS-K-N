@@ -1914,8 +1914,27 @@ class NodeRedisClientAdapter implements RedisClientLike {
             const client = await this.c()
             if (typeof client.multi === "function") {
               const tx = client.multi()
+              const txMethodAliases: Record<string, string> = {
+                hset: "hSet",
+                hgetall: "hGetAll",
+                zadd: "zAdd",
+                zrange: "zRange",
+                zrevrange: "zRange",
+                zcard: "zCard",
+                sadd: "sAdd",
+                smembers: "sMembers",
+              }
               for (const { method, args } of ops) {
-                if (typeof tx[method] === "function") tx[method](...args)
+                if (method === "zadd" && typeof tx.zAdd === "function") {
+                  tx.zAdd(args[0], { score: args[1], value: args[2] })
+                  continue
+                }
+                if (method === "zrevrange" && typeof tx.zRange === "function") {
+                  tx.zRange(args[0], args[1], args[2], { REV: true } as any)
+                  continue
+                }
+                const txMethod = typeof tx[method] === "function" ? method : txMethodAliases[method]
+                if (txMethod && typeof tx[txMethod] === "function") tx[txMethod](...args)
               }
               return tx.exec()
             }
