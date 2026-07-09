@@ -1,6 +1,6 @@
 import { DEFAULT_VOLUME_STEP_RATIO } from "@/lib/constants"
 import { NextResponse } from "next/server"
-import { getAllConnections, initRedis, updateConnection, setSettings, getSettings, getRedisClient,
+import { getAllConnections, getConnection, initRedis, updateConnection, setSettings, getSettings, getRedisClient,
   buildMainConnectionEnableUpdate } from "@/lib/redis-db"
 import { API_VERSIONS } from "@/lib/system-version"
 import { logProgressionEvent, getProgressionLogs } from "@/lib/engine-progression-logs"
@@ -24,6 +24,64 @@ function hasUsableExchangeCredentials(connection: any): boolean {
   if (key.length < 10 || secret.length < 10) return false
   const banned = /PLACEHOLDER|00998877|^test/i
   return !banned.test(key) && !banned.test(secret)
+}
+
+
+function hasOwnField(source: Record<string, unknown>, field: string): boolean {
+  return Object.prototype.hasOwnProperty.call(source, field)
+}
+
+function hasMeaningfulValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false
+  if (typeof value === "string") return value.trim().length > 0
+  if (Array.isArray(value)) return value.length > 0
+  return true
+}
+
+function readFirstMeaningful(source: Record<string, unknown>, fields: string[]): unknown {
+  for (const field of fields) {
+    if (hasOwnField(source, field) && hasMeaningfulValue(source[field])) {
+      return source[field]
+    }
+  }
+  return undefined
+}
+
+function parseStoredSymbols(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((symbol): symbol is string => typeof symbol === "string" && symbol.length > 0)
+  }
+  if (typeof value !== "string" || value.trim().length === 0) return []
+  const trimmed = value.trim()
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (Array.isArray(parsed)) {
+      return parsed.filter((symbol): symbol is string => typeof symbol === "string" && symbol.length > 0)
+    }
+  } catch {
+    // Fall back to comma-separated legacy values below.
+  }
+  return trimmed.split(",").map((symbol) => symbol.trim()).filter(Boolean)
+}
+
+function stringifySettingValue(value: unknown): string {
+  if (Array.isArray(value)) return JSON.stringify(value)
+  if (typeof value === "boolean") return value ? "true" : "false"
+  return String(value)
+}
+
+function resolveQuickStartValue(
+  body: Record<string, unknown>,
+  existing: Record<string, unknown>,
+  bodyFields: string[],
+  existingFields: string[],
+  safeDefault: unknown,
+): unknown {
+  const explicit = readFirstMeaningful(body, bodyFields)
+  if (explicit !== undefined) return explicit
+  const saved = readFirstMeaningful(existing, existingFields)
+  if (saved !== undefined) return saved
+  return safeDefault
 }
 
 function normalizeQuickstartExchange(connection: any): string {
@@ -238,6 +296,19 @@ export async function POST(request: Request) {
     
     const exchangeName = normalizeQuickstartExchange(connection)
     const connectionId = connection.id
+
+    const [latestConnectionHash, rawConnectionSettings, prefixedConnectionSettings] = await Promise.all([
+      getConnection(connectionId).catch(() => null),
+      client.hgetall(`connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
+      client.hgetall(`settings:connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
+    ])
+    const existingQuickStartSettings: Record<string, unknown> = {
+      ...(latestConnectionHash || connection || {}),
+      ...(rawConnectionSettings || {}),
+      ...(prefixedConnectionSettings || {}),
+    }
+    connection = { ...(connection || {}), ...(latestConnectionHash || {}) }
+
     console.log(`${LOG_PREFIX}: Found ${connection.name} (${connectionId}) on ${exchangeName}`)
 
     const [existingRawConnectionSettings, existingPrefixedConnectionSettings] = await Promise.all([
@@ -438,18 +509,16 @@ export async function POST(request: Request) {
     // auto-picked symbols". An explicit array on `body.symbols` always
     // wins over `symbolCount`.
     const rawSymbols = body.symbols
-    let symbols: string[] = []
-    if (Array.isArray(rawSymbols)) {
-      symbols = rawSymbols.filter(
-        (s: unknown): s is string => typeof s === "string" && s.length > 0,
-      )
-    } else if (typeof rawSymbols === "string" && rawSymbols.length > 0) {
-      symbols = [rawSymbols]
-    }
+    const explicitSymbols = readFirstMeaningful(body, ["symbols", "force_symbols"])
+    const existingSymbols = readFirstMeaningful(existingQuickStartSettings, ["symbols", "force_symbols", "active_symbols"])
+    let symbols = parseStoredSymbols(explicitSymbols ?? existingSymbols)
     // requestedCount controls the eventual auto-pick count when no
     // explicit symbols are provided. Allow any count >= 1 without artificial caps.
     // Very large counts (>500) are capped by exchange API response limits.
-    let requestedCount = QUICKSTART_DEFAULT_SYMBOL_COUNT
+    const savedSymbolCount = Number(readFirstMeaningful(existingQuickStartSettings, ["symbol_count", "symbolCount"]))
+    let requestedCount = Number.isFinite(savedSymbolCount) && savedSymbolCount > 0
+      ? Math.max(1, Math.min(1000, Math.floor(savedSymbolCount)))
+      : QUICKSTART_DEFAULT_SYMBOL_COUNT
     if (typeof rawSymbols === "number" && Number.isFinite(rawSymbols) && rawSymbols > 0) {
       // Allow explicit requests up to 1000 symbols (will be capped by exchange API)
       requestedCount = Math.max(1, Math.min(1000, Math.floor(rawSymbols)))
@@ -472,6 +541,7 @@ export async function POST(request: Request) {
     // cannot reliably call its own origin/localhost, so use the shared resolver
     // that powers /api/exchange/[exchange]/top-symbols. QuickStart defaults to
     // true 1h ATR volatility with a liquidity floor, matching the operator spec.
+    const requestedSymbolOrder = normaliseSort(String(resolveQuickStartValue(body, existingQuickStartSettings, ["symbolOrder", "symbol_order"], ["symbol_order", "symbolOrder"], "volatility_1h")))
     const requestedSymbolOrder = normaliseSort(
       body.symbolOrder || body.symbol_order || firstExistingSetting(existingConnectionSettings, ["symbol_order"], "volatility_1h"),
     )
@@ -548,6 +618,105 @@ export async function POST(request: Request) {
      // Step 3: QuickStart must assign + enable connection flow
      console.log(`${LOG_PREFIX}: [3/4] Updating connection state...`)
      
+     const resolvedLiveVolumeFactor = stringifySettingValue(resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["volume_factor_live", "live_volume_factor", "liveVolumeFactor"],
+       ["volume_factor_live", "live_volume_factor", "liveVolumeFactor"],
+       QUICKSTART_LIVE_VOLUME_FACTOR,
+     ))
+     const resolvedPresetVolumeFactor = stringifySettingValue(resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["volume_factor_preset", "preset_volume_factor", "presetVolumeFactor"],
+       ["volume_factor_preset", "preset_volume_factor", "presetVolumeFactor"],
+       "1.0",
+     ))
+     const resolvedVolumeStepRatio = stringifySettingValue(resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["volume_step_ratio", "volumeStepRatio"],
+       ["volume_step_ratio", "volumeStepRatio"],
+       String(DEFAULT_VOLUME_STEP_RATIO),
+     ))
+     const resolvedBaseProfitFactor = stringifySettingValue(resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["baseProfitFactor", "base_min_profit_factor"],
+       ["baseProfitFactor", "base_min_profit_factor"],
+       "1.0",
+     ))
+     const resolvedMainProfitFactor = stringifySettingValue(resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["mainProfitFactor", "main_min_profit_factor"],
+       ["mainProfitFactor", "main_min_profit_factor"],
+       "1.2",
+     ))
+     const resolvedRealProfitFactor = stringifySettingValue(resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["realProfitFactor", "real_min_profit_factor"],
+       ["realProfitFactor", "real_min_profit_factor"],
+       "1.2",
+     ))
+     const resolvedVariantTrailing = stringifySettingValue(resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["variantTrailingEnabled", "variant_trailing"],
+       ["variantTrailingEnabled", "variant_trailing"],
+       "true",
+     ))
+     const resolvedVariantBlock = stringifySettingValue(resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["variantBlockEnabled", "variant_block"],
+       ["variantBlockEnabled", "variant_block"],
+       "true",
+     ))
+     const resolvedVariantDca = stringifySettingValue(resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["variantDcaEnabled", "variant_dca"],
+       ["variantDcaEnabled", "variant_dca"],
+       "false",
+     ))
+     const resolvedControlOrders = stringifySettingValue(resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["control_orders", "controlOrders"],
+       ["control_orders", "controlOrders"],
+       "true",
+     ))
+     const resolvedMinStep = stringifySettingValue(resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["minStep", "min_step"],
+       ["minStep", "min_step"],
+       "5",
+     ))
+     const resolvedPrevPosMinCount = resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["prevPosMinCount", "prev_pos_min_count"],
+       ["prevPosMinCount", "prev_pos_min_count"],
+       undefined,
+     )
+     const resolvedMainEvalPosCount = resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["mainEvalPosCount", "main_eval_pos_count"],
+       ["mainEvalPosCount", "main_eval_pos_count"],
+       undefined,
+     )
+     const resolvedRealEvalPosCount = resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["realEvalPosCount", "real_eval_pos_count"],
+       ["realEvalPosCount", "real_eval_pos_count"],
+       undefined,
+     )
+
      // ── Quickstart minimal-volume default ──────────────────────────
      // QuickStart is intended to be a safe, low-risk way for an operator
      // to dip a toe in: real exchange orders, but the SMALLEST possible
@@ -595,6 +764,9 @@ export async function POST(request: Request) {
        // Lowest-volume live testing: force the per-connection factor to the
        // VolumeCalculator minimum. The calculator then clamps each pair up to
        // that exchange symbol's legal minimum notional/quantity.
+       live_volume_factor: resolvedLiveVolumeFactor,
+       volume_factor_live: resolvedLiveVolumeFactor,
+       volume_step_ratio: resolvedVolumeStepRatio,
        live_volume_factor: effectiveLiveVolumeFactor,
        volume_factor_live: effectiveVolumeFactorLive,
        preset_volume_factor: effectivePresetVolumeFactor,
@@ -612,6 +784,8 @@ export async function POST(request: Request) {
        updated_at: new Date().toISOString(),
      }
      
+     await updateConnection(connectionId, updated)
+     console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${resolvedLiveVolumeFactor}).`)
      await applyMainConnectionSettingsChange(connectionId, connection, {
        connectionPatch: updated,
        settingsPatch: {
@@ -641,11 +815,14 @@ export async function POST(request: Request) {
        connectionId,
        "quickstart_minimal_volume",
        "info",
+       `QuickStart resolved live_volume_factor=${resolvedLiveVolumeFactor} for this connection`,
+       {
+         live_volume_factor: resolvedLiveVolumeFactor,
        `QuickStart effective live_volume_factor=${effectiveLiveVolumeFactor}`,
        {
          live_volume_factor: effectiveLiveVolumeFactor,
          note:
-           "Per-connection override. Order size will be clamped UP to the per-pair exchange minimum (or the universal $5 notional floor). Adjust via Settings → Connection → Live Volume Factor (0.1×–10×) when ready to scale.",
+           "QuickStart preserves existing per-connection sizing settings unless the request body explicitly overrides them; safe defaults are only used on first setup.",
        },
      )
     
@@ -661,6 +838,7 @@ export async function POST(request: Request) {
     // first tick instead of using its compiled defaults.
     const { getRedisClient: _gsClient } = await import("@/lib/redis-db")
     const _gsc = _gsClient()
+    const quickStartConnectionSettings: Record<string, string> = {
     await _gsc.hset(`connection_settings:${connectionId}`, {
       // Volume factor (preserve operator-configured values; defaults are first-run only)
       volume_factor_live: effectiveVolumeFactorLive,
@@ -671,12 +849,49 @@ export async function POST(request: Request) {
       // Symbol order/count
     const quickstartConnectionSettingsPatch = {
       // Volume factor
-      volume_factor_live:   QUICKSTART_LIVE_VOLUME_FACTOR,
-      live_volume_factor:   QUICKSTART_LIVE_VOLUME_FACTOR,
-      volume_step_ratio:    String(DEFAULT_VOLUME_STEP_RATIO),
-      volume_factor_preset: "1.0",
+      volume_factor_live: resolvedLiveVolumeFactor,
+      live_volume_factor: resolvedLiveVolumeFactor,
+      volume_step_ratio: resolvedVolumeStepRatio,
+      volume_factor_preset: resolvedPresetVolumeFactor,
+      preset_volume_factor: resolvedPresetVolumeFactor,
       // Symbol order
       symbol_order: requestedSymbolOrder,
+      symbol_count: String(symbols.length),
+      symbols: JSON.stringify(symbols),
+      force_symbols: JSON.stringify(symbols),
+      // Strategy PF thresholds
+      baseProfitFactor: resolvedBaseProfitFactor,
+      mainProfitFactor: resolvedMainProfitFactor,
+      realProfitFactor: resolvedRealProfitFactor,
+      base_min_profit_factor: resolvedBaseProfitFactor,
+      main_min_profit_factor: resolvedMainProfitFactor,
+      real_min_profit_factor: resolvedRealProfitFactor,
+      // Variant toggles
+      variantTrailingEnabled: resolvedVariantTrailing,
+      variantBlockEnabled: resolvedVariantBlock,
+      variantDcaEnabled: resolvedVariantDca,
+      variant_trailing: resolvedVariantTrailing,
+      variant_block: resolvedVariantBlock,
+      variant_dca: resolvedVariantDca,
+      // Control orders (SL/TP on exchange)
+      control_orders: resolvedControlOrders,
+      // Min step for pseudo-positions
+      minStep: resolvedMinStep,
+      updated_at: new Date().toISOString(),
+    }
+    if (resolvedPrevPosMinCount !== undefined) {
+      quickStartConnectionSettings.prevPosMinCount = stringifySettingValue(resolvedPrevPosMinCount)
+    }
+    if (resolvedMainEvalPosCount !== undefined) {
+      quickStartConnectionSettings.mainEvalPosCount = stringifySettingValue(resolvedMainEvalPosCount)
+    }
+    if (resolvedRealEvalPosCount !== undefined) {
+      quickStartConnectionSettings.realEvalPosCount = stringifySettingValue(resolvedRealEvalPosCount)
+    }
+    await Promise.allSettled([
+      _gsc.hset(`connection_settings:${connectionId}`, quickStartConnectionSettings),
+      _gsc.hset(`settings:connection_settings:${connectionId}`, quickStartConnectionSettings),
+    ])
       symbol_count: effectiveSymbolCount,
       // Strategy PF thresholds
       base_min_profit_factor: effectiveBaseMinProfitFactor,
@@ -859,6 +1074,7 @@ export async function POST(request: Request) {
      if (liveTradeBlockedReason) {
        await logProgressionEvent(connectionId, "quickstart_live_trade_blocked", "warning",
          "Live exchange order placement disabled until connection test passes",
+         { reason: liveTradeBlockedReason, symbols, live_volume_factor: resolvedLiveVolumeFactor },
          { reason: liveTradeBlockedReason, symbols, live_volume_factor: effectiveLiveVolumeFactor },
        )
      }
@@ -1060,6 +1276,8 @@ export async function POST(request: Request) {
               force_symbols: JSON.stringify(symbols),
               symbol_count: effectiveSymbolCount,
               dev_symbol_count_override: String(symbols.length),
+              live_volume_factor: resolvedLiveVolumeFactor,
+              volume_step_ratio: resolvedVolumeStepRatio,
               live_volume_factor: effectiveLiveVolumeFactor,
               volume_factor_live: effectiveVolumeFactorLive,
               preset_volume_factor: effectivePresetVolumeFactor,
