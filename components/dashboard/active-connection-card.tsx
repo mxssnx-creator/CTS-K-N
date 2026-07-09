@@ -4,7 +4,6 @@ import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } 
 import { useDashboardEvents } from "@/lib/dashboard-events"
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { isCanonicalEventFresh, mergeFreshEventCursor, type CanonicalEvent, type EventFreshnessCursor } from "@/lib/events/schema"
-import { useState, useEffect, useCallback, useRef } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"

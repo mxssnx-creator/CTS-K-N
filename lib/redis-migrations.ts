@@ -3447,6 +3447,72 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "64")
     },
   },
+  {
+    version: 66,
+    name: "066-bingx-sdk-fast-order-default",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      const patch = {
+        connection_method: "library",
+        connection_library: "sdk",
+        updated_at: now,
+      }
+      await Promise.all([
+        client.hset("connection:bingx-x01", patch).catch(() => 0),
+        client.hset("settings:connection:bingx-x01", patch).catch(() => 0),
+        client.hset("settings:trade_engine_state:bingx-x01", patch).catch(() => 0),
+      ])
+      console.log("[v0] Migration 066: bingx-x01 uses official SDK fast order/control path by default")
+    },
+    down: async (client: any) => {
+      await Promise.all([
+        client.hset("connection:bingx-x01", { connection_method: "library", connection_library: "native" }).catch(() => 0),
+        client.hset("settings:connection:bingx-x01", { connection_method: "library", connection_library: "native" }).catch(() => 0),
+        client.hset("settings:trade_engine_state:bingx-x01", { connection_method: "library", connection_library: "native" }).catch(() => 0),
+      ])
+      await client.set("_schema_version", "65")
+    },
+  },
+  {
+    version: 67,
+    name: "067-strategy-flow-concurrency-performance-defaults",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      const existing = ((await client.hgetall("settings:system").catch(() => ({}))) || {}) as Record<string, string>
+      const patch: Record<string, string> = {
+        strategy_flow_symbol_concurrency_dev: existing.strategy_flow_symbol_concurrency_dev || "1",
+        strategy_flow_symbol_concurrency_prod: existing.strategy_flow_symbol_concurrency_prod || "2",
+        strategy_flow_symbol_concurrency_max: existing.strategy_flow_symbol_concurrency_max || "6",
+        strategy_flow_stage_yield_enabled: existing.strategy_flow_stage_yield_enabled || "1",
+        updated_at: now,
+      }
+      await Promise.all([
+        client.hset("settings:system", patch).catch(() => 0),
+        client.hset("system:database:coordination:performance", {
+          strategy_flow_symbol_concurrency_dev: patch.strategy_flow_symbol_concurrency_dev,
+          strategy_flow_symbol_concurrency_prod: patch.strategy_flow_symbol_concurrency_prod,
+          strategy_flow_symbol_concurrency_max: patch.strategy_flow_symbol_concurrency_max,
+          strategy_flow_stage_yield_enabled: patch.strategy_flow_stage_yield_enabled,
+          schema_version: "67",
+          updated_at: now,
+        }).catch(() => 0),
+      ])
+      console.log("[v0] Migration 067: seeded DB-backed strategy-flow concurrency defaults for dev/prod")
+    },
+    down: async (client: any) => {
+      await Promise.all([
+        client.hdel(
+          "settings:system",
+          "strategy_flow_symbol_concurrency_dev",
+          "strategy_flow_symbol_concurrency_prod",
+          "strategy_flow_symbol_concurrency_max",
+          "strategy_flow_stage_yield_enabled",
+        ).catch(() => 0),
+        client.del("system:database:coordination:performance").catch(() => 0),
+      ])
+      await client.set("_schema_version", "66")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {

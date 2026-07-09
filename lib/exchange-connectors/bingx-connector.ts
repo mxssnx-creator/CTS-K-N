@@ -146,6 +146,35 @@ export class BingXConnector extends BaseExchangeConnector {
     }
   }
 
+  public async warmUpFastPath(): Promise<void> {
+    if (this.sdkInitPromise) {
+      await this.sdkInitPromise.catch(() => undefined)
+      this.sdkInitPromise = null
+    }
+  }
+
+  private sdkSwapOrdersEnabled(): boolean {
+    return (
+      process.env.DISABLE_BINGX_SDK_ORDERS !== "1" &&
+      !this.credentials.isTestnet &&
+      this.credentials.apiType !== "spot" &&
+      !!this.sdkClient &&
+      !!this.sdkAccount
+    )
+  }
+
+  private async getSdkTradeService(): Promise<any | null> {
+    await this.warmUpFastPath()
+    if (!this.sdkSwapOrdersEnabled()) return null
+    return (this.sdkClient as any).getTradeService?.() || (this.sdkClient as any).services?.TradeService || null
+  }
+
+  private extractSdkOrderId(orderData: any): string | null {
+    const info = orderData?.data?.order || orderData?.data || {}
+    const id = info.orderId || info.orderID || info.id || orderData?.orderId
+    return id ? String(id) : null
+  }
+
   private getBaseUrl(): string {
     return this.credentials.isTestnet ? "https://testnet-open-api.bingx.com" : "https://open-api.bingx.com"
   }
@@ -746,7 +775,7 @@ export class BingXConnector extends BaseExchangeConnector {
         const now = Date.now()
         if (now - BingXConnector.lastSyncFailLogTs > 30_000) {
           BingXConnector.lastSyncFailLogTs = now
-          this.logError(`✗ Connection error: ${errorMsg} (100421 — throttled, next log in 30 s)`)
+          this.log(`Connection warning: ${errorMsg} (100421 — throttled, next log in 30 s)`)
         }
         // Return a non-throwing failure so VolumeCalculator can write the cache.
         return { success: false, error: errorMsg, balance: 0, capabilities: this.getCapabilities(), logs: this.logs }
@@ -761,7 +790,7 @@ export class BingXConnector extends BaseExchangeConnector {
         const now = Date.now()
         if (now - BingXConnector.lastTransportFailLogTs > 30_000) {
           BingXConnector.lastTransportFailLogTs = now
-          this.logError(`✗ Connection transport error: ${errorMsg} (throttled, next log in 30 s)`)
+          this.log(`Connection transport warning: ${errorMsg} (throttled, next log in 30 s)`)
         }
         return { success: false, error: errorMsg, balance: 0, capabilities: this.getCapabilities(), logs: this.logs }
       }
@@ -779,30 +808,14 @@ export class BingXConnector extends BaseExchangeConnector {
     options: PlaceOrderOptions = {},
   ): Promise<{ success: boolean; orderId?: string; error?: string; filledPrice?: number; avgPrice?: number; price?: number; filledQty?: number; executedQty?: number; status?: string }> {
     try {
-      // Use the official SDK for fast mainnet swap entry orders when safe. Keep
-      // REST for testnet/spot/reduce-only because the SDK is hard-wired to the
-      // mainnet swap endpoint and does not expose every close/protection option.
-      if (this.sdkInitPromise) {
-        await this.sdkInitPromise.catch(() => {})
-        this.sdkInitPromise = null
-      }
-      // SDK is the DEFAULT path for mainnet perpetual entry orders.
-      // Set DISABLE_BINGX_SDK_ORDERS=1 to force REST fallback (e.g. for debugging).
-      // REST is always used for: testnet, spot, reduce-only (close/SL/TP) orders.
-      const sdkOrderAllowed =
-        process.env.DISABLE_BINGX_SDK_ORDERS !== "1" &&
-        !this.credentials.isTestnet &&
-        this.credentials.apiType !== "spot" &&
-        !options.reduceOnly &&
-        !!this.sdkClient &&
-        !!this.sdkAccount
-      if (sdkOrderAllowed) {
+      // Use the official SDK as the default fast path for mainnet swap
+      // orders, including reduce/close calls when the caller supplies one-way
+      // reduceOnly semantics. Testnet/spot still use REST because the SDK
+      // targets the mainnet swap endpoint.
+      const tradeService = await this.getSdkTradeService()
+      if (tradeService?.tradeOrder) {
         try {
           const bingxSymbol = this.toBingXSymbol(symbol)
-
-          // SDK encapsulates the order placement with optimal timeout and retry
-          const tradeService = (this.sdkClient as any).getTradeService?.() || (this.sdkClient as any).services?.TradeService
-          if (!tradeService?.tradeOrder) throw new Error("BingX SDK tradeOrder service unavailable")
           const orderPayload: Record<string, string> = {
             symbol: bingxSymbol,
             side: side.toUpperCase(),
@@ -814,15 +827,18 @@ export class BingXConnector extends BaseExchangeConnector {
           if (price && orderType === "limit") orderPayload.price = String(price)
           if (options.hedgeMode !== false && options.positionSide) {
             orderPayload.positionSide = options.positionSide
+          } else if (options.reduceOnly) {
+            orderPayload.reduceOnly = "true"
           }
+          if (options.clientOrderId) orderPayload.clientOrderId = options.clientOrderId
 
           const orderData = await tradeService.tradeOrder(orderPayload, this.sdkAccount)
           const info = orderData?.data?.order || orderData?.data || {}
-          const id = info.orderId || info.id || orderData?.orderId
+          const id = this.extractSdkOrderId(orderData)
           if (this.isBingXSuccess(orderData?.code) && id) {
             return {
               success: true,
-              orderId: String(id),
+              orderId: id,
               status: info.status,
               filledQty: Number(info.executedQty ?? info.filledQty ?? 0) || 0,
               executedQty: Number(info.executedQty ?? 0) || 0,
@@ -1134,6 +1150,30 @@ export class BingXConnector extends BaseExchangeConnector {
         params.reduceOnly = "true"
       }
       if (options.clientOrderId) params.clientOrderId = options.clientOrderId
+
+      const tradeService = await this.getSdkTradeService()
+      if (tradeService?.tradeOrder) {
+        try {
+          const sdkData = await tradeService.tradeOrder(
+            {
+              ...params,
+              timestamp: String(this.getTimestamp()),
+              recvWindow: String(this.recvWindowMs),
+            },
+            this.sdkAccount,
+          )
+          const sdkOrderId = this.extractSdkOrderId(sdkData)
+          if (this.isBingXSuccess(sdkData?.code) && sdkOrderId) {
+            this.log(`✓ ${orderType} placed via SDK: ${sdkOrderId} @ ${stopStr}`)
+            return { success: true, orderId: sdkOrderId, orderPrice: stopRounded, stopPrice: stopRounded }
+          }
+          if (sdkData && !this.isBingXSuccess(sdkData.code)) {
+            throw new Error(`${sdkData.code}: ${sdkData.msg || sdkData.message || "SDK stop order rejected"}`)
+          }
+        } catch (sdkErr) {
+          console.warn("[BingX SDK] placeStopOrder fast-path failed, using REST fallback:", sdkErr instanceof Error ? sdkErr.message : String(sdkErr))
+        }
+      }
 
       this.log(
         `Placing ${orderType} ${closeSide} ${qtyStr} ${bingxSymbol} @ stop=${stopStr}` +

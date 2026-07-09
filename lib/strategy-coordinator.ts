@@ -1645,6 +1645,7 @@ export class StrategyCoordinator {
       const { result: baseResult, sets: baseSets, coordIndex } = await this.createBaseSets(symbol, indications)
       results.push(baseResult)
       emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "base", data: baseResult })
+      await new Promise<void>((resolve) => setImmediate(resolve))
 
       // STAGE 2: MAIN — validate Base Sets AND create additional related
       // variant Sets (Default / Trailing / Block / DCA) gated by posCtx.
@@ -1652,6 +1653,7 @@ export class StrategyCoordinator {
       const { result: mainResult, sets: mainSets } = await this.createMainSets(symbol, baseSets, posCtx, coordIndex, isPrehistoric)
       results.push(mainResult)
       emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "main", data: mainResult })
+      await new Promise<void>((resolve) => setImmediate(resolve))
 
       // STAGE 3: REAL ��� promote Sets with avgPF >= 1.4 (base-promoted AND
       // additional related variants flow uniformly through this filter).
@@ -1660,6 +1662,7 @@ export class StrategyCoordinator {
       const { result: realResult, sets: realSets } = await this.evaluateRealSets(symbol, mainSets, coordIndex, posCtx)
       results.push(realResult)
       emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "real", data: realResult })
+      await new Promise<void>((resolve) => setImmediate(resolve))
 
       // STAGE 4: LIVE — best 500 Sets for execution (skip in prehistoric mode).
       // Axis-entry hydration uses coordIndex.base.byKey.get(parentKey) — O(1)
@@ -1708,6 +1711,33 @@ export class StrategyCoordinator {
     }
   }
 
+  private _strategyFlowSymbolConcurrencyCache: { value: number; at: number } | null = null
+
+  private async getStrategyFlowSymbolConcurrency(): Promise<number> {
+    const envOverride = Number.parseInt(process.env.STRATEGY_FLOW_SYMBOL_CONCURRENCY ?? "", 10)
+    if (Number.isFinite(envOverride) && envOverride > 0) return Math.max(1, Math.min(envOverride, 6))
+
+    const cached = this._strategyFlowSymbolConcurrencyCache
+    if (cached && Date.now() - cached.at < 10_000) return cached.value
+
+    const mode = process.env.NODE_ENV === "production" ? "prod" : "dev"
+    const fallback = mode === "prod" ? 2 : 1
+    let configured = fallback
+    try {
+      const settings = ((await getRedisClient().hgetall("settings:system").catch(() => ({}))) || {}) as Record<string, unknown>
+      const modeValue = settings[`strategy_flow_symbol_concurrency_${mode}`]
+      const globalValue = settings.strategy_flow_symbol_concurrency
+      const parsed = Number.parseInt(String(modeValue ?? globalValue ?? fallback), 10)
+      configured = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+    } catch {
+      configured = fallback
+    }
+
+    const value = Math.max(1, Math.min(configured, 6))
+    this._strategyFlowSymbolConcurrencyCache = { value, at: Date.now() }
+    return value
+  }
+
   /**
    * Run N symbols in a single flow pass, sharing one position-context fetch
    * across all of them. Use this when the engine evaluates many symbols per
@@ -1726,18 +1756,32 @@ export class StrategyCoordinator {
     // effect on the very next cycle (no engine restart required).
     ;(this as any)._trailingVariantsCache = undefined
     const out: Record<string, StrategyEvaluation[]> = {}
-    // Cap concurrency so at most SYMBOL_CONCURRENCY symbol pipelines run
-    // simultaneously.  Each pipeline allocates Base + Main + Real + Live set
-    // graphs; running all N symbols in parallel multiplies peak live heap by N.
-    // SYMBOL_CONCURRENCY=3 (dev) / 6 (prod) keeps the in-flight set count
-    // proportional to what was previously tested at 5 symbols.
-    const SYMBOL_CONCURRENCY = 6
+    // Cap concurrency so at most a small number of symbol pipelines run
+    // simultaneously. Each pipeline allocates Base + Main + Real + Live set
+    // graphs and performs synchronous scoring work; running six 8-symbol BingX
+    // flows at once starves the Node event loop, making health/status/control
+    // routes time out while the engine is technically "working".
+    //
+    // Default DB-backed coordination is one symbol in dev and two in production,
+    // with an env override for larger workers. This keeps API/control
+    // interactivity responsive while still allowing production to process
+    // multiple symbols per pass.
     const queue = [...items]
-    const workers = Array.from({ length: Math.min(SYMBOL_CONCURRENCY, queue.length) }, async () => {
+    const configuredConcurrency = await this.getStrategyFlowSymbolConcurrency()
+    const symbolConcurrency = Math.max(
+      1,
+      Math.min(
+        Number.isFinite(configuredConcurrency) ? configuredConcurrency : 1,
+        6,
+        queue.length,
+      ),
+    )
+    const workers = Array.from({ length: symbolConcurrency }, async () => {
       while (queue.length > 0) {
         const item = queue.shift()
         if (!item) break
         out[item.symbol] = await this.executeStrategyFlow(item.symbol, item.indications, isPrehistoric, ctx, skipLiveDispatch)
+        await new Promise<void>((resolve) => setImmediate(resolve))
       }
     })
     await Promise.all(workers)

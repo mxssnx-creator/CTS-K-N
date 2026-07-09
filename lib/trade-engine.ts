@@ -11,6 +11,7 @@
  */
 
 const COORDINATOR_VERSION = "4.2.0"
+const FULL_RESTART_ESCALATION_ENABLED = false
 
 // STABILITY: NEVER stop or clear live engines on version change.
 //
@@ -109,6 +110,7 @@ export class GlobalTradeEngineCoordinator {
   private isPaused = false
   private healthCheckTimer?: NodeJS.Timeout
   private eventBusUnsubscribers: Array<() => void> = []
+  private healthMonitoringSubscriptionsStarted = false
   private coordinationMetricsTrackingStarted = false
   private coordinationMetrics: {
     totalSymbolsProcessed: number
@@ -1391,6 +1393,7 @@ for (const connection of validConnections) {
       this.healthCheckTimer = undefined
     }
     for (const unsubscribe of this.eventBusUnsubscribers.splice(0)) unsubscribe()
+    this.healthMonitoringSubscriptionsStarted = false
     this.coordinationMetricsTrackingStarted = false
     for (const [connectionId, manager] of this.engineManagers.entries()) {
       try {
@@ -1719,7 +1722,7 @@ for (const connection of validConnections) {
    * automatic full stop/start escalation because QuickStart's prehistoric
    * phase can run long enough to trip heartbeat checks; forced restarts reset
    * progress, create duplicate epochs, and were the source of repeated
-   * QuickStart crashes. Resets to 0 once the engine reports a fresh heartbeat.
+   * QuickStart crashes. Full restart escalation disabled; resets to 0 once the engine reports a fresh heartbeat.
    *
    * Map<connectionId, consecutiveStallCount>
    */
@@ -1736,53 +1739,85 @@ for (const connection of validConnections) {
   private escalatingEngines: Set<string> = new Set()
 
   private startGlobalHealthMonitoring(): void {
-    if (this.eventBusUnsubscribers.length > 0) return
+    if (this.healthMonitoringSubscriptionsStarted && this.healthCheckTimer) return
     console.log("[v0] Starting event-triggered trade engine health monitoring (refresh + stall watchdog)")
 
-    const runEventHealthCheck = async (connectionId?: string) => {
-      try {
-        await this.drainQueuedRefreshRequestsNow(connectionId)
-        if (!(await this.isGlobalCoordinatorEnabled("watchdog"))) {
-          this.stallEscalation.clear()
-          return
+    const pendingHealthCheckScopes = new Set<string>()
+    let healthCheckRunning = false
+
+    const executeHealthCheck = async (connectionId?: string) => {
+      await this.drainQueuedRefreshRequestsNow(connectionId)
+      if (!(await this.isGlobalCoordinatorEnabled("watchdog"))) {
+        this.stallEscalation.clear()
+        return
+      }
+      const now = Date.now()
+      const STALL_THRESHOLD_MS = 90_000
+      const managers = connectionId
+        ? Array.from(this.engineManagers.entries()).filter(([id]) => id === connectionId)
+        : Array.from(this.engineManagers.entries())
+      for (const [id, manager] of managers) {
+        if (!manager.isEngineRunning) continue
+        const lastHb = await getFreshestProcessorHeartbeat(id)
+        if (!lastHb) continue
+        const age = now - lastHb
+        if (age > STALL_THRESHOLD_MS) {
+          const consecutiveStalls = (this.stallEscalation.get(id) ?? 0) + 1
+          this.stallEscalation.set(id, consecutiveStalls)
+          await publishEngineEvent("engine.heartbeat.missed", { connectionId: id, lastHeartbeatAt: lastHb, ageMs: age, reason: "event-watchdog" }).catch(() => undefined)
+          console.warn(`[v0] [Watchdog] Engine ${id} stalled (last heartbeat ${age}ms ago, attempt ${consecutiveStalls}) — re-arming in place`)
+          await manager.rearmIfStalled().catch((error: unknown) => {
+            console.error(`[v0] [Watchdog] rearmIfStalled threw for ${id}:`, error instanceof Error ? error.message : String(error))
+          })
+        } else {
+          this.stallEscalation.delete(id)
         }
-        const now = Date.now()
-        const STALL_THRESHOLD_MS = 90_000
-        const managers = connectionId
-          ? Array.from(this.engineManagers.entries()).filter(([id]) => id === connectionId)
-          : Array.from(this.engineManagers.entries())
-        for (const [id, manager] of managers) {
-          if (!manager.isEngineRunning) continue
-          const lastHb = await getFreshestProcessorHeartbeat(id)
-          if (!lastHb) continue
-          const age = now - lastHb
-          if (age > STALL_THRESHOLD_MS) {
-            const consecutiveStalls = (this.stallEscalation.get(id) ?? 0) + 1
-            this.stallEscalation.set(id, consecutiveStalls)
-            await publishEngineEvent("engine.heartbeat.missed", { connectionId: id, lastHeartbeatAt: lastHb, ageMs: age, reason: "event-watchdog" }).catch(() => undefined)
-            console.warn(`[v0] [Watchdog] Engine ${id} stalled (last heartbeat ${age}ms ago, attempt ${consecutiveStalls}) — re-arming in place`)
-            await manager.rearmIfStalled().catch((error: unknown) => {
-              console.error(`[v0] [Watchdog] rearmIfStalled threw for ${id}:`, error instanceof Error ? error.message : String(error))
-            })
-          } else {
-            this.stallEscalation.delete(id)
-          }
-        }
-        if (this.isGloballyRunning) {
-          const health = await this.getGlobalHealth()
-          if (health.overall !== "healthy") console.warn(`[v0] Global trade engine health: ${health.overall}`)
-        }
-      } catch (error) {
-        console.error("[v0] Event-triggered health monitoring error:", error)
+      }
+      if (this.isGloballyRunning) {
+        const health = await this.getGlobalHealth()
+        if (health.overall !== "healthy") console.warn(`[v0] Global trade engine health: ${health.overall}`)
       }
     }
 
-    this.eventBusUnsubscribers.push(
-      onEngineEvent("engine.heartbeat.missed", (event) => runEventHealthCheck(event.payload.connectionId)),
-      onEngineEvent("engine.heartbeat.updated", (event) => runEventHealthCheck(event.payload.connectionId)),
-      onEngineEvent("settings.changed", (event) => runEventHealthCheck(event.payload.connectionId)),
-      onEngineEvent("engine.intent.changed", (event) => runEventHealthCheck(event.payload.connectionId)),
-    )
+    const runEventHealthCheck = async (connectionId?: string) => {
+      pendingHealthCheckScopes.add(connectionId || "*")
+      if (healthCheckRunning) return
+      healthCheckRunning = true
+      try {
+        while (pendingHealthCheckScopes.size > 0) {
+          const scopes = Array.from(pendingHealthCheckScopes)
+          pendingHealthCheckScopes.clear()
+          const scopesToRun = scopes.includes("*") ? [undefined] : scopes
+          for (const scope of scopesToRun) {
+            await executeHealthCheck(scope)
+          }
+        }
+      } catch (error) {
+        console.error("[v0] Event-triggered health monitoring error:", error)
+      } finally {
+        healthCheckRunning = false
+        if (pendingHealthCheckScopes.size > 0) {
+          setTimeout(() => void runEventHealthCheck(), 0)
+        }
+      }
+    }
+
+    if (!this.healthCheckTimer) {
+      this.healthCheckTimer = setInterval(() => {
+        void runEventHealthCheck()
+      }, 10_000)
+      this.healthCheckTimer.unref?.()
+    }
+
+    if (!this.healthMonitoringSubscriptionsStarted) {
+      this.eventBusUnsubscribers.push(
+        onEngineEvent("engine.refresh.requested", (event) => runEventHealthCheck(event.payload.connectionId)),
+        onEngineEvent("engine.heartbeat.updated", (event) => runEventHealthCheck(event.payload.connectionId)),
+        onEngineEvent("settings.changed", (event) => runEventHealthCheck(event.payload.connectionId)),
+        onEngineEvent("engine.intent.changed", (event) => runEventHealthCheck(event.payload.connectionId)),
+      )
+      this.healthMonitoringSubscriptionsStarted = true
+    }
   }
 
   /**

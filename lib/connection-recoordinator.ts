@@ -281,7 +281,6 @@ export async function recoordinateAfterSettingsChange(
       normalized.includes("Volume")
     )
   })
-  const requiresProgressRecoordination = symbolsChanged || strategyOrCoordinationChanged || progressAffectingChange
   let progressionChanged: boolean | undefined
   let progressionReason: string | undefined
   const requiresProgressRecoordination = destructiveProgressionChange || strategyOrCoordinationChanged || progressAffectingChange

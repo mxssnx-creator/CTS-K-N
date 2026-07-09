@@ -142,15 +142,13 @@ async function isLiveTradeEnabledForConnection(connectionId: string): Promise<bo
 // Target: syncWithExchange completes in <1 s on the hot path.
 // These timeouts bound per-call worst case so the pool never hangs.
 // Each value is calibrated to a ~2×p99 RTT of a typical BingX API call
-// Observed BingX p99 in production is 2–4 s per call; under load with 8
-// symbols placing simultaneous orders it can reach 6–8 s.  Timeouts are
-// set conservatively to handle the worst case while still catching genuine
-// hangs.  SL/TP placement is the most critical path — a timeout here leaves
-// a position unprotected, so it gets more budget than cancel/fetch.
-const EXCHANGE_TIMEOUT_CANCEL_ORDER_MS  = 30_000  // 30 s — cancel; retried next tick on failure; covers queue wait + BingX round-trip
-const EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 60_000  // 60 s — SL/TP placement; covers semaphore queue wait + BingX round-trip
-const EXCHANGE_TIMEOUT_GET_POSITIONS_MS = 15_000  // 15 s — position fetch for adoption + sync prefetch
-const EXCHANGE_TIMEOUT_GET_ORDER_MS     = 12_000  // 12 s — fill detection; retry via next sync tick on miss
+// SDK-backed BingX order/control calls normally complete in sub-second to a
+// few seconds. Fail fast so a hung venue call does not leave the control-order
+// queue blocked; the next reconcile tick retries any missed SL/TP leg.
+const EXCHANGE_TIMEOUT_CANCEL_ORDER_MS  = 8_000   // cancel; retried next tick on failure
+const EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000   // SL/TP placement; fast-fail + retry next tick
+const EXCHANGE_TIMEOUT_GET_POSITIONS_MS = 8_000   // position fetch for adoption + sync prefetch
+const EXCHANGE_TIMEOUT_GET_ORDER_MS     = 6_000   // fill detection; retry via next sync tick on miss
 
 // ── Global SL/TP placement semaphore ─────────────────────────────────────
 // 4 symbols × 2 directions × 2 stops (SL+TP) = up to 16 concurrent stop calls.
@@ -158,7 +156,7 @@ const EXCHANGE_TIMEOUT_GET_ORDER_MS     = 12_000  // 12 s — fill detection; re
 // Limit=6 lets 6 stop calls run in parallel; ceil(16/6)=3 passes at ~5s p99
 // each = ~15s total flush — vs ceil(16/3)=6 passes × 5s = ~30s at the old limit.
 // Raising from 3 to 6 halves SL/TP arming latency when all symbols open simultaneously.
-// EXCHANGE_TIMEOUT_PLACE_STOP_MS (60s) covers worst-case queue + BingX RTT.
+// EXCHANGE_TIMEOUT_PLACE_STOP_MS keeps each dispatched SL/TP HTTP call bounded.
 let __stopSemCount = 0
 const __STOP_SEM_LIMIT = 6
 const __stopSemQueue: Array<() => void> = []
@@ -4036,39 +4034,34 @@ export async function executeLivePosition(
       // for that leg. A failed placement leaves it at 0, which
       // `priceDrifted(0, desired)` correctly classifies as "needs arming"
       // on the next reconcile pass.
-      // BingX hedge-mode: placing SL and TP concurrently (Promise.all) causes
-      // the second order to receive code=109420 "position not exist" while the
-      // first order is still being registered by the exchange.  Serialise SL
-      // first, wait 500 ms, then place TP.  The 500 ms gap is enough for the
-      // exchange registry to reflect the first stop order.  The existing 4 s
-      // retry inside placeProtectionOrder handles any residual 109420s.
-      const slOrderId = (slPrice > 0 && !livePosition.stopLossOrderId)
-        ? await placeProtectionOrder(
-            exchangeConnector,
-            realPosition.symbol,
-            sideClose,
-            livePosition.executedQuantity,
-            slPrice,
-            "StopLoss",
-            realPosition.direction,
-          )
-        : (livePosition.stopLossOrderId || null)
-
-      if (slPrice > 0 && tpPrice > 0 && !livePosition.takeProfitOrderId) {
-        await new Promise((r) => setTimeout(r, 500))
-      }
-
-      const tpOrderId = (tpPrice > 0 && !livePosition.takeProfitOrderId)
-        ? await placeProtectionOrder(
-            exchangeConnector,
-            realPosition.symbol,
-            sideClose,
-            livePosition.executedQuantity,
-            tpPrice,
-            "TakeProfit",
-            realPosition.direction,
-          )
-        : (livePosition.takeProfitOrderId || null)
+      // Arm SL and TP concurrently. The BingX connector now uses the official
+      // SDK for conditional orders first and keeps the venue-specific retry
+      // logic inside `placeProtectionOrder`, so adding a fixed 500ms gap here
+      // only leaves a fresh live position exposed longer than necessary.
+      const [slOrderId, tpOrderId] = await Promise.all([
+        (slPrice > 0 && !livePosition.stopLossOrderId)
+          ? placeProtectionOrder(
+              exchangeConnector,
+              realPosition.symbol,
+              sideClose,
+              livePosition.executedQuantity,
+              slPrice,
+              "StopLoss",
+              realPosition.direction,
+            )
+          : Promise.resolve(livePosition.stopLossOrderId || null),
+        (tpPrice > 0 && !livePosition.takeProfitOrderId)
+          ? placeProtectionOrder(
+              exchangeConnector,
+              realPosition.symbol,
+              sideClose,
+              livePosition.executedQuantity,
+              tpPrice,
+              "TakeProfit",
+              realPosition.direction,
+            )
+          : Promise.resolve(livePosition.takeProfitOrderId || null),
+      ])
 
       // "PRICE_CROSSED" sentinel: market moved past the protection price between
       // calculation and placement (BingX 110412/110413). Force-close immediately

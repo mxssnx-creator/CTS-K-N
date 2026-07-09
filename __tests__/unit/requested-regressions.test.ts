@@ -415,6 +415,27 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("mainSets.sort((a, b) => mainSetOrder(a) - mainSetOrder(b))")
   })
 
+  test("strategy flow batch keeps engine control routes responsive under 8-symbol BingX load", () => {
+    const source = read("lib/strategy-coordinator.ts")
+    const migrations = read("lib/redis-migrations.ts")
+
+    expect(source).toContain("STRATEGY_FLOW_SYMBOL_CONCURRENCY")
+    expect(source).toContain("getStrategyFlowSymbolConcurrency")
+    expect(source).toContain("strategy_flow_symbol_concurrency_${mode}")
+    expect(source).toContain("const symbolConcurrency = Math.max(")
+    expect(source).toContain("Math.min(")
+    expect(source).toContain("6,")
+    expect(source).toContain("const workers = Array.from({ length: symbolConcurrency }")
+    expect(source).toContain("await new Promise<void>((resolve) => setImmediate(resolve))")
+    expect(source).toMatch(/stage: "base"[\s\S]{0,240}setImmediate/)
+    expect(source).toMatch(/stage: "main"[\s\S]{0,240}setImmediate/)
+    expect(source).toMatch(/stage: "real"[\s\S]{0,240}setImmediate/)
+    expect(source).not.toContain("const SYMBOL_CONCURRENCY = 6")
+    expect(migrations).toContain("067-strategy-flow-concurrency-performance-defaults")
+    expect(migrations).toContain("system:database:coordination:performance")
+    expect(migrations).toContain('strategy_flow_stage_yield_enabled: existing.strategy_flow_stage_yield_enabled || "1"')
+  })
+
   test("trailing is coordinated at Base and is not emitted as a Main adjust variant", () => {
     const source = read("lib/strategy-coordinator.ts")
 
@@ -495,6 +516,23 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("queued-only in this production API worker")
     expect(source).toContain("Leaving start request queued")
     expect(source).not.toContain("runningUnderProdStart")
+  })
+
+  test("event-driven health monitoring keeps a periodic missed-heartbeat safety sweep", () => {
+    const source = read("lib/trade-engine.ts")
+
+    expect(source).toContain("private healthMonitoringSubscriptionsStarted = false")
+    expect(source).toContain("if (this.healthMonitoringSubscriptionsStarted && this.healthCheckTimer) return")
+    expect(source).toContain("const pendingHealthCheckScopes = new Set<string>()")
+    expect(source).toContain("let healthCheckRunning = false")
+    expect(source).toContain('const scopesToRun = scopes.includes("*") ? [undefined] : scopes')
+    expect(source).toContain("this.healthCheckTimer = setInterval(() => {")
+    expect(source).toContain("void runEventHealthCheck()")
+    expect(source).toContain("}, 10_000)")
+    expect(source).toContain("this.healthCheckTimer.unref?.()")
+    expect(source).toContain("this.healthMonitoringSubscriptionsStarted = false")
+    expect(source).toContain("onEngineEvent(\"engine.refresh.requested\"")
+    expect(source).toContain("onEngineEvent(\"engine.heartbeat.updated\"")
   })
 
   test("base connection migrations preserve existing live-trade operator state", () => {
@@ -1686,6 +1724,22 @@ describe("requested regression guardrails", () => {
     expect(basePseudo).toContain("if (Number(slRatio) > maxStopLossRatio)")
     expect(indicationState).toContain("const slRatios = await this.getStopLossRatios()")
     expect(calculator).toContain("Math.floor((2.5 - 0.25) / 0.25) + 1")
+  })
+
+  test("BingX live order/control path defaults to the official SDK fast path", () => {
+    const bingx = read("lib/exchange-connectors/bingx-connector.ts")
+    const factory = read("lib/exchange-connectors/factory.ts")
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const migrations = read("lib/redis-migrations.ts")
+
+    expect(bingx).toContain("public async warmUpFastPath()")
+    expect(bingx).toContain("tradeService.tradeOrder")
+    expect(bingx).toContain("placeStopOrder fast-path")
+    expect(factory).toContain('connectionLibrary: this.resolveExchangeName(connection) === "bingx" ? "sdk"')
+    expect(liveStage).toContain("EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000")
+    expect(liveStage).toContain("const [slOrderId, tpOrderId] = await Promise.all")
+    expect(migrations).toContain("066-bingx-sdk-fast-order-default")
+    expect(migrations).toContain('connection_library: "sdk"')
   })
 
 })
