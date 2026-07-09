@@ -87,6 +87,7 @@
  * ╚═════════════════════════════════════════════════════════════════════════╝
  */
 
+import { publishEngineEvent } from "@/lib/engine-event-bus"
 import { getRedisClient, initRedis, setSettings } from "@/lib/redis-db"
 
 export interface ProgressionRecoordinationResult {
@@ -412,6 +413,8 @@ export class ProgressionStateManager {
         console.warn(`[v0] Failed to write progression metadata for ${connectionId}:`, writeError)
         return
       }
+
+      await publishEngineEvent("progression.stage.completed", { connectionId, stage: "cycle", successful, cycle: newCompleted, timestamp: new Date().toISOString() }).catch(() => undefined)
 
       // Log every 25 cycles
       if (newCompleted % 25 === 0 && newCompleted > 0) {
