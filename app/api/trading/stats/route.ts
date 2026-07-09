@@ -32,11 +32,27 @@ function isRealExchangePosition(pos: any): boolean {
 }
 
 function closedPnl(pos: any): number {
-  return Number(pos?.realizedPnL ?? pos?.realized_pnl ?? pos?.pnl) || 0
+  const stored = Number(pos?.realizedPnL ?? pos?.realized_pnl ?? pos?.pnl)
+  if (Number.isFinite(stored) && stored !== 0) return stored
+  const qty = Number(pos?.executedQuantity ?? pos?.quantity ?? 0) || 0
+  const entry = Number(pos?.averageExecutionPrice ?? pos?.entryPrice ?? 0) || 0
+  const close = Number(pos?.closePrice ?? pos?.exitPrice ?? 0) || 0
+  if (qty > 0 && entry > 0 && close > 0) {
+    return qty * (String(pos?.direction).toLowerCase() === "short" ? entry - close : close - entry)
+  }
+  return Number.isFinite(stored) ? stored : 0
 }
 
 function openPnl(pos: any): number {
-  return Number(pos?.unrealizedPnL ?? pos?.exchangeData?.unrealizedPnl ?? pos?.exchangeData?.unrealizedPnL) || 0
+  const stored = Number(pos?.unrealizedPnL ?? pos?.unrealized_pnl ?? pos?.exchangeData?.unrealizedPnl ?? pos?.exchangeData?.unrealizedPnL)
+  if (Number.isFinite(stored) && stored !== 0) return stored
+  const qty = Number(pos?.executedQuantity ?? pos?.quantity ?? 0) || 0
+  const entry = Number(pos?.averageExecutionPrice ?? pos?.entryPrice ?? 0) || 0
+  const mark = Number(pos?.markPrice ?? pos?.exchangeData?.markPrice ?? 0) || 0
+  if (qty > 0 && entry > 0 && mark > 0) {
+    return qty * (String(pos?.direction).toLowerCase() === "short" ? entry - mark : mark - entry)
+  }
+  return Number.isFinite(stored) ? stored : 0
 }
 
 function round2(n: number): number {
