@@ -1809,4 +1809,33 @@ describe("requested regression guardrails", () => {
     expect(source).toMatch(/if \(!this\.isEngineRunning\(request\.connectionId\)\) {[\s\S]*?return "defer"[\s\S]*?await this\.applyPendingChangesNow\(request\.connectionId\)/)
   })
 
+
+  test("live order failure paths update global and per-symbol failed counters", () => {
+    const source = read("lib/trade-engine/stages/live-stage.ts")
+    const failedMetric = 'await incrementMetric(connectionId, "live_orders_failed_count")'
+    const failedBySymbol = 'await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")'
+
+    const failedMetricCount = source.split(failedMetric).length - 1
+    const failedBySymbolCount = source.split(failedBySymbol).length - 1
+
+    expect(failedMetricCount).toBeGreaterThanOrEqual(5)
+    expect(failedBySymbolCount).toBe(failedMetricCount)
+
+    for (const marker of [
+      'Exchange connector not available or missing placeOrder',
+      '`No current price available for ${realPosition.symbol}`',
+      '`Exchange circuit breaker active for ${realPosition.symbol} — retrying in <5min`',
+      'Entry order rejected for ${realPosition.symbol}',
+      '`Live pipeline unhandled error for ${realPosition.symbol}`',
+    ]) {
+      const markerIndex = source.indexOf(marker)
+      expect(markerIndex).toBeGreaterThanOrEqual(0)
+      const block = source.slice(markerIndex, markerIndex + 2500)
+      expect(block).toContain('incrementMetric(connectionId, "live_orders_failed_count")')
+      expect(block).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")')
+    }
+
+    expect(source).toMatch(/async function incrementOrdersBySymbol[\s\S]*?catch \{[\s\S]*?best-effort/)
+  })
+
 })
