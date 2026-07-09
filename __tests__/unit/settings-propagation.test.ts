@@ -161,6 +161,37 @@ describe("settings propagation", () => {
     expect(notifyBody?.[0]).not.toContain('setSettings(`settings:dirty:${connectionId}`')
   })
 
+
+  test("strategy settings save pending flags are cleared only after engine applyPendingChangesNow consumes the change", () => {
+    const fs = require("fs")
+    const path = require("path")
+    const manager = fs.readFileSync(path.join(process.cwd(), "lib/trade-engine/engine-manager.ts"), "utf8")
+    const recoordinator = fs.readFileSync(path.join(process.cwd(), "lib/connection-recoordinator.ts"), "utf8")
+    const quickstart = fs.readFileSync(path.join(process.cwd(), "app/api/trade-engine/quick-start/route.ts"), "utf8")
+
+    expect(recoordinator).toContain('settings_recoordination_pending: "1"')
+    expect(recoordinator).toContain('strategy_recompute_requested: "1"')
+    expect(recoordinator).toContain("settings_recoordination_requested_event_id: settingsEvent.id")
+    expect(recoordinator).toContain("await coordinator.applyPendingChangesNow(id)")
+
+    const applyBlock = manager.slice(
+      manager.indexOf("private async applyPendingSettingsChange()"),
+      manager.indexOf("private async applyHotReload"),
+    )
+    expect(applyBlock).toContain("await this.applyHotReload(fields)")
+    expect(applyBlock).toContain("await clearPendingChanges(this.connectionId)")
+    expect(applyBlock).toContain("await this.stampSettingsRecoordinationApplied(event)")
+    expect(manager).toContain('settings_recoordination_pending: "0"')
+    expect(manager).toContain('strategy_recompute_requested: "0"')
+    expect(manager).toContain("settings_recoordination_completed_at")
+    expect(manager).toContain("settings_recoordination_applied_event_id")
+    expect(manager).toContain("settings_recoordination_last_error")
+    expect(manager).toContain("throw err")
+
+    expect(quickstart).toContain("it no longer clears")
+    expect(quickstart).toContain('...(quickstartEngineAlreadyRunning ? {} : { settings_recoordination_pending: "0" })')
+  })
+
   test("continuous and block coordination settings are reload/progress affecting", async () => {
     const { classifyChange } = await import("@/lib/settings-coordinator")
 
@@ -238,5 +269,29 @@ describe("System tab capacity controls", () => {
 
     expect(source).not.toContain('handleSettingChange("symbolCount"')
     expect(source).not.toContain('handleSettingChange("capacity')
+  })
+})
+
+describe("engine refresh queue status", () => {
+  test("queued refresh status and queued-vs-local application are surfaced", () => {
+    const fs = require("fs")
+    const path = require("path")
+    const queueSource = fs.readFileSync(path.join(process.cwd(), "lib/engine-refresh-queue.ts"), "utf8")
+    const recoordinatorSource = fs.readFileSync(path.join(process.cwd(), "lib/connection-recoordinator.ts"), "utf8")
+    const quickStartSource = fs.readFileSync(path.join(process.cwd(), "app/api/trade-engine/quick-start/route.ts"), "utf8")
+    const settingsRouteSource = fs.readFileSync(path.join(process.cwd(), "app/api/settings/connections/[id]/settings/route.ts"), "utf8")
+
+    expect(queueSource).toContain("refresh_queued_at")
+    expect(queueSource).toContain("refresh_last_attempt_at")
+    expect(queueSource).toContain("refresh_last_error")
+    expect(queueSource).toContain("refresh_processed_at")
+    expect(queueSource).toContain("await recordEngineRefreshRequestFailure(queuedRequest, drain.error)")
+    expect(recoordinatorSource).toContain("queuedForOwner: !!refreshStatus?.refreshQueued && !appliedLocally")
+    expect(recoordinatorSource).toContain("appliedLocally")
+    expect(quickStartSource).toContain("quickstartRecoordinationApplied ? \"0\" : \"1\"")
+    expect(quickStartSource).toContain("queued_for_owner")
+    expect(quickStartSource).toContain("applied_locally")
+    expect(settingsRouteSource).toContain("refreshQueued: recoordination.refreshQueued === true")
+    expect(settingsRouteSource).toContain("refreshStatus: recoordination.refreshStatus")
   })
 })
