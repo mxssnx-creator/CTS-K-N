@@ -45,6 +45,15 @@ describe("QuickStart route ordering", () => {
         api_key: "",
         api_secret: "",
       }]),
+      getConnection: jest.fn(async () => ({
+        id: "conn-1",
+        name: "Simulated BingX",
+        exchange: "bingx",
+        connector_type: "simulated",
+        exchange_type: "simulated",
+        api_key: "",
+        api_secret: "",
+      })),
       updateConnection: jest.fn(async () => undefined),
       setSettings: jest.fn(async () => undefined),
       getSettings: jest.fn(async () => ({})),
@@ -79,6 +88,25 @@ describe("QuickStart route ordering", () => {
       fetchTopSymbols: jest.fn(),
       normaliseSort: jest.fn(() => "volatility_1h"),
     }))
+    jest.doMock("@/lib/production-readiness", () => ({
+      checkProductionReadiness: jest.fn(async () => ({ ready: true, checks: [] })),
+      productionReadinessJson: jest.fn((readiness) => readiness),
+    }))
+    jest.doMock("@/lib/connection-recoordinator", () => ({
+      applyMainConnectionSettingsChange: jest.fn(async (connectionId: string, before: any, opts: any) => {
+        callOrder.push("applyMainConnectionSettingsChange")
+        const after = { ...before, ...(opts.connectionPatch || {}) }
+        return {
+          connection: after,
+          completion: {
+            connectionId,
+            completedAt: new Date().toISOString(),
+            changedFields: opts.changedFieldsOverride || [],
+            progressRecoordinationRequired: true,
+          },
+        }
+      }),
+    }))
 
     const { POST } = await import("@/app/api/trade-engine/quick-start/route")
     const response = await POST(new Request("http://localhost/api/trade-engine/quick-start", {
@@ -93,6 +121,18 @@ describe("QuickStart route ordering", () => {
 
     expect(response.status).toBe(200)
     await new Promise<void>((resolve) => setImmediate(resolve))
+
+    const redisDb = await import("@/lib/redis-db")
+    const recoordinator = await import("@/lib/connection-recoordinator")
+    expect(redisDb.updateConnection).not.toHaveBeenCalled()
+    expect(recoordinator.applyMainConnectionSettingsChange).toHaveBeenCalledTimes(1)
+    expect(recoordinator.applyMainConnectionSettingsChange).toHaveBeenCalledWith("conn-1", expect.objectContaining({ id: "conn-1" }), expect.objectContaining({
+      connectionPatch: expect.objectContaining({ live_volume_factor: "0.1" }),
+      settingsPatch: expect.objectContaining({ live_volume_factor: "0.1", volume_factor_live: "0.1" }),
+      changedFieldsOverride: expect.arrayContaining(["live_volume_factor", "connection_settings.live_volume_factor"]),
+    }))
+    expect(callOrder.indexOf("applyMainConnectionSettingsChange")).toBeGreaterThanOrEqual(0)
+    expect(callOrder.indexOf("applyMainConnectionSettingsChange")).toBeLessThan(callOrder.findIndex((entry) => entry.startsWith("startAll:")))
 
     expect(redisClient.hset).toHaveBeenCalledWith("trade_engine:global", expect.objectContaining({
       status: "running",
