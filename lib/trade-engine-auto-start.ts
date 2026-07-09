@@ -68,53 +68,41 @@ async function getQueuedRefreshRequestList() {
 }
 
 async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnType<typeof loadTradeEngineCoordinator>>): Promise<number> {
-  const { getQueuedEngineRefreshRequests, clearEngineRefreshRequest } = await import("./engine-refresh-queue")
+  const { processQueuedEngineRefreshRequests: consumeQueuedEngineRefreshRequests } = await import("./engine-refresh-queue")
   const { getConnection } = await loadRedisDb()
 
-  const refreshRequests = await getQueuedEngineRefreshRequests()
-  let processed = 0
-
-  for (const { request } of refreshRequests) {
-    const requestTime = new Date(request.timestamp).getTime()
-    if (!Number.isFinite(requestTime) || Date.now() - requestTime >= 120_000) {
-      console.log(`[v0] [AutoStart] Dropping expired refresh request for ${request.connectionId}`)
-      await clearEngineRefreshRequest(request.connectionId)
-      processed++
-      continue
-    }
-
-    const connection = await getConnection(request.connectionId)
-    const currentVersion = String(connection?.state_switch_version ?? 0)
-    const requestedVersion = String(request.state_switch_version ?? "")
-    if (!connection || currentVersion !== requestedVersion) {
-      console.log(
-        `[v0] [AutoStart] Ignoring stale refresh request for ${request.connectionId}: ` +
-          `requested state_switch_version=${requestedVersion}, current=${currentVersion}`,
-      )
-      await clearEngineRefreshRequest(request.connectionId)
-      processed++
-      continue
-    }
-
-    console.log(
-      `[v0] [AutoStart] Processing queued refresh request for ${request.connectionId}: ${request.action} ` +
-        `(state_switch_version=${requestedVersion}, reason=${request.reason})`,
-    )
-    await clearEngineRefreshRequest(request.connectionId)
-    processed++
-
-    if (request.action === "stop") {
-      await coordinator.stopEngine(request.connectionId, { operatorRequested: true })
-    } else if (request.action === "start") {
-      if (!coordinator.isEngineRunning?.(request.connectionId)) {
-        await coordinator.startMissingEngines([connection])
+  return consumeQueuedEngineRefreshRequests({
+    consumerName: "AutoStart",
+    staleAfterMs: 120_000,
+    getConnection,
+    act: async (request, connection) => {
+      if (request.action === "stop") {
+        await coordinator.stopEngine(request.connectionId, { operatorRequested: true })
+        return "processed"
       }
-    } else {
-      await coordinator.applyPendingChangesNow?.(request.connectionId)
-    }
-  }
 
-  return processed
+      if (request.action === "start") {
+        if (!coordinator.isEngineRunning?.(request.connectionId)) {
+          await coordinator.startMissingEngines([connection])
+        }
+        return "processed"
+      }
+
+      if (request.action === "restart") {
+        if (!coordinator.isEngineRunning?.(request.connectionId)) {
+          await coordinator.startMissingEngines([connection])
+        } else if (typeof coordinator.restartEngine === "function") {
+          await coordinator.restartEngine(request.connectionId)
+        } else {
+          await coordinator.applyPendingChangesNow?.(request.connectionId)
+        }
+        return "processed"
+      }
+
+      await coordinator.applyPendingChangesNow?.(request.connectionId)
+      return "processed"
+    },
+  })
 }
 
 /**
