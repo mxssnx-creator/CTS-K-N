@@ -211,6 +211,7 @@ async function mirrorEngineSettingsStores(
   }
 }
 
+const DEFAULT_SETTINGS: Omit<ConnectionSettings, "connectionId"> = DEFAULT_CONNECTION_SETTINGS
 export const DEFAULT_CONNECTION_SETTINGS: Omit<ConnectionSettings, "connectionId"> = {
   strategy: {
     takeProfit: 8,

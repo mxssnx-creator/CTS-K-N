@@ -423,28 +423,44 @@ export async function recoordinateAfterSettingsChange(
 
   let progressionChanged: boolean | undefined
   let progressionReason: string | undefined
-  if (requiresProgressRecoordination) {
+  const touchesProgressionState =
+    requiresProgressRecoordination || liveOrderSettingsChanged || symbolsChanged || strategyOrCoordinationChanged
+
+  if (touchesProgressionState) {
     try {
       const client = (await import("@/lib/redis-db")).getRedisClient()
-      if (destructiveProgressionChange) {
-        await runSerializedForConnection(id, async () => {
+      await runSerializedForConnection(id, async () => {
+        const now = new Date().toISOString()
+
+        // Serialize every Redis marker that mutates progression:{id} or
+        // trade_engine_state:{id}. Live-order-only saves stay hot-reload-only,
+        // but their event/marker writes cannot interleave with destructive
+        // symbol epoch resets for the same connection.
+        if (requiresProgressRecoordination) {
+          await client.hset(`progression:${id}`, {
+            settings_changed_at: now,
+            settings_recoordination_pending: "1",
+            settings_recoordination_completed: "0",
+            settings_recoordination_fields: JSON.stringify(normalizedChangedFields),
+          }).catch(() => 0)
+        }
+
+        if (destructiveProgressionChange) {
           const nextEpoch = `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+          const engineStatePatch = {
+            symbol_selection_epoch: nextEpoch,
+            quickstart_symbol_generation: nextEpoch,
+            settings_change_marker: now,
+            updated_at: now,
+          }
           await Promise.all([
-            client.hset(`trade_engine_state:${id}`, {
-              symbol_selection_epoch: nextEpoch,
-              quickstart_symbol_generation: nextEpoch,
-              updated_at: new Date().toISOString(),
-            }).catch(() => 0),
+            client.hset(`trade_engine_state:${id}`, engineStatePatch).catch(() => 0),
             client.hdel(
               `trade_engine_state:${id}`,
               "config_set_symbols_total",
               "config_set_symbols_processed",
             ).catch(() => 0),
-            client.hset(`settings:trade_engine_state:${id}`, {
-              symbol_selection_epoch: nextEpoch,
-              quickstart_symbol_generation: nextEpoch,
-              updated_at: new Date().toISOString(),
-            }).catch(() => 0),
+            client.hset(`settings:trade_engine_state:${id}`, engineStatePatch).catch(() => 0),
             client.hdel(
               `settings:trade_engine_state:${id}`,
               "config_set_symbols_total",
@@ -457,6 +473,12 @@ export async function recoordinateAfterSettingsChange(
           const result = await ProgressionStateManager.recoordinateForActualOne(id)
           progressionChanged = result?.changed
           progressionReason = result?.reason || "symbol-basket-or-mode-change"
+          await client.hset(`progression:${id}`, {
+            settings_recoordination_pending: "0",
+            settings_recoordination_completed: "1",
+            settings_recoordination_completed_at: new Date().toISOString(),
+            settings_recoordination_reason: progressionReason,
+          }).catch(() => 0)
           console.log(
             `[v0] [${opts.logTag}] Symbol basket/mode settings changed for ${id} → epoch bumped and progression recoordinated (changed:${result?.changed ?? "?"}, reason:${result?.reason ?? "?"})`,
           )
@@ -469,19 +491,44 @@ export async function recoordinateAfterSettingsChange(
             parentEventId: settingsEvent.id,
             data: { changed: result?.changed ?? false, reason: result?.reason, changedFields },
           })
-        })
-      } else if (strategyOrCoordinationChanged) {
-        await client.hset(`progression:${id}`, {
-          settings_changed_at: new Date().toISOString(),
-          settings_recoordination_pending: "1",
-          settings_recoordination_fields: JSON.stringify(normalizedChangedFields),
-          strategy_recompute_requested: "1",
-        }).catch(() => 0)
-        progressionReason = "strategy-config-cache-invalidated"
-        console.log(
-          `[v0] [${opts.logTag}] Strategy/coordination settings changed for ${id} → cache invalidation/recompute requested without prehistoric reset`,
-        )
-      }
+        } else if (strategyOrCoordinationChanged) {
+          await client.hset(`progression:${id}`, {
+            settings_changed_at: now,
+            settings_recoordination_pending: "0",
+            settings_recoordination_completed: "1",
+            settings_recoordination_completed_at: new Date().toISOString(),
+            settings_recoordination_fields: JSON.stringify(normalizedChangedFields),
+            settings_recoordination_reason: "strategy-config-cache-invalidated",
+            strategy_recompute_requested: "1",
+          }).catch(() => 0)
+          progressionReason = "strategy-config-cache-invalidated"
+          console.log(
+            `[v0] [${opts.logTag}] Strategy/coordination settings changed for ${id} → cache invalidation/recompute requested without prehistoric reset`,
+          )
+        }
+
+        // Mark affected stats dirty inside the same serialized section as the
+        // progression markers so stats fields cannot be stamped against a stale
+        // symbol epoch during concurrent saves.
+        if (symbolsChanged || strategyOrCoordinationChanged) {
+          await client.hset(`progression:${id}`, {
+            stats_recalculation_requested: "1",
+            stats_recalculation_requested_at: new Date().toISOString(),
+            stats_recalculation_fields: JSON.stringify(normalizedChangedFields),
+          }).catch(() => 0)
+        }
+
+        if (liveOrderSettingsChanged) {
+          const marker = {
+            live_order_settings_changed_at: new Date().toISOString(),
+            live_order_settings_fields: JSON.stringify(normalizedChangedFields),
+          }
+          await Promise.all([
+            client.hset(`trade_engine_state:${id}`, marker).catch(() => 0),
+            client.hset(`settings:trade_engine_state:${id}`, marker).catch(() => 0),
+          ])
+        }
+      })
     } catch (archiveErr) {
       console.warn(
         `[v0] [${opts.logTag}] Failed to coordinate progression after settings change for ${id}:`,
@@ -504,25 +551,6 @@ export async function recoordinateAfterSettingsChange(
   // Symbol/mode changes use the coupled destructive progression path above.
   // Strategy/coordination changes deliberately stay hot-reload-only so stats
   // remain visible and the global coordinator does not stop while settings are saved.
-
-  // Mark affected stats dirty so UI readers and background calculators can show
-  // a fresh/recalculating state after symbol, strategy, or volume changes.
-  if (symbolsChanged || strategyOrCoordinationChanged) {
-    try {
-      const { getRedisClient } = await import("@/lib/redis-db")
-      const now = new Date().toISOString()
-      await getRedisClient().hset(`progression:${id}`, {
-        stats_recalculation_requested: "1",
-        stats_recalculation_requested_at: now,
-        stats_recalculation_fields: JSON.stringify(normalizedChangedFields),
-      }).catch(() => 0)
-    } catch (statsErr) {
-      console.warn(
-        `[v0] [${opts.logTag}] Failed to stamp stats recalculation for ${id}:`,
-        statsErr instanceof Error ? statsErr.message : String(statsErr),
-      )
-    }
-  }
 
   // Steps 2 & 3 — coordinator-level actions. Bundled in one try block
   // because they all need the same `coordinator` reference, and a

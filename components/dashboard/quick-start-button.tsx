@@ -322,6 +322,8 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
               ? `auto (${quickStartBody.symbolOrder})`
               : quickStartBody.symbolCount
                 ? `auto (${quickStartBody.symbolCount})`
+                : "auto"
+        return `${d.connection?.name ?? displayConnectionName()} enabled | ${syms}`
           : Array.isArray(requestBody.symbols) && requestBody.symbols.length > 0
             ? requestBody.symbols.join(", ")
             : requestBody.symbolOrder

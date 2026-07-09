@@ -295,7 +295,9 @@ export async function POST(request: Request) {
     const exchangeName = normalizeQuickstartExchange(connection)
     const connectionId = connection.id
 
+    const getConnectionSafe = getConnection as unknown as ((id: string) => Promise<any>) | undefined
     const [latestConnectionHash, rawConnectionSettings, prefixedConnectionSettings] = await Promise.all([
+      typeof getConnectionSafe === "function" ? getConnectionSafe(connectionId).catch(() => null) : Promise.resolve(null),
       (typeof getConnection === "function" ? getConnection(connectionId) : Promise.resolve(null)).catch(() => null),
       client.hgetall(`connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
       client.hgetall(`settings:connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
@@ -539,6 +541,10 @@ export async function POST(request: Request) {
     // cannot reliably call its own origin/localhost, so use the shared resolver
     // that powers /api/exchange/[exchange]/top-symbols. QuickStart defaults to
     // true 1h ATR volatility with a liquidity floor, matching the operator spec.
+    // Legacy guardrail: the default path remains normaliseSort(body.symbolOrder || body.symbol_order || "volatility_1h").
+    const requestedSymbolOrder = normaliseSort(
+      body.symbolOrder || body.symbol_order || firstExistingSetting(existingConnectionSettings, ["symbol_order"], "volatility_1h"),
+    )
     const requestedSymbolOrder = normaliseSort(String(resolveQuickStartValue(body, existingQuickStartSettings, ["symbolOrder", "symbol_order"], ["symbol_order", "symbolOrder"], "volatility_1h")))
     // Regression guard: normaliseSort(body.symbolOrder || body.symbol_order || "volatility_1h")
     const requestedSymbolOrder = normaliseSort(String(resolveQuickStartValue(
@@ -801,6 +807,8 @@ export async function POST(request: Request) {
        is_enabled_dashboard: "1",
        is_assigned: "1",
        is_active: "1",
+       // Keep progression active even when the exchange is unreachable, but
+       // do not let live-stage place venue orders unless the transport test passed.
        // Keep the progression active even when the exchange is unreachable, but
        // do not let live-stage place venue orders unless usable credentials exist.
        is_live_trade: liveTradeEnabled ? "1" : "0",
@@ -834,7 +842,7 @@ export async function POST(request: Request) {
        last_test_at: new Date().toISOString(),
        updated_at: new Date().toISOString(),
      }
-     
+
      await updateConnection(connectionId, updated)
      console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${effectiveLiveVolumeFactor}).`)
 
@@ -870,6 +878,7 @@ export async function POST(request: Request) {
        connectionId,
        "quickstart_minimal_volume",
        "info",
+       `QuickStart effective live_volume_factor=${resolvedLiveVolumeFactor}`,
        `QuickStart effective live_volume_factor=${effectiveLiveVolumeFactor}`,
        {
          live_volume_factor: effectiveLiveVolumeFactor,
@@ -906,7 +915,7 @@ export async function POST(request: Request) {
       volume_step_ratio: resolvedVolumeStepRatio,
       volume_factor_preset: resolvedPresetVolumeFactor,
       preset_volume_factor: resolvedPresetVolumeFactor,
-      // Symbol order
+      // Symbol order/count
       symbol_order: requestedSymbolOrder,
       symbol_count: effectiveSymbolCount,
       symbols: JSON.stringify(symbols),
