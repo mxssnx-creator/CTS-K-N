@@ -263,6 +263,7 @@ import {
 } from "./progression-lock"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { fetchTopSymbols } from "@/lib/top-symbols"
+import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from "@/lib/progression-fingerprint"
 
 /**
  * Per-symbol fan-out concurrency cap.
@@ -798,38 +799,18 @@ export class TradeEngineManager {
           ...((await redisClient.hgetall(`settings:connection_settings:${this.connectionId}`).catch(() => ({}))) as Record<string, string>),
           ...((await redisClient.hgetall(`connection_settings:${this.connectionId}`).catch(() => ({}))) as Record<string, string>),
         }
-        const fpValue = (key: string, fallback = ""): string => {
-          const v = (connectionSettings as any)[key] ?? (state as any)[key] ?? (connData as any)[key] ?? fallback
-          if (v === undefined || v === null) return fallback
-          if (typeof v === "object") {
-            try { return JSON.stringify(v) } catch { return fallback }
-          }
-          return String(v)
-        }
-        const progressionFingerprintFields = [
-          "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
-          "profitFactorMin",
-          "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
-          "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
-          "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
-          "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
-          "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
-          "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio",
-          "minimal_step_count", "minimalStepCount", "minStep",
-          "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
-          "live_volume_factor", "preset_volume_factor", "volume_factor_live", "volume_factor_preset",
-          "volume_step_ratio", "volume_factor",
-          "coordination_settings", "strategies", "indications", "active_indications",
-        ]
-        const settingsFingerprint = JSON.stringify({
+        const settingsFingerprint = buildProgressionFingerprint({
+          connectionId: this.connectionId,
           engineType: config.engine_type || "main",
-          is_live_trade: connData.is_live_trade || "0",
-          is_testnet: connData.is_testnet || "0",
-          is_preset_trade: connData.is_preset_trade || "0",
-          connection_method: connData.connection_method || "library",
-          margin_type: connData.margin_type || "cross",
-          position_mode: connData.position_mode || "hedge",
-          settings: Object.fromEntries(progressionFingerprintFields.map((field) => [field, fpValue(field)])),
+          connData,
+          tradeEngineState: state,
+          connectionSettings,
+        })
+        const fingerprintSettings = buildProgressionFingerprintSettings({
+          engineType: config.engine_type || "main",
+          connData,
+          tradeEngineState: state,
+          connectionSettings,
         })
         const settingsSnapshot = {
           symbol_count: symbolCount,
@@ -843,7 +824,7 @@ export class TradeEngineManager {
           margin_type: connData.margin_type || "cross",
           position_mode: connData.position_mode || "hedge",
           progression_fingerprint: settingsFingerprint,
-          settings: Object.fromEntries(progressionFingerprintFields.map((field) => [field, fpValue(field)])),
+          settings: fingerprintSettings,
           updated_at: new Date().toISOString(),
         }
 
