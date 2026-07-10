@@ -181,6 +181,7 @@ export function ActiveConnectionCard({
     indicationsDirection: number
     indicationsMove: number
     indicationsActive: number
+    indicationsActiveAdvanced: number
     indicationsOptimal: number
     indicationsAuto: number
     indicationsTotal: number
@@ -735,6 +736,7 @@ export function ActiveConnectionCard({
           indicationsDirection: ind.direction || 0,
           indicationsMove:      ind.move      || 0,
           indicationsActive:    ind.active    || 0,
+          indicationsActiveAdvanced: ind.activeAdvanced || 0,
           indicationsOptimal:   ind.optimal   || 0,
           indicationsAuto:      ind.auto      || 0,
           indicationsTotal:     ind.total     || 0,
@@ -1587,11 +1589,12 @@ export function ActiveConnectionCard({
                         <div className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
                           Indications Evaluated ({prehistoricStats.indicationsTotal.toLocaleString()})
                         </div>
-                        <div className="grid grid-cols-5 gap-1">
+                        <div className="grid grid-cols-6 gap-1">
                           {[
                             { label: "Dir", value: prehistoricStats.indicationsDirection },
                             { label: "Move", value: prehistoricStats.indicationsMove },
                             { label: "Act", value: prehistoricStats.indicationsActive },
+                            { label: "Adv", value: prehistoricStats.indicationsActiveAdvanced },
                             { label: "Opt", value: prehistoricStats.indicationsOptimal },
                             { label: "Auto", value: prehistoricStats.indicationsAuto },
                           ].map(({ label, value }) => (

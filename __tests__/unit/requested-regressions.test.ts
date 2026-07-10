@@ -2060,4 +2060,23 @@ describe("requested regression guardrails", () => {
     expect(source).toMatch(/async function incrementOrdersBySymbol[\s\S]*?catch \{[\s\S]*?best-effort/)
   })
 
+  test("dashboard stats surface active advanced indications and real fan-out evaluated counts", () => {
+    const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
+    const quickstart = read("components/dashboard/quickstart-section.tsx")
+    const activeCard = read("components/dashboard/active-connection-card.tsx")
+
+    expect(statsRoute).toContain("const afterFanOut = activeRealInput + activeRealRelatedCreated")
+    expect(statsRoute).toContain("return afterFanOut || stratEvaluated.real || 0")
+    expect(statsRoute).not.toContain("return stratEvaluated.real || 0\n            // NOTE: Real accounting has three meanings")
+    expect(statsRoute).toContain("live:  activeStratByStage.live  || 0")
+
+    expect(quickstart).toContain("indActiveAdvanced: number")
+    expect(quickstart).toContain("let indActAdv  = s.breakdown?.indications?.activeAdvanced || 0")
+    expect(quickstart).toContain('{ label: "Adv",  value: stats.indActiveAdvanced }')
+
+    expect(activeCard).toContain("indicationsActiveAdvanced: number")
+    expect(activeCard).toContain("indicationsActiveAdvanced: ind.activeAdvanced || 0")
+    expect(activeCard).toContain('{ label: "Adv", value: prehistoricStats.indicationsActiveAdvanced }')
+  })
+
 })

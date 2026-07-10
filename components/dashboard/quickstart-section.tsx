@@ -206,6 +206,7 @@ interface LiveStats {
   indDirection: number
   indMove: number
   indActive: number
+  indActiveAdvanced: number
   indOptimal: number
   indAuto: number
   stratBase: number
@@ -313,7 +314,7 @@ const EMPTY_STATS: LiveStats = {
   historicAvgProfitFactor: 0, historicAvgProfitFactorCount: 0, executedPositions: 0,
   indicationCycles: 0, strategyCycles: 0, realtimeCycles: 0, indicationsTotal: 0,
   strategiesTotal: 0, positionsOpen: 0, successRate: 0, avgCycleMs: 0, isActive: false,
-  indDirection: 0, indMove: 0, indActive: 0, indOptimal: 0, indAuto: 0,
+  indDirection: 0, indMove: 0, indActive: 0, indActiveAdvanced: 0, indOptimal: 0, indAuto: 0,
   stratBase: 0, stratMain: 0, stratReal: 0, stratLive: 0,
   stageBase:  { ...EMPTY_STAGE }, stageMain: { ...EMPTY_STAGE },
   stageReal:  { ...EMPTY_STAGE }, stageLive: { ...EMPTY_STAGE },
@@ -466,6 +467,7 @@ export function QuickstartSection() {
       let indDir     = s.breakdown?.indications?.direction || 0
       let indMove    = s.breakdown?.indications?.move     || 0
       let indAct     = s.breakdown?.indications?.active   || 0
+      let indActAdv  = s.breakdown?.indications?.activeAdvanced || 0
       let indOpt     = s.breakdown?.indications?.optimal  || 0
       let indAuto    = s.breakdown?.indications?.auto     || 0
       let stratBase  = s.breakdown?.strategies?.base      || 0
@@ -485,6 +487,7 @@ export function QuickstartSection() {
             indDir     = e.indicationsByType?.direction || 0
             indMove    = e.indicationsByType?.move      || 0
             indAct     = e.indicationsByType?.active    || 0
+            indActAdv  = e.indicationsByType?.activeAdvanced || e.indicationsByType?.active_advanced || 0
             indOpt     = e.indicationsByType?.optimal   || 0
             indAuto    = e.indicationsByType?.auto      || 0
             stratBase  = e.baseStrategyCount  || 0
@@ -571,6 +574,7 @@ export function QuickstartSection() {
         indDirection:          indDir,
         indMove:               indMove,
         indActive:             indAct,
+        indActiveAdvanced:     indActAdv,
         indOptimal:            indOpt,
         indAuto:               indAuto,
         stratBase:             stratBase,
@@ -1120,6 +1124,7 @@ export function QuickstartSection() {
     { label: "Dir",  value: stats.indDirection },
     { label: "Move", value: stats.indMove      },
     { label: "Act",  value: stats.indActive    },
+    { label: "Adv",  value: stats.indActiveAdvanced },
     { label: "Opt",  value: stats.indOptimal   },
     { label: "Auto", value: stats.indAuto      },
   ]
