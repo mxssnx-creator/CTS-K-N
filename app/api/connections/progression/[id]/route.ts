@@ -445,6 +445,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     // Get recent logs for this connection, but do not let logging I/O block
     // progress/stats rendering during high-throughput recoordination runs.
+    const recentLogs = await withProgressionTimeout(
+      "recent logs",
+      connectionId,
+      getProgressionLogs(connectionId, { flush: false }),
+      [],
+    )
     const recentLogs = await withProgressionTimeout("recent logs", connectionId, getProgressionLogs(connectionId), [])
 
     const response = {

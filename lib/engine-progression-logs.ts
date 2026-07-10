@@ -178,10 +178,18 @@ export async function forceFlushLogs(connectionId: string): Promise<void> {
  * Get all progression logs for a connection
  * OPTIMIZED: Uses native Redis list operations and forces flush first
  */
-export async function getProgressionLogs(connectionId: string): Promise<ProgressionLogEntry[]> {
+export async function getProgressionLogs(
+  connectionId: string,
+  options: { flush?: boolean } = {},
+): Promise<ProgressionLogEntry[]> {
   try {
     // Force flush all pending logs first to ensure we get the latest entries
-    await flushAllLogBuffers()
+    // for log-detail views. Progress/status routes can pass flush:false after
+    // doing their own bounded connection-local flush, avoiding a global flush
+    // fan-out on every card poll.
+    if (options.flush !== false) {
+      await flushAllLogBuffers()
+    }
     
     const client = getRedisClient()
     const logKey = `engine_logs:${connectionId}`

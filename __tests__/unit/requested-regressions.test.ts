@@ -2125,6 +2125,7 @@ describe("requested regression guardrails", () => {
     expect(route).toContain("const PROGRESSION_AUX_TIMEOUT_MS = 750")
     expect(route).toContain("async function withProgressionTimeout")
     expect(route).toContain('withProgressionTimeout("log flush", connectionId, forceFlushLogs(connectionId), undefined)')
+    expect(route).toContain("getProgressionLogs(connectionId, { flush: false })")
     expect(route).toContain('withProgressionTimeout("recent logs", connectionId, getProgressionLogs(connectionId), [])')
     expect(route).toContain("returning live snapshot without blocking UI")
   })
@@ -2133,6 +2134,8 @@ describe("requested regression guardrails", () => {
   test("hot-path progression logs do not force immediate stdout and Redis flushes", () => {
     const source = read("lib/engine-progression-logs.ts")
 
+    expect(source).toContain("options: { flush?: boolean } = {}")
+    expect(source).toContain("if (options.flush !== false)")
     expect(source).toContain("function isImmediateFlushPhase")
     expect(source).toContain('phase.startsWith("quickstart")')
     expect(source).toContain("IMMEDIATE_FLUSH_PHASES.includes(phase)")
