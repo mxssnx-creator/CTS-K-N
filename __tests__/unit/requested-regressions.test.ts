@@ -1318,7 +1318,10 @@ describe("requested regression guardrails", () => {
     expect(quickStart).toContain("quickstart_engine_reused")
     expect(quickStart).toContain("Running engine reused; QuickStart symbols/settings applied without stop/restart")
     expect(quickStart).toContain("Engine already running — QuickStart settings applied without restart")
-    expect(quickStart).toContain("config_set_symbols_processed: quickstartEngineAlreadyRunning ? symbols.length : 0")
+    expect(quickStart).toContain("const quickstartNeedsFreshProcessing =")
+    expect(quickStart).toContain("quickstartRecoordination.progressionChanged === true")
+    expect(quickStart).toContain("quickstartEngineAlreadyRunning && !quickstartNeedsFreshProcessing ? symbols.length : 0")
+    expect(quickStart).toContain("!quickstartEngineAlreadyRunning || quickstartNeedsFreshProcessing")
     expect(quickStart).toContain("coordinator.invalidateSymbolsCacheForConnection(connectionId)")
     expect(quickStart).not.toContain("quickstart_engine_restart")
 
@@ -2100,6 +2103,19 @@ describe("requested regression guardrails", () => {
     expect(activeCard).toContain("indicationsActiveAdvanced: number")
     expect(activeCard).toContain("indicationsActiveAdvanced: ind.activeAdvanced || 0")
     expect(activeCard).toContain('{ label: "Adv", value: prehistoricStats.indicationsActiveAdvanced }')
+  })
+
+  test("main connection cards use canonical ids for progression and stats polling", () => {
+    const manager = read("components/dashboard/dashboard-active-connections-manager.tsx")
+    const activeConnections = read("lib/active-connections.ts")
+
+    expect(manager).toContain('const canonId = conn.id.replace(/^conn-/, "")')
+    expect(manager).toContain("id: `active-${canonId}`")
+    expect(manager).toContain("connectionId: canonId")
+    expect(manager).toContain("details: normalizedDetails")
+    expect(manager).not.toContain("connectionId: conn.id")
+    expect(activeConnections).toContain('const canonId = conn.id.replace(/^conn-/, "")')
+    expect(activeConnections).toContain("connectionId: canonId")
   })
 
 })

@@ -48,4 +48,18 @@ describe("dashboard event stream refactor", () => {
       }
     }
   })
+
+  it("bridges canonical recoordination/progress/live events into dashboard refresh handlers", () => {
+    const source = read("lib/dashboard-events.ts")
+
+    expect(source).toContain('client.subscribe("canonical-event"')
+    expect(source).toContain('"connection.recoordinated"')
+    expect(source).toContain('"settings.hotReloaded"')
+    expect(source).toContain('"progression.epochStarted"')
+    expect(source).toContain('"processing.progress"')
+    expect(source).toContain('"live.stageChanged"')
+    expect(source).toContain('handlers[eventType]?.(payload)')
+    expect(source).toContain('canonicalEvent: event')
+  })
+
 })
