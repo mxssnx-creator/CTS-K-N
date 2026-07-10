@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { getProgressionLogs, clearProgressionLogs } from "@/lib/engine-progression-logs"
 import { initRedis, getRedisClient, getSettings } from "@/lib/redis-db"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
+import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -30,6 +31,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   try {
     const { id } = await params
     const connectionId = id
+    const engineType = request.nextUrl.searchParams.get("engineType") || "main"
+    const scope = buildProgressionScope(connectionId, engineType)
     
     await initRedis()
 
@@ -41,11 +44,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const logs = await getProgressionLogs(connectionId)
     
     // Get progression state (cycles, trades, etc.)
-    const progressionState = await ProgressionStateManager.getProgressionState(connectionId)
-    const engineState = await getSettings(`trade_engine_state:${connectionId}`)
+    const progressionState = await ProgressionStateManager.getProgressionState(connectionId, engineType)
+    const engineState = await getSettings(`trade_engine_state:${connectionId}:${engineType}`)
     
     // Get engine progression phase
-    const engineProgression = await getSettings(`engine_progression:${connectionId}`)
+    const engineProgression = await getSettings(scope.engineProgressionKey)
     
     // Get structured engine logs
     const client = getRedisClient()
@@ -64,7 +67,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // always more current than the flat indications:{connId}:count key.
     let progHashForLogs: Record<string, string> = {}
     try {
-      progHashForLogs = (await client.hgetall(`progression:${connectionId}`)) || {}
+      await ensureScopedProgressionFromLegacy(client, connectionId, engineType)
+      progHashForLogs = (await client.hgetall(scope.progressionKey)) || {}
     } catch {
       progHashForLogs = {}
     }
@@ -211,6 +215,8 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
   try {
     const { id } = await params
     const connectionId = id
+    const engineType = request.nextUrl.searchParams.get("engineType") || "main"
+    const scope = buildProgressionScope(connectionId, engineType)
     
     await initRedis()
 

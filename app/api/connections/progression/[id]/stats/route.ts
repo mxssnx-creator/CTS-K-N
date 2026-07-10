@@ -4,6 +4,7 @@ import { VolumeCalculator } from "@/lib/volume-calculator"
 import { aggregateLastXClosedPositions } from "@/lib/trade-engine/closed-position-aggregation"
 import { getGlobalCoordinator } from "@/lib/trade-engine"
 import { normalizeSymbolList } from "@/lib/trade-engine/symbol-selection-ownership"
+import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -403,6 +404,7 @@ export async function GET(
   const mainLogic = async () => {
     try {
       const { id: connectionId } = await params
+      const engineType = request.nextUrl.searchParams.get("engineType") || "main"
 
       await initRedis()
       const client = getRedisClient()
@@ -453,16 +455,18 @@ export async function GET(
       strategyDetailRealHashRaw,
       strategyDetailLiveHashRaw,
     ] = await Promise.all([
+      ensureScopedProgressionFromLegacy(client, connectionId, engineType).then((scope) => client.hgetall(scope.progressionKey)).catch(() => null),
+      client.hgetall(buildProgressionScope(connectionId, engineType).prehistoricKey).catch(() => null),
       activeProgressionKey === `progression:${connectionId}` ? Promise.resolve(activeProgressionRaw) : client.hgetall(`progression:${connectionId}`).catch(() => null),
       client.hgetall(`prehistoric:${connectionId}`).catch(() => null),
       client.hgetall(`realtime:${connectionId}`).catch(() => null),
-      getSettings(`trade_engine_state:${connectionId}`).catch(() => ({})),
-      getSettings(`engine_progression:${connectionId}`).catch(() => ({})),
-      client.scard(`prehistoric:${connectionId}:symbols`).catch(() => 0),
+      getSettings(`trade_engine_state:${connectionId}:${engineType}`).catch(() => getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))),
+      getSettings(buildProgressionScope(connectionId, engineType).engineProgressionKey).catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({}))),
+      client.scard(`${buildProgressionScope(connectionId, engineType).prehistoricKey}:symbols`).catch(() => 0),
       // `:done` marker written by completePrehistoricPhase — a plain SET
       // key separate from the hash so a hot-reload that loses the in-memory
       // completion callback can still flip the progress bar to 100 %.
-      client.get(`prehistoric:${connectionId}:done`).catch(() => null),
+      client.get(`${buildProgressionScope(connectionId, engineType).prehistoricKey}:done`).catch(() => null),
       // Per-axis-window cumulative counters written by createMainSets in
       // strategy-coordinator.ts. Hash fields are `${axis}_${N}_sets` /
       // `${axis}_${N}_pos` for axis ∈ {prev, last, cont, pause} and the

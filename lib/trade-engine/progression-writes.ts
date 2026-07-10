@@ -21,8 +21,7 @@
 
 import { getRedisClient } from "@/lib/redis-db"
 import { getCurrentEpoch } from "./progression-lock"
-
-const PROGRESSION_KEY_PREFIX = "progression:"
+import { buildProgressionScope } from "@/lib/progression-scope"
 
 /**
  * Represent a single progression mutation (HSET/HINCRBY). The validator
@@ -44,12 +43,14 @@ export interface ProgressionWriteOptions {
   connectionId: string
   /** If true, log when a write is rejected (stale epoch). Default: false. */
   logStaleRejects?: boolean
+  /** Engine scope for canonical progression keys. Default: main. */
+  engineType?: string
   /** If true, bypass epoch validation (ONLY for initialization). Default: false. */
   skipEpochValidation?: boolean
 }
 
-function progressionKey(connectionId: string): string {
-  return `${PROGRESSION_KEY_PREFIX}${connectionId}`
+function progressionKey(connectionId: string, engineType = "main"): string {
+  return buildProgressionScope(connectionId, engineType).progressionKey
 }
 
 /**
@@ -93,12 +94,13 @@ export async function initializeProgression(
   connectionId: string,
   epoch: number,
   initialFields: Record<string, string | number>,
+  engineType = "main",
 ): Promise<boolean> {
   const client = getRedisClient()
   if (!client) return false
 
   try {
-    const key = progressionKey(connectionId)
+    const key = progressionKey(connectionId, engineType)
     const fields = {
       epoch: String(epoch),
       ...Object.fromEntries(Object.entries(initialFields).map(([k, v]) => [k, String(v)])),
@@ -142,7 +144,7 @@ export async function updateProgressionSnapshot(
   }
 
   try {
-    const key = progressionKey(opts.connectionId)
+    const key = progressionKey(opts.connectionId, opts.engineType)
 
     // Prepare all fields for atomic HSET
     const fields: Record<string, string> = {}
@@ -185,7 +187,7 @@ export async function hsetProgression(
   }
 
   try {
-    const key = progressionKey(connectionId)
+    const key = progressionKey(connectionId, opts.engineType)
     await (client as any).hset(key, field, String(value))
     return true
   } catch (err) {
@@ -220,7 +222,7 @@ export async function hincrbyProgression(
   }
 
   try {
-    const key = progressionKey(connectionId)
+    const key = progressionKey(connectionId, opts.engineType)
     const newValue = await (client as any).hincrby(key, field, increment)
     return newValue as number
   } catch (err) {
@@ -257,7 +259,7 @@ export async function hincrbyProgressionBatch(
   }
 
   try {
-    const key = progressionKey(connectionId)
+    const key = progressionKey(connectionId, opts.engineType)
     // Pipeline all HINCRBY commands
     const pipeline = (client as any).pipeline?.()
     if (!pipeline) {
@@ -286,12 +288,12 @@ export async function hincrbyProgressionBatch(
  * Atomic fetch of entire progression hash with epoch. Used for dashboard
  * refresh and consistency checks.
  */
-export async function getProgressionSnapshot(connectionId: string): Promise<Record<string, string> | null> {
+export async function getProgressionSnapshot(connectionId: string, engineType = "main"): Promise<Record<string, string> | null> {
   const client = getRedisClient()
   if (!client) return null
 
   try {
-    const key = progressionKey(connectionId)
+    const key = progressionKey(connectionId, engineType)
     const result = await (client as any).hgetall(key)
     return (result as Record<string, string>) || null
   } catch (err) {
@@ -307,12 +309,12 @@ export async function getProgressionSnapshot(connectionId: string): Promise<Reco
  * Delete progression hash (cleanup on engine stop). Does NOT check epoch
  * ownership — only called after lock release confirms we own it.
  */
-export async function deleteProgression(connectionId: string): Promise<boolean> {
+export async function deleteProgression(connectionId: string, engineType = "main"): Promise<boolean> {
   const client = getRedisClient()
   if (!client) return false
 
   try {
-    const key = progressionKey(connectionId)
+    const key = progressionKey(connectionId, engineType)
     await client.del(key)
     return true
   } catch (err) {
