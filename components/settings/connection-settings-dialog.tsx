@@ -48,6 +48,7 @@ import {
   Flame,
   CheckSquare,
   Square,
+  AlertTriangle,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -220,6 +221,8 @@ export function ConnectionSettingsDialog({
   // Shown as a read-only preview so the operator knows what takes effect
   // before and after saving.
   const [activeSymbols, setActiveSymbols] = useState<string[]>([])
+  const [symbolResolutionSource, setSymbolResolutionSource] = useState<string | undefined>(undefined)
+  const [saveWarning, setSaveWarning] = useState<string | null>(null)
 
   // ── Indications & Strategies state (per channel) ────────────────
   const [indMain,   setIndMain]   = useState<ChannelProfile>(DEFAULT_INDICATION_PROFILE)
@@ -420,6 +423,7 @@ export function ConnectionSettingsDialog({
           return []
         })()
         setActiveSymbols(parsedActive)
+        setSaveWarning(null)
 
         const mergeStratChannel = (saved: unknown, defaults: StrategyChannel): StrategyChannel => {
           if (!saved || typeof saved !== "object") return defaults
@@ -549,6 +553,8 @@ export function ConnectionSettingsDialog({
         symbols:      symbolsCfg.symbols,
         symbol_order: symbolsCfg.symbolOrder,
         symbol_count: symbolsCfg.symbolCount,
+        symbol_source: symbolResolutionSource,
+        symbols_confirmed: symbolsCfg.symbolOrder === "manual",
         // Strategies (per channel)
         strategies: {
           main:   stratMain,
@@ -588,6 +594,9 @@ export function ConnectionSettingsDialog({
         body:    JSON.stringify(payload),
       })
       if (!settingsRes.ok) throw new Error("Settings save failed")
+      const savedEvent = await settingsRes.clone().json().catch(() => ({})) as Record<string, unknown>
+      const warning = typeof savedEvent.warning === "string" ? savedEvent.warning : undefined
+      setSaveWarning(warning ?? null)
 
       const indRes = await fetch(`/api/settings/connections/${connectionId}/active-indications`, {
         method:  "PUT",
@@ -600,7 +609,7 @@ export function ConnectionSettingsDialog({
       // toast can show what the engine will actually run next cycle.
       let resolvedDesc = `Updated ${connectionName}`
       try {
-        const saved = await settingsRes.clone().json().catch(() => ({})) as Record<string, unknown>
+        const saved = savedEvent
         const settingsData = (saved.settings || {}) as Record<string, unknown>
         const rawResolved = settingsData.active_symbols || settingsData.symbols
         const resolvedList: string[] = (() => {
@@ -610,13 +619,14 @@ export function ConnectionSettingsDialog({
           }
           return []
         })()
-        if (resolvedList.length > 0) {
+        if (!warning && resolvedList.length > 0) {
           resolvedDesc = `Symbols: ${resolvedList.join(", ")}`
           setActiveSymbols(resolvedList)
+        } else if (warning) {
+          resolvedDesc = warning
         }
       } catch { /* non-fatal — description falls back to connection name */ }
 
-      const savedEvent = await settingsRes.clone().json().catch(() => ({})) as Record<string, unknown>
       const settingsVersion = typeof savedEvent.settingsVersion === "string" ? savedEvent.settingsVersion : undefined
       const recoordinationId = typeof savedEvent.recoordinationId === "string" ? savedEvent.recoordinationId : settingsVersion
       const progressionEpoch = typeof savedEvent.progressionEpoch === "string" ? savedEvent.progressionEpoch : undefined
@@ -633,7 +643,11 @@ export function ConnectionSettingsDialog({
         },
       }
 
-      toast.success("Settings saved", { description: resolvedDesc })
+      if (warning) {
+        toast.error("Settings saved with warning", { description: warning })
+      } else {
+        toast.success("Settings saved", { description: resolvedDesc })
+      }
       window.dispatchEvent(new CustomEvent("connection-settings-updated", { detail: eventDetail }))
       window.dispatchEvent(new CustomEvent("connection-settings-recoordination-complete", {
         detail: {
@@ -648,7 +662,7 @@ export function ConnectionSettingsDialog({
     } finally {
       setSaving(false)
     }
-  }, [connectionId, connectionName, overview, symbolsCfg, stratMain, stratPreset, indMain, indPreset, coordination, onOpenChange])
+  }, [connectionId, connectionName, overview, symbolsCfg, symbolResolutionSource, stratMain, stratPreset, indMain, indPreset, coordination, onOpenChange])
 
   // ─────────────────────────────────────────────────────────────────
   // SYMBOL HELPERS
@@ -666,6 +680,10 @@ export function ConnectionSettingsDialog({
         const list: string[] = Array.isArray(data.symbols) ? data.symbols
           : Array.isArray(data.available) ? data.available : []
         setExchangeSymbols(list)
+        setSymbolResolutionSource(typeof data.source === "string" ? data.source : undefined)
+        if (data.source === "fallback" && typeof data.warning === "string") {
+          setSaveWarning(data.warning)
+        }
         // Store full ticker objects for the ranked preview table
         if (Array.isArray(data.tickers)) {
           setExchangeTickers(data.tickers)
@@ -694,6 +712,16 @@ export function ConnectionSettingsDialog({
 
       setExchangeSymbols(symbols)
       setExchangeTickers(tickers)
+      setSymbolResolutionSource(typeof data.source === "string" ? data.source : undefined)
+      if (data.source === "fallback") {
+        const warning = typeof data.warning === "string"
+          ? data.warning
+          : "Live symbol ranking failed; fallback symbols are shown for manual review and will not replace the active set unless you switch to Manual or confirm them."
+        setSaveWarning(warning)
+        toast.error("Live symbol ranking unavailable", { description: warning })
+        return
+      }
+      setSaveWarning(null)
       setSymbolsCfg(prev => ({
         ...prev,
         symbols: symbols.slice(0, prev.symbolCount),
@@ -1436,6 +1464,16 @@ export function ConnectionSettingsDialog({
                               </button>
                             )
                           })}
+                      </div>
+                    </div>
+                  )}
+
+                  {saveWarning && (
+                    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300 flex gap-2">
+                      <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="font-medium">Symbol ranking warning</div>
+                        <div className="text-[11px] leading-relaxed">{saveWarning}</div>
                       </div>
                     </div>
                   )}
