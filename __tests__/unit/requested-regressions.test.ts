@@ -1810,6 +1810,21 @@ describe("requested regression guardrails", () => {
     expect(recoordinator).toContain("settings_recoordination_pending")
   })
 
+  test("central settings persistence does not classify persisted snapshots as touched fields when caller supplies changed fields", () => {
+    const recoordinator = read("lib/connection-recoordinator.ts")
+
+    expect(recoordinator).toContain("opts.changedFieldsOverride && opts.changedFieldsOverride.length > 0")
+    const changedOverrideBranch = recoordinator.slice(
+      recoordinator.indexOf("const changedFieldsOverride = opts.changedFieldsOverride"),
+      recoordinator.indexOf(": Array.from(new Set([", recoordinator.indexOf("const changedFieldsOverride = opts.changedFieldsOverride")),
+    )
+
+    expect(changedOverrideBranch).toContain("...Object.keys(opts.connectionPatch || {})")
+    expect(changedOverrideBranch).toContain("...opts.changedFieldsOverride")
+    expect(changedOverrideBranch).not.toContain("...Object.keys(settingsPatch)")
+  })
+
+
   test("trailing range settings drive recoordination, Set accounting, and control-order variant labels", () => {
     const coordinator = read("lib/strategy-coordinator.ts")
     const settingsCoordinator = read("lib/settings-coordinator.ts")

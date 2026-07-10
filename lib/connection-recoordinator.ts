@@ -214,15 +214,19 @@ export async function applyMainConnectionSettingsChange(
   // Reload from Redis so notify envelopes and downstream predicates see exactly
   // what was persisted, including updateConnection normalisation.
   after = (await getConnection(id).catch(() => null)) || after
-  const explicitFields = Array.from(new Set([
-    ...Object.keys(opts.connectionPatch || {}),
-    ...Object.keys(settingsPatch),
-    ...(opts.changedFieldsOverride || []),
-  ]))
+  const changedFieldsOverride = opts.changedFieldsOverride && opts.changedFieldsOverride.length > 0
+    ? Array.from(new Set([
+      ...Object.keys(opts.connectionPatch || {}),
+      ...opts.changedFieldsOverride,
+    ]))
+    : Array.from(new Set([
+      ...Object.keys(opts.connectionPatch || {}),
+      ...Object.keys(settingsPatch),
+    ]))
   const completion = await recoordinateAfterSettingsChange(id, before, after, {
     logTag: opts.logTag,
     settingsVersion: opts.settingsVersion,
-    changedFieldsOverride: explicitFields.length > 0 ? explicitFields : opts.changedFieldsOverride,
+    changedFieldsOverride: changedFieldsOverride.length > 0 ? changedFieldsOverride : opts.changedFieldsOverride,
   })
   return { connection: after, completion }
 }
