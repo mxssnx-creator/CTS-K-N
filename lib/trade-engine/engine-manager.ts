@@ -4518,12 +4518,10 @@ export class TradeEngineManager {
   ): Promise<void> {
     try {
       const completedAt = new Date().toISOString()
-      const appliedVersion = String(event.timestamp || completedAt)
-      await getRedisClient().hset(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, {
       const eventValues = (event.newValues || {}) as Record<string, unknown>
       const appliedVersion = String(eventValues.settings_version || eventValues.updated_at || event.timestamp || completedAt)
       const appliedEventId = String(eventValues.settings_event_id || appliedVersion)
-      await getRedisClient().hset(`progression:${this.connectionId}`, {
+      const patch = {
         settings_recoordination_pending: "0",
         strategy_recompute_requested: "0",
         settings_recoordination_completed_at: completedAt,
@@ -4533,8 +4531,16 @@ export class TradeEngineManager {
         settings_recoordination_requested_version: appliedVersion,
         settings_recoordination_requested_event_id: appliedEventId,
         settings_recoordination_applied_fields: JSON.stringify(event.changedFields || []),
-      })
-      await getRedisClient().hdel?.(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, "settings_recoordination_last_error")
+      }
+      const scope = buildProgressionScope(this.connectionId, this.currentEngineType)
+      await Promise.all([
+        getRedisClient().hset(scope.progressionKey, { ...patch, connection_id: this.connectionId, engine_type: scope.engineType }),
+        getRedisClient().hset(scope.legacyProgressionKey, patch),
+      ])
+      await Promise.all([
+        getRedisClient().hdel?.(scope.progressionKey, "settings_recoordination_last_error"),
+        getRedisClient().hdel?.(scope.legacyProgressionKey, "settings_recoordination_last_error"),
+      ])
     } catch (stampErr) {
       console.warn(
         `[v0] [Engine ${this.connectionId}] settings recoordination completion stamp failed:`,
@@ -4548,19 +4554,22 @@ export class TradeEngineManager {
     event?: import("@/lib/settings-coordinator").SettingsChangeEvent | null,
   ): Promise<void> {
     try {
-      await getRedisClient().hset(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, {
-        settings_recoordination_pending: "1",
       const eventValues = (event?.newValues || {}) as Record<string, unknown>
       const requestedVersion = String(eventValues.settings_version || eventValues.updated_at || event?.timestamp || "")
       const requestedEventId = String(eventValues.settings_event_id || requestedVersion)
-      await getRedisClient().hset(`progression:${this.connectionId}`, {
+      const patch = {
         settings_recoordination_pending: "0",
         strategy_recompute_requested: "1",
         settings_recoordination_last_error: error instanceof Error ? error.message : String(error),
         settings_recoordination_failed_at: new Date().toISOString(),
         ...(requestedVersion ? { settings_recoordination_requested_version: requestedVersion } : {}),
         ...(requestedEventId ? { settings_recoordination_requested_event_id: requestedEventId } : {}),
-      })
+      }
+      const scope = buildProgressionScope(this.connectionId, this.currentEngineType)
+      await Promise.all([
+        getRedisClient().hset(scope.progressionKey, { ...patch, connection_id: this.connectionId, engine_type: scope.engineType }),
+        getRedisClient().hset(scope.legacyProgressionKey, patch),
+      ])
     } catch (stampErr) {
       console.warn(
         `[v0] [Engine ${this.connectionId}] settings recoordination failure stamp failed:`,

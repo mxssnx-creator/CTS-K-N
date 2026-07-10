@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
-import { updateConnection, initRedis, getConnection, getRedisClient } from "@/lib/redis-db"
+import { updateConnection, initRedis, getConnection, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
 import { RedisTrades, RedisPositions } from "@/lib/redis-operations"
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 import { getTradeEngine } from "@/lib/trade-engine"
@@ -311,7 +311,6 @@ export async function PATCH(
 
     const merged = { ...current, ...settings } as Record<string, unknown>
 
-    const merged = { ...current, ...settings }
     const incomingSymbolSource = typeof (settings as Record<string, unknown>).symbol_source === "string"
       ? String((settings as Record<string, unknown>).symbol_source)
       : undefined
@@ -781,8 +780,8 @@ export async function PATCH(
             // migration/admin override list.
             force_symbols: resolvedSymbolsJson,
             symbol_count: String(resolved.length),
-            symbol_order: order,
-          })) || { ...effectiveConnection, active_symbols: resolvedSymbolsJson, force_symbols: resolvedSymbolsJson, symbol_count: String(resolved.length), symbol_order: order }
+            symbol_order: finalSymbolOrder,
+          })) || { ...effectiveConnection, active_symbols: resolvedSymbolsJson, force_symbols: resolvedSymbolsJson, symbol_count: String(resolved.length), symbol_order: finalSymbolOrder }
           // 2. Mirror into trade_engine_state (the engine's primary lookup) +
           //    seed the prehistoric symbol total so the progress bar denominator
           //    matches the new selection immediately.
@@ -796,7 +795,7 @@ export async function PATCH(
             active_symbols: resolvedSymbolsJson,
             force_symbols: resolvedSymbolsJson,
             symbol_count: String(resolved.length),
-            symbol_order: order,
+            symbol_order: finalSymbolOrder,
             config_set_symbols_total: String(resolved.length),
             updated_at: new Date().toISOString(),
           }
@@ -821,7 +820,7 @@ export async function PATCH(
             active_symbols: resolvedSymbolsJson,
             force_symbols: resolvedSymbolsJson,
             symbol_count: resolved.length,
-            symbol_order: order,
+            symbol_order: finalSymbolOrder,
             updated_at: new Date().toISOString(),
           })
           ;(merged as Record<string, unknown>).active_symbols = resolved
@@ -833,18 +832,12 @@ export async function PATCH(
           try {
             getTradeEngine()?.getEngineManager(id)?.invalidateSymbolsCache()
           } catch { /* engine may not be running yet — state above is enough */ }
-          await persistNow().catch((persistErr: unknown) => {
-            console.warn(
-              "[v0] [Settings] Persisting resolved symbols failed:",
-              persistErr instanceof Error ? persistErr.message : persistErr,
-            )
-          })
           // The authoritative writes above are synchronous. Do not schedule
           // delayed re-assert timers from a settings route: a second dialog save
           // can happen before those timers fire, and the old delayed closure
           // would then overwrite the newer active_symbols/trade_engine_state,
           // making progression appear to switch between old and new settings.
-          console.log(`[v0] [Settings] Resolved ${resolved.length} symbol(s) for ${id} (order=${order}): ${resolved.join(", ")}`)
+          console.log(`[v0] [Settings] Resolved ${resolved.length} symbol(s) for ${id} (order=${finalSymbolOrder}): ${resolved.join(", ")}`)
         }
       } catch (symErr) {
         console.error("[v0] [Settings] symbol auto-resolve failed:", symErr)
@@ -1051,7 +1044,7 @@ export async function PATCH(
       ? Array.from(new Set([...Object.keys(settings), ...Object.keys(flatKnobs), "connection_settings", "settings_version"]))
       : ["settings_version"]
 
-    const { connection: effectiveConnection, completion: recoordination } = await applyMainConnectionSettingsChange(
+    const { connection: appliedConnection, completion: recoordination } = await applyMainConnectionSettingsChange(
       id,
       { ...connection, connection_settings: current },
       {
@@ -1063,6 +1056,7 @@ export async function PATCH(
         logTag: "PATCH /settings",
       },
     )
+    effectiveConnection = appliedConnection
 
     try {
       getTradeEngine()?.getEngineManager(id)?.invalidateSymbolsCache()

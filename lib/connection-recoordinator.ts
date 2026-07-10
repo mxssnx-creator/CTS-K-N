@@ -344,6 +344,8 @@ export async function recoordinateAfterSettingsChange(
     data: { changedFields, logTag: opts.logTag },
   })
   const requestedSettingsVersion = String(opts.settingsVersion || settingsEvent.settingsVersion || settingsEvent.id)
+  // Keep event identity tied to the emitted canonical settings event:
+  // settings_recoordination_requested_event_id: settingsEvent.id
   const requestedSettingsEventId = settingsEvent.id
 
   // Step 1 — durable notify (Redis envelope read by all running engines).
