@@ -167,6 +167,8 @@ export function ActiveConnectionCard({
   // Live engine-stats counters displayed under the progress bar
   // Ref to current phase — used inside stable interval callback to avoid recreating on every phase change
   const canonicalCursorRef = useRef<EventFreshnessCursor>({})
+  const progressionFetchSeqRef = useRef(0)
+  const liveStatsFetchSeqRef = useRef(0)
   const phaseRef = useRef<string>("idle")
   const [dashboardEventRefreshKey, setDashboardEventRefreshKey] = useState(0)
   const [liveStats, setLiveStats] = useState<{
@@ -420,6 +422,7 @@ export function ActiveConnectionCard({
 
   // Poll progression
   const fetchProgression = useCallback(async () => {
+    const requestSeq = ++progressionFetchSeqRef.current
     try {
       const res = await fetch(`/api/connections/progression/${connection.connectionId}/stats`, {
         cache: "no-store",
@@ -427,6 +430,7 @@ export function ActiveConnectionCard({
       })
       if (res.ok) {
         const data = await res.json()
+        if (requestSeq !== progressionFetchSeqRef.current) return
         if (res.ok) {
           // The /stats payload exposes prehistoric data under `historic`, not
           // `prehistoricProgress` (the shape the legacy /progression endpoint
@@ -506,6 +510,7 @@ export function ActiveConnectionCard({
       })
       if (tRes.ok) {
         const tData = await tRes.json()
+        if (requestSeq !== progressionFetchSeqRef.current) return
         const tracking = tData?.tracking ?? tData
         if (tracking?.real?.averages) {
           setRealAverages({
@@ -561,6 +566,12 @@ export function ActiveConnectionCard({
 
   useEffect(() => {
     fetchProgression()
+    // Dashboard SSE is the fast path, but production deployments can lose the
+    // event stream during reconnects/proxy buffering. Keep a small canonical
+    // polling fallback so the connection card never freezes with stale progress.
+    const progressionPollInterval = window.setInterval(() => {
+      fetchProgression()
+    }, 4_000)
 
     // Steady-state progression updates arrive via dashboard SSE events.
     const handleConnectionToggled = () => { fetchProgression() }
@@ -627,6 +638,7 @@ export function ActiveConnectionCard({
     }
 
     return () => {
+      window.clearInterval(progressionPollInterval)
       if (typeof window !== "undefined") {
         window.removeEventListener("connection-toggled", handleConnectionToggled)
         window.removeEventListener("live-trade-toggled", handleLiveTradeToggled)
@@ -645,6 +657,7 @@ export function ActiveConnectionCard({
     }
 
     const fetchLiveStats = async () => {
+      const requestSeq = ++liveStatsFetchSeqRef.current
       try {
         // Use canonical stats endpoint — same source as progression info, per-connection
         const res = await fetch(
@@ -653,6 +666,7 @@ export function ActiveConnectionCard({
         )
         if (!res.ok) return
         const data = await res.json()
+        if (requestSeq !== liveStatsFetchSeqRef.current) return
         // Cycles label in the header should report the real interval-
         // frame count — every loop tick the indication processor fired
         // since the engine started — NOT the "live cycle" subset that
@@ -848,6 +862,13 @@ export function ActiveConnectionCard({
     }
 
     fetchLiveStats()
+    const liveStatsPollInterval = window.setInterval(() => {
+      fetchLiveStats()
+    }, 4_000)
+
+    return () => {
+      window.clearInterval(liveStatsPollInterval)
+    }
   }, [globalEngineRunning, connection.connectionId, connection.isActive, dashboardEventRefreshKey])
 
   // Handle Live Trade toggle ��� no longer gated on connection.isActive:
