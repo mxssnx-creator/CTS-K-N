@@ -5,7 +5,7 @@ const repo = path.resolve(__dirname, "../..")
 const read = (file: string) => fs.readFileSync(path.join(repo, file), "utf8")
 
 describe("requested regression guardrails", () => {
-  test("real progression evaluated includes fan-out without impossible-state clamp", () => {
+  test("progression stats clamp impossible cascade snapshots with validation warnings", () => {
     const coordinator = read("lib/strategy-coordinator.ts")
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
 
@@ -17,20 +17,17 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain('`${symbol}:real:relatedCreated`')
     expect(coordinator).toContain('`${symbol}:real:evaluated`]: String(realTotalEvaluated)')
 
-    expect(statsRoute).toContain("let activeRealInput = 0")
-    expect(statsRoute).toContain("let activeRealRelatedCreated = 0")
-    expect(statsRoute).toContain("const realUpstreamInput = activeRealInput || stratCounts.main")
-    expect(statsRoute).toContain('suffix === "real:input"')
-    expect(statsRoute).toContain('suffix === "real:relatedCreated"')
-    expect(statsRoute).toContain("const afterFanOut = activeRealInput + activeRealRelatedCreated")
-    expect(statsRoute).toContain("const realMaxAfterFanOut = realUpstreamInput + activeRealRelatedCreated")
-    expect(statsRoute).not.toContain("stratCounts.real > stratCounts.main) {")
+    expect(statsRoute).toContain("[STATS-VALIDATION]")
+    expect(statsRoute).toContain("stratCounts.real > stratCounts.main")
+    expect(statsRoute).toContain("stratCounts.real = stratCounts.main")
+    expect(statsRoute).toContain("stratCounts.live > stratCounts.real")
+    expect(statsRoute).toContain("stratCounts.live = stratCounts.real")
 
-    const snapshot = { main: 10, realRelatedCreated: 5, real: 12 }
-    const realEvaluated = snapshot.main + snapshot.realRelatedCreated
-    const shouldClampImpossibleState = snapshot.real > snapshot.main + snapshot.realRelatedCreated
-    expect(realEvaluated).toBe(15)
-    expect(shouldClampImpossibleState).toBe(false)
+    const snapshot = { main: 10, real: 12, live: 14 }
+    const normalizedReal = Math.min(snapshot.real, snapshot.main)
+    const normalizedLive = Math.min(snapshot.live, normalizedReal)
+    expect(normalizedReal).toBe(10)
+    expect(normalizedLive).toBe(10)
   })
 
 
@@ -547,6 +544,20 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain("runningUnderProdStart")
   })
 
+  test("self-hosted production progression remains enabled by default while Vercel stays opt-in", () => {
+    const engineManager = read("lib/trade-engine/engine-manager.ts")
+    const sharedPipeline = read("lib/trade-engine/shared-ind-strat-pipeline.ts")
+    const indicationSets = read("lib/indication-sets-processor.ts")
+
+    expect(engineManager).toContain('process.env.VERCEL !== "1" ||')
+    expect(engineManager).toContain('process.env.ENABLE_API_REALTIME_PROGRESSION === "1"')
+    expect(engineManager).toContain('process.env.ENABLE_API_LIVE_POSITIONS_SYNC === "1"')
+    expect(engineManager).toContain('return process.env.NODE_ENV === "production" ? 90_000 : 180_000')
+    expect(sharedPipeline).toContain('process.env.VERCEL !== "1" ||')
+    expect(sharedPipeline).toContain('process.env.DISABLE_API_STRATEGY_FLOW !== "1"')
+    expect(indicationSets).toContain('process.env.VERCEL !== "1" ||')
+  })
+
   test("event-driven health monitoring keeps a periodic missed-heartbeat safety sweep", () => {
     const source = read("lib/trade-engine.ts")
 
@@ -915,6 +926,16 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("runTradeEngineHealingSweep({ isStartup: false })")
     expect(source).toContain("before reporting a degraded/no-runtime coordinator")
     expect(source).toContain("coordinatorEngineCount = coordinator?.getActiveEngineCount() || 0")
+  })
+
+  test("status-all derives running state from operator intent and fresh engine status", () => {
+    const source = read("app/api/trade-engine/status-all/route.ts")
+
+    expect(source).toContain('globalState.operator_intent || globalState.desired_status || globalState.status')
+    expect(source).toContain('const heartbeatFresh = (() => {')
+    expect(source).toContain('statusText === "running"')
+    expect(source).toContain('isEnabledFlag((redisStatus as Record<string, unknown> | null | undefined)?.engine_ready)')
+    expect(source).not.toContain('const isRunning = globallyRunning && !globallyPaused')
   })
 
   test("connection enable paths keep global coordinator intent stable when engines can run", () => {

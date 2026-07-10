@@ -380,10 +380,16 @@ async function _createExchangeConnectorLazy() {
 // amplifying load. For live trading with 8+ symbols, increased to 120s dev / 90s prod
 // to prevent timeout failures during position fetching and strategy evaluation.
 // Cycles with real BingX API calls need more time for network latency and position reconciliation.
-// Both dev and prod use a generous deadline (180 s) to accommodate the full pipeline:
-// leverage + placeOrder + awaitFill + placeStop can take 100+ s under load.
-// The old prod-specific 90 s deadline caused premature cycle kills and "stuck" pipelines.
-const CYCLE_DEADLINE_MS = 180_000
+function parseCycleDeadlineMs(): number {
+  const raw = Number(process.env.CYCLE_DEADLINE_MS ?? process.env.ENGINE_CYCLE_DEADLINE_MS)
+  if (Number.isFinite(raw) && raw >= 5_000) return Math.floor(raw)
+  return process.env.NODE_ENV === "production" ? 90_000 : 180_000
+}
+
+// Development keeps a generous deadline for debugging long exchange cycles.
+// Production remains bounded, but not so short that normal symbol/prehistory/
+// exchange work is repeatedly cancelled and appears stuck.
+const CYCLE_DEADLINE_MS = parseCycleDeadlineMs()
 
 function withCycleDeadline<T>(work: Promise<T>, label: string, ms: number = CYCLE_DEADLINE_MS): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -2081,12 +2087,9 @@ export class TradeEngineManager {
 
         attemptedCycles++
 
-        // Self-hosted production (standalone `next start`, i.e. VERCEL !== "1")
-        // owns the runtime and must run realtime progression by default, exactly
-        // like dev — only Vercel/serverless request workers stay opt-in (they have
-        // no durable loop and must not do heavy per-tick work unless the operator
-        // explicitly enables it). This is what makes the progress counters
-        // (cycles_completed) advance in production instead of appearing frozen.
+        // API workers must remain responsive: Vercel/serverless workers keep
+        // realtime progression opt-in, while self-hosted production workers
+        // must run by default or progression appears stuck in production.
         const apiRealtimeProgressionEnabled =
           process.env.VERCEL !== "1" ||
           process.env.ENABLE_API_REALTIME_PROGRESSION === "1" ||
@@ -2935,14 +2938,9 @@ export class TradeEngineManager {
 
       liveSyncInFlight = true
       try {
-        // Production API workers must remain responsive. Exchange-side live
-        // position sync can be CPU/REST heavy and is opt-in for API-owned
-        // coordinators; the realtime indication/strategy progression still
-        // runs, and dedicated engine workers may enable the sync explicitly.
-        // Self-hosted production (VERCEL !== "1") owns the runtime and runs the
-        // exchange-side live position sync by default like dev; only Vercel/
-        // serverless request workers keep it opt-in (CPU/REST heavy, no durable
-        // loop). This keeps the UI's live position/interactivity in sync in prod.
+        // API workers must remain responsive. Vercel/serverless workers keep
+        // exchange-side live position sync opt-in, while self-hosted production
+        // workers run it by default so live progress does not freeze.
         const apiLiveSyncEnabled =
           process.env.VERCEL !== "1" ||
           process.env.ENABLE_API_LIVE_POSITIONS_SYNC === "1" ||

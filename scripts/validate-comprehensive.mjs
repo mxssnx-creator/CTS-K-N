@@ -3,7 +3,7 @@
 import http from 'http'
 import { performance } from 'perf_hooks'
 
-const API_BASE = 'http://localhost:3002/api'
+const API_BASE = process.env.API_BASE || `${process.env.BASE_URL || `http://localhost:${process.env.PORT || '3002'}`}/api`
 
 function formatRequestError(error, path) {
   if (error?.message) return error.message

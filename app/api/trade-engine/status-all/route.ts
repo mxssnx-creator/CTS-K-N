@@ -94,8 +94,12 @@ export async function GET() {
       1000,
       {} as Record<string, string>,
     )
-    const globallyRunning = globalState.status === "running"
-    const globallyPaused = globalState.status === "paused"
+    const operatorStopped = globalState.operator_stopped === "1" || globalState.operator_stopped === "true"
+    const globalIntent = operatorStopped
+      ? "stopped"
+      : globalState.operator_intent || globalState.desired_status || globalState.status || ""
+    const globallyRunning = globalIntent === "running"
+    const globallyPaused = globalIntent === "paused"
 
     const coordinator = getGlobalTradeEngineCoordinator()
     
@@ -143,7 +147,22 @@ export async function GET() {
             ...(await withTimeout(redisStatePromise, 750, {} as Record<string, string>)),
             ...(await withTimeout(settingsStatePromise, 750, {} as Record<string, string>)),
           }
-          const isRunning = globallyRunning && !globallyPaused
+          const statusText = String((redisStatus as Record<string, unknown> | null | undefined)?.status || "")
+          const statusHeartbeat = String(
+            (redisStatus as Record<string, unknown> | null | undefined)?.last_processor_heartbeat ||
+            (redisStatus as Record<string, unknown> | null | undefined)?.last_indication_run ||
+            "",
+          )
+          const heartbeatFresh = (() => {
+            const ts = Date.parse(statusHeartbeat)
+            return Number.isFinite(ts) && Date.now() - ts < 120_000
+          })()
+          const isRunning = !globallyPaused && !operatorStopped && (
+            globallyRunning ||
+            statusText === "running" ||
+            heartbeatFresh ||
+            isEnabledFlag((redisStatus as Record<string, unknown> | null | undefined)?.engine_ready)
+          )
           const configuredSymbols = parseSymbols(conn.active_symbols || conn.symbols)
           const statusSymbols = parseSymbols(redisStatus?.symbols || redisStatus?.active_symbols)
           const effectiveSymbols = configuredSymbols.length > 0 ? configuredSymbols : statusSymbols
