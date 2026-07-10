@@ -2118,4 +2118,29 @@ describe("requested regression guardrails", () => {
     expect(activeConnections).toContain("connectionId: canonId")
   })
 
+
+  test("progression status endpoint timeboxes auxiliary log IO for responsive dashboard cards", () => {
+    const route = read("app/api/connections/progression/[id]/route.ts")
+
+    expect(route).toContain("const PROGRESSION_AUX_TIMEOUT_MS = 750")
+    expect(route).toContain("async function withProgressionTimeout")
+    expect(route).toContain('withProgressionTimeout("log flush", connectionId, forceFlushLogs(connectionId), undefined)')
+    expect(route).toContain('withProgressionTimeout("recent logs", connectionId, getProgressionLogs(connectionId), [])')
+    expect(route).toContain("returning live snapshot without blocking UI")
+  })
+
+
+  test("hot-path progression logs do not force immediate stdout and Redis flushes", () => {
+    const source = read("lib/engine-progression-logs.ts")
+
+    expect(source).toContain("function isImmediateFlushPhase")
+    expect(source).toContain('phase.startsWith("quickstart")')
+    expect(source).toContain("IMMEDIATE_FLUSH_PHASES.includes(phase)")
+    expect(source).not.toContain("IMMEDIATE_FLUSH_PHASES.some(p => phase.includes(p))")
+    expect(source).toContain("indications_sets")
+    expect(source).toContain("live_trading")
+    expect(source).toContain("starve dashboard progress endpoints")
+    expect(source).not.toContain('"realtime", "live_trading", "error"')
+  })
+
 })
