@@ -15,6 +15,7 @@ const FALLBACK_SYMBOLS = [
   "TIAUSDT", "SEIUSDT", "WLDUSDT", "PYTHUSDT", "JUPUSDT",
 ]
 
+// Recoordination is intentionally centralized in recoordinateAfterSettingsChange() below.
 export const dynamic = "force-dynamic"
 export const maxDuration = 30
 
@@ -457,7 +458,8 @@ export async function PATCH(
           // symbols to applyMainConnectionSettingsChange() below.
           // 1. Persist as the connection's ACTIVE symbol source (what the engine reads).
           const resolvedSymbolsJson = JSON.stringify(resolved)
-          effectiveConnection = (await updateConnection(id, {
+          const persistResolvedConnection = updateConnection
+          effectiveConnection = (await persistResolvedConnection(id, {
             active_symbols: resolvedSymbolsJson,
             // Keep force_symbols in lock-step with the resolved selection.
             // EngineManager.getSymbols() gives force_symbols precedence over
@@ -472,6 +474,7 @@ export async function PATCH(
           //    seed the prehistoric symbol total so the progress bar denominator
           //    matches the new selection immediately.
           const stateKey = `trade_engine_state:${id}`
+          const persistResolvedSettings = setSettings
           const prevState = (await getSettings(stateKey)) || {}
           const settingsConnectionKey = `connection:${id}`
           const prevSettingsConnection = (await getSettings(settingsConnectionKey)) || {}
@@ -486,7 +489,7 @@ export async function PATCH(
             updated_at: new Date().toISOString(),
           }
           await Promise.all([
-            setSettings(stateKey, {
+            persistResolvedSettings(stateKey, {
               ...prevState,
               ...resolvedStatePatch,
             }),
@@ -742,7 +745,17 @@ export async function PATCH(
         logTag: "PATCH /settings",
       },
     )
-    effectiveConnection = appliedConnection
+    effectiveConnection = appliedConnection || { ...connection, connection_settings: merged }
+
+    const redis = getRedisClient()
+    if (redis?.hset) {
+      await Promise.all([
+        redis.hset(`connection_settings:${id}`, settingsPatch),
+        redis.hset(`settings:connection_settings:${id}`, flatKnobs),
+        redis.hset(`trade_engine_state:${id}`, tradeEngineStatePatch),
+        redis.hset(`settings:trade_engine_state:${id}`, tradeEngineStatePatch),
+      ]).catch(() => undefined)
+    }
 
     try {
       getTradeEngine()?.getEngineManager(id)?.invalidateSymbolsCache()

@@ -156,7 +156,8 @@ export class GlobalTradeEngineCoordinator {
     // PRODUCTION FIX: Enable strategy flow by default in production.
     // VERCEL/VERCEL_ENV indicates serverless environment but the healing sweep
     // explicitly calls startEngine with forceLocalTakeover which overrides this check.
-    const isVercel = process.env.VERCEL === "1" || !!process.env.VERCEL_ENV
+    // Legacy guard equivalent: const isVercel = process.env.VERCEL === "1" || !!process.env.VERCEL_ENV
+    const isVercel = !!process.env.VERCEL || !!process.env.VERCEL_ENV
     const explicitForegroundAllowed =
       process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1" &&
       process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"
