@@ -905,7 +905,10 @@ export class TradeEngineManager {
         // path. The fix is idempotent (same value, 24h re-expire) and costs
         // exactly one Redis SET per engine boot.
         try {
-          await redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`, "1", { EX: 86400 } as any)
+          await Promise.all([
+            redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`, "1", { EX: 86400 } as any),
+            redisClient.set(`prehistoric:${this.connectionId}:done`, "1", { EX: 86400 } as any),
+          ])
         } catch (gateErr) {
           console.warn(
             `[v0] [Engine] Failed to re-arm prehistoric done gate on cache hit:`,
@@ -964,7 +967,7 @@ export class TradeEngineManager {
             redisClient.get(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`),
             redisClient.get(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:firstpass:done`),
             redisClient.hget(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, "is_complete"),
-            redisClient.hget(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, "historic_avg_profit_factor"),
+            redisClient.hget(`prehistoric:${this.connectionId}`, "historic_avg_profit_factor"),
           ])
           const symbolsForCheck = await this.getSymbols()
           const hasSymbols = symbolsForCheck.length > 0
@@ -991,6 +994,8 @@ export class TradeEngineManager {
             await Promise.allSettled([
               redisClient.del(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`),
               redisClient.del(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:firstpass:done`),
+              redisClient.del(`prehistoric:${this.connectionId}:done`),
+              redisClient.del(`prehistoric:${this.connectionId}:firstpass:done`),
             ])
             // Also clear the completion fields that the cache-hit path
             // re-stamped above BEFORE this verification ran — otherwise the
@@ -1560,6 +1565,8 @@ export class TradeEngineManager {
           await Promise.all([
             redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`, "1", { EX: 86400 }),
             redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:firstpass:done`, "1", { EX: 86400 }),
+            redisClient.set(`prehistoric:${this.connectionId}:done`, "1", { EX: 86400 }),
+            redisClient.set(`prehistoric:${this.connectionId}:firstpass:done`, "1", { EX: 86400 }),
           ])
           await this.updateProgressionPhase(
             "live_trading",
@@ -1743,6 +1750,8 @@ export class TradeEngineManager {
       await Promise.all([
         redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`, "1", { EX: 86400 }),
         redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:firstpass:done`, "1", { EX: 86400 }),
+        redisClient.set(`prehistoric:${this.connectionId}:done`, "1", { EX: 86400 }),
+        redisClient.set(`prehistoric:${this.connectionId}:firstpass:done`, "1", { EX: 86400 }),
       ])
 
       // Emit a log event (NOT a phase overwrite) so the dashboard can show
@@ -1971,8 +1980,12 @@ export class TradeEngineManager {
     const refreshPrehistoricDone = async () => {
       try {
         const client = getRedisClient()
-        const v = await client.get(`prehistoric:${connId}:done`)
-        prehistoricDoneFlag = v === "1"
+        const scope = buildProgressionScope(connId, this.currentEngineType)
+        const [scoped, legacy] = await Promise.all([
+          client.get(`${scope.prehistoricKey}:done`),
+          client.get(`prehistoric:${connId}:done`),
+        ])
+        prehistoricDoneFlag = scoped === "1" || legacy === "1"
       } catch { /* keep last known value */ }
     }
     // Prime immediately and refresh every 3s
@@ -2552,8 +2565,12 @@ export class TradeEngineManager {
     const refreshPrehistoricDone = async () => {
       try {
         const client = getRedisClient()
-        const v = await client.get(`prehistoric:${connId}:done`)
-        prehistoricDoneFlag = v === "1"
+        const scope = buildProgressionScope(connId, this.currentEngineType)
+        const [scoped, legacy] = await Promise.all([
+          client.get(`${scope.prehistoricKey}:done`),
+          client.get(`prehistoric:${connId}:done`),
+        ])
+        prehistoricDoneFlag = scoped === "1" || legacy === "1"
       } catch { /* keep last known value */ }
     }
     void refreshPrehistoricDone()
@@ -3095,8 +3112,12 @@ export class TradeEngineManager {
     const refreshPrehistoricDone = async () => {
       try {
         const client = getRedisClient()
-        const v = await client.get(`prehistoric:${connId}:done`)
-        prehistoricDoneFlag = v === "1"
+        const scope = buildProgressionScope(connId, this.currentEngineType)
+        const [scoped, legacy] = await Promise.all([
+          client.get(`${scope.prehistoricKey}:done`),
+          client.get(`prehistoric:${connId}:done`),
+        ])
+        prehistoricDoneFlag = scoped === "1" || legacy === "1"
       } catch { /* keep last known value */ }
     }
     void refreshPrehistoricDone()
@@ -4518,12 +4539,11 @@ export class TradeEngineManager {
   ): Promise<void> {
     try {
       const completedAt = new Date().toISOString()
-      const appliedVersion = String(event.timestamp || completedAt)
-      await getRedisClient().hset(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, {
       const eventValues = (event.newValues || {}) as Record<string, unknown>
       const appliedVersion = String(eventValues.settings_version || eventValues.updated_at || event.timestamp || completedAt)
       const appliedEventId = String(eventValues.settings_event_id || appliedVersion)
-      await getRedisClient().hset(`progression:${this.connectionId}`, {
+      const progressionKey = buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey
+      await getRedisClient().hset(progressionKey, {
         settings_recoordination_pending: "0",
         strategy_recompute_requested: "0",
         settings_recoordination_completed_at: completedAt,
@@ -4534,7 +4554,7 @@ export class TradeEngineManager {
         settings_recoordination_requested_event_id: appliedEventId,
         settings_recoordination_applied_fields: JSON.stringify(event.changedFields || []),
       })
-      await getRedisClient().hdel?.(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, "settings_recoordination_last_error")
+      await getRedisClient().hdel?.(progressionKey, "settings_recoordination_last_error")
     } catch (stampErr) {
       console.warn(
         `[v0] [Engine ${this.connectionId}] settings recoordination completion stamp failed:`,
@@ -4548,12 +4568,10 @@ export class TradeEngineManager {
     event?: import("@/lib/settings-coordinator").SettingsChangeEvent | null,
   ): Promise<void> {
     try {
-      await getRedisClient().hset(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, {
-        settings_recoordination_pending: "1",
       const eventValues = (event?.newValues || {}) as Record<string, unknown>
       const requestedVersion = String(eventValues.settings_version || eventValues.updated_at || event?.timestamp || "")
       const requestedEventId = String(eventValues.settings_event_id || requestedVersion)
-      await getRedisClient().hset(`progression:${this.connectionId}`, {
+      await getRedisClient().hset(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, {
         settings_recoordination_pending: "0",
         strategy_recompute_requested: "1",
         settings_recoordination_last_error: error instanceof Error ? error.message : String(error),
