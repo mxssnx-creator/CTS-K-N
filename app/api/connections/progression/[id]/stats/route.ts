@@ -1304,8 +1304,7 @@ export async function GET(
       globalPaused ||
       coordDefinitelyStopped ||
       ep?.phase === "stopped" ||
-      es.status === "stopped" ||
-      es.status === "idle"
+      ((es.status === "stopped" || es.status === "idle") && !globalRunning && !hasFreshProcessorHeartbeat)
     const realtimeIsActive =
       !engineIsStopped &&
       (realtimeIndicationCycles > 0 ||
@@ -2592,8 +2591,9 @@ export async function GET(
         return "idle"
       }
       if (ep?.phase && ep.phase !== "unknown") return ep.phase
-      if (es.status === "stopped") return "stopped"
-      if (es.status === "idle")    return "idle"
+      if ((es.status === "stopped" || es.status === "idle") && !globalRunning && !hasFreshProcessorHeartbeat) {
+        return es.status === "stopped" ? "stopped" : "idle"
+      }
       if (es.status === "running" || realtimeIsActive) {
         if (historicIsComplete || es.prehistoric_data_loaded === "1" || es.prehistoric_data_loaded === true) {
           return "live_trading"
