@@ -4,6 +4,7 @@
 
 const hashStore = new Map<string, Record<string, any>>()
 const kvStore = new Map<string, string>()
+const setStore = new Map<string, Set<string>>()
 
 jest.mock("@/lib/redis-db", () => ({
   initRedis: jest.fn(async () => undefined),
@@ -24,6 +25,13 @@ jest.mock("@/lib/redis-db", () => ({
       hash[field] = String((Number(hash[field] || 0) || 0) + delta)
       hashStore.set(key, hash)
       return hash[field]
+    },
+    sadd: async (key: string, member: string) => {
+      const set = setStore.get(key) || new Set<string>()
+      const sizeBefore = set.size
+      set.add(member)
+      setStore.set(key, set)
+      return set.size === sizeBefore ? 0 : 1
     },
   })),
 }))
@@ -49,6 +57,7 @@ describe("live-order-service integration accounting", () => {
   beforeEach(() => {
     hashStore.clear()
     kvStore.clear()
+    setStore.clear()
     jest.resetModules()
   })
 
@@ -83,6 +92,46 @@ describe("live-order-service integration accounting", () => {
       executedQuantity: 2,
       averageExecutionPrice: 100,
       volumeUsd: 200,
+    })
+  })
+
+
+  test("exchange order ids make live progression accounting idempotent", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      setLeverage: jest.fn(async () => ({ success: true })),
+      placeOrder: jest.fn(async () => ({
+        success: true,
+        orderId: "same-exchange-order",
+        status: "filled",
+        filledQty: 1,
+        filledPrice: 100,
+      })),
+    }
+
+    const input = {
+      connectionId: "conn-idem",
+      symbol: "ethusdt",
+      side: "long",
+      quantity: 1,
+      leverage: 2,
+      connector,
+      connection: { id: "conn-idem", position_mode: "one_way" },
+    }
+
+    await placeLiveOrder(input)
+    await placeLiveOrder(input)
+
+    expect(connector.placeOrder).toHaveBeenCalledTimes(2)
+    expect(hashStore.get("progression:conn-idem")).toMatchObject({
+      live_orders_placed_count: "1",
+      live_orders_filled_count: "1",
+      live_positions_created_count: "1",
+      live_volume_usd_total: "100",
+    })
+    expect(hashStore.get("live_orders_by_symbol:conn-idem")).toMatchObject({
+      "ETHUSDT:long:placed": "1",
+      "ETHUSDT:long:filled": "1",
     })
   })
 
