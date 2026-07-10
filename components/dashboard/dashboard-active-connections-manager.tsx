@@ -223,8 +223,34 @@ export function DashboardActiveConnectionsManager() {
       const existingTimer = settingsSafetyTimersRef.current.get(connId)
       if (existingTimer) clearTimeout(existingTimer)
 
-      const safetyTimer = setTimeout(() => {
+      const safetyTimer = setTimeout(async () => {
         if (!savingRef.current.has(connId)) return
+        try {
+          const res = await fetch(`/api/connections/progression/${connId}/stats`, { cache: "no-store" })
+          if (res.ok) {
+            const stats = await res.json()
+            const rc = stats?.settingsRecoordination || {}
+            const observedVersion =
+              typeof rc.appliedVersion === "string" ? rc.appliedVersion :
+              typeof rc.requestedVersion === "string" ? rc.requestedVersion :
+              undefined
+            const confirmed =
+              rc.completedAt ||
+              rc.completed === true ||
+              rc.pending === false ||
+              (settingsVersion && observedVersion === settingsVersion)
+            if (confirmed) {
+              savingRef.current.delete(connId)
+              pendingSettingsVersionsRef.current.delete(connId)
+              settingsSafetyTimersRef.current.delete(connId)
+              loadConnections({ force: true })
+              checkGlobalEngine()
+              return
+            }
+          }
+        } catch {
+          // Fall through to the existing warning path.
+        }
         savingRef.current.delete(connId)
         pendingSettingsVersionsRef.current.delete(connId)
         settingsSafetyTimersRef.current.delete(connId)
@@ -233,7 +259,7 @@ export function DashboardActiveConnectionsManager() {
         })
         loadConnections({ force: true })
         checkGlobalEngine()
-      }, 15000)
+      }, 60000)
       settingsSafetyTimersRef.current.set(connId, safetyTimer)
     }
 
