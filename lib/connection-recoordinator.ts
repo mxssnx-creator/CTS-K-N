@@ -724,13 +724,30 @@ export async function recoordinateAfterSettingsChange(
       let globalRunning = false
       try {
         const { getRedisClient } = await import("@/lib/redis-db")
-        const globalState = await getRedisClient().hgetall("trade_engine:global")
+        const redis = getRedisClient()
+        const globalState = await redis.hgetall("trade_engine:global")
         const operatorStopped =
           (globalState as any)?.operator_stopped === "1" || (globalState as any)?.operator_stopped === "true"
         const intent = operatorStopped
           ? "stopped"
           : (globalState as any)?.operator_intent || (globalState as any)?.desired_status || (globalState as any)?.status || ""
         globalRunning = intent === "running"
+        // If a connection is explicitly dashboard-enabled but the global
+        // coordinator hash has never been initialised (common after a cold
+        // deploy/Redis reset), treat the settings save as a valid processing
+        // wake-up. Do not override an explicit operator stop.
+        if (!globalRunning && !operatorStopped && !intent) {
+          await redis.hset("trade_engine:global", {
+            status: "running",
+            desired_status: "running",
+            operator_intent: "running",
+            coordinator_ready: "true",
+            operator_stopped: "0",
+            started_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }).catch(() => 0)
+          globalRunning = true
+        }
       } catch {
         globalRunning = false
       }
@@ -738,8 +755,24 @@ export async function recoordinateAfterSettingsChange(
         console.log(
           `[v0] [${opts.logTag}] Recoordinate: starting engine for ${id} (was stopped, now should run, global intent=running)`,
         )
-        await coordinator.startMissingEngines([after])
-        appliedLocally = true
+        try {
+          await coordinator.startMissingEngines([after])
+          appliedLocally = true
+        } catch (startErr) {
+          console.warn(
+            `[v0] [${opts.logTag}] Local start after settings save failed for ${id}; queued refresh remains authoritative:`,
+            startErr instanceof Error ? startErr.message : String(startErr),
+          )
+        }
+        try {
+          const { runTradeEngineHealingSweep } = await import("@/lib/trade-engine-auto-start")
+          await runTradeEngineHealingSweep({ isStartup: false })
+        } catch (sweepErr) {
+          console.warn(
+            `[v0] [${opts.logTag}] Healing sweep after settings save failed for ${id}:`,
+            sweepErr instanceof Error ? sweepErr.message : String(sweepErr),
+          )
+        }
       } else {
         console.log(
           `[v0] [${opts.logTag}] Recoordinate: NOT starting ${id} — global engine not running (operator stop honored); settings apply on next explicit Start or continuity tick`,
