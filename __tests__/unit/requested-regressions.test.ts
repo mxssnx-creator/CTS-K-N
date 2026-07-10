@@ -1210,6 +1210,7 @@ describe("requested regression guardrails", () => {
   test("dashboard stats polling ignores stale overlapping responses", () => {
     const quickstart = read("components/dashboard/quickstart-section.tsx")
     const overview = read("components/dashboard/statistics-overview-v2.tsx")
+    const activeCard = read("components/dashboard/active-connection-card.tsx")
 
     expect(quickstart).toContain("const statsFetchSeqRef = useRef(0)")
     expect(quickstart).toContain("const requestSeq = ++statsFetchSeqRef.current")
@@ -1218,6 +1219,13 @@ describe("requested regression guardrails", () => {
     expect(overview).toContain("const statsFetchSeqRef = useRef(0)")
     expect(overview).toContain("const requestSeq = ++statsFetchSeqRef.current")
     expect(overview).toContain("requestSeq !== statsFetchSeqRef.current")
+
+    expect(activeCard).toContain("const progressionFetchSeqRef = useRef(0)")
+    expect(activeCard).toContain("const liveStatsFetchSeqRef = useRef(0)")
+    expect(activeCard).toContain("const requestSeq = ++progressionFetchSeqRef.current")
+    expect(activeCard).toContain("const requestSeq = ++liveStatsFetchSeqRef.current")
+    expect(activeCard).toContain("requestSeq !== progressionFetchSeqRef.current")
+    expect(activeCard).toContain("requestSeq !== liveStatsFetchSeqRef.current")
   })
 
 
@@ -1920,6 +1928,21 @@ describe("requested regression guardrails", () => {
     ]) {
       expect(setBlock).toContain(`"${key}"`)
     }
+  })
+
+
+  test("settings PATCH keeps symbol/settings persistence single-writer until recoordination apply", () => {
+    const route = read("app/api/settings/connections/[id]/settings/route.ts")
+    const patchStart = route.indexOf("export async function PATCH")
+    const applyStart = route.indexOf("const { connection: appliedConnection", patchStart)
+    expect(patchStart).toBeGreaterThanOrEqual(0)
+    expect(applyStart).toBeGreaterThan(patchStart)
+
+    const beforeApply = route.slice(patchStart, applyStart)
+    expect(beforeApply).toContain("Settings saves must stay")
+    expect(beforeApply).not.toContain("updateConnection(")
+    expect(beforeApply).not.toContain("setSettings(")
+    expect(beforeApply).not.toContain(".hset(")
   })
 
   test("settings PATCH mirrors flattened progression-visible fields into both trade-engine state hashes", async () => {
