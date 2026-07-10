@@ -2827,14 +2827,6 @@ export async function GET(
             return eval_val || main
           })(),
           realEvaluated: (() => {
-            // NOTE: realEvaluated = Main sets that ENTERED Real-stage PF evaluation
-            // (the INPUT count, written as mainPFEligible by the coordinator).
-            // stratCounts.real = Real sets that PASSED and survived to dispatch
-            // (the OUTPUT count), plus any related/axis-created fan-out that
-            // the Real stage materialized for this snapshot. With fan-out
-            // enabled, output can legitimately exceed the upstream input by
-            // that related-created amount, so do NOT clamp realEvaluated here.
-            return stratEvaluated.real || 0
             // NOTE: Real accounting has three meanings:
             // - real:input = upstream Main PF-eligible input before Real fan-out.
             // - real:relatedCreated = current-cycle Real fan-out added to input.
@@ -2870,6 +2862,7 @@ export async function GET(
           base:  activeStratByStage.base  || 0,
           main:  activeStratByStage.main  || 0,
           real:  activeStratByStage.real  || 0,
+          live:  activeStratByStage.live  || 0,
           total: activeStratTotal,
         },
       },
