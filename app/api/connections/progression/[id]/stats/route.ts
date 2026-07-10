@@ -255,6 +255,22 @@ function aggregateOrdersBySymbol(
     return true
   }
 
+  function isUnversionedLiveEngineProgression(hash: Record<string, any>): boolean {
+    if (!hash || Object.keys(hash).length === 0) return false
+    if (progressionEpoch(hash) || progressionSettingsVersion(hash)) return false
+
+    const phase = stableString(hash.phase).toLowerCase()
+    const hasLiveProgressField =
+      hash.progress !== undefined ||
+      hash.sub_current !== undefined ||
+      hash.sub_total !== undefined ||
+      hash.message !== undefined ||
+      hash.last_update !== undefined ||
+      hash.lastUpdate !== undefined
+
+    return hasLiveProgressField && phase !== "" && phase !== "idle" && phase !== "stopped" && phase !== "unknown"
+  }
+
   function parseProgressSettingsSnapshot(hash: Record<string, any>): Record<string, any> {
     return parseMaybeJson<Record<string, any>>(hash.progress_settings_snapshot, {})
   }
@@ -500,7 +516,12 @@ export async function GET(
     const rawEs = (engineState as Record<string, any>) || {}
     const rawEp = (engineProgression as Record<string, any>) || {}
     const engineStateUsable = fallbackMatchesActive(progHash, rawEs)
-    const engineProgressionUsable = fallbackMatchesActive(progHash, rawEp)
+    const engineProgressionMatchesActive = fallbackMatchesActive(progHash, rawEp)
+    // engine_progression:{id} is still the fastest live channel for phase,
+    // progress, sub_current, and sub_total, but its current writers do not stamp
+    // the active epoch/settings version. Keep accepting that live progress shape
+    // while continuing to reject unversioned fallback state/config counts.
+    const engineProgressionUsable = engineProgressionMatchesActive || isUnversionedLiveEngineProgression(rawEp)
     const es = engineStateUsable ? rawEs : {}
     const ep = engineProgressionUsable ? rawEp : {}
     const previousRun = {
