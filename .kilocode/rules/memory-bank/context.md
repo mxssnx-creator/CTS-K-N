@@ -249,3 +249,5 @@ export async function GET() {
 - [x] Dashboard settings event fix: unversioned `connection-settings-updated` events now refresh immediately without arming the recoordination watchdog, preventing false "Settings recoordination did not confirm" toasts from legacy/slider settings saves.
 
 - [x] Production progression unstuck: prehistoric bootstrap is now deadline-wrapped and the continuous prehistoric first-pass loop opens live gates after a bounded no-step fallback, so a hung/empty historic load cannot leave a connection permanently stuck before realtime/live processing.
+
+- [x] Progression fingerprint centralization: added `lib/progression-fingerprint.ts` as the single builder for progression snapshot fingerprints/settings, with stable boolean/number/object normalization and a broader progression-affecting field list covering symbols, engine/mode flags, margin/position mode, sizing/leverage, strategy thresholds, coordination, active indications, and system-close/control-order toggles. `ProgressionStateManager.recoordinateForActualOne()` and `EngineManager.start()` now share this builder for compare/stamp parity.
