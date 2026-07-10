@@ -129,9 +129,30 @@ export async function recordPerSymbolOrderCounter(connectionId: string, symbol: 
   await client.hincrby(`live_orders_by_symbol:${connectionId}`, `${symbolKey}:${direction}:${metric}`, 1)
 }
 
-export async function recordLiveOrderProgression(connectionId: string, symbol: string, direction: LiveOrderDirection, event: "placed" | "filled" | "failed" | "simulated", volumeUsd = 0): Promise<void> {
+async function claimLiveOrderProgressionEvent(connectionId: string, eventKey?: string): Promise<boolean> {
+  if (!eventKey) return true
+  const client = getRedisClient() as any
+  const normalized = String(eventKey).trim()
+  if (!normalized) return true
+  if (typeof client.sadd === "function") {
+    const claimSetKey = `live_order_progression_events:${connectionId}`
+    const added = await client.sadd(claimSetKey, normalized)
+    if (Number(added) > 0 && typeof client.expire === "function") {
+      await client.expire(claimSetKey, 60 * 60 * 24 * 30).catch(() => 0)
+    }
+    return Number(added) > 0
+  }
+  if (typeof client.set === "function") {
+    const claimed = await client.set(`live_order_progression_event:${connectionId}:${normalized}`, "1", { NX: true, EX: 60 * 60 * 24 * 30 })
+    return claimed === "OK" || claimed === true
+  }
+  return true
+}
+
+export async function recordLiveOrderProgression(connectionId: string, symbol: string, direction: LiveOrderDirection, event: "placed" | "filled" | "failed" | "simulated", volumeUsd = 0, eventKey?: string): Promise<boolean> {
   const client = getRedisClient() as any
   const progKey = `progression:${connectionId}`
+  if (!(await claimLiveOrderProgressionEvent(connectionId, eventKey))) return false
   if (event === "placed") await client.hincrby(progKey, "live_orders_placed_count", 1)
   if (event === "filled") {
     await client.hincrby(progKey, "live_orders_filled_count", 1)
@@ -162,6 +183,7 @@ export async function recordLiveOrderProgression(connectionId: string, symbol: s
     await recordPerSymbolOrderCounter(connectionId, symbol, direction, "placed")
     await recordPerSymbolOrderCounter(connectionId, symbol, direction, "filled")
   }
+  return true
 }
 
 export async function persistLiveOrderPosition(input: { connectionId: string; symbol: string; direction: LiveOrderDirection; quantity: number; leverage?: number; fill: ParsedFill; orderId?: string; existingPosition?: any; livePositionId?: string; status?: string }): Promise<any> {
@@ -213,20 +235,31 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
   const options = hedgeMode ? { hedgeMode: true, positionSide: direction === "long" ? "LONG" : "SHORT" } : { hedgeMode: false }
   const result = await connector.placeOrder(symbol, exchangeSide, input.quantity, input.price || 0, input.orderType || "market", options)
   if (!result?.success) {
-    if (input.updateCounters !== false) await recordLiveOrderProgression(input.connectionId, symbol, direction, "failed")
+    const failedOrderId = result?.orderId || result?.order_id || result?.id
+    if (input.updateCounters !== false) {
+      await recordLiveOrderProgression(
+        input.connectionId,
+        symbol,
+        direction,
+        "failed",
+        0,
+        failedOrderId ? `${symbol}:${direction}:${failedOrderId}:failed` : undefined,
+      )
+    }
     return { success: false, error: result?.error || "Failed to place order", mode, raw: result }
   }
-  const orderId = result.orderId || result.order_id || result.id || "N/A"
+  const exchangeOrderId = result.orderId || result.order_id || result.id
+  const orderId = exchangeOrderId || "N/A"
   const fill = parseOrderFill(result, input.quantity, input.price || 0)
   let position: any = null
   if (!willUseRealExchange) {
     if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: input.quantity, leverage: input.leverage, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId, status: "simulated" })
-    if (input.updateCounters !== false) await recordLiveOrderProgression(input.connectionId, symbol, direction, "simulated", position?.volumeUsd || (fill.filledQty * fill.filledPrice))
+    if (input.updateCounters !== false) await recordLiveOrderProgression(input.connectionId, symbol, direction, "simulated", position?.volumeUsd || (fill.filledQty * fill.filledPrice), exchangeOrderId ? `${symbol}:${direction}:${exchangeOrderId}:simulated` : undefined)
   } else {
     if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: input.quantity, leverage: input.leverage, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId })
     if (input.updateCounters !== false) {
-      await recordLiveOrderProgression(input.connectionId, symbol, direction, "placed")
-      if ((position?.executedQuantity || fill.filledQty) > 0) await recordLiveOrderProgression(input.connectionId, symbol, direction, "filled", position?.volumeUsd || (fill.filledQty * fill.filledPrice))
+      await recordLiveOrderProgression(input.connectionId, symbol, direction, "placed", 0, exchangeOrderId ? `${symbol}:${direction}:${exchangeOrderId}:placed` : undefined)
+      if ((position?.executedQuantity || fill.filledQty) > 0) await recordLiveOrderProgression(input.connectionId, symbol, direction, "filled", position?.volumeUsd || (fill.filledQty * fill.filledPrice), exchangeOrderId ? `${symbol}:${direction}:${exchangeOrderId}:filled` : undefined)
     }
   }
   return { success: true, mode, orderId, symbol, side: exchangeSide, direction, quantity: input.quantity, leverage: input.leverage || 1, fill, position, details: result }
