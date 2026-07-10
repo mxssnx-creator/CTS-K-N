@@ -386,7 +386,6 @@ export class ConfigSetProcessor {
             const totalSyms = Math.max(1, canonicalSymbolsTotal)
             const skipPct = Math.min(95, 15 + Math.round((symbolsProcessed / totalSyms) * 80))
             void setEngineProgress({
-            void setSettings(engineProgressionKey, {
               phase: "prehistoric_data",
               progress: skipPct,
               detail: `Prehistoric calc filling sets — ${symbolsProcessed}/${totalSyms} symbols processed (no data: ${symbol})`,
@@ -578,7 +577,6 @@ export class ConfigSetProcessor {
           const total = Math.max(1, canonicalSymbolsTotal)
           const pct = Math.min(95, 15 + Math.round((distinctProcessed / total) * 80))
           void setEngineProgress({
-          void setSettings(engineProgressionKey, {
             phase: "prehistoric_data",
             progress: pct,
             detail: `Prehistoric calc filling sets — ${distinctProcessed}/${total} symbols processed`,
@@ -629,7 +627,6 @@ export class ConfigSetProcessor {
           const totalSyms = Math.max(1, canonicalSymbolsTotal)
           const errPct = Math.min(95, 15 + Math.round((distinctErrProcessed / totalSyms) * 80))
           void setEngineProgress({
-          void setSettings(engineProgressionKey, {
             phase: "prehistoric_data",
             progress: errPct,
             detail: `Prehistoric calc filling sets — ${distinctErrProcessed}/${totalSyms} symbols processed (error: ${symbol})`,

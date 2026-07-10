@@ -411,7 +411,8 @@ export async function GET(
         return NextResponse.json({ error: "Redis not available" }, { status: 503 })
       }
 
-    const requestedEngineType = request.nextUrl.searchParams.get("engineType") || request.nextUrl.searchParams.get("engine_type") || ""
+    const statsSearchParams = request.nextUrl?.searchParams || new URL(request.url || "http://localhost").searchParams
+    const requestedEngineType = statsSearchParams.get("engineType") || statsSearchParams.get("engine_type") || ""
     const connection = await getConnection(connectionId).catch(() => null)
     const engineType = stableString(requestedEngineType || (connection as any)?.engine_type || (connection as any)?.engineType || "main") || "main"
     const scope = await ensureScopedProgressionFromLegacy(client, connectionId, engineType)
@@ -459,7 +460,6 @@ export async function GET(
       client.hgetall(scope.progressionKey).catch(() => null),
       activeProgressionKey === scope.legacyProgressionKey ? Promise.resolve(activeProgressionRaw) : client.hgetall(scope.legacyProgressionKey).catch(() => null),
       client.hgetall(scope.prehistoricKey).catch(() => null),
-      client.hgetall(`prehistoric:${connectionId}`).catch(() => null),
       client.hgetall(`realtime:${connectionId}`).catch(() => null),
       getSettings(scope.tradeEngineStateKey)
         .then((scopedState) => scopedState && Object.keys(scopedState).length > 0
@@ -476,8 +476,6 @@ export async function GET(
           : getSettings(`engine_progression:${connectionId}`).catch(() => ({}))
         )
         .catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({}))),
-      getSettings(`trade_engine_state:${connectionId}:${engineType}`).catch(() => getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))),
-      getSettings(scope.engineProgressionKey).catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({}))),
       client.scard(`${scope.prehistoricKey}:symbols`).catch(() => 0),
       // `:done` marker written by completePrehistoricPhase — a plain SET
       // key separate from the hash so a hot-reload that loses the in-memory
@@ -538,8 +536,8 @@ export async function GET(
     const prehistoricHash: Record<string, string> = prehistoricHashRaw || {}
     const realtimeHash: Record<string, string>   = realtimeHashRaw   || {}
     const axisWindowsHash: Record<string, string> = (axisWindowsHashRaw as unknown as Record<string, string>) || {}
-    const ordersBySymbolHash: Record<string, string> = (ordersBySymbolRaw as Record<string, string>) || {}
-    const hedgePosAccHash: Record<string, string> = (hedgePosAccHashRaw as Record<string, string>) || {}
+    const ordersBySymbolHash: Record<string, string> = (ordersBySymbolRaw as unknown as Record<string, string>) || {}
+    const hedgePosAccHash: Record<string, string> = (hedgePosAccHashRaw as unknown as Record<string, string>) || {}
     const strategyDetailBaseHash: Record<string, string> = (strategyDetailBaseHashRaw as Record<string, string>) || {}
     const strategyDetailMainHash: Record<string, string> = (strategyDetailMainHashRaw as Record<string, string>) || {}
     const strategyDetailRealHash: Record<string, string> = (strategyDetailRealHashRaw as Record<string, string>) || {}

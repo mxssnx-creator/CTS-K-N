@@ -991,7 +991,12 @@ export class ProgressionStateManager {
 
       // ── Settings fingerprint ────────────────────────────────────────────
       // Centralized fingerprint construction keeps recoordination comparisons
-      // aligned with engine-start snapshot stamping.
+      // aligned with engine-start snapshot stamping. Fingerprinted fields include
+      // "live_volume_factor", "preset_volume_factor", "volume_step_ratio",
+      // "leveragePercentage", "useMaximalLeverage", "maxLeverage",
+      // "margin_type", "position_mode", "useSystemCloseOnly",
+      // "use_system_close_only", "maxStopLossRatio", "max_stoploss_ratio",
+      // "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", and "trailingMinStep".
       const liveFingerprint = buildProgressionFingerprint({
         connectionId,
         engineType: engineType || "main",
