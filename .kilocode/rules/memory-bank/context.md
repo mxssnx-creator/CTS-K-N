@@ -29,6 +29,7 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Fix route handlers `localStartAllowed` pattern (NODE_ENV → VERCEL) for self-hosted production
 - [x] Fixed `pre-startup.ts` symbol seeding to preserve existing snapshot values (no overwrite of `force_symbols`)
 - [x] Updated redis-snapshot.json with complete bingx-x01 configuration: API credentials, 5 symbols (BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT, ADAUSDT), live_volume_factor=0.1, market data placeholder entries
+- [x] Fixed progression stats Redis namespace tuple alignment so scoped/legacy prehistoric hashes merge without shifting realtime, engine state, or order metrics.
 
 ## Current Structure
 

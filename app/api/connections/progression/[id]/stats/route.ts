@@ -443,6 +443,7 @@ export async function GET(
       scopedProgHashRaw,
       legacyProgHashRaw,
       prehistoricHashRaw,
+      legacyPrehistoricHashRaw,
       realtimeHashRaw,
       engineState,
       engineProgression,
@@ -476,8 +477,6 @@ export async function GET(
           : getSettings(`engine_progression:${connectionId}`).catch(() => ({}))
         )
         .catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({}))),
-      getSettings(`trade_engine_state:${connectionId}:${engineType}`).catch(() => getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))),
-      getSettings(scope.engineProgressionKey).catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({}))),
       client.scard(`${scope.prehistoricKey}:symbols`).catch(() => 0),
       // `:done` marker written by completePrehistoricPhase — a plain SET
       // key separate from the hash so a hot-reload that loses the in-memory
@@ -535,7 +534,11 @@ export async function GET(
       engine_type: engineType,
     }
     const unscopedProgressionUsable = activeProgressionKey === scope.legacyProgressionKey || fallbackMatchesActive(progHash, legacyProgHash)
-    const prehistoricHash: Record<string, string> = prehistoricHashRaw || {}
+    const legacyPrehistoricHash: Record<string, string> = legacyPrehistoricHashRaw || {}
+    const prehistoricHash: Record<string, string> = {
+      ...legacyPrehistoricHash,
+      ...((prehistoricHashRaw || {}) as Record<string, string>),
+    }
     const realtimeHash: Record<string, string>   = realtimeHashRaw   || {}
     const axisWindowsHash: Record<string, string> = (axisWindowsHashRaw as unknown as Record<string, string>) || {}
     const ordersBySymbolHash: Record<string, string> = (ordersBySymbolRaw as Record<string, string>) || {}
