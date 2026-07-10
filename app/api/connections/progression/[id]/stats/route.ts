@@ -225,6 +225,40 @@ function aggregateOrdersBySymbol(
     try { return JSON.parse(raw) as T } catch { return fallback }
   }
 
+
+  function stableString(v: unknown): string {
+    if (v === undefined || v === null) return ""
+    return String(v).trim()
+  }
+
+  function progressionSettingsVersion(hash: Record<string, any> | null | undefined): string {
+    if (!hash) return ""
+    return stableString(hash.started_for_settings_version || hash.settings_version || hash.settingsVersion)
+  }
+
+  function progressionEpoch(hash: Record<string, any> | null | undefined): string {
+    if (!hash) return ""
+    return stableString(hash.epoch || hash.progression_epoch || hash.started_at)
+  }
+
+  function fallbackMatchesActive(active: Record<string, any>, fallback: Record<string, any>): boolean {
+    if (!fallback || Object.keys(fallback).length === 0) return false
+    const activeEpoch = progressionEpoch(active)
+    const activeVersion = progressionSettingsVersion(active)
+    const fallbackEpoch = progressionEpoch(fallback)
+    const fallbackVersion = progressionSettingsVersion(fallback)
+    if (activeEpoch && fallbackEpoch && activeEpoch !== fallbackEpoch) return false
+    if (activeVersion && fallbackVersion && activeVersion !== fallbackVersion) return false
+    // If the active progression is versioned but the fallback is not, treat it
+    // as an old run. Unversioned fallback counts must not leak into active stats.
+    if ((activeEpoch || activeVersion) && !fallbackEpoch && !fallbackVersion) return false
+    return true
+  }
+
+  function parseProgressSettingsSnapshot(hash: Record<string, any>): Record<string, any> {
+    return parseMaybeJson<Record<string, any>>(hash.progress_settings_snapshot, {})
+  }
+
   async function readLivePosition(client: any, connectionId: string, id: string): Promise<Record<string, any> | null> {
     const raw = await client.get(`live:position:${id}`).catch(() => null)
     if (raw) {
@@ -351,10 +385,35 @@ export async function GET(
         return NextResponse.json({ error: "Redis not available" }, { status: 503 })
       }
 
+    const requestedEngineType = request.nextUrl.searchParams.get("engineType") || request.nextUrl.searchParams.get("engine_type") || ""
+    const connection = await getConnection(connectionId).catch(() => null)
+    const engineType = stableString(requestedEngineType || (connection as any)?.engine_type || (connection as any)?.engineType || "main") || "main"
+
+    // Read the scoped/active progression snapshot before any fallback hashes.
+    // Scoped forms are preferred when present; the historic unscoped
+    // `progression:{id}` key is accepted only when its engine_type matches.
+    const scopedProgressionCandidates = [
+      `progression:${connectionId}:${engineType}`,
+      `progression:${engineType}:${connectionId}`,
+      `progression:${connectionId}`,
+    ]
+    let activeProgressionKey = `progression:${connectionId}`
+    let activeProgressionRaw: Record<string, string> = {}
+    for (const key of scopedProgressionCandidates) {
+      const h = ((await client.hgetall(key).catch(() => null)) || {}) as Record<string, string>
+      if (Object.keys(h).length === 0) continue
+      const hashEngineType = stableString((h as any).engine_type || (h as any).engineType || engineType) || engineType
+      if (key !== `progression:${connectionId}` || hashEngineType === engineType) {
+        activeProgressionKey = key
+        activeProgressionRaw = h
+        break
+      }
+    }
+
     // ── Read all namespaces in parallel ──────────────────────────────────────
     // NOTE: hgetall returns null (not throws) when the key doesn't exist — always coerce to {}
     const [
-      progHashRaw,
+      unscopedProgHashRaw,
       prehistoricHashRaw,
       realtimeHashRaw,
       engineState,
@@ -369,7 +428,7 @@ export async function GET(
       strategyDetailRealHashRaw,
       strategyDetailLiveHashRaw,
     ] = await Promise.all([
-      client.hgetall(`progression:${connectionId}`).catch(() => null),
+      activeProgressionKey === `progression:${connectionId}` ? Promise.resolve(activeProgressionRaw) : client.hgetall(`progression:${connectionId}`).catch(() => null),
       client.hgetall(`prehistoric:${connectionId}`).catch(() => null),
       client.hgetall(`realtime:${connectionId}`).catch(() => null),
       getSettings(`trade_engine_state:${connectionId}`).catch(() => ({})),
@@ -412,7 +471,21 @@ export async function GET(
       client.hgetall(`strategy_detail:${connectionId}:live`).catch(() => null),
     ])
 
-    const progHash: Record<string, string>       = progHashRaw       || {}
+    const unscopedProgHash: Record<string, string> = unscopedProgHashRaw || {}
+    const progHash: Record<string, string> = activeProgressionKey === `progression:${connectionId}`
+      ? unscopedProgHash
+      : activeProgressionRaw
+    const activeProgressionSnapshot = parseProgressSettingsSnapshot(progHash)
+    const activeProgression = {
+      epoch: progressionEpoch(progHash),
+      started_for_settings_version: progressionSettingsVersion(progHash),
+      symbol_count: n(progHash.symbol_count || activeProgressionSnapshot.symbol_count),
+      active_symbols_hash: stableString(progHash.active_symbols_hash || activeProgressionSnapshot.symbols_hash),
+      progress_settings_snapshot: activeProgressionSnapshot,
+      key: activeProgressionKey,
+      engine_type: engineType,
+    }
+    const unscopedProgressionUsable = activeProgressionKey === `progression:${connectionId}` || fallbackMatchesActive(progHash, unscopedProgHash)
     const prehistoricHash: Record<string, string> = prehistoricHashRaw || {}
     const realtimeHash: Record<string, string>   = realtimeHashRaw   || {}
     const axisWindowsHash: Record<string, string> = axisWindowsHashRaw || {}
@@ -424,8 +497,17 @@ export async function GET(
     const strategyDetailLiveHash: Record<string, string> = (strategyDetailLiveHashRaw as Record<string, string>) || {}
     const ordersBySymbolAggregation = aggregateOrdersBySymbol(ordersBySymbolHash)
 
-    const es = (engineState as Record<string, any>) || {}
-    const ep = (engineProgression as Record<string, any>) || {}
+    const rawEs = (engineState as Record<string, any>) || {}
+    const rawEp = (engineProgression as Record<string, any>) || {}
+    const engineStateUsable = fallbackMatchesActive(progHash, rawEs)
+    const engineProgressionUsable = fallbackMatchesActive(progHash, rawEp)
+    const es = engineStateUsable ? rawEs : {}
+    const ep = engineProgressionUsable ? rawEp : {}
+    const previousRun = {
+      progression: unscopedProgressionUsable ? undefined : unscopedProgHash,
+      engineProgression: engineProgressionUsable ? undefined : rawEp,
+      engineState: engineStateUsable ? undefined : rawEs,
+    }
 
     // ── HISTORIC section ─────────────────────────────────────────────────────
     // Primary: prehistoric:{connId} hash (written by trackPrehistoricStats)
@@ -472,11 +554,16 @@ export async function GET(
     const canonicalSelectedSymbols = normalizeSymbolList(es.selected_symbols)
     const activeQuickstartTotal = Math.max(quickstartCount, quickstartSymbols.length)
     const engineProgressSubTotal = ep?.phase === "prehistoric_data" ? n(ep?.sub_total) : 0
-    const canonicalCurrentTotal = activeQuickstartTotal > 0
-      ? activeQuickstartTotal
-      : Math.max(
+    const activeSnapshotSymbolTotal = n(activeProgression.symbol_count)
+    const currentSelectedSymbols = normalizeSymbolList((connection as any)?.force_symbols || (connection as any)?.active_symbols || (connection as any)?.selected_symbols)
+    const canonicalCurrentTotal = activeSnapshotSymbolTotal > 0
+      ? activeSnapshotSymbolTotal
+      : activeQuickstartTotal > 0
+        ? activeQuickstartTotal
+        : Math.max(
         n(es.config_set_symbols_total),
         canonicalSelectedSymbols.length,
+        currentSelectedSymbols.length,
         symbolsFromArray,
         // Same fallback as sub_current above: this is the active worker-owned
         // denominator for the current prehistoric run.
@@ -3407,6 +3494,32 @@ export async function GET(
           progHash.session_number && progHash.epoch
             ? `${progHash.epoch}:${progHash.session_number}`
             : "",
+        activeProgression,
+      },
+
+      previousRun: {
+        progression: previousRun.progression && Object.keys(previousRun.progression).length > 0 ? {
+          epoch: progressionEpoch(previousRun.progression),
+          started_for_settings_version: progressionSettingsVersion(previousRun.progression),
+          symbol_count: n((previousRun.progression as any).symbol_count),
+          active_symbols_hash: stableString((previousRun.progression as any).active_symbols_hash),
+          phase: (previousRun.progression as any).phase || null,
+        } : null,
+        engineProgression: previousRun.engineProgression && Object.keys(previousRun.engineProgression).length > 0 ? {
+          epoch: progressionEpoch(previousRun.engineProgression),
+          started_for_settings_version: progressionSettingsVersion(previousRun.engineProgression),
+          phase: (previousRun.engineProgression as any).phase || null,
+          progress: n((previousRun.engineProgression as any).progress),
+          sub_current: n((previousRun.engineProgression as any).sub_current),
+          sub_total: n((previousRun.engineProgression as any).sub_total),
+        } : null,
+        engineState: previousRun.engineState && Object.keys(previousRun.engineState).length > 0 ? {
+          epoch: progressionEpoch(previousRun.engineState),
+          started_for_settings_version: progressionSettingsVersion(previousRun.engineState),
+          status: (previousRun.engineState as any).status || null,
+          config_set_symbols_processed: n((previousRun.engineState as any).config_set_symbols_processed),
+          config_set_symbols_total: n((previousRun.engineState as any).config_set_symbols_total),
+        } : null,
       },
 
       // ── Plan fields: added to surface engine internals to UI ────────────
