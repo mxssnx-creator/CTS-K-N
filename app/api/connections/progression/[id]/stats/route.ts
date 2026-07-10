@@ -404,7 +404,6 @@ export async function GET(
   const mainLogic = async () => {
     try {
       const { id: connectionId } = await params
-      const engineType = request.nextUrl.searchParams.get("engineType") || "main"
 
       await initRedis()
       const client = getRedisClient()
@@ -415,6 +414,7 @@ export async function GET(
     const requestedEngineType = request.nextUrl.searchParams.get("engineType") || request.nextUrl.searchParams.get("engine_type") || ""
     const connection = await getConnection(connectionId).catch(() => null)
     const engineType = stableString(requestedEngineType || (connection as any)?.engine_type || (connection as any)?.engineType || "main") || "main"
+    const scope = await ensureScopedProgressionFromLegacy(client, connectionId, engineType)
 
     // Read the scoped/active progression snapshot before any fallback hashes.
     // Scoped forms are preferred when present; the historic unscoped
@@ -440,7 +440,8 @@ export async function GET(
     // ── Read all namespaces in parallel ──────────────────────────────────────
     // NOTE: hgetall returns null (not throws) when the key doesn't exist — always coerce to {}
     const [
-      unscopedProgHashRaw,
+      scopedProgHashRaw,
+      legacyProgHashRaw,
       prehistoricHashRaw,
       realtimeHashRaw,
       engineState,
@@ -455,18 +456,18 @@ export async function GET(
       strategyDetailRealHashRaw,
       strategyDetailLiveHashRaw,
     ] = await Promise.all([
-      ensureScopedProgressionFromLegacy(client, connectionId, engineType).then((scope) => client.hgetall(scope.progressionKey)).catch(() => null),
-      client.hgetall(buildProgressionScope(connectionId, engineType).prehistoricKey).catch(() => null),
-      activeProgressionKey === `progression:${connectionId}` ? Promise.resolve(activeProgressionRaw) : client.hgetall(`progression:${connectionId}`).catch(() => null),
+      client.hgetall(scope.progressionKey).catch(() => null),
+      activeProgressionKey === scope.legacyProgressionKey ? Promise.resolve(activeProgressionRaw) : client.hgetall(scope.legacyProgressionKey).catch(() => null),
+      client.hgetall(scope.prehistoricKey).catch(() => null),
       client.hgetall(`prehistoric:${connectionId}`).catch(() => null),
       client.hgetall(`realtime:${connectionId}`).catch(() => null),
       getSettings(`trade_engine_state:${connectionId}:${engineType}`).catch(() => getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))),
-      getSettings(buildProgressionScope(connectionId, engineType).engineProgressionKey).catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({}))),
-      client.scard(`${buildProgressionScope(connectionId, engineType).prehistoricKey}:symbols`).catch(() => 0),
+      getSettings(scope.engineProgressionKey).catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({}))),
+      client.scard(`${scope.prehistoricKey}:symbols`).catch(() => 0),
       // `:done` marker written by completePrehistoricPhase — a plain SET
       // key separate from the hash so a hot-reload that loses the in-memory
       // completion callback can still flip the progress bar to 100 %.
-      client.get(`${buildProgressionScope(connectionId, engineType).prehistoricKey}:done`).catch(() => null),
+      client.get(`${scope.prehistoricKey}:done`).catch(() => null),
       // Per-axis-window cumulative counters written by createMainSets in
       // strategy-coordinator.ts. Hash fields are `${axis}_${N}_sets` /
       // `${axis}_${N}_pos` for axis ∈ {prev, last, cont, pause} and the
@@ -500,10 +501,14 @@ export async function GET(
       client.hgetall(`strategy_detail:${connectionId}:live`).catch(() => null),
     ])
 
-    const unscopedProgHash: Record<string, string> = unscopedProgHashRaw || {}
-    const progHash: Record<string, string> = activeProgressionKey === `progression:${connectionId}`
-      ? unscopedProgHash
-      : activeProgressionRaw
+    const scopedProgHash: Record<string, string> = scopedProgHashRaw || {}
+    const legacyProgHash: Record<string, string> = legacyProgHashRaw || {}
+    const progHash: Record<string, string> =
+      activeProgressionKey === scope.progressionKey
+        ? (Object.keys(activeProgressionRaw).length > 0 ? activeProgressionRaw : scopedProgHash)
+        : activeProgressionKey === scope.legacyProgressionKey
+          ? legacyProgHash
+          : activeProgressionRaw
     const activeProgressionSnapshot = parseProgressSettingsSnapshot(progHash)
     const activeProgression = {
       epoch: progressionEpoch(progHash),
@@ -514,11 +519,11 @@ export async function GET(
       key: activeProgressionKey,
       engine_type: engineType,
     }
-    const unscopedProgressionUsable = activeProgressionKey === `progression:${connectionId}` || fallbackMatchesActive(progHash, unscopedProgHash)
+    const unscopedProgressionUsable = activeProgressionKey === scope.legacyProgressionKey || fallbackMatchesActive(progHash, legacyProgHash)
     const prehistoricHash: Record<string, string> = prehistoricHashRaw || {}
     const realtimeHash: Record<string, string>   = realtimeHashRaw   || {}
-    const axisWindowsHash: Record<string, string> = axisWindowsHashRaw || {}
-    const ordersBySymbolHash: Record<string, string> = ordersBySymbolRaw || {}
+    const axisWindowsHash: Record<string, string> = (axisWindowsHashRaw as unknown as Record<string, string>) || {}
+    const ordersBySymbolHash: Record<string, string> = (ordersBySymbolRaw as Record<string, string>) || {}
     const hedgePosAccHash: Record<string, string> = (hedgePosAccHashRaw as Record<string, string>) || {}
     const strategyDetailBaseHash: Record<string, string> = (strategyDetailBaseHashRaw as Record<string, string>) || {}
     const strategyDetailMainHash: Record<string, string> = (strategyDetailMainHashRaw as Record<string, string>) || {}
@@ -533,7 +538,7 @@ export async function GET(
     const es = engineStateUsable ? rawEs : {}
     const ep = engineProgressionUsable ? rawEp : {}
     const previousRun = {
-      progression: unscopedProgressionUsable ? undefined : unscopedProgHash,
+      progression: unscopedProgressionUsable ? undefined : legacyProgHash,
       engineProgression: engineProgressionUsable ? undefined : rawEp,
       engineState: engineStateUsable ? undefined : rawEs,
     }

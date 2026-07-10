@@ -14,6 +14,7 @@ import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSelection, ownsCanonicalSymbolSelectionEpoch } from "@/lib/trade-engine/symbol-selection-ownership"
 import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
+import { buildProgressionScope } from "@/lib/progression-scope"
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
@@ -208,6 +209,29 @@ export class ConfigSetProcessor {
 
     await initRedis()
     const client = getRedisClient()
+    const progressionScope = buildProgressionScope(this.connectionId, "main")
+    const prehistoricKey = progressionScope.prehistoricKey
+    const prehistoricSymbolsKey = `${prehistoricKey}:symbols`
+    const engineProgressionKey = progressionScope.engineProgressionKey
+    const mirrorProgressHash = async (patch: Record<string, any>) => {
+      const stringPatch = Object.fromEntries(
+        Object.entries(patch).map(([key, value]) => [key, typeof value === "string" ? value : String(value)]),
+      )
+      await Promise.all([
+        client.hset(progressionScope.progressionKey, {
+          ...stringPatch,
+          connection_id: this.connectionId,
+          engine_type: progressionScope.engineType,
+        }).catch(() => 0),
+        client.hset(progressionScope.legacyProgressionKey, stringPatch).catch(() => 0),
+      ])
+    }
+    const hincrProgressHash = async (field: string, amount: number) => {
+      await Promise.all([
+        client.hincrby(progressionScope.progressionKey, field, amount).catch(() => 0),
+        client.hincrby(progressionScope.legacyProgressionKey, field, amount).catch(() => 0),
+      ])
+    }
 
     // Resolve the per-Set entry cap once for this whole run. Honours the
     // operator-controlled `setCompactionFloor` setting so the dashboard
@@ -246,7 +270,8 @@ export class ConfigSetProcessor {
 
     // Store range metadata for dashboard
     try {
-      await client.hset(`prehistoric:${this.connectionId}`, {
+      await Promise.all([
+        client.hset(prehistoricKey, {
         range_start: effectiveStart.toISOString(),
         range_end: effectiveEnd.toISOString(),
         timeframe_seconds: String(timeframeSec),
@@ -260,10 +285,26 @@ export class ConfigSetProcessor {
         strategy_configs: String(strategyConfigs.length),
         config_concurrency: String(CONFIG_CONCURRENCY),
         updated_at: new Date().toISOString(),
-      })
+        }).catch(() => 0),
+        client.hset(prehistoricKey, {
+          range_start: effectiveStart.toISOString(),
+          range_end: effectiveEnd.toISOString(),
+          timeframe_seconds: String(timeframeSec),
+          ...(ownsCurrentSelection ? {
+            symbol_selection_epoch: writerSelectionEpoch,
+            symbols_total: String(canonicalSymbolsTotal),
+          } : {}),
+          symbol_concurrency: String(SYMBOL_CONCURRENCY),
+          config_type_concurrency: String(CONFIG_TYPE_CONCURRENCY),
+          indication_configs: String(indicationConfigs.length),
+          strategy_configs: String(strategyConfigs.length),
+          config_concurrency: String(CONFIG_CONCURRENCY),
+          updated_at: new Date().toISOString(),
+        }).catch(() => 0),
+      ])
     } catch { /* non-critical */ }
 
-    const progressKey = `progression:${this.connectionId}`
+    const progressKey = progressionScope.progressionKey
 
     // Worker that processes a single symbol end-to-end. All DB writes inside
     // are fired with Promise.all where possible to minimise the await chain.
@@ -318,20 +359,20 @@ export class ConfigSetProcessor {
           // SADD is idempotent so a replay can't double-count.
           symbolsProcessed++
           try {
-            const added = Number(await client.sadd(`prehistoric:${this.connectionId}:symbols`, symbol)) || 0
-            await client.expire(`prehistoric:${this.connectionId}:symbols`, 86400)
+            const added = Number(await client.sadd(prehistoricSymbolsKey, symbol)) || 0
+            await client.expire(prehistoricSymbolsKey, 86400)
             if (added > 0) {
-              await client.hincrby(progressKey, "prehistoric_symbols_processed_count", 1)
+              await hincrProgressHash("prehistoric_symbols_processed_count", 1)
             }
-            const distinctSkipProcessed = clampProcessedToTotal(await client.scard(`prehistoric:${this.connectionId}:symbols`), canonicalSymbolsTotal)
-            await client.hset(`prehistoric:${this.connectionId}`, {
+            const distinctSkipProcessed = clampProcessedToTotal(await client.scard(prehistoricSymbolsKey), canonicalSymbolsTotal)
+            await client.hset(prehistoricKey, {
               symbols_processed: String(distinctSkipProcessed),
             })
             // Advance the dashboard percent bar even for data-less symbols,
             // using the SAME `engine_progression` schema the main path writes.
             const totalSyms = Math.max(1, canonicalSymbolsTotal)
             const skipPct = Math.min(95, 15 + Math.round((symbolsProcessed / totalSyms) * 80))
-            void setSettings(`engine_progression:${this.connectionId}`, {
+            void setSettings(engineProgressionKey, {
               phase: "prehistoric_data",
               progress: skipPct,
               detail: `Prehistoric calc filling sets — ${symbolsProcessed}/${totalSyms} symbols processed (no data: ${symbol})`,
@@ -427,22 +468,22 @@ export class ConfigSetProcessor {
         // "new symbol" signal, then SCARD becomes the displayed count.
         const progressWrite = (async () => {
           if (!(await stillOwnsCurrentSelection())) return
-          const added = Number(await client.sadd(`prehistoric:${this.connectionId}:symbols`, symbol).catch(() => 0)) || 0
-          await client.expire(`prehistoric:${this.connectionId}:symbols`, 86400).catch(() => 0)
+          const added = Number(await client.sadd(prehistoricSymbolsKey, symbol).catch(() => 0)) || 0
+          await client.expire(prehistoricSymbolsKey, 86400).catch(() => 0)
           if (added > 0) {
-            await client.hincrby(progressKey, "prehistoric_symbols_processed_count", 1).catch(() => 0)
+            await hincrProgressHash("prehistoric_symbols_processed_count", 1).catch(() => 0)
           }
-          const distinctProcessed = clampProcessedToTotal(await client.scard(`prehistoric:${this.connectionId}:symbols`).catch(() => 0), canonicalSymbolsTotal)
+          const distinctProcessed = clampProcessedToTotal(await client.scard(prehistoricSymbolsKey).catch(() => 0), canonicalSymbolsTotal)
           await Promise.all([
-            client.hincrby(progressKey, "prehistoric_candles_processed", combinedCandles.length),
-            client.hset(progressKey, {
+            hincrProgressHash("prehistoric_candles_processed", combinedCandles.length),
+            mirrorProgressHash({
               prehistoric_symbols_processed_count: String(distinctProcessed),
               prehistoric_current_symbol: symbol,
               prehistoric_intervals_processed: String(totalIntervalsProcessed),
               prehistoric_missing_loaded: String(missingIntervalsLoaded),
               prehistoric_timeframe_seconds: String(timeframeSec),
             }),
-            client.hset(`prehistoric:${this.connectionId}`, {
+            client.hset(prehistoricKey, {
               symbols_processed: String(distinctProcessed),
             }),
             client.expire(progressKey, 7 * 24 * 60 * 60),
@@ -479,17 +520,17 @@ export class ConfigSetProcessor {
           console.log(`[v0] [ConfigSetProcessor] stale symbol-selection progress ignored for ${symbol} (${symbols.length} symbols; canonical=${canonicalSymbolsTotal})`)
           return
         }
-        await client.sadd(`prehistoric:${this.connectionId}:symbols`, symbol)
+        await client.sadd(prehistoricSymbolsKey, symbol)
         const distinctProcessed = clampProcessedToTotal(await client
-          .scard(`prehistoric:${this.connectionId}:symbols`)
+          .scard(prehistoricSymbolsKey)
           .catch(() => symbolsProcessed), canonicalSymbolsTotal)
         await Promise.all([
           progressWrite,
-          client.hincrby(progressKey, "prehistoric_indications_total", indicationResults),
-          client.hincrby(progressKey, "prehistoric_strategies_total", strategyPositions),
+          hincrProgressHash("prehistoric_indications_total", indicationResults),
+          hincrProgressHash("prehistoric_strategies_total", strategyPositions),
           client.expire(progressKey, 7 * 24 * 60 * 60),
-          client.expire(`prehistoric:${this.connectionId}:symbols`, 86400),
-          client.hset(`prehistoric:${this.connectionId}`, {
+          client.expire(prehistoricSymbolsKey, 86400),
+          client.hset(prehistoricKey, {
             candles_loaded: String(candlesProcessed),
             symbols_processed: String(distinctProcessed),
             intervals_processed: String(totalIntervalsProcessed),
@@ -522,7 +563,7 @@ export class ConfigSetProcessor {
           // with the authoritative distinct-symbol set.
           const total = Math.max(1, canonicalSymbolsTotal)
           const pct = Math.min(95, 15 + Math.round((distinctProcessed / total) * 80))
-          void setSettings(`engine_progression:${this.connectionId}`, {
+          void setSettings(engineProgressionKey, {
             phase: "prehistoric_data",
             progress: pct,
             detail: `Prehistoric calc filling sets — ${distinctProcessed}/${total} symbols processed`,
@@ -561,18 +602,18 @@ export class ConfigSetProcessor {
         // monotonic distinct count.
         symbolsProcessed++
         try {
-          const added = Number(await client.sadd(`prehistoric:${this.connectionId}:symbols`, symbol)) || 0
-          await client.expire(`prehistoric:${this.connectionId}:symbols`, 86400)
+          const added = Number(await client.sadd(prehistoricSymbolsKey, symbol)) || 0
+          await client.expire(prehistoricSymbolsKey, 86400)
           if (added > 0) {
-            await client.hincrby(progressKey, "prehistoric_symbols_processed_count", 1)
+            await hincrProgressHash("prehistoric_symbols_processed_count", 1)
           }
-          const distinctErrProcessed = clampProcessedToTotal(await client.scard(`prehistoric:${this.connectionId}:symbols`), canonicalSymbolsTotal)
-          await client.hset(`prehistoric:${this.connectionId}`, {
+          const distinctErrProcessed = clampProcessedToTotal(await client.scard(prehistoricSymbolsKey), canonicalSymbolsTotal)
+          await client.hset(prehistoricKey, {
             symbols_processed: String(distinctErrProcessed),
           })
           const totalSyms = Math.max(1, canonicalSymbolsTotal)
           const errPct = Math.min(95, 15 + Math.round((distinctErrProcessed / totalSyms) * 80))
-          void setSettings(`engine_progression:${this.connectionId}`, {
+          void setSettings(engineProgressionKey, {
             phase: "prehistoric_data",
             progress: errPct,
             detail: `Prehistoric calc filling sets — ${distinctErrProcessed}/${totalSyms} symbols processed (error: ${symbol})`,
@@ -783,7 +824,7 @@ export class ConfigSetProcessor {
       // Always written (even with 0.0000 if no closed positions) so the
       // UI field is never undefined.
       stageWrites.push(
-        client.hset(`prehistoric:${this.connectionId}`, {
+        client.hset(prehistoricKey, {
           historic_avg_profit_factor: pfStr,
           historic_avg_profit_factor_count: String(resultCount),
           historic_avg_profit_factor_at: new Date().toISOString(),
@@ -843,7 +884,7 @@ export class ConfigSetProcessor {
     try {
       const client = getRedisClient()
       const finishedAt = new Date()
-      await client.hset(`prehistoric:${this.connectionId}`, {
+      await client.hset(prehistoricKey, {
         last_run_at: finishedAt.toISOString(),
         last_run_at_ms: String(finishedAt.getTime()),
         last_run_started_at: new Date(startTime).toISOString(),
