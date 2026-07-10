@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
-import { updateConnection, initRedis, getConnection, getRedisClient } from "@/lib/redis-db"
+import { updateConnection, initRedis, getConnection, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
 import { RedisTrades, RedisPositions } from "@/lib/redis-operations"
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 import { getTradeEngine } from "@/lib/trade-engine"
@@ -455,10 +455,69 @@ export async function PATCH(
           console.log(`[v0] [Settings] Resolved ${resolved.length} symbol(s) for ${id} (order=${finalSymbolOrder}): ${resolved.join(", ")}`)
           // Defer connection/trade-engine-state persistence for the resolved
           // symbols to applyMainConnectionSettingsChange() below.
+          // 1. Persist as the connection's ACTIVE symbol source (what the engine reads).
+          const resolvedSymbolsJson = JSON.stringify(resolved)
+          effectiveConnection = (await updateConnection(id, {
+            active_symbols: resolvedSymbolsJson,
+            // Keep force_symbols in lock-step with the resolved selection.
+            // EngineManager.getSymbols() gives force_symbols precedence over
+            // active_symbols; leaving an older force_symbols list in place made
+            // a successful "save 12 symbols" still boot with the previous
+            // migration/admin override list.
+            force_symbols: resolvedSymbolsJson,
+            symbol_count: String(resolved.length),
+            symbol_order: finalSymbolOrder,
+          })) || { ...effectiveConnection, active_symbols: resolvedSymbolsJson, force_symbols: resolvedSymbolsJson, symbol_count: String(resolved.length), symbol_order: finalSymbolOrder }
+          // 2. Mirror into trade_engine_state (the engine's primary lookup) +
+          //    seed the prehistoric symbol total so the progress bar denominator
+          //    matches the new selection immediately.
+          const stateKey = `trade_engine_state:${id}`
+          const prevState = (await getSettings(stateKey)) || {}
+          const settingsConnectionKey = `connection:${id}`
+          const prevSettingsConnection = (await getSettings(settingsConnectionKey)) || {}
+          const resolvedStatePatch = {
+            connection_id: id,
+            symbols: resolvedSymbolsJson,
+            active_symbols: resolvedSymbolsJson,
+            force_symbols: resolvedSymbolsJson,
+            symbol_count: String(resolved.length),
+            symbol_order: finalSymbolOrder,
+            config_set_symbols_total: String(resolved.length),
+            updated_at: new Date().toISOString(),
+          }
+          await Promise.all([
+            setSettings(stateKey, {
+              ...prevState,
+              ...resolvedStatePatch,
+            }),
+            getRedisClient().hset(stateKey, resolvedStatePatch).catch(() => 0),
+          ])
+          // 3. Fast-path only: invalidate the running engine's in-memory
+          //    symbol cache in this process so the change takes effect on the
+          //    next tick without waiting for the durable reload event.
+          //    Correctness does NOT depend on this call: production may run
+          //    the API route and engine manager in different processes, so
+          //    the manager also invalidates its cache when it consumes the
+          //    Redis-backed connection_settings reload event below.
+          await setSettings(settingsConnectionKey, {
+            ...prevSettingsConnection,
+            connection_id: id,
+            symbols: resolvedSymbolsJson,
+            active_symbols: resolvedSymbolsJson,
+            force_symbols: resolvedSymbolsJson,
+            symbol_count: resolved.length,
+            symbol_order: finalSymbolOrder,
+            updated_at: new Date().toISOString(),
+          })
           ;(merged as Record<string, unknown>).active_symbols = resolved
           ;(merged as Record<string, unknown>).force_symbols = resolved
           ;(merged as Record<string, unknown>).symbol_count = resolved.length
           ;(merged as Record<string, unknown>).symbol_source = resolutionSource
+          // 3. Invalidate the running engine's in-memory symbol cache so the
+          //    change takes effect on the next tick without a restart.
+          try {
+            getTradeEngine()?.getEngineManager(id)?.invalidateSymbolsCache()
+          } catch { /* engine may not be running yet — state above is enough */ }
           // The authoritative writes above are synchronous. Do not schedule
           // delayed re-assert timers from a settings route: a second dialog save
           // can happen before those timers fire, and the old delayed closure

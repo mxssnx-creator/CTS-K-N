@@ -476,6 +476,8 @@ export async function GET(
           : getSettings(`engine_progression:${connectionId}`).catch(() => ({}))
         )
         .catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({}))),
+      getSettings(`trade_engine_state:${connectionId}:${engineType}`).catch(() => getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))),
+      getSettings(scope.engineProgressionKey).catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({}))),
       client.scard(`${scope.prehistoricKey}:symbols`).catch(() => 0),
       // `:done` marker written by completePrehistoricPhase — a plain SET
       // key separate from the hash so a hot-reload that loses the in-memory
