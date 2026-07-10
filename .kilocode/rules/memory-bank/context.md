@@ -249,3 +249,4 @@ export async function GET() {
 - [x] Dashboard settings event fix: unversioned `connection-settings-updated` events now refresh immediately without arming the recoordination watchdog, preventing false "Settings recoordination did not confirm" toasts from legacy/slider settings saves.
 
 - [x] Production progression unstuck: prehistoric bootstrap is now deadline-wrapped and the continuous prehistoric first-pass loop opens live gates after a bounded no-step fallback, so a hung/empty historic load cannot leave a connection permanently stuck before realtime/live processing.
+| 2026-07-10 | Settings recoordination pending-state hardening: progression markers now include started/requested version/event metadata, successful and failed recoordination paths clear pending with completion/failure stamps, engine hot-reload stamps preserve requested identifiers, and progression stats expose stale pending markers as warnings after a short threshold. |

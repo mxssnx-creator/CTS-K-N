@@ -22,6 +22,31 @@ function throttledStatsWarn(key: string, msg: string): void {
   console.warn(msg)
 }
 
+const SETTINGS_RECOORDINATION_STALE_MS = 45_000
+
+function buildSettingsRecoordinationState(progHash: Record<string, string>, nowMs = Date.now()) {
+  const startedAt = progHash.settings_recoordination_started_at || progHash.settings_changed_at || ""
+  const startedMs = startedAt ? Date.parse(startedAt) : NaN
+  const pending = progHash.settings_recoordination_pending === "1" || progHash.settings_recoordination_pending === "true"
+  const isStale = pending && Number.isFinite(startedMs) && nowMs - startedMs > SETTINGS_RECOORDINATION_STALE_MS
+  return {
+    pending: pending && !isStale,
+    stale: isStale,
+    warning: isStale
+      ? `Settings recoordination marker is stale (${Math.round((nowMs - startedMs) / 1000)}s old)`
+      : null,
+    startedAt: startedAt || null,
+    completedAt: progHash.settings_recoordination_completed_at || null,
+    failedAt: progHash.settings_recoordination_failed_at || null,
+    lastError: progHash.settings_recoordination_last_error || null,
+    requestedVersion: progHash.settings_recoordination_requested_version || null,
+    requestedEventId: progHash.settings_recoordination_requested_event_id || null,
+    appliedVersion: progHash.settings_recoordination_applied_version || null,
+    appliedEventId: progHash.settings_recoordination_applied_event_id || null,
+    fields: (() => { try { return JSON.parse(progHash.settings_recoordination_fields || "[]") } catch { return [] } })(),
+  }
+}
+
   function n(v: unknown): number {
     const x = Number(v)
     return Number.isFinite(x) && x >= 0 ? x : 0
@@ -2440,6 +2465,7 @@ export async function GET(
     const progress = n(ep?.progress)
     const message  = ep?.detail || ep?.message || ""
     const lastUpdate = progHash.last_update || realtimeHash.last_cycle_at || new Date().toISOString()
+    const settingsRecoordination = buildSettingsRecoordinationState(progHash)
 
     let redisDbEntries = 0
     try { redisDbEntries = await client.dbSize() } catch { /* non-critical */ }
@@ -2511,6 +2537,7 @@ export async function GET(
     return NextResponse.json({
       success: true,
       connectionId,
+      settingsRecoordination,
 
       historic: {
         symbolsProcessed:       historicSymbolsProcessed,
