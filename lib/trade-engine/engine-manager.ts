@@ -4513,14 +4513,18 @@ export class TradeEngineManager {
   ): Promise<void> {
     try {
       const completedAt = new Date().toISOString()
-      const appliedVersion = String(event.timestamp || completedAt)
+      const eventValues = (event.newValues || {}) as Record<string, unknown>
+      const appliedVersion = String(eventValues.settings_version || eventValues.updated_at || event.timestamp || completedAt)
+      const appliedEventId = String(eventValues.settings_event_id || appliedVersion)
       await getRedisClient().hset(`progression:${this.connectionId}`, {
         settings_recoordination_pending: "0",
         strategy_recompute_requested: "0",
         settings_recoordination_completed_at: completedAt,
         settings_recoordination_applied_at: completedAt,
         settings_recoordination_applied_version: appliedVersion,
-        settings_recoordination_applied_event_id: appliedVersion,
+        settings_recoordination_applied_event_id: appliedEventId,
+        settings_recoordination_requested_version: appliedVersion,
+        settings_recoordination_requested_event_id: appliedEventId,
         settings_recoordination_applied_fields: JSON.stringify(event.changedFields || []),
       })
       await getRedisClient().hdel?.(`progression:${this.connectionId}`, "settings_recoordination_last_error")
@@ -4532,13 +4536,21 @@ export class TradeEngineManager {
     }
   }
 
-  private async stampSettingsRecoordinationFailed(error: unknown): Promise<void> {
+  private async stampSettingsRecoordinationFailed(
+    error: unknown,
+    event?: import("@/lib/settings-coordinator").SettingsChangeEvent | null,
+  ): Promise<void> {
     try {
+      const eventValues = (event?.newValues || {}) as Record<string, unknown>
+      const requestedVersion = String(eventValues.settings_version || eventValues.updated_at || event?.timestamp || "")
+      const requestedEventId = String(eventValues.settings_event_id || requestedVersion)
       await getRedisClient().hset(`progression:${this.connectionId}`, {
-        settings_recoordination_pending: "1",
+        settings_recoordination_pending: "0",
         strategy_recompute_requested: "1",
         settings_recoordination_last_error: error instanceof Error ? error.message : String(error),
         settings_recoordination_failed_at: new Date().toISOString(),
+        ...(requestedVersion ? { settings_recoordination_requested_version: requestedVersion } : {}),
+        ...(requestedEventId ? { settings_recoordination_requested_event_id: requestedEventId } : {}),
       })
     } catch (stampErr) {
       console.warn(
@@ -4556,9 +4568,10 @@ export class TradeEngineManager {
   private async applyPendingSettingsChange(): Promise<void> {
     if (this.settingsApplying) return
     this.settingsApplying = true
+    let event: import("@/lib/settings-coordinator").SettingsChangeEvent | null = null
     try {
       const { getPendingChanges, clearPendingChanges } = await import("@/lib/settings-coordinator")
-      const event = await getPendingChanges(this.connectionId)
+      event = await getPendingChanges(this.connectionId)
       if (!event) return
 
       const changeType = event.changeType
@@ -4591,7 +4604,7 @@ export class TradeEngineManager {
       await clearPendingChanges(this.connectionId)
       await this.stampSettingsRecoordinationApplied(event)
     } catch (err) {
-      await this.stampSettingsRecoordinationFailed(err)
+      await this.stampSettingsRecoordinationFailed(err, event)
       console.warn(
         `[v0] [Engine ${this.connectionId}] applyPendingSettingsChange failed:`,
         err instanceof Error ? err.message : String(err),

@@ -330,6 +330,8 @@ export async function recoordinateAfterSettingsChange(
     settingsVersion: (after as any).settings_version || (after as any).updated_at || new Date().toISOString(),
     data: { changedFields, logTag: opts.logTag },
   })
+  const requestedSettingsVersion = String(opts.settingsVersion || settingsEvent.settingsVersion || settingsEvent.id)
+  const requestedSettingsEventId = settingsEvent.id
 
   // Step 1 — durable notify (Redis envelope read by all running engines).
   try {
@@ -440,8 +442,11 @@ export async function recoordinateAfterSettingsChange(
           await client.hset(`progression:${id}`, {
             settings_changed_at: now,
             settings_recoordination_pending: "1",
+            settings_recoordination_started_at: now,
             settings_recoordination_completed: "0",
             settings_recoordination_fields: JSON.stringify(normalizedChangedFields),
+            settings_recoordination_requested_version: requestedSettingsVersion,
+            settings_recoordination_requested_event_id: requestedSettingsEventId,
           }).catch(() => 0)
         }
 
@@ -478,6 +483,9 @@ export async function recoordinateAfterSettingsChange(
             settings_recoordination_completed: "1",
             settings_recoordination_completed_at: new Date().toISOString(),
             settings_recoordination_reason: progressionReason,
+            settings_recoordination_requested_version: requestedSettingsVersion,
+            settings_recoordination_requested_event_id: requestedSettingsEventId,
+            settings_recoordination_last_error: "",
           }).catch(() => 0)
           console.log(
             `[v0] [${opts.logTag}] Symbol basket/mode settings changed for ${id} → epoch bumped and progression recoordinated (changed:${result?.changed ?? "?"}, reason:${result?.reason ?? "?"})`,
@@ -499,8 +507,9 @@ export async function recoordinateAfterSettingsChange(
           settings_recoordination_completed_at: new Date().toISOString(),
           settings_recoordination_fields: JSON.stringify(normalizedChangedFields),
           settings_recoordination_reason: "strategy-config-cache-invalidated",
-          settings_recoordination_requested_version: String(opts.settingsVersion || settingsEvent.settingsVersion || settingsEvent.id),
-          settings_recoordination_requested_event_id: settingsEvent.id,
+          settings_recoordination_requested_version: requestedSettingsVersion,
+          settings_recoordination_requested_event_id: requestedSettingsEventId,
+          settings_recoordination_last_error: "",
           strategy_recompute_requested: "1",
         }).catch(() => 0)
         progressionReason = "strategy-config-cache-invalidated"
@@ -533,6 +542,18 @@ export async function recoordinateAfterSettingsChange(
       }
       })
     } catch (archiveErr) {
+      const failedAt = new Date().toISOString()
+      try {
+        const client = (await import("@/lib/redis-db")).getRedisClient()
+        await client.hset(`progression:${id}`, {
+          settings_recoordination_pending: "0",
+          settings_recoordination_completed: "0",
+          settings_recoordination_failed_at: failedAt,
+          settings_recoordination_last_error: archiveErr instanceof Error ? archiveErr.message : String(archiveErr),
+          settings_recoordination_requested_version: requestedSettingsVersion,
+          settings_recoordination_requested_event_id: requestedSettingsEventId,
+        }).catch(() => 0)
+      } catch { /* best-effort failure stamp */ }
       console.warn(
         `[v0] [${opts.logTag}] Failed to coordinate progression after settings change for ${id}:`,
         archiveErr instanceof Error ? archiveErr.message : String(archiveErr),

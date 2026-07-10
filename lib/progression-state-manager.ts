@@ -1294,6 +1294,16 @@ export class ProgressionStateManager {
 
       return { changed: false, reason: "active progression already matches current state" }
     } catch (err) {
+      const failedAt = new Date().toISOString()
+      try {
+        const client = getRedisClient()
+        await client?.hset?.(`progression:${connectionId}`, {
+          settings_recoordination_pending: "0",
+          settings_recoordination_completed: "0",
+          settings_recoordination_failed_at: failedAt,
+          settings_recoordination_last_error: err instanceof Error ? err.message : String(err),
+        })
+      } catch { /* best-effort failure stamp */ }
       console.warn(`[v0] [Progression] recoordinateForActualOne failed for ${connectionId}:`, err)
       return {
         changed: false,
