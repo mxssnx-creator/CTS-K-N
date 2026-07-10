@@ -7,6 +7,14 @@ import { getTradeEngine } from "@/lib/trade-engine"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
 import { toRedisFlag } from "@/lib/boolean-utils"
 
+const FALLBACK_SYMBOLS = [
+  "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+  "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
+  "ATOMUSDT", "LTCUSDT", "UNIUSDT", "NEARUSDT", "MATICUSDT",
+  "OPUSDT", "ARBUSDT", "APTUSDT", "SUIUSDT", "INJUSDT",
+  "TIAUSDT", "SEIUSDT", "WLDUSDT", "PYTHUSDT", "JUPUSDT",
+]
+
 export const dynamic = "force-dynamic"
 export const maxDuration = 30
 
@@ -301,6 +309,15 @@ export async function PATCH(
       : connection.connection_settings || {}
 
     const merged = { ...current, ...settings }
+    const incomingSymbolSource = typeof (settings as Record<string, unknown>).symbol_source === "string"
+      ? String((settings as Record<string, unknown>).symbol_source)
+      : undefined
+    const incomingSymbolsAreFallback = incomingSymbolSource === "fallback"
+    const operatorConfirmedSymbols =
+      (merged as Record<string, unknown>).symbol_order === "manual" ||
+      (settings as Record<string, unknown>).symbols_confirmed === true
+    const shouldPreserveActiveSymbols = incomingSymbolsAreFallback && !operatorConfirmedSymbols
+    let symbolResolutionWarning: string | undefined
 
     const updated = {
       ...connection,
@@ -323,7 +340,7 @@ export async function PATCH(
       // Mirror symbol_count and force_symbols onto the connection hash so
       // getAllConnections() (and the UI card) always shows the current count.
       ...(settings.symbol_count !== undefined ? { symbol_count: String(Number(settings.symbol_count)) } : {}),
-      ...(Array.isArray(settings.symbols) && settings.symbols.length > 0
+      ...(!shouldPreserveActiveSymbols && Array.isArray(settings.symbols) && settings.symbols.length > 0
         // Non-empty explicit symbol list → write as force_symbols so getSymbols()
         // uses the operator's resolved / auto-selected list immediately.
         ? { force_symbols: JSON.stringify(settings.symbols), symbol_count: String(settings.symbols.length) }
@@ -415,9 +432,13 @@ export async function PATCH(
         const syms = (merged as Record<string, unknown>).symbols
         if (Array.isArray(syms) && syms.length > 0) {
           flatKnobs.symbols = JSON.stringify(syms)
-          // Also write force_symbols to the connection_settings hash so
-          // getSettings("trade_engine_state:{id}") finds the symbols
-          flatKnobs.force_symbols = JSON.stringify(syms)
+          // Only mirror force_symbols when the list is an operator-confirmed
+          // selection. Fallback suggestions must preserve the currently active
+          // engine symbols while keeping symbol_order/count for later live
+          // recoordination.
+          if (!shouldPreserveActiveSymbols) {
+            flatKnobs.force_symbols = JSON.stringify(syms)
+          }
         }
       }
 
@@ -710,6 +731,7 @@ export async function PATCH(
           : []
 
         let resolved: string[] = []
+        let resolutionSource: "live" | "fallback" | "manual" = incomingSymbolsAreFallback ? "fallback" : "live"
         if (manualList.length > 0) {
           // Operator curated an EXPLICIT symbol list — either typed manually or
           // hand-picked from the ranked 1h-ATR auto-select table in the dialog.
@@ -724,6 +746,7 @@ export async function PATCH(
           // exchange top-N instead. The slider count acts only as an upper bound:
           // truncate when the list is LONGER than count, never pad.
           resolved = manualList.length > count ? manualList.slice(0, count) : manualList
+          resolutionSource = incomingSymbolsAreFallback ? "fallback" : "manual"
         } else {
           // No explicit list — auto-resolve top-N by the chosen order. Call the shared resolver
           // DIRECTLY (no HTTP self-fetch — that fails on loopback/origin inside
@@ -744,12 +767,16 @@ export async function PATCH(
               fetchErr instanceof Error ? fetchErr.message : fetchErr,
             )
           }
-          // If auto-resolve produced nothing, fall back to any manual list the
-          // operator had, so we never wipe the engine's symbols.
-          if (resolved.length === 0 && manualList.length > 0) resolved = manualList.slice(0, count)
+          if (resolved.length === 0) {
+            resolved = FALLBACK_SYMBOLS.slice(0, count)
+            resolutionSource = "fallback"
+          }
         }
 
-        if (resolved.length > 0) {
+        if (resolutionSource === "fallback" && !operatorConfirmedSymbols) {
+          symbolResolutionWarning = "Live symbol ranking failed; the prior active symbol set was preserved. The requested symbol order and count were saved for the next successful recoordination."
+          ;(merged as Record<string, unknown>).symbol_source = "fallback"
+        } else if (resolved.length > 0) {
           resolvedSymbolsForSettings = resolved
           // 1. Persist as the connection's ACTIVE symbol source (what the engine reads).
           const resolvedSymbolsJson = JSON.stringify(resolved)
@@ -808,6 +835,7 @@ export async function PATCH(
           ;(merged as Record<string, unknown>).active_symbols = resolved
           ;(merged as Record<string, unknown>).force_symbols = resolved
           ;(merged as Record<string, unknown>).symbol_count = resolved.length
+          ;(merged as Record<string, unknown>).symbol_source = resolutionSource
           // 3. Invalidate the running engine's in-memory symbol cache so the
           //    change takes effect on the next tick without a restart.
           try {
@@ -906,6 +934,7 @@ export async function PATCH(
       recoordination,
       refreshQueued: recoordination.refreshQueued === true,
       refreshStatus: recoordination.refreshStatus,
+      warning: symbolResolutionWarning,
     })
   } catch (error) {
     console.error("[v0] [Settings] PATCH error:", error)
