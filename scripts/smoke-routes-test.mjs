@@ -3,9 +3,11 @@ import { spawn } from 'node:child_process'
 import { rmSync, openSync, closeSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
 
-const port = 3002
-const base = `http://localhost:${port}`
-const logPath = '/tmp/tmp3-test-dev.log'
+const port = Number(process.env.PORT || 3002)
+const externalBase = process.env.BASE_URL || ''
+const base = externalBase || `http://localhost:${port}`
+const ownsServer = !externalBase
+const logPath = `/tmp/cts-k-n-test-dev-${port}.log`
 
 async function killExisting() {
   await import('./kill-test-dev-port.mjs')
@@ -30,16 +32,20 @@ async function waitForRoute(path, attempts = 30) {
   throw new Error(`FAIL:${path}=${lastCode}`)
 }
 
-await killExisting()
-rmSync('.next', { recursive: true, force: true })
+let child = null
 
-const out = openSync(logPath, 'w')
-const child = spawn('npm', ['run', 'dev'], {
-  detached: true,
-  stdio: ['ignore', out, out],
-  env: { ...process.env },
-})
-closeSync(out)
+if (ownsServer) {
+  await killExisting()
+  rmSync('.next', { recursive: true, force: true })
+
+  const out = openSync(logPath, 'w')
+  child = spawn('npm', ['run', 'dev'], {
+    detached: true,
+    stdio: ['ignore', out, out],
+    env: { ...process.env, PORT: String(port) },
+  })
+  closeSync(out)
+}
 
 let exitCode = 0
 try {
@@ -70,10 +76,12 @@ try {
   exitCode = 1
   console.error(error instanceof Error ? error.message : String(error))
 } finally {
-  try { process.kill(-child.pid, 'SIGTERM') } catch {}
-  await sleep(500)
-  try { process.kill(-child.pid, 'SIGKILL') } catch {}
-  await killExisting()
+  if (ownsServer && child?.pid) {
+    try { process.kill(-child.pid, 'SIGTERM') } catch {}
+    await sleep(500)
+    try { process.kill(-child.pid, 'SIGKILL') } catch {}
+    await killExisting()
+  }
 }
 
 process.exit(exitCode)

@@ -14,21 +14,48 @@
 
 const { spawnSync } = require("child_process");
 const PORT = process.env.PORT || 3002;
-const BASE = `http://localhost:${PORT}`;
+const BASE = process.env.BASE_URL || `http://localhost:${PORT}`;
 
-const SYMBOLS_3 = ["PLAYSOUTUSDT", "XANUSDT", "BSBUSDT"]; // 3 volatile low-price symbols good for min-volume quickstart
+const DEFAULT_SYMBOLS = [
+  "PLAYSOUTUSDT", "XANUSDT", "BSBUSDT", "NILUSDT", "BILLUSDT", "GITLAWBUSDT",
+  "UBUSDT", "ASTEROIDETHUSDT", "RKCUSDT", "ERAUSDT", "DRIFTUSDT", "WIFUSDT",
+  "1000PEPEUSDT", "DOGEUSDT", "XRPUSDT", "ADAUSDT", "SOLUSDT", "SUIUSDT",
+  "LINKUSDT", "AVAXUSDT", "OPUSDT", "ARBUSDT", "APTUSDT", "NEARUSDT",
+  "FILUSDT", "DOTUSDT", "LTCUSDT", "BCHUSDT", "UNIUSDT", "TRXUSDT", "ETCUSDT", "ATOMUSDT",
+];
+
+function requestedSymbols() {
+  const explicit = process.env.SYMBOLS
+    ? process.env.SYMBOLS.split(",").map((symbol) => symbol.trim()).filter(Boolean)
+    : DEFAULT_SYMBOLS;
+  const count = Number(process.env.SYMBOL_COUNT || 3);
+  return explicit.slice(0, Math.min(Math.max(count, 1), 32));
+}
 
 async function main() {
-  console.log("\n=== 3-SYMBOL QUICKSTART + LIVE ORDER CREATION TEST ===");
-  console.log("Mode: Dev | Symbols: 3 | Live Trade: ENABLED | Focus: Real exchange order creation");
+  const symbols = requestedSymbols();
+  console.log(`\n=== ${symbols.length}-SYMBOL QUICKSTART + LIVE ORDER CREATION TEST ===`);
+  console.log(`Mode: Dev | Symbols: ${symbols.length} | Live Trade: ENABLED | Focus: Real exchange order creation`);
   console.log("Target:", BASE);
-  console.log("Symbols:", SYMBOLS_3.join(", "));
+  console.log("Symbols:", symbols.join(", "));
 
-  // Try to detect running dev server
-  const healthCheck = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(3000) }).catch(() => null);
+  // Try to detect a running server. Dev startup can spend several seconds in
+  // instrumentation/migrations, so retry before falling back to standalone mode.
+  let serverDetected = false;
+  for (const path of ["/api/health", "/"]) {
+    for (let attempt = 0; attempt < 12 && !serverDetected; attempt++) {
+      const response = await fetch(`${BASE}${path}`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(5000),
+      }).catch(() => null);
+      serverDetected = Boolean(response && (response.ok || response.status === 307));
+      if (!serverDetected) await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    if (serverDetected) break;
+  }
 
-  if (healthCheck && healthCheck.ok) {
-    console.log("\n[1] Dev server detected — triggering quickstart via API with 3 symbols + live enabled");
+  if (serverDetected) {
+    console.log(`\n[1] Dev server detected — triggering quickstart via API with ${symbols.length} symbols + live enabled`);
 
     try {
       const res = await fetch(`${BASE}/api/trade-engine/quick-start`, {
@@ -36,7 +63,8 @@ async function main() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "enable",
-          symbolCount: 3,
+          symbolCount: symbols.length,
+          symbols,
           // The backend quickstart handler forces is_live_trade=1 and live_volume_factor=0.1
         }),
         signal: AbortSignal.timeout(120000),
@@ -57,7 +85,7 @@ async function main() {
       console.log("   → Inspect Redis keys: engine_logs:*:live_trading for [REAL_ORDER_ATTEMPT] and [NO_REAL_ORDER]");
       console.log("   → Look for live:positions and real:* sets for the connection");
 
-      console.log("\n✅ 3-symbol quickstart API path completed. Review dashboard + Redis for live orders.");
+      console.log(`\n✅ ${symbols.length}-symbol quickstart API path completed. Review dashboard + Redis for live orders.`);
       process.exit(0);
     } catch (err) {
       console.error("[API Path] Failed:", err.message || err);
@@ -66,19 +94,19 @@ async function main() {
   }
 
   // Standalone diagnostic mode (no server / no Redis needed for basic path exercise)
-  console.log("\n[1] No dev server or Redis — running standalone 3-symbol diagnostic (exercises same code paths)");
+  console.log(`\n[1] No dev server or Redis — running standalone ${symbols.length}-symbol diagnostic (exercises same code paths)`);
   console.log("    (Real exchange orders require: running `npm run dev`, valid BINGX_* keys in .env.local, and a live connection)");
 
   try {
-    const symbolsArg = JSON.stringify(SYMBOLS_3);
+    const symbolsArg = JSON.stringify(symbols);
     const diag = spawnSync(process.execPath, [
       "scripts/standalone-bingx-live-diagnostic.mjs",
       symbolsArg,
     ], { stdio: "inherit", timeout: 60000 });
 
-    console.log("\n[Standalone 3-symbol diagnostic] Exit code:", diag.status);
+    console.log(`\n[Standalone ${symbols.length}-symbol diagnostic] Exit code:`, diag.status);
     console.log("\n=== TEST SUMMARY ===");
-    console.log("3-symbol quickstart test (live trade path) executed.");
+    console.log(`${symbols.length}-symbol quickstart test (live trade path) executed.`);
     console.log("Next for full verification with real order creation:");
     console.log("  1. npm run dev   (with BINGX_API_KEY/SECRET in .env.local, preferably testnet)");
     console.log("  2. npm run test:quickstart-3");

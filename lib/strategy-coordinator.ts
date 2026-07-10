@@ -1721,7 +1721,7 @@ export class StrategyCoordinator {
     if (cached && Date.now() - cached.at < 10_000) return cached.value
 
     const mode = process.env.NODE_ENV === "production" ? "prod" : "dev"
-    const fallback = mode === "prod" ? 2 : 1
+    const fallback = 1
     let configured = fallback
     try {
       const settings = ((await getRedisClient().hgetall("settings:system").catch(() => ({}))) || {}) as Record<string, unknown>
@@ -1729,6 +1729,9 @@ export class StrategyCoordinator {
       const globalValue = settings.strategy_flow_symbol_concurrency
       const parsed = Number.parseInt(String(modeValue ?? globalValue ?? fallback), 10)
       configured = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+      // Keep production route/status handlers responsive during high-symbol BingX runs.
+      // Operators can still opt into wider batches with STRATEGY_FLOW_SYMBOL_CONCURRENCY.
+      if (mode === "prod") configured = Math.min(configured, 1)
     } catch {
       configured = fallback
     }
@@ -2717,7 +2720,7 @@ export class StrategyCoordinator {
       // Explicit operator env overrides (configuredAxisCeiling / _instanceCeiling)
       // are still honoured below and not clamped.
       const _realCapForBound = process.env.NODE_ENV === "production" ? 100 : 60
-      const _boundedDynCeiling = Math.min(_dynAxisCeiling, Math.max(_realCapForBound * 3, 200))
+      const _boundedDynCeiling = Math.min(_dynAxisCeiling, Math.max(_realCapForBound * 2, 150))
       // Store on globalThis so HMR-lagged prototype instances pick up the new value.
       if (!configuredAxisCeiling) {
         ;(globalThis as any).__axis_sets_ceiling = _boundedDynCeiling
