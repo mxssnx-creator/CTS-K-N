@@ -54,12 +54,15 @@ export async function loadActiveConnections(): Promise<ActiveConnection[]> {
 
       // Show if: it's a main default exchange (bingx), OR it's dashboard-active (user added)
       if ((isBase && isMainDefault) || isDashboardActive) {
-        if (seenIds.has(conn.id)) continue
-        seenIds.add(conn.id)
+        const canonId = conn.id.replace(/^conn-/, "")
+        if (seenIds.has(canonId)) continue
+        seenIds.add(canonId)
 
         activeConnections.push({
-          id: `active-${conn.id}`,
-          connectionId: conn.id,
+          id: `active-${canonId}`,
+          // Always expose the canonical id used by progression/status APIs.
+          // Legacy `conn-*` aliases do not have matching progression hashes.
+          connectionId: canonId,
           exchangeName: conn.exchange.charAt(0).toUpperCase() + conn.exchange.slice(1),
           isActive: isDashboardActive,
           isBaseEnabled: isSettingsEnabled,

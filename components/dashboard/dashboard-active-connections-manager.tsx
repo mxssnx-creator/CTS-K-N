@@ -120,14 +120,21 @@ export function DashboardActiveConnectionsManager() {
           seenIds.add(canonId)
           const exchange = (conn.exchange || "").toLowerCase().trim()
           const isBase = BASE_EXCHANGES.includes(exchange)
+          const normalizedDetails = { ...conn, id: canonId }
           activeConns.push({
-            id: `active-${conn.id}`,
-            connectionId: conn.id,
+            id: `active-${canonId}`,
+            // Use the canonical Redis/API connection id for every child card
+            // request. Some connection lists can contain legacy `conn-*`
+            // aliases; rendering those aliases made the card poll
+            // `/api/connections/progression/conn-bingx-x01/stats`, which has
+            // no progression hash, so Main Connections showed no progress or
+            // stats even while `bingx-x01` was actively processing.
+            connectionId: canonId,
             exchangeName: conn.exchange ? conn.exchange.charAt(0).toUpperCase() + conn.exchange.slice(1) : "Unknown",
             isActive: isEnabledDashboard,
             isBaseEnabled: isBase,
             addedAt: conn.created_at || new Date().toISOString(),
-            details: conn,
+            details: normalizedDetails,
           })
         }
       }

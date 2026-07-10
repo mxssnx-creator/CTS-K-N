@@ -2105,4 +2105,17 @@ describe("requested regression guardrails", () => {
     expect(activeCard).toContain('{ label: "Adv", value: prehistoricStats.indicationsActiveAdvanced }')
   })
 
+  test("main connection cards use canonical ids for progression and stats polling", () => {
+    const manager = read("components/dashboard/dashboard-active-connections-manager.tsx")
+    const activeConnections = read("lib/active-connections.ts")
+
+    expect(manager).toContain('const canonId = conn.id.replace(/^conn-/, "")')
+    expect(manager).toContain("id: `active-${canonId}`")
+    expect(manager).toContain("connectionId: canonId")
+    expect(manager).toContain("details: normalizedDetails")
+    expect(manager).not.toContain("connectionId: conn.id")
+    expect(activeConnections).toContain('const canonId = conn.id.replace(/^conn-/, "")')
+    expect(activeConnections).toContain("connectionId: canonId")
+  })
+
 })
