@@ -99,6 +99,7 @@ export async function GET() {
 
 | Date | Changes |
 |------|---------|
+| 2026-07-10 | PR #81 review follow-up: prehistoric completion now writes legacy live-gate markers alongside engine-scoped markers, live tick gates read scoped/legacy completion, stale-cache cleanup clears both marker families, and cache integrity verification checks the legacy historic PF field still written by ConfigSetProcessor. |
 | 2026-07-10 | Production status-all correction: status-all now derives global running intent from `operator_intent`/`desired_status` as well as legacy `status`, and treats fresh per-engine running/heartbeat/ready state as running so dashboards do not show stopped while progression is actively advancing. |
 | 2026-07-10 | Production progression recovery: restored self-hosted production defaults for realtime progression, indication set fill, strategy flow, and live-position sync while keeping Vercel/serverless workers opt-in; raised the default production cycle deadline to 90s with env overrides so normal processing is not cancelled every 5s. |
 | 2026-07-10 | Engine start/status responsiveness hardening: explicit API/UI starts now use local takeover options, production cycle deadlines are shorter, API worker realtime/live/strategy/indication heavy paths are gated by opt-in env flags, progression stats clamp impossible real/main/live cascade snapshots with `[STATS-VALIDATION]` warnings, and status reads use bounded Redis/coordinator timeouts. |
