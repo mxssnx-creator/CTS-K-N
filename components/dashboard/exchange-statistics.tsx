@@ -14,7 +14,7 @@ const ExchangeStatisticsComponent = ({ connectionId, connectionName }: ExchangeS
   useEffect(() => {
     const loadStats = async () => {
       try {
-        const res = await fetch(`/api/settings/connections/${connectionId}/statistics`, { cache: "no-store" })
+        const res = await fetch(`/api/connections/progression/${connectionId}/stats`, { cache: "no-store" })
         if (res.ok) {
           const data = await res.json()
           setStats(data)
@@ -31,7 +31,21 @@ const ExchangeStatisticsComponent = ({ connectionId, connectionName }: ExchangeS
 
   if (!stats) return null
 
-  const prehistoric = stats.prehistoric || {}
+  const historic = stats.historic || {}
+  const realtime = stats.realtime || {}
+  const strategyDetail = stats.strategyDetail || {}
+  const liveExecution = stats.liveExecution || {}
+  const liveDetail = strategyDetail.live || {}
+  const prehistoric = {
+    symbols_analyzed: historic.symbolsProcessed ?? historic.symbolsTotal ?? 0,
+    win_rate: liveDetail.winRate ?? realtime.successRate ?? 0,
+    profit_factor: liveDetail.avgProfitFactor ?? strategyDetail.real?.avgProfitFactor ?? strategyDetail.main?.avgProfitFactor ?? 0,
+    trades: liveExecution.totalOrdersFilled ?? liveExecution.totalOrdersPlaced ?? realtime.totalTrades ?? 0,
+    profit: liveDetail.totalProfit ?? liveExecution.totalPnl ?? 0,
+    drawdown: liveDetail.avgMaxDrawdownTime ?? strategyDetail.real?.avgMaxDrawdownTime ?? 0,
+    avg_win: liveDetail.avgWinRate ?? 0,
+    avg_loss: liveDetail.avgLossRate ?? 0,
+  }
 
   return (
     <Card className="border-primary/10 bg-card/50">
