@@ -1027,6 +1027,10 @@ export async function POST(request: Request) {
       },
     )
 
+    const quickstartNeedsFreshProcessing =
+      quickstartRecoordination.progressionChanged === true ||
+      quickstartRecoordination.progressRecoordinationRequired === true
+
     await setSettings(`trade_engine_state:${connectionId}`, {
       connection_id: connectionId,
       symbols: symbols,
@@ -1040,8 +1044,16 @@ export async function POST(request: Request) {
       quickstart_symbols: JSON.stringify(symbols),
       selected_symbols: JSON.stringify(symbols),
       config_set_symbols_total: symbols.length,
-      config_set_symbols_processed: quickstartEngineAlreadyRunning ? symbols.length : 0,
-      prehistoric_data_loaded: quickstartEngineAlreadyRunning ? true : false,
+      // If QuickStart changed symbols/settings while the engine is already
+      // running, recoordination has just archived the old epoch and the next
+      // engine cycle must reprocess the new selection from 0/N. Do not mark
+      // the new symbol basket complete just because the previous basket was
+      // already running; that makes stats/UI show false 100% progress and can
+      // suppress the operator-visible reprocessing state.
+      config_set_symbols_processed:
+        quickstartEngineAlreadyRunning && !quickstartNeedsFreshProcessing ? symbols.length : 0,
+      prehistoric_data_loaded:
+        quickstartEngineAlreadyRunning && !quickstartNeedsFreshProcessing ? true : false,
       updated_at: new Date().toISOString(),
     })
 
@@ -1049,7 +1061,7 @@ export async function POST(request: Request) {
     // reads the canonical user-selected count from either source. The
     // processor will overwrite this once it starts processing, but the
     // initial value must already match what the user picked.
-    if (!quickstartEngineAlreadyRunning) {
+    if (!quickstartEngineAlreadyRunning || quickstartNeedsFreshProcessing) {
       try {
         await client.hset(`prehistoric:${connectionId}`, {
           symbol_selection_epoch: String(symbolSelectionEpoch),
