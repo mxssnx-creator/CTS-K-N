@@ -2126,6 +2126,7 @@ describe("requested regression guardrails", () => {
     expect(route).toContain("async function withProgressionTimeout")
     expect(route).toContain('withProgressionTimeout("log flush", connectionId, forceFlushLogs(connectionId), undefined)')
     expect(route).toContain("getProgressionLogs(connectionId, { flush: false })")
+    expect(route).toContain('withProgressionTimeout("recent logs", connectionId, getProgressionLogs(connectionId), [])')
     expect(route).toContain("returning live snapshot without blocking UI")
   })
 

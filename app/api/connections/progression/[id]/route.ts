@@ -451,6 +451,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       getProgressionLogs(connectionId, { flush: false }),
       [],
     )
+    const recentLogs = await withProgressionTimeout("recent logs", connectionId, getProgressionLogs(connectionId), [])
 
     const response = {
       success: true,
