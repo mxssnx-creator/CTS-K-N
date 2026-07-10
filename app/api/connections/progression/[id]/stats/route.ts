@@ -281,6 +281,21 @@ function aggregateOrdersBySymbol(
     return true
   }
 
+  function isFreshRuntimeSnapshot(hash: Record<string, any> | null | undefined, maxAgeMs = 120_000): boolean {
+    if (!hash || Object.keys(hash).length === 0) return false
+    const timestamp =
+      stableString(hash.updated_at) ||
+      stableString(hash.last_update) ||
+      stableString(hash.last_cycle_at) ||
+      stableString(hash.last_processor_heartbeat)
+    if (!timestamp) return false
+    const parsed = Number(timestamp)
+    const ts = Number.isFinite(parsed) && parsed > 1_000_000_000_000
+      ? parsed
+      : Date.parse(timestamp)
+    return Number.isFinite(ts) && Date.now() - ts >= 0 && Date.now() - ts <= maxAgeMs
+  }
+
   function parseProgressSettingsSnapshot(hash: Record<string, any>): Record<string, any> {
     return parseMaybeJson<Record<string, any>>(hash.progress_settings_snapshot, {})
   }
@@ -546,8 +561,8 @@ export async function GET(
 
     const rawEs = (engineState as Record<string, any>) || {}
     const rawEp = (engineProgression as Record<string, any>) || {}
-    const engineStateUsable = fallbackMatchesActive(progHash, rawEs)
-    const engineProgressionUsable = fallbackMatchesActive(progHash, rawEp)
+    const engineStateUsable = fallbackMatchesActive(progHash, rawEs) || isFreshRuntimeSnapshot(rawEs)
+    const engineProgressionUsable = fallbackMatchesActive(progHash, rawEp) || isFreshRuntimeSnapshot(rawEp)
     const es = engineStateUsable ? rawEs : {}
     const ep = engineProgressionUsable ? rawEp : {}
     const previousRun = {
@@ -1263,23 +1278,40 @@ export async function GET(
     const coordSaysRunning: boolean = coord
       ? coord.isEngineRunning(connectionId)
       : false
-    // If coordinator exists but says "not running", that's definitive.
-    // If coordinator doesn't exist yet (null, server just booted), fall back to
-    // Redis signals — don't assume stopped, since the coordinator may not have
-    // initialised yet.
-    const coordDefinitelyStopped = coord !== null && !coordSaysRunning
+    const globalEngineState: Record<string, string> =
+      (await client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>))) || {}
+    const globalIntent =
+      globalEngineState.operator_intent ||
+      globalEngineState.desired_status ||
+      globalEngineState.status ||
+      ""
+    const globalRunning = globalIntent === "running"
+    const globalPaused = globalIntent === "paused"
+    const processorHeartbeat = Math.max(
+      n((engineState as any)?.last_processor_heartbeat),
+      n((es as any)?.last_processor_heartbeat),
+    )
+    const hasFreshProcessorHeartbeat =
+      processorHeartbeat > 0 && Date.now() - processorHeartbeat < 90_000
+    // A missing local coordinator is NOT definitive in production/serverless:
+    // another worker may own the engine and publish fresh Redis heartbeats.
+    // Only mark stopped when local coordinator is absent AND Redis has no
+    // running intent/heartbeat proof.
+    const coordDefinitelyStopped =
+      coord !== null && !coordSaysRunning && !globalRunning && !hasFreshProcessorHeartbeat
 
     const engineIsStopped =
+      globalPaused ||
       coordDefinitelyStopped ||
       ep?.phase === "stopped" ||
-      es.status === "stopped" ||
-      es.status === "idle"
+      ((es.status === "stopped" || es.status === "idle") && !globalRunning && !hasFreshProcessorHeartbeat)
     const realtimeIsActive =
       !engineIsStopped &&
       (realtimeIndicationCycles > 0 ||
         ep?.phase === "live_trading" ||
         ep?.phase === "realtime" ||
-        es.status === "running")
+        es.status === "running" ||
+        (globalRunning && hasFreshProcessorHeartbeat))
 
     // ── BREAKDOWN section ────────────────────────────────���───────────────────
     // Indication per-type counts live in two places:
@@ -2559,8 +2591,9 @@ export async function GET(
         return "idle"
       }
       if (ep?.phase && ep.phase !== "unknown") return ep.phase
-      if (es.status === "stopped") return "stopped"
-      if (es.status === "idle")    return "idle"
+      if ((es.status === "stopped" || es.status === "idle") && !globalRunning && !hasFreshProcessorHeartbeat) {
+        return es.status === "stopped" ? "stopped" : "idle"
+      }
       if (es.status === "running" || realtimeIsActive) {
         if (historicIsComplete || es.prehistoric_data_loaded === "1" || es.prehistoric_data_loaded === true) {
           return "live_trading"

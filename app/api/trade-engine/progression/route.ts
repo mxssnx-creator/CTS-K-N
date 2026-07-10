@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { getActiveConnectionsForEngine, getConnectionTrades, getConnectionPositions, initRedis, getRedisClient } from "@/lib/redis-db"
+import { getActiveConnectionsForEngine, getConnectionTrades, getConnectionPositions, initRedis, getRedisClient, getSettings } from "@/lib/redis-db"
 import { SystemLogger } from "@/lib/system-logger"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 
@@ -78,21 +78,46 @@ export async function GET() {
     
     // OPTIMIZATION: Use Promise.allSettled for high-frequency non-blocking parallel execution
     const redis = getRedisClient()
+    const globalEngineState: Record<string, string> =
+      (await redis.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>))) || {}
+    const globalIntent =
+      globalEngineState.operator_intent ||
+      globalEngineState.desired_status ||
+      globalEngineState.status ||
+      "stopped"
+    const globalRunning = globalIntent === "running"
+    const globalPaused = globalIntent === "paused"
     const progressionData = await Promise.allSettled(
       activeConnections.map(async (conn) => {
         try {
           // OPTIMIZATION: Batch load all data in parallel per connection
-          const [trades, positions, progressionState, engineStatus] = await Promise.all([
+          const [trades, positions, progressionState, engineStatus, runtimeState, settingsRuntimeState, storedProgression] = await Promise.all([
             getConnectionTrades(conn.id).catch(() => []),
             getConnectionPositions(conn.id).catch(() => []),
             ProgressionStateManager.getProgressionState(conn.id).catch(() => ProgressionStateManager.getDefaultState(conn.id)),
             coordinator.getEngineStatus(conn.id).catch(() => null),
+            redis.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
+            redis.hgetall(`settings:trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
+            getSettings(`engine_progression:${conn.id}`).catch(() => ({})),
           ])
 
           const tradeCount = trades?.length || 0
           const pseudoCount = positions?.length || 0
-          const isEngineRunning = engineStatus !== null
-          const engineState = isEngineRunning ? "running" : "idle"
+          const processorHeartbeat = Math.max(
+            Number((runtimeState as any)?.last_processor_heartbeat || 0),
+            Number((settingsRuntimeState as any)?.last_processor_heartbeat || 0),
+          )
+          const hasFreshHeartbeat =
+            Number.isFinite(processorHeartbeat) && processorHeartbeat > 0 && Date.now() - processorHeartbeat < 90_000
+          const enabledForProcessing = conn.is_enabled_dashboard === true || conn.is_enabled_dashboard === "1"
+          const isEngineRunning = engineStatus !== null || (globalRunning && !globalPaused && hasFreshHeartbeat)
+          const engineState = isEngineRunning
+            ? "running"
+            : globalPaused
+              ? "paused"
+              : globalRunning && enabledForProcessing
+                ? "initializing"
+                : "idle"
           const updatedAt = progressionState.lastUpdate?.toISOString?.() || null
           const prehistoricLoaded = (progressionState.prehistoricCyclesCompleted || 0) > 0
           
@@ -105,6 +130,7 @@ export async function GET() {
             isLiveTrading: conn.is_live_trade,
             isEngineRunning,
             engineState,
+            engineProgression: storedProgression || {},
             tradeCount,
             pseudoPositionCount: pseudoCount,
             prehistoricDataLoaded: prehistoricLoaded,
