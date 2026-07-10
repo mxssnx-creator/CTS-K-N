@@ -311,7 +311,6 @@ export async function PATCH(
 
     const merged = { ...current, ...settings } as Record<string, unknown>
 
-    const merged = { ...current, ...settings }
     const incomingSymbolSource = typeof (settings as Record<string, unknown>).symbol_source === "string"
       ? String((settings as Record<string, unknown>).symbol_source)
       : undefined
@@ -357,326 +356,10 @@ export async function PATCH(
       updated_at: new Date().toISOString(),
     }
 
-    let effectiveConnection = (await updateConnection(id, updated)) || updated
-
-    // Persist the full Main Connection settings payload into both historical
-    // per-connection settings hashes. Some engine/progression readers consume
-    // the bare `connection_settings:{id}` hash while migration-seeded readers
-    // consume `settings:connection_settings:{id}`; keeping them in lock-step
-    // prevents a save from being overwritten by the other namespace later.
-    const serializedMergedSettings = serializeConnectionSettingsHash(merged as Record<string, unknown>)
-    if (Object.keys(serializedMergedSettings).length > 0) {
-      const redis = getRedisClient()
-      await Promise.all([
-        redis.hset(`connection_settings:${id}`, serializedMergedSettings),
-        redis.hset(`settings:connection_settings:${id}`, serializedMergedSettings).catch(() => 0),
-      ])
-
-      const progressionVisibleSettings = pickProgressionVisibleSettings(serializedMergedSettings)
-      if (Object.keys(progressionVisibleSettings).length > 0) {
-        await Promise.all([
-          redis.hset(`trade_engine_state:${id}`, {
-            ...progressionVisibleSettings,
-            connection_id: id,
-            updated_at: new Date().toISOString(),
-          }).catch(() => 0),
-          redis.hset(`settings:trade_engine_state:${id}`, {
-            ...progressionVisibleSettings,
-            connection_id: id,
-            updated_at: new Date().toISOString(),
-          }).catch(() => 0),
-        ])
-      }
-    }
-
-    // ── Flat eval-knob hash mirror (CRITICAL) ───────────────────────────
-    // The strategy coordinator and detailed-tracking read the per-eval
-    // knobs straight off the `connection_settings:{id}` Redis HASH via
-    // hgetall — NOT from the connection object's nested JSON. updateConnection
-    // only persists the connection hash (`connection:{id}`), so without this
-    // mirror the engine never sees operator changes and silently runs the
-    // built-in defaults (prevPosMinCount=5, prevPosWindow=25, etc.). Mirror
-    // every flat scalar the merged payload carries so the coordinator's
-    // 30s-cached hgetall picks them up on the next refresh window. Values
-    // are stringified because the emulator hash stores strings.
-    try {
-      const flatKnobs: Record<string, string> = {}
-      // ── Strategy coordination knobs ─────────────────────────────────────
-      const knobKeys = [
-        "prevPosMinCount",
-        "prevPosWindow",
-        "mainEvalPosCount",
-        "realEvalPosCount",
-        "minStep",
-        "maxStopLossRatio",
-        "trailingMinStep",
-      ] as const
-      for (const k of knobKeys) {
-        const v = (merged as Record<string, unknown>)[k]
-        if (typeof v === "number" && Number.isFinite(v)) {
-          flatKnobs[k] = String(v)
-          // Also write snake_case aliases so both naming styles resolve
-          const snake = k.replace(/([A-Z])/g, (m) => "_" + m.toLowerCase())
-          if (snake !== k) flatKnobs[snake] = String(v)
-        }
-      }
-
-      // ── Symbol selection fields ─────────────────────────────────────────
-      // Mirror symbol_order, symbol_count, and the resolved symbols list so
-      // the GET route can always read them from the hash regardless of whether
-      // they were also written to the connection JSON blob.
-      {
-        const order = (merged as Record<string, unknown>).symbol_order
-        if (typeof order === "string" && order.length > 0) flatKnobs.symbol_order = order
-
-        const count = Number((merged as Record<string, unknown>).symbol_count)
-        if (Number.isFinite(count) && count > 0) flatKnobs.symbol_count = String(Math.floor(count))
-
-        const syms = (merged as Record<string, unknown>).symbols
-        if (Array.isArray(syms) && syms.length > 0) {
-          flatKnobs.symbols = JSON.stringify(syms)
-          // Only mirror force_symbols when the list is an operator-confirmed
-          // selection. Fallback suggestions must preserve the currently active
-          // engine symbols while keeping symbol_order/count for later live
-          // recoordination.
-          if (!shouldPreserveActiveSymbols) {
-            flatKnobs.force_symbols = JSON.stringify(syms)
-          }
-        }
-      }
-
-      // ── Position / margin mode ──────────────────────────────────────────
-      {
-        const pm = (merged as Record<string, unknown>).position_mode
-        if (typeof pm === "string") flatKnobs.position_mode = pm
-
-        const mm = (merged as Record<string, unknown>).margin_mode
-        if (typeof mm === "string") flatKnobs.margin_mode = mm
-
-        const vt = (merged as Record<string, unknown>).volume_type
-        if (typeof vt === "string") flatKnobs.volume_type = vt
-      }
-
-      // ── System close flag ───────────────────────────────────────────────
-      {
-        const sco =
-          (merged as Record<string, unknown>).useSystemCloseOnly ??
-          (merged as Record<string, unknown>).use_system_close_only
-        if (typeof sco === "boolean") {
-          flatKnobs.useSystemCloseOnly  = sco ? "true" : "false"
-          flatKnobs.use_system_close_only = sco ? "true" : "false"
-        }
-      }
-
-      // ── Strategy coordination variant / axis / block flattening ─────────
-      // The dialog sends the full CoordinationSettings object nested under
-      // `coordination_settings`. The strategy coordinator's
-      // `loadCoordinationSettings()` reads FLAT scalar keys from the
-      // `connection_settings:{id}` hash (axisPrevEnabled,
-      // variantBlockEnabled, blockVolumeRatio, etc.). Without flattening
-      // here the engine ALWAYS uses its coded defaults (all variants on,
-      // all axes off, blockVolumeRatio=1.0) regardless of what the
-      // operator sets in the Connection Settings dialog.
-      {
-        const coord = (merged as Record<string, unknown>).coordination_settings as
-          | Record<string, unknown>
-          | undefined
-        if (coord && typeof coord === "object") {
-          // Variant toggles: variants.{trailing,block,dca}; pause is an axis, not a strategy variant.
-          //   → flat key variantTrailingEnabled, variantBlockEnabled, …
-          const variantsObj = coord.variants as Record<string, unknown> | undefined
-          if (variantsObj && typeof variantsObj === "object") {
-            for (const [vk, vv] of Object.entries(variantsObj)) {
-              if (typeof vv === "boolean" && ["trailing", "block", "dca"].includes(vk)) {
-                const cap = vk.charAt(0).toUpperCase() + vk.slice(1)
-                flatKnobs[`variant${cap}Enabled`] = vv ? "true" : "false"
-              }
-            }
-          }
-
-          // Axis toggles:  axes.{prev,last,cont,pause}.{enabled,maxWindow}
-          //   → flat keys axis{Prev,Last,Cont,Pause}Enabled and …MaxWindow
-          const axesObj = coord.axes as Record<string, Record<string, unknown>> | undefined
-          if (axesObj && typeof axesObj === "object") {
-            for (const [axisKey, axisVal] of Object.entries(axesObj)) {
-              if (axisVal && typeof axisVal === "object") {
-                const cap = axisKey.charAt(0).toUpperCase() + axisKey.slice(1)
-                if (typeof axisVal.enabled === "boolean") {
-                  flatKnobs[`axis${cap}Enabled`] = axisVal.enabled ? "true" : "false"
-                }
-                const mw = Number(axisVal.maxWindow)
-                if (Number.isFinite(mw) && mw >= 0) {
-                  flatKnobs[`axis${cap}MaxWindow`] = String(mw)
-                }
-              }
-            }
-          }
-
-          // Block-strategy tuning knobs (blockVolumeRatio 0.25-3.0,
-          // blockMaxStack 1-10, blockPauseCountRatio 1-4 step 0.5,
-          // blockActiveRealEnabled boolean).
-          // blockMaxStack 2-8, blockPauseCountRatio 1-4 step 0.5,
-          // blockActiveLiveEnabled boolean).
-          // Previously never written to the hash — engine always used 1.0/3.
-          const bvr = Number(coord.blockVolumeRatio)
-          if (Number.isFinite(bvr) && bvr > 0) {
-            flatKnobs.blockVolumeRatio = String(Math.max(0.25, Math.min(3.0, bvr)))
-          }
-          const bms = Number(coord.blockMaxStack)
-          if (Number.isFinite(bms) && bms >= 1) {
-            flatKnobs.blockMaxStack = String(Math.min(10, Math.max(1, Math.floor(bms))))
-          }
-          const bpcr = Number(coord.blockPauseCountRatio)
-          if (Number.isFinite(bpcr) && bpcr > 0) {
-            flatKnobs.blockPauseCountRatio = String(Math.max(1, Math.min(4, Math.round(bpcr * 2) / 2)))
-          }
-          const blockActiveReal =
-            typeof coord.blockActiveRealEnabled === "boolean"
-              ? coord.blockActiveRealEnabled
-              : typeof coord.blockActiveLiveEnabled === "boolean"
-                ? coord.blockActiveLiveEnabled
-                : undefined
-          if (typeof blockActiveReal === "boolean") {
-            flatKnobs.blockActiveRealEnabled = String(blockActiveReal)
-          }
-          if (typeof coord.blockActiveLiveEnabled === "boolean") {
-            flatKnobs.blockActiveLiveEnabled = String(coord.blockActiveLiveEnabled)
-          }
-        }
-      }
-
-      // ── Volume factor mirror ─────────────────────────────────────────────
-      // Live/Preset order sizing is operator configurable. Base pseudo
-      // positions are intentionally ratio/count based and must not expose or
-      // persist a separate "Base volume factor" knob, because the base stage
-      // never places exchange orders.
-      {
-        // Accept both field names: the dialog sends volume_factor_live, API callers may send live_volume_factor
-        const vflRaw = (merged as Record<string, unknown>).volume_factor_live
-          ?? (merged as Record<string, unknown>).live_volume_factor
-        const vfl = Number(vflRaw)
-        if (Number.isFinite(vfl) && vfl > 0) {
-          flatKnobs.volume_factor_live   = String(Math.max(0.1, Math.min(10, vfl)))
-          flatKnobs.live_volume_factor   = String(Math.max(0.1, Math.min(10, vfl)))
-        }
-        const vfp = Number((merged as Record<string, unknown>).volume_factor_preset
-          ?? (merged as Record<string, unknown>).preset_volume_factor)
-        if (Number.isFinite(vfp) && vfp > 0) {
-          flatKnobs.volume_factor_preset  = String(Math.max(0.1, Math.min(10, vfp)))
-          flatKnobs.preset_volume_factor  = String(Math.max(0.1, Math.min(10, vfp)))
-        }
-        const vsr = Number((merged as Record<string, unknown>).volume_step_ratio ?? (merged as Record<string, unknown>).volumeStepRatio)
-        if (Number.isFinite(vsr) && vsr > 0) {
-          flatKnobs.volume_step_ratio = String(Math.max(0.2, Math.min(1.8, vsr)))
-        }
-        // control_orders flag — whether to place SL/TP orders
-        const co = (merged as Record<string, unknown>).control_orders
-        if (co !== undefined && co !== null) {
-          flatKnobs.control_orders = co === true || co === "1" || co === "true" ? "1" : "0"
-        }
-      }
-
-      // ── Per-connection leverage mirror ──────────────────────────────────
-      // VolumeCalculator overlays the `connection_settings:{id}` hash on top
-      // of global app_settings, reading `leveragePercentage` (1–100) and
-      // `useMaximalLeverage` ("true"/"false"). Mirror them so per-connection
-      // leverage sizing actually takes effect.
-      {
-        const lev = Number((merged as Record<string, unknown>).leveragePercentage)
-        if (Number.isFinite(lev) && lev > 0) {
-          flatKnobs.leveragePercentage = String(Math.max(1, Math.min(100, lev)))
-        }
-        const useMax = (merged as Record<string, unknown>).useMaximalLeverage
-        if (typeof useMax === "boolean") flatKnobs.useMaximalLeverage = useMax ? "true" : "false"
-      }
-
-      // ── Per-channel PF / DDT / max-positions flattening (CRITICAL) ──────
-      // The dialog stores per-channel strategy tuning nested under
-      // `strategies.main.{base,main,real}` as:
-      //   min_profit_factor  (× multiplier)
-      //   max_drawdown_time  (MINUTES, slider 1–1440)
-      //   max_positions      (count)
-      // But the coordinator's `loadAppPFThresholds()` reads FLAT, differently
-      // named fields and expects DDT in HOURS:
-      //   baseProfitFactor / mainProfitFactor / realProfitFactor / liveProfitFactor
-      //   maxDrawdownTimeMainHours / ...RealHours / ...LiveHours
-      //   stageMinPosCountBase / ...Main / ...Real
-      // Until now nothing bridged the two, so per-channel edits silently never
-      // reached the engine (it used global app_settings / defaults forever).
-      // Flatten + unit-convert here so the coordinator's per-connection
-      // resolution (connection hash → global → default) picks them up.
-      const strat = (merged as Record<string, unknown>).strategies as
-        | Record<string, Record<string, { min_profit_factor?: number; max_drawdown_time?: number; max_positions?: number }>>
-        | undefined
-      const chan = strat?.main // the live/realtime profile drives the engine
-      if (chan) {
-        const pf = (raw: unknown): string | null => {
-          const n = Number(raw)
-          return Number.isFinite(n) && n > 0 ? String(Math.max(0, Math.min(5, n))) : null
-        }
-        const ddtMinToHr = (raw: unknown): string | null => {
-          const n = Number(raw)
-          if (!Number.isFinite(n) || n <= 0) return null
-          // minutes → hours, clamp to the coordinator's [1,72]h gate window
-          return String(Math.max(1, Math.min(72, n / 60)))
-        }
-        const posCount = (raw: unknown): string | null => {
-          const n = Number(raw)
-          return Number.isFinite(n) && n > 0 ? String(Math.floor(n)) : null
-        }
-        const pairs: Array<[string, string | null]> = [
-          ["baseProfitFactor", pf(chan.base?.min_profit_factor)],
-          ["mainProfitFactor", pf(chan.main?.min_profit_factor)],
-          ["realProfitFactor", pf(chan.real?.min_profit_factor)],
-          ["maxDrawdownTimeMainHours", ddtMinToHr(chan.main?.max_drawdown_time)],
-          ["maxDrawdownTimeRealHours", ddtMinToHr(chan.real?.max_drawdown_time)],
-          ["stageMinPosCountBase", posCount(chan.base?.max_positions)],
-          ["stageMinPosCountMain", posCount(chan.main?.max_positions)],
-          ["stageMinPosCountReal", posCount(chan.real?.max_positions)],
-        ]
-        for (const [k, v] of pairs) if (v !== null) flatKnobs[k] = v
-      }
-
-      if (Object.keys(flatKnobs).length > 0) {
-        const redis = getRedisClient()
-        const progressionVisibleKnobs = pickProgressionVisibleSettings(flatKnobs)
-        await Promise.all([
-          redis.hset(`connection_settings:${id}`, flatKnobs),
-          // Keep the settings:-prefixed mirror in lock-step with the bare hash.
-          // Different engine/progression readers historically preferred different
-          // namespaces; writing only one let a settings-dialog save bounce between
-          // old and new values until the next migration/refresh copied it over.
-          redis.hset(`settings:connection_settings:${id}`, flatKnobs).catch(() => 0),
-          Object.keys(progressionVisibleKnobs).length > 0
-            ? redis.hset(`trade_engine_state:${id}`, { ...progressionVisibleKnobs, connection_id: id, updated_at: new Date().toISOString() }).catch(() => 0)
-            : Promise.resolve(0),
-          Object.keys(progressionVisibleKnobs).length > 0
-            ? redis.hset(`settings:trade_engine_state:${id}`, { ...progressionVisibleKnobs, connection_id: id, updated_at: new Date().toISOString() }).catch(() => 0)
-            : Promise.resolve(0),
-        ])
-        const volumeConnectionPatch: Record<string, string> = {}
-        if (flatKnobs.volume_factor_live !== undefined) {
-          volumeConnectionPatch.live_volume_factor = flatKnobs.volume_factor_live
-        }
-        if (flatKnobs.volume_factor_preset !== undefined) {
-          volumeConnectionPatch.preset_volume_factor = flatKnobs.volume_factor_preset
-        }
-        if (flatKnobs.volume_step_ratio !== undefined) {
-          volumeConnectionPatch.volume_step_ratio = flatKnobs.volume_step_ratio
-        }
-        if (flatKnobs.volume_factor !== undefined) {
-          volumeConnectionPatch.volume_factor = flatKnobs.volume_factor
-        }
-        if (Object.keys(volumeConnectionPatch).length > 0) {
-          effectiveConnection = (await updateConnection(id, volumeConnectionPatch)) || {
-            ...effectiveConnection,
-            ...volumeConnectionPatch,
-          }
-        }
-      }
-    } catch (mirrorErr) {
-      console.error("[v0] [Settings] eval-knob hash mirror failed:", mirrorErr)
-    }
+    // Defer all Redis writes to the single ordered applyMainConnectionSettingsChange() call below.
+    // This prevents a running engine from observing partial settings, then falling
+    // back to older scoped/legacy mirrors during hot reload or coordinator restart.
+    let effectiveConnection = updated
 
     // ── Symbols → engine symbol source (auto-resolve top-N on save) ─────
     // The dialog saves `symbols` (manual list), `symbol_order` (volume /
@@ -770,81 +453,18 @@ export async function PATCH(
           merged.symbol_count = resolved.length
           merged.symbol_order = finalSymbolOrder
           console.log(`[v0] [Settings] Resolved ${resolved.length} symbol(s) for ${id} (order=${finalSymbolOrder}): ${resolved.join(", ")}`)
-          // 1. Persist as the connection's ACTIVE symbol source (what the engine reads).
-          const resolvedSymbolsJson = JSON.stringify(resolved)
-          effectiveConnection = (await updateConnection(id, {
-            active_symbols: resolvedSymbolsJson,
-            // Keep force_symbols in lock-step with the resolved selection.
-            // EngineManager.getSymbols() gives force_symbols precedence over
-            // active_symbols; leaving an older force_symbols list in place made
-            // a successful "save 12 symbols" still boot with the previous
-            // migration/admin override list.
-            force_symbols: resolvedSymbolsJson,
-            symbol_count: String(resolved.length),
-            symbol_order: order,
-          })) || { ...effectiveConnection, active_symbols: resolvedSymbolsJson, force_symbols: resolvedSymbolsJson, symbol_count: String(resolved.length), symbol_order: order }
-          // 2. Mirror into trade_engine_state (the engine's primary lookup) +
-          //    seed the prehistoric symbol total so the progress bar denominator
-          //    matches the new selection immediately.
-          const stateKey = `trade_engine_state:${id}`
-          const prevState = (await getSettings(stateKey)) || {}
-          const settingsConnectionKey = `connection:${id}`
-          const prevSettingsConnection = (await getSettings(settingsConnectionKey)) || {}
-          const resolvedStatePatch = {
-            connection_id: id,
-            symbols: resolvedSymbolsJson,
-            active_symbols: resolvedSymbolsJson,
-            force_symbols: resolvedSymbolsJson,
-            symbol_count: String(resolved.length),
-            symbol_order: order,
-            config_set_symbols_total: String(resolved.length),
-            updated_at: new Date().toISOString(),
-          }
-          await Promise.all([
-            setSettings(stateKey, {
-              ...prevState,
-              ...resolvedStatePatch,
-            }),
-            getRedisClient().hset(stateKey, resolvedStatePatch).catch(() => 0),
-          ])
-          // 3. Fast-path only: invalidate the running engine's in-memory
-          //    symbol cache in this process so the change takes effect on the
-          //    next tick without waiting for the durable reload event.
-          //    Correctness does NOT depend on this call: production may run
-          //    the API route and engine manager in different processes, so
-          //    the manager also invalidates its cache when it consumes the
-          //    Redis-backed connection_settings reload event below.
-          await setSettings(settingsConnectionKey, {
-            ...prevSettingsConnection,
-            connection_id: id,
-            symbols: resolvedSymbolsJson,
-            active_symbols: resolvedSymbolsJson,
-            force_symbols: resolvedSymbolsJson,
-            symbol_count: resolved.length,
-            symbol_order: order,
-            updated_at: new Date().toISOString(),
-          })
+          // Defer connection/trade-engine-state persistence for the resolved
+          // symbols to applyMainConnectionSettingsChange() below.
           ;(merged as Record<string, unknown>).active_symbols = resolved
           ;(merged as Record<string, unknown>).force_symbols = resolved
           ;(merged as Record<string, unknown>).symbol_count = resolved.length
           ;(merged as Record<string, unknown>).symbol_source = resolutionSource
-          // 3. Invalidate the running engine's in-memory symbol cache so the
-          //    change takes effect on the next tick without a restart.
-          try {
-            getTradeEngine()?.getEngineManager(id)?.invalidateSymbolsCache()
-          } catch { /* engine may not be running yet — state above is enough */ }
-          await persistNow().catch((persistErr: unknown) => {
-            console.warn(
-              "[v0] [Settings] Persisting resolved symbols failed:",
-              persistErr instanceof Error ? persistErr.message : persistErr,
-            )
-          })
           // The authoritative writes above are synchronous. Do not schedule
           // delayed re-assert timers from a settings route: a second dialog save
           // can happen before those timers fire, and the old delayed closure
           // would then overwrite the newer active_symbols/trade_engine_state,
           // making progression appear to switch between old and new settings.
-          console.log(`[v0] [Settings] Resolved ${resolved.length} symbol(s) for ${id} (order=${order}): ${resolved.join(", ")}`)
+          console.log(`[v0] [Settings] Resolved ${resolved.length} symbol(s) for ${id} (order=${finalSymbolOrder}): ${resolved.join(", ")}`)
         }
       } catch (symErr) {
         console.error("[v0] [Settings] symbol auto-resolve failed:", symErr)
@@ -1051,7 +671,7 @@ export async function PATCH(
       ? Array.from(new Set([...Object.keys(settings), ...Object.keys(flatKnobs), "connection_settings", "settings_version"]))
       : ["settings_version"]
 
-    const { connection: effectiveConnection, completion: recoordination } = await applyMainConnectionSettingsChange(
+    const { connection: appliedConnection, completion: recoordination } = await applyMainConnectionSettingsChange(
       id,
       { ...connection, connection_settings: current },
       {
@@ -1063,6 +683,7 @@ export async function PATCH(
         logTag: "PATCH /settings",
       },
     )
+    effectiveConnection = appliedConnection
 
     try {
       getTradeEngine()?.getEngineManager(id)?.invalidateSymbolsCache()

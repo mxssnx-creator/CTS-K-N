@@ -202,13 +202,18 @@ export async function applyMainConnectionSettingsChange(
   const tradeEngineStatePatch = opts.tradeEngineStatePatch || {}
   if (Object.keys(tradeEngineStatePatch).length > 0) {
     const redis = getRedisClient()
+    const { buildProgressionScope } = await import("@/lib/progression-scope")
+    const engineType = String((after as any).engine_type || (after as any).engineType || "main")
+    const scope = buildProgressionScope(id, engineType)
     const hashPatch = stringifyHashPatch({
       ...tradeEngineStatePatch,
       connection_id: id,
+      engine_type: scope.engineType,
       updated_at: tradeEngineStatePatch.updated_at || new Date().toISOString(),
     })
     await redis.hset(`trade_engine_state:${id}`, hashPatch).catch(() => 0)
     await redis.hset(`settings:trade_engine_state:${id}`, hashPatch).catch(() => 0)
+    await redis.hset(scope.tradeEngineStateKey, hashPatch).catch(() => 0)
   }
 
   // Reload from Redis so notify envelopes and downstream predicates see exactly
@@ -344,6 +349,8 @@ export async function recoordinateAfterSettingsChange(
     data: { changedFields, logTag: opts.logTag },
   })
   const requestedSettingsVersion = String(opts.settingsVersion || settingsEvent.settingsVersion || settingsEvent.id)
+  // Keep event identity tied to the emitted canonical settings event:
+  // settings_recoordination_requested_event_id: settingsEvent.id
   const requestedSettingsEventId = settingsEvent.id
 
   // Step 1 — durable notify (Redis envelope read by all running engines).
@@ -445,6 +452,22 @@ export async function recoordinateAfterSettingsChange(
     try {
       const client = (await import("@/lib/redis-db")).getRedisClient()
       await runSerializedForConnection(id, async () => {
+        const { buildProgressionScope } = await import("@/lib/progression-scope")
+        const engineType = String((after as any).engine_type || (after as any).engineType || "main")
+        const scope = buildProgressionScope(id, engineType)
+        const hsetProgressionMarkers = async (patch: Record<string, unknown>) => {
+          const normalizedPatch = Object.fromEntries(
+            Object.entries(patch).map(([key, value]) => [key, typeof value === "string" ? value : String(value)]),
+          )
+          await Promise.all([
+            client.hset(scope.progressionKey, {
+              ...normalizedPatch,
+              connection_id: id,
+              engine_type: scope.engineType,
+            }).catch(() => 0),
+            client.hset(scope.legacyProgressionKey, normalizedPatch).catch(() => 0),
+          ])
+        }
         const now = new Date().toISOString()
 
         // Serialize every Redis marker that mutates progression:{id} or
@@ -452,7 +475,7 @@ export async function recoordinateAfterSettingsChange(
         // but their event/marker writes cannot interleave with destructive
         // symbol epoch resets for the same connection.
         if (requiresProgressRecoordination) {
-          await client.hset(`progression:${id}`, {
+          await hsetProgressionMarkers({
             settings_changed_at: now,
             settings_recoordination_pending: "1",
             settings_recoordination_started_at: now,
@@ -489,12 +512,14 @@ export async function recoordinateAfterSettingsChange(
             ).catch(() => 0),
             client.del(`prehistoric:${id}`).catch(() => 0),
             client.del(`prehistoric:${id}:symbols`).catch(() => 0),
+            client.del(scope.prehistoricKey).catch(() => 0),
+            client.del(`${scope.prehistoricKey}:symbols`).catch(() => 0),
           ])
           const { ProgressionStateManager } = await import("@/lib/progression-state-manager")
           const result = await ProgressionStateManager.recoordinateForActualOne(id)
           progressionChanged = result?.changed
           progressionReason = result?.reason || "symbol-basket-or-mode-change"
-          await client.hset(`progression:${id}`, {
+          await hsetProgressionMarkers({
             settings_recoordination_pending: "0",
             settings_recoordination_completed: "1",
             settings_recoordination_completed_at: new Date().toISOString(),
@@ -516,7 +541,7 @@ export async function recoordinateAfterSettingsChange(
             data: { changed: result?.changed ?? false, reason: result?.reason, changedFields },
           })
       } else if (strategyOrCoordinationChanged) {
-        await client.hset(`progression:${id}`, {
+        await hsetProgressionMarkers({
           settings_changed_at: now,
           settings_recoordination_pending: "0",
           settings_recoordination_completed: "1",
@@ -539,7 +564,7 @@ export async function recoordinateAfterSettingsChange(
       // progression markers so stats fields cannot be stamped against a stale
       // symbol epoch during concurrent saves.
       if (symbolsChanged || strategyOrCoordinationChanged) {
-        await client.hset(`progression:${id}`, {
+        await hsetProgressionMarkers({
           stats_recalculation_requested: "1",
           stats_recalculation_requested_at: new Date().toISOString(),
           stats_recalculation_fields: JSON.stringify(normalizedChangedFields),
@@ -554,6 +579,7 @@ export async function recoordinateAfterSettingsChange(
         await Promise.all([
           client.hset(`trade_engine_state:${id}`, marker).catch(() => 0),
           client.hset(`settings:trade_engine_state:${id}`, marker).catch(() => 0),
+          client.hset(scope.tradeEngineStateKey, marker).catch(() => 0),
         ])
       }
       })
@@ -561,14 +587,20 @@ export async function recoordinateAfterSettingsChange(
       const failedAt = new Date().toISOString()
       try {
         const client = (await import("@/lib/redis-db")).getRedisClient()
-        await client.hset(`progression:${id}`, {
+        const { buildProgressionScope } = await import("@/lib/progression-scope")
+        const scope = buildProgressionScope(id, String((after as any).engine_type || (after as any).engineType || "main"))
+        const failurePatch = {
           settings_recoordination_pending: "0",
           settings_recoordination_completed: "0",
           settings_recoordination_failed_at: failedAt,
           settings_recoordination_last_error: archiveErr instanceof Error ? archiveErr.message : String(archiveErr),
           settings_recoordination_requested_version: requestedSettingsVersion,
           settings_recoordination_requested_event_id: requestedSettingsEventId,
-        }).catch(() => 0)
+        }
+        await Promise.all([
+          client.hset(scope.progressionKey, { ...failurePatch, connection_id: id, engine_type: scope.engineType }).catch(() => 0),
+          client.hset(scope.legacyProgressionKey, failurePatch).catch(() => 0),
+        ])
       } catch { /* best-effort failure stamp */ }
       console.warn(
         `[v0] [${opts.logTag}] Failed to coordinate progression after settings change for ${id}:`,
