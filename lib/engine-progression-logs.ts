@@ -42,10 +42,21 @@ const LOG_FLUSH_TIMEOUT_MS = 300
 
 // Important phases that should flush immediately
 const IMMEDIATE_FLUSH_PHASES = [
-  "initializing", "prehistoric_data", "indications", "strategies", 
-  "realtime", "live_trading", "error", "engine_started", "engine_stopped",
+  "initializing", "prehistoric_data", "error", "engine_started", "engine_stopped",
   "engine_starting", "engine_error", "quickstart"
 ]
+
+function isImmediateFlushPhase(phase: string): boolean {
+  // Keep lifecycle transitions fast, but do not treat high-frequency
+  // per-symbol/per-set phases such as `indications`, `indications_sets`,
+  // `strategies`, `strategies_realtime`, `realtime`, or `live_trading`
+  // order attempts as console/log
+  // flush blockers on every event. The previous substring check matched
+  // thousands of hot-path events during 12-symbol dev/prod comparison runs and
+  // could starve dashboard progress endpoints behind stdout/Redis log churn.
+  if (phase.startsWith("quickstart")) return true
+  return IMMEDIATE_FLUSH_PHASES.includes(phase)
+}
 
 /**
  * Log a progression event for a connection
@@ -90,7 +101,7 @@ export async function logProgressionEvent(
     }
     
     // Immediate flush for important phases or errors
-    const isImportant = IMMEDIATE_FLUSH_PHASES.some(p => phase.includes(p)) || level === "error" || level === "warning"
+    const isImportant = isImmediateFlushPhase(phase) || level === "error" || level === "warning"
     if (isImportant || buffer.length >= BUFFER_FLUSH_SIZE) {
       // Never let Redis logging latency block live trading/progression. The
       // periodic flush remains the durability safety net.
@@ -167,10 +178,18 @@ export async function forceFlushLogs(connectionId: string): Promise<void> {
  * Get all progression logs for a connection
  * OPTIMIZED: Uses native Redis list operations and forces flush first
  */
-export async function getProgressionLogs(connectionId: string): Promise<ProgressionLogEntry[]> {
+export async function getProgressionLogs(
+  connectionId: string,
+  options: { flush?: boolean } = {},
+): Promise<ProgressionLogEntry[]> {
   try {
     // Force flush all pending logs first to ensure we get the latest entries
-    await flushAllLogBuffers()
+    // for log-detail views. Progress/status routes can pass flush:false after
+    // doing their own bounded connection-local flush, avoiding a global flush
+    // fan-out on every card poll.
+    if (options.flush !== false) {
+      await flushAllLogBuffers()
+    }
     
     const client = getRedisClient()
     const logKey = `engine_logs:${connectionId}`

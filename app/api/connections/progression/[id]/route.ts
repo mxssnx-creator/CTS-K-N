@@ -39,6 +39,36 @@ function parseSymbolList(value: unknown): string[] {
     .filter(Boolean)
 }
 
+
+const PROGRESSION_AUX_TIMEOUT_MS = 750
+
+async function withProgressionTimeout<T>(
+  label: string,
+  connectionId: string,
+  work: Promise<T>,
+  fallback: T,
+  timeoutMs = PROGRESSION_AUX_TIMEOUT_MS,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => {
+          console.warn(`[v0] [ProgressionAPI] ${label} timed out for ${connectionId}; returning live snapshot without blocking UI`)
+          resolve(fallback)
+        }, timeoutMs)
+        timer.unref?.()
+      }),
+    ])
+  } catch (error) {
+    console.warn(`[v0] [ProgressionAPI] ${label} failed for ${connectionId}:`, error)
+    return fallback
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 function getConfiguredSymbolCount(connection: any, engineState: any): number {
   const canonicalSelectedSymbols = normalizeSymbolList(engineState?.selected_symbols)
   const canonicalTotal = Math.max(toNumber(engineState?.config_set_symbols_total), canonicalSelectedSymbols.length)
@@ -79,12 +109,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return getErrorResponse(connectionId, "Redis initialization failed")
     }
     
-    // Force flush any pending logs before fetching
-    try {
-      await forceFlushLogs(connectionId)
-    } catch (flushErr) {
-      console.warn(`[v0] [ProgressionAPI] Failed to flush logs for ${connectionId}:`, flushErr)
-    }
+    // Keep the card/progress endpoint responsive even while dev/prod engines are
+    // producing heavy logs. A stale log buffer must never block the live
+    // progression/stats snapshot used by Main Connections cards.
+    await withProgressionTimeout("log flush", connectionId, forceFlushLogs(connectionId), undefined)
 
     // Get connection details for context
     const connection = await getConnection(connectionId).catch((e) => {
@@ -415,8 +443,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const phaseOrder = ["idle", "initializing", "prehistoric_data", "indications", "strategies", "realtime", "live_trading"]
     const currentIdx = phaseOrder.indexOf(phase)
 
-    // Get recent logs for this connection
-    const recentLogs = await getProgressionLogs(connectionId)
+    // Get recent logs for this connection, but do not let logging I/O block
+    // progress/stats rendering during high-throughput recoordination runs.
+    const recentLogs = await withProgressionTimeout(
+      "recent logs",
+      connectionId,
+      getProgressionLogs(connectionId, { flush: false }),
+      [],
+    )
 
     const response = {
       success: true,
