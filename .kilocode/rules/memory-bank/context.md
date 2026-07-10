@@ -249,3 +249,5 @@ export async function GET() {
 - [x] Dashboard settings event fix: unversioned `connection-settings-updated` events now refresh immediately without arming the recoordination watchdog, preventing false "Settings recoordination did not confirm" toasts from legacy/slider settings saves.
 
 - [x] Production progression unstuck: prehistoric bootstrap is now deadline-wrapped and the continuous prehistoric first-pass loop opens live gates after a bounded no-step fallback, so a hung/empty historic load cannot leave a connection permanently stuck before realtime/live processing.
+
+- 2026-07-10 | Symbol resolution fallback preservation: Main Connection settings saves now carry symbol resolution source metadata, preserve existing active/forced engine symbols when live ranking falls back unless the operator explicitly confirms/manual-selects the list, return a save warning, and keep symbol_order/symbol_count for the next successful recoordination. The settings dialog now displays the warning and keeps the previous active-symbol preview instead of implying fallback symbols are active.
