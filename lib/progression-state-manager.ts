@@ -91,6 +91,7 @@ import { publishEngineEvent } from "@/lib/engine-event-bus"
 import { getRedisClient, initRedis, setSettings } from "@/lib/redis-db"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
+import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from "@/lib/progression-fingerprint"
 
 export interface ProgressionRecoordinationResult {
   changed: boolean
@@ -989,49 +990,20 @@ export class ProgressionStateManager {
       const liveSymbolsHash = currentSymbols.slice().sort().join("|")
 
       // ── Settings fingerprint ────────────────────────────────────────────
-      // Fields that fundamentally change what the progression computes.
-      // A progression born for is_live_trade=0 must be scrapped when
-      // the operator enables live trading (different code paths, different
-      // position sets). Likewise for testnet/preset mode switches and
-      // connection_method (library vs websocket), and the margin/position
-      // configuration that drives the exchange connector. We compare the
-      // *stored* snapshot (captured at engine-start) to the *live* values
-      // so the first settings-save that differs triggers a clean restart.
-      const fpValue = (key: string, fallback = ""): string => {
-        const v = (connectionSettings as any)[key] ?? (state as any)[key] ?? (connData as any)[key] ?? fallback
-        if (v === undefined || v === null) return fallback
-        if (typeof v === "object") {
-          try { return JSON.stringify(v) } catch { return fallback }
-        }
-        return String(v)
-      }
-      const progressionFingerprintFields = [
-        "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
-        "profitFactorMin",
-        "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
-        "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
-        "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
-        "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep",
-        "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
-        "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
-        "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio",
-        "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
-        "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
-        "live_volume_factor", "preset_volume_factor", "volume_factor_live", "volume_factor_preset",
-        "volume_step_ratio", "volume_factor", "leveragePercentage", "useMaximalLeverage",
-        "maxLeverage", "margin_type", "position_mode", "useSystemCloseOnly", "use_system_close_only",
-        "coordination_settings", "strategies", "indications", "active_indications",
-      ]
-
-      const liveFingerprint = JSON.stringify({
+      // Centralized fingerprint construction keeps recoordination comparisons
+      // aligned with engine-start snapshot stamping.
+      const liveFingerprint = buildProgressionFingerprint({
+        connectionId,
         engineType: engineType || "main",
-        is_live_trade: connData.is_live_trade || "0",
-        is_testnet: connData.is_testnet || "0",
-        is_preset_trade: connData.is_preset_trade || "0",
-        connection_method: connData.connection_method || "library",
-        margin_type: connData.margin_type || "cross",
-        position_mode: connData.position_mode || "hedge",
-        settings: Object.fromEntries(progressionFingerprintFields.map((field) => [field, fpValue(field)])),
+        connData,
+        tradeEngineState: state,
+        connectionSettings,
+      })
+      const liveFingerprintSettings = buildProgressionFingerprintSettings({
+        engineType: engineType || "main",
+        connData,
+        tradeEngineState: state,
+        connectionSettings,
       })
 
       // The stored snapshot is a JSON blob; parse it gracefully.
@@ -1067,7 +1039,7 @@ export class ProgressionStateManager {
         margin_type: connData.margin_type || "cross",
         position_mode: connData.position_mode || "hedge",
         progression_fingerprint: liveFingerprint,
-        settings: Object.fromEntries(progressionFingerprintFields.map((field) => [field, fpValue(field)])),
+        settings: liveFingerprintSettings,
         updated_at: new Date().toISOString(),
       }
 
@@ -1329,6 +1301,16 @@ export class ProgressionStateManager {
 
       return { changed: false, reason: "active progression already matches current state" }
     } catch (err) {
+      const failedAt = new Date().toISOString()
+      try {
+        const client = getRedisClient()
+        await client?.hset?.(`progression:${connectionId}`, {
+          settings_recoordination_pending: "0",
+          settings_recoordination_completed: "0",
+          settings_recoordination_failed_at: failedAt,
+          settings_recoordination_last_error: err instanceof Error ? err.message : String(err),
+        })
+      } catch { /* best-effort failure stamp */ }
       console.warn(`[v0] [Progression] recoordinateForActualOne failed for ${connectionId}:`, err)
       return {
         changed: false,

@@ -2,6 +2,14 @@ import { NextResponse } from "next/server"
 import { getConnection, initRedis } from "@/lib/redis-db"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
 
+const FALLBACK_SYMBOLS = [
+  "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+  "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
+  "ATOMUSDT", "LTCUSDT", "UNIUSDT", "NEARUSDT", "MATICUSDT",
+  "OPUSDT", "ARBUSDT", "APTUSDT", "SUIUSDT", "INJUSDT",
+  "TIAUSDT", "SEIUSDT", "WLDUSDT", "PYTHUSDT", "JUPUSDT",
+]
+
 export const dynamic = "force-dynamic"
 
 /**
@@ -63,20 +71,14 @@ export async function GET(
     }
 
     // Hardcoded safe-majors fallback — always available offline
-    const fallback = [
-      "BTCUSDT",  "ETHUSDT",  "SOLUSDT",  "BNBUSDT",  "XRPUSDT",
-      "DOGEUSDT", "ADAUSDT",  "AVAXUSDT", "LINKUSDT", "DOTUSDT",
-      "ATOMUSDT", "LTCUSDT",  "UNIUSDT",  "NEARUSDT", "MATICUSDT",
-      "OPUSDT",   "ARBUSDT",  "APTUSDT",  "SUIUSDT",  "INJUSDT",
-      "TIAUSDT",  "SEIUSDT",  "WLDUSDT",  "PYTHUSDT", "JUPUSDT",
-    ]
     return NextResponse.json({
-      symbols:  fallback.slice(0, count),
-      tickers:  fallback.slice(0, count).map((s, i) => ({ symbol: s, priceChangePercent: 0.5, volume: 1000 - i * 10 })),
+      symbols:  FALLBACK_SYMBOLS.slice(0, count),
+      tickers:  FALLBACK_SYMBOLS.slice(0, count).map((s, i) => ({ symbol: s, priceChangePercent: 0.5, volume: 1000 - i * 10 })),
       source:   "fallback",
       sort,
       exchange,
-      count:    Math.min(count, fallback.length),
+      warning: "Live symbol ranking failed; returned offline fallback symbols for manual review.",
+      count:    Math.min(count, FALLBACK_SYMBOLS.length),
     })
   } catch (error) {
     console.error("[v0] [symbols] Unexpected error:", error)

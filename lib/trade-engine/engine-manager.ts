@@ -264,6 +264,7 @@ import {
 } from "./progression-lock"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { fetchTopSymbols } from "@/lib/top-symbols"
+import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from "@/lib/progression-fingerprint"
 
 /**
  * Per-symbol fan-out concurrency cap.
@@ -801,38 +802,18 @@ export class TradeEngineManager {
           ...((await redisClient.hgetall(`settings:connection_settings:${this.connectionId}`).catch(() => ({}))) as Record<string, string>),
           ...((await redisClient.hgetall(`connection_settings:${this.connectionId}`).catch(() => ({}))) as Record<string, string>),
         }
-        const fpValue = (key: string, fallback = ""): string => {
-          const v = (connectionSettings as any)[key] ?? (state as any)[key] ?? (connData as any)[key] ?? fallback
-          if (v === undefined || v === null) return fallback
-          if (typeof v === "object") {
-            try { return JSON.stringify(v) } catch { return fallback }
-          }
-          return String(v)
-        }
-        const progressionFingerprintFields = [
-          "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
-          "profitFactorMin",
-          "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
-          "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
-          "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
-          "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
-          "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
-          "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio",
-          "minimal_step_count", "minimalStepCount", "minStep",
-          "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
-          "live_volume_factor", "preset_volume_factor", "volume_factor_live", "volume_factor_preset",
-          "volume_step_ratio", "volume_factor",
-          "coordination_settings", "strategies", "indications", "active_indications",
-        ]
-        const settingsFingerprint = JSON.stringify({
+        const settingsFingerprint = buildProgressionFingerprint({
+          connectionId: this.connectionId,
           engineType: config.engine_type || "main",
-          is_live_trade: connData.is_live_trade || "0",
-          is_testnet: connData.is_testnet || "0",
-          is_preset_trade: connData.is_preset_trade || "0",
-          connection_method: connData.connection_method || "library",
-          margin_type: connData.margin_type || "cross",
-          position_mode: connData.position_mode || "hedge",
-          settings: Object.fromEntries(progressionFingerprintFields.map((field) => [field, fpValue(field)])),
+          connData,
+          tradeEngineState: state,
+          connectionSettings,
+        })
+        const fingerprintSettings = buildProgressionFingerprintSettings({
+          engineType: config.engine_type || "main",
+          connData,
+          tradeEngineState: state,
+          connectionSettings,
         })
         const settingsSnapshot = {
           symbol_count: symbolCount,
@@ -846,7 +827,7 @@ export class TradeEngineManager {
           margin_type: connData.margin_type || "cross",
           position_mode: connData.position_mode || "hedge",
           progression_fingerprint: settingsFingerprint,
-          settings: Object.fromEntries(progressionFingerprintFields.map((field) => [field, fpValue(field)])),
+          settings: fingerprintSettings,
           updated_at: new Date().toISOString(),
         }
 
@@ -4539,12 +4520,18 @@ export class TradeEngineManager {
       const completedAt = new Date().toISOString()
       const appliedVersion = String(event.timestamp || completedAt)
       await getRedisClient().hset(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, {
+      const eventValues = (event.newValues || {}) as Record<string, unknown>
+      const appliedVersion = String(eventValues.settings_version || eventValues.updated_at || event.timestamp || completedAt)
+      const appliedEventId = String(eventValues.settings_event_id || appliedVersion)
+      await getRedisClient().hset(`progression:${this.connectionId}`, {
         settings_recoordination_pending: "0",
         strategy_recompute_requested: "0",
         settings_recoordination_completed_at: completedAt,
         settings_recoordination_applied_at: completedAt,
         settings_recoordination_applied_version: appliedVersion,
-        settings_recoordination_applied_event_id: appliedVersion,
+        settings_recoordination_applied_event_id: appliedEventId,
+        settings_recoordination_requested_version: appliedVersion,
+        settings_recoordination_requested_event_id: appliedEventId,
         settings_recoordination_applied_fields: JSON.stringify(event.changedFields || []),
       })
       await getRedisClient().hdel?.(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, "settings_recoordination_last_error")
@@ -4556,13 +4543,23 @@ export class TradeEngineManager {
     }
   }
 
-  private async stampSettingsRecoordinationFailed(error: unknown): Promise<void> {
+  private async stampSettingsRecoordinationFailed(
+    error: unknown,
+    event?: import("@/lib/settings-coordinator").SettingsChangeEvent | null,
+  ): Promise<void> {
     try {
       await getRedisClient().hset(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, {
         settings_recoordination_pending: "1",
+      const eventValues = (event?.newValues || {}) as Record<string, unknown>
+      const requestedVersion = String(eventValues.settings_version || eventValues.updated_at || event?.timestamp || "")
+      const requestedEventId = String(eventValues.settings_event_id || requestedVersion)
+      await getRedisClient().hset(`progression:${this.connectionId}`, {
+        settings_recoordination_pending: "0",
         strategy_recompute_requested: "1",
         settings_recoordination_last_error: error instanceof Error ? error.message : String(error),
         settings_recoordination_failed_at: new Date().toISOString(),
+        ...(requestedVersion ? { settings_recoordination_requested_version: requestedVersion } : {}),
+        ...(requestedEventId ? { settings_recoordination_requested_event_id: requestedEventId } : {}),
       })
     } catch (stampErr) {
       console.warn(
@@ -4580,9 +4577,10 @@ export class TradeEngineManager {
   private async applyPendingSettingsChange(): Promise<void> {
     if (this.settingsApplying) return
     this.settingsApplying = true
+    let event: import("@/lib/settings-coordinator").SettingsChangeEvent | null = null
     try {
       const { getPendingChanges, clearPendingChanges } = await import("@/lib/settings-coordinator")
-      const event = await getPendingChanges(this.connectionId)
+      event = await getPendingChanges(this.connectionId)
       if (!event) return
 
       const changeType = event.changeType
@@ -4615,7 +4613,7 @@ export class TradeEngineManager {
       await clearPendingChanges(this.connectionId)
       await this.stampSettingsRecoordinationApplied(event)
     } catch (err) {
-      await this.stampSettingsRecoordinationFailed(err)
+      await this.stampSettingsRecoordinationFailed(err, event)
       console.warn(
         `[v0] [Engine ${this.connectionId}] applyPendingSettingsChange failed:`,
         err instanceof Error ? err.message : String(err),
