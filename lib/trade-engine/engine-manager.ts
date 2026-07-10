@@ -4179,7 +4179,9 @@ export class TradeEngineManager {
     subProgress?: { current: number; total: number; item?: string }
   ): Promise<void> {
     try {
-      const key = buildProgressionScope(this.connectionId, this.currentEngineType).engineProgressionKey
+      const scope = buildProgressionScope(this.connectionId, this.currentEngineType)
+      const key = scope.engineProgressionKey
+      const legacyKey = `engine_progression:${this.connectionId}`
       const progressionData = {
         phase,
         progress: Math.min(100, Math.max(0, progress)),
@@ -4188,10 +4190,14 @@ export class TradeEngineManager {
         sub_total: subProgress?.total || 0,
         sub_item: subProgress?.item || "",
         connection_id: this.connectionId,
+        engine_type: scope.engineType,
         updated_at: new Date().toISOString(),
       }
 
-      await setSettings(key, progressionData)
+      await Promise.all([
+        setSettings(key, progressionData),
+        setSettings(legacyKey, progressionData).catch(() => undefined),
+      ])
 
       // Log progression update with full details
       const msg = subProgress && subProgress.total > 0

@@ -49,8 +49,17 @@ export interface ProgressionWriteOptions {
   skipEpochValidation?: boolean
 }
 
+function progressionScope(connectionId: string, engineType = "main") {
+  return buildProgressionScope(connectionId, engineType)
+}
+
 function progressionKey(connectionId: string, engineType = "main"): string {
-  return buildProgressionScope(connectionId, engineType).progressionKey
+  return progressionScope(connectionId, engineType).progressionKey
+}
+
+function legacyProgressionKey(connectionId: string, engineType = "main"): string | null {
+  const scope = progressionScope(connectionId, engineType)
+  return scope.legacyProgressionKey === scope.progressionKey ? null : scope.legacyProgressionKey
 }
 
 /**
@@ -101,13 +110,19 @@ export async function initializeProgression(
 
   try {
     const key = progressionKey(connectionId, engineType)
+    const legacyKey = legacyProgressionKey(connectionId, engineType)
     const fields = {
       epoch: String(epoch),
+      connection_id: connectionId,
+      engine_type: engineType,
       ...Object.fromEntries(Object.entries(initialFields).map(([k, v]) => [k, String(v)])),
     }
 
     // Use HSET to atomically set all fields
-    await (client as any).hset(key, fields)
+    await Promise.all([
+      (client as any).hset(key, fields),
+      legacyKey ? (client as any).hset(legacyKey, fields).catch(() => 0) : Promise.resolve(0),
+    ])
     return true
   } catch (err) {
     console.warn(
@@ -145,15 +160,22 @@ export async function updateProgressionSnapshot(
 
   try {
     const key = progressionKey(opts.connectionId, opts.engineType)
+    const legacyKey = legacyProgressionKey(opts.connectionId, opts.engineType)
 
     // Prepare all fields for atomic HSET
-    const fields: Record<string, string> = {}
+    const fields: Record<string, string> = {
+      connection_id: opts.connectionId,
+      engine_type: opts.engineType || "main",
+    }
     for (const mut of mutations) {
       fields[mut.field] = String(mut.value)
     }
 
     // Atomic write
-    await (client as any).hset(key, fields)
+    await Promise.all([
+      (client as any).hset(key, fields),
+      legacyKey ? (client as any).hset(legacyKey, fields).catch(() => 0) : Promise.resolve(0),
+    ])
     return mutations.length
   } catch (err) {
     console.warn(
@@ -188,7 +210,12 @@ export async function hsetProgression(
 
   try {
     const key = progressionKey(connectionId, opts.engineType)
-    await (client as any).hset(key, field, String(value))
+    const legacyKey = legacyProgressionKey(connectionId, opts.engineType)
+    await Promise.all([
+      (client as any).hset(key, field, String(value)),
+      (client as any).hset(key, { connection_id: connectionId, engine_type: opts.engineType || "main" }).catch(() => 0),
+      legacyKey ? (client as any).hset(legacyKey, field, String(value)).catch(() => 0) : Promise.resolve(0),
+    ])
     return true
   } catch (err) {
     console.warn(
@@ -223,7 +250,12 @@ export async function hincrbyProgression(
 
   try {
     const key = progressionKey(connectionId, opts.engineType)
+    const legacyKey = legacyProgressionKey(connectionId, opts.engineType)
     const newValue = await (client as any).hincrby(key, field, increment)
+    await Promise.all([
+      (client as any).hset(key, { connection_id: connectionId, engine_type: opts.engineType || "main" }).catch(() => 0),
+      legacyKey ? (client as any).hincrby(legacyKey, field, increment).catch(() => 0) : Promise.resolve(0),
+    ])
     return newValue as number
   } catch (err) {
     console.warn(
@@ -260,20 +292,27 @@ export async function hincrbyProgressionBatch(
 
   try {
     const key = progressionKey(connectionId, opts.engineType)
+    const legacyKey = legacyProgressionKey(connectionId, opts.engineType)
     // Pipeline all HINCRBY commands
     const pipeline = (client as any).pipeline?.()
     if (!pipeline) {
       // Fallback if pipeline not available
       for (const [field, inc] of Object.entries(increments)) {
-        await (client as any).hincrby(key, field, inc)
+        await Promise.all([
+          (client as any).hincrby(key, field, inc),
+          legacyKey ? (client as any).hincrby(legacyKey, field, inc).catch(() => 0) : Promise.resolve(0),
+        ])
       }
+      await (client as any).hset(key, { connection_id: connectionId, engine_type: opts.engineType || "main" }).catch(() => 0)
       return true
     }
 
     for (const [field, inc] of Object.entries(increments)) {
       pipeline.hincrby(key, field, inc)
+      if (legacyKey) pipeline.hincrby(legacyKey, field, inc)
     }
     await pipeline.exec()
+    await (client as any).hset(key, { connection_id: connectionId, engine_type: opts.engineType || "main" }).catch(() => 0)
     return true
   } catch (err) {
     console.warn(
@@ -294,8 +333,14 @@ export async function getProgressionSnapshot(connectionId: string, engineType = 
 
   try {
     const key = progressionKey(connectionId, engineType)
-    const result = await (client as any).hgetall(key)
-    return (result as Record<string, string>) || null
+    const result = ((await (client as any).hgetall(key)) || {}) as Record<string, string>
+    if (Object.keys(result).length > 0) return result
+    const legacyKey = legacyProgressionKey(connectionId, engineType)
+    if (legacyKey) {
+      const legacy = ((await (client as any).hgetall(legacyKey).catch(() => null)) || {}) as Record<string, string>
+      return Object.keys(legacy).length > 0 ? legacy : null
+    }
+    return null
   } catch (err) {
     console.warn(
       `[ProgressionWrites] Failed to fetch progression for ${connectionId}:`,
@@ -315,7 +360,11 @@ export async function deleteProgression(connectionId: string, engineType = "main
 
   try {
     const key = progressionKey(connectionId, engineType)
-    await client.del(key)
+    const legacyKey = legacyProgressionKey(connectionId, engineType)
+    await Promise.all([
+      client.del(key),
+      legacyKey ? client.del(legacyKey).catch(() => 0) : Promise.resolve(0),
+    ])
     return true
   } catch (err) {
     console.warn(

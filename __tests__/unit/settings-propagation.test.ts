@@ -148,6 +148,21 @@ describe("settings propagation", () => {
     expect(source).toContain("notifySettingsChanged")
   })
 
+  test("canonical settings PATCH has no pre-recoordination partial Redis writes", () => {
+    const fs = require("fs")
+    const path = require("path")
+    const source = fs.readFileSync(path.join(process.cwd(), "app/api/settings/connections/[id]/settings/route.ts"), "utf8")
+    const patchSource = source.slice(source.indexOf("export async function PATCH"))
+    const beforeApply = patchSource.slice(0, patchSource.indexOf("const { connection: appliedConnection, completion: recoordination } = await applyMainConnectionSettingsChange("))
+
+    expect(beforeApply).toContain("let effectiveConnection = updated")
+    expect(beforeApply).not.toContain("updateConnection(id, updated)")
+    expect(beforeApply).not.toContain("redis.hset(`connection_settings:${id}`")
+    expect(beforeApply).not.toContain("redis.hset(`trade_engine_state:${id}`")
+    expect(beforeApply).not.toContain("setSettings(stateKey")
+    expect(beforeApply).not.toContain("updateConnection(id, {")
+  })
+
   test("notifySettingsChanged writes dirty flags through raw Redis instead of setSettings", () => {
     const fs = require("fs")
     const path = require("path")

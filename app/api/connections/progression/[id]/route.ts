@@ -98,11 +98,18 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const progression = await getSettings(scope.engineProgressionKey).catch((e) => {
       console.warn(`[v0] [ProgressionAPI] Failed to get progression settings for ${connectionId}:`, e)
       return {}
+    }).then(async (scoped) => {
+      if (scoped && Object.keys(scoped).length > 0) return scoped
+      return getSettings(`engine_progression:${connectionId}`).catch(() => ({}))
     })
     
     // Get engine state from the correct Redis key: trade_engine_state:{connectionId}
     const client = getRedisClient()
-    const engineState = await getSettings(`trade_engine_state:${connectionId}:${engineType}`).catch((e) => {
+    const engineState = await getSettings(scope.tradeEngineStateKey).catch(() =>
+      getSettings(`trade_engine_state:${connectionId}:${engineType}`).catch(() =>
+        getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))
+      )
+    ).catch((e) => {
       console.warn(`[v0] [ProgressionAPI] Failed to get engine state for ${connectionId}:`, e)
       return {}
     })
@@ -222,7 +229,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // (which can be non-zero on engine restart from a previous live run).
     // The downstream auto-derivation only kicks in once prehistoric is
     // truly complete, so the user always sees the honest phase + percent.
-    const prehistoricDoneRaw = await client?.get(`prehistoric:${connectionId}:done`).catch(() => null)
+    const prehistoricDoneRaw =
+      await client?.get(`${scope.prehistoricKey}:done`).catch(() => null) ||
+      await client?.get(`prehistoric:${connectionId}:done`).catch(() => null)
     const prehistoricDone = String(prehistoricDoneRaw) === "1"
 
     if (engineRunning && !prehistoricDone) {

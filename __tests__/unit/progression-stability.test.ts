@@ -63,4 +63,62 @@ describe('Progression State Manager - Stability Tests', () => {
       expect(multiplier).toBe(0.5)
     })
   })
+
+  describe('Scoped progression regression guards', () => {
+    test('stats route keeps scoped progression namespaces aligned and stale fallbacks isolated', () => {
+      const fs = require('fs')
+      const path = require('path')
+      const source = fs.readFileSync(path.join(process.cwd(), 'app/api/connections/progression/[id]/stats/route.ts'), 'utf8')
+
+      expect(source).toContain('const scope = await ensureScopedProgressionFromLegacy(client, connectionId, engineType)')
+      expect(source).toContain('client.hgetall(scope.progressionKey)')
+      expect(source).toContain('client.hgetall(scope.prehistoricKey)')
+      expect(source).toContain('getSettings(scope.engineProgressionKey)')
+      expect(source).toContain('getSettings(`engine_progression:${connectionId}`)')
+      expect(source).toContain('getSettings(scope.tradeEngineStateKey)')
+      expect(source).toContain('progression: unscopedProgressionUsable ? undefined : legacyProgHash')
+      expect(source).not.toContain('const engineType = request.nextUrl.searchParams.get("engineType") || "main"')
+    })
+
+    test('config-set prehistoric progress mirrors scoped and legacy progress for deploy compatibility', () => {
+      const fs = require('fs')
+      const path = require('path')
+      const source = fs.readFileSync(path.join(process.cwd(), 'lib/trade-engine/config-set-processor.ts'), 'utf8')
+
+      expect(source).toContain('const progressionScope = buildProgressionScope(this.connectionId, "main")')
+      expect(source).toContain('const prehistoricSymbolsKey = `${prehistoricKey}:symbols`')
+      expect(source).toContain('client.hset(progressionScope.progressionKey')
+      expect(source).toContain('client.hset(progressionScope.legacyProgressionKey')
+      expect(source).toContain('client.hincrby(progressionScope.progressionKey')
+      expect(source).toContain('client.hincrby(progressionScope.legacyProgressionKey')
+      expect(source).toContain('setSettings(engineProgressionKey, stamped)')
+      expect(source).toContain('setSettings(legacyEngineProgressionKey, stamped)')
+      expect(source).not.toContain('setSettings(engineProgressionKey, {')
+    })
+
+    test('runtime progression APIs and write wrappers keep scoped and legacy keys deploy-compatible', () => {
+      const fs = require('fs')
+      const path = require('path')
+      const routeSource = fs.readFileSync(path.join(process.cwd(), 'app/api/connections/progression/[id]/route.ts'), 'utf8')
+      const writesSource = fs.readFileSync(path.join(process.cwd(), 'lib/trade-engine/progression-writes.ts'), 'utf8')
+      const managerSource = fs.readFileSync(path.join(process.cwd(), 'lib/trade-engine/engine-manager.ts'), 'utf8')
+      const recoordinatorSource = fs.readFileSync(path.join(process.cwd(), 'lib/connection-recoordinator.ts'), 'utf8')
+
+      expect(routeSource).toContain('getSettings(scope.engineProgressionKey)')
+      expect(routeSource).toContain('getSettings(`engine_progression:${connectionId}`)')
+      expect(routeSource).toContain('client?.get(`${scope.prehistoricKey}:done`)')
+      expect(routeSource).toContain('client?.get(`prehistoric:${connectionId}:done`)')
+
+      expect(writesSource).toContain('legacyProgressionKey(connectionId, engineType)')
+      expect(writesSource).toContain('(client as any).hset(legacyKey, fields)')
+      expect(writesSource).toContain('(client as any).hincrby(legacyKey, field, increment)')
+      expect(writesSource).toContain('client.del(legacyKey)')
+
+      expect(managerSource).toContain('setSettings(legacyKey, progressionData)')
+      expect(recoordinatorSource).toContain('redis.hset(scope.tradeEngineStateKey, hashPatch)')
+      expect(recoordinatorSource).toContain('client.hset(scope.tradeEngineStateKey, marker)')
+      expect(recoordinatorSource).toContain('client.hset(scope.progressionKey')
+      expect(recoordinatorSource).toContain('client.hset(scope.legacyProgressionKey')
+    })
+  })
 })

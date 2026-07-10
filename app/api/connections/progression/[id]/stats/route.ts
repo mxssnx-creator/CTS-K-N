@@ -461,6 +461,21 @@ export async function GET(
       client.hgetall(scope.prehistoricKey).catch(() => null),
       client.hgetall(`prehistoric:${connectionId}`).catch(() => null),
       client.hgetall(`realtime:${connectionId}`).catch(() => null),
+      getSettings(scope.tradeEngineStateKey)
+        .then((scopedState) => scopedState && Object.keys(scopedState).length > 0
+          ? scopedState
+          : getSettings(`trade_engine_state:${connectionId}:${engineType}`).then((typedState) => typedState && Object.keys(typedState).length > 0
+            ? typedState
+            : getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))
+          )
+        )
+        .catch(() => getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))),
+      getSettings(scope.engineProgressionKey)
+        .then((scopedProgression) => scopedProgression && Object.keys(scopedProgression).length > 0
+          ? scopedProgression
+          : getSettings(`engine_progression:${connectionId}`).catch(() => ({}))
+        )
+        .catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({}))),
       getSettings(`trade_engine_state:${connectionId}:${engineType}`).catch(() => getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))),
       getSettings(scope.engineProgressionKey).catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({}))),
       client.scard(`${scope.prehistoricKey}:symbols`).catch(() => 0),

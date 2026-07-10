@@ -213,6 +213,7 @@ export class ConfigSetProcessor {
     const prehistoricKey = progressionScope.prehistoricKey
     const prehistoricSymbolsKey = `${prehistoricKey}:symbols`
     const engineProgressionKey = progressionScope.engineProgressionKey
+    const legacyEngineProgressionKey = `engine_progression:${this.connectionId}`
     const mirrorProgressHash = async (patch: Record<string, any>) => {
       const stringPatch = Object.fromEntries(
         Object.entries(patch).map(([key, value]) => [key, typeof value === "string" ? value : String(value)]),
@@ -230,6 +231,18 @@ export class ConfigSetProcessor {
       await Promise.all([
         client.hincrby(progressionScope.progressionKey, field, amount).catch(() => 0),
         client.hincrby(progressionScope.legacyProgressionKey, field, amount).catch(() => 0),
+      ])
+    }
+    const setEngineProgress = async (patch: Record<string, unknown>) => {
+      const stamped = {
+        ...patch,
+        connection_id: this.connectionId,
+        engine_type: progressionScope.engineType,
+        updated_at: String(patch.updated_at || new Date().toISOString()),
+      }
+      await Promise.all([
+        setSettings(engineProgressionKey, stamped).catch(() => undefined),
+        setSettings(legacyEngineProgressionKey, stamped).catch(() => undefined),
       ])
     }
 
@@ -372,6 +385,7 @@ export class ConfigSetProcessor {
             // using the SAME `engine_progression` schema the main path writes.
             const totalSyms = Math.max(1, canonicalSymbolsTotal)
             const skipPct = Math.min(95, 15 + Math.round((symbolsProcessed / totalSyms) * 80))
+            void setEngineProgress({
             void setSettings(engineProgressionKey, {
               phase: "prehistoric_data",
               progress: skipPct,
@@ -563,6 +577,7 @@ export class ConfigSetProcessor {
           // with the authoritative distinct-symbol set.
           const total = Math.max(1, canonicalSymbolsTotal)
           const pct = Math.min(95, 15 + Math.round((distinctProcessed / total) * 80))
+          void setEngineProgress({
           void setSettings(engineProgressionKey, {
             phase: "prehistoric_data",
             progress: pct,
@@ -613,6 +628,7 @@ export class ConfigSetProcessor {
           })
           const totalSyms = Math.max(1, canonicalSymbolsTotal)
           const errPct = Math.min(95, 15 + Math.round((distinctErrProcessed / totalSyms) * 80))
+          void setEngineProgress({
           void setSettings(engineProgressionKey, {
             phase: "prehistoric_data",
             progress: errPct,
