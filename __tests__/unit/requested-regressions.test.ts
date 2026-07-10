@@ -1318,7 +1318,10 @@ describe("requested regression guardrails", () => {
     expect(quickStart).toContain("quickstart_engine_reused")
     expect(quickStart).toContain("Running engine reused; QuickStart symbols/settings applied without stop/restart")
     expect(quickStart).toContain("Engine already running — QuickStart settings applied without restart")
-    expect(quickStart).toContain("config_set_symbols_processed: quickstartEngineAlreadyRunning ? symbols.length : 0")
+    expect(quickStart).toContain("const quickstartNeedsFreshProcessing =")
+    expect(quickStart).toContain("quickstartRecoordination.progressionChanged === true")
+    expect(quickStart).toContain("quickstartEngineAlreadyRunning && !quickstartNeedsFreshProcessing ? symbols.length : 0")
+    expect(quickStart).toContain("!quickstartEngineAlreadyRunning || quickstartNeedsFreshProcessing")
     expect(quickStart).toContain("coordinator.invalidateSymbolsCacheForConnection(connectionId)")
     expect(quickStart).not.toContain("quickstart_engine_restart")
 
