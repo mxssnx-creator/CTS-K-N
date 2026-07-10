@@ -149,6 +149,7 @@ async function runSerializedForConnection(connectionId: string, work: () => Prom
 export interface MainConnectionSettingsChangeOptions extends RecoordinateOptions {
   connectionPatch?: Record<string, any>
   settingsPatch?: Record<string, any>
+  tradeEngineStatePatch?: Record<string, any>
   settingsKey?: string
   mirrorSettingsKey?: boolean
 }
@@ -196,6 +197,18 @@ export async function applyMainConnectionSettingsChange(
     } else {
       await setSettings(settingsKey, settingsPatch)
     }
+  }
+
+  const tradeEngineStatePatch = opts.tradeEngineStatePatch || {}
+  if (Object.keys(tradeEngineStatePatch).length > 0) {
+    const redis = getRedisClient()
+    const hashPatch = stringifyHashPatch({
+      ...tradeEngineStatePatch,
+      connection_id: id,
+      updated_at: tradeEngineStatePatch.updated_at || new Date().toISOString(),
+    })
+    await redis.hset(`trade_engine_state:${id}`, hashPatch).catch(() => 0)
+    await redis.hset(`settings:trade_engine_state:${id}`, hashPatch).catch(() => 0)
   }
 
   // Reload from Redis so notify envelopes and downstream predicates see exactly
@@ -451,7 +464,10 @@ export async function recoordinateAfterSettingsChange(
         }
 
         if (destructiveProgressionChange) {
-          const nextEpoch = `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+          const nextEpoch =
+            typeof (after as any).symbol_selection_epoch === "string" && (after as any).symbol_selection_epoch.length > 0
+              ? (after as any).symbol_selection_epoch
+              : `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
           const engineStatePatch = {
             symbol_selection_epoch: nextEpoch,
             quickstart_symbol_generation: nextEpoch,
