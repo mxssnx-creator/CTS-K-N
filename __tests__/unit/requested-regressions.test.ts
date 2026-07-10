@@ -538,6 +538,7 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("private canOwnEngineRuntime()")
     expect(source).toContain('process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1"')
     expect(source).toContain('process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"')
+    expect(source).toContain('const isVercel = process.env.VERCEL === "1" || !!process.env.VERCEL_ENV')
     expect(source).toContain('!explicitForegroundAllowed && !forceLocalTakeover')
     expect(source).toContain("queued-only in this production API worker")
     expect(source).toContain("Leaving start request queued")
@@ -1366,6 +1367,16 @@ describe("requested regression guardrails", () => {
 
     expect(Math.max(0, realTotalEvaluated - realSetsLength)).toBe(0)
     expect(realTotalEvaluated).toBe(5)
+  })
+
+  test("production prehistoric bootstrap cannot permanently gate live processing", () => {
+    const source = read("lib/trade-engine/engine-manager.ts")
+
+    expect(source).toContain("PREHISTORIC_BOOTSTRAP_DEADLINE_MS")
+    expect(source).toContain("Engine ${this.connectionId} prehistoric bootstrap")
+    expect(source).toContain("FIRST_PASS_GATE_FALLBACK_MS")
+    expect(source).toContain("first-pass fallback opened live gates")
+    expect(source).toContain('client.set(`prehistoric:${connId}:done`, "1", { EX: 86400 })')
   })
 
   test("production cron route uses canonical ind-strat pipeline for all configured symbols", () => {

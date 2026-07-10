@@ -391,6 +391,22 @@ function parseCycleDeadlineMs(): number {
 // exchange work is repeatedly cancelled and appears stuck.
 const CYCLE_DEADLINE_MS = parseCycleDeadlineMs()
 
+function parsePrehistoricBootstrapDeadlineMs(): number {
+  const raw = Number(
+    process.env.PREHISTORIC_BOOTSTRAP_DEADLINE_MS ??
+      process.env.PREHISTORIC_LOAD_DEADLINE_MS,
+  )
+  if (Number.isFinite(raw) && raw >= 60_000) return Math.floor(raw)
+  // The one-time ConfigSetProcessor bootstrap can legitimately take longer
+  // than a realtime tick, but it must never be allowed to wedge the production
+  // pipeline forever. If it exceeds this deadline the background promise is
+  // rejected into the existing fallback path, which opens the live processing
+  // gates and keeps progression moving while operators inspect the error.
+  return process.env.NODE_ENV === "production" ? 10 * 60_000 : 20 * 60_000
+}
+
+const PREHISTORIC_BOOTSTRAP_DEADLINE_MS = parsePrehistoricBootstrapDeadlineMs()
+
 function withCycleDeadline<T>(work: Promise<T>, label: string, ms: number = CYCLE_DEADLINE_MS): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false
@@ -1497,7 +1513,11 @@ export class TradeEngineManager {
    */
   private loadPrehistoricDataInBackground(cacheKey: string, redisClient: ReturnType<typeof getRedisClient>): void {
     this.updateProgressionPhase("prehistoric_data", 15, "Prehistoric calc starting — filling sets...")
-      .then(() => this.loadPrehistoricData())
+      .then(() => withCycleDeadline(
+        this.loadPrehistoricData(),
+        `Engine ${this.connectionId} prehistoric bootstrap`,
+        PREHISTORIC_BOOTSTRAP_DEADLINE_MS,
+      ))
       .then(async () => {
         await redisClient.set(cacheKey, "1", { EX: 86400 })
         await setSettings(`trade_engine_state:${this.connectionId}`, {
@@ -3330,6 +3350,8 @@ export class TradeEngineManager {
     let cycleCount = 0
     let firstPassDone = false
     const connId = this.connectionId
+    const firstPassStartedAt = Date.now()
+    const FIRST_PASS_GATE_FALLBACK_MS = Math.max(60_000, Math.min(PREHISTORIC_BOOTSTRAP_DEADLINE_MS, 90_000))
     // Adaptive pause tracking — see scheduleNext above.
     let _ppLastSteps = 0
     let _ppConsecutiveIdle = 0
@@ -3612,18 +3634,37 @@ export class TradeEngineManager {
         // tick (cold candle cache, market data not yet loaded) we would arm realtime
         // against completely empty Sets — exactly the state the gate is designed to
         // prevent. Stay in the "not done" state and let the next cycle retry.
-        if (!firstPassDone && stepsTotal > 0) {
+        const firstPassFallbackDue =
+          !firstPassDone &&
+          stepsTotal === 0 &&
+          Date.now() - firstPassStartedAt >= FIRST_PASS_GATE_FALLBACK_MS
+
+        if (!firstPassDone && (stepsTotal > 0 || firstPassFallbackDue)) {
           firstPassDone = true
           try {
             const client = getRedisClient()
-            await client.set(`prehistoric:${connId}:firstpass:done`, "1", { EX: 86400 })
+            const gateWrites: Promise<unknown>[] = [
+              client.set(`prehistoric:${connId}:firstpass:done`, "1", { EX: 86400 }),
+            ]
+            if (firstPassFallbackDue) {
+              // If the replay loop cannot find any candles/steps before the
+              // bootstrap watchdog window expires, do not leave the engine
+              // permanently gated in production. The full bootstrap continues
+              // in the background under its own deadline; opening the gate lets
+              // realtime/live processing handle current candles and existing
+              // positions instead of showing a stuck progression forever.
+              gateWrites.push(client.set(`prehistoric:${connId}:done`, "1", { EX: 86400 }))
+            }
+            await Promise.all(gateWrites)
           } catch { /* non-critical */ }
           await logProgressionEvent(
             connId,
             "prehistoric_progression",
-            "info",
-            `Prehistoric Progression first-pass complete (${symbols.length} symbols, ${duration} ms)`,
-            { cycle: cycleCount, symbols: symbols.length, durationMs: duration },
+            firstPassFallbackDue ? "warning" : "info",
+            firstPassFallbackDue
+              ? `Prehistoric Progression first-pass fallback opened live gates after ${Date.now() - firstPassStartedAt} ms with no replay steps`
+              : `Prehistoric Progression first-pass complete (${symbols.length} symbols, ${duration} ms)`,
+            { cycle: cycleCount, symbols: symbols.length, durationMs: duration, fallback: firstPassFallbackDue },
           ).catch(() => {})
 
           // Release the startup gate. Wrapped in try/catch so a buggy

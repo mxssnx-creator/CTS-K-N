@@ -205,6 +205,18 @@ export function DashboardActiveConnectionsManager() {
       if (!connId) return
 
       const settingsVersion = typeof detail?.settingsVersion === "string" ? detail.settingsVersion : undefined
+
+      // Legacy settings-change events (for example quick sliders and older dialogs)
+      // only mean "refresh consumers"; they do not carry the versioned backend
+      // recoordination contract. Starting the confirmation watchdog for those
+      // unversioned events produces a false "Settings recoordination did not
+      // confirm" toast even though the save completed successfully.
+      if (!settingsVersion) {
+        loadConnections({ force: true })
+        checkGlobalEngine()
+        return
+      }
+
       savingRef.current.add(connId)
       pendingSettingsVersionsRef.current.set(connId, settingsVersion)
 
