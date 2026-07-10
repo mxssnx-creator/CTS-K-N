@@ -245,3 +245,7 @@ export async function GET() {
 
 - 2026-07-09: Extracted live progression order-by-symbol aggregation into a shared helper that supports canonical `{SYMBOL}:{direction}:{placed|filled|failed}` fields plus legacy JSON symbol rows, returns per-symbol rows and long/short totals, and feeds both `ordersBySymbol` and `ordersByDirection` in the stats API. Added mixed canonical/legacy regression coverage.
 | 2026-07-09 | Live-stage reconcile fill accounting is now idempotent: `LivePosition` persists `fillCounterRecordedAt`, reconcile exchange-position fallback and getOrder fill/partial-fill paths call one marker-guarded counter helper, and regression coverage asserts fill counters are not incremented directly without the durable marker. |
+
+- [x] Dashboard settings event fix: unversioned `connection-settings-updated` events now refresh immediately without arming the recoordination watchdog, preventing false "Settings recoordination did not confirm" toasts from legacy/slider settings saves.
+
+- [x] Production progression unstuck: prehistoric bootstrap is now deadline-wrapped and the continuous prehistoric first-pass loop opens live gates after a bounded no-step fallback, so a hung/empty historic load cannot leave a connection permanently stuck before realtime/live processing.
