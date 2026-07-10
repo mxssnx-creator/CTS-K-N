@@ -3483,7 +3483,7 @@ const migrations: Migration[] = [
       const existing = ((await client.hgetall("settings:system").catch(() => ({}))) || {}) as Record<string, string>
       const patch: Record<string, string> = {
         strategy_flow_symbol_concurrency_dev: existing.strategy_flow_symbol_concurrency_dev || "1",
-        strategy_flow_symbol_concurrency_prod: existing.strategy_flow_symbol_concurrency_prod || "2",
+        strategy_flow_symbol_concurrency_prod: existing.strategy_flow_symbol_concurrency_prod || "1",
         strategy_flow_symbol_concurrency_max: existing.strategy_flow_symbol_concurrency_max || "6",
         strategy_flow_stage_yield_enabled: existing.strategy_flow_stage_yield_enabled || "1",
         updated_at: now,
