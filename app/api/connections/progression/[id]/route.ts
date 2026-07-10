@@ -4,6 +4,7 @@ import { getProgressionLogs, forceFlushLogs } from "@/lib/engine-progression-log
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { normalizeSymbolList } from "@/lib/trade-engine/symbol-selection-ownership"
+import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
 
 export const dynamic = "force-dynamic"
 export const dynamicParams = true
@@ -68,6 +69,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   try {
     const { id } = await params
     const connectionId = id
+    const engineType = request.nextUrl.searchParams.get("engineType") || "main"
 
     // PRODUCTION FIX: Initialize Redis before use
     try {
@@ -92,14 +94,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const connName = connection?.name || connectionId
 
     // Get progression phase data from engine-manager's updateProgressionPhase
-    const progression = await getSettings(`engine_progression:${connectionId}`).catch((e) => {
+    const scope = buildProgressionScope(connectionId, engineType)
+    const progression = await getSettings(scope.engineProgressionKey).catch((e) => {
       console.warn(`[v0] [ProgressionAPI] Failed to get progression settings for ${connectionId}:`, e)
       return {}
     })
     
     // Get engine state from the correct Redis key: trade_engine_state:{connectionId}
     const client = getRedisClient()
-    const engineState = await getSettings(`trade_engine_state:${connectionId}`).catch((e) => {
+    const engineState = await getSettings(`trade_engine_state:${connectionId}:${engineType}`).catch((e) => {
       console.warn(`[v0] [ProgressionAPI] Failed to get engine state for ${connectionId}:`, e)
       return {}
     })
@@ -138,7 +141,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const isActiveInserted = connection?.is_active_inserted === "1" || connection?.is_active_inserted === true
     
     // Get progression state (cycles, success rates)
-    let progressionState = await ProgressionStateManager.getProgressionState(connectionId).catch((e) => {
+    let progressionState = await ProgressionStateManager.getProgressionState(connectionId, engineType).catch((e) => {
       console.warn(`[v0] [ProgressionAPI] Failed to get progression state for ${connectionId}:`, e)
       return ProgressionStateManager.getDefaultState(connectionId)
     })
@@ -147,7 +150,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // This is more current than engineState which persists only every 50-100 cycles
     let progHash: Record<string, string> = {}
     try {
-      progHash = (await client.hgetall(`progression:${connectionId}`)) || {}
+      await ensureScopedProgressionFromLegacy(client, connectionId, engineType)
+      progHash = (await client.hgetall(scope.progressionKey)) || {}
     } catch { /* non-critical */ }
 
     // Cycle counts: prefer live progression hash over engineState (more current)

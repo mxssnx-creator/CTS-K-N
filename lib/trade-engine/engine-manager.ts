@@ -1,6 +1,7 @@
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
 import { publishEngineEvent } from "@/lib/engine-event-bus"
 import { hasStrategyAffectingChange, hasSymbolAffectingChange, isGenericConnectionSettingsReload } from "@/lib/trade-engine/settings-change-fields"
+import { buildProgressionScope } from "@/lib/progression-scope"
 // Keep heap telemetry bundler-safe. Importing/requiring the Node `v8` built-in
 // from this hot server module makes Next dev's webpack resolver emit repeated
 // "Can't resolve 'v8'" warnings when the trade engine is pulled into route
@@ -518,6 +519,7 @@ export class TradeEngineManager {
   private liveProgressionsArmed = false
   private healthCheckTimer?: NodeJS.Timeout
   private heartbeatTimer?: NodeJS.Timeout
+  private currentEngineType = "main"
 
   // Throttle for the settings-dirty Redis read in the indication tick.
   // The flag is set by the UI (rare) but read on every tick — at 20 Hz
@@ -634,7 +636,7 @@ export class TradeEngineManager {
     try {
       const client = getRedisClient()
       const state = await client.hgetall(`trade_engine_state:${this.connectionId}`).catch(() => ({} as Record<string, string>))
-      const settingsState = await client.hgetall(`settings:trade_engine_state:${this.connectionId}`).catch(() => ({} as Record<string, string>))
+      const settingsState = await client.hgetall(buildProgressionScope(this.connectionId, this.currentEngineType).tradeEngineStateKey).catch(() => ({} as Record<string, string>))
       const stopRequested =
         state.stop_requested === "1" || state.stop_requested === "true" ||
         settingsState.stop_requested === "1" || settingsState.stop_requested === "true" ||
@@ -692,6 +694,7 @@ export class TradeEngineManager {
     // higher epoch and can correctly invalidate stale cached state.
     // Local fallback for non-coordinator callers: a fresh epoch with
     // no owner token (writes that need owner verification will skip).
+    this.currentEngineType = config.engine_type || "main"
     this.lockHandle = lockCtx
     this.epoch = lockCtx?.epoch ?? Date.now()
 
@@ -748,13 +751,13 @@ export class TradeEngineManager {
       } catch (ensureErr) {
         console.warn("[v0] [Engine] ensureJustUniqueProgression failed, falling back to archive:", ensureErr)
         this.epoch = this.lockHandle?.epoch ?? Date.now()
-        await ProgressionStateManager.archiveAndStartNewProgression(this.connectionId, this.epoch).catch(() => {})
+        await ProgressionStateManager.archiveAndStartNewProgression(this.connectionId, this.epoch, config.engine_type || "main").catch(() => {})
         // Use validated wrapper to prevent stale writes
         const { updateProgressionSnapshot } = await import("./progression-writes")
         await updateProgressionSnapshot([
           { field: "engine_started", value: "true", operation: "set" },
           { field: "last_update", value: new Date().toISOString(), operation: "set" },
-        ], { connectionId: this.connectionId, epoch: this.epoch }).catch(() => {})
+        ], { connectionId: this.connectionId, epoch: this.epoch, engineType: config.engine_type || "main" }).catch(() => {})
       }
 
       // Initialize engine state
@@ -793,7 +796,7 @@ export class TradeEngineManager {
         const symbolsHash = symbols.slice().sort().join("|") // simple deterministic hash; do not reorder runtime processing
         // Snapshot a minimal but useful slice of current connection settings
         const connData = (await redisClient.hgetall(`connection:${this.connectionId}`).catch(() => ({}))) as Record<string, string>
-        const state = (await redisClient.hgetall(`settings:trade_engine_state:${this.connectionId}`).catch(() => ({}))) as Record<string, string>
+        const state = (await redisClient.hgetall(buildProgressionScope(this.connectionId, this.currentEngineType).tradeEngineStateKey).catch(() => ({}))) as Record<string, string>
         const connectionSettings = {
           ...((await redisClient.hgetall(`settings:connection_settings:${this.connectionId}`).catch(() => ({}))) as Record<string, string>),
           ...((await redisClient.hgetall(`connection_settings:${this.connectionId}`).catch(() => ({}))) as Record<string, string>),
@@ -867,6 +870,7 @@ export class TradeEngineManager {
             connectionId: this.connectionId,
             epoch: this.epoch,
             logStaleRejects: false,
+            engineType: config.engine_type || "main",
           })
           snapWriteOk = result > 0
         } catch (err) {
@@ -878,6 +882,7 @@ export class TradeEngineManager {
               connectionId: this.connectionId,
               epoch: this.epoch,
               logStaleRejects: false,
+              engineType: config.engine_type || "main",
             })
             snapWriteOk = result > 0
           } catch (retryErr) {
@@ -919,7 +924,7 @@ export class TradeEngineManager {
         // path. The fix is idempotent (same value, 24h re-expire) and costs
         // exactly one Redis SET per engine boot.
         try {
-          await redisClient.set(`prehistoric:${this.connectionId}:done`, "1", { EX: 86400 } as any)
+          await redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`, "1", { EX: 86400 } as any)
         } catch (gateErr) {
           console.warn(
             `[v0] [Engine] Failed to re-arm prehistoric done gate on cache hit:`,
@@ -941,7 +946,7 @@ export class TradeEngineManager {
           const writerSelectionEpoch = cacheSelection?.epoch || ""
           const ownsCacheSelection = await ownsCanonicalSymbolSelectionEpoch(this.connectionId, symbols, writerSelectionEpoch)
           const canonicalCacheTotal = await canonicalTotalForSymbols(this.connectionId, symbols)
-          if (ownsCacheSelection) await redisClient.hset(`prehistoric:${this.connectionId}`, {
+          if (ownsCacheSelection) await redisClient.hset(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, {
             is_complete: "1",
             symbol_selection_epoch: writerSelectionEpoch,
             symbols_processed: String(clampProcessedToTotal(symbols.length, canonicalCacheTotal)),
@@ -949,7 +954,7 @@ export class TradeEngineManager {
             updated_at: new Date().toISOString(),
             data_source: ownsCacheSelection ? "cache" : "stale-cache-ignored",
           })
-          await redisClient.expire(`prehistoric:${this.connectionId}`, 86400)
+          await redisClient.expire(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, 86400)
           console.log(`[v0] [Engine] Prehistoric cache hit — restored hash for ${symbols.length} symbols (${this.connectionId})`)
         } catch (restoreErr) {
           console.warn(
@@ -975,10 +980,10 @@ export class TradeEngineManager {
         // preserving the fast path when data is truly present.
         try {
           const [doneFlag, firstPass, isComplete, pfSample] = await Promise.all([
-            redisClient.get(`prehistoric:${this.connectionId}:done`),
-            redisClient.get(`prehistoric:${this.connectionId}:firstpass:done`),
-            redisClient.hget(`prehistoric:${this.connectionId}`, "is_complete"),
-            redisClient.hget(`prehistoric:${this.connectionId}`, "historic_avg_profit_factor"),
+            redisClient.get(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`),
+            redisClient.get(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:firstpass:done`),
+            redisClient.hget(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, "is_complete"),
+            redisClient.hget(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, "historic_avg_profit_factor"),
           ])
           const symbolsForCheck = await this.getSymbols()
           const hasSymbols = symbolsForCheck.length > 0
@@ -1003,15 +1008,15 @@ export class TradeEngineManager {
             )
             // Wipe partial gates so the one-time load writes them cleanly at the end.
             await Promise.allSettled([
-              redisClient.del(`prehistoric:${this.connectionId}:done`),
-              redisClient.del(`prehistoric:${this.connectionId}:firstpass:done`),
+              redisClient.del(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`),
+              redisClient.del(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:firstpass:done`),
             ])
             // Also clear the completion fields that the cache-hit path
             // re-stamped above BEFORE this verification ran — otherwise the
             // stats route would show a fake "complete N/N" while the forced
             // full reload is still processing.
             await redisClient
-              .hset(`prehistoric:${this.connectionId}`, {
+              .hset(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, {
                 is_complete: "0",
                 symbols_processed: "0",
                 updated_at: new Date().toISOString(),
@@ -1572,8 +1577,8 @@ export class TradeEngineManager {
           // only `:done` is written the replay loop spins forever without
           // ever calling the callback, leaving realtime permanently disabled.
           await Promise.all([
-            redisClient.set(`prehistoric:${this.connectionId}:done`, "1", { EX: 86400 }),
-            redisClient.set(`prehistoric:${this.connectionId}:firstpass:done`, "1", { EX: 86400 }),
+            redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`, "1", { EX: 86400 }),
+            redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:firstpass:done`, "1", { EX: 86400 }),
           ])
           await this.updateProgressionPhase(
             "live_trading",
@@ -1674,9 +1679,9 @@ export class TradeEngineManager {
       const ownsCurrentSelection = await ownsCanonicalSymbolSelectionEpoch(this.connectionId, symbols, writerSelectionEpoch)
       const canonicalSymbolsTotal = await canonicalTotalForSymbols(this.connectionId, symbols)
       if (ownsCurrentSelection) {
-        await redisClient.del(`prehistoric:${this.connectionId}:symbols`).catch(() => {})
+        await redisClient.del(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:symbols`).catch(() => {})
       }
-      await redisClient.hset(`prehistoric:${this.connectionId}`, {
+      await redisClient.hset(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, {
         range_start: prehistoricStart.toISOString(),
         range_end: prehistoricEnd.toISOString(),
         range_hours: String(rangeHours),
@@ -1730,11 +1735,11 @@ export class TradeEngineManager {
       // `processingResult.symbolsProcessed` counter raced under parallelism and
       // can be lower than reality; SCARD is always the monotonic ground truth.
       const finalScardRaw = await redisClient
-        .scard(`prehistoric:${this.connectionId}:symbols`)
+        .scard(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:symbols`)
         .catch(() => processingResult.symbolsProcessed)
       const finalScard = clampProcessedToTotal(finalScardRaw, processingResult.symbolsTotal)
       const ownsCurrentSelectionAtCompletion = await ownsCanonicalSymbolSelectionEpoch(this.connectionId, symbols, writerSelectionEpoch)
-      await redisClient.hset(`prehistoric:${this.connectionId}`, {
+      await redisClient.hset(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, {
         is_complete: "1",
         ...(ownsCurrentSelectionAtCompletion ? {
           symbol_selection_epoch: writerSelectionEpoch,
@@ -1747,7 +1752,7 @@ export class TradeEngineManager {
         completed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
-      await redisClient.expire(`prehistoric:${this.connectionId}`, 86400)
+      await redisClient.expire(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, 86400)
 
       // Publish an explicit "prehistoric done" marker. The live processors watch
       // this flag and switch from fast churn mode to adaptive-backoff idle mode
@@ -1755,8 +1760,8 @@ export class TradeEngineManager {
       // is finished. The interval itself stays effective whenever productive
       // work is available.
       await Promise.all([
-        redisClient.set(`prehistoric:${this.connectionId}:done`, "1", { EX: 86400 }),
-        redisClient.set(`prehistoric:${this.connectionId}:firstpass:done`, "1", { EX: 86400 }),
+        redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`, "1", { EX: 86400 }),
+        redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:firstpass:done`, "1", { EX: 86400 }),
       ])
 
       // Emit a log event (NOT a phase overwrite) so the dashboard can show
@@ -1824,7 +1829,7 @@ export class TradeEngineManager {
       // of symbols this alone saves hundreds of serialised awaits at startup.
       try {
         const client = getRedisClient()
-        const symbolsKey = `prehistoric:${this.connectionId}:symbols`
+        const symbolsKey = `${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:symbols`
         const writes: Promise<any>[] = []
         if (symbols.length > 0) {
           // Single SADD with multiple members, then one EXPIRE for the index.
@@ -2121,9 +2126,9 @@ export class TradeEngineManager {
             const client = getRedisClient()
             const nowMs = Date.now()
             await Promise.all([
-              client.hincrby(`progression:${this.connectionId}`, "realtime_cycle_count", 1),
-              client.hincrby(`progression:${this.connectionId}`, "frames_processed", 1),
-              client.hset(`settings:trade_engine_state:${this.connectionId}`, {
+              client.hincrby(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, "realtime_cycle_count", 1),
+              client.hincrby(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, "frames_processed", 1),
+              client.hset(buildProgressionScope(this.connectionId, this.currentEngineType).tradeEngineStateKey, {
                 status: "running",
                 last_processor_heartbeat: String(nowMs),
                 last_indication_run: new Date(nowMs).toISOString(),
@@ -2183,7 +2188,7 @@ export class TradeEngineManager {
               // their errors ��� no silent data loss.
               try {
                 const client = getRedisClient()
-                const progKey = `progression:${this.connectionId}`
+                const progKey = buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey
                 const safeMsg = msg.slice(0, 240)
                 await Promise.all([
                   client.hincrby(progKey, "indication_symbol_errors_count", 1),
@@ -2317,7 +2322,7 @@ export class TradeEngineManager {
         //                                       since the engine started.
         try {
           const client = getRedisClient()
-          const redisKey = `progression:${this.connectionId}`
+          const redisKey = buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey
           // Fan-out all counter updates in parallel. The in-memory Redis
           // client services these in constant time; Promise.all minimises the
           // awaited round-trips per cycle compared to sequential awaits.
@@ -2351,7 +2356,7 @@ export class TradeEngineManager {
             // `last_processor_heartbeat` from the tick itself prevents
             // false-positive stalls caused by event-loop starvation of
             // the 10 s `startHeartbeat` setInterval callback.
-            client.hset(`settings:trade_engine_state:${this.connectionId}`, {
+            client.hset(buildProgressionScope(this.connectionId, this.currentEngineType).tradeEngineStateKey, {
               status: "running",
               last_processor_heartbeat: String(nowMs),
               last_indication_run: nowIso,
@@ -2718,7 +2723,7 @@ export class TradeEngineManager {
         //     pipeline and are NOT added here, so cross-symbol sums are safe.
         try {
           const client = getRedisClient()
-          const redisKey = `progression:${this.connectionId}`
+          const redisKey = buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey
           // Fan-out cycle counters in parallel — same atomic-counter
           // pattern as the indication tick. Replacing the previous
           // sequential awaits saves multiple RTTs per cycle and lets us
@@ -2750,7 +2755,7 @@ export class TradeEngineManager {
             // restarts a perfectly-healthy engine. Writing the heartbeat
             // from the tick itself ties liveness to ACTUAL processing
             // activity — the only signal that actually matters.
-            client.hset(`settings:trade_engine_state:${this.connectionId}`, {
+            client.hset(buildProgressionScope(this.connectionId, this.currentEngineType).tradeEngineStateKey, {
               status: "running",
               last_processor_heartbeat: String(nowMs),
               last_strategy_run: nowIso,
@@ -3034,7 +3039,7 @@ export class TradeEngineManager {
         // loop is alive and cycling at its configured cadence.
         try {
           const client = getRedisClient()
-          const progKey = `progression:${this.connectionId}`
+          const progKey = buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey
           const nowMs = Date.now()
           await Promise.all([
             client.hincrby(progKey, "live_positions_cycle_count", 1),
@@ -3042,7 +3047,7 @@ export class TradeEngineManager {
               live_positions_last_cycle_at: String(nowMs),
               live_positions_last_cycle_ms: String(duration),
             }),
-            client.hset(`settings:trade_engine_state:${this.connectionId}`, {
+            client.hset(buildProgressionScope(this.connectionId, this.currentEngineType).tradeEngineStateKey, {
               status: "running",
               last_processor_heartbeat: String(nowMs),
               last_live_positions_run: new Date(nowMs).toISOString(),
@@ -3234,7 +3239,7 @@ export class TradeEngineManager {
         //   * frames_processed           — cross-processor cumulative tick total.
         try {
           const client = getRedisClient()
-          const redisKey = `progression:${this.connectionId}`
+          const redisKey = buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey
           await client.hincrby(redisKey, "realtime_cycle_count", 1)
           await client.hincrby(redisKey, "frames_processed", 1)
           if (outcome === "productive") {
@@ -4193,7 +4198,7 @@ export class TradeEngineManager {
     subProgress?: { current: number; total: number; item?: string }
   ): Promise<void> {
     try {
-      const key = `engine_progression:${this.connectionId}`
+      const key = buildProgressionScope(this.connectionId, this.currentEngineType).engineProgressionKey
       const progressionData = {
         phase,
         progress: Math.min(100, Math.max(0, progress)),
@@ -4533,7 +4538,7 @@ export class TradeEngineManager {
     try {
       const completedAt = new Date().toISOString()
       const appliedVersion = String(event.timestamp || completedAt)
-      await getRedisClient().hset(`progression:${this.connectionId}`, {
+      await getRedisClient().hset(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, {
         settings_recoordination_pending: "0",
         strategy_recompute_requested: "0",
         settings_recoordination_completed_at: completedAt,
@@ -4542,7 +4547,7 @@ export class TradeEngineManager {
         settings_recoordination_applied_event_id: appliedVersion,
         settings_recoordination_applied_fields: JSON.stringify(event.changedFields || []),
       })
-      await getRedisClient().hdel?.(`progression:${this.connectionId}`, "settings_recoordination_last_error")
+      await getRedisClient().hdel?.(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, "settings_recoordination_last_error")
     } catch (stampErr) {
       console.warn(
         `[v0] [Engine ${this.connectionId}] settings recoordination completion stamp failed:`,
@@ -4553,7 +4558,7 @@ export class TradeEngineManager {
 
   private async stampSettingsRecoordinationFailed(error: unknown): Promise<void> {
     try {
-      await getRedisClient().hset(`progression:${this.connectionId}`, {
+      await getRedisClient().hset(buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey, {
         settings_recoordination_pending: "1",
         strategy_recompute_requested: "1",
         settings_recoordination_last_error: error instanceof Error ? error.message : String(error),

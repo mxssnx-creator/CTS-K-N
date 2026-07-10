@@ -249,3 +249,5 @@ export async function GET() {
 - [x] Dashboard settings event fix: unversioned `connection-settings-updated` events now refresh immediately without arming the recoordination watchdog, preventing false "Settings recoordination did not confirm" toasts from legacy/slider settings saves.
 
 - [x] Production progression unstuck: prehistoric bootstrap is now deadline-wrapped and the continuous prehistoric first-pass loop opens live gates after a bounded no-step fallback, so a hung/empty historic load cannot leave a connection permanently stuck before realtime/live processing.
+
+- [x] Scoped progression keys: canonical progression/prehistoric/trade-engine-state reads and writes now include engine type (`progression:{connectionId}:{engineType}` and siblings), with a one-time main-scope migration fallback from legacy unscoped progression hashes for backward-compatible reads.
