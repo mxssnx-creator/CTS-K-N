@@ -1,6 +1,12 @@
 "use client"
 
-import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } from "@/lib/connection-events"
+import {
+  CONNECTION_STATE_CHANGED_EVENT,
+  PROGRESSION_STATE_INVALIDATE_EVENT,
+  TRADE_ENGINE_STATUS_INVALIDATE_EVENT,
+  buildConnectionMutationEventDetail,
+  dispatchConnectionMutationEvents,
+} from "@/lib/connection-events"
 import React, { useState, useEffect } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -202,6 +208,11 @@ export function DashboardActiveConnectionsManager() {
       checkGlobalEngine()
     }
 
+    const handleConnectionMutation = () => {
+      loadConnections({ force: true })
+      checkGlobalEngine()
+    }
+
     // Settings saves now complete through an explicit event emitted after the
     // PATCH route has awaited recoordinateAfterSettingsChange and persisted the
     // authoritative progression/connection hashes. Until that versioned event
@@ -291,6 +302,10 @@ export function DashboardActiveConnectionsManager() {
     
     if (typeof window !== 'undefined') {
       window.addEventListener('engine-state-changed', handleEngineStateChange)
+      window.addEventListener(CONNECTION_STATE_CHANGED_EVENT, handleConnectionMutation)
+      window.addEventListener(TRADE_ENGINE_STATUS_INVALIDATE_EVENT, handleConnectionMutation)
+      window.addEventListener(PROGRESSION_STATE_INVALIDATE_EVENT, handleConnectionMutation)
+      window.addEventListener('live-trade-toggled', handleConnectionMutation)
       window.addEventListener('connection-settings-updated', handleSettingsUpdated)
       window.addEventListener('connection-settings-recoordination-complete', handleSettingsRecoordinationComplete)
     }
@@ -300,6 +315,10 @@ export function DashboardActiveConnectionsManager() {
       clearInterval(engineInterval)
       if (typeof window !== 'undefined') {
         window.removeEventListener('engine-state-changed', handleEngineStateChange)
+        window.removeEventListener(CONNECTION_STATE_CHANGED_EVENT, handleConnectionMutation)
+        window.removeEventListener(TRADE_ENGINE_STATUS_INVALIDATE_EVENT, handleConnectionMutation)
+        window.removeEventListener(PROGRESSION_STATE_INVALIDATE_EVENT, handleConnectionMutation)
+        window.removeEventListener('live-trade-toggled', handleConnectionMutation)
         window.removeEventListener('connection-settings-updated', handleSettingsUpdated)
         window.removeEventListener('connection-settings-recoordination-complete', handleSettingsRecoordinationComplete)
         settingsSafetyTimersRef.current.forEach(timer => clearTimeout(timer))
