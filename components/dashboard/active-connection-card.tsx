@@ -906,8 +906,17 @@ export function ActiveConnectionCard({
           source: "active-connection-card.liveTrade",
         }))
         if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("live-trade-toggled", {
-            detail: { connectionId: connection.connectionId, newState: requestedState, effectiveState }
+          const eventDetail = { connectionId: connection.connectionId, newState: requestedState, effectiveState }
+          window.dispatchEvent(new CustomEvent("live-trade-toggled", { detail: eventDetail }))
+          window.dispatchEvent(new CustomEvent("connection-settings-updated", {
+            detail: {
+              connectionId: connection.connectionId,
+              settings: {
+                is_live_trade: effectiveState,
+                live_trade_requested: requestedState,
+                is_enabled_dashboard: requestedState ? true : undefined,
+              },
+            },
           }))
         }
       } else {
@@ -993,6 +1002,86 @@ export function ActiveConnectionCard({
           : connection.isActive
             ? { label: "Ready", className: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300" }
             : { label: "Off", className: "text-muted-foreground" }
+
+  const renderOverviewTiles = () => {
+    const symbolsProcessed = progression?.prehistoricProgress?.symbolsProcessed ?? 0
+    const symbolsTotal = progression?.prehistoricProgress?.symbolsTotal ?? 0
+    const ordersPlaced = prehistoricStats?.liveOrdersPlaced ?? 0
+    const ordersFilled = prehistoricStats?.liveOrdersFilled ?? 0
+    const ordersFailed =
+      (prehistoricStats?.liveOrdersFailed ?? 0) +
+      (prehistoricStats?.liveOrdersRejected ?? 0)
+    const livePnl = prehistoricStats?.liveAggUnrealizedPnl || prehistoricStats?.liveTotalPnl || 0
+    const tiles: Array<{ label: string; value: string | number; title?: string; tone?: string }> = []
+
+    if (symbolsProcessed > 0 || symbolsTotal > 0) {
+      tiles.push({
+        label: "Symbols",
+        value: symbolsTotal > 0 ? `${symbolsProcessed}/${symbolsTotal}` : symbolsProcessed,
+        title: "Prehistoric backfill coverage — symbols processed vs total.",
+      })
+    }
+
+    tiles.push(
+      {
+        label: "Cycles",
+        value: liveStats?.indicationCycles ?? 0,
+        title: "Realtime indication processor ticks since engine start.",
+      },
+      {
+        label: "Ind",
+        value: liveStats?.indications ?? prehistoricStats?.indicationsTotal ?? 0,
+        title: "Current or cumulative indication sets from the canonical progression stats endpoint.",
+      },
+      {
+        label: "Strat",
+        value: liveStats?.strategies ?? ((prehistoricStats?.stratBase ?? 0) + (prehistoricStats?.stratMain ?? 0) + (prehistoricStats?.stratReal ?? 0)),
+        title: "Current or cumulative strategy sets from the canonical progression stats endpoint.",
+      },
+      {
+        label: (prehistoricStats?.liveOpenPositions ?? 0) > 0 ? "Live" : "Pseudo",
+        value: liveStats?.positions ?? 0,
+        title: (prehistoricStats?.liveOpenPositions ?? 0) > 0
+          ? "Open exchange positions (live)."
+          : "Open pseudo positions (evaluation stage).",
+      },
+      {
+        label: "Orders",
+        value: ordersFilled > 0 ? `${ordersPlaced}/${ordersFilled}` : ordersPlaced,
+        title: "Live exchange orders placed / filled.",
+        tone: ordersPlaced > 0 ? "text-amber-700 dark:text-amber-400" : undefined,
+      },
+    )
+
+    if (ordersFailed > 0) {
+      tiles.push({
+        label: "Failed",
+        value: ordersFailed,
+        title: "Live exchange orders failed or rejected.",
+        tone: "text-red-600 dark:text-red-400",
+      })
+    }
+
+    if (livePnl !== 0) {
+      tiles.push({
+        label: "PnL",
+        value: `${livePnl > 0 ? "+" : ""}$${Math.abs(livePnl).toFixed(2)}`,
+        title: "Live exchange unrealized/realized PnL.",
+        tone: livePnl > 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400",
+      })
+    }
+
+    return tiles.map(({ label, value, title, tone }) => (
+      <div key={label} className="flex items-center gap-1 text-[10px]" title={title}>
+        <span className="text-muted-foreground">{label}</span>
+        <span className={`font-semibold tabular-nums ${tone ?? ""}`}>
+          {typeof value === "number" && value >= 1000
+            ? `${(value / 1000).toFixed(1)}K`
+            : value}
+        </span>
+      </div>
+    ))
+  }
 
   const connName = details?.name || connection.connectionId
   const testStatus = details?.last_test_status
@@ -1271,48 +1360,13 @@ export function ActiveConnectionCard({
           </CardHeader>
 
           {/* Per-connection stats row — shown whenever active with data, even in idle/stopped phases.
-              Layout: Symbols | Cycles | Pseudo|Live. Indications / Strategies / Sets moved to the
-              Realtime Execution panel where they belong semantically (live ticking data, not
-              connection-level overview). The Symbols tile here surfaces the prehistoric backfill
-              progress so the operator can read both the realtime tick count AND backfill coverage
-              at a glance, even when the engine is paused. */}
+              This compact overview intentionally includes the full operator-critical
+              stats set (Cycles, Ind, Strat, Pseudo/Live, Orders, failures, PnL) so
+              the Main Connections card is complete without requiring expansion. */}
           {connection.isActive && liveStats && (phase === "idle" || phase === "stopped" || phase === "disabled") && (
             <CardContent className="pt-0 pb-2 px-4">
               <div className="flex items-center gap-3 flex-wrap pt-1 border-t border-border/40">
-                {(() => {
-                  const symbolsProcessed = progression?.prehistoricProgress?.symbolsProcessed ?? 0
-                  const symbolsTotal     = progression?.prehistoricProgress?.symbolsTotal     ?? 0
-                  const tiles: Array<{ label: string; value: string | number; title?: string }> = []
-                  if (symbolsProcessed > 0 || symbolsTotal > 0) {
-                    tiles.push({
-                      label: "Symbols",
-                      value: symbolsTotal > 0 ? `${symbolsProcessed}/${symbolsTotal}` : symbolsProcessed,
-                      title: "Prehistoric backfill coverage — symbols processed vs total.",
-                    })
-                  }
-                  tiles.push({
-                    label: "Cycles",
-                    value: liveStats.indicationCycles,
-                    title: "Realtime indication processor ticks since engine start.",
-                  })
-                  tiles.push({
-                    label: (prehistoricStats?.liveOpenPositions ?? 0) > 0 ? "Live" : "Pseudo",
-                    value: liveStats.positions,
-                    title: (prehistoricStats?.liveOpenPositions ?? 0) > 0
-                      ? "Open exchange positions (live)."
-                      : "Open pseudo positions (evaluation stage).",
-                  })
-                  return tiles.map(({ label, value, title }) => (
-                    <div key={label} className="flex items-center gap-1 text-[10px]" title={title}>
-                      <span className="text-muted-foreground">{label}</span>
-                      <span className="font-semibold tabular-nums">
-                        {typeof value === "number" && value >= 1000
-                          ? `${(value / 1000).toFixed(1)}K`
-                          : value}
-                      </span>
-                    </div>
-                  ))
-                })()}
+                  {renderOverviewTiles()}
               </div>
             </CardContent>
           )}
@@ -1337,45 +1391,11 @@ export function ActiveConnectionCard({
                 )}
 
                 {/* Per-connection engine stats — always shown when connection is active.
-                    Layout matches the idle variant: Symbols | Cycles | Pseudo|Live.
-                    Indications / Strategies / Sets live in the Realtime Execution panel.
-                    When liveStats hasn't loaded yet we render with 0-fallbacks so the
-                    tiles are always visible once we leave prehistoric_data phase. */}
+                    Layout matches the idle variant and includes the full compact
+                    overview: Symbols, Cycles, Ind, Strat, Pseudo/Live, Orders,
+                    failure counts, and PnL when available. */}
                 <div className="flex items-center gap-3 mt-1.5 flex-wrap">
-                  {(() => {
-                    const symbolsProcessed = progression?.prehistoricProgress?.symbolsProcessed ?? 0
-                    const symbolsTotal     = progression?.prehistoricProgress?.symbolsTotal     ?? 0
-                    const tiles: Array<{ label: string; value: string | number; title?: string }> = []
-                    if (symbolsProcessed > 0 || symbolsTotal > 0) {
-                      tiles.push({
-                        label: "Symbols",
-                        value: symbolsTotal > 0 ? `${symbolsProcessed}/${symbolsTotal}` : symbolsProcessed,
-                        title: "Prehistoric backfill coverage — symbols processed vs total.",
-                      })
-                    }
-                    tiles.push({
-                      label: "Cycles",
-                      value: liveStats?.indicationCycles ?? 0,
-                      title: "Realtime indication processor ticks since engine start.",
-                    })
-                    tiles.push({
-                      label: (prehistoricStats?.liveOpenPositions ?? 0) > 0 ? "Live" : "Pseudo",
-                      value: liveStats?.positions ?? 0,
-                      title: (prehistoricStats?.liveOpenPositions ?? 0) > 0
-                        ? "Open exchange positions (live)."
-                        : "Open pseudo positions (evaluation stage).",
-                    })
-                    return tiles.map(({ label, value, title }) => (
-                      <div key={label} className="flex items-center gap-1 text-[10px]" title={title}>
-                        <span className="text-muted-foreground">{label}</span>
-                        <span className="font-semibold tabular-nums">
-                          {typeof value === "number" && value >= 1000
-                            ? `${(value / 1000).toFixed(1)}K`
-                            : value}
-                        </span>
-                      </div>
-                    ))
-                  })()}
+                  {renderOverviewTiles()}
                 </div>
 
                 {/* ── Mirroring pipeline counts ──────────────────────

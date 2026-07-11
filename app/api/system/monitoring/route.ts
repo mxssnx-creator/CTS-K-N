@@ -5,26 +5,76 @@ import { getSystemResourceMetrics } from "@/lib/system-resource-metrics"
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
+async function collectRedisKeys(client: ReturnType<typeof getRedisClient>): Promise<{ keys: string[]; keyCount: number }> {
+  try {
+    const keysResult = await client.keys("*")
+    if (Array.isArray(keysResult) && keysResult.length > 0) {
+      return { keys: keysResult, keyCount: keysResult.length }
+    }
+  } catch {
+    // Some hosted Redis providers disable KEYS. Fall back to SCAN below.
+  }
+
+  const scannedKeys = new Set<string>()
+  try {
+    let cursor: string | number = "0"
+    for (let i = 0; i < 200; i++) {
+      if (typeof client.scan !== "function") break
+      const result = await client.scan(cursor, "MATCH", "*", "COUNT", 500)
+      const nextCursor = Array.isArray(result) ? result[0] : "0"
+      const batch = Array.isArray(result) ? result[1] : []
+      if (Array.isArray(batch)) {
+        for (const key of batch) scannedKeys.add(String(key))
+      }
+      cursor = nextCursor
+      if (String(cursor) === "0") break
+    }
+  } catch {
+    // Keep going: dbsize/pattern probes below can still provide a real count.
+  }
+
+  if (scannedKeys.size > 0) {
+    return { keys: Array.from(scannedKeys), keyCount: scannedKeys.size }
+  }
+
+  try {
+    const dbsize = typeof (client as any).dbSize === "function"
+      ? await (client as any).dbSize()
+      : await (client as any).dbsize?.()
+    const keyCount = Number(dbsize)
+    if (Number.isFinite(keyCount) && keyCount > 0) {
+      return { keys: [], keyCount }
+    }
+  } catch {
+    // Optional command; not all adapters expose it.
+  }
+
+  return { keys: [], keyCount: 0 }
+}
+
 export async function GET() {
   try {
     const resourceMetrics = getSystemResourceMetrics()
     let client: ReturnType<typeof getRedisClient> | null = null
 
     let allKeys: string[] = []
+    let keyCount = 0
     let redisAvailable = false
     try {
       await initRedis()
       client = getRedisClient()
-      const keysResult = await client.keys("*")
-      allKeys = Array.isArray(keysResult) ? keysResult : []
+      const collected = await collectRedisKeys(client)
+      allKeys = collected.keys
+      keyCount = collected.keyCount
       redisAvailable = true
     } catch (redisError) {
       console.warn("[Monitoring] Redis unavailable while collecting system metrics:", redisError instanceof Error ? redisError.message : String(redisError))
       allKeys = []
+      keyCount = 0
       redisAvailable = false
     }
     
-    const keys = allKeys.length
+    const keys = Math.max(keyCount, allKeys.length)
     const sets = allKeys.filter((k: string) => k.includes(":set") || k.includes("_set")).length
     const positionKeys = allKeys.filter((k: string) => k.includes("position")).length
     const indicationKeys = allKeys.filter((k: string) => 
@@ -76,7 +126,7 @@ export async function GET() {
     
     // PRIMARY: read live progression hashes (written every cycle — always current)
     try {
-      const progressionKeys = allKeys.filter((k: string) => k.startsWith("progression:") && !k.includes(":"))
+      const progressionKeys = allKeys.filter((k: string) => /^progression:[^:]+$/.test(k))
       for (const progKey of progressionKeys) {
         try {
           if (!client) continue
