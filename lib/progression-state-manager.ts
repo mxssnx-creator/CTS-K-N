@@ -92,6 +92,7 @@ import { getRedisClient, initRedis, setSettings } from "@/lib/redis-db"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
 import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from "@/lib/progression-fingerprint"
+import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
 
 export interface ProgressionRecoordinationResult {
   changed: boolean
@@ -1356,6 +1357,7 @@ export class ProgressionStateManager {
       const scope = await ensureScopedProgressionFromLegacy(client, connectionId, engineType)
       const key = scope.progressionKey
       const existing = await client.hgetall(key).catch(() => null)
+      const processorHeartbeat = await getFreshestProcessorHeartbeat(connectionId).catch(() => 0)
 
       const now = Date.now()
       const nowIso = new Date(now).toISOString()
@@ -1367,12 +1369,16 @@ export class ProgressionStateManager {
       // `last_update` (the canonical activity timestamp written every 500
       // cycles and on every settings change) to a generous staleness bound.
       //
-      // STALENESS_MS = 30 minutes. An actively running engine updates
-      // `last_update` at minimum every 500 cycles × ≥300ms = ~150s. If
-      // 30 min have elapsed with no update the engine is either stopped or
-      // dead — treating the progression as live would incorrectly attach
-      // a new engine start to a zombie session (wrong epoch, wrong counters).
+      // STALENESS_MS = 30 minutes for stopped/reusable sessions. Running
+      // sessions are stricter: a real processor writes `last_processor_heartbeat`
+      // every productive tick. If the active hash is older than
+      // PROCESSOR_HEARTBEAT_STALE_MS with no fresh heartbeat, it is a zombie
+      // (often left by a crashed/cold-started worker) and must be archived so
+      // dashboard progress/stats cannot stay stuck forever with no processing.
       const STALENESS_MS = 30 * 60 * 1000
+      const PROCESSOR_HEARTBEAT_STALE_MS = 90_000
+      const hasFreshProcessorHeartbeat =
+        processorHeartbeat > 0 && Number.isFinite(processorHeartbeat) && now - processorHeartbeat <= PROCESSOR_HEARTBEAT_STALE_MS
 
       const ownerEpoch = options.ownerEpoch && Number.isFinite(options.ownerEpoch) && options.ownerEpoch > 0
         ? options.ownerEpoch
@@ -1430,16 +1436,25 @@ export class ProgressionStateManager {
           ? new Date(existing.last_update).getTime()
           : (existing.started_at ? Number(existing.started_at) : 0)
         const sessionAge = now - lastUpdateMs
-        const isStale = !lastUpdateMs || !Number.isFinite(lastUpdateMs) || sessionAge > STALENESS_MS
+        const startedAtMs = Number(existing.started_at || "0") || lastUpdateMs || 0
+        const activeAge = now - startedAtMs
+        const lacksRuntimeProof = activeAge > PROCESSOR_HEARTBEAT_STALE_MS && !hasFreshProcessorHeartbeat
+        const isStale =
+          !lastUpdateMs ||
+          !Number.isFinite(lastUpdateMs) ||
+          sessionAge > STALENESS_MS ||
+          lacksRuntimeProof
 
         if (!isStale) {
           // There is already one healthy unique active progression (recoordinate ensured it matches current live state)
           const sessionNumber = parseInt(existing.session_number || "1", 10)
           const epoch = ownerEpoch
 
-          // Light attach: update activity timestamps, keep the same unique session/epoch
+          // Light attach: mark only the visit/owner. Do NOT refresh `last_update`
+          // unless a processor is actually alive; otherwise repeated dashboard/
+          // auto-start attaches can keep a dead progression looking fresh forever.
           await client.hset(key, {
-            last_update: nowIso,
+            ...(hasFreshProcessorHeartbeat ? { last_update: nowIso } : {}),
             last_visited: nowIso,
             engine_started: "true",
             epoch: String(epoch),
@@ -1459,7 +1474,7 @@ export class ProgressionStateManager {
         // Session is stale — treat as dead and start fresh
         console.log(
           `[v0] [Progression] Stale session detected for ${connectionId} ` +
-          `(engine_started=true but last_update=${Math.round(sessionAge / 60000)}min ago) — starting fresh.`,
+          `(engine_started=true, age=${Math.round(sessionAge / 1000)}s, heartbeatFresh=${hasFreshProcessorHeartbeat}) — starting fresh.`,
         )
       }
 
