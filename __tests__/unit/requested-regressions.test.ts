@@ -1389,10 +1389,17 @@ describe("requested regression guardrails", () => {
 
     expect(progressionRoute).toContain('import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"')
     expect(progressionRoute).toContain('const globalIntent = globalState?.operator_intent || globalState?.desired_status || globalState?.status || ""')
+    expect(progressionRoute).toContain('const [scopedEngineState, scopedRawEngineState, legacySettingsEngineState, legacyRawEngineState] = await Promise.all')
+    expect(progressionRoute).toContain('const activeProgressionSymbolCount = toNumber(progHash.symbol_count) || toNumber(progHash.quickstart_symbol_count)')
+    expect(progressionRoute).toContain('prehistoricProgress.percentComplete = 100')
     expect(progressionRoute).toContain('const processorHeartbeat = await getFreshestProcessorHeartbeat(connectionId).catch(() => 0)')
     expect(progressionRoute).toContain('hasFreshProcessorHeartbeat ||')
 
     expect(statusRoute).toContain('import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"')
+    expect(statusRoute).toContain('import { buildProgressionScope } from "@/lib/progression-scope"')
+    expect(statusRoute).toContain('const globalIntent = globalState.operator_intent || globalState.desired_status || globalState.status || ""')
+    expect(statusRoute).toContain('const runtimeActive = !!engineStatus || heartbeatFresh || (globalRunning && assigned && processingEnabled)')
+    expect(statusRoute).toContain('getSettings(scope.engineProgressionKey)')
     expect(statusRoute).toContain('const globalIntent = globalState.operator_intent || globalState.desired_status || globalState.status || ""')
     expect(statusRoute).toContain('const runtimeActive = !!engineStatus || heartbeatFresh || (globalRunning && assigned && processingEnabled)')
     expect(statusRoute).toContain('lastProcessorHeartbeat: processorHeartbeat || null')

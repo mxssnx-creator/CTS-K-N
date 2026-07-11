@@ -1,4 +1,9 @@
 import { NextResponse } from "next/server"
+import { getAllConnections, getRedisClient, getSettings, initRedis } from "@/lib/redis-db"
+import { SystemLogger } from "@/lib/system-logger"
+import { getTradeEngineStatus } from "@/lib/trade-engine"
+import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
+import { buildProgressionScope } from "@/lib/progression-scope"
 import { getAllConnections, getRedisClient, initRedis } from "@/lib/redis-db"
 import { SystemLogger } from "@/lib/system-logger"
 import { getTradeEngineStatus } from "@/lib/trade-engine"
@@ -35,10 +40,15 @@ export async function GET() {
 
           const assigned = connection.is_active_inserted === true || connection.is_active_inserted === "1" || connection.is_assigned === true || connection.is_assigned === "1" || connection.is_dashboard_inserted === true || connection.is_dashboard_inserted === "1"
           const processingEnabled = connection.is_enabled_dashboard === true || connection.is_enabled_dashboard === "1"
-
           const processorHeartbeat = await getFreshestProcessorHeartbeat(connection.id).catch(() => 0)
           const heartbeatFresh = processorHeartbeat > 0 && Date.now() - processorHeartbeat < 90_000
           const runtimeActive = !!engineStatus || heartbeatFresh || (globalRunning && assigned && processingEnabled)
+          const scope = buildProgressionScope(connection.id, "main")
+          const [scopedProgression, legacyProgression] = await Promise.all([
+            getSettings(scope.engineProgressionKey).catch(() => ({} as Record<string, string>)),
+            getSettings(`engine_progression:${connection.id}`).catch(() => ({} as Record<string, string>)),
+          ])
+          const progression = Object.keys(scopedProgression || {}).length > 0 ? scopedProgression : legacyProgression
           const progression = await client.hgetall(`engine_progression:${connection.id}`).catch(() => ({} as Record<string, string>))
           const progressionProgress = Number((progression as any)?.progress || 0) || 0
 
