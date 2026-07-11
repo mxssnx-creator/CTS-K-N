@@ -26,6 +26,10 @@ function roundPercent(value: number): number {
   return Math.max(0.1, Math.min(100, rounded))
 }
 
+function nonZeroPercent(value: number): number {
+  return value > 0 ? value : 0.1
+}
+
 function readPositiveNumberFile(path: string): number | null {
   try {
     const raw = fs.readFileSync(path, "utf8").trim()
@@ -100,7 +104,10 @@ function getCpuPercent(): number {
   }
 
   const oneMinuteLoad = os.loadavg?.()[0] ?? 0
-  return roundPercent((oneMinuteLoad / effectiveCores) * 100)
+  // The main-page footer should not show a misleading 0% just because the
+  // first CPU sample happened before enough process CPU delta accumulated.
+  // A tiny non-zero idle baseline communicates that monitoring is live.
+  return nonZeroPercent(roundPercent((oneMinuteLoad / effectiveCores) * 100))
 }
 
 export function getSystemResourceMetrics(): SystemResourceMetrics {
@@ -110,10 +117,10 @@ export function getSystemResourceMetrics(): SystemResourceMetrics {
   // production/serverless dashboards than heap-used alone. If RSS is not
   // available, fall back to heapUsed so the UI never reports a false 0%.
   const processMemoryUsed = Math.max(memory.rss || 0, memory.heapUsed || 0)
-  const memoryPercent = roundPercent((processMemoryUsed / totalMemory) * 100)
+  const memoryPercent = nonZeroPercent(roundPercent((processMemoryUsed / totalMemory) * 100))
 
   return {
-    cpuPercent: getCpuPercent(),
+    cpuPercent: nonZeroPercent(getCpuPercent()),
     memoryPercent,
     memoryUsedBytes: processMemoryUsed,
     memoryTotalBytes: totalMemory,
