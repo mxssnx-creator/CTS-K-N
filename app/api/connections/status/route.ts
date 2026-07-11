@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server"
-import { getAllConnections, initRedis } from "@/lib/redis-db"
+import { getAllConnections, getRedisClient, initRedis } from "@/lib/redis-db"
 import { SystemLogger } from "@/lib/system-logger"
 import { getTradeEngineStatus } from "@/lib/trade-engine"
+import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
 
 // GET real-time status for all active connections
 export const dynamic = "force-dynamic"
@@ -12,6 +13,11 @@ export async function GET() {
 
     await initRedis()
     const connections = await getAllConnections()
+    const client = getRedisClient()
+    const globalState = (await client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>))) || {}
+    const globalIntent = globalState.operator_intent || globalState.desired_status || globalState.status || ""
+    const globalRunning = globalIntent === "running" || (!globalIntent && globalState.operator_stopped !== "1" && globalState.operator_stopped !== "true")
+    const globalPaused = globalIntent === "paused"
     
     // Ensure connections is an array
     if (!Array.isArray(connections)) {
@@ -30,20 +36,28 @@ export async function GET() {
           const assigned = connection.is_active_inserted === true || connection.is_active_inserted === "1" || connection.is_assigned === true || connection.is_assigned === "1" || connection.is_dashboard_inserted === true || connection.is_dashboard_inserted === "1"
           const processingEnabled = connection.is_enabled_dashboard === true || connection.is_enabled_dashboard === "1"
 
+          const processorHeartbeat = await getFreshestProcessorHeartbeat(connection.id).catch(() => 0)
+          const heartbeatFresh = processorHeartbeat > 0 && Date.now() - processorHeartbeat < 90_000
+          const runtimeActive = !!engineStatus || heartbeatFresh || (globalRunning && assigned && processingEnabled)
+          const progression = await client.hgetall(`engine_progression:${connection.id}`).catch(() => ({} as Record<string, string>))
+          const progressionProgress = Number((progression as any)?.progress || 0) || 0
+
           return {
             id: connection.id,
             name: connection.name,
             exchange: connection.exchange,
             assigned,
             processingEnabled,
-            status: processingEnabled ? (connection.is_live_trade ? "connected" : "connecting") : "disabled",
-            progress: engineStatus?.loadingProgress || 0,
+            status: !processingEnabled ? "disabled" : globalPaused ? "paused" : runtimeActive ? "connected" : "connecting",
+            progress: engineStatus?.loadingProgress || progressionProgress,
             balance: engineStatus?.balance || 0,
             activePositions: engineStatus?.activePositions || 0,
             activeSymbols: engineStatus?.activeSymbols || 0,
             indicationsActive: engineStatus?.indicationsActive || 0,
-            lastUpdate: engineStatus?.lastUpdate || new Date().toISOString(),
-            isLoading: engineStatus?.isLoading || false,
+            lastUpdate: engineStatus?.lastUpdate || (processorHeartbeat ? new Date(processorHeartbeat).toISOString() : new Date().toISOString()),
+            heartbeatFresh,
+            lastProcessorHeartbeat: processorHeartbeat || null,
+            isLoading: engineStatus?.isLoading || (processingEnabled && !runtimeActive),
             loadingStage: engineStatus?.loadingStage || "idle",
             error: engineStatus?.error || null,
           }

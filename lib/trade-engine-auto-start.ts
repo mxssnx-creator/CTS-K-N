@@ -259,8 +259,19 @@ async function runTradeEngineHealingSweepInternal({ isStartup }: HealingSweepOpt
     }
 
     // PROD FIX: Uninitialized operator_intent now defaults to "running" (changed from "stopped")
-    // Only explicitly stopped/paused intents block autostart
+    // Only explicitly stopped/paused intents block autostart. When the hash is
+    // empty, also stamp the canonical running intent so status/progression
+    // endpoints report the same reality as the processors we are about to start.
     const shouldRun = operatorIntent !== "stopped"
+    if (shouldRun && !operatorIntent) {
+      await client.hset("trade_engine:global", {
+        operator_intent: "running",
+        desired_status: "running",
+        status: "running",
+        auto_started_from_empty_intent: "1",
+        auto_started_at: new Date().toISOString(),
+      }).catch(() => 0)
+    }
     if (!shouldRun) {
       if (isStartup) {
         console.warn(

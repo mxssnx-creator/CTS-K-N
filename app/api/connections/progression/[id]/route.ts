@@ -5,6 +5,7 @@ import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { normalizeSymbolList } from "@/lib/trade-engine/symbol-selection-ownership"
 import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
+import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
 
 export const dynamic = "force-dynamic"
 export const dynamicParams = true
@@ -152,7 +153,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     } catch {
       globalState = {}
     }
-    const isGloballyRunning = globalState?.status === "running"
+    const globalIntent = globalState?.operator_intent || globalState?.desired_status || globalState?.status || ""
+    const isGloballyRunning = globalIntent === "running" || (!globalIntent && (globalState?.operator_stopped !== "1" && globalState?.operator_stopped !== "true"))
     const configuredSymbolCount = getConfiguredSymbolCount(connection, engineState)
     
      // PHASE 2 FIX: Check running flag directly from coordinator (most reliable)
@@ -202,12 +204,17 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       progressionState.strategyCycleCount ||
       progressionState.strategyLiveCycleCount ||
       0
-    const hasRecentActivity = engineState?.last_indication_run 
+    const processorHeartbeat = await getFreshestProcessorHeartbeat(connectionId).catch(() => 0)
+    const hasFreshProcessorHeartbeat = processorHeartbeat > 0 && Date.now() - processorHeartbeat < 90_000
+    const hasRecentActivity = hasFreshProcessorHeartbeat || (engineState?.last_indication_run
       ? (Date.now() - new Date(engineState.last_indication_run).getTime()) < 60000 // Active in last 60s
-      : false
+      : false)
     
-    // Engine is running only when there is current runtime evidence
+    // Engine is running only when there is current runtime evidence, or when
+    // production continuity has explicit/implicit running intent for an
+    // assigned+enabled connection that may still be attaching its first worker.
     const engineRunning = isEngineRunning || 
+      hasFreshProcessorHeartbeat ||
       (isGloballyRunning && (isActiveInserted || isInserted) && isEnabled) ||
       engineState?.status === "running" ||
       hasRecentActivity

@@ -1380,6 +1380,49 @@ describe("requested regression guardrails", () => {
     expect(realTotalEvaluated).toBe(5)
   })
 
+
+
+
+  test("connection status and progression routes use production heartbeat/global intent fallbacks", () => {
+    const progressionRoute = read("app/api/connections/progression/[id]/route.ts")
+    const statusRoute = read("app/api/connections/status/route.ts")
+
+    expect(progressionRoute).toContain('import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"')
+    expect(progressionRoute).toContain('const globalIntent = globalState?.operator_intent || globalState?.desired_status || globalState?.status || ""')
+    expect(progressionRoute).toContain('const processorHeartbeat = await getFreshestProcessorHeartbeat(connectionId).catch(() => 0)')
+    expect(progressionRoute).toContain('hasFreshProcessorHeartbeat ||')
+
+    expect(statusRoute).toContain('import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"')
+    expect(statusRoute).toContain('const globalIntent = globalState.operator_intent || globalState.desired_status || globalState.status || ""')
+    expect(statusRoute).toContain('const runtimeActive = !!engineStatus || heartbeatFresh || (globalRunning && assigned && processingEnabled)')
+    expect(statusRoute).toContain('lastProcessorHeartbeat: processorHeartbeat || null')
+  })
+
+  test("production auto-start empty global intent can start processors instead of staying queued", () => {
+    const coordinator = read("lib/trade-engine.ts")
+    const autoStart = read("lib/trade-engine-auto-start.ts")
+
+    expect(autoStart).toContain('const shouldRun = operatorIntent !== "stopped"')
+    expect(autoStart).toContain('if (shouldRun && !operatorIntent)')
+    expect(autoStart).toContain('auto_started_from_empty_intent: "1"')
+    expect(autoStart).toContain('operator_intent: "running"')
+    expect(coordinator).toContain('const rawIntent = globalState?.operator_intent || globalState?.desired_status || globalState?.status || ""')
+    expect(coordinator).toContain('const enabled = intent === "running" || (!operatorStopped && rawIntent === "")')
+    expect(coordinator).toContain('uninitialized global hash means "run eligible enabled connections"')
+    expect(coordinator).not.toContain('const enabled = intent === "running"\n      this.isPaused = intent === "paused"')
+  })
+
+  test("unique progression attach requires runtime heartbeat proof so dead progress cannot stay stuck", () => {
+    const source = read("lib/progression-state-manager.ts")
+
+    expect(source).toContain('import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"')
+    expect(source).toContain("const PROCESSOR_HEARTBEAT_STALE_MS = 90_000")
+    expect(source).toContain("const hasFreshProcessorHeartbeat")
+    expect(source).toContain("const lacksRuntimeProof = activeAge > PROCESSOR_HEARTBEAT_STALE_MS && !hasFreshProcessorHeartbeat")
+    expect(source).toContain("dashboard/\n          // auto-start attaches can keep a dead progression looking fresh forever")
+    expect(source).toContain("...(hasFreshProcessorHeartbeat ? { last_update: nowIso } : {})")
+  })
+
   test("production prehistoric bootstrap cannot permanently gate live processing", () => {
     const source = read("lib/trade-engine/engine-manager.ts")
 
