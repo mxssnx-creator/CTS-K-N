@@ -1382,6 +1382,22 @@ describe("requested regression guardrails", () => {
 
 
 
+
+  test("connection status and progression routes use production heartbeat/global intent fallbacks", () => {
+    const progressionRoute = read("app/api/connections/progression/[id]/route.ts")
+    const statusRoute = read("app/api/connections/status/route.ts")
+
+    expect(progressionRoute).toContain('import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"')
+    expect(progressionRoute).toContain('const globalIntent = globalState?.operator_intent || globalState?.desired_status || globalState?.status || ""')
+    expect(progressionRoute).toContain('const processorHeartbeat = await getFreshestProcessorHeartbeat(connectionId).catch(() => 0)')
+    expect(progressionRoute).toContain('hasFreshProcessorHeartbeat ||')
+
+    expect(statusRoute).toContain('import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"')
+    expect(statusRoute).toContain('const globalIntent = globalState.operator_intent || globalState.desired_status || globalState.status || ""')
+    expect(statusRoute).toContain('const runtimeActive = !!engineStatus || heartbeatFresh || (globalRunning && assigned && processingEnabled)')
+    expect(statusRoute).toContain('lastProcessorHeartbeat: processorHeartbeat || null')
+  })
+
   test("production auto-start empty global intent can start processors instead of staying queued", () => {
     const coordinator = read("lib/trade-engine.ts")
     const autoStart = read("lib/trade-engine-auto-start.ts")
