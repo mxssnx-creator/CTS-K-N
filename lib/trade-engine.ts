@@ -196,10 +196,19 @@ export class GlobalTradeEngineCoordinator {
       const globalState = (await client.hgetall("trade_engine:global").catch(() => null)) as Record<string, string> | null
       const operatorStopped =
         globalState?.operator_stopped === "1" || globalState?.operator_stopped === "true"
-      const intent = operatorStopped
-        ? "stopped"
-        : globalState?.operator_intent || globalState?.desired_status || globalState?.status || ""
-      const enabled = intent === "running"
+      const rawIntent = globalState?.operator_intent || globalState?.desired_status || globalState?.status || ""
+      const intent = operatorStopped ? "stopped" : rawIntent
+
+      // Production continuity must match the auto-start sweep semantics: an
+      // uninitialized global hash means "run eligible enabled connections".
+      // Only explicit stopped/paused operator intent should block engine work.
+      // Previously the sweep decided `operatorIntent !== "stopped"`, then
+      // immediately called startMissingEngines(), whose stricter
+      // isGlobalCoordinatorEnabled() required `intent === "running"`. Fresh
+      // production deployments therefore reported queued/degraded progress with
+      // no processors and no stats until a separate route happened to stamp
+      // running intent.
+      const enabled = intent === "running" || (!operatorStopped && rawIntent === "")
       this.isPaused = intent === "paused"
       this.isGloballyRunning = enabled && Array.from(this.engineManagers.values()).some((manager) => manager.isEngineRunning)
       if (!enabled) {
