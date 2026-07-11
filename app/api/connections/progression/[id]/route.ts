@@ -5,6 +5,7 @@ import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { normalizeSymbolList } from "@/lib/trade-engine/symbol-selection-ownership"
 import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
+import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
 
 export const dynamic = "force-dynamic"
 export const dynamicParams = true
@@ -131,16 +132,27 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return getSettings(`engine_progression:${connectionId}`).catch(() => ({}))
     })
     
-    // Get engine state from the correct Redis key: trade_engine_state:{connectionId}
+    // Get engine state from all production writers and merge newest/scoped fields.
+    // Engine workers often publish hot heartbeat/config counters to
+    // settings:trade_engine_state:{id}:{engineType}, while legacy/startup paths
+    // may still write trade_engine_state:{id}. Reading only one hash made the
+    // progress endpoint use stale symbol totals and appear stuck in prod.
     const client = getRedisClient()
-    const engineState = await getSettings(scope.tradeEngineStateKey).catch(() =>
-      getSettings(`trade_engine_state:${connectionId}:${engineType}`).catch(() =>
-        getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))
-      )
-    ).catch((e) => {
+    const [scopedEngineState, scopedRawEngineState, legacySettingsEngineState, legacyRawEngineState] = await Promise.all([
+      getSettings(scope.tradeEngineStateKey).catch(() => ({})),
+      getSettings(`trade_engine_state:${connectionId}:${engineType}`).catch(() => ({})),
+      getSettings(`settings:trade_engine_state:${connectionId}`).catch(() => ({})),
+      getSettings(`trade_engine_state:${connectionId}`).catch(() => ({})),
+    ]).catch((e) => {
       console.warn(`[v0] [ProgressionAPI] Failed to get engine state for ${connectionId}:`, e)
-      return {}
+      return [{}, {}, {}, {}] as any[]
     })
+    const engineState = {
+      ...(legacyRawEngineState || {}),
+      ...(legacySettingsEngineState || {}),
+      ...(scopedRawEngineState || {}),
+      ...(scopedEngineState || {}),
+    }
     
     // Also check global state (stored as Redis HASH via hset, not a string)
     let globalState: any = {}
@@ -152,8 +164,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     } catch {
       globalState = {}
     }
-    const isGloballyRunning = globalState?.status === "running"
-    const configuredSymbolCount = getConfiguredSymbolCount(connection, engineState)
+    const globalIntent = globalState?.operator_intent || globalState?.desired_status || globalState?.status || ""
+    const isGloballyRunning = globalIntent === "running" || (!globalIntent && (globalState?.operator_stopped !== "1" && globalState?.operator_stopped !== "true"))
+    let configuredSymbolCount = getConfiguredSymbolCount(connection, engineState)
     
      // PHASE 2 FIX: Check running flag directly from coordinator (most reliable)
      // Get current engine running state from coordinator
@@ -187,6 +200,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     try {
       await ensureScopedProgressionFromLegacy(client, connectionId, engineType)
       progHash = (await client.hgetall(scope.progressionKey)) || {}
+      // The active progression hash is the most reliable per-session symbol
+      // owner. Prefer it over stale connection-level symbol_count values left
+      // by old migrations/default profiles so progress does not show 0/20 while
+      // stats correctly show the active 1/1 production run.
+      const activeProgressionSymbolCount = toNumber(progHash.symbol_count) || toNumber(progHash.quickstart_symbol_count)
+      if (activeProgressionSymbolCount > 0) configuredSymbolCount = activeProgressionSymbolCount
     } catch { /* non-critical */ }
 
     // Cycle counts: prefer live progression hash over engineState (more current)
@@ -202,12 +221,17 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       progressionState.strategyCycleCount ||
       progressionState.strategyLiveCycleCount ||
       0
-    const hasRecentActivity = engineState?.last_indication_run 
+    const processorHeartbeat = await getFreshestProcessorHeartbeat(connectionId).catch(() => 0)
+    const hasFreshProcessorHeartbeat = processorHeartbeat > 0 && Date.now() - processorHeartbeat < 90_000
+    const hasRecentActivity = hasFreshProcessorHeartbeat || (engineState?.last_indication_run
       ? (Date.now() - new Date(engineState.last_indication_run).getTime()) < 60000 // Active in last 60s
-      : false
+      : false)
     
-    // Engine is running only when there is current runtime evidence
+    // Engine is running only when there is current runtime evidence, or when
+    // production continuity has explicit/implicit running intent for an
+    // assigned+enabled connection that may still be attaching its first worker.
     const engineRunning = isEngineRunning || 
+      hasFreshProcessorHeartbeat ||
       (isGloballyRunning && (isActiveInserted || isInserted) && isEnabled) ||
       engineState?.status === "running" ||
       hasRecentActivity
@@ -419,6 +443,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       }
     } catch (e) {
       console.warn(`[v0] [ProgressionAPI] Failed to get prehistoric progress for ${connectionId}:`, e)
+    }
+
+    // If the authoritative phase has advanced past prehistoric, the detailed
+    // prehistoric widget must not keep showing 0/N from stale or absent legacy
+    // prehistoric hashes. Stats already report the active session as complete;
+    // mirror that completion here for connection progress cards.
+    if (!["idle", "initializing", "prehistoric_data", "ready"].includes(phase) || phase === "live_trading" || progress >= 100) {
+      prehistoricProgress.symbolsTotal = Math.max(prehistoricProgress.symbolsTotal, configuredSymbolCount, 1)
+      prehistoricProgress.symbolsProcessed = Math.max(prehistoricProgress.symbolsProcessed, prehistoricProgress.symbolsTotal)
+      prehistoricProgress.percentComplete = 100
     }
     
     const subItem = progression?.sub_item || (phase === "prehistoric_data" ? "symbols" : "")
