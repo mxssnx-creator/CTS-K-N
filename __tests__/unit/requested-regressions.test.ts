@@ -1403,6 +1403,13 @@ describe("requested regression guardrails", () => {
     expect(statusRoute).toContain('const globalIntent = globalState.operator_intent || globalState.desired_status || globalState.status || ""')
     expect(statusRoute).toContain('const runtimeActive = !!engineStatus || heartbeatFresh || (globalRunning && assigned && processingEnabled)')
     expect(statusRoute).toContain('lastProcessorHeartbeat: processorHeartbeat || null')
+
+    expect((statusRoute.match(/import \{ getAllConnections, getRedisClient, getSettings, initRedis \} from "@\/lib\/redis-db"/g) || []).length).toBe(1)
+    expect((statusRoute.match(/import \{ SystemLogger \} from "@\/lib\/system-logger"/g) || []).length).toBe(1)
+    expect((statusRoute.match(/import \{ getTradeEngineStatus \} from "@\/lib\/trade-engine"/g) || []).length).toBe(1)
+    expect((statusRoute.match(/import \{ getFreshestProcessorHeartbeat \} from "@\/lib\/engine-heartbeat"/g) || []).length).toBe(1)
+    expect((statusRoute.match(/const progression =/g) || []).length).toBe(1)
+    expect((progressionRoute.match(/configuredSymbolCount = getConfiguredSymbolCount/g) || []).length).toBe(1)
   })
 
   test("production auto-start empty global intent can start processors instead of staying queued", () => {

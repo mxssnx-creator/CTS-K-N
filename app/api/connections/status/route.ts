@@ -4,10 +4,6 @@ import { SystemLogger } from "@/lib/system-logger"
 import { getTradeEngineStatus } from "@/lib/trade-engine"
 import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
 import { buildProgressionScope } from "@/lib/progression-scope"
-import { getAllConnections, getRedisClient, initRedis } from "@/lib/redis-db"
-import { SystemLogger } from "@/lib/system-logger"
-import { getTradeEngineStatus } from "@/lib/trade-engine"
-import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
 
 // GET real-time status for all active connections
 export const dynamic = "force-dynamic"
@@ -49,7 +45,6 @@ export async function GET() {
             getSettings(`engine_progression:${connection.id}`).catch(() => ({} as Record<string, string>)),
           ])
           const progression = Object.keys(scopedProgression || {}).length > 0 ? scopedProgression : legacyProgression
-          const progression = await client.hgetall(`engine_progression:${connection.id}`).catch(() => ({} as Record<string, string>))
           const progressionProgress = Number((progression as any)?.progress || 0) || 0
 
           const processorHeartbeat = await getFreshestProcessorHeartbeat(connection.id).catch(() => 0)
