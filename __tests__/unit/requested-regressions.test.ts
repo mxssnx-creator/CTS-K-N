@@ -1400,6 +1400,8 @@ describe("requested regression guardrails", () => {
     expect(statusRoute).toContain('const globalIntent = globalState.operator_intent || globalState.desired_status || globalState.status || ""')
     expect(statusRoute).toContain('const runtimeActive = !!engineStatus || heartbeatFresh || (globalRunning && assigned && processingEnabled)')
     expect(statusRoute).toContain('getSettings(scope.engineProgressionKey)')
+    expect(statusRoute).toContain('const globalIntent = globalState.operator_intent || globalState.desired_status || globalState.status || ""')
+    expect(statusRoute).toContain('const runtimeActive = !!engineStatus || heartbeatFresh || (globalRunning && assigned && processingEnabled)')
     expect(statusRoute).toContain('lastProcessorHeartbeat: processorHeartbeat || null')
   })
 
