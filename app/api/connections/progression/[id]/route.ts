@@ -167,7 +167,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const globalIntent = globalState?.operator_intent || globalState?.desired_status || globalState?.status || ""
     const isGloballyRunning = globalIntent === "running" || (!globalIntent && (globalState?.operator_stopped !== "1" && globalState?.operator_stopped !== "true"))
     let configuredSymbolCount = getConfiguredSymbolCount(connection, engineState)
-    const configuredSymbolCount = getConfiguredSymbolCount(connection, engineState)
     
      // PHASE 2 FIX: Check running flag directly from coordinator (most reliable)
      // Get current engine running state from coordinator
