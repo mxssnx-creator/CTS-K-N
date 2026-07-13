@@ -2419,7 +2419,7 @@ export class StrategyCoordinator {
       : this._coordinationSettings.mainEvalPosCount
     let skippedLowPos = 0
 
-    // ── 1. Fingerprint-cache lookup ────────────────────────────────────────
+    // ── 1. Fingerprint-cache lookup ───────────────��────────────────────────
     // Fetch last cycle's fingerprint map up-front. `fpCacheKey:v2` stores a
     // per-symbol hash of { fingerprint: JSON.stringify(slimDelta) } entries
     // where slimDelta carries ONLY scalar aggregate fields (no entries[]).
@@ -4133,7 +4133,7 @@ export class StrategyCoordinator {
       //
       // Pre-compute the axis POSITION accumulation sum so the stats route
       // never needs extra round-trips on every dashboard refresh.
-      // Source: axis_pos_acc:{conn} ��� the hash bumpAxisPosAccumulation writes
+      // Source: axis_pos_acc:{conn} ����� the hash bumpAxisPosAccumulation writes
       // to in the Real tuner loop above. Each field is parentSetKey|axisKey and
       // the value is the cumulative entryCount (= baseEC + min(cont,liveCont))
       // across all cycles — exactly the "Accumulated" perspective the operator
@@ -4590,13 +4590,6 @@ export class StrategyCoordinator {
     // (which caused BingX 100421 backlog) but allows block + default variants
     // to be tested together. The final dispatch loop (lines 4699-4715) enforces
     // per-variant per-direction caps (1 default, 1 block, 1 dca per direction).
-    if (realSets.length > 0 && Math.random() < 0.01) {
-      const topPF = realSets.slice(0, 3).map((s) => s.avgProfitFactor?.toFixed(3))
-      const topDDT = realSets.slice(0, 3).map((s) => s.avgDrawdownTime)
-      console.log(`[v0] [LiveFilter] ${symbol}: realSets=${realSets.length} minPF=${metrics.minProfitFactor} maxDDT=${metrics.maxDrawdownTime} topPF=[${topPF}] topDDT=[${topDDT}]`)
-    } else if (realSets.length === 0 && Math.random() < 0.02) {
-      console.log(`[v0] [LiveFilter] ${symbol}: realSets=0 (no real sets to filter)`)
-    }
     const allQualifying = realSets
       .filter(
         (s) =>
