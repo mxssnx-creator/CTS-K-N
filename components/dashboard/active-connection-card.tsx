@@ -970,12 +970,19 @@ export function ActiveConnectionCard({
   // Falls back to the engine's value when:
   //   • the prehistoric percent is 0 (nothing to render yet), or
   //   • we're in any other phase (engine progress is correct elsewhere).
-  const enginePhaseProgress = progression?.progress || 0
-  const prehistoricPercent = progression?.prehistoricProgress?.percentComplete ?? 0
-  const progress =
+  const clampProgress = (value: unknown) => {
+    const numeric = Number(value)
+    return Number.isFinite(numeric) ? Math.max(0, Math.min(100, Math.round(numeric))) : 0
+  }
+  const enginePhaseProgress = clampProgress(progression?.progress)
+  const prehistoricPercent = clampProgress(progression?.prehistoricProgress?.percentComplete)
+  const progress = clampProgress(
     phase === "prehistoric_data" && prehistoricPercent > 0
       ? prehistoricPercent
-      : enginePhaseProgress
+      : phase === "live_trading"
+        ? Math.max(enginePhaseProgress, 100)
+        : enginePhaseProgress
+  )
   const isRunning = phase === "live_trading"
   // "unknown" = engine just started, no phase written yet → show amber "Starting..."
   const isStarting = (
