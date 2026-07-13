@@ -305,7 +305,7 @@ import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from
  * count manageable (3 × MAIN_AXIS_SETS_CEILING per cycle peak).
  */
 const _devSymCount = process.env.NODE_ENV === "development"
-  ? Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1)
+  ? Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "4", 10) || 4)
   : 0
 // For 8 symbols with concurrency=1: symbols run sequentially, one at a time.
 // Phase3 (strategy evaluation) is CPU-heavy — 3800+ sets per symbol takes
@@ -3877,8 +3877,8 @@ export class TradeEngineManager {
             process.env.NODE_ENV === "development" ||
             (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")
           if (localSymbolCapActive) {
-            const devCapSource = (connState as any)?.dev_symbol_count_override ?? process.env.V0_DEV_SYMBOL_COUNT ?? "1"
-            const devCap = Math.max(1, parseInt(String(devCapSource), 10) || 1)
+            const devCapSource = (connState as any)?.dev_symbol_count_override ?? process.env.V0_DEV_SYMBOL_COUNT ?? "4"
+            const devCap = Math.max(1, parseInt(String(devCapSource), 10) || 4)
             effectiveForceSymbols = effectiveForceSymbols.slice(0, devCap)
           }
           const sortedForce = [...effectiveForceSymbols].sort()
@@ -3934,8 +3934,8 @@ export class TradeEngineManager {
         const _isLocalRun = process.env.NODE_ENV === "development" ||
           (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")
         if (_isLocalRun) {
-          const devCapSource = (connState as any)?.dev_symbol_count_override ?? process.env.V0_DEV_SYMBOL_COUNT ?? "1"
-          const devCap = Math.max(1, parseInt(String(devCapSource), 10) || 1)
+          const devCapSource = (connState as any)?.dev_symbol_count_override ?? process.env.V0_DEV_SYMBOL_COUNT ?? "4"
+          const devCap = Math.max(1, parseInt(String(devCapSource), 10) || 4)
           // IMPORTANT: never short-circuit to ["BTCUSDT"] here. That made
           // local/self-hosted production ignore operator-selected force_symbols
           // / active_symbols before the ownership guard ran, so ConfigSetProcessor

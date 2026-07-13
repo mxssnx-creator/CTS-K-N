@@ -2432,7 +2432,7 @@ const migrations: Migration[] = [
         updated_at:             now,
       }).catch(() => {})
 
-      // ── 4. Progression snapshot so status API reflects 20 symbols ─────────
+      // ── 4. Progression snapshot so status API reflects 20 symbols ────────��
       await client.hset(`progression:${CONN_ID}`, {
         symbol_count:                 symCount,
         active_symbols_hash:          SYMS.slice().sort().join("|"),
@@ -3513,6 +3513,45 @@ const migrations: Migration[] = [
         client.del("system:database:coordination:performance").catch(() => 0),
       ])
       await client.set("_schema_version", "66")
+    },
+  },
+  {
+    version: 68,
+    name: "068-4-symbol-live-trade-defaults",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      // Clear the OOM-survival 1-symbol pin written by migration 053 so that
+      // the runtime env default (V0_DEV_SYMBOL_COUNT=4) and the volatility-
+      // ordered 4-symbol set from migrations 055/057/059 take effect.
+      // Also ensure symbol_count=4, concurrency=4, and live_trade enabled.
+      const connPatch = {
+        symbol_count: "4",
+        is_live_trade: "1",
+        live_trade_enabled: "1",
+        updated_at: now,
+      }
+      const perfPatch = {
+        strategy_flow_symbol_concurrency_dev: "4",
+        strategy_flow_symbol_concurrency_prod: "1",
+        updated_at: now,
+      }
+      await Promise.all([
+        // Remove the 1-symbol OOM override key
+        client.hdel("settings:trade_engine_state:bingx-x01", "dev_symbol_count_override").catch(() => 0),
+        client.hdel("connection:bingx-x01", "dev_symbol_count_override").catch(() => 0),
+        // Ensure 4-symbol + live trade on both canonical hashes
+        client.hset("connection:bingx-x01", connPatch).catch(() => 0),
+        client.hset("settings:connection:bingx-x01", connPatch).catch(() => 0),
+        client.hset("settings:trade_engine_state:bingx-x01", connPatch).catch(() => 0),
+        // Allow 4 symbols to run concurrently in dev
+        client.hset("settings:system", perfPatch).catch(() => 0),
+        client.hset("system:database:coordination:performance", perfPatch).catch(() => 0),
+      ])
+      console.log("[v0] Migration 068: 4-symbol live-trade defaults applied (dev_symbol_count_override cleared, concurrency=4)")
+    },
+    down: async (client: any) => {
+      await client.hset("settings:trade_engine_state:bingx-x01", { dev_symbol_count_override: "1", symbol_count: "1" }).catch(() => 0)
+      await client.set("_schema_version", "67")
     },
   },
 ]
