@@ -4266,7 +4266,7 @@ export class StrategyCoordinator {
       )
 
       // ── P1-1: Real-stage per-variant aggregation ──��────────���────────
-      // ── Real-stage rolling sample (for averaged count stats) ──────────
+      // ── Real-stage rolling sample (for averaged count stats) ──���───────
       // Push one timestamped sample of the live Real counts per (symbol,
       // cycle) onto a bounded ring list. The tracking layer averages all
       // samples inside a fixed interval window to produce the displayed
@@ -4590,6 +4590,13 @@ export class StrategyCoordinator {
     // (which caused BingX 100421 backlog) but allows block + default variants
     // to be tested together. The final dispatch loop (lines 4699-4715) enforces
     // per-variant per-direction caps (1 default, 1 block, 1 dca per direction).
+    if (realSets.length > 0 && Math.random() < 0.01) {
+      const topPF = realSets.slice(0, 3).map((s) => s.avgProfitFactor?.toFixed(3))
+      const topDDT = realSets.slice(0, 3).map((s) => s.avgDrawdownTime)
+      console.log(`[v0] [LiveFilter] ${symbol}: realSets=${realSets.length} minPF=${metrics.minProfitFactor} maxDDT=${metrics.maxDrawdownTime} topPF=[${topPF}] topDDT=[${topDDT}]`)
+    } else if (realSets.length === 0 && Math.random() < 0.02) {
+      console.log(`[v0] [LiveFilter] ${symbol}: realSets=0 (no real sets to filter)`)
+    }
     const allQualifying = realSets
       .filter(
         (s) =>

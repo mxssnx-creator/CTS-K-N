@@ -132,10 +132,14 @@ async function executeReadyStrategiesAsLiveOrders(
         const baseArr: any[] = Array.isArray(baseSt?.sets) ? baseSt.sets : []
         const keySet   = new Set<string>(stored.setKeys as string[])
         realSets       = baseArr.filter((s: any) => keySet.has(s.setKey))
+        console.log(`[v0] [Phase4] ${symbol}: slim real=${stored.setKeys.length} keys, baseArr=${baseArr.length}, resolved=${realSets.length}`)
       } else {
         // Legacy full-blob format — tolerate during rollout.
         realSets = Array.isArray(stored.sets) ? stored.sets : []
+        console.log(`[v0] [Phase4] ${symbol}: legacy blob real sets=${realSets.length}`)
       }
+    } else {
+      console.log(`[v0] [Phase4] ${symbol}: stored=null/empty for realKey=${realKey}`)
     }
 
     if (realSets.length === 0) return
