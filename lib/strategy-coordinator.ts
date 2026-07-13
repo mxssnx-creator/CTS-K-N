@@ -627,6 +627,14 @@ type LiveDispatchDecision = {
 
 const MAX_LIVE_TAKE_PROFIT_PCT = 22
 
+// Minimum live SL/TP floors — kept realistic for crypto perpetuals.
+// 0.2% SL was too close to BingX's market spread/slippage (~0.05–0.15%),
+// causing immediate fill-and-trigger on entry. 1.0% gives adequate buffer
+// for normal market microstructure noise on major USDT perpetuals.
+// TP floor of 0.5% ensures we always have a meaningful reward target.
+const MIN_LIVE_STOP_LOSS_PCT = 1.0
+const MIN_LIVE_TAKE_PROFIT_PCT = 0.5
+
 function deriveProtectionFromProfitFactor(
   profitFactor: number,
   positionCostPct: number,
@@ -634,17 +642,24 @@ function deriveProtectionFromProfitFactor(
   costModel: ProtectionCostModel = conservativeCostFallbackForExchange("generic"),
 ): DerivedProtection & ProfitFactorProtection {
   const pf = sanitizeLiveProfitFactor(profitFactor, 1)
-  const baseRiskPct = Number.isFinite(positionCostPct) && positionCostPct > 0 ? positionCostPct : 0.1
-  const stopLossPct = clampNumber(baseRiskPct * Math.max(0.1, sizeMultiplier), 0.2, 5)
+  // exchangePositionCost is seeded as 0.02 (minimum-volume marker) in migration
+  // 031; the actual BingX taker round-trip cost is ~0.1% per side × 2 = 0.2%
+  // plus ~0.05% spread = ~0.25%. Use a realistic cost floor so SL doesn't
+  // collapse to the 1% minimum via the sub-0.1% clamp path.
+  const rawCostPct = Number.isFinite(positionCostPct) && positionCostPct > 0 ? positionCostPct : 0.25
+  // If the stored value is clearly the legacy 0.02 minimum-volume sentinel,
+  // treat it as the BingX realistic cost instead of a tiny risk fraction.
+  const baseRiskPct = rawCostPct <= 0.05 ? 0.25 : rawCostPct
+  const stopLossPct = clampNumber(baseRiskPct * Math.max(0.1, sizeMultiplier), MIN_LIVE_STOP_LOSS_PCT, 5)
   const costBufferPct = (
     (costModel.takerFeeBpsPerSide * 2) +
     costModel.estimatedSpreadBps +
     (costModel.estimatedMarketSlippageBps * 2) +
     (costModel.fundingHoldCostBufferBps ?? 0)
   ) / 100
-  const grossTakeProfitPct = Math.max(0.2, stopLossPct * Math.max(1, pf))
+  const grossTakeProfitPct = Math.max(MIN_LIVE_TAKE_PROFIT_PCT, stopLossPct * Math.max(1, pf))
   const adjustedTakeProfitPct = grossTakeProfitPct + Math.max(costBufferPct, LIVE_PROTECTION_FEE_BUFFER_PCT)
-  const takeProfitPct = clampNumber(adjustedTakeProfitPct, 0.2, MAX_LIVE_TAKE_PROFIT_PCT)
+  const takeProfitPct = clampNumber(adjustedTakeProfitPct, MIN_LIVE_TAKE_PROFIT_PCT, MAX_LIVE_TAKE_PROFIT_PCT)
   const effectiveTpPct = Math.max(0, takeProfitPct - costBufferPct)
   return {
     takeProfitPct,
@@ -5050,13 +5065,13 @@ export class StrategyCoordinator {
                   (coordIndex ? coordIndex.base.byKey.get(parentKey)?.trailingProfile : undefined)
 
                 let sl = protection.stopLossPct
-                // CRITICAL FIX: Add slippage buffer to block variant SL prices
-                // Larger positions experience worse fills due to order book depth.
-                // Block positions (1.15-1.25x) need ~0.5-1.0% wider SL bands to account
-                // for fill slippage so SL doesn't immediately cross on entry.
+                // Add slippage buffer to block variant SL: larger positions get
+                // worse fills due to order book depth. Minimum raised to 1.5% so
+                // block SL always clears the MIN_LIVE_STOP_LOSS_PCT floor after
+                // the extra buffer is applied.
                 if (set.variant === "block" && effectiveSizeMult > 1.0) {
                   const slippageBuffer = Math.min(0.5, (effectiveSizeMult - 1.0) * 2.0)  // 0.2-0.5% buffer for 1.1-1.25x sizes
-                  sl = Math.max(0.5, sl + slippageBuffer)  // Add buffer, but keep minimum 0.5%
+                  sl = Math.max(MIN_LIVE_STOP_LOSS_PCT + 0.5, sl + slippageBuffer)  // floor at 1.5% for block
                 }
                 if (set.variant === "trailing" && resolvedTrailingProfile && resolvedTrailingProfile.stopRatio > 0) {
                   // Trailing-variant: initial SL = trailing stop distance.
@@ -5699,7 +5714,7 @@ export class StrategyCoordinator {
    * All axis Sets inherit `avgProfitFactor` / `avgDrawdownTime` /
    * `avgConfidence` / `trailingProfile` from `baseDefault` unchanged —
    * they are PROJECTIONS, not re-evaluations. `entries` is deliberately
-   * empty (`[]`) to prevent 320× JSON duplication on Redis persist and
+   * empty (`[]`) to prevent 320�� JSON duplication on Redis persist and
    * 80,000× inflation of per-variant entry-counters downstream.
    *
    * `entries` hydration for downstream consumers (exchange order
