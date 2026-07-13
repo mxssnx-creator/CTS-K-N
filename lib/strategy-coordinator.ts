@@ -2419,7 +2419,7 @@ export class StrategyCoordinator {
       : this._coordinationSettings.mainEvalPosCount
     let skippedLowPos = 0
 
-    // ── 1. Fingerprint-cache lookup ───────────────��────────────────────────
+    // ── 1. Fingerprint-cache lookup ───────────────���────────────────────────
     // Fetch last cycle's fingerprint map up-front. `fpCacheKey:v2` stores a
     // per-symbol hash of { fingerprint: JSON.stringify(slimDelta) } entries
     // where slimDelta carries ONLY scalar aggregate fields (no entries[]).
@@ -3552,15 +3552,11 @@ export class StrategyCoordinator {
         : _defaultRealCap)
     const realSetsCap = Math.min(this.config.maxRealSets ?? _realOutputCap, _realOutputCap)
     
-    console.log(`[v0] [DEBUG] EARLY CAP: realQualifying=${realQualifying.length} cap=${realSetsCap} env=${process.env.NODE_ENV}`)
     if (realQualifying.length > realSetsCap) {
       console.warn(
         `[v0] [RealStage] ${this.connectionId}: Capping ${realQualifying.length} → ${realSetsCap} before hedge netting`
       )
       realQualifying.length = realSetsCap  // Truncate in-place
-      console.log(`[v0] [DEBUG] EARLY CAP: After truncate realQualifying=${realQualifying.length}`)
-    } else {
-      console.log(`[v0] [DEBUG] EARLY CAP: No truncation needed (${realQualifying.length} <= ${realSetsCap})`)
     }
     
     const realSorted = realQualifying   // alias — hedge-net reads realSorted
@@ -5123,7 +5119,7 @@ export class StrategyCoordinator {
                       consistencyRatio: set.avgConfidence,
                     },
                     status: "pending",
-                    // ── Set lineage propagation (Strategy → Real → Live) ──
+                    // ── Set lineage propagation (Strategy → Real → Live) ─���
                     // `executeLivePosition` mirrors these onto the LivePosition
                     // verbatim. Without them the executed live order carries
                     // `setKey=undefined`, breaking:

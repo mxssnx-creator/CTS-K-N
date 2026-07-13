@@ -41,12 +41,10 @@ export async function GET() {
       return NextResponse.json(cached.data)
     }
 
-    console.log("[v0] [ProgressionEngine] Fetching real-time trade engine progression data")
-    
     try {
       await initRedis()
     } catch (redisInitError) {
-      console.error("[v0] Failed to initialize Redis:", redisInitError)
+      console.error("[ProgressionEngine] Failed to initialize Redis:", redisInitError)
       return NextResponse.json({
         success: false,
         error: "Redis initialization failed",
@@ -58,7 +56,6 @@ export async function GET() {
     }
     
     const activeConnections = await getActiveConnectionsForEngine()
-    console.log(`[v0] [ProgressionEngine] Processing ${activeConnections.length} active connections`)
     
     // Import the global coordinator for engine status
     const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
@@ -176,7 +173,7 @@ export async function GET() {
             },
           }
         } catch (err) {
-          console.warn(`[v0] Error processing ${conn.id}:`, err instanceof Error ? err.message : String(err))
+          console.warn(`[ProgressionEngine] Error processing ${conn.id}:`, err instanceof Error ? err.message : String(err))
           return {
             connectionId: conn.id,
             connectionName: conn.name,
@@ -205,7 +202,7 @@ export async function GET() {
     
     return NextResponse.json(response)
   } catch (error) {
-    console.error("[v0] [ProgressionEngine] Critical error:", error)
+    console.error("[ProgressionEngine] Critical error:", error)
     await SystemLogger.logError(error, "api", "GET /api/trade-engine/progression").catch(() => {})
     return NextResponse.json({ 
       success: false,
