@@ -47,17 +47,6 @@ export async function GET() {
           const progression = Object.keys(scopedProgression || {}).length > 0 ? scopedProgression : legacyProgression
           const progressionProgress = Number((progression as any)?.progress || 0) || 0
 
-          const processorHeartbeat = await getFreshestProcessorHeartbeat(connection.id).catch(() => 0)
-          const heartbeatFresh = processorHeartbeat > 0 && Date.now() - processorHeartbeat < 90_000
-          const runtimeActive = !!engineStatus || heartbeatFresh || (globalRunning && assigned && processingEnabled)
-          const scope = buildProgressionScope(connection.id, "main")
-          const [scopedProgression, legacyProgression] = await Promise.all([
-            getSettings(scope.engineProgressionKey).catch(() => ({} as Record<string, string>)),
-            getSettings(`engine_progression:${connection.id}`).catch(() => ({} as Record<string, string>)),
-          ])
-          const progression = Object.keys(scopedProgression || {}).length > 0 ? scopedProgression : legacyProgression
-          const progressionProgress = Number((progression as any)?.progress || 0) || 0
-
           return {
             id: connection.id,
             name: connection.name,
