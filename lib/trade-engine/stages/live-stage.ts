@@ -43,11 +43,7 @@ import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { hasRealTradeBlock } from "@/lib/real-trade-gates"
 
 const LOG_PREFIX = "[v0] [LivePositionStage]"
-// 1.0% minimum SL — must exceed BingX typical spread+slippage (~0.1-0.15%) with
-// a realistic buffer. 0.2% was too close to market microstructure noise and
-// caused immediate SL triggers on entry fills. Must stay in sync with
-// MIN_LIVE_STOP_LOSS_PCT in strategy-coordinator.ts.
-const MIN_EXCHANGE_STOP_LOSS_PERCENT = 1.0
+const MIN_EXCHANGE_STOP_LOSS_PERCENT = 0.2
 
 // ── Position snapshot cache for cycle-level deduplication ──
 // Per-cycle position cache keyed by {connId} to eliminate duplicate getPositions() 
@@ -80,6 +76,40 @@ function setCachedPositions(connId: string, positions: any[]): void {
 
 function clearPositionCache(connId: string): void {
   positionCacheByConn.delete(connId)
+}
+
+// ── BingX code=110206: TP/SL order quota exceeded ──────────────────────────
+// When the account's open SL/TP order count reaches the exchange limit, every
+// placeStopOrder call returns 110206. Without a circuit breaker the reconcile
+// loop retries every cycle (~150/min), flooding the exchange log and burning
+// API rate-limit budget. This map records the earliest time the engine is
+// allowed to attempt protection placement again for a given connectionId.
+// The cooldown window is 60 s — long enough for the operator to see the error
+// and cancel stale orders, but short enough to resume automatically once quota
+// is freed (e.g. when old positions close and their SL/TP orders are removed
+// by the exchange).
+const protectionQuotaBackoff = new Map<string, number>()
+const PROTECTION_QUOTA_BACKOFF_MS = 60_000  // 60 s per-connection cooldown
+
+function isProtectionQuotaBlocked(connId: string): boolean {
+  const until = protectionQuotaBackoff.get(connId)
+  if (!until) return false
+  if (Date.now() >= until) {
+    protectionQuotaBackoff.delete(connId)
+    return false
+  }
+  return true
+}
+
+function markProtectionQuotaExhausted(connId: string): void {
+  const until = Date.now() + PROTECTION_QUOTA_BACKOFF_MS
+  // Only log on the first hit to avoid log spam.
+  if (!protectionQuotaBackoff.has(connId)) {
+    console.warn(
+      `${LOG_PREFIX} [ProtectionQuota] ${connId}: code=110206 quota exceeded — suspending SL/TP placement for ${PROTECTION_QUOTA_BACKOFF_MS / 1000}s`,
+    )
+  }
+  protectionQuotaBackoff.set(connId, until)
 }
 
 /**
@@ -154,7 +184,7 @@ const EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000   // SL/TP placement; fast-fail 
 const EXCHANGE_TIMEOUT_GET_POSITIONS_MS = 8_000   // position fetch for adoption + sync prefetch
 const EXCHANGE_TIMEOUT_GET_ORDER_MS     = 6_000   // fill detection; retry via next sync tick on miss
 
-// ── Global SL/TP placement semaphore ─────────────────────────────────────
+// ── Global SL/TP placement semaphore ────────────────────────��────────────
 // 4 symbols × 2 directions × 2 stops (SL+TP) = up to 16 concurrent stop calls.
 // BingX rate limiter now allows 5 concurrent requests (maxConcurrent=5).
 // Limit=6 lets 6 stop calls run in parallel; ceil(16/6)=3 passes at ~5s p99
@@ -1885,6 +1915,17 @@ async function placeProtectionOrder(
       )
       return "PRICE_CROSSED"
     }
+    // code=110206: "The number of your TP/SL orders has exceeded the limit."
+    // The account's open protection-order quota is full. Retrying immediately
+    // is pointless — the quota won't free until existing SL/TP orders close.
+    // Return "QUOTA_EXCEEDED" so callers can skip re-arm and back off.
+    const is110206 = errMsg.includes("110206") || /TP\/SL orders has exceeded|number of.*TP.*SL.*exceeded/i.test(errMsg)
+    if (is110206) {
+      // connectionId is not in scope here; the caller (updateProtectionOrders)
+      // reads the sentinel and calls markProtectionQuotaExhausted(connId).
+      console.warn(`${tag} QUOTA_EXCEEDED (code=110206): TP/SL order limit reached — caller will suspend placement`)
+      return "QUOTA_EXCEEDED"
+    }
     // result.error is the connector's normalized venue-side message.
     // Log verbatim so operators see the EXACT venue rejection.
     console.warn(
@@ -2251,6 +2292,15 @@ async function updateProtectionOrders(
     return result
   }
 
+  // ── code=110206 quota backoff gate ────────────────────────────────
+  // When the account's TP/SL order count has hit the exchange cap, all
+  // placement attempts are suspended for PROTECTION_QUOTA_BACKOFF_MS.
+  // This prevents the ~150/min cycle rate from flooding BingX with
+  // rejected requests that fill the log and consume rate-limit budget.
+  if (isProtectionQuotaBlocked(pos.connectionId)) {
+    return result
+  }
+
   // ── System-close-only mode (cached) ───────────────────────────────
   // Reconcile fans out across every live position on every tick, so
   // calling `getAppSettings()` here would issue one HGETALL per
@@ -2434,7 +2484,7 @@ async function updateProtectionOrders(
       // expression evaluate to `false` whenever NO order existed — so a
       // position with no stop-loss order was never armed at all.
       //
-      // ── Re-arm cooldown (MIN_REARM_MS) ────────────────────────────────────
+      // ── Re-arm cooldown (MIN_REARM_MS) ────────────��───────────────────────
       // When an order IS present and we're just drift-cancel-replacing, gate
       // on the cooldown to prevent oscillation storms. Missing-order paths
       // (!pos.stopLossOrderId, already cleared by liveness-verify above)
@@ -2484,8 +2534,14 @@ async function updateProtectionOrders(
         // have a confirmed numeric order id (not the "PRICE_CROSSED" sentinel
         // which means market already blew past the SL and a force-close should
         // happen on the next reconcile checkAndForceCloseOnSltpCross pass).
-        const slIdOk = id && id !== "PRICE_CROSSED" && id !== "position_exhausted"
-        if (slIdOk) {
+        const slIdOk = id && id !== "PRICE_CROSSED" && id !== "position_exhausted" && id !== "QUOTA_EXCEEDED"
+        if (id === "QUOTA_EXCEEDED") {
+          // Account quota exhausted — suspend all protection placement for this
+          // connection for PROTECTION_QUOTA_BACKOFF_MS. Do NOT clear orderId/price
+          // so existing armed orders (if any) remain tracked.
+          markProtectionQuotaExhausted(pos.connectionId)
+          // Leave existing stopLossOrderId / stopLossPrice unchanged.
+        } else if (slIdOk) {
           pos.stopLossOrderId = id!
           pos.stopLossPrice = desiredSl
           pos.stopLossLastArmedAt = Date.now()
@@ -2543,8 +2599,11 @@ async function updateProtectionOrders(
           "TakeProfit",
           pos.direction!,
         )
-        const tpIdOk = id && id !== "PRICE_CROSSED" && id !== "position_exhausted"
-        if (tpIdOk) {
+        const tpIdOk = id && id !== "PRICE_CROSSED" && id !== "position_exhausted" && id !== "QUOTA_EXCEEDED"
+        if (id === "QUOTA_EXCEEDED") {
+          // Mirror of the SL leg: suspend placement, preserve existing order data.
+          markProtectionQuotaExhausted(pos.connectionId)
+        } else if (tpIdOk) {
           pos.takeProfitOrderId = id!
           pos.takeProfitPrice = desiredTp
           pos.takeProfitLastArmedAt = Date.now()
@@ -2831,7 +2890,7 @@ export async function executeLivePosition(
     ).catch(() => {})
   }
 
-  // ── Trailing-variant SL config log ───────────────────────────────��────────
+  // ── Trailing-variant SL config log ─────────────────────────────��─��────────
   // When the trailing profile overrides the initial SL% (anchor = stopRatio),
   // log it explicitly so the progression panel shows both the PF-derived value
   // and the config-anchored override side-by-side for operator visibility.
@@ -4159,10 +4218,20 @@ export async function executeLivePosition(
         return livePosition
       }
 
-      if (slOrderId) {
-        livePosition.stopLossOrderId = slOrderId
+      // "QUOTA_EXCEEDED" sentinel: account TP/SL order limit reached (BingX 110206).
+      // Mark the connection as quota-blocked so reconcile backs off for 60 s.
+      // Leave orderId/price at 0 — the position is live without protection.
+      if (slOrderId === "QUOTA_EXCEEDED" || tpOrderId === "QUOTA_EXCEEDED") {
+        markProtectionQuotaExhausted(connectionId)
+      }
+
+      const slIdValid = slOrderId && slOrderId !== "PRICE_CROSSED" && slOrderId !== "position_exhausted" && slOrderId !== "QUOTA_EXCEEDED"
+      const tpIdValid = tpOrderId && tpOrderId !== "PRICE_CROSSED" && tpOrderId !== "position_exhausted" && tpOrderId !== "QUOTA_EXCEEDED"
+
+      if (slIdValid) {
+        livePosition.stopLossOrderId = slOrderId!
         livePosition.stopLossPrice = slPrice
-      } else if (slPrice > 0) {
+      } else if (slPrice > 0 && slOrderId !== "QUOTA_EXCEEDED") {
         // Surface the protection gap loudly so operators and the
         // dashboard see it; the next reconcile will retry.
         console.error(
@@ -4177,10 +4246,10 @@ export async function executeLivePosition(
         )
         pushStep(livePosition, "place_stop_loss", false, `initial SL placement failed @ ${slPrice}`)
       }
-      if (tpOrderId) {
-        livePosition.takeProfitOrderId = tpOrderId
+      if (tpIdValid) {
+        livePosition.takeProfitOrderId = tpOrderId!
         livePosition.takeProfitPrice = tpPrice
-      } else if (tpPrice > 0) {
+      } else if (tpPrice > 0 && tpOrderId !== "QUOTA_EXCEEDED") {
         console.error(
           `${LOG_PREFIX} INITIAL TakeProfit placement FAILED for ${realPosition.symbol} — position is LIVE without TP until next reconcile tick`,
         )
@@ -6556,6 +6625,18 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
             unrealizedPnL: uPnl || position.exchangeData?.unrealizedPnL,
             syncedAt: Date.now(),
           }
+          // Recover averageExecutionPrice / entryPrice from exchange if the
+          // stored value is 0 (happens after a restart where the Redis hash
+          // had averageExecutionPrice=0 from an earlier partial write). Without
+          // this, computeDesiredProtectionPrices returns desiredSl=0 and no
+          // SL/TP orders are ever placed for those positions.
+          const exEntry = parseFloat(
+            String(exchangePos.entryPrice ?? (exchangePos as any).avgPrice ?? exchangePos.markPrice ?? "0"),
+          ) || 0
+          if (exEntry > 0) {
+            if (!(position.averageExecutionPrice > 0)) position.averageExecutionPrice = exEntry
+            if (!(position.entryPrice > 0)) position.entryPrice = exEntry
+          }
           position.updatedAt = Date.now()
         } else if (
           // ── Externally-closed branch (THE missing close path) ──────
@@ -7157,7 +7238,7 @@ export async function recalculateAndApplySLTP(
 }
 
 /**
- * ── syncLiveFromPseudo (spec §6) ─────────────────────────────────────
+ * ── syncLiveFromPseudo (spec §6) ───────────────────────────────���─────
  *
  * Copy SL/TP percentages from a pseudo (strategy-side virtual) position
  * onto matching live (exchange-side real) positions on the same
@@ -7213,7 +7294,7 @@ export async function syncLiveFromPseudo(
     let slPct = Number.isFinite(rawSL) ? (Math.abs(rawSL) < 1 ? rawSL * 100 : rawSL) : undefined
     const tpPct = Number.isFinite(rawTP) ? (Math.abs(rawTP) < 1 ? rawTP * 100 : rawTP) : undefined
 
-    // ── Trailing-aware SL pull-through ���─────────────────────────────
+    // ── Trailing-aware SL pull-through ���───────���─────────────────────
     // When the pseudo's trailing-stop machine is ARMED (multi-step
     // `trailing_active=1` or legacy `trailing_stop_price>0`), the
     // effective stop level is no longer `stoploss_ratio × fillPrice`
