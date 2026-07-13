@@ -53,6 +53,12 @@ function buildSettingsRecoordinationState(progHash: Record<string, string>, nowM
     return Number.isFinite(x) && x >= 0 ? x : 0
   }
 
+  function pct(v: unknown): number {
+    const x = Number(v)
+    if (!Number.isFinite(x)) return 0
+    return Math.max(0, Math.min(100, Math.round(x)))
+  }
+
 type OrderDirection = "long" | "short"
 type OrderKind = "placed" | "filled" | "failed"
 type OrderDirectionStats = Record<OrderKind, number>
@@ -2604,8 +2610,26 @@ export async function GET(
       if (realtimeIndicationCycles > 0) return "realtime"
       return "idle"
     })()
-    const progress = n(ep?.progress)
-    const message  = ep?.detail || ep?.message || ""
+    const rawEngineProgress = pct(ep?.progress)
+    const progress = (() => {
+      if (engineIsStopped) return rawEngineProgress
+      if (phase === "prehistoric_data") return pct(historicProgressPercent)
+      if (phase === "live_trading") return 100
+      if (phase === "realtime") return Math.max(rawEngineProgress, historicIsComplete ? 100 : 75)
+      if (phase === "strategies") return Math.max(rawEngineProgress, 80)
+      if (phase === "indications") return Math.max(rawEngineProgress, 60)
+      if (phase === "initializing") return Math.max(rawEngineProgress, 5)
+      return rawEngineProgress
+    })()
+    const message  = ep?.detail || ep?.message || (
+      phase === "prehistoric_data"
+        ? `Historical processing ${historicProgressPercent}% (${historicSymbolsProcessed}/${historicSymbolsTotal || "?"} symbols)`
+        : phase === "live_trading"
+          ? "Live trading active"
+          : phase === "realtime"
+            ? "Realtime processing active"
+            : ""
+    )
     const lastUpdate = progHash.last_update || realtimeHash.last_cycle_at || new Date().toISOString()
     const settingsRecoordination = buildSettingsRecoordinationState(progHash)
 
