@@ -338,7 +338,12 @@ export class ProgressionStateManager {
         return
       }
 
-      const redisKey = `progression:${connectionId}`
+      // Use the scoped key (progression:connectionId:engineType) so it matches
+      // getProgressionState which reads via buildProgressionScope. The legacy
+      // unscoped key (progression:connectionId) was written here previously,
+      // causing cyclesCompleted to always read as 0 from the scoped key.
+      const scope = buildProgressionScope(connectionId)
+      const redisKey = scope.progressionKey
 
       // CRITICAL FIX: use atomic hincrby instead of read-modify-write hset.
       // Three processors (indication/strategy/realtime) call incrementCycle
