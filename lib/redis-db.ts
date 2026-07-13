@@ -698,7 +698,7 @@ export class InlineLocalRedis implements RedisClientLike {
         if (isCritical) {
           // CRITICAL: purge volatile families first, then run 3 eviction passes
           // to maximally reclaim before the engine's next cycle can add more.
-          void this.cleanupVolatileRuntimeState({ reason: "critical-rss" })
+          void this.cleanupVolatileRuntimeState({ mode: "activeOwnerSafe", reason: "critical-rss" })
           this.evictOldRecords()
           this.evictOldRecords()
           this.evictOldRecords()
@@ -4062,8 +4062,18 @@ export async function updateConnection(id: string, updates: any): Promise<any> {
     ...updates,
     updated_at: new Date().toISOString(),
   }
+  const canonicalSettingsPatch = Object.fromEntries(
+    Object.entries(updated).filter(([key]) => CONNECTION_SETTINGS_CANONICAL_FIELDS.has(key)),
+  )
+  canonicalSettingsPatch.updated_at = updated.updated_at
+
   await Promise.all([
     client.hset(`connection:${id}`, updated),
+    // Keep the canonical settings mirror in the same write barrier. Readers
+    // intentionally merge this hash with connection:{id}; leaving an older
+    // mirror behind can override a newly enabled live-trade flag or symbol
+    // basket and silently route a requested live run through simulation.
+    client.hset(`settings:connection:${id}`, canonicalSettingsPatch),
     syncMainEnabledConnectionIndex(client, updated),
   ])
   invalidateConnectionsCache()

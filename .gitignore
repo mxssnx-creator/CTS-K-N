@@ -12,8 +12,9 @@ __v0_jsx-dev-runtime.ts
 # Common ignores
 node_modules
 .next/
-.DS_Store.v0-data/redis-snapshot.json
+.DS_Store
 .v0-data/redis-snapshot.json
+.v0-data/redis-snapshot.json.corrupt-*
 
 # Build outputs and local runtime snapshots (never commit)
 .next/

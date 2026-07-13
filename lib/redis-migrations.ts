@@ -3901,10 +3901,10 @@ if (!hasExisting) {
   //    Migration 057 / 055 may run before this guard and write their own
   //    symbol_count — this runs AFTER all migrations so it always wins.
   //
-  // 2. PURGE stale live:position:* keys from a previous run.
-  //    The snapshot persists open/placed positions across restarts. Stale
-  //    position hashes consume heap, raise fill-detect null-error count,
-  //    and inflate the memory guard baseline. Purging here keeps baseline clean.
+  // 2. RECONCILE stale live-position indexes from a previous run.
+  //    Position records are durable trading/audit state and MUST survive a
+  //    restart so the exchange-sync loop can close or adopt them safely. Only
+  //    dangling index members and expired dedup locks are safe to remove here.
   {
     const DEV_CONN  = "bingx-x01"
     const devSymCount = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "4", 10) || 4)
@@ -3944,31 +3944,22 @@ if (!hasExisting) {
       await client.hset(h, devSymPayload).catch(() => 0)
     }
 
-    // Purge stale live:position:* (open/placed/closed position hashes from
-    // the last run). InlineLocalRedis exposes client.keys(pattern) for
-    // glob-style matching — use that instead of SCAN (not implemented).
-    const livePositionKeys: string[] = await client.keys("live:position:*").catch(() => [])
-    let purged = 0
-    for (const k of livePositionKeys) {
-      // Keep tracking-pointer keys (plain strings, tiny) — only delete
-      // the position hash/string keys that carry the full position payload.
-      if (!k.includes(":tracking:")) {
-        await client.del(k).catch(() => 0)
-        purged++
-      }
-    }
-
-    // CRITICAL: Also purge the open-index and closed-index LISTS for every
-    // connection. These lists contain position IDs from the previous run.
-    // After purging position hashes above, these IDs are dangling references —
-    // getLivePositions() fetches each ID and gets null (deleted hash), which
-    // the sync-tick then treats as a terminal position stuck in the open index.
-    // Clearing both lists on boot prevents this every-cycle purge noise.
+    // Preserve every live:position:* payload. These records contain exchange
+    // order IDs, fills, fees, and close state needed for restart reconciliation.
+    // Instead, remove only index members whose payload no longer exists.
     const posIndexKeys: string[] = await client.keys("live:positions:*").catch(() => [])
-    let indexPurged = 0
-    for (const k of posIndexKeys) {
-      await client.del(k).catch(() => 0)
-      indexPurged++
+    let danglingIndexMembersPurged = 0
+    for (const indexKey of posIndexKeys) {
+      const positionIds: string[] = await client.lrange(indexKey, 0, -1).catch(() => [])
+      for (const positionId of positionIds) {
+        const [jsonPayload, hashPayload] = await Promise.all([
+          client.get(`live:position:${positionId}`).catch(() => null),
+          client.hgetall(`live_positions:${DEV_CONN}:${positionId}`).catch(() => null),
+        ])
+        if (!jsonPayload && (!hashPayload || Object.keys(hashPayload).length === 0)) {
+          danglingIndexMembersPurged += await client.lrem(indexKey, 0, positionId).catch(() => 0)
+        }
+      }
     }
 
     // CRITICAL: Purge live:lock:* dedup keys from the previous run.
@@ -3987,8 +3978,7 @@ if (!hasExisting) {
     const symDesc = devSymCount === 1 ? "force_symbols=BTCUSDT" : `symbol_count=${devSymCount} (volatility_1h)`
     console.log(
       `[v0] [Boot] Pinned ${symDesc} across all key namespaces` +
-      (purged > 0 ? `, purged ${purged} stale live:position keys` : "") +
-      (indexPurged > 0 ? `, cleared ${indexPurged} stale position index lists` : "") +
+      (danglingIndexMembersPurged > 0 ? `, removed ${danglingIndexMembersPurged} dangling live-position index member(s)` : "") +
       (lockKeys.length > 0 ? `, released ${lockKeys.length} stale dedup locks` : ""),
     )
   }

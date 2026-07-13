@@ -233,7 +233,7 @@ function getCyclePauseMsSync(): number {
 // Prime the cache on module load so the first cycle uses a recent value.
 refreshCyclePauseMsAsync()
 
-import { getSettings, setSettings, getAllConnections, getRedisClient, initRedis, getSettingsVersionCachedSync, getAppSettings, getAppSetting, getSettingsVersion } from "@/lib/redis-db"
+import { getSettings, setSettings, getAllConnections, getConnection, getRedisClient, initRedis, getSettingsVersionCachedSync, getAppSettings, getAppSetting, getSettingsVersion } from "@/lib/redis-db"
 import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSelection, ownsCanonicalSymbolSelection, ownsCanonicalSymbolSelectionEpoch } from "@/lib/trade-engine/symbol-selection-ownership"
 import { DataSyncManager } from "@/lib/data-sync-manager"
 import { IndicationProcessor } from "./indication-processor-fixed"
@@ -3843,7 +3843,7 @@ export class TradeEngineManager {
   private _symbolsCachedAt = 0
   private static readonly _SYMBOLS_TTL_MS = 5000
 
-  // ── Invalidate symbol cache when settings change ──────────────────────────
+  // ── Invalidate symbol cache when settings change ─────────────────────────���
   // Called whenever force_symbols or active_symbols are updated by the admin
   // API or migrations to ensure getSymbols() re-reads from Redis immediately.
   private invalidateSymbolCache(): void {
@@ -3911,7 +3911,10 @@ export class TradeEngineManager {
         // getSettings() automatically prepends "settings:" prefix to keys.
         const [connState, connSettings] = await Promise.all([
           getSettings(`trade_engine_state:${this.connectionId}`),
-          getSettings(`connection:${this.connectionId}`),
+          // getConnection() is the canonical mirror-aware reader. Calling
+          // getSettings("connection:…") here reads only settings:connection:…
+          // and can retain a stale pre-QuickStart force_symbols/live state.
+          getConnection(this.connectionId),
         ])
 
         // ── DEV / LOCAL-PROD SYMBOL CAP ───────────────────────────────────

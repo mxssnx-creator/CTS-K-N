@@ -1532,10 +1532,9 @@ export class StrategyCoordinator {
         | undefined
       const SOFT_RSS_MB = gl?.rssSoftMB ?? 2_000
       const HARD_RSS_MB = gl?.rssHardMB ?? 3_000
-      // Emergency: 95% of hard — pause the engine entirely for a full GC cycle
-      // before the OS kills the process. No swap means SIGKILL happens in <1s
-      // once anon-RSS exceeds total RAM.
-      const EMERGENCY_RSS_MB = Math.round(HARD_RSS_MB * 1.07)
+      // Emergency must be below the hard ceiling so the longer pause happens
+      // before critical eviction and kernel OOM pressure, not after it.
+      const EMERGENCY_RSS_MB = Math.round(HARD_RSS_MB * 0.95)
 
       let rssMB = process.memoryUsage().rss / 1024 / 1024
       if (rssMB < SOFT_RSS_MB) return
@@ -1977,7 +1976,7 @@ export class StrategyCoordinator {
           this._prevPosWindowAt = Date.now()
         }
       } catch { /* default stays */ }
-      // Windowed (last-N) stats — the spec-correct "average of the last N
+      // Windowed (last-N) stats �� the spec-correct "average of the last N
       // positions" rather than a lifetime mean. PF and DDT are BOTH averaged
       // over the SAME `prevPosWindow` sample (single cumulative window). The
       // blend still only activates once the bucket has at least
@@ -2700,7 +2699,7 @@ export class StrategyCoordinator {
           ? Math.floor(rawAxisCeiling)
           : null
       const _axGl = (globalThis as any).__redis_mem_limits as { heapMB: number } | undefined
-      // memScale ≈ 1.7 on the 8.4 GB VM (heapMB ≈ 3500).
+      // memScale �� 1.7 on the 8.4 GB VM (heapMB ≈ 3500).
       // Default ceiling: 800 × memScale per symbol → ~1366 on the 8.4 GB VM.
       // Raised from 300 (≈512) — with SYMBOL_CONCURRENCY=1 and exchange-close
       // retries eliminated, peak instantaneous heap is dominated by axis-set
