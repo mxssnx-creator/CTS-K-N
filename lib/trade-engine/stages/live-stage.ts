@@ -43,7 +43,11 @@ import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { hasRealTradeBlock } from "@/lib/real-trade-gates"
 
 const LOG_PREFIX = "[v0] [LivePositionStage]"
-const MIN_EXCHANGE_STOP_LOSS_PERCENT = 0.2
+// 1.0% minimum SL — must exceed BingX typical spread+slippage (~0.1-0.15%) with
+// a realistic buffer. 0.2% was too close to market microstructure noise and
+// caused immediate SL triggers on entry fills. Must stay in sync with
+// MIN_LIVE_STOP_LOSS_PCT in strategy-coordinator.ts.
+const MIN_EXCHANGE_STOP_LOSS_PERCENT = 1.0
 
 // ── Position snapshot cache for cycle-level deduplication ──
 // Per-cycle position cache keyed by {connId} to eliminate duplicate getPositions() 
@@ -2827,7 +2831,7 @@ export async function executeLivePosition(
     ).catch(() => {})
   }
 
-  // ── Trailing-variant SL config log ────────────────────────────────────────
+  // ── Trailing-variant SL config log ───────────────────────────────��────────
   // When the trailing profile overrides the initial SL% (anchor = stopRatio),
   // log it explicitly so the progression panel shows both the PF-derived value
   // and the config-anchored override side-by-side for operator visibility.

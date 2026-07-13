@@ -193,8 +193,65 @@ export class ProgressionStateManager {
       let data: Record<string, string> = {}
       
       try {
-        const raw = await client.hgetall(key)
-        if (raw !== null && raw !== undefined) data = raw as Record<string, string>
+        // Read scoped key first, then fall back to / merge with the legacy key.
+        // Strategy stages (base/main/real/indication) still hincrby to the legacy
+        // key, so we must read both and merge them: additive numeric counters are
+        // summed when both keys are present; the scoped key wins for scalar fields.
+        const [rawScoped, rawLegacy] = await Promise.all([
+          client.hgetall(key).catch(() => null),
+          client.hgetall(scope.legacyProgressionKey).catch(() => null),
+        ])
+        const scoped: Record<string, string> = (rawScoped && typeof rawScoped === 'object') ? rawScoped as Record<string, string> : {}
+        const legacy: Record<string, string> = (rawLegacy && typeof rawLegacy === 'object') ? rawLegacy as Record<string, string> : {}
+
+        // Scalar fields: scoped overrides legacy (identity, timestamps, rates, snapshots)
+        const SCALAR_FIELDS = new Set([
+          "session_number", "epoch", "started_at", "ended_at",
+          "cycle_success_rate", "trade_success_rate", "cycle_time_ms",
+          "last_cycle_time", "last_update", "connection_id", "engine_type",
+          "engine_started", "prehistoric_phase_active", "prehistoric_symbols_processed",
+          "progress_settings_snapshot", "symbol_count", "active_symbols_hash",
+          "started_for_settings_version", "migrated_from_unscoped", "migrated_at",
+        ])
+        // Additive fields: sum both keys atomically
+        const ADDITIVE_FIELDS = new Set([
+          "cycles_completed", "successful_cycles", "failed_cycles",
+          "total_trades", "successful_trades", "total_profit",
+          "indications_direction_count", "indications_move_count",
+          "indications_active_count", "indications_active_advanced_count",
+          "indications_optimal_count", "indications_auto_count",
+          "strategies_base_total", "strategies_main_total", "strategies_real_total",
+          "strategies_base_evaluated", "strategies_main_evaluated", "strategies_real_evaluated",
+          "indication_cycle_count", "indication_live_cycle_count",
+          "strategy_cycle_count", "strategy_live_cycle_count",
+          "realtime_cycle_count", "realtime_live_cycle_count",
+          "frames_processed", "intervals_processed",
+          "indications_count", "strategies_count",
+          "prehistoric_cycles_completed", "prehistoric_candles_processed",
+          "prehistoric_symbols_processed_count",
+        ])
+
+        const merged: Record<string, string> = { ...legacy }
+        for (const [k, v] of Object.entries(scoped)) {
+          if (ADDITIVE_FIELDS.has(k)) {
+            const a = parseFloat(legacy[k] || "0")
+            const b = parseFloat(v || "0")
+            // Avoid double-counting: if legacy already includes what the scoped key has
+            // (i.e. the scoped key was seeded from legacy via migration), only take the max.
+            // If scoped > legacy the scoped key has independent increments; sum them.
+            // Use max when migrated_from_unscoped is set; otherwise sum.
+            if (scoped.migrated_from_unscoped === "true") {
+              merged[k] = String(Math.max(a, b))
+            } else {
+              merged[k] = String(a + b)
+            }
+          } else if (SCALAR_FIELDS.has(k)) {
+            merged[k] = v // scoped wins
+          } else {
+            merged[k] = v // default: scoped wins for unknown fields
+          }
+        }
+        data = merged
       } catch (redisError) {
         console.warn(`[v0] Redis connection error reading scoped progression for ${connectionId}/${engineType}, using default state:`, redisError)
         return this.getDefaultState(connectionId)
@@ -338,12 +395,13 @@ export class ProgressionStateManager {
         return
       }
 
-      // Use the scoped key (progression:connectionId:engineType) so it matches
-      // getProgressionState which reads via buildProgressionScope. The legacy
-      // unscoped key (progression:connectionId) was written here previously,
-      // causing cyclesCompleted to always read as 0 from the scoped key.
+      // Write cycle counters to the LEGACY key (progression:connectionId) so that
+      // strategy stages (which also hincrby to the legacy key) and getProgressionState
+      // (which now merges both keys) always see a consistent view. The legacy key is
+      // the single source of truth for all additive counters; the scoped key is kept
+      // in sync via the merge read in getProgressionState.
       const scope = buildProgressionScope(connectionId)
-      const redisKey = scope.progressionKey
+      const redisKey = scope.legacyProgressionKey
 
       // CRITICAL FIX: use atomic hincrby instead of read-modify-write hset.
       // Three processors (indication/strategy/realtime) call incrementCycle

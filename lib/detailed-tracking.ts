@@ -431,9 +431,14 @@ export async function getStrategyTracking(
   const mainPFThreshold = resolvePF("mainProfitFactor", 1.2)
   const realPFThreshold = resolvePF("realProfitFactor", 1.2)
 
-  // Variant breakdowns
-  const mainVariants = await readVariantBreakdown(client, connectionId, "main")
-  const realVariants = await readVariantBreakdown(client, connectionId, "real")
+  // Variant breakdowns.
+  // NOTE: The MAIN stage never writes strategy_variant_main:* keys —
+  // variant materialisation (block/dca/trailing) happens at the REAL stage.
+  // Use the real-stage keys for both views so the dashboard shows actual counts.
+  const [mainVariants, realVariants] = await Promise.all([
+    readVariantBreakdown(client, connectionId, "real"),
+    readVariantBreakdown(client, connectionId, "real"),
+  ])
 
   // Axis accumulation at Real stage
   const axisAccumulation = await readAxisAccumulation(client, connectionId)

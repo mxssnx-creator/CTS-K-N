@@ -3554,6 +3554,46 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "67")
     },
   },
+  {
+    // Migration 069 — Fix exchangePositionCost sentinel and SL/TP cost basis
+    //
+    // Problem: migration 031 seeded exchangePositionCost=0.02 (the minimum-volume
+    // marker) into connection_settings:bingx-x01. The strategy-coordinator reads
+    // this value as a cost-percentage basis for deriveProtectionFromProfitFactor,
+    // yielding baseRiskPct=0.02% and after the clamp: stopLossPct=0.2%.
+    //
+    // 0.2% SL is only $0.00214 away from entry on XRPUSDT at $1.068 — well within
+    // normal market spread/slippage noise, causing immediate trigger on fill.
+    //
+    // Fix: update exchangePositionCost to 0.25 (0.25% ≈ BingX taker 0.1%×2 sides +
+    // 0.05% spread), which gives baseRiskPct=0.25 → stopLossPct≈1.25%. This is safe
+    // even after the new MIN_LIVE_STOP_LOSS_PCT=1.0% floor in strategy-coordinator.
+    // Also ensure both key locations have the correct value.
+    version: 69,
+    name: "069-fix-exchange-position-cost-sl-tp-basis",
+    up: async (client: any) => {
+      const REALISTIC_BINGX_COST = "0.25"
+      const patch = {
+        exchangePositionCost: REALISTIC_BINGX_COST,
+        updated_at: new Date().toISOString(),
+      }
+      await Promise.all([
+        // connection_settings:{id} — where strategy-coordinator reads it
+        client.hset("connection_settings:bingx-x01", patch).catch(() => 0),
+        // settings:connection:{id} — where migrations 031/068 write
+        client.hset("settings:connection:bingx-x01", patch).catch(() => 0),
+      ])
+      console.log(`[v0] Migration 069: exchangePositionCost updated to ${REALISTIC_BINGX_COST}% on bingx-x01 (was 0.02 sentinel → SL/TP now use realistic ~1.25% minimum)`)
+    },
+    down: async (client: any) => {
+      const patch = { exchangePositionCost: "0.02" }
+      await Promise.all([
+        client.hset("connection_settings:bingx-x01", patch).catch(() => 0),
+        client.hset("settings:connection:bingx-x01", patch).catch(() => 0),
+      ])
+      await client.set("_schema_version", "68")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {

@@ -380,8 +380,9 @@ describe("requested regression guardrails", () => {
     const source = read("lib/trade-engine/engine-manager.ts")
 
     expect(source).toContain("dev_symbol_count_override")
-    expect(source).toContain('process.env.V0_DEV_SYMBOL_COUNT ?? "1"')
-    expect(source).toContain("resolve operator symbols, then slice to 1")
+    // Default is now 4 (previously 1 — changed to match the 4-symbol live-trade
+    // default so engines start with all four symbols without needing an explicit env override).
+    expect(source).toContain('process.env.V0_DEV_SYMBOL_COUNT ?? "4"')
     expect(source).toContain('never short-circuit to ["BTCUSDT"] here')
     expect(source).not.toContain('if (devCap === 1) return ["BTCUSDT"]')
   })
