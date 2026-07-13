@@ -119,8 +119,20 @@ export async function GET() {
                 ? "initializing"
                 : "idle"
           const updatedAt = progressionState.lastUpdate?.toISOString?.() || null
-          const prehistoricLoaded = (progressionState.prehistoricCyclesCompleted || 0) > 0
-          
+          // prehistoricDataLoaded: true when at least one prehistoric pass has
+          // completed (cyclesCompleted > 0) OR the engine has already processed
+          // the historic candle set (symbolsProcessedCount > 0).
+          const prehistoricLoaded =
+            (progressionState.prehistoricCyclesCompleted || 0) > 0 ||
+            (progressionState.prehistoricSymbolsProcessedCount || 0) > 0
+
+          // Compute trade success rate from authoritative merged counters rather
+          // than trusting the stored scalar which may come from a stale key.
+          const totalTrades = progressionState.totalTrades || 0
+          const successfulTrades = progressionState.successfulTrades || 0
+          const computedTradeSuccessRate =
+            totalTrades > 0 ? Math.round((successfulTrades / totalTrades) * 10000) / 100 : 0
+
           return {
             connectionId: conn.id,
             connectionName: conn.name,
@@ -140,16 +152,27 @@ export async function GET() {
               successfulCycles: progressionState.successfulCycles,
               failedCycles: progressionState.failedCycles,
               cycleSuccessRate: progressionState.cycleSuccessRate,
-              totalTrades: progressionState.totalTrades,
-              successfulTrades: progressionState.successfulTrades,
+              totalTrades,
+              successfulTrades,
               totalProfit: progressionState.totalProfit,
+              tradeSuccessRate: computedTradeSuccessRate,
               indicationsDirectionCount: progressionState.indicationsDirectionCount || 0,
               indicationsMoveCount: progressionState.indicationsMoveCount || 0,
               indicationsActiveCount: progressionState.indicationsActiveCount || 0,
+              indicationsActiveAdvancedCount: progressionState.indicationsActiveAdvancedCount || 0,
               indicationsOptimalCount: progressionState.indicationsOptimalCount || 0,
+              indicationsAutoCount: progressionState.indicationsAutoCount || 0,
               strategiesBaseTotal: progressionState.strategiesBaseTotal || 0,
               strategiesMainTotal: progressionState.strategiesMainTotal || 0,
               strategiesRealTotal: progressionState.strategiesRealTotal || 0,
+              strategyEvaluatedBase: progressionState.strategyEvaluatedBase || 0,
+              strategyEvaluatedMain: progressionState.strategyEvaluatedMain || 0,
+              strategyEvaluatedReal: progressionState.strategyEvaluatedReal || 0,
+              indicationCycleCount: progressionState.indicationCycleCount || 0,
+              strategyCycleCount: progressionState.strategyCycleCount || 0,
+              realtimeCycleCount: progressionState.realtimeCycleCount || 0,
+              indicationsCount: progressionState.indicationsCount || 0,
+              strategiesCount: progressionState.strategiesCount || 0,
             },
           }
         } catch (err) {
