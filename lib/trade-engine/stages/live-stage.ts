@@ -43,11 +43,7 @@ import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { hasRealTradeBlock } from "@/lib/real-trade-gates"
 
 const LOG_PREFIX = "[v0] [LivePositionStage]"
-// 1.0% minimum SL — must exceed BingX typical spread+slippage (~0.1-0.15%) with
-// a realistic buffer. 0.2% was too close to market microstructure noise and
-// caused immediate SL triggers on entry fills. Must stay in sync with
-// MIN_LIVE_STOP_LOSS_PCT in strategy-coordinator.ts.
-const MIN_EXCHANGE_STOP_LOSS_PERCENT = 1.0
+const MIN_EXCHANGE_STOP_LOSS_PERCENT = 0.2
 
 // ── Position snapshot cache for cycle-level deduplication ──
 // Per-cycle position cache keyed by {connId} to eliminate duplicate getPositions() 
@@ -154,7 +150,7 @@ const EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000   // SL/TP placement; fast-fail 
 const EXCHANGE_TIMEOUT_GET_POSITIONS_MS = 8_000   // position fetch for adoption + sync prefetch
 const EXCHANGE_TIMEOUT_GET_ORDER_MS     = 6_000   // fill detection; retry via next sync tick on miss
 
-// ── Global SL/TP placement semaphore ─────────────────────────────────────
+// ── Global SL/TP placement semaphore ────────────────────────��────────────
 // 4 symbols × 2 directions × 2 stops (SL+TP) = up to 16 concurrent stop calls.
 // BingX rate limiter now allows 5 concurrent requests (maxConcurrent=5).
 // Limit=6 lets 6 stop calls run in parallel; ceil(16/6)=3 passes at ~5s p99
@@ -2434,7 +2430,7 @@ async function updateProtectionOrders(
       // expression evaluate to `false` whenever NO order existed — so a
       // position with no stop-loss order was never armed at all.
       //
-      // ── Re-arm cooldown (MIN_REARM_MS) ────────────────────────────────────
+      // ── Re-arm cooldown (MIN_REARM_MS) ────────────��───────────────────────
       // When an order IS present and we're just drift-cancel-replacing, gate
       // on the cooldown to prevent oscillation storms. Missing-order paths
       // (!pos.stopLossOrderId, already cleared by liveness-verify above)
@@ -6556,6 +6552,18 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
             unrealizedPnL: uPnl || position.exchangeData?.unrealizedPnL,
             syncedAt: Date.now(),
           }
+          // Recover averageExecutionPrice / entryPrice from exchange if the
+          // stored value is 0 (happens after a restart where the Redis hash
+          // had averageExecutionPrice=0 from an earlier partial write). Without
+          // this, computeDesiredProtectionPrices returns desiredSl=0 and no
+          // SL/TP orders are ever placed for those positions.
+          const exEntry = parseFloat(
+            String(exchangePos.entryPrice ?? (exchangePos as any).avgPrice ?? exchangePos.markPrice ?? "0"),
+          ) || 0
+          if (exEntry > 0) {
+            if (!(position.averageExecutionPrice > 0)) position.averageExecutionPrice = exEntry
+            if (!(position.entryPrice > 0)) position.entryPrice = exEntry
+          }
           position.updatedAt = Date.now()
         } else if (
           // ── Externally-closed branch (THE missing close path) ──────
@@ -7157,7 +7165,7 @@ export async function recalculateAndApplySLTP(
 }
 
 /**
- * ── syncLiveFromPseudo (spec §6) ─────────────────────────────────────
+ * ── syncLiveFromPseudo (spec §6) ───────────────────────────────���─────
  *
  * Copy SL/TP percentages from a pseudo (strategy-side virtual) position
  * onto matching live (exchange-side real) positions on the same

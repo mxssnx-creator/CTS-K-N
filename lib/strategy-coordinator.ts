@@ -627,13 +627,11 @@ type LiveDispatchDecision = {
 
 const MAX_LIVE_TAKE_PROFIT_PCT = 22
 
-// Minimum live SL/TP floors — kept realistic for crypto perpetuals.
-// 0.2% SL was too close to BingX's market spread/slippage (~0.05–0.15%),
-// causing immediate fill-and-trigger on entry. 1.0% gives adequate buffer
-// for normal market microstructure noise on major USDT perpetuals.
-// TP floor of 0.5% ensures we always have a meaningful reward target.
-const MIN_LIVE_STOP_LOSS_PCT = 1.0
-const MIN_LIVE_TAKE_PROFIT_PCT = 0.5
+// SL is derived from TP via the profit-factor ratio. The 0.2% floor is the
+// minimum distance from entry that a stop-loss may be placed — controlled from
+// the Real stage settings and enforced here as a hard lower bound.
+const MIN_LIVE_STOP_LOSS_PCT = 0.2
+const MIN_LIVE_TAKE_PROFIT_PCT = 0.2
 
 function deriveProtectionFromProfitFactor(
   profitFactor: number,
@@ -642,14 +640,7 @@ function deriveProtectionFromProfitFactor(
   costModel: ProtectionCostModel = conservativeCostFallbackForExchange("generic"),
 ): DerivedProtection & ProfitFactorProtection {
   const pf = sanitizeLiveProfitFactor(profitFactor, 1)
-  // exchangePositionCost is seeded as 0.02 (minimum-volume marker) in migration
-  // 031; the actual BingX taker round-trip cost is ~0.1% per side × 2 = 0.2%
-  // plus ~0.05% spread = ~0.25%. Use a realistic cost floor so SL doesn't
-  // collapse to the 1% minimum via the sub-0.1% clamp path.
-  const rawCostPct = Number.isFinite(positionCostPct) && positionCostPct > 0 ? positionCostPct : 0.25
-  // If the stored value is clearly the legacy 0.02 minimum-volume sentinel,
-  // treat it as the BingX realistic cost instead of a tiny risk fraction.
-  const baseRiskPct = rawCostPct <= 0.05 ? 0.25 : rawCostPct
+  const baseRiskPct = Number.isFinite(positionCostPct) && positionCostPct > 0 ? positionCostPct : 0.1
   const stopLossPct = clampNumber(baseRiskPct * Math.max(0.1, sizeMultiplier), MIN_LIVE_STOP_LOSS_PCT, 5)
   const costBufferPct = (
     (costModel.takerFeeBpsPerSide * 2) +
@@ -4021,7 +4012,7 @@ export class StrategyCoordinator {
     // reconciliation hook. Documented on `reconcileLivePositions` —
     // direction unchanged & magnitude grew → partial OPEN for ��; direction
     // unchanged & magnitude shrunk → partial CLOSE lowest-PF; direction
-    // flipped or flat:0 ��� close all in bucket then optionally re-open.
+    // flipped or flat:0 ���� close all in bucket then optionally re-open.
     // live_net_target tracks hedge-direction net positions for the live dispatch.
     if (Object.keys(netTargetWrites).length > 0) {
       try {
@@ -5082,13 +5073,13 @@ export class StrategyCoordinator {
                   (coordIndex ? coordIndex.base.byKey.get(parentKey)?.trailingProfile : undefined)
 
                 let sl = protection.stopLossPct
-                // Add slippage buffer to block variant SL: larger positions get
-                // worse fills due to order book depth. Minimum raised to 1.5% so
-                // block SL always clears the MIN_LIVE_STOP_LOSS_PCT floor after
-                // the extra buffer is applied.
+                // CRITICAL FIX: Add slippage buffer to block variant SL prices
+                // Larger positions experience worse fills due to order book depth.
+                // Block positions (1.15-1.25x) need ~0.5-1.0% wider SL bands to account
+                // for fill slippage so SL doesn't immediately cross on entry.
                 if (set.variant === "block" && effectiveSizeMult > 1.0) {
                   const slippageBuffer = Math.min(0.5, (effectiveSizeMult - 1.0) * 2.0)  // 0.2-0.5% buffer for 1.1-1.25x sizes
-                  sl = Math.max(MIN_LIVE_STOP_LOSS_PCT + 0.5, sl + slippageBuffer)  // floor at 1.5% for block
+                  sl = Math.max(0.5, sl + slippageBuffer)  // Add buffer, but keep minimum 0.5%
                 }
                 if (set.variant === "trailing" && resolvedTrailingProfile && resolvedTrailingProfile.stopRatio > 0) {
                   // Trailing-variant: initial SL = trailing stop distance.
