@@ -3930,7 +3930,7 @@ export class TradeEngineManager {
         // Behaviour:
         //   V0_DEV_SYMBOL_COUNT=1  → resolve operator symbols, then slice to 1
         //   V0_DEV_SYMBOL_COUNT=10 → resolve operator symbols, then slice to 10
-        //   unset                  → default 1
+        //   unset                  → default 4 (supports the standard 4-symbol live config)
         const _isLocalRun = process.env.NODE_ENV === "development" ||
           (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")
         if (_isLocalRun) {
