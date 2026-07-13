@@ -1542,7 +1542,7 @@ describe("requested regression guardrails", () => {
     expect(cleanupBlock).toContain("const isCritical = rssMB > CMEM.rssHardMB")
     expect(cleanupBlock).toContain("const isWarm")
     expect(cleanupBlock).toContain("FULL_CLEANUP_INTERVAL_MS")
-    expect(cleanupBlock).toContain('cleanupVolatileRuntimeState({ reason: "critical-rss" })')
+    expect(cleanupBlock).toContain('cleanupVolatileRuntimeState({ mode: "activeOwnerSafe", reason: "critical-rss" })')
     expect(cleanupBlock).toContain("ttlCleanupTimer.unref?.()")
 
     for (const durablePrefix of [

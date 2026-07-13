@@ -4062,10 +4062,15 @@ export async function updateConnection(id: string, updates: any): Promise<any> {
     ...updates,
     updated_at: new Date().toISOString(),
   }
-  const canonicalSettingsPatch = Object.fromEntries(
-    Object.entries(updated).filter(([key]) => CONNECTION_SETTINGS_CANONICAL_FIELDS.has(key)),
+  const canonicalSettingsPatch = Object.entries(updated).reduce<Record<string, string>>(
+    (patch, [key, value]) => {
+      if (CONNECTION_SETTINGS_CANONICAL_FIELDS.has(key) && value !== undefined && value !== null) {
+        patch[key] = typeof value === "string" ? value : JSON.stringify(value)
+      }
+      return patch
+    },
+    { updated_at: String(updated.updated_at) },
   )
-  canonicalSettingsPatch.updated_at = updated.updated_at
 
   await Promise.all([
     client.hset(`connection:${id}`, updated),
