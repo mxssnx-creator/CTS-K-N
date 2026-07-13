@@ -1626,17 +1626,28 @@ export class StrategyCoordinator {
       // cycle when the market hasn't generated new entries.
       const posFingerprint = `${posCtx.continuousCount}|${posCtx.lastPosCount}|${posCtx.prevPosCount}`
       const prevFingerprint = (this as any)._lastPosFingerprint?.[symbol]
-      if (prevFingerprint === posFingerprint && !isPrehistoric) {
-        // Position state unchanged AND indication count stable
-        if (indications.length === (this as any)._lastIndicationCount?.[symbol]) {
-          console.log(`[v0] [StrategyCoordinator] ${symbol}: position+indication state unchanged, skipping cycle`)
-          return results // Early exit — no recalculation needed
-        }
-      }
       if (!(this as any)._lastPosFingerprint) (this as any)._lastPosFingerprint = {}
       if (!(this as any)._lastIndicationCount) (this as any)._lastIndicationCount = {}
+      if (!(this as any)._lastRealSets) (this as any)._lastRealSets = {}
+      if (!(this as any)._lastCoordIndex) (this as any)._lastCoordIndex = {}
       ;(this as any)._lastPosFingerprint[symbol] = posFingerprint
       ;(this as any)._lastIndicationCount[symbol] = indications.length
+
+      if (prevFingerprint === posFingerprint && !isPrehistoric) {
+        // Position state unchanged AND indication count stable — skip Base/Main/Real
+        // recalculation (expensive), but ALWAYS run the LIVE stage so SL/TP
+        // protection reconciliation and armoring still happen every cycle.
+        if (indications.length === (this as any)._lastIndicationCount?.[symbol]) {
+          const cachedRealSets: any[] = (this as any)._lastRealSets?.[symbol] ?? []
+          const cachedCoordIndex: any = (this as any)._lastCoordIndex?.[symbol]
+          if (cachedRealSets.length > 0 && cachedCoordIndex && !skipLiveDispatch) {
+            // Re-run LIVE stage only — uses cached real sets, no Base/Main/Real recalc
+            const { result: liveResult } = await this.createLiveSets(symbol, cachedRealSets, cachedCoordIndex, skipLiveDispatch)
+            results.push(liveResult)
+          }
+          return results
+        }
+      }
 
       // Refresh per-cycle trailing-matrix cache when this entry-point is
       // called standalone (the batch entry-point invalidates already).
@@ -1677,6 +1688,12 @@ export class StrategyCoordinator {
       results.push(realResult)
       emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "real", data: realResult })
       await new Promise<void>((resolve) => setImmediate(resolve))
+
+      // Cache real sets for the "state-unchanged" fast-path: LIVE stage always
+      // needs the latest real sets for SL/TP armoring even when base/main/real
+      // recalculation was skipped this cycle.
+      ;(this as any)._lastRealSets[symbol] = realSets
+      ;(this as any)._lastCoordIndex[symbol] = coordIndex
 
       // STAGE 4: LIVE — best 500 Sets for execution (skip in prehistoric mode).
       // Axis-entry hydration uses coordIndex.base.byKey.get(parentKey) — O(1)
