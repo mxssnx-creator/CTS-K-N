@@ -3,6 +3,9 @@ import { SystemLogger } from "@/lib/system-logger"
 import { initRedis, getConnection, updateConnection, getRedisClient } from "@/lib/redis-db"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
 
+const isEnabledFlag = (value: unknown) =>
+  value === true || value === 1 || value === "1" || value === "true"
+
 // POST - Add connection to active connections (set is_enabled_dashboard flag)
 export const dynamic = "force-dynamic"
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -21,10 +24,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // the current state without resetting is_enabled_dashboard to "0". This
     // prevents re-adding a live connection from silently disabling it.
     const alreadyInserted =
-      connection.is_active_inserted === "1" ||
-      connection.is_active_inserted === true ||
-      (connection as any).is_dashboard_inserted === "1" ||
-      (connection as any).is_dashboard_inserted === true
+      isEnabledFlag(connection.is_active_inserted) ||
+      isEnabledFlag((connection as any).is_dashboard_inserted)
     if (alreadyInserted) {
       const normalizedConnection = {
         ...connection,
@@ -59,9 +60,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     await updateConnection(connectionId, updatedConnection)
 
-    const logMsg = `[v0] [ActiveConnection] ✓ ENABLED: ${connection.name} (${connectionId}) | Exchange: ${connection.exchange} | Base: ${["bybit", "bingx", "pionex", "orangex", "binance", "okx"].includes((connection.exchange || "").toLowerCase())}`
+    const logMsg = `[v0] [ActiveConnection] ✓ ADDED (disabled): ${connection.name} (${connectionId}) | Exchange: ${connection.exchange} | Base: ${["bybit", "bingx", "pionex", "orangex", "binance", "okx"].includes((connection.exchange || "").toLowerCase())}`
     console.log(logMsg)
-    await SystemLogger.logConnection("Dashboard: Enabled active connection", connectionId, "info")
+    await SystemLogger.logConnection("Dashboard: Added active connection (disabled)", connectionId, "info")
 
     // Notify engine of dashboard activation and recoordinate
     try {
@@ -107,7 +108,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({
       success: true,
       connection: updatedConnection,
-      message: "Connection enabled on dashboard",
+      message: "Connection added to active dashboard (disabled until enabled by operator)",
     })
   } catch (error) {
     console.error(`[v0] [ActiveConnection] ✗ FAILED to enable: ${error instanceof Error ? error.message : String(error)}`)

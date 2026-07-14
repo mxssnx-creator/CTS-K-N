@@ -1,7 +1,7 @@
 "use client"
 
 import { DEFAULT_VOLUME_STEP_RATIO, MAX_VOLUME_STEP_RATIO, MIN_VOLUME_FACTOR, MIN_VOLUME_STEP_RATIO } from "@/lib/constants"
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import {
   Dialog,
   DialogContent,
@@ -64,6 +64,13 @@ import { toast } from "@/lib/simple-toast"
 // render time ("StrategyCoordinationSection is not defined"). A
 // fresh import shape forces the bundler to emit a new module id.
 import { StrategyCoordinationSection, DEFAULT_COORDINATION_SETTINGS, type CoordinationSettings } from "@/components/settings/strategy-coordination-section"
+import { DEFAULT_TRAILING_VARIANTS, normalizeTrailingVariants, parseStoredBoolean } from "@/lib/trailing-settings"
+import { normalizeDcaProfile } from "@/lib/dca-strategy"
+import {
+  normalizeIndicationProfile,
+  DEFAULT_MAIN_INDICATION_PROFILE,
+  DEFAULT_PRESET_INDICATION_PROFILE,
+} from "@/lib/active-indication-profile"
 
 // ─────────────────────────────────────────────────────────────────────
 // PUBLIC API
@@ -156,13 +163,25 @@ interface SymbolsSettings {
   symbolCount: number
 }
 
-const DEFAULT_INDICATION_PROFILE: ChannelProfile = {
-  direction: { enabled: true,  range: 5,  timeout: 30, interval: 1 },
-  move:      { enabled: true,  range: 10, timeout: 30, interval: 1 },
-  active:    { enabled: true,  range: 15, timeout: 60, interval: 5 },
-  optimal:   { enabled: false, range: 20, timeout: 60, interval: 5 },
-  auto:      { enabled: false, range: 25, timeout: 90, interval: 15 },
+const DEFAULT_OVERVIEW_SETTINGS: OverviewSettings = {
+  volumeFactorBase: MIN_VOLUME_FACTOR,
+  volumeFactorLive: MIN_VOLUME_FACTOR,
+  volumeFactorPreset: MIN_VOLUME_FACTOR,
+  volumeStepRatio: DEFAULT_VOLUME_STEP_RATIO,
+  marginMode: "cross",
+  volumeType: "usdt",
+  positionMode: "one_way",
+  leveragePercentage: 100,
+  useMaximalLeverage: true,
+  useSystemCloseOnly: false,
 }
+
+const DEFAULT_SYMBOLS_SETTINGS: SymbolsSettings = {
+  symbols: [],
+  symbolOrder: "volatility_1h",
+  symbolCount: 20,
+}
+
 // Operator-spec defaults: base PF 1.0, main/real PF 1.2; max positions
 // raised for high-throughput pipelines (base/main: 5000, real: 2000).
 // Operator spec: base PF=1.0, main/real PF=1.2; max positions raised for high-throughput pipelines.
@@ -190,26 +209,11 @@ export function ConnectionSettingsDialog({
   const [exchangeKey, setExchangeKey] = useState<string>(exchange)
 
   // ── Overview state ──────────────────────────────────────────────
-  const [overview, setOverview] = useState<OverviewSettings>({
-    volumeFactorBase: MIN_VOLUME_FACTOR,
-    volumeFactorLive: MIN_VOLUME_FACTOR,
-    volumeFactorPreset: MIN_VOLUME_FACTOR,
-    volumeStepRatio: DEFAULT_VOLUME_STEP_RATIO,
-    marginMode: "cross",
-    volumeType: "usdt",
-    positionMode: "one_way",
-    leveragePercentage: 100,
-    useMaximalLeverage: true,
-    useSystemCloseOnly: false,
-  })
+  const [overview, setOverview] = useState<OverviewSettings>(DEFAULT_OVERVIEW_SETTINGS)
 
   // ── Symbols state ───────────────────────────────────────────────
   // Operator spec: default symbolOrder = volatility_1h, symbolCount = 20
-  const [symbolsCfg, setSymbolsCfg] = useState<SymbolsSettings>({
-    symbols: [],
-    symbolOrder: "volatility_1h",
-    symbolCount: 20,
-  })
+  const [symbolsCfg, setSymbolsCfg] = useState<SymbolsSettings>(DEFAULT_SYMBOLS_SETTINGS)
   const [symbolInput, setSymbolInput] = useState("")
   const [exchangeSymbols, setExchangeSymbols] = useState<string[]>([])
   // Full ticker objects (includes atr1h when sort=volatility_1h)
@@ -223,10 +227,17 @@ export function ConnectionSettingsDialog({
   const [activeSymbols, setActiveSymbols] = useState<string[]>([])
   const [symbolResolutionSource, setSymbolResolutionSource] = useState<string | undefined>(undefined)
   const [saveWarning, setSaveWarning] = useState<string | null>(null)
+  // A dialog can stay mounted while its connection prop changes. Ignore any
+  // slower response from the previous connection so it cannot hydrate stale
+  // values over the newly selected connection.
+  const loadSequenceRef = useRef(0)
+  const presetLoadSequenceRef = useRef(0)
+  const symbolRequestSequenceRef = useRef(0)
+  const saveSequenceRef = useRef(0)
 
   // ── Indications & Strategies state (per channel) ────────────────
-  const [indMain,   setIndMain]   = useState<ChannelProfile>(DEFAULT_INDICATION_PROFILE)
-  const [indPreset, setIndPreset] = useState<ChannelProfile>(DEFAULT_INDICATION_PROFILE)
+  const [indMain,   setIndMain]   = useState<ChannelProfile>(DEFAULT_MAIN_INDICATION_PROFILE)
+  const [indPreset, setIndPreset] = useState<ChannelProfile>(DEFAULT_PRESET_INDICATION_PROFILE)
   const [stratMain,   setStratMain]   = useState<StrategyChannel>(DEFAULT_STRATEGY_PROFILE)
   const [stratPreset, setStratPreset] = useState<StrategyChannel>(DEFAULT_STRATEGY_PROFILE)
   const [coordination, setCoordination] = useState<CoordinationSettings>(DEFAULT_COORDINATION_SETTINGS)
@@ -241,10 +252,12 @@ export function ConnectionSettingsDialog({
   const [presetConfirm,  setPresetConfirm]  = useState<string | null>(null) // name awaiting delete confirm
 
   const fetchPresets = useCallback(async () => {
+    const sequence = ++presetLoadSequenceRef.current
     try {
       const res = await fetch(`/api/settings/connections/${connectionId}/settings-presets`)
       if (!res.ok) return
       const data = await res.json()
+      if (sequence !== presetLoadSequenceRef.current) return
       setPresets(Array.isArray(data.presets) ? data.presets : [])
     } catch {
       // non-fatal
@@ -270,6 +283,7 @@ export function ConnectionSettingsDialog({
         symbol_order:         symbolsCfg.symbolOrder,
         symbol_count:         symbolsCfg.symbolCount,
         symbols:              symbolsCfg.symbols,
+        indication_channels:  { main: indMain, preset: indPreset },
         strategies:           { main: stratMain, preset: stratPreset },
         coordination_settings: coordination,
         prevPosMinCount:      coordination.prevPosMinCount,
@@ -300,7 +314,7 @@ export function ConnectionSettingsDialog({
     } finally {
       setPresetSaving(false)
     }
-  }, [connectionId, presetName, overview, symbolsCfg, stratMain, stratPreset, coordination, fetchPresets])
+  }, [connectionId, presetName, overview, symbolsCfg, indMain, indPreset, stratMain, stratPreset, coordination, fetchPresets])
 
   const loadPreset = useCallback(async (preset: SettingsPreset) => {
     setPresetLoading(preset.name)
@@ -319,8 +333,8 @@ export function ConnectionSettingsDialog({
         volumeType:        (p.volume_type    as "usdt" | "contract" | "spot") || prev.volumeType,
         positionMode:      (p.position_mode  as "one_way" | "hedge") || prev.positionMode,
         leveragePercentage: Number(p.leveragePercentage)   || prev.leveragePercentage,
-        useMaximalLeverage: p.useMaximalLeverage !== false && p.useMaximalLeverage !== "false",
-        useSystemCloseOnly: p.use_system_close_only === true || p.useSystemCloseOnly === true,
+        useMaximalLeverage: parseStoredBoolean(p.useMaximalLeverage, true),
+        useSystemCloseOnly: parseStoredBoolean(p.use_system_close_only ?? p.useSystemCloseOnly, false),
       }))
 
       // Apply symbols settings
@@ -336,14 +350,30 @@ export function ConnectionSettingsDialog({
       if (strats?.main) setStratMain(prev => ({ ...prev, ...(strats.main as object) }))
       if (strats?.preset) setStratPreset(prev => ({ ...prev, ...(strats.preset as object) }))
 
+      const indicationChannels = p.indication_channels as Record<string, unknown> | undefined
+      if (indicationChannels) {
+        setIndMain(normalizeIndicationProfile(indicationChannels.main, DEFAULT_MAIN_INDICATION_PROFILE))
+        setIndPreset(normalizeIndicationProfile(indicationChannels.preset, DEFAULT_PRESET_INDICATION_PROFILE))
+      }
+
       // Apply coordination
       const coord = (p.coordination_settings || p.coordinationSettings) as Partial<CoordinationSettings> | undefined
       if (coord && typeof coord === "object") {
-        setCoordination(prev => ({
-          ...prev,
+        const dca = normalizeDcaProfile(coord)
+        const rawTrailing = coord.trailingVariants ?? p.strategyBaseTrailingVariants
+        setCoordination({
+          ...DEFAULT_COORDINATION_SETTINGS,
           ...coord,
-          variants: { ...prev.variants, ...(coord.variants ?? {}) },
-        }))
+          axes: { ...DEFAULT_COORDINATION_SETTINGS.axes, ...(coord.axes ?? {}) },
+          variants: { ...DEFAULT_COORDINATION_SETTINGS.variants, ...(coord.variants ?? {}) },
+          trailingVariants: normalizeTrailingVariants(rawTrailing ?? DEFAULT_TRAILING_VARIANTS),
+          dcaMaxSteps: dca.maxSteps,
+          dcaStepVolumeMultipliers: dca.stepVolumeMultipliers,
+          dcaStepDistancesPct: dca.stepDistancesPct,
+          dcaTakeProfitMode: dca.takeProfitMode,
+          dcaBreakevenProfitPct: dca.breakevenProfitPct,
+          dcaCooldownSeconds: dca.cooldownSeconds,
+        })
       }
 
       toast.success("Preset loaded", { description: `"${preset.name}" — review and save to apply` })
@@ -378,7 +408,31 @@ export function ConnectionSettingsDialog({
   // ──────────────────────────────────────────────────────��──────────
 
   const loadAllSettings = useCallback(async () => {
+    const loadSequence = ++loadSequenceRef.current
     setLoading(true)
+    // Clear all connection-scoped state before hydration. If a request fails,
+    // never expose values from the previously opened connection.
+    setExchangeKey(String(exchange || "bingx").toLowerCase())
+    setOverview({ ...DEFAULT_OVERVIEW_SETTINGS })
+    setSymbolsCfg({ ...DEFAULT_SYMBOLS_SETTINGS, symbols: [] })
+    setSymbolInput("")
+    setSymbolResolutionSource(undefined)
+    setIndMain(DEFAULT_MAIN_INDICATION_PROFILE)
+    setIndPreset(DEFAULT_PRESET_INDICATION_PROFILE)
+    setStratMain(DEFAULT_STRATEGY_PROFILE)
+    setStratPreset(DEFAULT_STRATEGY_PROFILE)
+    setCoordination({
+      ...DEFAULT_COORDINATION_SETTINGS,
+      axes: { ...DEFAULT_COORDINATION_SETTINGS.axes },
+      variants: { ...DEFAULT_COORDINATION_SETTINGS.variants },
+      trailingVariants: [...DEFAULT_COORDINATION_SETTINGS.trailingVariants],
+      dcaStepVolumeMultipliers: [...DEFAULT_COORDINATION_SETTINGS.dcaStepVolumeMultipliers],
+      dcaStepDistancesPct: [...DEFAULT_COORDINATION_SETTINGS.dcaStepDistancesPct],
+    })
+    setExchangeSymbols([])
+    setExchangeTickers([])
+    setActiveSymbols([])
+    setSaveWarning(null)
     try {
       const [settingsRes, indRes, symRes] = await Promise.all([
         fetch(`/api/settings/connections/${connectionId}/settings`).catch(() => null),
@@ -386,8 +440,11 @@ export function ConnectionSettingsDialog({
         fetch(`/api/settings/connections/${connectionId}/symbols`).catch(() => null),
       ])
 
+      if (loadSequence !== loadSequenceRef.current) return
+
       if (settingsRes?.ok) {
         const data = await settingsRes.json()
+        if (loadSequence !== loadSequenceRef.current) return
         const settings = data.settings || {}
         const conn     = data.connection || {}
         setExchangeKey(String(conn.exchange || exchange).toLowerCase())
@@ -404,15 +461,14 @@ export function ConnectionSettingsDialog({
           volumeType:  (settings.volume_type || (conn.api_type === "futures_inverse" ? "contract" : conn.api_type === "spot" ? "spot" : "usdt")) as "usdt" | "contract" | "spot",
           positionMode: (settings.position_mode || conn.position_mode || "one_way") as "one_way" | "hedge",
           leveragePercentage: Number(settings.leveragePercentage) || 100,
-          useMaximalLeverage: settings.useMaximalLeverage !== false && settings.useMaximalLeverage !== "false",
-          useSystemCloseOnly: settings.use_system_close_only === true || settings.useSystemCloseOnly === true,
+          useMaximalLeverage: parseStoredBoolean(settings.useMaximalLeverage, true),
+          useSystemCloseOnly: parseStoredBoolean(settings.use_system_close_only ?? settings.useSystemCloseOnly, false),
         })
-        setSymbolsCfg(prev => ({
-          ...prev,
-          symbols:     Array.isArray(settings.symbols) ? settings.symbols : prev.symbols,
-          symbolOrder: (settings.symbol_order as SymbolOrder) || prev.symbolOrder,
-          symbolCount: Number(settings.symbol_count) || prev.symbolCount,
-        }))
+        setSymbolsCfg({
+          symbols: Array.isArray(settings.symbols) ? settings.symbols : [],
+          symbolOrder: (settings.symbol_order as SymbolOrder) || "volatility_1h",
+          symbolCount: Number(settings.symbol_count) || 20,
+        })
         const rawActive = conn.active_symbols || settings.active_symbols
         const parsedActive: string[] = (() => {
           if (Array.isArray(rawActive)) return rawActive.filter(Boolean)
@@ -441,22 +497,31 @@ export function ConnectionSettingsDialog({
           }
           return { base: mergeStage("base"), main: mergeStage("main"), real: mergeStage("real") }
         }
-        if (settings.strategies?.main)   setStratMain(mergeStratChannel(settings.strategies.main, DEFAULT_STRATEGY_PROFILE))
-        if (settings.strategies?.preset) setStratPreset(mergeStratChannel(settings.strategies.preset, DEFAULT_STRATEGY_PROFILE))
+        setStratMain(mergeStratChannel(settings.strategies?.main, DEFAULT_STRATEGY_PROFILE))
+        setStratPreset(mergeStratChannel(settings.strategies?.preset, DEFAULT_STRATEGY_PROFILE))
 
-        const coord = settings.coordination_settings || settings.coordinationSettings
-        if (coord) {
-          setCoordination(prev => ({
+        const coord = settings.coordination_settings || settings.coordinationSettings || {}
+        {
+          const dca = normalizeDcaProfile({ ...(settings as Record<string, unknown>), ...coord })
+          const rawTrailing = (coord as Record<string, unknown>).trailingVariants ??
+            (settings as Record<string, unknown>).strategyBaseTrailingVariants
+          setCoordination({
             ...DEFAULT_COORDINATION_SETTINGS,
-            ...prev,
             ...coord,
             axes:     { ...DEFAULT_COORDINATION_SETTINGS.axes,     ...(coord.axes     || {}) },
             variants: { ...DEFAULT_COORDINATION_SETTINGS.variants, ...(coord.variants || {}) },
             blockVolumeRatio: typeof coord.blockVolumeRatio === "number" ? coord.blockVolumeRatio : DEFAULT_COORDINATION_SETTINGS.blockVolumeRatio,
             blockMaxStack:    typeof coord.blockMaxStack    === "number" ? coord.blockMaxStack    : DEFAULT_COORDINATION_SETTINGS.blockMaxStack,
             blockPauseCountRatio: typeof coord.blockPauseCountRatio === "number" ? coord.blockPauseCountRatio : DEFAULT_COORDINATION_SETTINGS.blockPauseCountRatio,
-            blockActiveRealEnabled: typeof coord.blockActiveRealEnabled === "boolean" ? coord.blockActiveRealEnabled : typeof coord.blockActiveLiveEnabled === "boolean" ? coord.blockActiveLiveEnabled : DEFAULT_COORDINATION_SETTINGS.blockActiveRealEnabled,
+            blockActiveRealEnabled: typeof coord.blockActiveRealEnabled === "boolean" ? coord.blockActiveRealEnabled : DEFAULT_COORDINATION_SETTINGS.blockActiveRealEnabled,
             blockActiveLiveEnabled: typeof coord.blockActiveLiveEnabled === "boolean" ? coord.blockActiveLiveEnabled : DEFAULT_COORDINATION_SETTINGS.blockActiveLiveEnabled,
+            trailingVariants: normalizeTrailingVariants(rawTrailing ?? DEFAULT_TRAILING_VARIANTS),
+            dcaMaxSteps: dca.maxSteps,
+            dcaStepVolumeMultipliers: dca.stepVolumeMultipliers,
+            dcaStepDistancesPct: dca.stepDistancesPct,
+            dcaTakeProfitMode: dca.takeProfitMode,
+            dcaBreakevenProfitPct: dca.breakevenProfitPct,
+            dcaCooldownSeconds: dca.cooldownSeconds,
             prevPosMinCount: (() => {
               const flat = Number((settings as Record<string, unknown>).prevPosMinCount ?? (settings as Record<string, unknown>).prevPiMinCount)
               if (Number.isFinite(flat) && flat >= 1) return Math.min(50, Math.floor(flat))
@@ -501,27 +566,29 @@ export function ConnectionSettingsDialog({
               if (Number.isFinite(nested) && nested >= 2) return Math.min(30, Math.max(2, Math.round(nested)))
               return DEFAULT_COORDINATION_SETTINGS.trailingMinStep ?? 6
             })(),
-          }))
+          })
         }
       }
 
       if (indRes?.ok) {
         const data = await indRes.json()
+        if (loadSequence !== loadSequenceRef.current) return
         const channels = data.channels || {}
-        if (channels.main)   setIndMain(channels.main)
-        if (channels.preset) setIndPreset(channels.preset)
+        setIndMain(normalizeIndicationProfile(channels.main, DEFAULT_MAIN_INDICATION_PROFILE))
+        setIndPreset(normalizeIndicationProfile(channels.preset, DEFAULT_PRESET_INDICATION_PROFILE))
       }
 
       if (symRes?.ok) {
         const data = await symRes.json()
-        if (Array.isArray(data.symbols) && data.symbols.length > 0) {
-          setExchangeSymbols(data.symbols)
-        }
+        if (loadSequence !== loadSequenceRef.current) return
+        setExchangeSymbols(Array.isArray(data.symbols) ? data.symbols : [])
+      } else {
+        setExchangeSymbols([])
       }
     } catch (err) {
       console.error("[v0] [Settings Dialog] loadAllSettings error:", err)
     } finally {
-      setLoading(false)
+      if (loadSequence === loadSequenceRef.current) setLoading(false)
     }
   // Reload settings whenever the active connection or exchange changes.
   // connectionId and exchange are stable — both come from props and don't change
@@ -535,6 +602,7 @@ export function ConnectionSettingsDialog({
   // ─��──────────────────────────────────��────────────────────────────
 
   const saveAll = useCallback(async () => {
+    const saveSequence = ++saveSequenceRef.current
     setSaving(true)
     try {
       const payload = {
@@ -567,6 +635,10 @@ export function ConnectionSettingsDialog({
         // and never reached the engine's connection_settings hash reader.
         coordination_settings: coordination,
         coordinationSettings:  coordination, // legacy alias
+        // Persist both indication channels in the same ordered transaction as
+        // the rest of the dialog. This produces one coherent hot reload and
+        // prevents the engine from seeing new strategies with old indications.
+        indication_channels: { main: indMain, preset: indPreset },
         // Flat top-level mirrors so the engine + `getStrategyTracking`
         // can read them as plain `connection_settings` HASH fields
         // without parsing the nested coordination JSON every cycle.
@@ -582,6 +654,8 @@ export function ConnectionSettingsDialog({
         variant_trailing: coordination.variants.trailing !== false,
         variant_block:    coordination.variants.block    !== false,
         variant_dca:      coordination.variants.dca      === true,
+        strategyBaseTrailingEnabled: coordination.variants.trailing !== false,
+        strategyBaseTrailingVariants: coordination.trailingVariants,
       }
 
       // Save in a deterministic order. The settings PATCH already mirrors
@@ -593,17 +667,12 @@ export function ConnectionSettingsDialog({
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify(payload),
       })
+      if (saveSequence !== saveSequenceRef.current) return
       if (!settingsRes.ok) throw new Error("Settings save failed")
       const savedEvent = await settingsRes.clone().json().catch(() => ({})) as Record<string, unknown>
+      if (saveSequence !== saveSequenceRef.current) return
       const warning = typeof savedEvent.warning === "string" ? savedEvent.warning : undefined
       setSaveWarning(warning ?? null)
-
-      const indRes = await fetch(`/api/settings/connections/${connectionId}/active-indications`, {
-        method:  "PUT",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ channels: { main: indMain, preset: indPreset } }),
-      })
-      if (!indRes.ok) throw new Error("Indications save failed")
 
       // Re-read active_symbols from the updated settings response so the
       // toast can show what the engine will actually run next cycle.
@@ -657,10 +726,11 @@ export function ConnectionSettingsDialog({
       }))
       onOpenChange(false)
     } catch (err) {
+      if (saveSequence !== saveSequenceRef.current) return
       console.error("[v0] [Settings Dialog] save error:", err)
       toast.error("Save failed", { description: err instanceof Error ? err.message : String(err) })
     } finally {
-      setSaving(false)
+      if (saveSequence === saveSequenceRef.current) setSaving(false)
     }
   }, [connectionId, connectionName, overview, symbolsCfg, symbolResolutionSource, stratMain, stratPreset, indMain, indPreset, coordination, onOpenChange])
 
@@ -670,6 +740,7 @@ export function ConnectionSettingsDialog({
 
   const fetchExchangeSymbols = useCallback(async () => {
     if (!exchangeKey) return
+    const sequence = ++symbolRequestSequenceRef.current
     setLoadingSymbols(true)
     try {
       const res = await fetch(
@@ -677,6 +748,7 @@ export function ConnectionSettingsDialog({
       ).catch(() => null)
       if (res?.ok) {
         const data = await res.json()
+        if (sequence !== symbolRequestSequenceRef.current) return
         const list: string[] = Array.isArray(data.symbols) ? data.symbols
           : Array.isArray(data.available) ? data.available : []
         setExchangeSymbols(list)
@@ -690,7 +762,9 @@ export function ConnectionSettingsDialog({
         }
       }
     } catch { /* non-fatal */ }
-    finally { setLoadingSymbols(false) }
+    finally {
+      if (sequence === symbolRequestSequenceRef.current) setLoadingSymbols(false)
+    }
   }, [connectionId, exchangeKey, symbolsCfg.symbolOrder])
 
   // Auto-selects top-N symbols by true 1h ATR volatility.
@@ -698,6 +772,7 @@ export function ConnectionSettingsDialog({
   // then populates `symbolsCfg.symbols` and switches symbolOrder to volatility_1h
   // so the engine's PATCH resolver auto-applies them on the next engine start.
   const autoSelectByVolatility1h = useCallback(async () => {
+    const sequence = ++symbolRequestSequenceRef.current
     setLoadingVolatility1h(true)
     try {
       const res = await fetch(
@@ -705,6 +780,7 @@ export function ConnectionSettingsDialog({
       ).catch(() => null)
       if (!res?.ok) throw new Error("Failed to fetch 1h volatility symbols")
       const data = await res.json()
+      if (sequence !== symbolRequestSequenceRef.current) return
       const tickers: Array<{ symbol: string; priceChangePercent: number; volume: number; atr1h?: number }> =
         Array.isArray(data.tickers) ? data.tickers : []
       const symbols: string[] = tickers.map((t) => t.symbol)
@@ -732,9 +808,10 @@ export function ConnectionSettingsDialog({
         { description: symbols.slice(0, symbolsCfg.symbolCount).join(", ") },
       )
     } catch (err) {
+      if (sequence !== symbolRequestSequenceRef.current) return
       toast.error("Auto-select failed", { description: err instanceof Error ? err.message : String(err) })
     } finally {
-      setLoadingVolatility1h(false)
+      if (sequence === symbolRequestSequenceRef.current) setLoadingVolatility1h(false)
     }
   }, [connectionId, symbolsCfg.symbolCount])
 
@@ -779,25 +856,44 @@ export function ConnectionSettingsDialog({
   // ─────────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      loadSequenceRef.current++
+      presetLoadSequenceRef.current++
+      symbolRequestSequenceRef.current++
+      saveSequenceRef.current++
+      setSaving(false)
+      setLoadingSymbols(false)
+      setLoadingVolatility1h(false)
+      return
+    }
     setTab("overview")
     setPresetsOpen(false)
     setPresetName("")
     setPresetConfirm(null)
     loadAllSettings()
     fetchPresets()
-    // Opening the dialog resets the transient preset state and refreshes data.
-    // Stable stable refs — intentionally omit from dep array to avoid
-    // retriggering on every render. `open` is the only signal we need.
-
-  }, [open])
+    // Invalidate this connection's pending hydration before a new connection
+    // or a closed dialog can receive its response.
+    return () => {
+      loadSequenceRef.current++
+      presetLoadSequenceRef.current++
+      symbolRequestSequenceRef.current++
+      saveSequenceRef.current++
+    }
+  }, [open, connectionId, exchange, loadAllSettings, fetchPresets])
 
   // ─────────────────────────────────────────────────────────────────
   // RENDER
   // ────────────────────────────────────────────────────────���────────
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen && (saving || presetSaving || presetDeleting !== null)) return
+        onOpenChange(nextOpen)
+      }}
+    >
       <DialogContent className="max-w-3xl h-[90dvh] max-h-[90dvh] overflow-hidden flex flex-col p-0 [&>button]:z-10">
         {/* Header */}
         <DialogHeader className="px-5 pt-4 pb-3 border-b shrink-0">

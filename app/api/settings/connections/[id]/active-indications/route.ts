@@ -1,6 +1,16 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getConnection, getSettings } from "@/lib/redis-db"
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
+import {
+  DEFAULT_MAIN_INDICATION_PROFILE,
+  DEFAULT_PRESET_INDICATION_PROFILE,
+  INDICATION_PROFILE_TYPES,
+  indicationProfilesToFlat,
+  normalizeIndicationProfile,
+  readStoredIndicationProfile,
+  type IndicationChannelProfile,
+} from "@/lib/active-indication-profile"
+import { settingsValuesEqual } from "@/lib/settings-diff"
 
 // ── Channel-aware indication settings ──────────────────────────────
 // Each connection holds two profiles: `main` (the active config the
@@ -16,71 +26,14 @@ import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinato
 // Legacy keys are preserved so the engine and indication-sets-processor
 // (which read `direction`, `move`, etc.) continue to work without a
 // schema change. The Preset profile is purely additive.
-const TYPES = ["direction", "move", "active", "optimal", "auto"] as const
-type IndicationType = (typeof TYPES)[number]
-
-interface IndicationParams {
-  enabled: boolean
-  range: number
-  timeout: number
-  interval: number
-}
-
-type ChannelProfile = Record<IndicationType, IndicationParams>
-
-const DEFAULT_PROFILE: ChannelProfile = {
-  direction: { enabled: true,  range: 5,  timeout: 30, interval: 1 },
-  move:      { enabled: true,  range: 10, timeout: 30, interval: 1 },
-  active:    { enabled: true,  range: 15, timeout: 60, interval: 5 },
-  optimal:   { enabled: false, range: 20, timeout: 60, interval: 5 },
-  auto:      { enabled: false, range: 25, timeout: 90, interval: 15 },
-}
-
-const DEFAULT_PRESET: ChannelProfile = {
-  direction: { enabled: true,  range: 8,  timeout: 45, interval: 1 },
-  move:      { enabled: true,  range: 12, timeout: 45, interval: 1 },
-  active:    { enabled: false, range: 20, timeout: 90, interval: 5 },
-  optimal:   { enabled: true,  range: 25, timeout: 90, interval: 5 },
-  auto:      { enabled: false, range: 30, timeout: 120, interval: 15 },
-}
-
-function readProfile(stored: any, suffix: "" | "_preset", fallback: ChannelProfile): ChannelProfile {
-  const out: any = {}
-  for (const t of TYPES) {
-    const enabledKey = suffix === "" ? t : `${t}_preset`
-    out[t] = {
-      enabled:
-        stored?.[enabledKey] === true ||
-        stored?.[enabledKey] === "true" ||
-        (stored?.[enabledKey] === undefined ? fallback[t].enabled : false),
-      range:    Number(stored?.[`${t}${suffix}_range`])    || fallback[t].range,
-      timeout:  Number(stored?.[`${t}${suffix}_timeout`])  || fallback[t].timeout,
-      interval: Number(stored?.[`${t}${suffix}_interval`]) || fallback[t].interval,
-    }
-  }
-  return out
-}
-
-function profileToFlat(profile: ChannelProfile, suffix: "" | "_preset"): Record<string, any> {
-  const out: Record<string, any> = {}
-  for (const t of TYPES) {
-    const enabledKey = suffix === "" ? t : `${t}_preset`
-    out[enabledKey] = profile[t].enabled
-    out[`${t}${suffix}_range`]    = profile[t].range
-    out[`${t}${suffix}_timeout`]  = profile[t].timeout
-    out[`${t}${suffix}_interval`] = profile[t].interval
-  }
-  return out
-}
-
 export const dynamic = "force-dynamic"
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
     const stored = await getSettings(`active_indications:${id}`)
 
-    const main   = readProfile(stored, "",       DEFAULT_PROFILE)
-    const preset = readProfile(stored, "_preset", DEFAULT_PRESET)
+    const main = readStoredIndicationProfile(stored, "", DEFAULT_MAIN_INDICATION_PROFILE)
+    const preset = readStoredIndicationProfile(stored, "_preset", DEFAULT_PRESET_INDICATION_PROFILE)
 
     // Return both the legacy flat shape (for backward compat with
     // existing consumers like indication-sets-processor) AND the new
@@ -101,7 +54,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       {
         error: "Failed to fetch active indications",
         direction: true, move: true, active: true, optimal: false, auto: false,
-        channels: { main: DEFAULT_PROFILE, preset: DEFAULT_PRESET },
+        channels: { main: DEFAULT_MAIN_INDICATION_PROFILE, preset: DEFAULT_PRESET_INDICATION_PROFILE },
       },
       { status: 200 },
     )
@@ -117,30 +70,40 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     // or the legacy flat shape (`{ direction, move, ... }`). When only
     // legacy is supplied, the Preset profile is left untouched.
     const existing = (await getSettings(`active_indications:${id}`)) || {}
-    const existingMain   = readProfile(existing, "",        DEFAULT_PROFILE)
-    const existingPreset = readProfile(existing, "_preset", DEFAULT_PRESET)
+    const existingMain = readStoredIndicationProfile(existing, "", DEFAULT_MAIN_INDICATION_PROFILE)
+    const existingPreset = readStoredIndicationProfile(existing, "_preset", DEFAULT_PRESET_INDICATION_PROFILE)
 
-    let nextMain:   ChannelProfile = existingMain
-    let nextPreset: ChannelProfile = existingPreset
+    let nextMain: IndicationChannelProfile = existingMain
+    let nextPreset: IndicationChannelProfile = existingPreset
 
-    if (body?.channels?.main)   nextMain   = body.channels.main
-    if (body?.channels?.preset) nextPreset = body.channels.preset
+    if (body?.channels?.main) nextMain = normalizeIndicationProfile(body.channels.main, existingMain)
+    if (body?.channels?.preset) nextPreset = normalizeIndicationProfile(body.channels.preset, existingPreset)
 
     // Legacy flat shape merge — only updates the enabled toggles,
     // numeric params come from the existing Main profile so the
     // engine never sees zeros after a partial save.
     if (body && body.channels === undefined) {
-      const legacy = ["direction", "move", "active", "optimal", "auto"] as const
-      const merged: any = { ...existingMain }
-      for (const t of legacy) {
+      const merged: IndicationChannelProfile = { ...existingMain }
+      for (const t of INDICATION_PROFILE_TYPES) {
         if (typeof body[t] === "boolean") merged[t] = { ...existingMain[t], enabled: body[t] }
       }
       nextMain = merged
     }
 
+    const profilePatch = indicationProfilesToFlat(nextMain, nextPreset)
+    const changed = Object.entries(profilePatch).some(
+      ([key, value]) => !settingsValuesEqual((existing as Record<string, unknown>)[key], value),
+    )
+    if (!changed) {
+      return NextResponse.json({
+        success: true,
+        unchanged: true,
+        channels: { main: nextMain, preset: nextPreset },
+      })
+    }
+
     const flat = {
-      ...profileToFlat(nextMain,   ""),
-      ...profileToFlat(nextPreset, "_preset"),
+      ...profilePatch,
       updated_at: new Date().toISOString(),
     }
     const connection = await getConnection(id)

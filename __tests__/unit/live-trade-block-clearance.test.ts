@@ -16,6 +16,7 @@ const updateConnection = jest.fn(async (id: string, updates: any) => {
   return next
 })
 const logProgressionEvent = jest.fn(async () => undefined)
+const syncWithExchange = jest.fn(async () => ({ reconciled: 0, updated: 0, closed: 0, errors: 0 }))
 
 jest.mock("@/lib/redis-db", () => ({
   initRedis: jest.fn(async () => undefined),
@@ -33,6 +34,36 @@ jest.mock("@/lib/trade-engine", () => ({
     isEngineRunning: jest.fn(() => true),
     startEngine: jest.fn(async () => undefined),
   })),
+}))
+
+// Enabling live trade schedules a fire-and-forget control-order rebuild. Keep
+// this unit test hermetic: it must never construct a real BingX connector.
+jest.mock("@/lib/exchange-connectors", () => ({
+  createExchangeConnector: jest.fn(async () => ({ kind: "mock-exchange" })),
+}))
+
+jest.mock("@/lib/trade-engine/stages/live-stage", () => ({
+  syncWithExchange: (...args: any[]) => syncWithExchange(...args),
+}))
+
+jest.mock("@/lib/progression-state-manager", () => ({
+  ProgressionStateManager: {
+    recoordinateForActualOne: jest.fn(async () => ({ changed: false })),
+  },
+}))
+
+jest.mock("@/lib/settings-coordinator", () => ({
+  notifySettingsChanged: jest.fn(async () => undefined),
+}))
+
+jest.mock("@/lib/engine-refresh-queue", () => ({
+  nextStateSwitchVersion: jest.fn(() => "test-switch-version"),
+  queueEngineRefreshRequest: jest.fn(async () => undefined),
+}))
+
+jest.mock("@/lib/production-readiness", () => ({
+  checkProductionReadiness: jest.fn(async () => ({ ready: true, checks: [] })),
+  productionReadinessJson: jest.fn((value: unknown) => value),
 }))
 
 jest.mock("@/lib/settings-storage", () => ({
@@ -92,5 +123,7 @@ describe("live-trade block clearance", () => {
       expect.stringContaining("cleared stale block"),
       expect.objectContaining({ previous_block_reason: "Connection test failed", is_live_trade: true }),
     )
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(syncWithExchange).toHaveBeenCalledWith(mockConnection.id, expect.objectContaining({ kind: "mock-exchange" }))
   })
 })

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useCallback } from "react"
+import { useState, useMemo, useCallback, useEffect, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -14,234 +14,354 @@ import {
   Filter,
   RotateCw,
 } from "lucide-react"
+import type { TradeHistoryRow as TradeHistoryRowType } from "@/lib/trade-history"
 
-export interface TradeHistoryRow {
-  id:          string
-  symbol:      string
-  direction:   "long" | "short"
-  entryPrice:  number
-  exitPrice:   number
-  realizedPnl: number
-  pnlPct:      number
-  holdMinutes: number
-  openedAt:    number
-  closedAt:    number
-  volumeUsd:   number
-  pnlLabel:    string
-  pnlPctLabel: string
-  holdLabel:   string
-}
+export type TradeHistoryRow = TradeHistoryRowType
 
 interface TradeHistoryTableProps {
   trades: TradeHistoryRow[]
+  /** Hard payload/render cap; the API and UI never retain more than 500. */
   limit?: number
-  onRefresh?: () => void
+  /** Constant DOM window used by the virtual scroller. */
+  visibleWindow?: number
+  onRefresh?: () => void | Promise<void>
 }
 
-type SortField = "closedAt" | "realizedPnl" | "pnlPct" | "symbol" | "holdMinutes" | "volumeUsd" | "entryPrice" | "exitPrice" | "direction"
+type SortField =
+  | "closedAt"
+  | "realizedPnl"
+  | "pnlPct"
+  | "symbol"
+  | "holdMinutes"
+  | "volumeUsd"
+  | "entryPrice"
+  | "exitPrice"
+  | "fees"
+  | "direction"
 type SortDir = "asc" | "desc"
 
-export function TradeHistoryTable({ trades, limit = 15, onRefresh }: TradeHistoryTableProps) {
+const ROW_HEIGHT = 44
+const DEFAULT_WINDOW = 50
+const MAX_RECORDS = 500
+const GRID_COLUMNS = "140px 100px 70px 110px 110px 100px 80px 100px 80px 80px"
+
+function finite(value: unknown): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function money(value: number, digits = 2): string {
+  return `${value < 0 ? "-" : ""}$${Math.abs(value).toLocaleString("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })}`
+}
+
+export function TradeHistoryTable({
+  trades,
+  limit = MAX_RECORDS,
+  visibleWindow = DEFAULT_WINDOW,
+  onRefresh,
+}: TradeHistoryTableProps) {
+  const hardLimit = Math.max(1, Math.min(MAX_RECORDS, Math.floor(limit) || MAX_RECORDS))
+  const windowSize = Math.max(1, Math.min(DEFAULT_WINDOW, Math.floor(visibleWindow) || DEFAULT_WINDOW))
   const [sortField, setSortField] = useState<SortField>("closedAt")
   const [sortDir, setSortDir] = useState<SortDir>("desc")
   const [search, setSearch] = useState("")
   const [directionFilter, setDirectionFilter] = useState<"all" | "long" | "short">("all")
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [windowStart, setWindowStart] = useState(0)
+  const viewportRef = useRef<HTMLDivElement | null>(null)
 
   const handleSort = (field: SortField) => {
-    if (sortField === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
-    else { setSortField(field); setSortDir("desc") }
+    if (sortField === field) setSortDir((direction) => (direction === "asc" ? "desc" : "asc"))
+    else {
+      setSortField(field)
+      setSortDir(field === "symbol" || field === "direction" ? "asc" : "desc")
+    }
   }
 
   const handleRefresh = useCallback(async () => {
+    if (!onRefresh || isRefreshing) return
     setIsRefreshing(true)
     try {
-      if (onRefresh) await onRefresh()
+      await onRefresh()
     } finally {
       setIsRefreshing(false)
     }
-  }, [onRefresh])
+  }, [isRefreshing, onRefresh])
 
   const SortIcon = ({ field }: { field: SortField }) => {
-    if (sortField !== field) return <ArrowUp className="h-3 w-3 ml-1 opacity-30" />
+    if (sortField !== field) return <ArrowUp className="ml-1 inline h-3 w-3 opacity-25" />
     return sortDir === "asc"
-      ? <ArrowUp className="h-3 w-3 ml-1" />
-      : <ArrowDown className="h-3 w-3 ml-1" />
+      ? <ArrowUp className="ml-1 inline h-3 w-3" />
+      : <ArrowDown className="ml-1 inline h-3 w-3" />
   }
 
-  // Dedupe trades by id. The server's tradeHistory payload can carry the same
-  // closed position twice (e.g. an "adopted" exchange position that is also
-  // tracked in Redis), which produced duplicate React keys at render → React
-  // duplicates/omits children inconsistently between server and client
-  // (hydration error #418). Keep the most-recently-closed copy per id and let
-  // entries with an empty id fall back to a positional key so none are dropped.
-  const dedupedTrades = useMemo(() => {
-    const out: TradeHistoryRow[] = []
-    const seen = new Map<string, number>()
-    for (const t of trades) {
-      const id = t.id || ""
-      if (!id) { out.push(t); continue }
-      const idx = seen.get(id)
-      if (idx === undefined) {
-        seen.set(id, out.length)
-        out.push(t)
-      } else if ((t.closedAt || 0) >= (out[idx].closedAt || 0)) {
-        out[idx] = t
+  // Dedupe before applying the 500-row bound. Exchange close-order id is the
+  // strongest identity; local id is the fallback. Keep the newest copy.
+  const cappedTrades = useMemo(() => {
+    const byId = new Map<string, TradeHistoryRow>()
+    const anonymous: TradeHistoryRow[] = []
+    for (const trade of trades) {
+      if (!trade || !trade.symbol) continue
+      const key = trade.closeOrderId
+        ? `close:${trade.closeOrderId}`
+        : trade.id
+          ? `id:${trade.id}`
+          : ""
+      if (!key) {
+        anonymous.push(trade)
+        continue
       }
+      const existing = byId.get(key)
+      if (!existing || finite(trade.closedAt) >= finite(existing.closedAt)) byId.set(key, trade)
     }
-    return out
-  }, [trades])
+    return [...byId.values(), ...anonymous]
+      .sort((a, b) => finite(b.closedAt) - finite(a.closedAt))
+      .slice(0, hardLimit)
+  }, [hardLimit, trades])
 
   const filtered = useMemo(() => {
-    let list = [...dedupedTrades]
-    if (directionFilter !== "all") list = list.filter((t) => t.direction === directionFilter)
-    if (search.trim()) {
-      const q = search.trim().toUpperCase()
-      list = list.filter((t) => t.symbol.includes(q) || t.id.includes(q))
+    let list = [...cappedTrades]
+    if (directionFilter !== "all") list = list.filter((trade) => trade.direction === directionFilter)
+    const query = search.trim().toUpperCase()
+    if (query) {
+      list = list.filter((trade) =>
+        trade.symbol.toUpperCase().includes(query) ||
+        trade.id.toUpperCase().includes(query) ||
+        String(trade.orderId || "").toUpperCase().includes(query) ||
+        String(trade.closeOrderId || "").toUpperCase().includes(query),
+      )
     }
+
     list.sort((a, b) => {
-      let va: number, vb: number
-      switch (sortField) {
-        case "closedAt":    va = b.closedAt;    vb = a.closedAt; break   // reversed: newest first
-        case "realizedPnl": va = a.realizedPnl; vb = b.realizedPnl; break
-        case "pnlPct":      va = a.pnlPct;      vb = b.pnlPct; break
-        case "symbol":      va = a.symbol.charCodeAt(0); vb = b.symbol.charCodeAt(0); break
-        case "holdMinutes": va = a.holdMinutes; vb = b.holdMinutes; break
-        case "volumeUsd":   va = a.volumeUsd;   vb = b.volumeUsd; break
-        case "entryPrice":  va = a.entryPrice;  vb = b.entryPrice; break
-        case "exitPrice":   va = a.exitPrice;   vb = b.exitPrice; break
-        case "direction":   va = a.direction.charCodeAt(0); vb = b.direction.charCodeAt(0); break
+      let comparison = 0
+      if (sortField === "symbol" || sortField === "direction") {
+        comparison = String(a[sortField]).localeCompare(String(b[sortField]))
+      } else {
+        comparison = finite(a[sortField]) - finite(b[sortField])
       }
-      return sortDir === "asc" ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1)
+      return sortDir === "asc" ? comparison : -comparison
     })
-    return list.slice(0, limit)
-  }, [dedupedTrades, sortField, sortDir, search, directionFilter, limit])
+    return list
+  }, [cappedTrades, directionFilter, search, sortDir, sortField])
 
-  const wins   = dedupedTrades.filter((t) => t.realizedPnl > 0).length
-  const losses = dedupedTrades.filter((t) => t.realizedPnl < 0).length
-  const totalPnl = dedupedTrades.reduce((s, t) => s + t.realizedPnl, 0)
+  const summary = useMemo(() => {
+    let wins = 0
+    let losses = 0
+    let flat = 0
+    let netPnl = 0
+    let fees = 0
+    let volume = 0
+    for (const trade of cappedTrades) {
+      const pnl = finite(trade.realizedPnl)
+      if (pnl > 0) wins++
+      else if (pnl < 0) losses++
+      else flat++
+      netPnl += pnl
+      fees += Math.abs(finite(trade.fees))
+      volume += finite(trade.volumeUsd)
+    }
+    const decided = wins + losses
+    return {
+      wins,
+      losses,
+      flat,
+      netPnl,
+      fees,
+      volume,
+      winRate: decided > 0 ? (wins / decided) * 100 : 0,
+    }
+  }, [cappedTrades])
 
-  const fmtTime = (ts: number) =>
-    ts > 0 ? new Date(ts).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"
+  useEffect(() => {
+    setWindowStart(0)
+    if (viewportRef.current) viewportRef.current.scrollTop = 0
+  }, [directionFilter, search, sortDir, sortField, cappedTrades.length])
+
+  const maximumStart = Math.max(0, filtered.length - windowSize)
+  const safeWindowStart = Math.min(windowStart, maximumStart)
+  const visibleTrades = filtered.slice(safeWindowStart, safeWindowStart + windowSize)
+  const topSpacer = safeWindowStart * ROW_HEIGHT
+  const bottomSpacer = Math.max(0, (filtered.length - safeWindowStart - visibleTrades.length) * ROW_HEIGHT)
+
+  const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    const next = Math.min(
+      Math.max(0, filtered.length - windowSize),
+      Math.max(0, Math.floor(event.currentTarget.scrollTop / ROW_HEIGHT)),
+    )
+    setWindowStart((previous) => previous === next ? previous : next)
+  }, [filtered.length, windowSize])
+
+  const fmtTime = (timestamp: number) => timestamp > 0
+    ? new Date(timestamp).toLocaleString("en-GB", {
+        day: "2-digit",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "—"
 
   return (
-    <Card className="h-full flex flex-col">
-      <CardHeader className="pb-3 border-b">
-        <div className="flex items-start justify-between gap-3">
+    <Card className="flex h-full flex-col overflow-hidden">
+      <CardHeader className="space-y-3 border-b pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <History className="h-4 w-4 text-muted-foreground" />
             <CardTitle className="text-sm font-semibold">Trade History</CardTitle>
-            <Badge variant="outline" className="text-[10px] font-normal h-5">{trades.length}</Badge>
+            <Badge variant="outline" className="h-5 text-[10px] font-normal">
+              {cappedTrades.length}/{MAX_RECORDS}
+            </Badge>
+            <Badge variant="secondary" className="h-5 text-[9px] font-normal">
+              {windowSize}-row window
+            </Badge>
           </div>
-          <div className="flex items-center gap-1.5">
-            <div className="flex items-center gap-1 text-[11px]">
-              <span className="text-green-600 font-medium">{wins}W</span>
-              <span className="text-red-600 font-medium">{losses}L</span>
-              <span className={totalPnl >= 0 ? "text-green-600 font-medium" : "text-red-600 font-medium"}>
-                {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}
-              </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 w-7 p-0"
+            onClick={handleRefresh}
+            disabled={!onRefresh || isRefreshing}
+            aria-label="Refresh exchange trade history"
+          >
+            <RotateCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+          </Button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          <div className="rounded-md border bg-muted/20 px-2 py-1.5">
+            <div className="text-[9px] uppercase tracking-wide text-muted-foreground">Won</div>
+            <div className="text-sm font-semibold tabular-nums text-emerald-600">{summary.wins}</div>
+          </div>
+          <div className="rounded-md border bg-muted/20 px-2 py-1.5">
+            <div className="text-[9px] uppercase tracking-wide text-muted-foreground">Lost</div>
+            <div className="text-sm font-semibold tabular-nums text-rose-600">{summary.losses}</div>
+          </div>
+          <div className="rounded-md border bg-muted/20 px-2 py-1.5">
+            <div className="text-[9px] uppercase tracking-wide text-muted-foreground">Win rate</div>
+            <div className="text-sm font-semibold tabular-nums">{summary.winRate.toFixed(1)}%</div>
+          </div>
+          <div className="rounded-md border bg-muted/20 px-2 py-1.5">
+            <div className="text-[9px] uppercase tracking-wide text-muted-foreground">Net PnL</div>
+            <div className={`text-sm font-semibold tabular-nums ${summary.netPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+              {summary.netPnl >= 0 ? "+" : ""}{money(summary.netPnl)}
             </div>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 w-7 p-0 ml-1"
-              onClick={handleRefresh}
-              disabled={isRefreshing}
-            >
-              <RotateCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
-            </Button>
+          </div>
+          <div className="rounded-md border bg-muted/20 px-2 py-1.5">
+            <div className="text-[9px] uppercase tracking-wide text-muted-foreground">Fees</div>
+            <div className="text-sm font-semibold tabular-nums">{money(summary.fees)}</div>
+          </div>
+          <div className="rounded-md border bg-muted/20 px-2 py-1.5">
+            <div className="text-[9px] uppercase tracking-wide text-muted-foreground">Volume</div>
+            <div className="text-sm font-semibold tabular-nums">{money(summary.volume, 0)}</div>
           </div>
         </div>
-        
-        {/* Filter controls */}
-        <div className="flex items-center gap-2 mt-3">
-          <div className="relative flex-1 max-w-xs">
+
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-[180px] flex-1 sm:max-w-xs">
             <Input
-              placeholder="Symbol or ID…"
+              placeholder="Symbol or order ID…"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="h-7 text-xs pl-7"
+              onChange={(event) => setSearch(event.target.value)}
+              className="h-7 pl-7 text-xs"
             />
             <Filter className="absolute left-2 top-1.5 h-3 w-3 text-muted-foreground" />
           </div>
           <div className="flex gap-1">
-            {(["all", "long", "short"] as const).map((d) => (
+            {(["all", "long", "short"] as const).map((direction) => (
               <Button
-                key={d}
+                key={direction}
                 size="sm"
-                variant={directionFilter === d ? "default" : "outline"}
+                variant={directionFilter === direction ? "default" : "outline"}
                 className="h-7 text-[10px] font-medium"
-                onClick={() => setDirectionFilter(d)}
+                onClick={() => setDirectionFilter(direction)}
               >
-                {d === "all" ? "All" : d.toUpperCase()}
+                {direction === "all" ? "All" : direction.toUpperCase()}
               </Button>
             ))}
           </div>
+          <span className="ml-auto text-[10px] text-muted-foreground tabular-nums">
+            {filtered.length === 0
+              ? "0 records"
+              : `${safeWindowStart + 1}–${safeWindowStart + visibleTrades.length} of ${filtered.length}`}
+            {summary.flat > 0 ? ` · ${summary.flat} flat` : ""}
+          </span>
         </div>
       </CardHeader>
 
       <CardContent className="flex-1 overflow-hidden p-0">
         {filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-40 text-muted-foreground">
-            <History className="h-6 w-6 mb-2 opacity-30" />
-            <p className="text-xs">No trades yet</p>
+          <div className="flex h-40 flex-col items-center justify-center text-muted-foreground">
+            <History className="mb-2 h-6 w-6 opacity-30" />
+            <p className="text-xs">No closed exchange trades yet</p>
           </div>
         ) : (
-          <div className="h-full overflow-y-auto">
-            <div className="space-y-1 p-3">
-              {/* Compact header row */}
-              <div className="grid gap-2 px-2 py-1.5 text-[10px] font-medium text-muted-foreground border-b sticky top-0 bg-background z-10"
-                style={{gridTemplateColumns: "1fr 0.7fr 0.6fr 0.8fr 0.8fr 0.7fr"}}>
-                <div className="cursor-pointer hover:text-foreground" onClick={() => handleSort("closedAt")}>
-                  Closed <SortIcon field="closedAt" />
-                </div>
-                <div className="cursor-pointer hover:text-foreground" onClick={() => handleSort("symbol")}>Sym</div>
-                <div className="cursor-pointer hover:text-foreground" onClick={() => handleSort("direction")}>Dir</div>
-                <div className="text-right cursor-pointer hover:text-foreground" onClick={() => handleSort("entryPrice")}>Entry</div>
-                <div className="text-right cursor-pointer hover:text-foreground" onClick={() => handleSort("exitPrice")}>Exit</div>
-                <div className="text-right cursor-pointer hover:text-foreground" onClick={() => handleSort("realizedPnl")}>P&L</div>
+          <div className="overflow-x-auto">
+            <div className="min-w-[1000px]">
+              <div
+                className="grid h-9 items-center border-b bg-muted/30 px-3 text-[10px] font-medium text-muted-foreground"
+                style={{ gridTemplateColumns: GRID_COLUMNS }}
+              >
+                <button className="text-left hover:text-foreground" onClick={() => handleSort("closedAt")}>Closed <SortIcon field="closedAt" /></button>
+                <button className="text-left hover:text-foreground" onClick={() => handleSort("symbol")}>Symbol <SortIcon field="symbol" /></button>
+                <button className="text-left hover:text-foreground" onClick={() => handleSort("direction")}>Side <SortIcon field="direction" /></button>
+                <button className="text-right hover:text-foreground" onClick={() => handleSort("entryPrice")}>Entry <SortIcon field="entryPrice" /></button>
+                <button className="text-right hover:text-foreground" onClick={() => handleSort("exitPrice")}>Exit <SortIcon field="exitPrice" /></button>
+                <button className="text-right hover:text-foreground" onClick={() => handleSort("volumeUsd")}>Volume <SortIcon field="volumeUsd" /></button>
+                <button className="text-right hover:text-foreground" onClick={() => handleSort("fees")}>Fee <SortIcon field="fees" /></button>
+                <button className="text-right hover:text-foreground" onClick={() => handleSort("realizedPnl")}>Net PnL <SortIcon field="realizedPnl" /></button>
+                <button className="text-right hover:text-foreground" onClick={() => handleSort("pnlPct")}>PnL % <SortIcon field="pnlPct" /></button>
+                <span className="text-right">Source</span>
               </div>
 
-              {/* Data rows */}
-              {filtered.map((trade, i) => {
-                const isWin = trade.realizedPnl >= 0
-                return (
-                  <div
-                    key={trade.id ? `${trade.id}#${i}` : `trade-${i}`}
-                    className="grid gap-2 px-2 py-1.5 text-[10px] hover:bg-muted/40 rounded transition-colors items-center"
-                    style={{gridTemplateColumns: "1fr 0.7fr 0.6fr 0.8fr 0.8fr 0.7fr"}}
-                  >
-                    <div className="text-muted-foreground whitespace-nowrap">{fmtTime(trade.closedAt)}</div>
-                    <div className="font-medium truncate">{trade.symbol}</div>
-                    <div>
-                      <Badge variant={trade.direction === "long" ? "default" : "secondary"} className="text-[9px] h-4 px-1.5">
-                        {trade.direction === "long" ? <TrendingUp className="h-2.5 w-2.5 mr-0.5" /> : <TrendingDown className="h-2.5 w-2.5 mr-0.5" />}
-                        {trade.direction === "long" ? "L" : "S"}
-                      </Badge>
-                    </div>
-                    <div className="text-right font-mono text-muted-foreground">{trade.entryPrice > 0 ? `$${trade.entryPrice.toFixed(3)}` : "—"}</div>
+              <div
+                ref={viewportRef}
+                className="h-[560px] overflow-y-auto overscroll-contain"
+                onScroll={handleScroll}
+              >
+                <div style={{ height: topSpacer }} aria-hidden="true" />
+                {visibleTrades.map((trade, index) => {
+                  const pnl = finite(trade.realizedPnl)
+                  const isWin = pnl > 0
+                  const isLoss = pnl < 0
+                  return (
                     <div
-                      className="text-right font-mono text-muted-foreground"
-                      title={
-                        trade.exitPrice > 0 && trade.entryPrice > 0 &&
-                        Math.abs(trade.exitPrice - trade.entryPrice) / trade.entryPrice < 0.00001
-                          ? "Exit price reconstructed from P&L (no stored close price)"
-                          : undefined
-                      }
+                      key={`${trade.closeOrderId || trade.id || "trade"}:${safeWindowStart + index}`}
+                      className="grid h-11 items-center border-b border-border/40 px-3 text-[10px] transition-colors hover:bg-muted/40"
+                      style={{ gridTemplateColumns: GRID_COLUMNS }}
+                      title={`ID: ${trade.id}${trade.closeOrderId ? ` · Close order: ${trade.closeOrderId}` : ""}`}
                     >
-                      {trade.exitPrice > 0
-                        ? (trade.entryPrice > 0 &&
-                           Math.abs(trade.exitPrice - trade.entryPrice) / trade.entryPrice < 0.00001
-                            ? `~$${trade.exitPrice.toFixed(3)}`
-                            : `$${trade.exitPrice.toFixed(3)}`)
-                        : "—"}
+                      <div className="whitespace-nowrap text-muted-foreground">{fmtTime(finite(trade.closedAt))}</div>
+                      <div className="truncate font-semibold">{trade.symbol}</div>
+                      <div>
+                        <Badge variant={trade.direction === "long" ? "default" : "secondary"} className="h-4 px-1.5 text-[9px]">
+                          {trade.direction === "long"
+                            ? <TrendingUp className="mr-0.5 h-2.5 w-2.5" />
+                            : <TrendingDown className="mr-0.5 h-2.5 w-2.5" />}
+                          {trade.direction === "long" ? "L" : "S"}
+                        </Badge>
+                      </div>
+                      <div className="text-right font-mono text-muted-foreground">{trade.entryPrice > 0 ? money(trade.entryPrice, trade.entryPrice < 10 ? 4 : 2) : "—"}</div>
+                      <div className="text-right font-mono text-muted-foreground">{trade.exitPrice > 0 ? money(trade.exitPrice, trade.exitPrice < 10 ? 4 : 2) : "—"}</div>
+                      <div className="text-right font-mono">{money(finite(trade.volumeUsd), 2)}</div>
+                      <div className="text-right font-mono text-amber-600">{money(Math.abs(finite(trade.fees)), 4)}</div>
+                      <div className={`text-right font-mono font-semibold ${isWin ? "text-emerald-600" : isLoss ? "text-rose-600" : "text-muted-foreground"}`}>
+                        {pnl > 0 ? "+" : ""}{money(pnl, 2)}
+                      </div>
+                      <div className={`text-right font-mono ${isWin ? "text-emerald-600" : isLoss ? "text-rose-600" : "text-muted-foreground"}`}>
+                        {finite(trade.pnlPct) > 0 ? "+" : ""}{finite(trade.pnlPct).toFixed(2)}%
+                      </div>
+                      <div className="text-right">
+                        <Badge variant={trade.source === "exchange" ? "default" : "outline"} className="h-4 px-1 text-[8px] uppercase">
+                          {trade.source === "exchange" ? "BingX" : "Local"}
+                        </Badge>
+                      </div>
                     </div>
-                    <div className={`text-right font-medium ${isWin ? "text-green-600" : "text-red-600"}`}>
-                      {isWin ? "+" : ""}{trade.pnlLabel.substring(1)}
-                    </div>
-                  </div>
-                )
-              })}
+                  )
+                })}
+                <div style={{ height: bottomSpacer }} aria-hidden="true" />
+              </div>
             </div>
           </div>
         )}

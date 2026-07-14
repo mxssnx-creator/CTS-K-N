@@ -38,9 +38,18 @@
 
 import { Switch } from "@/components/ui/switch"
 import { Slider } from "@/components/ui/slider"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import {
+  DEFAULT_TRAILING_VARIANTS,
+  TRAILING_START_RATIOS,
+  TRAILING_STOP_RATIOS,
+  trailingVariantKey,
+} from "@/lib/trailing-settings"
+import { DEFAULT_DCA_PROFILE, type DcaTakeProfitMode } from "@/lib/dca-strategy"
 
 export interface CoordinationSettings {
   // ── Position-Count axes ─────────────────────────────────────────────
@@ -58,8 +67,8 @@ export interface CoordinationSettings {
   }
   // ── Block-strategy: completed-position block count × vol-ratio coordination ─
   // Knobs that flow into the Block variant's runtime size scaling.
-  // The coordinator multiplies each Block sub-config's base size by
-  //   m(blockCount) = 1 + (blockCount − 1) × blockVolumeRatio
+  // Each valid Block count is added independently from its position basis:
+  //   addVolume = positionBaseVolume × (blockCount × blockVolumeRatio)
   // for every blockCount in [1..blockMaxStack]. pause count is derived as
   // round(blockCount × blockPauseCountRatio).
   blockVolumeRatio: number // 0.25..3.0 per spec band (UI clamps; engine re-clamps)
@@ -67,6 +76,20 @@ export interface CoordinationSettings {
   blockPauseCountRatio: number // 1..4, step 0.5
   blockActiveRealEnabled: boolean // active real-position Block overlay, default true
   blockActiveLiveEnabled: boolean // active live-position Block overlay, default true
+
+  // Per-connection trailing matrix. Values use the canonical "start:stop"
+  // encoding and are validated again by the engine before Base fan-out.
+  trailingVariants: string[]
+
+  // DCA is a sequential, price-triggered add-on ladder. Every volume is
+  // relative to the confirmed initial position quantity (never the growing
+  // aggregate), preventing exponential exposure growth.
+  dcaMaxSteps: number // 1..4
+  dcaStepVolumeMultipliers: number[] // four values, 0.1..2.5 × initial qty
+  dcaStepDistancesPct: number[] // four monotonic adverse distances, 0.1..20%
+  dcaTakeProfitMode: DcaTakeProfitMode
+  dcaBreakevenProfitPct: number // 0.05..5%
+  dcaCooldownSeconds: number // 0..3600 seconds between confirmed steps
 
   /**
    * ── Prev-PI threshold (operator spec) ──────────────────────────────
@@ -167,6 +190,13 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockPauseCountRatio: 1.0,
   blockActiveRealEnabled: true,
   blockActiveLiveEnabled: true,
+  trailingVariants: [...DEFAULT_TRAILING_VARIANTS],
+  dcaMaxSteps: DEFAULT_DCA_PROFILE.maxSteps,
+  dcaStepVolumeMultipliers: [...DEFAULT_DCA_PROFILE.stepVolumeMultipliers],
+  dcaStepDistancesPct: [...DEFAULT_DCA_PROFILE.stepDistancesPct],
+  dcaTakeProfitMode: DEFAULT_DCA_PROFILE.takeProfitMode,
+  dcaBreakevenProfitPct: DEFAULT_DCA_PROFILE.breakevenProfitPct,
+  dcaCooldownSeconds: DEFAULT_DCA_PROFILE.cooldownSeconds,
   prevPosMinCount:   5,
   prevPosWindow:    25,
   mainEvalPosCount: 15,
@@ -288,6 +318,30 @@ export function StrategyCoordinationSection({
     })
   }
 
+  const enabledTrailingVariants = new Set(value.trailingVariants || [])
+  const setTrailingVariants = (next: Set<string>) => {
+    onChange({
+      ...value,
+      trailingVariants: DEFAULT_TRAILING_VARIANTS.filter((key) => next.has(key)),
+    })
+  }
+  const toggleTrailingVariant = (start: number, stop: number) => {
+    const key = trailingVariantKey(start, stop)
+    const next = new Set(enabledTrailingVariants)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    setTrailingVariants(next)
+  }
+  const updateDcaArray = (
+    key: "dcaStepVolumeMultipliers" | "dcaStepDistancesPct",
+    index: number,
+    nextValue: number,
+  ) => {
+    const next = [...value[key]]
+    next[index] = nextValue
+    onChange({ ...value, [key]: next })
+  }
+
   return (
     <div className="space-y-4">
       {/* ── Position-Count Axes card ─────────────────────────────── */}
@@ -356,6 +410,78 @@ export function StrategyCoordinationSection({
               </div>
             )
           })}
+        </CardContent>
+      </Card>
+
+      {/* ── Trailing matrix ─────────────────────────────────────────── */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle className="text-sm">Trailing — Independent Start × Stop Profiles</CardTitle>
+              <CardDescription className="text-xs">
+                Each selected pair creates one independent Base Set. Start is
+                the favourable activation gain; stop is the trailing distance;
+                the ratchet step is always half the stop distance. The engine
+                deduplicates and caps this matrix at 25 profiles.
+              </CardDescription>
+            </div>
+            <Badge variant={value.variants.trailing ? "default" : "outline"} className="text-[10px]">
+              {value.variants.trailing ? `${enabledTrailingVariants.size}/25 active` : "Disabled"}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!value.variants.trailing || enabledTrailingVariants.size === 25}
+              onClick={() => setTrailingVariants(new Set(DEFAULT_TRAILING_VARIANTS))}
+            >
+              Enable all
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!value.variants.trailing || enabledTrailingVariants.size === 0}
+              onClick={() => setTrailingVariants(new Set())}
+            >
+              Disable matrix
+            </Button>
+          </div>
+          <div className={value.variants.trailing ? "space-y-2" : "pointer-events-none space-y-2 opacity-50"}>
+            {TRAILING_START_RATIOS.map((start) => (
+              <div key={start} className="rounded-lg border border-border/60 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <Label className="text-xs font-semibold tabular-nums">
+                    Start {(start * 100).toFixed(0)}%
+                  </Label>
+                  <span className="text-[10px] text-muted-foreground">Stop distance · step = stop / 2</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                  {TRAILING_STOP_RATIOS.map((stop) => {
+                    const key = trailingVariantKey(start, stop)
+                    const checked = enabledTrailingVariants.has(key)
+                    return (
+                      <label
+                        key={key}
+                        className={`flex cursor-pointer items-center gap-2 rounded-md border px-2 py-2 text-[11px] ${checked ? "border-primary/40 bg-primary/5" : "border-border/60"}`}
+                      >
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={() => toggleTrailingVariant(start, stop)}
+                        />
+                        <span className="font-mono">{(stop * 100).toFixed(0)}%</span>
+                      </label>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
         </CardContent>
       </Card>
 
@@ -461,6 +587,133 @@ export function StrategyCoordinationSection({
         </CardContent>
       </Card>
 
+      {/* ── DCA tuning card ─────────────────────────────────────────── */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle className="text-sm">DCA — Sequential Price-Triggered Ladder</CardTitle>
+              <CardDescription className="text-xs">
+                DCA only adds to an already-confirmed Standard/Trailing parent.
+                Steps trigger sequentially on an adverse move from the original
+                entry. Each quantity is based on the initial confirmed size,
+                which keeps exposure deterministic after every restart.
+              </CardDescription>
+            </div>
+            <Badge variant={value.variants.dca ? "default" : "outline"} className="text-[10px]">
+              {value.variants.dca ? "Active" : "Disabled"}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className={value.variants.dca ? "space-y-4" : "pointer-events-none space-y-4 opacity-50"}>
+          <div className="rounded-lg border border-border/60 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <Label className="text-sm font-semibold">Maximum Steps</Label>
+                <p className="text-xs text-muted-foreground">Only the next unfinished step can submit an order.</p>
+              </div>
+              <Badge variant="outline" className="text-[10px] tabular-nums">1–4</Badge>
+            </div>
+            <div className="flex items-center gap-3">
+              <Slider
+                min={1}
+                max={4}
+                step={1}
+                value={[value.dcaMaxSteps]}
+                onValueChange={([next]) => onChange({ ...value, dcaMaxSteps: next })}
+                className="flex-1"
+              />
+              <span className="w-8 text-right text-xs font-semibold tabular-nums">{value.dcaMaxSteps}</span>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            {Array.from({ length: value.dcaMaxSteps }, (_, index) => (
+              <div key={index} className="rounded-lg border border-border/60 p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-semibold">Step {index + 1}</Label>
+                  <span className="text-[10px] text-muted-foreground font-mono">
+                    +{value.dcaStepVolumeMultipliers[index].toFixed(2)}× initial at −{value.dcaStepDistancesPct[index].toFixed(2)}%
+                  </span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-[11px]"><span>Volume multiplier</span><span>{value.dcaStepVolumeMultipliers[index].toFixed(2)}×</span></div>
+                    <Slider
+                      min={0.1}
+                      max={2.5}
+                      step={0.1}
+                      value={[value.dcaStepVolumeMultipliers[index]]}
+                      onValueChange={([next]) => updateDcaArray("dcaStepVolumeMultipliers", index, Number(next.toFixed(2)))}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-[11px]"><span>Adverse distance</span><span>{value.dcaStepDistancesPct[index].toFixed(2)}%</span></div>
+                    <Slider
+                      min={0.1}
+                      max={20}
+                      step={0.1}
+                      value={[value.dcaStepDistancesPct[index]]}
+                      onValueChange={([next]) => updateDcaArray("dcaStepDistancesPct", index, Number(next.toFixed(2)))}
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded-lg border border-border/60 p-3 space-y-3">
+            <Label className="text-sm font-semibold">Take-Profit Reference</Label>
+            <div className="grid gap-2 sm:grid-cols-3">
+              {([
+                ["average", "Average entry"],
+                ["first_entry", "First entry"],
+                ["breakeven_plus", "Breakeven +"],
+              ] as Array<[DcaTakeProfitMode, string]>).map(([mode, label]) => (
+                <Button
+                  key={mode}
+                  type="button"
+                  size="sm"
+                  variant={value.dcaTakeProfitMode === mode ? "default" : "outline"}
+                  onClick={() => onChange({ ...value, dcaTakeProfitMode: mode })}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+            {value.dcaTakeProfitMode === "breakeven_plus" && (
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-[11px]"><span>Profit above breakeven</span><span>{value.dcaBreakevenProfitPct.toFixed(2)}%</span></div>
+                <Slider
+                  min={0.05}
+                  max={5}
+                  step={0.05}
+                  value={[value.dcaBreakevenProfitPct]}
+                  onValueChange={([next]) => onChange({ ...value, dcaBreakevenProfitPct: Number(next.toFixed(2)) })}
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-border/60 p-3 space-y-2">
+            <div className="flex justify-between gap-3">
+              <div>
+                <Label className="text-sm font-semibold">Confirmed-Step Cooldown</Label>
+                <p className="text-xs text-muted-foreground">Prevents multiple levels from firing in one fast price cascade.</p>
+              </div>
+              <span className="text-xs font-semibold tabular-nums">{value.dcaCooldownSeconds}s</span>
+            </div>
+            <Slider
+              min={0}
+              max={3600}
+              step={15}
+              value={[value.dcaCooldownSeconds]}
+              onValueChange={([next]) => onChange({ ...value, dcaCooldownSeconds: next })}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       {/* ── Variant profiles card ────────────────────────────────── */}
       <Card>
         <CardHeader className="pb-3">
@@ -516,7 +769,7 @@ export function StrategyCoordinationSection({
 
       {/* ── Block tuning card ────────────────────────────────────────
           Completed-position Block coordination knobs:
-            • Volume-ratio slider → additive multiplier per block count
+            • Volume-ratio slider → independent add-on from each position basis
             • Max-stack stepper   → number of independent block counts
             • Pause ratio         → post-success pause window per block count */}
       <Card>
@@ -527,11 +780,10 @@ export function StrategyCoordinationSection({
                 Block — Completed Position Count × Vol-Ratio
               </CardTitle>
               <CardDescription className="text-xs">
-                Adjusts how the Block variant scales add-on size by completed
-                block count. The emitted overlay&apos;s
-                size multiplier follows{" "}
+                Calculates every valid Block add-on independently from that
+                position&apos;s current volume basis. The add-on follows{" "}
                 <span className="font-mono text-[11px]">
-                  m(block) = 1 + (block − 1) × ratio
+                  add = base × (block count × ratio)
                 </span>{" "}
                 and every block count up to <strong>max stack</strong> is
                 processed independently, so coverage is bounded and parallel.
@@ -552,10 +804,10 @@ export function StrategyCoordinationSection({
               <div>
                 <Label className="text-sm font-semibold">Volume Ratio</Label>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  Additive scaling step per completed-position block count.
-                  1.0 ≈ doubles per block step (spec default); 0.25 is
-                  conservative; 3.0 is aggressive. Engine clamps to
-                  0.25–3.0 even if the value is bypassed.
+                  Ratio applied independently to each valid Block count and
+                  that position&apos;s own current volume basis. The calculated
+                  quantity is added to the open position. Engine clamps this
+                  setting to 0.25–3.0 even if the UI is bypassed.
                 </p>
               </div>
               <Badge variant="outline" className="text-[10px] tabular-nums">
@@ -580,7 +832,7 @@ export function StrategyCoordinationSection({
             </div>
             <div className="grid grid-cols-3 gap-2 pt-1 text-[11px]">
               {[1, 2, 3].map((n) => {
-                const mul = 1 + (n - 1) * value.blockVolumeRatio
+                const mul = n * value.blockVolumeRatio
                 return (
                   <div
                     key={n}
@@ -590,7 +842,7 @@ export function StrategyCoordinationSection({
                       block={n}
                     </span>
                     <span className="font-mono tabular-nums font-semibold">
-                      ×{mul.toFixed(2)}
+                      +{mul.toFixed(2)}× base
                     </span>
                   </div>
                 )
@@ -646,7 +898,6 @@ export function StrategyCoordinationSection({
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   Number of independent Block sizes processed in parallel.
                   Default 10 emits all block counts 1 through 10. Engine clamps to 1–10.
-                  Default 3 emits block counts 1, 2, and 3. Engine clamps to 2–8.
                 </p>
               </div>
               <Badge variant="outline" className="text-[10px] tabular-nums">

@@ -49,15 +49,29 @@ export async function POST(_req: NextRequest) {
       // self-fetch here: Node's fetch cannot resolve `/api/...` without a base
       // URL, and silently skipping this left production boot dependent on a
       // browser page mount.
-      const { initializeTradeEngineAutoStart, runTradeEngineHealingSweep } = await import("@/lib/trade-engine-auto-start")
-      await initializeTradeEngineAutoStart().catch(() => {})
-      const healing = await runTradeEngineHealingSweep({ isStartup: true }).catch((error) => ({
-        startedCount: 0,
-        eligibleCount: 0,
-        error: error instanceof Error ? error.message : String(error),
-      }))
-      const { startServerContinuityRunner } = await import("@/lib/server-continuity-runner")
-      startServerContinuityRunner()
+      const autoStartDisabled = process.env.DISABLE_TRADE_ENGINE_AUTOSTART === "1"
+      let healing: {
+        startedCount: number
+        eligibleCount: number
+        skipped?: string
+        error?: string
+      }
+      if (autoStartDisabled) {
+        healing = { startedCount: 0, eligibleCount: 0, skipped: "disabled_by_environment" }
+        console.warn("[v0] [SystemInitialize] Engine auto-start disabled; bootstrap will not start trading engines")
+      } else {
+        const { initializeTradeEngineAutoStart, runTradeEngineHealingSweep } = await import("@/lib/trade-engine-auto-start")
+        await initializeTradeEngineAutoStart().catch(() => {})
+        healing = await runTradeEngineHealingSweep({ isStartup: true }).catch((error) => ({
+          startedCount: 0,
+          eligibleCount: 0,
+          error: error instanceof Error ? error.message : String(error),
+        }))
+      }
+      if (process.env.DISABLE_IN_PROCESS_CONTINUITY !== "1") {
+        const { startServerContinuityRunner } = await import("@/lib/server-continuity-runner")
+        startServerContinuityRunner()
+      }
       await recordStartupPhase("system_initialize_complete", {
         healing_started_count: healing.startedCount,
         healing_eligible_count: healing.eligibleCount,

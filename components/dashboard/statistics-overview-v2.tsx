@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef, useMemo } from "react"
+import { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { useExchange } from "@/lib/exchange-context"
 import { TradeHistoryTable, type TradeHistoryRow } from "@/components/dashboard/trade-history-table"
@@ -587,11 +587,51 @@ export function StatisticsOverviewV2() {
   const { selectedConnectionId } = useExchange()
   const connectionId = selectedConnectionId || "default-bingx-001"
   const [stats, setStats] = useState<CompactStats>(EMPTY)
+  const [exchangeTradeHistory, setExchangeTradeHistory] = useState<TradeHistoryRow[]>([])
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
   // Event-triggered refreshes can overlap with the 3s poll. Only the newest
   // stats payload may update state, otherwise an older slow response can make
   // the dashboard appear to stall or jump backward.
   const statsFetchSeqRef = useRef(0)
+  const historyFetchSeqRef = useRef(0)
+  const lastHistoryClosedCountRef = useRef(0)
+
+  const loadTradeHistory = useCallback(async (force = false) => {
+    const requestSequence = ++historyFetchSeqRef.current
+    try {
+      const response = await fetch(
+        `/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}&limit=500${force ? "&force=1" : ""}`,
+        { cache: "no-store" },
+      )
+      if (!response.ok || requestSequence !== historyFetchSeqRef.current) return
+      const data = await response.json()
+      if (requestSequence !== historyFetchSeqRef.current || !Array.isArray(data?.rows)) return
+      setExchangeTradeHistory(data.rows.slice(0, 500) as TradeHistoryRow[])
+    } catch {
+      // Keep the last successful exchange snapshot/local stats fallback. A
+      // transient venue error must not blank history or reset W/L counters.
+    }
+  }, [connectionId])
+
+  useEffect(() => {
+    setExchangeTradeHistory([])
+    lastHistoryClosedCountRef.current = 0
+    void loadTradeHistory(false)
+    const interval = window.setInterval(() => { void loadTradeHistory(false) }, 30_000)
+    return () => {
+      window.clearInterval(interval)
+      historyFetchSeqRef.current++
+    }
+  }, [connectionId, loadTradeHistory])
+
+  // A confirmed local close should surface immediately; otherwise the bounded
+  // 30 s refresh is enough and avoids exchange-history polling on every stats
+  // heartbeat/event.
+  useEffect(() => {
+    const previous = lastHistoryClosedCountRef.current
+    lastHistoryClosedCountRef.current = stats.liveClosed
+    if (stats.liveClosed > previous) void loadTradeHistory(false)
+  }, [loadTradeHistory, stats.liveClosed])
 
   const dashboardEventHandlers = useMemo(() => ({
     "progression.updated": () => setEventRefreshKey((key) => key + 1),
@@ -1524,11 +1564,14 @@ export function StatisticsOverviewV2() {
         )}
 
         {/* ── TRADE HISTORY ─────────────────────────────────────────────── */}
-        {stats.tradeHistory.length > 0 && (
-          <div className="mt-3 pt-3 border-t border-border/40">
-            <TradeHistoryTable trades={stats.tradeHistory} />
-          </div>
-        )}
+        <div className="mt-3 pt-3 border-t border-border/40">
+          <TradeHistoryTable
+            trades={exchangeTradeHistory.length > 0 ? exchangeTradeHistory : stats.tradeHistory}
+            limit={500}
+            visibleWindow={50}
+            onRefresh={() => loadTradeHistory(true)}
+          />
+        </div>
 
         {stats.phase && stats.phase !== "—" && (
           <div className="mt-2 pt-2 border-t border-border/40 flex items-center gap-2">

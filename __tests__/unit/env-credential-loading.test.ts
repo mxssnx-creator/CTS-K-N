@@ -1,7 +1,3 @@
-import fs from "node:fs"
-import os from "node:os"
-import path from "node:path"
-
 const originalCwd = process.cwd()
 const originalNodeEnv = process.env.NODE_ENV
 const originalKey = process.env.BINGX_API_KEY
@@ -16,7 +12,7 @@ function restoreEnv(): void {
   else process.env.BINGX_API_SECRET = originalSecret
 }
 
-test("env var takes precedence over hardcoded default for bingx-x01", async () => {
+test("loads bingx-x01 credentials from server environment variables", async () => {
   process.env.NODE_ENV = "production"
   delete process.env.BINGX_API_KEY
   delete process.env.BINGX_API_SECRET
@@ -30,14 +26,12 @@ test("env var takes precedence over hardcoded default for bingx-x01", async () =
   restoreEnv()
 })
 
-test("hardcoded default is used when no env var is present (production out-of-the-box)", async () => {
+test("does not expose a source fallback when no environment credential is present", async () => {
   process.env.NODE_ENV = "production"
   delete process.env.BINGX_API_KEY
   delete process.env.BINGX_API_SECRET
   const { getBaseConnectionCredentials } = await import("@/lib/base-connection-credentials")
   const creds = getBaseConnectionCredentials("bingx-x01")
-  expect(creds.apiKey.length).toBeGreaterThan(10)
-  expect(creds.apiSecret.length).toBeGreaterThan(10)
-  expect(creds.apiKey.startsWith("test")).toBe(false)
+  expect(creds).toEqual({ apiKey: "", apiSecret: "" })
   restoreEnv()
 })
