@@ -23,9 +23,21 @@ jest.mock("@/lib/redis-db", () => ({
   }),
   getRedisClient: jest.fn(() => ({
     set: jest.fn(async (key: string, value: string, options?: unknown) => {
+      if ((options as any)?.NX && store.has(key)) return null
       redisSets.push({ key, value, options })
       store.set(key, value)
       return "OK"
+    }),
+    get: jest.fn(async (key: string) => String(store.get(key) ?? "") || null),
+    incr: jest.fn(async (key: string) => {
+      const next = Number(store.get(key) ?? 0) + 1
+      store.set(key, String(next))
+      return next
+    }),
+    del: jest.fn(async (key: string) => {
+      const direct = store.delete(key)
+      const logical = key.startsWith("settings:") ? store.delete(key.slice("settings:".length)) : false
+      return direct || logical ? 1 : 0
     }),
     hset: jest.fn(async (key: string, value: unknown) => {
       hsets.push({ key, value })
@@ -54,13 +66,7 @@ describe("settings propagation", () => {
       { connection_settings: { strategies: { main: { main: { min_profit_factor: 1.8 } } } } },
     )
 
-    expect(writes.map((w) => w.key)).toEqual(
-      expect.arrayContaining([
-        "settings_change:conn-main",
-        "settings_change_counter:conn-main",
-        "trade_engine_state:conn-main",
-      ]),
-    )
+    expect(writes.map((w) => w.key)).toContain("settings_change:conn-main")
     expect(writes.some((w) => w.key === "settings:dirty:conn-main")).toBe(false)
     expect(redisSets).toContainEqual({
       key: "settings:dirty:conn-main",
@@ -72,10 +78,11 @@ describe("settings propagation", () => {
       changeType: "reload",
       changedFields: ["strategies", "mainProfitFactor", "connection_settings"],
     })
-    expect(writes.find((w) => w.key === "trade_engine_state:conn-main")?.value).toMatchObject({
-      reload_required: true,
-      reload_fields: ["strategies", "mainProfitFactor", "connection_settings"],
+    expect(hsets.find((w) => w.key === "settings:trade_engine_state:conn-main")?.value).toMatchObject({
+      reload_required: "1",
+      reload_fields: JSON.stringify(["strategies", "mainProfitFactor", "connection_settings"]),
     })
+    expect(store.get("settings:settings_change_counter:conn-main:value")).toBe("1")
     expect(hsets.find((w) => w.key === "progression:conn-main")?.value).toHaveProperty("settings_changed_at")
   })
 
@@ -84,8 +91,8 @@ describe("settings propagation", () => {
     const observed: Array<{ hasReloadState: boolean; pendingExists: boolean }> = []
     const unsubscribe = onSettingsChanged("conn-main", () => {
       observed.push({
-        hasReloadState: writes.some(
-          (w) => w.key === "trade_engine_state:conn-main" && (w.value as any)?.reload_required === true,
+        hasReloadState: hsets.some(
+          (w) => w.key === "settings:trade_engine_state:conn-main" && (w.value as any)?.reload_required === "1",
         ),
         pendingExists: writes.some((w) => w.key === "settings_change:conn-main"),
       })
@@ -117,7 +124,35 @@ describe("settings propagation", () => {
     }
 
     expect(writes.some((w) => w.key === "settings_change:conn-main")).toBe(true)
-    expect(writes.some((w) => w.key === "trade_engine_state:conn-main")).toBe(true)
+    expect(hsets.some((w) => w.key === "settings:trade_engine_state:conn-main")).toBe(true)
+  })
+
+  test("settings counter stays numeric beyond nine and pending cleanup is event-owned", async () => {
+    const { notifySettingsChanged, getChangeCounter, getPendingChanges, clearPendingChanges } = await import(
+      "@/lib/settings-coordinator"
+    )
+
+    let firstEvent: Awaited<ReturnType<typeof notifySettingsChanged>> | undefined
+    let latestEvent: Awaited<ReturnType<typeof notifySettingsChanged>> | undefined
+    for (let index = 0; index < 12; index++) {
+      latestEvent = await notifySettingsChanged(
+        "conn-main",
+        [index % 2 === 0 ? "strategies" : "live_volume_factor"],
+        { api_secret: "must-not-be-retained", updated_at: `2026-07-14T12:00:${String(index).padStart(2, "0")}.000Z` },
+        { api_key: "must-not-be-retained", updated_at: `2026-07-14T12:00:${String(index + 1).padStart(2, "0")}.000Z` },
+      )
+      firstEvent ||= latestEvent
+    }
+
+    await expect(getChangeCounter("conn-main")).resolves.toBe(12)
+    const pending = await getPendingChanges("conn-main")
+    expect(pending?.changedFields).toEqual(expect.arrayContaining(["strategies", "live_volume_factor"]))
+    expect(pending?.previousValues).not.toHaveProperty("api_secret")
+    expect(pending?.newValues).not.toHaveProperty("api_key")
+    await expect(clearPendingChanges("conn-main", firstEvent)).resolves.toBe(false)
+    await expect(getPendingChanges("conn-main")).resolves.toMatchObject({ eventId: latestEvent?.eventId })
+    await expect(clearPendingChanges("conn-main", latestEvent)).resolves.toBe(true)
+    await expect(getPendingChanges("conn-main")).resolves.toBeNull()
   })
 
   test("legacy connection-settings writer mirrors engine stores and recoordinates", () => {
@@ -194,20 +229,23 @@ describe("settings propagation", () => {
       manager.indexOf("private async applyHotReload"),
     )
     expect(applyBlock).toContain("await this.applyHotReload(fields)")
-    expect(applyBlock).toContain("await clearPendingChanges(this.connectionId)")
+    expect(applyBlock).toContain("await clearPendingChanges(this.connectionId, event)")
+    expect(applyBlock).toContain("if (!cleared) this.settingsApplyQueued = true")
     expect(applyBlock).toContain("await this.stampSettingsRecoordinationApplied(event)")
     expect(manager).toContain('settings_recoordination_pending: "0"')
     expect(manager).toContain('strategy_recompute_requested: "0"')
     expect(manager).toContain("settings_recoordination_completed_at")
     expect(manager).toContain("settings_recoordination_applied_event_id")
     expect(manager).toContain("settings_recoordination_last_error")
+    expect(manager).toContain("settingsWatcherGeneration")
+    expect(manager).toContain("watcherGeneration !== this.settingsWatcherGeneration")
     expect(manager).toContain("throw err")
 
     expect(quickstart).toContain("it no longer clears")
     expect(quickstart).toContain('...(quickstartEngineAlreadyRunning ? {} : { settings_recoordination_pending: "0" })')
   })
 
-  test("continuous and block coordination settings are reload/progress affecting", async () => {
+  test("continuous, Block, trailing, and DCA settings are reload/progress affecting", async () => {
     const { classifyChange } = await import("@/lib/settings-coordinator")
 
     for (const field of [
@@ -216,12 +254,19 @@ describe("settings propagation", () => {
       "blockPauseCountRatio",
       "blockActiveRealEnabled",
       "blockActiveLiveEnabled",
+      "strategyBaseTrailingVariants",
+      "dcaMaxSteps",
+      "dcaStepVolumeMultipliers",
+      "dcaStepDistancesPct",
+      "dcaTakeProfitMode",
+      "dcaBreakevenProfitPct",
+      "dcaCooldownSeconds",
     ]) {
       expect(classifyChange([field])).toBe("reload")
     }
   })
 
-  test("engine hot reload treats continuous and block knobs as strategy-affecting", async () => {
+  test("engine hot reload treats continuous, Block, trailing, and DCA knobs as strategy-affecting", async () => {
     const { hasStrategyAffectingChange } = await import("@/lib/trade-engine/settings-change-fields")
 
     for (const field of [
@@ -230,6 +275,13 @@ describe("settings propagation", () => {
       "blockPauseCountRatio",
       "blockActiveRealEnabled",
       "blockActiveLiveEnabled",
+      "strategyBaseTrailingVariants",
+      "dcaMaxSteps",
+      "dcaStepVolumeMultipliers",
+      "dcaStepDistancesPct",
+      "dcaTakeProfitMode",
+      "dcaBreakevenProfitPct",
+      "dcaCooldownSeconds",
     ]) {
       expect(hasStrategyAffectingChange([field])).toBe(true)
       expect(hasStrategyAffectingChange([`connection_settings.${field}`])).toBe(true)

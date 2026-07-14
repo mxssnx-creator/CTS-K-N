@@ -1,6 +1,7 @@
 "use client"
 
-import { createContext, useContext, useState, useEffect, useRef, useCallback, type ReactNode } from "react"
+import { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react"
+import { useDashboardEvents, type DashboardEventPayload } from "@/lib/dashboard-events"
 
 interface ExchangeContextType {
   selectedExchange: string | null
@@ -28,6 +29,8 @@ export function ExchangeProvider({ children }: { children: ReactNode }) {
   const [activeConnections, setActiveConnections] = useState<any[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const loadingRef = useRef(false)
+  const loadPromiseRef = useRef<Promise<void> | null>(null)
+  const forceReloadQueuedRef = useRef(false)
   const lastLoadRef = useRef(0)
   // Use a ref to read selectedConnectionId inside the callback without stale closure
   const selectedConnectionIdRef = useRef<string | null>(null)
@@ -40,58 +43,105 @@ export function ExchangeProvider({ children }: { children: ReactNode }) {
 
   const loadActiveConnections = useCallback(async (options?: { force?: boolean }) => {
     const force = options?.force === true
-    if (loadingRef.current) return
+    if (loadingRef.current) {
+      // Do not drop a post-mutation refresh merely because a pre-mutation
+      // request is still in flight. Coalesce any number of forced refreshes
+      // into one sequential follow-up and let callers await the fresh result.
+      if (force) forceReloadQueuedRef.current = true
+      await loadPromiseRef.current
+      return
+    }
     if (!force && Date.now() - lastLoadRef.current < LOAD_COOLDOWN) return
 
     loadingRef.current = true
     setIsLoading(true)
-    try {
-      const response = await fetch("/api/settings/connections", {
-        cache: "no-store",
-        headers: { "Cache-Control": "no-cache" },
-      })
-      if (response.ok) {
-        const data = await response.json()
-        const connections = data.connections || []
-        
-        const toBoolean = (v: unknown) => v === true || v === 1 || v === "1" || v === "true"
+    const loadPromise = (async () => {
+      try {
+        do {
+          forceReloadQueuedRef.current = false
+          try {
+            const response = await fetch("/api/settings/connections", {
+              cache: "no-store",
+              headers: { "Cache-Control": "no-cache" },
+            })
+            if (response.ok) {
+              const data = await response.json()
+              const connections = data.connections || []
 
-        // STABLE ASSIGNMENT RULE: a connection appears in Main Connections ONLY when
-        // the user has explicitly assigned it (is_active_inserted / is_dashboard_inserted /
-        // is_assigned) or the dashboard toggle is currently on (is_enabled_dashboard).
-        // We do NOT auto-include connections just because they are base (bybit/bingx);
-        // that was the root cause of cards "re-appearing" after enable/delete.
-        const mainConnections = connections.filter((c: any) => {
-          const isInserted =
-            toBoolean(c.is_active_inserted) ||
-            toBoolean(c.is_dashboard_inserted) ||
-            toBoolean(c.is_assigned)
-          const isDashboardActive = toBoolean(c.is_enabled_dashboard)
-          return isInserted || isDashboardActive
-        })
-        
-        setActiveConnections(mainConnections)
-        
-        // Auto-select only when no connection is currently selected.
-        // Read from ref to avoid stale closure (state is always null inside useCallback).
-        if (mainConnections.length > 0 && !selectedConnectionIdRef.current) {
-          // Prefer BingX, then fall back to first available connection
-          const preferred =
-            mainConnections.find((c: any) => (c.exchange || "").toLowerCase() === "bingx") ||
-            mainConnections[0]
-          setSelectedConnectionId(preferred.id)
-          setSelectedExchange(preferred.exchange || null)
-          selectedConnectionIdRef.current = preferred.id
-        }
+              const toBoolean = (v: unknown) => v === true || v === 1 || v === "1" || v === "true"
+
+              // STABLE ASSIGNMENT RULE: a connection appears in Main Connections ONLY when
+              // the user has explicitly assigned it (is_active_inserted / is_dashboard_inserted /
+              // is_assigned) or the dashboard toggle is currently on (is_enabled_dashboard).
+              const mainConnections = connections.filter((c: any) => {
+                const isInserted =
+                  toBoolean(c.is_active_inserted) ||
+                  toBoolean(c.is_dashboard_inserted) ||
+                  toBoolean(c.is_assigned)
+                const isDashboardActive = toBoolean(c.is_enabled_dashboard)
+                return isInserted || isDashboardActive
+              })
+
+              setActiveConnections(mainConnections)
+
+              // Auto-select only when no connection is currently selected.
+              // Read from ref to avoid stale closure (state is always null inside useCallback).
+              const selectedStillExists = mainConnections.some(
+                (connection: any) => connection.id === selectedConnectionIdRef.current,
+              )
+              if (mainConnections.length > 0 && !selectedStillExists) {
+                const preferred =
+                  mainConnections.find((c: any) => (c.exchange || "").toLowerCase() === "bingx") ||
+                  mainConnections[0]
+                setSelectedConnectionId(preferred.id)
+                setSelectedExchange(preferred.exchange || null)
+                selectedConnectionIdRef.current = preferred.id
+              } else if (mainConnections.length === 0 && selectedConnectionIdRef.current) {
+                setSelectedConnectionId(null)
+                setSelectedExchange(null)
+                selectedConnectionIdRef.current = null
+              }
+            }
+          } catch (error) {
+            console.error("[ExchangeContext] Failed to load connections:", error)
+          } finally {
+            lastLoadRef.current = Date.now()
+          }
+          // Any forced event received while the request was in flight sets the
+          // flag and causes one fresh read. The flag is reset before each pass,
+          // so bursts are coalesced without losing the newest mutation.
+        } while (forceReloadQueuedRef.current)
+      } finally {
+        loadingRef.current = false
+        setIsLoading(false)
       }
-    } catch (error) {
-      console.error("[ExchangeContext] Failed to load connections:", error)
+    })()
+    loadPromiseRef.current = loadPromise
+    try {
+      await loadPromise
     } finally {
-      loadingRef.current = false
-      setIsLoading(false)
-      lastLoadRef.current = Date.now()
+      if (loadPromiseRef.current === loadPromise) {
+        loadPromiseRef.current = null
+      }
     }
   }, [])
+
+  const loadActiveConnectionsEventRef = useRef(loadActiveConnections)
+  loadActiveConnectionsEventRef.current = loadActiveConnections
+  const dashboardEventHandlers = useMemo(() => {
+    const refresh = (payload: DashboardEventPayload) => {
+      const canonicalType = String(payload.canonicalType || "")
+      if (["strategy.stageChanged", "processing.progress", "position.updated", "indication.updated"].includes(canonicalType)) {
+        return
+      }
+      void loadActiveConnectionsEventRef.current({ force: true })
+    }
+    return {
+      "connection.updated": refresh,
+      "settings.recoordinated": refresh,
+    }
+  }, [])
+  useDashboardEvents("*", dashboardEventHandlers)
 
   // Load on mount; also refresh when connections are toggled or added/removed
   useEffect(() => {

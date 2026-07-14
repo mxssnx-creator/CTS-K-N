@@ -3,6 +3,7 @@ import { getAllConnections, initRedis, createConnection } from "@/lib/redis-db"
 import { generateConnectionIdFromApiKey, isApiKeyInUse } from "@/lib/connection-id-manager"
 import { CONNECTION_PREDEFINITIONS } from "@/lib/connection-predefinitions"
 import { API_VERSIONS } from "@/lib/system-version"
+import { maskConnectionSecrets } from "@/lib/connection-secrets"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -71,13 +72,7 @@ export async function GET(request: NextRequest) {
     
     // SECURITY: never return raw credentials. Previous code returned every
     // connection's api_key/api_secret in PLAINTEXT to any caller.
-    const maskSecret = (v: unknown) =>
-      typeof v === "string" && v.length > 4 ? `••••${v.slice(-4)}` : v ? "••••" : v
-    const safeConnections = connections.map((c) => ({
-      ...c,
-      ...(c.api_key !== undefined ? { api_key: maskSecret(c.api_key) } : {}),
-      ...(c.api_secret !== undefined ? { api_secret: maskSecret(c.api_secret) } : {}),
-    }))
+    const safeConnections = connections.map((connection) => maskConnectionSecrets(connection))
 
     return NextResponse.json({ success: true, count: safeConnections.length, connections: safeConnections, version: API_VERSION }, { headers })
   } catch (error) {

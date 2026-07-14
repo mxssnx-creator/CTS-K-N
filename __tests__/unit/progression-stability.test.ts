@@ -115,7 +115,7 @@ describe('Progression State Manager - Stability Tests', () => {
       expect(writesSource).toContain('client.del(legacyKey)')
 
       expect(managerSource).toContain('setSettings(legacyKey, progressionData)')
-      expect(recoordinatorSource).toContain('redis.hset(scope.tradeEngineStateKey, hashPatch)')
+      expect(recoordinatorSource).toContain('writeOrBundle(scope.tradeEngineStateKey, hashPatch)')
       expect(recoordinatorSource).toContain('client.hset(scope.tradeEngineStateKey, marker)')
       expect(recoordinatorSource).toContain('client.hset(scope.progressionKey')
       expect(recoordinatorSource).toContain('client.hset(scope.legacyProgressionKey')

@@ -22,6 +22,10 @@ jest.mock("@/lib/redis-db", () => ({
   initRedis: jest.fn(async () => undefined),
   getConnection: jest.fn(async (id: string) => store.get(id) || null),
   updateConnection: (...args: any[]) => updateConnection(...args),
+  updateConnectionState: async (id: string, updates: any) => ({
+    applied: true,
+    connection: await updateConnection(id, updates),
+  }),
   persistNow: jest.fn(async () => undefined),
   getRedisClient: jest.fn(() => ({
     hset: jest.fn(async () => undefined),
@@ -57,7 +61,7 @@ jest.mock("@/lib/settings-coordinator", () => ({
 }))
 
 jest.mock("@/lib/engine-refresh-queue", () => ({
-  nextStateSwitchVersion: jest.fn(() => "test-switch-version"),
+  allocateStateSwitchVersion: jest.fn(async () => "test-switch-version"),
   queueEngineRefreshRequest: jest.fn(async () => undefined),
 }))
 

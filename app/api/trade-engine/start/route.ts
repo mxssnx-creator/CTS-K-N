@@ -5,6 +5,7 @@ import { SystemLogger } from "@/lib/system-logger"
 import { createExchangeConnector } from "@/lib/exchange-connectors"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
+import { allocateStateSwitchVersion } from "@/lib/engine-refresh-queue"
 
 export const dynamic = "force-dynamic"
 
@@ -191,7 +192,7 @@ export async function POST(request: NextRequest) {
     let liveTradeEnabledConnections: string[] = []
     let liveTradeRequestedConnections: string[] = []
     try {
-      const { getConnection, updateConnection, getAllConnections } = await import("@/lib/redis-db")
+      const { getConnection, updateConnectionState, getAllConnections } = await import("@/lib/redis-db")
       const { loadSettingsAsync } = await import("@/lib/settings-storage")
       const settings = await loadSettingsAsync()
       
@@ -222,12 +223,15 @@ export async function POST(request: NextRequest) {
                     live_trade_requested: "1",
                   }
 
-              await updateConnection(connId, {
-                ...conn,
+              const stateSwitchVersion = await allocateStateSwitchVersion(connId, conn)
+              const transition = await updateConnectionState(connId, {
                 ...liveTradeUpdate,
                 paused_by_global: "0",
+                state_switch_version: stateSwitchVersion,
+                state_switch_action: "global_start",
                 updated_at: new Date().toISOString(),
-              })
+              }, stateSwitchVersion)
+              if (!transition.applied) continue
               if (staleLiveTradeBlockReason) {
                 await logProgressionEvent(
                   connId,
@@ -296,14 +300,17 @@ export async function POST(request: NextRequest) {
             // Request live trade for assigned connections, but only enable real
             // exchange order placement when credentials validate right now.
             const credentialCheck = await validateLiveTradeCredentials(conn)
+            const stateSwitchVersion = await allocateStateSwitchVersion(conn.id, conn)
             const updatedConn = {
-              ...conn,
               is_live_trade: credentialCheck.valid ? "1" : "0",
               live_trade_blocked_reason: credentialCheck.valid ? "" : credentialCheck.reason,
               live_trade_requested: "1",
+              state_switch_version: stateSwitchVersion,
+              state_switch_action: "global_start",
               updated_at: new Date().toISOString(),
             }
-            await updateConnection(conn.id, updatedConn)
+            const transition = await updateConnectionState(conn.id, updatedConn, stateSwitchVersion)
+            if (!transition.applied) continue
             if (staleLiveTradeBlockReason) {
               await logProgressionEvent(
                 conn.id,
@@ -360,18 +367,21 @@ export async function POST(request: NextRequest) {
       const pausedPresetRaw = await client.get("trade_engine:paused_preset_connections")
       if (pausedPresetRaw) {
         const pausedPresetIds: string[] = JSON.parse(String(pausedPresetRaw))
-        const { getConnection: getConn2, updateConnection: updateConn2 } = await import("@/lib/redis-db")
+        const { getConnection: getConn2, updateConnectionState: updateConnState2 } = await import("@/lib/redis-db")
         
         for (const connId of pausedPresetIds) {
           try {
             const conn = await getConn2(connId)
             if (conn && conn.paused_preset_by_global === "1") {
-              await updateConn2(connId, {
-                ...conn,
+              const stateSwitchVersion = await allocateStateSwitchVersion(connId, conn)
+              const transition = await updateConnState2(connId, {
                 is_preset_trade: "1",
                 paused_preset_by_global: "0",
+                state_switch_version: stateSwitchVersion,
+                state_switch_action: "global_start_preset",
                 updated_at: new Date().toISOString(),
-              })
+              }, stateSwitchVersion)
+              if (!transition.applied) continue
               
               // Update preset engine state in Redis
               if (conn.preset_type_id) {

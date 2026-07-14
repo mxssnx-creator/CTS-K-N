@@ -101,13 +101,12 @@ export class ConnectionManager {
       }
 
       // Update Redis - only change is_enabled if explicitly provided
-      const updatedConnection: any = {
-        ...connection,
+      const connectionPatch: any = {
         ...(updates.enabled !== undefined ? { is_enabled: updates.enabled ? "1" : "0" } : {}),
         updated_at: new Date().toISOString(),
       }
 
-      await updateConnection(id, updatedConnection)
+      await updateConnection(id, connectionPatch)
 
       // Update memory
       const state = this.connections.get(id)

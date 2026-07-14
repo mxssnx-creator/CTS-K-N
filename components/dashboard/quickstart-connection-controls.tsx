@@ -35,7 +35,7 @@
  * clean slate.
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel,
@@ -58,6 +58,7 @@ import {
 // `selectedConnection` / `selectedExchange` to flow back through every
 // consumer of `useExchange`.
 import { useExchange } from "@/lib/exchange-context"
+import { useDashboardEvents, type DashboardEventPayload } from "@/lib/dashboard-events"
 
 interface ConnectionRow {
   id: string
@@ -97,36 +98,58 @@ export function QuickstartConnectionControls() {
     { ok: boolean; message: string } | null
   >(null)
   const [popoverOpen, setPopoverOpen] = useState(false)
+  const connectionLoadSequenceRef = useRef(0)
 
   // ── data load ──────────────────────────────────────────────────────────
   // The same /api/settings/connections endpoint the rest of the dashboard
   // uses — no separate cache, so the picker reflects the same connection
   // state the user sees in Settings.
   const loadConnections = useCallback(async () => {
+    const requestSequence = ++connectionLoadSequenceRef.current
     setLoading(true)
     try {
       const res = await fetch(`/api/settings/connections?t=${Date.now()}`, {
         cache: "no-store",
       })
+      if (requestSequence !== connectionLoadSequenceRef.current) return
       const data = await res.json()
+      if (requestSequence !== connectionLoadSequenceRef.current) return
       const list: ConnectionRow[] = Array.isArray(data?.connections)
         ? data.connections
         : []
       setConnections(list)
     } catch (err) {
       console.error("[v0] [QSConnectionControls] load failed:", err)
-      setConnections([])
+      if (requestSequence === connectionLoadSequenceRef.current) setConnections([])
     } finally {
-      setLoading(false)
+      if (requestSequence === connectionLoadSequenceRef.current) setLoading(false)
     }
   }, [])
+
+  const loadConnectionsEventRef = useRef(loadConnections)
+  loadConnectionsEventRef.current = loadConnections
+  const dashboardEventHandlers = useMemo(() => {
+    const refresh = (payload: DashboardEventPayload) => {
+      const canonicalType = String(payload.canonicalType || "")
+      if (["strategy.stageChanged", "processing.progress", "position.updated", "indication.updated"].includes(canonicalType)) return
+      void loadConnectionsEventRef.current()
+    }
+    return {
+      "connection.updated": refresh,
+      "settings.recoordinated": refresh,
+    }
+  }, [])
+  useDashboardEvents("*", dashboardEventHandlers)
 
   useEffect(() => {
     loadConnections()
     // Re-load when other parts of the app emit the standard refresh event.
     const handler = () => loadConnections()
     window.addEventListener("connections:refresh", handler)
-    return () => window.removeEventListener("connections:refresh", handler)
+    return () => {
+      connectionLoadSequenceRef.current++
+      window.removeEventListener("connections:refresh", handler)
+    }
   }, [loadConnections])
 
   // ── derived: addable base connections ──────────────────────────────────
@@ -197,7 +220,7 @@ export function QuickstartConnectionControls() {
       setAdding(connectionId)
       try {
         const res = await fetch(
-          "/api/settings/connections/add-to-active",
+          `/api/settings/connections/${encodeURIComponent(connectionId)}/active`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },

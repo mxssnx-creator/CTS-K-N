@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { initRedis, getRedisClient, getAllConnections } from "@/lib/redis-db"
+import { maskConnectionSecrets } from "@/lib/connection-secrets"
 
 
 export const dynamic = "force-dynamic"
@@ -17,6 +18,8 @@ export async function GET() {
       "#",
       "# Format: key = value",
       "#",
+      "# Exchange credentials are intentionally omitted from browser exports.",
+      "# Re-enter or inject credentials through the protected connection settings flow after import.",
       "",
       "# SETTINGS",
       "# =========",
@@ -26,10 +29,15 @@ export async function GET() {
     try {
       const allKeys = await client.keys("settings:*")
       for (const key of allKeys) {
+        if (/api.?key|api.?secret|passphrase|secret.?key/i.test(key)) continue
         const value = await client.get(key)
         if (value !== null && value !== undefined) {
           const settingKey = key.replace("settings:", "")
-          lines.push(`${settingKey} = ${typeof value === "string" ? value : JSON.stringify(value)}`)
+          let safeValue: unknown = value
+          if (typeof value === "string" && /^[{[]/.test(value.trim())) {
+            try { safeValue = maskConnectionSecrets(JSON.parse(value)) } catch { /* ordinary value */ }
+          }
+          lines.push(`${settingKey} = ${typeof safeValue === "string" ? safeValue : JSON.stringify(safeValue)}`)
         }
       }
     } catch (error) {
@@ -42,8 +50,12 @@ export async function GET() {
     const connections = await getAllConnections()
     for (const conn of connections) {
       lines.push(`# Connection: ${conn.name} (${conn.id})`)
-      for (const [key, value] of Object.entries(conn)) {
+      const safeConnection = maskConnectionSecrets(conn) as Record<string, unknown>
+      for (const [key, value] of Object.entries(safeConnection)) {
         if (key !== "id" && key !== "name") {
+          if (/^(api_key|api_secret|api_passphrase|apiKey|apiSecret|apiPassphrase|secret_key|secretKey|passphrase)$/.test(key)) {
+            continue
+          }
           let valueStr: string
           if (value === null || value === undefined) {
             valueStr = ""

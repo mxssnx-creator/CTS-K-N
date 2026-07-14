@@ -21,6 +21,7 @@ import {
   readStoredIndicationProfile,
 } from "@/lib/active-indication-profile"
 import { changedSettingKeys, settingsValuesEqual } from "@/lib/settings-diff"
+import { maskConnectionSecrets, maskConnectionSettings } from "@/lib/connection-secrets"
 
 const FALLBACK_SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -303,8 +304,8 @@ export async function GET(
     settings.coordinationSettings = coordinationSettings
 
     return NextResponse.json({
-      connection,
-      settings,
+      connection: maskConnectionSecrets(connection),
+      settings: maskConnectionSettings(settings),
       statistics: {
         active_trades: trades?.length || 0,
         active_positions: positions?.length || 0,
@@ -383,7 +384,7 @@ export async function PUT(
     ]))
 
     if (changedFields.length === 0) {
-      return NextResponse.json({ success: true, unchanged: true, connection })
+      return NextResponse.json({ success: true, unchanged: true, connection: maskConnectionSecrets(connection) })
     }
 
     const settingsVersion = `${id}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`
@@ -424,7 +425,11 @@ export async function PUT(
 
     await SystemLogger.logConnection(`Updated settings`, id, "info")
 
-    return NextResponse.json({ success: true, connection: effectiveConnection, recoordination })
+    return NextResponse.json({
+      success: true,
+      connection: maskConnectionSecrets(effectiveConnection),
+      recoordination,
+    })
   } catch (error) {
     console.error("[v0] [Settings] PUT error:", error)
     await SystemLogger.logError(error, "api", "PUT /api/settings/connections/[id]/settings")
@@ -917,7 +922,9 @@ export async function PATCH(
 
     return NextResponse.json({
       success: true,
-      settings: (effectiveConnection as Record<string, unknown>).connection_settings || merged,
+      settings: maskConnectionSettings(
+        (effectiveConnection as Record<string, unknown>).connection_settings || merged,
+      ),
       settingsVersion,
       recoordinationId: settingsVersion,
       progressionEpoch: recoordination.completedAt,

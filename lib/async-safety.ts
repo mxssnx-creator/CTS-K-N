@@ -288,15 +288,20 @@ export async function withTimeout<T>(
   timeoutMs: number,
   operationName: string = 'operation'
 ): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(
-        () => reject(new Error(`[${operationName}] Timeout after ${timeoutMs}ms`)),
-        timeoutMs
-      )
-    )
-  ])
+  let timeout: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`[${operationName}] Timeout after ${timeoutMs}ms`)),
+          timeoutMs,
+        )
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
 }
 
 /**

@@ -1,84 +1,143 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
-import { initRedis, getConnection, updateConnection } from "@/lib/redis-db"
+import { getConnection, getRedisClient, initRedis } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { parseBooleanInput, toRedisFlag } from "@/lib/boolean-utils"
+import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
+import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
+import { emitCanonicalEvent } from "@/lib/events/emitter"
+import { maskConnectionSecrets } from "@/lib/connection-secrets"
+import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 
 /**
- * POST /api/settings/connections/[id]/preset-toggle
- *
- * Toggles the `is_preset_trade` flag on a connection. Like `live-trade`, this
- * is a MODE FLAG on the already-running engine — not a separate engine. The
- * running engine checks this flag each cycle to decide whether to evaluate
- * preset strategies vs the default flow.
- *
- * STABILITY RULE (important):
- *   Preset-toggle must NOT stop the engine when the user turns Preset Mode off
- *   — doing so would also kill the Main trading pipeline. It must also NOT
- *   restart the engine when turning Preset on if the engine is already running
- *   (the underlying TradeEngineManager.start() no-ops via `isRunning` guard).
- *
- *   The only case where this endpoint starts the engine is when Preset is
- *   turned ON while the engine is not yet running — in that case the engine is
- *   started so the flag actually has an effect.
+ * Preset mode is a mode of the connection's single shared engine. Disabling it
+ * never stops the Main pipeline; enabling it wakes or queues that shared engine
+ * and publishes a durable settings generation for its owner process.
  */
 export const dynamic = "force-dynamic"
+export const runtime = "nodejs"
+export const maxDuration = 15
+
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: connectionId } = await params
   try {
-    const body = await request.json()
-    const isPresetTrade = parseBooleanInput(body?.is_preset_trade)
+    const body = await request.json().catch(() => ({}))
+    const rawFlag = body?.is_preset_trade ?? body?.enabled
+    if (rawFlag === undefined || rawFlag === null) {
+      return NextResponse.json(
+        { success: false, error: "Missing required is_preset_trade flag" },
+        { status: 400 },
+      )
+    }
+    const isPresetTrade = parseBooleanInput(rawFlag)
 
-    console.log(`[v0] [Preset Trade] POST for ${connectionId}, is_preset_trade=${isPresetTrade}`)
+    if (isPresetTrade && process.env.NODE_ENV === "production") {
+      const readiness = await checkProductionReadiness()
+      if (!readiness.ready) return NextResponse.json(productionReadinessJson(readiness), { status: 503 })
+    }
 
     await initRedis()
     const connection = await getConnection(connectionId)
-    if (!connection) {
-      return NextResponse.json({ error: "Connection not found" }, { status: 404 })
-    }
-    const connName = connection.name
+    if (!connection) return NextResponse.json({ error: "Connection not found" }, { status: 404 })
 
-    // Require credentials for preset trading (same as live).
-    if (isPresetTrade) {
-      const apiKey = (connection.api_key || connection.apiKey || "") as string
-      const apiSecret = (connection.api_secret || connection.apiSecret || "") as string
-      const hasCredentials = apiKey.length > 10 && apiSecret.length > 10
-      if (!hasCredentials) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: "API credentials required for preset trading",
-            hint: "Add API key and secret in Settings to enable preset trading",
-          },
-          { status: 400 },
-        )
-      }
+    const apiKey = String(connection.api_key || connection.apiKey || "")
+    const apiSecret = String(connection.api_secret || connection.apiSecret || "")
+    if (isPresetTrade && (apiKey.length <= 10 || apiSecret.length <= 10)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "API credentials required for preset trading",
+          hint: "Add API key and secret in Settings to enable preset trading",
+        },
+        { status: 400 },
+      )
     }
 
-    // Persist the flag — the running engine reads this each cycle.
-    const updatedConnection = {
-      ...connection,
+    const stateSwitchVersion = await allocateStateSwitchVersion(connectionId, connection)
+    const changedAt = new Date().toISOString()
+    const connectionPatch = {
       is_preset_trade: toRedisFlag(isPresetTrade),
-      updated_at: new Date().toISOString(),
+      ...(isPresetTrade
+        ? {
+            is_assigned: "1",
+            is_active_inserted: "1",
+            is_dashboard_inserted: "1",
+            is_enabled_dashboard: "1",
+            is_active: "1",
+          }
+        : {}),
+      state_switch_version: stateSwitchVersion,
+      preset_trade_changed_at: changedAt,
+      updated_at: changedAt,
     }
-    await updateConnection(connectionId, updatedConnection)
-    console.log(`[v0] [Preset Trade] Flag updated for ${connName}: ${isPresetTrade}`)
+    const presetFlagFields = new Set([
+      "is_preset_trade",
+      "is_assigned",
+      "is_active_inserted",
+      "is_dashboard_inserted",
+      "is_enabled_dashboard",
+      "is_active",
+    ])
+    const changedFieldsOverride = Object.keys(connectionPatch).filter((field) => {
+      if (field === "updated_at" || field === "preset_trade_changed_at") return false
+      if (field === "state_switch_version") return true
+      if (presetFlagFields.has(field)) {
+        return parseBooleanInput((connection as any)[field]) !== parseBooleanInput((connectionPatch as any)[field])
+      }
+      return JSON.stringify((connection as any)[field]) !== JSON.stringify((connectionPatch as any)[field])
+    })
+
+    const { connection: updatedConnection, completion, stateTransitionApplied } = await applyMainConnectionSettingsChange(
+      connectionId,
+      connection,
+      {
+        connectionPatch,
+        changedFieldsOverride,
+        logTag: "POST /settings/preset-toggle",
+        settingsVersion: stateSwitchVersion,
+        stateSwitchVersion,
+      },
+    )
+    if (!stateTransitionApplied) {
+      return NextResponse.json(
+        { success: false, error: "Preset switch was superseded by a newer state", state_switch_version: updatedConnection.state_switch_version },
+        { status: 409 },
+      )
+    }
 
     const coordinator = getGlobalTradeEngineCoordinator()
-    let engineStatus: "running" | "starting" | "stopped" | "error" = "stopped"
+    let engineStatus: "running" | "queued" | "stopped" | "error" =
+      coordinator.isEngineRunning(connectionId) ? "running" : "stopped"
     let engineStartedNow = false
 
-    if (isPresetTrade) {
-      if (coordinator.isEngineRunning(connectionId)) {
-        engineStatus = "running"
-        console.log(`[v0] [Preset Trade] Engine already running for ${connName} — flag updated, no restart`)
-      } else {
-        try {
+    if (isPresetTrade && !coordinator.isEngineRunning(connectionId)) {
+      const client = getRedisClient()
+      await client.hset("trade_engine:global", {
+        status: "running",
+        desired_status: "running",
+        operator_intent: "running",
+        coordinator_ready: "true",
+        operator_stopped: "0",
+        operator_stopped_at: "",
+        stopped_at: "",
+        mode: "preset",
+        updated_at: changedAt,
+      })
+
+      const localStartAllowed =
+        process.env.DISABLE_TRADE_ENGINE_IN_PROCESS !== "1" &&
+        process.env.NEXT_RUNTIME !== "edge" &&
+        (process.env.VERCEL !== "1" ||
+          (process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1" &&
+            process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"))
+
+      try {
+        if (localStartAllowed) {
           const settings = await loadSettingsAsync()
-          await coordinator.startEngine(connectionId, {
+          const started = await coordinator.startEngine(connectionId, {
             connectionId,
-            connection_name: connName,
+            connection_name: connection.name,
             exchange: connection.exchange,
             engine_type: "preset",
             allowInProcessStart: true,
@@ -86,43 +145,57 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             strategyInterval: settings?.strategyUpdateIntervalMs ? settings.strategyUpdateIntervalMs / 1000 : 10,
             realtimeInterval: settings?.realtimeIntervalMs ? settings.realtimeIntervalMs / 1000 : 0.3,
           }, { markAssigned: true, forceLocalTakeover: true })
-          engineStatus = "starting"
-          engineStartedNow = true
-          console.log(`[v0] [Preset Trade] Engine started for ${connName} to service preset flag`)
-        } catch (err) {
-          console.error(`[v0] [Preset Trade] Failed to start engine:`, err)
-          await SystemLogger.logError(err, "api", `Start preset engine for ${connName}`)
-          return NextResponse.json(
-            {
-              success: false,
-              error: "Failed to start preset engine",
-              details: err instanceof Error ? err.message : String(err),
-            },
-            { status: 500 },
-          )
+          engineStartedNow = started
+          engineStatus = coordinator.isEngineRunning(connectionId) ? "running" : "queued"
+        } else {
+          await queueEngineRefreshRequest({
+            connectionId,
+            action: "start",
+            state_switch_version: stateSwitchVersion,
+            reason: "preset_trade_enable",
+            timestamp: changedAt,
+          })
+          engineStatus = "queued"
         }
+      } catch (startError) {
+        await queueEngineRefreshRequest({
+          connectionId,
+          action: "start",
+          state_switch_version: stateSwitchVersion,
+          reason: "preset_trade_enable_foreground_start_failed",
+          timestamp: new Date().toISOString(),
+        }).catch(() => undefined)
+        engineStatus = "queued"
+        await SystemLogger.logError(startError, "api", `Preset start queued for ${connection.name}`)
       }
-    } else {
-      // Turning Preset OFF must NOT stop the engine — the Main pipeline might
-      // still be running. Next cycle the strategy flow will ignore the preset
-      // branch because the flag is "0".
-      engineStatus = coordinator.isEngineRunning(connectionId) ? "running" : "stopped"
-      console.log(`[v0] [Preset Trade] Flag cleared for ${connName} — engine left untouched (status=${engineStatus})`)
     }
 
     await SystemLogger.logConnection(
       `Preset Mode ${isPresetTrade ? "enabled" : "disabled"} via UI toggle`,
       connectionId,
       "info",
-      { is_preset_trade: isPresetTrade, engineStartedNow, engineStatus },
+      { is_preset_trade: isPresetTrade, engineStartedNow, engineStatus, stateSwitchVersion },
     )
+
+    emitCanonicalEvent({
+      type: "connection.recoordinated",
+      connectionId,
+      stage: "connection",
+      settingsVersion: stateSwitchVersion,
+      data: {
+        mode: "preset",
+        enabled: isPresetTrade,
+        engineStatus,
+        refreshQueued: completion.refreshQueued === true,
+      },
+    })
 
     return NextResponse.json({
       success: true,
       is_preset_trade: isPresetTrade,
       engineStatus,
       engineStartedNow,
-      connection: updatedConnection,
+      connection: maskConnectionSecrets(updatedConnection),
       message: `Preset Mode ${isPresetTrade ? "enabled" : "disabled"}`,
     })
   } catch (error) {

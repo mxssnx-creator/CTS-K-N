@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { maskConnectionSecret, maskConnectionSettings } from "@/lib/connection-secrets"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -17,14 +18,24 @@ export async function GET(request: NextRequest) {
     const hashKey = request.nextUrl.searchParams.get("hash")
     if (hashKey) {
       const data = await client.hgetall(hashKey).catch(() => null)
-      return NextResponse.json({ hashKey, data: data || {}, fieldCount: data ? Object.keys(data).length : 0 })
+      return NextResponse.json({
+        hashKey,
+        data: maskConnectionSettings(data || {}),
+        fieldCount: data ? Object.keys(data).length : 0,
+      })
     }
 
     // Inspect an arbitrary string key via ?key=<key>
     const strKey = request.nextUrl.searchParams.get("key")
     if (strKey) {
       const value = await client.get(strKey).catch(() => null)
-      return NextResponse.json({ strKey, value })
+      let safeValue: unknown = value
+      if (/api.?key|api.?secret|passphrase|secret.?key/i.test(strKey)) {
+        safeValue = maskConnectionSecret(value)
+      } else if (typeof value === "string" && /^[{[]/.test(value.trim())) {
+        try { safeValue = maskConnectionSettings(JSON.parse(value)) } catch { /* non-JSON string */ }
+      }
+      return NextResponse.json({ strKey, value: safeValue })
     }
 
     // List keys matching ?keys=<pattern>
@@ -54,7 +65,7 @@ export async function GET(request: NextRequest) {
         is_inserted: data.is_inserted,
         is_enabled_dashboard: data.is_enabled_dashboard,
         api_key_length: data.api_key?.length || 0,
-        api_key_preview: data.api_key ? `${data.api_key.substring(0, 20)}...` : "EMPTY",
+        api_key_masked: data.api_key ? maskConnectionSecret(data.api_key) : "EMPTY",
         has_valid_key: hasValidKey,
         api_secret_length: data.api_secret?.length || 0,
         all_fields: Object.keys(data),

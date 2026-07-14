@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
 import { initRedis, getConnection, updateConnection } from "@/lib/redis-db"
 import { parseBooleanInput, toRedisFlag } from "@/lib/boolean-utils"
+import { emitCanonicalEvent } from "@/lib/events/emitter"
 
 // POST toggle connection enabled status
 // NOTE: Trade engines DO NOT start here
@@ -27,13 +28,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
 
     // Update connection in Redis with updated_at timestamp
-    const updatedConnection = {
-      ...connection,
+    const connectionPatch = {
       is_enabled: toRedisFlag(isEnabled),
       updated_at: new Date().toISOString(),
     }
 
-    await updateConnection(connectionId, updatedConnection)
+    const updatedConnection = (await updateConnection(connectionId, connectionPatch)) || {
+      ...connection,
+      ...connectionPatch,
+    }
     console.log("[v0] [Toggle] Connection is_enabled updated:", connectionId, "=", isEnabled)
 
     // Log the change but do NOT start/stop engines here
@@ -45,9 +48,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       { is_enabled: isEnabled },
     )
 
+    emitCanonicalEvent({
+      type: "dashboard.sectionUpdated",
+      connectionId,
+      stage: "dashboard",
+      settingsVersion: updatedConnection.updated_at,
+      data: { section: "connections", is_enabled: isEnabled },
+    })
+
     return NextResponse.json({
       success: true,
-      connection: updatedConnection,
+      // Never echo exchange credentials from a state-only toggle response.
+      connection: {
+        id: connectionId,
+        name: updatedConnection.name,
+        exchange: updatedConnection.exchange,
+        is_enabled: updatedConnection.is_enabled,
+        updated_at: updatedConnection.updated_at,
+      },
       message: `Connection ${isEnabled ? "enabled" : "disabled"}. Trade engines are controlled separately.`,
     })
   } catch (error) {

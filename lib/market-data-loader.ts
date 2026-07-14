@@ -46,6 +46,53 @@ export interface MarketData {
   source: string // Exchange name or "synthetic"
 }
 
+export interface LoadMarketDataOptions {
+  /** Require the chunked prehistoric index in addition to the realtime tail. */
+  requireHistory?: boolean
+}
+
+const REALTIME_CANDLE_TAIL = 300
+const HISTORIC_CHUNK_SIZE = 2_000
+const MARKET_DATA_TTL_SECONDS = 24 * 60 * 60
+
+async function writeHistoricCandleChunks(
+  client: any,
+  symbol: string,
+  candles: MarketDataCandle[],
+): Promise<void> {
+  const chunksKey = `market_data:${symbol}:history:chunks`
+  const metaKey = `market_data:${symbol}:history:meta`
+  const ranges: Array<{ start: number; end: number; count: number }> = []
+
+  // Hide metadata while replacing its list. Readers fall back to the small
+  // realtime tail during this short window instead of observing partial data.
+  await client.del(metaKey).catch(() => 0)
+  await client.del(chunksKey).catch(() => 0)
+  for (let offset = 0; offset < candles.length; offset += HISTORIC_CHUNK_SIZE) {
+    const chunk = candles.slice(offset, offset + HISTORIC_CHUNK_SIZE)
+    if (chunk.length === 0) continue
+    ranges.push({
+      start: Number(chunk[0].timestamp),
+      end: Number(chunk[chunk.length - 1].timestamp),
+      count: chunk.length,
+    })
+    // Serialize and release one chunk at a time. This avoids retaining a full
+    // second JSON copy of an 86,400-candle day in the Node heap.
+    await client.rpush(chunksKey, JSON.stringify(chunk))
+  }
+  await client.set(metaKey, JSON.stringify({
+    version: 1,
+    chunkSize: HISTORIC_CHUNK_SIZE,
+    candleCount: candles.length,
+    ranges,
+    updatedAt: new Date().toISOString(),
+  }))
+  await Promise.all([
+    client.expire(chunksKey, MARKET_DATA_TTL_SECONDS),
+    client.expire(metaKey, MARKET_DATA_TTL_SECONDS),
+  ])
+}
+
 /**
  * Generate synthetic market data as fallback
  * Only used when exchange fetch fails
@@ -172,10 +219,13 @@ let __lastDevCacheHitLogAt = 0
  * Load market data for all symbols into Redis
  * Fetches REAL data from exchanges, falls back to synthetic only on failure
  */
-export async function loadMarketDataForEngine(symbols: string[] = []): Promise<number> {
+export async function loadMarketDataForEngine(
+  symbols: string[] = [],
+  options: LoadMarketDataOptions = {},
+): Promise<number> {
   const requestedSymbols = symbols.length > 0 ? symbols : DEFAULT_ENGINE_MARKET_SYMBOLS
   const uniqueSymbols = Array.from(new Set(requestedSymbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean)))
-  const flightKey = uniqueSymbols.join("|")
+  const flightKey = `${options.requireHistory ? "history" : "tail"}:${uniqueSymbols.join("|")}`
 
   // Coalesce concurrent calls — the second caller joins the first
   // promise for the exact same symbol set and receives the same result,
@@ -201,11 +251,17 @@ export async function loadMarketDataForEngine(symbols: string[] = []): Promise<n
     // engine. Check the requested symbol set, only load missing symbols, and
     // throttle the "already cached" log.
     {
-      const cacheKeys = targetSymbols.map((symbol) => `market_data:${symbol}:1s`)
+      const cacheKeys = targetSymbols.flatMap((symbol) => options.requireHistory
+        ? [`market_data:${symbol}:1s`, `market_data:${symbol}:history:meta`]
+        : [`market_data:${symbol}:1s`])
       const cachedValues = cacheKeys.length > 0
         ? (await (client as any).mget(...cacheKeys)) as (string | null)[]
         : []
-      const missingSymbols = targetSymbols.filter((_, index) => !cachedValues[index])
+      const keysPerSymbol = options.requireHistory ? 2 : 1
+      const missingSymbols = targetSymbols.filter((_, index) => {
+        const offset = index * keysPerSymbol
+        return !cachedValues[offset] || (options.requireHistory && !cachedValues[offset + 1])
+      })
       if (missingSymbols.length === 0) {
         const now = Date.now()
         if (now - __lastDevCacheHitLogAt > 30_000) {
@@ -277,10 +333,11 @@ export async function loadMarketDataForEngine(symbols: string[] = []): Promise<n
           console.log(`[v0] [MarketData] ⚠ Using synthetic data for ${symbol} (exchange 1s fetch failed)`)
         }
 
+        const realtimeCandles = candles.slice(-REALTIME_CANDLE_TAIL)
         const marketData: MarketData = {
           symbol,
           timeframe: "1s",
-          candles,
+          candles: realtimeCandles,
           lastUpdated: new Date().toISOString(),
           source,
         }
@@ -300,7 +357,7 @@ export async function loadMarketDataForEngine(symbols: string[] = []): Promise<n
         const writes: Promise<unknown>[] = [
           client.set(key, jsonData),
           client.expire(key, 86400),
-          client.set(candlesKey, JSON.stringify(candles)),
+          client.set(candlesKey, JSON.stringify(realtimeCandles)),
           client.expire(candlesKey, 86400),
         ]
         if (latestCandle) {
@@ -333,6 +390,7 @@ export async function loadMarketDataForEngine(symbols: string[] = []): Promise<n
           console.log(`[v0] [MarketData] ✓ ${symbol}: $${priceStr} ${sourceLabel} (${candles.length} intervals)`)
         }
         await Promise.all(writes)
+        await writeHistoricCandleChunks(client, symbol, candles)
 
         loaded++
       } catch (error) {
@@ -418,10 +476,11 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
       }
     }
 
+    const realtimeCandles = candles.slice(-REALTIME_CANDLE_TAIL)
     const marketData: MarketData = {
       symbol,
       timeframe: "1s",
-      candles,
+      candles: realtimeCandles,
       lastUpdated: new Date().toISOString(),
       source,
     }
@@ -432,7 +491,7 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
 
     // Update candles array
     const candlesKey = `market_data:${symbol}:candles`
-    await client.set(candlesKey, JSON.stringify(candles))
+    await client.set(candlesKey, JSON.stringify(realtimeCandles))
     await client.expire(candlesKey, 86400)
 
     // Update hash
@@ -461,6 +520,8 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
       await client.hmset(hashKey, ...flatArgs)
       await client.expire(hashKey, 86400)
     }
+
+    await writeHistoricCandleChunks(client, symbol, candles)
 
     console.log(`[v0] [MarketData] ✓ Updated ${symbol} with ${source} data`)
     return source !== "synthetic"

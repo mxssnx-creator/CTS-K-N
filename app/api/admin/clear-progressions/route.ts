@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
+import { allocateStateSwitchVersion } from "@/lib/engine-refresh-queue"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -220,25 +221,27 @@ export async function POST() {
     // preserve is_enabled_dashboard="1". A DB reset gives a truly clean slate;
     // the operator must re-enable connections manually after a reset.
     try {
-      const { getAllConnections, updateConnection } = await import("@/lib/redis-db")
+      const { getAllConnections, updateConnectionState } = await import("@/lib/redis-db")
       const conns = await getAllConnections()
       for (const c of conns) {
         // Preserve is_live_trade and is_preset_trade so the engine can
         // continue monitoring open positions on the next start. Also preserve
         // is_active_inserted / is_assigned so the connection stays visible
         // in the main panel after the reset (operator re-enables via Start).
-        await updateConnection(c.id, {
-          ...c,
+        const stateSwitchVersion = await allocateStateSwitchVersion(c.id, c)
+        await updateConnectionState(c.id, {
           is_enabled_dashboard: "0",
           is_active: "0",
           paused_by_global: "0",
           paused_preset_by_global: "0",
+          state_switch_version: stateSwitchVersion,
+          state_switch_action: "clear_progressions",
           updated_at: new Date().toISOString(),
           // NOTE: is_live_trade, is_preset_trade, is_active_inserted,
           // is_assigned are INTENTIONALLY preserved so:
           //   • Live positions can be adopted on the next engine start.
           //   • The connection card remains visible in the main panel.
-        })
+        }, stateSwitchVersion)
       }
       console.log(`[v0] [ClearProgressions] reset runtime flags on ${conns.length} connections (all disabled)`)
       // Second persist — captures the connection-flag resets so they are

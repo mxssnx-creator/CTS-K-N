@@ -140,7 +140,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       testLog.push(`[${new Date().toISOString()}] ${isPredefined ? "This is a predefined template - please add your real API credentials" : "Please configure valid API credentials for this exchange before testing"}`)
 
       await updateConnection(id, {
-        ...connection,
         last_test_status: "warning",
         last_test_log: JSON.stringify(testLog),
         last_test_at: new Date().toISOString(),
@@ -219,7 +218,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const testedApiType = body.api_type || connection.api_type || "perpetual_futures"
     await updateConnection(id, {
-      ...connection,
       last_test_status: "success",
       last_test_balance: String(result.balance),
       last_test_log: JSON.stringify(testLog),
@@ -297,7 +295,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       const existingConnection = await getConnection(id)
       if (existingConnection) {
         await updateConnection(id, {
-          ...existingConnection,
           last_test_status: "failed",
           last_test_log: JSON.stringify(testLog),
           last_test_at: new Date().toISOString(),

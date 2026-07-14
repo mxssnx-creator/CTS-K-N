@@ -9,6 +9,9 @@ describe("QuickStart route ordering", () => {
     const globalIntent: Record<string, string> = {}
 
     const redisClient = {
+      _stateVersion: 0,
+      incr: jest.fn(async function (this: any) { return ++redisClient._stateVersion }),
+      incrby: jest.fn(async (_key: string, amount: number) => (redisClient._stateVersion += amount)),
       hset: jest.fn(async (key: string, value: Record<string, string>) => {
         if (key === "trade_engine:global") {
           callOrder.push("hset:trade_engine:global")
@@ -55,6 +58,10 @@ describe("QuickStart route ordering", () => {
         api_secret: "",
       })),
       updateConnection: jest.fn(async () => undefined),
+      updateConnectionState: jest.fn(async (_id: string, patch: Record<string, unknown>) => ({
+        applied: true,
+        connection: { id: "conn-1", name: "Simulated BingX", exchange: "bingx", ...patch },
+      })),
       setSettings: jest.fn(async () => undefined),
       getSettings: jest.fn(async () => ({})),
       buildMainConnectionEnableUpdate: jest.fn((connection: any) => connection),
@@ -104,6 +111,7 @@ describe("QuickStart route ordering", () => {
             changedFields: opts.changedFieldsOverride || [],
             progressRecoordinationRequired: true,
           },
+          stateTransitionApplied: true,
         }
       }),
     }))

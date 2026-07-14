@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
-import { initRedis, getConnection, updateConnection, persistNow, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getConnection, updateConnectionState, persistNow, getRedisClient } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { parseBooleanInput, toRedisFlag } from "@/lib/boolean-utils"
@@ -9,8 +9,10 @@ import { BASE_CONNECTION_CREDENTIALS } from "@/lib/base-connection-credentials"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
-import { nextStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
+import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
+import { emitCanonicalEvent } from "@/lib/events/emitter"
+import { maskConnectionSecrets } from "@/lib/connection-secrets"
 
 /**
  * POST /api/settings/connections/[id]/live-trade
@@ -79,6 +81,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     let hasCredentials = apiKey.length > 10 && apiSecret.length > 10
 
     let liveTradeBlockedReason = ""
+    let injectedCredentials = false
     if (isLiveTrade) {
       if (
         !hasCredentials &&
@@ -89,12 +92,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         apiKey = creds.apiKey
         apiSecret = creds.apiSecret
         hasCredentials = true
-        await updateConnection(connectionId, {
-          ...connection,
-          api_key: apiKey,
-          api_secret: apiSecret,
-          updated_at: new Date().toISOString(),
-        })
+        injectedCredentials = true
         console.log(`[v0] [LiveTrade] Injected predefined credentials for ${connName}`)
       }
       if (!hasCredentials) {
@@ -104,7 +102,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // Write the flag — this is what the running engine's live-stage checks.
     const staleLiveTradeBlockReason = String((connection as any).live_trade_blocked_reason || "").trim()
-    const stateSwitchVersion = nextStateSwitchVersion(connection)
+    const stateSwitchVersion = await allocateStateSwitchVersion(connectionId, connection)
     const liveTradeChangedAt = new Date().toISOString()
     const previousValues = {
       is_live_trade: connection.is_live_trade,
@@ -113,10 +111,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       live_trade_changed_at: (connection as any).live_trade_changed_at,
     }
 
-    const updatedConnection = {
-      ...connection,
-      api_key: apiKey,
-      api_secret: apiSecret,
+    const connectionPatch = {
+      ...(injectedCredentials ? { api_key: apiKey, api_secret: apiSecret } : {}),
       is_live_trade: toRedisFlag(isLiveTrade && hasCredentials),
       live_trade_blocked_reason: liveTradeBlockedReason,
       // If Live is turned on while the main engine is not already running,
@@ -137,7 +133,36 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       live_trade_changed_at: liveTradeChangedAt,
       updated_at: liveTradeChangedAt,
     }
-    await updateConnection(connectionId, updatedConnection)
+    const transition = await updateConnectionState(connectionId, connectionPatch, stateSwitchVersion)
+    if (!transition.applied) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Live Trade switch was superseded by a newer connection state",
+          state_switch_version: transition.connection?.state_switch_version,
+          connection: transition.connection ? maskConnectionSecrets(transition.connection) : undefined,
+        },
+        { status: 409 },
+      )
+    }
+    const updatedConnection = transition.connection || { ...connection, ...connectionPatch }
+
+    const booleanStateFields = new Set([
+      "is_live_trade",
+      "live_trade_requested",
+      "is_assigned",
+      "is_active_inserted",
+      "is_enabled_dashboard",
+      "is_active",
+    ])
+    const changedFields = Object.keys(connectionPatch).filter((field) => {
+      if (field === "updated_at" || field === "live_trade_changed_at") return false
+      if (field === "state_switch_version") return true
+      if (booleanStateFields.has(field)) {
+        return isTruthyFlag((connection as any)[field]) !== isTruthyFlag((updatedConnection as any)[field])
+      }
+      return JSON.stringify((connection as any)[field]) !== JSON.stringify((updatedConnection as any)[field])
+    })
 
     const newValues = {
       is_live_trade: updatedConnection.is_live_trade,
@@ -145,17 +170,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       state_switch_version: stateSwitchVersion,
       live_trade_changed_at: liveTradeChangedAt,
     }
+    // Do not report a successful switch until the durable settings envelope
+    // and dirty flag exist. The engine-owning worker may be a different
+    // process, so swallowing this failure can persist the UI flag without ever
+    // applying it to the running engine.
     await notifySettingsChanged(
       connectionId,
-      ["is_live_trade", "live_trade_requested"],
+      changedFields,
       previousValues,
       newValues,
-    ).catch((settingsErr: unknown) => {
-      console.warn(
-        `[v0] [LiveTrade] Settings-change signal failed for ${connectionId}:`,
-        settingsErr instanceof Error ? settingsErr.message : String(settingsErr),
-      )
-    })
+    )
 
     const coordinator = getGlobalTradeEngineCoordinator()
     // Best-effort local fast-path only. Remote workers converge via the durable
@@ -167,12 +191,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       )
     })
 
-    await ProgressionStateManager.recoordinateForActualOne(connectionId).catch((progressionErr: unknown) => {
-      console.warn(
-        "[v0] [LiveTrade] Progression recoordination failed after live-trade dirty signal:",
-        progressionErr instanceof Error ? progressionErr.message : progressionErr,
-      )
-    })
+    if (changedFields.includes("is_live_trade") || changedFields.includes("live_trade_requested")) {
+      await ProgressionStateManager.recoordinateForActualOne(connectionId).catch((progressionErr: unknown) => {
+        console.warn(
+          "[v0] [LiveTrade] Progression recoordination failed after live-trade dirty signal:",
+          progressionErr instanceof Error ? progressionErr.message : progressionErr,
+        )
+      })
+    }
 
     if (staleLiveTradeBlockReason) {
       const clearReason = isLiveTrade
@@ -211,6 +237,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       if (!isLiveTrade || !hasCredentials) return
       void (async () => {
         try {
+          const latest = await getConnection(connectionId)
+          if (
+            !latest ||
+            String((latest as any).state_switch_version ?? "") !== String(stateSwitchVersion) ||
+            !isTruthyFlag((latest as any).is_live_trade)
+          ) {
+            console.log(`[v0] [LiveTrade] Skipping stale control-order rebuild for ${connName}`)
+            return
+          }
           const { createExchangeConnector } = await import("@/lib/exchange-connectors")
           const connector = await createExchangeConnector(connection.exchange, {
             apiKey,
@@ -371,13 +406,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // SECURITY: never echo raw credentials back to the client. The previous
     // response included api_key/api_secret in PLAINTEXT.
-    const maskSecret = (v: unknown) =>
-      typeof v === "string" && v.length > 4 ? `••••${v.slice(-4)}` : v ? "••••" : v
-    const safeConnection = {
-      ...updatedConnection,
-      api_key: maskSecret(updatedConnection.api_key),
-      api_secret: maskSecret(updatedConnection.api_secret),
-    }
+    const safeConnection = maskConnectionSecrets(updatedConnection)
+
+    emitCanonicalEvent({
+      type: "live.stageChanged",
+      connectionId,
+      stage: "live",
+      settingsVersion: stateSwitchVersion,
+      data: {
+        action: isLiveTrade ? "enabled" : "disabled",
+        is_live_trade: isLiveTrade && hasCredentials,
+        live_trade_requested: isLiveTrade,
+        engineStatus,
+      },
+    })
 
     return NextResponse.json({
       success: true,

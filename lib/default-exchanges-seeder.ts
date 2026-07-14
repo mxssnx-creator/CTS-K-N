@@ -43,7 +43,7 @@ export async function seedDefaultExchanges() {
 }
 
 /**
- * Ensures canonical base connections exist and injects predefined real credentials.
+ * Ensures canonical base connections exist and fills missing environment credentials.
  * Also removes legacy `*-base` / `*-default-disabled` duplicates that caused blank/duplicated entries.
  * Only runs once - subsequent calls return immediately.
  */
@@ -90,58 +90,61 @@ export async function ensureDefaultExchangesExist() {
 
       const normalizedBase = {
         id: cfg.id,
-        name: existing?.name || cfg.name,
+        name: cfg.name,
         exchange: cfg.exchange,
-        // Enforce perpetual_futures for base BingX/Pionex/OrangeX connections - Spot API returns 0 balance for perpetual positions
-        api_type: (cfg.exchange === "bingx" || cfg.exchange === "pionex" || cfg.exchange === "orangex") 
-          ? "perpetual_futures" 
-          : (existing?.api_type || cfg.apiType),
-        contract_type: existing?.contract_type || cfg.contractType,
-        connection_method: existing?.connection_method || cfg.connectionMethod,
-        connection_library: existing?.connection_library || cfg.connectionLibrary,
-        margin_type: existing?.margin_type || "cross",
-        position_mode: existing?.position_mode || "hedge",
-        is_testnet: existing?.is_testnet ?? false,
-        is_predefined: existing?.is_predefined ?? true,
+        api_type: cfg.apiType,
+        contract_type: cfg.contractType,
+        connection_method: cfg.connectionMethod,
+        connection_library: cfg.connectionLibrary,
+        margin_type: "cross",
+        position_mode: "hedge",
+        is_testnet: false,
+        is_predefined: true,
         // ONLY bybit and bingx are inserted (shown on Main Connections by default)
         // All others (pionex, orangex) are disabled and hidden
         is_inserted: cfg.exchange === "bybit" || cfg.exchange === "bingx" ? "1" : "0",
         // PRESERVE existing is_active_inserted — only set "1" for brand-new bingx-x01 connections.
         // Bybit should NOT be auto-inserted. Never override user deletions or manual toggles.
-        is_active_inserted: existing
-          ? (existing.is_active_inserted ?? "0")
-          : (cfg.exchange === "bingx" ? "1" : "0"),
+        is_active_inserted: cfg.exchange === "bingx" ? "1" : "0",
         // ONLY bybit and bingx are enabled by default in settings
         is_enabled: cfg.exchange === "bybit" || cfg.exchange === "bingx" ? "1" : "0",
-        is_enabled_dashboard: existing?.is_enabled_dashboard ?? "0",
-        is_active: existing?.is_active ?? "0",
-        created_at: existing?.created_at || now,
+        is_enabled_dashboard: "0",
+        is_active: "0",
+        created_at: now,
         updated_at: now,
       } as Record<string, any>
 
-        // ALWAYS inject real predefined credentials for base connections
-        // This ensures canonical base connections (bingx-x01, etc.) have valid credentials on every startup
-        if (hasConfiguredCreds) {
-          normalizedBase.api_key = apiKey
-          normalizedBase.api_secret = apiSecret
-          console.log(`[v0] [BaseSeed] ✓ Injected predefined credentials for ${cfg.id}`)
-        } else {
-          // Should never happen for canonical base connections
-          normalizedBase.api_key = existing?.api_key || ""
-          normalizedBase.api_secret = existing?.api_secret || ""
-          console.warn(`[v0] [BaseSeed] ⚠ No predefined credentials available for ${cfg.id}`)
-      }
-
       if (!existing) {
+        normalizedBase.api_key = hasConfiguredCreds ? apiKey : ""
+        normalizedBase.api_secret = hasConfiguredCreds ? apiSecret : ""
         await createConnection(normalizedBase)
         created++
       } else {
-        await updateConnection(cfg.id, normalizedBase)
-        updated++
+        // Seeding is a missing-default repair, never a settings reset. Only
+        // fill absent schema fields and credentials; preserve every explicit
+        // operator choice (API type, testnet, enable/assignment flags, names,
+        // volumes, strategies, and existing credentials).
+        const repairPatch: Record<string, any> = {}
+        for (const [field, value] of Object.entries(normalizedBase)) {
+          if (field === "updated_at" || field === "created_at" || field === "id") continue
+          if (existing[field] === undefined || existing[field] === null) repairPatch[field] = value
+        }
+        if (!existing.created_at) repairPatch.created_at = now
+        if (hasConfiguredCreds) {
+          if (!String(existing.api_key || "").trim()) repairPatch.api_key = apiKey
+          if (!String(existing.api_secret || "").trim()) repairPatch.api_secret = apiSecret
+        }
+        if (Object.keys(repairPatch).length > 0) {
+          repairPatch.updated_at = now
+          await updateConnection(cfg.id, repairPatch)
+          updated++
+        }
       }
 
         if (hasConfiguredCreds) {
           credentialsApplied++
+        } else {
+          console.warn(`[v0] [BaseSeed] No environment credentials available for ${cfg.id}`)
         }
       }
 

@@ -11,6 +11,50 @@ import { emitPositionUpdate } from "@/lib/broadcast-helpers"
 import { StrategyConfigManager, type PseudoPosition as StrategyPseudoPosition } from "@/lib/strategy-config-manager"
 import { calculatePseudoClosePnl, PSEUDO_POSITION_CLOSE_COST_RATIO } from "@/lib/pseudo-position-costs"
 
+const DIRECTION_CREATION_LOCK_TTL_MS = 15_000
+const REFRESH_DIRECTION_CREATION_LOCK_LUA = `
+  if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+  end
+  return 0
+`
+const RELEASE_DIRECTION_CREATION_LOCK_LUA = `
+  if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+  end
+  return 0
+`
+
+interface DirectionCreationLock {
+  key: string
+  token: string
+}
+
+async function evalDirectionCreationLock(
+  client: any,
+  script: string,
+  lock: DirectionCreationLock,
+  ttlMs?: number,
+): Promise<number> {
+  const args = ttlMs === undefined ? [lock.token] : [lock.token, String(ttlMs)]
+  if (typeof client.eval === "function") {
+    try {
+      return Number(await client.eval(script, { keys: [lock.key], arguments: args })) || 0
+    } catch {
+      return Number(await client.eval(script, 1, lock.key, ...args)) || 0
+    }
+  }
+  // Local/test adapter fallback. Production Redis uses the atomic Lua branch.
+  if (String(await client.get(lock.key).catch(() => "")) !== lock.token) return 0
+  if (ttlMs !== undefined) {
+    if (typeof client.pExpire === "function") return Number(await client.pExpire(lock.key, ttlMs)) || 0
+    if (typeof client.pexpire === "function") return Number(await client.pexpire(lock.key, ttlMs)) || 0
+    if (typeof client.expire === "function") return Number(await client.expire(lock.key, Math.ceil(ttlMs / 1000))) || 0
+    return 1
+  }
+  return Number(await client.del(lock.key).catch(() => 0)) || 0
+}
+
 /**
  * Cryptographically-strong short ID generator.
  * Uses crypto.getRandomValues (Web Crypto, available Node 18+ globally) so
@@ -244,6 +288,8 @@ export class PseudoPositionManager {
     trailingStopRatio?: number
     trailingStepRatio?: number
   }): Promise<string | null> {
+    let creationLock: DirectionCreationLock | null = null
+    let stopCreationLockRefresh: (() => void) | null = null
     try {
       // Multi-step path forces trailing on regardless of caller flag —
       // the operator opted into the matrix so the position MUST honour it.
@@ -274,15 +320,16 @@ export class PseudoPositionManager {
       ].join(":")
 
       // P0-4: Gate on both Set-uniqueness AND the per-direction cap.
-      const canCreate = await this.canCreatePosition(
+      creationLock = await this.canCreatePosition(
         params.symbol,
         configSetKey,
         params.side,
       )
 
-      if (!canCreate) {
+      if (!creationLock) {
         return null  // silent — one position per config set is expected, or direction cap reached
       }
+      stopCreationLockRefresh = this.startDirectionCreationLockLeaseRefresh(creationLock)
 
       // ── Volume calculation ──────────────────────────────────────────
       const volumeCalc = await (async () => {
@@ -348,6 +395,10 @@ export class PseudoPositionManager {
       // Generate unique tracking ID to identify system-created positions
       const systemTrackingId = `sys-${this.connectionId}-${nanoid(8)}`
       const client = getRedisClient()
+
+      // Re-validate immediately before the atomic write. If Redis stalled long
+      // enough for the lease to expire, an expired worker must never write after a newer creator.
+      if (!(await this.refreshDirectionCreationLock(creationLock))) return null
 
       const positionData: Record<string, string> = {
         connection_id: this.connectionId,
@@ -446,6 +497,9 @@ export class PseudoPositionManager {
     } catch (error) {
       console.error("[v0] Failed to create pseudo position:", error)
       return null
+    } finally {
+      stopCreationLockRefresh?.()
+      if (creationLock) await this.releaseDirectionCreationLock(creationLock).catch(() => false)
     }
   }
 
@@ -1081,35 +1135,55 @@ export class PseudoPositionManager {
    * (unbounded). Spec: *"Active Pseudo Position Limit for each
    * direction Long,short maximal 1"*.
    */
+  private async refreshDirectionCreationLock(lock: DirectionCreationLock): Promise<boolean> {
+    return (await evalDirectionCreationLock(
+      getRedisClient(),
+      REFRESH_DIRECTION_CREATION_LOCK_LUA,
+      lock,
+      DIRECTION_CREATION_LOCK_TTL_MS,
+    )) === 1
+  }
+
+  private startDirectionCreationLockLeaseRefresh(lock: DirectionCreationLock): () => void {
+    const timer = setInterval(() => {
+      void this.refreshDirectionCreationLock(lock).catch(() => false)
+    }, Math.max(1000, Math.floor(DIRECTION_CREATION_LOCK_TTL_MS / 3)))
+    timer.unref?.()
+    return () => clearInterval(timer)
+  }
+
+  private async releaseDirectionCreationLock(lock: DirectionCreationLock): Promise<boolean> {
+    return (await evalDirectionCreationLock(
+      getRedisClient(),
+      RELEASE_DIRECTION_CREATION_LOCK_LUA,
+      lock,
+    )) === 1
+  }
+
   private async canCreatePosition(
     symbol: string,
     configSetKey: string,
     side?: "long" | "short",
-  ): Promise<boolean> {
+  ): Promise<DirectionCreationLock | null> {
+    let lock: DirectionCreationLock | null = null
     try {
       const client = getRedisClient()
-      // Gate 1: SET NX mutex (5 s TTL) + double-check via SISMEMBER.
-      // SISMEMBER + SADD was racy: both callers could see `false` before
-      // either added to the set, producing duplicate positions.
-      const gateKey = `pseudo:gate:${this.connectionId}:${configSetKey}`
-      const acquired = await client.set(gateKey, "1", { NX: true, EX: 5 })
-      if (!acquired) return false
-      // Second check: the Set may already contain the key from a prior run
-      // (the gate TTL expired but the Set entry persisted). Double-check.
+      // One token-owned lease per connection+direction serializes both the
+      // config uniqueness check and the direction-wide cap across symbols.
+      lock = {
+        key: `pseudo:creation_lock:${this.connectionId}:${side || symbol || "legacy"}`,
+        token: nanoid(24),
+      }
+      const acquired = await client.set(lock.key, lock.token, {
+        NX: true,
+        PX: DIRECTION_CREATION_LOCK_TTL_MS,
+      } as any)
+      if (!acquired) return null
+
       const isMember = await client.sismember(this.activeConfigKeysSetKey(), configSetKey)
       if (isMember) {
-        // STALE-LOCK REPAIR: The gate mutex expired (5 s TTL) but the
-        // key is still in the active set — this means the prior owner
-        // crashed without cleaning up. Remove the stale entry with SREM
-        // so future ticks are not permanently blocked for this configKey.
-        try {
-          await client.srem(this.activeConfigKeysSetKey(), configSetKey)
-        } catch { /* best-effort sink clearing */ }
-        // Release the gate so another tick on a different configKey
-        // (or the same configKey after the stale entry was removed)
-        // can proceed without waiting 5 s.
-        await client.del(gateKey).catch(() => {})
-        return false
+        await this.releaseDirectionCreationLock(lock).catch(() => false)
+        return null
       }
 
       // Gate 2: per-direction cap (SCARD). When `side` is not supplied
@@ -1120,17 +1194,16 @@ export class PseudoPositionManager {
         const cap = await this.getMaxActivePerDirection()
         const count = await client.scard(this.activeByDirectionKey(side))
         if (Number(count) >= cap) {
-          return false
+          await this.releaseDirectionCreationLock(lock).catch(() => false)
+          return null
         }
       }
-      return true
+      return lock
     } catch (error) {
       console.error("[v0] Failed to check position limit:", error)
-      // On Redis error fall through and allow creation (fail-open).
-      // The spec default of 1 per direction is enforced via the cap
-      // cache's default, so a brief cache miss during a Redis blip
-      // won't let the cap silently drift.
-      return true
+      if (lock) await this.releaseDirectionCreationLock(lock).catch(() => false)
+      // Fail closed: without a verified lease we cannot guarantee uniqueness.
+      return null
     }
   }
 

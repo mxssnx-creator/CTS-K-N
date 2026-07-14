@@ -32,7 +32,10 @@
     "postvercel-build": "node scripts/normalize-next-env.mjs",
     "build:prod-parallel": "NEXT_DIST_DIR=.next-prod pnpm run build",
     "start:prod-parallel": "NEXT_DIST_DIR=.next-prod PORT=${PORT:-3003} pnpm run start",
-    "test:quickstart-12": "SYMBOL_COUNT=12 pnpm run test:quickstart-3"
+    "test:quickstart-12": "SYMBOL_COUNT=12 pnpm run test:quickstart-3",
+    "test:stress-32": "NODE_OPTIONS='--expose-gc --max-old-space-size=1024' node scripts/stress-bingx-public-32.mjs",
+    "test:prod-preview": "node scripts/run-prod-preview-check.mjs",
+    "test:prod-preview:verify": "node scripts/verify-prod-preview.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

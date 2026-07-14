@@ -3,7 +3,6 @@
 import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } from "@/lib/connection-events"
 import { useDashboardEvents } from "@/lib/dashboard-events"
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
-import { isCanonicalEventFresh, mergeFreshEventCursor, type CanonicalEvent, type EventFreshnessCursor } from "@/lib/events/schema"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -166,7 +165,6 @@ export function ActiveConnectionCard({
   const [presetTradeStatus, setPresetTradeStatus] = useState<"idle" | "active" | "paused" | "stopped">("idle")
   // Live engine-stats counters displayed under the progress bar
   // Ref to current phase — used inside stable interval callback to avoid recreating on every phase change
-  const canonicalCursorRef = useRef<EventFreshnessCursor>({})
   const progressionFetchSeqRef = useRef(0)
   const liveStatsFetchSeqRef = useRef(0)
   const phaseRef = useRef<string>("idle")
@@ -533,14 +531,21 @@ export function ActiveConnectionCard({
   }, [connection.connectionId])
 
 
-  const dashboardEventHandlers = useMemo(() => ({
-    "connection.updated": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
-    "settings.recoordinated": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
-    "engine.stage.changed": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
-    "progression.updated": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
-    "live.summary.updated": () => setDashboardEventRefreshKey((key) => key + 1),
-    "monitoring.updated": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
-  }), [fetchProgression])
+  const dashboardEventHandlers = useMemo(() => {
+    const refreshProgression = () => {
+      void fetchProgression()
+      setDashboardEventRefreshKey((key) => key + 1)
+    }
+    const refreshSummary = () => setDashboardEventRefreshKey((key) => key + 1)
+    return {
+      "connection.updated": refreshProgression,
+      "settings.recoordinated": refreshProgression,
+      "engine.stage.changed": refreshProgression,
+      "progression.updated": refreshProgression,
+      "live.summary.updated": refreshSummary,
+      "monitoring.updated": refreshProgression,
+    }
+  }, [fetchProgression])
   useDashboardEvents(connection.connectionId, dashboardEventHandlers)
   // Keep phaseRef current so the stable interval can read it without recreating
   useEffect(() => {
@@ -568,10 +573,10 @@ export function ActiveConnectionCard({
     fetchProgression()
     // Dashboard SSE is the fast path, but production deployments can lose the
     // event stream during reconnects/proxy buffering. Keep a small canonical
-    // polling fallback so the connection card never freezes with stale progress.
+    // low-frequency fallback so the connection card never freezes with stale progress.
     const progressionPollInterval = window.setInterval(() => {
       fetchProgression()
-    }, 4_000)
+    }, 15_000)
 
     // Steady-state progression updates arrive via dashboard SSE events.
     const handleConnectionToggled = () => { fetchProgression() }
@@ -590,23 +595,6 @@ export function ActiveConnectionCard({
         fetchProgression()
       }
     }
-    const handleCanonicalEvent = (event: Event) => {
-      const canonical = (event as CustomEvent<CanonicalEvent>).detail
-      if (!canonical || canonical.connectionId !== connection.connectionId) return
-      const cursor = canonicalCursorRef.current
-      if (!isCanonicalEventFresh(canonical, cursor)) return
-      canonicalCursorRef.current = mergeFreshEventCursor(cursor, canonical)
-      if (
-        canonical.type === "progression.epochStarted" ||
-        canonical.type === "progression.stageChanged" ||
-        canonical.type === "connection.recoordinated" ||
-        canonical.type === "strategy.stageChanged" ||
-        canonical.type === "live.stageChanged"
-      ) {
-        fetchProgression()
-      }
-    }
-
     const handleSettingsUpdated = (event: Event) => {
       const customEvent = event as CustomEvent
       if (customEvent.detail?.connectionId === connection.connectionId) {
@@ -634,7 +622,6 @@ export function ActiveConnectionCard({
       window.addEventListener("live-trade-toggled", handleLiveTradeToggled)
       window.addEventListener("engine-state-changed", handleConnectionToggled)
       window.addEventListener("connection-settings-updated", handleSettingsUpdated)
-      window.addEventListener("canonical-event", handleCanonicalEvent)
     }
 
     return () => {
@@ -644,12 +631,12 @@ export function ActiveConnectionCard({
         window.removeEventListener("live-trade-toggled", handleLiveTradeToggled)
         window.removeEventListener("engine-state-changed", handleConnectionToggled)
         window.removeEventListener("connection-settings-updated", handleSettingsUpdated)
-        window.removeEventListener("canonical-event", handleCanonicalEvent)
       }
     }
   }, [fetchProgression, connection.connectionId])
 
-  // Fetch live stats every 4s from the canonical /stats endpoint (per-connection, cumulative)
+  // Canonical events are the fast path; 15 s is a continuity fallback for
+  // proxy buffering or a cross-worker stream gap.
   useEffect(() => {
     if (!connection.isActive && !globalEngineRunning) {
       setLiveStats(null)
@@ -864,7 +851,7 @@ export function ActiveConnectionCard({
     fetchLiveStats()
     const liveStatsPollInterval = window.setInterval(() => {
       fetchLiveStats()
-    }, 4_000)
+    }, 15_000)
 
     return () => {
       window.clearInterval(liveStatsPollInterval)

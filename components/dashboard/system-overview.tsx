@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useRef } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Settings, Zap, Database, Network, Activity, TrendingUp, Wifi, WifiOff } from "lucide-react"
@@ -87,12 +87,17 @@ export function SystemOverview() {
     },
   })
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
-  const dashboardEventHandlers = useMemo(() => ({
-    "connection.updated": () => setEventRefreshKey((key) => key + 1),
-    "settings.recoordinated": () => setEventRefreshKey((key) => key + 1),
-    "engine.stage.changed": () => setEventRefreshKey((key) => key + 1),
-    "monitoring.updated": () => setEventRefreshKey((key) => key + 1),
-  }), [])
+  const connectionFetchSequenceRef = useRef(0)
+  const statsFetchSequenceRef = useRef(0)
+  const dashboardEventHandlers = useMemo(() => {
+    const refresh = () => setEventRefreshKey((key) => key + 1)
+    return {
+      "connection.updated": refresh,
+      "settings.recoordinated": refresh,
+      "engine.stage.changed": refresh,
+      "monitoring.updated": refresh,
+    }
+  }, [])
   useDashboardEvents("*", dashboardEventHandlers)
 
 
@@ -147,13 +152,15 @@ export function SystemOverview() {
 
   useEffect(() => {
     const loadPerConnectionInfo = async () => {
+      const requestSequence = ++connectionFetchSequenceRef.current
       try {
         const res = await fetch("/api/settings/connections?t=" + Date.now(), {
           cache: "no-store",
           headers: { "Cache-Control": "no-cache, no-store, must-revalidate" },
         })
-        if (!res.ok) return
+        if (!res.ok || requestSequence !== connectionFetchSequenceRef.current) return
         const data = await res.json()
+        if (requestSequence !== connectionFetchSequenceRef.current) return
         const allConns = Array.isArray(data) ? data : (data?.connections || [])
         const toB = (v: unknown) => v === true || v === "1" || v === "true"
         const activeConns: PerConnectionInfo[] = allConns
@@ -173,13 +180,15 @@ export function SystemOverview() {
     }
 
     const loadStats = async () => {
+      const requestSequence = ++statsFetchSequenceRef.current
       try {
         const response = await fetch("/api/main/system-stats-v3", {
           cache: "no-store",
           headers: { "Cache-Control": "no-cache" },
         })
-        if (response.ok) {
+        if (response.ok && requestSequence === statsFetchSequenceRef.current) {
           const data = await response.json()
+          if (requestSequence !== statsFetchSequenceRef.current) return
           setStats(normalizeSystemStats(data))
         }
       } catch {
@@ -200,6 +209,8 @@ export function SystemOverview() {
     }
 
     return () => {
+      connectionFetchSequenceRef.current++
+      statsFetchSequenceRef.current++
       if (typeof window !== 'undefined') {
         window.removeEventListener('connection-toggled', handleConnectionToggled)
         window.removeEventListener('live-trade-toggled', handleLiveTradeToggled)

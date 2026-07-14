@@ -63,6 +63,7 @@ const globalForRedis = globalThis as unknown as {
   __redis_fully_connected?: boolean
   __redis_backend?: RedisBackend
   __redis_volatile_startup_cleanup_ran?: boolean
+  __connection_state_queues?: Map<string, Promise<void>>
 }
 
 export type RedisBackend = "inline-local" | "redis-network"
@@ -72,7 +73,7 @@ export interface RedisClientLike {
   info(): Promise<string>
   get(key: string): Promise<string | null>
   mget(...keys: string[]): Promise<Array<string | null>>
-  set(key: string, value: string, options?: { EX?: number; NX?: boolean; XX?: boolean }): Promise<string | null>
+  set(key: string, value: string, options?: { EX?: number; PX?: number; NX?: boolean; XX?: boolean }): Promise<string | null>
   setex(key: string, seconds: number, value: string): Promise<void | string>
   incr(key: string): Promise<number>
   incrby(key: string, increment: number): Promise<number>
@@ -1231,7 +1232,7 @@ export class InlineLocalRedis implements RedisClientLike {
   async set(
     key: string,
     value: string,
-    options?: { EX?: number; NX?: boolean; XX?: boolean },
+    options?: { EX?: number; PX?: number; NX?: boolean; XX?: boolean },
   ): Promise<string | null> {
     this.trackOperation()
     if (options?.NX || options?.XX) {
@@ -1244,6 +1245,8 @@ export class InlineLocalRedis implements RedisClientLike {
     this.data.strings.set(key, value)
     if (options?.EX) {
       this.setKeyTTL(key, options.EX)
+    } else if (options?.PX && Number.isFinite(options.PX) && options.PX > 0) {
+      this.data.ttl.set(key, Date.now() + options.PX)
     }
     return "OK"
   }
@@ -1960,7 +1963,7 @@ class NodeRedisClientAdapter implements RedisClientLike {
   async info() { return String(await (await this.c()).info()) }
   async get(key: string) { return await (await this.c()).get(key) }
   async mget(...keys: string[]) { return await (await this.c()).mGet(keys) }
-  async set(key: string, value: string, options?: { EX?: number; NX?: boolean; XX?: boolean }) { return await (await this.c()).set(key, value, options as any) }
+  async set(key: string, value: string, options?: { EX?: number; PX?: number; NX?: boolean; XX?: boolean }) { return await (await this.c()).set(key, value, options as any) }
   async setex(key: string, seconds: number, value: string) { return await (await this.c()).setEx(key, seconds, value) }
   async incr(key: string) { return await (await this.c()).incr(key) }
   async incrby(key: string, increment: number) { return await (await this.c()).incrBy(key, increment) }
@@ -2078,7 +2081,7 @@ class UpstashRestRedisClient implements RedisClientLike {
   async info() { return "redis_version:upstash-rest" }
   async get(key: string) { return await this.command<string | null>(["GET", key]) }
   async mget(...keys: string[]) { return await this.command<Array<string | null>>(["MGET", ...keys]) }
-  async set(key: string, value: string, options?: { EX?: number; NX?: boolean; XX?: boolean }) { const cmd: Array<string | number> = ["SET", key, value]; if (options?.NX) cmd.push("NX"); if (options?.XX) cmd.push("XX"); if (options?.EX) cmd.push("EX", options.EX); return await this.command<string | null>(cmd) }
+  async set(key: string, value: string, options?: { EX?: number; PX?: number; NX?: boolean; XX?: boolean }) { const cmd: Array<string | number> = ["SET", key, value]; if (options?.NX) cmd.push("NX"); if (options?.XX) cmd.push("XX"); if (options?.EX) cmd.push("EX", options.EX); else if (options?.PX) cmd.push("PX", options.PX); return await this.command<string | null>(cmd) }
   async setex(key: string, seconds: number, value: string) { await this.command(["SETEX", key, seconds, value]) }
   async incr(key: string) { return await this.command<number>(["INCR", key]) }
   async incrby(key: string, increment: number) { return await this.command<number>(["INCRBY", key, increment]) }
@@ -3522,6 +3525,7 @@ export async function savePosition(position: any): Promise<void> {
           // Only add if not already present
           await client.lpush(`live:positions:${connId}:closed`, id).catch(() => 0)
         }
+        await client.ltrim(`live:positions:${connId}:closed`, 0, 499).catch(() => {})
         // Mark moved so closeLivePosition can detect duplicate increments
         await client.set(`live:positions:${connId}:moved:${id}`, String(Date.now())).catch(() => null)
         await client.expire(`live:positions:${connId}:moved:${id}`, 60 * 60).catch(() => 0)
@@ -3751,9 +3755,8 @@ export function isConnectionBaseEnabled(connection: any): boolean {
   return isEnabledFlag(connection.is_enabled)
 }
 
-export function buildMainConnectionEnableUpdate(connection: any): any {
+export function buildMainConnectionEnableUpdate(_connection: any): any {
   return {
-    ...connection,
     is_assigned: "1",
     is_enabled_dashboard: "1",
     is_dashboard_inserted: "1",
@@ -3763,9 +3766,8 @@ export function buildMainConnectionEnableUpdate(connection: any): any {
   }
 }
 
-export function buildMainConnectionDisableUpdate(connection: any): any {
+export function buildMainConnectionDisableUpdate(_connection: any): any {
   return {
-    ...connection,
     is_assigned: "1",
     is_enabled_dashboard: "0",
     is_active: "0",
@@ -3773,9 +3775,8 @@ export function buildMainConnectionDisableUpdate(connection: any): any {
   }
 }
 
-export function buildMainConnectionRemoveUpdate(connection: any): any {
+export function buildMainConnectionRemoveUpdate(_connection: any): any {
   return {
-    ...connection,
     is_assigned: "0",
     is_active_inserted: "0",
     is_dashboard_inserted: "0",
@@ -3785,9 +3786,8 @@ export function buildMainConnectionRemoveUpdate(connection: any): any {
   }
 }
 
-export function buildBaseConnectionEnableUpdate(connection: any): any {
+export function buildBaseConnectionEnableUpdate(_connection: any): any {
   return {
-    ...connection,
     is_enabled: "1",
     is_inserted: "1",
     updated_at: new Date().toISOString(),
@@ -4057,32 +4057,188 @@ export async function updateConnection(id: string, updates: any): Promise<any> {
   if (!existing || Object.keys(existing).length === 0) {
     return null
   }
-  const updated = {
-    ...existing,
-    ...updates,
-    updated_at: new Date().toISOString(),
-  }
-  const canonicalSettingsPatch = Object.entries(updated).reduce<Record<string, string>>(
+  const updatedAt = new Date().toISOString()
+  const connectionPatch = Object.entries(updates || {}).reduce<Record<string, any>>(
+    (patch, [key, value]) => {
+      // `undefined` means "not supplied" for every settings/switch route. Do
+      // not stringify it into Redis or accidentally clear a sibling setting.
+      if (value !== undefined) patch[key] = value
+      return patch
+    },
+    { updated_at: updatedAt },
+  )
+  const canonicalSettingsPatch = Object.entries(connectionPatch).reduce<Record<string, string>>(
     (patch, [key, value]) => {
       if (CONNECTION_SETTINGS_CANONICAL_FIELDS.has(key) && value !== undefined && value !== null) {
         patch[key] = typeof value === "string" ? value : JSON.stringify(value)
       }
       return patch
     },
-    { updated_at: String(updated.updated_at) },
+    { updated_at: updatedAt },
   )
 
+  // Write only changed fields. The former read/merge/full-HSET sequence lost
+  // concurrent edits to unrelated fields because the last stale snapshot won.
+  // Redis HSETs on disjoint fields now compose safely; same-field switches keep
+  // normal last-writer semantics and are ordered by state_switch_version.
   await Promise.all([
-    client.hset(`connection:${id}`, updated),
+    client.hset(`connection:${id}`, connectionPatch),
     // Keep the canonical settings mirror in the same write barrier. Readers
     // intentionally merge this hash with connection:{id}; leaving an older
     // mirror behind can override a newly enabled live-trade flag or symbol
     // basket and silently route a requested live run through simulation.
     client.hset(`settings:connection:${id}`, canonicalSettingsPatch),
-    syncMainEnabledConnectionIndex(client, updated),
   ])
+  const updated = await client.hgetall(`connection:${id}`)
+  await syncMainEnabledConnectionIndex(client, updated)
   invalidateConnectionsCache()
   return updated
+}
+
+export interface ConnectionStatePatchResult {
+  applied: boolean
+  connection: Record<string, any> | null
+}
+
+export interface ConnectionStateRelatedHashPatch {
+  key: string
+  patch: Record<string, unknown>
+}
+
+function redisHashValue(value: unknown): string {
+  if (typeof value === "string") return value
+  if (value === null) return ""
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value)
+  return JSON.stringify(value)
+}
+
+/**
+ * Atomically commit a runtime switch generation if it is newer than the
+ * generation currently stored on the connection.
+ *
+ * Shared Redis uses one Lua compare-and-HSET across the connection and its
+ * canonical settings mirror. Inline preview uses a global per-connection
+ * promise queue. Returning `applied:false` lets route handlers stop before
+ * publishing/queuing work for an obsolete user action.
+ */
+export async function updateConnectionState(
+  id: string,
+  updates: Record<string, any>,
+  stateSwitchVersion: string | number,
+  options: { relatedHashPatches?: ConnectionStateRelatedHashPatch[] } = {},
+): Promise<ConnectionStatePatchResult> {
+  const client = getRedisClient()
+  const existing = await client.hgetall(`connection:${id}`)
+  if (!existing || Object.keys(existing).length === 0) return { applied: false, connection: null }
+
+  const proposedVersion = Number(stateSwitchVersion)
+  if (!Number.isSafeInteger(proposedVersion) || proposedVersion < 0) {
+    throw new Error(`Invalid state switch generation for ${id}: ${stateSwitchVersion}`)
+  }
+  const updatedAt = new Date().toISOString()
+  const connectionPatch = Object.entries({
+    ...updates,
+    state_switch_version: String(proposedVersion),
+    updated_at: updates.updated_at || updatedAt,
+  }).reduce<Record<string, string>>((patch, [key, value]) => {
+    if (value !== undefined) patch[key] = redisHashValue(value)
+    return patch
+  }, {})
+  const canonicalSettingsPatch = Object.entries(connectionPatch).reduce<Record<string, string>>(
+    (patch, [key, value]) => {
+      if (key === "updated_at" || CONNECTION_SETTINGS_CANONICAL_FIELDS.has(key)) patch[key] = value
+      return patch
+    },
+    {},
+  )
+  const relatedHashPatches = (options.relatedHashPatches || [])
+    .filter((item) => item?.key && Object.keys(item.patch || {}).length > 0)
+    .map((item) => ({
+      key: item.key,
+      patch: Object.entries(item.patch).reduce<Record<string, string>>((out, [field, value]) => {
+        if (value !== undefined) out[field] = redisHashValue(value)
+        return out
+      }, {}),
+    }))
+
+  let applied = false
+  if (getRedisBackend() === "redis-network") {
+    if (typeof client.eval !== "function") {
+      throw new Error("Shared Redis adapter does not support atomic state transitions")
+    }
+    const connectionEntries = Object.entries(connectionPatch)
+    const settingsEntries = Object.entries(canonicalSettingsPatch)
+    const relatedEntries = relatedHashPatches.map((item) => ({ key: item.key, entries: Object.entries(item.patch) }))
+    const script = `
+      if redis.call('EXISTS', KEYS[1]) == 0 then return -1 end
+      local current = tonumber(redis.call('HGET', KEYS[1], 'state_switch_version') or '0') or 0
+      local proposed = tonumber(ARGV[1])
+      if (not proposed) or proposed <= current then return 0 end
+      local index = 2
+      local connectionCount = tonumber(ARGV[index]); index = index + 1
+      for i = 1, connectionCount do
+        redis.call('HSET', KEYS[1], ARGV[index], ARGV[index + 1])
+        index = index + 2
+      end
+      local settingsCount = tonumber(ARGV[index]); index = index + 1
+      for i = 1, settingsCount do
+        redis.call('HSET', KEYS[2], ARGV[index], ARGV[index + 1])
+        index = index + 2
+      end
+      local relatedCount = tonumber(ARGV[index]); index = index + 1
+      for relatedIndex = 1, relatedCount do
+        local fieldCount = tonumber(ARGV[index]); index = index + 1
+        for fieldIndex = 1, fieldCount do
+          redis.call('HSET', KEYS[relatedIndex + 2], ARGV[index], ARGV[index + 1])
+          index = index + 2
+        end
+      end
+      return 1
+    `
+    const result = await client.eval(script, {
+      keys: [`connection:${id}`, `settings:connection:${id}`, ...relatedEntries.map((item) => item.key)],
+      arguments: [
+        String(proposedVersion),
+        String(connectionEntries.length),
+        ...connectionEntries.flatMap(([field, value]) => [field, value]),
+        String(settingsEntries.length),
+        ...settingsEntries.flatMap(([field, value]) => [field, value]),
+        String(relatedEntries.length),
+        ...relatedEntries.flatMap((item) => [
+          String(item.entries.length),
+          ...item.entries.flatMap(([field, value]) => [field, value]),
+        ]),
+      ],
+    })
+    applied = Number(result) === 1
+  } else {
+    const queues = globalForRedis.__connection_state_queues || new Map<string, Promise<void>>()
+    globalForRedis.__connection_state_queues = queues
+    const previous = queues.get(id) || Promise.resolve()
+    const current = previous.catch(() => undefined).then(async () => {
+      const latest = await client.hgetall(`connection:${id}`)
+      if (!latest || Object.keys(latest).length === 0) return
+      const currentVersion = Number(latest?.state_switch_version ?? 0)
+      if (Number.isFinite(currentVersion) && proposedVersion <= currentVersion) return
+      await Promise.all([
+        client.hset(`connection:${id}`, connectionPatch),
+        client.hset(`settings:connection:${id}`, canonicalSettingsPatch),
+        ...relatedHashPatches.map((item) => client.hset(item.key, item.patch)),
+      ])
+      applied = true
+    })
+    queues.set(id, current)
+    try {
+      await current
+    } finally {
+      if (queues.get(id) === current) queues.delete(id)
+    }
+  }
+
+  const connection = await client.hgetall(`connection:${id}`)
+  if (applied) await syncMainEnabledConnectionIndex(client, connection)
+  invalidateConnectionsCache()
+  return { applied, connection }
 }
 
 export async function createPosition(data: any): Promise<any> {

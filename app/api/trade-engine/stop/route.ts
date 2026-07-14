@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
+import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
 
 // Clear ALL stale engine timers
 function clearAllEngineTimers() {
@@ -45,7 +46,7 @@ export async function POST(request: NextRequest) {
     // If no connectionId, stop ALL engines (global shutdown)
     if (!connectionId) {
       // 1. Find all connections with active engines and record them for potential resume
-      const { getAllConnections, updateConnection } = await import("@/lib/redis-db")
+      const { getAllConnections, updateConnectionState } = await import("@/lib/redis-db")
       const allConnections = await getAllConnections()
       const pausedConnections: string[] = []
       const pausedPresetConnections: string[] = []
@@ -55,22 +56,26 @@ export async function POST(request: NextRequest) {
         const isPresetTrade = conn.is_preset_trade === "1" || conn.is_preset_trade === true
         
         if (isLiveTrade || isPresetTrade) {
+          const stateSwitchVersion = await allocateStateSwitchVersion(conn.id, conn)
           const updates: Record<string, string> = {
+            state_switch_version: stateSwitchVersion,
+            state_switch_action: "global_stop",
             updated_at: new Date().toISOString(),
           }
           
           if (isLiveTrade) {
-            pausedConnections.push(conn.id)
             updates.is_live_trade = "0"
             updates.paused_by_global = "1"
           }
           if (isPresetTrade) {
-            pausedPresetConnections.push(conn.id)
             updates.is_preset_trade = "0"
             updates.paused_preset_by_global = "1"
           }
           
-          await updateConnection(conn.id, { ...conn, ...updates })
+          const transition = await updateConnectionState(conn.id, updates, stateSwitchVersion)
+          if (!transition.applied) continue
+          if (isLiveTrade) pausedConnections.push(conn.id)
+          if (isPresetTrade) pausedPresetConnections.push(conn.id)
           console.log("[v0] [Trade Engine] Paused connection:", conn.id, conn.name, 
             isLiveTrade ? "(main)" : "", isPresetTrade ? "(preset)" : "")
         }
@@ -142,6 +147,29 @@ export async function POST(request: NextRequest) {
     }
 
     try {
+      const stateSwitchVersion = await allocateStateSwitchVersion(connectionId, connection)
+      const stoppedAt = new Date().toISOString()
+      const { updateConnectionState } = await import("@/lib/redis-db")
+      const transition = await updateConnectionState(connectionId, {
+        is_enabled_dashboard: "0",
+        is_active: "0",
+        state_switch_version: stateSwitchVersion,
+        state_switch_action: "engine_stop",
+        updated_at: stoppedAt,
+      }, stateSwitchVersion)
+      if (!transition.applied) {
+        return NextResponse.json(
+          { success: false, error: "Stop was superseded by a newer connection state" },
+          { status: 409 },
+        )
+      }
+      await queueEngineRefreshRequest({
+        connectionId,
+        action: "stop",
+        state_switch_version: stateSwitchVersion,
+        reason: "trade_engine_stop_endpoint",
+        timestamp: stoppedAt,
+      })
       // Stop the engine via coordinator
       await coordinator.stopEngine(connectionId, { operatorRequested: true })
 
