@@ -26,6 +26,7 @@ import {
   loadCompactionConfig,
   type CompactionConfig,
 } from "@/lib/sets-compaction"
+import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
 
 export interface EvaluationMetrics {
   maxDrawdownTime: number
@@ -1236,18 +1237,11 @@ export class StrategyCoordinator {
       // fall back to the global app setting, else the built-in default below.
       // We overlay the connection hash on top of global settings so any field
       // the operator did NOT set per-connection transparently inherits global.
-      let connS: Record<string, string> = {}
-      try {
-        connS = ((await getRedisClient().hgetall(`connection_settings:${this.connectionId}`)) ||
-          {}) as Record<string, string>
-      } catch {
-        connS = {}
-      }
-      const s: Record<string, unknown> = { ...(globalS as Record<string, unknown>) }
-      // Only let non-empty connection-hash scalars override.
-      for (const [k, v] of Object.entries(connS)) {
-        if (v !== undefined && v !== null && v !== "") s[k] = v
-      }
+      const connS = await getCanonicalConnectionSettingsOverlay(this.connectionId).catch(() => ({} as Record<string, string>))
+      const s: Record<string, unknown> = overlayNonEmpty(
+        { ...(globalS as Record<string, unknown>) },
+        connS as Record<string, unknown>,
+      )
       const clamp = (raw: unknown, fallback: number): number => {
         const n = Number(raw)
         if (!Number.isFinite(n) || n < 0) return fallback
@@ -1414,17 +1408,11 @@ export class StrategyCoordinator {
       // axisPrevEnabled, blockVolumeRatio, etc.) into `connection_settings:{id}`.
       // Overlay them on top of global settings so any field the operator did
       // NOT set per-connection transparently inherits the global value.
-      let connS: Record<string, string> = {}
-      try {
-        connS = ((await getRedisClient().hgetall(`connection_settings:${this.connectionId}`)) ||
-          {}) as Record<string, string>
-      } catch {
-        connS = {}
-      }
-      const s: Record<string, unknown> = { ...(globalS as Record<string, unknown>) }
-      for (const [k, v] of Object.entries(connS)) {
-        if (v !== undefined && v !== null && v !== "") s[k] = v
-      }
+      const connS = await getCanonicalConnectionSettingsOverlay(this.connectionId).catch(() => ({} as Record<string, string>))
+      const s: Record<string, unknown> = overlayNonEmpty(
+        { ...(globalS as Record<string, unknown>) },
+        connS as Record<string, unknown>,
+      )
 
       // Boolean helper: accepts "true"/true → true, "false"/false → false,
       // undefined → supplied default. Mirrors the hash-stored "true"/"false"
@@ -1832,13 +1820,9 @@ export class StrategyCoordinator {
     if ((this as any)._trailingVariantsCache) return (this as any)._trailingVariantsCache
     try {
       // Lazy import to avoid circular deps in legacy callers
-      const { getAppSettings, getRedisClient } = await import("@/lib/redis-db")
+      const { getAppSettings } = await import("@/lib/redis-db")
       const appSettings = (await getAppSettings()) || {}
-      let connSettings: Record<string, unknown> = {}
-      try {
-        const client = getRedisClient()
-        connSettings = ((await client.hgetall(`connection_settings:${this.connectionId}`).catch(() => null)) || {}) as Record<string, unknown>
-      } catch { /* default stays */ }
+      const connSettings = await getCanonicalConnectionSettingsOverlay(this.connectionId).catch(() => ({} as Record<string, string>)) as Record<string, unknown>
       // Connection settings override global app settings so per-connection
       // trailing-range edits are picked up by the same recoordination
       // fingerprint that restarts/stamps progression. This keeps the Engine
@@ -1982,10 +1966,7 @@ export class StrategyCoordinator {
           prevPosMinCount = this._prevPosMinCountValue
           prevPosWindow = this._prevPosWindowValue
         } else {
-          const client = getRedisClient()
-          const cs = (await client.hgetall(
-            `connection_settings:${this.connectionId}`,
-          )) as Record<string, string>
+          const cs = await getCanonicalConnectionSettingsOverlay(this.connectionId).catch(() => ({} as Record<string, string>))
           const v = Number(cs?.prevPosMinCount || cs?.prevPiMinCount || "")
           if (Number.isFinite(v) && v >= 1) prevPosMinCount = Math.min(50, Math.floor(v))
           this._prevPosMinCountValue = prevPosMinCount
@@ -4564,7 +4545,7 @@ export class StrategyCoordinator {
       maxLive = this._cachedExchangeMaxLive || 500
 
       if (!this._cachedLivePositionCost || now - this._cachedLivePositionCostAt > 5 * 60 * 1000) {
-        const connSettings = await getRedisClient().hgetall(`connection_settings:${this.connectionId}`).catch(() => ({}))
+        const connSettings = await getCanonicalConnectionSettingsOverlay(this.connectionId).catch(() => ({} as Record<string, string>))
         const rawCost = Number((connSettings as any)?.exchangePositionCost ?? (connSettings as any)?.positionCost ?? "")
         this._cachedLivePositionCost = Number.isFinite(rawCost) && rawCost > 0 ? rawCost : 0.1
         this._cachedLivePositionCostAt = now
