@@ -2491,6 +2491,7 @@ export function ActiveConnectionCard({
           onOpenChange={setSettingsDialogOpen}
           connectionId={connection.connectionId}
           connectionName={connName}
+          exchange={details?.exchange || connection.exchangeName}
         />
       )}
       <ProgressionLogsDialog

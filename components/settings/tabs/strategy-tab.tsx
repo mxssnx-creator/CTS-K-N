@@ -6,9 +6,12 @@ import { Separator } from "@/components/ui/separator"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import AutoIndicationSettings from "@/components/settings/auto-indication-settings"
 import MultiTrailingSettings from "@/components/settings/strategy/multi-trailing-settings"
 import { useState } from "react"
+import { DEFAULT_DCA_PROFILE } from "@/lib/dca-strategy"
+import { parseStoredBoolean } from "@/lib/trailing-settings"
 
 interface StrategyTabProps {
   settings: any
@@ -18,6 +21,24 @@ interface StrategyTabProps {
 export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps) {
   const [strategySubTab, setStrategySubTab] = useState("main")
   const [strategyMainSubTab, setStrategyMainSubTab] = useState("base")
+  const blockAdjustmentEnabled = parseStoredBoolean(settings.blockAdjustment, true)
+  const dcaAdjustmentEnabled = parseStoredBoolean(settings.dcaAdjustment, false)
+  const dcaVolumes: number[] = Array.isArray(settings.dcaStepVolumeMultipliers)
+    ? settings.dcaStepVolumeMultipliers
+    : DEFAULT_DCA_PROFILE.stepVolumeMultipliers
+  const dcaDistances: number[] = Array.isArray(settings.dcaStepDistancesPct)
+    ? settings.dcaStepDistancesPct
+    : DEFAULT_DCA_PROFILE.stepDistancesPct
+  const dcaMaxSteps = Math.max(1, Math.min(4, Number(settings.dcaMaxSteps) || DEFAULT_DCA_PROFILE.maxSteps))
+  const updateDcaStep = (key: "dcaStepVolumeMultipliers" | "dcaStepDistancesPct", index: number, value: number) => {
+    const fallback = key === "dcaStepVolumeMultipliers"
+      ? DEFAULT_DCA_PROFILE.stepVolumeMultipliers
+      : DEFAULT_DCA_PROFILE.stepDistancesPct
+    const current = Array.isArray(settings[key]) ? [...settings[key]] : [...fallback]
+    while (current.length < 4) current.push(fallback[current.length])
+    current[index] = value
+    handleSettingChange(key, current)
+  }
 
   return (
     <TabsContent value="strategy" className="space-y-4">
@@ -352,7 +373,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                   <CardDescription>Configure block and DCA adjustments</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid md:grid-cols-2 gap-6">
+                  <div className="grid gap-6 md:grid-cols-2">
                     <div className="flex items-center justify-between p-4 border rounded-lg">
                       <div>
                         <Label>Block Adjustment</Label>
@@ -361,7 +382,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                         </p>
                       </div>
                       <Switch
-                        checked={settings.blockAdjustment !== false}
+                        checked={blockAdjustmentEnabled}
                         onCheckedChange={(checked) => handleSettingChange("blockAdjustment", checked)}
                       />
                     </div>
@@ -374,10 +395,101 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                         </p>
                       </div>
                       <Switch
-                        checked={settings.dcaAdjustment === true}
+                        checked={dcaAdjustmentEnabled}
                         onCheckedChange={(checked) => handleSettingChange("dcaAdjustment", checked)}
                       />
                     </div>
+                  </div>
+
+                  <div className={dcaAdjustmentEnabled ? "mt-6 space-y-5 border-t pt-5" : "mt-6 space-y-5 border-t pt-5 opacity-50 pointer-events-none"}>
+                    <div>
+                      <h3 className="font-semibold">DCA progression profile</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Each step is triggered by an adverse move from the immutable first fill and sized from that first quantity—not from the accumulated total.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label>Maximum steps</Label>
+                        <span className="text-sm font-semibold tabular-nums">{dcaMaxSteps}</span>
+                      </div>
+                      <Slider
+                        min={1}
+                        max={4}
+                        step={1}
+                        value={[dcaMaxSteps]}
+                        onValueChange={([value]) => handleSettingChange("dcaMaxSteps", value)}
+                      />
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {Array.from({ length: dcaMaxSteps }, (_, index) => (
+                        <div key={index} className="space-y-3 rounded-lg border bg-muted/20 p-3">
+                          <div className="text-xs font-semibold">Step {index + 1}</div>
+                          <div className="space-y-1.5">
+                            <div className="flex justify-between text-xs"><span>Initial-volume multiple</span><span>{Number(dcaVolumes[index] ?? DEFAULT_DCA_PROFILE.stepVolumeMultipliers[index]).toFixed(2)}×</span></div>
+                            <Slider
+                              min={0.1}
+                              max={2.5}
+                              step={0.1}
+                              value={[Number(dcaVolumes[index] ?? DEFAULT_DCA_PROFILE.stepVolumeMultipliers[index])]}
+                              onValueChange={([value]) => updateDcaStep("dcaStepVolumeMultipliers", index, Number(value.toFixed(2)))}
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <div className="flex justify-between text-xs"><span>Adverse distance</span><span>{Number(dcaDistances[index] ?? DEFAULT_DCA_PROFILE.stepDistancesPct[index]).toFixed(2)}%</span></div>
+                            <Slider
+                              min={0.1}
+                              max={20}
+                              step={0.1}
+                              value={[Number(dcaDistances[index] ?? DEFAULT_DCA_PROFILE.stepDistancesPct[index])]}
+                              onValueChange={([value]) => updateDcaStep("dcaStepDistancesPct", index, Number(value.toFixed(2)))}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>Take-profit reference</Label>
+                        <Select
+                          value={settings.dcaTakeProfitMode || DEFAULT_DCA_PROFILE.takeProfitMode}
+                          onValueChange={(value) => handleSettingChange("dcaTakeProfitMode", value)}
+                        >
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="average">Average entry</SelectItem>
+                            <SelectItem value="first_entry">First entry</SelectItem>
+                            <SelectItem value="breakeven_plus">Breakeven plus</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex justify-between"><Label>Step cooldown</Label><span className="text-xs">{Number(settings.dcaCooldownSeconds ?? DEFAULT_DCA_PROFILE.cooldownSeconds)}s</span></div>
+                        <Slider
+                          min={0}
+                          max={3600}
+                          step={5}
+                          value={[Number(settings.dcaCooldownSeconds ?? DEFAULT_DCA_PROFILE.cooldownSeconds)]}
+                          onValueChange={([value]) => handleSettingChange("dcaCooldownSeconds", value)}
+                        />
+                      </div>
+                    </div>
+
+                    {(settings.dcaTakeProfitMode || DEFAULT_DCA_PROFILE.takeProfitMode) === "breakeven_plus" && (
+                      <div className="space-y-2">
+                        <div className="flex justify-between"><Label>Breakeven profit</Label><span className="text-xs">{Number(settings.dcaBreakevenProfitPct ?? DEFAULT_DCA_PROFILE.breakevenProfitPct).toFixed(2)}%</span></div>
+                        <Slider
+                          min={0.05}
+                          max={5}
+                          step={0.05}
+                          value={[Number(settings.dcaBreakevenProfitPct ?? DEFAULT_DCA_PROFILE.breakevenProfitPct)]}
+                          onValueChange={([value]) => handleSettingChange("dcaBreakevenProfitPct", Number(value.toFixed(2)))}
+                        />
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>

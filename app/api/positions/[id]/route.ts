@@ -197,11 +197,22 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       // For live positions with close price, use the live-stage close logic
       try {
         const { closeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+        let connector: any = undefined
+        if (String(position.status || "") !== "simulated") {
+          const { exchangeConnectorFactory } = await import("@/lib/exchange-connectors/factory")
+          connector = await exchangeConnectorFactory.getOrCreateConnector(connectionId)
+          if (!connector) {
+            return NextResponse.json(
+              { success: false, error: "Exchange connector unavailable; position remains open" },
+              { status: 503 },
+            )
+          }
+        }
         const closedPos = await closeLivePosition(
           connectionId,
           positionId,
           parseFloat(closePrice),
-          undefined, // No connector for manual close - just update state
+          connector,
           closeReason
         )
         
@@ -217,17 +228,32 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
             },
           })
         }
+        return NextResponse.json(
+          { success: false, error: "Exchange close was not confirmed; position remains open" },
+          { status: 409 },
+        )
       } catch (err) {
         console.error(`[v0] [PositionsAPI] Failed to use live-stage close:`, err)
-        // Fall through to basic close
+        return NextResponse.json(
+          { success: false, error: "Live position close failed; position remains open" },
+          { status: 502 },
+        )
       }
+    }
+
+    if (isLivePosition) {
+      return NextResponse.json(
+        { success: false, error: "close_price required for a live position" },
+        { status: 400 },
+      )
     }
 
     // Fallback: Basic close for pseudo positions or when live-stage unavailable
     const finalPrice = closePrice ? parseFloat(closePrice) : parseFloat(position.current_price || "0")
     const entry = parseFloat(position.entry_price || "0")
     const qty = parseFloat(position.quantity || "0")
-    const finalPnL = (finalPrice - entry) * qty
+    const direction = String(position.direction || position.side || "long").toLowerCase()
+    const finalPnL = (direction === "short" ? entry - finalPrice : finalPrice - entry) * qty
 
     // Mark as closed with comprehensive metadata
     await client.hset(`position:${connectionId}:${positionId}`, {

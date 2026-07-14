@@ -1,5 +1,7 @@
 const hashes = new Map<string, Record<string, any>>()
 const writeLog: Array<{ key: string; patch: Record<string, any> }> = []
+let activeProgressionRecoordinates = 0
+let maxActiveProgressionRecoordinates = 0
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -36,8 +38,17 @@ jest.mock("@/lib/redis-db", () => ({
 jest.mock("@/lib/progression-state-manager", () => ({
   ProgressionStateManager: {
     recoordinateForActualOne: jest.fn(async (connectionId: string) => {
-      await sleep(25)
-      return { changed: true, reason: "symbol-basket-or-mode-change", newEpoch: hashes.get(`trade_engine_state:${connectionId}`)?.symbol_selection_epoch }
+      activeProgressionRecoordinates++
+      maxActiveProgressionRecoordinates = Math.max(
+        maxActiveProgressionRecoordinates,
+        activeProgressionRecoordinates,
+      )
+      try {
+        await sleep(25)
+        return { changed: true, reason: "symbol-basket-or-mode-change", newEpoch: hashes.get(`trade_engine_state:${connectionId}`)?.symbol_selection_epoch }
+      } finally {
+        activeProgressionRecoordinates--
+      }
     }),
   },
 }))
@@ -72,6 +83,8 @@ describe("connection recoordinator serialization", () => {
   beforeEach(() => {
     hashes.clear()
     writeLog.length = 0
+    activeProgressionRecoordinates = 0
+    maxActiveProgressionRecoordinates = 0
     jest.clearAllMocks()
   })
 
@@ -117,5 +130,36 @@ describe("connection recoordinator serialization", () => {
 
     expect(symbolCompletionWrite).toBeGreaterThanOrEqual(0)
     expect(firstStrategyProgressionWrite).toBeGreaterThan(symbolCompletionWrite)
+  })
+
+  test("three concurrent destructive saves form one strict per-connection queue", async () => {
+    const { recoordinateAfterSettingsChange } = await import("@/lib/connection-recoordinator")
+    const { ProgressionStateManager } = await import("@/lib/progression-state-manager")
+    const before = { id: "conn-three-save-race", symbols: ["BTC-USDT"] }
+
+    await Promise.all([
+      recoordinateAfterSettingsChange(
+        "conn-three-save-race",
+        before,
+        { ...before, symbols: ["ETH-USDT"] },
+        { logTag: "save-1", changedFieldsOverride: ["symbols"] },
+      ),
+      recoordinateAfterSettingsChange(
+        "conn-three-save-race",
+        before,
+        { ...before, symbols: ["SOL-USDT"] },
+        { logTag: "save-2", changedFieldsOverride: ["symbols"] },
+      ),
+      recoordinateAfterSettingsChange(
+        "conn-three-save-race",
+        before,
+        { ...before, symbols: ["XRP-USDT"] },
+        { logTag: "save-3", changedFieldsOverride: ["symbols"] },
+      ),
+    ])
+
+    expect(ProgressionStateManager.recoordinateForActualOne).toHaveBeenCalledTimes(3)
+    expect(maxActiveProgressionRecoordinates).toBe(1)
+    expect(activeProgressionRecoordinates).toBe(0)
   })
 })

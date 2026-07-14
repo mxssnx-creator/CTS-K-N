@@ -14,6 +14,14 @@ import {
 } from "@/components/ui/accordion"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
+import {
+  DEFAULT_TRAILING_VARIANTS,
+  TRAILING_START_RATIOS,
+  TRAILING_STOP_RATIOS,
+  normalizeTrailingVariants,
+  parseStoredBoolean,
+  trailingVariantKey,
+} from "@/lib/trailing-settings"
 
 /**
  * Spec-mandated multi-step trailing matrix for Base Strategies.
@@ -30,11 +38,11 @@ import { Separator } from "@/components/ui/separator"
  * `settings.strategyBaseTrailingVariants`.
  */
 
-const START_VALUES = [0.3, 0.6, 0.9, 1.2, 1.5] as const
-const STOP_VALUES = [0.1, 0.2, 0.3, 0.4, 0.5] as const
+const START_VALUES = TRAILING_START_RATIOS
+const STOP_VALUES = TRAILING_STOP_RATIOS
 
 const fmtRatio = (r: number) => `${(r * 100).toFixed(0)}%`
-const variantKey = (start: number, stop: number) => `${start.toFixed(1)}:${stop.toFixed(1)}`
+const variantKey = trailingVariantKey
 
 interface MultiTrailingSettingsProps {
   settings: any
@@ -47,13 +55,12 @@ export default function MultiTrailingSettings({
 }: MultiTrailingSettingsProps) {
   // Normalise to a Set for O(1) lookup; defaults to all 25 enabled when missing
   const enabledSet = useMemo(() => {
-    const list: string[] = Array.isArray(settings.strategyBaseTrailingVariants)
-      ? settings.strategyBaseTrailingVariants
-      : []
+    const raw = settings.strategyBaseTrailingVariants
+    const list = normalizeTrailingVariants(raw === undefined ? DEFAULT_TRAILING_VARIANTS : raw)
     return new Set(list)
   }, [settings.strategyBaseTrailingVariants])
 
-  const masterEnabled = settings.strategyBaseTrailingEnabled !== false
+  const masterEnabled = parseStoredBoolean(settings.strategyBaseTrailingEnabled, true)
   const totalEnabled = enabledSet.size
   const totalCombos = START_VALUES.length * STOP_VALUES.length
 

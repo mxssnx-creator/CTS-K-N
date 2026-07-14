@@ -159,12 +159,22 @@ function useDebouncedSaver<T extends (...args: any[]) => void | Promise<void>>(
 ) {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const fnRef = useRef(fn)
-  fnRef.current = fn
   useEffect(() => {
-    return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    fnRef.current = fn
+    // A queued save belongs to the callback (and therefore connection) that
+    // created it. Drop it when the selected connection changes instead of
+    // invoking the new callback with the previous connection's value.
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current)
+      timeoutRef.current = undefined
     }
-  }, [])
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+        timeoutRef.current = undefined
+      }
+    }
+  }, [fn])
   return useCallback(
     (...args: Parameters<T>) => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
@@ -218,6 +228,7 @@ export function QuickstartOptionsBar() {
   // (`coord.variants.trailing !== false` in strategy-coordinator), so an
   // operator who never touches this control still gets trailing.
   const [trailingEnabled, setTrailingEnabled] = useState(true)
+  const hydrateSequenceRef = useRef(0)
 
   // Per-field save status — drives the inline chip. We track a single
   // shared status because the operator typically only mutates one knob
@@ -249,8 +260,12 @@ export function QuickstartOptionsBar() {
   //                   list to avoid a fourth fetch — the GET /settings
   //                   response above embeds the whole connection record)
   const hydrate = useCallback(async () => {
+    const sequence = ++hydrateSequenceRef.current
     if (!cid) {
-      setHydrated(true)
+      if (sequence === hydrateSequenceRef.current) {
+        setLoading(false)
+        setHydrated(true)
+      }
       return
     }
     setLoading(true)
@@ -264,8 +279,11 @@ export function QuickstartOptionsBar() {
         }),
       ])
 
+      if (sequence !== hydrateSequenceRef.current) return
+
       if (settingsRes.ok) {
         const data = await settingsRes.json()
+        if (sequence !== hydrateSequenceRef.current) return
         const conn = data?.connection || {}
         const settings = (data?.settings && typeof data.settings === "object")
           ? data.settings
@@ -320,19 +338,25 @@ export function QuickstartOptionsBar() {
 
       if (volumeRes.ok) {
         const data = await volumeRes.json()
+        if (sequence !== hydrateSequenceRef.current) return
         setVolumeFactor(clampVf(data?.live_volume_factor ?? 1))
       }
     } catch (err) {
       console.error("[v0] [QSOptions] hydrate failed:", err)
     } finally {
-      setLoading(false)
-      setHydrated(true)
+      if (sequence === hydrateSequenceRef.current) {
+        setLoading(false)
+        setHydrated(true)
+      }
     }
   }, [cid])
 
   useEffect(() => {
     setHydrated(false)
     void hydrate()
+    return () => {
+      hydrateSequenceRef.current++
+    }
   }, [hydrate])
 
   // ── persistence primitives ───────────────────────────────────────────

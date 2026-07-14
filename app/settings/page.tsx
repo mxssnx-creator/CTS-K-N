@@ -1,6 +1,7 @@
 "use client"
 
 import { DEFAULT_VOLUME_STEP_RATIO, MIN_VOLUME_FACTOR } from "@/lib/constants"
+import { DEFAULT_DCA_PROFILE, type DcaTakeProfitMode } from "@/lib/dca-strategy"
 export const dynamic = "force-dynamic"
 import { useState, useEffect } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -29,7 +30,6 @@ import { IndicationTab } from "@/components/settings/tabs/indication-tab"
 import { StrategyTab } from "@/components/settings/tabs/strategy-tab"
 import { SystemTab } from "@/components/settings/tabs/system-tab"
 import { PageHeader } from "@/components/page-header"
-import { useExchange } from "@/lib/exchange-context"
 
 const EXCHANGE_MAX_POSITIONS: Record<string, number> = {
   bybit: 500,
@@ -78,6 +78,12 @@ interface Settings {
   trailingStopValues: string
   blockAdjustment: boolean
   dcaAdjustment: boolean
+  dcaMaxSteps: number
+  dcaStepVolumeMultipliers: number[]
+  dcaStepDistancesPct: number[]
+  dcaTakeProfitMode: DcaTakeProfitMode
+  dcaBreakevenProfitPct: number
+  dcaCooldownSeconds: number
   arrangementType: string
   numberOfSymbolsToSelect: number
   quoteAsset: string
@@ -442,6 +448,12 @@ const initialSettings: Settings = {
   // Adjustment Strategies
   blockAdjustment: true,
   dcaAdjustment: false,
+  dcaMaxSteps: DEFAULT_DCA_PROFILE.maxSteps,
+  dcaStepVolumeMultipliers: [...DEFAULT_DCA_PROFILE.stepVolumeMultipliers],
+  dcaStepDistancesPct: [...DEFAULT_DCA_PROFILE.stepDistancesPct],
+  dcaTakeProfitMode: DEFAULT_DCA_PROFILE.takeProfitMode,
+  dcaBreakevenProfitPct: DEFAULT_DCA_PROFILE.breakevenProfitPct,
+  dcaCooldownSeconds: DEFAULT_DCA_PROFILE.cooldownSeconds,
   block_enabled: true,
   dca_enabled: false,
 
@@ -755,7 +767,6 @@ const initialSettings: Settings = {
 
 export default function SettingsPage() {
   // useToast hook removed, toast from sonner imported and used.
-  const { selectedConnectionId } = useExchange()
   const [newMainSymbol, setNewMainSymbol] = useState("")
   const [newForcedSymbol, setNewForcedSymbol] = useState("")
 
@@ -1294,18 +1305,22 @@ export default function SettingsPage() {
     }
   }, [selectedExchangeConnection])
 
-  // Effect to load connection-specific settings when selectedConnectionId changes (from exchange context)
+  // Keep deep links such as /settings?tab=exchange stable across reloads and
+  // browser navigation. The page previously ignored this query even though
+  // /settings/connections redirects to it.
   useEffect(() => {
-    if (selectedConnectionId) {
-      // Show a toast that settings have been reloaded for the connection
-      toast.info("Loading settings for connection", {
-        description: `Settings are now scoped to the selected connection.`,
-      })
-      // In the future, this will load connection-specific settings
-      // For now, the current implementation works with global settings
-      // which will be enhanced in the next phase
+    const requested = new URLSearchParams(window.location.search).get("tab")
+    if (["overall", "exchange", "indication", "strategy", "system"].includes(requested || "")) {
+      setActiveTab(requested!)
     }
-  }, [selectedConnectionId])
+  }, [])
+
+  const changeActiveTab = (nextTab: string) => {
+    setActiveTab(nextTab)
+    const url = new URL(window.location.href)
+    url.searchParams.set("tab", nextTab)
+    window.history.replaceState(window.history.state, "", url)
+  }
 
   // Effect to set the initial selected connection when connections load
   useEffect(() => {
@@ -2015,17 +2030,35 @@ export default function SettingsPage() {
   return (
     <AuthGuard>
       <div className="flex min-h-0 flex-col">
-        <PageHeader title="Settings" description="Configure system parameters and trading strategies">
+        <PageHeader title="Settings" description="Global engine defaults, exchange connections, strategies, and runtime controls">
           <Button onClick={saveAllSettings} disabled={saving} size="sm">
             <Save className="h-4 w-4 mr-2" />
             {reorganizing ? "Reorganizing..." : saving ? "Saving..." : "Save Changes"}
           </Button>
         </PageHeader>
         <div className="flex-1 min-h-0 overflow-auto">
-          <div className="mx-auto max-w-7xl space-y-6">
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <div className="overflow-x-auto pb-1">
-            <TabsList className="grid w-full min-w-[640px] grid-cols-5">
+          <div className="mx-auto max-w-7xl space-y-6 px-4 pb-8 sm:px-6">
+        <Card className="overflow-hidden border-primary/15 bg-gradient-to-r from-primary/[0.07] via-background to-background">
+          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold">Configuration control center</span>
+                <Badge variant="secondary">Global defaults</Badge>
+                <Badge variant="outline">{connections.length} connections</Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Global fields apply across engines. Connection credentials and overrides remain isolated in each connection card and survive reconnects.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Activity className="h-4 w-4 text-emerald-500" />
+              Actual-diff hot reload
+            </div>
+          </CardContent>
+        </Card>
+        <Tabs value={activeTab} onValueChange={changeActiveTab}>
+          <div className="sticky top-0 z-10 overflow-x-auto border-b bg-background/95 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+            <TabsList className="grid w-full min-w-[640px] grid-cols-5 rounded-xl">
               <TabsTrigger value="overall">Overall</TabsTrigger>
               <TabsTrigger value="exchange">Exchange</TabsTrigger>
               <TabsTrigger value="indication">Indication</TabsTrigger>

@@ -9,6 +9,10 @@ import {
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { invalidateCompactionCache } from "@/lib/sets-compaction"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
+import { changedSettingKeys } from "@/lib/settings-diff"
+import { DEFAULT_DCA_PROFILE } from "@/lib/dca-strategy"
+import { DEFAULT_TRAILING_VARIANTS } from "@/lib/trailing-settings"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 
 /**
  * Fan out a "settings_changed" progression log event AND a settings-
@@ -20,11 +24,10 @@ import { notifySettingsChanged } from "@/lib/settings-coordinator"
  * so a log/signal failure never causes the settings save to 500.
  */
 async function emitSettingsChanged(keyCount: number, changedKeys: string[]): Promise<void> {
+  if (keyCount <= 0 || changedKeys.length === 0) return
   try {
     const connections = await getAllConnections().catch(() => [])
-    const activeConnections = (connections || []).filter((c: any) =>
-      c.is_enabled === "1" || c.is_enabled === true
-    )
+    const activeConnections = (connections || []).filter((c: any) => isTruthyFlag(c.is_enabled))
 
     await Promise.all([
       // Progression log fan-out (operator visibility)
@@ -121,6 +124,16 @@ function getDefaultSettings(): Record<string, any> {
     strategyRealSetsSafetyCeiling: 100,
     maxRealSets: 100,
     strategyLiveSetsCeiling: 90,
+    strategyBaseTrailingEnabled: true,
+    strategyBaseTrailingVariants: DEFAULT_TRAILING_VARIANTS,
+    blockAdjustment: true,
+    dcaAdjustment: false,
+    dcaMaxSteps: DEFAULT_DCA_PROFILE.maxSteps,
+    dcaStepVolumeMultipliers: DEFAULT_DCA_PROFILE.stepVolumeMultipliers,
+    dcaStepDistancesPct: DEFAULT_DCA_PROFILE.stepDistancesPct,
+    dcaTakeProfitMode: DEFAULT_DCA_PROFILE.takeProfitMode,
+    dcaBreakevenProfitPct: DEFAULT_DCA_PROFILE.breakevenProfitPct,
+    dcaCooldownSeconds: DEFAULT_DCA_PROFILE.cooldownSeconds,
     positionCost: POSITION_COST_MIN_PERCENT,
     exchangePositionCost: POSITION_COST_MIN_PERCENT,
   }
@@ -185,23 +198,27 @@ export async function POST(request: Request) {
     // pseudo-position-manager, market-data-cache, indication-processor-fixed,
     // indication-sets-processor — all of which read `all_settings`) see the
     // same snapshot on the next cycle.
+    const existingSettings = (await getAppSettings({ bypassCache: true })) || {}
+    // POST is accepted as a partial compatibility write. Preserve the full
+    // canonical snapshot in both Redis and the in-process cache; caching only
+    // the submitted fields made unrelated settings appear to reset until the
+    // next bypass-cache read.
     const normalizedBody = normalizePositionCostSettings(body)
-    await setAppSettings(normalizedBody)
-    // Bust the in-process compaction config cache so the new
-    // setCompactionFloor / setCompactionThresholdPct / per-type
-    // overrides apply on the very next save cycle (otherwise the 5s
-    // TTL inside `lib/sets-compaction.ts` would delay propagation in
-    // this Node instance).
-    invalidateCompactionCache()
+    const mergedSettings = normalizePositionCostSettings({ ...existingSettings, ...normalizedBody })
+    const changedKeys = changedSettingKeys(existingSettings, mergedSettings, Object.keys(normalizedBody))
+    if (changedKeys.length > 0) {
+      await setAppSettings(mergedSettings)
+      // Bust the in-process compaction config cache only for a real change.
+      invalidateCompactionCache()
+    }
     // Fan out a progression event AND a coordinator reload signal so the
     // running engine immediately picks up new positionCost / leverage /
     // TP/SL values without waiting for the 3 s watcher tick.
-    const changedKeys = Object.keys(normalizedBody || {})
     await emitSettingsChanged(changedKeys.length, changedKeys)
 
     console.log("[v0] Settings saved successfully to Redis (canonical + legacy mirror)")
 
-    return NextResponse.json({ success: true })
+    return NextResponse.json({ success: true, settings: mergedSettings })
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : "Unknown error"
     console.error("[v0] Failed to save settings to Redis:", errorMsg)
@@ -228,9 +245,11 @@ export async function PUT(request: Request) {
     const existingSettings = (await getAppSettings({ bypassCache: true })) || {}
     const mergedSettings = normalizePositionCostSettings({ ...existingSettings, ...incoming })
 
-    await setAppSettings(mergedSettings)
-    invalidateCompactionCache()
-    const putChangedKeys = Object.keys(incoming || {})
+    const putChangedKeys = changedSettingKeys(existingSettings, mergedSettings, Object.keys(incoming || {}))
+    if (putChangedKeys.length > 0) {
+      await setAppSettings(mergedSettings)
+      invalidateCompactionCache()
+    }
     await emitSettingsChanged(putChangedKeys.length, putChangedKeys)
 
     console.log("[v0] Settings updated successfully in Redis (canonical + legacy mirror)")

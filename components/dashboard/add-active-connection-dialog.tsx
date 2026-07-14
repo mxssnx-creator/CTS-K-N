@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -27,14 +27,10 @@ export function AddActiveConnectionDialog({
   const [availableConnections, setAvailableConnections] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [adding, setAdding] = useState(false)
+  const loadSequenceRef = useRef(0)
 
-  useEffect(() => {
-    if (open) {
-      loadConnections()
-    }
-  }, [open])
-
-  const loadConnections = async () => {
+  const loadConnections = useCallback(async () => {
+    const sequence = ++loadSequenceRef.current
     setLoading(true)
     try {
       const response = await fetch("/api/settings/connections", {
@@ -47,6 +43,7 @@ export function AddActiveConnectionDialog({
       }
 
       const data = await response.json()
+      if (sequence !== loadSequenceRef.current) return
       
       // Handle both array and object response formats
       let allConnections = Array.isArray(data) ? data : (data?.connections || data?.data || [])
@@ -61,30 +58,43 @@ export function AddActiveConnectionDialog({
       // 2. Not yet added to Active panel (is_active_inserted=0 AND is_dashboard_inserted=0)
       // This includes base exchange predefined templates AND user-created connections
       const KNOWN_BASE_EXCHANGES = ["bybit", "bingx", "binance", "okx", "pionex", "orangex", "gateio", "kucoin", "mexc", "bitget", "huobi"]
+      const isTruthyFlag = (value: unknown) =>
+        value === true || value === 1 || value === "1" || value === "true"
       const availableForAdd = allConnections.filter((c: any) => {
         const exchange = (c.exchange || "").toLowerCase().trim()
         const isKnownExchange = KNOWN_BASE_EXCHANGES.includes(exchange)
         const isUserCreated = c.is_predefined === false || c.is_predefined === "0" || c.is_predefined === "false"
-        const isEnabled = c.is_enabled === true || c.is_enabled === "1" || c.is_enabled === "true"
-        const alreadyInActivePanel = c.is_active_inserted === true || c.is_active_inserted === "1" ||
-                                      c.is_dashboard_inserted === true || c.is_dashboard_inserted === "1"
+        const isEnabled = isTruthyFlag(c.is_enabled)
+        const alreadyInActivePanel = isTruthyFlag(c.is_active_inserted) || isTruthyFlag(c.is_dashboard_inserted)
         
         // Show connections that are enabled, not yet in Active panel, and either known exchange or user-created
         return (isKnownExchange || isUserCreated) && isEnabled && !alreadyInActivePanel
       })
 
       setAvailableConnections(availableForAdd)
-
-      if (availableForAdd.length > 0 && !selectedConnection) {
-        setSelectedConnection(availableForAdd[0].id || "")
-      }
+      setSelectedConnection((current) =>
+        availableForAdd.some((connection: any) => connection.id === current)
+          ? current
+          : (availableForAdd[0]?.id || ""),
+      )
     } catch (error) {
       console.error("[AddDialog] Error loading connections:", error)
       toast.error("Failed to load connections")
     } finally {
-      setLoading(false)
+      if (sequence === loadSequenceRef.current) setLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    if (!open) {
+      loadSequenceRef.current++
+      setSelectedConnection("")
+      return
+    }
+    setSelectedConnection("")
+    void loadConnections()
+    return () => { loadSequenceRef.current++ }
+  }, [open, loadConnections])
 
   const handleAdd = async () => {
     if (!selectedConnection) {
@@ -113,9 +123,6 @@ export function AddActiveConnectionDialog({
 
       toast.success(`${connection.name} added to active list`)
       
-      // Wait a moment for backend to update
-      await new Promise(resolve => setTimeout(resolve, 500))
-
       if (onConnectionAdded) await onConnectionAdded(selectedConnection)
       if (onSuccess) onSuccess(selectedConnection)
 
@@ -132,7 +139,13 @@ export function AddActiveConnectionDialog({
   const selectedConn = availableConnections.find((c: any) => c.id === selectedConnection)
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (adding && !nextOpen) return
+        onOpenChange(nextOpen)
+      }}
+    >
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Add Connection to Active List</DialogTitle>

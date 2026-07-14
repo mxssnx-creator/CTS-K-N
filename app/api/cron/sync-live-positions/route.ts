@@ -102,7 +102,7 @@ function mergeSummary(into: SweepSummary, from: SweepSummary): void {
  * Run a single sweep across all live connections whose engine is idle.
  * Pure function over the connection list — no locking, no sleeping.
  */
-async function runOneSweep(): Promise<SweepSummary> {
+export async function runLivePositionRecoverySweep(): Promise<SweepSummary> {
   const summary = newSummary()
   await initRedis()
   const client = getRedisClient()
@@ -256,7 +256,7 @@ export async function GET() {
 
     while (Date.now() < deadline) {
       const sweepStarted = Date.now()
-      const result = await runOneSweep().catch((err) => {
+      const result = await runLivePositionRecoverySweep().catch((err) => {
         console.warn("[SyncLivePositions] sweep failed:", err)
         const errSummary = newSummary()
         errSummary.errors = 1

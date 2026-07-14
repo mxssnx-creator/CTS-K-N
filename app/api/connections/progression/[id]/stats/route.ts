@@ -5,6 +5,7 @@ import { aggregateLastXClosedPositions } from "@/lib/trade-engine/closed-positio
 import { getGlobalCoordinator } from "@/lib/trade-engine"
 import { normalizeSymbolList } from "@/lib/trade-engine/symbol-selection-ownership"
 import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
+import { loadClosedPositionSnapshots } from "@/lib/trade-history"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -1959,67 +1960,15 @@ export async function GET(
     }
 
     // ── SINGLE closed-archive fetch shared by stratDetail.live and
-    //    closedPositionsForHistory (below) ─────────────────────────────────
-    // CRITICAL FIX: Fetch from BOTH Redis live positions AND database persisted
-    // positions to ensure complete trade history. Previously only Redis was checked,
-    // missing positions that were synced to the database by data-cleanup-manager.
-    // Now we fetch from Redis first (for freshest data), then supplement from
-    // database to capture any that may have been archived/cleaned.
-    const sharedClosedParsed: Array<Record<string, any>> = []
-    const seenIds = new Set<string>()
-    
-    try {
-      // Fetch from Redis live:positions:${connectionId}:closed list
-      const closedIds = ((await client
-        .lrange(`live:positions:${connectionId}:closed`, 0, 499)
-        .catch(() => [])) || []) as string[]
-      const rawList = await Promise.all(
-        closedIds.map((id) => readLivePosition(client, connectionId, id).catch(() => null)),
-      )
-      for (const pos of rawList) {
-        if (!pos) continue
-        try {
-          sharedClosedParsed.push(pos)
-          if (pos.id) seenIds.add(pos.id)
-        } catch { /* skip malformed */ }
-      }
-    } catch { /* archive empty */ }
-    
-    // Supplement with positions from database that may have been synced and not
-    // in the Redis live list (e.g., archived/cleaned or from previous sessions)
-    try {
-      const { query } = await import("@/lib/db")
-      const dbPositions = await query(
-        `SELECT 
-          id, symbol, direction, entry_price as "entryPrice", exit_price as "exitPrice",
-          quantity, realized_pnl as "realizedPnL", opened_at as "openedAt", 
-          closed_at as "closedAt", status
-        FROM positions 
-        WHERE connection_id = $1 AND status = 'closed'
-        ORDER BY closed_at DESC LIMIT 500`,
-        [connectionId]
-      )
-      for (const pos of dbPositions || []) {
-        // Skip if already in Redis (avoid duplicates)
-        if (pos.id && seenIds.has(pos.id)) continue
-        // Only add if it has minimum required fields for display
-        if (pos.symbol && pos.direction && pos.entryPrice && pos.realizedPnL !== null) {
-          sharedClosedParsed.push({
-            id: pos.id || "",
-            symbol: pos.symbol,
-            direction: pos.direction,
-            entryPrice: pos.entryPrice,
-            exitPrice: pos.exitPrice || 0,
-            quantity: pos.quantity,
-            realizedPnL: pos.realizedPnL,
-            openedAt: pos.openedAt ? new Date(pos.openedAt).getTime() : 0,
-            closedAt: pos.closedAt ? new Date(pos.closedAt).getTime() : 0,
-            status: pos.status,
-          })
-          if (pos.id) seenIds.add(pos.id)
-        }
-      }
-    } catch { /* database query failed */ }
+    //    closedPositionsForHistory (below) ────────────────────────────────
+    // `loadClosedPositionSnapshots` uses the closed LIST index plus one MGET
+    // (hash fallback only for old records), replacing up to 500 independent
+    // Redis round trips on every dashboard refresh. Real exchange history and
+    // fee enrichment live in the dedicated /api/trading/trade-history route;
+    // this hot stats endpoint deliberately stays local and lightweight.
+    const sharedClosedParsed = await loadClosedPositionSnapshots(client, connectionId, 500).catch(
+      () => [] as Array<Record<string, any>>,
+    )
 
     type DispatchSummaryRow = {
       bucket: string
@@ -3496,9 +3445,10 @@ export async function GET(
       },
 
       // ── TRADE HISTORY ────────────────────────────────────────────────────────
-      // Up to 500 most-recently-closed live exchange positions with full row-level
-      // detail. Sorted newest-first. Drives the TradeHistoryTable component.
-      tradeHistory: tradeHistory.map((pos) => ({
+      // Lightweight 50-row local fallback only. The dedicated trade-history
+      // endpoint returns/merges up to 500 exchange-backed rows; keeping 500
+      // duplicates in every hot stats payload wasted bandwidth and browser RAM.
+      tradeHistory: tradeHistory.slice(0, 50).map((pos) => ({
         id:          pos.id,
         symbol:      pos.symbol,
         direction:   pos.direction,

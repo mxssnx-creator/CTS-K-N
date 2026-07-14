@@ -1,5 +1,7 @@
 "use client"
 
+import { useEffect, useMemo } from "react"
+
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -27,6 +29,9 @@ interface ExchangeTabProps {
   removeForcedSymbol: (symbol: string) => void
   connections: any[]
 }
+
+const toBoolean = (value: unknown) =>
+  value === true || value === 1 || value === "1" || value === "true"
 
 export function ExchangeTab({
   settings,
@@ -58,34 +63,35 @@ export function ExchangeTab({
    * settings flow entirely. The same toBoolean helper below is already the
    * source of truth used by ExchangeProvider.loadActiveConnections.
    */
-  const toBoolean = (v: unknown) => v === true || v === 1 || v === "1" || v === "true"
-  const mainConnections = connections.filter((c: any) => {
+  const mainConnections = useMemo(() => connections.filter((c: any) => {
     const isInserted =
       toBoolean(c.is_active_inserted) ||
       toBoolean(c.is_dashboard_inserted) ||
       toBoolean(c.is_assigned)
     const isDashboardActive = toBoolean(c.is_enabled_dashboard)
     return isInserted || isDashboardActive
-  })
+  }), [connections])
+
+  useEffect(() => {
+    if (mainConnections.length === 0) return
+    if (!mainConnections.some((connection: any) => connection.id === selectedConnectionId)) {
+      setSelectedConnectionId(mainConnections[0].id)
+    }
+  }, [mainConnections, selectedConnectionId, setSelectedConnectionId])
   
   return (
     <Tabs defaultValue="exchange">
       <div className="mb-4 p-4 bg-muted/30 rounded-lg border">
         <label className="text-sm font-medium mb-2 block">Active Connection</label>
         <Select 
-          value={selectedConnectionId || "standard"} 
+          value={mainConnections.some((connection: any) => connection.id === selectedConnectionId) ? selectedConnectionId || undefined : undefined}
           onValueChange={(val) => setSelectedConnectionId(val)}
+          disabled={mainConnections.length === 0}
         >
           <SelectTrigger className="w-full max-w-md">
             <SelectValue placeholder="Select connection" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="standard">
-              <div className="flex items-center gap-2">
-                <span>Standard</span>
-                <span className="text-muted-foreground text-xs">(Mock)</span>
-              </div>
-            </SelectItem>
             {mainConnections.map((conn: any) => (
               <SelectItem key={conn.id} value={conn.id}>
                 <div className="flex items-center gap-2">
@@ -105,7 +111,9 @@ export function ExchangeTab({
           contradicted the global-scope banner and caused user confusion.
         */}
         <p className="text-xs text-muted-foreground mt-2">
-          Select which connection&apos;s per-exchange overrides to surface below &mdash; trading defaults shown further down are global.
+          {mainConnections.length > 0
+            ? "This selects the exchange context for previews. Trading defaults below remain global; use the connection card on the dashboard for isolated overrides."
+            : "No active connection is assigned yet. Add and enable a connection in Overall → Exchange Connections."}
         </p>
       </div>
       <TabsContent value="exchange" className="space-y-4">

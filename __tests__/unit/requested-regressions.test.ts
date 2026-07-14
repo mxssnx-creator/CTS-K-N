@@ -477,6 +477,7 @@ describe("requested regression guardrails", () => {
 
   test("block overlays completed-position counts and active-position exposure at Real stage", () => {
     const source = read("lib/strategy-coordinator.ts")
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
 
     expect(source).toContain("Block is not materialized as its own Main/Real Set")
@@ -484,15 +485,32 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("EVERY block size [1..blockMaxStack]")
     expect(source).toContain("blockMaxStack:    10")
     expect(source).toContain("Math.max(1, Math.min(10, this._coordinationSettings.blockMaxStack | 0))")
-    expect(source).toContain("for (let blockCount = 1; blockCount <= maxStack; blockCount++)")
+    expect(source).toContain("const orderedBlockCounts = [")
+    expect(source).toContain("for (const blockCount of orderedBlockCounts)")
     expect(source).toContain("setKey: `${source.setKey}#block:${blockCount}`")
     expect(source).toContain("Active Real/Live-position Block handling belongs to REAL")
     expect(source).toContain("buildActiveRealBlockOverlaysForReal")
     expect(source).toContain("blockActiveRealEnabled && !this._coordinationSettings.blockActiveLiveEnabled")
     expect(source).toContain("setKey: `${source.setKey}#block:active:${boundedCount}`")
     expect(statsRoute).toContain("const realValidatedActivePositions = realOpen || realDetailRunning || 0")
-    expect(source).toContain("variantSizeMultiplier: Number((blockConfig.size * blockMul).toFixed(6))")
+    expect(source).toContain("calculateBlockVolumeMultiplier(")
+    expect(source).toContain("variantSizeMultiplier: blockCalculatedVolumeMultiplier")
+    expect(source).toContain("blockBaseVolumeMultiplier")
+    expect(source).toContain("blockVolumeRatio: ratio")
     expect(source).toContain("variant: \"block\"")
+    expect(source).toContain("const activeCount = Math.max(realCount, liveCount)")
+    expect(source).toContain("perSymbolLiveOpenByDir")
+    expect(source).toContain("getUnavailableBlockKeys(symbol)")
+    expect(source).toContain("dispatchSets.sort((a, b) => dispatchOrder(a) - dispatchOrder(b))")
+    expect(liveStage).toContain("Block Set ${realPosition.setKey || \"unknown\"} waits for authoritative parent fill")
+    expect(liveStage).toContain("real?.sizeMultiplier ?? existing.sizeMultiplier")
+    expect(liveStage).toContain("calculateBlockAddQuantity(blockBaseQuantity, blockCount, blockVolumeRatio)")
+    expect(liveStage).toContain("addQty = currentPositionQty × (activeBlockCount × blockVolumeRatio)")
+    expect(liveStage).toContain("exact fill deferred to reconciliation")
+    expect(liveStage).toContain('p.status === "simulated"')
+    expect(liveStage).toContain("accumulateIntoSimulatedPosition")
+    expect(liveStage).toContain("Block and DCA are adjustment-only variants")
+    expect(liveStage).toContain('mutatePositionWithVersionCheck(existing, ["simulated"]')
   })
 
   test("block pause count ratio is persisted and clamped for strategy settings", () => {
@@ -1615,7 +1633,7 @@ describe("requested regression guardrails", () => {
     expect(saveBlock).toContain("const liveSetIndexKey = `live_set_keys:${position.connectionId}`")
     expect(saveBlock).toContain("await client.sadd(liveSetIndexKey, position.setKey)")
     expect(saveBlock).toContain("await client.srem(liveSetIndexKey, position.setKey)")
-    expect(saveBlock).toContain("await client.expire(liveSetIndexKey, 24 * 60 * 60)")
+    expect(saveBlock).toContain("await keepDurable(liveSetIndexKey)")
   })
 
   test("live positions route does not use production KEYS fallback", () => {
@@ -1700,7 +1718,10 @@ describe("requested regression guardrails", () => {
     expect(cacheBlock).toContain("getAppSettings().catch")
     expect(cacheBlock).toContain("settings:connection_settings:${connectionId}")
     expect(cacheBlock).toContain("connection_settings:${connectionId}")
-    expect(cacheBlock).toContain("const merged = { ...(appSettings || {}), ...(prefixedConnSettings || {}), ...(connSettings || {}) }")
+    expect(cacheBlock).toContain("const merged = {")
+    expect(cacheBlock).toContain("...(appSettings || {}),")
+    expect(cacheBlock).toContain("...(connSettings || {}),")
+    expect(cacheBlock).toContain("...(prefixedConnSettings || {}),")
     expect(cacheBlock).not.toContain("_systemCloseCacheValue")
     expect(cacheBlock).not.toContain("_systemCloseInflight")
 
@@ -1757,11 +1778,14 @@ describe("requested regression guardrails", () => {
     const fnEnd = coordinator.indexOf("private async createLiveSets", fnStart)
     const blockFn = coordinator.slice(fnStart, fnEnd)
 
-    expect(blockFn).toContain("activeByDirSnapshot?: { long: number; short: number }")
+    expect(blockFn).toContain("activeRealByDirSnapshot?: { long: number; short: number }")
+    expect(blockFn).toContain("activeLiveByDirSnapshot?: { long: number; short: number }")
     expect(blockFn).toContain("Use the PositionContext snapshot built once per cycle")
-    expect(blockFn).toContain("activeByDirSnapshot")
-    expect(blockFn).toContain("if (!activeByDirSnapshot)")
+    expect(blockFn).toContain("activeRealByDirSnapshot")
+    expect(blockFn).toContain("activeLiveByDirSnapshot")
+    expect(blockFn).toContain("if (this._coordinationSettings.blockActiveRealEnabled && !activeRealByDirSnapshot)")
     expect(coordinator).toContain("posCtx?.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 }")
+    expect(coordinator).toContain("posCtx?.perSymbolLiveOpenByDir?.[symbol] ?? { long: 0, short: 0 }")
   })
 
   test("dashboard footer and production monitoring bar stay visible at page bottom", () => {
@@ -1871,7 +1895,8 @@ describe("requested regression guardrails", () => {
     expect(settingsRoute).toContain("Recoordination is intentionally centralized in recoordinateAfterSettingsChange() below")
     expect(settingsRoute).not.toContain("ProgressionStateManager.recoordinateForActualOne(id)")
     expect(settingsRoute).not.toContain("setTimeout(() =>")
-    expect(settingsRoute).toContain("redis.hset(`settings:connection_settings:${id}`, flatKnobs)")
+    expect(settingsRoute).toContain("settingsPatch,")
+    expect(recoordinator).toContain("await redis.hset(`settings:connection_settings:${id}`, hashPatch)")
     expect(settingsRoute).toContain("making progression appear to switch between old and new settings")
 
     expect(recoordinator).toContain("runSerializedForConnection")
@@ -2037,14 +2062,15 @@ describe("requested regression guardrails", () => {
       RedisTrades: { getTradesByConnection: jest.fn().mockResolvedValue([]) },
       RedisPositions: { getPositionsByConnection: jest.fn().mockResolvedValue([]) },
     }))
-    jest.doMock("@/lib/connection-recoordinator", () => ({
-      applyMainConnectionSettingsChange: jest.fn().mockResolvedValue({
+    const applyMainConnectionSettingsChange = jest.fn().mockResolvedValue({
         completion: {
           completedAt: "2026-07-09T00:00:01.000Z",
           refreshQueued: false,
           refreshStatus: "applied_locally",
         },
-      }),
+      })
+    jest.doMock("@/lib/connection-recoordinator", () => ({
+      applyMainConnectionSettingsChange,
     }))
     jest.doMock("@/lib/trade-engine", () => ({ getTradeEngine: jest.fn(() => null) }))
     jest.doMock("@/lib/top-symbols", () => ({
@@ -2079,19 +2105,10 @@ describe("requested regression guardrails", () => {
     )
 
     expect(response.status).toBe(200)
-
-    const stateWrites = hset.mock.calls.filter(([key]) =>
-      key === "trade_engine_state:conn-progress-visible" ||
-      key === "settings:trade_engine_state:conn-progress-visible",
-    )
-    const writesByKey = (redisKey: string) =>
-      Object.assign({}, ...stateWrites.filter(([key]) => key === redisKey).map(([, patch]) => patch))
-
-    for (const redisKey of [
-      "trade_engine_state:conn-progress-visible",
-      "settings:trade_engine_state:conn-progress-visible",
-    ]) {
-      expect(writesByKey(redisKey)).toEqual(expect.objectContaining({
+    expect(hset).not.toHaveBeenCalled()
+    expect(applyMainConnectionSettingsChange).toHaveBeenCalledTimes(1)
+    const applyOptions = applyMainConnectionSettingsChange.mock.calls[0][2]
+    expect(applyOptions.tradeEngineStatePatch).toEqual(expect.objectContaining({
         variantTrailingEnabled: "false",
         variantBlockEnabled: "true",
         variantDcaEnabled: "false",
@@ -2112,8 +2129,7 @@ describe("requested regression guardrails", () => {
         use_system_close_only: "true",
         leveragePercentage: "42",
         useMaximalLeverage: "false",
-      }))
-    }
+    }))
   })
 
   test("live order failure paths update global and per-symbol failed counters", () => {

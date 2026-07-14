@@ -1,11 +1,26 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
-import { updateConnection, initRedis, getConnection, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
+import { initRedis, getConnection, getRedisClient, getSettings } from "@/lib/redis-db"
 import { RedisTrades, RedisPositions } from "@/lib/redis-operations"
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 import { getTradeEngine } from "@/lib/trade-engine"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
 import { toRedisFlag } from "@/lib/boolean-utils"
+import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
+import {
+  DEFAULT_TRAILING_VARIANTS,
+  normalizeTrailingVariants,
+  parseStoredBoolean,
+} from "@/lib/trailing-settings"
+import { normalizeDcaProfile } from "@/lib/dca-strategy"
+import {
+  DEFAULT_MAIN_INDICATION_PROFILE,
+  DEFAULT_PRESET_INDICATION_PROFILE,
+  indicationProfilesToFlat,
+  normalizeIndicationProfile,
+  readStoredIndicationProfile,
+} from "@/lib/active-indication-profile"
+import { changedSettingKeys, settingsValuesEqual } from "@/lib/settings-diff"
 
 const FALLBACK_SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -65,6 +80,14 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "blockPauseCountRatio",
   "blockActiveRealEnabled",
   "blockActiveLiveEnabled",
+  "strategyBaseTrailingEnabled",
+  "strategyBaseTrailingVariants",
+  "dcaMaxSteps",
+  "dcaStepVolumeMultipliers",
+  "dcaStepDistancesPct",
+  "dcaTakeProfitMode",
+  "dcaBreakevenProfitPct",
+  "dcaCooldownSeconds",
   "useSystemCloseOnly",
   "use_system_close_only",
   "leveragePercentage",
@@ -148,8 +171,8 @@ export async function GET(
           // Axis max-window values
           "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
           // Block strategy tuning
-          "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled",
-          "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveLiveEnabled",
+          "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio",
+          "dcaMaxSteps", "dcaBreakevenProfitPct", "dcaCooldownSeconds",
           // PF / DDT / stage thresholds
           "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
           "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
@@ -163,12 +186,17 @@ export async function GET(
           // Coordination variant toggles
           "variantTrailingEnabled", "variantBlockEnabled",
           "variantDcaEnabled",
+          "blockActiveRealEnabled", "blockActiveLiveEnabled",
+          "strategyBaseTrailingEnabled",
           // Axis enable flags
           "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
         ].includes(k)) {
           // Store as boolean so dialog toggle/checkbox checks work correctly.
           hashSettings[k] = v === "true"
-        } else if (k === "symbols" || k === "active_symbols" || k === "force_symbols") {
+        } else if ([
+          "symbols", "active_symbols", "force_symbols",
+          "strategyBaseTrailingVariants", "dcaStepVolumeMultipliers", "dcaStepDistancesPct",
+        ].includes(k)) {
           // Symbols are stored as JSON strings in the hash.
           try { hashSettings[k] = JSON.parse(v) } catch { hashSettings[k] = v }
         } else {
@@ -180,13 +208,99 @@ export async function GET(
     // Merge: hash fields override JSON blob fields (hash is more recent).
     // Include defaults for newer coordination knobs so existing production
     // connections expose stable values before the first save after upgrade.
-    const settings = {
+    const settings: Record<string, any> = {
       minStep: 5,
       maxStopLossRatio: 2.5,
       trailingMinStep: 6,
       ...jsonSettings,
       ...hashSettings,
     }
+
+    // Rehydrate the canonical nested coordination object from both storage
+    // forms. Quick Start and migrations may only have flat HASH fields while
+    // the Settings UI consumes `coordination_settings`; without this merge an
+    // explicitly saved Block toggle could appear reset on reconnect.
+    const storedCoord = (
+      settings.coordination_settings ?? settings.coordinationSettings ?? {}
+    ) as Record<string, any>
+    const storedVariants = (storedCoord.variants || {}) as Record<string, any>
+    const firstDefined = (...values: unknown[]): unknown =>
+      values.find((value) => value !== undefined && value !== null && value !== "")
+    const asBoolean = (value: unknown, fallback: boolean): boolean => {
+      if (value === true || value === "true" || value === 1 || value === "1") return true
+      if (value === false || value === "false" || value === 0 || value === "0") return false
+      return fallback
+    }
+    const asBoundedNumber = (value: unknown, fallback: number, min: number, max: number): number => {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback
+    }
+    const dca = normalizeDcaProfile({ ...settings, ...storedCoord })
+    const trailingVariants = normalizeTrailingVariants(firstDefined(
+      storedCoord.trailingVariants,
+      settings.strategyBaseTrailingVariants,
+      DEFAULT_TRAILING_VARIANTS,
+    ))
+    const coordinationSettings = {
+      ...storedCoord,
+      variants: {
+        ...storedVariants,
+        trailing: asBoolean(firstDefined(
+          storedVariants.trailing,
+          settings.strategyBaseTrailingEnabled,
+          settings.variantTrailingEnabled,
+          settings.variant_trailing,
+          connection.variant_trailing,
+        ), true),
+        block: asBoolean(firstDefined(
+          storedVariants.block,
+          settings.variantBlockEnabled,
+          settings.variant_block,
+          connection.variant_block,
+        ), true),
+        dca: asBoolean(firstDefined(
+          storedVariants.dca,
+          settings.variantDcaEnabled,
+          settings.variant_dca,
+          connection.variant_dca,
+        ), false),
+      },
+      blockVolumeRatio: asBoundedNumber(
+        firstDefined(storedCoord.blockVolumeRatio, settings.blockVolumeRatio),
+        1.0,
+        0.25,
+        3.0,
+      ),
+      blockMaxStack: Math.floor(asBoundedNumber(
+        firstDefined(storedCoord.blockMaxStack, settings.blockMaxStack),
+        10,
+        1,
+        10,
+      )),
+      blockPauseCountRatio: Math.round(asBoundedNumber(
+        firstDefined(storedCoord.blockPauseCountRatio, settings.blockPauseCountRatio),
+        1.0,
+        1,
+        4,
+      ) * 2) / 2,
+      blockActiveRealEnabled: asBoolean(firstDefined(
+        storedCoord.blockActiveRealEnabled,
+        settings.blockActiveRealEnabled,
+      ), true),
+      blockActiveLiveEnabled: asBoolean(firstDefined(
+        storedCoord.blockActiveLiveEnabled,
+        settings.blockActiveLiveEnabled,
+      ), true),
+      trailingVariants,
+      dcaMaxSteps: dca.maxSteps,
+      dcaStepVolumeMultipliers: dca.stepVolumeMultipliers,
+      dcaStepDistancesPct: dca.stepDistancesPct,
+      dcaTakeProfitMode: dca.takeProfitMode,
+      dcaBreakevenProfitPct: dca.breakevenProfitPct,
+      dcaCooldownSeconds: dca.cooldownSeconds,
+    }
+    settings.coordination_settings = coordinationSettings
+    settings.coordinationSettings = coordinationSettings
 
     return NextResponse.json({
       connection,
@@ -217,7 +331,6 @@ export async function PUT(
     const body = await request.json()
 
     await initRedis()
-    const client = getRedisClient()
     const connection = await getConnection(id)
 
     if (!connection) {
@@ -225,60 +338,93 @@ export async function PUT(
     }
 
     // Merge settings with existing (like PATCH does)
-    const currentSettings = typeof connection.connection_settings === "string"
+    const currentSettings: Record<string, any> = typeof connection.connection_settings === "string"
       ? JSON.parse(connection.connection_settings)
       : connection.connection_settings || {}
-    const mergedSettings = { ...currentSettings, ...(body.settings || {}) }
-
-    const updated = {
-      ...connection,
-      name: body.name || connection.name,
-      api_type: body.api_type || connection.api_type,
-      connection_method: body.connection_method || connection.connection_method,
-      connection_library: body.connection_library || connection.connection_library,
-      margin_type: body.margin_type || connection.margin_type,
-      position_mode: body.position_mode || connection.position_mode,
-      is_testnet: body.is_testnet !== undefined ? body.is_testnet : connection.is_testnet,
-      is_enabled: body.is_enabled !== undefined ? body.is_enabled : connection.is_enabled,
-      is_active: body.is_active !== undefined ? body.is_active : connection.is_active,
-      volume_factor: body.volume_factor || connection.volume_factor,
-      connection_settings: mergedSettings,
-      // Mirror symbol fields to connection hash (CRITICAL - same as PATCH)
-      ...(Array.isArray(body.symbols) && body.symbols.length > 0
-        ? { force_symbols: JSON.stringify(body.symbols), symbol_count: String(body.symbols.length) }
-        : {}),
-      updated_at: new Date().toISOString(),
+    const incomingSettings = body.settings && typeof body.settings === "object" ? body.settings : {}
+    const mergedSettings = mergeConnectionSettings(currentSettings, incomingSettings)
+    const hasSymbols = Array.isArray(body.symbols)
+    if (hasSymbols) {
+      const symbols = body.symbols.map(String).map((symbol: string) => symbol.trim()).filter(Boolean)
+      mergedSettings.symbols = symbols
+      mergedSettings.force_symbols = symbols
+      mergedSettings.active_symbols = symbols
+      mergedSettings.symbol_count = symbols.length
     }
 
-    let effectiveConnection = (await updateConnection(id, updated)) || updated
-
-    // Also write symbols to the flat hash (same as PATCH) so getSymbols() reads them
-    if (Array.isArray(body.symbols) && body.symbols.length > 0) {
-      try {
-        await client.hset(`connection_settings:${id}`, {
-          symbols: JSON.stringify(body.symbols),
-          force_symbols: JSON.stringify(body.symbols),
-          symbol_count: String(body.symbols.length),
-        })
-      } catch (err) {
-        console.warn(`[v0] Failed to update symbol hash for ${id}:`, err)
-      }
+    const connectionPatch: Record<string, unknown> = {}
+    for (const key of [
+      "name", "api_type", "connection_method", "connection_library", "margin_type",
+      "position_mode", "is_testnet", "is_enabled", "is_active", "volume_factor",
+    ] as const) {
+      if (body[key] !== undefined) connectionPatch[key] = body[key]
+    }
+    if (Object.keys(incomingSettings).length > 0 || hasSymbols) {
+      connectionPatch.connection_settings = mergedSettings
+    }
+    if (hasSymbols) {
+      const symbols = mergedSettings.symbols as string[]
+      connectionPatch.force_symbols = JSON.stringify(symbols)
+      connectionPatch.active_symbols = JSON.stringify(symbols)
+      connectionPatch.symbol_count = String(symbols.length)
     }
 
-    // Full propagation: notify + fast-path apply + recoordinate
-    // (start/stop/hot-reload as the new state dictates). See
-    // lib/connection-recoordinator.ts for the design rationale.
-    await applyMainConnectionSettingsChange(id, connection, {
-      connectionPatch: {},
-      changedFieldsOverride: Object.keys(body.settings || {}).length > 0
-        ? Array.from(new Set([...Object.keys(body.settings || {}), "connection_settings"]))
-        : undefined,
-      logTag: "PUT /settings",
-    })
+    const changedFields = Array.from(new Set([
+      ...changedSettingKeys(
+        connection as Record<string, unknown>,
+        { ...connection, ...connectionPatch },
+        Object.keys(connectionPatch).filter((key) => key !== "connection_settings"),
+      ),
+      ...changedSettingKeys(
+        currentSettings,
+        mergedSettings,
+        [...Object.keys(incomingSettings), ...(hasSymbols ? ["symbols", "force_symbols", "active_symbols", "symbol_count"] : [])],
+      ),
+    ]))
+
+    if (changedFields.length === 0) {
+      return NextResponse.json({ success: true, unchanged: true, connection })
+    }
+
+    const settingsVersion = `${id}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`
+    const updatedAt = new Date().toISOString()
+    connectionPatch.settings_version = settingsVersion
+    connectionPatch.updated_at = updatedAt
+
+    const settingsPatch = Object.keys(incomingSettings).length > 0 || hasSymbols
+      ? {
+          ...serializeConnectionSettingsHash(mergedSettings),
+          settings_version: settingsVersion,
+        }
+      : {}
+    const tradeEngineStatePatch = {
+      ...pickProgressionVisibleSettings(settingsPatch),
+      ...(hasSymbols ? {
+        symbols: JSON.stringify(mergedSettings.symbols),
+        force_symbols: JSON.stringify(mergedSettings.symbols),
+        active_symbols: JSON.stringify(mergedSettings.symbols),
+        symbol_count: String((mergedSettings.symbols as string[]).length),
+        config_set_symbols_total: String((mergedSettings.symbols as string[]).length),
+      } : {}),
+      settings_version: settingsVersion,
+      updated_at: updatedAt,
+    }
+
+    // One ordered writer persists the connection, flat settings mirrors, and
+    // progression-visible state before emitting a single reload envelope.
+    const { connection: effectiveConnection, completion: recoordination } =
+      await applyMainConnectionSettingsChange(id, connection, {
+        connectionPatch,
+        settingsPatch,
+        tradeEngineStatePatch,
+        changedFieldsOverride: changedFields,
+        settingsVersion,
+        logTag: "PUT /settings",
+      })
 
     await SystemLogger.logConnection(`Updated settings`, id, "info")
 
-    return NextResponse.json({ success: true, connection: effectiveConnection })
+    return NextResponse.json({ success: true, connection: effectiveConnection, recoordination })
   } catch (error) {
     console.error("[v0] [Settings] PUT error:", error)
     await SystemLogger.logError(error, "api", "PUT /api/settings/connections/[id]/settings")
@@ -295,7 +441,10 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params
-    const settings = await request.json()
+    const requestSettings = await request.json() as Record<string, any>
+    const incomingIndicationChannels = requestSettings.indication_channels
+    const settings: Record<string, any> = { ...requestSettings }
+    delete settings.indication_channels
     const settingsVersion = `${id}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`
     const updatedAt = new Date().toISOString()
 
@@ -310,7 +459,32 @@ export async function PATCH(
       ? JSON.parse(connection.connection_settings)
       : connection.connection_settings || {}
 
-    const merged = { ...current, ...settings } as Record<string, unknown>
+    const merged = mergeConnectionSettings(current, settings)
+    let activeIndicationPatch: Record<string, string> | undefined
+    let activeIndicationsChanged = false
+    if (incomingIndicationChannels && typeof incomingIndicationChannels === "object") {
+      const existingIndications = (await getSettings(`active_indications:${id}`).catch(() => null)) || {}
+      const existingMain = readStoredIndicationProfile(
+        existingIndications,
+        "",
+        DEFAULT_MAIN_INDICATION_PROFILE,
+      )
+      const existingPreset = readStoredIndicationProfile(
+        existingIndications,
+        "_preset",
+        DEFAULT_PRESET_INDICATION_PROFILE,
+      )
+      const nextMain = normalizeIndicationProfile(incomingIndicationChannels.main, existingMain)
+      const nextPreset = normalizeIndicationProfile(incomingIndicationChannels.preset, existingPreset)
+      const nextFlat = indicationProfilesToFlat(nextMain, nextPreset)
+      activeIndicationsChanged = Object.entries(nextFlat).some(
+        ([key, value]) => !settingsValuesEqual((existingIndications as Record<string, unknown>)[key], value),
+      )
+      activeIndicationPatch = {
+        ...nextFlat,
+        updated_at: updatedAt,
+      }
+    }
 
     const incomingSymbolSource = typeof (settings as Record<string, unknown>).symbol_source === "string"
       ? String((settings as Record<string, unknown>).symbol_source)
@@ -418,7 +592,7 @@ export async function PATCH(
 
         let resolved: string[] = []
         let resolutionSource: "live" | "fallback" | "manual" = incomingSymbolsAreFallback ? "fallback" : "live"
-        if (manualList.length > 0) {
+        if (operatorConfirmedSymbols && manualList.length > 0) {
           resolved = manualList.length > count ? manualList.slice(0, count) : manualList
           resolutionSource = incomingSymbolsAreFallback ? "fallback" : "manual"
         } else {
@@ -436,7 +610,13 @@ export async function PATCH(
               fetchErr instanceof Error ? fetchErr.message : fetchErr,
             )
           }
-          if (resolved.length === 0 && manualList.length > 0) resolved = manualList.slice(0, count)
+          // Keep the submitted preview only as a non-destructive fallback.
+          // Auto ranking modes must re-query the venue instead of silently
+          // becoming a fixed manual list after the first dialog save.
+          if (resolved.length === 0 && manualList.length > 0) {
+            resolved = manualList.slice(0, count)
+            resolutionSource = "fallback"
+          }
           if (resolved.length === 0) {
             resolved = FALLBACK_SYMBOLS.slice(0, count)
             resolutionSource = "fallback"
@@ -475,7 +655,6 @@ export async function PATCH(
           // can happen before those timers fire, and the old delayed closure
           // would then overwrite the newer active_symbols/trade_engine_state,
           // making progression appear to switch between old and new settings.
-          console.log(`[v0] [Settings] Resolved ${resolved.length} symbol(s) for ${id} (order=${finalSymbolOrder}): ${resolved.join(", ")}`)
         }
       } catch (symErr) {
         console.error("[v0] [Settings] symbol auto-resolve failed:", symErr)
@@ -568,9 +747,26 @@ export async function PATCH(
       if (Number.isFinite(bms) && bms >= 1) flatKnobs.blockMaxStack = String(Math.min(10, Math.max(1, Math.floor(bms))))
       const bpcr = Number(coord.blockPauseCountRatio)
       if (Number.isFinite(bpcr) && bpcr > 0) flatKnobs.blockPauseCountRatio = String(Math.max(1, Math.min(4, Math.round(bpcr * 2) / 2)))
-      const blockActiveReal = typeof coord.blockActiveRealEnabled === "boolean" ? coord.blockActiveRealEnabled : typeof coord.blockActiveLiveEnabled === "boolean" ? coord.blockActiveLiveEnabled : undefined
-      if (typeof blockActiveReal === "boolean") flatKnobs.blockActiveRealEnabled = String(blockActiveReal)
+      if (typeof coord.blockActiveRealEnabled === "boolean") flatKnobs.blockActiveRealEnabled = String(coord.blockActiveRealEnabled)
       if (typeof coord.blockActiveLiveEnabled === "boolean") flatKnobs.blockActiveLiveEnabled = String(coord.blockActiveLiveEnabled)
+
+      const normalizedTrailing = normalizeTrailingVariants(
+        coord.trailingVariants ?? merged.strategyBaseTrailingVariants ?? DEFAULT_TRAILING_VARIANTS,
+      )
+      flatKnobs.strategyBaseTrailingVariants = JSON.stringify(normalizedTrailing)
+      const trailingEnabled = parseStoredBoolean(
+        (coord.variants as Record<string, unknown> | undefined)?.trailing ?? merged.strategyBaseTrailingEnabled,
+        true,
+      )
+      flatKnobs.strategyBaseTrailingEnabled = trailingEnabled ? "true" : "false"
+
+      const dca = normalizeDcaProfile({ ...merged, ...coord })
+      flatKnobs.dcaMaxSteps = String(dca.maxSteps)
+      flatKnobs.dcaStepVolumeMultipliers = JSON.stringify(dca.stepVolumeMultipliers)
+      flatKnobs.dcaStepDistancesPct = JSON.stringify(dca.stepDistancesPct)
+      flatKnobs.dcaTakeProfitMode = dca.takeProfitMode
+      flatKnobs.dcaBreakevenProfitPct = String(dca.breakevenProfitPct)
+      flatKnobs.dcaCooldownSeconds = String(dca.cooldownSeconds)
     }
 
     const vfl = Number(merged.volume_factor_live ?? merged.live_volume_factor)
@@ -678,9 +874,19 @@ export async function PATCH(
       })
     }
 
-    const changedFieldsOverride = Object.keys(settings).length > 0
-      ? Array.from(new Set([...Object.keys(settings), ...Object.keys(flatKnobs), "connection_settings", "settings_version"]))
-      : ["settings_version"]
+    // Only report fields whose effective values actually changed. The dialog
+    // sends a full snapshot; treating every supplied field as changed meant an
+    // unchanged `symbols` array triggered a destructive prehistoric reset on
+    // every Save. Nested objects are compared canonically (object key order and
+    // Redis scalar strings do not create false changes).
+    const changedFieldsOverride = changedSettingKeys(
+      current as Record<string, unknown>,
+      merged as Record<string, unknown>,
+      Object.keys(settings),
+    )
+    if (activeIndicationsChanged) {
+      changedFieldsOverride.push("active_indications", "indications")
+    }
 
     const { connection: appliedConnection, completion: recoordination } = await applyMainConnectionSettingsChange(
       id,
@@ -692,19 +898,16 @@ export async function PATCH(
         changedFieldsOverride,
         settingsVersion,
         logTag: "PATCH /settings",
+        additionalSettingsPatches: activeIndicationPatch && activeIndicationsChanged
+          ? [{
+              settingsKey: `active_indications:${id}`,
+              settingsPatch: activeIndicationPatch,
+              mirrorSettingsKey: false,
+            }]
+          : undefined,
       },
     )
     effectiveConnection = appliedConnection || { ...connection, connection_settings: merged }
-
-    const redis = getRedisClient()
-    if (redis?.hset) {
-      await Promise.all([
-        redis.hset(`connection_settings:${id}`, settingsPatch),
-        redis.hset(`settings:connection_settings:${id}`, flatKnobs),
-        redis.hset(`trade_engine_state:${id}`, tradeEngineStatePatch),
-        redis.hset(`settings:trade_engine_state:${id}`, tradeEngineStatePatch),
-      ]).catch(() => undefined)
-    }
 
     try {
       getTradeEngine()?.getEngineManager(id)?.invalidateSymbolsCache()

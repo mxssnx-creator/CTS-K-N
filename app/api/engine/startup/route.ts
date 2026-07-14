@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
 
     // Load market data for all symbols
     console.log("[v0] [API] Loading market data for engine startup...")
-    const loadedCount = await loadMarketDataForEngine(symbols)
+    const loadedCount = await loadMarketDataForEngine(symbols, { requireHistory: true })
 
     if (loadedCount === 0) {
       return NextResponse.json(
