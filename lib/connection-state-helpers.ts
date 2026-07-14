@@ -29,11 +29,11 @@ export function getConnectionState(conn: any): ConnectionState {
  * - Keep is_inserted stable
  * - Set is_assigned=1, is_enabled_dashboard=1, is_active=1
  */
-export function buildMainConnectionEnableUpdate(conn: any): Record<string, any> {
+export function buildMainConnectionEnableUpdate(_conn: any): Record<string, any> {
   return {
-    ...conn,
     is_assigned: "1",
     is_active_inserted: "1",
+    is_dashboard_inserted: "1",
     is_enabled_dashboard: "1",
     is_active: "1",
     updated_at: new Date().toISOString(),
@@ -46,9 +46,8 @@ export function buildMainConnectionEnableUpdate(conn: any): Record<string, any> 
  * - Set is_enabled_dashboard=0, is_active=0
  * - ALWAYS keep is_assigned=1 so the card stays visible in the panel
  */
-export function buildMainConnectionDisableUpdate(conn: any): Record<string, any> {
+export function buildMainConnectionDisableUpdate(_conn: any): Record<string, any> {
   return {
-    ...conn,
     is_assigned: "1",
     is_active_inserted: "0",
     is_enabled_dashboard: "0",
@@ -60,9 +59,8 @@ export function buildMainConnectionDisableUpdate(conn: any): Record<string, any>
 /**
  * Build update object to REMOVE a connection from Main Connections panel
  */
-export function buildMainConnectionRemoveUpdate(conn: any): Record<string, any> {
+export function buildMainConnectionRemoveUpdate(_conn: any): Record<string, any> {
   return {
-    ...conn,
     is_assigned: "0",
     is_active_inserted: "0",
     is_dashboard_inserted: "0",

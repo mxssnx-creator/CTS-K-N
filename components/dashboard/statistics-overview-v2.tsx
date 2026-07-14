@@ -588,6 +588,7 @@ export function StatisticsOverviewV2() {
   const connectionId = selectedConnectionId || "default-bingx-001"
   const [stats, setStats] = useState<CompactStats>(EMPTY)
   const [exchangeTradeHistory, setExchangeTradeHistory] = useState<TradeHistoryRow[]>([])
+  const [tradeHistoryLoaded, setTradeHistoryLoaded] = useState(false)
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
   // Event-triggered refreshes can overlap with the 3s poll. Only the newest
   // stats payload may update state, otherwise an older slow response can make
@@ -607,6 +608,7 @@ export function StatisticsOverviewV2() {
       const data = await response.json()
       if (requestSequence !== historyFetchSeqRef.current || !Array.isArray(data?.rows)) return
       setExchangeTradeHistory(data.rows.slice(0, 500) as TradeHistoryRow[])
+      setTradeHistoryLoaded(true)
     } catch {
       // Keep the last successful exchange snapshot/local stats fallback. A
       // transient venue error must not blank history or reset W/L counters.
@@ -615,6 +617,7 @@ export function StatisticsOverviewV2() {
 
   useEffect(() => {
     setExchangeTradeHistory([])
+    setTradeHistoryLoaded(false)
     lastHistoryClosedCountRef.current = 0
     void loadTradeHistory(false)
     const interval = window.setInterval(() => { void loadTradeHistory(false) }, 30_000)
@@ -633,12 +636,15 @@ export function StatisticsOverviewV2() {
     if (stats.liveClosed > previous) void loadTradeHistory(false)
   }, [loadTradeHistory, stats.liveClosed])
 
-  const dashboardEventHandlers = useMemo(() => ({
-    "progression.updated": () => setEventRefreshKey((key) => key + 1),
-    "engine.stage.changed": () => setEventRefreshKey((key) => key + 1),
-    "live.summary.updated": () => setEventRefreshKey((key) => key + 1),
-    "monitoring.updated": () => setEventRefreshKey((key) => key + 1),
-  }), [])
+  const dashboardEventHandlers = useMemo(() => {
+    const refresh = () => setEventRefreshKey((key) => key + 1)
+    return {
+      "progression.updated": refresh,
+      "engine.stage.changed": refresh,
+      "live.summary.updated": refresh,
+      "monitoring.updated": refresh,
+    }
+  }, [])
   useDashboardEvents(connectionId, dashboardEventHandlers)
 
   useEffect(() => {
@@ -1566,7 +1572,7 @@ export function StatisticsOverviewV2() {
         {/* ── TRADE HISTORY ─────────────────────────────────────────────── */}
         <div className="mt-3 pt-3 border-t border-border/40">
           <TradeHistoryTable
-            trades={exchangeTradeHistory.length > 0 ? exchangeTradeHistory : stats.tradeHistory}
+            trades={tradeHistoryLoaded ? exchangeTradeHistory : stats.tradeHistory}
             limit={500}
             visibleWindow={50}
             onRefresh={() => loadTradeHistory(true)}

@@ -1,5 +1,5 @@
 import { EventEmitter } from "events"
-import { initRedis, getSettings, setSettings, getConnection, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getSettings, setSettings, getConnection, getRedisBackend, getRedisClient } from "@/lib/redis-db"
 import { publishEngineEvent } from "@/lib/engine-event-bus"
 
 /**
@@ -16,7 +16,6 @@ import { publishEngineEvent } from "@/lib/engine-event-bus"
 const RESTART_REQUIRED_FIELDS = [
   "api_key", "api_secret", "exchange", "is_testnet",
   "api_type", "api_subtype", "progression_epoch",
-  "api_type", "api_subtype",
   // Browser/dialog saves must not stop or restart a live engine. Symbol and
   // mode changes are handled by the hot-reload path, which invalidates symbol
   // caches, refreshes per-cycle settings, and lets progression recoordination
@@ -41,6 +40,8 @@ const PROGRESSION_RESTART_FIELDS = [
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
   "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled",
+  "dcaMaxSteps", "dcaStepVolumeMultipliers", "dcaStepDistancesPct",
+  "dcaTakeProfitMode", "dcaBreakevenProfitPct", "dcaCooldownSeconds",
   "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
 ]
@@ -63,23 +64,127 @@ const HOT_RELOAD_FIELDS = [
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
   "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled", "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
+  "dcaMaxSteps", "dcaStepVolumeMultipliers", "dcaStepDistancesPct",
+  "dcaTakeProfitMode", "dcaBreakevenProfitPct", "dcaCooldownSeconds",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
 ]
 
 export type ChangeType = "restart" | "reload" | "cosmetic"
 
 export interface SettingsChangeEvent {
+  /** Stable identity used to prevent an older engine apply from clearing a newer pending save. */
+  eventId?: string
   connectionId: string
   changedFields: string[]
   changeType: ChangeType
   timestamp: string
   previousValues?: Record<string, unknown>
   newValues?: Record<string, unknown>
+  supersedesEventId?: string
 }
 
 const SETTINGS_CHANGED_EVENT = "settings-changed"
-const settingsChangeBus = new EventEmitter()
+const settingsCoordinatorGlobal = globalThis as typeof globalThis & {
+  __settings_change_bus?: EventEmitter
+}
+const settingsChangeBus = settingsCoordinatorGlobal.__settings_change_bus ?? new EventEmitter()
 settingsChangeBus.setMaxListeners(500)
+settingsCoordinatorGlobal.__settings_change_bus = settingsChangeBus
+
+const settingsSignalGlobal = globalThis as typeof globalThis & {
+  __settings_signal_queues?: Map<string, Promise<unknown>>
+  __settings_event_process_salt?: string
+}
+const settingsEventProcessSalt =
+  settingsSignalGlobal.__settings_event_process_salt ?? Math.random().toString(36).slice(2, 10)
+settingsSignalGlobal.__settings_event_process_salt = settingsEventProcessSalt
+const SETTINGS_SIGNAL_LOCK_TTL_MS = 10_000
+const SETTINGS_SIGNAL_LOCK_WAIT_MS = 5_000
+
+function nextSettingsEventId(connectionId: string): string {
+  return `${connectionId}:${Date.now()}:${process.pid}:${settingsEventProcessSalt}:${Math.random().toString(36).slice(2, 8)}`
+}
+
+async function runSerializedSettingsSignal<T>(connectionId: string, work: () => Promise<T>): Promise<T> {
+  const queues = settingsSignalGlobal.__settings_signal_queues ?? new Map<string, Promise<unknown>>()
+  settingsSignalGlobal.__settings_signal_queues = queues
+  const previous = queues.get(connectionId) ?? Promise.resolve()
+  const current = previous.catch(() => undefined).then(async () => {
+    const client = getRedisClient()
+    const useSharedLock = typeof getRedisBackend === "function" && getRedisBackend() === "redis-network"
+    if (!useSharedLock) return work()
+
+    const lockKey = `settings_change_signal_lock:${connectionId}`
+    const token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`
+    const deadline = Date.now() + SETTINGS_SIGNAL_LOCK_WAIT_MS
+    let acquired = false
+    do {
+      const result = await client.set(lockKey, token, { NX: true, PX: SETTINGS_SIGNAL_LOCK_TTL_MS })
+      acquired = result === "OK" || (result as unknown) === true
+      if (!acquired) await new Promise((resolve) => setTimeout(resolve, 15 + Math.floor(Math.random() * 20)))
+    } while (!acquired && Date.now() < deadline)
+    if (!acquired) throw new Error(`Timed out waiting for settings signal lock for ${connectionId}`)
+
+    try {
+      return await work()
+    } finally {
+      try {
+        if (typeof client.eval === "function") {
+          await client.eval(
+            `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`,
+            { keys: [lockKey], arguments: [token] },
+          )
+        } else {
+          const currentToken = await client.get(lockKey)
+          if (currentToken === token) await client.del(lockKey)
+        }
+      } catch {
+        // The short lease is the final cleanup guard if ownership verification fails.
+      }
+    }
+  })
+  queues.set(connectionId, current)
+  try {
+    return await current
+  } finally {
+    if (queues.get(connectionId) === current) queues.delete(connectionId)
+  }
+}
+
+function normalizeLegacyCounter(value: unknown): number {
+  if (Array.isArray(value)) {
+    const joined = value.map((part) => String(Number(part))).join("")
+    const parsed = Number(joined)
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>
+    const direct = Number(record.value ?? record.counter)
+    if (Number.isSafeInteger(direct) && direct >= 0) return direct
+    const numericKeys = Object.keys(record).filter((key) => /^\d+$/.test(key)).sort((a, b) => Number(a) - Number(b))
+    if (numericKeys.length > 0) {
+      const parsed = Number(numericKeys.map((key) => String(Number(record[key]))).join(""))
+      if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed
+    }
+  }
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0
+}
+
+function compactSettingsEventValues(values: Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
+  if (!values) return undefined
+  const compact: Record<string, unknown> = {}
+  for (const field of [
+    "settings_version",
+    "updated_at",
+    "state_switch_version",
+    "settings_event_id",
+    "symbol_selection_epoch",
+  ]) {
+    if (values[field] !== undefined) compact[field] = values[field]
+  }
+  return Object.keys(compact).length > 0 ? compact : undefined
+}
 
 export function onSettingsChanged(
   connectionId: string,
@@ -156,16 +261,36 @@ export async function notifySettingsChanged(
   newValues?: Record<string, unknown>
 ): Promise<SettingsChangeEvent> {
   await initRedis()
-  
-  const changeType = classifyChange(changedFields)
-  const event: SettingsChangeEvent = {
-    connectionId,
-    changedFields,
-    changeType,
-    timestamp: new Date().toISOString(),
-    previousValues,
-    newValues,
-  }
+
+  // Merge rather than overwrite an unconsumed event. Two API workers can save
+  // different settings close together; retaining the union guarantees the
+  // owner invalidates every affected cache even when only the newest envelope
+  // is observed. The connection snapshot is re-read under the signal lock so
+  // a delayed notifier never republishes stale form values as authoritative.
+  const event = await runSerializedSettingsSignal(connectionId, async () => {
+    const pending = await getSettings(`settings_change:${connectionId}`).catch(() => null) as SettingsChangeEvent | null
+    const mergedFields = Array.from(new Set([
+      ...(Array.isArray(pending?.changedFields) ? pending.changedFields : []),
+      ...changedFields,
+    ]))
+    const authoritativeConnection = await getConnection(connectionId).catch(() => null)
+    const mergedEvent: SettingsChangeEvent = {
+      eventId: nextSettingsEventId(connectionId),
+      connectionId,
+      changedFields: mergedFields,
+      changeType: classifyChange(mergedFields),
+      timestamp: new Date().toISOString(),
+      // The engine only needs generation metadata for completion stamps. Do
+      // not retain entire connection snapshots (especially credentials and
+      // nested strategy trees) in every pending event.
+      previousValues: compactSettingsEventValues(pending?.previousValues ?? previousValues),
+      newValues: compactSettingsEventValues(authoritativeConnection || newValues || pending?.newValues),
+      supersedesEventId: pending?.eventId,
+    }
+    await setSettings(`settings_change:${connectionId}`, mergedEvent)
+    return mergedEvent
+  })
+  const { changeType } = event
 
   // Write both durable signals before the API handler returns success:
   // 1. `settings_change:{id}` is the reload/restart envelope consumed by
@@ -176,18 +301,24 @@ export async function notifySettingsChanged(
   //    processor-level caches as a raw Redis string key. It is intentionally
   //    mandatory: a settings PATCH response must not report success until both
   //    signals are persisted.
-  await setSettings(`settings_change:${connectionId}`, event)
-  await publishEngineEvent("settings.changed", { connectionId, changedFields, changeType, timestamp: event.timestamp })
   const client = getRedisClient()
   await client.set(`settings:dirty:${connectionId}`, "1", { EX: 300 })
   console.log(
     `[v0] [SettingsCoordinator] Dirty flag set for ${connectionId}: key=settings:dirty:${connectionId}, fields=[${changedFields.join(",")}]`,
   )
   
-  // Increment a global change counter for this connection
-  const counter = await getSettings(`settings_change_counter:${connectionId}`)
-  const newCounter = (Number(counter) || 0) + 1
-  await setSettings(`settings_change_counter:${connectionId}`, String(newCounter))
+  // Increment atomically across API/engine workers. The old implementation did
+  // get+set through a hash and also encoded scalar "10" as fields 0/1, causing
+  // the counter to become NaN precisely at the tenth settings save.
+  const counterKey = `settings:settings_change_counter:${connectionId}:value`
+  const existingCounter = await client.get(counterKey).catch(() => null)
+  if (existingCounter === null) {
+    const legacyCounter = normalizeLegacyCounter(
+      await getSettings(`settings_change_counter:${connectionId}`).catch(() => null),
+    )
+    await client.set(counterKey, String(legacyCounter), { NX: true })
+  }
+  await client.incr(counterKey)
 
   console.log(`[v0] [SettingsCoordinator] Change event for ${connectionId}: type=${changeType}, fields=[${changedFields.join(",")}]`)
 
@@ -195,12 +326,15 @@ export async function notifySettingsChanged(
   if (changeType === "restart") {
     const engineState = await getSettings(`trade_engine_state:${connectionId}`)
     if (engineState && (engineState.status === "running" || engineState.status === "ready")) {
-      await setSettings(`trade_engine_state:${connectionId}`, {
-        ...engineState,
-        restart_required: true,
-        restart_reason: `Settings changed: ${changedFields.join(", ")}`,
+      const restartPatch = {
+        restart_required: "1",
+        restart_reason: `Settings changed: ${event.changedFields.join(", ")}`,
         restart_requested_at: new Date().toISOString(),
-      })
+      }
+      await Promise.all([
+        client.hset(`settings:trade_engine_state:${connectionId}`, restartPatch),
+        client.hset(`trade_engine_state:${connectionId}`, restartPatch),
+      ])
       console.log(`[v0] [SettingsCoordinator] Engine restart flagged for ${connectionId}`)
     }
   }
@@ -211,15 +345,15 @@ export async function notifySettingsChanged(
     const engineState = await getSettings(`trade_engine_state:${connectionId}`)
     if (engineState && (engineState.status === "running" || engineState.status === "ready")) {
       await clearEngineRestartFlags(connectionId)
-      await setSettings(`trade_engine_state:${connectionId}`, {
-        ...engineState,
-        restart_required: undefined,
-        restart_reason: undefined,
-        restart_requested_at: undefined,
-        reload_required: true,
-        reload_fields: changedFields,
+      const reloadPatch = {
+        reload_required: "1",
+        reload_fields: JSON.stringify(event.changedFields),
         reload_requested_at: new Date().toISOString(),
-      })
+      }
+      await Promise.all([
+        client.hset(`settings:trade_engine_state:${connectionId}`, reloadPatch),
+        client.hset(`trade_engine_state:${connectionId}`, reloadPatch),
+      ])
       // Keep progression/stat counters intact on hot reload. Operators expect
       // settings-dialog saves to update the next cycle in-place; resetting the
       // canonical progression hash here made dashboard stats disappear and looked
@@ -258,6 +392,26 @@ export async function notifySettingsChanged(
     )
   }
 
+  // Publish only after the complete durable envelope, dirty flag, counters,
+  // engine flags, and targeted refresh request exist. An in-process listener
+  // can react synchronously, so publishing earlier exposed half-committed
+  // settings state to the owning engine.
+  await publishEngineEvent("settings.changed", {
+    connectionId,
+    changedFields: event.changedFields,
+    changeType,
+    timestamp: event.timestamp,
+    eventId: event.eventId,
+  }).catch((error) => {
+    // Redis envelope + dirty flag + refresh queue above are the durable
+    // correctness path. A transient pub/sub failure must not turn an already
+    // committed settings save into a misleading HTTP 500.
+    console.warn(
+      `[v0] [SettingsCoordinator] Event publish failed for ${connectionId}:`,
+      error instanceof Error ? error.message : String(error),
+    )
+  })
+
   // Emit only after all durable state writes above have completed. The
   // in-process engine subscriber may immediately consume and clear the pending
   // settings_change envelope; emitting earlier can race with reload_required /
@@ -279,29 +433,37 @@ export async function getPendingChanges(connectionId: string): Promise<SettingsC
 /**
  * Clear pending changes after the engine has processed them.
  */
-export async function clearPendingChanges(connectionId: string): Promise<void> {
+export async function clearPendingChanges(
+  connectionId: string,
+  expectedEvent?: Pick<SettingsChangeEvent, "eventId" | "timestamp">,
+): Promise<boolean> {
   await initRedis()
-  const client = getRedisClient()
-  await client.del(`settings:settings_change:${connectionId}`).catch(async () => {
-    // Fallback for Redis-like clients without DEL support. Do not call
-    // setSettings(..., null): flattenForHmset expects an object and throws
-    // Object.entries(null), which made production hot-reload log false
-    // applyPendingSettingsChange failures after settings-dialog saves.
-    await client.hdel?.(`settings:settings_change:${connectionId}`, "connectionId", "changedFields", "changeType", "timestamp", "previousValues", "newValues")
+  return runSerializedSettingsSignal(connectionId, async () => {
+    const current = await getSettings(`settings_change:${connectionId}`).catch(() => null) as SettingsChangeEvent | null
+    if (!current) return true
+    if (expectedEvent) {
+      const matches = expectedEvent.eventId
+        ? current.eventId === expectedEvent.eventId
+        : current.timestamp === expectedEvent.timestamp
+      if (!matches) return false
+    }
+
+    const client = getRedisClient()
+    const stateFields = [
+      "restart_required",
+      "restart_reason",
+      "restart_requested_at",
+      "reload_required",
+      "reload_fields",
+      "reload_requested_at",
+    ]
+    await Promise.all([
+      client.del(`settings:settings_change:${connectionId}`),
+      client.hdel(`settings:trade_engine_state:${connectionId}`, ...stateFields),
+      client.hdel(`trade_engine_state:${connectionId}`, ...stateFields),
+    ])
+    return true
   })
-  
-  // Also clear restart/reload flags from engine state
-  const engineState = await getSettings(`trade_engine_state:${connectionId}`)
-  if (engineState) {
-    const cleaned = { ...engineState }
-    delete cleaned.restart_required
-    delete cleaned.restart_reason
-    delete cleaned.restart_requested_at
-    delete cleaned.reload_required
-    delete cleaned.reload_fields
-    delete cleaned.reload_requested_at
-    await setSettings(`trade_engine_state:${connectionId}`, cleaned)
-  }
 }
 
 /**
@@ -309,8 +471,10 @@ export async function clearPendingChanges(connectionId: string): Promise<void> {
  */
 export async function getChangeCounter(connectionId: string): Promise<number> {
   await initRedis()
-  const counter = await getSettings(`settings_change_counter:${connectionId}`)
-  return Number(counter) || 0
+  const client = getRedisClient()
+  const counter = await client.get(`settings:settings_change_counter:${connectionId}:value`).catch(() => null)
+  if (counter !== null) return normalizeLegacyCounter(counter)
+  return normalizeLegacyCounter(await getSettings(`settings_change_counter:${connectionId}`))
 }
 
 /**

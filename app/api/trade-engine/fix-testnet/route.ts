@@ -38,7 +38,6 @@ export async function POST(request: Request) {
     const fixedConnections = []
     for (const conn of connectionsToFix) {
       const updated = {
-        ...conn,
         is_testnet: false,
         updated_at: new Date().toISOString(),
       }

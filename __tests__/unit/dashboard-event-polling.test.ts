@@ -58,8 +58,26 @@ describe("dashboard event stream refactor", () => {
     expect(source).toContain('"progression.epochStarted"')
     expect(source).toContain('"processing.progress"')
     expect(source).toContain('"live.stageChanged"')
-    expect(source).toContain('handlers[eventType]?.(payload)')
+    expect(source).toContain('const handler = handlers[eventType]')
+    expect(source).toContain('invoked.has(handler)')
+    expect(source).toContain('scheduleHandler(handler, payload, event.type)')
+    expect(source).toContain('highFrequencyTypes.has(canonicalType)')
     expect(source).toContain('canonicalEvent: event')
+  })
+
+  it("rejects stale UI fetches and queues forced refreshes received during an in-flight read", () => {
+    const exchangeContext = read("lib/exchange-context.tsx")
+    const quickstartConnections = read("components/dashboard/quickstart-connection-controls.tsx")
+    const settingsConnections = read("components/settings/exchange-connection-manager.tsx")
+    const systemOverview = read("components/dashboard/system-overview.tsx")
+
+    expect(exchangeContext).toContain("forceReloadQueuedRef.current = true")
+    expect(exchangeContext).toContain("while (forceReloadQueuedRef.current)")
+    expect(exchangeContext).toContain('useDashboardEvents("*", dashboardEventHandlers)')
+    expect(quickstartConnections).toContain("connectionLoadSequenceRef.current")
+    expect(settingsConnections).toContain("connectionLoadSequenceRef.current")
+    expect(systemOverview).toContain("connectionFetchSequenceRef.current")
+    expect(systemOverview).toContain("statsFetchSequenceRef.current")
   })
 
 })

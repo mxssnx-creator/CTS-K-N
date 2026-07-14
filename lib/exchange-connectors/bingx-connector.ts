@@ -40,6 +40,21 @@ import { safeParseResponse } from "@/lib/safe-response-parser"
  * - Hedge position mode
  */
 export class BingXConnector extends BaseExchangeConnector {
+  private lastPositionsSnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
+  private lastOpenOrdersSnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
+  private lastOrderHistorySnapshotStatus = { ok: false, at: 0, error: "not_fetched" }
+
+  getLastPositionsSnapshotStatus(): { ok: boolean; at: number; error?: string } {
+    return { ...this.lastPositionsSnapshotStatus }
+  }
+
+  getLastOpenOrdersSnapshotStatus(): { ok: boolean; at: number; error?: string } {
+    return { ...this.lastOpenOrdersSnapshotStatus }
+  }
+
+  getLastOrderHistorySnapshotStatus(): { ok: boolean; at: number; error?: string } {
+    return { ...this.lastOrderHistorySnapshotStatus }
+  }
   // ── Official BingX SDK Client (with connection pooling & keep-alive) ──────
   // The SDK handles all signature generation, retry logic, and connection pooling
   // for significantly faster execution compared to manual REST calls.
@@ -830,7 +845,7 @@ export class BingXConnector extends BaseExchangeConnector {
           } else if (options.reduceOnly) {
             orderPayload.reduceOnly = "true"
           }
-          if (options.clientOrderId) orderPayload.clientOrderId = options.clientOrderId
+          if (options.clientOrderId) orderPayload.clientOrderID = options.clientOrderId
 
           const orderData = await tradeService.tradeOrder(orderPayload, this.sdkAccount)
           const info = orderData?.data?.order || orderData?.data || {}
@@ -942,7 +957,7 @@ export class BingXConnector extends BaseExchangeConnector {
           params.reduceOnly = "true"
         }
         if (options.clientOrderId) {
-          params.clientOrderId = options.clientOrderId
+          params.clientOrderID = options.clientOrderId
         }
       }
 
@@ -1149,7 +1164,7 @@ export class BingXConnector extends BaseExchangeConnector {
       if (!hedgeMode && options.reduceOnly !== false) {
         params.reduceOnly = "true"
       }
-      if (options.clientOrderId) params.clientOrderId = options.clientOrderId
+      if (options.clientOrderId) params.clientOrderID = options.clientOrderId
 
       const tradeService = await this.getSdkTradeService()
       if (tradeService?.tradeOrder) {
@@ -1224,7 +1239,7 @@ export class BingXConnector extends BaseExchangeConnector {
             }
 	            if (id) {
 	              this.log(`✓ ${orderType} placed on timestamp retry: ${id}`)
-	              return { success: true, orderId: String(id), clientOrderId: params.clientOrderId } as any
+	              return { success: true, orderId: String(id), clientOrderId: params.clientOrderID } as any
 	            }
             // Fall through to error handling if orderId was not found
           }
@@ -1256,7 +1271,7 @@ export class BingXConnector extends BaseExchangeConnector {
             }
 	            if (id2) {
 	              this.log(`✓ ${orderType} placed on reduceOnly hedge retry: ${id2}`)
-	              return { success: true, orderId: String(id2), clientOrderId: params.clientOrderId } as any
+	              return { success: true, orderId: String(id2), clientOrderId: params.clientOrderID } as any
 	            }
             // Fall through to error handling if orderId was not found
           }
@@ -1367,14 +1382,6 @@ export class BingXConnector extends BaseExchangeConnector {
           if (!retryResponse.ok) throw new Error(`HTTP ${retryResponse.status}: ${retryResponse.statusText}`)
           data = await this.safeJson(retryResponse)
 
-          // Second consecutive 100421 after a fresh resync means the order is
-          // already gone on BingX (some API versions return 100421 for "order
-          // not found" rather than a proper order-not-found code). Treat this
-          // as a successful cancellation — the order no longer exists either way.
-          if (String(data.code) === "100421") {
-            this.log(`Order ${orderId} already gone (double 100421 after resync — treating as cancelled)`)
-            return { success: true }
-          }
         }
       }
 
@@ -1388,7 +1395,6 @@ export class BingXConnector extends BaseExchangeConnector {
         const code = String(data.code)
         const msgLower = String(data.msg ?? "").toLowerCase()
         const isOrderGone =
-          code === "100410" || code === "101400" || code === "80012" ||
           msgLower.includes("order does not exist") ||
           msgLower.includes("order not exist") ||
           (code === "109400" && msgLower.includes("not exist"))
@@ -1477,6 +1483,7 @@ export class BingXConnector extends BaseExchangeConnector {
   }
 
   async getOpenOrders(symbol?: string): Promise<any[]> {
+    this.lastOpenOrdersSnapshotStatus = { ok: false, at: Date.now(), error: "request_in_progress" }
     try {
       // Sync server time before any signed request
       await this.syncServerTime()
@@ -1504,20 +1511,34 @@ export class BingXConnector extends BaseExchangeConnector {
       const data = await this.safeJson(response)
 
       if (!this.isBingXSuccess(data.code)) {
+        this.lastOpenOrdersSnapshotStatus = { ok: false, at: Date.now(), error: `${data.code}:${data.msg || "exchange_error"}` }
         return []
       }
 
       // Swap openOrders returns { orders: [...] }; spot returns an array directly.
       const rows = data.data?.orders || data.data
-      return Array.isArray(rows) ? rows : []
+      const orders = Array.isArray(rows) ? rows : []
+      this.lastOpenOrdersSnapshotStatus = { ok: true, at: Date.now(), error: "" }
+      return orders
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
+      this.lastOpenOrdersSnapshotStatus = { ok: false, at: Date.now(), error: errorMsg }
       this.logError(`✗ Failed to fetch open orders: ${errorMsg}`)
       return []
     }
   }
 
-  async getOrderHistory(symbol?: string, limit: number = 50): Promise<any[]> {
+  /**
+   * Fetch one authoritative history snapshot. Keeping success separate from
+   * `rows` matters because an empty successful account and a failed request
+   * are different states. The dashboard must never replace cached history
+   * with an error-shaped empty array.
+   */
+  async getOrderHistorySnapshot(
+    symbol?: string,
+    limit: number = 50,
+  ): Promise<{ ok: boolean; rows: any[]; error?: string }> {
+    this.lastOrderHistorySnapshotStatus = { ok: false, at: Date.now(), error: "request_in_progress" }
     try {
       // Sync server time before any signed request
       await this.syncServerTime()
@@ -1546,19 +1567,29 @@ export class BingXConnector extends BaseExchangeConnector {
       const data = await this.safeJson(response)
 
       if (!this.isBingXSuccess(data.code)) {
-        return []
+        const error = `${data.code}:${data.msg || "exchange_error"}`
+        this.lastOrderHistorySnapshotStatus = { ok: false, at: Date.now(), error }
+        return { ok: false, rows: [], error }
       }
 
       const rows = data.data?.orders || data.data
-      return Array.isArray(rows) ? rows : []
+      const normalizedRows = Array.isArray(rows) ? rows : []
+      this.lastOrderHistorySnapshotStatus = { ok: true, at: Date.now(), error: "" }
+      return { ok: true, rows: normalizedRows }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
+      this.lastOrderHistorySnapshotStatus = { ok: false, at: Date.now(), error: errorMsg }
       this.logError(`✗ Failed to fetch order history: ${errorMsg}`)
-      return []
+      return { ok: false, rows: [], error: errorMsg }
     }
   }
 
+  async getOrderHistory(symbol?: string, limit: number = 50): Promise<any[]> {
+    return (await this.getOrderHistorySnapshot(symbol, limit)).rows
+  }
+
   async getPositions(symbol?: string): Promise<any[]> {
+    this.lastPositionsSnapshotStatus = { ok: false, at: Date.now(), error: "request_in_progress" }
     try {
       // Sync server time before any signed request
       await this.syncServerTime()
@@ -1577,6 +1608,7 @@ export class BingXConnector extends BaseExchangeConnector {
     
     if (effectiveContractType === "spot" || apiType === "spot") {
       this.log("Positions not available for spot trading")
+      this.lastPositionsSnapshotStatus = { ok: true, at: Date.now(), error: "" }
       return []
     }
 
@@ -1609,6 +1641,7 @@ export class BingXConnector extends BaseExchangeConnector {
       const data = await this.safeJson(response)
 
       if (!this.isBingXSuccess(data.code)) {
+        this.lastPositionsSnapshotStatus = { ok: false, at: Date.now(), error: `${data.code}:${data.msg || "exchange_error"}` }
         return []
       }
 
@@ -1619,7 +1652,7 @@ export class BingXConnector extends BaseExchangeConnector {
       //   entryPrice   — BingX v3 perpetual (average entry price)
       //   positionSide — "LONG" | "SHORT" (hedge mode) or "BOTH" (one-way)
       //   unrealizedPnl, markPrice, liquidationPrice — ancillary fields
-      return raw.map((p: any) => ({
+      const positions = raw.map((p: any) => ({
         ...p,
         // Canonical quantity: BingX uses `positionAmt` in v3; expose it
         // under that name AND under `contracts` so both callers succeed.
@@ -1632,8 +1665,11 @@ export class BingXConnector extends BaseExchangeConnector {
         // Normalise positionSide capitalisation.
         positionSide:  String(p.positionSide ?? p.side ?? "BOTH").toUpperCase(),
       }))
+      this.lastPositionsSnapshotStatus = { ok: true, at: Date.now(), error: "" }
+      return positions
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
+      this.lastPositionsSnapshotStatus = { ok: false, at: Date.now(), error: errorMsg }
       this.logError(`✗ Failed to fetch positions: ${errorMsg}`)
       return []
     }
@@ -2934,7 +2970,7 @@ export class BingXConnector extends BaseExchangeConnector {
       }
       
       if (orderId) params.orderId = orderId
-      if (clientOrderId) params.clientOrderId = clientOrderId
+      if (clientOrderId) params.clientOrderID = clientOrderId
       
       const { signature, queryString: signedQs } = this.signParams(params)
       const url = `${this.getBaseUrl()}/openApi/swap/v2/trade/openOrder?${signedQs}&signature=${signature}`
@@ -2982,7 +3018,7 @@ export class BingXConnector extends BaseExchangeConnector {
       }
       
       if (orderId) params.orderId = orderId
-      if (clientOrderId) params.clientOrderId = clientOrderId
+      if (clientOrderId) params.clientOrderID = clientOrderId
       
       const { signature, queryString: signedQs } = this.signParams(params)
       const url = `${this.getBaseUrl()}/openApi/swap/v2/trade/order?${signedQs}&signature=${signature}`

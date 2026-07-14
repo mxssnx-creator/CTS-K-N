@@ -79,6 +79,7 @@ describe("settings continuity", () => {
     const redis = {
       hset: jest.fn(async (key: string) => { writes.push(`hset:${key}`); return 1 }),
     }
+    const notifySettingsChanged = jest.fn()
     const before = { id: "conn-atomic", exchange: "bingx", is_live_trade: "0" }
     jest.doMock("@/lib/redis-db", () => ({
       initRedis: jest.fn().mockResolvedValue(undefined),
@@ -91,7 +92,7 @@ describe("settings continuity", () => {
       setSettings: jest.fn(async (key: string) => { writes.push(`settings:${key}`) }),
     }))
     jest.doMock("@/lib/settings-coordinator", () => ({
-      notifySettingsChanged: jest.fn(),
+      notifySettingsChanged,
       detectChangedFields: jest.fn(() => []),
     }))
     jest.doMock("@/lib/events/emitter", () => ({ emitCanonicalEvent: jest.fn() }))
@@ -126,11 +127,16 @@ describe("settings continuity", () => {
       "hset:scope:trade-engine:conn-atomic",
     ]))
     expect(writes.slice(commitIndex + 1).some((entry) => entry.startsWith("hset:"))).toBe(false)
+    expect(notifySettingsChanged).not.toHaveBeenCalled()
   })
 
   test("concurrent connection commits re-read queued state and retain sibling fields", async () => {
     jest.resetModules()
-    let stored: Record<string, unknown> = { id: "conn-commit-race", exchange: "bingx" }
+    let stored: Record<string, any> = {
+      id: "conn-commit-race",
+      exchange: "bingx",
+      connection_settings: { coordination_settings: { variants: { block: true, dca: false } } },
+    }
     let activeCommits = 0
     let maxActiveCommits = 0
     jest.doMock("@/lib/redis-db", () => ({
@@ -160,12 +166,18 @@ describe("settings continuity", () => {
     const before = { ...stored }
     await Promise.all([
       applyMainConnectionSettingsChange("conn-commit-race", before, {
-        connectionPatch: { live_volume_factor: "0.7" },
+        connectionPatch: {
+          live_volume_factor: "0.7",
+          connection_settings: { coordination_settings: { variants: { block: false } } },
+        },
         changedFieldsOverride: [],
         logTag: "volume-save",
       }),
       applyMainConnectionSettingsChange("conn-commit-race", before, {
-        connectionPatch: { is_live_trade: "1" },
+        connectionPatch: {
+          is_live_trade: "1",
+          connection_settings: { coordination_settings: { variants: { dca: true } } },
+        },
         changedFieldsOverride: [],
         logTag: "live-save",
       }),
@@ -176,6 +188,10 @@ describe("settings continuity", () => {
       live_volume_factor: "0.7",
       is_live_trade: "1",
     }))
+    expect(stored.connection_settings.coordination_settings.variants).toEqual({
+      block: false,
+      dca: true,
+    })
   })
 
   test("settings races and pseudo creation leases retain token ownership", () => {
@@ -186,6 +202,8 @@ describe("settings continuity", () => {
     expect(recoordinator).toContain(".then(work)")
     expect(recoordinator).toContain("inFlightRecoordinations.set(connectionId, current)")
     expect(recoordinator).toContain("inFlightSettingsCommits.set(connectionId, current)")
+    expect(recoordinator).toContain("connection_settings_commit_lock:")
+    expect(recoordinator).toContain("PX: SETTINGS_COMMIT_LOCK_TTL_MS")
     expect(pseudo).toContain("refreshDirectionCreationLock")
     expect(pseudo).toContain("expired worker must never write after a newer creator")
     expect(dialog).toContain("symbolRequestSequenceRef")

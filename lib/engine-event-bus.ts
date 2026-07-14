@@ -14,7 +14,7 @@ export interface EngineEventPayloads {
   "engine.intent.changed": { connectionId?: string; intent: string; reason?: string; timestamp?: string }
   "engine.heartbeat.missed": { connectionId: string; lastHeartbeatAt?: number; ageMs?: number; reason?: string; timestamp?: string }
   "engine.heartbeat.updated": { connectionId: string; heartbeatAt: number; source?: string; timestamp?: string }
-  "settings.changed": { connectionId: string; changedFields: string[]; changeType: string; timestamp: string }
+  "settings.changed": { connectionId: string; changedFields: string[]; changeType: string; timestamp: string; eventId?: string }
   "progression.stage.completed": { connectionId: string; stage: string; successful?: boolean; cycle?: number; timestamp?: string }
   "market.candle.closed": { connectionId?: string; symbol: string; interval?: string; closedAt: number; timestamp?: string }
   "engine.refresh.requested": { connectionId: string; action: string; stateSwitchVersion: string; reason: string; timestamp: string }

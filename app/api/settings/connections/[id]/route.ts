@@ -1,27 +1,34 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
-import { getConnection, updateConnection, deleteConnection, initRedis } from "@/lib/redis-db"
+import { getConnection, deleteConnection, initRedis } from "@/lib/redis-db"
 import { ConnectionDataArchive } from "@/lib/connection-data-archive"
-import { recoordinateAfterSettingsChange } from "@/lib/connection-recoordinator"
-
-// SECURITY: never return raw credentials from any handler in this route.
-// Masked values keep the UI informative ("key is set, ends in …abcd") while
-// the PUT/PATCH sanitizers ignore masked/empty values, so round-tripping a
-// fetched connection through an edit dialog can never corrupt stored secrets.
-const maskSecret = (v: unknown) =>
-  typeof v === "string" && v.length > 4 ? `••••${v.slice(-4)}` : v ? "••••" : v
-
-const maskConnectionSecrets = (conn: Record<string, any>) => ({
-  ...conn,
-  ...(conn.api_key !== undefined ? { api_key: maskSecret(conn.api_key) } : {}),
-  ...(conn.api_secret !== undefined ? { api_secret: maskSecret(conn.api_secret) } : {}),
-})
-
-// A value the client sends back that is empty or still masked must never
-// overwrite the stored secret.
-const isMaskedOrEmpty = (v: unknown) => typeof v === "string" && (v === "" || v.includes("••••"))
+import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
+import { maskConnectionSecrets, preserveMaskedConnectionSecrets } from "@/lib/connection-secrets"
 
 export const dynamic = "force-dynamic"
+
+function changedConnectionPatchFields(
+  patch: Record<string, any>,
+  current: Record<string, any>,
+): string[] {
+  const fields = Object.keys(patch).filter((field) => field !== "connection_settings")
+  if (patch.connection_settings === undefined) return fields
+  const parse = (value: unknown): Record<string, any> | null => {
+    if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, any>
+    if (typeof value === "string" && value.trim().startsWith("{")) {
+      try { return JSON.parse(value) } catch { return null }
+    }
+    return null
+  }
+  const incoming = parse(patch.connection_settings)
+  const existing = parse(current.connection_settings) || {}
+  if (!incoming) return [...fields, "connection_settings"]
+  for (const [field, value] of Object.entries(incoming)) {
+    if (JSON.stringify(existing[field]) !== JSON.stringify(value)) fields.push(`connection_settings.${field}`)
+  }
+  return fields
+}
+
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
@@ -144,7 +151,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const body = await request.json()
 
     console.log("[v0] Patching connection in Redis:", id, "with", Object.keys(body).length, "fields")
-    await SystemLogger.logConnection(`Patching connection`, id, "info", body)
+    await SystemLogger.logConnection(`Patching connection`, id, "info", { fields: Object.keys(body) })
 
     await initRedis()
     const connection = await getConnection(id)
@@ -153,39 +160,20 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
 
-    const sanitizedBody = { ...body }
-    // Ignore empty AND masked values (the GET handler returns masked secrets,
-    // so an edit dialog round-trip would otherwise overwrite the real key
-    // with "••••abcd").
-    if (isMaskedOrEmpty(sanitizedBody.api_key) && connection.api_key) {
-      delete sanitizedBody.api_key
-    }
-    if (isMaskedOrEmpty(sanitizedBody.api_secret) && connection.api_secret) {
-      delete sanitizedBody.api_secret
-    }
+    const sanitizedBody = preserveMaskedConnectionSecrets(body, connection)
+    delete sanitizedBody.id
+    delete sanitizedBody.created_at
 
-    const updatedConnection = {
-      ...connection,
-      ...sanitizedBody,
-      id: connection.id,
-      created_at: connection.created_at,
-      updated_at: new Date().toISOString(),
-    }
-
-    await updateConnection(id, updatedConnection)
-
-    // Full propagation: notify + fast-path apply + recoordinate
-    // (start the engine if it now should run, stop if it now shouldn't,
-    // hot-reload if it already is). See lib/connection-recoordinator.ts
-    // for the full rationale — this single call replaces the three
-    // separate steps that previously diverged across handlers.
-    await recoordinateAfterSettingsChange(id, connection, updatedConnection, {
+    const connectionPatch = { ...sanitizedBody, updated_at: new Date().toISOString() }
+    const { connection: persistedConnection } = await applyMainConnectionSettingsChange(id, connection, {
+      connectionPatch,
+      changedFieldsOverride: changedConnectionPatchFields(sanitizedBody, connection),
       logTag: "PATCH /connections/[id]",
     })
 
     await SystemLogger.logConnection(`Connection patched successfully`, id, "info")
 
-    return NextResponse.json({ success: true, connection: maskConnectionSecrets(updatedConnection) })
+    return NextResponse.json({ success: true, connection: maskConnectionSecrets(persistedConnection) })
   } catch (error) {
     console.error("[v0] Failed to patch connection:", error)
     await SystemLogger.logError(error, "api", `PATCH /api/settings/connections/${(await params).id}`)
@@ -201,8 +189,8 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     const { id } = await params
     const body = await request.json()
 
-    console.log("[v0] Updating connection in Redis:", id, body)
-    await SystemLogger.logConnection(`Updating connection`, id, "info", body)
+    console.log("[v0] Updating connection in Redis:", id, "fields:", Object.keys(body))
+    await SystemLogger.logConnection(`Updating connection`, id, "info", { fields: Object.keys(body) })
 
     await initRedis()
     const connection = await getConnection(id)
@@ -226,35 +214,20 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       }
     } catch { /* non-critical */ }
 
-    const sanitizedBody = { ...body }
-    // Ignore empty AND masked values (see PATCH above).
-    if (isMaskedOrEmpty(sanitizedBody.api_key) && connection.api_key) {
-      delete sanitizedBody.api_key
-    }
-    if (isMaskedOrEmpty(sanitizedBody.api_secret) && connection.api_secret) {
-      delete sanitizedBody.api_secret
-    }
+    const sanitizedBody = preserveMaskedConnectionSecrets(body, connection)
+    delete sanitizedBody.id
+    delete sanitizedBody.created_at
 
-    const updatedConnection = {
-      ...connection,
-      ...sanitizedBody,
-      id: connection.id,
-      created_at: connection.created_at,
-      updated_at: new Date().toISOString(),
-    }
-
-    await updateConnection(id, updatedConnection)
-
-    // Full propagation: notify + fast-path apply + recoordinate.
-    // See PATCH above (and lib/connection-recoordinator.ts) for full
-    // rationale.
-    await recoordinateAfterSettingsChange(id, connection, updatedConnection, {
+    const connectionPatch = { ...sanitizedBody, updated_at: new Date().toISOString() }
+    const { connection: persistedConnection } = await applyMainConnectionSettingsChange(id, connection, {
+      connectionPatch,
+      changedFieldsOverride: changedConnectionPatchFields(sanitizedBody, connection),
       logTag: "PUT /connections/[id]",
     })
 
     await SystemLogger.logConnection(`Connection updated successfully`, id, "info")
 
-    return NextResponse.json({ success: true, connection: maskConnectionSecrets(updatedConnection) })
+    return NextResponse.json({ success: true, connection: maskConnectionSecrets(persistedConnection) })
   } catch (error) {
     console.error("[v0] Failed to update connection:", error)
     await SystemLogger.logError(error, "api", `PUT /api/settings/connections/${(await params).id}`)

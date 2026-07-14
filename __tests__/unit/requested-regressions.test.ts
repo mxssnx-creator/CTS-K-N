@@ -1896,7 +1896,8 @@ describe("requested regression guardrails", () => {
     expect(settingsRoute).not.toContain("ProgressionStateManager.recoordinateForActualOne(id)")
     expect(settingsRoute).not.toContain("setTimeout(() =>")
     expect(settingsRoute).toContain("settingsPatch,")
-    expect(recoordinator).toContain("await redis.hset(`settings:connection_settings:${id}`, hashPatch)")
+    expect(recoordinator).toContain("await writeOrBundle(`settings:connection_settings:${id}`, hashPatch)")
+    expect(recoordinator).toContain("relatedHashPatches")
     expect(settingsRoute).toContain("making progression appear to switch between old and new settings")
 
     expect(recoordinator).toContain("runSerializedForConnection")

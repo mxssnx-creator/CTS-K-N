@@ -24,23 +24,54 @@ export async function GET(request: NextRequest) {
       "Access-Control-Allow-Headers": "Content-Type",
     })
 
-    // Create a response with streaming support
-    const response = new Response(
-      new ReadableStream({
-        async start(controller) {
-          try {
+    // Create a response with streaming support. `cancel()` and the request
+    // abort signal both tear down the heartbeat and broadcaster subscription;
+    // without this, every reconnect retained a closed controller forever.
+    let cleanup = () => {}
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        try {
+            let closed = false
+            let heartbeatInterval: ReturnType<typeof setInterval> | undefined
+            let unsubscribe = () => {}
+            const onAbort = () => cleanup()
+            cleanup = () => {
+              if (closed) return
+              closed = true
+              if (heartbeatInterval) clearInterval(heartbeatInterval)
+              request.signal.removeEventListener("abort", onAbort)
+              unsubscribe()
+              try { controller.close() } catch { /* already cancelled */ }
+            }
+            const enqueue = (payload: string) => controller.enqueue(encoder.encode(payload))
             // Send initial connection confirmation
             const confirmationMessage = {
               type: "connected",
               connectionId,
               timestamp: new Date().toISOString(),
             }
-            controller.enqueue(`data: ${JSON.stringify(confirmationMessage)}\n\n`)
+            // This is a named event because SSEClient resolves its connect()
+            // promise from the `connected` listener. Generic data-only output
+            // left clients stuck in CONNECTING even though bytes were flowing.
+            enqueue(`event: connected\ndata: ${JSON.stringify(confirmationMessage)}\n\n`)
 
-            // Get message history for catch-up on reconnect
+            // Register before taking the reconnect-history snapshot. If an
+            // event lands between the two operations it may be delivered both
+            // live and through history, but the canonical event id makes that
+            // harmless on the client. Registering after the snapshot left a
+            // real gap where the event was delivered by neither path.
             const broadcaster = getBroadcaster()
-            const history = broadcaster.getHistory(connectionId)
+            const subscription = broadcaster.registerClient(connectionId, {
+              write: (data: string) => {
+                enqueue(data)
+              },
+              writable: true,
+            })
+            unsubscribe = subscription.unsubscribe
 
+            // Get message history for catch-up on reconnect.
+            const history = broadcaster.getHistory(connectionId)
             // Send recent history if available (for client catch-up)
             if (history.length > 0) {
               const historyMessage = {
@@ -49,39 +80,34 @@ export async function GET(request: NextRequest) {
                 data: history.slice(-10), // Last 10 messages
                 timestamp: new Date().toISOString(),
               }
-              controller.enqueue(`data: ${JSON.stringify(historyMessage)}\n\n`)
+              enqueue(`data: ${JSON.stringify(historyMessage)}\n\n`)
             }
 
-            // Register client and get send function
-            const { send } = broadcaster.registerClient(connectionId, {
-              write: (data: string) => {
-                controller.enqueue(data)
-              },
-              writable: true,
-            })
-
             // Keep connection alive with periodic heartbeat
-            const heartbeatInterval = setInterval(() => {
+            heartbeatInterval = setInterval(() => {
               try {
-                controller.enqueue(`: heartbeat at ${new Date().toISOString()}\n\n`)
+                enqueue(`: heartbeat at ${new Date().toISOString()}\n\n`)
               } catch (error) {
                 console.error("[SSE] Heartbeat error:", error)
-                clearInterval(heartbeatInterval)
+                cleanup()
               }
             }, 30000) // 30 second heartbeat
 
-            // Handle connection close
-            const originalClose = controller.close.bind(controller)
-            controller.close = () => {
-              clearInterval(heartbeatInterval)
-              originalClose()
-            }
+            request.signal.addEventListener("abort", onAbort, { once: true })
+            if (request.signal.aborted) cleanup()
           } catch (error) {
             console.error("[SSE] Stream setup error:", error)
-            controller.error(error)
+            try { controller.error(error) } catch { /* already closed */ }
+            cleanup()
           }
         },
-      }),
+        cancel() {
+          cleanup()
+        },
+      })
+
+    const response = new Response(
+      stream,
       {
         status: 200,
         headers: responseHeaders,

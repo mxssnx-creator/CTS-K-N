@@ -41,7 +41,13 @@ interface ClientSubscription {
 class EventBroadcaster {
   private subscriptions: Map<string, Set<ClientSubscription>> = new Map()
   private messageHistory: Map<string, BroadcastMessage[]> = new Map()
-  private maxHistorySize = 100 // Keep last 100 messages per connection
+  // Reconnect catch-up sends at most ten records. Keep only a small bounded
+  // cushion beyond that and truncate telemetry-heavy payloads early; otherwise
+  // 32-symbol progress events across many connections can retain tens of MB in
+  // the Next.js process even though the browser only needs an invalidation.
+  private maxHistorySize = 20
+  private maxHistoryConnections = 64
+  private maxHistoryPayloadBytes = 8 * 1024
 
   /**
    * Register a new SSE client
@@ -54,11 +60,9 @@ class EventBroadcaster {
 
     const send = (message: BroadcastMessage) => {
       try {
-        if (response.writable || response.responseWritable !== false) {
+        if (response.writable !== false && response.responseWritable !== false) {
           const data = `data: ${JSON.stringify(message)}\n\n`
           response.write(data)
-          // Store in history
-          this.addToHistory(connectionId, message)
         }
       } catch (error) {
         console.error('[EventBroadcaster] Error sending message:', error)
@@ -80,7 +84,7 @@ class EventBroadcaster {
     const unsubscribe = () => {
       this.unsubscribeClient(subscriptionKey)
       try {
-        response.end()
+        if (typeof response.end === 'function') response.end()
       } catch (error) {
         console.error('[EventBroadcaster] Error closing response:', error)
       }
@@ -110,7 +114,7 @@ class EventBroadcaster {
     })
 
     // Store in history
-    this.addToHistory(connectionId, normalized)
+    this.addToHistory(connectionId, this.compactForHistory(normalized))
   }
 
   public broadcastCanonical(event: CanonicalEvent<any>): void {
@@ -143,6 +147,14 @@ class EventBroadcaster {
       'settings-update': 'settings.saved',
       'engine-status': 'engine.status',
       'processing-progress': 'processing.progress',
+      'connection.updated': 'dashboard.sectionUpdated',
+      'settings.recoordinated': 'connection.recoordinated',
+      'engine.stage.changed': 'engine.status',
+      'progression.updated': 'processing.progress',
+      'live.summary.updated': 'live.stageChanged',
+      'logs.appended': 'dashboard.sectionUpdated',
+      'monitoring.updated': 'dashboard.sectionUpdated',
+      'engine-stage-ack': 'processing.progress',
       error: 'error',
     }
     const eventType = legacyToCanonical[legacy.type] || 'engine.status'
@@ -239,6 +251,12 @@ class EventBroadcaster {
    * Get message history for a connection (for catch-up on reconnect)
    */
   public getHistory(connectionId: string): BroadcastMessage[] {
+    if (connectionId === '*') {
+      return Array.from(this.messageHistory.values())
+        .flat()
+        .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp))
+        .slice(-this.maxHistorySize)
+    }
     return this.messageHistory.get(connectionId) || []
   }
 
@@ -262,6 +280,10 @@ class EventBroadcaster {
    */
   private addToHistory(connectionId: string, message: BroadcastMessage): void {
     if (!this.messageHistory.has(connectionId)) {
+      if (this.messageHistory.size >= this.maxHistoryConnections) {
+        const oldestConnectionId = this.messageHistory.keys().next().value
+        if (oldestConnectionId) this.messageHistory.delete(oldestConnectionId)
+      }
       this.messageHistory.set(connectionId, [])
     }
 
@@ -271,6 +293,25 @@ class EventBroadcaster {
     // Keep only last maxHistorySize messages
     if (history.length > this.maxHistorySize) {
       history.shift()
+    }
+  }
+
+  private compactForHistory(message: BroadcastMessage): BroadcastMessage {
+    try {
+      if (JSON.stringify(message).length <= this.maxHistoryPayloadBytes) return message
+    } catch {
+      // Circular or non-serializable data is never useful in reconnect history.
+    }
+    const canonicalEvent = message.canonicalEvent
+      ? {
+          ...message.canonicalEvent,
+          data: { historyPayloadTruncated: true, originalType: message.canonicalEvent.type },
+        }
+      : undefined
+    return {
+      ...message,
+      data: canonicalEvent || { historyPayloadTruncated: true, originalType: message.type },
+      canonicalEvent,
     }
   }
 
@@ -307,23 +348,28 @@ class EventBroadcaster {
       totalClients: Array.from(connectionStats.values()).reduce((sum, count) => sum + count, 0),
       connectionStats: Object.fromEntries(connectionStats),
       historySize: this.messageHistory.size,
+      historyMessages: Array.from(this.messageHistory.values()).reduce((sum, history) => sum + history.length, 0),
     }
   }
 }
 
-// Global singleton instance
-let instance: EventBroadcaster | null = null
+// Keep one broadcaster across separately bundled Next.js route modules and
+// hot reloads. A module-local singleton can give `/api/ws` and a mutation API
+// different instances, silently dropping cross-route UI events.
+const broadcasterGlobal = globalThis as typeof globalThis & {
+  __eventBroadcaster?: EventBroadcaster
+}
 
 export function getBroadcaster(): EventBroadcaster {
-  if (!instance) {
-    instance = new EventBroadcaster()
+  if (!broadcasterGlobal.__eventBroadcaster) {
+    broadcasterGlobal.__eventBroadcaster = new EventBroadcaster()
   }
-  return instance
+  return broadcasterGlobal.__eventBroadcaster
 }
 
 export function resetBroadcaster(): void {
-  if (instance) {
-    instance.clear()
-    instance = null
+  if (broadcasterGlobal.__eventBroadcaster) {
+    broadcasterGlobal.__eventBroadcaster.clear()
+    delete broadcasterGlobal.__eventBroadcaster
   }
 }

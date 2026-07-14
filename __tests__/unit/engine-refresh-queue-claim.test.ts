@@ -37,6 +37,7 @@ describe("engine refresh queue claims", () => {
       }),
       smembers: jest.fn(async (key: string) => Array.from(sets.get(key) ?? [])),
       keys: jest.fn(async () => []),
+      expire: jest.fn(async () => 1),
     }
 
     jest.doMock("@/lib/redis-db", () => ({
@@ -48,6 +49,11 @@ describe("engine refresh queue claims", () => {
     }))
     jest.doMock("@/lib/engine-event-bus", () => ({
       publishEngineEvent: jest.fn().mockResolvedValue(undefined),
+    }))
+    jest.doMock("@/lib/trade-engine", () => ({
+      getGlobalTradeEngineCoordinator: jest.fn(() => ({
+        drainQueuedRefreshRequestsNow: jest.fn().mockResolvedValue(undefined),
+      })),
     }))
 
     return { client, settings, raw, sets }
@@ -114,5 +120,34 @@ describe("engine refresh queue claims", () => {
     expect(queued.retryCount).toBe(1)
     expect(queued.lastError).toBe("boom")
     expect(state.raw.has(`${ENGINE_REFRESH_CLAIM_PREFIX}${request.connectionId}`)).toBe(false)
+  })
+
+  test("an older consumer cannot clear a newer request that arrives during its action", async () => {
+    const state = mockRedis()
+    const { queueEngineRefreshRequest, clearEngineRefreshRequest } = await import("@/lib/engine-refresh-queue")
+    const connectionId = "conn-owned-clear"
+    await queueEngineRefreshRequest({
+      connectionId,
+      action: "refresh",
+      state_switch_version: "4",
+      reason: "old",
+      timestamp: "2026-07-14T12:00:00.000Z",
+    })
+    const oldRequest = state.settings.get(`engine_coordinator:refresh_requested:${connectionId}`)
+    state.settings.set(`engine_coordinator:refresh_requested:${connectionId}`, {
+      requestId: "new-owned-request",
+      connectionId,
+      action: "stop",
+      state_switch_version: "5",
+      reason: "new",
+      timestamp: "2026-07-14T12:00:01.000Z",
+    })
+    await clearEngineRefreshRequest(connectionId, oldRequest)
+
+    expect(state.settings.get(`engine_coordinator:refresh_requested:${connectionId}`)).toMatchObject({
+      action: "stop",
+      state_switch_version: "5",
+      reason: "new",
+    })
   })
 })

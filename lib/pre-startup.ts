@@ -170,7 +170,6 @@ export async function testAllExchangeConnections() {
     const now = new Date().toISOString()
     for (const connection of testable) {
       await updateConnection(connection.id, {
-        ...connection,
         last_test_status: "skipped",
         last_test_time: now,
         last_test_message: "Startup connector tests disabled in safe bootstrap mode",

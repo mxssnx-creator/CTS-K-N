@@ -84,12 +84,15 @@ export function ConnectionCard({
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false)
   const [advancedTab, setAdvancedTab] = useState("risk")
   const [dashboardEventRefreshKey, setDashboardEventRefreshKey] = useState(0)
-  const dashboardEventHandlers = useMemo(() => ({
-    "connection.updated": () => setDashboardEventRefreshKey((key) => key + 1),
-    "settings.recoordinated": () => setDashboardEventRefreshKey((key) => key + 1),
-    "engine.stage.changed": () => setDashboardEventRefreshKey((key) => key + 1),
-    "progression.updated": () => setDashboardEventRefreshKey((key) => key + 1),
-  }), [])
+  const dashboardEventHandlers = useMemo(() => {
+    const refresh = () => setDashboardEventRefreshKey((key) => key + 1)
+    return {
+      "connection.updated": refresh,
+      "settings.recoordinated": refresh,
+      "engine.stage.changed": refresh,
+      "progression.updated": refresh,
+    }
+  }, [])
   useDashboardEvents(connection.id, dashboardEventHandlers)
   const [showPresetDialog, setShowPresetDialog] = useState(false)
   const [showStrategyDialog, setShowStrategyDialog] = useState(false)
