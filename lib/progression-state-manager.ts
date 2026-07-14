@@ -93,6 +93,7 @@ import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
 import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from "@/lib/progression-fingerprint"
 import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
+import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
 
 export interface ProgressionRecoordinationResult {
   changed: boolean
@@ -1039,16 +1040,20 @@ export class ProgressionStateManager {
       const state = (await client
         .hgetall(scope.tradeEngineStateKey)
         .catch(() => ({}))) as Record<string, string>
-      const connectionSettings = {
-        ...((await client.hgetall(`settings:connection_settings:${connectionId}`).catch(() => ({}))) as Record<string, string>),
-        ...((await client.hgetall(`connection_settings:${connectionId}`).catch(() => ({}))) as Record<string, string>),
-      }
+      const connectionSettings = await getCanonicalConnectionSettingsOverlay(connectionId).catch(() => ({} as Record<string, string>))
       const cd = connData as Record<string, string>
-      let currentSymbols: string[] = parseSymbols(state.force_symbols)
+      // Canonical operator selections must beat trade-engine-state because a
+      // running production engine can still be stamping the previous basket while
+      // QuickStart/settings recoordination is trying to start the next 12-symbol
+      // epoch. Only fall back to engine state after connection/settings mirrors.
+      let currentSymbols: string[] = parseSymbols(connectionSettings.force_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(cd.force_symbols)
+      if (currentSymbols.length === 0) currentSymbols = parseSymbols(connectionSettings.symbols)
+      if (currentSymbols.length === 0) currentSymbols = parseSymbols(connectionSettings.active_symbols)
+      if (currentSymbols.length === 0) currentSymbols = parseSymbols(cd.active_symbols)
+      if (currentSymbols.length === 0) currentSymbols = parseSymbols(state.force_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(state.active_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(state.symbols)
-      if (currentSymbols.length === 0) currentSymbols = parseSymbols(cd.active_symbols)
 
       const liveSymbolCount = currentSymbols.length
       const liveSymbolsHash = currentSymbols.slice().sort().join("|")

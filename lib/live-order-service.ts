@@ -95,6 +95,12 @@ export async function createLiveOrderConnector(connection: any, payload: Record<
     const safetyFailure = getLiveOrderSafetyFailure(payload)
     if (safetyFailure) throw Object.assign(new Error(safetyFailure), { statusCode: 403, mode: "blocked_live_order_safety" })
   }
+  if (!willUseRealExchange && process.env.NODE_ENV === "production" && process.env.ALLOW_PROD_SIMULATED !== "1") {
+    throw Object.assign(new Error(`Live exchange credentials missing for ${connection.id || connection.name || "connection"}; refusing simulated fallback in production`), {
+      statusCode: 409,
+      mode: "missing_live_exchange_credentials",
+    })
+  }
   if (!willUseRealExchange) {
     const { SimulatedConnector } = await import("@/lib/exchange-connectors/simulated-connector")
     return { connector: new SimulatedConnector({ apiKey: connection.api_key, apiSecret: connection.api_secret, isTestnet: isTruthyFlag(connection.is_testnet) }, "simulated"), mode: "simulated", willUseRealExchange }

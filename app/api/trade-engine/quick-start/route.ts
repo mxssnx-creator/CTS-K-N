@@ -801,6 +801,10 @@ export async function POST(request: Request) {
        force_symbols: JSON.stringify(symbols),
        symbol_order: requestedSymbolOrder,
        symbol_count: String(symbols.length),
+       // Local/self-hosted production uses this cap to protect memory. Keep it
+       // aligned with the explicit QuickStart request before recoordination/start
+       // so a 12-symbol smoke does not get silently sliced back to the default 4.
+       dev_symbol_count_override: String(symbols.length),
        // Persist the resolved sizing knobs to the connection hash too because
        // some engine paths read directly from the connection snapshot.
        // Lowest-volume live testing: force the per-connection factor to the
@@ -959,6 +963,20 @@ export async function POST(request: Request) {
     const { connection: appliedConnection, completion: quickstartRecoordination } = await applyMainConnectionSettingsChange(connectionId, connection, {
       connectionPatch: updated,
       settingsPatch: quickstartConnectionSettingsPatch,
+      tradeEngineStatePatch: {
+        force_symbols: JSON.stringify(symbols),
+        symbols: JSON.stringify(symbols),
+        active_symbols: JSON.stringify(symbols),
+        selected_symbols: JSON.stringify(symbols),
+        quickstart_symbols: JSON.stringify(symbols),
+        quickstart_symbol_count: String(symbols.length),
+        symbol_count: String(symbols.length),
+        dev_symbol_count_override: String(symbols.length),
+        config_set_symbols_total: String(symbols.length),
+        config_set_symbols_processed: "0",
+        symbol_selection_epoch: symbolSelectionEpoch,
+        quickstart_symbol_generation: symbolSelectionEpoch,
+      },
       changedFieldsOverride: quickstartTouchedFields,
       logTag: "POST /api/trade-engine/quick-start",
       settingsVersion: updated.updated_at,

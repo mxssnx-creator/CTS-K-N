@@ -2204,4 +2204,85 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain('"realtime", "live_trading", "error"')
   })
 
+  test("canonical connection-settings mirror wins over stale legacy defaults for production progression", () => {
+    const manager = read("lib/trade-engine/engine-manager.ts")
+    const progression = read("lib/progression-state-manager.ts")
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+
+    const overlay = read("lib/connection-settings-overlay.ts")
+    const legacyIndex = overlay.indexOf("hgetall(`connection_settings:${")
+    const canonicalIndex = overlay.indexOf("hgetall(`settings:connection_settings:${")
+    expect(legacyIndex).toBeGreaterThan(-1)
+    expect(canonicalIndex).toBeGreaterThan(-1)
+    expect(legacyIndex).toBeLessThan(canonicalIndex)
+
+    expect(manager).toContain("canonical settings mirror must win")
+    expect(progression).toContain("getCanonicalConnectionSettingsOverlay(connectionId)")
+
+    const mergeBlock = liveStage.slice(
+      liveStage.indexOf("const merged = {"),
+      liveStage.indexOf("const value = parseSystemCloseFlag"),
+    )
+    expect(mergeBlock.indexOf("...(connSettings || {})")).toBeLessThan(mergeBlock.indexOf("...(prefixedConnSettings || {})"))
+    expect(mergeBlock).toContain("stale legacy defaults cannot re-enable")
+  })
+
+
+  test("production live order connector refuses simulated fallback when credentials are missing", () => {
+    const source = read("lib/live-order-service.ts")
+
+    expect(source).toContain('process.env.NODE_ENV === "production"')
+    expect(source).toContain('process.env.ALLOW_PROD_SIMULATED !== "1"')
+    expect(source).toContain("missing_live_exchange_credentials")
+    expect(source.indexOf("missing_live_exchange_credentials")).toBeLessThan(source.indexOf("new SimulatedConnector"))
+  })
+
+
+  test("strategy coordination and live volume calculations use canonical settings overlays", () => {
+    const volume = read("lib/volume-calculator.ts")
+    const strategy = read("lib/strategy-coordinator.ts")
+    const overlay = read("lib/connection-settings-overlay.ts")
+
+    expect(overlay).toContain("connection_settings:${connectionId}")
+    expect(overlay).toContain("settings:connection_settings:${connectionId}")
+    expect(overlay.indexOf("legacySettings")).toBeLessThan(overlay.indexOf("canonicalSettings"))
+    expect(overlay).toContain("overlayNonEmpty")
+
+    expect(volume).toContain("getCanonicalConnectionSettingsOverlay(connectionId)")
+    expect(volume).toContain("this AFTER all overlays")
+    expect(volume.indexOf("const connSettings = await getCanonicalConnectionSettingsOverlay(connectionId)")).toBeLessThan(volume.indexOf("const positionCostRaw ="))
+    expect(volume).toContain("producing default-sized live")
+
+    expect(strategy).toContain("getCanonicalConnectionSettingsOverlay(this.connectionId)")
+    expect(strategy).toContain("const s: Record<string, unknown> = overlayNonEmpty")
+    expect(strategy).not.toContain("hgetall(`connection_settings:${this.connectionId}`)")
+  })
+
+
+  test("progression recoordination resolves operator symbols before stale engine-state symbols", () => {
+    const source = read("lib/progression-state-manager.ts")
+    const block = source.slice(
+      source.indexOf("Canonical operator selections must beat trade-engine-state"),
+      source.indexOf("const liveSymbolCount = currentSymbols.length"),
+    )
+
+    expect(source).toContain("const connectionSettings = await getCanonicalConnectionSettingsOverlay(connectionId)")
+    expect(block.indexOf("connectionSettings.force_symbols")).toBeLessThan(block.indexOf("state.force_symbols"))
+    expect(block.indexOf("connectionSettings.symbols")).toBeLessThan(block.indexOf("state.symbols"))
+    expect(block).toContain("next 12-symbol")
+  })
+
+
+  test("QuickStart 12-symbol production smoke seeds local symbol cap before engine start", () => {
+    const quickStart = read("app/api/trade-engine/quick-start/route.ts")
+    const manager = read("lib/trade-engine/engine-manager.ts")
+
+    expect(quickStart).toContain("dev_symbol_count_override: String(symbols.length)")
+    expect(quickStart).toContain("tradeEngineStatePatch: {")
+    expect(quickStart).toContain("config_set_symbols_total: String(symbols.length)")
+    expect(quickStart).toContain("so a 12-symbol smoke does not get silently sliced back to the default 4")
+    expect(manager).toContain("(connSettings as any)?.dev_symbol_count_override")
+  })
+
+
 })

@@ -11,6 +11,7 @@
 import { initRedis, getSettings, getAppSettings, setSettings, getRedisClient, getConnection } from "@/lib/redis-db"
 import { getMaxLeverageForExchange } from "@/lib/leverage-policy"
 import { DEFAULT_VOLUME_STEP_RATIO, MAX_VOLUME_STEP_RATIO, MIN_VOLUME_STEP_RATIO } from "@/lib/constants"
+import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
 
 interface VolumeCalculationParams {
   baseVolumeFactor?: number
@@ -541,43 +542,39 @@ export class VolumeCalculator {
 
       // Get settings from Redis via the mirror-aware reader. The volume
       // calculator needs `exchangePositionCost`/`positionCost`,
-      // `leveragePercentage`, and `useMaximalLeverage` — all of which are
-      // managed from the main Settings UI (canonical `app_settings`).
-      // Previously this read `system_settings`, which is a different
-      // bundle (cleanup schedule, backup toggles) — so the operator's
-      // saved leverage/cost never reached volume calculations.
-      //
-      // Per-connection override: the connection settings dialog can save
-      // `leveragePercentage` / `useMaximalLeverage` / `exchangePositionCost`
-      // per-connection, mirrored into the `connection_settings:{id}` hash.
-      // Overlay any non-empty connection-hash scalar on top of the global
-      // app settings so per-connection sizing wins, else inherits global.
+      // `leveragePercentage`, and `useMaximalLeverage` from global app
+      // settings plus per-connection overrides. Legacy defaults can remain in
+      // `connection_settings:{id}` after migrations, while the Settings UI
+      // writes the canonical mirror `settings:connection_settings:{id}`; read
+      // both and let the canonical mirror win so live order sizing cannot fall
+      // back to stale defaults in production.
       const globalSettings = (await getAppSettings()) || {}
-      let connSettings: Record<string, string> = {}
-      try {
-        connSettings = ((await client.hgetall(`connection_settings:${connectionId}`)) ||
-          {}) as Record<string, string>
-      } catch {
-        connSettings = {}
+      const connSettings = await getCanonicalConnectionSettingsOverlay(connectionId).catch(() => ({} as Record<string, string>))
+      const connection = await getConnection(connectionId).catch(() => null)
+
+      const settings: Record<string, unknown> = overlayNonEmpty(
+        { ...(globalSettings as Record<string, unknown>) },
+        connSettings as Record<string, unknown>,
+      )
+      if (connection) {
+        const CONN_FIELDS_TO_OVERLAY = [
+          "exchangePositionCost", "exchange_position_cost", "positionCost",
+          "positions_average", "positionsAverage",
+          "live_volume_factor", "preset_volume_factor", "volume_step_ratio",
+          "leveragePercentage", "useMaximalLeverage",
+        ] as const
+        for (const f of CONN_FIELDS_TO_OVERLAY) {
+          const v = (connection as Record<string, unknown>)[f]
+          if (v !== undefined && v !== null && v !== "") settings[f] = v
+        }
       }
-      const settings: Record<string, unknown> = { ...(globalSettings as Record<string, unknown>) }
-      for (const [k, v] of Object.entries(connSettings)) {
-        if (v !== undefined && v !== null && v !== "") settings[k] = v
-      }
+
       // ── Position cost resolution ─────────────────────────────────────
-      // Priority: connection_settings:{id} overlay (in `settings`)
-      //           > connection:{id} record direct field
-      //           > global app_settings (also in `settings`)
-      //           > built-in default 0.02 (0.02% of balance)
-      //
-      // `settings` already merges global app_settings + connection_settings
-      // overlay so checking `settings` first covers both those sources.
-      // We also check the raw connection record fields because operators
-      // may set `exchangePositionCost` via updateConnection() which writes
-      // to connection:{id} directly without going through connection_settings.
-      // The connection record is fetched later (line 494 area) so we keep
-      // these as lazy reads from the already-fetched `settings` object here;
-      // the raw connection record fields will be merged in below once fetched.
+      // Priority: canonical per-connection settings overlay > connection:{id}
+      // direct fields > global app_settings > built-in default 0.02%. Resolve
+      // this AFTER all overlays; the old order calculated it before direct
+      // connection/canonical settings were merged, producing default-sized live
+      // orders despite saved operator sizing.
       const positionCostRaw =
         settings.exchangePositionCost ??
         settings.positionCost ??
@@ -591,7 +588,6 @@ export class VolumeCalculator {
       const positionCost = clampedPositionCostPercent / 100  // 0.02% absolute fallback
 
       // ── Positions-average resolution ─────────────────────────────────
-      // Same priority stack: connection_settings overlay → app_settings → default 2.
       const positionsAverage = (() => {
         const raw = parseFloat(String(settings.positions_average ?? settings.positionsAverage ?? "2"))
         return Number.isFinite(raw) && raw > 0 ? raw : 2
@@ -601,37 +597,9 @@ export class VolumeCalculator {
       //   useMaximalLeverage (default true)  → exchange predefinition max
       //   useMaximalLeverage false            → maxLeverage × (leveragePercentage / 100)
       //
-      // Both settings can be set per-connection (connection_settings:{id} hash
-      // overlaid on top of app_settings above). This makes the Settings UI
-      // controls ("Leverage %", "Max Leverage", "Use Maximal Leverage") actually
-      // reach volume calculations.
-      //
       // Two downstream safety nets still apply after this:
       //   1. setLeverage(symbol, X) on the connector — venue clamps to per-symbol bracket.
       //   2. The live-stage 101204 auto-halve retry handles margin rejections.
-      // ── Single getConnection call ─────────────────────────────────────
-      // Fetch the connection record ONCE — reused for exchange type
-      // (leverage max lookup) AND for live/preset volume factor resolution.
-      // Previously this was called twice (lines 494 and 537), creating a
-      // race window and doubling Redis round-trips on every live order.
-      //
-      // After fetching, we also overlay the connection record's own fields
-      // (exchangePositionCost, positionCost, live_volume_factor, etc.) into
-      // `settings` so positionCost resolution above uses the correct value
-      // if the operator set it via updateConnection() directly.
-      const connection = await getConnection(connectionId).catch(() => null)
-      if (connection) {
-        const CONN_FIELDS_TO_OVERLAY = [
-          "exchangePositionCost", "exchange_position_cost", "positionCost",
-          "positions_average", "positionsAverage",
-          "live_volume_factor", "preset_volume_factor", "volume_step_ratio",
-          "leveragePercentage", "useMaximalLeverage",
-        ] as const
-        for (const f of CONN_FIELDS_TO_OVERLAY) {
-          const v = (connection as Record<string, unknown>)[f]
-          if (v !== undefined && v !== null && v !== "") settings[f] = v
-        }
-      }
       const exchangeMax   = getMaxLeverageForExchange(connection?.exchange)
       const useMaximal    = settings.useMaximalLeverage === true ||
                             settings.useMaximalLeverage === "true" ||

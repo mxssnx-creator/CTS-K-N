@@ -2237,7 +2237,14 @@ async function getCachedSystemCloseOnly(connectionId: string): Promise<boolean> 
       // Per-connection settings win over global app settings so the operator
       // can disable exchange-side SL/TP for one noisy connection without
       // forcing every other connection into system-close-only mode.
-      const merged = { ...(appSettings || {}), ...(prefixedConnSettings || {}), ...(connSettings || {}) }
+      const merged = {
+        ...(appSettings || {}),
+        ...(connSettings || {}),
+        // Canonical per-connection settings are written under the settings:
+        // mirror; keep them last so stale legacy defaults cannot re-enable
+        // exchange control orders after the operator disabled them.
+        ...(prefixedConnSettings || {}),
+      }
       const value = parseSystemCloseFlag((merged as any).useSystemCloseOnly) ||
         parseSystemCloseFlag((merged as any).use_system_close_only)
       systemCloseCacheByConnection.set(cacheKey, { value, at: Date.now() })

@@ -799,8 +799,11 @@ export class TradeEngineManager {
         const connData = (await redisClient.hgetall(`connection:${this.connectionId}`).catch(() => ({}))) as Record<string, string>
         const state = (await redisClient.hgetall(buildProgressionScope(this.connectionId, this.currentEngineType).tradeEngineStateKey).catch(() => ({}))) as Record<string, string>
         const connectionSettings = {
-          ...((await redisClient.hgetall(`settings:connection_settings:${this.connectionId}`).catch(() => ({}))) as Record<string, string>),
+          // Legacy defaults may still live in connection_settings:{id}; the
+          // canonical settings mirror must win so progression fingerprints are
+          // stamped from the operator's latest production settings.
           ...((await redisClient.hgetall(`connection_settings:${this.connectionId}`).catch(() => ({}))) as Record<string, string>),
+          ...((await redisClient.hgetall(`settings:connection_settings:${this.connectionId}`).catch(() => ({}))) as Record<string, string>),
         }
         const settingsFingerprint = buildProgressionFingerprint({
           connectionId: this.connectionId,
@@ -3877,7 +3880,10 @@ export class TradeEngineManager {
             process.env.NODE_ENV === "development" ||
             (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")
           if (localSymbolCapActive) {
-            const devCapSource = (connState as any)?.dev_symbol_count_override ?? process.env.V0_DEV_SYMBOL_COUNT ?? "4"
+            const devCapSource =
+              (connState as any)?.dev_symbol_count_override ??
+              process.env.V0_DEV_SYMBOL_COUNT ??
+              "4"
             const devCap = Math.max(1, parseInt(String(devCapSource), 10) || 4)
             effectiveForceSymbols = effectiveForceSymbols.slice(0, devCap)
           }
@@ -3934,7 +3940,11 @@ export class TradeEngineManager {
         const _isLocalRun = process.env.NODE_ENV === "development" ||
           (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")
         if (_isLocalRun) {
-          const devCapSource = (connState as any)?.dev_symbol_count_override ?? process.env.V0_DEV_SYMBOL_COUNT ?? "4"
+          const devCapSource =
+            (connState as any)?.dev_symbol_count_override ??
+            (connSettings as any)?.dev_symbol_count_override ??
+            process.env.V0_DEV_SYMBOL_COUNT ??
+            "4"
           const devCap = Math.max(1, parseInt(String(devCapSource), 10) || 4)
           // IMPORTANT: never short-circuit to ["BTCUSDT"] here. That made
           // local/self-hosted production ignore operator-selected force_symbols
