@@ -8,7 +8,6 @@ import { GlobalTradeEngineControls } from "./global-trade-engine-controls"
 import { DashboardActiveConnectionsManager } from "./dashboard-active-connections-manager"
 import { StatisticsOverviewV2 } from "./statistics-overview-v2"
 import { SystemMonitoringPanel } from "./system-monitoring-panel"
-import { EngineProgressionTestButton } from "./engine-progression-test-dialog"
 import { DetailedLogsButton } from "./detailed-logs-button"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -58,9 +57,6 @@ function createSessionInstanceId(): string {
 }
 
 function DashboardRuntimeFooter() {
-  // All session-unique / time-dependent values are generated ONLY after mount.
-  // Generating them during render (useState initializer / useMemo) produces
-  // different values on the server vs the client, causing hydration mismatches.
   const [startedAt, setStartedAt] = useState<Date | null>(null)
   const [now, setNow] = useState<Date | null>(null)
   const [instanceId, setInstanceId] = useState<string | null>(null)
@@ -97,19 +93,12 @@ export function Dashboard() {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <PageHeader
-        title="CTS v3.2 Dashboard"
-        description="Monitor and control your active exchange connections"
+        title="CTS Dashboard"
+        description="Live trading control and monitoring"
         showExchangeSelector
+        visual="mesh"
       >
-        {/*
-         * Top-level "Run Engine Test" button — mirrors the same dialog that
-         * the QuickstartSection hosts, but rendered in the page header so
-         * operators can trigger a full 7-phase engine progression test
-         * without scrolling. `variant="header"` renders the slightly larger
-         * primary-accent pill used for header actions.
-        */}
         <DetailedLogsButton />
-        <EngineProgressionTestButton variant="header" />
       </PageHeader>
 
       <div className="flex-1 space-y-4 px-3 md:px-4 py-4 pb-8">
