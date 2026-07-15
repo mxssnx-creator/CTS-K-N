@@ -371,18 +371,21 @@ function aggregateOrdersBySymbol(
  * only when the primary sources return zero.
  *
  * ── IMPORTANT: Pipeline semantics (applies to every stage total below) ─
- * Base → Main → Real → Live is a CASCADE FILTER pipeline:
+ * Base → Main → Real → Live is a coordinated transformation pipeline:
  *   Base  = initial Set enumeration (eval)
- *   Main  = Base Sets that survived the Main PF/DDT filter
- *   Real  = Main Sets that survived the strict Real filter (adjust)
+ *   Main  = surviving Base parents plus position-axis/variant related Sets
+ *   Real  = Main candidates filtered, netted, adjusted, and capped
  *   Live  = Real Sets promoted to the exchange (runtime subset of Real)
- * Each downstream stage contains the SAME logical strategies that survived
- * the upstream stage — it is NOT a separate population. Therefore:
+ * Main may legitimately be larger than Base because one parent can materialise
+ * multiple independent related Sets. The stage populations still MUST NOT be
+ * added together because downstream Sets retain/derive from upstream parents.
+ * Therefore:
  *
  *   canonical "strategies total" = Real-stage count (final filtered output)
  *
- * and stage counters MUST NEVER be summed together. Ratios between adjacent
- * stages (e.g. main/base) express pass-through rate, not additive totals.
+ * and stage counters MUST NEVER be summed together. Direct adjacent count
+ * ratios are not filter pass rates; use stageEvalPercent, whose Main value is
+ * based on passed parent Sets / Base inputs before fan-out.
  * The same rule applies to pseudo-position base/main/real counts.
  *
  * Response shape:
@@ -1397,6 +1400,9 @@ export async function GET(
     // occurred when a single-symbol standalone key was compared against
     // the cross-symbol active sum.
     const activeStratEvaluated: Record<string, number> = { base: 0, main: 0, real: 0 }
+    let activeMainInput = 0
+    let activeMainPassedParents = 0
+    let activeMainRelatedCreated = 0
     let activeRealInput = 0
     let activeRealRelatedCreated = 0
     // Hoisted so the raw hash is accessible in the return block for `strategiesActive`.
@@ -1442,6 +1448,18 @@ export async function GET(
             activeRealInput += numVal
             continue
           }
+          if (suffix === "main:input") {
+            activeMainInput += numVal
+            continue
+          }
+          if (suffix === "main:passedParents") {
+            activeMainPassedParents += numVal
+            continue
+          }
+          if (suffix === "main:relatedCreated") {
+            activeMainRelatedCreated += numVal
+            continue
+          }
           if (suffix === "real:relatedCreated") {
             activeRealRelatedCreated += numVal
             continue
@@ -1454,8 +1472,8 @@ export async function GET(
       }
     } catch { /* non-critical: dashboard falls back to cumulative */ }
     const activeIndTotal = Object.values(activeIndByType).reduce((s, v) => s + v, 0)
-    // Pipeline-aware total: only count REAL stage (final filtered output), not sum of BASE+MAIN+REAL
-    // Each strategy survives through the cascade filter, not added at each stage.
+    // Pipeline-aware total: use REAL final output, not the sum of parent and
+    // derived stage populations.
     let activeStratTotal = activeStratByStage.real || strategiesTotal
     const activeSetsIndTotal   = Object.values(activeSetsIndByType).reduce((s, v) => s + v, 0)
     // Only count distinct REAL-stage sets progressing, not sum across stages
@@ -1507,23 +1525,11 @@ export async function GET(
         stratEvaluated[type] = fromActiveEval > 0 ? fromActiveEval : 0
       })
     )
-    // Enforce cascade invariants for all public progression counters:
-    // BASE → MAIN → REAL → LIVE is a cascade. A stats read can observe
-    // writers between Redis updates (for example REAL updated before MAIN),
-    // but the public dashboard/validators should never see impossible
-    // snapshots such as real > main or live > real. Clamp and warn with a
-    // stable [STATS-VALIDATION] marker so operators can identify writer/read
-    // races without leaking invalid progression state.
-    if (stratCounts.main > 0 && stratCounts.real > stratCounts.main) {
-      throttledStatsWarn(
-        `${connectionId}:real-gt-main`,
-        `[STATS-VALIDATION] ${connectionId}: real (${stratCounts.real}) > main (${stratCounts.main}). ` +
-        `Clamping real to main to preserve cascade invariants.`,
-      )
-      stratCounts.real = stratCounts.main
-      activeStratByStage.real = Math.min(activeStratByStage.real || 0, stratCounts.real)
-      activeStratTotal = activeStratByStage.real || stratCounts.real || strategiesTotal
-    }
+    // Main and Real materialise related/adjusted Sets, so their output counts
+    // may legitimately exceed the prior stage's raw count. Live is different:
+    // it selects directly from the bounded Real output and must remain a subset.
+    // A stats read can still race the Real/Live writes, so clamp only that true
+    // subset invariant and expose the writer race through a throttled warning.
     if (stratCounts.real > 0 && stratCounts.live > stratCounts.real) {
       throttledStatsWarn(
         `${connectionId}:live-gt-real`,
@@ -1535,10 +1541,10 @@ export async function GET(
       activeStratTotal = activeStratByStage.real || stratCounts.real || strategiesTotal
     }
     // ── Pipeline-aware "total strategies" ────────────────────────────────
-    // Base → Main → Real → Live is a CASCADE FILTER (eval → filter → adjust).
-    // Each stage operates on the output of the previous stage, so the SAME
-    // logical strategy exists at every stage it survives. Summing the four
-    // stage counters would triple/quadruple-count the same strategy.
+    // Base → Main → Real → Live is a transformation pipeline. Main expands
+    // parent Sets into position-axis/variant children; Real filters/adjusts
+    // those descendants. Summing stage outputs therefore counts both parents
+    // and descendants and is not a meaningful strategy total.
     //
     // The canonical total is the REAL-stage count (the final filtered output
     // before live promotion). Live is a runtime-only subset derived from Real
@@ -2445,12 +2451,12 @@ export async function GET(
 
     // ── METADATA section ─────────────────────────────────────────────�����──────
     // ── STAGE EVAL PERCENT ───────────────────────────────────────────────────
-    // Cascade survival rates: same logic as detailed-tracking.ts so the stats
+    // Parent-filter/output rates: same logic as detailed-tracking.ts so the stats
     // endpoint exposes the same values without a second full Redis round-trip.
     //   strategies_{stage}_total     = Sets the stage OUTPUT (promoted)
     //   strategies_{stage}_evaluated = Sets that ENTERED the stage (input)
     // base = 100% (pipeline entry; every Base set that exists passed by definition)
-    // main = Main output / Main input  (Base→Main filter survival; expected ~1%)
+    // main = Base parents passed / Base parents evaluated (before fan-out)
     // real = Real output / Real input  (Main→Real filter survival)
     const _pct = (num: number, den: number): number =>
       den > 0 ? Math.max(0, Math.min(100, Number(((num / den) * 100).toFixed(1)))) : 0
@@ -2466,20 +2472,25 @@ export async function GET(
     const _baseEvaluated   = Number(progHash.strategies_base_evaluated        || "0")
     const _mainOutput      = Number(progHash.strategies_main_total            || "0")
     const _mainInput       = Number(progHash.strategies_main_evaluated        || "0")
-    const _mainCreated     = Number(progHash.strategies_main_related_created  || "0")
+    const _mainParentsPassed = Number(progHash.strategies_main_parent_passed  || "0")
     const _realOutput      = Number(progHash.strategies_real_total            || "0")
     const _realInput       = Number(progHash.strategies_real_evaluated        || "0")
     // base = evaluated ÷ overall generated (pipeline entry — every Base Set is
     //        evaluated, so ~100% when any exist, expressed as the true ratio).
-    // main = main output ÷ (passed-forward-from-base + additionally-created-at-main)
+    // main = passed Base parents ÷ evaluated Base parents. Related Main Sets
+    //        are reported separately and never inflate this filter ratio.
     // real = real output ÷ Real evaluated pool (already includes Real fan-out)
     // live evalPct = sets dispatched this cycle / real sets available for dispatch
     const _liveDispatched = stratCounts.live || 0
     const _liveBase       = stratCounts.real  || 0
     const stageEvalPercent = {
       base: _pct(_baseEvaluated, _baseOutput),
-      main: _pct(_mainOutput, _mainInput + _mainCreated),
-      real: _pct(_realOutput, _realInput),
+      main: activeMainInput > 0
+        ? _pct(activeMainPassedParents, activeMainInput)
+        : _pct(_mainParentsPassed || Math.min(_mainOutput, _mainInput), _mainInput),
+      real: (activeRealInput + activeRealRelatedCreated) > 0
+        ? _pct(stratCounts.real || 0, activeRealInput + activeRealRelatedCreated)
+        : _pct(_realOutput, _realInput),
       // Live: what fraction of Real-stage survivors were dispatched to exchange
       live: _liveBase > 0 ? Math.min(100, Math.round((_liveDispatched / _liveBase) * 1000) / 10) : 0,
     }
@@ -2761,11 +2772,9 @@ export async function GET(
           // Live is the final dispatch stage (sets actually selected for order dispatch).
           // Written per-cycle by createLiveSets into strategies_active:{conn} hash.
           live:  stratCounts.live  || 0,
-          // Pipeline-aware total: Base → Main → Real → Live is a cascade, not
-          // four independent populations. Summing stage counts double/triple
-          // counts the same logical Sets and is the source of inflated Main/
-          // Real totals in production dashboards. `stratTotal` is the canonical
-          // deepest surviving Set count (Real, with safe fallback).
+          // Pipeline-aware total: Main includes related descendants of Base and
+          // Real is the final evaluated output. Summing all stages mixes parents
+          // with descendants; `stratTotal` is the canonical Real-stage output.
           total: stratTotal,
         },
         positions: {
@@ -2803,9 +2812,7 @@ export async function GET(
           main: stratCounts.main || 0,
           real: stratCounts.real || 0,
           live: stratCounts.live || 0,
-          // Pipeline-aware total — do not sum cascade stages. Base/Main/Real
-          // contain the same logical Sets at successive filters, so summing
-          // stages inflates counts and makes Main look too high in prod.
+          // Pipeline-aware total — do not add parent and derived stage outputs.
           total: stratTotal,
           baseEvaluated: (() => {
             // Validate constraint: eval <= sets
@@ -2816,22 +2823,13 @@ export async function GET(
             return eval_val
           })(),
           mainEvaluated: (() => {
-            const main = stratCounts.main || 0
-            // The active hash writes baseSets.length (= base candidate count) into
-            // {symbol}:main:evaluated — the correct "inputs to the main stage" count.
-            // But the user expects "how many main sets were evaluated" which equals
-            // main (all main sets are evaluated; pass rate is 100% at main stage).
-            // The standalone `strategies:{id}:main:evaluated` key correctly writes
-            // mainSets.length, so prefer it when it's larger.
-            const eval_val = stratEvaluated.main || 0
-            // When the active-hash eval is smaller than main (the base-input
-            // interpretation), treat the main count itself as the evaluated count:
-            // all main sets undergo full PF/DDT evaluation.
-            if (main > 0 && eval_val < main) return main
-            // Transient read-race: clamp silently (expected, not a bug).
-            if (eval_val > main && main > 0) return main
-            return eval_val || main
+            // Main evaluation is the upstream Base-parent input. Main output can
+            // be larger because related axis/variant Sets are materialised after
+            // the parent filter, so never clamp this input to the output count.
+            return activeMainInput || stratEvaluated.main || 0
           })(),
+          mainPassedParents: activeMainPassedParents,
+          mainRelatedCreated: activeMainRelatedCreated,
           realEvaluated: (() => {
             // NOTE: Real accounting has three meanings:
             // - real:input = upstream Main PF-eligible input before Real fan-out.
@@ -3577,10 +3575,10 @@ export async function GET(
       //   Consumers can iterate keys to render per-symbol stage badges.
       strategiesActive: stratActiveHash ?? {},
 
-      // stageEvalPercent: cascade survival rates base/main/real (0-100).
+      // stageEvalPercent: coordinated parent/output rates base/main/real/live.
       //   base = 100 when any Base Sets exist (entry point — by definition all pass).
-      //   main = Main output / Main input (Base→Main filter survival rate).
-      //   real = Real output / Real input  (Main→Real filter survival rate).
+      //   main = Base parents passed / Base parents evaluated (before fan-out).
+      //   real = Real output / complete Real evaluated pool (after fan-out).
       stageEvalPercent,
 
       // realAverages: 5-min rolling averages over the real_samples ring buffer.

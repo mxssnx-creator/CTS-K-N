@@ -434,6 +434,68 @@ function registerCoordRecord(idx: CoordIndex, rec: SetCoordRecord): void {
   arr.push(rec)
 }
 
+/**
+ * Keep only the Base parents and tuning records required by the next cycle's
+ * Live-only fast path. Retaining the full per-cycle coordination graph defeats
+ * its explicit cleanup; clearing that same graph made cached axis Sets lose
+ * their Base entries. This compact snapshot preserves correctness with memory
+ * proportional to surviving Real Sets rather than every Main candidate.
+ */
+function snapshotCoordIndexForLive(idx: CoordIndex, realSets: StrategySet[]): CoordIndex {
+  const base: BaseRegistry = { byKey: new Map(), orderedKeys: [] }
+  const snapshot = makeCoordIndex(base)
+  for (const set of realSets) {
+    const parentKey = set.parentSetKey || set.setKey.split("#")[0]
+    const baseSet = idx.base.byKey.get(parentKey)
+    if (baseSet && !base.byKey.has(parentKey)) {
+      base.byKey.set(parentKey, baseSet)
+      base.orderedKeys.push(parentKey)
+    }
+    const record = idx.byCoordKey.get(set.setKey)
+    if (record) registerCoordRecord(snapshot, { ...record, _setView: undefined })
+    snapshot.validRealKeys.add(set.setKey)
+  }
+  return snapshot
+}
+
+export function buildStrategyIndicationFingerprint(indications: any[]): string {
+  let latestTimestamp = 0
+  let hash = 0x811c9dc5
+  const mix = (value: unknown): void => {
+    const text = String(value ?? "")
+    for (let index = 0; index < text.length; index++) {
+      hash ^= text.charCodeAt(index)
+      hash = Math.imul(hash, 0x01000193)
+    }
+    hash ^= 0xff
+    hash = Math.imul(hash, 0x01000193)
+  }
+
+  for (const indication of indications) {
+    const raw = indication?.timestamp ?? indication?.calculated_at ?? indication?.created_at
+    const numeric = typeof raw === "number" ? raw : Number(raw)
+    if (Number.isFinite(numeric) && numeric > latestTimestamp) latestTimestamp = numeric
+    else if (typeof raw === "string") {
+      const parsed = Date.parse(raw)
+      if (Number.isFinite(parsed) && parsed > latestTimestamp) latestTimestamp = parsed
+    }
+
+    // Hash identity plus the compact fields that can change strategy output.
+    // This catches same-length replacements anywhere in the array without
+    // retaining or serialising the full indication objects.
+    mix(indication?.id ?? indication?.setKey ?? indication?.configId)
+    mix(raw)
+    mix(indication?.type ?? indication?.indication_type)
+    mix(indication?.direction ?? indication?.signal)
+    mix(indication?.profitFactor ?? indication?.profit_factor)
+    mix(indication?.strength ?? indication?.confidence)
+    mix(indication?.price ?? indication?.value)
+    mix(indication?.validated)
+  }
+
+  return `${indications.length}|${latestTimestamp}|${(hash >>> 0).toString(36)}`
+}
+
 // ─����������������������������������������� Position-Count Cartesian Axis Windows (operator spec) ────────────────────
 //
 // At Strategy Main, every Base Set that survives the Base→Main gate fans out
@@ -1613,28 +1675,26 @@ export class StrategyCoordinator {
       // no new positions have opened/closed. Prevents recalculating P&F/DDT every
       // cycle when the market hasn't generated new entries.
       const posFingerprint = `${posCtx.continuousCount}|${posCtx.lastPosCount}|${posCtx.prevPosCount}`
+      const indicationFingerprint = buildStrategyIndicationFingerprint(indications)
       const prevFingerprint = (this as any)._lastPosFingerprint?.[symbol]
+      const prevIndicationFingerprint = (this as any)._lastIndicationFingerprint?.[symbol]
       if (!(this as any)._lastPosFingerprint) (this as any)._lastPosFingerprint = {}
-      if (!(this as any)._lastIndicationCount) (this as any)._lastIndicationCount = {}
+      if (!(this as any)._lastIndicationFingerprint) (this as any)._lastIndicationFingerprint = {}
       if (!(this as any)._lastRealSets) (this as any)._lastRealSets = {}
       if (!(this as any)._lastCoordIndex) (this as any)._lastCoordIndex = {}
-      ;(this as any)._lastPosFingerprint[symbol] = posFingerprint
-      ;(this as any)._lastIndicationCount[symbol] = indications.length
 
-      if (prevFingerprint === posFingerprint && !isPrehistoric) {
-        // Position state unchanged AND indication count stable — skip Base/Main/Real
+      if (prevFingerprint === posFingerprint && prevIndicationFingerprint === indicationFingerprint && !isPrehistoric) {
+        // Position state and indication identity are unchanged — skip Base/Main/Real
         // recalculation (expensive), but ALWAYS run the LIVE stage so SL/TP
         // protection reconciliation and armoring still happen every cycle.
-        if (indications.length === (this as any)._lastIndicationCount?.[symbol]) {
-          const cachedRealSets: any[] = (this as any)._lastRealSets?.[symbol] ?? []
-          const cachedCoordIndex: any = (this as any)._lastCoordIndex?.[symbol]
-          if (cachedRealSets.length > 0 && cachedCoordIndex && !skipLiveDispatch) {
-            // Re-run LIVE stage only — uses cached real sets, no Base/Main/Real recalc
-            const { result: liveResult } = await this.createLiveSets(symbol, cachedRealSets, cachedCoordIndex, skipLiveDispatch)
-            results.push(liveResult)
-          }
-          return results
+        const cachedRealSets: any[] = (this as any)._lastRealSets?.[symbol] ?? []
+        const cachedCoordIndex: any = (this as any)._lastCoordIndex?.[symbol]
+        if (cachedRealSets.length > 0 && cachedCoordIndex && !skipLiveDispatch) {
+          // Re-run LIVE stage only — uses cached real sets, no Base/Main/Real recalc
+          const { result: liveResult } = await this.createLiveSets(symbol, cachedRealSets, cachedCoordIndex, skipLiveDispatch)
+          results.push(liveResult)
         }
+        return results
       }
 
       // Refresh per-cycle trailing-matrix cache when this entry-point is
@@ -1681,7 +1741,15 @@ export class StrategyCoordinator {
       // needs the latest real sets for SL/TP armoring even when base/main/real
       // recalculation was skipped this cycle.
       ;(this as any)._lastRealSets[symbol] = realSets
-      ;(this as any)._lastCoordIndex[symbol] = coordIndex
+      ;(this as any)._lastCoordIndex[symbol] = snapshotCoordIndexForLive(coordIndex, realSets)
+
+      // Commit fingerprints only after Base/Main/Real and their compact live
+      // snapshot completed successfully.  A failed stage must be retried on
+      // the next cycle instead of making an older cache look current.
+      // The former implementation also wrote the current indication count
+      // before comparing it, which could incorrectly reuse stale Real Sets.
+      ;(this as any)._lastPosFingerprint[symbol] = posFingerprint
+      ;(this as any)._lastIndicationFingerprint[symbol] = indicationFingerprint
 
       // STAGE 4: LIVE — best 500 Sets for execution (skip in prehistoric mode).
       // Axis-entry hydration uses coordIndex.base.byKey.get(parentKey) — O(1)
@@ -1719,7 +1787,11 @@ export class StrategyCoordinator {
       // major GC, which may not run between tight cycles at high symbol counts.
       if (coordIndex) {
         coordIndex.base.byKey.clear()
+        coordIndex.base.orderedKeys.length = 0
         coordIndex.records.length = 0
+        coordIndex.byCoordKey.clear()
+        coordIndex.byParentKey.clear()
+        coordIndex.liveSetsByVariant.clear()
         coordIndex.validRealKeys.clear()
       }
 
@@ -1734,13 +1806,13 @@ export class StrategyCoordinator {
 
   private async getStrategyFlowSymbolConcurrency(): Promise<number> {
     const envOverride = Number.parseInt(process.env.STRATEGY_FLOW_SYMBOL_CONCURRENCY ?? "", 10)
-    if (Number.isFinite(envOverride) && envOverride > 0) return Math.max(1, Math.min(envOverride, 6))
+    if (Number.isFinite(envOverride) && envOverride > 0) return Math.max(1, Math.min(envOverride, 4))
 
     const cached = this._strategyFlowSymbolConcurrencyCache
     if (cached && Date.now() - cached.at < 10_000) return cached.value
 
     const mode = process.env.NODE_ENV === "production" ? "prod" : "dev"
-    const fallback = 1
+    const fallback = mode === "prod" ? 2 : 1
     let configured = fallback
     try {
       const settings = ((await getRedisClient().hgetall("settings:system").catch(() => ({}))) || {}) as Record<string, unknown>
@@ -1748,14 +1820,11 @@ export class StrategyCoordinator {
       const globalValue = settings.strategy_flow_symbol_concurrency
       const parsed = Number.parseInt(String(modeValue ?? globalValue ?? fallback), 10)
       configured = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
-      // Keep production route/status handlers responsive during high-symbol BingX runs.
-      // Operators can still opt into wider batches with STRATEGY_FLOW_SYMBOL_CONCURRENCY.
-      if (mode === "prod") configured = Math.min(configured, 1)
     } catch {
       configured = fallback
     }
 
-    const value = Math.max(1, Math.min(configured, 6))
+    const value = Math.max(1, Math.min(configured, 4))
     this._strategyFlowSymbolConcurrencyCache = { value, at: Date.now() }
     return value
   }
@@ -1794,7 +1863,7 @@ export class StrategyCoordinator {
       1,
       Math.min(
         Number.isFinite(configuredConcurrency) ? configuredConcurrency : 1,
-        6,
+        4,
         queue.length,
       ),
     )
@@ -2941,6 +3010,12 @@ export class StrategyCoordinator {
     const passRatioMain = baseSets.length > 0
       ? Math.min(1, uniqueBaseSetsProduced.size / baseSets.length)
       : 0
+    // Main is both a filter and an expansion stage. Keep the parent funnel
+    // separate from the materialised output so a valid axis/variant fan-out
+    // (Main > Base) is never misreported as a >100% filter pass rate.
+    const mainInputCount = baseSets.length
+    const mainPassedParentCount = uniqueBaseSetsProduced.size
+    const mainRelatedSetCount = Math.max(0, mainSets.length - mainPassedParentCount)
 
     // ── Write Main counts to Redis ──���─────────────────────────────────────
     // CUMULATIVE via hincrby so the dashboard does not oscillate with
@@ -2983,9 +3058,12 @@ export class StrategyCoordinator {
           entries_total:     String(mainEntriesTotal),
           entries_count:     String(mainEntriesTotal),
           axis_sets:         String(axisSetsAdded),
-          evaluated:         String(mainSets.length),
-          passed_sets:       String(mainSets.length),
+          evaluated:         String(mainInputCount),
+          passed_sets:       String(mainPassedParentCount),
           pass_rate:         String(passRatioMain.toFixed(4)),
+          input_sets:        String(mainInputCount),
+          parent_sets_passed: String(mainPassedParentCount),
+          related_sets:      String(mainRelatedSetCount),
           count_pos_eval:    String(mainSets.length),
           sets_running_now:         String(mainRunningNow),
           sets_with_open_positions: String(mainRunningNow),
@@ -2995,8 +3073,8 @@ export class StrategyCoordinator {
           [`s:${symbol}:entries`]:    String(mainEntriesTotal),
           [`s:${symbol}:running`]:    String(mainRunningNow),
           [`s:${symbol}:progressing`]: String(mainProgressing),
-          [`s:${symbol}:passed`]:     String(mainSets.length),
-          [`s:${symbol}:evaluated`]:  String(mainSets.length),
+          [`s:${symbol}:passed`]:     String(mainPassedParentCount),
+          [`s:${symbol}:evaluated`]:  String(mainInputCount),
           [`s:${symbol}:apf`]:        String(mainAvgPF.toFixed(4)),
           [`s:${symbol}:addt`]:       String(Math.round(mainAvgDDT)),
           [`s:${symbol}:apps`]:       String(mainAvgPosPerSet.toFixed(2)),
@@ -3009,7 +3087,7 @@ export class StrategyCoordinator {
           [`s:${symbol}:passed`]: String(baseSets.length),
         }).catch(() => {}),
         client.set(`strategies:${this.connectionId}:main:count`, String(mainSets.length)),
-        client.set(`strategies:${this.connectionId}:main:evaluated`, String(mainSets.length)),
+        client.set(`strategies:${this.connectionId}:main:evaluated`, String(mainInputCount)),
         client.set(`strategies:${this.connectionId}:base:passed`, String(baseSets.length)),
         client.expire(`strategies:${this.connectionId}:main:count`, 86400),
         client.expire(`strategies:${this.connectionId}:main:evaluated`, 86400),
@@ -3017,6 +3095,12 @@ export class StrategyCoordinator {
       ]
       if (mainSets.length > 0) writes.push(client.hincrby(redisKey, "strategies_main_total", mainSets.length))
       if (baseSets.length > 0) writes.push(client.hincrby(redisKey, "strategies_main_evaluated", baseSets.length))
+      if (mainPassedParentCount > 0) {
+        writes.push(client.hincrby(redisKey, "strategies_main_parent_passed", mainPassedParentCount))
+      }
+      if (mainRelatedSetCount > 0) {
+        writes.push(client.hincrby(redisKey, "strategies_main_related_sets", mainRelatedSetCount))
+      }
 
       // ── ACTIVE-NOW snapshot for Main stage (per symbol, like Base/Real) ───
       // The stats route reads `strategies_active:{conn}` and aggregates by
@@ -3025,8 +3109,12 @@ export class StrategyCoordinator {
       writes.push(
         client.hset(`strategies_active:${this.connectionId}`, {
           [`${symbol}:main`]:           String(mainSets.length),
-          // main:evaluated = Base Sets that entered Main filter (= candidates)
-          [`${symbol}:main:evaluated`]: String(baseSets.length),
+          // Parent funnel and expansion accounting are deliberately separate:
+          // Main output can exceed Base input through valid axis/variant fan-out.
+          [`${symbol}:main:evaluated`]: String(mainInputCount),
+          [`${symbol}:main:input`]: String(mainInputCount),
+          [`${symbol}:main:passedParents`]: String(mainPassedParentCount),
+          [`${symbol}:main:relatedCreated`]: String(mainRelatedSetCount),
         }),
         client.expire(`strategies_active:${this.connectionId}`, 600),
       )

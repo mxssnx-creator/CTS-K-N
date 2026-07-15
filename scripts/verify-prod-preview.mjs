@@ -16,13 +16,14 @@ const PAGES = [
   "/tracking",
 ]
 
-async function request(pathname, { json = false, timeoutMs = 15_000, method = "GET", body } = {}) {
+async function request(pathname, { json = false, timeoutMs = 15_000, method = "GET", body, headers = {} } = {}) {
   const url = new URL(pathname, BASE_URL)
   const response = await fetch(url, {
     method,
     headers: {
       Accept: json ? "application/json" : "text/html,application/json",
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      ...headers,
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     cache: "no-store",
@@ -113,6 +114,30 @@ async function main() {
   const startedAt = Date.now()
   const health = await request("/api/health", { json: true, timeoutMs: 30_000 })
   if (!health?.status && health?.alive !== true) throw new Error("Health response has no liveness status")
+
+  const initReads = []
+  for (let index = 0; index < 5; index++) {
+    const init = await request("/api/system/init-status", { json: true, timeoutMs: 30_000 })
+    if (!init?.ready || !init?.system?.startup?.completed || init?.system?.startup?.status !== "ready") {
+      throw new Error(`Startup readiness invalid: ${JSON.stringify(init?.system?.startup || init)}`)
+    }
+    if (Number(init?.migrations?.current_version) !== Number(init?.migrations?.latest_version)) {
+      throw new Error("Production migration version is not current")
+    }
+    if (!init?.system?.site_instance_id) throw new Error("Stable site instance ID is missing")
+    initReads.push(init)
+  }
+  const siteInstanceIds = new Set(initReads.map((item) => item.system.site_instance_id))
+  if (siteInstanceIds.size !== 1) throw new Error("Site instance changed across repeated UI/API reads")
+
+  const unauthorizedCron = await fetch(new URL("/api/cron/server-continuity", BASE_URL), {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (unauthorizedCron.status !== 401) {
+    throw new Error(`Protected cron accepted an unauthenticated request (HTTP ${unauthorizedCron.status})`)
+  }
 
   for (const page of PAGES) {
     const html = await request(page, { timeoutMs: 30_000 })
@@ -208,6 +233,10 @@ async function main() {
     tradeHistoryLosses: history?.summary?.losses || 0,
     progressionReads: progressionReads.length,
     connectionSwitchesVerified: connectionId ? 2 : 0,
+    siteInstanceId: initReads[0]?.system?.site_instance_id || null,
+    startupBootId: initReads[0]?.system?.startup?.boot_id || null,
+    schemaVersion: initReads[0]?.migrations?.current_version || null,
+    protectedCronVerified: true,
     durationMs: Date.now() - startedAt,
   }, null, 2))
 }

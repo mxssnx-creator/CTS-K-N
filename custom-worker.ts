@@ -19,18 +19,25 @@ type WorkerScheduledController = {
   scheduledTime?: number
 }
 
+type WorkerEnvironment = {
+  CRON_SECRET?: string
+  [key: string]: unknown
+}
+
 const INTERNAL_ORIGIN = "https://cts-v-yd.internal"
 const CRON_PATHS = [
   "/api/cron/server-continuity",
   "/api/cron/sync-live-positions",
 ] as const
 
-async function invokeCronPath(path: (typeof CRON_PATHS)[number], env: unknown, ctx: WorkerExecutionContext): Promise<void> {
+async function invokeCronPath(path: (typeof CRON_PATHS)[number], env: WorkerEnvironment, ctx: WorkerExecutionContext): Promise<void> {
+  const cronSecret = String(env?.CRON_SECRET || "").trim()
   const request = new Request(`${INTERNAL_ORIGIN}${path}`, {
     method: "GET",
     headers: {
       "User-Agent": "cloudflare-scheduled-worker",
       "x-cloudflare-cron": "1",
+      ...(cronSecret ? { Authorization: `Bearer ${cronSecret}` } : {}),
     },
   })
 
@@ -44,7 +51,7 @@ async function invokeCronPath(path: (typeof CRON_PATHS)[number], env: unknown, c
 export default {
   fetch: handler.fetch,
 
-  async scheduled(_controller: WorkerScheduledController, env: unknown, ctx: WorkerExecutionContext) {
+  async scheduled(_controller: WorkerScheduledController, env: WorkerEnvironment, ctx: WorkerExecutionContext) {
     const tasks = CRON_PATHS.map((path) => invokeCronPath(path, env, ctx))
     const results = await Promise.allSettled(tasks)
     const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")

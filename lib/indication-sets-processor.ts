@@ -37,6 +37,7 @@ import {
   type CompactionConfig,
   type SetCompactionType,
 } from "@/lib/sets-compaction"
+import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 // Default limits per indication type (independently configurable)
 const DEFAULT_LIMITS = {
@@ -1035,10 +1036,16 @@ export class IndicationSetsProcessor {
       // Append each grouped set through the shared helper so legacy JSON-array
       // keys are migrated to Redis LISTs consistently with the single-save path.
       const groupedEntries = Array.from(grouped.entries())
-      for (const [setKey, serializedEntries] of groupedEntries) {
+      const writeConcurrency = concurrencyFromEnv(
+        ["INDICATION_SET_WRITE_CONCURRENCY"],
+        12,
+        24,
+        groupedEntries.length,
+      )
+      await mapWithConcurrency(groupedEntries, writeConcurrency, async ([setKey, serializedEntries]) => {
         await this.appendIndicationEntries(client, setKey, serializedEntries, compactionCfg)
-        await this.indexSetKey(client, setKey, setKey.split(':')[2], type)
-      }
+        await this.indexSetKey(client, setKey, setKey.split(":")[2], type)
+      })
     } catch (error) {
       // Silent fail for non-critical batch operations
     }
@@ -1401,8 +1408,11 @@ export class IndicationSetsProcessor {
         bySetKey.set(pending.setKey, arr)
       }
 
-      await Promise.all(
-        [...bySetKey.entries()].map(async ([setKey, items]) => {
+      const outcomeGroups = [...bySetKey.entries()]
+      await mapWithConcurrency(
+        outcomeGroups,
+        concurrencyFromEnv(["INDICATION_OUTCOME_CONCURRENCY"], 8, 20, outcomeGroups.length),
+        async ([setKey, items]) => {
           // Record all outcome samples for this setKey before reading entries,
           // so the final PF reflects all closed outcomes from this cycle.
           let pf = 0
@@ -1445,7 +1455,7 @@ export class IndicationSetsProcessor {
             await client.ltrim(setKey, -cfg.floor, -1)
           }
           await this.indexSetKey(client, setKey, setKey.split(":")[2], type)
-        }),
+        },
       )
 
       await client.expire(key, 86400)
@@ -1812,9 +1822,14 @@ export class IndicationSetsProcessor {
         }
       }
 
-      // Fan out all reads in parallel. New keys are Redis LISTs; legacy keys
-      // may still be JSON arrays, so the helper falls back to GET/JSON parse.
-      const values = await Promise.all(keys.map((k: string) => this.readIndicationSetEntries(client, k)))
+      // Bound listing reads so a large config index cannot materialise every
+      // Redis response/promise at once. New keys are LISTs; legacy keys may
+      // still be JSON arrays, so the helper keeps its GET/JSON fallback.
+      const values = await mapWithConcurrency(
+        keys,
+        concurrencyFromEnv(["INDICATION_SET_READ_CONCURRENCY"], 12, 32, keys.length),
+        (key) => this.readIndicationSetEntries(client, key),
+      )
 
       let totalEntries = 0
       let totalProfitFactor = 0
@@ -1854,9 +1869,11 @@ export class IndicationSetsProcessor {
       const keys = await this.getIndexedSetKeys(client, symbol, type)
       if (!keys || keys.length === 0) return []
 
-      // Fan out all reads in parallel. New keys are Redis LISTs; legacy keys
-      // may still be JSON arrays, so the helper falls back to GET/JSON parse.
-      const values = await Promise.all(keys.map((k: string) => this.readIndicationSetEntries(client, k)))
+      const values = await mapWithConcurrency(
+        keys,
+        concurrencyFromEnv(["INDICATION_SET_READ_CONCURRENCY"], 12, 32, keys.length),
+        (key) => this.readIndicationSetEntries(client, key),
+      )
       const allEntries: any[] = []
       for (let i = 0; i < values.length; i++) {
         const entries = values[i]

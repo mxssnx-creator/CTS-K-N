@@ -250,9 +250,9 @@ export function CalculationDemo() {
                   <li className="flex items-start gap-2">
                     <span className="w-2 h-2 bg-purple-500 rounded-full mt-2 flex-shrink-0"></span>
                     <span>
-                      <strong>Strategy pipeline is a cascade, not a sum:</strong> Base → Main → Real are evaluation,
-                      filter, and adjust stages of the SAME logical strategy. The canonical &quot;total strategies&quot;
-                      count is the Real-stage output only — never Base+Main+Real added together.
+                      <strong>Strategy pipeline outputs are related, not additive:</strong> Main can materialise
+                      several position-axis/variant Sets from one Base parent; Real filters and adjusts that pool.
+                      The canonical final count is Real — never Base+Main+Real added together.
                     </span>
                   </li>
                 </ul>

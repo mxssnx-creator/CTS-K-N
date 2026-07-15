@@ -3,6 +3,7 @@ import { initRedis, getRedisClient, getAllConnections } from "@/lib/redis-db"
 import { reconcileLivePositions, syncWithExchange } from "@/lib/trade-engine/stages/live-stage"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { getEngineTimings, refreshEngineTimings, ENGINE_TIMING_BOUNDS } from "@/lib/engine-timings"
+import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
@@ -208,7 +209,10 @@ export async function runLivePositionRecoverySweep(): Promise<SweepSummary> {
   return summary
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = authorizeCronRequest(request)
+  if (!auth.ok) return cronAuthorizationResponse(auth)
+
   const started = Date.now()
   await initRedis()
   const client = getRedisClient()

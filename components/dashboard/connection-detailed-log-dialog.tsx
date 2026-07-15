@@ -118,8 +118,8 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
                           metricsData.metrics?.indicationsCount
                           || Number(statsData?.realtime?.indicationsTotal) || 0,
         // Canonical "strategies evaluated" = Real-stage count only.
-        // Base → Main → Real is a cascade filter of the SAME strategies;
-        // summing the three evaluated counters would multi-count them.
+        // Main contains related descendants of Base; Real is the canonical
+        // final evaluated output, so stage populations are not summed.
         strategiesEvaluated: metricsData.metrics?.totalStrategiesEvaluated
                           || metricsData.progressionState?.strategyEvaluatedReal
                           || Number(statsData?.realtime?.strategiesTotal) || 0,

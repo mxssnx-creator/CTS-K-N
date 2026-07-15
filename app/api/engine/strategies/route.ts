@@ -120,10 +120,9 @@ export async function GET(req: NextRequest) {
       }
       
       // ── Pipeline-aware totals ─────────────────────────────────────────
-      // Base → Main → Real is a cascade filter. Each stage processes the
-      // SAME logical strategies that survived the previous filter, so
-      // summing them would triple-count. The canonical "total" at every
-      // level is the Real-stage count only.
+      // Main derives related axis/variant Sets from Base and Real is the final
+      // evaluated output. Adding stage populations mixes parents and derived
+      // Sets, so the canonical total is the Real-stage count only.
       const response = {
         connectionId,
         strategies: {

@@ -27,6 +27,7 @@ import { IndicationProcessor } from "@/lib/trade-engine/indication-processor-fix
 import { StrategyProcessor } from "@/lib/trade-engine/strategy-processor"
 import { IndicationSetsProcessor } from "@/lib/indication-sets-processor"
 import { runIndStratCycle, type PipelineCycleResult } from "@/lib/trade-engine/shared-ind-strat-pipeline"
+import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
@@ -334,7 +335,10 @@ async function releaseCronLock(client: any, token: string): Promise<void> {
   }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = authorizeCronRequest(request)
+  if (!auth.ok) return cronAuthorizationResponse(auth)
+
   // ── Same-process guard ──────────────────────────────────────────────────────
   if (_cronInFlight) {
     return NextResponse.json({ success: true, skipped: true, reason: "in-flight" }, { status: 200 })
@@ -513,6 +517,6 @@ export async function GET() {
   }
 }
 
-export async function POST() {
-  return GET()
+export async function POST(request: Request) {
+  return GET(request)
 }

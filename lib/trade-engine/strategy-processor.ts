@@ -10,7 +10,7 @@
 const _STRATEGY_BUILD_VERSION = "2.1.0"
 import { getSettings, setSettings, getRedisClient, initRedis, getIndications } from "@/lib/redis-db"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
-import { StrategyCoordinator, getStrategyCoordinator } from "@/lib/strategy-coordinator"
+import { buildStrategyIndicationFingerprint, StrategyCoordinator, getStrategyCoordinator } from "@/lib/strategy-coordinator"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { trackStrategyStats } from "@/lib/statistics-tracker"
 // Strategy-flow throttle values are read live from `settings:system`. The
@@ -46,8 +46,7 @@ const STRATEGY_FLOW_MAX_INTERVAL_MS = 15_000 // heartbeat re-run
 
 interface FlowThrottleEntry {
   lastRunAt: number          // wall-clock ms of last successful run
-  lastIndicationCount: number
-  lastLatestTimestamp: number
+  lastFingerprint: string
 }
 
 // Map<`${connectionId}:${symbol}`, FlowThrottleEntry>
@@ -84,6 +83,8 @@ export class StrategyProcessor {
    * BASE → Evaluate BASE → MAIN → REAL → LIVE with detailed calculations
    */
   async processStrategy(symbol: string, indications: any[] = [], skipLiveDispatch: boolean = false): Promise<{ strategiesEvaluated: number; liveReady: number }> {
+    let reservedThrottleKey: string | undefined
+    let reservedAt = 0
     try {
       await initRedis()
       
@@ -195,8 +196,8 @@ export class StrategyProcessor {
       }
 
       // ── Throttle gate ────────────────────────────────────────────────
-      // Compute a cheap fingerprint of the indication set: (count, most
-      // recent timestamp). If unchanged from the last run AND we're
+      // Compute a compact fingerprint of indication identities, timestamps,
+      // and strategy-relevant scalar values. If unchanged from the last run AND we're
       // inside the min-interval window, skip the expensive flow. This
       // prevents the 20×/sec re-evaluation feedback loop documented in
       // the module header above. The flow still runs on:
@@ -208,13 +209,7 @@ export class StrategyProcessor {
       // that bump the timestamp every tick).
       const throttleKey = `${this.connectionId}:${symbol}`
       const now = Date.now()
-      const latestIndicationTs = validIndications.reduce(
-        (max, ind) => {
-          const t = Number(ind?.timestamp ?? 0)
-          return Number.isFinite(t) && t > max ? t : max
-        },
-        0,
-      )
+      const indicationFingerprint = buildStrategyIndicationFingerprint(validIndications)
       const prev = flowThrottle.get(throttleKey)
       if (prev) {
         const elapsed = now - prev.lastRunAt
@@ -231,9 +226,7 @@ export class StrategyProcessor {
         }
         // Within MIN_INTERVAL: only re-run if fingerprint changed.
         if (elapsed < MIN_INTERVAL_MS) {
-          const fingerprintUnchanged =
-            prev.lastIndicationCount === validIndications.length &&
-            prev.lastLatestTimestamp === latestIndicationTs
+          const fingerprintUnchanged = prev.lastFingerprint === indicationFingerprint
           if (fingerprintUnchanged) {
             return { strategiesEvaluated: 0, liveReady: 0 }
           }
@@ -241,9 +234,7 @@ export class StrategyProcessor {
         // Past MIN_INTERVAL but under MAX_INTERVAL: also require
         // fingerprint change. Past MAX_INTERVAL: always run (heartbeat).
         if (elapsed < MAX_INTERVAL_MS) {
-          const fingerprintUnchanged =
-            prev.lastIndicationCount === validIndications.length &&
-            prev.lastLatestTimestamp === latestIndicationTs
+          const fingerprintUnchanged = prev.lastFingerprint === indicationFingerprint
           if (fingerprintUnchanged) {
             return { strategiesEvaluated: 0, liveReady: 0 }
           }
@@ -257,9 +248,10 @@ export class StrategyProcessor {
       // throttled.
       flowThrottle.set(throttleKey, {
         lastRunAt: now,
-        lastIndicationCount: validIndications.length,
-        lastLatestTimestamp: latestIndicationTs,
+        lastFingerprint: indicationFingerprint,
       })
+      reservedThrottleKey = throttleKey
+      reservedAt = now
 
       // Execute complete strategy coordination flow using ONLY the
       // validated indications. Base/Main/Real/Live filtering downstream
@@ -270,12 +262,10 @@ export class StrategyProcessor {
       const results = await coordinator.executeStrategyFlow(symbol, validIndications, false, undefined, skipLiveDispatch)
 
       // ── Pipeline-aware counting ────────────────────────────────────────
-      // BASE → MAIN → REAL → LIVE is a CASCADE FILTER, not four independent
-      // categories. Each stage technically performs the SAME operation
-      // (evaluate → filter → adjust) on the output of the previous stage, so
-      // a single logical "strategy" flows through all stages. Summing stage
-      // counts (`base + main + real + live`) would count the same strategy
-      // up to 4 times — a bug.
+      // BASE → MAIN → REAL → LIVE is a coordinated transformation pipeline,
+      // not four additive categories. Main can materialise several related
+      // axis/variant Sets from a Base parent and Real filters/adjusts that pool.
+      // Summing outputs would mix parent and derived populations.
       //
       // The canonical "strategies evaluated this cycle" is therefore the
       // FINAL-stage output. We use REAL (`result.totalCreated`) as the
@@ -354,6 +344,14 @@ export class StrategyProcessor {
       // the final-stage count are meaningful totals.
       return { strategiesEvaluated: realEvaluated, liveReady: realLiveReady }
     } catch (error) {
+      // A provisional reservation prevents duplicate concurrent flows. If the
+      // reserved flow itself fails, remove only that exact reservation so the
+      // next engine tick retries immediately instead of serving stale output
+      // until the heartbeat interval elapses.
+      if (reservedThrottleKey) {
+        const reserved = flowThrottle.get(reservedThrottleKey)
+        if (reserved?.lastRunAt === reservedAt) flowThrottle.delete(reservedThrottleKey)
+      }
       console.error(
         `[v0] [Strategy] Failed for ${symbol}:`,
         error instanceof Error ? error.message : String(error)

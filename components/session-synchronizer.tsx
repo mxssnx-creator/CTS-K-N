@@ -46,34 +46,41 @@ export function SessionSynchronizer() {
       }
     }
 
-    // Save scroll position when user scrolls
+    let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined
+    // localStorage writes are synchronous. Debounce scroll persistence so a
+    // fast scroll does one compact write instead of hundreds on the UI thread.
     const handleScroll = () => {
-      try {
-        const scrollTop = window.scrollY || document.documentElement.scrollTop
-        const mainContent = document.querySelector("main")
-        if (mainContent) {
-          // Save main content scroll position
-          saveSessionState({
-            scrollPositions: {
-              main: mainContent.scrollTop,
-              window: scrollTop,
-            },
-          })
+      if (scrollSaveTimer) clearTimeout(scrollSaveTimer)
+      scrollSaveTimer = setTimeout(() => {
+        try {
+          const scrollTop = window.scrollY || document.documentElement.scrollTop
+          const mainContent = document.querySelector("main")
+          if (mainContent) {
+            saveSessionState({
+              scrollPositions: {
+                main: mainContent.scrollTop,
+                window: scrollTop,
+              },
+            })
+          }
+        } catch {
+          // Ignore scroll tracking errors
         }
-      } catch {
-        // Ignore scroll tracking errors
-      }
+      }, 200)
     }
 
     document.addEventListener("visibilitychange", handleVisibilityChange)
     window.addEventListener("beforeunload", handleBeforeUnload)
+    window.addEventListener("pagehide", handleBeforeUnload)
     window.addEventListener("scroll", handleScroll, { passive: true })
 
     // Cleanup
     return () => {
       clearInterval(syncInterval)
+      if (scrollSaveTimer) clearTimeout(scrollSaveTimer)
       document.removeEventListener("visibilitychange", handleVisibilityChange)
       window.removeEventListener("beforeunload", handleBeforeUnload)
+      window.removeEventListener("pagehide", handleBeforeUnload)
       window.removeEventListener("scroll", handleScroll)
     }
   }, [])

@@ -10,6 +10,18 @@ import { initRedis, getSettings, setSettings, getRedisClient } from "@/lib/redis
 import { BasePseudoPositionManager } from "./base-pseudo-position-manager"
 import { ExchangePositionManager } from "./exchange-position-manager"
 import { logProgressionEvent } from "./engine-progression-logs"
+import { concurrencyFromEnv, forEachWithConcurrency, mapWithConcurrency } from "./bounded-concurrency"
+
+export function calculatePositionProtectionPrices(position: any): { takeprofit: number; stoploss: number } {
+  const entryPrice = Number(position.entry_price) || 0
+  const takeprofitRatio = Math.max(0, Number(position.takeprofit_factor) || 1) / 100
+  const stoplossRatio = Math.max(0, Number(position.stoploss_ratio) || 1) / 100
+  const isShort = String(position.direction || position.side || "long").toLowerCase() === "short"
+  return {
+    takeprofit: entryPrice * (isShort ? 1 - takeprofitRatio : 1 + takeprofitRatio),
+    stoploss: entryPrice * (isShort ? 1 + stoplossRatio : 1 - stoplossRatio),
+  }
+}
 
 export class PositionFlowCoordinator {
   private connectionId: string
@@ -20,6 +32,44 @@ export class PositionFlowCoordinator {
     this.connectionId = connectionId
     this.basePseudoManager = new BasePseudoPositionManager(connectionId)
     this.exchangePositionManager = new ExchangePositionManager(connectionId)
+  }
+
+  private readConcurrency(itemCount: number): number {
+    return concurrencyFromEnv(["POSITION_FLOW_READ_CONCURRENCY"], 12, 32, itemCount)
+  }
+
+  private async loadSettingsBatch(keys: readonly string[]): Promise<any[]> {
+    return mapWithConcurrency(
+      keys,
+      this.readConcurrency(keys.length),
+      async (key) => getSettings(key),
+    )
+  }
+
+  /** Serialize the check-and-create transition for one Main→Real parent. */
+  private async withRealPseudoAdmission(mainPositionId: string, work: () => Promise<void>): Promise<boolean> {
+    const client = getRedisClient()
+    const key = `position_flow:real_admission:${this.connectionId}:${mainPositionId}`
+    const token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+    const acquired = await client.set(key, token, { NX: true, PX: 30_000 } as any)
+    if (acquired !== "OK" && (acquired as any) !== true) return false
+
+    try {
+      if (await getSettings(`real_pseudo:${this.connectionId}:main:${mainPositionId}`)) return false
+      await work()
+      return true
+    } finally {
+      try {
+        if (typeof client.eval === "function") {
+          await client.eval(
+            `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`,
+            { keys: [key], arguments: [token] },
+          )
+        } else if ((await client.get(key)) === token) {
+          await client.del(key)
+        }
+      } catch { /* the bounded lease expires automatically */ }
+    }
   }
 
   /**
@@ -70,13 +120,15 @@ export class PositionFlowCoordinator {
       // Get main pseudo positions for this connection+symbol
       const positionIds = await client.smembers(`pseudo_positions:${this.connectionId}:main`)
       
-      for (const posId of positionIds) {
-        const mainPos = await getSettings(`pseudo_position:${posId}`)
-        if (!mainPos || mainPos.symbol !== symbol || (mainPos.status !== "open" && mainPos.status !== "active")) continue // "active" kept for legacy Redis data
+      const mainPositions = await this.loadSettingsBatch(
+        positionIds.map((posId) => `pseudo_position:${posId}`),
+      )
+      for (const mainPos of mainPositions) {
+        if (!mainPos || mainPos.symbol !== symbol || !["open", "active", "main_active"].includes(mainPos.status)) continue
         if ((mainPos.profit_factor || 0) < 0.6) continue
 
         // Check if real pseudo already exists
-        const existingReal = await getSettings(`real_pseudo:${this.connectionId}:main:${posId}`)
+        const existingReal = await getSettings(`real_pseudo:${this.connectionId}:main:${mainPos.id}`)
         if (existingReal) continue
 
         if (await this.isValidForRealPseudo(mainPos)) {
@@ -116,32 +168,35 @@ export class PositionFlowCoordinator {
     try {
       await initRedis()
       const client = getRedisClient()
-      const realId = `rp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      await this.withRealPseudoAdmission(mainPosition.id, async () => {
+        const realId = `rp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        const protection = calculatePositionProtectionPrices(mainPosition)
+        const realPseudo = {
+          id: realId,
+          connection_id: this.connectionId,
+          main_config_id: mainPosition.id,
+          base_config_id: mainPosition.base_position_id,
+          symbol: mainPosition.symbol,
+          side: mainPosition.direction,
+          entry_price: mainPosition.entry_price,
+          quantity: mainPosition.quantity || 1,
+          takeprofit: protection.takeprofit,
+          stoploss: protection.stoploss,
+          trailing_enabled: mainPosition.trailing_enabled || false,
+          trail_start: mainPosition.trail_start,
+          trail_stop: mainPosition.trail_stop,
+          status: "validated",
+          validated_at: new Date().toISOString(),
+          profit_factor: mainPosition.profit_factor,
+        }
 
-      const realPseudo = {
-        id: realId,
-        connection_id: this.connectionId,
-        main_config_id: mainPosition.id,
-        base_config_id: mainPosition.base_position_id,
-        symbol: mainPosition.symbol,
-        side: mainPosition.direction,
-        entry_price: mainPosition.entry_price,
-        quantity: mainPosition.quantity || 1,
-        takeprofit: mainPosition.entry_price * (1 + (mainPosition.takeprofit_factor || 1) / 100),
-        stoploss: mainPosition.entry_price * (1 - (mainPosition.stoploss_ratio || 1) / 100),
-        trailing_enabled: mainPosition.trailing_enabled || false,
-        trail_start: mainPosition.trail_start,
-        trail_stop: mainPosition.trail_stop,
-        status: "validated",
-        validated_at: new Date().toISOString(),
-        profit_factor: mainPosition.profit_factor,
-      }
-
-      await setSettings(`real_pseudo:${realId}`, realPseudo)
-      await setSettings(`real_pseudo:${this.connectionId}:main:${mainPosition.id}`, { id: realId })
-      await client.sadd(`real_pseudo_positions:${this.connectionId}`, realId)
-
-      console.log(`[v0] Created Real Pseudo position ${realId} for ${mainPosition.symbol} from Main ${mainPosition.id}`)
+        await setSettings(`real_pseudo:${realId}`, realPseudo)
+        await Promise.all([
+          setSettings(`real_pseudo:${this.connectionId}:main:${mainPosition.id}`, { id: realId }),
+          client.sadd(`real_pseudo_positions:${this.connectionId}`, realId),
+        ])
+        console.log(`[v0] Created Real Pseudo position ${realId} for ${mainPosition.symbol} from Main ${mainPosition.id}`)
+      })
     } catch (error) {
       console.error(`[v0] Error creating Real Pseudo position:`, error)
     }
@@ -157,9 +212,16 @@ export class PositionFlowCoordinator {
       await this.reconcileActiveRealPseudo()
 
       const realPosIds = await client.smembers(`real_pseudo_positions:${this.connectionId}`)
+      const realPositions = await this.loadSettingsBatch(
+        realPosIds.map((realId) => `real_pseudo:${realId}`),
+      )
 
-      for (const realId of realPosIds) {
-        const realPos = await getSettings(`real_pseudo:${realId}`)
+      // Exchange mutation remains deliberately serial: independent Redis and
+      // calculation reads are parallel, but account-level order placement must
+      // preserve deterministic risk checks and exchange ordering.
+      for (let index = 0; index < realPosIds.length; index++) {
+        const realId = realPosIds[index]
+        const realPos = realPositions[index]
         if (!realPos || realPos.status !== "validated") continue
 
         // Check not already mirrored
@@ -209,7 +271,7 @@ export class PositionFlowCoordinator {
 
       const profitFactor =
         (basePos.winning_positions || 0) > 0 && (basePos.losing_positions || 0) > 0
-          ? ((basePos.avg_profit || 0) * (basePos.win_rate || 0)) / ((basePos.avg_loss || 1) * (1 - (basePos.win_rate || 0)))
+          ? ((basePos.avg_profit || 0) * (basePos.win_rate || 0)) / (Math.abs(basePos.avg_loss || 1) * (1 - (basePos.win_rate || 0)))
           : 0
 
       if (profitFactor < 0.5) return
@@ -271,14 +333,12 @@ export class PositionFlowCoordinator {
 
       // Get recent main positions for this base
       const mainPosIds = await client.smembers(`pseudo_positions:${this.connectionId}:main`)
-      const lastXPositions: any[] = []
-
-      for (const posId of mainPosIds) {
-        const pos = await getSettings(`pseudo_position:${posId}`)
-        if (pos && pos.base_position_id === mainPosition.base_position_id) {
-          lastXPositions.push(pos)
-        }
-      }
+      const loadedPositions = await this.loadSettingsBatch(
+        mainPosIds.map((posId) => `pseudo_position:${posId}`),
+      )
+      const lastXPositions = loadedPositions.filter(
+        (pos) => pos && pos.base_position_id === mainPosition.base_position_id,
+      )
 
       // Sort by created_at DESC and take last 20
       lastXPositions.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
@@ -296,41 +356,44 @@ export class PositionFlowCoordinator {
       const existingReal = await getSettings(`real_pseudo:${this.connectionId}:main:${mainPosition.id}`)
       if (existingReal) return
 
-      const realId = `rp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-      const realPseudo = {
-        id: realId,
-        connection_id: this.connectionId,
-        main_config_id: mainPosition.id,
-        base_config_id: mainPosition.base_position_id,
-        symbol: mainPosition.symbol,
-        side: mainPosition.direction,
-        entry_price: mainPosition.entry_price,
-        quantity: mainPosition.quantity || 1,
-        takeprofit: mainPosition.entry_price * (1 + (mainPosition.takeprofit_factor || 1) / 100),
-        stoploss: mainPosition.entry_price * (1 - (mainPosition.stoploss_ratio || 1) / 100),
-        trailing_enabled: mainPosition.trailing_enabled || false,
-        trail_start: mainPosition.trail_start,
-        trail_stop: mainPosition.trail_stop,
-        status: "validated",
-        validated_at: new Date().toISOString(),
-        profit_factor: recentProfitFactor,
-        avg_drawdown_time: avgDrawdownTime,
-      }
+      await this.withRealPseudoAdmission(mainPosition.id, async () => {
+        const realId = `rp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        const protection = calculatePositionProtectionPrices(mainPosition)
+        const realPseudo = {
+          id: realId,
+          connection_id: this.connectionId,
+          main_config_id: mainPosition.id,
+          base_config_id: mainPosition.base_position_id,
+          symbol: mainPosition.symbol,
+          side: mainPosition.direction,
+          entry_price: mainPosition.entry_price,
+          quantity: mainPosition.quantity || 1,
+          takeprofit: protection.takeprofit,
+          stoploss: protection.stoploss,
+          trailing_enabled: mainPosition.trailing_enabled || false,
+          trail_start: mainPosition.trail_start,
+          trail_stop: mainPosition.trail_stop,
+          status: "validated",
+          validated_at: new Date().toISOString(),
+          profit_factor: recentProfitFactor,
+          avg_drawdown_time: avgDrawdownTime,
+        }
 
-      await setSettings(`real_pseudo:${realId}`, realPseudo)
-      await setSettings(`real_pseudo:${this.connectionId}:main:${mainPosition.id}`, { id: realId })
-      await client.sadd(`real_pseudo_positions:${this.connectionId}`, realId)
-      await client.sadd(`real_pseudo:${this.connectionId}`, realId)
+        await setSettings(`real_pseudo:${realId}`, realPseudo)
+        await Promise.all([
+          setSettings(`real_pseudo:${this.connectionId}:main:${mainPosition.id}`, { id: realId }),
+          client.sadd(`real_pseudo_positions:${this.connectionId}`, realId),
+          client.sadd(`real_pseudo:${this.connectionId}`, realId),
+        ])
 
-      console.log(`[v0] Created REAL PSEUDO ${realId} representing MAIN ${mainPosition.id} (PF: ${recentProfitFactor.toFixed(2)}, DD: ${avgDrawdownTime.toFixed(1)}h)`)
-      
-      // Log real pseudo graduation
-      await logProgressionEvent(this.connectionId, "real_pseudo_graduated", "info", `Graduated to real pseudo position`, {
-        mainPositionId: mainPosition.id,
-        realPositionId: realId,
-        symbol: mainPosition.symbol,
-        profitFactor: recentProfitFactor.toFixed(2),
-        avgDrawdownTime: avgDrawdownTime.toFixed(1),
+        console.log(`[v0] Created REAL PSEUDO ${realId} representing MAIN ${mainPosition.id} (PF: ${recentProfitFactor.toFixed(2)}, DD: ${avgDrawdownTime.toFixed(1)}h)`)
+        await logProgressionEvent(this.connectionId, "real_pseudo_graduated", "info", `Graduated to real pseudo position`, {
+          mainPositionId: mainPosition.id,
+          realPositionId: realId,
+          symbol: mainPosition.symbol,
+          profitFactor: recentProfitFactor.toFixed(2),
+          avgDrawdownTime: avgDrawdownTime.toFixed(1),
+        })
       })
     } catch (error) {
       console.error(`[v0] Error evaluating for real pseudo graduation:`, error)
@@ -363,14 +426,12 @@ export class PositionFlowCoordinator {
       await initRedis()
       const client = getRedisClient()
       const mainPosIds = await client.smembers(`pseudo_positions:${this.connectionId}:main`)
-      const positions: any[] = []
-
-      for (const posId of mainPosIds) {
-        const pos = await getSettings(`pseudo_position:${posId}`)
-        if (pos && pos.base_position_id === baseConfigId && (pos.status || "").includes("closed")) {
-          positions.push(pos)
-        }
-      }
+      const loadedPositions = await this.loadSettingsBatch(
+        mainPosIds.map((posId) => `pseudo_position:${posId}`),
+      )
+      const positions = loadedPositions.filter(
+        (pos) => pos && pos.base_position_id === baseConfigId && (pos.status || "").includes("closed"),
+      )
 
       positions.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
       return this.calculateProfitFactorFromPositions(positions.slice(0, count))
@@ -401,16 +462,22 @@ export class PositionFlowCoordinator {
     try {
       const client = getRedisClient()
       const ids = await client.smembers(`real_pseudo:${this.connectionId}`)
-      let removed = 0
-      for (const id of ids) {
-        const p = await getSettings(`real_pseudo:${id}`)
-        const invalid = !p || p.status !== "validated" || (p.status === "closed")
-        if (invalid) {
-          await client.srem(`real_pseudo:${this.connectionId}`, id)
-          await client.srem(`real_pseudo_positions:${this.connectionId}`, id)
-          removed++
-        }
-      }
+      const positions = await this.loadSettingsBatch(ids.map((id) => `real_pseudo:${id}`))
+      const staleIds = ids.filter((_, index) => {
+        const position = positions[index]
+        return !position || position.status !== "validated"
+      })
+      await forEachWithConcurrency(
+        staleIds,
+        this.readConcurrency(staleIds.length),
+        async (id) => {
+          await Promise.all([
+            client.srem(`real_pseudo:${this.connectionId}`, id),
+            client.srem(`real_pseudo_positions:${this.connectionId}`, id),
+          ])
+        },
+      )
+      const removed = staleIds.length
       if (removed > 0) {
         await logProgressionEvent(this.connectionId, "real_pseudo_reconciled", "info", `Reconciled removed ${removed} stale real pseudo positions`)
       }

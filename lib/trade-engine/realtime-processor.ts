@@ -37,6 +37,7 @@ import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 // cold start.
 import { getEngineTimings } from "@/lib/engine-timings"
 import { performanceProfiler } from "@/lib/performance-profiler"
+import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 // ── Module-level import memoization for live-sync hot paths ──────────
 // `fireSyncLiveFromPseudo` and `maybeRunLiveSync` were previously doing
@@ -296,8 +297,10 @@ export class RealtimeProcessor {
       // Process all positions for this symbol in parallel. Each call
       // carries the position hash through so the manager skips a second
       // HGETALL.
-      await Promise.all(
-        positions.map((position) => this.processPosition(position, prehistoricReady)),
+      await mapWithConcurrency(
+        positions,
+        concurrencyFromEnv(["PSEUDO_POSITION_CONCURRENCY"], 12, 32, positions.length),
+        (position) => this.processPositionOnce(position, prehistoricReady),
       )
 
       // Surface the per-symbol pseudo-update counters so the dashboard
@@ -508,14 +511,10 @@ export class RealtimeProcessor {
       // `prehistoricReady` is passed as an advisory flag so Phase B
       // (prev-set enrichment) can be conditionally skipped without
       // blocking Phase A (mark-to-market + TP/SL).
-      await Promise.all(
-        activePositions.map((position) => {
-          if (!position?.id) return Promise.resolve()
-          this._inflightProcessPosition.add(position.id)
-          return this.processPosition(position, prehistoricReady).finally(() => {
-            this._inflightProcessPosition.delete(position.id)
-          })
-        }),
+      await mapWithConcurrency(
+        activePositions,
+        concurrencyFromEnv(["PSEUDO_POSITION_CONCURRENCY"], 12, 32, activePositions.length),
+        (position) => this.processPositionOnce(position, prehistoricReady),
       )
 
       // ── Cross-tick visibility for the "open positions are being
@@ -592,6 +591,17 @@ export class RealtimeProcessor {
    * the core safety mechanism) gracefully degrade to defaults when
    * prehistoric is not yet ready.
    */
+  private async processPositionOnce(position: any, prehistoricReady: boolean): Promise<void> {
+    const id = String(position?.id || "")
+    if (!id || this._inflightProcessPosition.has(id)) return
+    this._inflightProcessPosition.add(id)
+    try {
+      await this.processPosition(position, prehistoricReady)
+    } finally {
+      this._inflightProcessPosition.delete(id)
+    }
+  }
+
   private async processPosition(position: any, prehistoricReady: boolean): Promise<void> {
     try {
       // ── System tracking validation ──

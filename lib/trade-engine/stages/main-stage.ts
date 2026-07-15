@@ -6,6 +6,7 @@
 
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import type { BasePosition } from "./base-stage"
+import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 const LOG_PREFIX = "[v0] [MainPositionStage]"
 
@@ -65,17 +66,15 @@ export async function evaluateToMainPositions(
     // Group base positions by symbol and direction
     const grouped = groupBySymbolAndDirection(basePositions)
 
-    for (const [key, positions] of Object.entries(grouped)) {
+    const groups = Object.entries(grouped)
+    const evaluated = await mapWithConcurrency(
+      groups,
+      concurrencyFromEnv(["MAIN_POSITION_SYMBOL_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"], 4, 8, groups.length),
+      async ([key, positions]): Promise<MainPosition | null> => {
       const [symbol, direction] = key.split(":")
 
       // Calculate evaluation metrics
       const avgStrength = calculateAverageStrength(positions)
-      const trendScore = await calculateTrendScore(client, connectionId, symbol, direction)
-      const volatility = await calculateVolatilityScore(
-        client,
-        connectionId,
-        symbol
-      )
       const riskScore = calculateRiskScore(positions, maxDD)
 
       // Check if passes threshold
@@ -85,12 +84,16 @@ export async function evaluateToMainPositions(
             2
           )} < ${minStrength}`
         )
-        continue
+        return null
       }
 
-      // Get historical metrics
-      const metrics = await getPositionMetrics(client, connectionId, symbol, direction)
-      const history = await getPositionHistory(client, connectionId, symbol, direction)
+      // Independent Redis reads share one RTT window per group.
+      const [trendScore, volatility, metrics, history] = await Promise.all([
+        calculateTrendScore(client, connectionId, symbol, direction),
+        calculateVolatilityScore(client, connectionId, symbol),
+        getPositionMetrics(client, connectionId, symbol, direction),
+        getPositionHistory(client, connectionId, symbol, direction),
+      ])
 
       const mainPosition: MainPosition = {
         id: `main:${connectionId}:${symbol}:${direction}:${Date.now()}`,
@@ -109,20 +112,26 @@ export async function evaluateToMainPositions(
         status: "active",
       }
 
-      mainPositions.push(mainPosition)
-
       // Store main position
       const storageKey = `main:position:${mainPosition.id}`
-      await client.setex(storageKey, 604800, JSON.stringify(mainPosition)) // 7 days
-      await client.sadd(`main:positions:index:${connectionId}`, mainPosition.id)
-      await client.expire(`main:positions:index:${connectionId}`, 604800)
+      const indexKey = `main:positions:index:${connectionId}`
+      await Promise.all([
+        client.setex(storageKey, 604800, JSON.stringify(mainPosition)),
+        (async () => {
+          await client.sadd(indexKey, mainPosition.id)
+          await client.expire(indexKey, 604800)
+        })(),
+      ])
 
       console.log(
         `${LOG_PREFIX} Created main position: ${symbol} ${direction} (strength=${avgStrength.toFixed(
           2
         )}, trend=${trendScore.toFixed(2)}, vol=${volatility.toFixed(2)})`
       )
-    }
+      return mainPosition
+      },
+    )
+    for (const position of evaluated) if (position) mainPositions.push(position)
 
     console.log(`${LOG_PREFIX} Evaluated to ${mainPositions.length} main positions`)
     return mainPositions

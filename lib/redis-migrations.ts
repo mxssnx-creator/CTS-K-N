@@ -4,6 +4,7 @@
  */
 
 import { getRedisClient, ensureCoreRedis, setMigrationsRun, haveMigrationsRun } from "./redis-db"
+import { ensureUniqueSiteInstanceWithClient } from "./site-instance"
 
 /**
  * Reset the in-process migration guards.
@@ -11,17 +12,10 @@ import { getRedisClient, ensureCoreRedis, setMigrationsRun, haveMigrationsRun } 
  * MUST be called by any code path that wipes the Redis keyspace
  * (FLUSHALL / flushDb), e.g. the Reset-DB and Flush-DB install routes.
  *
- * Why this is required:
- *   `runMigrations()` short-circuits on two process-level guards —
- *   the cached `migrationRunPromise` (returns the FIRST run's resolved
- *   promise to every later caller) and `haveMigrationsRun()`. A DB wipe
- *   deletes `_schema_version` / `_migrations_run` from Redis but cannot
- *   touch these JS-module guards. Without resetting them, the
- *   post-flush `runMigrations()` call returns the stale resolved promise
- *   and the migrations (001–022) NEVER replay, leaving the database
- *   half-initialised (no schema version, no metadata hashes, no seeded
- *   indexes). Calling this before re-running migrations forces a full,
- *   clean replay against the now-empty keyspace.
+ * Explicit reset paths call this immediately so the process-local
+ * `haveMigrationsRun()` marker is cleared before the new schema run. The
+ * single-flight promise itself is retained only while a run is in flight, so
+ * an external Redis restore/wipe can also be detected and replayed safely.
  */
 /**
  * Cross-module-scope coalescing guard.
@@ -1799,7 +1793,7 @@ const migrations: Migration[] = [
       const haveConn = existingConn || {}
       const connWrites: Record<string, string> = {}
       // is_live_trade: only set if the operator has not already toggled it
-      if (!haveConn["is_live_trade"] || haveConn["is_live_trade"] === "0" || haveConn["is_live_trade"] === "false") {
+      if (!("is_live_trade" in haveConn)) {
         connWrites["is_live_trade"] = "1"
       }
       // active_symbols: set if empty / absent
@@ -3520,34 +3514,36 @@ const migrations: Migration[] = [
     name: "068-4-symbol-live-trade-defaults",
     up: async (client: any) => {
       const now = new Date().toISOString()
-      // Clear the OOM-survival 1-symbol pin written by migration 053 so that
-      // the runtime env default (V0_DEV_SYMBOL_COUNT=4) and the volatility-
-      // ordered 4-symbol set from migrations 055/057/059 take effect.
-      // Also ensure symbol_count=4, concurrency=4, and live_trade enabled.
+      // Preserve every operator-saved field. Historical migration 068 used to
+      // overwrite symbol count, live mode, and concurrency whenever a restored
+      // database first reached this version, making settings appear to reset on
+      // connection/restart. Defaults now fill missing fields only.
       const connPatch = {
         symbol_count: "4",
         is_live_trade: "1",
         live_trade_enabled: "1",
-        updated_at: now,
       }
       const perfPatch = {
         strategy_flow_symbol_concurrency_dev: "4",
         strategy_flow_symbol_concurrency_prod: "1",
-        updated_at: now,
+      }
+      const setDefaults = async (key: string, defaults: Record<string, string>) => {
+        const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const writes = Object.fromEntries(
+          Object.entries(defaults).filter(([field]) => !(field in existing)),
+        ) as Record<string, string>
+        if (Object.keys(writes).length > 0) {
+          await client.hset(key, { ...writes, updated_at: now }).catch(() => 0)
+        }
       }
       await Promise.all([
-        // Remove the 1-symbol OOM override key
-        client.hdel("settings:trade_engine_state:bingx-x01", "dev_symbol_count_override").catch(() => 0),
-        client.hdel("connection:bingx-x01", "dev_symbol_count_override").catch(() => 0),
-        // Ensure 4-symbol + live trade on both canonical hashes
-        client.hset("connection:bingx-x01", connPatch).catch(() => 0),
-        client.hset("settings:connection:bingx-x01", connPatch).catch(() => 0),
-        client.hset("settings:trade_engine_state:bingx-x01", connPatch).catch(() => 0),
-        // Allow 4 symbols to run concurrently in dev
-        client.hset("settings:system", perfPatch).catch(() => 0),
-        client.hset("system:database:coordination:performance", perfPatch).catch(() => 0),
+        setDefaults("connection:bingx-x01", connPatch),
+        setDefaults("settings:connection:bingx-x01", connPatch),
+        setDefaults("settings:trade_engine_state:bingx-x01", connPatch),
+        setDefaults("settings:system", perfPatch),
+        setDefaults("system:database:coordination:performance", perfPatch),
       ])
-      console.log("[v0] Migration 068: 4-symbol live-trade defaults applied (dev_symbol_count_override cleared, concurrency=4)")
+      console.log("[v0] Migration 068: missing 4-symbol/live-trade defaults filled without overwriting operator settings")
     },
     down: async (client: any) => {
       await client.hset("settings:trade_engine_state:bingx-x01", { dev_symbol_count_override: "1", symbol_count: "1" }).catch(() => 0)
@@ -3564,14 +3560,47 @@ const migrations: Migration[] = [
     version: 69,
     name: "069-sync-exchange-position-cost-keys",
     up: async (client: any) => {
-      const patch = { exchangePositionCost: "0.02", updated_at: new Date().toISOString() }
-      await Promise.all([
-        client.hset("connection_settings:bingx-x01", patch).catch(() => 0),
-        client.hset("settings:connection:bingx-x01", patch).catch(() => 0),
-      ])
+      const now = new Date().toISOString()
+      await Promise.all(["connection_settings:bingx-x01", "settings:connection:bingx-x01"].map(async (key) => {
+        const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        if (!("exchangePositionCost" in existing)) {
+          await client.hset(key, { exchangePositionCost: "0.02", updated_at: now }).catch(() => 0)
+        }
+      }))
     },
     down: async (client: any) => {
       await client.set("_schema_version", "68")
+    },
+  },
+  {
+    version: 70,
+    name: "070-stable-site-instance-and-portable-minute-continuity",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      await ensureUniqueSiteInstanceWithClient(client)
+
+      const existing = ((await client.hgetall("settings:system").catch(() => ({}))) || {}) as Record<string, string>
+      const settingsPatch: Record<string, string> = {}
+      if (!("continuity_scheduler_interval_seconds" in existing)) {
+        settingsPatch.continuity_scheduler_interval_seconds = "60"
+      }
+      if (!("continuity_scheduler_mode" in existing)) {
+        settingsPatch.continuity_scheduler_mode = "auto"
+      }
+      if (Object.keys(settingsPatch).length > 0) {
+        await client.hset("settings:system", { ...settingsPatch, updated_at: now }).catch(() => 0)
+      }
+      await client.hset("system:coordination:continuity", {
+        interval_seconds: "60",
+        portable_scheduler_supported: "1",
+        schema_version: "70",
+        updated_at: now,
+      }).catch(() => 0)
+    },
+    down: async (client: any) => {
+      // Identity is intentionally retained during rollback; deleting it would
+      // rotate the site/session and break continuous engine ownership.
+      await client.set("_schema_version", "69")
     },
   },
 ]
@@ -4148,25 +4177,12 @@ async function ensureCompleteProductionCoverage(client: any): Promise<void> {
 
   console.log("[v0] [Migrations] Running full coverage repair (containers, indexes, global zeros)")
 
-  // Ensure the entire Site/Project has ONE unique instance (independent of connections).
-  // IMPORTANT: do not call redis-db.ensureUniqueSiteInstance() from inside
-  // migrations; that helper calls initRedis(), and initRedis is currently
-  // awaiting runMigrations(), causing a startup deadlock. Use the already-open
-  // core Redis client passed to this repair function.
+  // Ensure the entire Site/Project has ONE unique instance (independent of
+  // connections). The helper uses SET NX for an atomic cross-worker claim and
+  // deliberately accepts the already-open client, avoiding init/migration
+  // re-entrancy.
   try {
-    const siteKey = "site:unique_instance"
-    const existing = await client.hgetall(siteKey).catch(() => null)
-    if (!existing || !existing.site_session_id) {
-      await client.hset(siteKey, {
-        site_session_id: `site_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
-        created_at: new Date().toISOString(),
-        last_activity: new Date().toISOString(),
-        page_instance_count: "0",
-        initialized_by: "migration_coverage",
-      })
-    } else {
-      await client.hset(siteKey, { last_activity: new Date().toISOString() })
-    }
+    await ensureUniqueSiteInstanceWithClient(client)
   } catch {}
 
   try {
@@ -4492,11 +4508,9 @@ async function runPendingMigrationBatch({
  * Run all pending migrations
  */
 export async function runMigrations(): Promise<MigrationRunResult> {
-  // If a run is already in-flight (or completed), return the same promise so
-  // concurrent callers coalesce onto a single execution and never re-enter
-  // runMigrationsInternal(). The promise is intentionally kept after resolution —
-  // clearing it in `finally` caused a race where a second caller that had just
-  // started awaiting would see null and immediately start a second migration run.
+  // Coalesce concurrent callers onto a single in-flight execution. Do not cache
+  // a resolved promise: Redis can be restored or wiped independently of this
+  // Node process, and initRedis() must then be able to replay missing schema.
   const existing = getMigrationRunPromise()
   if (existing) {
     return existing
@@ -4504,12 +4518,11 @@ export async function runMigrations(): Promise<MigrationRunResult> {
 
   const promise = runMigrationsInternal()
   setMigrationRunPromise(promise)
-  void promise.catch(() => {
-    // Do not cache a rejected migration promise forever. initRedis() also
-    // resets this state on migration errors, but runMigrations() is exported
-    // and can be called directly by admin/maintenance routes. If a direct call
-    // hits a transient Redis error or per-migration deadline, the next caller
-    // must be able to retry instead of receiving the same stale rejection.
+  void promise.then(() => {
+    if (getMigrationRunPromise() === promise) {
+      setMigrationRunPromise(null)
+    }
+  }, () => {
     if (getMigrationRunPromise() === promise) {
       setMigrationRunPromise(null)
     }

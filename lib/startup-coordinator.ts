@@ -29,6 +29,17 @@ import {
   recordStartupError,
   recordStartupPhase,
 } from "@/lib/startup-diagnostics"
+import {
+  markRuntimeStartupFailed,
+  markRuntimeStartupReady,
+  markRuntimeStartupStarting,
+} from "@/lib/runtime-startup-state"
+
+type StartupCoordinatorGlobal = typeof globalThis & {
+  __cts_complete_startup_promise?: Promise<void> | null
+}
+
+const startupCoordinatorGlobal = globalThis as StartupCoordinatorGlobal
 
 function getPositionConnectionId(pos: any): string {
   return String(pos?.connectionId ?? pos?.connection_id ?? "").trim()
@@ -308,17 +319,21 @@ export async function cleanupOrphanedProgress() {
 /**
  * PHASE 4 FIX 4.1: Complete startup sequence (no auto-start)
  */
-export async function completeStartup() {
-  await recordStartupPhase("startup_coordinator_running")
+async function completeStartupInternal() {
   console.log(`[v0] [Startup] ========================================`)
   console.log(`[v0] [Startup] Beginning pre-startup sequence...`)
   console.log(`[v0] [Startup] ========================================\n`)
 
   try {
     // Step 1: Initialize Redis (runMigrations runs inside initRedis)
-    await recordStartupPhase("redis_initializing")
     console.log(`[v0] [Startup] Step 1/8: Initializing Redis...`)
+    // Do not write startup diagnostics before initRedis(). A pre-init HSET on
+    // InlineLocalRedis makes the store non-empty and intentionally suppresses
+    // snapshot loading, which used to discard persisted settings/progression on
+    // every production restart.
     await initRedis()
+    await markRuntimeStartupStarting("startup-coordinator")
+    await recordStartupPhase("startup_coordinator_running")
     await recordStartupPhase("redis_ready")
     console.log(`[v0] [Startup] ✓ Redis initialized`)
 
@@ -486,6 +501,38 @@ export async function completeStartup() {
     console.error(`[v0] [Startup] ✗ Fatal error during startup:`, error)
     throw error
   }
+}
+
+/**
+ * Process-wide single-flight startup entrypoint.
+ *
+ * Instrumentation, browser bootstrap, and health-recovery requests can arrive
+ * together during a cold start. They must all await the same migration and
+ * cleanup sequence, and readiness is published only after that sequence
+ * succeeds. The promise is cleared after settlement so an external Redis
+ * restore or a later explicit recovery can run the coordinator again.
+ */
+export function completeStartup(): Promise<void> {
+  const existing = startupCoordinatorGlobal.__cts_complete_startup_promise
+  if (existing) return existing
+
+  let promise!: Promise<void>
+  promise = (async () => {
+    try {
+      await completeStartupInternal()
+      await markRuntimeStartupReady("startup-coordinator")
+    } catch (error) {
+      await markRuntimeStartupFailed("startup-coordinator", error).catch(() => {})
+      throw error
+    } finally {
+      if (startupCoordinatorGlobal.__cts_complete_startup_promise === promise) {
+        startupCoordinatorGlobal.__cts_complete_startup_promise = null
+      }
+    }
+  })()
+
+  startupCoordinatorGlobal.__cts_complete_startup_promise = promise
+  return promise
 }
 
 /**

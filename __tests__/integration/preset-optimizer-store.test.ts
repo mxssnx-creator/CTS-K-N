@@ -370,7 +370,7 @@ describe("preset optimizer store and API integration", () => {
       .toBeGreaterThan(13 * 24 * 60 * 60_000)
   })
 
-  test("processes 32 symbols with only one prehistoric candle batch resident at a time", async () => {
+  test("processes 32 symbols with the bounded two-batch prehistoric memory ceiling", async () => {
     const symbols = Array.from({ length: 32 }, (_, index) => `P${String(index + 1).padStart(2, "0")}USDT`)
     let activeLoads = 0
     let peakConcurrentLoads = 0
@@ -419,7 +419,8 @@ describe("preset optimizer store and API integration", () => {
       sourceCandles: 12_800,
     })
     expect(mockGetHistoricCandlesForRange).toHaveBeenCalledTimes(32)
-    expect(peakConcurrentLoads).toBe(1)
+    expect(peakConcurrentLoads).toBe(2)
+    expect(activeLoads).toBe(0)
     const overview = await store.getPresetOverview(connectionId)
     expect(overview.summary).toMatchObject({ total: 32, eligible: 32, selected: 32, symbols: 32 })
   })

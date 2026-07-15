@@ -18,6 +18,7 @@ import {
 } from "@/lib/redis-db"
 import { getHistoricCandlesForRange } from "@/lib/trade-engine/market-data-cache"
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
+import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 const PREFIX = "preset_optimizer:v2"
 const GENERATION_RETENTION = 2
@@ -640,6 +641,14 @@ export async function runPresetOptimization(input: {
     sourceCandles: 0,
     sampledCandles: 0,
   }
+  let progressWriteTail: Promise<void> = Promise.resolve()
+  const queueProgressWrite = (): Promise<void> => {
+    const snapshot = { ...progress }
+    progressWriteTail = progressWriteTail
+      .catch(() => {})
+      .then(() => writeProgress(input.connectionId, snapshot))
+    return progressWriteTail
+  }
 
   try {
     const [savedSettings, commonSettings, connection, connectionSettings, appSettings, symbols] = await Promise.all([
@@ -654,7 +663,7 @@ export async function runPresetOptimization(input: {
       ? normalizePresetOptimizerSettings({ ...savedSettings, ...input.settings })
       : savedSettings
     progress.symbolsTotal = symbols.length
-    await writeProgress(input.connectionId, progress)
+    await queueProgressWrite()
 
     const positionCostPct = Math.max(
       0.000001,
@@ -673,13 +682,16 @@ export async function runPresetOptimization(input: {
     const endMs = Date.now()
     const startMs = endMs - settings.historyDays * 24 * 60 * 60 * 1000
 
-    // Symbols are deliberately processed one at a time. The historical range
-    // for the previous symbol becomes unreachable before the next one loads,
-    // keeping peak heap proportional to one symbol instead of N symbols.
-    for (let index = 0; index < symbols.length; index++) {
-      const symbol = symbols[index]
+    // Each worker retains only one symbol's bounded historical window. A small
+    // pool overlaps range I/O and calculation while keeping peak memory
+    // proportional to the configured worker count; every worker releases its
+    // candle array immediately after the symbol completes.
+    await mapWithConcurrency(
+      symbols,
+      concurrencyFromEnv(["PRESET_OPTIMIZER_SYMBOL_CONCURRENCY"], 2, 4, symbols.length),
+      async (symbol) => {
       progress.currentSymbol = symbol
-      await writeProgress(input.connectionId, progress)
+      await queueProgressWrite()
       let candles: unknown[] = []
       try {
         const historic = await loadPresetHistoricRange({
@@ -710,29 +722,30 @@ export async function runPresetOptimization(input: {
         // reassignment also makes the intended lifetime clear to V8/GC.
         candles = []
       }
-      progress.symbolsCompleted = index + 1
-      await writeProgress(input.connectionId, progress)
+      progress.symbolsCompleted++
+      await queueProgressWrite()
       // Long 12/32-symbol runs can exceed the initial lock TTL. Refresh only
       // while this worker still owns the token so a second optimizer cannot
       // publish a competing generation mid-run.
       if (await client.get(lockKey(input.connectionId)).catch(() => null) === token) {
         await client.expire(lockKey(input.connectionId), OPTIMIZATION_LOCK_SECONDS).catch(() => 0)
       }
-      await new Promise<void>((resolve) => setImmediate(resolve))
-    }
+      },
+    )
 
     await persistGeneration(input.connectionId, generationId, allPresets, settings.autoSelect)
     await cleanupOldGenerations(input.connectionId, generationId)
     progress.status = "completed"
     progress.currentSymbol = undefined
     progress.completedAt = new Date().toISOString()
-    await writeProgress(input.connectionId, progress)
+    await queueProgressWrite()
+    await progressWriteTail
     return progress
   } catch (error) {
     progress.status = "failed"
     progress.completedAt = new Date().toISOString()
     progress.error = error instanceof Error ? error.message : String(error)
-    await writeProgress(input.connectionId, progress).catch(() => {})
+    await queueProgressWrite().catch(() => {})
     throw error
   } finally {
     const current = await client.get(lockKey(input.connectionId)).catch(() => null)

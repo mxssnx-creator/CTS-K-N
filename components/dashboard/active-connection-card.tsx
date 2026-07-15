@@ -506,11 +506,11 @@ export function ActiveConnectionCard({
           // `data.progression`, a key that does not exist in the /stats
           // payload, so reloads restored an empty {} and blanked the card.
           try {
-            sessionStorage.setItem(
+            localStorage.setItem(
               `acc:progression:${connection.connectionId}`,
               JSON.stringify({ ...nextProgression, _cachedAt: Date.now() })
             )
-          } catch { /* sessionStorage unavailable */ }
+          } catch { /* localStorage unavailable */ }
         }
       }
     } catch {
@@ -569,17 +569,20 @@ export function ActiveConnectionCard({
     phaseRef.current = progression?.phase || "idle"
   }, [progression?.phase])
 
-  // Restore last-known progression from sessionStorage on mount so the card
-  // shows previous progress immediately on page reload instead of blank.
+  // Restore last-known progression from durable browser storage on mount so
+  // reloads and reopened tabs show continuity while the fresh poll completes.
   useEffect(() => {
     try {
-      const cached = sessionStorage.getItem(`acc:progression:${connection.connectionId}`)
+      const key = `acc:progression:${connection.connectionId}`
+      const cached = localStorage.getItem(key) || sessionStorage.getItem(key)
       if (cached) {
         const parsed = JSON.parse(cached)
         const age = Date.now() - (parsed._cachedAt ?? 0)
-        if (age < 10 * 60 * 1000) {
+        if (age < 24 * 60 * 60 * 1000) {
           const { _cachedAt: _, ...prog } = parsed
           setProgression(prog)
+          localStorage.setItem(key, cached)
+          sessionStorage.removeItem(key)
         }
       }
     } catch { /* ignore corrupted data */ }

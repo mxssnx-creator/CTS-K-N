@@ -13,6 +13,7 @@ import * as crypto from "crypto"
 import { PresetPseudoPositionManager } from "./preset-pseudo-position-manager"
 import { DataSyncManager } from "./data-sync-manager"
 import { logProgressionEvent } from "./engine-progression-logs"
+import { concurrencyFromEnv, mapWithConcurrency } from "./bounded-concurrency"
 
 export interface PresetCoordinationConfig {
   connectionId: string
@@ -32,11 +33,21 @@ export class PresetCoordinationEngine {
   private lastPositionTime: Map<string, number> = new Map()
   private pseudoPositionManager: PresetPseudoPositionManager
 
-  private readonly BATCH_SIZE = 10
-  // No MAX_CONCURRENT_SYMBOLS — process all symbols in connection dynamically
-  // Symbol-level concurrency is controlled by engine-manager.ts SYMBOL_CONCURRENCY=1
-  private readonly MAX_CONCURRENT_INDICATIONS = 20 // Process 20 indication combinations in parallel
-  private readonly RATE_LIMIT_DELAY = 100
+  private readonly MAX_CONCURRENT_SYMBOLS = concurrencyFromEnv(
+    ["PRESET_SYMBOL_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"],
+    4,
+    8,
+  )
+  private readonly MAX_CONCURRENT_CONFIG_SETS = concurrencyFromEnv(
+    ["PRESET_CONFIG_SET_CONCURRENCY"],
+    2,
+    4,
+  )
+  private readonly MAX_CONCURRENT_INDICATIONS = concurrencyFromEnv(
+    ["PRESET_COMBINATION_CONCURRENCY"],
+    8,
+    20,
+  )
 
   constructor(connectionId: string, presetTypeId: string) {
     this.connectionId = connectionId
@@ -145,14 +156,12 @@ export class PresetCoordinationEngine {
     }
 
     const symbolEntries = Array.from(symbolDayRequirements.entries())
-    // Process all symbols in the connection without artificial batching limits.
-    // SYMBOL_CONCURRENCY=1 in engine-manager ensures sequential CPU scheduling.
-    const batches = this.createBatches(symbolEntries, symbolEntries.length || 1)
     let completed = 0
 
-    for (const batch of batches) {
-      await Promise.all(
-        batch.map(async ([symbol, requiredDays]) => {
+    await mapWithConcurrency(
+      symbolEntries,
+      this.MAX_CONCURRENT_SYMBOLS,
+      async ([symbol, requiredDays]) => {
           try {
             const endTime = new Date()
             const startTime = new Date(endTime.getTime() - requiredDays * 24 * 60 * 60 * 1000)
@@ -186,11 +195,8 @@ export class PresetCoordinationEngine {
             console.error(`[v0] Failed to check/load historical data for ${symbol}:`, error)
             completed++
           }
-        }),
-      )
-
-      await new Promise((resolve) => setTimeout(resolve, this.RATE_LIMIT_DELAY))
-    }
+      },
+    )
 
     console.log("[v0] Historical data check complete")
   }
@@ -238,28 +244,24 @@ export class PresetCoordinationEngine {
     // previous O(configSets × symbols) sequential chain into a
     // bounded-parallel fan-out that scales with hardware/Redis
     // capacity instead of with the size of the basket.
-    await Promise.all(
-      this.configurationSets.map(async (configSet) => {
+    await mapWithConcurrency(
+      this.configurationSets,
+      this.MAX_CONCURRENT_CONFIG_SETS,
+      async (configSet) => {
         try {
           const symbols = await this.getSymbolsForConfigSet(configSet)
-          // Dynamic batching: no artificial symbol limits, respects SYMBOL_CONCURRENCY=1
-          const batches = this.createBatches(symbols, symbols.length || 1)
-          for (const batch of batches) {
-            await Promise.all(
-              batch.map((symbol) =>
-                this.calculateConfigSetResults(configSet, symbol).catch((err) => {
-                  console.error(
-                    `[v0] calculateConfigSetResults failed for set=${configSet.id} symbol=${symbol}:`,
-                    err instanceof Error ? err.message : String(err),
-                  )
-                }),
-              ),
-            )
-          }
+          await mapWithConcurrency(symbols, this.MAX_CONCURRENT_SYMBOLS, async (symbol) => {
+            await this.calculateConfigSetResults(configSet, symbol).catch((err) => {
+              console.error(
+                `[v0] calculateConfigSetResults failed for set=${configSet.id} symbol=${symbol}:`,
+                err instanceof Error ? err.message : String(err),
+              )
+            })
+          })
         } catch (error) {
           console.error(`[v0] Failed to calculate results for config set ${configSet.id}:`, error)
         }
-      }),
+      },
     )
 
     console.log("[v0] Coordination results calculation complete")
@@ -320,12 +322,10 @@ export class PresetCoordinationEngine {
     historicalData: any[],
     combinations: Array<{ indication: any; position: any; trailing: any }>,
   ): Promise<void> {
-    const batches = this.createBatches(combinations, this.MAX_CONCURRENT_INDICATIONS)
-
-    for (const batch of batches) {
-      // Process batch in parallel
-      await Promise.all(
-        batch.map(async (combo) => {
+    await mapWithConcurrency(
+      combinations,
+      this.MAX_CONCURRENT_INDICATIONS,
+      async (combo) => {
           try {
             await this.calculateCombinationResult(
               configSet,
@@ -338,12 +338,8 @@ export class PresetCoordinationEngine {
           } catch (error) {
             console.error(`[v0] Failed to calculate combination for ${symbol}:`, error)
           }
-        }),
-      )
-
-      // Small delay between batches to avoid overwhelming the system
-      await new Promise((resolve) => setTimeout(resolve, this.RATE_LIMIT_DELAY))
-    }
+      },
+    )
   }
 
   /**
@@ -521,22 +517,17 @@ export class PresetCoordinationEngine {
       ORDER BY profit_factor_last_25 DESC, profit_factor_last_50 DESC
     `
 
-    const batches = this.createBatches(validResults, this.MAX_CONCURRENT_INDICATIONS)
-
-    for (const batch of batches) {
-      await Promise.all(
-        batch.map(async (result) => {
+    await mapWithConcurrency(
+      validResults,
+      this.MAX_CONCURRENT_INDICATIONS,
+      async (result) => {
           try {
             await this.evaluateAndOpenPosition(result as PresetCoordinationResult)
           } catch (error) {
             console.error(`[v0] Failed to evaluate result ${(result as PresetCoordinationResult).id}:`, error)
           }
-        }),
-      )
-
-      // Small delay between batches
-      await new Promise((resolve) => setTimeout(resolve, this.RATE_LIMIT_DELAY))
-    }
+      },
+    )
 
     console.log("[v0] Coordination cycle complete")
   }

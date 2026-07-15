@@ -552,34 +552,34 @@ export async function getStrategyTracking(
     }
   })()
 
-  // ── Stage pass-through percentages (cascade survival rate) ────────
+  // ── Stage evaluation percentages ──────────────────────────────────
   // Uses the cumulative lifetime counters the coordinator maintains so the
   // ratios are stable instead of oscillating with per-cycle snapshots:
   //   strategies_{stage}_total      = Sets the stage OUTPUT (promoted)
   //   strategies_{stage}_evaluated  = Sets that ENTERED the stage (input)
   // base = 100% (pipeline entry; every Base set that exists passed by definition)
-  // main = Main output / Main input (Base→Main survival; expected ~1%)
+  // main = Base parents passed / Base parents evaluated (before fan-out)
   // real = Real output / Real evaluated pool (Main inputs + Real fan-out)
   // Each clamped to [0,100].
-  // CUMULATIVE FUNNEL (operator spec) — kept identical to the /stats route so
-  // both surfaces agree. Main still computes its candidate pool as input +
-  // related fan-out. Real stores that unified pool directly in
+  // CUMULATIVE FUNNEL — kept identical to the /stats route so both surfaces
+  // agree. Main's related axis/variant descendants do not inflate its parent
+  // pass rate. Real stores its complete post-fan-out evaluated pool directly in
   // `strategies_real_evaluated`, matching `strategy_detail:*:real.evaluated`.
   const baseOutput    = Number(prog.strategies_base_total            || "0")
   const baseInput     = Number(prog.strategies_base_evaluated        || "0")
   const mainOutput    = Number(prog.strategies_main_total            || "0")
   const mainInput     = Number(prog.strategies_main_evaluated        || "0")
-  const mainCreated   = Number(prog.strategies_main_related_created  || "0")
+  const mainParentsPassed = Number(prog.strategies_main_parent_passed || "0")
   const realOutput    = Number(prog.strategies_real_total            || "0")
   const realInput     = Number(prog.strategies_real_evaluated        || "0")
   const pct = (num: number, den: number): number =>
     den > 0 ? Math.max(0, Math.min(100, Number(((num / den) * 100).toFixed(1)))) : 0
   // base = evaluated ÷ overall generated (entry point → ~100% when any exist).
-  // main = main output ÷ (passed-forward-from-base + additionally-created-at-main).
+  // main = passed Base parents ÷ evaluated Base parents.
   // real = real output ÷ Real evaluated pool (already includes Real fan-out).
   const stageEvalPercent = {
     base: pct(baseInput, baseOutput),
-    main: pct(mainOutput, mainInput + mainCreated),
+    main: pct(mainParentsPassed || Math.min(mainOutput, mainInput), mainInput),
     real: pct(realOutput, realInput),
   }
 

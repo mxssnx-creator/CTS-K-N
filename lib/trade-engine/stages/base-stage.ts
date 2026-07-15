@@ -5,6 +5,7 @@
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import type { ExchangeConnection } from "@/lib/types"
 import type { IndicationSignal } from "./indication-stage"
+import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 const LOG_PREFIX = "[v0] [BasePositionStage]"
 
@@ -48,90 +49,117 @@ export async function generateBasePositions(
   try {
     const connectionId = connection.id || connection.name
 
-    // ── Parallel per-indication base-position generation ───────────────
-    //
-    // Each indication is fully independent (different symbol/direction
-    // keyspace) — the original sequential loop awaited 2 reads + up to
-    // 2 writes per indication, serialising the entire stage. We now:
-    //   1. Pipeline the existence-count reads for ALL indications.
-    //   2. Compute the open-position deltas synchronously.
-    //   3. Pipeline the storeBasePosition writes.
-    //
-    // This collapses the stage from O(N · RTT) into O(3 · RTT)
-    // regardless of N, which is the same shape as the engine-manager's
-    // per-symbol fan-out and is bounded by Promise.all's natural
-    // pipelining inside the Redis client.
-    const existenceCounts = await Promise.all(
-      indications.map(async (indication) => {
+    // Position limits are per symbol+direction. Parallelising every indication
+    // independently made all same-symbol tasks observe the same old count and
+    // over-create beyond the ceiling. Group by symbol, lease that admission
+    // slot, and process independent symbols concurrently instead.
+    const bySymbol = new Map<string, IndicationSignal[]>()
+    for (const indication of indications) {
+      const group = bySymbol.get(indication.symbol)
+      if (group) group.push(indication)
+      else bySymbol.set(indication.symbol, [indication])
+    }
+
+    const symbolGroups = [...bySymbol.entries()]
+    const groupedResults = await mapWithConcurrency(
+      symbolGroups,
+      concurrencyFromEnv(["BASE_POSITION_SYMBOL_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"], 4, 8, symbolGroups.length),
+      async ([symbol, symbolIndications]) => withBaseAdmissionLock(client, connectionId, symbol, async () => {
         const [existingLong, existingShort] = await Promise.all([
-          countExistingPositions(client, connectionId, indication.symbol, "long"),
-          countExistingPositions(client, connectionId, indication.symbol, "short"),
+          countExistingPositions(client, connectionId, symbol, "long", maxLong),
+          countExistingPositions(client, connectionId, symbol, "short", maxShort),
         ])
-        return { indication, existingLong, existingShort }
+        let longSlots = Math.max(0, maxLong - existingLong)
+        let shortSlots = Math.max(0, maxShort - existingShort)
+        const created: BasePosition[] = []
+        const writes: Promise<unknown>[] = []
+
+        for (let indicationIndex = 0; indicationIndex < symbolIndications.length; indicationIndex++) {
+          const indication = symbolIndications[indicationIndex]
+          const now = Date.now()
+          if (longSlots > 0) {
+            const longPosition: BasePosition = {
+              id: `base:${connectionId}:${indication.symbol}:${indication.timestamp}:${indicationIndex}:long`,
+              connectionId,
+              connectionName: connection.name,
+              symbol: indication.symbol,
+              timeframe: indication.timeframe,
+              direction: "long",
+              entryPrice: indication.price,
+              entryTime: now,
+              indicationSignal: indication.signal,
+              indicationStrength: indication.strength,
+              status: "open",
+              sourceIndicationTimestamp: indication.timestamp,
+              createdAt: now,
+              updatedAt: now,
+            }
+            created.push(longPosition)
+            writes.push(storeBasePosition(client, longPosition))
+            longSlots--
+          }
+          if (shortSlots > 0) {
+            const shortPosition: BasePosition = {
+              id: `base:${connectionId}:${indication.symbol}:${indication.timestamp}:${indicationIndex}:short`,
+              connectionId,
+              connectionName: connection.name,
+              symbol: indication.symbol,
+              timeframe: indication.timeframe,
+              direction: "short",
+              entryPrice: indication.price,
+              entryTime: now,
+              indicationSignal: indication.signal,
+              indicationStrength: indication.strength,
+              status: "open",
+              sourceIndicationTimestamp: indication.timestamp,
+              createdAt: now,
+              updatedAt: now,
+            }
+            created.push(shortPosition)
+            writes.push(storeBasePosition(client, shortPosition))
+            shortSlots--
+          }
+          if (longSlots === 0 && shortSlots === 0) break
+        }
+        if (writes.length > 0) await Promise.all(writes)
+        return created
       }),
     )
-
-    const writes: Promise<unknown>[] = []
-    for (const { indication, existingLong, existingShort } of existenceCounts) {
-      if (existingLong < maxLong) {
-        const longPosition: BasePosition = {
-          id: `base:${connectionId}:${indication.symbol}:${Date.now()}:long`,
-          connectionId,
-          connectionName: connection.name,
-          symbol: indication.symbol,
-          timeframe: indication.timeframe,
-          direction: "long",
-          entryPrice: indication.price,
-          entryTime: Date.now(),
-          indicationSignal: indication.signal,
-          indicationStrength: indication.strength,
-          status: "open",
-          sourceIndicationTimestamp: indication.timestamp,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        }
-        basePositions.push(longPosition)
-        writes.push(storeBasePosition(client, longPosition))
-        console.log(
-          `${LOG_PREFIX} Created LONG base position ${longPosition.id} (strength: ${indication.strength.toFixed(2)})`
-        )
-      }
-      if (existingShort < maxShort) {
-        const shortPosition: BasePosition = {
-          id: `base:${connectionId}:${indication.symbol}:${Date.now()}:short`,
-          connectionId,
-          connectionName: connection.name,
-          symbol: indication.symbol,
-          timeframe: indication.timeframe,
-          direction: "short",
-          entryPrice: indication.price,
-          entryTime: Date.now(),
-          indicationSignal: indication.signal,
-          indicationStrength: indication.strength,
-          status: "open",
-          sourceIndicationTimestamp: indication.timestamp,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        }
-        basePositions.push(shortPosition)
-        writes.push(storeBasePosition(client, shortPosition))
-        console.log(
-          `${LOG_PREFIX} Created SHORT base position ${shortPosition.id} (strength: ${indication.strength.toFixed(2)})`
-        )
-      }
-      if (existingLong >= maxLong && existingShort >= maxShort) {
-        console.log(
-          `${LOG_PREFIX} Position limits reached for ${indication.symbol} (${existingLong}/${maxLong} long, ${existingShort}/${maxShort} short)`
-        )
-      }
-    }
-    if (writes.length > 0) await Promise.all(writes)
+    for (const created of groupedResults) basePositions.push(...created)
 
     console.log(`${LOG_PREFIX} Generated ${basePositions.length} base positions`)
     return basePositions
   } catch (err) {
     console.error(`${LOG_PREFIX} Error generating base positions: ${err}`)
     throw err
+  }
+}
+
+async function withBaseAdmissionLock<T>(
+  client: any,
+  connectionId: string,
+  symbol: string,
+  work: () => Promise<T>,
+): Promise<T | []> {
+  const key = `base:positions:admission_lock:${connectionId}:${symbol}`
+  const token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+  const acquired = await client.set(key, token, { NX: true, PX: 30_000 }).catch(() => null)
+  if (acquired !== "OK") return []
+  try {
+    return await work()
+  } finally {
+    try {
+      if (typeof client.eval === "function") {
+        await client.eval(
+          `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`,
+          { keys: [key], arguments: [token] },
+        )
+      } else if ((await client.get(key)) === token) {
+        // InlineLocalRedis is single-process and does not expose EVAL. Its
+        // 30-second lease comfortably exceeds this bounded write section.
+        await client.del(key)
+      }
+    } catch { /* lease expires automatically */ }
   }
 }
 

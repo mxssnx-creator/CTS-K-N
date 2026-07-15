@@ -909,7 +909,7 @@ export function QuickstartOverviewDialog() {
                 </div>
                 <div
                   className="flex justify-between"
-                  title="Canonical 'total strategies' = Real-stage output. Base ��� Main → Real is a cascade filter of the same logical strategy — stages are NOT summed together."
+                  title="Canonical total = Real-stage output. Main contains related descendants of Base, so stage outputs are not summed together."
                 >
                   <span className="text-muted-foreground">Strategies (Real)</span>
                   <span className="font-medium tabular-nums">{fmt(bd?.strategies.total || 0)}</span>

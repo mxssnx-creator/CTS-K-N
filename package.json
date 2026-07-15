@@ -35,7 +35,11 @@
     "test:quickstart-12": "SYMBOL_COUNT=12 pnpm run test:quickstart-3",
     "test:stress-32": "NODE_OPTIONS='--expose-gc --max-old-space-size=1024' node scripts/stress-bingx-public-32.mjs",
     "test:prod-preview": "node scripts/run-prod-preview-check.mjs",
-    "test:prod-preview:verify": "node scripts/verify-prod-preview.mjs"
+    "test:prod-preview:verify": "node scripts/verify-prod-preview.mjs",
+    "test:prod-soak": "node scripts/verify-prod-soak.mjs",
+    "scheduler:minute": "node scripts/run-minute-scheduler.mjs",
+    "scheduler:minute:once": "node scripts/run-minute-scheduler.mjs --once",
+    "test:scheduler:minute": "node scripts/test-minute-scheduler.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -121,7 +125,7 @@
     "vercel": "latest"
   },
   "engines": {
-    "node": ">=20 <23"
+    "node": ">=20.16"
   },
   "packageManager": "pnpm@10.28.1"
 }

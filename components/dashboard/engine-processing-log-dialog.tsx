@@ -502,17 +502,17 @@ export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { 
                 <Card className="p-4 space-y-2">
                   <div className="text-sm font-medium flex items-center gap-2">
                     <Zap className="w-4 h-4 text-amber-500" />
-                    Strategies — Pipeline Stages (cascade filter)
+                    Strategies — Coordinated Pipeline
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    Base → Main → Real → Live is <em>eval → filter → adjust → promote</em>. Each stage counts the
-                    SAME strategies that survived the previous filter — do not add the four values together. The
-                    canonical &quot;total strategies&quot; is the Real-stage count.
+                    Base → Main → Real → Live is <em>enumerate → filter/expand → adjust → promote</em>. Main can
+                    create related axis/variant Sets from a Base parent, so its count may be higher than Base.
+                    Do not add stage outputs; the canonical final count is Real.
                   </p>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-center text-xs">
                     {[
                       { label: "Base (eval)",   value: stats.breakdown.strategies.base, bg: "bg-orange-50 dark:bg-orange-950/30", txt: "text-orange-700 dark:text-orange-400" },
-                      { label: "Main (filter)", value: stats.breakdown.strategies.main, bg: "bg-yellow-50 dark:bg-yellow-950/30", txt: "text-yellow-700 dark:text-yellow-400" },
+                      { label: "Main (expand)", value: stats.breakdown.strategies.main, bg: "bg-yellow-50 dark:bg-yellow-950/30", txt: "text-yellow-700 dark:text-yellow-400" },
                       { label: "Real (adjust)", value: stats.breakdown.strategies.real, bg: "bg-green-50 dark:bg-green-950/30",  txt: "text-green-700 dark:text-green-400" },
                       { label: "Live (promoted)", value: (stats.breakdown.strategies as any).live || 0, bg: "bg-amber-50 dark:bg-amber-950/30", txt: "text-amber-700 dark:text-amber-400" },
                     ].map(({ label, value, bg, txt }) => (
