@@ -267,13 +267,13 @@ interface LiveStats {
   // ── Real-stage rolling averages (5-min ring buffer) ──────────────────
   // Mirrors the values shown in the active-connection-card Historical box.
   realAverages: { activeSets: number; posPerSet: number; posOpen: number; samples: number } | null
-  // ── Stage cascade eval percentages ───────────────────────────────────
-  // base = mainInput/baseOutput, main = mainOutput/mainInput, real = realOutput/realInput
-  stageEvalPercent: { base: number; main: number; real: number } | null
+  // ── Stage evaluation percentages ─────────────────────────────────────
+  // Main is parent pass-rate before fan-out; Real is output/evaluated pool.
+  stageEvalPercent: { base: number; main: number; real: number; live?: number } | null
   // phase
   phase: string
   engineRunning: boolean
-  // Timestamp (epoch-ms) written by the sessionStorage persistence layer
+  // Timestamp (epoch-ms) written by the durable browser persistence layer
   // so the restore path can skip excessively stale snapshots on reload.
   updatedAt?: number
 }
@@ -666,7 +666,7 @@ export function QuickstartSection() {
       }
       if (requestSeq !== statsFetchSeqRef.current) return
       setStats(nextStats)
-      // Persist stats to sessionStorage so a page reload can restore the last
+      // Persist stats durably so a reload/reopened tab can restore the last
       // known values instantly (before the first polling fetch returns).
       // Use nextStats (the freshly-built value) rather than the stale `stats`
       // closure variable — React state updates are async so `stats` still holds
@@ -674,12 +674,12 @@ export function QuickstartSection() {
       // Key is per-connection so switching connections doesn't show stale data.
       try {
         if (connectionId) {
-          sessionStorage.setItem(
+          localStorage.setItem(
             `qs:stats:${connectionId}`,
             JSON.stringify({ ...nextStats, updatedAt: Date.now() })
           )
         }
-      } catch { /* sessionStorage unavailable */ }
+      } catch { /* localStorage unavailable */ }
       // Sync isRunning from server truth on every stats fetch so the
       // Start/Stop button and status dot always reflect real engine state,
       // even after a page reload or when another tab stopped the engine.
@@ -1036,7 +1036,7 @@ export function QuickstartSection() {
   // effect — rather than in the useState initialisers — is what prevents the
   // hydration mismatch on the Start button and the cascading radix id drift.
   //
-  // Also restores the last-known stats from sessionStorage so the dashboard
+  // Also restores the last-known stats from durable browser storage so the dashboard
   // shows the previous progress immediately on page reload instead of showing
   // zeros while the first polling fetch is in-flight (~3-5 s).
   useEffect(() => {
@@ -1062,19 +1062,20 @@ export function QuickstartSection() {
         // wrong connection after a picker change.
         const statsKey = connectionId ?? ac
         try {
-          const cached = sessionStorage.getItem(`qs:stats:${statsKey}`)
+          const key = `qs:stats:${statsKey}`
+          const cached = localStorage.getItem(key) || sessionStorage.getItem(key)
           if (cached) {
             const parsed = JSON.parse(cached) as LiveStats
-            // Only hydrate if the snapshot is reasonably fresh (< 10 min).
-            // Stale snapshots are harmless — the first real fetch overwrites
-            // them — but we skip extremely old data to avoid confusing the
-            // operator with hours-old numbers that look "live".
+            // Hydrate a bounded last-known snapshot; the first canonical fetch
+            // replaces it immediately and remains authoritative.
             const age = Date.now() - (parsed.updatedAt ?? 0)
-            if (age < 10 * 60 * 1000) {
+            if (age < 24 * 60 * 60 * 1000) {
               setStats(parsed)
+              localStorage.setItem(key, cached)
+              sessionStorage.removeItem(key)
             }
           }
-        } catch { /* ignore corrupted sessionStorage data */ }
+        } catch { /* ignore corrupted browser data */ }
       }
     } catch { /* localStorage may be unavailable */ }
 
@@ -1971,32 +1972,28 @@ export function QuickstartSection() {
               )}
             </div>
 
-            {/* strategies breakdown
-                Base → Main → Real → Live is a CASCADE FILTER (eval → filter →
-                adjust → promote). Each stage operates on the SURVIVORS of the
-                previous stage, so the four counters are NOT additive — each
-                ratio below is stage-over-previous pass rate. The header total
-                is the canonical strategy count = Real-stage output only. */}
+            {/* Strategy-stage outputs are not additive. Main can exceed Base
+                because it materialises position-axis/variant descendants. */}
             <div className="rounded-md border bg-muted/20 p-2.5 space-y-1.5">
               <div className="flex items-center gap-1.5 text-[11px] font-semibold">
                 <BarChart3 className="w-3.5 h-3.5 text-amber-500" />
                 Strategies
                 <span
                   className="ml-auto text-[10px] text-muted-foreground font-normal"
-                  title="Canonical total = Real-stage output. Base/Main are intermediate filter stages of the same strategy, not separate counts."
+                  title="Canonical total = Real-stage output. Main includes descendants derived from Base, so stage outputs are not added together."
                 >
                   Final (Real) {fmt(stats.stratReal)}
                 </span>
               </div>
               <p className="text-[9px] text-muted-foreground/80 -mt-1 leading-tight">
-                Cascade filter — each stage filters the survivors of the previous stage. Counts are <em>not</em> added together.
+                Coordinated pipeline — Main may expand Base into related Sets; Real filters and adjusts them. Stage outputs are <em>not</em> added together.
               </p>
               <div className="grid grid-cols-4 gap-1.5 text-center text-[10px]">
                 {[
                   { label: "Base",   sub: "eval",    value: stats.stratBase, color: "text-orange-600 dark:text-orange-400", ratio: null },
-                  { label: "Main",   sub: "filter",  value: stats.stratMain, color: "text-yellow-600 dark:text-yellow-400", ratio: stats.stratBase > 0 ? `${((stats.stratMain / stats.stratBase) * 100).toFixed(0)}% pass` : null },
-                  { label: "Real",   sub: "adjust",  value: stats.stratReal, color: "text-green-600 dark:text-green-400",   ratio: stats.stratMain > 0 ? `${((stats.stratReal / stats.stratMain) * 100).toFixed(0)}% pass` : null },
-                  { label: "Live",   sub: "promote", value: stats.stratLive, color: "text-blue-600 dark:text-blue-400",     ratio: stats.stratReal > 0 ? `${((stats.stratLive / stats.stratReal) * 100).toFixed(0)}% live` : null },
+                  { label: "Main",   sub: "expand",  value: stats.stratMain, color: "text-yellow-600 dark:text-yellow-400", ratio: stats.stageEvalPercent ? `${stats.stageEvalPercent.main.toFixed(0)}% parents pass` : null },
+                  { label: "Real",   sub: "adjust",  value: stats.stratReal, color: "text-green-600 dark:text-green-400",   ratio: stats.stageEvalPercent ? `${stats.stageEvalPercent.real.toFixed(0)}% pool pass` : null },
+                  { label: "Live",   sub: "promote", value: stats.stratLive, color: "text-blue-600 dark:text-blue-400",     ratio: stats.stageEvalPercent?.live != null ? `${stats.stageEvalPercent.live.toFixed(0)}% live` : null },
                 ].map(({ label, sub, value, color, ratio }) => (
                   <div key={label} className="rounded bg-muted/60 py-1.5 px-1">
                     <div className={`text-sm font-bold tabular-nums ${color}`}>{fmt(value)}</div>

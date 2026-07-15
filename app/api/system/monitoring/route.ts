@@ -5,51 +5,117 @@ import { getSystemResourceMetrics } from "@/lib/system-resource-metrics"
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-async function collectRedisKeys(client: ReturnType<typeof getRedisClient>): Promise<{ keys: string[]; keyCount: number }> {
+const MONITORING_KEY_SAMPLE_LIMIT = 20_000
+const MONITORING_KEY_SAMPLE_TTL_MS = 5_000
+let keyInventoryCache: { at: number; keys: string[] } | null = null
+
+async function readRedisDbSize(client: ReturnType<typeof getRedisClient>): Promise<number> {
   try {
-    const keysResult = await client.keys("*")
-    if (Array.isArray(keysResult) && keysResult.length > 0) {
-      return { keys: keysResult, keyCount: keysResult.length }
-    }
+    const result = typeof (client as any).dbSize === "function"
+      ? await (client as any).dbSize()
+      : await (client as any).dbsize?.()
+    const size = Number(result)
+    return Number.isFinite(size) && size >= 0 ? size : 0
   } catch {
-    // Some hosted Redis providers disable KEYS. Fall back to SCAN below.
+    return 0
+  }
+}
+
+async function collectRedisKeys(client: ReturnType<typeof getRedisClient>): Promise<{ keys: string[]; keyCount: number }> {
+  const exactKeyCount = await readRedisDbSize(client)
+  const now = Date.now()
+  if (keyInventoryCache && now - keyInventoryCache.at < MONITORING_KEY_SAMPLE_TTL_MS) {
+    return {
+      keys: keyInventoryCache.keys,
+      keyCount: Math.max(exactKeyCount, keyInventoryCache.keys.length),
+    }
+  }
+
+  const remember = (keys: string[], keyCount: number) => {
+    keyInventoryCache = { at: now, keys }
+    return { keys, keyCount }
+  }
+
+  // InlineLocalRedis implements SCAN by rebuilding the complete matching-key
+  // array for every cursor page. One KEYS pass is therefore both faster and
+  // lower-allocation locally. Network Redis providers use incremental SCAN so
+  // their event loop is never blocked by KEYS on a large production database.
+  const isInlineLocal = client?.constructor?.name === "InlineLocalRedis"
+  if (isInlineLocal) {
+    try {
+      const keysResult = await client.keys("*")
+      if (Array.isArray(keysResult)) {
+        const keys = keysResult.slice(0, MONITORING_KEY_SAMPLE_LIMIT)
+        return remember(keys, Math.max(exactKeyCount, keysResult.length))
+      }
+    } catch { /* fall through to the bounded scanner */ }
   }
 
   const scannedKeys = new Set<string>()
   try {
     let cursor: string | number = "0"
-    for (let i = 0; i < 200; i++) {
+    for (let i = 0; i < 200 && scannedKeys.size < MONITORING_KEY_SAMPLE_LIMIT; i++) {
       if (typeof client.scan !== "function") break
       const result = await client.scan(cursor, "MATCH", "*", "COUNT", 500)
       const nextCursor = Array.isArray(result) ? result[0] : "0"
       const batch = Array.isArray(result) ? result[1] : []
       if (Array.isArray(batch)) {
-        for (const key of batch) scannedKeys.add(String(key))
+        for (const key of batch) {
+          scannedKeys.add(String(key))
+          if (scannedKeys.size >= MONITORING_KEY_SAMPLE_LIMIT) break
+        }
       }
       cursor = nextCursor
       if (String(cursor) === "0") break
     }
   } catch {
-    // Keep going: dbsize/pattern probes below can still provide a real count.
+    // Keep going: the exact DBSIZE value can still provide a useful result.
   }
 
   if (scannedKeys.size > 0) {
-    return { keys: Array.from(scannedKeys), keyCount: scannedKeys.size }
+    const keys = Array.from(scannedKeys)
+    return remember(keys, Math.max(exactKeyCount, scannedKeys.size))
   }
 
-  try {
-    const dbsize = typeof (client as any).dbSize === "function"
-      ? await (client as any).dbSize()
-      : await (client as any).dbsize?.()
-    const keyCount = Number(dbsize)
-    if (Number.isFinite(keyCount) && keyCount > 0) {
-      return { keys: [], keyCount }
+  // Last-resort compatibility for adapters that expose neither SCAN nor
+  // DBSIZE. This path is intentionally skipped for normal hosted providers.
+  if (exactKeyCount === 0) {
+    try {
+      const keysResult = await client.keys("*")
+      if (Array.isArray(keysResult)) {
+        const keys = keysResult.slice(0, MONITORING_KEY_SAMPLE_LIMIT)
+        return remember(keys, keysResult.length)
+      }
+    } catch { /* no inventory available */ }
+  }
+
+  return { keys: [], keyCount: exactKeyCount }
+}
+
+async function collectConnectionIds(
+  client: ReturnType<typeof getRedisClient>,
+  sampledKeys: string[],
+): Promise<string[]> {
+  const ids = new Set<string>()
+  const [allConnections, enabledConnections, activeConnections] = await Promise.all(
+    ["connections", "connections:main:enabled", "connections:active"]
+      .map((key) => client.smembers(key).catch(() => [] as string[])),
+  )
+  const runtimeIndexed = [...enabledConnections, ...activeConnections]
+  for (const id of runtimeIndexed.length > 0 ? runtimeIndexed : allConnections) {
+    if (id) ids.add(String(id))
+  }
+
+  // Compatibility for snapshots from before the connection indexes existed.
+  if (ids.size === 0) {
+    for (const key of sampledKeys) {
+      const progressionMatch = /^progression:([^:]+)(?::[^:]+)?$/.exec(key)
+      const connectionMatch = /^(?:settings:)?connection:([^:]+)$/.exec(key)
+      const id = progressionMatch?.[1] || connectionMatch?.[1]
+      if (id) ids.add(id)
     }
-  } catch {
-    // Optional command; not all adapters expose it.
   }
-
-  return { keys: [], keyCount: 0 }
+  return Array.from(ids)
 }
 
 export async function GET() {
@@ -86,22 +152,20 @@ export async function GET() {
 
     let estimatedDbBytes = 0
     try {
-      const sampleKeys = allKeys.slice(0, 20)
-      let sampledBytes = 0
-      for (const key of sampleKeys) {
-        sampledBytes += key.length
+      const sampleKeys = allKeys.slice(0, 12)
+      const sampleSizes = await Promise.all(sampleKeys.map(async (key) => {
+        let bytes = key.length
         const strValue = client ? await client.get(key).catch(() => null) : null
-        if (typeof strValue === "string" && strValue.length > 0) {
-          sampledBytes += strValue.length
-          continue
-        }
+        if (typeof strValue === "string" && strValue.length > 0) return bytes + strValue.length
         const hashValue = client ? await client.hgetall(key).catch(() => null) : null
         if (hashValue && typeof hashValue === "object") {
           for (const [field, value] of Object.entries(hashValue)) {
-            sampledBytes += String(field).length + String(value).length
+            bytes += String(field).length + String(value).length
           }
         }
-      }
+        return bytes
+      }))
+      const sampledBytes = sampleSizes.reduce((sum, bytes) => sum + bytes, 0)
       estimatedDbBytes = sampleKeys.length > 0
         ? Math.max(0, Math.round((sampledBytes / sampleKeys.length) * Math.max(keys, 1)))
         : 0
@@ -124,21 +188,56 @@ export async function GET() {
     let strategiesRunning = false
     let redisActiveEngineCount = 0
     
-    // PRIMARY: read live progression hashes (written every cycle — always current)
+    // PRIMARY: read live progression hashes through connection indexes. Cycle
+    // observability must not depend on a bounded key-inventory sample happening
+    // to contain every progression key.
     try {
-      const progressionKeys = allKeys.filter((k: string) => /^progression:[^:]+$/.test(k))
-      for (const progKey of progressionKeys) {
+      const connectionIds = client ? await collectConnectionIds(client, allKeys) : []
+      for (const connectionId of connectionIds) {
         try {
           if (!client) continue
-          const progHash = await client.hgetall(progKey)
-          if (progHash && typeof progHash === "object") {
-            const indCycles  = Number(progHash.indication_cycle_count)  || 0
-            const stratCycles = Number(progHash.strategy_cycle_count)   || 0
-            if (indCycles > 0 || stratCycles > 0) {
+          const connectionHash = await client.hgetall(`connection:${connectionId}`).catch(() => ({}))
+          const configuredEngineType = String(
+            (connectionHash as any)?.engine_type || (connectionHash as any)?.engineType || "main",
+          ).replace(/[^A-Za-z0-9._-]/g, "_") || "main"
+          const engineTypes = Array.from(new Set([configuredEngineType, "main", "preset"]))
+          const [legacyProgression, legacyEngineState, realtimeState, scopedProgressions, scopedEngineStates] = await Promise.all([
+            client.hgetall(`progression:${connectionId}`).catch(() => ({})),
+            client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({})),
+            client.hgetall(`realtime:${connectionId}`).catch(() => ({})),
+            Promise.all(engineTypes.map((type) => client.hgetall(`progression:${connectionId}:${type}`).catch(() => ({})))),
+            Promise.all(engineTypes.map((type) => client.hgetall(`settings:trade_engine_state:${connectionId}:${type}`).catch(() => ({})))),
+          ])
+          const progressionHashes = [legacyProgression, ...scopedProgressions] as Array<Record<string, any>>
+          const engineStateHashes = [legacyEngineState, ...scopedEngineStates] as Array<Record<string, any>>
+          const maxField = (hashes: Array<Record<string, any>>, field: string): number =>
+            hashes.reduce((max, hash) => Math.max(max, Number(hash?.[field]) || 0), 0)
+          const hasCycleSource = [...progressionHashes, ...engineStateHashes, realtimeState]
+            .some((hash) => hash && Object.keys(hash).length > 0)
+          if (hasCycleSource) {
+            const realtimeCycles = Math.max(
+              maxField(progressionHashes, "realtime_cycle_count"),
+              maxField(engineStateHashes, "realtime_cycle_count"),
+              Number((realtimeState as any)?.cycle_count) || 0,
+            )
+            const indCycles = Math.max(
+              maxField(progressionHashes, "indication_cycle_count"),
+              maxField(progressionHashes, "indication_live_cycle_count"),
+              maxField(engineStateHashes, "indication_cycle_count"),
+              realtimeCycles,
+            )
+            const stratCycles = Math.max(
+              maxField(progressionHashes, "strategy_cycle_count"),
+              maxField(progressionHashes, "strategy_live_cycle_count"),
+              maxField(engineStateHashes, "strategy_cycle_count"),
+              realtimeCycles,
+            )
+            const stateRunning = engineStateHashes.some((state) => state?.status === "running")
+            if (indCycles > 0 || stratCycles > 0 || stateRunning) {
               totalIndicationCycles += indCycles
               totalStrategyCycles   += stratCycles
-              indicationsRunning     = true
-              strategiesRunning      = true
+              indicationsRunning     = indCycles > 0 || stateRunning
+              strategiesRunning      = stratCycles > 0 || stateRunning
               redisActiveEngineCount++
             }
           }
@@ -146,8 +245,8 @@ export async function GET() {
       }
     } catch {}
 
-    // FALLBACK: settings:trade_engine_state:* keys (stale — every 50-100 cycles)
-    // Only used when live progression hash is empty (engine just started)
+    // FALLBACK for unindexed legacy snapshots: sampled state keys. New
+    // installations are covered by the indexed loop above.
     if (totalIndicationCycles === 0) {
       try {
         const connectionStateKeys = allKeys.filter((k: string) => k.startsWith("settings:trade_engine_state:"))

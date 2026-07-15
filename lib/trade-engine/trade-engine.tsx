@@ -16,6 +16,7 @@ import { RealtimeProcessor } from "./realtime-processor"
 import { IndicationStateManager } from "@/lib/indication-state-manager"
 import { PositionFlowCoordinator } from "@/lib/position-flow-coordinator"
 import { getDataCleanupManager } from "@/lib/data-cleanup-manager"
+import { clampConcurrency, mapSettledWithConcurrency, mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 export const TRADE_SERVICE_NAME = "TradeEngine-PerConnection"
 
@@ -71,7 +72,11 @@ export class TradeEngine {
 
   constructor(config: TradeEngineConfig) {
     this.connectionId = config.connectionId
-    this.maxConcurrency = config.maxConcurrency || 10
+    this.maxConcurrency = clampConcurrency(
+      config.maxConcurrency ?? process.env.PRESET_SYMBOL_CONCURRENCY,
+      4,
+      8,
+    )
     this.tradeInterval = config.tradeInterval
     this.realInterval = config.realInterval
 
@@ -285,44 +290,26 @@ export class TradeEngine {
   }
 
   private async processSymbolsPresetMode(symbols: string[]): Promise<void> {
-    // Process symbols in optimal batch sizes based on CPU cores
-    const optimalBatchSize = Math.min(this.maxConcurrency, Math.ceil(symbols.length / 4))
-    const chunks = []
-
-    for (let i = 0; i < symbols.length; i += optimalBatchSize) {
-      chunks.push(symbols.slice(i, i + optimalBatchSize))
-    }
-
-    // Process chunks with Promise.allSettled for error isolation
-    for (const chunk of chunks) {
-      const results = await Promise.allSettled(chunk.map((symbol) => this.processSymbolPreset(symbol)))
-
-      // Log any rejected promises for monitoring
-      const failures = results.filter((r) => r.status === "rejected")
-      if (failures.length > 0) {
-        console.warn(`[v0] ${failures.length} symbols failed in preset mode batch`)
-      }
+    const results = await mapSettledWithConcurrency(
+      symbols,
+      clampConcurrency(this.maxConcurrency, 4, 8, symbols.length),
+      (symbol) => this.processSymbolPreset(symbol),
+    )
+    const failures = results.filter((result) => result.status === "rejected")
+    if (failures.length > 0) {
+      console.warn(`[v0] ${failures.length} symbols failed in preset mode cycle`)
     }
   }
 
   private async processSymbolsMainMode(symbols: string[]): Promise<void> {
-    // Process symbols in optimal batch sizes
-    const optimalBatchSize = Math.min(this.maxConcurrency, Math.ceil(symbols.length / 4))
-    const chunks = []
-
-    for (let i = 0; i < symbols.length; i += optimalBatchSize) {
-      chunks.push(symbols.slice(i, i + optimalBatchSize))
-    }
-
-    // Process chunks with Promise.allSettled for error isolation
-    for (const chunk of chunks) {
-      const results = await Promise.allSettled(chunk.map((symbol) => this.processSymbolMain(symbol)))
-
-      // Log any rejected promises for monitoring
-      const failures = results.filter((r) => r.status === "rejected")
-      if (failures.length > 0) {
-        console.warn(`[v0] ${failures.length} symbols failed in main mode batch`)
-      }
+    const results = await mapSettledWithConcurrency(
+      symbols,
+      clampConcurrency(this.maxConcurrency, 4, 8, symbols.length),
+      (symbol) => this.processSymbolMain(symbol),
+    )
+    const failures = results.filter((result) => result.status === "rejected")
+    if (failures.length > 0) {
+      console.warn(`[v0] ${failures.length} symbols failed in main mode cycle`)
     }
   }
 
@@ -335,16 +322,13 @@ export class TradeEngine {
     this.presetProcessingQueue.add(symbol)
 
     try {
-      // Process in parallel with error isolation
-      const [indicationResult, strategyResult] = await Promise.allSettled([
-        this.indicationProcessor.processIndication(symbol),
-        this.strategyProcessor.processStrategy(symbol),
-      ])
-
-      // Continue with position management if indication succeeded
-      if (indicationResult.status === "fulfilled") {
-        await this.managePseudoPositionsWithValidation(symbol, "preset")
-      }
+      // Indication output is a dependency of Strategy input for the same
+      // symbol. The old Promise.all raced Strategy against its producer and
+      // could evaluate the previous cycle's Redis snapshot. Preserve this
+      // per-symbol order while symbols themselves run concurrently.
+      const indications = await this.indicationProcessor.processIndication(symbol)
+      await this.strategyProcessor.processStrategy(symbol, indications)
+      await this.managePseudoPositionsWithValidation(symbol, "preset")
 
       await this.logTradeActivities(symbol, "preset")
     } catch (error) {
@@ -475,13 +459,11 @@ export class TradeEngine {
         1,
         Math.min(this.maxConcurrency || 8, symbols.length, 16),
       )
-      let nextIdx = 0
       const errors: Array<{ symbol: string; error: string }> = []
-      const worker = async (): Promise<void> => {
-        while (true) {
-          const i = nextIdx++
-          if (i >= symbols.length) return
-          const symbol = symbols[i]
+      await mapWithConcurrency(
+        symbols,
+        PREHISTORIC_CONCURRENCY,
+        async (symbol) => {
           try {
             // For a single symbol, indications must produce the
             // historical sets BEFORE strategies can consume them —
@@ -496,11 +478,8 @@ export class TradeEngine {
             errors.push({ symbol, error: msg })
             console.error(`[v0] [Prehistoric] ${symbol} failed:`, msg)
           }
-        }
-      }
-      const workers: Promise<void>[] = []
-      for (let w = 0; w < PREHISTORIC_CONCURRENCY; w++) workers.push(worker())
-      await Promise.all(workers)
+        },
+      )
 
       if (errors.length > 0) {
         console.warn(`[v0] Prehistoric data loaded with ${errors.length}/${symbols.length} symbol failures: ${errors.map((e) => e.symbol).join(", ")}`)

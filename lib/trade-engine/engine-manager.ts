@@ -265,59 +265,40 @@ import {
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { fetchTopSymbols } from "@/lib/top-symbols"
 import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from "@/lib/progression-fingerprint"
+import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 /**
- * Per-symbol fan-out concurrency cap.
- *
- * `Promise.all(symbols.map(...))` is conceptually parallel but practically
- * unbounded: at 50+ symbols every per-symbol task fires simultaneously,
- * each performing several Redis reads + indicator math + (sometimes)
- * a market-data refetch. The cumulative pressure can:
- *   • saturate the Redis client's pipeline depth → tail latency spikes
- *   • starve the Node event loop while indicator math runs → other
- *     timers (heartbeat, /api requests, watchdog) drift
- *   • cause the per-cycle deadline to fire even though no single task
- *     was hung — the whole batch was just queued behind itself
- *
- * Capping concurrency at 32 keeps p99 cycle latency stable across watchlist
- * sizes from 1 to a few hundred symbols. The cap is intentionally
- * larger than typical symbol counts (most operators run 1–25) so the
- * common case still runs fully in parallel; the cap only kicks in for
- * heavy workloads where it provides real protection.
- *
- * If a future operator runs hundreds of symbols and the cap becomes the
- * bottleneck, expose this as a setting — but don't remove the cap.
- *
- * MEMORY: raised 6 → 8 for 20-symbol runs. Each symbol's strategy pass builds a
- * large in-memory Set graph (Base→Main→Real). The CoordIndex optimisation (slim
- * SetCoordRecord scalars vs full StrategySet clones) significantly reduced per-symbol
- * peak allocation. At 20 symbols with 6144 MB dev heap we drop to 5 concurrent
- * to keep peak live Set-graph allocation below the eviction trigger threshold.
- * Node is single-threaded — tighter concurrency yields to GC between symbols.
- * At 20 symbols: 3 concurrent means each batch of 3 completes, yields the
- * event loop (letting the 4s eviction interval fire), then starts the next 3.
- * 5 concurrent keeps the event loop blocked long enough that the eviction
- * setInterval callback cannot fire between batches.
- *
- * DEV NOTE: Scales with V0_DEV_SYMBOL_COUNT. With 1 symbol it stays 1;
- * with 10 symbols it rises to min(3, ceil(N/4)) so at most 3 symbols
- * are processed in parallel even in dev, keeping in-flight StrategySet
- * count manageable (3 × MAIN_AXIS_SETS_CEILING per cycle peak).
+ * Main realtime symbol work overlaps Redis/market-data waits with a small,
+ * ordered worker pool. Base→Main→Real creates a large in-memory graph and is
+ * CPU-heavy in single-threaded Node, so wider fan-out increases RSS and tail
+ * latency instead of throughput. Default two gives useful I/O overlap; memory
+ * pressure automatically contracts it to one. Operators with larger workers
+ * can tune ENGINE_SYMBOL_CONCURRENCY/REALTIME_SYMBOL_CONCURRENCY up to four.
  */
-const _devSymCount = process.env.NODE_ENV === "development"
-  ? Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "4", 10) || 4)
-  : 0
-// For 8 symbols with concurrency=1: symbols run sequentially, one at a time.
-// Phase3 (strategy evaluation) is CPU-heavy — 3800+ sets per symbol takes
-// 50-90s in single-threaded Node. Running 2 in parallel splits CPU 50/50,
-// causing both to exceed the 90s timeout. Sequential execution (concurrency=1)
-// eliminates contention: each symbol gets full CPU and completes in 40-70s.
-// Process one symbol at a time. Concurrent processing was causing RSS to
-// spike to 5.2 GB (above the EMERGENCY threshold) when two BTCUSDT cycles
-// ran simultaneously, triggering MemGuard pauses that stalled BingX requests
-// and caused the 120s cycle deadline to fire. Sequential processing keeps
-// peak RSS ~1 GB lower with negligible throughput impact on 4 symbols.
-const SYMBOL_CONCURRENCY = 1
+function getSymbolConcurrency(symbolCount: number): number {
+  const configured = concurrencyFromEnv(
+    ["ENGINE_SYMBOL_CONCURRENCY", "REALTIME_SYMBOL_CONCURRENCY"],
+    2,
+    4,
+    symbolCount,
+  )
+  try {
+    const limits = (globalThis as any).__redis_mem_limits as { rssSoftMB?: number } | undefined
+    const softLimit = Number(limits?.rssSoftMB)
+    const rssMB = process.memoryUsage().rss / 1024 / 1024
+    if (Number.isFinite(softLimit) && softLimit > 0 && rssMB >= softLimit * 0.9) return 1
+  } catch { /* keep configured concurrency */ }
+  return configured
+}
+
+function getReplaySymbolConcurrency(symbolCount: number): number {
+  return concurrencyFromEnv(
+    ["PREHISTORIC_REPLAY_SYMBOL_CONCURRENCY"],
+    1,
+    2,
+    symbolCount,
+  )
+}
 
 // ── Lazy-import helpers for LivePositions hot path ───────────────────
 // `await import()` at 200 ms cadence costs ~1 ms each (module resolution
@@ -438,56 +419,6 @@ function withCycleDeadline<T>(work: Promise<T>, label: string, ms: number = CYCL
       },
     )
   })
-}
-
-/**
- * Run `task(item)` for each item with at most `concurrency` tasks
- * in flight at a time. Preserves input order in the result array
- * (so callers using `for (let i...)` indexing into both `symbols`
- * and the result array remain correct).
- *
- * Failures inside `task` should be caught by the task itself and
- * mapped to a sentinel value — this helper does NOT swallow rejections,
- * because losing track of an erroring symbol is exactly the bug we're
- * fixing. The existing call sites already wrap with `.catch(...)`.
- */
-async function mapWithConcurrency<TIn, TOut>(
-  items: readonly TIn[],
-  concurrency: number,
-  task: (item: TIn, index: number) => Promise<TOut>,
-): Promise<TOut[]> {
-  if (items.length === 0) return []
-  // Fast path: when the list fits inside the cap there's no benefit to
-  // the worker-pool overhead — defer to plain Promise.all.
-  if (items.length <= concurrency) {
-    return Promise.all(items.map((item, index) => task(item, index)))
-  }
-
-  const results = new Array<TOut>(items.length)
-  let nextIndex = 0
-  // Worker draining a shared cursor. Each worker pulls the next index,
-  // awaits the task, stores the result at the original position, and
-  // loops until the cursor is exhausted. This is the classic
-  // bounded-parallelism pattern (no third-party dependency, no Symbol
-  // iterator overhead, deterministic ordering).
-  const worker = async (): Promise<void> => {
-    while (true) {
-      const i = nextIndex++
-      if (i >= items.length) return
-      results[i] = await task(items[i], i)
-      // Yield to the event loop after each task so GC and setInterval callbacks
-      // (eviction, GC trigger) have a guaranteed chance to run between symbols.
-      // Without this yield, tight synchronous computation inside async tasks can
-      // block the event loop for seconds, preventing the 4s eviction timer from
-      // firing and causing InlineLocalRedis heap to grow unchecked.
-      await new Promise<void>((resolve) => setImmediate(resolve))
-    }
-  }
-  const workers: Promise<void>[] = []
-  const poolSize = Math.min(concurrency, items.length)
-  for (let i = 0; i < poolSize; i++) workers.push(worker())
-  await Promise.all(workers)
-  return results
 }
 
 export interface EngineConfig {
@@ -2151,7 +2082,7 @@ export class TradeEngineManager {
         await prefetchMarketDataBatch(symbols).catch(() => { /* non-critical */ })
 
         // Process indications for every symbol in parallel — but with a
-        // hard concurrency cap (`SYMBOL_CONCURRENCY`) so dense watchlists
+        // memory-aware concurrency cap so dense watchlists
         // don't saturate the Redis pipeline or starve the event loop.
         // Wrapped in `withCycleDeadline` so a single hung await inside
         // any `processIndication` call (Redis stall / network black-hole)
@@ -2185,7 +2116,7 @@ export class TradeEngineManager {
           realtime: this.realtimeProcessor,
         }
         const pipelineResults = await withCycleDeadline(
-          mapWithConcurrency(symbols, SYMBOL_CONCURRENCY, (symbol) =>
+          mapWithConcurrency(symbols, getSymbolConcurrency(symbols.length), (symbol) =>
             runIndStratCycle(this.connectionId, symbol, "realtime", pipelineDeps).catch(async (err) => {
               const msg = err instanceof Error ? err.message : String(err)
               console.error(`[v0] [RealtimeProgression] Error for ${symbol}:`, msg)
@@ -2663,7 +2594,7 @@ export class TradeEngineManager {
         // top of this file. Guards against a single hung
         // `processStrategy(symbol)` blocking the entire strategy loop.
         // Bounded fan-out (`mapWithConcurrency`) caps in-flight tasks at
-        // SYMBOL_CONCURRENCY so dense watchlists don't saturate Redis or
+        // the memory-aware symbol limit so dense watchlists don't saturate Redis or
         // stall the event loop.
         //
         // Per-symbol errors are now tracked (previously silently
@@ -2672,7 +2603,7 @@ export class TradeEngineManager {
         // operator can see a chronic per-symbol breakage.
         const strategyFailedSymbols: { symbol: string; error: string }[] = []
         const strategyResults = await withCycleDeadline(
-          mapWithConcurrency(symbols, SYMBOL_CONCURRENCY, (symbol) =>
+          mapWithConcurrency(symbols, getSymbolConcurrency(symbols.length), (symbol) =>
             this.strategyProcessor.processStrategy(symbol).catch((err) => {
               const msg = err instanceof Error ? err.message : String(err)
               strategyFailedSymbols.push({ symbol, error: msg })
@@ -3321,7 +3252,7 @@ export class TradeEngineManager {
    * Each cycle:
    *   1. Compute the look-back window from `prehistoric_range_hours`
    *      (default 8 h; bounds 1–50 h).
-   *   2. For each symbol (concurrency-capped at `SYMBOL_CONCURRENCY`):
+   *   2. For each symbol (bounded, ordered worker pool):
    *        runIndStratCycle(symbol, "historical", { window })
    *   3. After the first complete pass, set
    *        prehistoric:{connId}:done = 1                  (back-compat)
@@ -3606,13 +3537,12 @@ export class TradeEngineManager {
         // to keep peak prehistoric-replay heap below the 1200 MB eviction floor.
         // 4 GB VM: run one symbol at a time in dev to prevent concurrent
         // axis fan-out from spiking RSS past the kernel OOM threshold.
-        // Replay concurrency: sequential (1) in both dev and prod to avoid
-        // CPU contention that splits cores and causes cycle deadline misses.
-        // The old prod value of 2 split CPU 50/50, causing both tasks to exceed
-        // the cycle deadline — exactly the "stuck pipeline" symptom.
-        const REPLAY_CONCURRENCY = 1
+        // Replay defaults to one because every task runs the full CPU-heavy
+        // Base→Main→Real graph for up to 30 candles. Large workers can opt into
+        // two; the shared ordered pool still prevents unbounded fan-out.
+        const replayConcurrency = getReplaySymbolConcurrency(symbols.length)
         const results = await withCycleDeadline(
-          mapWithConcurrency(symbols, REPLAY_CONCURRENCY, replayOneSymbol),
+          mapWithConcurrency(symbols, replayConcurrency, replayOneSymbol),
           `Engine ${connId} prehistoric-progression`,
           timeoutMs,
         )
@@ -3939,7 +3869,7 @@ export class TradeEngineManager {
         // ── DEV / LOCAL-PROD SYMBOL CAP ───────────────────────────────────
         // In development the InlineLocalRedis emulator holds ALL state on the
         // Node.js heap, so symbol count directly controls peak RSS. The cap
-        // is controlled by V0_DEV_SYMBOL_COUNT (env var, default "1") so it
+        // is controlled by V0_DEV_SYMBOL_COUNT (env var, default "4") so it
         // can be raised to 10+ on a larger-RAM VM without touching code.
         //
         // ALSO applied when running `next start` locally (NODE_ENV=production
@@ -4149,7 +4079,7 @@ export class TradeEngineManager {
           strategy: this.strategyProcessor,
           realtime: this.realtimeProcessor,
         }
-        await mapWithConcurrency(symbols, SYMBOL_CONCURRENCY, (symbol) =>
+        await mapWithConcurrency(symbols, getSymbolConcurrency(symbols.length), (symbol) =>
           runIndStratCycle(this.connectionId, symbol, "realtime", pipelineDeps).catch((err) => {
             console.warn(
               `[v0] [Engine ${this.connectionId}] immediate strategy re-evaluation failed for ${symbol}:`,

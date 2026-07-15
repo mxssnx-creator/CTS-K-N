@@ -9,6 +9,7 @@
  */
 
 import { NextResponse } from "next/server"
+import { authorizeCronRequest, createInternalCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
@@ -16,24 +17,14 @@ export const revalidate = 0
 export const fetchCache = "force-no-store"
 
 export async function GET(request: Request) {
+  const auth = authorizeCronRequest(request)
+  if (!auth.ok) return cronAuthorizationResponse(auth)
+
   try {
-    const baseUrl = process.env.NEXTAUTH_URL || 
-                   process.env.NEXT_PUBLIC_APP_URL || 
-                   `http://localhost:${process.env.PORT || "3000"}`
-
-    // Call the internal cron endpoint
-    const response = await fetch(
-      `${baseUrl}/api/cron/generate-indications`,
-      {
-        method: "GET",
-        cache: "no-store",
-        headers: {
-          "x-cron-source": "schedule-indications",
-          "x-timestamp": Date.now().toString(),
-        },
-      }
-    )
-
+    // Execute the shared route handler directly. HTTP self-fetches can deadlock
+    // a single-worker dev/preview server and add needless network overhead.
+    const mod = await import("@/app/api/cron/generate-indications/route")
+    const response = await mod.GET(createInternalCronRequest("/api/cron/generate-indications"))
     const data = await response.json()
 
     return NextResponse.json(

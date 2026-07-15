@@ -7,11 +7,13 @@
  * is process-scoped and idempotent so the trade-engine/cron path remains active
  * for long-lived production (`next start`, Docker, PM2, VPS) and dev servers.
  *
- * Vercel/serverless note: serverless functions cannot guarantee durable
- * in-process timers after the request returns. On Vercel the repo's
- * `vercel.json` crons are the durable production fallback. Set
- * DISABLE_IN_PROCESS_CONTINUITY=1 to opt out in long-lived Node deployments.
+ * Serverless note: functions cannot guarantee durable in-process timers after
+ * the request returns. Use the repository's portable minute scheduler (or a
+ * platform cron trigger) there. Set DISABLE_IN_PROCESS_CONTINUITY=1 to opt out
+ * in long-lived Node deployments.
  */
+
+import { createInternalCronRequest } from "@/lib/cron-auth"
 
 type ContinuityGlobal = typeof globalThis & {
   __cts_continuity_runner?: {
@@ -19,11 +21,13 @@ type ContinuityGlobal = typeof globalThis & {
     indicationInFlight: boolean
     autoStartInFlight: boolean
     liveRecoveryInFlight: boolean
+    minuteTimer?: ReturnType<typeof setInterval>
     liveRecoveryTimer?: ReturnType<typeof setInterval>
   }
 }
 
 const g = globalThis as ContinuityGlobal
+export const CONTINUITY_MINUTE_INTERVAL_MS = 60_000
 const LIVE_RECOVERY_INTERVAL_MS = 15_000
 
 function shouldSkipInProcessTimers(): boolean {
@@ -44,7 +48,7 @@ export async function enqueueContinuityIndicationJob(): Promise<void> {
     const { publishEngineEvent } = await import("@/lib/engine-event-bus")
     await publishEngineEvent("engine.intent.changed", { intent: "continuity.generate-indications", reason: "in-process-runner", timestamp: new Date().toISOString() })
     const mod = await import("@/app/api/cron/generate-indications/route")
-    await mod.GET()
+    await mod.GET(createInternalCronRequest("/api/cron/generate-indications"))
   } catch (err) {
     console.warn(
       "[v0] [Continuity] indication tick failed:",
@@ -58,12 +62,13 @@ export async function enqueueContinuityIndicationJob(): Promise<void> {
 export async function enqueueContinuityAutoStartJob(): Promise<void> {
   const state = g.__cts_continuity_runner
   if (!state || state.autoStartInFlight) return
+  if (process.env.DISABLE_TRADE_ENGINE_AUTOSTART === "1") return
   state.autoStartInFlight = true
   try {
     const { publishEngineEvent } = await import("@/lib/engine-event-bus")
     await publishEngineEvent("engine.intent.changed", { intent: "continuity.autostart", reason: "in-process-runner", timestamp: new Date().toISOString() })
-    const { initializeTradeEngineAutoStart } = await import("@/lib/trade-engine-auto-start")
-    await initializeTradeEngineAutoStart()
+    const { runTradeEngineHealingSweep } = await import("@/lib/trade-engine-auto-start")
+    await runTradeEngineHealingSweep({ isStartup: false })
   } catch (err) {
     console.warn(
       "[v0] [Continuity] auto-start monitor tick failed:",
@@ -91,6 +96,14 @@ export async function enqueueContinuityLiveRecoveryJob(): Promise<void> {
   }
 }
 
+/** One portable minute tick for indication generation and intent healing. */
+export async function enqueueContinuityMinuteJob(): Promise<void> {
+  await Promise.all([
+    enqueueContinuityAutoStartJob(),
+    enqueueContinuityIndicationJob(),
+  ])
+}
+
 export function isServerContinuityRunnerStarted(): boolean {
   return !!g.__cts_continuity_runner?.started
 }
@@ -114,17 +127,20 @@ export function startServerContinuityRunner(): void {
     return
   }
 
-  // Enqueue one idempotent event job on startup. External cron remains the durable
-  // scheduler; the in-process runner no longer owns continuous local intervals.
-  void enqueueContinuityAutoStartJob()
-  void enqueueContinuityIndicationJob()
+  // Run once immediately, then continuously once per minute. Individual job
+  // guards prevent overlap if a slow cycle reaches the next interval.
+  void enqueueContinuityMinuteJob()
   void enqueueContinuityLiveRecoveryJob()
+  state.minuteTimer = setInterval(() => {
+    void enqueueContinuityMinuteJob()
+  }, CONTINUITY_MINUTE_INTERVAL_MS)
+  state.minuteTimer.unref?.()
   state.liveRecoveryTimer = setInterval(() => {
     void enqueueContinuityLiveRecoveryJob()
   }, LIVE_RECOVERY_INTERVAL_MS)
   state.liveRecoveryTimer.unref?.()
 
-  console.log("[v0] [Continuity] Server runner enqueued startup continuity jobs; external cron remains scheduler")
+  console.log("[v0] [Continuity] Server runner active (minute coordination + 15s live recovery)")
 }
 
 export function stopServerContinuityRunner(): void {
@@ -134,6 +150,8 @@ export function stopServerContinuityRunner(): void {
   state.indicationInFlight = false
   state.autoStartInFlight = false
   state.liveRecoveryInFlight = false
+  if (state.minuteTimer) clearInterval(state.minuteTimer)
   if (state.liveRecoveryTimer) clearInterval(state.liveRecoveryTimer)
+  state.minuteTimer = undefined
   state.liveRecoveryTimer = undefined
 }

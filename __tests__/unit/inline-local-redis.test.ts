@@ -159,6 +159,25 @@ describe("InlineLocalRedis compatibility and persistence", () => {
     }
   })
 
+  it("writes the synchronous production shutdown snapshot without global require", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "inline-redis-sync-"))
+    const snapshotPath = join(dir, "redis-snapshot.json")
+    process.env.V0_REDIS_SNAPSHOT_PATH = snapshotPath
+
+    try {
+      const writer = new InlineLocalRedis()
+      await writer.set("shutdown:persist", "stable")
+      expect(writer.saveToDiskSync()).toBe(true)
+
+      resetInlineGlobals()
+      const reader = new InlineLocalRedis()
+      await expect(reader.loadFromDisk()).resolves.toBe(true)
+      await expect(reader.get("shutdown:persist")).resolves.toBe("stable")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it("keeps sorted sets ordered while updating duplicate members and slicing score ranges", async () => {
     const redis = new InlineLocalRedis()
 

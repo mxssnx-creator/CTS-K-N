@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { runTradeEngineHealingSweep } from "@/lib/trade-engine-auto-start"
 import { startServerContinuityRunner } from "@/lib/server-continuity-runner"
+import { authorizeCronRequest, createInternalCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -44,7 +45,10 @@ async function runCronTask(
  * This cron endpoint is the deployment-level heartbeat that re-arms Redis,
  * migrations, and the trade-engine auto-start monitor once per minute.
  */
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = authorizeCronRequest(request)
+  if (!auth.ok) return cronAuthorizationResponse(auth)
+
   const startedAt = Date.now()
   const token = `continuity_${startedAt}_${Math.random().toString(36).slice(2, 10)}`
 
@@ -62,7 +66,7 @@ export async function GET() {
       // single cron invocation runs the durable heartbeat tasks directly.
       //
       // NOTE: live-position sync is intentionally NOT run here. It has its OWN
-      // dedicated Vercel cron (`/api/cron/sync-live-positions`, see vercel.json)
+      // dedicated portable scheduler call (`/api/cron/sync-live-positions`)
       // because that route self-loops 4 sweeps over a ~55 s wall budget for a
       // ~15 s effective reconcile cadence — the operator's "keep actively
       // processing until positions close" requirement. Running it here as a
@@ -78,7 +82,7 @@ export async function GET() {
         runCronTask("auto-start-healing-sweep", () => runTradeEngineHealingSweep({ isStartup: true })),
         runCronTask("generate-indications", async () => {
           const mod = await import("@/app/api/cron/generate-indications/route")
-          return mod.GET()
+          return mod.GET(createInternalCronRequest("/api/cron/generate-indications"))
         }),
       ])
       const failedTasks = tasks.filter((task) => !task.ok)
@@ -105,6 +109,6 @@ export async function GET() {
   }
 }
 
-export async function POST() {
-  return GET()
+export async function POST(request: Request) {
+  return GET(request)
 }

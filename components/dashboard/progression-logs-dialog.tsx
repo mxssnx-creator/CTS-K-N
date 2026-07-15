@@ -558,27 +558,22 @@ export function ProgressionLogsDialog({
                   </div>
                 </div>
 
-                {/* Strategies by stage — from /stats breakdown.strategies
-                    Base → Main → Real → Live is a CASCADE FILTER (eval → filter
-                    → adjust). Each stage counts the SAME logical strategy as it
-                    survives the previous filter. The header "Total" shows the
-                    Real-stage output only (the canonical strategy count) —
-                    never Base+Main+Real summed. */}
+                {/* Strategies by stage — Main includes independently tracked
+                    axis/variant descendants of Base. Outputs are related but
+                    not additive; the header uses final Real-stage output. */}
                 <div className="rounded-lg border p-4 space-y-3">
                   <div className="flex items-center gap-2">
                     <Zap className="w-4 h-4 text-amber-500" />
                     <h3 className="font-semibold">Strategies — Pipeline Stages</h3>
                     {/*
-                      Header shows alive Sets across the active stages
-                      (Base + Main + Real, summed by the engine writer
-                      itself — NOT a UI sum) versus the cumulative
-                      Real-stage output. Same paired layout as the
-                      Indications header above.
+                      Header shows current Real-stage output versus the
+                      cumulative Real-stage output. Per-stage materialised
+                      counts remain visible below.
                     */}
                     <span
                       className="ml-auto text-xs flex items-center gap-1.5"
                       title={
-                        `Active Sets across stages right now: ${fmt(activeStrategies.total)}\n` +
+                        `Active Real-stage output right now: ${fmt(activeStrategies.total)}\n` +
                         `Per-stage alive: B=${fmt(activeStrategies.base)} M=${fmt(activeStrategies.main)} R=${fmt(activeStrategies.real)}\n` +
                         `Cumulative final-stage (Real) Sets since run start: ${fmt(bd?.strategies.total || rt?.strategiesTotal || 0)}`
                       }
@@ -594,8 +589,8 @@ export function ProgressionLogsDialog({
                     </span>
                   </div>
                   <p className="text-[10px] text-muted-foreground -mt-1">
-                    Cascade filter: Base → Main → Real → Live. Stages are NOT added together —
-                    each value is the count of the SAME strategies that survived the previous filter.
+                    Coordinated pipeline: Main can expand Base into related position-axis/variant Sets;
+                    Real filters and adjusts that pool. Stage outputs are not added together.
                   </p>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center text-xs">
                     {[
@@ -609,7 +604,7 @@ export function ProgressionLogsDialog({
                         <div className={`text-xl font-bold tabular-nums ${cls}`}>{fmt(value)}</div>
                         <div className="text-muted-foreground">{label}</div>
                         {evaluated > 0 && (
-                          <div className="text-[10px] text-muted-foreground mt-0.5">{fmt(evaluated)} passed</div>
+                          <div className="text-[10px] text-muted-foreground mt-0.5">{fmt(evaluated)} evaluated</div>
                         )}
                       </div>
                     ))}

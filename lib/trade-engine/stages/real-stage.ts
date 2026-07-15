@@ -7,6 +7,7 @@
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { getMaxLeverageForExchange } from "@/lib/leverage-policy"
 import type { MainPosition } from "./main-stage"
+import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 const LOG_PREFIX = "[v0] [RealPositionStage]"
 
@@ -115,7 +116,10 @@ export async function evaluateToRealPositions(
   )
 
   try {
-    for (const mainPos of mainPositions) {
+    const evaluated = await mapWithConcurrency(
+      mainPositions,
+      concurrencyFromEnv(["REAL_POSITION_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"], 4, 8, mainPositions.length),
+      async (mainPos): Promise<RealPosition | null> => {
       // Check ratio criteria
       const profitRatio = calculateProfitabilityRatio(mainPos)
       // accountRisk: dimensionless fraction (0–1) of account balance at risk
@@ -184,23 +188,30 @@ export async function evaluateToRealPositions(
           mainPos as any // mainPos may have setKey/setVariant/sizeMultiplier fields
         )
 
-        realPositions.push(realPosition)
-
         // Store real position
         const key = `real:position:${realPosition.id}`
-        await client.setex(key, 604800, JSON.stringify(realPosition))
-        await client.sadd(`real:positions:index:${connectionId}`, realPosition.id)
-        await client.expire(`real:positions:index:${connectionId}`, 604800)
+        const indexKey = `real:positions:index:${connectionId}`
+        await Promise.all([
+          client.setex(key, 604800, JSON.stringify(realPosition)),
+          (async () => {
+            await client.sadd(indexKey, realPosition.id)
+            await client.expire(indexKey, 604800)
+          })(),
+        ])
 
         console.log(
           `${LOG_PREFIX} ✓ APPROVED: ${mainPos.symbol} ${mainPos.direction} (score: ${evaluationScore.toFixed(2)})`
         )
+        return realPosition
       } else {
         console.log(
           `${LOG_PREFIX} ✗ REJECTED: ${mainPos.symbol} ${mainPos.direction} (score: ${evaluationScore.toFixed(2)}, ratios: ${ratiosMet})`
         )
+        return null
       }
-    }
+      },
+    )
+    for (const position of evaluated) if (position) realPositions.push(position)
 
     console.log(
       `${LOG_PREFIX} Created ${realPositions.length} real trading positions from ${mainPositions.length} main positions`

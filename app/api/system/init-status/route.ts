@@ -84,14 +84,24 @@ export async function GET(request: NextRequest) {
     // Get actual key count directly (most reliable)
     const { getRedisClient } = await import("@/lib/redis-db")
     const client = getRedisClient()
-    const [startupHash, startupCompletedAtKey] = await Promise.all([
+    const [startupHash, startupCompletedAtKey, durableSiteId, siteHash] = await Promise.all([
       client.hgetall("system:startup").catch(() => ({} as Record<string, string>)),
       client.get("system:startup:completed_at").catch(() => null),
+      client.get("site:unique_instance:id").catch(() => null),
+      client.hgetall("site:unique_instance").catch(() => ({} as Record<string, string>)),
     ])
+    const startupStatus = String((startupHash as Record<string, string>)?.status || "")
     const instrumentationBootCompletedAt =
       (startupHash as Record<string, string>)?.instrumentation_boot_completed_at ||
       (startupHash as Record<string, string>)?.completed_at ||
       (typeof startupCompletedAtKey === "string" ? startupCompletedAtKey : null)
+    const startupCompleted = startupStatus
+      ? startupStatus === "ready"
+      : Boolean(instrumentationBootCompletedAt)
+    const siteInstanceId =
+      (typeof durableSiteId === "string" ? durableSiteId : null) ||
+      (siteHash as Record<string, string>)?.site_session_id ||
+      null
     const allKeys = await client.keys("*").catch(() => [])
     const actualKeyCount = Array.isArray(allKeys) ? allKeys.length : 0
 
@@ -123,14 +133,21 @@ export async function GET(request: NextRequest) {
 
     const initialized =
       connected && migrationStatus.currentVersion === migrationStatus.latestVersion
-    const ready = initialized && connectionsCount > 0
+    const ready = initialized && connectionsCount > 0 && startupCompleted
+    const responseStatus = ready ? "ready" : startupStatus === "error" ? "error" : "initializing"
 
     return NextResponse.json(
       {
-        status: initialized ? "ready" : "initializing",
+        status: responseStatus,
         initialized,
         ready,
-        message: initialized ? "System ready" : "Migrations in progress",
+        message: ready
+          ? "System ready"
+          : startupStatus === "error"
+            ? "Critical startup failed"
+            : initialized
+              ? "Startup coordination in progress"
+              : "Migrations in progress",
         database: {
           type: "redis",
           connected,
@@ -153,11 +170,16 @@ export async function GET(request: NextRequest) {
         system: {
           version: "3.2",
           environment: process.env.NODE_ENV || "development",
+          site_instance_id: siteInstanceId,
           timestamp: new Date().toISOString(),
           startup: {
-            completed: Boolean(instrumentationBootCompletedAt),
+            completed: startupCompleted,
+            status: startupStatus || (startupCompleted ? "ready" : "unknown"),
             completed_at: instrumentationBootCompletedAt,
             instrumentationBootCompletedAt,
+            boot_id: (startupHash as Record<string, string>)?.boot_id || null,
+            scheduler_mode: (startupHash as Record<string, string>)?.scheduler_mode || null,
+            last_error: (startupHash as Record<string, string>)?.last_error || null,
             redis_key: "system:startup:completed_at",
           },
         },

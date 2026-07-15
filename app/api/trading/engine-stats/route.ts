@@ -158,8 +158,8 @@ export async function GET(req: Request) {
 
     // ── 5. Build response ────────────────────────────────────────────────────────
     // Canonical "total strategies" = REAL-stage count (the final filtered output).
-    // Base → Main → Real → Live is a cascade filter (eval → filter → adjust → promote).
-    // Stages share the SAME logical strategy — summing them would multi-count.
+    // Main derives related axis/variant Sets from Base; Real is the final
+    // evaluated output. Summing stages mixes parent and derived populations.
     // Live is a runtime subset of Real, also not part of the canonical total.
     const totalStrategySets = realSetCount
 

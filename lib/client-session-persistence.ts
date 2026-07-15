@@ -1,16 +1,19 @@
 /**
  * Client-side Session Persistence
  * Maintains UI state, navigation, and user progress across page refreshes
- * Data is stored in sessionStorage (not localStorage) so it persists during a session
- * but clears when the browser tab closes for a fresh start if needed
+ * Durable UI preferences are stored in localStorage so reloads, closed tabs,
+ * and long gaps do not create a new apparent site/session. Canonical engine
+ * state still comes from Redis; this cache only avoids UI resets while the
+ * first fresh API response is loading.
  */
 
 const SESSION_STORAGE_KEY = "cts-v-session-state"
-const SESSION_VERSION = "1.0"
+const SESSION_VERSION = "2.0"
 
 export interface SessionState {
   version: string
   timestamp: number
+  clientSessionId: string
   // Navigation state
   currentPage: string
   navigationHistory: string[]
@@ -28,8 +31,33 @@ export interface SessionState {
   userPreferences?: Record<string, any>
 }
 
+function createClientSessionId(): string {
+  try {
+    const uuid = globalThis.crypto?.randomUUID?.()
+    if (uuid) return `client_${uuid}`
+  } catch {}
+  return `client_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`
+}
+
+function normalizeSessionState(value: unknown): SessionState | null {
+  if (!value || typeof value !== "object") return null
+  const raw = value as Partial<SessionState>
+  const defaults = getDefaultSessionState()
+  return {
+    ...defaults,
+    ...raw,
+    version: SESSION_VERSION,
+    timestamp: Number.isFinite(Number(raw.timestamp)) ? Number(raw.timestamp) : Date.now(),
+    clientSessionId: String(raw.clientSessionId || defaults.clientSessionId),
+    currentPage: typeof raw.currentPage === "string" ? raw.currentPage : defaults.currentPage,
+    navigationHistory: Array.isArray(raw.navigationHistory)
+      ? raw.navigationHistory.filter((item): item is string => typeof item === "string").slice(-20)
+      : defaults.navigationHistory,
+  }
+}
+
 /**
- * Save session state to sessionStorage
+ * Save durable client UI state.
  */
 export function saveSessionState(state: Partial<SessionState>): void {
   try {
@@ -42,32 +70,44 @@ export function saveSessionState(state: Partial<SessionState>): void {
       timestamp: Date.now(),
     }
 
-    sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(mergedState))
-    console.log("[v0] Session state saved:", { keys: Object.keys(mergedState) })
+    const serialized = JSON.stringify(mergedState)
+    try {
+      localStorage.setItem(SESSION_STORAGE_KEY, serialized)
+    } catch {
+      sessionStorage.setItem(SESSION_STORAGE_KEY, serialized)
+    }
   } catch (error) {
     console.error("[v0] Error saving session state:", error)
   }
 }
 
 /**
- * Load session state from sessionStorage
+ * Load durable state, migrating the legacy tab-scoped v1 payload once.
  */
 export function getSessionState(): SessionState | null {
+  if (typeof window === "undefined") return null
+
   try {
-    if (typeof window === "undefined") return null // Server-side
+    const durable = localStorage.getItem(SESSION_STORAGE_KEY)
+    if (durable) return normalizeSessionState(JSON.parse(durable))
+  } catch {
+    // Fall through to the tab-scoped compatibility store.
+  }
 
-    const stored = sessionStorage.getItem(SESSION_STORAGE_KEY)
-    if (!stored) return null
-
-    const parsed = JSON.parse(stored) as SessionState
-
-    // Validate version and age (24 hours max)
-    if (parsed.version !== SESSION_VERSION) return null
-    if (Date.now() - parsed.timestamp > 24 * 60 * 60 * 1000) return null
-
-    return parsed
-  } catch (error) {
-    console.error("[v0] Error loading session state:", error)
+  try {
+    const legacy = sessionStorage.getItem(SESSION_STORAGE_KEY)
+    if (!legacy) return null
+    const migrated = normalizeSessionState(JSON.parse(legacy))
+    if (migrated) {
+      try {
+        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(migrated))
+        sessionStorage.removeItem(SESSION_STORAGE_KEY)
+      } catch {
+        // localStorage may be unavailable in a restricted browser context.
+      }
+    }
+    return migrated
+  } catch {
     return null
   }
 }
@@ -79,6 +119,7 @@ export function getDefaultSessionState(): SessionState {
   return {
     version: SESSION_VERSION,
     timestamp: Date.now(),
+    clientSessionId: createClientSessionId(),
     currentPage: "/",
     navigationHistory: ["/"],
     sidebarCollapsed: false,
@@ -186,7 +227,7 @@ export function clearSessionState(): void {
   try {
     if (typeof window !== "undefined") {
       sessionStorage.removeItem(SESSION_STORAGE_KEY)
-      console.log("[v0] Session state cleared")
+      localStorage.removeItem(SESSION_STORAGE_KEY)
     }
   } catch (error) {
     console.error("[v0] Error clearing session state:", error)

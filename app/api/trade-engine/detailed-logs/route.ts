@@ -581,8 +581,8 @@ export async function GET(request: Request) {
       },
       configsProcessed: perConnection.reduce((sum, item) => sum + item.prehistoric.indicationResults + item.prehistoric.strategyPositions, 0),
       // `evalsCompleted` = canonical strategies-evaluated count = Real-stage output.
-      // Base and Main are upstream filter stages in the SAME pipeline; summing
-      // them would triple-count the same logical strategies.
+      // Base and Main contain parent/derived pipeline populations; summing them
+      // would mix upstream work with the final evaluated output.
       evalsCompleted: aggregatedStrategyCounts.real,
       avgCycleDuration,
       lastUpdate: new Date().toISOString(),

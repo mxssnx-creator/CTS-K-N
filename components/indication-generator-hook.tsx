@@ -201,6 +201,13 @@ export function useIndicationGenerator(enabled: boolean = true, intervalMs: numb
  * Component version that can be dropped into any page.
  */
 export function IndicationGeneratorProvider({ children }: { children?: React.ReactNode }) {
-  useIndicationGenerator(true, 3000)
+  // Production progress is server-owned (engine + portable minute scheduler),
+  // so closing/reloading the dashboard cannot pause it and browsers do not need
+  // access to protected cron endpoints. Keep the legacy browser heartbeat only
+  // for local development or an explicit diagnostic opt-in.
+  const browserHeartbeatEnabled =
+    process.env.NODE_ENV !== "production" ||
+    process.env.NEXT_PUBLIC_ENABLE_BROWSER_INDICATION_CRON === "1"
+  useIndicationGenerator(browserHeartbeatEnabled, 3000)
   return <>{children}</>
 }

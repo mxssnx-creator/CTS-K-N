@@ -1,3 +1,9 @@
+import {
+  ensureUniqueSiteInstanceWithClient,
+  GLOBAL_SITE_INSTANCE_KEY,
+  GLOBAL_SITE_INSTANCE_ID_KEY,
+} from "./site-instance"
+
 /**
  * Redis Database Layer - High Performance Edition v3.0
  * In-memory Redis client for Next.js runtime
@@ -408,15 +414,20 @@ export class InlineLocalRedis implements RedisClientLike {
     // could re-enter the bundler graph.
     let fsSync: typeof import("fs"), pathMod: typeof import("path")
     try {
-      // require() is fine here because this method only ever runs in Node.
-      // We use dynamic require via Function to bypass static-bundler analysis.
-      const dynamicRequire = Function("m", "return require(m)") as (m: string) => any
-      // Bare specifiers — Node maps these to the built-ins identically
-      // to the `node:` URI form. Avoiding the URI form here keeps the
-      // request strings out of any chunk the bundler might still scan
-      // (defence in depth — `Function(...)` already hides them).
-      fsSync = dynamicRequire("fs")
-      pathMod = dynamicRequire("path")
+      // `Function("return require")` breaks inside a production Webpack/Next
+      // bundle because CommonJS require is module-scoped rather than global.
+      // Node's getBuiltinModule bypasses the bundle safely and is available on
+      // supported Node 20/22 runtimes. Keep the dynamic-require fallback for
+      // early Node 20 patch releases.
+      const getBuiltinModule = (process as any).getBuiltinModule as undefined | ((name: string) => any)
+      if (typeof getBuiltinModule === "function") {
+        fsSync = getBuiltinModule("fs")
+        pathMod = getBuiltinModule("path")
+      } else {
+        const dynamicRequire = Function("m", "return require(m)") as (m: string) => any
+        fsSync = dynamicRequire("fs")
+        pathMod = dynamicRequire("path")
+      }
     } catch {
       return false
     }
@@ -3890,8 +3901,6 @@ export function isProductionEnvironment(): boolean {
  * - Prevents "starting new Overall Progression / Instances" on every visit.
  * - "Just Unique" for the whole project.
  */
-const GLOBAL_SITE_INSTANCE_KEY = "site:unique_instance"
-
 export async function ensureUniqueSiteInstance(): Promise<{ siteSessionId: string; isNew: boolean }> {
   // This helper is called from production migration coverage while initRedis()
   // is already awaiting runMigrations(). Calling initRedis() again from that
@@ -3908,43 +3917,19 @@ export async function ensureUniqueSiteInstance(): Promise<{ siteSessionId: strin
     return { siteSessionId: "fallback-" + Date.now(), isNew: true }
   }
 
-  const existing = await client.hgetall(GLOBAL_SITE_INSTANCE_KEY).catch(() => null)
-
-  if (existing && existing.site_session_id) {
-    // Reuse the one and only unique site instance - just touch activity
-    await client.hset(GLOBAL_SITE_INSTANCE_KEY, {
-      last_activity: new Date().toISOString(),
-    }).catch(() => {})
-
-    return { siteSessionId: existing.site_session_id, isNew: false }
+  const result = await ensureUniqueSiteInstanceWithClient(client)
+  if (result.isNew) {
+    console.log(`[v0] [SiteInstance] Created the one unique site/project instance: ${result.siteSessionId}`)
   }
-
-  // First time ever (or after full reset) → create the single unique site instance
-  const newId = "site_" + Date.now() + "_" + Math.random().toString(36).slice(2, 12)
-  const now = new Date().toISOString()
-
-  await client.hset(GLOBAL_SITE_INSTANCE_KEY, {
-    site_session_id: newId,
-    created_at: now,
-    last_activity: now,
-    version: "1",
-  }).catch(() => {})
-
-  // Mirror into trade_engine:global so all monitoring sees the unique site instance
-  await client.hset("trade_engine:global", {
-    site_session_id: newId,
-    site_instance_created: now,
-  }).catch(() => {})
-
-  console.log(`[v0] [SiteInstance] Created the one unique site/project instance: ${newId}`)
-
-  return { siteSessionId: newId, isNew: true }
+  return { siteSessionId: result.siteSessionId, isNew: result.isNew }
 }
 
 export async function getCurrentSiteInstanceId(): Promise<string | null> {
   await initRedis()
   const client = getRedisClient()
   if (!client) return null
+  const durableId = await client.get(GLOBAL_SITE_INSTANCE_ID_KEY).catch(() => null)
+  if (durableId) return durableId
   const data = await client.hgetall(GLOBAL_SITE_INSTANCE_KEY).catch(() => null)
   return data?.site_session_id || null
 }

@@ -26,10 +26,32 @@
  *   initializeTradeEngineAutoStart() → startServerContinuityRunner()
  */
 
-// Guard against double-execution across HMR / module re-evaluation. The flag
-// lives on globalThis so it survives Next.js dev module reloads within one
-// process (register() is only meant to run once per real process start).
-const bootGuard = globalThis as unknown as { __v0_instrumentation_booted?: boolean }
+// Guard against double-execution across HMR / module re-evaluation. Failed
+// startup attempts are not cached: a long-lived Node process retries after one
+// minute, while serverless platforms naturally retry on a later invocation.
+const bootGuard = globalThis as unknown as {
+  __v0_instrumentation_booted?: boolean
+  __v0_instrumentation_boot_promise?: Promise<void> | null
+  __v0_instrumentation_retry_timer?: ReturnType<typeof setTimeout>
+}
+
+function canRetryInProcess(): boolean {
+  return !(
+    process.env.VERCEL === "1" ||
+    Boolean(process.env.VERCEL_ENV) ||
+    process.env.NEXT_RUNTIME === "edge"
+  )
+}
+
+function scheduleStartupRetry(): void {
+  if (!canRetryInProcess() || bootGuard.__v0_instrumentation_retry_timer) return
+  bootGuard.__v0_instrumentation_retry_timer = setTimeout(() => {
+    bootGuard.__v0_instrumentation_retry_timer = undefined
+    void register()
+  }, 60_000)
+  bootGuard.__v0_instrumentation_retry_timer.unref?.()
+  console.warn("[v0] [Instrumentation] critical startup will retry in 60 seconds")
+}
 
 export async function register(): Promise<void> {
   // Only skip the Edge runtime. In `next start` / OpenNext production workers
@@ -41,24 +63,39 @@ export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME === "edge") return
 
   if (bootGuard.__v0_instrumentation_booted) return
-  bootGuard.__v0_instrumentation_booted = true
+  if (bootGuard.__v0_instrumentation_boot_promise) {
+    return bootGuard.__v0_instrumentation_boot_promise
+  }
+
+  let bootPromise!: Promise<void>
+  bootPromise = runDeterministicBoot().finally(() => {
+    if (bootGuard.__v0_instrumentation_boot_promise === bootPromise) {
+      bootGuard.__v0_instrumentation_boot_promise = null
+    }
+  })
+  bootGuard.__v0_instrumentation_boot_promise = bootPromise
+  return bootPromise
+}
+
+async function runDeterministicBoot(): Promise<void> {
 
   console.log("[v0] [Instrumentation] register() — beginning deterministic server boot...")
 
-  // Each step is wrapped so a single failure cannot abort the rest of the boot
-  // (or crash the server). The pre-startup sequence is the most important part
-  // — it runs migrations and cleans orphaned state from the previous process.
+  // Migrations and startup reconciliation are critical. Never start an engine
+  // or advertise readiness when this phase failed against a partial schema.
   try {
-    const { recordStartupPhase } = await import("@/lib/startup-diagnostics")
-    await recordStartupPhase("startup_coordinator_running")
     const { completeStartup } = await import("@/lib/startup-coordinator")
     await completeStartup()
     const { recordInstrumentationRegistered } = await import("@/lib/startup-diagnostics")
-    await recordInstrumentationRegistered()
+    await recordInstrumentationRegistered().catch(() => {})
   } catch (err) {
-    const { recordStartupError } = await import("@/lib/startup-diagnostics")
-    await recordStartupError(err, "completeStartup").catch(() => {})
-    console.error("[v0] [Instrumentation] completeStartup failed (continuing):", err instanceof Error ? err.message : err)
+    await import("@/lib/startup-diagnostics")
+      .then(({ recordStartupError }) => recordStartupError(err, "completeStartup"))
+      .catch(() => {})
+    bootGuard.__v0_instrumentation_booted = false
+    console.error("[v0] [Instrumentation] critical startup failed; engines remain stopped:", err instanceof Error ? err.message : err)
+    scheduleStartupRetry()
+    return
   }
 
   // Production Node processes should be self-contained: initialize the
@@ -97,24 +134,11 @@ export async function register(): Promise<void> {
     console.warn("[v0] [Instrumentation] background in-process continuity skipped; deployment cron or UI-triggered reconciliation remains available")
   }
 
-  try {
-    const { getRedisClient } = await import("@/lib/redis-db")
-    const client = getRedisClient()
-    const completedAt = new Date().toISOString()
-    await client.hset("system:startup", {
-      completed_at: completedAt,
-      instrumentation_boot_completed_at: completedAt,
-      runtime: process.env.NEXT_RUNTIME || "nodejs",
-      node_env: process.env.NODE_ENV || "development",
-    })
-    await client.set("system:startup:completed_at", completedAt).catch(() => {})
-  } catch (err) {
-    console.error(
-      "[v0] [Instrumentation] failed to persist boot completion status (continuing):",
-      err instanceof Error ? err.message : err,
-    )
+  bootGuard.__v0_instrumentation_booted = true
+  if (bootGuard.__v0_instrumentation_retry_timer) {
+    clearTimeout(bootGuard.__v0_instrumentation_retry_timer)
+    bootGuard.__v0_instrumentation_retry_timer = undefined
   }
-
   console.log("[v0] [Instrumentation] ✓ Server boot complete")
   try {
     const { recordStartupPhase } = await import("@/lib/startup-diagnostics")

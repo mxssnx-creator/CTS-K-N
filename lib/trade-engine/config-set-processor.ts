@@ -15,6 +15,7 @@ import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSele
 import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { buildProgressionScope } from "@/lib/progression-scope"
+import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
@@ -29,28 +30,6 @@ function groupConfigsByType<T extends { type?: string }>(configs: T[]): Array<[s
     else grouped.set(type, [config])
   }
   return Array.from(grouped.entries())
-}
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  concurrency: number,
-  mapper: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  if (items.length === 0) return []
-
-  const limit = Math.max(1, Math.min(concurrency, items.length))
-  const results = new Array<R>(items.length)
-  let nextIndex = 0
-
-  const workers = Array.from({ length: limit }, async () => {
-    while (nextIndex < items.length) {
-      const index = nextIndex++
-      results[index] = await mapper(items[index], index)
-    }
-  })
-
-  await Promise.all(workers)
-  return results
 }
 
 export interface ProcessingResult {
@@ -179,20 +158,26 @@ export class ConfigSetProcessor {
     const effectiveStart = rangeStart ?? new Date(now.getTime() - 8 * 60 * 60 * 1000)
     const intervalMs = timeframeSec * 1000
 
-    // Symbol-level concurrency: process N symbols in parallel. Each symbol
-    // then fans out its enabled indication/strategy configs in parallel.
-    // Tunable via env (PREHISTORIC_SYMBOL_CONCURRENCY) — default 8.
-    const SYMBOL_CONCURRENCY = Math.max(
-      1,
-      Math.min(32, Number(process.env.PREHISTORIC_SYMBOL_CONCURRENCY) || 8)
+    // Bounded nested budgets. The former defaults (8 symbols × 8 types ×
+    // 24 configs, twice for indication+strategy) could schedule hundreds of
+    // large calculations at once. These pools still overlap independent I/O
+    // and config work, but cap outer fan-out and divide each domain's total
+    // config budget across active types.
+    const SYMBOL_CONCURRENCY = concurrencyFromEnv(
+      ["PREHISTORIC_SYMBOL_CONCURRENCY"],
+      2,
+      4,
+      symbols.length,
     )
-    const CONFIG_CONCURRENCY = Math.max(
-      1,
-      Math.min(64, Number(process.env.PREHISTORIC_CONFIG_CONCURRENCY) || 24)
+    const CONFIG_CONCURRENCY = concurrencyFromEnv(
+      ["PREHISTORIC_CONFIG_CONCURRENCY"],
+      8,
+      16,
     )
-    const CONFIG_TYPE_CONCURRENCY = Math.max(
-      1,
-      Math.min(16, Number(process.env.PREHISTORIC_CONFIG_TYPE_CONCURRENCY) || 8)
+    const CONFIG_TYPE_CONCURRENCY = concurrencyFromEnv(
+      ["PREHISTORIC_CONFIG_TYPE_CONCURRENCY"],
+      4,
+      5,
     )
 
     const initialSelection = await getCanonicalSymbolSelection(this.connectionId)
@@ -281,10 +266,10 @@ export class ConfigSetProcessor {
       `${strategyConfigs.length} strategy configs (in ${tConfigsMs}ms)`
     )
 
-    // Store range metadata for dashboard
+    // Store range/concurrency metadata for dashboard. One write is enough;
+    // the previous duplicate Promise.all issued the exact same HSET twice.
     try {
-      await Promise.all([
-        client.hset(prehistoricKey, {
+      await client.hset(prehistoricKey, {
         range_start: effectiveStart.toISOString(),
         range_end: effectiveEnd.toISOString(),
         timeframe_seconds: String(timeframeSec),
@@ -297,24 +282,12 @@ export class ConfigSetProcessor {
         indication_configs: String(indicationConfigs.length),
         strategy_configs: String(strategyConfigs.length),
         config_concurrency: String(CONFIG_CONCURRENCY),
+        candles_loaded: "0",
+        intervals_processed: "0",
+        missing_intervals: "0",
+        symbols_processed: "0",
         updated_at: new Date().toISOString(),
-        }).catch(() => 0),
-        client.hset(prehistoricKey, {
-          range_start: effectiveStart.toISOString(),
-          range_end: effectiveEnd.toISOString(),
-          timeframe_seconds: String(timeframeSec),
-          ...(ownsCurrentSelection ? {
-            symbol_selection_epoch: writerSelectionEpoch,
-            symbols_total: String(canonicalSymbolsTotal),
-          } : {}),
-          symbol_concurrency: String(SYMBOL_CONCURRENCY),
-          config_type_concurrency: String(CONFIG_TYPE_CONCURRENCY),
-          indication_configs: String(indicationConfigs.length),
-          strategy_configs: String(strategyConfigs.length),
-          config_concurrency: String(CONFIG_CONCURRENCY),
-          updated_at: new Date().toISOString(),
-        }).catch(() => 0),
-      ])
+      }).catch(() => 0)
     } catch { /* non-critical */ }
 
     const progressKey = progressionScope.progressionKey
@@ -489,11 +462,11 @@ export class ConfigSetProcessor {
           const distinctProcessed = clampProcessedToTotal(await client.scard(prehistoricSymbolsKey).catch(() => 0), canonicalSymbolsTotal)
           await Promise.all([
             hincrProgressHash("prehistoric_candles_processed", combinedCandles.length),
+            hincrProgressHash("prehistoric_intervals_processed", symbolIntervalCount),
+            hincrProgressHash("prehistoric_missing_loaded", symbolMissingCount),
             mirrorProgressHash({
               prehistoric_symbols_processed_count: String(distinctProcessed),
               prehistoric_current_symbol: symbol,
-              prehistoric_intervals_processed: String(totalIntervalsProcessed),
-              prehistoric_missing_loaded: String(missingIntervalsLoaded),
               prehistoric_timeframe_seconds: String(timeframeSec),
             }),
             client.hset(prehistoricKey, {
@@ -543,12 +516,12 @@ export class ConfigSetProcessor {
           hincrProgressHash("prehistoric_strategies_total", strategyPositions),
           client.expire(progressKey, 7 * 24 * 60 * 60),
           client.expire(prehistoricSymbolsKey, 86400),
-          client.hset(prehistoricKey, {
-            candles_loaded: String(candlesProcessed),
-            symbols_processed: String(distinctProcessed),
-            intervals_processed: String(totalIntervalsProcessed),
-            missing_intervals: String(missingIntervalsLoaded),
-          }),
+          // Shared totals must be atomic under parallel symbol workers. An
+          // absolute HSET could finish out of order and regress a newer total.
+          client.hincrby(prehistoricKey, "candles_loaded", combinedCandles.length),
+          client.hincrby(prehistoricKey, "intervals_processed", symbolIntervalCount),
+          client.hincrby(prehistoricKey, "missing_intervals", symbolMissingCount),
+          client.hset(prehistoricKey, { symbols_processed: String(distinctProcessed) }),
           // Bump the canonical `prehistoric_cycles_completed` counter and
           // mirror the processed symbols into the hash via the shared
           // ProgressionStateManager primitive. Without this call, the
@@ -644,20 +617,9 @@ export class ConfigSetProcessor {
       }
     }
 
-    // Fixed-size worker pool. We grab symbols off the queue as workers finish.
-    const queue = [...symbols]
-    const workers: Promise<void>[] = []
-    const spawnWorker = async (): Promise<void> => {
-      while (queue.length > 0) {
-        const sym = queue.shift()
-        if (!sym) break
-        await processOneSymbol(sym)
-      }
-    }
-    for (let i = 0; i < Math.min(SYMBOL_CONCURRENCY, symbols.length); i++) {
-      workers.push(spawnWorker())
-    }
-    await Promise.all(workers)
+    // Ordered cursor-based pool: no O(n) queue.shift() churn and no unbounded
+    // Promise fan-out. Per-symbol errors remain isolated inside processOneSymbol.
+    await mapWithConcurrency(symbols, SYMBOL_CONCURRENCY, processOneSymbol)
 
     const duration = Date.now() - startTime
     const result: ProcessingResult = {
@@ -940,13 +902,15 @@ export class ConfigSetProcessor {
     if (configs.length === 0) return 0
 
     const configTypeGroups = groupConfigsByType(configs)
+    const activeTypeConcurrency = Math.max(1, Math.min(typeConcurrency, configTypeGroups.length))
+    const perTypeConcurrency = Math.max(1, Math.floor(concurrency / activeTypeConcurrency))
     const perTypeResults = await mapWithConcurrency(
       configTypeGroups,
-      typeConcurrency,
+      activeTypeConcurrency,
       async ([type, typeConfigs]) => {
         const perConfigResults = await mapWithConcurrency(
           typeConfigs,
-          concurrency,
+          perTypeConcurrency,
           async (config) => {
             try {
               await yieldToEventLoop()
@@ -1115,13 +1079,15 @@ export class ConfigSetProcessor {
     const piClient = getRedisClient()
 
     const configTypeGroups = groupConfigsByType(configs)
+    const activeTypeConcurrency = Math.max(1, Math.min(typeConcurrency, configTypeGroups.length))
+    const perTypeConcurrency = Math.max(1, Math.floor(concurrency / activeTypeConcurrency))
     const perTypeCounts = await mapWithConcurrency(
       configTypeGroups,
-      typeConcurrency,
+      activeTypeConcurrency,
       async ([type, typeConfigs]) => {
         const perConfigCounts = await mapWithConcurrency(
           typeConfigs,
-          concurrency,
+          perTypeConcurrency,
           async (config) => {
             try {
               await yieldToEventLoop()

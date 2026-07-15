@@ -5,7 +5,7 @@ const repo = path.resolve(__dirname, "../..")
 const read = (file: string) => fs.readFileSync(path.join(repo, file), "utf8")
 
 describe("requested regression guardrails", () => {
-  test("progression stats clamp impossible cascade snapshots with validation warnings", () => {
+  test("progression stats preserve valid strategy fan-out and clamp only Live to Real", () => {
     const coordinator = read("lib/strategy-coordinator.ts")
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
 
@@ -18,16 +18,16 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain('`${symbol}:real:evaluated`]: String(realTotalEvaluated)')
 
     expect(statsRoute).toContain("[STATS-VALIDATION]")
-    expect(statsRoute).toContain("stratCounts.real > stratCounts.main")
-    expect(statsRoute).toContain("stratCounts.real = stratCounts.main")
+    expect(statsRoute).toContain("Main and Real materialise related/adjusted Sets")
+    expect(statsRoute).not.toContain("stratCounts.real = stratCounts.main")
     expect(statsRoute).toContain("stratCounts.live > stratCounts.real")
     expect(statsRoute).toContain("stratCounts.live = stratCounts.real")
 
     const snapshot = { main: 10, real: 12, live: 14 }
-    const normalizedReal = Math.min(snapshot.real, snapshot.main)
+    const normalizedReal = snapshot.real
     const normalizedLive = Math.min(snapshot.live, normalizedReal)
-    expect(normalizedReal).toBe(10)
-    expect(normalizedLive).toBe(10)
+    expect(normalizedReal).toBe(12)
+    expect(normalizedLive).toBe(12)
   })
 
 
@@ -118,7 +118,7 @@ describe("requested regression guardrails", () => {
   test("progression strategy totals are pipeline-aware and do not sum cascade stages", () => {
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
 
-    expect(statsRoute).toContain("Pipeline-aware total: Base → Main → Real → Live is a cascade")
+    expect(statsRoute).toContain("Pipeline-aware total: Main includes related descendants of Base")
     expect(statsRoute).toContain("total: stratTotal")
     expect(statsRoute).not.toContain("total: (stratCounts.base || 0) + (stratCounts.main || 0) + (stratCounts.real || 0) + (stratCounts.live || 0)")
     expect(statsRoute).not.toContain("full pipeline throughput across all stages")
@@ -457,7 +457,7 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("dev_symbol_count_override")
     // Default is now 4 (previously 1 — changed to match the 4-symbol live-trade
     // default so engines start with all four symbols without needing an explicit env override).
-    expect(source).toContain('process.env.V0_DEV_SYMBOL_COUNT ?? "4"')
+    expect(source).toMatch(/process\.env\.V0_DEV_SYMBOL_COUNT\s*\?\?\s*"4"/)
     expect(source).toContain('never short-circuit to ["BTCUSDT"] here')
     expect(source).not.toContain('if (devCap === 1) return ["BTCUSDT"]')
   })
@@ -1287,6 +1287,15 @@ describe("requested regression guardrails", () => {
     expect(route).toContain('Redis unavailable while collecting system metrics')
     expect(route).toContain('cpu: resourceMetrics.cpuPercent')
     expect(route).toContain('memory: resourceMetrics.memoryPercent')
+    expect(route).toContain('const MONITORING_KEY_SAMPLE_LIMIT = 20_000')
+    expect(route).toContain('const MONITORING_KEY_SAMPLE_TTL_MS = 5_000')
+    expect(route).toContain('collectConnectionIds(client, allKeys)')
+    expect(route).toContain('maxField(progressionHashes, "realtime_cycle_count")')
+    expect(route).toContain('progression:${connectionId}:${type}')
+    expect(route).toContain('client.hgetall(`realtime:${connectionId}`)')
+    expect(route).toContain('const connectionMatch = /^(?:settings:)?connection:([^:]+)$/')
+    expect(route).toContain('client.smembers(key)')
+    expect(route).toContain('runtimeIndexed.length > 0 ? runtimeIndexed : allConnections')
     expect(route).not.toContain('cpu: 0,')
     expect(route).not.toContain('memory: 0,')
 
