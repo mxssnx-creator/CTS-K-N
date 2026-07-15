@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process"
+import { existsSync } from "node:fs"
 import process from "node:process"
 
 const port = Number(process.env.PORT || 3102)
 const baseUrl = `http://127.0.0.1:${port}`
 const nextBin = "node_modules/next/dist/bin/next"
+const distDir = process.env.NEXT_DIST_DIR || ".next-prod"
 let outputTail = ""
 
 function keepTail(chunk) {
@@ -51,11 +53,16 @@ async function stopServer(child) {
 }
 
 async function main() {
+  if (!existsSync(`${distDir}/BUILD_ID`)) {
+    throw new Error(`Production build not found in ${distDir}; run NEXT_DIST_DIR=${distDir} npm run build first`)
+  }
+
   const child = spawn(process.execPath, [nextBin, "start", "-H", "127.0.0.1", "-p", String(port)], {
     cwd: process.cwd(),
     env: {
       ...process.env,
       NODE_ENV: "production",
+      NEXT_DIST_DIR: distDir,
       DISABLE_TRADE_ENGINE_AUTOSTART: "1",
       DISABLE_TRADE_ENGINE_IN_PROCESS: "1",
       DISABLE_IN_PROCESS_CONTINUITY: "1",

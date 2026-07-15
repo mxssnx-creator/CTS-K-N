@@ -13,6 +13,7 @@ import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/eng
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { maskConnectionSecrets } from "@/lib/connection-secrets"
+import { evaluateRealTradeReadiness, hasUsableLiveCredentials } from "@/lib/real-trade-gates"
 
 /**
  * POST /api/settings/connections/[id]/live-trade
@@ -78,9 +79,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // When enabling Live, check credentials. Inject predefined creds for base connections.
     let apiKey = (connection.api_key || connection.apiKey || "") as string
     let apiSecret = (connection.api_secret || connection.apiSecret || "") as string
-    let hasCredentials = apiKey.length > 10 && apiSecret.length > 10
+    let hasCredentials = hasUsableLiveCredentials({ api_key: apiKey, api_secret: apiSecret })
 
     let liveTradeBlockedReason = ""
+    let liveTradeBlockCode: string | null = null
     let injectedCredentials = false
     if (isLiveTrade) {
       if (
@@ -91,14 +93,30 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         const creds = BASE_CONNECTION_CREDENTIALS[connectionId as keyof typeof BASE_CONNECTION_CREDENTIALS]
         apiKey = creds.apiKey
         apiSecret = creds.apiSecret
-        hasCredentials = true
+        hasCredentials = hasUsableLiveCredentials({ api_key: apiKey, api_secret: apiSecret })
         injectedCredentials = true
         console.log(`[v0] [LiveTrade] Injected predefined credentials for ${connName}`)
       }
-      if (!hasCredentials) {
-        liveTradeBlockedReason = "API credentials required for live trading"
+      // Evaluate the prospective ON state with the stale persisted reason
+      // deliberately cleared. This is the same decision live-stage uses, so
+      // the API can no longer report enabled while the engine silently creates
+      // simulated positions because durable coordination or credentials fail.
+      const prospectiveReadiness = evaluateRealTradeReadiness({
+        ...connection,
+        api_key: apiKey,
+        api_secret: apiSecret,
+        is_live_trade: "1",
+        live_trade_requested: "1",
+        live_trade_blocked_reason: "",
+      })
+      hasCredentials = prospectiveReadiness.credentialsValid
+      if (!prospectiveReadiness.canPlaceRealOrders) {
+        liveTradeBlockedReason = prospectiveReadiness.blockReason
+        liveTradeBlockCode = prospectiveReadiness.blockCode
       }
     }
+
+    const liveTradeEffective = isLiveTrade && hasCredentials && !liveTradeBlockedReason
 
     // Write the flag — this is what the running engine's live-stage checks.
     const staleLiveTradeBlockReason = String((connection as any).live_trade_blocked_reason || "").trim()
@@ -113,7 +131,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const connectionPatch = {
       ...(injectedCredentials ? { api_key: apiKey, api_secret: apiSecret } : {}),
-      is_live_trade: toRedisFlag(isLiveTrade && hasCredentials),
+      is_live_trade: toRedisFlag(liveTradeEffective),
       live_trade_blocked_reason: liveTradeBlockedReason,
       // If Live is turned on while the main engine is not already running,
       // make the connection engine-eligible before coordinator.startEngine().
@@ -126,7 +144,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             is_enabled_dashboard: "1",
             is_active: "1",
             live_trade_requested: "1",
-            ...(hasCredentials ? { last_test_status: "success" } : {}),
+            ...(liveTradeEffective ? { last_test_status: "success" } : {}),
           }
         : { live_trade_requested: "0" }),
       state_switch_version: stateSwitchVersion,
@@ -201,12 +219,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
 
     if (staleLiveTradeBlockReason) {
-      const clearReason = isLiveTrade
+      const clearReason = liveTradeEffective
         ? "Live Trading enabled after credential validation; cleared stale block so exchange orders can proceed."
-        : "Live Trading disabled by operator; cleared stale block reason because this is not an error state."
-      await logProgressionEvent(connectionId, "live_trading", "info", clearReason, {
+        : isLiveTrade
+          ? `Live Trading remains blocked after revalidation: ${liveTradeBlockedReason}`
+          : "Live Trading disabled by operator; cleared stale block reason because this is not an error state."
+      await logProgressionEvent(connectionId, "live_trading", liveTradeEffective || !isLiveTrade ? "info" : "warning", clearReason, {
         previous_block_reason: staleLiveTradeBlockReason,
-        is_live_trade: isLiveTrade,
+        is_live_trade: liveTradeEffective,
+        live_trade_blocked_reason: liveTradeBlockedReason || undefined,
       })
     }
     if (isLiveTrade) {
@@ -217,7 +238,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         operator_stopped: "0",
         operator_stopped_at: "",
         stopped_at: "",
-        mode: hasCredentials ? "live" : "live_requested",
+        mode: liveTradeEffective ? "live" : "live_requested",
         updated_at: new Date().toISOString(),
       }).catch((stateErr: unknown) => {
         console.warn(
@@ -234,7 +255,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
 
     const triggerControlOrderRebuild = () => {
-      if (!isLiveTrade || !hasCredentials) return
+      if (!liveTradeEffective) return
       void (async () => {
         try {
           const latest = await getConnection(connectionId)
@@ -302,7 +323,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
               connectionId,
               connection_name: connName,
               exchange: connection.exchange,
-              engine_type: "live",
+              // Live execution is the final stage of the single Main Trade
+              // Engine progression. Starting a separate `live` scope here
+              // disconnects the manager from Main symbols/state and makes the
+              // dashboard observe a different progression than the order path.
+              engine_type: "main",
               allowInProcessStart: true,
               indicationInterval: settings?.mainEngineIntervalMs ? settings.mainEngineIntervalMs / 1000 : 1,
               strategyInterval: settings?.strategyUpdateIntervalMs ? settings.strategyUpdateIntervalMs / 1000 : 1,
@@ -396,11 +421,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       connectionId,
       "info",
       {
-        is_live_trade: isLiveTrade && hasCredentials,
+        is_live_trade: liveTradeEffective,
         live_trade_requested: isLiveTrade,
         engineStartedNow,
         engineStatus,
         liveTradeBlockedReason,
+        liveTradeBlockCode,
+        liveExecutionMode: liveTradeEffective ? "live" : isLiveTrade ? "blocked" : "simulation",
       },
     )
 
@@ -415,23 +442,28 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       settingsVersion: stateSwitchVersion,
       data: {
         action: isLiveTrade ? "enabled" : "disabled",
-        is_live_trade: isLiveTrade && hasCredentials,
+        is_live_trade: liveTradeEffective,
         live_trade_requested: isLiveTrade,
+        live_trade_blocked_reason: liveTradeBlockedReason || undefined,
+        live_trade_block_code: liveTradeBlockCode || undefined,
+        live_execution_mode: liveTradeEffective ? "live" : isLiveTrade ? "blocked" : "simulation",
         engineStatus,
       },
     })
 
     return NextResponse.json({
       success: true,
-      is_live_trade: isLiveTrade && hasCredentials,
+      is_live_trade: liveTradeEffective,
       live_trade_requested: isLiveTrade,
       live_trade_blocked_reason: liveTradeBlockedReason,
+      live_trade_block_code: liveTradeBlockCode,
+      live_execution_mode: liveTradeEffective ? "live" : isLiveTrade ? "blocked" : "simulation",
       engineStatus,
       engineStartedNow,
       connection: safeConnection,
       message:
-        isLiveTrade && !hasCredentials
-          ? "Live Trading requested; exchange order placement is blocked until API credentials are configured"
+        isLiveTrade && !liveTradeEffective
+          ? `Live Trading requested but blocked: ${liveTradeBlockedReason}`
           : `Live Trading ${isLiveTrade ? "enabled" : "disabled"}`,
       connectionName: connName,
       exchange: connection.exchange,

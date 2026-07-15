@@ -12,6 +12,7 @@ import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
+import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -322,30 +323,25 @@ export async function POST(request: Request) {
     const exchangeName = normalizeQuickstartExchange(connection)
     const connectionId = connection.id
 
-    const getConnectionSafe = getConnection as unknown as ((id: string) => Promise<any>) | undefined
     const [latestConnectionHash, rawConnectionSettings, prefixedConnectionSettings] = await Promise.all([
       client.hgetall(`connection:${connectionId}`).catch(() => null),
-      typeof getConnectionSafe === "function" ? getConnectionSafe(connectionId).catch(() => null) : Promise.resolve(null),
-      (typeof getConnection === "function" ? getConnection(connectionId) : Promise.resolve(null)).catch(() => null),
       client.hgetall(`connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
       client.hgetall(`settings:connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
     ])
     const existingQuickStartSettings: Record<string, unknown> = {
       ...(latestConnectionHash || connection || {}),
       ...(rawConnectionSettings || {}),
+      // The namespaced settings hash is the canonical mirror and therefore
+      // wins when a legacy hash still contains an older value.
       ...(prefixedConnectionSettings || {}),
     }
     connection = { ...(connection || {}), ...(latestConnectionHash || {}) }
 
     console.log(`${LOG_PREFIX}: Found ${connection.name} (${connectionId}) on ${exchangeName}`)
 
-    const [existingRawConnectionSettings, existingPrefixedConnectionSettings] = await Promise.all([
-      client.hgetall(`connection_settings:${connectionId}`).catch(() => ({} as Record<string, string>)),
-      client.hgetall(`settings:connection_settings:${connectionId}`).catch(() => ({} as Record<string, string>)),
-    ])
     const existingConnectionSettings: Record<string, unknown> = {
-      ...(existingPrefixedConnectionSettings ?? {}),
-      ...(existingRawConnectionSettings ?? {}),
+      ...(rawConnectionSettings ?? {}),
+      ...(prefixedConnectionSettings ?? {}),
     }
     const effectiveVolumeFactorLive = firstExistingSetting(
       existingConnectionSettings,
@@ -648,12 +644,22 @@ export async function POST(request: Request) {
 
     // Production QuickStart should not silently fall back to paper/sim just
     // because the lightweight connection test endpoint is flaky or rate-limited.
-    // Credentials are the real live-order gate; the live stage will still record
-    // exchange placement errors if the venue rejects the order.
-    const liveTradeEnabled = liveTradeRequested && hasCredentials
+    // Credential shape and durable coordination are the pre-order gates; the
+    // live stage still records exchange placement errors if the venue rejects
+    // an order after those prerequisites pass.
+    const quickStartLiveReadiness = evaluateRealTradeReadiness({
+      ...connection,
+      is_live_trade: liveTradeRequested ? "1" : "0",
+      live_trade_requested: liveTradeRequested ? "1" : "0",
+      live_trade_blocked_reason: "",
+    })
+    const liveTradeEnabled = liveTradeRequested && quickStartLiveReadiness.canPlaceRealOrders
     const liveTradeBlockedReason = liveTradeRequested && !liveTradeEnabled
-      ? "No API credentials configured"
+      ? quickStartLiveReadiness.blockReason
       : ""
+    const liveTradeBlockCode = liveTradeRequested && !liveTradeEnabled
+      ? quickStartLiveReadiness.blockCode
+      : null
 
     await logProgressionEvent(connectionId, "quickstart_symbols", "info", "Trading symbols configured", {
       symbols,
@@ -1144,12 +1150,13 @@ export async function POST(request: Request) {
        liveTradeRequested,
        liveTradeEnabled,
        liveTradeBlockedReason: liveTradeBlockedReason || undefined,
+       liveTradeBlockCode: liveTradeBlockCode || undefined,
      })
 
      if (liveTradeBlockedReason) {
        await logProgressionEvent(connectionId, "quickstart_live_trade_blocked", "warning",
-         "Live exchange order placement disabled until connection test passes",
-         { reason: liveTradeBlockedReason, symbols, live_volume_factor: resolvedLiveVolumeFactor },
+         "Live exchange order placement blocked until Main live-order requirements pass",
+         { reason: liveTradeBlockedReason, blockCode: liveTradeBlockCode, symbols, live_volume_factor: resolvedLiveVolumeFactor },
        )
      }
      
@@ -1545,6 +1552,7 @@ export async function POST(request: Request) {
         liveTradeRequested,
         liveTradeEnabled,
         liveTradeBlockedReason: liveTradeBlockedReason || undefined,
+        liveTradeBlockCode: liveTradeBlockCode || undefined,
       },
       engineCounts: {
         indications: indCount,
@@ -1575,12 +1583,12 @@ export async function POST(request: Request) {
       },
       refreshQueued: quickstartRecoordination.refreshQueued === true,
       refreshStatus: quickstartRecoordination.refreshStatus,
-      status: liveTradeEnabled ? "ready_with_live_trading" : (hasCredentials ? "ready_connection_test_failed" : "ready_without_credentials"),
+      status: liveTradeEnabled ? "ready_with_live_trading" : (liveTradeRequested ? "ready_live_trading_blocked" : "ready_without_live_trading"),
       nextSteps: liveTradeEnabled
         ? "Connection assigned, enabled, and live exchange order placement is enabled."
-        : (hasCredentials
-          ? "Connection assigned and engine progression started, but live exchange order placement is blocked until the connection test passes."
-          : "Connection assigned and enabled for quickstart, but credentials are missing/invalid for live exchange operations."),
+        : liveTradeRequested
+          ? `Connection assigned and engine progression started, but live exchange order placement is blocked: ${liveTradeBlockedReason}`
+          : "Connection assigned and enabled for quickstart with live exchange trading disabled.",
       duration: totalDuration,
       logs: allLogs.slice(0, 50),
       logsCount: allLogs.length,

@@ -227,16 +227,30 @@ export async function getHistoricCandlesForRange(
   const client = getRedisClient()
   const listKey = `market_data:${symbol}:history:chunks`
   const batchChunks = Math.max(1, Math.min(64, Math.floor(Number(options.batchChunks) || 8)))
-  const selected: any[] = []
+  // Deduplicate directly into the final bounded range. The previous path
+  // built a batch array, a complete selected array, another Map, and a final
+  // sorted array at once. A single Map keeps only one reference per candle
+  // while each raw Redis batch becomes unreachable before the next LRANGE.
+  const selectedByTimestamp = new Map<number, any>()
   for (let cursor = first; cursor <= last; cursor += batchChunks) {
     const batchEnd = Math.min(last, cursor + batchChunks - 1)
     const rawChunks = await client.lrange(listKey, cursor, batchEnd)
-    for (const candle of normalizeHistoricCandles(Array.isArray(rawChunks) ? rawChunks : [])) {
-      const timestamp = candleTimestamp(candle)
-      if (timestamp >= startMs && timestamp <= endMs) selected.push(candle)
+    for (const rawChunk of Array.isArray(rawChunks) ? rawChunks : []) {
+      try {
+        const parsed = typeof rawChunk === "string" ? JSON.parse(rawChunk) : rawChunk
+        if (!Array.isArray(parsed)) continue
+        for (const candle of parsed) {
+          const timestamp = candleTimestamp(candle)
+          if (Number.isFinite(timestamp) && timestamp >= startMs && timestamp <= endMs) {
+            selectedByTimestamp.set(timestamp, candle)
+          }
+        }
+      } catch {
+        // Ignore only the corrupt chunk; later chunks remain usable.
+      }
     }
   }
-  return normalizeHistoricCandles([selected])
+  return [...selectedByTimestamp.values()].sort((a, b) => candleTimestamp(a) - candleTimestamp(b))
 }
 
 /**

@@ -320,8 +320,41 @@ interface Settings {
   // Preset Trade Specific Settings
   profitFactorMinPreset?: number
   drawdownTimePreset?: number
+  presetHistoryDays?: number
+  presetCountPerSymbol?: number
+  presetTpMin?: number
+  presetTpMax?: number
+  presetTpStep?: number
+  presetSlMin?: number
+  presetSlMax?: number
+  presetSlStep?: number
+  presetTrailingIndependent?: boolean
+  presetTrailStartMin?: number
+  presetTrailStartMax?: number
+  presetTrailStartStep?: number
+  presetTrailStopMin?: number
+  presetTrailStopMax?: number
+  presetTrailStopStep?: number
+  presetTrailStepRatio?: number
+  presetAutoGenerate?: boolean
+  presetAutoSelect?: boolean
+  presetIndicatorTypes?: string[]
+  presetMaxIndicatorVariants?: number
+  presetMaxSignalsPerVariant?: number
+  presetMaxCandlesPerRun?: number
   presetTrailingEnabled?: boolean
   presetBlockEnabled?: boolean
+  presetBlockVolumeRatio?: number
+  presetBlockMaxStack?: number
+  presetBlockPauseCountRatio?: number
+  presetBlockActiveRealEnabled?: boolean
+  presetBlockActiveLiveEnabled?: boolean
+  variantBlockEnabled?: boolean
+  blockVolumeRatio?: number
+  blockMaxStack?: number
+  blockPauseCountRatio?: number
+  blockActiveRealEnabled?: boolean
+  blockActiveLiveEnabled?: boolean
   presetDcaEnabled?: boolean
   presetDirectionEnabled?: boolean
   presetMoveEnabled?: boolean
@@ -569,6 +602,55 @@ const initialSettings: Settings = {
   stepRelationMinRatio: 0.2, // Moved to strategy section
   stepRelationMaxRatio: 1.0, // Moved to strategy section
 
+  // Preset optimizer / execution defaults. These are duplicated in the
+  // optimizer normalizer intentionally so first paint, Settings hydration,
+  // API reads, and live execution all agree before any persisted override.
+  profitFactorMinPreset: 0.7,
+  drawdownTimePreset: 5,
+  presetHistoryDays: 14,
+  presetCountPerSymbol: 4,
+  presetTpMin: 3,
+  presetTpMax: 30,
+  presetTpStep: 1,
+  presetSlMin: 0.25,
+  presetSlMax: 2,
+  presetSlStep: 0.25,
+  presetTrailingEnabled: true,
+  presetTrailingIndependent: true,
+  presetTrailStartMin: 0.5,
+  presetTrailStartMax: 1.5,
+  presetTrailStartStep: 0.1,
+  presetTrailStopMin: 0.2,
+  presetTrailStopMax: 0.4,
+  presetTrailStopStep: 0.1,
+  presetTrailStepRatio: 0.5,
+  presetAutoGenerate: true,
+  presetAutoSelect: true,
+  presetIndicatorTypes: ["rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "sar"],
+  presetMaxIndicatorVariants: 4,
+  presetMaxSignalsPerVariant: 48,
+  presetMaxCandlesPerRun: 6000,
+  presetBlockEnabled: true,
+  presetBlockVolumeRatio: 1,
+  presetBlockMaxStack: 10,
+  presetBlockPauseCountRatio: 1,
+  presetBlockActiveRealEnabled: true,
+  presetBlockActiveLiveEnabled: true,
+  variantBlockEnabled: true,
+  blockVolumeRatio: 1,
+  blockMaxStack: 10,
+  blockPauseCountRatio: 1,
+  blockActiveRealEnabled: true,
+  blockActiveLiveEnabled: true,
+  presetDcaEnabled: false,
+  presetDirectionEnabled: true,
+  presetMoveEnabled: true,
+  presetActiveEnabled: true,
+  presetOptimalEnabled: false,
+  presetTrailingStrategy: true,
+  presetBlockStrategy: true,
+  presetDcaStrategy: false,
+
   // Main Indication Settings
   marketActivityEnabled: true, // Changed to enabled by default
   marketActivityCalculationRange: 10,
@@ -787,17 +869,50 @@ export default function SettingsPage() {
     mainTrailingStrategy: initialSettings.mainTrailingStrategy ?? true,
     mainBlockStrategy: initialSettings.mainBlockStrategy ?? false,
     mainDcaStrategy: initialSettings.mainDcaStrategy ?? false,
-    profitFactorMinPreset: initialSettings.profitFactorMinPreset ?? 0.6,
-    drawdownTimePreset: initialSettings.drawdownTimePreset ?? 300,
-    presetTrailingEnabled: initialSettings.presetTrailingEnabled ?? false,
-    presetBlockEnabled: initialSettings.presetBlockEnabled ?? false,
+    profitFactorMinPreset: initialSettings.profitFactorMinPreset ?? 0.7,
+    drawdownTimePreset: initialSettings.drawdownTimePreset ?? 5,
+    presetHistoryDays: initialSettings.presetHistoryDays ?? 14,
+    presetCountPerSymbol: initialSettings.presetCountPerSymbol ?? 4,
+    presetTpMin: initialSettings.presetTpMin ?? 3,
+    presetTpMax: initialSettings.presetTpMax ?? 30,
+    presetTpStep: initialSettings.presetTpStep ?? 1,
+    presetSlMin: initialSettings.presetSlMin ?? 0.25,
+    presetSlMax: initialSettings.presetSlMax ?? 2,
+    presetSlStep: initialSettings.presetSlStep ?? 0.25,
+    presetTrailingEnabled: initialSettings.presetTrailingEnabled ?? true,
+    presetTrailingIndependent: initialSettings.presetTrailingIndependent ?? true,
+    presetTrailStartMin: initialSettings.presetTrailStartMin ?? 0.5,
+    presetTrailStartMax: initialSettings.presetTrailStartMax ?? 1.5,
+    presetTrailStartStep: initialSettings.presetTrailStartStep ?? 0.1,
+    presetTrailStopMin: initialSettings.presetTrailStopMin ?? 0.2,
+    presetTrailStopMax: initialSettings.presetTrailStopMax ?? 0.4,
+    presetTrailStopStep: initialSettings.presetTrailStopStep ?? 0.1,
+    presetTrailStepRatio: initialSettings.presetTrailStepRatio ?? 0.5,
+    presetAutoGenerate: initialSettings.presetAutoGenerate ?? true,
+    presetAutoSelect: initialSettings.presetAutoSelect ?? true,
+    presetIndicatorTypes: initialSettings.presetIndicatorTypes ?? ["rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "sar"],
+    presetMaxIndicatorVariants: initialSettings.presetMaxIndicatorVariants ?? 4,
+    presetMaxSignalsPerVariant: initialSettings.presetMaxSignalsPerVariant ?? 48,
+    presetMaxCandlesPerRun: initialSettings.presetMaxCandlesPerRun ?? 6000,
+    presetBlockEnabled: initialSettings.presetBlockEnabled ?? true,
+    presetBlockVolumeRatio: initialSettings.presetBlockVolumeRatio ?? initialSettings.blockVolumeRatio ?? 1,
+    presetBlockMaxStack: initialSettings.presetBlockMaxStack ?? initialSettings.blockMaxStack ?? 10,
+    presetBlockPauseCountRatio: initialSettings.presetBlockPauseCountRatio ?? initialSettings.blockPauseCountRatio ?? 1,
+    presetBlockActiveRealEnabled: initialSettings.presetBlockActiveRealEnabled ?? initialSettings.blockActiveRealEnabled ?? true,
+    presetBlockActiveLiveEnabled: initialSettings.presetBlockActiveLiveEnabled ?? initialSettings.blockActiveLiveEnabled ?? true,
+    variantBlockEnabled: initialSettings.variantBlockEnabled ?? initialSettings.presetBlockEnabled ?? true,
+    blockVolumeRatio: initialSettings.blockVolumeRatio ?? initialSettings.presetBlockVolumeRatio ?? 1,
+    blockMaxStack: initialSettings.blockMaxStack ?? initialSettings.presetBlockMaxStack ?? 10,
+    blockPauseCountRatio: initialSettings.blockPauseCountRatio ?? initialSettings.presetBlockPauseCountRatio ?? 1,
+    blockActiveRealEnabled: initialSettings.blockActiveRealEnabled ?? initialSettings.presetBlockActiveRealEnabled ?? true,
+    blockActiveLiveEnabled: initialSettings.blockActiveLiveEnabled ?? initialSettings.presetBlockActiveLiveEnabled ?? true,
     presetDcaEnabled: initialSettings.presetDcaEnabled ?? false,
     presetDirectionEnabled: initialSettings.presetDirectionEnabled ?? true,
     presetMoveEnabled: initialSettings.presetMoveEnabled ?? true,
     presetActiveEnabled: initialSettings.presetActiveEnabled ?? true,
     presetOptimalEnabled: initialSettings.presetOptimalEnabled ?? false,
-    presetTrailingStrategy: initialSettings.presetTrailingStrategy ?? false,
-    presetBlockStrategy: initialSettings.presetBlockStrategy ?? false,
+    presetTrailingStrategy: initialSettings.presetTrailingStrategy ?? true,
+    presetBlockStrategy: initialSettings.presetBlockStrategy ?? true,
     presetDcaStrategy: initialSettings.presetDcaStrategy ?? false,
     tradeMode: initialSettings.tradeMode ?? "both",
     strategyTrailingEnabled: initialSettings.strategyTrailingEnabled ?? true,

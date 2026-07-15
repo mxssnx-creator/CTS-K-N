@@ -131,9 +131,14 @@ describe("requested regression guardrails", () => {
     const optionsBar = read("components/dashboard/quickstart-options-bar.tsx")
     const quickstart = read("components/dashboard/quickstart-section.tsx")
 
-    expect(engineStates).toContain("const liveRequested = toBoolean((connection as any).live_trade_requested)")
+    expect(engineStates).toContain("const liveRequested = liveReadiness.requested")
     expect(engineStates).toContain("const flagLive    = liveRequested || liveEffective")
-    expect(engineStates).toContain("live: buildModeState(flagLive, liveEffective)")
+    expect(engineStates).toContain("...buildModeState(flagLive, liveEffective)")
+    expect(engineStates).toContain("executionMode: liveReadiness.executionMode")
+    expect(engineStates).toContain("mainTrade: mainTradeState")
+    expect(engineStates).toContain("presetTrade: presetTradeState")
+    expect(engineStates).toContain("live: mainTradeState")
+    expect(engineStates).toContain("preset: presetTradeState")
     expect(activeCard).toContain("const liveTradeUiFlag")
     expect(activeCard).toContain("toBoolean(details?.live_trade_requested) || toBoolean(details?.is_live_trade)")
     expect(activeCard).toContain("const requestedState = typeof data.live_trade_requested === \"boolean\" ? data.live_trade_requested : newState")
@@ -154,7 +159,7 @@ describe("requested regression guardrails", () => {
     expect(intentBlock).toContain('status: "running"')
     expect(intentBlock).toContain('desired_status: "running"')
     expect(intentBlock).toContain('operator_intent: "running"')
-    expect(intentBlock).toContain('mode: hasCredentials ? "live" : "live_requested"')
+    expect(intentBlock).toContain('mode: liveTradeEffective ? "live" : "live_requested"')
   })
 
   test("live-trade queued starts use per-connection refresh requests consumed by coordinator", () => {
@@ -162,6 +167,8 @@ describe("requested regression guardrails", () => {
 
     expect(source).toContain("queueEngineRefreshRequest({")
     expect(source).toContain("state_switch_version: stateSwitchVersion")
+    expect(source).toContain('engine_type: "main"')
+    expect(source).not.toContain('engine_type: "live"')
     expect(source).not.toContain('hset("engine_coordinator:refresh_requested"')
     expect(source).toContain('engineStatus = "queued"')
   })
@@ -185,19 +192,30 @@ describe("requested regression guardrails", () => {
     const source = read("app/api/settings/connections/[id]/live-trade/route.ts")
 
     expect(source).toContain("BASE_CONNECTION_CREDENTIALS[connectionId as keyof typeof BASE_CONNECTION_CREDENTIALS]?.apiKey")
-    expect(source).toContain('liveTradeBlockedReason = "API credentials required for live trading"')
-    expect(source).toContain("is_live_trade: toRedisFlag(isLiveTrade && hasCredentials)")
+    expect(source).toContain("liveTradeBlockedReason = prospectiveReadiness.blockReason")
+    expect(source).toContain("is_live_trade: toRedisFlag(liveTradeEffective)")
+    expect(source).toContain("evaluateRealTradeReadiness")
     expect(source).toContain('live_trade_requested: "1"')
     expect(source).not.toContain('error: "API credentials required for live trading"')
   })
 
-  test("global start preserves credential-gated live trade updates", () => {
+  test("global start preserves operator live intent and credential-gates only requested live trading", () => {
     const source = read("app/api/trade-engine/start/route.ts")
 
-    expect(source).toContain("const liveTradeUpdate = credentialCheck.valid")
+    expect(source).toContain("function isLiveTradeRequested")
+    expect(source).toContain("validateLiveTradeRequirements")
+    expect(source).not.toContain("connector.testConnection()")
+    expect(source).toContain("const liveTradeUpdate = liveTradeRequested")
     expect(source).toContain("...liveTradeUpdate")
     expect(source).toContain('is_live_trade: credentialCheck.valid ? "1" : "0"')
+    expect(source).toContain('live_trade_requested: "0"')
+    expect(source).toContain('engine_type: "main"')
+    expect(source).not.toContain("Ensure live trade is enabled")
+    expect(source).not.toContain("cleared stale block so exchange orders can proceed")
     expect(source).not.toMatch(/\.\.\.liveTradeUpdate,[\s\S]{0,160}is_live_trade:\s*"1"/)
+    expect(source.indexOf("await updateConnectionState(conn.id, updatedConn")).toBeLessThan(
+      source.lastIndexOf("await coordinator.startAll()"),
+    )
   })
 
   test("stopEngine runtime cleanup preserves Main Connection assignment fields", () => {
@@ -240,6 +258,63 @@ describe("requested regression guardrails", () => {
     expect(recoordinator).toContain("Drawdown")
     expect(recoordinator).toContain("variant")
     expect(recoordinator).toContain("axis")
+  })
+
+  test("Preset Trade intent survives infrastructure blocks and auto-recovers after settings become valid", () => {
+    const route = read("app/api/settings/connections/[id]/preset-toggle/route.ts")
+    const recoordinator = read("lib/connection-recoordinator.ts")
+    const engineStates = read("app/api/connections/[id]/engine-states/route.ts")
+    const activeCard = read("components/dashboard/active-connection-card.tsx")
+
+    expect(route).toContain('preset_trade_requested: toRedisFlag(presetTradeRequested)')
+    expect(route).toContain('is_preset_trade: toRedisFlag(presetTradeEffective)')
+    expect(route).toContain('evaluateRealTradeReadiness({')
+    expect(route).toContain('}, "preset")')
+    expect(route).not.toContain('error: "API credentials required for live trading"')
+    expect(recoordinator).toContain("Preset Trade unblocked")
+    expect(recoordinator).toContain('preset_trade_blocked_reason: ""')
+    expect(recoordinator).toContain('"preset",')
+    expect(engineStates).toContain("presetReadiness.requested")
+    expect(activeCard).toContain("preset_trade_requested")
+  })
+
+  test("Preset UI exposes persisted historical diagrams, defaults, and the correct shared-engine assignments", () => {
+    const page = read("app/presets/page.tsx")
+    const optimizer = read("lib/preset-optimizer.ts")
+    const presetToggle = read("app/api/settings/connections/[id]/preset-toggle/route.ts")
+    const mainToggle = read("app/api/settings/connections/[id]/live-trade/route.ts")
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+
+    expect(page).toContain("function PresetDailyDiagram")
+    expect(page).toContain("Daily average ProfitFactor")
+    expect(page).toContain("Position cost")
+    expect(page).toContain("Win / Loss")
+    expect(page).toContain("Drawdown time")
+    expect(page).toContain("Auto-select best per symbol/type")
+    expect(page).toContain("Block Strategy Type · Adjust")
+    expect(page).toContain("Block count × volume ratio")
+    expect(page).toContain("Below threshold")
+    expect(page).toContain("/api/preset-optimizer")
+    expect(page).toContain("const controller = new AbortController()")
+    expect(page).toContain("await loadOverview(true, controller.signal)")
+    expect(optimizer).toContain("historyDays: 14")
+    expect(optimizer).toContain("presetsPerSymbol: 4")
+    expect(optimizer).toContain("minProfitFactor: 0.7")
+    expect(optimizer).toContain("maxDrawdownHours: 5")
+    expect(optimizer).toContain("blockMaxStack: 10")
+    expect(optimizer).toContain("blockVolumeRatio: 1")
+    expect(optimizer).toContain("evenly-spaced quantiles")
+    expect(optimizer).toContain("Release both larger reference arrays")
+    expect(optimizer).toContain("one-active-position-per-symbol/direction constraint")
+    const presetStore = read("lib/preset-store.ts")
+    expect(presetStore).toContain("persistConnectionBlockSettings")
+    expect(presetStore).toContain("variantBlockEnabled: String(settings.blockEnabled)")
+    expect(presetStore).toContain("Preset is not eligible for live selection")
+    expect(presetToggle).toContain('engine_type: "main"')
+    expect(presetToggle).toContain("one shared Main progression")
+    expect(mainToggle).toContain('engine_type: "main"')
+    expect(liveStage).toContain('executionIntent: "main" | "preset"')
+    expect(liveStage).toContain("applySelectedPresetToRealPosition")
   })
 
   test("disabling one connection does not stop the global coordinator", () => {
@@ -311,7 +386,7 @@ describe("requested regression guardrails", () => {
     expect(source).toContain('engineStatus = "running"')
     expect(source).toContain('allowInProcessStart: true')
     expect(source).toContain('live_trade_requested: "1"')
-    expect(source).toContain('mode: hasCredentials ? "live" : "live_requested"')
+    expect(source).toContain('mode: liveTradeEffective ? "live" : "live_requested"')
     expect(source).not.toContain("setImmediate")
   })
 
@@ -789,6 +864,12 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain("from 'v8'")
   })
 
+  test("passive connection health monitoring does not keep a stopped worker resident", () => {
+    const source = read("lib/connection-coordinator.ts")
+
+    expect(source).toContain("this.healthCheckInterval.unref?.()")
+  })
+
   test("production build cleanup respects NEXT_DIST_DIR for parallel dev/prod verification", () => {
     const pkg = JSON.parse(read("package.json"))
 
@@ -800,6 +881,10 @@ describe("requested regression guardrails", () => {
     expect(pkg.scripts.postbuild).toBe("node scripts/normalize-next-env.mjs")
     expect(pkg.scripts["postvercel-build"]).toBe("node scripts/normalize-next-env.mjs")
     expect(read("scripts/normalize-next-env.mjs")).toContain('./.next/types/routes.d.ts')
+    const previewRunner = read("scripts/run-prod-preview-check.mjs")
+    expect(previewRunner).toContain('process.env.NEXT_DIST_DIR || ".next-prod"')
+    expect(previewRunner).toContain("NEXT_DIST_DIR: distDir")
+    expect(previewRunner).toContain('existsSync(`${distDir}/BUILD_ID`)')
   })
 
   test("production status routes merge raw and settings-prefixed engine heartbeat state", () => {
@@ -1884,8 +1969,10 @@ describe("requested regression guardrails", () => {
     expect(gates).toContain("!hasSharedRedisConfig()")
     expect(gates).toContain("ALLOW_INLINE_REDIS_LIVE_TRADING")
     expect(gates).toContain("shared Redis is not configured")
-    expect(liveStage).toContain("hasRealTradeBlock(connSettings)")
-    expect(liveStage).toContain("hasRealTradeBlock(freshSettings)")
+    expect(liveStage).toContain("evaluateRealTradeReadiness(connSettings, executionIntent)")
+    expect(liveStage).toContain("evaluateRealTradeReadiness(freshSettings, freshExecutionIntent)")
+    expect(liveStage).toContain("A requested live run must fail visibly")
+    expect(liveStage).toContain('livePosition.executionMode = "blocked"')
   })
 
   test("settings dialog saves are single-pass and do not replay stale delayed state", () => {

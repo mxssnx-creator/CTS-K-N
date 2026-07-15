@@ -147,6 +147,7 @@ export function ActiveConnectionCard({
     liveTradeUiFlag(connection.details as any)
   )
   const [presetMode, setPresetMode] = useState(() =>
+    toInitBool((connection.details as any)?.preset_trade_requested) ||
     toInitBool((connection.details as any)?.is_preset_trade)
   )
   const [liveTradeLoading, setLiveTradeLoading] = useState(false)
@@ -292,8 +293,24 @@ export function ActiveConnectionCard({
     engineRunning: boolean
     runningHint: boolean
     enabled: { flag: boolean; running: boolean; inSync: boolean }
-    live:    { flag: boolean; running: boolean; inSync: boolean }
-    preset:  { flag: boolean; running: boolean; inSync: boolean }
+    live:    {
+      flag: boolean
+      effective?: boolean
+      running: boolean
+      inSync: boolean
+      executionMode?: "live" | "blocked" | "simulation"
+      blockCode?: string | null
+      blockReason?: string
+    }
+    preset:  {
+      flag: boolean
+      effective?: boolean
+      running: boolean
+      inSync: boolean
+      executionMode?: "live" | "blocked" | "simulation"
+      blockCode?: string | null
+      blockReason?: string
+    }
   } | null>(null)
   const details = connection.details
 
@@ -301,7 +318,7 @@ export function ActiveConnectionCard({
   useEffect(() => {
     if (details) {
       setLiveTrade(liveTradeUiFlag(details))
-      setPresetMode(toBoolean(details.is_preset_trade))
+      setPresetMode(toBoolean(details.preset_trade_requested) || toBoolean(details.is_preset_trade))
       setLiveVolumeFactor(Number(details.live_volume_factor) || 1.0)
       setPresetVolumeFactor(Number(details.preset_volume_factor) || 1.0)
       setVolumeStepRatio(Number(details.volume_step_ratio) || DEFAULT_VOLUME_STEP_RATIO)
@@ -881,11 +898,13 @@ export function ActiveConnectionCard({
         const requestedState = typeof data.live_trade_requested === "boolean" ? data.live_trade_requested : newState
         const effectiveState = typeof data.is_live_trade === "boolean" ? data.is_live_trade : requestedState
         setLiveTrade(requestedState)
-        toast.success(
-          requestedState
-            ? (effectiveState ? `Live Trading starting on ${connName}...` : `Live Trading requested on ${connName}; waiting for valid credentials`)
-            : `Live Trading stopped on ${connName}`,
-        )
+        const liveTradeMessage = requestedState
+          ? (effectiveState
+              ? `Live Trading starting on ${connName}...`
+              : `Live Trading blocked on ${connName}: ${data.live_trade_blocked_reason || "production live-order requirements are not satisfied"}`)
+          : `Live Trading stopped on ${connName}`
+        if (requestedState && !effectiveState) toast.warning(liveTradeMessage)
+        else toast.success(liveTradeMessage)
         dispatchConnectionMutationEvents(buildConnectionMutationEventDetail(data, {
           connectionId: connection.connectionId,
           connection: { id: connection.connectionId, name: connection.exchangeName },
@@ -922,6 +941,7 @@ export function ActiveConnectionCard({
   // Handle Preset Mode toggle — no longer gated on connection.isActive,
   // same rationale as handleLiveTradeToggle above.
   const handlePresetModeToggle = async (newState: boolean) => {
+    const previousState = presetMode
     presetModeLoadingRef.current = true
     setPresetModeLoading(true)
     try {
@@ -930,14 +950,22 @@ export function ActiveConnectionCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ is_preset_trade: newState }),
       })
-      if (res.ok) {
-        setPresetMode(newState)
-        toast.success(newState ? "Preset Mode engine starting..." : "Preset Mode engine stopped")
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.success) {
+        const requestedState = typeof data.preset_trade_requested === "boolean" ? data.preset_trade_requested : newState
+        const effectiveState = typeof data.is_preset_trade === "boolean" ? data.is_preset_trade : requestedState
+        setPresetMode(requestedState)
+        if (requestedState && !effectiveState) {
+          toast.warning(`Preset Mode blocked: ${data.preset_trade_blocked_reason || "production exchange requirements are not satisfied"}`)
+        } else {
+          toast.success(requestedState ? "Preset Mode engine starting..." : "Preset Mode engine stopped")
+        }
       } else {
-        const err = await res.json().catch(() => ({ error: "Failed" }))
-        toast.error(err.error || "Failed to toggle Preset Mode")
+        setPresetMode(previousState)
+        toast.error(data.error || "Failed to toggle Preset Mode")
       }
     } catch {
+      setPresetMode(previousState)
       toast.error("Failed to toggle Preset Mode")
     } finally {
       presetModeLoadingRef.current = false
@@ -1248,7 +1276,11 @@ export function ActiveConnectionCard({
                 <Label
                   htmlFor={`live-${connection.connectionId}`}
                   className={`text-xs font-medium cursor-pointer ${
-                    liveTrade ? "text-green-600 dark:text-green-400" : ""
+                    liveTrade && engineStates?.live.executionMode === "blocked"
+                      ? "text-red-600 dark:text-red-400"
+                      : liveTrade
+                        ? "text-green-600 dark:text-green-400"
+                        : ""
                   }`}
                 >
                   {liveTradeLoading ? (
@@ -1258,7 +1290,14 @@ export function ActiveConnectionCard({
                   ) : (
                     <span className="flex items-center gap-1">
                       <Activity className="h-3 w-3" /> Live Trade
-                      {engineStates && liveTrade && !engineStates.live.inSync && (
+                      {engineStates && liveTrade && engineStates.live.executionMode === "blocked" && (
+                        <span
+                          title={engineStates.live.blockReason || "Live exchange order placement is blocked"}
+                          className="inline-block h-1.5 w-1.5 rounded-full bg-red-500"
+                          aria-label={engineStates.live.blockReason || "Live exchange order placement is blocked"}
+                        />
+                      )}
+                      {engineStates && liveTrade && engineStates.live.executionMode !== "blocked" && !engineStates.live.inSync && (
                         <span
                           title="Live flag ON but engine state differs — reconciling"
                           className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse"
@@ -1285,7 +1324,11 @@ export function ActiveConnectionCard({
                 <Label
                   htmlFor={`preset-${connection.connectionId}`}
                   className={`text-xs font-medium cursor-pointer ${
-                    presetMode ? "text-purple-600 dark:text-purple-400" : ""
+                    presetMode && engineStates?.preset.executionMode === "blocked"
+                      ? "text-red-600 dark:text-red-400"
+                      : presetMode
+                        ? "text-purple-600 dark:text-purple-400"
+                        : ""
                   }`}
                 >
                   {presetModeLoading ? (
@@ -1295,7 +1338,14 @@ export function ActiveConnectionCard({
                   ) : (
                     <span className="flex items-center gap-1">
                       Preset Mode
-                      {engineStates && presetMode && !engineStates.preset.inSync && (
+                      {engineStates && presetMode && engineStates.preset.executionMode === "blocked" && (
+                        <span
+                          title={engineStates.preset.blockReason || "Preset exchange execution is blocked"}
+                          className="inline-block h-1.5 w-1.5 rounded-full bg-red-500"
+                          aria-label={engineStates.preset.blockReason || "Preset exchange execution is blocked"}
+                        />
+                      )}
+                      {engineStates && presetMode && engineStates.preset.executionMode !== "blocked" && !engineStates.preset.inSync && (
                         <span
                           title="Preset flag ON but engine state differs — reconciling"
                           className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse"

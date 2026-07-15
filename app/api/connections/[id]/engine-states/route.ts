@@ -1,8 +1,8 @@
 /**
  * GET /api/connections/[id]/engine-states
  *
- * Returns per-connection engine running state for all three engines (main,
- * live, preset) together with the persisted DB toggle flags. The UI uses this
+ * Returns the shared per-connection engine state together with the persisted
+ * Main Trade and Preset Trade mode flags. The UI uses this
  * to keep the Enable / Live Trade / Preset Mode switches bidirectionally synced
  * with the actual engine state and to surface drift (e.g. flag is ON but the
  * engine is not actually running).
@@ -12,14 +12,19 @@
  *   success: true,
  *   connectionId: string,
  *   enabled:  { flag: boolean, running: boolean, inSync: boolean },
- *   live:     { flag: boolean, running: boolean, inSync: boolean },
- *   preset:   { flag: boolean, running: boolean, inSync: boolean },
+ *   live:     { flag: boolean, running: boolean, inSync: boolean }, // legacy alias
+ *   preset:   { flag: boolean, running: boolean, inSync: boolean }, // legacy alias
+ *   modes: {
+ *     mainTrade:   { flag: boolean, running: boolean, inSync: boolean },
+ *     presetTrade: { flag: boolean, running: boolean, inSync: boolean },
+ *   },
  * }
  */
 import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getConnection, getRedisClient, getSettings } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
+import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 
 export const runtime = "nodejs"
 export const maxDuration = 15
@@ -76,10 +81,14 @@ export async function GET(
     // live-trade endpoint preserves `live_trade_requested=1` while keeping
     // `is_live_trade=0`; if this endpoint reports only the effective flag, the
     // slider flips itself back off on the next poll and looks unstable.
-    const liveEffective = toBoolean((connection as any).is_live_trade)
-    const liveRequested = toBoolean((connection as any).live_trade_requested)
+    const liveReadiness = evaluateRealTradeReadiness(connection as Record<string, any>)
+    const liveEffective = liveReadiness.canPlaceRealOrders
+    const liveRequested = liveReadiness.requested
     const flagLive    = liveRequested || liveEffective
-    const flagPreset  = toBoolean((connection as any).is_preset_trade)
+    const presetReadiness = evaluateRealTradeReadiness(connection as Record<string, any>, "preset")
+    const presetEffective = presetReadiness.canPlaceRealOrders
+    const presetRequested = presetReadiness.requested
+    const flagPreset  = presetRequested || presetEffective
 
     // Correct semantics now that Live/Preset are mode flags on a single engine
     // (not separate engines). One TradeEngineManager per connection services all
@@ -107,6 +116,23 @@ export async function GET(
       inSync: !flag || !effective || engineRunning,
     })
 
+    const mainTradeState = {
+      ...buildModeState(flagLive, liveEffective),
+      executionMode: liveReadiness.executionMode,
+      blockCode: liveReadiness.blockCode,
+      blockReason: liveReadiness.blockReason,
+      credentialsValid: liveReadiness.credentialsValid,
+      durableCoordinationReady: liveReadiness.durableCoordinationReady,
+    }
+    const presetTradeState = {
+      ...buildModeState(flagPreset, presetEffective),
+      executionMode: presetReadiness.executionMode,
+      blockCode: presetReadiness.blockCode,
+      blockReason: presetReadiness.blockReason,
+      credentialsValid: presetReadiness.credentialsValid,
+      durableCoordinationReady: presetReadiness.durableCoordinationReady,
+    }
+
     return NextResponse.json(
       {
         success: true,
@@ -114,8 +140,15 @@ export async function GET(
         engineRunning,
         runningHint,
         enabled: buildEnableState(flagEnabled),
-        live: buildModeState(flagLive, liveEffective),
-        preset: buildModeState(flagPreset),
+        // Keep the original top-level properties for older dashboard clients,
+        // while exposing explicit stable names to prevent Main/Preset mode
+        // state from being confused with the shared processing engine.
+        live: mainTradeState,
+        preset: presetTradeState,
+        modes: {
+          mainTrade: mainTradeState,
+          presetTrade: presetTradeState,
+        },
         timestamp: new Date().toISOString(),
       },
       { headers }

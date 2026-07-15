@@ -981,7 +981,7 @@ export function QuickstartSection() {
         requestedState
           ? (effectiveState
               ? "LIVE exchange trading ENABLED — real orders can be placed when strategy gates pass"
-              : "LIVE exchange trading REQUESTED — blocked until API credentials are configured")
+              : `LIVE exchange trading REQUESTED — blocked: ${body?.live_trade_blocked_reason || "production live-order requirements are not satisfied"}`)
           : "LIVE exchange trading disabled",
         requestedState ? (effectiveState ? "success" : "warning") : "info",
       )

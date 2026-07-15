@@ -487,17 +487,30 @@ export async function recoordinateAfterSettingsChange(
   // hasRealTradeBlock() rejects every exchange order even though credentials
   // now exist.
   try {
-    const { hasConnectionCredentials, isTruthyFlag } = await import("@/lib/connection-state-utils")
+    const { isTruthyFlag } = await import("@/lib/connection-state-utils")
+    const { evaluateRealTradeReadiness } = await import("@/lib/real-trade-gates")
     const liveRequested = isTruthyFlag((after as any).live_trade_requested) || isTruthyFlag((after as any).is_live_trade)
-    const hasCreds = hasConnectionCredentials(after, 5, true)
-    const hasBlock = String((after as any).live_trade_blocked_reason || "").trim().length > 0
-    if (liveRequested && hasCreds && (!isTruthyFlag((after as any).is_live_trade) || hasBlock)) {
+    const currentBlockReason = String((after as any).live_trade_blocked_reason || "").trim()
+    const hasBlock = currentBlockReason.length > 0
+    const autoRepairableBlock =
+      !hasBlock || /credential|api key|api secret|shared redis|inlinelocalredis/i.test(currentBlockReason)
+    const prospectiveReadiness = evaluateRealTradeReadiness({
+      ...after,
+      is_live_trade: "1",
+      live_trade_requested: "1",
+      live_trade_blocked_reason: "",
+    })
+    if (
+      liveRequested &&
+      prospectiveReadiness.canPlaceRealOrders &&
+      autoRepairableBlock &&
+      (!isTruthyFlag((after as any).is_live_trade) || hasBlock)
+    ) {
       const { updateConnection } = await import("@/lib/redis-db")
       const patch = {
         is_live_trade: "1",
         live_trade_requested: "1",
         live_trade_blocked_reason: "",
-        last_test_status: "success",
         updated_at: new Date().toISOString(),
       }
       await updateConnection(id, patch)
@@ -512,6 +525,60 @@ export async function recoordinateAfterSettingsChange(
     console.warn(
       `[v0] [${opts.logTag}] Live Trade credential unblock check failed for ${id}:`,
       liveRepairErr instanceof Error ? liveRepairErr.message : String(liveRepairErr),
+    )
+  }
+
+  // Preset Trade uses the same exchange execution pipeline as Main Trade, but
+  // keeps an independent requested/effective state. Preserve that request
+  // across credential edits and clear only auto-repairable infrastructure
+  // blocks once the connection becomes ready.
+  try {
+    const { isTruthyFlag } = await import("@/lib/connection-state-utils")
+    const { evaluateRealTradeReadiness } = await import("@/lib/real-trade-gates")
+    const presetRequested =
+      isTruthyFlag((after as any).preset_trade_requested) ||
+      isTruthyFlag((after as any).is_preset_trade)
+    const currentBlockReason = String((after as any).preset_trade_blocked_reason || "").trim()
+    const hasBlock = currentBlockReason.length > 0
+    const autoRepairableBlock =
+      !hasBlock || /credential|api key|api secret|shared redis|inlinelocalredis/i.test(currentBlockReason)
+    const prospectiveReadiness = evaluateRealTradeReadiness(
+      {
+        ...after,
+        is_preset_trade: "1",
+        preset_trade_requested: "1",
+        preset_trade_blocked_reason: "",
+      },
+      "preset",
+    )
+    if (
+      presetRequested &&
+      prospectiveReadiness.canPlaceRealOrders &&
+      autoRepairableBlock &&
+      (!isTruthyFlag((after as any).is_preset_trade) || hasBlock)
+    ) {
+      const { updateConnection } = await import("@/lib/redis-db")
+      const patch = {
+        is_preset_trade: "1",
+        preset_trade_requested: "1",
+        preset_trade_blocked_reason: "",
+        preset_trade_block_code: "",
+        updated_at: new Date().toISOString(),
+      }
+      await updateConnection(id, patch)
+      after = { ...after, ...patch }
+      if (!changedFields.includes("is_preset_trade")) changedFields.push("is_preset_trade")
+      if (!changedFields.includes("preset_trade_blocked_reason")) {
+        changedFields.push("preset_trade_blocked_reason")
+      }
+      console.log(
+        `[v0] [${opts.logTag}] Preset Trade unblocked for ${id} after credential/settings save`,
+      )
+    }
+  } catch (presetRepairErr) {
+    console.warn(
+      `[v0] [${opts.logTag}] Preset Trade credential unblock check failed for ${id}:`,
+      presetRepairErr instanceof Error ? presetRepairErr.message : String(presetRepairErr),
     )
   }
 

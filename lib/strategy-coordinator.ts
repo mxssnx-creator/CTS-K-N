@@ -862,8 +862,8 @@ export class StrategyCoordinator {
      * block count can recover independently until that count's results are
      * positive again.
      *
-     *   1. **Block count** — each block size multiplies add-on size by
-     *      `(1 + (blockCount-1) × ratio)`, where ratio is blockVolumeRatio.
+     *   1. **Block count** — each independent add-on is calculated as
+     *      `positionBase × (blockCount × ratio)`, where ratio is blockVolumeRatio.
      *
      *   2. **Operator vol-ratio** — `blockVolumeRatio` is the per-block-count
      *      additive step (0.25 = +25 % per extra block count). The spec
@@ -5963,9 +5963,9 @@ export class StrategyCoordinator {
         // Each blockCount 1..blockMaxStack is emitted independently as a
         // transient execution overlay over the selected Set.
         gate: () => true,
-        // ── Block sub-configs ─ size is the *base* multiplier that the
-        // block overlay then scales by `(1 + (blockCount−1)×ratio)` so the
-        // block count and operator vol-ratio knob both flow into live notional.
+        // ── Block sub-configs ─ size is the Set's historical coordination
+        // base multiplier. Exchange add quantity is calculated independently
+        // from the authoritative position basis as `base × count × ratio`.
         // CRITICAL FIX: Reduced from 1.5/2.0 to 1.15/1.25 to prevent slippage
         // beyond SL triggers. Larger positions were getting filled at prices
         // that immediately crossed their own SL triggers on the same tick,

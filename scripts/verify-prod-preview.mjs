@@ -12,6 +12,7 @@ const PAGES = [
   "/logistics",
   "/active-exchange",
   "/live-trading",
+  "/presets",
   "/tracking",
 ]
 
@@ -161,12 +162,14 @@ async function main() {
       progressionReads.push(stats)
     }
 
-    const [logistics, engineStats, livePositions, engineStatuses, connectionSettings] = await Promise.all([
+    const [logistics, engineStats, livePositions, engineStatuses, connectionSettings, presetOverview, modeStates] = await Promise.all([
       request(`/api/logistics/queue?connectionId=${encodeURIComponent(connectionId)}`, { json: true, timeoutMs: 30_000 }),
       request(`/api/trading/engine-stats?connection_id=${encodeURIComponent(connectionId)}`, { json: true, timeoutMs: 30_000 }),
       request(`/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}`, { json: true, timeoutMs: 30_000 }),
       request("/api/trade-engine/status-all", { json: true, timeoutMs: 30_000 }),
       request(`/api/settings/connections/${encodeURIComponent(connectionId)}/settings`, { json: true, timeoutMs: 30_000 }),
+      request(`/api/preset-optimizer?connectionId=${encodeURIComponent(connectionId)}`, { json: true, timeoutMs: 30_000 }),
+      request(`/api/connections/${encodeURIComponent(connectionId)}/engine-states`, { json: true, timeoutMs: 30_000 }),
     ])
     if (!logistics?.success) throw new Error("Logistics API schema invalid")
     for (const field of ["queueSize", "processingRate", "successRate", "avgLatency", "completedOrders", "failedOrders"]) {
@@ -177,6 +180,15 @@ async function main() {
     if (!Array.isArray(liveRows)) throw new Error("Live positions API schema invalid")
     if (!engineStatuses || !Array.isArray(engineStatuses.engines)) throw new Error("Engine status API schema invalid")
     if (!connectionSettings?.settings || typeof connectionSettings.settings !== "object") throw new Error("Connection settings API schema invalid")
+    if (!presetOverview?.success || !Array.isArray(presetOverview?.data?.presets)) {
+      throw new Error("Preset optimizer API schema invalid")
+    }
+    if (Number(presetOverview?.data?.settings?.presetsPerSymbol) !== 4) {
+      throw new Error("Preset optimizer default count is not four per symbol/type")
+    }
+    if (!modeStates?.success || !modeStates?.modes?.mainTrade || !modeStates?.modes?.presetTrade) {
+      throw new Error("Main/Preset engine-state schema invalid")
+    }
   }
 
   const memory = monitoring?.memory || monitoring?.system?.memory || monitoring?.resources?.memory || {}

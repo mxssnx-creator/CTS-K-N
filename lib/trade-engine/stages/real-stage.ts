@@ -62,6 +62,13 @@ export interface RealPosition {
   // Forwarded through RealPosition → LivePosition for audit and future
   // re-scoring. Mirrors StrategySet.prevPos — see strategy-coordinator.ts.
   prevPos?: { count: number; successRate: number; profitFactor: number; avgDDT: number }
+  // Optimized Preset lineage. Populated only when the connection runs in
+  // Preset-only mode; Main Live positions remain unchanged.
+  presetId?: string
+  presetIndicatorType?: string
+  presetRank?: number
+  presetPositionCostPct?: number
+  presetProfitFactor?: number
 }
 
 /**
@@ -300,8 +307,9 @@ function createRealPosition(
 
   // Phase 2 FIX: Propagate variant lineage and strategy type from parent StrategySet
   // so the live executor receives correct position sizing.
-  // - For "adjust" type (Block/DCA): Use baseMultiplier (volume-ratio scaled)
-  //   block: m(n) = 1 + (n-1) × ratio (typically 1.5-2.0 after scaling)
+  // - For "adjust" type (Block/DCA): Use the coordinated baseMultiplier.
+  //   Block exchange add quantity is independently resolved from the
+  //   authoritative position basis as base × (count × volume ratio).
   //   dca: reduced size (typically 0.5)
   // - For "standard" type: Use 1.0 (position-count scaling applied separately)
   // If no variantSource provided, defaults are sizeMultiplier=1.0, type="standard".
@@ -321,7 +329,7 @@ function createRealPosition(
       console.log(
         `${LOG_PREFIX} [POSITION_TYPE_VALIDATION] Creating Block (Adjust) position: ` +
         `symbol=${mainPos.symbol} sizeMultiplier=${sizeMultiplier} ` +
-        `(volume-ratio scaled: m(n) = 1 + (n-1) × ratio)`
+        `(independent add: positionBase × blockCount × volumeRatio)`
       )
     } else if (setVariant === "dca") {
       console.log(
@@ -365,8 +373,8 @@ function createRealPosition(
     //   - "adjust": Adjustment strategies (Block/DCA)
     //     Qty applies baseMultiplier (volume-ratio scaled) directly
     //
-    // For "adjust" type: sizeMultiplier already includes vol-ratio scaling:
-    //   block: m(n) = 1 + (n-1) × volumeRatio (typically 1.5-2.0)
+    // For "adjust" type: the coordination multiplier retains Set lineage:
+    //   block: baseMultiplier × blockCount × volumeRatio
     //   dca: 0.5 (reduced averaging entries)
     // For "standard" type: sizeMultiplier=1.0, continuousCount scaling applied separately
     ...(setKey && { setKey }),

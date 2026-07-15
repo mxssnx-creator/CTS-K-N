@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
+import { authorizeAdminBearer } from "@/lib/admin-auth"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { maskConnectionSecret, maskConnectionSettings } from "@/lib/connection-secrets"
 
@@ -6,6 +7,20 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET(request: NextRequest) {
+  // This route can inspect internal Redis records and is therefore disabled by
+  // default even when an ADMIN_SECRET exists. Operators must enable it
+  // explicitly and authenticate every request with that server-side secret.
+  if (process.env.REDIS_DEBUG_ENABLED !== "1") {
+    return NextResponse.json({ error: "Not found" }, { status: 404 })
+  }
+  const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+  if (!authorization.ok) {
+    return NextResponse.json(
+      { error: authorization.error },
+      { status: authorization.status },
+    )
+  }
+
   try {
     await initRedis()
     const client = getRedisClient()

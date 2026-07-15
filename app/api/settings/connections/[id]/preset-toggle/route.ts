@@ -9,6 +9,7 @@ import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinato
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { maskConnectionSecrets } from "@/lib/connection-secrets"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
+import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 
 /**
  * Preset mode is a mode of the connection's single shared engine. Disabling it
@@ -30,9 +31,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         { status: 400 },
       )
     }
-    const isPresetTrade = parseBooleanInput(rawFlag)
+    const presetTradeRequested = parseBooleanInput(rawFlag)
 
-    if (isPresetTrade && process.env.NODE_ENV === "production") {
+    if (presetTradeRequested && process.env.NODE_ENV === "production") {
       const readiness = await checkProductionReadiness()
       if (!readiness.ready) return NextResponse.json(productionReadinessJson(readiness), { status: 503 })
     }
@@ -41,24 +42,23 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const connection = await getConnection(connectionId)
     if (!connection) return NextResponse.json({ error: "Connection not found" }, { status: 404 })
 
-    const apiKey = String(connection.api_key || connection.apiKey || "")
-    const apiSecret = String(connection.api_secret || connection.apiSecret || "")
-    if (isPresetTrade && (apiKey.length <= 10 || apiSecret.length <= 10)) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "API credentials required for preset trading",
-          hint: "Add API key and secret in Settings to enable preset trading",
-        },
-        { status: 400 },
-      )
-    }
+    const presetReadiness = evaluateRealTradeReadiness({
+      ...connection,
+      is_preset_trade: presetTradeRequested ? "1" : "0",
+      preset_trade_requested: presetTradeRequested ? "1" : "0",
+      preset_trade_blocked_reason: "",
+    }, "preset")
+    const presetTradeEffective = presetTradeRequested && presetReadiness.canPlaceRealOrders
+    const presetTradeBlockedReason = presetTradeRequested && !presetTradeEffective ? presetReadiness.blockReason : ""
 
     const stateSwitchVersion = await allocateStateSwitchVersion(connectionId, connection)
     const changedAt = new Date().toISOString()
     const connectionPatch = {
-      is_preset_trade: toRedisFlag(isPresetTrade),
-      ...(isPresetTrade
+      is_preset_trade: toRedisFlag(presetTradeEffective),
+      preset_trade_requested: toRedisFlag(presetTradeRequested),
+      preset_trade_blocked_reason: presetTradeBlockedReason,
+      preset_trade_block_code: presetTradeBlockedReason ? String(presetReadiness.blockCode || "unknown") : "",
+      ...(presetTradeEffective
         ? {
             is_assigned: "1",
             is_active_inserted: "1",
@@ -73,6 +73,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
     const presetFlagFields = new Set([
       "is_preset_trade",
+      "preset_trade_requested",
       "is_assigned",
       "is_active_inserted",
       "is_dashboard_inserted",
@@ -111,7 +112,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       coordinator.isEngineRunning(connectionId) ? "running" : "stopped"
     let engineStartedNow = false
 
-    if (isPresetTrade && !coordinator.isEngineRunning(connectionId)) {
+    if (presetTradeEffective && !coordinator.isEngineRunning(connectionId)) {
       const client = getRedisClient()
       await client.hset("trade_engine:global", {
         status: "running",
@@ -139,7 +140,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             connectionId,
             connection_name: connection.name,
             exchange: connection.exchange,
-            engine_type: "preset",
+            // Preset is an execution/profile mode of the connection's one shared Main progression.
+            // Starting a separate `preset` scope
+            // leaves Main/Preset switches observing different prehistoric and
+            // progression state when the mode changes on an already-running
+            // manager.
+            engine_type: "main",
             allowInProcessStart: true,
             indicationInterval: settings?.mainEngineIntervalMs ? settings.mainEngineIntervalMs / 1000 : 5,
             strategyInterval: settings?.strategyUpdateIntervalMs ? settings.strategyUpdateIntervalMs / 1000 : 10,
@@ -171,10 +177,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
 
     await SystemLogger.logConnection(
-      `Preset Mode ${isPresetTrade ? "enabled" : "disabled"} via UI toggle`,
+      `Preset Mode ${presetTradeEffective ? "enabled" : presetTradeRequested ? "requested but blocked" : "disabled"} via UI toggle`,
       connectionId,
       "info",
-      { is_preset_trade: isPresetTrade, engineStartedNow, engineStatus, stateSwitchVersion },
+      {
+        is_preset_trade: presetTradeEffective,
+        preset_trade_requested: presetTradeRequested,
+        preset_trade_blocked_reason: presetTradeBlockedReason || undefined,
+        engineStartedNow,
+        engineStatus,
+        stateSwitchVersion,
+      },
     )
 
     emitCanonicalEvent({
@@ -184,7 +197,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       settingsVersion: stateSwitchVersion,
       data: {
         mode: "preset",
-        enabled: isPresetTrade,
+        enabled: presetTradeEffective,
+        requested: presetTradeRequested,
+        executionMode: presetReadiness.executionMode,
+        blockCode: presetTradeBlockedReason ? presetReadiness.blockCode : undefined,
+        blockReason: presetTradeBlockedReason || undefined,
         engineStatus,
         refreshQueued: completion.refreshQueued === true,
       },
@@ -192,11 +209,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     return NextResponse.json({
       success: true,
-      is_preset_trade: isPresetTrade,
+      is_preset_trade: presetTradeEffective,
+      preset_trade_requested: presetTradeRequested,
+      preset_trade_blocked_reason: presetTradeBlockedReason,
+      preset_trade_block_code: presetTradeBlockedReason ? presetReadiness.blockCode : null,
+      preset_execution_mode: presetTradeEffective ? "live" : presetTradeRequested ? "blocked" : "simulation",
       engineStatus,
       engineStartedNow,
       connection: maskConnectionSecrets(updatedConnection),
-      message: `Preset Mode ${isPresetTrade ? "enabled" : "disabled"}`,
+      message: presetTradeEffective
+        ? "Preset Mode enabled"
+        : presetTradeRequested
+          ? `Preset Mode requested but blocked: ${presetTradeBlockedReason}`
+          : "Preset Mode disabled",
     })
   } catch (error) {
     console.error("[v0] [Preset Trade] Exception:", error)

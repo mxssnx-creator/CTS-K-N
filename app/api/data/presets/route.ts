@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
+import { listOptimizedPresets } from "@/lib/preset-store"
 
 interface PresetTemplate {
   id: string
@@ -115,102 +116,33 @@ function generateMockPresets(connectionId: string): PresetTemplate[] {
   ]
 }
 
-function parseMaybeJSON<T = any>(value: unknown, fallback: T): T {
-  if (value == null) return fallback
-  if (typeof value !== "string") return value as T
-  try {
-    return JSON.parse(value) as T
-  } catch {
-    return fallback
-  }
-}
-
-function pickFirstNumber(v: unknown, fallback = 0): number {
-  if (Array.isArray(v) && v.length > 0 && typeof v[0] === "number") return v[0]
-  if (typeof v === "number") return v
-  if (typeof v === "string") {
-    const n = Number(v)
-    if (!Number.isNaN(n)) return n
-  }
-  return fallback
-}
-
 /**
- * Real-mode preset loader: reads the shared preset *templates* from the DB shim
- * (Redis-backed) and enriches each one with per-connection stats derived from
- * that connection's active strategies. We do NOT fabricate numbers — if the
- * trading engine has not produced any strategies for this connection + preset
- * yet, the stats are zeroed and `enabled` reflects the preset's is_active flag.
+ * Compatibility projection for older PresetCard consumers. The canonical
+ * source is the generation-indexed optimizer store; no fabricated production
+ * values or SQL shim rows are returned.
  */
 async function getRealPresets(connectionId: string): Promise<PresetTemplate[]> {
   try {
-    // No SQL DB — fall through to mock presets
-    const rows: any[] = []
-
-    if (!rows || rows.length === 0) {
-      return []
-    }
-
-    // Active strategies for this connection — used to compute *real* per-preset stats.
-    const activeStrategies: any[] = []
-
-    const byPreset = new Map<string, any[]>()
-    for (const s of activeStrategies) {
-      const pid = String(s.preset_id || s.presetId || "")
-      if (!pid) continue
-      const list = byPreset.get(pid) || []
-      list.push(s)
-      byPreset.set(pid, list)
-    }
-
-    return rows.map((preset: any) => {
-      const id = String(preset.id ?? preset.name ?? `preset-${Math.random().toString(36).slice(2)}`)
-      const strategies = byPreset.get(id) || []
-
-      const successCount = strategies.length
-      const avgProfit =
-        successCount > 0
-          ? strategies.reduce((sum, s) => sum + (Number(s.profit_factor) || 0), 0) / successCount
-          : 0
-      const avgWinRate =
-        successCount > 0
-          ? strategies.reduce((sum, s) => sum + (Number(s.win_rate) || 0), 0) / successCount
-          : 0
-
-      // Config defaults — take the first value from each preset's array field
-      // so the user sees one concrete number per column (not an array).
-      const tpSteps = parseMaybeJSON<number[]>(preset.takeprofit_steps, [4])
-      const slRatios = parseMaybeJSON<number[]>(preset.stoploss_ratios, [0.6])
-      const volFactors = parseMaybeJSON<number[]>(preset.volume_factors, [1])
-      const strategyTypes = parseMaybeJSON<string[]>(preset.strategy_types, ["main"])
-
-      const isEnabled =
-        preset.is_active === true ||
-        preset.is_active === 1 ||
-        preset.is_active === "true" ||
-        preset.is_active === "1"
-
-      return {
-        id,
-        name: String(preset.name || `Preset ${id}`),
-        description: String(preset.description || "Trading preset"),
-        strategyType:
-          Array.isArray(strategyTypes) && strategyTypes.length > 0 ? String(strategyTypes[0]) : "main",
-        symbol: String(preset.symbol || "MULTI"),
-        enabled: isEnabled,
-        config: {
-          tp: pickFirstNumber(tpSteps, 4),
-          sl: pickFirstNumber(slRatios, 0.6),
-          leverage: Number(preset.default_leverage) || 1,
-          volume: pickFirstNumber(volFactors, 1),
-        },
-        stats: {
-          winRate: Number(avgWinRate.toFixed(2)),
-          avgProfit: Number(avgProfit.toFixed(2)),
-          successCount,
-        },
-      }
-    })
+    const { presets } = await listOptimizedPresets(connectionId, { limit: 2_000 })
+    return presets.map((preset) => ({
+      id: preset.id,
+      name: `${preset.symbol} ${preset.indicator.type.toUpperCase()} #${preset.rank}`,
+      description: `PF ${preset.metrics.profitFactor.toFixed(2)} · ${preset.metrics.totalPositions} positions · ${preset.trailing.enabled ? "independent trailing" : "TP/SL"}`,
+      strategyType: preset.indicator.type,
+      symbol: preset.symbol,
+      enabled: preset.selected,
+      config: {
+        tp: preset.takeProfitPct,
+        sl: preset.stopLossPct,
+        leverage: 1,
+        volume: preset.positionCostPct,
+      },
+      stats: {
+        winRate: preset.metrics.winRate,
+        avgProfit: Number((preset.metrics.averageR * preset.positionCostPct).toFixed(4)),
+        successCount: preset.metrics.totalPositions,
+      },
+    }))
   } catch (error) {
     console.error(`[data/presets] Failed to load real presets for ${connectionId}:`, error)
     return []
@@ -235,10 +167,7 @@ export async function GET(request: NextRequest) {
     if (isDemo) {
       presets = generateMockPresets(connectionId)
     } else {
-      // Previously this branch always returned `[]`, leaving the Presets page
-      // blank on real connections. Now we pull the shared preset templates
-      // out of the DB shim and attach per-connection stats derived from the
-      // running trade engine's Redis strategies.
+      // Real connections expose only persisted optimizer results.
       presets = await getRealPresets(connectionId)
     }
 

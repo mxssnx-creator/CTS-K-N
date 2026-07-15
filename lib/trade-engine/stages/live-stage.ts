@@ -18,8 +18,8 @@
  *  10. Metrics counters in progression:{connId} hash (live orders placed,
  *      filled, failed; live positions open; total volume USD)
  *
- * Disabling is_live_trade on the connection short-circuits the pipeline and
- * records a "simulated" live position without touching the exchange.
+ * When neither Main Live nor the independent Preset mode is enabled, the
+ * pipeline records a simulated position without touching the exchange.
  */
 
 import { getAppSettings, getConnection, getRedisClient, initRedis, setSettings } from "@/lib/redis-db"
@@ -39,7 +39,7 @@ import {
   type LiveOrderTrace,
 } from "@/lib/live-order-logger"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
-import { hasRealTradeBlock } from "@/lib/real-trade-gates"
+import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import {
   advanceBlockCountPausesOnPositionClose,
   buildBlockLegState,
@@ -201,8 +201,8 @@ function computeSetAwareSL(
 
 async function isLiveTradeEnabledForConnection(connectionId: string): Promise<boolean> {
   const connection = (await getConnection(connectionId).catch(() => null)) || {}
-  if (hasRealTradeBlock(connection as Record<string, any>)) return false
-  return isTruthyFlag((connection as any).is_live_trade) || isTruthyFlag((connection as any).live_trade_enabled)
+  return evaluateRealTradeReadiness(connection as Record<string, any>).canPlaceRealOrders ||
+    evaluateRealTradeReadiness(connection as Record<string, any>, "preset").canPlaceRealOrders
 }
 
 // ── Exchange call timeouts ────────────────────────────────────────────────
@@ -308,6 +308,15 @@ interface LivePosition {
   trailingStopPrice?: number
   status?: "open" | "closed" | "filled" | "partially_filled" | "placed" | "pending_fill" | "placed_unconfirmed" | "rejected" | "cancelled" | "error" | "simulated" | "pending" | "closing" | "closing_partial"
   statusReason?: string
+  executionMode?: "live" | "blocked" | "simulation"
+  executionIntent?: "main" | "preset"
+  executionBlockCode?: string
+  executionBlockReason?: string
+  presetId?: string
+  presetIndicatorType?: string
+  presetRank?: number
+  presetPositionCostPct?: number
+  presetProfitFactor?: number
   closeReason?: string
   closePrice?: number
   // ── Race condition prevention (Redis-backed mutation lock) ──
@@ -1040,13 +1049,15 @@ async function resolveAccumulationPlan(
   if (real?.setVariant === "block") {
     const blockCount = parseBlockCount(real?.setKey)
     const blockVolumeRatio = Number(real?.blockVolumeRatio ?? existing.blockVolumeRatio ?? 1)
-    const blockBaseQuantity = Number(
-      existing.blockBaseQuantity ?? existing.initialExecutedQuantity ?? existing.executedQuantity ?? 0,
-    )
+    // Each independent Block count uses the authoritative quantity currently
+    // confirmed on the position. After Block 1 fills, Block 3 therefore starts
+    // from the new aggregate basis, matching the operator formula and keeping
+    // the exact basis on that Block leg for restart/reconciliation audit.
+    const blockBaseQuantity = Number(existing.executedQuantity ?? existing.quantity ?? 0)
     if (!blockCount || blockBaseQuantity <= 0 || blockVolumeRatio <= 0) return null
     // Per independent Block set: addQty = currentPositionQty × (activeBlockCount × blockVolumeRatio).
-    // currentPositionQty is snapshotted as immutable blockBaseQuantity so later
-    // Block legs do not compound on quantities added by earlier Block counts.
+    // currentPositionQty is snapshotted per leg in pendingAccumulation; later
+    // Blocks intentionally use the newly exchange-confirmed aggregate quantity.
     const addQty = calculateBlockAddQuantity(blockBaseQuantity, blockCount, blockVolumeRatio)
     return { addQty, variant: "block", blockCount, blockBaseQuantity }
   }
@@ -1240,7 +1251,8 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     const clientOrderId = makeDurableClientOrderId("acc", existing)
     existing.initialExecutedQuantity ??= existing.executedQuantity
     existing.initialEntryPrice ??= existing.averageExecutionPrice || existing.entryPrice
-    existing.blockBaseQuantity ??= existing.initialExecutedQuantity
+    if (plan.variant === "block") existing.blockBaseQuantity = plan.blockBaseQuantity
+    else existing.blockBaseQuantity ??= existing.initialExecutedQuantity
     if (plan.dcaProfile) existing.dcaProfile = plan.dcaProfile
     existing.pendingAccumulation = {
       clientOrderId,
@@ -3277,12 +3289,13 @@ async function updateProtectionOrders(
  */
 export async function executeLivePosition(
   connectionId: string,
-  realPosition: RealPosition,
+  sourceRealPosition: RealPosition,
   exchangeConnector: any
 ): Promise<LivePosition> {
   await initRedis()
   const client = getRedisClient()
   const connectionTrackingId = makeConnectionTrackingId(connectionId)
+  let realPosition = sourceRealPosition
 
   // ── Exchange circuit-breaker gate (per-symbol) ──────────────���────────
   // BingX code 109400 — "API orders temporarily disabled due to market
@@ -3400,6 +3413,26 @@ export async function executeLivePosition(
     return skipped
   }
 
+  // Resolve the execution mode once before constructing the immutable position
+  // snapshot. Preset mode is independent from Main Live, but Main wins when
+  // both switches are on so enabling Presets cannot silently rewrite a Main
+  // strategy order. In Preset-only mode the active optimized preset is applied
+  // before SL/TP/trailing fields are copied into the LivePosition.
+  const initialConnectionSettings = (await getConnection(connectionId).catch(() => null)) || {}
+  const mainModeEnabled = isTruthyFlag((initialConnectionSettings as any).is_live_trade) ||
+    isTruthyFlag((initialConnectionSettings as any).live_trade_enabled)
+  const presetModeEnabled = isTruthyFlag((initialConnectionSettings as any).is_preset_trade) ||
+    isTruthyFlag((initialConnectionSettings as any).preset_trade_enabled)
+  const executionIntent: "main" | "preset" = presetModeEnabled && !mainModeEnabled ? "preset" : "main"
+  if (executionIntent === "preset") {
+    const { applySelectedPresetToRealPosition } = await import("@/lib/preset-store")
+    realPosition = await applySelectedPresetToRealPosition(
+      connectionId,
+      realPosition,
+      initialConnectionSettings as Record<string, any>,
+    )
+  }
+
   const livePosition: LivePosition = {
     id: `live:${connectionId}:${realPosition.symbol}:${realPosition.direction}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
     connectionId,
@@ -3466,6 +3499,12 @@ export async function executeLivePosition(
     // after creation — they reflect the Set's config at dispatch time.
     trailingProfile: realPosition.trailingProfile,
     prevPos:         realPosition.prevPos,
+    presetId: realPosition.presetId,
+    presetIndicatorType: realPosition.presetIndicatorType,
+    presetRank: realPosition.presetRank,
+    presetPositionCostPct: realPosition.presetPositionCostPct,
+    presetProfitFactor: realPosition.presetProfitFactor,
+    executionIntent,
   }
 
   const normalizedInitialSl = normalizeStopLossPercent(realPosition.stopLoss)
@@ -3533,43 +3572,45 @@ export async function executeLivePosition(
     // came back as a boolean, causing every real order to become a "simulated" order
     // despite the strategy-coordinator correctly detecting live_trade=true just one
     // function call upstream.
-    const { getConnection: _getConn } = await import("@/lib/redis-db")
-    const { isTruthyFlag } = await import("@/lib/connection-state-utils")
-    const connSettings = (await _getConn(connectionId)) || {}
-    const isLiveTradeEnabledRaw =
-      !hasRealTradeBlock(connSettings) &&
-      (isTruthyFlag(connSettings.is_live_trade) ||
-        isTruthyFlag(connSettings.live_trade_enabled))
+    const connSettings = initialConnectionSettings
+    // One canonical decision is shared with the Main Live toggle and status
+    // APIs. Previously each path implemented a slightly different combination
+    // of flags, credentials, and Redis checks, so production could display Live
+    // ON while this branch silently created paper positions.
+    const liveReadiness = evaluateRealTradeReadiness(connSettings, executionIntent)
+    const isLiveTradeEnabled = liveReadiness.canPlaceRealOrders
+    livePosition.executionMode = liveReadiness.executionMode
+    livePosition.executionBlockCode = liveReadiness.blockCode || undefined
+    livePosition.executionBlockReason = liveReadiness.blockReason || undefined
 
-    // ── CREDENTIAL GATE (production robustness) ────────────────────────────
-    // `is_live_trade` can be force-set to "1" by migrations/seeders even when
-    // the connection has NO valid API credentials (e.g. a fresh production
-    // deploy with empty/placeholder keys). Without this gate the engine
-    // attempts REAL exchange order execution every cycle and every attempt
-    // fails with an auth error — which surfaces as coordinator error messages,
-    // progression failures, and "unsuccessful" trades in production, while dev
-    // (configured with real local credentials) works fine. When credentials
-    // are absent we deliberately fall through to the existing paper/simulation
-    // branch instead of failing, so the connection still progresses safely.
-    const hasValidLiveCredentials = (() => {
-      const key = connSettings?.api_key || connSettings?.apiKey
-      const secret = connSettings?.api_secret || connSettings?.apiSecret
-      // Keep this threshold aligned with QuickStart/live-trade routes. Some
-      // production exchange keys are shorter than 16 chars; treating them as
-      // invalid here made the live stage record simulated positions even though
-      // the operator had real credentials saved.
-      if (!key || String(key).length < 10) return false
-      if (!secret || String(secret).length < 10) return false
-      const banned = /PLACEHOLDER|00998877|^test/i
-      if (banned.test(String(key)) || banned.test(String(secret))) return false
-      return true
-    })()
-    const isLiveTradeEnabled = isLiveTradeEnabledRaw && hasValidLiveCredentials
-    if (isLiveTradeEnabledRaw && !hasValidLiveCredentials) {
-      console.warn(
-        `${LOG_PREFIX} live_trade enabled on ${connectionId} but connection has no valid API credentials — ` +
-          `executing in simulation (paper) mode instead of real exchange orders`,
-      )
+    // A requested live run must fail visibly when its safety prerequisites are
+    // not met. Falling back to paper here made the Main engine look healthy
+    // while no venue order was ever attempted. Paper simulation remains active
+    // only when the operator has actually left Live Trade disabled.
+    if (!isLiveTradeEnabled && liveReadiness.requested) {
+      livePosition.status = "rejected"
+      livePosition.statusReason =
+        `Live exchange order blocked (${liveReadiness.blockCode || "unknown"}): ${liveReadiness.blockReason}`
+      pushStep(livePosition, "live_readiness", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      await Promise.all([
+        incrementMetric(connectionId, "live_orders_blocked_count"),
+        logProgressionEvent(
+          connectionId,
+          "live_trading",
+          "warning",
+          livePosition.statusReason,
+          {
+            symbol: realPosition.symbol,
+            direction: realPosition.direction,
+            blockCode: liveReadiness.blockCode,
+            credentialsValid: liveReadiness.credentialsValid,
+            durableCoordinationReady: liveReadiness.durableCoordinationReady,
+          },
+        ),
+      ])
+      console.warn(`${LOG_PREFIX} ${livePosition.statusReason}`)
+      return livePosition
     }
 
     // isBlockVariant and _lockDirSuffix are hoisted to function scope (before
@@ -3611,13 +3652,13 @@ export async function executeLivePosition(
       return accumulateIntoLivePosition(connectionId, existing, realPosition, adjustmentPrice, exchangeConnector)
     }
 
-    pushStep(livePosition, "preflight", true, `live_trade=${isLiveTradeEnabled}`)
+    pushStep(livePosition, "preflight", true, `execution_mode=${liveReadiness.executionMode}`)
     await logProgressionEvent(
       connectionId,
       "live_trading",
       "info",
       `Live pipeline start ${realPosition.symbol} ${realPosition.direction}`,
-      { liveTrade: isLiveTradeEnabled, realPositionId: realPosition.id }
+      { liveTrade: isLiveTradeEnabled, executionMode: liveReadiness.executionMode, realPositionId: realPosition.id }
     )
 
     // ── Atomic dedup gate (P0-4 race fix) ──��───────────────────────────
@@ -3804,7 +3845,8 @@ export async function executeLivePosition(
           `simulated slot already open for ${realPosition.symbol} ${realPosition.direction}`,
         )
         existingSimulatedSlot.statusReason =
-          existingSimulatedSlot.statusReason || "live_trade disabled — no exchange execution"
+          existingSimulatedSlot.statusReason || "live_trade disabled by operator — no exchange execution"
+        existingSimulatedSlot.executionMode = "simulation"
         existingSimulatedSlot.updatedAt = Date.now()
         await savePosition(existingSimulatedSlot)
         return existingSimulatedSlot
@@ -3865,7 +3907,8 @@ export async function executeLivePosition(
         },
       ]
       livePosition.status = "simulated"
-      livePosition.statusReason = "live_trade disabled — no exchange execution"
+      livePosition.statusReason = "live_trade disabled by operator — no exchange execution"
+      livePosition.executionMode = "simulation"
       pushStep(livePosition, "simulate", true, `qty=${simQty} @ ${simEntryPrice}`)
       await savePosition(livePosition)
       // Run counters in parallel — they're independent. Simulated orders are
@@ -3887,11 +3930,11 @@ export async function executeLivePosition(
           connectionId,
           "live_trading",
           "info",
-          `Simulated live order (live_trade disabled) ${realPosition.symbol}`,
+          `Simulated live order (live_trade disabled by operator) ${realPosition.symbol}`,
           { direction: realPosition.direction, quantity: simQty, entryPrice: simEntryPrice }
         ),
       ])
-      console.log(`${LOG_PREFIX} SIMULATION: ${realPosition.symbol} ${realPosition.direction} qty=${simQty} @ ${simEntryPrice} (live_trade disabled)`)
+      console.log(`${LOG_PREFIX} SIMULATION: ${realPosition.symbol} ${realPosition.direction} qty=${simQty} @ ${simEntryPrice} (live_trade disabled by operator)`)
       return livePosition
     }
 
@@ -4162,10 +4205,11 @@ export async function executeLivePosition(
           clientOrderId: orderTrace.exchangeTrackingId,
         }
       : { hedgeMode: false, clientOrderId: orderTrace.exchangeTrackingId }
-    const isStillLive =
-      !hasRealTradeBlock(freshSettings) &&
-      (reCheckTruthy(freshSettings.is_live_trade) ||
-        reCheckTruthy(freshSettings.live_trade_enabled))
+    const freshMainModeEnabled = reCheckTruthy(freshSettings.is_live_trade) || reCheckTruthy(freshSettings.live_trade_enabled)
+    const freshPresetModeEnabled = reCheckTruthy(freshSettings.is_preset_trade) || reCheckTruthy(freshSettings.preset_trade_enabled)
+    const freshExecutionIntent: "main" | "preset" = freshPresetModeEnabled && !freshMainModeEnabled ? "preset" : "main"
+    const freshReadiness = evaluateRealTradeReadiness(freshSettings, freshExecutionIntent)
+    const isStillLive = freshReadiness.canPlaceRealOrders
     
     const isTestnetConnection = reCheckTruthy(freshSettings.is_testnet)
     if (isTestnetConnection) {
@@ -4181,8 +4225,11 @@ export async function executeLivePosition(
 
     if (!isStillLive) {
       livePosition.status = "rejected"
+      livePosition.executionMode = "blocked"
+      livePosition.executionBlockCode = freshReadiness.blockCode || undefined
+      livePosition.executionBlockReason = freshReadiness.blockReason || undefined
       livePosition.statusReason =
-        `Control Orders disabled (is_live_trade=false) — order blocked before exchange placement`
+        `Exchange order blocked before placement (${freshReadiness.blockCode || "unknown"}): ${freshReadiness.blockReason}`
       pushStep(livePosition, "entry", false, livePosition.statusReason)
       await savePosition(livePosition)
       await incrementMetric(connectionId, "live_orders_blocked_count")
@@ -4193,6 +4240,14 @@ export async function executeLivePosition(
         livePosition.statusReason,
         { symbol: realPosition.symbol, direction: realPosition.direction },
       ).catch(() => {})
+      if (liveOrderLockToken) {
+        await releaseLock(
+          connectionId,
+          realPosition.symbol,
+          realPosition.direction + _lockDirSuffix,
+          liveOrderLockToken,
+        ).catch(() => {})
+      }
       return livePosition
     }
 

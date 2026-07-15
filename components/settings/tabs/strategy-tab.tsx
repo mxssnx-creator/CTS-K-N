@@ -18,6 +18,35 @@ interface StrategyTabProps {
   handleSettingChange: (key: string, value: any) => void
 }
 
+function PresetOptimizerSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+  suffix = "",
+}: {
+  label: string
+  value: number
+  min: number
+  max: number
+  step: number
+  onChange: (value: number) => void
+  suffix?: string
+}) {
+  const digits = step < 1 ? (step < 0.1 ? 2 : 1) : 0
+  return (
+    <div className="space-y-2">
+      <div className="flex justify-between gap-2">
+        <Label className="text-xs">{label}</Label>
+        <span className="text-xs tabular-nums text-muted-foreground">{value.toFixed(digits)}{suffix}</span>
+      </div>
+      <Slider min={min} max={max} step={step} value={[value]} onValueChange={([next]) => onChange(next)} />
+    </div>
+  )
+}
+
 export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps) {
   const [strategySubTab, setStrategySubTab] = useState("main")
   const [strategyMainSubTab, setStrategyMainSubTab] = useState("base")
@@ -30,6 +59,9 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
     ? settings.dcaStepDistancesPct
     : DEFAULT_DCA_PROFILE.stepDistancesPct
   const dcaMaxSteps = Math.max(1, Math.min(4, Number(settings.dcaMaxSteps) || DEFAULT_DCA_PROFILE.maxSteps))
+  const presetIndicatorTypes: string[] = Array.isArray(settings.presetIndicatorTypes)
+    ? settings.presetIndicatorTypes
+    : ["rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "sar"]
   const updateDcaStep = (key: "dcaStepVolumeMultipliers" | "dcaStepDistancesPct", index: number, value: number) => {
     const fallback = key === "dcaStepVolumeMultipliers"
       ? DEFAULT_DCA_PROFILE.stepVolumeMultipliers
@@ -39,6 +71,16 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
     current[index] = value
     handleSettingChange(key, current)
   }
+  const updatePresetBlockSetting = (presetKey: string, runtimeKey: string, value: number | boolean) => {
+    handleSettingChange(presetKey, value)
+    handleSettingChange(runtimeKey, value)
+  }
+  const presetBlockEnabled = settings.presetBlockEnabled !== false
+  const presetBlockVolumeRatio = Number(settings.presetBlockVolumeRatio ?? settings.blockVolumeRatio ?? 1)
+  const presetBlockMaxStack = Number(settings.presetBlockMaxStack ?? settings.blockMaxStack ?? 10)
+  const presetBlockPauseCountRatio = Number(settings.presetBlockPauseCountRatio ?? settings.blockPauseCountRatio ?? 1)
+  const presetBlockActiveRealEnabled = settings.presetBlockActiveRealEnabled ?? settings.blockActiveRealEnabled ?? true
+  const presetBlockActiveLiveEnabled = settings.presetBlockActiveLiveEnabled ?? settings.blockActiveLiveEnabled ?? true
 
   return (
     <TabsContent value="strategy" className="space-y-4">
@@ -509,15 +551,15 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                   <Label>Minimum Profit Factor</Label>
                   <div className="flex items-center gap-4">
                     <Slider
-                      min={0.1}
-                      max={2.0}
+                      min={0.4}
+                      max={3.0}
                       step={0.1}
-                      value={[settings.profitFactorMinPreset || 0.6]}
+                      value={[settings.profitFactorMinPreset ?? 0.7]}
                       onValueChange={([value]) => handleSettingChange("profitFactorMinPreset", value)}
                       className="flex-1"
                     />
                     <span className="text-sm font-medium w-10 text-right">
-                      {(settings.profitFactorMinPreset || 0.6).toFixed(1)}
+                      {(settings.profitFactorMinPreset ?? 0.7).toFixed(1)}
                     </span>
                   </div>
                 </div>
@@ -527,15 +569,99 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                   <div className="flex items-center gap-4">
                     <Slider
                       min={1}
-                      max={72}
-                      step={1}
-                      value={[settings.drawdownTimePreset || 24]}
+                      max={24}
+                      step={0.5}
+                      value={[settings.drawdownTimePreset ?? 5]}
                       onValueChange={([value]) => handleSettingChange("drawdownTimePreset", value)}
                       className="flex-1"
                     />
                     <span className="text-sm font-medium w-16 text-right">
-                      {settings.drawdownTimePreset || 24}h
+                      {settings.drawdownTimePreset ?? 5}h
                     </span>
+                  </div>
+                </div>
+              </div>
+
+              <Separator />
+
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-lg font-semibold">Historical Optimizer Coverage</h3>
+                  <p className="text-xs text-muted-foreground">
+                    The same persisted settings used by the Presets page and live Preset execution. TP and SL are ratios of exchange position cost.
+                  </p>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <PresetOptimizerSlider label="History" value={Number(settings.presetHistoryDays ?? 14)} min={1} max={14} step={1} suffix="d" onChange={(value) => handleSettingChange("presetHistoryDays", value)} />
+                  <PresetOptimizerSlider label="Presets / symbol / type" value={Number(settings.presetCountPerSymbol ?? 4)} min={1} max={12} step={1} onChange={(value) => handleSettingChange("presetCountPerSymbol", value)} />
+                  <PresetOptimizerSlider label="Indicator variants / type" value={Number(settings.presetMaxIndicatorVariants ?? 4)} min={1} max={12} step={1} onChange={(value) => handleSettingChange("presetMaxIndicatorVariants", value)} />
+                  <PresetOptimizerSlider label="Signals / variant" value={Number(settings.presetMaxSignalsPerVariant ?? 48)} min={8} max={128} step={1} onChange={(value) => handleSettingChange("presetMaxSignalsPerVariant", value)} />
+                  <PresetOptimizerSlider label="Maximum candles / symbol" value={Number(settings.presetMaxCandlesPerRun ?? 6000)} min={500} max={20000} step={500} onChange={(value) => handleSettingChange("presetMaxCandlesPerRun", value)} />
+                  <PresetOptimizerSlider label="Trailing step factor" value={Number(settings.presetTrailStepRatio ?? 0.5)} min={0.1} max={1} step={0.1} onChange={(value) => handleSettingChange("presetTrailStepRatio", value)} />
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-4">
+                  <div className="space-y-3 rounded-lg border p-3">
+                    <Label>Take Profit / position cost</Label>
+                    <PresetOptimizerSlider label="Minimum" value={Number(settings.presetTpMin ?? 3)} min={3} max={30} step={1} onChange={(value) => handleSettingChange("presetTpMin", value)} />
+                    <PresetOptimizerSlider label="Maximum" value={Number(settings.presetTpMax ?? 30)} min={3} max={30} step={1} onChange={(value) => handleSettingChange("presetTpMax", value)} />
+                    <PresetOptimizerSlider label="Step" value={Number(settings.presetTpStep ?? 1)} min={1} max={27} step={1} onChange={(value) => handleSettingChange("presetTpStep", value)} />
+                  </div>
+                  <div className="space-y-3 rounded-lg border p-3">
+                    <Label>Stop Loss / Take Profit</Label>
+                    <PresetOptimizerSlider label="Minimum" value={Number(settings.presetSlMin ?? 0.25)} min={0.25} max={2} step={0.25} onChange={(value) => handleSettingChange("presetSlMin", value)} />
+                    <PresetOptimizerSlider label="Maximum" value={Number(settings.presetSlMax ?? 2)} min={0.25} max={2} step={0.25} onChange={(value) => handleSettingChange("presetSlMax", value)} />
+                    <PresetOptimizerSlider label="Step" value={Number(settings.presetSlStep ?? 0.25)} min={0.25} max={1.75} step={0.25} onChange={(value) => handleSettingChange("presetSlStep", value)} />
+                  </div>
+                  <div className="space-y-3 rounded-lg border p-3">
+                    <Label>Trailing activation ratio</Label>
+                    <PresetOptimizerSlider label="Minimum" value={Number(settings.presetTrailStartMin ?? 0.5)} min={0.5} max={1.5} step={0.1} onChange={(value) => handleSettingChange("presetTrailStartMin", value)} />
+                    <PresetOptimizerSlider label="Maximum" value={Number(settings.presetTrailStartMax ?? 1.5)} min={0.5} max={1.5} step={0.1} onChange={(value) => handleSettingChange("presetTrailStartMax", value)} />
+                    <PresetOptimizerSlider label="Step" value={Number(settings.presetTrailStartStep ?? 0.1)} min={0.1} max={1} step={0.1} onChange={(value) => handleSettingChange("presetTrailStartStep", value)} />
+                  </div>
+                  <div className="space-y-3 rounded-lg border p-3">
+                    <Label>Trailing stop ratio</Label>
+                    <PresetOptimizerSlider label="Minimum" value={Number(settings.presetTrailStopMin ?? 0.2)} min={0.2} max={0.4} step={0.1} onChange={(value) => handleSettingChange("presetTrailStopMin", value)} />
+                    <PresetOptimizerSlider label="Maximum" value={Number(settings.presetTrailStopMax ?? 0.4)} min={0.2} max={0.4} step={0.1} onChange={(value) => handleSettingChange("presetTrailStopMax", value)} />
+                    <PresetOptimizerSlider label="Step" value={Number(settings.presetTrailStopStep ?? 0.1)} min={0.1} max={0.2} step={0.1} onChange={(value) => handleSettingChange("presetTrailStopStep", value)} />
+                  </div>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div className="flex items-center justify-between rounded-lg border p-3">
+                    <Label>Auto-generate missing results</Label>
+                    <Switch checked={settings.presetAutoGenerate !== false} onCheckedChange={(checked) => handleSettingChange("presetAutoGenerate", checked)} />
+                  </div>
+                  <div className="flex items-center justify-between rounded-lg border p-3">
+                    <Label>Auto-select best / symbol / type</Label>
+                    <Switch checked={settings.presetAutoSelect !== false} onCheckedChange={(checked) => handleSettingChange("presetAutoSelect", checked)} />
+                  </div>
+                  <div className="flex items-center justify-between rounded-lg border p-3">
+                    <Label>Trailing independent from TP</Label>
+                    <Switch checked={settings.presetTrailingIndependent !== false} onCheckedChange={(checked) => handleSettingChange("presetTrailingIndependent", checked)} />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Common indication types</Label>
+                  <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
+                    {["rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "sar"].map((type) => {
+                      const checked = presetIndicatorTypes.includes(type)
+                      return (
+                        <div key={type} className="flex items-center justify-between rounded-lg border px-3 py-2">
+                          <Label className="text-xs uppercase">{type}</Label>
+                          <Switch
+                            checked={checked}
+                            onCheckedChange={(enabled) => handleSettingChange(
+                              "presetIndicatorTypes",
+                              enabled
+                                ? [...new Set([...presetIndicatorTypes, type])]
+                                : presetIndicatorTypes.filter((item) => item !== type),
+                            )}
+                          />
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
               </div>
@@ -565,8 +691,12 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       <p className="text-xs text-muted-foreground">Enable block trading strategy</p>
                     </div>
                     <Switch
-                      checked={settings.presetBlockEnabled === true}
-                      onCheckedChange={(checked) => handleSettingChange("presetBlockEnabled", checked)}
+                      checked={presetBlockEnabled}
+                      onCheckedChange={(checked) => {
+                        updatePresetBlockSetting("presetBlockEnabled", "variantBlockEnabled", checked)
+                        handleSettingChange("presetBlockStrategy", checked)
+                        handleSettingChange("blockAdjustment", checked)
+                      }}
                     />
                   </div>
 
@@ -579,6 +709,72 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       checked={settings.presetDcaEnabled === true}
                       onCheckedChange={(checked) => handleSettingChange("presetDcaEnabled", checked)}
                     />
+                  </div>
+                </div>
+
+                <div className={`space-y-4 rounded-lg border p-4 ${presetBlockEnabled ? "" : "opacity-60"}`}>
+                  <div>
+                    <h4 className="font-semibold">Block Strategy Type · Adjust</h4>
+                    <p className="text-xs text-muted-foreground">
+                      Every valid Block count is coordinated independently. Exchange add quantity = current position base × (active Block count × volume ratio); its volume state remains attached until that position closes profitably, followed by its own count pause.
+                    </p>
+                  </div>
+                  <div className={presetBlockEnabled ? "grid gap-4 md:grid-cols-3" : "grid gap-4 md:grid-cols-3 pointer-events-none"}>
+                    <PresetOptimizerSlider
+                      label="Volume ratio"
+                      value={presetBlockVolumeRatio}
+                      min={0.25}
+                      max={3}
+                      step={0.05}
+                      onChange={(value) => updatePresetBlockSetting("presetBlockVolumeRatio", "blockVolumeRatio", value)}
+                    />
+                    <PresetOptimizerSlider
+                      label="Independent Block counts"
+                      value={presetBlockMaxStack}
+                      min={1}
+                      max={10}
+                      step={1}
+                      onChange={(value) => updatePresetBlockSetting("presetBlockMaxStack", "blockMaxStack", value)}
+                    />
+                    <PresetOptimizerSlider
+                      label="Post-profit pause ratio"
+                      value={presetBlockPauseCountRatio}
+                      min={1}
+                      max={4}
+                      step={0.5}
+                      onChange={(value) => updatePresetBlockSetting("presetBlockPauseCountRatio", "blockPauseCountRatio", value)}
+                    />
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="flex items-center justify-between rounded-lg border p-3">
+                      <div>
+                        <Label>Active Real-position Block</Label>
+                        <p className="text-xs text-muted-foreground">Coordinate currently running Real exposure.</p>
+                      </div>
+                      <Switch
+                        checked={Boolean(presetBlockActiveRealEnabled)}
+                        disabled={!presetBlockEnabled}
+                        onCheckedChange={(checked) => updatePresetBlockSetting("presetBlockActiveRealEnabled", "blockActiveRealEnabled", checked)}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between rounded-lg border p-3">
+                      <div>
+                        <Label>Active Live-position Block</Label>
+                        <p className="text-xs text-muted-foreground">Coordinate existing exchange exposure independently.</p>
+                      </div>
+                      <Switch
+                        checked={Boolean(presetBlockActiveLiveEnabled)}
+                        disabled={!presetBlockEnabled}
+                        onCheckedChange={(checked) => updatePresetBlockSetting("presetBlockActiveLiveEnabled", "blockActiveLiveEnabled", checked)}
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-[11px]">
+                    {[1, 2, Math.max(3, Math.min(10, Math.floor(presetBlockMaxStack)))].map((count, index) => (
+                      <div key={`${count}-${index}`} className="rounded border bg-muted/20 p-2 text-center tabular-nums">
+                        Block {count}: +{(count * presetBlockVolumeRatio).toFixed(2)}× base
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
