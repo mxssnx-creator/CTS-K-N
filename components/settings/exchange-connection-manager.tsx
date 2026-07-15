@@ -2,7 +2,7 @@
 
 import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } from "@/lib/connection-events"
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -26,6 +26,9 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AlertCircle, Lock, Zap } from "lucide-react"
+import { useDashboardEvents, type DashboardEventPayload } from "@/lib/dashboard-events"
+
+const toBooleanFlag = (value: unknown): boolean => value === true || value === 1 || value === "1" || value === "true"
 
 const EXCHANGES: Record<string, { name: string; subtypes: string[] }> = {
   bybit: { name: "Bybit", subtypes: ["perpetual", "futures", "spot", "options"] },
@@ -453,11 +456,10 @@ export default function ExchangeConnectionManager() {
   const [testingId, setTestingId] = useState<string | null>(null)
   const [recentlyInsertedBase, setRecentlyInsertedBase] = useState<Set<string>>(new Set())
   const [showBingXCredentialsDialog, setShowBingXCredentialsDialog] = useState(false)
+  const connectionLoadSequenceRef = useRef(0)
 
   // Default exchanges to display
   const DEFAULT_EXCHANGES = ["bybit", "bingx", "pionex", "orangex"]
-  const toBoolean = (value: unknown): boolean => value === true || value === 1 || value === "1" || value === "true"
-
   // Separate predefined (templates) from user-created connections
   const predefinedConnections = connections.filter((c: any) => c.is_predefined === true || c.is_predefined === "1")
   const userConnections = connections.filter((c: any) => !(c.is_predefined === true || c.is_predefined === "1"))
@@ -471,15 +473,17 @@ export default function ExchangeConnectionManager() {
     return isUserCreated || isBase
   })
 
-  const loadConnections = async () => {
+  const loadConnections = useCallback(async () => {
+    const requestSequence = ++connectionLoadSequenceRef.current
     try {
       setLoading(true)
       setError(null)
 
-      const response = await fetch("/api/settings/connections")
+      const response = await fetch(`/api/settings/connections?t=${Date.now()}`, { cache: "no-store" })
       if (!response.ok) throw new Error("Failed to load connections")
 
       const data = await response.json()
+      if (requestSequence !== connectionLoadSequenceRef.current) return
 
       // Handle both array and object response formats
       let connectionsArray = Array.isArray(data) ? data : (data?.connections || [])
@@ -501,12 +505,12 @@ export default function ExchangeConnectionManager() {
         })
         .map((c: any) => ({
           ...c,
-          is_enabled: toBoolean(c.is_enabled),
-          is_testnet: toBoolean(c.is_testnet),
-          is_live_trade: toBoolean(c.is_live_trade),
-          is_preset_trade: toBoolean(c.is_preset_trade),
-          is_active: toBoolean(c.is_active),
-          is_predefined: toBoolean(c.is_predefined),
+          is_enabled: toBooleanFlag(c.is_enabled),
+          is_testnet: toBooleanFlag(c.is_testnet),
+          is_live_trade: toBooleanFlag(c.is_live_trade),
+          is_preset_trade: toBooleanFlag(c.is_preset_trade),
+          is_active: toBooleanFlag(c.is_active),
+          is_predefined: toBooleanFlag(c.is_predefined),
           volume_factor: typeof c.volume_factor === "number" ? c.volume_factor : MIN_VOLUME_FACTOR,
           margin_type: c.margin_type || "cross",
           position_mode: c.position_mode || "hedge",
@@ -518,16 +522,34 @@ export default function ExchangeConnectionManager() {
       setConnections(validConnections)
     } catch (err) {
       console.error("[v0] Error loading connections:", err)
-      setError(err instanceof Error ? err.message : "Failed to load connections")
-      setConnections([])
+      if (requestSequence === connectionLoadSequenceRef.current) {
+        setError(err instanceof Error ? err.message : "Failed to load connections")
+        setConnections([])
+      }
     } finally {
-      setLoading(false)
+      if (requestSequence === connectionLoadSequenceRef.current) setLoading(false)
     }
-  }
+  }, [])
+
+  const loadConnectionsEventRef = useRef(loadConnections)
+  loadConnectionsEventRef.current = loadConnections
+  const dashboardEventHandlers = useMemo(() => {
+    const refresh = (payload: DashboardEventPayload) => {
+      const canonicalType = String(payload.canonicalType || "")
+      if (["strategy.stageChanged", "processing.progress", "position.updated", "indication.updated"].includes(canonicalType)) return
+      void loadConnectionsEventRef.current()
+    }
+    return {
+      "connection.updated": refresh,
+      "settings.recoordinated": refresh,
+    }
+  }, [])
+  useDashboardEvents("*", dashboardEventHandlers)
 
   useEffect(() => {
-    loadConnections()
-  }, [])
+    void loadConnections()
+    return () => { connectionLoadSequenceRef.current++ }
+  }, [loadConnections])
 
   const testConnection = async (id: string) => {
     setTestingId(id)
@@ -606,11 +628,7 @@ export default function ExchangeConnectionManager() {
       const response = await fetch(`/api/settings/connections/${id}/toggle`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          is_enabled: enabled,
-          is_live_trade: enabled ? connection.is_live_trade : false,
-          is_preset_trade: enabled ? connection.is_preset_trade : false,
-        }),
+        body: JSON.stringify({ is_enabled: enabled }),
       })
 
       const data = await response.json().catch(() => ({}))
@@ -624,7 +642,7 @@ export default function ExchangeConnectionManager() {
       dispatchConnectionMutationEvents(buildConnectionMutationEventDetail(data, {
         connectionId: id,
         connection: { id, name: connection.name, exchange: connection.exchange },
-        engine: { action: enabled ? "enable" : "disable", status: data.tradeEngineStarted ? "running" : undefined },
+        engine: { action: enabled ? "base-enable" : "base-disable" },
         source: "exchange-connection-manager.toggleConnection",
       }))
 
@@ -632,27 +650,13 @@ export default function ExchangeConnectionManager() {
       setConnections((prev) =>
         prev.map((c) => 
           c.id === id 
-            ? { 
-                ...c, 
-                is_enabled: enabled,
-                is_live_trade: enabled ? c.is_live_trade : false,
-                is_preset_trade: enabled ? c.is_preset_trade : false,
-              } 
+            ? { ...c, is_enabled: enabled }
             : c
         )
       )
 
-      // Show appropriate toast message
-      if (enabled) {
-        const message = data.tradeEngineStarted 
-          ? `Connection enabled and trade engine started automatically`
-          : `Connection enabled${connection.api_key ? " (add credentials to auto-start trade engine)" : ""}`
-        toast.success(message)
-      } else {
-        toast.success("Connection disabled")
-      }
-      
-      console.log("[v0] Toggle successful for:", id, "trade engine started:", data.tradeEngineStarted)
+      toast.success(enabled ? "Connection enabled in Settings" : "Connection disabled in Settings")
+      console.log("[v0] Base Settings toggle successful for:", id, "enabled:", enabled)
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : "Failed to toggle connection"
       console.error("[v0] Toggle error:", errorMsg)

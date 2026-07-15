@@ -29,6 +29,11 @@ type CachedExchangeHistory = {
   rows: TradeHistoryRow[]
 }
 
+type OrderHistorySnapshot = {
+  ok: boolean
+  rows: any[]
+}
+
 const inFlightByConnection = new Map<string, Promise<CachedExchangeHistory | null>>()
 
 function parseSymbols(...values: unknown[]): string[] {
@@ -117,19 +122,35 @@ async function fetchExchangeHistory(
     let rawOrders: any[] = []
     let authoritative = false
 
+    const fetchSnapshot = async (symbol: string | undefined, limit: number): Promise<OrderHistorySnapshot> => {
+      if (typeof (connector as any).getOrderHistorySnapshot === "function") {
+        const snapshot = await (connector as any).getOrderHistorySnapshot(symbol, limit)
+        return {
+          ok: snapshot?.ok === true,
+          rows: Array.isArray(snapshot?.rows) ? snapshot.rows : [],
+        }
+      }
+      const rows = await connector.getOrderHistory(symbol, limit)
+      const status = (connector as any).getLastOrderHistorySnapshotStatus?.()
+      return {
+        ok: status ? status.ok === true : Array.isArray(rows),
+        rows: Array.isArray(rows) ? rows : [],
+      }
+    }
+
     // BingX accepts an account-wide allOrders request on the native path. It is
     // the cheapest source (one signed call for all 12 symbols).
     let globalRequestTimedOut = false
-    rawOrders = await withTimeout(
-      connector.getOrderHistory(undefined, MAX_TRADE_HISTORY_RECORDS),
+    const globalSnapshot = await withTimeout(
+      fetchSnapshot(undefined, MAX_TRADE_HISTORY_RECORDS),
       GLOBAL_HISTORY_TIMEOUT_MS,
       `trade-history global ${connectionId}`,
     ).catch(() => {
       globalRequestTimedOut = true
-      return []
+      return { ok: false, rows: [] } satisfies OrderHistorySnapshot
     })
-    const globalStatus = (connector as any).getLastOrderHistorySnapshotStatus?.()
-    authoritative = globalStatus ? globalStatus.ok === true : Array.isArray(rawOrders)
+    rawOrders = globalSnapshot.rows
+    authoritative = globalSnapshot.ok
     // A timed-out account-wide call is not evidence that a symbol is required;
     // retry on the next dashboard poll instead of launching twelve more calls.
     if (globalRequestTimedOut) return previous
@@ -154,16 +175,17 @@ async function fetchExchangeHistory(
         const remainingMs = fallbackDeadline - Date.now()
         if (remainingMs <= 250) break
         const batch = symbols.slice(index, index + 4)
-        const batchRows = await Promise.all(
+        const batchSnapshots = await Promise.all(
           batch.map((symbol) => withTimeout(
-            connector.getOrderHistory(symbol, 100),
+            fetchSnapshot(symbol, 100),
             Math.max(250, Math.min(4_000, remainingMs)),
             `trade-history ${connectionId} ${symbol}`,
-          ).catch(() => [])),
+          ).catch(() => ({ ok: false, rows: [] } satisfies OrderHistorySnapshot))),
         )
-        for (const rows of batchRows) if (Array.isArray(rows)) perSymbolRows.push(...rows)
-        const status = (connector as any).getLastOrderHistorySnapshotStatus?.()
-        if (!status || status.ok === true) anySuccessfulSnapshot = true
+        for (const snapshot of batchSnapshots) {
+          if (snapshot.ok) anySuccessfulSnapshot = true
+          perSymbolRows.push(...snapshot.rows)
+        }
       }
       rawOrders = perSymbolRows
       authoritative = anySuccessfulSnapshot

@@ -53,8 +53,6 @@ export async function POST() {
         
         // Update connection with test result
         await updateConnection(conn.id, {
-          ...conn,
-          is_enabled: "1", // Always force-enable base connections
           last_test_status: result.success ? "success" : "failed",
           last_test_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -69,10 +67,9 @@ export async function POST() {
 
         console.log(`[v0] [AutoTest] ${conn.name || conn.id}: ${result.success ? "OK" : "FAILED"}`)
       } catch (error) {
-        // Even on test failure, keep connection enabled (base connections are always enabled)
+        // A connectivity probe records health only; it never changes the
+        // operator-owned Settings enable switch.
         await updateConnection(conn.id, {
-          ...conn,
-          is_enabled: "1",
           last_test_status: "error",
           last_test_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),

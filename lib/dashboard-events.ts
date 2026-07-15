@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect } from "react"
-import { getSSEClient, releaseSSE, retainSSE, type SSEEventType } from "@/lib/sse-client"
+import { getSSEClient, releaseSSE, retainSSE } from "@/lib/sse-client"
 import type { CanonicalEvent } from "@/lib/events/schema"
 
 export const DASHBOARD_EVENT_TYPES = [
@@ -36,7 +36,7 @@ const CANONICAL_DASHBOARD_EVENT_MAP: Record<string, DashboardEventType[]> = {
   "progression.stageChanged": ["progression.updated", "engine.stage.changed", "monitoring.updated", "logs.appended"],
   "strategy.stageChanged": ["progression.updated", "engine.stage.changed", "monitoring.updated", "logs.appended"],
   "processing.progress": ["progression.updated", "engine.stage.changed", "monitoring.updated"],
-  "live.stageChanged": ["live.summary.updated", "progression.updated", "engine.stage.changed", "monitoring.updated"],
+  "live.stageChanged": ["connection.updated", "live.summary.updated", "progression.updated", "engine.stage.changed", "monitoring.updated"],
   "position.updated": ["live.summary.updated", "monitoring.updated"],
   "indication.updated": ["monitoring.updated"],
   "dashboard.sectionUpdated": ["connection.updated", "progression.updated", "live.summary.updated", "monitoring.updated"],
@@ -70,25 +70,71 @@ export function useDashboardEvents(
   useEffect(() => {
     const streamConnectionId = connectionId || "*"
     const client = getSSEClient(streamConnectionId)
-    const unsubscribers = DASHBOARD_EVENT_TYPES.map((eventType) =>
-      client.subscribe(eventType as SSEEventType, (payload: DashboardEventPayload) => {
-        handlers[eventType]?.(payload)
-      }),
-    )
+    // Every broadcaster message is normalized to one canonical event. Listening
+    // to both the canonical and its legacy compatibility event made each UI
+    // refresh run twice (and doubled API traffic) for the same server message.
+    const pendingHandlers = new Map<
+      (payload: DashboardEventPayload) => void,
+      { timer: ReturnType<typeof setTimeout>; payload: DashboardEventPayload; delay: number }
+    >()
+    const highFrequencyTypes = new Set([
+      "strategy.stageChanged",
+      "processing.progress",
+      "position.updated",
+      "indication.updated",
+    ])
+    const scheduleHandler = (
+      handler: (payload: DashboardEventPayload) => void,
+      payload: DashboardEventPayload,
+      canonicalType: string,
+    ) => {
+      const delay = highFrequencyTypes.has(canonicalType) ? 750 : 25
+      const pending = pendingHandlers.get(handler)
+      if (pending) {
+        pending.payload = payload
+        // A settings/switch event must not sit behind a pending telemetry
+        // refresh. Promote it to the short coordination delay.
+        if (delay < pending.delay) {
+          clearTimeout(pending.timer)
+          pending.delay = delay
+          pending.timer = setTimeout(() => {
+            pendingHandlers.delete(handler)
+            handler(pending.payload)
+          }, delay)
+        }
+        return
+      }
+      const entry = {
+        payload,
+        delay,
+        timer: undefined as unknown as ReturnType<typeof setTimeout>,
+      }
+      entry.timer = setTimeout(() => {
+        pendingHandlers.delete(handler)
+        handler(entry.payload)
+      }, delay)
+      pendingHandlers.set(handler, entry)
+    }
 
-    unsubscribers.push(
+    const unsubscribers = [
       client.subscribe("canonical-event", (event: CanonicalEvent) => {
         const payload = dashboardPayloadFromCanonical(event)
+        const invoked = new Set<(payload: DashboardEventPayload) => void>()
         for (const eventType of dashboardEventsForCanonical(event)) {
-          handlers[eventType]?.(payload)
+          const handler = handlers[eventType]
+          if (!handler || invoked.has(handler)) continue
+          invoked.add(handler)
+          scheduleHandler(handler, payload, event.type)
         }
       }),
-    )
+    ]
 
     retainSSE(streamConnectionId)
 
     return () => {
       unsubscribers.forEach((unsubscribe) => unsubscribe())
+      pendingHandlers.forEach(({ timer }) => clearTimeout(timer))
+      pendingHandlers.clear()
       releaseSSE(streamConnectionId)
     }
   }, [connectionId, handlers])

@@ -13,6 +13,7 @@ import {
   initRedis,
   getAllConnections,
   getRedisClient,
+  savePosition as saveRedisPosition,
   setSettings,
   cleanupVolatileRuntimeState,
   isProductionEnvironment,
@@ -48,10 +49,10 @@ function hasSystemAndConnectionTracking(pos: any): boolean {
 }
 
 /**
- * Scan all live:position:* keys and close any that are still "open"
- * but have exceeded their max hold time. This catches positions that
- * were left open when the process was killed (SIGTERM before the closer
- * ran) or when the engine restarted without exchange connectivity.
+ * Scan all live:position:* keys and re-index every system-owned open
+ * position for authoritative exchange recovery. Startup must never infer an
+ * exchange close from local age alone: the venue may still hold exposure or
+ * control orders after a process crash.
  *
  * Called once at the end of completeStartup() — non-blocking, errors
  * are logged but never fail startup.
@@ -62,12 +63,11 @@ async function reconcileStrandedPositions() {
     const keys = await client.keys("live:position:*")
     if (!keys.length) return
 
-    const MAX_HOLD_MS = 4 * 60 * 60 * 1000 // 4 hours hard cap
     const RECONCILE_DEADLINE_MS = 20_000 // 20s hard deadline
     const deadline = Date.now() + RECONCILE_DEADLINE_MS
     const now = Date.now()
     let found = 0
-    let closed = 0
+    let reindexed = 0
 
     for (const key of keys) {
       if (Date.now() > deadline) {
@@ -94,27 +94,15 @@ async function reconcileStrandedPositions() {
         }
         found++
 
-        const age = now - (pos.openedAt || pos.createdAt || 0)
-        if (age < MAX_HOLD_MS) {
-          // Not yet expired — mark for monitoring but don't force-close
-          console.log(
-            `[v0] [Startup] Stranded open position ${pos.id} (${pos.symbol}) age=${Math.round(age / 60000)}min — within hold limit, skipping`,
-          )
-          continue
-        }
-
-        // Position is past max hold — mark as closed in Redis with a
-        // shutdown reason. The exchange order may still be open; the
-        // reconciliation cron will pick it up and cancel it on next run.
-        console.warn(
-          `[v0] [Startup] Closing stranded position ${pos.id} (${pos.symbol}) age=${Math.round(age / 60000)}min — exceeded ${MAX_HOLD_MS / 60000}min limit`,
-        )
-        pos.status = "closed"
-        pos.closedAt = now
+        // savePosition atomically refreshes the durable open index and all
+        // exchange/client tracking pointers. The live recovery loop will then
+        // reconcile the venue snapshot, entry submission, quantity, and
+        // protection orders. No local-only age based terminal transition is
+        // permitted here.
+        pos.restartRecoveryRequestedAt = now
         pos.updatedAt = now
-        pos.closeReason = "startup_reconcile_max_hold_exceeded"
-        await client.set(key, JSON.stringify(pos))
-        closed++
+        await saveRedisPosition(pos)
+        reindexed++
       } catch (err) {
         console.warn(`[v0] [Startup] reconcile error for ${key}:`, err)
       }
@@ -122,7 +110,7 @@ async function reconcileStrandedPositions() {
 
     if (found > 0) {
       console.log(
-        `[v0] [Startup] ✓ Reconciled ${found} stranded positions: ${closed} force-closed, ${found - closed} within hold limit`,
+        `[v0] [Startup] ✓ Re-indexed ${reindexed}/${found} tracked open positions for authoritative exchange recovery`,
       )
     }
   } catch (err) {

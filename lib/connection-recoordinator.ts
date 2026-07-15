@@ -41,8 +41,37 @@
 
 import { notifySettingsChanged, detectChangedFields } from "@/lib/settings-coordinator"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
+import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
 
 const inFlightRecoordinations = new Map<string, Promise<void>>()
+const inFlightSettingsCommits = new Map<string, Promise<unknown>>()
+const SETTINGS_COMMIT_LOCK_TTL_MS = 30_000
+const SETTINGS_COMMIT_LOCK_WAIT_MS = 8_000
+
+async function acquireSharedSettingsCommitLock(redis: any, connectionId: string): Promise<string> {
+  const key = `connection_settings_commit_lock:${connectionId}`
+  const token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`
+  const deadline = Date.now() + SETTINGS_COMMIT_LOCK_WAIT_MS
+  do {
+    const acquired = await redis.set(key, token, { NX: true, PX: SETTINGS_COMMIT_LOCK_TTL_MS })
+    if (acquired === "OK" || acquired === true) return token
+    await new Promise((resolve) => setTimeout(resolve, 20 + Math.floor(Math.random() * 20)))
+  } while (Date.now() < deadline)
+  throw new Error(`Timed out waiting for settings commit lock for ${connectionId}`)
+}
+
+async function releaseSharedSettingsCommitLock(redis: any, connectionId: string, token: string): Promise<void> {
+  const key = `connection_settings_commit_lock:${connectionId}`
+  if (typeof redis.eval === "function") {
+    await redis.eval(
+      `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`,
+      { keys: [key], arguments: [token] },
+    ).catch(() => 0)
+    return
+  }
+  const current = await redis.get(key).catch(() => null)
+  if (current === token) await redis.del(key).catch(() => 0)
+}
 
 function normalizeChangedField(field: string): string {
   const f = String(field || "")
@@ -71,6 +100,17 @@ const STRATEGY_COORDINATION_SETTING_FIELDS = new Set([
   "strategyBaseTrailingEnabled",
   "strategyBaseTrailingVariants",
   "trailingMinStep",
+  "blockVolumeRatio",
+  "blockMaxStack",
+  "blockPauseCountRatio",
+  "blockActiveRealEnabled",
+  "blockActiveLiveEnabled",
+  "dcaMaxSteps",
+  "dcaStepVolumeMultipliers",
+  "dcaStepDistancesPct",
+  "dcaTakeProfitMode",
+  "dcaBreakevenProfitPct",
+  "dcaCooldownSeconds",
   "axisPrevEnabled",
   "axisLastEnabled",
   "axisContEnabled",
@@ -104,6 +144,13 @@ const LIVE_ORDER_SETTING_FIELDS = new Set([
   "volume_factor_preset",
   "volume_step_ratio",
   "blockVolumeRatio",
+  "blockActiveLiveEnabled",
+  "dcaMaxSteps",
+  "dcaStepVolumeMultipliers",
+  "dcaStepDistancesPct",
+  "dcaTakeProfitMode",
+  "dcaBreakevenProfitPct",
+  "dcaCooldownSeconds",
   "leveragePercentage",
   "useMaximalLeverage",
   "maxLeverage",
@@ -134,15 +181,25 @@ function isStrategyCoordinationField(field: string): boolean {
 }
 
 async function runSerializedForConnection(connectionId: string, work: () => Promise<void>): Promise<void> {
-  const previous = inFlightRecoordinations.get(connectionId)
-  if (previous) {
-    try { await previous } catch { /* prior save already logged its own failure */ }
-  }
-  const current = work().finally(() => {
-    if (inFlightRecoordinations.get(connectionId) === current) inFlightRecoordinations.delete(connectionId)
-  })
+  const previous = inFlightRecoordinations.get(connectionId) ?? Promise.resolve()
+  const current = previous.catch(() => undefined).then(work)
   inFlightRecoordinations.set(connectionId, current)
-  await current
+  try {
+    await current
+  } finally {
+    if (inFlightRecoordinations.get(connectionId) === current) inFlightRecoordinations.delete(connectionId)
+  }
+}
+
+async function runSerializedSettingsCommit<T>(connectionId: string, work: () => Promise<T>): Promise<T> {
+  const previous = inFlightSettingsCommits.get(connectionId) ?? Promise.resolve()
+  const current = previous.catch(() => undefined).then(work)
+  inFlightSettingsCommits.set(connectionId, current)
+  try {
+    return await current
+  } finally {
+    if (inFlightSettingsCommits.get(connectionId) === current) inFlightSettingsCommits.delete(connectionId)
+  }
 }
 
 
@@ -152,6 +209,15 @@ export interface MainConnectionSettingsChangeOptions extends RecoordinateOptions
   tradeEngineStatePatch?: Record<string, any>
   settingsKey?: string
   mirrorSettingsKey?: boolean
+  additionalSettingsPatches?: Array<{
+    settingsKey: string
+    settingsPatch: Record<string, any>
+    mirrorSettingsKey?: boolean
+  }>
+  /** Additional raw Redis hashes committed with a guarded state switch. */
+  relatedHashPatches?: Array<{ key: string; patch: Record<string, any> }>
+  /** Guard runtime switch writes against an already-newer generation. */
+  stateSwitchVersion?: string | number
 }
 
 function stringifyHashPatch(patch: Record<string, any>): Record<string, string> {
@@ -175,61 +241,169 @@ export async function applyMainConnectionSettingsChange(
   id: string,
   before: Record<string, any>,
   opts: MainConnectionSettingsChangeOptions,
-): Promise<{ connection: Record<string, any>; completion: RecoordinationCompletion }> {
-  const { initRedis, updateConnection, getRedisClient, getConnection, setSettings } = await import("@/lib/redis-db")
-  await initRedis()
-
-  let after = { ...before, ...(opts.connectionPatch || {}) }
-  if (opts.connectionPatch && Object.keys(opts.connectionPatch).length > 0) {
-    after = (await updateConnection(id, after)) || after
-  }
-
-  const settingsPatch = opts.settingsPatch || {}
-  if (Object.keys(settingsPatch).length > 0) {
-    const settingsKey = opts.settingsKey || `connection_settings:${id}`
-    if (settingsKey === `connection_settings:${id}`) {
-      const redis = getRedisClient()
-      const hashPatch = stringifyHashPatch(settingsPatch)
-      await redis.hset(settingsKey, hashPatch)
-      if (opts.mirrorSettingsKey !== false) {
-        await redis.hset(`settings:connection_settings:${id}`, hashPatch).catch(() => 0)
-      }
-    } else {
-      await setSettings(settingsKey, settingsPatch)
-    }
-  }
-
-  const tradeEngineStatePatch = opts.tradeEngineStatePatch || {}
-  if (Object.keys(tradeEngineStatePatch).length > 0) {
+): Promise<{
+  connection: Record<string, any>
+  completion: RecoordinationCompletion
+  stateTransitionApplied: boolean
+}> {
+  return runSerializedSettingsCommit(id, async () => {
+    const { initRedis, updateConnection, updateConnectionState, getRedisBackend, getRedisClient, getConnection, setSettings } = await import("@/lib/redis-db")
+    await initRedis()
+    const settingsPatch = opts.settingsPatch || {}
     const redis = getRedisClient()
-    const { buildProgressionScope } = await import("@/lib/progression-scope")
-    const engineType = String((after as any).engine_type || (after as any).engineType || "main")
-    const scope = buildProgressionScope(id, engineType)
-    const hashPatch = stringifyHashPatch({
-      ...tradeEngineStatePatch,
-      connection_id: id,
-      engine_type: scope.engineType,
-      updated_at: tradeEngineStatePatch.updated_at || new Date().toISOString(),
-    })
-    await redis.hset(`trade_engine_state:${id}`, hashPatch).catch(() => 0)
-    await redis.hset(`settings:trade_engine_state:${id}`, hashPatch).catch(() => 0)
-    await redis.hset(scope.tradeEngineStateKey, hashPatch).catch(() => 0)
-  }
+    const sharedLockToken = typeof getRedisBackend === "function" && getRedisBackend() === "redis-network"
+      ? await acquireSharedSettingsCommitLock(redis, id)
+      : null
+    let current!: Record<string, any>
+    let after!: Record<string, any>
+    try {
+    // Re-read inside both the process queue and shared Redis lock. Two
+    // concurrent dialogs may have started with the same stale snapshot;
+    // deep-merging the nested settings envelope against the newest row keeps
+    // sibling strategy/coordination fields from being reset by the later save.
+    current = (await getConnection(id).catch(() => null)) || before
+    const effectiveConnectionPatch = { ...(opts.connectionPatch || {}) }
+    if (effectiveConnectionPatch.connection_settings !== undefined) {
+      const parseSettings = (value: unknown): Record<string, any> => {
+        if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, any>
+        if (typeof value === "string" && value.trim().startsWith("{")) {
+          try { return JSON.parse(value) } catch { return {} }
+        }
+        return {}
+      }
+      const incomingSettings = parseSettings(effectiveConnectionPatch.connection_settings)
+      const changedFieldSet = new Set((opts.changedFieldsOverride || []).map(normalizeChangedField))
+      const replaceWholeEnvelope =
+        opts.changedFieldsOverride === undefined ||
+        changedFieldSet.size === 0 ||
+        changedFieldSet.has("connection_settings")
+      const selectiveIncomingSettings = replaceWholeEnvelope
+        ? incomingSettings
+        : Object.fromEntries(
+            Object.entries(incomingSettings).filter(([field]) => changedFieldSet.has(field)),
+          )
+      effectiveConnectionPatch.connection_settings = mergeConnectionSettings(
+        parseSettings(current.connection_settings),
+        selectiveIncomingSettings,
+      )
+    }
+    after = { ...current, ...effectiveConnectionPatch }
+    const stateGuardedBundle =
+      opts.stateSwitchVersion !== undefined &&
+      Object.keys(effectiveConnectionPatch).length > 0
+    const relatedHashPatches: Array<{ key: string; patch: Record<string, string> }> = []
+    const writeOrBundle = async (key: string, patch: Record<string, string>): Promise<void> => {
+      if (stateGuardedBundle) relatedHashPatches.push({ key, patch })
+      else await redis.hset(key, patch)
+    }
 
-  // Reload from Redis so notify envelopes and downstream predicates see exactly
-  // what was persisted, including updateConnection normalisation.
-  after = (await getConnection(id).catch(() => null)) || after
-  const explicitFields = Array.from(new Set([
-    ...Object.keys(opts.connectionPatch || {}),
-    ...Object.keys(settingsPatch),
-    ...(opts.changedFieldsOverride || []),
-  ]))
-  const completion = await recoordinateAfterSettingsChange(id, before, after, {
-    logTag: opts.logTag,
-    settingsVersion: opts.settingsVersion,
-    changedFieldsOverride: explicitFields.length > 0 ? explicitFields : opts.changedFieldsOverride,
+    for (const related of opts.relatedHashPatches || []) {
+      if (!related?.key || Object.keys(related.patch || {}).length === 0) continue
+      await writeOrBundle(related.key, stringifyHashPatch(related.patch))
+    }
+
+    // A state switch and all of its dependent settings hashes are committed in
+    // one generation-guarded Redis transaction below. Ordinary settings saves
+    // retain the ordered dependent-hashes-before-connection commit barrier.
+    if (Object.keys(settingsPatch).length > 0) {
+      const settingsKey = opts.settingsKey || `connection_settings:${id}`
+      if (settingsKey === `connection_settings:${id}`) {
+        const hashPatch = stringifyHashPatch(settingsPatch)
+        await writeOrBundle(settingsKey, hashPatch)
+        if (opts.mirrorSettingsKey !== false) {
+          await writeOrBundle(`settings:connection_settings:${id}`, hashPatch)
+        }
+      } else if (stateGuardedBundle) {
+        await writeOrBundle(`settings:${settingsKey}`, stringifyHashPatch(settingsPatch))
+      } else {
+        await setSettings(settingsKey, settingsPatch)
+      }
+    }
+
+    for (const additional of opts.additionalSettingsPatches || []) {
+      if (!additional?.settingsKey || Object.keys(additional.settingsPatch || {}).length === 0) continue
+      if (stateGuardedBundle) {
+        const hashPatch = stringifyHashPatch(additional.settingsPatch)
+        await writeOrBundle(`settings:${additional.settingsKey}`, hashPatch)
+        if (additional.mirrorSettingsKey !== false && !additional.settingsKey.startsWith("settings:")) {
+          await writeOrBundle(`settings:settings:${additional.settingsKey}`, hashPatch)
+        }
+      } else {
+        await setSettings(additional.settingsKey, additional.settingsPatch)
+        if (additional.mirrorSettingsKey !== false && !additional.settingsKey.startsWith("settings:")) {
+          await setSettings(`settings:${additional.settingsKey}`, additional.settingsPatch).catch(() => undefined)
+        }
+      }
+    }
+
+    const tradeEngineStatePatch = opts.tradeEngineStatePatch || {}
+    if (Object.keys(tradeEngineStatePatch).length > 0) {
+      const { buildProgressionScope } = await import("@/lib/progression-scope")
+      const engineType = String((after as any).engine_type || (after as any).engineType || "main")
+      const scope = buildProgressionScope(id, engineType)
+      const hashPatch = stringifyHashPatch({
+        ...tradeEngineStatePatch,
+        connection_id: id,
+        engine_type: scope.engineType,
+        updated_at: tradeEngineStatePatch.updated_at || new Date().toISOString(),
+      })
+      await writeOrBundle(`trade_engine_state:${id}`, hashPatch)
+      await writeOrBundle(`settings:trade_engine_state:${id}`, hashPatch)
+      await writeOrBundle(scope.tradeEngineStateKey, hashPatch)
+    }
+
+    if (Object.keys(effectiveConnectionPatch).length > 0) {
+      // Commit only the caller-owned fields. Passing `after` here rewrote the
+      // complete snapshot that was read above; a dashboard/live switch landing
+      // between that read and this write could therefore be reset by an
+      // unrelated settings save. `updateConnection` merges the patch against
+      // the latest hash and returns the authoritative post-commit snapshot.
+      if (opts.stateSwitchVersion !== undefined) {
+        const transition = await updateConnectionState(id, effectiveConnectionPatch, opts.stateSwitchVersion, {
+          relatedHashPatches,
+        })
+        after = transition.connection || after
+        if (!transition.applied) {
+          return {
+            connection: after,
+            completion: {
+              connectionId: id,
+              settingsVersion: opts.settingsVersion,
+              recoordinationId: opts.settingsVersion,
+              completedAt: new Date().toISOString(),
+              changedFields: [],
+              progressRecoordinationRequired: false,
+              refreshQueued: false,
+              appliedLocally: false,
+              queuedForOwner: false,
+            },
+            stateTransitionApplied: false,
+          }
+        }
+      } else {
+        after = (await updateConnection(id, effectiveConnectionPatch)) || after
+      }
+    }
+    after = (await getConnection(id).catch(() => null)) || after
+    } finally {
+      if (sharedLockToken) await releaseSharedSettingsCommitLock(redis, id, sharedLockToken)
+    }
+
+    const explicitFields = Array.from(new Set([
+      ...Object.keys(opts.connectionPatch || {}),
+      ...Object.keys(settingsPatch),
+      ...(opts.additionalSettingsPatches || []).flatMap((patch) => Object.keys(patch.settingsPatch || {})),
+    ]))
+    const changedFieldsOverride = opts.changedFieldsOverride !== undefined
+      ? opts.changedFieldsOverride
+      : explicitFields
+    const completion = await recoordinateAfterSettingsChange(id, current, after, {
+      logTag: opts.logTag,
+      settingsVersion: opts.settingsVersion,
+      changedFieldsOverride,
+    })
+    return { connection: after, completion, stateTransitionApplied: true }
   })
-  return { connection: after, completion }
 }
 
 export interface RecoordinationCompletion {
@@ -243,7 +417,8 @@ export interface RecoordinationCompletion {
   progressionReason?: string
   refreshQueued?: boolean
   refreshStatus?: {
-    refreshQueued: true
+    refreshQueued: boolean
+    refreshSuperseded?: boolean
     refresh_queued_at: string
     refresh_last_attempt_at?: string
     refresh_last_error?: string
@@ -287,10 +462,9 @@ export async function recoordinateAfterSettingsChange(
   opts: RecoordinateOptions,
 ): Promise<RecoordinationCompletion> {
   const detected = detectChangedFields(before, after)
-  const changedFields =
-    opts.changedFieldsOverride && opts.changedFieldsOverride.length > 0
-      ? opts.changedFieldsOverride
-      : detected
+  const changedFields = opts.changedFieldsOverride !== undefined
+    ? [...opts.changedFieldsOverride]
+    : detected
 
   const makeCompletion = (extra?: Partial<RecoordinationCompletion>): RecoordinationCompletion => ({
     connectionId: id,
@@ -313,17 +487,30 @@ export async function recoordinateAfterSettingsChange(
   // hasRealTradeBlock() rejects every exchange order even though credentials
   // now exist.
   try {
-    const { hasConnectionCredentials, isTruthyFlag } = await import("@/lib/connection-state-utils")
+    const { isTruthyFlag } = await import("@/lib/connection-state-utils")
+    const { evaluateRealTradeReadiness } = await import("@/lib/real-trade-gates")
     const liveRequested = isTruthyFlag((after as any).live_trade_requested) || isTruthyFlag((after as any).is_live_trade)
-    const hasCreds = hasConnectionCredentials(after, 5, true)
-    const hasBlock = String((after as any).live_trade_blocked_reason || "").trim().length > 0
-    if (liveRequested && hasCreds && (!isTruthyFlag((after as any).is_live_trade) || hasBlock)) {
+    const currentBlockReason = String((after as any).live_trade_blocked_reason || "").trim()
+    const hasBlock = currentBlockReason.length > 0
+    const autoRepairableBlock =
+      !hasBlock || /credential|api key|api secret|shared redis|inlinelocalredis/i.test(currentBlockReason)
+    const prospectiveReadiness = evaluateRealTradeReadiness({
+      ...after,
+      is_live_trade: "1",
+      live_trade_requested: "1",
+      live_trade_blocked_reason: "",
+    })
+    if (
+      liveRequested &&
+      prospectiveReadiness.canPlaceRealOrders &&
+      autoRepairableBlock &&
+      (!isTruthyFlag((after as any).is_live_trade) || hasBlock)
+    ) {
       const { updateConnection } = await import("@/lib/redis-db")
       const patch = {
         is_live_trade: "1",
         live_trade_requested: "1",
         live_trade_blocked_reason: "",
-        last_test_status: "success",
         updated_at: new Date().toISOString(),
       }
       await updateConnection(id, patch)
@@ -341,21 +528,74 @@ export async function recoordinateAfterSettingsChange(
     )
   }
 
-  const settingsEvent = emitCanonicalEvent({
-    type: "settings.saved",
-    connectionId: id,
-    stage: "settings",
-    settingsVersion: (after as any).settings_version || (after as any).updated_at || new Date().toISOString(),
-    data: { changedFields, logTag: opts.logTag },
-  })
-  const requestedSettingsVersion = String(opts.settingsVersion || settingsEvent.settingsVersion || settingsEvent.id)
-  // Keep event identity tied to the emitted canonical settings event:
-  // settings_recoordination_requested_event_id: settingsEvent.id
-  const requestedSettingsEventId = settingsEvent.id
+  // Preset Trade uses the same exchange execution pipeline as Main Trade, but
+  // keeps an independent requested/effective state. Preserve that request
+  // across credential edits and clear only auto-repairable infrastructure
+  // blocks once the connection becomes ready.
+  try {
+    const { isTruthyFlag } = await import("@/lib/connection-state-utils")
+    const { evaluateRealTradeReadiness } = await import("@/lib/real-trade-gates")
+    const presetRequested =
+      isTruthyFlag((after as any).preset_trade_requested) ||
+      isTruthyFlag((after as any).is_preset_trade)
+    const currentBlockReason = String((after as any).preset_trade_blocked_reason || "").trim()
+    const hasBlock = currentBlockReason.length > 0
+    const autoRepairableBlock =
+      !hasBlock || /credential|api key|api secret|shared redis|inlinelocalredis/i.test(currentBlockReason)
+    const prospectiveReadiness = evaluateRealTradeReadiness(
+      {
+        ...after,
+        is_preset_trade: "1",
+        preset_trade_requested: "1",
+        preset_trade_blocked_reason: "",
+      },
+      "preset",
+    )
+    if (
+      presetRequested &&
+      prospectiveReadiness.canPlaceRealOrders &&
+      autoRepairableBlock &&
+      (!isTruthyFlag((after as any).is_preset_trade) || hasBlock)
+    ) {
+      const { updateConnection } = await import("@/lib/redis-db")
+      const patch = {
+        is_preset_trade: "1",
+        preset_trade_requested: "1",
+        preset_trade_blocked_reason: "",
+        preset_trade_block_code: "",
+        updated_at: new Date().toISOString(),
+      }
+      await updateConnection(id, patch)
+      after = { ...after, ...patch }
+      if (!changedFields.includes("is_preset_trade")) changedFields.push("is_preset_trade")
+      if (!changedFields.includes("preset_trade_blocked_reason")) {
+        changedFields.push("preset_trade_blocked_reason")
+      }
+      console.log(
+        `[v0] [${opts.logTag}] Preset Trade unblocked for ${id} after credential/settings save`,
+      )
+    }
+  } catch (presetRepairErr) {
+    console.warn(
+      `[v0] [${opts.logTag}] Preset Trade credential unblock check failed for ${id}:`,
+      presetRepairErr instanceof Error ? presetRepairErr.message : String(presetRepairErr),
+    )
+  }
 
   // Step 1 — durable notify (Redis envelope read by all running engines).
+  let settingsEvent: ReturnType<typeof emitCanonicalEvent>
   try {
     await notifySettingsChanged(id, changedFields, before, after)
+    // UI/cross-tab broadcasts sit behind the same durable commit barrier as
+    // the engine notification. A failed Redis write must never look like a
+    // completed save in another dashboard tab.
+    settingsEvent = emitCanonicalEvent({
+      type: "settings.saved",
+      connectionId: id,
+      stage: "settings",
+      settingsVersion: (after as any).settings_version || (after as any).updated_at || new Date().toISOString(),
+      data: { changedFields, logTag: opts.logTag },
+    })
     emitCanonicalEvent({
       type: "settings.hotReloaded",
       connectionId: id,
@@ -375,6 +615,10 @@ export async function recoordinateAfterSettingsChange(
     // layer consumed by engine-owning processes.
     throw notifyErr
   }
+  const requestedSettingsVersion = String(opts.settingsVersion || settingsEvent.settingsVersion || settingsEvent.id)
+  // Keep event identity tied to the emitted canonical settings event:
+  // settings_recoordination_requested_event_id: settingsEvent.id
+  const requestedSettingsEventId = settingsEvent.id
 
   // Force singleton strategy coordinators to drop any generation-gated settings
   // reads on the next strategy cycle. This is intentionally before local

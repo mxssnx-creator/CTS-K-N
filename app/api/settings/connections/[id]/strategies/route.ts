@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { initRedis, getConnection, updateConnection, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getConnection } from "@/lib/redis-db"
+import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 
 /**
  * Per-connection strategy settings (Base / Main / Real channels).
@@ -122,19 +123,17 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       }
     }
 
-    const mergedSettings = {
-      ...cs,
-      strategies: { ...(cs?.strategies || {}), main: channel },
-    }
-    await updateConnection(id, {
-      ...conn,
-      connection_settings: mergedSettings,
-      updated_at: new Date().toISOString(),
+    await applyMainConnectionSettingsChange(id, conn, {
+      connectionPatch: {
+        connection_settings: {
+          strategies: { main: channel },
+        },
+        updated_at: new Date().toISOString(),
+      },
+      settingsPatch: flat,
+      changedFieldsOverride: ["strategies", ...Object.keys(flat)],
+      logTag: "PUT /settings/connections/[id]/strategies",
     })
-
-    if (Object.keys(flat).length > 0) {
-      await getRedisClient().hset(`connection_settings:${id}`, flat)
-    }
 
     return NextResponse.json({ success: true, strategies })
   } catch (error) {

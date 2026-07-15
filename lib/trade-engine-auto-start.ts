@@ -90,7 +90,7 @@ async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnTyp
         } else {
           await coordinator.applyPendingChangesNow?.(request.connectionId)
         }
-        await refreshQueue.clearEngineRefreshRequest(request.connectionId)
+        await refreshQueue.clearEngineRefreshRequest(request.connectionId, request)
         processed++
       } catch (error) {
         await refreshQueue.recordEngineRefreshRequestFailure(request, error)
@@ -101,7 +101,7 @@ async function processQueuedEngineRefreshRequests(coordinator: Awaited<ReturnTyp
 
   return consumeQueuedEngineRefreshRequests({
     consumerName: "AutoStart",
-    staleAfterMs: 120_000,
+    staleAfterMs: refreshQueue.ENGINE_REFRESH_REQUEST_TTL_MS,
     getConnection,
     act: async (request, connection) => {
       if (request.action === "stop") {

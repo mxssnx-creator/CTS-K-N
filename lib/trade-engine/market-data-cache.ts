@@ -134,6 +134,175 @@ const PARSED_CANDLES_CACHE = new Map<
 const PARSED_CANDLES_TTL = 5 * 60_000 // 5 min — defensive eviction
 const PARSED_CANDLES_MAX_ENTRIES = 64
 
+interface HistoricChunkRange {
+  start: number
+  end: number
+  count?: number
+}
+
+interface HistoricRangeOptions {
+  startMs: number
+  endMs: number
+  /** Maximum number of Redis list elements fetched in one request. */
+  batchChunks?: number
+}
+
+interface HistoricWindowOptions {
+  afterMs: number
+  beforeMs: number
+  limit: number
+  warmup?: number
+  lookahead?: number
+}
+
+function candleTimestamp(candle: any): number {
+  return Number(candle?.timestamp ?? candle?.time ?? candle?.openTime ?? 0)
+}
+
+function normalizeHistoricCandles(chunks: unknown[]): any[] {
+  const byTimestamp = new Map<number, any>()
+  for (const rawChunk of chunks) {
+    try {
+      const parsed = typeof rawChunk === "string" ? JSON.parse(rawChunk) : rawChunk
+      if (!Array.isArray(parsed)) continue
+      for (const candle of parsed) {
+        const timestamp = candleTimestamp(candle)
+        if (Number.isFinite(timestamp) && timestamp > 0) byTimestamp.set(timestamp, candle)
+      }
+    } catch {
+      // A partially-written/corrupt chunk must not abort the complete replay.
+    }
+  }
+  return [...byTimestamp.values()].sort((a, b) => candleTimestamp(a) - candleTimestamp(b))
+}
+
+async function loadHistoricChunkRanges(symbol: string): Promise<HistoricChunkRange[]> {
+  await initRedis()
+  const client = getRedisClient()
+  const raw = await client.get(`market_data:${symbol}:history:meta`)
+  if (!raw) return []
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
+    if (!Array.isArray(parsed?.ranges)) return []
+    return parsed.ranges
+      .map((range: any) => ({
+        start: Number(range?.start),
+        end: Number(range?.end),
+        count: Math.max(0, Number(range?.count) || 0),
+      }))
+      .filter((range: HistoricChunkRange) => Number.isFinite(range.start) && Number.isFinite(range.end))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Load only the history chunks intersecting a calculation range. This is the
+ * memory-bounded replacement for parsing the complete prehistoric JSON blob on
+ * every cycle. Chunks are released as soon as each bounded Redis batch has
+ * been parsed and filtered.
+ */
+export async function getHistoricCandlesForRange(
+  symbol: string,
+  options: HistoricRangeOptions,
+): Promise<any[]> {
+  const startMs = Math.min(Number(options.startMs), Number(options.endMs))
+  const endMs = Math.max(Number(options.startMs), Number(options.endMs))
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return []
+
+  const ranges = await loadHistoricChunkRanges(symbol)
+  if (ranges.length === 0) {
+    const legacy = await getParsedCandlesCached(symbol)
+    return legacy.filter((candle) => {
+      const timestamp = candleTimestamp(candle)
+      return timestamp >= startMs && timestamp <= endMs
+    })
+  }
+
+  const first = ranges.findIndex((range) => range.end >= startMs && range.start <= endMs)
+  if (first < 0) return []
+  let last = first
+  while (last + 1 < ranges.length && ranges[last + 1].start <= endMs) last++
+
+  const client = getRedisClient()
+  const listKey = `market_data:${symbol}:history:chunks`
+  const batchChunks = Math.max(1, Math.min(64, Math.floor(Number(options.batchChunks) || 8)))
+  // Deduplicate directly into the final bounded range. The previous path
+  // built a batch array, a complete selected array, another Map, and a final
+  // sorted array at once. A single Map keeps only one reference per candle
+  // while each raw Redis batch becomes unreachable before the next LRANGE.
+  const selectedByTimestamp = new Map<number, any>()
+  for (let cursor = first; cursor <= last; cursor += batchChunks) {
+    const batchEnd = Math.min(last, cursor + batchChunks - 1)
+    const rawChunks = await client.lrange(listKey, cursor, batchEnd)
+    for (const rawChunk of Array.isArray(rawChunks) ? rawChunks : []) {
+      try {
+        const parsed = typeof rawChunk === "string" ? JSON.parse(rawChunk) : rawChunk
+        if (!Array.isArray(parsed)) continue
+        for (const candle of parsed) {
+          const timestamp = candleTimestamp(candle)
+          if (Number.isFinite(timestamp) && timestamp >= startMs && timestamp <= endMs) {
+            selectedByTimestamp.set(timestamp, candle)
+          }
+        }
+      } catch {
+        // Ignore only the corrupt chunk; later chunks remain usable.
+      }
+    }
+  }
+  return [...selectedByTimestamp.values()].sort((a, b) => candleTimestamp(a) - candleTimestamp(b))
+}
+
+/**
+ * Load a small replay window around the last processed timestamp. The single
+ * contiguous LRANGE is intentionally wide enough for warmup and lookahead but
+ * never includes unrelated prehistoric chunks.
+ */
+export async function getHistoricCandleWindow(
+  symbol: string,
+  options: HistoricWindowOptions,
+): Promise<{ warmup: any[]; pending: any[]; lookahead: any[] }> {
+  const afterMs = Number(options.afterMs)
+  const beforeMs = Number(options.beforeMs)
+  const limit = Math.max(0, Math.floor(Number(options.limit) || 0))
+  const warmupCount = Math.max(0, Math.floor(Number(options.warmup) || 0))
+  const lookaheadCount = Math.max(0, Math.floor(Number(options.lookahead) || 0))
+  const empty = { warmup: [] as any[], pending: [] as any[], lookahead: [] as any[] }
+  if (!Number.isFinite(afterMs) || !Number.isFinite(beforeMs) || beforeMs < afterMs) return empty
+
+  const ranges = await loadHistoricChunkRanges(symbol)
+  let candles: any[]
+  if (ranges.length === 0) {
+    candles = await getParsedCandlesCached(symbol)
+  } else {
+    let first = ranges.findIndex((range) => range.end >= afterMs)
+    if (first < 0) first = ranges.length - 1
+    let warmupNeeded = warmupCount
+    while (first > 0 && warmupNeeded > 0) {
+      warmupNeeded -= Math.max(1, Number(ranges[first].count) || 0)
+      first--
+    }
+
+    let last = ranges.findIndex((range, index) => index >= first && range.end >= beforeMs)
+    if (last < 0) last = ranges.length - 1
+    let lookaheadNeeded = lookaheadCount
+    while (last + 1 < ranges.length && lookaheadNeeded > Math.max(0, Number(ranges[last].count) || 0)) {
+      lookaheadNeeded -= Math.max(1, Number(ranges[last].count) || 0)
+      last++
+    }
+
+    const rawChunks = await getRedisClient().lrange(`market_data:${symbol}:history:chunks`, first, last)
+    candles = normalizeHistoricCandles(Array.isArray(rawChunks) ? rawChunks : [])
+  }
+
+  const warmup = candles.filter((candle) => candleTimestamp(candle) <= afterMs).slice(-warmupCount)
+  const pending = candles
+    .filter((candle) => candleTimestamp(candle) > afterMs && candleTimestamp(candle) < beforeMs)
+    .slice(0, limit)
+  const lookahead = candles.filter((candle) => candleTimestamp(candle) >= beforeMs).slice(0, lookaheadCount)
+  return { warmup, pending, lookahead }
+}
+
 /**
  * Return the parsed candle array for a symbol, parsing the Redis JSON blob at
  * most once per data version instead of on every replay cycle. Candles are

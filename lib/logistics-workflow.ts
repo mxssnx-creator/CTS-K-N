@@ -2,16 +2,43 @@ import { type getDashboardWorkflowSnapshot } from "@/lib/dashboard-workflow"
 
 type DashboardWorkflowSnapshot = Awaited<ReturnType<typeof getDashboardWorkflowSnapshot>>
 
+type LogisticsRateSample = { processed: number; at: number; rate: number }
+const logisticsGlobal = globalThis as typeof globalThis & {
+  __logisticsRateSamples?: Map<string, LogisticsRateSample>
+}
+const rateSamples = logisticsGlobal.__logisticsRateSamples ?? new Map<string, LogisticsRateSample>()
+logisticsGlobal.__logisticsRateSamples = rateSamples
+
+function calculateOrderRate(connectionId: string, processed: number): number {
+  const now = Date.now()
+  const previous = rateSamples.get(connectionId)
+  let rate = 0
+  if (previous && processed >= previous.processed && now > previous.at) {
+    rate = (processed - previous.processed) / ((now - previous.at) / 1000)
+  }
+  const rounded = Math.round(Math.max(0, rate) * 100) / 100
+  rateSamples.set(connectionId, { processed, at: now, rate: rounded })
+
+  // This is observability state, not trade state. Keep it strictly bounded.
+  if (rateSamples.size > 100) {
+    const oldest = Array.from(rateSamples.entries()).sort((a, b) => a[1].at - b[1].at)
+    for (const [key] of oldest.slice(0, rateSamples.size - 100)) rateSamples.delete(key)
+  }
+  return rounded
+}
+
 export function buildLogisticsQueuePayload(snapshot: DashboardWorkflowSnapshot) {
   const { focusConnection, connectionMetrics, overview, globalStatus } = snapshot
 
   const cycleSuccessRate = Math.round(connectionMetrics.progression?.cycleSuccessRate || 0)
-  const completedOrders = connectionMetrics.trades
-  const failedOrders = connectionMetrics.progression?.failedCycles || 0
+  const completedOrders = connectionMetrics.liveOrders.filled
+  const failedOrders = connectionMetrics.liveOrders.failed
   const totalProcessed = completedOrders + failedOrders
   const successRate = totalProcessed > 0 ? Math.round((completedOrders / totalProcessed) * 100) : cycleSuccessRate
-
-  const processingRate = connectionMetrics.engineCycles?.total || connectionMetrics.progression?.cyclesCompleted || 0
+  const processingRate = calculateOrderRate(
+    focusConnection?.id || "global",
+    totalProcessed,
+  )
 
   const latencySamples = [
     connectionMetrics.engineDurations?.indicationAvgMs || 0,
@@ -24,24 +51,27 @@ export function buildLogisticsQueuePayload(snapshot: DashboardWorkflowSnapshot) 
       ? Math.round(latencySamples.reduce((sum, value) => sum + value, 0) / latencySamples.length)
       : 0
 
-  const latestSymbolFromLogs = connectionMetrics.logs.find((log: any) => typeof log.details?.symbol === "string")?.details?.symbol
-  const focusSymbol = latestSymbolFromLogs || "N/A"
-  const queueBacklog = Math.max(0, overview.eligibleEngineConnections - processingRate)
+  const queueBacklog = connectionMetrics.liveOrders.pending
+  const queueCapacity = connectionMetrics.maxOpenPositions
+  const processingPressure = queueCapacity > 0
+    ? Math.min(100, Math.round((queueBacklog / queueCapacity) * 100))
+    : 0
+  const degradedRuntime =
+    processingPressure >= 90 ||
+    (totalProcessed > 0 && successRate < 50)
   const workflowHealth =
     overview.eligibleEngineConnections === 0
       ? "needs-input"
       : globalStatus === "running"
-        ? "operational"
+        ? degradedRuntime ? "degraded" : "healthy"
         : globalStatus === "paused"
           ? "degraded"
           : "blocked"
-  const processingPressure = overview.eligibleEngineConnections > 0
-    ? Math.min(100, Math.round((queueBacklog / overview.eligibleEngineConnections) * 100))
-    : 0
 
   return {
     success: true,
-    queueSize: Math.max(0, overview.eligibleEngineConnections - overview.liveTradeConnections),
+    queueSize: queueBacklog,
+    queueCapacity,
     queueBacklog,
     workflowHealth,
     processingPressure,
@@ -52,18 +82,9 @@ export function buildLogisticsQueuePayload(snapshot: DashboardWorkflowSnapshot) 
     throughput: processingRate > 0 ? processingRate * 60 : 0,
     completedOrders,
     failedOrders,
-    activeOrders: focusConnection
-      ? [
-          {
-            id: focusConnection.id,
-            orderId: `#${focusConnection.id.slice(0, 8)}`,
-            symbol: focusSymbol,
-            status: globalStatus === "running" ? "processing" : "waiting",
-            quantity: `${connectionMetrics.positions} tracked positions`,
-            latency: avgLatency,
-          },
-        ]
-      : [],
+    // Do not fabricate venue order IDs. Detailed open orders come from the
+    // exchange/live-position APIs; this endpoint provides aggregate queue data.
+    activeOrders: [],
     workflow: snapshot.workflowPhases,
     focusConnection,
     progression: connectionMetrics.progression,

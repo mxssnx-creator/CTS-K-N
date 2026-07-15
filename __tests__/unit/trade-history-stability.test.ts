@@ -221,6 +221,74 @@ describe("BingX-backed trade history", () => {
     })
   })
 
+  test("does not attach venue PnL to a different same-symbol slot closed nearby", () => {
+    const exchange = normalizeBingXClosedOrder({
+      symbol: "BTCUSDT",
+      orderId: "anonymous-close",
+      side: "SELL",
+      positionSide: "LONG",
+      status: "FILLED",
+      executedQty: "2",
+      avgPrice: "110",
+      profit: "20",
+      updateTime: 1_700_000_060_000,
+    })!
+    const wrongSlot = normalizeLocalTradeHistoryRow({
+      id: "wrong-slot",
+      status: "closed",
+      symbol: "BTCUSDT",
+      direction: "long",
+      executedQuantity: 1,
+      averageExecutionPrice: 100,
+      closePrice: 110,
+      realizedPnL: 10,
+      closedAt: 1_700_000_059_000,
+    })!
+    const correctSlot = normalizeLocalTradeHistoryRow({
+      id: "correct-slot",
+      status: "closed",
+      symbol: "BTCUSDT",
+      direction: "long",
+      executedQuantity: 2,
+      averageExecutionPrice: 100,
+      closePrice: 110,
+      realizedPnL: 20,
+      closedAt: 1_700_000_061_000,
+    })!
+
+    const rows = mergeTradeHistory([exchange], [wrongSlot, correctSlot], 500)
+    expect(rows.find((row) => row.id === "correct-slot")?.source).toBe("exchange")
+    expect(rows.find((row) => row.id === "wrong-slot")?.source).toBe("local")
+  })
+
+  test("does not trust a reused venue position id outside the close-time window", () => {
+    const exchange = normalizeBingXClosedOrder({
+      symbol: "ETHUSDT",
+      orderId: "late-close",
+      positionID: "reused-position-id",
+      side: "SELL",
+      positionSide: "LONG",
+      status: "FILLED",
+      executedQty: "1",
+      avgPrice: "110",
+      profit: "10",
+      updateTime: 1_700_001_000_000,
+    })!
+    const oldLocal = normalizeLocalTradeHistoryRow({
+      id: "old-local",
+      status: "closed",
+      symbol: "ETHUSDT",
+      direction: "long",
+      executedQuantity: 1,
+      averageExecutionPrice: 100,
+      closePrice: 110,
+      realizedPnL: 10,
+      closedAt: 1_700_000_000_000,
+      exchangeData: { exchangePositionId: "reused-position-id" },
+    })!
+    expect(mergeTradeHistory([exchange], [oldLocal], 500)).toHaveLength(2)
+  })
+
   test("loads the closed LIST index with one MGET and hash fallback", async () => {
     const client = {
       lrange: jest.fn().mockResolvedValue(["live:a", "live:b", "live:a"]),
@@ -293,6 +361,9 @@ describe("live-order stranded-position guards", () => {
     expect(liveStage).toContain("recoverEntryOrderByClientId")
     expect(liveStage).toContain("pendingAccumulation")
     expect(liveStage).toContain("pendingProtectionOrders")
+    expect(liveStage).toContain("protection_submission_recovered")
+    expect(liveStage).toContain("pendingSlBlocksPlacement")
+    expect(liveStage).toContain("pendingTpBlocksPlacement")
     expect(liveStage).toContain("exchange_quantity_reconciled")
     expect(bingx).toContain("orderPayload.clientOrderID = options.clientOrderId")
     expect(bingx).toContain("params.clientOrderID = clientOrderId")
@@ -324,6 +395,9 @@ describe("live-order stranded-position guards", () => {
     expect(historyRoute).toContain("globalRequestTimedOut")
     expect(historyRoute).toContain(").slice(0, 32)")
     expect(historyRoute).toContain("index += 4")
+    expect(historyRoute).toContain("getOrderHistorySnapshot")
+    expect(bingx).toContain("lastOrderHistorySnapshotStatus")
+    expect(bingx).toContain("getOrderHistorySnapshot")
     expect(asyncSafety).toContain("if (timeout) clearTimeout(timeout)")
   })
 

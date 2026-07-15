@@ -743,14 +743,14 @@ export class GlobalTradeEngineCoordinator {
    * monitor tick. The health monitor still calls this without a connection id
    * as a safety net for requests written by other processes/serverless calls.
    */
-  public async drainQueuedRefreshRequestsNow(connectionId?: string): Promise<void> {
+  public async drainQueuedRefreshRequestsNow(connectionId?: string): Promise<number> {
     const { getConnection } = await import("@/lib/redis-db")
     // Guardrail: shared queue consumer drops requests when requestAgeMs >= ENGINE_REFRESH_REQUEST_TTL_MS
     // and logs ttlMs=${ENGINE_REFRESH_REQUEST_TTL_MS}; do not reintroduce local TTL literals here.
-    await processQueuedEngineRefreshRequests({
+    return await processQueuedEngineRefreshRequests({
       consumerName: "Coordinator",
       targetConnectionId: connectionId,
-      staleAfterMs: 30_000,
+      staleAfterMs: ENGINE_REFRESH_REQUEST_TTL_MS,
       getConnection,
       act: async (request) => {
         if (request.action === "stop") {

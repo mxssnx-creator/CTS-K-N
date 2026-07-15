@@ -18,10 +18,13 @@ type ContinuityGlobal = typeof globalThis & {
     started: boolean
     indicationInFlight: boolean
     autoStartInFlight: boolean
+    liveRecoveryInFlight: boolean
+    liveRecoveryTimer?: ReturnType<typeof setInterval>
   }
 }
 
 const g = globalThis as ContinuityGlobal
+const LIVE_RECOVERY_INTERVAL_MS = 15_000
 
 function shouldSkipInProcessTimers(): boolean {
   // Long-lived Node production/dev processes should keep continuity alive by
@@ -71,6 +74,23 @@ export async function enqueueContinuityAutoStartJob(): Promise<void> {
   }
 }
 
+export async function enqueueContinuityLiveRecoveryJob(): Promise<void> {
+  const state = g.__cts_continuity_runner
+  if (!state || state.liveRecoveryInFlight) return
+  state.liveRecoveryInFlight = true
+  try {
+    const { runLivePositionRecoverySweep } = await import("@/app/api/cron/sync-live-positions/route")
+    await runLivePositionRecoverySweep()
+  } catch (err) {
+    console.warn(
+      "[v0] [Continuity] live-position recovery tick failed:",
+      err instanceof Error ? err.message : String(err),
+    )
+  } finally {
+    state.liveRecoveryInFlight = false
+  }
+}
+
 export function isServerContinuityRunnerStarted(): boolean {
   return !!g.__cts_continuity_runner?.started
 }
@@ -81,6 +101,7 @@ export function startServerContinuityRunner(): void {
       started: false,
       indicationInFlight: false,
       autoStartInFlight: false,
+      liveRecoveryInFlight: false,
     }
   }
 
@@ -97,6 +118,11 @@ export function startServerContinuityRunner(): void {
   // scheduler; the in-process runner no longer owns continuous local intervals.
   void enqueueContinuityAutoStartJob()
   void enqueueContinuityIndicationJob()
+  void enqueueContinuityLiveRecoveryJob()
+  state.liveRecoveryTimer = setInterval(() => {
+    void enqueueContinuityLiveRecoveryJob()
+  }, LIVE_RECOVERY_INTERVAL_MS)
+  state.liveRecoveryTimer.unref?.()
 
   console.log("[v0] [Continuity] Server runner enqueued startup continuity jobs; external cron remains scheduler")
 }
@@ -107,4 +133,7 @@ export function stopServerContinuityRunner(): void {
   state.started = false
   state.indicationInFlight = false
   state.autoStartInFlight = false
+  state.liveRecoveryInFlight = false
+  if (state.liveRecoveryTimer) clearInterval(state.liveRecoveryTimer)
+  state.liveRecoveryTimer = undefined
 }

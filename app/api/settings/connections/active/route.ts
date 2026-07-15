@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { initRedis, getAllConnections } from "@/lib/redis-db"
+import { maskConnectionSecrets } from "@/lib/connection-secrets"
 
 export const dynamic = "force-dynamic"
 export async function GET() {
@@ -15,7 +16,7 @@ export async function GET() {
     
     return NextResponse.json({
       success: true,
-      connections: activeConnections,
+      connections: activeConnections.map((connection) => maskConnectionSecrets(connection)),
       total: allConnections.length,
       active: activeConnections.length,
       eligibleForEngine: activeConnections.length,

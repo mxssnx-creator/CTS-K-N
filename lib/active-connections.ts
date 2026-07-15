@@ -88,8 +88,7 @@ export async function saveActiveConnections(connections: ActiveConnection[]): Pr
         const connection = await getConnection(ac.connectionId)
         if (connection) {
           // Save is_enabled_dashboard (Dashboard active state) - NOT is_enabled
-          connection.is_enabled_dashboard = ac.isActive ? "1" : "0"
-          await updateConnection(ac.connectionId, connection)
+          await updateConnection(ac.connectionId, { is_enabled_dashboard: ac.isActive ? "1" : "0" })
         }
       } catch (e) {
         console.warn(`[v0] [ActiveConnections] Could not update ${ac.connectionId}:`, e)
@@ -130,8 +129,7 @@ export async function addActiveConnection(connectionId: string, exchangeName: st
     }
 
     console.log(`[v0] [ActiveConnections] Setting is_enabled_dashboard=1 for ${connectionId}`)
-    connection.is_enabled_dashboard = "1"
-    await updateConnection(connectionId, connection)
+    await updateConnection(connectionId, { is_enabled_dashboard: "1" })
     console.log(`[v0] [ActiveConnections] Successfully added ${connectionId} to active list`)
 
     return {
@@ -158,8 +156,7 @@ export async function removeActiveConnection(connectionId: string): Promise<void
       connection = all.find((c: any) => c.id === connectionId)
     }
     if (connection) {
-      connection.is_enabled_dashboard = "0"
-      await updateConnection(connectionId, connection)
+      await updateConnection(connectionId, { is_enabled_dashboard: "0" })
     }
   } catch (error) {
     console.error("[v0] Error removing active connection:", error)
@@ -181,8 +178,7 @@ export async function toggleActiveConnection(connectionId: string, isActive: boo
     }
     if (connection) {
       // Toggle is_enabled_dashboard (Dashboard active state) - NOT is_enabled (Settings state)
-      connection.is_enabled_dashboard = isActive ? "1" : "0"
-      await updateConnection(connectionId, connection)
+      await updateConnection(connectionId, { is_enabled_dashboard: isActive ? "1" : "0" })
       console.log(`[v0] [ActiveConnections] Toggled ${connectionId} active: ${isActive}`)
     }
   } catch (error) {

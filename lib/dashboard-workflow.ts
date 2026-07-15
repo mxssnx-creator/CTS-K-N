@@ -1,4 +1,4 @@
-import { getAllConnections, getConnectionPositions, getConnectionTrades, getRedisClient, getSettings, initRedis } from "@/lib/redis-db"
+import { getAllConnections, getAppSettings, getConnectionPositions, getConnectionTrades, getRedisClient, getSettings, initRedis } from "@/lib/redis-db"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { getProgressionLogs } from "@/lib/engine-progression-logs"
 import {
@@ -78,8 +78,11 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
   await initRedis()
 
   const client = getRedisClient()
-  const allConnections = await getAllConnections()
-  const globalState = await client.hgetall("trade_engine:global")
+  const [allConnections, globalState, appSettings] = await Promise.all([
+    getAllConnections(),
+    client.hgetall("trade_engine:global"),
+    getAppSettings().catch(() => ({} as Record<string, unknown>)),
+  ])
   const globalStatus = globalState?.status || "stopped"
 
   const normalizedConnections: WorkflowConnection[] = allConnections.map((connection: any) => {
@@ -121,6 +124,8 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
     logs: [] as Awaited<ReturnType<typeof getProgressionLogs>>,
     engineCycles: { indication: 0, strategy: 0, realtime: 0, total: 0 },
     engineDurations: { indicationAvgMs: 0, strategyAvgMs: 0, realtimeAvgMs: 0 },
+    liveOrders: { placed: 0, filled: 0, failed: 0, rejected: 0, pending: 0 },
+    maxOpenPositions: 0,
     comprehensiveStats: null as null | {
       symbols: { prehistoricLoaded: number; prehistoricDataSize: number; intervalsProcessed: number }
       indicationsByType: { direction: number; move: number; active: number; optimal: number; auto: number; total: number }
@@ -161,6 +166,11 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
     const activeIndications    = parseInt(ph.indications_active_count    || "0", 10)
     const optimalIndications   = parseInt(ph.indications_optimal_count   || "0", 10)
     const autoIndications      = parseInt(ph.indications_auto_count      || "0", 10)
+    const liveOrdersPlaced = Math.max(0, parseInt(ph.live_orders_placed_count || "0", 10) || 0)
+    const liveOrdersFilled = Math.max(0, parseInt(ph.live_orders_filled_count || "0", 10) || 0)
+    const liveOrdersFailed = Math.max(0, parseInt(ph.live_orders_failed_count || "0", 10) || 0)
+    const liveOrdersRejected = Math.max(0, parseInt(ph.live_orders_rejected_count || "0", 10) || 0)
+    const maxOpenPositionsRaw = Number((appSettings as Record<string, unknown>).max_open_positions)
 
     // Strategy set counts from settings:strategies:* hash keys
     let baseSets = 0, mainSets = 0, realSets = 0
@@ -203,6 +213,17 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
         strategyAvgMs: Number((engineState as any)?.strategy_avg_duration_ms || 0),
         realtimeAvgMs: Number((engineState as any)?.realtime_avg_duration_ms || 0),
       },
+      liveOrders: {
+        placed: liveOrdersPlaced,
+        filled: liveOrdersFilled,
+        failed: liveOrdersFailed,
+        rejected: liveOrdersRejected,
+        pending: Math.max(0, liveOrdersPlaced - liveOrdersFilled),
+      },
+      // 0 means the operator selected an unlimited/non-numeric ceiling.
+      maxOpenPositions: Number.isFinite(maxOpenPositionsRaw) && maxOpenPositionsRaw > 0
+        ? Math.floor(maxOpenPositionsRaw)
+        : 0,
       comprehensiveStats: {
         symbols: {
           prehistoricLoaded: prehistoricSymbols,

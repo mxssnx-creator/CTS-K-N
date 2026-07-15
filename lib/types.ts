@@ -349,14 +349,42 @@ export interface SystemSettings {
   positionCooldownTimeout?: number // seconds, default 20
   maxPositionsPerConfigSet?: number // default 1
 
-  presetTpMin?: number // Take profit minimum factor (default: 2)
-  presetTpMax?: number // Take profit maximum factor (default: 30)
-  presetTpStep?: number // Take profit step (default: 2)
-  presetSlMin?: number // Stop loss minimum ratio (default: 0.3)
-  presetSlMax?: number // Stop loss maximum ratio (default: 3.0)
-  presetSlStep?: number // Stop loss step (default: 0.3)
-  presetTrailStarts?: number[] // Trailing start values (default: [0.5, 1.0, 1.5])
-  presetTrailStops?: number[] // Trailing stop values (default: [0.2, 0.4, 0.6])
+  // Historical Preset optimizer. These keys are persisted in app settings and
+  // consumed by the Presets page, optimizer worker, and live Preset execution.
+  profitFactorMinPreset?: number // default 0.7; range 0.4-3.0
+  drawdownTimePreset?: number // hours; default 5
+  presetHistoryDays?: number // default 14; range 1-14
+  presetCountPerSymbol?: number // per symbol and indication type; default 4
+  presetTpMin?: number // position-cost factor; default 3
+  presetTpMax?: number // position-cost factor; default 30
+  presetTpStep?: number // default 1
+  presetSlMin?: number // ratio of TP; default 0.25
+  presetSlMax?: number // ratio of TP; default 2.0
+  presetSlStep?: number // default 0.25
+  presetTrailingEnabled?: boolean // include trailing candidates; default true
+  presetTrailingIndependent?: boolean // trailing candidate can omit fixed TP; default true
+  presetTrailStartMin?: number // positive market-change ratio; default 0.5
+  presetTrailStartMax?: number // default 1.5
+  presetTrailStartStep?: number // default 0.1
+  presetTrailStopMin?: number // ratio of positive market change; default 0.2
+  presetTrailStopMax?: number // default 0.4
+  presetTrailStopStep?: number // default 0.1
+  presetTrailStepRatio?: number // ratio of stop range; default 0.5
+  presetAutoGenerate?: boolean
+  presetAutoSelect?: boolean
+  presetIndicatorTypes?: string[]
+  presetMaxIndicatorVariants?: number
+  presetMaxSignalsPerVariant?: number
+  presetMaxCandlesPerRun?: number
+  presetBlockEnabled?: boolean
+  presetBlockVolumeRatio?: number
+  presetBlockMaxStack?: number
+  presetBlockPauseCountRatio?: number
+  presetBlockActiveRealEnabled?: boolean
+  presetBlockActiveLiveEnabled?: boolean
+  // Legacy array fields retained for imported settings files.
+  presetTrailStarts?: number[]
+  presetTrailStops?: number[]
 
   minimumConnectInterval?: number // milliseconds, default 200ms
 

@@ -3,7 +3,9 @@ import { SystemLogger } from "@/lib/system-logger"
 import { initRedis, getConnection, updateConnection, getRedisClient } from "@/lib/redis-db"
 import { createExchangeConnector } from "@/lib/exchange-connectors"
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
-import { nextStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
+import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
+import { maskConnectionSecrets } from "@/lib/connection-secrets"
+import { parseBooleanInput } from "@/lib/boolean-utils"
 
 /**
  * POST /api/settings/connections/[id]/enable
@@ -16,7 +18,12 @@ export const dynamic = "force-dynamic"
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
-    const { shouldEnable, skipTest = false } = await request.json()
+    const body = await request.json().catch(() => ({}))
+    if (body?.shouldEnable === undefined || body?.shouldEnable === null) {
+      return NextResponse.json({ error: "Missing required shouldEnable flag" }, { status: 400 })
+    }
+    const shouldEnable = parseBooleanInput(body.shouldEnable)
+    const skipTest = parseBooleanInput(body.skipTest)
 
     console.log(`[v0] [Enable Connection] ${id}: shouldEnable=${shouldEnable}, skipTest=${skipTest}`)
     await initRedis()
@@ -80,23 +87,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
 
     // Update connection enabled state
-    const stateSwitchVersion = nextStateSwitchVersion(connection)
-    const updatedConnection = {
-      ...connection,
-      is_enabled: shouldEnable ? "1" : "0",
-      state_switch_version: stateSwitchVersion,
-      updated_at: new Date().toISOString(),
-    }
+    const stateSwitchVersion = await allocateStateSwitchVersion(id, connection)
+    const updatedAt = new Date().toISOString()
 
-    await applyMainConnectionSettingsChange(id, connection, {
+    const { connection: updatedConnection, stateTransitionApplied } = await applyMainConnectionSettingsChange(id, connection, {
       connectionPatch: {
         is_enabled: shouldEnable ? "1" : "0",
         state_switch_version: stateSwitchVersion,
-        updated_at: updatedConnection.updated_at,
+        updated_at: updatedAt,
       },
       changedFieldsOverride: ["is_enabled", "state_switch_version"],
       logTag: "POST /settings/enable",
+      stateSwitchVersion,
     })
+    if (!stateTransitionApplied) {
+      return NextResponse.json({ success: false, error: "Enable switch was superseded by a newer state" }, { status: 409 })
+    }
     console.log(`[v0] [Enable Connection] ${id} is now ${shouldEnable ? "enabled" : "disabled"}`)
 
     await SystemLogger.logConnection(
@@ -183,7 +189,7 @@ await queueEngineRefreshRequest({
     return NextResponse.json({
       success: true,
       message: `Connection ${shouldEnable ? "enabled" : "disabled"}`,
-      connection: updatedConnection,
+      connection: maskConnectionSecrets(updatedConnection),
     })
   } catch (error) {
     console.error(`[v0] [Enable Connection] Exception:`, error)

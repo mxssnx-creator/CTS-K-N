@@ -2073,8 +2073,8 @@ const VARIANT_META: {
   },
   {
     key: "block",
-    label: "Block",
-    desc:  "Add-on entries when continuousCount is in the 1–2 range. Independent of axes.",
+    label: "Block · Adjust",
+    desc:  "Independent completed-position Block counts and active-position overlays; each add-on uses that position's base volume × count × configured ratio.",
     defaultOn: true,
   },
   {

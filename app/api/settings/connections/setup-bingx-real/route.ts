@@ -47,8 +47,7 @@ export async function POST(request: NextRequest) {
     console.log(`[v0] [BingX Setup] Updating BingX connection with real credentials...`)
 
     // Update the connection with real credentials
-    const updatedConnection = {
-      ...bingxConnection,
+    const connectionPatch = {
       api_key: apiKey,
       api_secret: apiSecret,
       api_passphrase: apiPassphrase || "",
@@ -56,10 +55,12 @@ export async function POST(request: NextRequest) {
       updated_at: new Date().toISOString(),
     }
 
-    await updateConnection("bingx-x01", updatedConnection)
+    const updatedConnection = (await updateConnection("bingx-x01", connectionPatch)) || {
+      ...bingxConnection,
+      ...connectionPatch,
+    }
 
     console.log(`[v0] [BingX Setup] ✓ BingX connection updated with real credentials`)
-    console.log(`[v0] [BingX Setup] API Key: ${apiKey.substring(0, 10)}...${apiKey.substring(apiKey.length - 10)}`)
 
     // Log the setup event
     await logProgressionEvent("bingx-x01", "credentials_set", "info", "Real credentials configured for BingX", {
@@ -75,7 +76,7 @@ export async function POST(request: NextRequest) {
         id: updatedConnection.id,
         name: updatedConnection.name,
         exchange: updatedConnection.exchange,
-        api_key_preview: `${apiKey.substring(0, 10)}...${apiKey.substring(apiKey.length - 10)}`,
+        api_key_configured: true,
         api_secret_length: apiSecret.length,
         is_testnet: false,
         updated_at: updatedConnection.updated_at,

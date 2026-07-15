@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic"
 
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
@@ -16,6 +16,7 @@ import { AuthGuard } from "@/components/auth-guard"
 import { useExchange } from "@/lib/exchange-context"
 import { cn } from "@/lib/utils"
 import { countLiveOpenPositions, isLiveOpenStatus } from "@/lib/live-position-status"
+import { useDashboardEvents } from "@/lib/dashboard-events"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -74,6 +75,7 @@ interface QueueData {
   queueSize: number; processingRate: number; successRate: number
   avgLatency: number; completedOrders: number; failedOrders: number
   workflowHealth: string; processingPressure: number
+  queueCapacity?: number
   workflow: Array<{ id: string; label: string; status: "complete" | "warning" | "pending"; detail: string }>
   focusConnection: { id: string; name: string; exchange: string; liveTradeEnabled: boolean } | null
   progression: { cyclesCompleted: number; successfulCycles: number; cycleSuccessRate: number; totalTrades: number } | null
@@ -436,9 +438,10 @@ function PresetModeTab() {
   return (
     <div className="space-y-3">
       <div className="rounded-md border bg-muted/5 px-3 py-2">
+        <Tag color="blue">Configuration reference</Tag>
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           <span className="font-semibold text-foreground">Preset Mode</span> uses classic technical indicators with confluence filtering.
-          Unlike Main System, signals execute directly — no pseudo position stage. Minimum 2 indicators must agree for a trade signal.
+          The values below describe the preset pipeline defaults; actual enabled indicators and thresholds are controlled on the Presets page.
         </p>
       </div>
 
@@ -539,9 +542,10 @@ function BotsTab() {
   return (
     <div className="space-y-3">
       <div className="rounded-md border bg-muted/5 px-3 py-2">
+        <Tag color="orange">Reference only · no bot runtime attached</Tag>
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          <span className="font-semibold text-foreground">Trading Bots</span> run continuously with custom configs,
-          independent of Main System and Preset Mode. Each bot type has distinct mechanics and risk profiles.
+          <span className="font-semibold text-foreground">Trading Bots</span> documents possible bot mechanics.
+          This page does not create, start, or imply a running Grid, Arbitrage, Market-Making, or standalone DCA bot.
         </p>
       </div>
 
@@ -656,14 +660,18 @@ function LivePositionsSection({ positions }: { positions: LivePosition[] }) {
 function QueueSection({ queueData }: { queueData: QueueData | null }) {
   if (!queueData) return null
   const q = queueData
-  const healthColor = q.workflowHealth === "healthy" ? "green" : q.workflowHealth === "degraded" ? "orange" : "red"
+  const healthColor = q.workflowHealth === "healthy"
+    ? "green"
+    : q.workflowHealth === "degraded" || q.workflowHealth === "needs-input"
+      ? "orange"
+      : "red"
 
   return (
     <div className="rounded-md border bg-card">
       <div className="flex items-center justify-between border-b px-3 py-1.5">
         <div className="flex items-center gap-1.5">
           <Database className="h-3 w-3 text-muted-foreground" />
-          <span className="text-[11px] font-semibold uppercase tracking-wider">Order Queue</span>
+          <span className="text-[11px] font-semibold uppercase tracking-wider">Exchange Order Queue</span>
         </div>
         <Tag color={healthColor as any}>{q.workflowHealth || "unknown"}</Tag>
       </div>
@@ -673,7 +681,7 @@ function QueueSection({ queueData }: { queueData: QueueData | null }) {
             { l: "Queue",     v: q.queueSize         },
             { l: "Rate/s",    v: q.processingRate     },
             { l: "Success",   v: `${q.successRate}%`  },
-            { l: "Latency",   v: `${q.avgLatency}ms`  },
+            { l: "Cycle Lat.", v: `${q.avgLatency}ms` },
             { l: "Completed", v: q.completedOrders    },
             { l: "Failed",    v: q.failedOrders       },
           ].map(m => (
@@ -686,7 +694,7 @@ function QueueSection({ queueData }: { queueData: QueueData | null }) {
         {typeof q.processingPressure === "number" && (
           <div className="space-y-0.5">
             <div className="flex justify-between text-[10px] text-muted-foreground">
-              <span>Pressure</span><span>{q.processingPressure}%</span>
+              <span>Pressure{q.queueCapacity ? ` (${q.queueSize}/${q.queueCapacity})` : " (unlimited ceiling)"}</span><span>{q.processingPressure}%</span>
             </div>
             <Progress value={q.processingPressure} className="h-1" />
           </div>
@@ -771,9 +779,10 @@ function LogisticsContent() {
   const [livePos,      setLivePos]      = useState<LivePosition[]>([])
   const [lastRefresh,  setLastRefresh]  = useState<Date | null>(null)
   const [refreshing,   setRefreshing]   = useState(false)
-  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+  const loadSequenceRef = useRef(0)
 
   const loadAll = useCallback(async (silent: boolean = false) => {
+    const sequence = ++loadSequenceRef.current
     if (!silent) setRefreshing(true)
     try {
       const [statsRes, queueRes, livePosRes] = await Promise.allSettled([
@@ -783,24 +792,39 @@ function LogisticsContent() {
         fetch(`/api/logistics/queue?connectionId=${encodeURIComponent(connId)}`, { cache: "no-store" }),
         fetch(`/api/trading/live-positions?connection_id=${connId}`, { cache: "no-store" }),
       ])
-      if (statsRes.status === "fulfilled" && statsRes.value.ok)
-        setStats(await statsRes.value.json())
-      if (queueRes.status === "fulfilled" && queueRes.value.ok)
-        setQueueData(await queueRes.value.json())
+      const [nextStats, nextQueue, nextPositions] = await Promise.all([
+        statsRes.status === "fulfilled" && statsRes.value.ok ? statsRes.value.json() : null,
+        queueRes.status === "fulfilled" && queueRes.value.ok ? queueRes.value.json() : null,
+        livePosRes.status === "fulfilled" && livePosRes.value.ok ? livePosRes.value.json() : null,
+      ])
+      if (sequence !== loadSequenceRef.current) return
+      if (nextStats) setStats(nextStats)
+      if (nextQueue) setQueueData(nextQueue)
       if (livePosRes.status === "fulfilled" && livePosRes.value.ok) {
-        const d = await livePosRes.value.json()
-        setLivePos(Array.isArray(d) ? d : (d?.positions || []))
+        setLivePos(Array.isArray(nextPositions) ? nextPositions : (nextPositions?.positions || []))
       }
       setLastRefresh(new Date())
     } catch { /* non-critical */ }
-    finally { if (!silent) setRefreshing(false) }
+    finally {
+      if (!silent && sequence === loadSequenceRef.current) setRefreshing(false)
+    }
   }, [connId])
 
+  const dashboardEventHandlers = useMemo(() => {
+    const refresh = () => { void loadAll(true) }
+    return { "monitoring.updated": refresh }
+  }, [loadAll])
+  useDashboardEvents(connId, dashboardEventHandlers)
+
   useEffect(() => {
-    loadAll()
-    clearInterval(pollRef.current)
-    pollRef.current = setInterval(() => loadAll(true), 3000)
-    return () => clearInterval(pollRef.current)
+    void loadAll()
+    // SSE is the fast path; a low-frequency fallback heals proxy buffering or
+    // cross-worker event loss without the previous 3-second request churn.
+    const fallbackInterval = window.setInterval(() => { void loadAll(true) }, 15_000)
+    return () => {
+      window.clearInterval(fallbackInterval)
+      loadSequenceRef.current++
+    }
   }, [loadAll])
 
   const engineRunning = (stats?.indicationCycleCount || 0) > 0

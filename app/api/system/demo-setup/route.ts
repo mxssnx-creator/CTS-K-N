@@ -58,8 +58,7 @@ export async function POST(request: Request) {
     console.log("[v0] [DemoSetup] Found connection:", connection.name, connection.id)
 
     // Update connection with credentials and enable everything
-    const updatedConnection = {
-      ...connection,
+    const connectionPatch = {
       api_key,
       api_secret,
       is_testnet: false, // Always mainnet
@@ -73,7 +72,7 @@ export async function POST(request: Request) {
       updated_at: new Date().toISOString(),
     }
 
-    await updateConnection(connection.id, updatedConnection)
+    await updateConnection(connection.id, connectionPatch)
     console.log("[v0] [DemoSetup] Connection updated with credentials")
 
     // Log progression event

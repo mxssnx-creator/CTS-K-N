@@ -19,6 +19,7 @@ import { COMPONENT_VERSIONS } from "@/lib/system-version"
 import { AddActiveConnectionDialog } from "./add-active-connection-dialog"
 import { ActiveConnectionCard } from "./active-connection-card"
 import { QuickStartButton } from "./quick-start-button"
+import { useDashboardEvents, type DashboardEventPayload } from "@/lib/dashboard-events"
 
 interface ActiveConnectionWithDetails extends ActiveConnection {
   details?: Connection
@@ -54,6 +55,8 @@ export function DashboardActiveConnectionsManager() {
   const savingRef = React.useRef<Set<string>>(new Set())
   const pendingSettingsVersionsRef = React.useRef<Map<string, string | undefined>>(new Map())
   const settingsSafetyTimersRef = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const connectionLoadSequenceRef = React.useRef(0)
+  const globalStatusSequenceRef = React.useRef(0)
   React.useEffect(() => { togglingRef.current = togglingIds }, [togglingIds])
   React.useEffect(() => { removingRef.current = removingIds }, [removingIds])
 
@@ -78,6 +81,7 @@ export function DashboardActiveConnectionsManager() {
     if (!opts?.force && (togglingRef.current.size > 0 || removingRef.current.size > 0)) {
       return
     }
+    const requestSequence = ++connectionLoadSequenceRef.current
     try {
       const timestamp = new Date().getTime()
       const response = await fetch(`/api/settings/connections?v=${VERSION}&t=${timestamp}`, {
@@ -90,11 +94,12 @@ export function DashboardActiveConnectionsManager() {
       })
 
       if (!response.ok) {
-        setLoading(false)
+        if (requestSequence === connectionLoadSequenceRef.current) setLoading(false)
         return
       }
 
       const data = await response.json()
+      if (requestSequence !== connectionLoadSequenceRef.current) return
       const allConnections: Connection[] = Array.isArray(data) ? data : (data?.connections || [])
       
       const activeConns: ActiveConnectionWithDetails[] = []
@@ -169,15 +174,17 @@ export function DashboardActiveConnectionsManager() {
     } catch (error) {
       console.error("[Manager] Error loading connections:", error)
     } finally {
-      setLoading(false)
+      if (requestSequence === connectionLoadSequenceRef.current) setLoading(false)
     }
   }
 
   const checkGlobalEngine = async () => {
+    const requestSequence = ++globalStatusSequenceRef.current
     try {
       const res = await fetch("/api/trade-engine/status")
-      if (res.ok) {
+      if (res.ok && requestSequence === globalStatusSequenceRef.current) {
         const data = await res.json()
+        if (requestSequence !== globalStatusSequenceRef.current) return
         const wasRunning = globalEngineRef.current
         const nowRunning = data.actualRuntimeStatus === "running" || data.running === true
         const heartbeatFresh = data.workerAttached === true || data.connectionHeartbeatFresh === true || data.globalHeartbeatFresh === true
@@ -193,15 +200,40 @@ export function DashboardActiveConnectionsManager() {
     } catch {
       // Keep previous state on error
     } finally {
-      setGlobalEngineLoading(false)
+      if (requestSequence === globalStatusSequenceRef.current) setGlobalEngineLoading(false)
     }
   }
+
+  const loadConnectionsEventRef = React.useRef(loadConnections)
+  const checkGlobalEngineEventRef = React.useRef(checkGlobalEngine)
+  loadConnectionsEventRef.current = loadConnections
+  checkGlobalEngineEventRef.current = checkGlobalEngine
+  const dashboardEventHandlers = React.useMemo(() => {
+    const refresh = (payload: DashboardEventPayload) => {
+      // Per-symbol telemetry is consumed by the individual cards. Reloading
+      // the full connection list for every strategy/position event would turn
+      // a 32-symbol cycle into a request storm.
+      if (["strategy.stageChanged", "processing.progress", "position.updated", "indication.updated"].includes(String(payload.canonicalType || ""))) {
+        return
+      }
+      void loadConnectionsEventRef.current({ force: true })
+      void checkGlobalEngineEventRef.current()
+    }
+    return {
+      "connection.updated": refresh,
+      "settings.recoordinated": refresh,
+      "engine.stage.changed": refresh,
+    }
+  }, [])
+  useDashboardEvents("*", dashboardEventHandlers)
 
   useEffect(() => {
   loadConnections()
   checkGlobalEngine()
-  const connInterval = setInterval(loadConnections, 8000)
-  const engineInterval = setInterval(checkGlobalEngine, 5000)
+  // SSE is authoritative; these low-frequency polls only heal proxy or
+  // cross-worker delivery gaps during unlimited runtime.
+  const connInterval = setInterval(loadConnections, 30000)
+  const engineInterval = setInterval(checkGlobalEngine, 30000)
     
     // Listen for relevant events and refresh
     const handleEngineStateChange = () => {
@@ -311,6 +343,8 @@ export function DashboardActiveConnectionsManager() {
     }
     
     return () => {
+      connectionLoadSequenceRef.current++
+      globalStatusSequenceRef.current++
       clearInterval(connInterval)
       clearInterval(engineInterval)
       if (typeof window !== 'undefined') {
@@ -334,7 +368,7 @@ export function DashboardActiveConnectionsManager() {
 
     setTogglingIds(prev => new Set(prev).add(connectionId))
 
-    const connInfo = activeConnections.find(ac => ac.connectionId === connectionId)
+    const connInfo = activeConnectionsRef.current.find(ac => ac.connectionId === connectionId)
     const connName = connInfo?.exchangeName ? `${connInfo.exchangeName} (${connectionId})` : connectionId
 
     try {

@@ -5,9 +5,9 @@ import {
   calculateLivePositionStats,
 } from "@/lib/trade-engine/stages/live-stage"
 import { initRedis, getRedisClient, getConnection } from "@/lib/redis-db"
-import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { getAlternateLivePositionKeys } from "@/lib/live-position-alt-index"
 import { countLiveOpenPositions, isLiveOpenStatus } from "@/lib/live-position-status"
+import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 
 export const dynamic = "force-dynamic"
 
@@ -183,9 +183,10 @@ export async function GET(request: Request) {
       winRate: 0,
     }))
 
-    const liveTradeEnabled = Boolean(connection && isTruthyFlag((connection as any).is_live_trade))
-    const liveTradeRequested = Boolean(connection && isTruthyFlag((connection as any).live_trade_requested))
-    const liveTradeBlockedReason = String((connection as any)?.live_trade_blocked_reason || "")
+    const liveReadiness = evaluateRealTradeReadiness((connection || {}) as Record<string, any>)
+    const liveTradeEnabled = liveReadiness.canPlaceRealOrders
+    const liveTradeRequested = liveReadiness.requested
+    const liveTradeBlockedReason = liveReadiness.blockReason
 
     return NextResponse.json({
       connectionId,
@@ -218,9 +219,15 @@ export async function GET(request: Request) {
         liveTradeEnabled,
         liveTradeRequested,
         liveTradeBlockedReason,
+        liveTradeBlockCode: liveReadiness.blockCode,
+        liveExecutionMode: liveReadiness.executionMode,
+        credentialsValid: liveReadiness.credentialsValid,
+        durableCoordinationReady: liveReadiness.durableCoordinationReady,
         realExchangeDataComplete: realPositions.length > 0 || !liveTradeEnabled,
         message: liveTradeEnabled
           ? "Real exchange positions are separated from simulated/paper positions and use exchange-synced order/position identifiers when available."
+          : liveTradeRequested
+            ? `Live exchange trading is blocked: ${liveTradeBlockedReason}`
           : "Live exchange order placement is not enabled; returned exchange-real history may be empty and simulated positions are separated from real data.",
       },
     })

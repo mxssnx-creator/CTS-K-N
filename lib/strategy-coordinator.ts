@@ -27,6 +27,10 @@ import {
   type CompactionConfig,
 } from "@/lib/sets-compaction"
 import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
+import {
+  calculateBlockVolumeMultiplier,
+  getUnavailableBlockSetKeys,
+} from "@/lib/block-count-state"
 
 export interface EvaluationMetrics {
   maxDrawdownTime: number
@@ -120,6 +124,9 @@ export interface StrategySet {
    */
   variantSizeMultiplier?: number
   variantLeverage?: number
+  blockBaseVolumeMultiplier?: number
+  blockVolumeRatio?: number
+  blockCalculatedVolumeMultiplier?: number
   /**
    * ── Position-count axis windows that this Set satisfies ────────────
    *
@@ -274,6 +281,8 @@ export interface PositionContext {
    * short coordinations fully independent.
    */
   perSymbolOpenByDir: Record<string, { long: number; short: number }>
+  /** Exchange-backed open positions, kept separate from Real pseudo exposure. */
+  perSymbolLiveOpenByDir: Record<string, { long: number; short: number }>
 }
 
 // ─── BASE-ANCHORED COORDINATION MODEL ────────────────────────────────────────
@@ -853,8 +862,8 @@ export class StrategyCoordinator {
      * block count can recover independently until that count's results are
      * positive again.
      *
-     *   1. **Block count** — each block size multiplies add-on size by
-     *      `(1 + (blockCount-1) × ratio)`, where ratio is blockVolumeRatio.
+     *   1. **Block count** — each independent add-on is calculated as
+     *      `positionBase × (blockCount × ratio)`, where ratio is blockVolumeRatio.
      *
      *   2. **Operator vol-ratio** — `blockVolumeRatio` is the per-block-count
      *      additive step (0.25 = +25 % per extra block count). The spec
@@ -1462,7 +1471,7 @@ export class StrategyCoordinator {
       if (Number.isFinite(bpcr) && bpcr > 0) {
         this._coordinationSettings.blockPauseCountRatio = Math.max(1, Math.min(4, Math.round(bpcr * 2) / 2))
       }
-      this._coordinationSettings.blockActiveRealEnabled = bool(s.blockActiveRealEnabled ?? s.blockActiveLiveEnabled, true)
+      this._coordinationSettings.blockActiveRealEnabled = bool(s.blockActiveRealEnabled, true)
       this._coordinationSettings.blockActiveLiveEnabled = bool(s.blockActiveLiveEnabled, true)
     } catch {
       // use last-known values on any Redis error
@@ -3222,7 +3231,8 @@ export class StrategyCoordinator {
     sourceSets: StrategySet[],
     metrics: EvaluationMetrics,
     coordIndex?: CoordIndex,
-    activeByDirSnapshot?: { long: number; short: number },
+    activeRealByDirSnapshot?: { long: number; short: number },
+    activeLiveByDirSnapshot?: { long: number; short: number },
   ): Promise<StrategySet[]> {
     if (
       !this._coordinationSettings.variants.block ||
@@ -3240,15 +3250,34 @@ export class StrategyCoordinator {
     // (symbols × open positions), which was a major source of UI/API stalls
     // when many connections and block coordinations were active. If a legacy
     // caller does not pass the snapshot, fall back to one bounded read.
-    const activeByDir = activeByDirSnapshot
-      ? { long: activeByDirSnapshot.long || 0, short: activeByDirSnapshot.short || 0 }
+    const activeRealByDir = activeRealByDirSnapshot
+      ? { long: activeRealByDirSnapshot.long || 0, short: activeRealByDirSnapshot.short || 0 }
       : { long: 0, short: 0 }
-    if (!activeByDirSnapshot) {
+    const activeLiveByDir = activeLiveByDirSnapshot
+      ? { long: activeLiveByDirSnapshot.long || 0, short: activeLiveByDirSnapshot.short || 0 }
+      : { long: 0, short: 0 }
+    const realOnlyBlockMode =
+      this._coordinationSettings.blockActiveRealEnabled && !this._coordinationSettings.blockActiveLiveEnabled
+    if (realOnlyBlockMode) {
+      activeLiveByDir.long = 0
+      activeLiveByDir.short = 0
+    }
+    if (this._coordinationSettings.blockActiveRealEnabled && !activeRealByDirSnapshot) {
       const activePositions = await new PseudoPositionManager(this.connectionId).getActivePositions()
       for (const pos of activePositions) {
         if (String(pos.symbol || "").toUpperCase() !== symbol.toUpperCase()) continue
         const dir = String(pos.direction || pos.side || "").toLowerCase() === "short" ? "short" : "long"
-        activeByDir[dir]++
+        activeRealByDir[dir]++
+      }
+    }
+    if (this._coordinationSettings.blockActiveLiveEnabled && !activeLiveByDirSnapshot) {
+      const { getLivePositions } = await import("@/lib/trade-engine/stages/live-stage")
+      const livePositions = await getLivePositions(this.connectionId)
+      for (const pos of livePositions) {
+        if (String(pos.symbol || "").toUpperCase() !== symbol.toUpperCase()) continue
+        if (["closed", "rejected", "cancelled", "canceled", "error"].includes(String(pos.status || "").toLowerCase())) continue
+        const dir = String(pos.direction || pos.side || "").toLowerCase() === "short" ? "short" : "long"
+        activeLiveByDir[dir]++
       }
     }
 
@@ -3258,13 +3287,19 @@ export class StrategyCoordinator {
     const overlays: StrategySet[] = []
 
     for (const dir of ["long", "short"] as const) {
-      const activeCount = activeByDir[dir]
+      const realCount = this._coordinationSettings.blockActiveRealEnabled ? activeRealByDir[dir] : 0
+      const liveCount = this._coordinationSettings.blockActiveLiveEnabled ? activeLiveByDir[dir] : 0
+      const activeCount = Math.max(realCount, liveCount)
       if (activeCount <= 0) continue
       const source = sourceSets.find((s) => s.direction === dir && s.variant !== "dca" && !String(s.setKey).includes("#block:active:"))
       if (!source) continue
 
       const boundedCount = Math.min(Math.max(1, activeCount), maxStack)
-      const blockMul = 1 + (boundedCount - 1) * ratio
+      const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
+        blockConfig.size,
+        boundedCount,
+        ratio,
+      )
       const pauseWindow = Math.max(1, Math.min(32, Math.round(boundedCount * pauseRatio)))
       const parentSetKey = source.parentSetKey || source.setKey
       const axisWindows = {
@@ -3284,8 +3319,11 @@ export class StrategyCoordinator {
           (source.avgProfitFactor || metrics.minProfitFactor) * blockConfig.pfBias,
         ),
         avgDrawdownTime: (source.avgDrawdownTime || 0) + (blockConfig.ddtBias * boundedCount),
-        variantSizeMultiplier: Number((blockConfig.size * blockMul).toFixed(6)),
+        variantSizeMultiplier: blockCalculatedVolumeMultiplier,
         variantLeverage: blockConfig.leverage,
+        blockBaseVolumeMultiplier: blockConfig.size,
+        blockVolumeRatio: ratio,
+        blockCalculatedVolumeMultiplier,
         status: "valid_real",
       }
       overlays.push(overlay)
@@ -3312,6 +3350,10 @@ export class StrategyCoordinator {
     }
 
     return overlays
+  }
+
+  private async getUnavailableBlockKeys(symbol: string): Promise<Set<string>> {
+    return getUnavailableBlockSetKeys(getRedisClient(), this.connectionId, symbol)
   }
 
   /**
@@ -3704,6 +3746,7 @@ export class StrategyCoordinator {
         metrics,
         coordIndex,
         posCtx?.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 },
+        posCtx?.perSymbolLiveOpenByDir?.[symbol] ?? { long: 0, short: 0 },
       )
       if (activePositionBlockOverlays.length > 0) {
         realStageRelatedCreated += activePositionBlockOverlays.length
@@ -4898,11 +4941,21 @@ export class StrategyCoordinator {
 
                 if (blockConfig) {
                   const blockOverlays: StrategySet[] = []
+                  const unavailableBlockKeys = await this.getUnavailableBlockKeys(symbol)
+                  const orderedBlockCounts = [
+                    ...Array.from({ length: maxStack }, (_, index) => index + 1),
+                  ]
                   for (const dir of ["long", "short"] as const) {
                     const source = qualifying.find((s) => s.direction === dir && s.variant !== "dca" && s.variant !== "block")
                     if (!source) continue
-                    for (let blockCount = 1; blockCount <= maxStack; blockCount++) {
-                      const blockMul = 1 + (blockCount - 1) * ratio
+                    for (const blockCount of orderedBlockCounts) {
+                      const blockSetKey = `${source.setKey}#block:${blockCount}`
+                      if (unavailableBlockKeys.has(blockSetKey)) continue
+                      const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
+                        blockConfig.size,
+                        blockCount,
+                        ratio,
+                      )
                       const pauseWindow = Math.max(1, Math.min(32, Math.round(blockCount * pauseRatio)))
                       blockOverlays.push({
                         ...source,
@@ -4920,8 +4973,11 @@ export class StrategyCoordinator {
                           (source.avgProfitFactor || metrics.minProfitFactor) * blockConfig.pfBias,
                         ),
                         avgDrawdownTime: (source.avgDrawdownTime || 0) + (blockConfig.ddtBias * blockCount),
-                        variantSizeMultiplier: Number((blockConfig.size * blockMul).toFixed(6)),
+                        variantSizeMultiplier: blockCalculatedVolumeMultiplier,
                         variantLeverage: blockConfig.leverage,
+                        blockBaseVolumeMultiplier: blockConfig.size,
+                        blockVolumeRatio: ratio,
+                        blockCalculatedVolumeMultiplier,
                       })
                     }
                   }
@@ -4973,6 +5029,13 @@ export class StrategyCoordinator {
                 }
               }
             }
+
+            const dispatchOrder = (set: StrategySet): number => {
+              if (set.variant === "block") return 1
+              if (set.variant === "dca") return 2
+              return 0
+            }
+            dispatchSets.sort((a, b) => dispatchOrder(a) - dispatchOrder(b))
 
             let placed = 0
             let filled = 0
@@ -5122,6 +5185,9 @@ export class StrategyCoordinator {
                     // already incorporated the CoordRecord sizeDelta from the
                     // Real-stage tuner — no extra entry scan needed.
                     sizeMultiplier: effectiveSizeMult,
+                    blockBaseVolumeMultiplier: set.blockBaseVolumeMultiplier,
+                    blockVolumeRatio: set.blockVolumeRatio,
+                    blockCalculatedVolumeMultiplier: set.blockCalculatedVolumeMultiplier,
                     // ── Set-config propagation to Live ───������─────────────────
                     // Forward the Set's trailing profile and historical
                     // performance snapshot into the RealPosition so that
@@ -5404,6 +5470,7 @@ export class StrategyCoordinator {
       prevLosses: 0,
       perSymbolOpen: {},
       perSymbolOpenByDir: {},
+      perSymbolLiveOpenByDir: {},
     }
   }
 
@@ -5440,6 +5507,24 @@ export class StrategyCoordinator {
         if (dir === "short") perSymbolOpenByDir[sym].short += 1
         else                 perSymbolOpenByDir[sym].long  += 1
       }
+
+      // Capture exchange-backed Live exposure once in the same per-cycle
+      // PositionContext. Real and Live block toggles remain independent and
+      // Real-stage symbols reuse these direction indexes without N× scans.
+      const perSymbolLiveOpenByDir: Record<string, { long: number; short: number }> = {}
+      try {
+        const { getLivePositions } = await import("@/lib/trade-engine/stages/live-stage")
+        const livePositions = await getLivePositions(this.connectionId)
+        for (const p of livePositions) {
+          if (["closed", "rejected", "cancelled", "canceled", "error"].includes(String(p.status || "").toLowerCase())) continue
+          const sym = String(p.symbol || "")
+          if (!sym) continue
+          if (!perSymbolLiveOpenByDir[sym]) perSymbolLiveOpenByDir[sym] = { long: 0, short: 0 }
+          const dir = String(p.direction || p.side || "long").toLowerCase()
+          if (dir === "short") perSymbolLiveOpenByDir[sym].short += 1
+          else                 perSymbolLiveOpenByDir[sym].long += 1
+        }
+      } catch { /* live exposure is best-effort; pseudo context remains valid */ }
 
       // ── P-CTX-1: Read from dedicated closed-positions index ──────────
       // `closePosition()` in PseudoPositionManager removes the position id
@@ -5558,6 +5643,7 @@ export class StrategyCoordinator {
         prevLosses,
         perSymbolOpen,
         perSymbolOpenByDir,
+        perSymbolLiveOpenByDir,
       }
 
       this.positionContextCache = { ctx, ts: now }
@@ -5877,9 +5963,9 @@ export class StrategyCoordinator {
         // Each blockCount 1..blockMaxStack is emitted independently as a
         // transient execution overlay over the selected Set.
         gate: () => true,
-        // ── Block sub-configs ─ size is the *base* multiplier that the
-        // block overlay then scales by `(1 + (blockCount−1)×ratio)` so the
-        // block count and operator vol-ratio knob both flow into live notional.
+        // ── Block sub-configs ─ size is the Set's historical coordination
+        // base multiplier. Exchange add quantity is calculated independently
+        // from the authoritative position basis as `base × count × ratio`.
         // CRITICAL FIX: Reduced from 1.5/2.0 to 1.15/1.25 to prevent slippage
         // beyond SL triggers. Larger positions were getting filled at prices
         // that immediately crossed their own SL triggers on the same tick,

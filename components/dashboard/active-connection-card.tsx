@@ -3,7 +3,6 @@
 import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } from "@/lib/connection-events"
 import { useDashboardEvents } from "@/lib/dashboard-events"
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
-import { isCanonicalEventFresh, mergeFreshEventCursor, type CanonicalEvent, type EventFreshnessCursor } from "@/lib/events/schema"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -148,6 +147,7 @@ export function ActiveConnectionCard({
     liveTradeUiFlag(connection.details as any)
   )
   const [presetMode, setPresetMode] = useState(() =>
+    toInitBool((connection.details as any)?.preset_trade_requested) ||
     toInitBool((connection.details as any)?.is_preset_trade)
   )
   const [liveTradeLoading, setLiveTradeLoading] = useState(false)
@@ -166,7 +166,6 @@ export function ActiveConnectionCard({
   const [presetTradeStatus, setPresetTradeStatus] = useState<"idle" | "active" | "paused" | "stopped">("idle")
   // Live engine-stats counters displayed under the progress bar
   // Ref to current phase — used inside stable interval callback to avoid recreating on every phase change
-  const canonicalCursorRef = useRef<EventFreshnessCursor>({})
   const progressionFetchSeqRef = useRef(0)
   const liveStatsFetchSeqRef = useRef(0)
   const phaseRef = useRef<string>("idle")
@@ -294,8 +293,24 @@ export function ActiveConnectionCard({
     engineRunning: boolean
     runningHint: boolean
     enabled: { flag: boolean; running: boolean; inSync: boolean }
-    live:    { flag: boolean; running: boolean; inSync: boolean }
-    preset:  { flag: boolean; running: boolean; inSync: boolean }
+    live:    {
+      flag: boolean
+      effective?: boolean
+      running: boolean
+      inSync: boolean
+      executionMode?: "live" | "blocked" | "simulation"
+      blockCode?: string | null
+      blockReason?: string
+    }
+    preset:  {
+      flag: boolean
+      effective?: boolean
+      running: boolean
+      inSync: boolean
+      executionMode?: "live" | "blocked" | "simulation"
+      blockCode?: string | null
+      blockReason?: string
+    }
   } | null>(null)
   const details = connection.details
 
@@ -303,7 +318,7 @@ export function ActiveConnectionCard({
   useEffect(() => {
     if (details) {
       setLiveTrade(liveTradeUiFlag(details))
-      setPresetMode(toBoolean(details.is_preset_trade))
+      setPresetMode(toBoolean(details.preset_trade_requested) || toBoolean(details.is_preset_trade))
       setLiveVolumeFactor(Number(details.live_volume_factor) || 1.0)
       setPresetVolumeFactor(Number(details.preset_volume_factor) || 1.0)
       setVolumeStepRatio(Number(details.volume_step_ratio) || DEFAULT_VOLUME_STEP_RATIO)
@@ -533,14 +548,21 @@ export function ActiveConnectionCard({
   }, [connection.connectionId])
 
 
-  const dashboardEventHandlers = useMemo(() => ({
-    "connection.updated": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
-    "settings.recoordinated": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
-    "engine.stage.changed": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
-    "progression.updated": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
-    "live.summary.updated": () => setDashboardEventRefreshKey((key) => key + 1),
-    "monitoring.updated": () => { void fetchProgression(); setDashboardEventRefreshKey((key) => key + 1) },
-  }), [fetchProgression])
+  const dashboardEventHandlers = useMemo(() => {
+    const refreshProgression = () => {
+      void fetchProgression()
+      setDashboardEventRefreshKey((key) => key + 1)
+    }
+    const refreshSummary = () => setDashboardEventRefreshKey((key) => key + 1)
+    return {
+      "connection.updated": refreshProgression,
+      "settings.recoordinated": refreshProgression,
+      "engine.stage.changed": refreshProgression,
+      "progression.updated": refreshProgression,
+      "live.summary.updated": refreshSummary,
+      "monitoring.updated": refreshProgression,
+    }
+  }, [fetchProgression])
   useDashboardEvents(connection.connectionId, dashboardEventHandlers)
   // Keep phaseRef current so the stable interval can read it without recreating
   useEffect(() => {
@@ -568,10 +590,10 @@ export function ActiveConnectionCard({
     fetchProgression()
     // Dashboard SSE is the fast path, but production deployments can lose the
     // event stream during reconnects/proxy buffering. Keep a small canonical
-    // polling fallback so the connection card never freezes with stale progress.
+    // low-frequency fallback so the connection card never freezes with stale progress.
     const progressionPollInterval = window.setInterval(() => {
       fetchProgression()
-    }, 4_000)
+    }, 15_000)
 
     // Steady-state progression updates arrive via dashboard SSE events.
     const handleConnectionToggled = () => { fetchProgression() }
@@ -590,23 +612,6 @@ export function ActiveConnectionCard({
         fetchProgression()
       }
     }
-    const handleCanonicalEvent = (event: Event) => {
-      const canonical = (event as CustomEvent<CanonicalEvent>).detail
-      if (!canonical || canonical.connectionId !== connection.connectionId) return
-      const cursor = canonicalCursorRef.current
-      if (!isCanonicalEventFresh(canonical, cursor)) return
-      canonicalCursorRef.current = mergeFreshEventCursor(cursor, canonical)
-      if (
-        canonical.type === "progression.epochStarted" ||
-        canonical.type === "progression.stageChanged" ||
-        canonical.type === "connection.recoordinated" ||
-        canonical.type === "strategy.stageChanged" ||
-        canonical.type === "live.stageChanged"
-      ) {
-        fetchProgression()
-      }
-    }
-
     const handleSettingsUpdated = (event: Event) => {
       const customEvent = event as CustomEvent
       if (customEvent.detail?.connectionId === connection.connectionId) {
@@ -634,7 +639,6 @@ export function ActiveConnectionCard({
       window.addEventListener("live-trade-toggled", handleLiveTradeToggled)
       window.addEventListener("engine-state-changed", handleConnectionToggled)
       window.addEventListener("connection-settings-updated", handleSettingsUpdated)
-      window.addEventListener("canonical-event", handleCanonicalEvent)
     }
 
     return () => {
@@ -644,12 +648,12 @@ export function ActiveConnectionCard({
         window.removeEventListener("live-trade-toggled", handleLiveTradeToggled)
         window.removeEventListener("engine-state-changed", handleConnectionToggled)
         window.removeEventListener("connection-settings-updated", handleSettingsUpdated)
-        window.removeEventListener("canonical-event", handleCanonicalEvent)
       }
     }
   }, [fetchProgression, connection.connectionId])
 
-  // Fetch live stats every 4s from the canonical /stats endpoint (per-connection, cumulative)
+  // Canonical events are the fast path; 15 s is a continuity fallback for
+  // proxy buffering or a cross-worker stream gap.
   useEffect(() => {
     if (!connection.isActive && !globalEngineRunning) {
       setLiveStats(null)
@@ -864,7 +868,7 @@ export function ActiveConnectionCard({
     fetchLiveStats()
     const liveStatsPollInterval = window.setInterval(() => {
       fetchLiveStats()
-    }, 4_000)
+    }, 15_000)
 
     return () => {
       window.clearInterval(liveStatsPollInterval)
@@ -894,11 +898,13 @@ export function ActiveConnectionCard({
         const requestedState = typeof data.live_trade_requested === "boolean" ? data.live_trade_requested : newState
         const effectiveState = typeof data.is_live_trade === "boolean" ? data.is_live_trade : requestedState
         setLiveTrade(requestedState)
-        toast.success(
-          requestedState
-            ? (effectiveState ? `Live Trading starting on ${connName}...` : `Live Trading requested on ${connName}; waiting for valid credentials`)
-            : `Live Trading stopped on ${connName}`,
-        )
+        const liveTradeMessage = requestedState
+          ? (effectiveState
+              ? `Live Trading starting on ${connName}...`
+              : `Live Trading blocked on ${connName}: ${data.live_trade_blocked_reason || "production live-order requirements are not satisfied"}`)
+          : `Live Trading stopped on ${connName}`
+        if (requestedState && !effectiveState) toast.warning(liveTradeMessage)
+        else toast.success(liveTradeMessage)
         dispatchConnectionMutationEvents(buildConnectionMutationEventDetail(data, {
           connectionId: connection.connectionId,
           connection: { id: connection.connectionId, name: connection.exchangeName },
@@ -935,6 +941,7 @@ export function ActiveConnectionCard({
   // Handle Preset Mode toggle — no longer gated on connection.isActive,
   // same rationale as handleLiveTradeToggle above.
   const handlePresetModeToggle = async (newState: boolean) => {
+    const previousState = presetMode
     presetModeLoadingRef.current = true
     setPresetModeLoading(true)
     try {
@@ -943,14 +950,22 @@ export function ActiveConnectionCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ is_preset_trade: newState }),
       })
-      if (res.ok) {
-        setPresetMode(newState)
-        toast.success(newState ? "Preset Mode engine starting..." : "Preset Mode engine stopped")
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.success) {
+        const requestedState = typeof data.preset_trade_requested === "boolean" ? data.preset_trade_requested : newState
+        const effectiveState = typeof data.is_preset_trade === "boolean" ? data.is_preset_trade : requestedState
+        setPresetMode(requestedState)
+        if (requestedState && !effectiveState) {
+          toast.warning(`Preset Mode blocked: ${data.preset_trade_blocked_reason || "production exchange requirements are not satisfied"}`)
+        } else {
+          toast.success(requestedState ? "Preset Mode engine starting..." : "Preset Mode engine stopped")
+        }
       } else {
-        const err = await res.json().catch(() => ({ error: "Failed" }))
-        toast.error(err.error || "Failed to toggle Preset Mode")
+        setPresetMode(previousState)
+        toast.error(data.error || "Failed to toggle Preset Mode")
       }
     } catch {
+      setPresetMode(previousState)
       toast.error("Failed to toggle Preset Mode")
     } finally {
       presetModeLoadingRef.current = false
@@ -1261,7 +1276,11 @@ export function ActiveConnectionCard({
                 <Label
                   htmlFor={`live-${connection.connectionId}`}
                   className={`text-xs font-medium cursor-pointer ${
-                    liveTrade ? "text-green-600 dark:text-green-400" : ""
+                    liveTrade && engineStates?.live.executionMode === "blocked"
+                      ? "text-red-600 dark:text-red-400"
+                      : liveTrade
+                        ? "text-green-600 dark:text-green-400"
+                        : ""
                   }`}
                 >
                   {liveTradeLoading ? (
@@ -1271,7 +1290,14 @@ export function ActiveConnectionCard({
                   ) : (
                     <span className="flex items-center gap-1">
                       <Activity className="h-3 w-3" /> Live Trade
-                      {engineStates && liveTrade && !engineStates.live.inSync && (
+                      {engineStates && liveTrade && engineStates.live.executionMode === "blocked" && (
+                        <span
+                          title={engineStates.live.blockReason || "Live exchange order placement is blocked"}
+                          className="inline-block h-1.5 w-1.5 rounded-full bg-red-500"
+                          aria-label={engineStates.live.blockReason || "Live exchange order placement is blocked"}
+                        />
+                      )}
+                      {engineStates && liveTrade && engineStates.live.executionMode !== "blocked" && !engineStates.live.inSync && (
                         <span
                           title="Live flag ON but engine state differs — reconciling"
                           className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse"
@@ -1298,7 +1324,11 @@ export function ActiveConnectionCard({
                 <Label
                   htmlFor={`preset-${connection.connectionId}`}
                   className={`text-xs font-medium cursor-pointer ${
-                    presetMode ? "text-purple-600 dark:text-purple-400" : ""
+                    presetMode && engineStates?.preset.executionMode === "blocked"
+                      ? "text-red-600 dark:text-red-400"
+                      : presetMode
+                        ? "text-purple-600 dark:text-purple-400"
+                        : ""
                   }`}
                 >
                   {presetModeLoading ? (
@@ -1308,7 +1338,14 @@ export function ActiveConnectionCard({
                   ) : (
                     <span className="flex items-center gap-1">
                       Preset Mode
-                      {engineStates && presetMode && !engineStates.preset.inSync && (
+                      {engineStates && presetMode && engineStates.preset.executionMode === "blocked" && (
+                        <span
+                          title={engineStates.preset.blockReason || "Preset exchange execution is blocked"}
+                          className="inline-block h-1.5 w-1.5 rounded-full bg-red-500"
+                          aria-label={engineStates.preset.blockReason || "Preset exchange execution is blocked"}
+                        />
+                      )}
+                      {engineStates && presetMode && engineStates.preset.executionMode !== "blocked" && !engineStates.preset.inSync && (
                         <span
                           title="Preset flag ON but engine state differs — reconciling"
                           className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse"

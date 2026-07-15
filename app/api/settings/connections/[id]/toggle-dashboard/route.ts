@@ -1,13 +1,14 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { initRedis, getConnection, updateConnection, setSettings, getSettings, getAllConnections, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getConnection, updateConnectionState, setSettings, getSettings, getAllConnections, getRedisClient } from "@/lib/redis-db"
 import { getConnectionState, buildMainConnectionEnableUpdate, buildMainConnectionDisableUpdate, buildMainConnectionRemoveUpdate, isConnectionReadyForEngine } from "@/lib/connection-state-helpers"
 import { toggleConnectionLimiter } from "@/lib/connection-rate-limiter"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { isTruthyFlag, parseBooleanInput, toRedisFlag } from "@/lib/boolean-utils"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadSettingsAsync } from "@/lib/settings-storage"
-import { currentStateSwitchVersion, nextStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
+import { allocateStateSwitchVersion, currentStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
 import { buildMissingTradeEngineWorkerDiagnostic } from "@/lib/trade-engine-worker-heartbeat"
+import { emitCanonicalEvent } from "@/lib/events/emitter"
 
 // POST toggle connection active status (inserted/enabled) - INDEPENDENT from Settings
 // When enabling, also triggers engine start for this connection
@@ -100,21 +101,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     
     let stateSwitchVersion = currentStateSwitchVersion(connection)
     if (needsUpdate) {
+      stateSwitchVersion = await allocateStateSwitchVersion(resolvedId, connection)
       if (isRemoval) {
         // Remove from Main Connections completely - unassign
-        stateSwitchVersion = nextStateSwitchVersion(connection)
         updatedConnection = { ...buildMainConnectionRemoveUpdate(connection), state_switch_version: stateSwitchVersion }
         engineAction = "stop"
         console.log(`[v0] [Toggle] REMOVING: main_assigned=false, main_enabled=false (complete unassignment)`)
       } else if (enableMain) {
         // Enable in Main Connections - use clean helper
-        stateSwitchVersion = nextStateSwitchVersion(connection)
         updatedConnection = { ...buildMainConnectionEnableUpdate(connection), state_switch_version: stateSwitchVersion }
         engineAction = "start"
         console.log(`[v0] [Toggle] ENABLING: main_assigned=true, main_enabled=true (engine will process)`)
       } else {
         // Disable in Main Connections - use clean helper  
-        stateSwitchVersion = nextStateSwitchVersion(connection)
         updatedConnection = { ...buildMainConnectionDisableUpdate(connection), state_switch_version: stateSwitchVersion }
         engineAction = "stop"
         console.log(`[v0] [Toggle] DISABLING: main_enabled=false (engine will stop)`)
@@ -167,14 +166,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // switch generation so status/progression readers and coordinator workers
     // can distinguish this operator intent from stale queued start/stop work.
     if (needsUpdate && updatedConnection) {
-      stateSwitchVersion = `${Date.now()}`
       updatedConnection = {
         ...updatedConnection,
         state_switch_version: stateSwitchVersion,
         state_switch_action: enableMain ? "enable" : "disable",
         state_switch_at: new Date().toISOString(),
       }
-      await updateConnection(resolvedId, updatedConnection)
+      const transition = await updateConnectionState(resolvedId, updatedConnection, stateSwitchVersion)
+      if (!transition.applied) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Connection switch was superseded by a newer state",
+            state_switch_version: transition.connection?.state_switch_version,
+          },
+          { status: 409 },
+        )
+      }
+      updatedConnection = transition.connection || { ...connection, ...updatedConnection }
       await setSettings(`connection_state_switch:${resolvedId}`, {
         version: stateSwitchVersion,
         action: enableMain ? "enable" : "disable",
@@ -436,6 +445,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const wasChange = needsUpdate || (engineAction === 'start')
     const effectiveEnabled = enableMain
+    emitCanonicalEvent({
+      type: "connection.recoordinated",
+      connectionId: resolvedId,
+      stage: "connection",
+      settingsVersion: stateSwitchVersion,
+      data: {
+        action: effectiveEnabled ? "enabled" : "disabled",
+        changed: wasChange,
+        engineAction,
+        engineStatus,
+        is_enabled_dashboard: effectiveEnabled,
+      },
+    })
     return NextResponse.json({
       success: true,
       changed: wasChange,

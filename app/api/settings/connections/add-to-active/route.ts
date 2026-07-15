@@ -1,7 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
-import { initRedis, getConnection, updateConnection } from "@/lib/redis-db"
+import { initRedis, getConnection } from "@/lib/redis-db"
 import { isTruthyFlag } from "@/lib/boolean-utils"
+import { maskConnectionSecrets } from "@/lib/connection-secrets"
+import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
+import { allocateStateSwitchVersion } from "@/lib/engine-refresh-queue"
+import { emitCanonicalEvent } from "@/lib/events/emitter"
 
 /**
  * POST /api/settings/connections/add-to-active
@@ -31,40 +35,88 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
 
-    // Check if already inserted in active list
-    if (isTruthyFlag(baseConnection.is_active_inserted)) {
-      return NextResponse.json({
-        success: false,
-        error: "Connection already in Active panel",
-      })
-    }
+    const alreadyInserted =
+      isTruthyFlag(baseConnection.is_active_inserted) ||
+      isTruthyFlag(baseConnection.is_dashboard_inserted) ||
+      isTruthyFlag(baseConnection.is_assigned)
 
-    // Add to active list: inserted into Active panel, but NOT enabled by default
-    const activeConnection = {
-      ...baseConnection,
-      is_active_inserted: "1",    // Visible in Active panel (inserted)
-      is_enabled_dashboard: "0",  // Toggle is OFF (NOT enabled by default)
-      is_enabled: baseConnection.is_enabled || "1", // Preserve Settings base state
-      is_active: "0",             // Not active until user enables
-      is_inserted: "1",           // Inserted (for connection tracking)
-      is_live_trade: "0",
-      is_preset_trade: "0",
-      updated_at: new Date().toISOString(),
-    }
+    const stateSwitchVersion = await allocateStateSwitchVersion(connectionId, baseConnection)
+    const updatedAt = new Date().toISOString()
+    // Assignment is a runtime state transition, not an ordinary settings
+    // write. Commit every alias under one generation so a concurrent Enable /
+    // Remove action cannot be overwritten by this route's older snapshot.
+    const connectionPatch = alreadyInserted
+      ? {
+          is_active_inserted: "1",
+          is_dashboard_inserted: "1",
+          is_assigned: "1",
+          is_inserted: "1",
+          is_enabled_dashboard: baseConnection.is_enabled_dashboard ?? baseConnection.is_active ?? "0",
+          is_active: baseConnection.is_active ?? baseConnection.is_enabled_dashboard ?? "0",
+          state_switch_version: stateSwitchVersion,
+          updated_at: updatedAt,
+        }
+      : {
+          is_active_inserted: "1",
+          is_dashboard_inserted: "1",
+          is_assigned: "1",
+          is_inserted: "1",
+          is_enabled_dashboard: "0",
+          is_active: "0",
+          is_live_trade: "0",
+          live_trade_requested: "0",
+          is_preset_trade: "0",
+          state_switch_version: stateSwitchVersion,
+          updated_at: updatedAt,
+        }
 
-    await updateConnection(connectionId, activeConnection)
+    const { connection: activeConnection, stateTransitionApplied } = await applyMainConnectionSettingsChange(
+      connectionId,
+      baseConnection,
+      {
+        connectionPatch,
+        changedFieldsOverride: Object.keys(connectionPatch),
+        settingsVersion: stateSwitchVersion,
+        stateSwitchVersion,
+        logTag: "POST /settings/connections/add-to-active",
+      },
+    )
+    if (!stateTransitionApplied) {
+      return NextResponse.json(
+        { success: false, error: "Assignment was superseded by a newer connection state" },
+        { status: 409 },
+      )
+    }
 
     await SystemLogger.logConnection(
-      `Inserted into Active panel. Toggle to enable.`,
+      alreadyInserted ? "Normalized existing Active panel assignment" : "Inserted into Active panel. Toggle to enable.",
       connectionId,
       "info",
-      { is_active_inserted: true, is_enabled_dashboard: false, is_enabled: activeConnection.is_enabled },
+      {
+        is_active_inserted: true,
+        is_enabled_dashboard: isTruthyFlag(activeConnection.is_enabled_dashboard),
+        is_enabled: activeConnection.is_enabled,
+      },
     )
+    emitCanonicalEvent({
+      type: "connection.recoordinated",
+      connectionId,
+      stage: "connection",
+      settingsVersion: stateSwitchVersion,
+      data: {
+        action: "assigned",
+        alreadyActive: alreadyInserted,
+        is_enabled_dashboard: isTruthyFlag(activeConnection.is_enabled_dashboard),
+      },
+    })
 
     return NextResponse.json({
       success: true,
-      message: "Connection inserted into Active panel. Toggle Enable to start processing.",
-      connection: activeConnection,
+      alreadyActive: alreadyInserted,
+      message: alreadyInserted
+        ? "Connection already assigned; state aliases were normalized."
+        : "Connection inserted into Active panel. Toggle Enable to start processing.",
+      connection: maskConnectionSecrets(activeConnection),
     })
   } catch (error) {
     console.error(`[v0] [Add to Active] Exception:`, error)

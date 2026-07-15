@@ -249,7 +249,7 @@ import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { engineMonitor } from "@/lib/engine-performance-monitor"
 import { ConfigSetProcessor } from "./config-set-processor"
 import { StrategyCoordinator } from "@/lib/strategy-coordinator"
-import { prefetchMarketDataBatch, getParsedCandlesCached } from "./market-data-cache"
+import { prefetchMarketDataBatch, getHistoricCandleWindow } from "./market-data-cache"
 import {
   // ── Cross-process progression ownership (spec §"no multiple started
   // progressions per connection, no switching"). The lock guarantees a
@@ -595,10 +595,13 @@ export class TradeEngineManager {
    * "did the indication thresholds change since I last computed?").
    */
   private unsubscribeSettingsWatcher?: () => void
+  private settingsWatcherGeneration = 0
   private lastSettingsCounter = 0
   private settingsVersion = 0
   /** Set true while a settings apply is in flight to prevent overlap. */
   private settingsApplying = false
+  /** Coalesces a newer durable envelope that arrives while one is applying. */
+  private settingsApplyQueued = false
   /** Prevents dirty-flag and hot-reload fast paths from recursively fanning out. */
   private immediateStrategyReevaluationInFlight = false
 
@@ -1019,6 +1022,13 @@ export class TradeEngineManager {
         }
       }
 
+      // Crash/restart safety: start the exit-only LivePositions progression
+      // before historic bootstrap. It can adopt and protect already-open
+      // exchange exposure while indication/strategy entry processing remains
+      // gated on the authoritative prehistoric completion flag.
+      this.isRunning = true
+      this.armLivePositionRecovery("startup/restart recovery")
+
       if (!cacheHit) {
         // PRODUCTION FAST-PATH REMOVED (data-integrity directive).
         // The previous code force-stamped `prehistoric:{id}:done`,
@@ -1238,6 +1248,7 @@ export class TradeEngineManager {
       if (this.prehistoricTimer) { clearTimeout(this.prehistoricTimer); this.prehistoricTimer = undefined }
       if (this.healthCheckTimer) { clearInterval(this.healthCheckTimer); this.healthCheckTimer = undefined }
       if (this.heartbeatTimer)   { clearInterval(this.heartbeatTimer);   this.heartbeatTimer = undefined }
+      this.settingsWatcherGeneration++
       if (this.unsubscribeSettingsWatcher) { this.unsubscribeSettingsWatcher(); this.unsubscribeSettingsWatcher = undefined }
 
       await this.updateProgressionPhase("error", 0, errorMsg)
@@ -1316,6 +1327,19 @@ export class TradeEngineManager {
     )
     this.startIndicationProcessor(this.startConfig.indicationInterval)
     this.startStrategyProcessor(this.startConfig.strategyInterval)
+    this.startRealtimeProcessor(this.startConfig.realtimeInterval)
+  }
+
+  /**
+   * Arm only exchange-position recovery during bootstrap. The normal
+   * armLiveProgressions path replaces this timer after prehistoric data is
+   * authoritative and may then enable entry-producing processors.
+   */
+  private armLivePositionRecovery(reason: string): void {
+    if (!this.isRunning || !this.startConfig) return
+    console.log(
+      `[v0] [Engine ${this.connectionId}] ${reason} — arming exit-only LivePositions recovery before historic bootstrap.`,
+    )
     this.startRealtimeProcessor(this.startConfig.realtimeInterval)
   }
 
@@ -1437,6 +1461,7 @@ export class TradeEngineManager {
       this.unsubscribeSettingsWatcher()
       this.unsubscribeSettingsWatcher = undefined
     }
+    this.settingsWatcherGeneration++
 
     this.isRunning = false
     this.liveProgressionsArmed = false
@@ -3447,18 +3472,6 @@ export class TradeEngineManager {
         ): Promise<{ symbol: string; stepsReplayed: number; indications: number; strategies: number; durationMs: number; error?: string }> => {
           const symStart = Date.now()
           try {
-            // Load candles for this symbol via the parsed-candles cache.
-            // OOM-PROTECTION: previously this did client.get + JSON.parse of
-            // the FULL ~86,400-candle (~10 MB) blob PER SYMBOL on EVERY cycle
-            // (~1/sec) and then .filter().sort()'d it — the transient garbage
-            // outpaced GC and OOM-killed next-server minutes after the engine
-            // went active. The cache parses+sorts each blob at most once per
-            // data version and returns a shared read-only array.
-            const candles = await getParsedCandlesCached(symbol)
-            if (!Array.isArray(candles) || candles.length === 0) {
-              return { symbol, stepsReplayed: 0, indications: 0, strategies: 0, durationMs: Date.now() - symStart }
-            }
-
             // Resolve resume point. On the very first cycle (no checkpoint)
             // we start at the configured window's start so we don't skip
             // backward bars; on subsequent cycles we resume strictly
@@ -3468,21 +3481,25 @@ export class TradeEngineManager {
             const ckpt = ckptRaw ? Number(ckptRaw) : windowStartMs
             const resumeFrom = Number.isFinite(ckpt) ? ckpt : windowStartMs
 
-            // Filter to candles strictly newer than the checkpoint AND
-            // within the look-back window. The cached array is already sorted
-            // ascending by timestamp, so no re-sort is needed here.
-            const pending = candles
-              .filter((c: any) => {
-                const ts = Number(c?.timestamp ?? c?.t ?? 0)
-                return Number.isFinite(ts) && ts > resumeFrom && ts <= windowEndMs
-              })
+            // Load only the chunks needed for this replay slice. Warmup prices
+            // are retained just long enough for indicator calculation; pending
+            // candles are capped before processing and both arrays become
+            // collectible when this symbol worker completes.
+            const replayWindow = await getHistoricCandleWindow(symbol, {
+              afterMs: resumeFrom,
+              beforeMs: windowEndMs,
+              limit: MAX_REPLAY_STEPS_PER_SYMBOL,
+              warmup: 300,
+              lookahead: 0,
+            })
+            const pending = replayWindow.pending
 
             if (pending.length === 0) {
               return { symbol, stepsReplayed: 0, indications: 0, strategies: 0, durationMs: Date.now() - symStart }
             }
 
             // Cap per-cycle work so cold starts don't starve the loop.
-            const steps = pending.slice(0, MAX_REPLAY_STEPS_PER_SYMBOL)
+            const steps = pending
 
             // One shared sets processor for the whole symbol so we don't
             // pay the per-step allocation tax.
@@ -3494,11 +3511,7 @@ export class TradeEngineManager {
             // normalizePriceHistory looks for marketData.prices or
             // marketData.candles — passing prices[] is the fastest path.
             const PRICE_WINDOW = 300
-            const priceWindowBase: number[] = candles
-              .filter((c: any) => {
-                const ts = Number(c?.timestamp ?? c?.t ?? 0)
-                return Number.isFinite(ts) && ts <= resumeFrom
-              })
+            const priceWindowBase: number[] = replayWindow.warmup
               .slice(-PRICE_WINDOW)
               .map((c: any) => Number(c?.close ?? c?.price ?? c?.last ?? 0))
               .filter((p: number) => p > 0)
@@ -4467,22 +4480,20 @@ export class TradeEngineManager {
    * engine refresh queue.
    */
   private startSettingsWatcher(): void {
+    const watcherGeneration = ++this.settingsWatcherGeneration
     if (this.unsubscribeSettingsWatcher) {
       this.unsubscribeSettingsWatcher()
       this.unsubscribeSettingsWatcher = undefined
     }
     // Seed the counter so we don't immediately re-apply a change that
     // happened BEFORE the engine started.
-    void this.seedSettingsCounter()
+    void this.seedSettingsCounter(watcherGeneration)
     void import("@/lib/settings-coordinator").then(({ onSettingsChanged }) => {
-      if (!this.isRunning) return
-      this.unsubscribeSettingsWatcher = onSettingsChanged(this.connectionId, async (event) => {
-        if (!this.isRunning) {
-          if (this.unsubscribeSettingsWatcher) this.unsubscribeSettingsWatcher()
-          this.unsubscribeSettingsWatcher = undefined
+      if (!this.isRunning || watcherGeneration !== this.settingsWatcherGeneration) return
+      const unsubscribe = onSettingsChanged(this.connectionId, async (event) => {
+        if (!this.isRunning || watcherGeneration !== this.settingsWatcherGeneration) {
           return
         }
-        if (this.settingsApplying) return
         try {
           const { getChangeCounter } = await import("@/lib/settings-coordinator")
           const counter = await getChangeCounter(this.connectionId)
@@ -4496,6 +4507,13 @@ export class TradeEngineManager {
           )
         }
       })
+      // Stop/restart may have happened synchronously while the dynamic import
+      // was resolving. Never retain a watcher for the superseded generation.
+      if (!this.isRunning || watcherGeneration !== this.settingsWatcherGeneration) {
+        unsubscribe()
+        return
+      }
+      this.unsubscribeSettingsWatcher = unsubscribe
     }).catch((err) => {
       console.warn(
         `[v0] [Engine ${this.connectionId}] settings watcher subscription failed:`,
@@ -4504,12 +4522,13 @@ export class TradeEngineManager {
     })
   }
 
-  private async seedSettingsCounter(): Promise<void> {
+  private async seedSettingsCounter(watcherGeneration: number): Promise<void> {
     try {
       const { getChangeCounter } = await import("@/lib/settings-coordinator")
-      this.lastSettingsCounter = await getChangeCounter(this.connectionId)
+      const counter = await getChangeCounter(this.connectionId)
+      if (watcherGeneration === this.settingsWatcherGeneration) this.lastSettingsCounter = counter
     } catch {
-      this.lastSettingsCounter = 0
+      if (watcherGeneration === this.settingsWatcherGeneration) this.lastSettingsCounter = 0
     }
   }
 
@@ -4603,43 +4622,43 @@ export class TradeEngineManager {
    * fast-path call and a watcher tick can't interleave.
    */
   private async applyPendingSettingsChange(): Promise<void> {
-    if (this.settingsApplying) return
+    if (this.settingsApplying) {
+      this.settingsApplyQueued = true
+      return
+    }
     this.settingsApplying = true
     let event: import("@/lib/settings-coordinator").SettingsChangeEvent | null = null
     try {
       const { getPendingChanges, clearPendingChanges } = await import("@/lib/settings-coordinator")
-      event = await getPendingChanges(this.connectionId)
-      if (!event) return
+      do {
+        this.settingsApplyQueued = false
+        event = await getPendingChanges(this.connectionId)
+        if (!event) break
 
-      const changeType = event.changeType
-      const fields = Array.isArray(event.changedFields) ? event.changedFields : []
-      console.log(
-        `[v0] [Engine ${this.connectionId}] applying settings change type=${changeType} fields=[${fields.join(",")}]`,
-      )
+        const changeType = event.changeType
+        const fields = Array.isArray(event.changedFields) ? event.changedFields : []
+        console.log(
+          `[v0] [Engine ${this.connectionId}] applying settings change type=${changeType} fields=[${fields.join(",")}]`,
+        )
 
-      if (changeType === "restart") {
-        // Hand off to the coordinator's stop+start path. Clear and completion-stamp
-        // only after restart succeeds; otherwise the durable pending envelope and
-        // progression flags must remain visible for retry/debugging.
-        const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
-        const coordinator = getGlobalTradeEngineCoordinator()
-        await coordinator.restartEngine(this.connectionId)
-        await clearPendingChanges(this.connectionId)
+        if (changeType === "restart") {
+          // Hand off to the coordinator's stop+start path. Clear and completion-stamp
+          // only after restart succeeds; otherwise the durable pending envelope and
+          // progression flags must remain visible for retry/debugging.
+          const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
+          const coordinator = getGlobalTradeEngineCoordinator()
+          await coordinator.restartEngine(this.connectionId)
+        } else if (changeType === "reload") {
+          await this.applyHotReload(fields)
+        }
+
+        // Only the exact envelope we applied may be removed. If another save
+        // arrived mid-apply, owned cleanup returns false and the loop consumes
+        // that newer/merged envelope before releasing the local mutex.
+        const cleared = await clearPendingChanges(this.connectionId, event)
         await this.stampSettingsRecoordinationApplied(event)
-        return
-      }
-
-      if (changeType === "reload") {
-        await this.applyHotReload(fields)
-        await clearPendingChanges(this.connectionId)
-        await this.stampSettingsRecoordinationApplied(event)
-        return
-      }
-
-      // `cosmetic` — name change, label, etc. Nothing to do for the
-      // engine, just clear the marker.
-      await clearPendingChanges(this.connectionId)
-      await this.stampSettingsRecoordinationApplied(event)
+        if (!cleared) this.settingsApplyQueued = true
+      } while (this.settingsApplyQueued)
     } catch (err) {
       await this.stampSettingsRecoordinationFailed(err, event)
       console.warn(

@@ -186,9 +186,9 @@ export class ConnectionManagerV2 {
         updated_at: new Date().toISOString(),
       }
 
-      await updateConnection(id, updated)
+      const persisted = await updateConnection(id, { ...input, updated_at: updated.updated_at })
       console.log("[v0] Connection updated:", id)
-      return updated as ConnectionV2
+      return (persisted || updated) as ConnectionV2
     } catch (error) {
       console.error("[v0] Failed to update connection:", error)
       await SystemLogger.logError("connection-manager-v2", error, { action: "updateConnection", id })

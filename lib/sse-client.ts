@@ -39,9 +39,13 @@ export class SSEClient {
   private subscriptions: Map<SSEEventType, Set<(data: any) => void>> = new Map()
   private isConnecting = false
   private reconnectAttempts = 0
-  private maxReconnectAttempts = 5
   private reconnectDelay = 3000
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private shouldReconnect = true
   private freshnessByScope: Map<string, EventFreshnessCursor> = new Map()
+  private seenCanonicalEventIds = new Set<string>()
+  private seenCanonicalEventOrder: string[] = []
+  private readonly maxSeenCanonicalEvents = 1000
 
   constructor(connectionId: string, url?: string) {
     this.connectionId = connectionId
@@ -56,7 +60,7 @@ export class SSEClient {
 
   public connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      if (this.eventSource && this.eventSource.readyState !== EventSource.CLOSED) {
+      if (this.eventSource?.readyState === EventSource.OPEN) {
         resolve()
         return
       }
@@ -67,22 +71,40 @@ export class SSEClient {
       }
 
       this.isConnecting = true
+      this.shouldReconnect = true
 
       try {
         this.eventSource = new EventSource(this.url, { withCredentials: true })
-
-        this.eventSource.addEventListener('connected', (event) => {
-          console.log('[SSE] Connected')
+        let settled = false
+        const markConnected = (data: any) => {
           this.isConnecting = false
           this.reconnectAttempts = 0
-          this.emit('connected', JSON.parse(event.data))
-          resolve()
+          this.emit('connected', data)
+          if (!settled) {
+            settled = true
+            resolve()
+          }
+        }
+
+        this.eventSource.addEventListener('connected', (event) => {
+          try {
+            console.log('[SSE] Connected')
+            markConnected(JSON.parse(event.data))
+          } catch (error) {
+            console.error('[SSE] Failed to parse connected event:', error)
+          }
         })
 
         // Listen for generic message event
         this.eventSource.addEventListener('message', (event) => {
           try {
             const message: SSEMessage = JSON.parse(event.data)
+            // Backward-compatible with servers that emitted the handshake as
+            // an unnamed message before `event: connected` was introduced.
+            if (message.type === 'connected') {
+              markConnected(message.data ?? message)
+              return
+            }
             this.handleMessage(message)
           } catch (error) {
             console.error('[SSE] Failed to parse message:', error)
@@ -113,7 +135,18 @@ export class SSEClient {
           this.eventSource!.addEventListener(eventType, (event) => {
             try {
               const data = JSON.parse(event.data)
-              this.emit(eventType, data)
+              // Named events may contain either the full broadcaster envelope
+              // or the historic raw payload. Route full messages through the
+              // same connection/freshness/dedup guard as unnamed SSE data.
+              if (data?.connectionId && data?.type) {
+                this.handleMessage(data as SSEMessage)
+              } else if (eventType === 'canonical-event' && data?.id) {
+                if (this.acceptCanonicalEvent(data as CanonicalEvent<any>)) {
+                  this.emit('canonical-event', data)
+                }
+              } else {
+                this.emit(eventType, data)
+              }
             } catch (error) {
               console.error(`[SSE] Failed to parse ${eventType}:`, error)
             }
@@ -124,7 +157,11 @@ export class SSEClient {
           console.error('[SSE] Connection error')
           this.isConnecting = false
           this.emit('error', { message: 'SSE connection error' })
-          this.attemptReconnect()
+          if (!settled) {
+            settled = true
+            reject(new Error('SSE connection error'))
+          }
+          this.scheduleReconnect()
         }
       } catch (error) {
         console.error('[SSE] Connection failed:', error)
@@ -135,10 +172,16 @@ export class SSEClient {
   }
 
   public disconnect(): void {
+    this.shouldReconnect = false
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
     if (this.eventSource) {
       this.eventSource.close()
       this.eventSource = null
     }
+    this.isConnecting = false
   }
 
   public subscribe(eventType: SSEEventType, callback: (data: any) => void): () => void {
@@ -171,7 +214,21 @@ export class SSEClient {
 
   private handleMessage(message: SSEMessage): void {
     // Only process messages for current connection
-    if (message.connectionId !== this.connectionId && message.connectionId !== '*') {
+    if (
+      this.connectionId !== '*' &&
+      message.connectionId !== this.connectionId &&
+      message.connectionId !== '*'
+    ) {
+      return
+    }
+
+    if (message.type === 'history' && Array.isArray(message.data)) {
+      for (const historicMessage of message.data) {
+        if (historicMessage && typeof historicMessage === 'object') {
+          this.handleMessage(historicMessage as SSEMessage)
+        }
+      }
+      this.emit('history', message.data)
       return
     }
 
@@ -189,32 +246,47 @@ export class SSEClient {
   }
 
   public acceptCanonicalEvent(event: CanonicalEvent<any>): boolean {
-    if (event.connectionId !== this.connectionId && event.connectionId !== '*') return false
+    if (
+      this.connectionId !== '*' &&
+      event.connectionId !== this.connectionId &&
+      event.connectionId !== '*'
+    ) return false
+    if (event.id && this.seenCanonicalEventIds.has(event.id)) return false
     const scope = `${event.connectionId}:${event.symbol || '*'}:${event.stage || '*'}`
     const cursor = this.freshnessByScope.get(scope) || {}
     if (!isCanonicalEventFresh(event, cursor)) return false
     this.freshnessByScope.set(scope, mergeFreshEventCursor(cursor, event))
+    if (event.id) {
+      this.seenCanonicalEventIds.add(event.id)
+      this.seenCanonicalEventOrder.push(event.id)
+      if (this.seenCanonicalEventOrder.length > this.maxSeenCanonicalEvents) {
+        const expiredId = this.seenCanonicalEventOrder.shift()
+        if (expiredId) this.seenCanonicalEventIds.delete(expiredId)
+      }
+    }
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('canonical-event', { detail: event }))
     }
     return true
   }
 
-  private attemptReconnect(): void {
-    if (this.reconnectAttempts < this.maxReconnectAttempts) {
-      this.reconnectAttempts++
-      const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1)
-      console.log(`[SSE] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`)
+  private scheduleReconnect(): void {
+    if (!this.shouldReconnect || this.reconnectTimer) return
+    this.reconnectAttempts++
+    // Retry forever for long-running dashboards, but cap the delay so a
+    // recovered production server reconnects within 30 seconds.
+    const delay = Math.min(30_000, this.reconnectDelay * Math.pow(2, Math.min(6, this.reconnectAttempts - 1)))
+    console.log(`[SSE] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`)
+    this.eventSource?.close()
+    this.eventSource = null
 
-      setTimeout(() => {
-        this.connect().catch((error) => {
-          console.error('[SSE] Reconnection failed:', error)
-        })
-      }, delay)
-    } else {
-      console.error('[SSE] Max reconnection attempts reached')
-      this.emit('error', { message: 'SSE reconnection failed' })
-    }
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      if (!this.shouldReconnect) return
+      this.connect().catch((error) => {
+        console.error('[SSE] Reconnection failed:', error)
+      })
+    }, delay)
   }
 
   public getConnectionState(): string {

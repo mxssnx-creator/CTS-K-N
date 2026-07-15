@@ -1,6 +1,6 @@
 import { DEFAULT_VOLUME_STEP_RATIO } from "@/lib/constants"
 import { NextResponse } from "next/server"
-import { getAllConnections, getConnection, initRedis, updateConnection, setSettings, getSettings, getRedisClient,
+import { getAllConnections, getConnection, initRedis, updateConnectionState, setSettings, getSettings, getRedisClient,
   buildMainConnectionEnableUpdate } from "@/lib/redis-db"
 import { API_VERSIONS } from "@/lib/system-version"
 import { logProgressionEvent, getProgressionLogs } from "@/lib/engine-progression-logs"
@@ -11,6 +11,8 @@ import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
+import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
+import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -321,30 +323,25 @@ export async function POST(request: Request) {
     const exchangeName = normalizeQuickstartExchange(connection)
     const connectionId = connection.id
 
-    const getConnectionSafe = getConnection as unknown as ((id: string) => Promise<any>) | undefined
     const [latestConnectionHash, rawConnectionSettings, prefixedConnectionSettings] = await Promise.all([
       client.hgetall(`connection:${connectionId}`).catch(() => null),
-      typeof getConnectionSafe === "function" ? getConnectionSafe(connectionId).catch(() => null) : Promise.resolve(null),
-      (typeof getConnection === "function" ? getConnection(connectionId) : Promise.resolve(null)).catch(() => null),
       client.hgetall(`connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
       client.hgetall(`settings:connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
     ])
     const existingQuickStartSettings: Record<string, unknown> = {
       ...(latestConnectionHash || connection || {}),
       ...(rawConnectionSettings || {}),
+      // The namespaced settings hash is the canonical mirror and therefore
+      // wins when a legacy hash still contains an older value.
       ...(prefixedConnectionSettings || {}),
     }
     connection = { ...(connection || {}), ...(latestConnectionHash || {}) }
 
     console.log(`${LOG_PREFIX}: Found ${connection.name} (${connectionId}) on ${exchangeName}`)
 
-    const [existingRawConnectionSettings, existingPrefixedConnectionSettings] = await Promise.all([
-      client.hgetall(`connection_settings:${connectionId}`).catch(() => ({} as Record<string, string>)),
-      client.hgetall(`settings:connection_settings:${connectionId}`).catch(() => ({} as Record<string, string>)),
-    ])
     const existingConnectionSettings: Record<string, unknown> = {
-      ...(existingPrefixedConnectionSettings ?? {}),
-      ...(existingRawConnectionSettings ?? {}),
+      ...(rawConnectionSettings ?? {}),
+      ...(prefixedConnectionSettings ?? {}),
     }
     const effectiveVolumeFactorLive = firstExistingSetting(
       existingConnectionSettings,
@@ -384,6 +381,32 @@ export async function POST(request: Request) {
     if (action === "disable") {
       console.log(`${LOG_PREFIX}: Disabling ${connection.name}...`)
       const stopAt = new Date().toISOString()
+      const stateSwitchVersion = await allocateStateSwitchVersion(connectionId, connection)
+      const transition = await updateConnectionState(connectionId, {
+        is_dashboard_inserted: "0",
+        is_enabled_dashboard: "0",
+        is_assigned: "0",
+        is_enabled: "0",
+        is_live_trade: "0",
+        live_trade_requested: "0",
+        live_trade_blocked_reason: "",
+        state_switch_version: stateSwitchVersion,
+        state_switch_action: "quickstart_disable",
+        updated_at: stopAt,
+      }, stateSwitchVersion)
+      if (!transition.applied) {
+        return NextResponse.json(
+          { success: false, error: "QuickStart disable was superseded by a newer connection state" },
+          { status: 409 },
+        )
+      }
+      await queueEngineRefreshRequest({
+        connectionId,
+        action: "stop",
+        state_switch_version: stateSwitchVersion,
+        reason: "quickstart_disable",
+        timestamp: stopAt,
+      })
       let stopWarning = ""
       try {
         const coordinator = getGlobalTradeEngineCoordinator()
@@ -417,19 +440,6 @@ export async function POST(request: Request) {
         console.warn(`${LOG_PREFIX}: Stop engine warning during disable:`, stopErr)
       }
 
-      const disabled = {
-        ...connection,
-        is_dashboard_inserted: "0",
-        is_enabled_dashboard: "0",
-        is_assigned: "0",
-        is_enabled: "0",
-        is_live_trade: "0",
-        live_trade_requested: "0",
-        live_trade_blocked_reason: "",
-        updated_at: stopAt,
-      }
-      await updateConnection(connectionId, disabled)
-      
       await logProgressionEvent(connectionId, "quickstart_disabled", stopWarning ? "warning" : "info", "Connection stopped via QuickStart", {
         connectionName: connection.name,
         stopWarning: stopWarning || undefined,
@@ -634,12 +644,22 @@ export async function POST(request: Request) {
 
     // Production QuickStart should not silently fall back to paper/sim just
     // because the lightweight connection test endpoint is flaky or rate-limited.
-    // Credentials are the real live-order gate; the live stage will still record
-    // exchange placement errors if the venue rejects the order.
-    const liveTradeEnabled = liveTradeRequested && hasCredentials
+    // Credential shape and durable coordination are the pre-order gates; the
+    // live stage still records exchange placement errors if the venue rejects
+    // an order after those prerequisites pass.
+    const quickStartLiveReadiness = evaluateRealTradeReadiness({
+      ...connection,
+      is_live_trade: liveTradeRequested ? "1" : "0",
+      live_trade_requested: liveTradeRequested ? "1" : "0",
+      live_trade_blocked_reason: "",
+    })
+    const liveTradeEnabled = liveTradeRequested && quickStartLiveReadiness.canPlaceRealOrders
     const liveTradeBlockedReason = liveTradeRequested && !liveTradeEnabled
-      ? "No API credentials configured"
+      ? quickStartLiveReadiness.blockReason
       : ""
+    const liveTradeBlockCode = liveTradeRequested && !liveTradeEnabled
+      ? quickStartLiveReadiness.blockCode
+      : null
 
     await logProgressionEvent(connectionId, "quickstart_symbols", "info", "Trading symbols configured", {
       symbols,
@@ -774,9 +794,8 @@ export async function POST(request: Request) {
      // Factor slider in Settings (range 0.1×–10×) once they're happy
      // with how the engine is behaving.
 
-
+     const stateSwitchVersion = await allocateStateSwitchVersion(connectionId, connection)
      const updated = {
-       ...connection,
        // Explicit quickstart assignment/enabling for engine processing.
        // is_enabled + is_inserted are required by getAssignedAndEnabledConnections()
        // which filters on these base fields — without them coordinator.startAll()
@@ -797,6 +816,8 @@ export async function POST(request: Request) {
        is_live_trade: liveTradeEnabled ? "1" : "0",
        live_trade_requested: liveTradeRequested ? "1" : "0",
        live_trade_blocked_reason: liveTradeBlockedReason || "",
+       state_switch_version: stateSwitchVersion,
+       state_switch_action: "quickstart_enable",
        active_symbols: JSON.stringify(symbols),
        force_symbols: JSON.stringify(symbols),
        symbol_order: requestedSymbolOrder,
@@ -824,20 +845,6 @@ export async function POST(request: Request) {
        updated_at: new Date().toISOString(),
      }
 
-     // Surface the minimal-volume policy in the progression log so the
-     // operator can confirm in the UI exactly which sizing knob was applied.
-     await logProgressionEvent(
-       connectionId,
-       "quickstart_minimal_volume",
-       "info",
-       `QuickStart resolved live_volume_factor=${resolvedLiveVolumeFactor}`,
-       {
-         live_volume_factor: resolvedLiveVolumeFactor,
-         note:
-           "QuickStart persists resolved per-connection sizing settings before production engine startup so bundled workers read the same state as dev.",
-       },
-     )
-
     // ALSO store in trade_engine_state for engine to find.
     // IMPORTANT: record the user-selected symbol count under
     // `config_set_symbols_total` so the /stats endpoint no longer defaults
@@ -847,8 +854,6 @@ export async function POST(request: Request) {
     // trailing on, block on, dca off, control orders on, minimum live volume, volatility_1h.
     // These are persisted to connection_settings so the engine reads them on the
     // first tick instead of using its compiled defaults.
-    const { getRedisClient: _gsClient } = await import("@/lib/redis-db")
-    const _gsc = _gsClient()
     const quickstartConnectionSettingsPatch: Record<string, string> = {
       // Volume factor
       volume_factor_live: resolvedLiveVolumeFactor,
@@ -890,11 +895,6 @@ export async function POST(request: Request) {
     if (resolvedRealEvalPosCount !== undefined) {
       quickstartConnectionSettingsPatch.realEvalPosCount = stringifySettingValue(resolvedRealEvalPosCount)
     }
-    await Promise.allSettled([
-      _gsc.hset(`connection_settings:${connectionId}`, quickstartConnectionSettingsPatch),
-      _gsc.hset(`settings:connection_settings:${connectionId}`, quickstartConnectionSettingsPatch),
-    ])
-
      const quickstartTouchedFields = [
        "is_enabled",
        "is_inserted",
@@ -922,7 +922,7 @@ export async function POST(request: Request) {
      const coordinator = getGlobalTradeEngineCoordinator()
      const quickstartEngineAlreadyRunning = coordinator.isEngineRunning(connectionId)
 
-     await setSettings(`engine_progression:${connectionId}`, {
+     const quickstartProgressionPatch = {
       phase: "recoordination",
       status: "recoordinating",
       progress: quickstartEngineAlreadyRunning ? 98 : 8,
@@ -935,32 +935,25 @@ export async function POST(request: Request) {
         : "QuickStart settings saved — queuing durable engine recoordination.",
       changed_fields: quickstartTouchedFields,
       updated_at: new Date().toISOString(),
-    })
-    await client.hset(`progression:${connectionId}`, {
+    }
+    const quickstartCanonicalProgressionPatch = {
       phase: "recoordination",
       settings_recoordination_pending: "1",
       settings_recoordination_fields: JSON.stringify(quickstartTouchedFields),
       quickstart_recoordination_started_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    }).catch(() => 0)
-    await logProgressionEvent(connectionId, "quickstart_recoordination_requested", "info",
-      "QuickStart saved connection/settings and requested durable recoordination",
-      {
-        changedFields: quickstartTouchedFields,
-        engineAlreadyRunning: quickstartEngineAlreadyRunning,
-      },
-    )
-    emitEngineStageAck(connectionId, "startup", "ack", "QuickStart saved settings and requested durable recoordination", {
-      changedFields: quickstartTouchedFields,
-      engineAlreadyRunning: quickstartEngineAlreadyRunning,
-    })
+    }
 
     // QuickStart has exactly one connection/settings persistence path before
     // recoordination: applyMainConnectionSettingsChange() writes the connection
     // hash, mirrors both connection_settings hashes, then recoordinates from
     // the persisted after-snapshot. Do not add a standalone updateConnection()
     // above this call; the regression test guards this ordering.
-    const { connection: appliedConnection, completion: quickstartRecoordination } = await applyMainConnectionSettingsChange(connectionId, connection, {
+    const {
+      connection: appliedConnection,
+      completion: quickstartRecoordination,
+      stateTransitionApplied,
+    } = await applyMainConnectionSettingsChange(connectionId, connection, {
       connectionPatch: updated,
       settingsPatch: quickstartConnectionSettingsPatch,
       tradeEngineStatePatch: {
@@ -977,12 +970,35 @@ export async function POST(request: Request) {
         symbol_selection_epoch: symbolSelectionEpoch,
         quickstart_symbol_generation: symbolSelectionEpoch,
       },
+      relatedHashPatches: [
+        { key: `settings:engine_progression:${connectionId}`, patch: quickstartProgressionPatch },
+        { key: `progression:${connectionId}`, patch: quickstartCanonicalProgressionPatch },
+      ],
       changedFieldsOverride: quickstartTouchedFields,
       logTag: "POST /api/trade-engine/quick-start",
       settingsVersion: updated.updated_at,
+      stateSwitchVersion,
     })
+    if (!stateTransitionApplied) {
+      return NextResponse.json(
+        { success: false, error: "QuickStart was superseded by a newer connection state" },
+        { status: 409 },
+      )
+    }
     connection = appliedConnection
     console.log(`${LOG_PREFIX}: [3/4] Connection state updated (assigned+enabled, live_volume_factor=${resolvedLiveVolumeFactor}).`)
+
+    await logProgressionEvent(connectionId, "quickstart_recoordination_requested", "info",
+      "QuickStart atomically committed connection/settings and requested durable recoordination",
+      {
+        changedFields: quickstartTouchedFields,
+        engineAlreadyRunning: quickstartEngineAlreadyRunning,
+      },
+    )
+    emitEngineStageAck(connectionId, "startup", "ack", "QuickStart settings commit accepted and recoordination requested", {
+      changedFields: quickstartTouchedFields,
+      engineAlreadyRunning: quickstartEngineAlreadyRunning,
+    })
 
     await logProgressionEvent(
       connectionId,
@@ -1123,8 +1139,8 @@ export async function POST(request: Request) {
       }
     }
     
-     const isAssigned = updated.is_assigned === "1" || updated.is_assigned === true
-     const isMainEnabled = updated.is_enabled_dashboard === "1" || updated.is_enabled_dashboard === true
+     const isAssigned = updated.is_assigned === "1"
+     const isMainEnabled = updated.is_enabled_dashboard === "1"
      
      await logProgressionEvent(connectionId, "quickstart_updated", "info", "Connection state updated", {
        symbols,
@@ -1134,12 +1150,13 @@ export async function POST(request: Request) {
        liveTradeRequested,
        liveTradeEnabled,
        liveTradeBlockedReason: liveTradeBlockedReason || undefined,
+       liveTradeBlockCode: liveTradeBlockCode || undefined,
      })
 
      if (liveTradeBlockedReason) {
        await logProgressionEvent(connectionId, "quickstart_live_trade_blocked", "warning",
-         "Live exchange order placement disabled until connection test passes",
-         { reason: liveTradeBlockedReason, symbols, live_volume_factor: resolvedLiveVolumeFactor },
+         "Live exchange order placement blocked until Main live-order requirements pass",
+         { reason: liveTradeBlockedReason, blockCode: liveTradeBlockCode, symbols, live_volume_factor: resolvedLiveVolumeFactor },
        )
      }
      
@@ -1328,25 +1345,6 @@ export async function POST(request: Request) {
               })
               return { started: false, queued: true }
             }
-
-            // Re-persist the current QuickStart symbol/live gate after engine confirms start.
-            // Do not spread the stale pre-QuickStart connection object here; it can
-            // revert active_symbols/force_symbols/live flags while the async boot finishes.
-            await updateConnection(connectionId, {
-              is_live_trade: liveTradeEnabled ? "1" : "0",
-              live_trade_requested: liveTradeRequested ? "1" : "0",
-              live_trade_blocked_reason: liveTradeBlockedReason || "",
-              active_symbols: JSON.stringify(symbols),
-              force_symbols: JSON.stringify(symbols),
-              symbol_count: String(symbols.length),
-              dev_symbol_count_override: String(symbols.length),
-              live_volume_factor: resolvedLiveVolumeFactor,
-              volume_factor_live: resolvedLiveVolumeFactor,
-              preset_volume_factor: resolvedPresetVolumeFactor,
-              volume_factor_preset: resolvedPresetVolumeFactor,
-              volume_step_ratio: resolvedVolumeStepRatio,
-              updated_at: new Date().toISOString(),
-            })
 
             console.log(`${LOG_PREFIX} ✓ Main Engine started for ${connection.name} (async)`)
             await logProgressionEvent(connectionId, "engine_started", "info", "Main Trade Engine started via QuickStart", {
@@ -1554,6 +1552,7 @@ export async function POST(request: Request) {
         liveTradeRequested,
         liveTradeEnabled,
         liveTradeBlockedReason: liveTradeBlockedReason || undefined,
+        liveTradeBlockCode: liveTradeBlockCode || undefined,
       },
       engineCounts: {
         indications: indCount,
@@ -1584,12 +1583,12 @@ export async function POST(request: Request) {
       },
       refreshQueued: quickstartRecoordination.refreshQueued === true,
       refreshStatus: quickstartRecoordination.refreshStatus,
-      status: liveTradeEnabled ? "ready_with_live_trading" : (hasCredentials ? "ready_connection_test_failed" : "ready_without_credentials"),
+      status: liveTradeEnabled ? "ready_with_live_trading" : (liveTradeRequested ? "ready_live_trading_blocked" : "ready_without_live_trading"),
       nextSteps: liveTradeEnabled
         ? "Connection assigned, enabled, and live exchange order placement is enabled."
-        : (hasCredentials
-          ? "Connection assigned and engine progression started, but live exchange order placement is blocked until the connection test passes."
-          : "Connection assigned and enabled for quickstart, but credentials are missing/invalid for live exchange operations."),
+        : liveTradeRequested
+          ? `Connection assigned and engine progression started, but live exchange order placement is blocked: ${liveTradeBlockedReason}`
+          : "Connection assigned and enabled for quickstart with live exchange trading disabled.",
       duration: totalDuration,
       logs: allLogs.slice(0, 50),
       logsCount: allLogs.length,

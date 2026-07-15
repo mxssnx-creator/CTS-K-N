@@ -64,11 +64,7 @@ export async function POST(request: NextRequest) {
               parsedValue = actualValue
             }
 
-            const updated = {
-              ...connection,
-              [fieldName]: parsedValue,
-            }
-            await updateConnection(connId, updated)
+            await updateConnection(connId, { [fieldName]: parsedValue })
             imported++
           } else {
             skipped++
@@ -89,7 +85,8 @@ export async function POST(request: NextRequest) {
         }
       } catch (error) {
         errors++
-        errorsList.push(`Line: ${trimmed} - ${error instanceof Error ? error.message : "Unknown error"}`)
+        const keyOnly = trimmed.split("=", 1)[0]?.trim() || "unknown"
+        errorsList.push(`Key: ${keyOnly} - ${error instanceof Error ? error.message : "Unknown error"}`)
       }
     }
 

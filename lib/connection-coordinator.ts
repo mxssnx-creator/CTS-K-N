@@ -170,6 +170,10 @@ export class ConnectionCoordinator {
     this.healthCheckInterval = setInterval(() => {
       this.performHealthChecks()
     }, 300000)
+    // The HTTP server / engine owner keeps production alive. A passive health
+    // monitor must never become the last referenced handle after a graceful
+    // shutdown (or keep short-lived workers and test processes resident).
+    this.healthCheckInterval.unref?.()
 
     // Initial health check
     this.performHealthChecks()
