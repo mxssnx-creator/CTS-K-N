@@ -8,15 +8,11 @@ export async function POST() {
     console.log("[v0] Initializing Redis database with migrations...")
 
     const { initRedis } = await import("@/lib/redis-db")
-    const { runMigrations } = await import("@/lib/redis-migrations")
 
     const startTime = Date.now()
 
     // Initialize Redis
     await initRedis()
-
-    // Run migrations
-    await runMigrations()
 
     const duration = Date.now() - startTime
 

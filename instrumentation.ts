@@ -94,8 +94,14 @@ async function runDeterministicBoot(): Promise<void> {
       .catch(() => {})
     bootGuard.__v0_instrumentation_booted = false
     console.error("[v0] [Instrumentation] critical startup failed; engines remain stopped:", err instanceof Error ? err.message : err)
-    scheduleStartupRetry()
-    return
+    if (canRetryInProcess()) {
+      scheduleStartupRetry()
+      return
+    }
+    // Serverless workers cannot retain the retry timer. Fail the cold start so
+    // the platform retries with a fresh process instead of serving a worker
+    // that advertises routes while migrations/startup invariants are incomplete.
+    throw err
   }
 
   // Production Node processes should be self-contained: initialize the

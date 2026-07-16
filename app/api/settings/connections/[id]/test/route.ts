@@ -10,7 +10,8 @@ const TEST_TIMEOUT_MS = 30000
 const MAX_RETRIES = 3
 const RETRY_INTERVAL_MS = 1000
 
-// Timeout handler for requests with abort controller
+// Deadline wrapper. Connector transports enforce their own request aborts;
+// this outer deadline bounds the API response and retry contract.
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
@@ -55,7 +56,9 @@ async function withRetry<T>(
 }
 
 export const dynamic = "force-dynamic"
-export const maxDuration = 15
+// Three bounded exchange attempts plus retry spacing can take just over 90s on
+// a degraded venue. Keep the route budget aligned with its own retry contract.
+export const maxDuration = 120
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const testLog: string[] = []
   const startTime = Date.now()
@@ -170,6 +173,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     testLog.push(`[${new Date().toISOString()}] Minimum connect interval: ${minInterval}ms`)
 
     const rateLimiter = new RateLimiter(connection.exchange)
+    const isBingX = String(connection.exchange || "").toLowerCase().replace(/[^a-z]/g, "").includes("bingx")
+    const testedConnectionMethod = isBingX
+      ? "library"
+      : body.connection_method || connection.connection_method || "rest"
+    const testedConnectionLibrary = isBingX
+      ? "sdk"
+      : body.connection_library || connection.connection_library || "native"
 
     // Execute with retry system: 3 attempts with 1 second interval
     const testResult = await withRetry(
@@ -184,16 +194,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             apiPassphrase: body.api_passphrase || connection.api_passphrase || "",
             isTestnet: body.is_testnet !== undefined ? body.is_testnet : (connection.is_testnet || false),
             apiType: body.api_type || connection.api_type,
-            connectionMethod: body.connection_method || connection.connection_method,
-            connectionLibrary: body.connection_library || connection.connection_library,
+            connectionMethod: testedConnectionMethod,
+            connectionLibrary: testedConnectionLibrary,
           })
 
-          const testPromise = connector.testConnection()
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Connection test timeout after 30 seconds")), TEST_TIMEOUT_MS)
+          const connectorResult = await withTimeout(
+            connector.testConnection(),
+            TEST_TIMEOUT_MS,
+            "Exchange connection test",
           )
-
-          return await Promise.race([testPromise, timeoutPromise])
+          return {
+            ...connectorResult,
+            fastPathStatus: (connector as any).getFastPathStatus?.(),
+          }
         })
       },
       MAX_RETRIES,
@@ -211,7 +224,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const duration = Date.now() - startTime
     testLog.push(`[${new Date().toISOString()}] Connection successful!`)
-    testLog.push(`[${new Date().toISOString()}] Account Balance: ${result.balance.toFixed(4)} USDT`)
+    const normalizedBalance = Number(result.balance)
+    testLog.push(
+      `[${new Date().toISOString()}] Account Balance: ${Number.isFinite(normalizedBalance) ? normalizedBalance.toFixed(4) : "0.0000"} USDT`,
+    )
     if (result.btcPrice) {
       testLog.push(`[${new Date().toISOString()}] BTC Price: $${result.btcPrice.toFixed(2)}`)
     }
@@ -223,6 +239,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       last_test_log: JSON.stringify(testLog),
       last_test_at: new Date().toISOString(),
       api_type: testedApiType,
+      connection_method: testedConnectionMethod,
+      connection_library: testedConnectionLibrary,
       api_capabilities: JSON.stringify(result.capabilities || []),
       updated_at: new Date().toISOString(),
     })
@@ -242,8 +260,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       apiType: body.api_type || connection.api_type,
       apiSubtype: body.api_subtype || connection.api_subtype,
       exchange: connection.exchange,
-      connectionMethod: body.connection_method || connection.connection_method,
-      connectionLibrary: body.connection_library || connection.connection_library,
+      connectionMethod: testedConnectionMethod,
+      connectionLibrary: testedConnectionLibrary,
+      fastPathStatus: result.fastPathStatus || null,
       log: testLog,
       duration,
     })

@@ -5,6 +5,14 @@
 
 import { getRedisClient, ensureCoreRedis, setMigrationsRun, haveMigrationsRun } from "./redis-db"
 import { ensureUniqueSiteInstanceWithClient } from "./site-instance"
+import { rebuildConnectionSecondaryIndexes } from "./database-indexes"
+import {
+  createDatabaseMaintenanceFingerprint,
+  DATABASE_MAINTENANCE_STATUS_KEY,
+  ensureUnifiedProgressionKeysWithClient,
+} from "./database-maintenance"
+import { createRedisLockToken, releaseOwnedRedisLock, renewOwnedRedisLock } from "./redis-lock-utils"
+import { scanRedisKeys } from "./redis-scan"
 
 /**
  * Reset the in-process migration guards.
@@ -33,7 +41,8 @@ import { ensureUniqueSiteInstanceWithClient } from "./site-instance"
 const globalMigrationGuard = globalThis as unknown as {
   __migration_run_promise?: Promise<MigrationRunResult> | null
   __coverage_repair_done?: boolean
-  __coverage_repair_promise?: Promise<void> | null
+  __coverage_repair_fingerprint?: string | null
+  __coverage_repair_promise?: Promise<CoverageRepairResult> | null
 }
 
 function getMigrationRunPromise() {
@@ -53,7 +62,12 @@ export function resetMigrationRunState(): void {
   // Allow coverage repair to run again after a DB flush so fresh connections
   // get their metadata scaffolding.
   globalMigrationGuard.__coverage_repair_done = false
+  globalMigrationGuard.__coverage_repair_fingerprint = null
   globalMigrationGuard.__coverage_repair_promise = null
+  // A destructive/import reset calls this before replaying migrations. Clear
+  // only the idempotent seed-complete marker so the existing reset routes can
+  // run their unchanged runPreStartup() step again after the fresh schema.
+  ;(globalThis as typeof globalThis & { __cts_pre_startup_done?: boolean }).__cts_pre_startup_done = false
   try {
     setMigrationsRun(false)
   } catch {
@@ -75,6 +89,43 @@ interface MigrationRunResult {
   message: string
   version: number
   databaseHealth?: Record<string, string>
+}
+
+export interface CoverageRepairResult {
+  status: "completed" | "skipped" | "busy"
+  fingerprint: string
+  connections: number
+}
+
+async function loadConnectionsForMaintenanceMigration(client: any): Promise<any[]> {
+  const [indexedIds, rawKeys, settingsKeys, tombstonedIds] = await Promise.all([
+    client.smembers("connections").catch(() => []),
+    scanRedisKeys(client, "connection:*"),
+    scanRedisKeys(client, "settings:connection:*"),
+    client.smembers("connections:tombstoned").catch(() => []),
+  ])
+  const tombstones = new Set((tombstonedIds || []).map(String))
+  const ids = new Set<string>((indexedIds || []).map(String))
+  for (const key of rawKeys) ids.add(String(key).replace(/^connection:/, ""))
+  for (const key of settingsKeys) ids.add(String(key).replace(/^settings:connection:/, ""))
+
+  // A tombstone is the durable operator-delete contract. Clean stale mirrors
+  // left by older delete paths before rebuilding the canonical index.
+  await Promise.all(Array.from(tombstones).map((id) =>
+    client.del(`connection:${id}`, `settings:connection:${id}`).catch(() => 0),
+  ))
+
+  const connections = await Promise.all(Array.from(ids)
+    .filter((id) => id && !tombstones.has(id))
+    .map(async (id) => {
+      const [raw, settings] = await Promise.all([
+        client.hgetall(`connection:${id}`).catch(() => ({})),
+        client.hgetall(`settings:connection:${id}`).catch(() => ({})),
+      ])
+      const merged = { ...(settings || {}), ...(raw || {}), id }
+      return merged.name && merged.exchange ? merged : null
+    }))
+  return connections.filter(Boolean)
 }
 
 // NOTE: the in-flight coalescing promise now lives on globalThis (see
@@ -3458,7 +3509,7 @@ const migrations: Migration[] = [
         client.hset("settings:connection:bingx-x01", patch).catch(() => 0),
         client.hset("settings:trade_engine_state:bingx-x01", patch).catch(() => 0),
       ])
-      console.log("[v0] Migration 066: bingx-x01 uses official SDK fast order/control path by default")
+      console.log("[v0] Migration 066: bingx-x01 uses the bingx-api library fast path by default")
     },
     down: async (client: any) => {
       await Promise.all([
@@ -3601,6 +3652,63 @@ const migrations: Migration[] = [
       // Identity is intentionally retained during rollback; deleting it would
       // rotate the site/session and break continuous engine ownership.
       await client.set("_schema_version", "69")
+    },
+  },
+  {
+    version: 71,
+    name: "071-unified-database-maintenance-and-secondary-indexes",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const ids = connections.map((connection) => String(connection.id)).filter(Boolean)
+
+      // Reconcile the canonical collection index once. Runtime connection CRUD
+      // maintains it after this migration, so dashboard polling no longer needs
+      // global connection:* / settings:connection:* key scans.
+      await client.del("connections")
+      if (ids.length > 0) await client.sadd("connections", ...ids)
+
+      let progressionKeysUpdated = 0
+      const batchSize = 12
+      for (let offset = 0; offset < connections.length; offset += batchSize) {
+        const updated = await Promise.all(
+          connections.slice(offset, offset + batchSize).map((connection) =>
+            ensureUnifiedProgressionKeysWithClient(client, String(connection.id)),
+          ),
+        )
+        progressionKeysUpdated += updated.filter(Boolean).length
+      }
+      const indexes = await rebuildConnectionSecondaryIndexes(client, connections)
+      const fingerprint = createDatabaseMaintenanceFingerprint(71, connections)
+      const now = new Date().toISOString()
+      await Promise.all([
+        client.hset(DATABASE_MAINTENANCE_STATUS_KEY, {
+          status: "completed",
+          fingerprint,
+          schema_version: "71",
+          connection_count: String(connections.length),
+          progression_keys_updated: String(progressionKeysUpdated),
+          index_keys: String(indexes.indexKeys),
+          index_memberships: String(indexes.memberships),
+          completed_at: now,
+          migration: "071",
+          last_error: "",
+        }),
+        client.hset("system:database:coordination:maintenance", {
+          schema_version: "71",
+          migration_execution: "single_flight_distributed",
+          fresh_install_mode: "combined_batch",
+          connection_reads: "maintained_index_with_scan_recovery",
+          secondary_indexes: "maintained_on_write",
+          updated_at: now,
+        }),
+      ])
+    },
+    down: async (client: any) => {
+      await client.del(
+        DATABASE_MAINTENANCE_STATUS_KEY,
+        "system:database:coordination:maintenance",
+      ).catch(() => 0)
+      await client.set("_schema_version", "70")
     },
   },
 ]
@@ -4082,18 +4190,17 @@ const ensureBootstrapDiag = new Set<string>()
 /**
  * PRODUCTION MODE COMPLETE COVERAGE REPAIR
  * 
- * This function is the "make sure everything is correct and non-zero in production"
- * pass. It is ALWAYS executed (even when schema is already at latest) when
- * running in production / Vercel preview / prod deploys.
+ * This function is the "make sure everything is structurally complete"
+ * repair pass. Startup coordinates it through a durable fingerprint and
+ * distributed lock, so identical cold workers do not repeat the scan.
  * 
  * It guarantees:
  *  - All migration-022 style indexes and progression containers exist
  *  - Progression counters, strategy sets, live-position indexes are repaired
- *  - trade_engine:global is bootstrapped to "running" (unless operator stopped)
  *  - Zero-count metadata keys are initialized for every enabled connection
  *  - No "No Progress / No counts" after cold start / redeploy
  * 
- * Dev mode intentionally skips the heavy parts (see startPersistence comments).
+ * It never invents progression completion, counts, or engine liveness.
  */
 async function ensureCompleteProductionCoverage(client: any): Promise<void> {
   const coverageStartedAt = new Date().toISOString()
@@ -4105,76 +4212,6 @@ async function ensureCompleteProductionCoverage(client: any): Promise<void> {
     // Diagnostic persistence is best-effort only.
   }
   let repairedConnections = 0
-  // ── Essential progression repair (runs in all modes) ────────────────
-  try {
-    const allConns = (await client.smembers("connections")) || []
-    const connSet = new Set(allConns)
-    repairedConnections = Math.max(repairedConnections, connSet.size)
-
-    for (const connId of connSet) {
-      if (!connId) continue
-      const prefixes = [
-        `strategies:${connId}`,
-        `progression:${connId}`,
-        `live_positions:${connId}`,
-        `realtime:${connId}`,
-      ]
-      for (const p of prefixes) {
-        const metaKey = `${p}:metadata`
-        if (!(await client.exists(metaKey))) {
-          await client.hset(metaKey, {
-            created_at: new Date().toISOString(),
-            last_cycle: new Date().toISOString(),
-            total_base_created: "0",
-            total_main_created: "0",
-            total_real_created: "0",
-            total_live_created: "0",
-            repaired_by: "ensureCompleteProductionCoverage",
-          })
-        }
-      }
-
-      // Canonical prehistoric/progression containers for BOTH dev and prod.
-      // Seed only pending/zero fields when absent — never stamp completion gates.
-      // This makes fresh installs and flushed DBs render a complete progress shape
-      // before the engine starts, while preserving the rule that only the real
-      // prehistoric pipeline can write :done / :firstpass:done / is_complete=1.
-      const prehistoricKey = `prehistoric:${connId}`
-      const preExists = await client.exists(prehistoricKey).catch(() => 0)
-      if (!preExists) {
-        await client.hset(prehistoricKey, {
-          is_complete: "0",
-          symbols_processed: "0",
-          symbols_total: "0",
-          candles_loaded: "0",
-          indicators_calculated: "0",
-          data_source: "pending",
-          repaired_by: "ensureCompleteProductionCoverage",
-          updated_at: new Date().toISOString(),
-        }).catch(() => {})
-      }
-      await client.hset(`progression:${connId}`, {
-        migration_coverage_checked_at: new Date().toISOString(),
-      }).catch(() => {})
-
-      // DO NOT stamp prehistoric:done / firstpass:done here.
-      // These gates are written by the engine itself after a genuine prehistoric
-      // run completes. Stamping them unconditionally on every coverage-repair call
-      // (which fires on EVERY migration fast-path invocation = every request)
-      // silently skips prehistoric processing for every new/reset connection and
-      // directly prevents the "settings change → progression restarts" behaviour.
-      // The engine-manager's error path already writes both flags as a safety net
-      // when prehistoric genuinely fails.
-
-      // DO NOT stamp engine_started:true here.
-      // That flag is the engine's own heartbeat marker. Writing it in the coverage
-      // repair resurrects zombie progressions (connections that were stopped/disabled)
-      // and fights with the operator-stop path. Only the engine itself sets it.
-    }
-  } catch (err) {
-    console.warn("[v0] [Migrations] Essential progression repair warning:", err)
-  }
-
   console.log("[v0] [Migrations] Running full coverage repair (containers, indexes, global zeros)")
 
   // Ensure the entire Site/Project has ONE unique instance (independent of
@@ -4200,6 +4237,7 @@ async function ensureCompleteProductionCoverage(client: any): Promise<void> {
 
     for (const connId of connSet) {
       if (!connId) continue
+      const repairTimestamp = new Date().toISOString()
 
       // Progression containers (the source of "progress" and counts in dashboard)
       const prefixes = [
@@ -4252,10 +4290,50 @@ async function ensureCompleteProductionCoverage(client: any): Promise<void> {
       if (!(await client.exists(engineStatusKey))) {
         await client.hset(engineStatusKey, {
           status: "stopped",
-          last_tick: new Date().toISOString(),
+          last_tick: repairTimestamp,
           cycles: "0",
         })
       }
+
+      // Prehistoric containers only — completion gates remain owned by the
+      // genuine prehistoric engine pipeline.
+      for (const prefix of [
+        `strategies:${connId}:prehistoric`,
+        `indications:${connId}:prehistoric`,
+        `prehistoric:${connId}:data`,
+      ]) {
+        if (!(await client.exists(`${prefix}:meta`))) {
+          await client.hset(`${prefix}:meta`, {
+            initialized: "1",
+            repaired_by: "ensureCompleteProductionCoverage",
+            created_at: repairTimestamp,
+          }).catch(() => {})
+        }
+      }
+      if (!(await client.exists(`prehistoric:${connId}`).catch(() => 0))) {
+        await client.hset(`prehistoric:${connId}`, {
+          is_complete: "0",
+          symbols_processed: "0",
+          symbols_total: "0",
+          candles_loaded: "0",
+          indicators_calculated: "0",
+          data_source: "pending",
+          repaired_by: "ensureCompleteProductionCoverage",
+          updated_at: repairTimestamp,
+        }).catch(() => {})
+      }
+
+      const progressionKey = `progression:${connId}`
+      const hasSnapshot = await client.hget(progressionKey, "progress_settings_snapshot").catch(() => null)
+      if (!hasSnapshot) {
+        await client.hset(progressionKey, {
+          symbol_count: "0",
+          active_symbols_hash: "",
+          started_for_settings_version: repairTimestamp,
+          progress_settings_snapshot: JSON.stringify({ initialized_by: "prod_coverage", at: repairTimestamp }),
+        }).catch(() => {})
+      }
+      await client.hset(progressionKey, { migration_coverage_checked_at: repairTimestamp }).catch(() => {})
 
       // DATA INTEGRITY FIX: synthetic strategy-set counts REMOVED.
       // This block previously wrote fake random counts (180+rand per symbol)
@@ -4290,59 +4368,6 @@ async function ensureCompleteProductionCoverage(client: any): Promise<void> {
       site_instance: "production",
     }).catch(() => {})
 
-    // 4. PREHISTORIC STRUCTURES (containers only — no fake completion).
-    // DATA INTEGRITY FIX: this block previously stamped fake prehistoric
-    // completion (prehistoric_done=1, 125000 candles, 850 indications, …)
-    // unconditionally on every prod request. That faked dashboard data AND
-    // skipped the real prehistoric processing phase. Now only the empty
-    // container meta keys are ensured; all progress/completion flags are
-    // written exclusively by the real prehistoric pipeline
-    // (config-set-processor / progression-state-manager).
-    for (const connId of connSet) {
-      if (!connId) continue
-      const prehistoricPrefixes = [
-        `strategies:${connId}:prehistoric`,
-        `indications:${connId}:prehistoric`,
-        `prehistoric:${connId}:data`,
-      ]
-      for (const p of prehistoricPrefixes) {
-        const exists = await client.exists(`${p}:meta`)
-        if (!exists) {
-          await client.hset(`${p}:meta`, {
-            initialized: "1",
-            repaired_by: "ensureCompleteProductionCoverage",
-            created_at: new Date().toISOString(),
-          }).catch(() => {})
-        }
-      }
-      if (!(await client.exists(`prehistoric:${connId}`).catch(() => 0))) {
-        await client.hset(`prehistoric:${connId}`, {
-          is_complete: "0",
-          symbols_processed: "0",
-          symbols_total: "0",
-          candles_loaded: "0",
-          indicators_calculated: "0",
-          data_source: "pending",
-          repaired_by: "ensureCompleteProductionCoverage",
-          updated_at: new Date().toISOString(),
-        }).catch(() => {})
-      }
-    }
-
-    // Ensure uniqueness/solidity snapshot fields exist on progression hashes (for the new per-progress isolation)
-    for (const connId of connSet) {
-      const progKey = `progression:${connId}`
-      const hasSnapshot = await client.hget(progKey, "progress_settings_snapshot").catch(() => null)
-      if (!hasSnapshot) {
-        await client.hset(progKey, {
-          symbol_count: "0",
-          active_symbols_hash: "",
-          started_for_settings_version: new Date().toISOString(),
-          progress_settings_snapshot: JSON.stringify({ initialized_by: "prod_coverage", at: new Date().toISOString() }),
-        }).catch(() => {})
-      }
-    }
-
     // (No fake position seeding — positions are created exclusively by the
     // live-trade engine when real orders fill on the exchange.)
 
@@ -4369,7 +4394,8 @@ async function ensureCompleteProductionCoverage(client: any): Promise<void> {
       })
       await recordStartupError(err, "coverage_repair")
     } catch {}
-    console.warn("[v0] [Migrations] [PROD-COVERAGE] Repair pass had non-fatal error (continuing):", err)
+    console.warn("[v0] [Migrations] [PROD-COVERAGE] Repair pass failed:", err)
+    throw err
   }
 }
 
@@ -4377,6 +4403,9 @@ const COVERAGE_REPAIR_STATUS_KEY = "database:coverage_repair:status"
 const COVERAGE_REPAIR_LAST_STARTED_KEY = "database:coverage_repair:last_started_at"
 const COVERAGE_REPAIR_LAST_COMPLETED_KEY = "database:coverage_repair:last_completed_at"
 const COVERAGE_REPAIR_LAST_ERROR_KEY = "database:coverage_repair:last_error"
+const COVERAGE_REPAIR_FINGERPRINT_KEY = "database:coverage_repair:fingerprint"
+const COVERAGE_REPAIR_LOCK_KEY = "database:coverage_repair:lock"
+const COVERAGE_REPAIR_MAX_AGE_MS = 6 * 60 * 60 * 1000
 
 async function setCoverageRepairStatus(
   client: any,
@@ -4408,32 +4437,87 @@ async function setCoverageRepairStatus(
  * normal routes to serve while non-critical production coverage scaffolding is
  * still being checked/repaired.
  */
-export async function runProductionCoverageRepair(): Promise<void> {
-  if (globalMigrationGuard.__coverage_repair_done) {
-    await ensureCoreRedis()
-    const client = getRedisClient()
-    await setCoverageRepairStatus(client, "completed")
-    return
-  }
-
+export async function runProductionCoverageRepair(
+  options: { force?: boolean } = {},
+): Promise<CoverageRepairResult> {
   const existing = globalMigrationGuard.__coverage_repair_promise
   if (existing) return existing
 
-  let promise!: Promise<void>
+  let promise!: Promise<CoverageRepairResult>
   promise = (async () => {
-    await ensureCoreRedis()
-    const client = getRedisClient()
-    const startedAt = new Date().toISOString()
-    await setCoverageRepairStatus(client, "running", { startedAt, error: "" })
     try {
-      await ensureCompleteProductionCoverage(client)
-      globalMigrationGuard.__coverage_repair_done = true
-      await setCoverageRepairStatus(client, "completed", { completedAt: new Date().toISOString(), error: "" })
-    } catch (error) {
-      globalMigrationGuard.__coverage_repair_done = false
-      const message = error instanceof Error ? error.message : String(error)
-      await setCoverageRepairStatus(client, "failed", { error: message })
-      throw error
+      await ensureCoreRedis()
+      const client = getRedisClient()
+      const [schemaVersionRaw, allConnections, enabledConnections] = await Promise.all([
+        client.get("_schema_version").catch(() => "0"),
+        client.smembers("connections").catch(() => []),
+        client.smembers("connections:main:enabled").catch(() => []),
+      ])
+      const connectionIds = Array.from(new Set([
+        ...(allConnections || []).map(String),
+        ...(enabledConnections || []).map(String),
+      ].filter(Boolean))).sort()
+      const fingerprint = createDatabaseMaintenanceFingerprint(
+        Number(schemaVersionRaw || 0),
+        connectionIds.map((id) => ({ id, exchange: "coverage" })),
+      )
+      const isFreshCompletion = async () => {
+        const [savedFingerprint, completedAt] = await Promise.all([
+          client.get(COVERAGE_REPAIR_FINGERPRINT_KEY).catch(() => null),
+          client.get(COVERAGE_REPAIR_LAST_COMPLETED_KEY).catch(() => null),
+        ])
+        const completedTime = Date.parse(String(completedAt || ""))
+        return savedFingerprint === fingerprint &&
+          Number.isFinite(completedTime) &&
+          Date.now() - completedTime < COVERAGE_REPAIR_MAX_AGE_MS
+      }
+
+      if (!options.force &&
+          globalMigrationGuard.__coverage_repair_done &&
+          globalMigrationGuard.__coverage_repair_fingerprint === fingerprint) {
+        return { status: "skipped", fingerprint, connections: connectionIds.length }
+      }
+      if (!options.force && await isFreshCompletion()) {
+        globalMigrationGuard.__coverage_repair_done = true
+        globalMigrationGuard.__coverage_repair_fingerprint = fingerprint
+        return { status: "skipped", fingerprint, connections: connectionIds.length }
+      }
+
+      const token = createRedisLockToken("coverage-repair")
+      const acquired = await client.set(COVERAGE_REPAIR_LOCK_KEY, token, { NX: true, EX: 300 }).catch(() => null)
+      if (acquired !== "OK") {
+        return { status: "busy", fingerprint, connections: connectionIds.length }
+      }
+
+      try {
+        if (!options.force && await isFreshCompletion()) {
+          globalMigrationGuard.__coverage_repair_done = true
+          globalMigrationGuard.__coverage_repair_fingerprint = fingerprint
+          return { status: "skipped", fingerprint, connections: connectionIds.length }
+        }
+
+        const startedAt = new Date().toISOString()
+        await setCoverageRepairStatus(client, "running", { startedAt, error: "" })
+        try {
+          await ensureCompleteProductionCoverage(client)
+          const completedAt = new Date().toISOString()
+          await Promise.all([
+            client.set(COVERAGE_REPAIR_FINGERPRINT_KEY, fingerprint),
+            setCoverageRepairStatus(client, "completed", { completedAt, error: "" }),
+          ])
+          globalMigrationGuard.__coverage_repair_done = true
+          globalMigrationGuard.__coverage_repair_fingerprint = fingerprint
+          return { status: "completed", fingerprint, connections: connectionIds.length }
+        } catch (error) {
+          globalMigrationGuard.__coverage_repair_done = false
+          globalMigrationGuard.__coverage_repair_fingerprint = null
+          const message = error instanceof Error ? error.message : String(error)
+          await setCoverageRepairStatus(client, "failed", { error: message })
+          throw error
+        }
+      } finally {
+        await releaseOwnedRedisLock(client, COVERAGE_REPAIR_LOCK_KEY, token).catch(() => false)
+      }
     } finally {
       if (globalMigrationGuard.__coverage_repair_promise === promise) {
         globalMigrationGuard.__coverage_repair_promise = null
@@ -4443,6 +4527,32 @@ export async function runProductionCoverageRepair(): Promise<void> {
 
   globalMigrationGuard.__coverage_repair_promise = promise
   return promise
+}
+
+const MIGRATION_EXECUTION_LOCK_KEY = "system:database:migrations:lock"
+const MIGRATION_EXECUTION_LOCK_TTL_SECONDS = 300
+const MIGRATION_EXECUTION_LOCK_WAIT_MS = 120_000
+
+async function waitForMigrationExecutionSlot(
+  client: any,
+  targetVersion: number,
+  token: string,
+): Promise<"acquired" | "completed"> {
+  const deadline = Date.now() + MIGRATION_EXECUTION_LOCK_WAIT_MS
+  while (Date.now() < deadline) {
+    const acquired = await client.set(MIGRATION_EXECUTION_LOCK_KEY, token, {
+      NX: true,
+      EX: MIGRATION_EXECUTION_LOCK_TTL_SECONDS,
+    }).catch(() => null)
+    if (acquired === "OK") return "acquired"
+
+    const currentVersion = Number((await client.get("_schema_version").catch(() => "0")) || "0")
+    if (Number.isFinite(currentVersion) && currentVersion >= targetVersion) return "completed"
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error(
+    `Timed out waiting ${MIGRATION_EXECUTION_LOCK_WAIT_MS}ms for the distributed migration lock`,
+  )
 }
 
 function createMigrationExecutionClient(client: any): any {
@@ -4476,21 +4586,19 @@ async function runPendingMigrationBatch({
 
   for (const migration of pendingMigrations) {
     const elapsed = Date.now() - startedAt
-    const remainingMs = Math.max(1, deadlineMs - elapsed)
-    let timeout: ReturnType<typeof setTimeout> | undefined
+    if (elapsed >= deadlineMs) {
+      throw new Error(
+        `Combined migration batch exceeded ${deadlineMs}ms before starting ${migration.name}`,
+      )
+    }
     try {
       console.log(`[v0] [Migrations] Running: ${migration.name} (v${migration.version})`)
-      await Promise.race([
-        migration.up(migrationClient),
-        new Promise<never>((_, reject) => {
-          timeout = setTimeout(
-            () => reject(new Error(`Migration ${migration.name} exceeded remaining batch deadline (${remainingMs}ms)`)),
-            remainingMs,
-          )
-        }),
-      ]).finally(() => {
-        if (timeout) clearTimeout(timeout)
-      })
+      // Never race an in-flight migration against a rejecting timer: Redis
+      // commands cannot be cancelled, and releasing the distributed lock while
+      // the losing promise continues would let a second worker mutate the same
+      // schema concurrently. The budget is enforced between crash-safe steps;
+      // once a step begins we retain and renew the lock until it settles.
+      await migration.up(migrationClient)
       // Stamp `_schema_version` after EACH migration from the runner. Individual
       // migration bodies often contain legacy `_schema_version` writes; the
       // proxy above suppresses those duplicate writes so fresh installs execute
@@ -4603,13 +4711,13 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
      }
 
     const versionStr = await client.get("_schema_version")
-    const currentVersion = versionStr ? parseInt(versionStr as string) : 0
+    let currentVersion = versionStr ? parseInt(versionStr as string) : 0
     const finalVersion = Math.max(...migrations.map((m) => m.version))
 
     console.warn(`[v0] [Migrations] Current: v${currentVersion}, Target: v${finalVersion}`)
 
     // Get migrations that need to run (version > currentVersion)
-    const pendingMigrations = migrations.filter((m) => m.version > currentVersion)
+    let pendingMigrations = migrations.filter((m) => m.version > currentVersion)
     
     if (pendingMigrations.length === 0) {
       // Suppress the "already at latest" line after the first occurrence
@@ -4648,13 +4756,42 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
       return { success: true, message: `Already at latest version ${finalVersion}`, version: finalVersion, databaseHealth }
     }
 
+    // Multiple production workers can cold-start against the same Redis at the
+    // same time. The process-wide promise above coalesces one worker; this lock
+    // serializes the migration batch across workers/containers as well.
+    const migrationLockToken = createRedisLockToken("schema-migrations")
+    const migrationSlot = await waitForMigrationExecutionSlot(client, finalVersion, migrationLockToken)
+    if (migrationSlot === "completed") {
+      return runMigrationsInternal()
+    }
+    currentVersion = Number((await client.get("_schema_version").catch(() => "0")) || "0")
+    pendingMigrations = migrations.filter((migration) => migration.version > currentVersion)
+    if (pendingMigrations.length === 0) {
+      await releaseOwnedRedisLock(client, MIGRATION_EXECUTION_LOCK_KEY, migrationLockToken).catch(() => false)
+      return runMigrationsInternal()
+    }
+
+    const migrationLockRenewal = setInterval(() => {
+      void renewOwnedRedisLock(
+        client,
+        MIGRATION_EXECUTION_LOCK_KEY,
+        migrationLockToken,
+        MIGRATION_EXECUTION_LOCK_TTL_SECONDS,
+      ).catch(() => false)
+    }, 30_000)
+    migrationLockRenewal.unref?.()
+
     // Run pending migrations as one optimized batch. The batch client suppresses
     // duplicate legacy `_schema_version` writes inside individual migration
     // bodies; this runner remains the single place that stamps durable per-step
     // progress after each migration completes.
-    const MIGRATION_DEADLINE_MS = Math.max(30_000, pendingMigrations.length * 30_000)
-    console.warn(`[v0] [Migrations] Running ${pendingMigrations.length} pending migrations as a combined batch...`)
-    await runPendingMigrationBatch({ client, pendingMigrations, deadlineMs: MIGRATION_DEADLINE_MS })
+    try {
+      const configuredDeadline = Number(process.env.MIGRATION_BATCH_DEADLINE_MS || 0)
+      const MIGRATION_DEADLINE_MS = Number.isFinite(configuredDeadline) && configuredDeadline >= 30_000
+        ? configuredDeadline
+        : process.env.NODE_ENV === "production" ? 150_000 : 55_000
+      console.warn(`[v0] [Migrations] Running ${pendingMigrations.length} pending migrations as a combined batch...`)
+      await runPendingMigrationBatch({ client, pendingMigrations, deadlineMs: MIGRATION_DEADLINE_MS })
 
     // Ensure schema version reflects the final target (defensive; the loop
     // already stamped the last migration's version).
@@ -4696,7 +4833,11 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
         is_migrated: true,
       }))
       .catch(() => null)
-    return result
+      return result
+    } finally {
+      clearInterval(migrationLockRenewal)
+      await releaseOwnedRedisLock(client, MIGRATION_EXECUTION_LOCK_KEY, migrationLockToken).catch(() => false)
+    }
   } catch (error) {
     await import("@/lib/startup-diagnostics")
       .then(({ recordMigrationStatus, recordStartupError }) => Promise.all([

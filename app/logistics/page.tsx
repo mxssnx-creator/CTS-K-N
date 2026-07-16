@@ -17,6 +17,7 @@ import { useExchange } from "@/lib/exchange-context"
 import { cn } from "@/lib/utils"
 import { countLiveOpenPositions, isLiveOpenStatus } from "@/lib/live-position-status"
 import { useDashboardEvents } from "@/lib/dashboard-events"
+import { PageHeader } from "@/components/page-header"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -832,21 +833,27 @@ function LogisticsContent() {
 
   return (
     <div className="flex flex-col flex-1 overflow-auto">
-      {/* Top bar */}
-      <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-background/95 px-4 py-2 backdrop-blur">
+      <PageHeader
+        title="Logistics"
+        description="Engine workflow and queue coordination"
+        showScope
+      >
         <div className="flex items-center gap-2">
           <Dot on={engineRunning} />
-          <span className="text-xs font-semibold uppercase tracking-wider">Logistics</span>
           <Tag color={engineRunning ? "green" : "default"}>{engineRunning ? "Live" : "Idle"}</Tag>
-          <span className="text-[10px] text-muted-foreground hidden sm:inline">{connId}</span>
-        </div>
-        <div className="flex items-center gap-2">
           <span className="text-[10px] text-muted-foreground hidden sm:inline">Updated {refreshLabel}</span>
-          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => loadAll()} disabled={refreshing}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => loadAll()}
+            disabled={refreshing}
+            aria-label="Refresh logistics"
+          >
             <RefreshCw className={cn("h-3 w-3", refreshing && "animate-spin")} />
           </Button>
         </div>
-      </div>
+      </PageHeader>
 
       {/* Content */}
       <div className="flex flex-col gap-3 p-4">

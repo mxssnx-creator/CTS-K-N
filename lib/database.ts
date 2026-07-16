@@ -87,9 +87,8 @@ export async function addConnection(name: string, exchange: string, apiKey: stri
  */
 export async function initializeDatabase() {
   try {
+    // initRedisDb includes the complete migration barrier.
     await initRedisDb()
-    const { runMigrations } = await import("./redis-migrations")
-    await runMigrations()
     console.log("[v0] Database initialized with Redis")
     return true
   } catch (error) {

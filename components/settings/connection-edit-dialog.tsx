@@ -67,8 +67,8 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
         exchange: connection.exchange || "bybit",
         api_type: connection.api_type || "perpetual_futures",
         api_subtype: connection.api_subtype || "perpetual",
-        connection_method: connection.connection_method || "rest",
-        connection_library: connection.connection_library || "native",
+        connection_method: connection.connection_method || (String(connection.exchange).toLowerCase() === "bingx" ? "library" : "rest"),
+        connection_library: connection.connection_library || (String(connection.exchange).toLowerCase() === "bingx" ? "sdk" : "native"),
         api_key: connection.api_key || "",
         api_secret: connection.api_secret || "",
         api_passphrase: connection.api_passphrase || "",
@@ -85,7 +85,16 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
   }, [isOpen, connection])
 
   const handleChange = (field: string, value: any) => {
-    setFormData((prev) => ({ ...prev, [field]: value }))
+    setFormData((prev) => ({
+      ...prev,
+      [field]: value,
+      ...(field === "exchange" && String(value).toLowerCase() === "bingx"
+        ? { connection_method: "library", connection_library: "sdk" }
+        : {}),
+      ...(field === "connection_method" && value === "library" && prev.exchange === "bingx"
+        ? { connection_library: "sdk" }
+        : {}),
+    }))
     setErrors((prev) => ({ ...prev, [field]: "" }))
   }
 
@@ -307,12 +316,17 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                     <SelectContent>
                       <SelectItem value="native"><span className="text-sm">Native (Default)</span></SelectItem>
                       <SelectItem value="ccxt"><span className="text-sm">CCXT</span></SelectItem>
-                      <SelectItem value="original"><span className="text-sm">Original - {EXCHANGE_LIBRARY_PACKAGES[formData.exchange] || "SDK"}</span></SelectItem>
+                      {formData.exchange === "bingx" ? (
+                        <SelectItem value="sdk"><span className="text-sm">bingx-api package (Default)</span></SelectItem>
+                      ) : (
+                        <SelectItem value="original"><span className="text-sm">Original - {EXCHANGE_LIBRARY_PACKAGES[formData.exchange] || "SDK"}</span></SelectItem>
+                      )}
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground mt-0.5">
                     {formData.connection_library === "native" && "Built-in native implementation"}
-                    {formData.connection_library === "original" && `Official ${formData.exchange.toUpperCase()} SDK`}
+                    {formData.connection_library === "sdk" && "Native bingx-api package with signed REST fallback"}
+                    {formData.connection_library === "original" && `${formData.exchange.toUpperCase()} exchange library`}
                     {formData.connection_library === "ccxt" && "Universal CCXT library (cross-exchange)"}
                   </p>
                 </div>

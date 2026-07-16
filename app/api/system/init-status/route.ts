@@ -75,6 +75,7 @@ export async function GET(request: NextRequest) {
            is_enabled_dashboard: (existingConn?.is_enabled_dashboard as string) || "0",
            is_active: dashboardEnabled ? "1" : "0",
            connection_method: "library",
+           connection_library: "sdk",
             updated_at: new Date().toISOString(),
           })
          console.log("[v0] [Init] Auto-injected BingX predefined credentials")

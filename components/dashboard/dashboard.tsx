@@ -94,9 +94,8 @@ export function Dashboard() {
     <div className="flex-1 flex flex-col min-h-0">
       <PageHeader
         title="CTS Dashboard"
-        description="Live trading control and monitoring"
+        description="Live trading control"
         showExchangeSelector
-        visual="mesh"
       >
         <DetailedLogsButton />
       </PageHeader>

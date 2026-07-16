@@ -1,7 +1,11 @@
 import { getSettings, getAllConnections, initRedis, saveMarketData, setAppSettings, updateConnection } from "@/lib/redis-db"
-import { runMigrations } from "@/lib/redis-migrations"
 
-let ran = false
+type PreStartupGlobal = typeof globalThis & {
+  __cts_pre_startup_done?: boolean
+  __cts_pre_startup_promise?: Promise<void> | null
+}
+
+const preStartupGlobal = globalThis as PreStartupGlobal
 
 function shouldRunPreStartup(): boolean {
   if (process.env.NEXT_RUNTIME !== "nodejs") return false
@@ -186,27 +190,48 @@ export function startPeriodicConnectionTesting() {
   // Disabled in safe bootstrap mode.
 }
 
-export async function runPreStartup() {
+export function resetPreStartupState(): void {
+  preStartupGlobal.__cts_pre_startup_done = false
+}
+
+export async function runPreStartup(options: { force?: boolean } = {}): Promise<void> {
   if (!shouldRunPreStartup()) return
-  if (ran) return
-  ran = true
-
-  try {
-    await initRedis()
-    await runMigrations()
-
-    // Settings seeding and market data placeholder seeding must run in ALL modes.
-    // On a production cold-start with empty Redis the engine would boot with no
-    // settings and no market data at all — both are no-ops when data already exists.
-    await initializeDefaultSettings()
-    await seedPredefinedConnections()
-    await seedMarketData()
-
-    // Connection testing is skipped in safe bootstrap mode (both dev and prod).
-    // The engine tests connections lazily when it first ticks.
-
-    // Engine start is intentionally skipped in safe bootstrap mode.
-  } catch (error) {
-    console.error("[v0] Pre-startup failed:", error)
+  if (options.force && preStartupGlobal.__cts_pre_startup_promise) {
+    await preStartupGlobal.__cts_pre_startup_promise.catch(() => undefined)
   }
+  if (options.force) preStartupGlobal.__cts_pre_startup_done = false
+  if (preStartupGlobal.__cts_pre_startup_done) return
+  if (preStartupGlobal.__cts_pre_startup_promise) return preStartupGlobal.__cts_pre_startup_promise
+
+  let promise!: Promise<void>
+  promise = (async () => {
+    try {
+      // initRedis is the single schema-readiness path and already executes all
+      // pending migrations. A second direct run here duplicated startup work.
+      await initRedis()
+
+      // Settings seeding and market data placeholder seeding must run in ALL modes.
+      // On a production cold-start with empty Redis the engine would boot with no
+      // settings and no market data at all — both are no-ops when data already exists.
+      await initializeDefaultSettings()
+      await seedPredefinedConnections()
+      await seedMarketData()
+
+      // Connection testing is skipped in safe bootstrap mode (both dev and prod).
+      // The engine tests connections lazily when it first ticks.
+
+      // Engine start is intentionally skipped in safe bootstrap mode.
+      preStartupGlobal.__cts_pre_startup_done = true
+    } catch (error) {
+      preStartupGlobal.__cts_pre_startup_done = false
+      console.error("[v0] Pre-startup failed:", error)
+      throw error
+    } finally {
+      if (preStartupGlobal.__cts_pre_startup_promise === promise) {
+        preStartupGlobal.__cts_pre_startup_promise = null
+      }
+    }
+  })()
+  preStartupGlobal.__cts_pre_startup_promise = promise
+  return promise
 }

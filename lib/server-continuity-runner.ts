@@ -14,6 +14,7 @@
  */
 
 import { createInternalCronRequest } from "@/lib/cron-auth"
+import { getEngineTimings } from "@/lib/engine-timings"
 
 type ContinuityGlobal = typeof globalThis & {
   __cts_continuity_runner?: {
@@ -22,13 +23,30 @@ type ContinuityGlobal = typeof globalThis & {
     autoStartInFlight: boolean
     liveRecoveryInFlight: boolean
     minuteTimer?: ReturnType<typeof setInterval>
-    liveRecoveryTimer?: ReturnType<typeof setInterval>
+    liveRecoveryTimer?: ReturnType<typeof setTimeout>
   }
 }
 
 const g = globalThis as ContinuityGlobal
 export const CONTINUITY_MINUTE_INTERVAL_MS = 60_000
-const LIVE_RECOVERY_INTERVAL_MS = 15_000
+
+export function getLiveRecoveryIntervalMs(): number {
+  const seconds = Number(getEngineTimings().cronSyncIntervalSeconds)
+  return Math.max(5, Math.min(60, Number.isFinite(seconds) ? seconds : 15)) * 1_000
+}
+
+function scheduleNextLiveRecovery(): void {
+  const state = g.__cts_continuity_runner
+  if (!state?.started || shouldSkipInProcessTimers()) return
+  state.liveRecoveryTimer = setTimeout(async () => {
+    try {
+      await enqueueContinuityLiveRecoveryJob()
+    } finally {
+      scheduleNextLiveRecovery()
+    }
+  }, getLiveRecoveryIntervalMs())
+  state.liveRecoveryTimer.unref?.()
+}
 
 function shouldSkipInProcessTimers(): boolean {
   // Long-lived Node production/dev processes should keep continuity alive by
@@ -135,12 +153,11 @@ export function startServerContinuityRunner(): void {
     void enqueueContinuityMinuteJob()
   }, CONTINUITY_MINUTE_INTERVAL_MS)
   state.minuteTimer.unref?.()
-  state.liveRecoveryTimer = setInterval(() => {
-    void enqueueContinuityLiveRecoveryJob()
-  }, LIVE_RECOVERY_INTERVAL_MS)
-  state.liveRecoveryTimer.unref?.()
+  scheduleNextLiveRecovery()
 
-  console.log("[v0] [Continuity] Server runner active (minute coordination + 15s live recovery)")
+  console.log(
+    `[v0] [Continuity] Server runner active (minute coordination + ${getLiveRecoveryIntervalMs() / 1_000}s live recovery)`,
+  )
 }
 
 export function stopServerContinuityRunner(): void {
@@ -151,7 +168,7 @@ export function stopServerContinuityRunner(): void {
   state.autoStartInFlight = false
   state.liveRecoveryInFlight = false
   if (state.minuteTimer) clearInterval(state.minuteTimer)
-  if (state.liveRecoveryTimer) clearInterval(state.liveRecoveryTimer)
+  if (state.liveRecoveryTimer) clearTimeout(state.liveRecoveryTimer)
   state.minuteTimer = undefined
   state.liveRecoveryTimer = undefined
 }

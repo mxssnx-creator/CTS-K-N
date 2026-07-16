@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/sidebar"
 import { ThemeSwitcher } from "@/components/theme-switcher"
 import { StyleSwitcher } from "@/components/style-switcher"
+import { TopInfoLayerSwitcher } from "@/components/top-info-layer-switcher"
 import { ExchangeSelectorTop } from "@/components/exchange-selector-top"
 import { useAuth } from "@/lib/auth-context"
 import { Button } from "@/components/ui/button"
@@ -249,6 +250,7 @@ export function AppSidebar() {
         <div className="flex items-center justify-between gap-1 group-data-[collapsible=icon]:justify-center">
           <span className="text-[10px] text-muted-foreground group-data-[collapsible=icon]:hidden">Appearance</span>
           <div className="flex items-center gap-1 group-data-[collapsible=icon]:flex-col">
+            <TopInfoLayerSwitcher />
             <StyleSwitcher />
             <ThemeSwitcher />
           </div>

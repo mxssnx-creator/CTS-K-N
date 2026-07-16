@@ -477,8 +477,8 @@ export function dbNow(): string {
 
 export async function runStartupMigrations(): Promise<void> {
   try {
-    const { runMigrations } = await import("./redis-migrations")
-    await runMigrations()
+    const { initRedis } = await import("./redis-db")
+    await initRedis()
   } catch (error) {
     console.warn("[v0] Startup migrations failed:", error)
   }

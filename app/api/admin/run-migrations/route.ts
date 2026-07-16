@@ -9,17 +9,16 @@ export async function POST() {
 
     // Redis migrations are handled automatically
     const { initRedis } = await import("@/lib/redis-db")
-    const { runMigrations } = await import("@/lib/redis-migrations")
+    const { getMigrationStatus } = await import("@/lib/redis-migrations")
 
     await initRedis()
-    const result = await runMigrations()
+    const result = await getMigrationStatus()
+    if (!result.isMigrated) throw new Error(result.message)
 
-    // Report the REAL migration result instead of hardcoded counts. The
-    // previous static `applied: 5` misrepresented every run (the system is at
-    // schema v22 and runMigrations() returns { success, message, version }).
+    // Report the durable status instead of the former hardcoded applied count.
     return NextResponse.json({
-      success: result.success !== false,
-      version: result.version,
+      success: result.isMigrated,
+      version: result.currentVersion,
       message: result.message ?? "Redis migrations completed",
     })
   } catch (error: any) {

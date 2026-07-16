@@ -104,4 +104,77 @@ describe("redis-db secondary indexes", () => {
     await expect(client.smembers("idx:indications")).resolves.toEqual([])
     await expect(client.smembers("idx:strategies")).resolves.toEqual([])
   })
+
+  it("maintains connection indexes on create, exchange change, disable, and delete", async () => {
+    const redisDb = await loadRedisDb()
+    const client = redisDb.getRedisClient()
+
+    await redisDb.createConnection({
+      id: "conn-live",
+      name: "Live",
+      exchange: "bingx",
+      is_assigned: "1",
+      is_enabled_dashboard: "1",
+      is_inserted: "1",
+      is_enabled: "1",
+      last_test_status: "success",
+    })
+    await expect(client.smembers("connections:main:enabled")).resolves.toEqual(["conn-live"])
+    await expect(client.smembers("connections:base:enabled")).resolves.toEqual(["conn-live"])
+    await expect(client.smembers("connections:working")).resolves.toEqual(["conn-live"])
+    await expect(client.smembers("connections:exchange:bingx")).resolves.toEqual(["conn-live"])
+
+    await redisDb.updateConnection("conn-live", {
+      exchange: "bybit",
+      is_enabled_dashboard: "0",
+      is_enabled: "0",
+      last_test_status: "failed",
+    })
+    await expect(client.smembers("connections:main:enabled")).resolves.toEqual([])
+    await expect(client.smembers("connections:base:enabled")).resolves.toEqual([])
+    await expect(client.smembers("connections:working")).resolves.toEqual([])
+    await expect(client.smembers("connections:exchange:bingx")).resolves.toEqual([])
+    await expect(client.smembers("connections:exchange:bybit")).resolves.toEqual(["conn-live"])
+
+    await redisDb.deleteConnection("conn-live")
+    await expect(client.smembers("connections:exchange:bybit")).resolves.toEqual([])
+    await expect(client.hgetall("connection:conn-live")).resolves.toEqual({})
+    await expect(client.hgetall("settings:connection:conn-live")).resolves.toEqual({})
+    await expect(redisDb.getAllConnections()).resolves.toEqual([])
+  })
+
+  it("consolidates once per schema/fingerprint and preserves live progression values", async () => {
+    const redisDb = await loadRedisDb()
+    const client = redisDb.getRedisClient()
+    await client.set("_schema_version", "71")
+    await redisDb.createConnection({
+      id: "conn-maintenance",
+      name: "Maintenance",
+      exchange: "bingx",
+      is_assigned: "1",
+      is_enabled_dashboard: "1",
+    })
+    await client.hset("progression:conn-maintenance", {
+      phase: "running",
+      cycles_completed: "9",
+      phase_message: "",
+    })
+    await client.sadd("connections:exchange:stale", "conn-maintenance")
+
+    const { consolidateDatabase } = await import("@/lib/database-consolidation")
+    const first = await consolidateDatabase({ force: true })
+    expect(first.status).toBe("completed")
+    expect(first.progressionKeysUpdated).toBe(1)
+    await expect(client.smembers("connections:exchange:stale")).resolves.toEqual([])
+    await expect(client.hgetall("progression:conn-maintenance")).resolves.toEqual(expect.objectContaining({
+      phase: "running",
+      cycles_completed: "9",
+      phase_message: "",
+      successful_cycles: "0",
+    }))
+
+    const second = await consolidateDatabase()
+    expect(second.status).toBe("skipped")
+    expect(second.fingerprint).toBe(first.fingerprint)
+  })
 })

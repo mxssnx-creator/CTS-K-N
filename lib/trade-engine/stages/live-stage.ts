@@ -57,6 +57,11 @@ import {
   type DcaLegState,
   type DcaProfile,
 } from "@/lib/dca-strategy"
+import {
+  markStrategyPositionInactive,
+  recordStrategyPositionEntry,
+} from "@/lib/pos-history"
+import { getLivePositionSetLineageKeys } from "@/lib/live-position-lineage"
 
 const LOG_PREFIX = "[v0] [LivePositionStage]"
 const MIN_EXCHANGE_STOP_LOSS_PERCENT = 0.2
@@ -335,6 +340,9 @@ interface LivePosition {
   pendingAccumulation?: {
     clientOrderId: string
     setKey: string
+    parentSetKey?: string
+    indicationType?: string
+    axisKey?: string
     requestedQuantity: number
     positionQuantityBefore: number
     orderId?: string
@@ -368,6 +376,7 @@ interface LivePosition {
   dcaLegs?: DcaLegState[]
   dcaTakeProfitPrice?: number
   setKey?: string
+  indicationType?: string
   exchangeData?: Record<string, unknown>
   orderId?: string
   // Durable marker proving the live fill counters were already recorded for
@@ -399,7 +408,7 @@ interface LivePosition {
   // Both fields ride verbatim from StrategySet → RealPosition → LivePosition
   // via the dispatch payload in `createLiveSets`.
   trailingProfile?: { startRatio: number; stopRatio: number; stepRatio: number }
-  prevPos?: { count: number; successRate: number; profitFactor: number; avgDDT: number }
+  prevPos?: { count: number; successRate: number; profitFactor: number; avgDDT: number; recentPnls?: number[] }
 
   progression?: { step: string; timestamp: number; success: boolean; details: string }[]
 }
@@ -409,12 +418,62 @@ function hasFillCounterRecorded(position: Pick<LivePosition, "fillCounterRecorde
   return Number(position.fillCounterRecordedAt || 0) > 0
 }
 
+function axisKeyFromLineage(
+  setKey: string,
+  axisWindows?: LivePosition["axisWindows"],
+): string {
+  const embedded = setKey.match(/#axis:([^#]+)/)?.[1]
+  if (embedded) return embedded
+  if (!axisWindows) return ""
+  const outcome = String((axisWindows as any).outcome || "pos")
+  const direction = String((axisWindows as any).dir || "")
+  return `p${axisWindows.prev || 0}_l${axisWindows.last || 0}_c${axisWindows.cont || 0}_u${axisWindows.pause || 0}_${outcome}${direction ? `_${direction}` : ""}`
+}
+
+async function recordConfirmedStrategyEntry(
+  connectionId: string,
+  position: LivePosition,
+  entryId: string,
+  lineage?: {
+    setKey?: string
+    parentSetKey?: string
+    indicationType?: string
+    axisKey?: string
+    axisWindows?: LivePosition["axisWindows"]
+  },
+): Promise<boolean> {
+  const setKey = String(lineage?.setKey || position.setKey || "").trim()
+  if (!setKey) return false
+  const direction = position.direction === "short" || position.side === "short" ? "short" : "long"
+  const parentSetKey = String(
+    lineage?.parentSetKey || position.parentSetKey || setKey.split("#")[0] || setKey,
+  )
+  const keyParts = setKey.split(":")
+  const inferredType = keyParts.length >= 3 && keyParts[0] === position.symbol
+    ? keyParts[1]
+    : keyParts[0]
+  return recordStrategyPositionEntry({
+    connectionId,
+    positionId: position.id,
+    entryId,
+    setKey,
+    parentSetKey,
+    symbol: position.symbol,
+    indicationType: String(lineage?.indicationType || position.indicationType || inferredType || "unknown"),
+    direction,
+    axisKey: String(lineage?.axisKey || axisKeyFromLineage(setKey, lineage?.axisWindows || position.axisWindows)),
+  })
+}
+
 async function recordFillCountersOnce(
   connectionId: string,
   position: LivePosition,
   symbol: string,
   side: string,
 ): Promise<boolean> {
+  // Entry accounting is independently idempotent. Run it even when the legacy
+  // fill marker exists so pre-rollout positions are backfilled on reconcile.
+  await recordConfirmedStrategyEntry(connectionId, position, `${position.id}:initial`)
   if (hasFillCounterRecorded(position)) return false
 
   // Mark first, before incrementing, so the same in-memory reconcile pass cannot
@@ -733,6 +792,7 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
     }
 
     const liveSetIndexKey = `live_set_keys:${position.connectionId}`
+    const liveSetLineageKeys = getLivePositionSetLineageKeys(position)
     if (terminalStatuses.has(String(position.status || "").toLowerCase())) {
       await client.lrem(openIndexKey, 0, position.id).catch(() => 0)
       const alreadyClosed = await client.lpos(closedIndexKey, position.id).catch(() => null)
@@ -741,13 +801,16 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       }
       await client.set(`live:positions:${position.connectionId}:moved:${position.id}`, String(Date.now())).catch(() => null)
       await client.expire(`live:positions:${position.connectionId}:moved:${position.id}`, 60 * 60).catch(() => 0)
-      if (position.setKey) await client.srem(liveSetIndexKey, position.setKey).catch(() => 0)
-      if (position.parentSetKey) await client.srem(liveSetIndexKey, position.parentSetKey).catch(() => 0)
+      for (const setKey of liveSetLineageKeys) {
+        await client.srem(liveSetIndexKey, setKey).catch(() => 0)
+      }
+      await markStrategyPositionInactive(position.connectionId, position.id)
     } else {
       await client.lrem(openIndexKey, 0, position.id).catch(() => 0)
       await client.lpush(openIndexKey, position.id).catch(() => 0)
-      if (position.setKey) await client.sadd(liveSetIndexKey, position.setKey).catch(() => 0)
-      if (position.parentSetKey) await client.sadd(liveSetIndexKey, position.parentSetKey).catch(() => 0)
+      for (const setKey of liveSetLineageKeys) {
+        await client.sadd(liveSetIndexKey, setKey).catch(() => 0)
+      }
       await client.expire(liveSetIndexKey, 24 * 60 * 60).catch(() => 0)
     }
     await keepDurable(liveSetIndexKey)
@@ -1174,6 +1237,19 @@ async function accumulateIntoSimulatedPosition(
     if (mutated) {
       Object.assign(existing, mutated)
       await savePosition(existing)
+      if (real?.setKey) {
+        await recordConfirmedStrategyEntry(
+          connId,
+          existing,
+          `${existing.id}:set:${real.setKey}`,
+          {
+            setKey: real.setKey,
+            parentSetKey: real.parentSetKey,
+            indicationType: real.indicationType,
+            axisWindows: real.axisWindows,
+          },
+        )
+      }
       await incrementMetric(connId, "live_orders_accumulated_count")
     }
   } finally {
@@ -1257,6 +1333,9 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     existing.pendingAccumulation = {
       clientOrderId,
       setKey: String(real?.setKey || ""),
+      parentSetKey: String(real?.parentSetKey || ""),
+      indicationType: String(real?.indicationType || ""),
+      axisKey: axisKeyFromLineage(String(real?.setKey || ""), real?.axisWindows),
       requestedQuantity: plan.addQty,
       positionQuantityBefore: Number(existing.executedQuantity || 0),
       submittedAt: Date.now(),
@@ -1378,6 +1457,19 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     Object.assign(existing, mutated)
     await incrementMetric(connId, "live_orders_accumulated_count")
     await savePosition(existing)
+    if (pending.setKey) {
+      await recordConfirmedStrategyEntry(
+        connId,
+        existing,
+        `${existing.id}:set:${pending.setKey}`,
+        {
+          setKey: pending.setKey,
+          parentSetKey: pending.parentSetKey,
+          indicationType: pending.indicationType,
+          axisKey: pending.axisKey,
+        },
+      )
+    }
     existing.stopLossLastArmedAt = undefined
     existing.takeProfitLastArmedAt = undefined
     await updateProtectionOrders(connector, existing, "accumulate_rearm", null).catch((err) => {
@@ -1393,11 +1485,11 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
   return existing
 }
 
-function reconcileAuthoritativeExchangeQuantity(
+async function reconcileAuthoritativeExchangeQuantity(
   position: LivePosition,
   exchangeQuantity: number,
   exchangeEntryPrice: number,
-): boolean {
+): Promise<boolean> {
   if (!Number.isFinite(exchangeQuantity) || exchangeQuantity <= 0) return false
   const before = Number(position.executedQuantity || 0)
   const tolerance = Math.max(1e-12, exchangeQuantity * 1e-8)
@@ -1467,6 +1559,19 @@ function reconcileAuthoritativeExchangeQuantity(
     `authoritative exchange quantity ${before} → ${exchangeQuantity}${exactAdded > 0 ? ` (+${exactAdded})` : ""}`,
   )
   position.updatedAt = Date.now()
+  if (pending && exactAdded > 0 && pending.setKey) {
+    await recordConfirmedStrategyEntry(
+      position.connectionId,
+      position,
+      `${position.id}:set:${pending.setKey}`,
+      {
+        setKey: pending.setKey,
+        parentSetKey: pending.parentSetKey,
+        indicationType: pending.indicationType,
+        axisKey: pending.axisKey,
+      },
+    )
+  }
   return true
 }
 const REFRESH_LOCK_TTL_LUA = `
@@ -3483,6 +3588,7 @@ export async function executeLivePosition(
     // than having to special-case the first entry).
     setKey:         realPosition.setKey,
     parentSetKey:   realPosition.parentSetKey,
+    indicationType: realPosition.indicationType,
     setVariant:     realPosition.setVariant,
     axisWindows:    realPosition.axisWindows,
     sizeMultiplier: realPosition.sizeMultiplier,
@@ -3911,15 +4017,22 @@ export async function executeLivePosition(
       livePosition.executionMode = "simulation"
       pushStep(livePosition, "simulate", true, `qty=${simQty} @ ${simEntryPrice}`)
       await savePosition(livePosition)
+      await recordFillCountersOnce(
+        connectionId,
+        livePosition,
+        realPosition.symbol,
+        realPosition.direction,
+      )
+      // Persist the durable fill marker after the idempotent entry ledger and
+      // legacy fill metrics have committed.
+      await savePosition(livePosition)
       // Run counters in parallel — they're independent. Simulated orders are
       // canonicalized as both placed and filled because this branch immediately
       // creates an open position with executed quantity and a synthetic fill.
       await Promise.all([
         incrementMetric(connectionId, "live_orders_simulated_count"),
         incrementMetric(connectionId, "live_orders_placed_count"),
-        incrementMetric(connectionId, "live_orders_filled_count"),
         incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed"),
-        incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "filled"),
         // Track simulated positions in created counter as well so the
         // openPositions.live.open = created - closed math works for
         // paper trades (the close-counter is bumped by
@@ -6155,7 +6268,7 @@ async function orphanCloseExpiredPositions(
  * Called by:
  *   • startRealtimeProcessor  (engine-manager.ts, 200 ms self-scheduling loop)
  *   • maybeRunLiveSync        (realtime-processor.ts, legacy throttle gate — delegates here)
- *   • /api/cron/sync-live-positions (Vercel cron, ~30 s)
+ *   • /api/cron/sync-live-positions (portable external scheduler, 60 s)
  *   • syncWithExchange        (legacy shim, redirects here)
  *
  * Responsibilities (in one Redis-locked pass):
@@ -6442,7 +6555,7 @@ export async function reconcileLivePositions(
             syncedAt: Date.now(),
           }
           pos.updatedAt = Date.now()
-          reconcileAuthoritativeExchangeQuantity(pos, authoritativeSize, authoritativeEntry)
+          await reconcileAuthoritativeExchangeQuantity(pos, authoritativeSize, authoritativeEntry)
           pos.submissionAbsentConfirmations = 0
           if (!pos.orderId && pos.submissionState === "unconfirmed") {
             const clientOrderId = getTrackedClientOrderId(pos, "entry")
@@ -6941,7 +7054,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
   // `syncWithExchange` has three independent callers in production:
   //   1. RealtimeProcessor.maybeRunLiveSync() — every 200 ms (in-process
   //      gate `liveSyncInFlight` covers same-process collisions only)
-  //   2. /api/cron/sync-live-positions — Vercel cron, ~30 s
+  //   2. /api/cron/sync-live-positions — portable scheduler, 60 s
   //   3. /api/trade-engine/resume      — one-shot on resume
   //
   // Without a Redis-backed lock the cron+realtime can run in parallel
@@ -7527,7 +7640,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
             if (!(position.averageExecutionPrice > 0)) position.averageExecutionPrice = exEntry
             if (!(position.entryPrice > 0)) position.entryPrice = exEntry
           }
-          reconcileAuthoritativeExchangeQuantity(position, authoritativeSize, exEntry)
+          await reconcileAuthoritativeExchangeQuantity(position, authoritativeSize, exEntry)
           position.submissionAbsentConfirmations = 0
           position.updatedAt = Date.now()
         } else if (

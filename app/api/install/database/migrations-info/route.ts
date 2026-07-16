@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { initRedis } from "@/lib/redis-db"
-import { getMigrationStatus, runMigrations } from "@/lib/redis-migrations"
+import { getMigrationStatus } from "@/lib/redis-migrations"
 
 export const dynamic = "force-dynamic"
 export async function GET() {
@@ -34,16 +34,14 @@ export async function GET() {
 export async function POST() {
   try {
     await initRedis()
-    
-    console.log("[v0] [API] Running migrations...")
-    const result = await runMigrations()
-    
-    console.log("[v0] [API] Migrations completed:", result.message)
+    const status = await getMigrationStatus()
+    if (!status.isMigrated) throw new Error(status.message || "Migration readiness failed")
+    console.log("[v0] [API] Migrations verified:", status.message)
     
     return NextResponse.json({
       success: true,
-      message: result.message,
-      version: result.version,
+      message: status.message,
+      version: status.currentVersion,
     })
   } catch (error) {
     console.error("[v0] Migration run error:", error)

@@ -124,6 +124,8 @@ export interface PosWindowStats {
   avgDDT: number
   /** count >= requested threshold. */
   hasSignal: boolean
+  /** Cost-adjusted realised PnLs, newest first, for Previous/Last axes. */
+  recentPnls: number[]
 }
 
 const EMPTY_WINDOW: PosWindowStats = {
@@ -132,6 +134,7 @@ const EMPTY_WINDOW: PosWindowStats = {
   profitFactor: 0,
   avgDDT: 0,
   hasSignal: false,
+  recentPnls: [],
 }
 
 // ── Key builders ───────────────────────────────────────────────────────
@@ -410,6 +413,7 @@ function deriveWindow(records: string[], window: number): PosWindowStats {
   let n = 0
   let ddtSum = 0
   let ddtCount = 0
+  const recentPnls: number[] = []
   for (let i = 0; i < records.length && i < winN; i++) {
     const rec = records[i]
     // NEW FORMAT: "pnl|cost|ddt" (cost-adjusted)
@@ -425,6 +429,7 @@ function deriveWindow(records: string[], window: number): PosWindowStats {
     
     if (Number.isFinite(pnl)) {
       n++
+      recentPnls.push(pnl)
       if (pnl > 0) {
         wins++
         num += pnl
@@ -455,6 +460,7 @@ function deriveWindow(records: string[], window: number): PosWindowStats {
     profitFactor,
     avgDDT: ddtCount > 0 ? ddtSum / ddtCount : 0,
     hasSignal: n >= winN,
+    recentPnls,
   }
 }
 
@@ -651,6 +657,151 @@ export async function getAxisPosAccumulation(
 // the engine considers "valid" — i.e. surviving Real and reaching Live).
 // One HASH per connection with rollup fields the dashboard renders.
 
+// ── Confirmed strategy-position entry ledger (v2) ─────────────────────
+// Strategy Sets are evaluated on every engine cycle, but a position becomes
+// an entry only after an initial fill or a confirmed accumulation. New writers
+// use this idempotent ledger so stable Sets are not counted every cycle.
+
+const STRATEGY_ENTRY_IDS_KEY = (connectionId: string) =>
+  `strategy_pos_entry_ids:${connectionId}`
+const STRATEGY_SET_ENTRY_COUNTS_KEY = (connectionId: string) =>
+  `strategy_set_entry_counts:${connectionId}`
+const STRATEGY_PARENT_ENTRY_COUNTS_KEY = (connectionId: string) =>
+  `strategy_parent_entry_counts:${connectionId}`
+const VALID_POS_V2_KEY = (connectionId: string) =>
+  `valid_positions_v2:${connectionId}`
+const VALID_POS_ACTIVE_V2_KEY = (connectionId: string) =>
+  `valid_positions_active_v2:${connectionId}`
+
+export interface StrategyPositionEntryInput {
+  connectionId: string
+  /** Stable live/pseudo position id. */
+  positionId: string
+  /** Stable fill identity, e.g. positionId:initial or positionId:set:setKey. */
+  entryId: string
+  /** Exact Real/Main axis Set that earned this confirmed entry. */
+  setKey: string
+  /** Authoritative Base Set key. */
+  parentSetKey?: string
+  symbol: string
+  indicationType: string
+  direction: "long" | "short"
+  axisKey?: string
+}
+
+const RECORD_STRATEGY_ENTRY_LUA = `
+  local inserted = redis.call('SADD', KEYS[1], ARGV[1])
+  redis.call('SADD', KEYS[2], ARGV[2])
+  redis.call('EXPIRE', KEYS[1], ARGV[9])
+  redis.call('EXPIRE', KEYS[2], ARGV[9])
+  if inserted == 0 then return 0 end
+  redis.call('HINCRBY', KEYS[3], ARGV[3], 1)
+  redis.call('HINCRBY', KEYS[4], ARGV[4], 1)
+  redis.call('HINCRBY', KEYS[5], ARGV[4], 1)
+  if ARGV[8] ~= '' then
+    redis.call('HINCRBY', KEYS[6], ARGV[4] .. '|' .. ARGV[8], 1)
+  end
+  redis.call('HINCRBY', KEYS[7], ARGV[4] .. ':' .. ARGV[7], 1)
+  redis.call('HINCRBY', KEYS[7], ARGV[4] .. ':sets_' .. ARGV[7], 1)
+  redis.call('HSET', KEYS[7], ARGV[4] .. ':ts', ARGV[10])
+  redis.call('HINCRBY', KEYS[8], 'overall', 1)
+  redis.call('HINCRBY', KEYS[8], 'by_symbol:' .. ARGV[5], 1)
+  redis.call('HINCRBY', KEYS[8], 'by_dir:' .. ARGV[7], 1)
+  redis.call('HINCRBY', KEYS[8], 'by_type:' .. ARGV[6], 1)
+  for i = 3, 8 do redis.call('EXPIRE', KEYS[i], ARGV[9]) end
+  return 1
+`
+
+/** Book one confirmed position entry exactly once and mark its position active. */
+export async function recordStrategyPositionEntry(
+  input: StrategyPositionEntryInput,
+): Promise<boolean> {
+  const connectionId = String(input.connectionId || "").trim()
+  const positionId = String(input.positionId || "").trim()
+  const entryId = String(input.entryId || "").trim()
+  const setKey = String(input.setKey || "").trim()
+  if (!connectionId || !positionId || !entryId || !setKey) return false
+
+  const parentSetKey = String(input.parentSetKey || setKey.split("#")[0] || setKey)
+  const symbol = String(input.symbol || "unknown")
+  const indicationType = String(input.indicationType || "unknown")
+  const direction = input.direction === "short" ? "short" : "long"
+  const axisKey = String(input.axisKey || "")
+  const client = getRedisClient()
+  const keys = [
+    STRATEGY_ENTRY_IDS_KEY(connectionId),
+    VALID_POS_ACTIVE_V2_KEY(connectionId),
+    STRATEGY_SET_ENTRY_COUNTS_KEY(connectionId),
+    STRATEGY_PARENT_ENTRY_COUNTS_KEY(connectionId),
+    `real_pi_acc:${connectionId}`,
+    `axis_pos_acc:${connectionId}`,
+    `hedge_pos_acc:${connectionId}`,
+    VALID_POS_V2_KEY(connectionId),
+  ]
+  const args = [
+    entryId,
+    positionId,
+    setKey,
+    parentSetKey,
+    symbol,
+    indicationType,
+    direction,
+    axisKey,
+    String(TTL_SECONDS),
+    String(Date.now()),
+  ]
+
+  if (typeof client.eval === "function") {
+    try {
+      return Number(await client.eval(RECORD_STRATEGY_ENTRY_LUA, {
+        keys,
+        arguments: args,
+      })) === 1
+    } catch {
+      // If Lua committed before a network error, SADD below still prevents
+      // duplicate counters. Inline/test Redis intentionally uses this path.
+    }
+  }
+
+  const inserted = Number(await client.sadd(keys[0], entryId)) === 1
+  const pipeline = client.multi()
+  pipeline.sadd(keys[1], positionId)
+  pipeline.expire(keys[0], TTL_SECONDS)
+  pipeline.expire(keys[1], TTL_SECONDS)
+  if (inserted) {
+    pipeline.hincrby(keys[2], setKey, 1)
+    pipeline.hincrby(keys[3], parentSetKey, 1)
+    pipeline.hincrby(keys[4], parentSetKey, 1)
+    if (axisKey) pipeline.hincrby(keys[5], `${parentSetKey}|${axisKey}`, 1)
+    pipeline.hincrby(keys[6], `${parentSetKey}:${direction}`, 1)
+    pipeline.hincrby(keys[6], `${parentSetKey}:sets_${direction}`, 1)
+    pipeline.hset(keys[6], `${parentSetKey}:ts`, String(Date.now()))
+    pipeline.hincrby(keys[7], "overall", 1)
+    pipeline.hincrby(keys[7], `by_symbol:${symbol}`, 1)
+    pipeline.hincrby(keys[7], `by_dir:${direction}`, 1)
+    pipeline.hincrby(keys[7], `by_type:${indicationType}`, 1)
+    for (let i = 2; i < keys.length; i++) pipeline.expire(keys[i], TTL_SECONDS)
+  }
+  await pipeline.exec()
+  return inserted
+}
+
+/** Remove a terminal position from the active Set without changing history. */
+export async function markStrategyPositionInactive(
+  connectionId: string,
+  positionId: string,
+): Promise<boolean> {
+  if (!connectionId || !positionId) return false
+  try {
+    return Number(await getRedisClient().srem(
+      VALID_POS_ACTIVE_V2_KEY(connectionId),
+      positionId,
+    )) > 0
+  } catch {
+    return false
+  }
+}
+
 const VALID_POS_KEY = (connectionId: string) =>
   `valid_positions:${connectionId}`
 
@@ -714,18 +865,17 @@ export async function getValidPositions(
   }
   try {
     const client = getRedisClient()
-    const k = VALID_POS_KEY(connectionId)
-    const hash = await client.hgetall(k)
-    
-    // Debug: log what we got from Redis
-    if (!hash || Object.keys(hash).length === 0) {
-      console.log(`[v0] [PosHistory] getValidPositions(${connectionId}): empty hash from Redis key "${k}"`)
-    }
-
-    const h = hash || {}
+    const v2 = (await client.hgetall(VALID_POS_V2_KEY(connectionId))) || {}
+    const hasV2 = Object.keys(v2).length > 0
+    const h = hasV2
+      ? v2
+      : ((await client.hgetall(VALID_POS_KEY(connectionId))) || {})
+    const activeCount = hasV2 && typeof (client as any).scard === "function"
+      ? Number(await client.scard(VALID_POS_ACTIVE_V2_KEY(connectionId))) || 0
+      : Number(h.combined || 0)
     return {
       overall: Number(h.overall || 0),
-      combined: Number(h.combined || 0),
+      combined: activeCount,
       bySymbol: Object.fromEntries(
         Object.entries(h)
           .filter(([key]) => key.startsWith("by_symbol:"))

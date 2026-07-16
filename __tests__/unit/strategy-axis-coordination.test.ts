@@ -1,0 +1,121 @@
+import {
+  selectLiveSetsWithActivePriority,
+  StrategyCoordinator,
+  type StrategySet,
+} from "@/lib/strategy-coordinator"
+
+function baseSet(recentPnls: number[]): StrategySet {
+  return {
+    setKey: "BTCUSDT:direction:long",
+    indicationType: "direction",
+    direction: "long",
+    avgProfitFactor: 2,
+    avgConfidence: 0.9,
+    avgDrawdownTime: 10,
+    entryCount: 3,
+    entries: [{
+      id: "entry",
+      sizeMultiplier: 1,
+      leverage: 1,
+      positionState: "new",
+      profitFactor: 2,
+      drawdownTime: 10,
+      confidence: 0.9,
+    }],
+    prevPos: {
+      count: recentPnls.length,
+      successRate: recentPnls.filter((pnl) => pnl > 0).length / Math.max(1, recentPnls.length),
+      profitFactor: 2,
+      avgDDT: 10,
+      recentPnls,
+    },
+  }
+}
+
+describe("strategy position-count axis coordination", () => {
+  test("uses closed PnLs and direction-specific live counts", () => {
+    const coordinator = new StrategyCoordinator("axis-test") as any
+    coordinator._coordinationSettings.axes = {
+      prev: { enabled: true, maxWindow: 4 },
+      last: { enabled: true, maxWindow: 2 },
+      cont: { enabled: true, maxWindow: 3 },
+      pause: { enabled: true, maxWindow: 4 },
+    }
+
+    const sets = coordinator.expandAxisSets(
+      baseSet([2, -1, 3, -1]),
+      1.2,
+      3,
+      { long: 2, short: 1 },
+      3,
+      100,
+    ) as StrategySet[]
+
+    expect(sets).toHaveLength(6)
+    expect(sets.every((set) => set.setKey.includes("_u3"))).toBe(true)
+    expect(sets.filter((set) => set.direction === "long")).toHaveLength(4)
+    expect(sets.filter((set) => set.direction === "short")).toHaveLength(2)
+    expect(sets.some((set) => set.axisWindows?.cont === 2 && set.direction === "short")).toBe(false)
+    expect(Math.max(...sets.map((set) => set.entryCount))).toBe(6)
+  })
+
+  test("does not speculate Previous/Last Sets without completed positions", () => {
+    const coordinator = new StrategyCoordinator("axis-empty") as any
+    coordinator._coordinationSettings.axes = {
+      prev: { enabled: true, maxWindow: 12 },
+      last: { enabled: true, maxWindow: 4 },
+      cont: { enabled: true, maxWindow: 8 },
+      pause: { enabled: true, maxWindow: 8 },
+    }
+    expect(coordinator.expandAxisSets(baseSet([]), 1.2, 2, { long: 1, short: 1 }, 0, 100)).toEqual([])
+  })
+
+  test("enforces the output budget while Continuous runs independently", () => {
+    const coordinator = new StrategyCoordinator("axis-budget") as any
+    coordinator._coordinationSettings.axes = {
+      prev: { enabled: false, maxWindow: 0 },
+      last: { enabled: false, maxWindow: 0 },
+      cont: { enabled: true, maxWindow: 8 },
+      pause: { enabled: false, maxWindow: 0 },
+    }
+    const sets = coordinator.expandAxisSets(baseSet([]), 1.2, 4, { long: 4, short: 4 }, 0, 3)
+    expect(sets).toHaveLength(3)
+    expect(new Set(sets.map((set: StrategySet) => set.setKey)).size).toBe(3)
+  })
+
+  test("reserves exact active Live Sets without activating sibling axes", () => {
+    const active = { ...baseSet([2, -1, 3, -1]), setKey: "base#axis:active", avgProfitFactor: 0.4 }
+    const sibling = {
+      ...baseSet([2, -1, 3, -1]),
+      setKey: "base#axis:sibling",
+      parentSetKey: "base",
+      avgProfitFactor: 0.4,
+    }
+    const candidate = { ...baseSet([2, -1, 3, -1]), setKey: "other#axis:best", avgProfitFactor: 2.4 }
+
+    const result = selectLiveSetsWithActivePriority(
+      [sibling, candidate, active],
+      new Set(["base", active.setKey]),
+      { minProfitFactor: 1.2, maxDrawdownTime: 60 },
+      2,
+    )
+
+    expect(result.active.map((set) => set.setKey)).toEqual([active.setKey])
+    expect(result.selected.map((set) => set.setKey)).toEqual([active.setKey, candidate.setKey])
+    expect(result.selected.some((set) => set.setKey === sibling.setKey)).toBe(false)
+  })
+
+  test("never evicts active exposure when active count exceeds the candidate cap", () => {
+    const first = { ...baseSet([]), setKey: "active:1", avgProfitFactor: 0.2 }
+    const second = { ...baseSet([]), setKey: "active:2", avgProfitFactor: 0.3 }
+    const result = selectLiveSetsWithActivePriority(
+      [first, second],
+      new Set([first.setKey, second.setKey]),
+      { minProfitFactor: 1.2, maxDrawdownTime: 60 },
+      1,
+    )
+
+    expect(result.selected).toHaveLength(2)
+    expect(new Set(result.selected.map((set) => set.setKey))).toEqual(new Set([first.setKey, second.setKey]))
+  })
+})

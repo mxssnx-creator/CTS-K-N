@@ -324,6 +324,7 @@ async function completeStartupInternal() {
   console.log(`[v0] [Startup] Beginning pre-startup sequence...`)
   console.log(`[v0] [Startup] ========================================\n`)
 
+  let migrationStatusForValidation: any
   try {
     // Step 1: Initialize Redis (runMigrations runs inside initRedis)
     console.log(`[v0] [Startup] Step 1/8: Initializing Redis...`)
@@ -336,15 +337,6 @@ async function completeStartupInternal() {
     await recordStartupPhase("startup_coordinator_running")
     await recordStartupPhase("redis_ready")
     console.log(`[v0] [Startup] ✓ Redis initialized`)
-
-    // Heavy coverage repair is intentionally background-only. initRedis() has
-    // already completed the blocking schema migrations and base-connection
-    // creation, so normal API routes can start while this non-critical repair
-    // records its own Redis status/progress keys.
-    runProductionCoverageRepair().catch(err =>
-      console.warn(`[v0] [Startup] Background production coverage repair error:`, err instanceof Error ? err.message : err),
-    )
-    console.log(`[v0] [Startup] ✓ Production coverage repair scheduled in background`)
 
     const volatileCleanup = isProductionEnvironment() && (globalThis as any).__redis_volatile_startup_cleanup_ran
       ? { deleted: 0, preserved: 0 }
@@ -361,6 +353,7 @@ async function completeStartupInternal() {
     let migrationReport = "unknown"
     try {
       const migStatus = await getMigrationStatus()
+      migrationStatusForValidation = migStatus
       await recordMigrationStatus({
         current_version: migStatus.currentVersion,
         latest_version: migStatus.latestVersion,
@@ -377,8 +370,12 @@ async function completeStartupInternal() {
         `${migStatus.isMigrated ? "UP TO DATE" : `PENDING (${migStatus.pendingMigrations?.length ?? 0})`} ` +
         `(${migStatus.message})`,
       )
+      if (!migStatus.isMigrated) {
+        throw new Error(`Migration readiness invariant failed: ${migrationReport}`)
+      }
     } catch (e) {
-      console.warn(`[v0] [Startup] Could not read migration status (non-fatal):`, e instanceof Error ? e.message : e)
+      console.error(`[v0] [Startup] Migration verification failed:`, e instanceof Error ? e.message : e)
+      throw e
     }
 
     // Initialize memory management for long-term stability
@@ -404,35 +401,45 @@ async function completeStartupInternal() {
 
     // Step 3: Validate database integrity
     console.log(`[v0] [Startup] Step 3/8: Validating database integrity...`)
-    try {
-      await validateDatabase()
-      console.log(`[v0] [Startup] ✓ Database validation passed\n`)
-    } catch (e) {
-      console.warn(`[v0] [Startup] ⚠ Database validation warning: ${e}`)
-      console.log(`[v0] [Startup] ✓ Continuing with warnings\n`)
+    const validation = await validateDatabase({ migrationStatus: migrationStatusForValidation })
+    if (validation?.valid === false) {
+      throw new Error(`Database validation failed: ${validation.errors.join("; ")}`)
     }
+    console.log(`[v0] [Startup] ✓ Database validation passed\n`)
 
     // Step 4: Load base connections (no start)
     console.log(`[v0] [Startup] Step 4/8: Loading base connections...`)
     const allConnections = await getAllConnections()
     console.log(`[v0] [Startup] ✓ Loaded ${allConnections.length} base connections\n`)
 
-    // Step 5: Consolidate database (Phase 3) — non-blocking with 15s deadline.
-    // Consolidation is purely a data-migration step; the engine runs fine
-    // without it. Blocking startup on this makes cold-boot latency
-    // proportional to connection count (one Redis read per connection).
-    console.log(`[v0] [Startup] Step 5/8: Consolidating database structures (background, 15s deadline)...`)
+    // Step 5: Verify schema-fingerprinted maintenance. Normal boots hit the
+    // durable marker and skip; legacy/imported state gets one bounded repair.
+    console.log(`[v0] [Startup] Step 5/8: Verifying consolidated database structures (15s deadline)...`)
     try {
       const DEADLINE_MS = 15_000
-      await Promise.race([
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+      const maintenance = await Promise.race([
         consolidateDatabase(),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("consolidation deadline exceeded")), DEADLINE_MS)),
-      ])
-      console.log(`[v0] [Startup] ✓ Database consolidation complete\n`)
+        new Promise<never>((_, reject) => {
+          deadlineTimer = setTimeout(() => reject(new Error("consolidation deadline exceeded")), DEADLINE_MS)
+        }),
+      ]).finally(() => {
+        if (deadlineTimer) clearTimeout(deadlineTimer)
+      })
+      console.log(`[v0] [Startup] ✓ Database maintenance ${maintenance?.status ?? "complete"}\n`)
     } catch (e) {
       console.warn(`[v0] [Startup] ⚠ Database consolidation did not finish: ${e instanceof Error ? e.message : String(e)}`)
       console.log(`[v0] [Startup] ✓ Continuing without consolidation (engine works without it)\n`)
     }
+
+    // Run non-critical production coverage only after schema, seed,
+    // validation, and structural maintenance are coordinated. A durable
+    // fingerprint + distributed lock prevents every cold worker from repeating
+    // the same scan or racing the startup writes above.
+    runProductionCoverageRepair().catch(err =>
+      console.warn(`[v0] [Startup] Background production coverage repair error:`, err instanceof Error ? err.message : err),
+    )
+    console.log(`[v0] [Startup] ✓ Production coverage repair scheduled in background`)
 
 // Step 6: Initialize coordinator
      console.log(`[v0] [Startup] Step 6/8: Initializing engine coordinator...`)

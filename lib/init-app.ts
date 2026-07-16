@@ -15,12 +15,9 @@ export async function initializeApplication() {
   try {
     console.log("[v0] Application initializing with Redis...")
     
-    // Initialize Redis with migrations
+    // initRedis is the authoritative connection + migration readiness path.
     const { initRedis } = await import("@/lib/redis-db")
-    const { runMigrations } = await import("@/lib/redis-migrations")
-    
     await initRedis()
-    await runMigrations()
     
     initializationComplete = true
     console.log("[v0] Application initialized successfully")

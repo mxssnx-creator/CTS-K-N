@@ -1691,17 +1691,19 @@ describe("requested regression guardrails", () => {
     expect(envExample).toContain("ALLOW_PROD_INLINE_REDIS=1")
   })
 
-  test("simulated live-stage orders increment directional per-symbol counters", () => {
+  test("simulated live-stage orders use the idempotent fill/entry counter path", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const simStart = liveStage.indexOf("if (!isLiveTradeEnabled) {")
     const simEnd = liveStage.indexOf("if (!exchangeConnector || typeof exchangeConnector.placeOrder !== \"function\")", simStart)
     const simBlock = liveStage.slice(simStart, simEnd)
 
     expect(simBlock).toContain("await savePosition(livePosition)")
+    expect(simBlock).toContain("await recordFillCountersOnce(")
     expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_placed_count")')
-    expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_filled_count")')
     expect(simBlock).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")')
-    expect(simBlock).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "filled")')
+    expect(liveStage).toContain('await incrementMetric(connectionId, "live_orders_filled_count")')
+    expect(liveStage).toContain('await incrementOrdersBySymbol(connectionId, symbol, side, "filled")')
+    expect(liveStage).toContain("await recordConfirmedStrategyEntry(connectionId, position")
     const liveOrderService = read("lib/live-order-service.ts")
     expect(liveOrderService).toContain('if (event === "simulated")')
     expect(liveOrderService).toContain('await client.hincrby(progKey, "live_orders_placed_count", 1)')
@@ -1725,8 +1727,9 @@ describe("requested regression guardrails", () => {
     expect(saveBlock).toContain("exchangeData.clientOrderIds")
     expect(saveBlock).toContain("exchangeData.exchangePositionId")
     expect(saveBlock).toContain("const liveSetIndexKey = `live_set_keys:${position.connectionId}`")
-    expect(saveBlock).toContain("await client.sadd(liveSetIndexKey, position.setKey)")
-    expect(saveBlock).toContain("await client.srem(liveSetIndexKey, position.setKey)")
+    expect(saveBlock).toContain("getLivePositionSetLineageKeys(position)")
+    expect(saveBlock).toContain("await client.sadd(liveSetIndexKey, setKey)")
+    expect(saveBlock).toContain("await client.srem(liveSetIndexKey, setKey)")
     expect(saveBlock).toContain("await keepDurable(liveSetIndexKey)")
   })
 
@@ -2016,7 +2019,7 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain("const settings = { ...(appSettings as Record<string, unknown>), ...connSettings }")
     expect(coordinator).toContain("trailing_sets:        String(baseTrailingSets)")
     expect(coordinator).toContain("[`s:${symbol}:trailing`]:   String(baseTrailingSets)")
-    expect(coordinator).toContain("[`${symbol}:base:trailing`]: String(baseTrailingSets)")
+    expect(coordinator).toContain("[`${symbol}:base:trailing`]: String(baseTrailingRunningNow)")
     expect(coordinator).toContain('cached.variant = "trailing"')
     expect(coordinator).toContain('variant:         (baseSet.trailingProfile && profile.name === "default") ? "trailing" : profile.name')
     expect(coordinator).toContain('variant:         baseDefault.trailingProfile ? "trailing" : "default"')
@@ -2056,7 +2059,7 @@ describe("requested regression guardrails", () => {
     expect(calculator).toContain("Math.floor((2.5 - 0.25) / 0.25) + 1")
   })
 
-  test("BingX live order/control path defaults to the official SDK fast path", () => {
+  test("BingX live order/control path defaults to the bingx-api library fast path", () => {
     const bingx = read("lib/exchange-connectors/bingx-connector.ts")
     const factory = read("lib/exchange-connectors/factory.ts")
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
@@ -2064,7 +2067,7 @@ describe("requested regression guardrails", () => {
 
     expect(bingx).toContain("public async warmUpFastPath()")
     expect(bingx).toContain("tradeService.tradeOrder")
-    expect(bingx).toContain("placeStopOrder fast-path")
+    expect(bingx).toContain('recordSdkFallback("placeStopOrder"')
     expect(factory).toContain('connectionLibrary: this.resolveExchangeName(connection) === "bingx" ? "sdk"')
     expect(liveStage).toContain("EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000")
     expect(liveStage).toContain("const [slOrderId, tpOrderId] = await Promise.all")

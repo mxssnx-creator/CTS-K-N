@@ -492,10 +492,17 @@ export async function POST(request: Request) {
           apiType: connection.api_type || "perpetual_futures",
         })
         
-        const testResult = await Promise.race([
+        const testResult = await awaitWithTimeout(
           connector.testConnection(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Test timeout (30s)")), 30000))
-        ]) as any
+          30_000,
+          {
+            success: false,
+            error: "Connection test timed out after 30s",
+            balance: 0,
+            capabilities: connector.getCapabilities(),
+            logs: [],
+          },
+        ) as any
         
         testDuration = Date.now() - testStart
         testPassed = testResult.success !== false

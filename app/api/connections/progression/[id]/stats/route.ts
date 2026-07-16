@@ -1868,8 +1868,8 @@ export async function GET(
             ? (() => {
                 // Overall = total Real sets produced across all cycles.
                 // Fall back to stratCounts.real (current-cycle output count).
-                // Accumulated = axis position accumulation sum from axis_pos_acc hash.
-                // Written by bumpAxisPosAccumulation in the Real tuner loop.
+                // Accumulated = confirmed, idempotent axis-entry sum from the
+                // axis_pos_acc hash (initial/accumulation fills only).
                 // General = distinct Real sets this cycle (not lifetime createdSets).
                 // Combined = Real sets running now (those with active base set coordination).
 

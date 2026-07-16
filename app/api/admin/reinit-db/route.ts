@@ -8,15 +8,18 @@ export async function POST() {
     console.log("[v0] Reinitializing Redis migrations...")
 
     const { initRedis } = await import("@/lib/redis-db")
-    const { runMigrations } = await import("@/lib/redis-migrations")
+    const { getMigrationStatus } = await import("@/lib/redis-migrations")
+    const { consolidateDatabase } = await import("@/lib/database-consolidation")
 
     const startTime = Date.now()
 
     // Re-initialize Redis connection
     await initRedis()
 
-    // Run all migrations again
-    await runMigrations()
+    const status = await getMigrationStatus()
+    if (!status.isMigrated) throw new Error(status.message)
+    const maintenance = await consolidateDatabase({ force: true })
+    if (maintenance.status === "busy") throw new Error("Database maintenance is already running")
 
     const duration = Date.now() - startTime
 

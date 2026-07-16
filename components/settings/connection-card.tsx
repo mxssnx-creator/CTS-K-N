@@ -78,7 +78,7 @@ export function ConnectionCard({
     api_type: connection.api_type,
     api_subtype: connection.api_subtype,
     connection_method: connection.connection_method,
-    connection_library: connection.connection_library || "native",
+    connection_library: connection.connection_library || (exchange === "bingx" ? "sdk" : "native"),
     margin_type: connection.margin_type,
     position_mode: connection.position_mode,
     is_testnet: false, // ALWAYS MAINNET - force to false
@@ -95,13 +95,13 @@ export function ConnectionCard({
     } else if (editFormData.connection_method === "websocket") {
       defaultLibrary = "native"
     } else if (editFormData.connection_method === "library") {
-      defaultLibrary = "original"
+      defaultLibrary = exchange === "bingx" ? "sdk" : "original"
     }
 
     if (editFormData.connection_library !== defaultLibrary) {
       setEditFormData(prev => ({ ...prev, connection_library: defaultLibrary }))
     }
-  }, [editFormData.connection_method])
+  }, [editFormData.connection_method, exchange])
 
 
 
@@ -141,8 +141,8 @@ export function ConnectionCard({
           exchange: connection.exchange,
           api_type: editFormData.api_type || "perpetual_futures",
           api_subtype: editFormData.api_subtype,
-          connection_method: editFormData.connection_method || "rest",
-          connection_library: editFormData.connection_library || "native",
+          connection_method: editFormData.connection_method || (exchange === "bingx" ? "library" : "rest"),
+          connection_library: editFormData.connection_library || (exchange === "bingx" ? "sdk" : "native"),
           api_key: editFormData.api_key || "",
           api_secret: editFormData.api_secret || "",
           api_passphrase: editFormData.api_passphrase || "",
@@ -592,7 +592,11 @@ export function ConnectionCard({
                       )}
                       {editFormData.connection_method === "library" && (
                         <>
-                          <SelectItem value="original"><span className="text-sm">Original - {EXCHANGE_LIBRARY_PACKAGES[connection.exchange] || "Exchange SDK"}</span></SelectItem>
+                          {exchange === "bingx" ? (
+                            <SelectItem value="sdk"><span className="text-sm">bingx-api package (Default)</span></SelectItem>
+                          ) : (
+                            <SelectItem value="original"><span className="text-sm">Original - {EXCHANGE_LIBRARY_PACKAGES[connection.exchange] || "Exchange SDK"}</span></SelectItem>
+                          )}
                           <SelectItem value="ccxt"><span className="text-sm">CCXT</span></SelectItem>
                         </>
                       )}
@@ -611,7 +615,8 @@ export function ConnectionCard({
                   </Select>
                   <p className="text-xs text-muted-foreground mt-0.5">
                     {editFormData.connection_library === "native" && "Built-in native implementation"}
-                    {editFormData.connection_library === "original" && `Official ${connection.exchange.toUpperCase()} SDK`}
+                    {editFormData.connection_library === "sdk" && "Native bingx-api package with signed REST fallback"}
+                    {editFormData.connection_library === "original" && `${connection.exchange.toUpperCase()} exchange library`}
                     {editFormData.connection_library === "ccxt" && "Universal CCXT library (cross-exchange)"}
                   </p>
                 </div>
