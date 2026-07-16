@@ -87,6 +87,7 @@ const SYMBOL_BASKET_SETTING_FIELDS = new Set([
 ])
 
 const STRATEGY_COORDINATION_SETTING_FIELDS = new Set([
+  "preset_type_id",
   "strategies",
   "coordination_settings",
   "profitFactorMin",

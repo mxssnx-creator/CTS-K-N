@@ -12,7 +12,8 @@ let outputTail = ""
 const snapshotPath = `/tmp/cts-prod-preview-${process.pid}.json`
 const UI_MAX_SYMBOLS = 32
 const maxSymbolsRequested = process.argv.includes("--max-symbols")
-const productionSoakSymbolCount = maxSymbolsRequested
+const uiOnlyRequested = process.argv.includes("--ui-only")
+const productionSoakSymbolCount = maxSymbolsRequested || uiOnlyRequested
   ? UI_MAX_SYMBOLS
   : Math.max(1, Math.min(UI_MAX_SYMBOLS, Number(process.env.PROD_SOAK_SYMBOL_COUNT || 12)))
 const soakSymbols = [
@@ -201,6 +202,24 @@ async function main() {
   let engineServer
 
   try {
+    if (uiOnlyRequested) {
+      // Focused production-client workflow for changes to Main Connection UI
+      // and settings APIs. It keeps the same forced-simulation/empty-credential
+      // safety envelope as the full harness but skips the already-independent
+      // restart and four-minute soak phases.
+      engineServer = startServer({ engines: true })
+      await waitForReady(engineServer)
+      await runUiMaxVerifier()
+      console.log(JSON.stringify({
+        success: true,
+        productionUiOnly: true,
+        productionUiMaxSymbolsVerified: true,
+        simulatedEngineSymbols: UI_MAX_SYMBOLS,
+        realExchangeOrdersSubmitted: 0,
+      }, null, 2))
+      return
+    }
+
     firstServer = startServer()
     await waitForReady(firstServer)
     await runVerifier()

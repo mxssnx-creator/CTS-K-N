@@ -3,6 +3,7 @@ import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
 import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
+import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 
 // Clear ALL stale engine timers
 function clearAllEngineTimers() {
@@ -23,6 +24,7 @@ function clearAllEngineTimers() {
 export const dynamic = "force-dynamic"
 export async function POST(request: NextRequest) {
   try {
+    invalidateTradeEngineStatusCache()
     let connectionId: string | undefined
     try {
       const text = await request.text()
@@ -124,6 +126,7 @@ export async function POST(request: NextRequest) {
         "info",
         { pausedConnections, pausedPresetConnections }
       )
+      invalidateTradeEngineStatusCache()
       
       return NextResponse.json({ 
         success: true, 
@@ -180,6 +183,7 @@ export async function POST(request: NextRequest) {
       )
 
       console.log("[v0] [Trade Engine] Engine stopped successfully for connection:", connectionId)
+      invalidateTradeEngineStatusCache()
 
       return NextResponse.json({
         success: true,
@@ -205,6 +209,7 @@ export async function POST(request: NextRequest) {
       )
     }
   } catch (error) {
+    invalidateTradeEngineStatusCache()
     const errorMessage = error instanceof Error ? error.message : "Unknown error"
     console.error("[v0] [Trade Engine] Failed to process stop request:", errorMessage)
     await SystemLogger.logError(error, "trade-engine", "POST /api/trade-engine/stop")

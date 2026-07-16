@@ -110,6 +110,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!conn) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
+    const settingsVersion = `${id}:volume:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`
 
     // Build a minimal patch — only the fields the caller supplied. We
     // do NOT touch the other one (avoiding the read-modify-write trap
@@ -125,10 +126,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (patch.preset_volume_factor !== undefined) settingsPatch.volume_factor_preset = patch.preset_volume_factor
     if (patch.volume_step_ratio !== undefined) settingsPatch.volume_step_ratio = patch.volume_step_ratio
 
-    const { connection: effectiveConnection } = await applyMainConnectionSettingsChange(id, conn, {
+    const { connection: effectiveConnection, completion: recoordination } = await applyMainConnectionSettingsChange(id, conn, {
       connectionPatch: patch,
       settingsPatch,
       changedFieldsOverride: Array.from(new Set([...Object.keys(patch), ...Object.keys(settingsPatch), "connection_settings"])),
+      settingsVersion,
       logTag: "POST /settings/volume",
     })
 
@@ -141,6 +143,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({
       success: true,
       connectionId: id,
+      settingsVersion,
+      recoordinationId: settingsVersion,
+      progressionEpoch: recoordination.completedAt,
+      recoordination,
+      refreshQueued: recoordination.refreshQueued === true,
+      refreshStatus: recoordination.refreshStatus,
       live_volume_factor: live ?? clampFactor(effectiveConnection.live_volume_factor) ?? FACTOR_MIN,
       preset_volume_factor: preset ?? clampFactor(effectiveConnection.preset_volume_factor) ?? FACTOR_MIN,
       volume_step_ratio: stepRatio ?? clampStepRatio(effectiveConnection.volume_step_ratio) ?? DEFAULT_VOLUME_STEP_RATIO,

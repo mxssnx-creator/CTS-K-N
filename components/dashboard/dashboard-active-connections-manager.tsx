@@ -552,7 +552,7 @@ export function DashboardActiveConnectionsManager() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="font-semibold text-sm">Main Connections (Active Connections)</h3>
           <p className="text-xs text-muted-foreground">
@@ -614,6 +614,7 @@ export function DashboardActiveConnectionsManager() {
               isToggling={togglingIds.has(conn.connectionId)}
               isRemoving={removingIds.has(conn.connectionId)}
               globalEngineRunning={globalEngineRunning}
+              globalEngineQueued={globalEngineQueued}
             />
           ))}
         </div>

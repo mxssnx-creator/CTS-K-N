@@ -12,6 +12,7 @@ import { notifySettingsChanged } from "@/lib/settings-coordinator"
 import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
+import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 import { maskConnectionSecrets } from "@/lib/connection-secrets"
 import { evaluateRealTradeReadiness, hasUsableLiveCredentials } from "@/lib/real-trade-gates"
 
@@ -454,6 +455,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         engineStatus,
       },
     })
+    invalidateTradeEngineStatusCache()
 
     return NextResponse.json({
       success: true,

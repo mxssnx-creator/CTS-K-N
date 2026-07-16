@@ -66,8 +66,22 @@ interface ConnectionRow {
   exchange: string
   is_enabled?: string | boolean
   is_active_inserted?: string | boolean
+  is_dashboard_inserted?: string | boolean
+  is_assigned?: string | boolean
   is_inserted?: string | boolean
   is_enabled_dashboard?: string | boolean
+}
+
+const toBooleanFlag = (value: unknown): boolean =>
+  value === true || value === 1 || value === "1" || value === "true"
+
+function isInMainPanel(connection: ConnectionRow): boolean {
+  return (
+    toBooleanFlag(connection.is_active_inserted) ||
+    toBooleanFlag(connection.is_dashboard_inserted) ||
+    toBooleanFlag(connection.is_assigned) ||
+    toBooleanFlag(connection.is_enabled_dashboard)
+  )
 }
 
 function exchangeColor(exchange: string): string {
@@ -160,22 +174,14 @@ export function QuickstartConnectionControls() {
   const addable = connections.filter((c) => {
     if (!isBaseConnection(c)) return false
     if (!isConnectionEnabled(c)) return false
-    const inserted =
-      c.is_active_inserted === "1" ||
-      c.is_active_inserted === true ||
-      c.is_active_inserted === ("true" as any)
-    return !inserted
+    return !isInMainPanel(c)
   })
 
   // Items already in the Active panel — informational so the operator
   // sees what's already there without having to flip tabs.
   const alreadyAdded = connections.filter((c) => {
     if (!isBaseConnection(c)) return false
-    return (
-      c.is_active_inserted === "1" ||
-      c.is_active_inserted === true ||
-      c.is_active_inserted === ("true" as any)
-    )
+    return isInMainPanel(c)
   })
 
   // ── currently-selected connection (for the trigger label) ────────────

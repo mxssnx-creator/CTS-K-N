@@ -48,7 +48,13 @@ import { ConnectionDetailedLogDialog } from "@/components/dashboard/connection-d
 import { EngineProcessingLogDialog }   from "@/components/dashboard/engine-processing-log-dialog"
 import { DetailedLoggingDialog }       from "@/components/dashboard/detailed-logging-dialog"
 import { VolumeConfigurationPanel } from "@/components/dashboard/volume-configuration-panel"
-import { DEFAULT_VOLUME_STEP_RATIO } from "@/lib/constants"
+import { DEFAULT_VOLUME_STEP_RATIO, MIN_VOLUME_FACTOR } from "@/lib/constants"
+import {
+  boundedPassedCount,
+  boundedPercentage,
+  finiteMetric,
+  nonNegativeMetric,
+} from "@/lib/dashboard-metrics"
 import { OrderSettingsPanel } from "@/components/dashboard/order-settings-panel"
 import { MainTradeCard } from "@/components/dashboard/main-trade-card"
 import { PresetTradeCard } from "@/components/dashboard/preset-trade-card"
@@ -91,7 +97,10 @@ const PHASE_LABELS: Record<string, string> = {
   indications: "Processing Indications",
   strategies: "Calculating Strategies",
   realtime: "Real-time Processing",
-  live_trading: "Live Trading Active",
+  // This legacy phase name means that the continuous realtime loop is ready.
+  // It does not prove that real exchange order placement is enabled; the Live
+  // Trade switch/execution-mode indicator owns that separate status.
+  live_trading: "Realtime Processing Active",
   stopped: "Stopped",
   error: "Error",
   unknown: "Starting Up",
@@ -110,6 +119,7 @@ interface ActiveConnectionCardProps {
   isToggling: boolean
   isRemoving?: boolean
   globalEngineRunning: boolean
+  globalEngineQueued?: boolean
 }
 
 export function ActiveConnectionCard({
@@ -121,6 +131,7 @@ export function ActiveConnectionCard({
   isToggling,
   isRemoving = false,
   globalEngineRunning,
+  globalEngineQueued = false,
 }: ActiveConnectionCardProps) {
   const [progression, setProgression] = useState<ProgressionData | null>(null)
   // Lightweight Real-stage averages + stage eval percentages, fetched on the
@@ -160,6 +171,10 @@ export function ActiveConnectionCard({
   const [liveVolumeFactor, setLiveVolumeFactor] = useState(0.1)
   const [presetVolumeFactor, setPresetVolumeFactor] = useState(0.1)
   const [volumeStepRatio, setVolumeStepRatio] = useState(DEFAULT_VOLUME_STEP_RATIO)
+  const liveVolumeFactorRef = useRef(MIN_VOLUME_FACTOR)
+  const presetVolumeFactorRef = useRef(MIN_VOLUME_FACTOR)
+  const volumeStepRatioRef = useRef(DEFAULT_VOLUME_STEP_RATIO)
+  const volumeSaveSequenceRef = useRef({ live: 0, preset: 0, step: 0 })
   const [orderType, setOrderType] = useState<"market" | "limit">("market")
   const [volumeType, setVolumeType] = useState<"usdt" | "contract">("usdt")
   const [mainTradeStatus, setMainTradeStatus] = useState<"idle" | "active" | "paused" | "stopped">("idle")
@@ -319,9 +334,15 @@ export function ActiveConnectionCard({
     if (details) {
       setLiveTrade(liveTradeUiFlag(details))
       setPresetMode(toBoolean(details.preset_trade_requested) || toBoolean(details.is_preset_trade))
-      setLiveVolumeFactor(Number(details.live_volume_factor) || 1.0)
-      setPresetVolumeFactor(Number(details.preset_volume_factor) || 1.0)
-      setVolumeStepRatio(Number(details.volume_step_ratio) || DEFAULT_VOLUME_STEP_RATIO)
+      const nextLiveFactor = Number(details.live_volume_factor) || MIN_VOLUME_FACTOR
+      const nextPresetFactor = Number(details.preset_volume_factor) || MIN_VOLUME_FACTOR
+      const nextStepRatio = Number(details.volume_step_ratio) || DEFAULT_VOLUME_STEP_RATIO
+      liveVolumeFactorRef.current = nextLiveFactor
+      presetVolumeFactorRef.current = nextPresetFactor
+      volumeStepRatioRef.current = nextStepRatio
+      setLiveVolumeFactor(nextLiveFactor)
+      setPresetVolumeFactor(nextPresetFactor)
+      setVolumeStepRatio(nextStepRatio)
       setOrderType(details.order_type as "market" | "limit" || "market")
       setVolumeType(details.volume_type as "usdt" | "contract" || "usdt")
     }
@@ -383,8 +404,31 @@ export function ActiveConnectionCard({
       clearTimeout(timeoutId)
     }
   }, [connection.connectionId, connection.isActive])
-  // Save volume factor changes to backend
+  const dispatchVolumeSettingsChange = useCallback((settings: Record<string, number>, response: any) => {
+    if (typeof window === "undefined") return
+    const settingsVersion = typeof response?.settingsVersion === "string" ? response.settingsVersion : undefined
+    const detail = {
+      connectionId: connection.connectionId,
+      settings,
+      settingsVersion,
+      recoordinationId: response?.recoordinationId ?? settingsVersion,
+      progressionEpoch: response?.progressionEpoch,
+    }
+    window.dispatchEvent(new CustomEvent("connection-settings-updated", { detail }))
+    if (settingsVersion) {
+      window.dispatchEvent(new CustomEvent("connection-settings-recoordination-complete", {
+        detail: { ...detail, recoordination: response?.recoordination },
+      }))
+    }
+  }, [connection.connectionId])
+
+  // Save volume factor changes to backend. Per-field generations prevent an
+  // older request from reverting a newer slider value when responses arrive
+  // out of order.
   const handleLiveVolumeChange = useCallback(async (value: number) => {
+    const previous = liveVolumeFactorRef.current
+    const sequence = ++volumeSaveSequenceRef.current.live
+    liveVolumeFactorRef.current = value
     setLiveVolumeFactor(value)
     try {
       const res = await fetch(`/api/settings/connections/${connection.connectionId}/volume`, {
@@ -392,16 +436,27 @@ export function ActiveConnectionCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ live_volume_factor: value }),
       })
-      if (!res.ok) throw new Error("Failed to save live volume factor")
-      window.dispatchEvent(new CustomEvent("connection-settings-updated", {
-        detail: { connectionId: connection.connectionId, settings: { live_volume_factor: value, volume_factor_live: value } },
-      }))
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data?.success === false) throw new Error(data?.error || "Failed to save live volume factor")
+      if (sequence !== volumeSaveSequenceRef.current.live) return
+      const applied = Number(data?.live_volume_factor)
+      const next = Number.isFinite(applied) ? applied : value
+      liveVolumeFactorRef.current = next
+      setLiveVolumeFactor(next)
+      dispatchVolumeSettingsChange({ live_volume_factor: next, volume_factor_live: next }, data)
     } catch (error) {
+      if (sequence !== volumeSaveSequenceRef.current.live) return
+      liveVolumeFactorRef.current = previous
+      setLiveVolumeFactor(previous)
       console.error("[v0] Failed to save live volume factor:", error)
+      toast.error("Failed to save live volume factor")
     }
-  }, [connection.connectionId])
+  }, [connection.connectionId, dispatchVolumeSettingsChange])
 
   const handlePresetVolumeChange = useCallback(async (value: number) => {
+    const previous = presetVolumeFactorRef.current
+    const sequence = ++volumeSaveSequenceRef.current.preset
+    presetVolumeFactorRef.current = value
     setPresetVolumeFactor(value)
     try {
       const res = await fetch(`/api/settings/connections/${connection.connectionId}/volume`, {
@@ -409,16 +464,27 @@ export function ActiveConnectionCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ preset_volume_factor: value }),
       })
-      if (!res.ok) throw new Error("Failed to save preset volume factor")
-      window.dispatchEvent(new CustomEvent("connection-settings-updated", {
-        detail: { connectionId: connection.connectionId, settings: { preset_volume_factor: value, volume_factor_preset: value } },
-      }))
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data?.success === false) throw new Error(data?.error || "Failed to save preset volume factor")
+      if (sequence !== volumeSaveSequenceRef.current.preset) return
+      const applied = Number(data?.preset_volume_factor)
+      const next = Number.isFinite(applied) ? applied : value
+      presetVolumeFactorRef.current = next
+      setPresetVolumeFactor(next)
+      dispatchVolumeSettingsChange({ preset_volume_factor: next, volume_factor_preset: next }, data)
     } catch (error) {
+      if (sequence !== volumeSaveSequenceRef.current.preset) return
+      presetVolumeFactorRef.current = previous
+      setPresetVolumeFactor(previous)
       console.error("[v0] Failed to save preset volume factor:", error)
+      toast.error("Failed to save preset volume factor")
     }
-  }, [connection.connectionId])
+  }, [connection.connectionId, dispatchVolumeSettingsChange])
 
   const handleVolumeStepRatioChange = useCallback(async (value: number) => {
+    const previous = volumeStepRatioRef.current
+    const sequence = ++volumeSaveSequenceRef.current.step
+    volumeStepRatioRef.current = value
     setVolumeStepRatio(value)
     try {
       const res = await fetch(`/api/settings/connections/${connection.connectionId}/volume`, {
@@ -426,14 +492,22 @@ export function ActiveConnectionCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ volume_step_ratio: value }),
       })
-      if (!res.ok) throw new Error("Failed to save volume step ratio")
-      window.dispatchEvent(new CustomEvent("connection-settings-updated", {
-        detail: { connectionId: connection.connectionId, settings: { volume_step_ratio: value } },
-      }))
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data?.success === false) throw new Error(data?.error || "Failed to save volume step ratio")
+      if (sequence !== volumeSaveSequenceRef.current.step) return
+      const applied = Number(data?.volume_step_ratio)
+      const next = Number.isFinite(applied) ? applied : value
+      volumeStepRatioRef.current = next
+      setVolumeStepRatio(next)
+      dispatchVolumeSettingsChange({ volume_step_ratio: next }, data)
     } catch (error) {
+      if (sequence !== volumeSaveSequenceRef.current.step) return
+      volumeStepRatioRef.current = previous
+      setVolumeStepRatio(previous)
       console.error("[v0] Failed to save volume step ratio:", error)
+      toast.error("Failed to save volume step ratio")
     }
-  }, [connection.connectionId])
+  }, [connection.connectionId, dispatchVolumeSettingsChange])
 
   // Poll progression
   const fetchProgression = useCallback(async () => {
@@ -529,16 +603,16 @@ export function ActiveConnectionCard({
         const tracking = tData?.tracking ?? tData
         if (tracking?.real?.averages) {
           setRealAverages({
-            activeSets: Number(tracking.real.averages.activeSets) || 0,
-            posPerSet: Number(tracking.real.averages.posPerSet) || 0,
-            posOpen: Number(tracking.real.averages.posOpen) || 0,
+            activeSets: nonNegativeMetric(tracking.real.averages.activeSets),
+            posPerSet: nonNegativeMetric(tracking.real.averages.posPerSet),
+            posOpen: nonNegativeMetric(tracking.real.averages.posOpen),
           })
         }
         if (tracking?.stageEvalPercent) {
           setStageEvalPercent({
-            base: Number(tracking.stageEvalPercent.base) || 0,
-            main: Number(tracking.stageEvalPercent.main) || 0,
-            real: Number(tracking.stageEvalPercent.real) || 0,
+            base: boundedPercentage(tracking.stageEvalPercent.base),
+            main: boundedPercentage(tracking.stageEvalPercent.main),
+            real: boundedPercentage(tracking.stageEvalPercent.real),
           })
         }
       }
@@ -624,9 +698,18 @@ export function ActiveConnectionCard({
         const liveFactor = Number(updatedSettings.live_volume_factor ?? updatedSettings.volume_factor_live)
         const presetFactor = Number(updatedSettings.preset_volume_factor ?? updatedSettings.volume_factor_preset)
         const stepRatio = Number(updatedSettings.volume_step_ratio)
-        if (Number.isFinite(liveFactor) && liveFactor > 0) setLiveVolumeFactor(liveFactor)
-        if (Number.isFinite(presetFactor) && presetFactor > 0) setPresetVolumeFactor(presetFactor)
-        if (Number.isFinite(stepRatio) && stepRatio > 0) setVolumeStepRatio(stepRatio)
+        if (Number.isFinite(liveFactor) && liveFactor > 0) {
+          liveVolumeFactorRef.current = liveFactor
+          setLiveVolumeFactor(liveFactor)
+        }
+        if (Number.isFinite(presetFactor) && presetFactor > 0) {
+          presetVolumeFactorRef.current = presetFactor
+          setPresetVolumeFactor(presetFactor)
+        }
+        if (Number.isFinite(stepRatio) && stepRatio > 0) {
+          volumeStepRatioRef.current = stepRatio
+          setVolumeStepRatio(stepRatio)
+        }
         fetchProgression()
       }
     }
@@ -765,20 +848,20 @@ export function ActiveConnectionCard({
           stratMain:  strat.main || 0,
           stratReal:  strat.real || 0,
           stratLive:  strat.live || 0,
-          basePassRatio:       sd.base?.passRatio      || 0,
-          mainPassRatio:       sd.main?.passRatio      || 0,
-          realPassRatio:       sd.real?.passRatio      || 0,
-          livePassRatio:       sd.live?.passRatio      || 0,
-          avgProfitFactorBase: sd.base?.avgProfitFactor || 0,
-          avgProfitFactorMain: sd.main?.avgProfitFactor || 0,
-          avgProfitFactorReal: sd.real?.avgProfitFactor || 0,
-          avgProfitFactorLive: sd.live?.avgProfitFactor || 0,
-          avgDrawdownTimeBase: sd.base?.avgDrawdownTime || 0,
-          avgDrawdownTimeMain: sd.main?.avgDrawdownTime || 0,
-          avgDrawdownTimeReal: sd.real?.avgDrawdownTime || 0,
-          avgHoldTimeLive:     sd.live?.avgDrawdownTime || 0, // minutes
-          avgPosEvalReal:      sd.real?.avgPosEvalReal  || 0,
-          avgPosEvalLive:      sd.live?.avgPosEvalReal  || 0, // ROI fraction
+          basePassRatio:       boundedPercentage(sd.base?.passRatio),
+          mainPassRatio:       boundedPercentage(sd.main?.passRatio),
+          realPassRatio:       boundedPercentage(sd.real?.passRatio),
+          livePassRatio:       boundedPercentage(sd.live?.passRatio),
+          avgProfitFactorBase: nonNegativeMetric(sd.base?.avgProfitFactor),
+          avgProfitFactorMain: nonNegativeMetric(sd.main?.avgProfitFactor),
+          avgProfitFactorReal: nonNegativeMetric(sd.real?.avgProfitFactor),
+          avgProfitFactorLive: nonNegativeMetric(sd.live?.avgProfitFactor),
+          avgDrawdownTimeBase: nonNegativeMetric(sd.base?.avgDrawdownTime),
+          avgDrawdownTimeMain: nonNegativeMetric(sd.main?.avgDrawdownTime),
+          avgDrawdownTimeReal: nonNegativeMetric(sd.real?.avgDrawdownTime),
+          avgHoldTimeLive:     nonNegativeMetric(sd.live?.avgDrawdownTime), // minutes
+          avgPosEvalReal:      finiteMetric(sd.real?.avgPosEvalReal),
+          avgPosEvalLive:      finiteMetric(sd.live?.avgPosEvalReal), // ROI fraction
           // ── Evaluated / passed counts (per-stage, NO cross-tier mixing) ──
           // Bug history: previous implementation cross-fell-back per stage,
           // e.g. `basePassed || (strat.main || 0)` meant "if Base has no
@@ -797,16 +880,16 @@ export function ActiveConnectionCard({
           // as "missing" and the display shows real zeros honestly.
           // The display-side clamp `passed = min(passed, evaluated)` below
           // is a final safety net against any backend invariant breakage.
-          baseEvaluated:    Math.max(0, sd.base?.evaluated ?? 0),
-          basePassed:       Math.max(0, Math.min(sd.base?.passed ?? 0, sd.base?.evaluated ?? Number.POSITIVE_INFINITY)),
-          mainEvaluated:    Math.max(0, sd.main?.evaluated ?? 0),
-          mainPassed:       Math.max(0, Math.min(sd.main?.passed ?? 0, sd.main?.evaluated ?? Number.POSITIVE_INFINITY)),
-          realEvaluated:    Math.max(0, sd.real?.evaluated ?? 0),
-          realPassed:       Math.max(0, Math.min(sd.real?.passed ?? 0, sd.real?.evaluated ?? Number.POSITIVE_INFINITY)),
+          baseEvaluated:    nonNegativeMetric(sd.base?.evaluated),
+          basePassed:       boundedPassedCount(sd.base?.passed, sd.base?.evaluated),
+          mainEvaluated:    nonNegativeMetric(sd.main?.evaluated),
+          mainPassed:       boundedPassedCount(sd.main?.passed, sd.main?.evaluated),
+          realEvaluated:    nonNegativeMetric(sd.real?.evaluated),
+          realPassed:       boundedPassedCount(sd.real?.passed, sd.real?.evaluated),
           // Live: `evaluated` = orders placed, `passed` = orders filled.
           // Same clamp keeps `filled ≤ placed`.
-          liveEvaluated:    Math.max(0, sd.live?.evaluated ?? 0),
-          livePassed:       Math.max(0, Math.min(sd.live?.passed ?? 0, sd.live?.evaluated ?? Number.POSITIVE_INFINITY)),
+          liveEvaluated:    nonNegativeMetric(sd.live?.evaluated),
+          livePassed:       boundedPassedCount(sd.live?.passed, sd.live?.evaluated),
           countPosEvalReal: sd.real?.countPosEval || 0,
           countPosEvalLive: sd.live?.countPosEval || 0,
           liveTotalPnl:     sd.live?.totalPnl    || 0,
@@ -834,8 +917,8 @@ export function ActiveConnectionCard({
           liveVolumeUsdTotal:    Number(data?.liveExecution?.marginUsdTotal)
                                    || Number(data?.liveExecution?.volumeUsdTotal)
                                    || 0,
-          liveFillRate:          data?.liveExecution?.fillRate         || 0,
-          liveWinRate:           data?.liveExecution?.winRate          || 0,
+          liveFillRate:          boundedPercentage(data?.liveExecution?.fillRate),
+          liveWinRate:           boundedPercentage(data?.liveExecution?.winRate),
           // ── Mirroring pipeline open-position counts ─────────────
           // Counts only for pseudo/real; USD only at the live exchange
           // layer. We prefer the per-position margin aggregate
@@ -1001,7 +1084,7 @@ export function ActiveConnectionCard({
         ? Math.max(enginePhaseProgress, 100)
         : enginePhaseProgress
   )
-  const isRunning = phase === "live_trading"
+  const isRunning = phase === "live_trading" && globalEngineRunning && connection.isActive
   // "unknown" = engine just started, no phase written yet → show amber "Starting..."
   const isStarting = (
     phase !== "idle" && phase !== "stopped" && phase !== "live_trading" && phase !== "error" && phase !== "disabled"
@@ -1017,13 +1100,15 @@ export function ActiveConnectionCard({
         : "border-border"
 
   const statusBadge = isRunning
-    ? { label: "Live", className: "bg-green-600 text-white" }
+    ? { label: "Running", className: "bg-green-600 text-white" }
     : isStarting
       ? { label: "Starting...", className: "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300" }
       : hasError
         ? { label: "Error", className: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300" }
         : connection.isActive && !globalEngineRunning
-          ? { label: "Paused", className: "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300" }
+          ? globalEngineQueued
+            ? { label: "Queued", className: "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300" }
+            : { label: "Paused", className: "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300" }
           : connection.isActive
             ? { label: "Ready", className: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300" }
             : { label: "Off", className: "text-muted-foreground" }
@@ -1209,7 +1294,7 @@ export function ActiveConnectionCard({
               {!details?.is_testnet && (
                 <>
                   <span className="text-muted-foreground/50">|</span>
-                  <span className="text-green-600 dark:text-green-400 font-medium">Live</span>
+                  <span className="text-green-600 dark:text-green-400 font-medium">Mainnet</span>
                 </>
               )}
               {details?.last_test_time && (
@@ -1224,7 +1309,7 @@ export function ActiveConnectionCard({
             </CardDescription>
 
             {/* Row 3: Three toggle switches */}
-            <div className="flex items-center gap-4 mt-2.5 pt-2 border-t border-border/50">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-2.5 pt-2 border-t border-border/50">
               {/* Enable toggle — no pre-condition on global engine; toggle-dashboard API starts the engine */}
               <div className="flex items-center gap-2">
                 <Switch
@@ -2431,7 +2516,7 @@ export function ActiveConnectionCard({
                   <h4 className="text-[10px] font-semibold text-muted-foreground mb-2 uppercase tracking-wider">
                     Engine Progression
                   </h4>
-                  <div className="grid grid-cols-3 gap-x-4 gap-y-2 text-xs">
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
                     <div>
                       <div className="text-muted-foreground mb-0.5">Phase</div>
                       <div className="font-medium">{PHASE_LABELS[phase] || phase}</div>
@@ -2471,7 +2556,7 @@ export function ActiveConnectionCard({
                       </Badge>
                     </div>
                     <div>
-                      <div className="text-muted-foreground mb-0.5">Live Trading</div>
+                      <div className="text-muted-foreground mb-0.5">Realtime Loop</div>
                       <Badge variant={progression.details?.liveTradingActive ? "default" : "secondary"} className="text-[10px]">
                         {progression.details?.liveTradingActive ? "Active" : "Pending"}
                       </Badge>

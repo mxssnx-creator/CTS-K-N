@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getTradeEngine } from "@/lib/trade-engine"
 import { initRedis, getRedisClient, getActiveConnectionsForEngine } from "@/lib/redis-db"
+import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -12,6 +13,7 @@ export const dynamic = "force-dynamic"
  */
 export async function POST() {
   try {
+    invalidateTradeEngineStatusCache()
     await initRedis()
     const client = getRedisClient()
     const coordinator = getTradeEngine()
@@ -87,6 +89,7 @@ export async function POST() {
     }
     
     console.log("[v0] Global Trade Engine Coordinator paused via API")
+    invalidateTradeEngineStatusCache()
 
     return NextResponse.json({
       success: true,
@@ -94,6 +97,7 @@ export async function POST() {
       status: "paused",
     })
   } catch (error) {
+    invalidateTradeEngineStatusCache()
     const errorMessage = error instanceof Error ? error.message : "Unknown error"
     console.error("[v0] Pause API error:", errorMessage)
 

@@ -1,133 +1,172 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { sql } from "@/lib/db"
-import { initRedis, getConnection } from "@/lib/redis-db"
-import { notifySettingsChanged } from "@/lib/settings-coordinator"
+import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
+import { getConnection, getRedisClient, initRedis } from "@/lib/redis-db"
 
-// PATCH /api/settings/connections/[id]/preset-type - Assign preset type to connection
 export const dynamic = "force-dynamic"
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const { id } = await params
-    const body = await request.json()
-    const { preset_type_id } = body
 
-    // Validate preset type exists if provided
-    if (preset_type_id) {
-      const [presetType] = await sql`
-        SELECT id FROM preset_types WHERE id = ${preset_type_id}
-      `
+type RedisHash = Record<string, string>
 
-      if (!presetType) {
-        return NextResponse.json({ error: "Preset type not found" }, { status: 404 })
-      }
-    }
+const hasFields = (value: RedisHash | null | undefined): value is RedisHash =>
+  Boolean(value && Object.keys(value).length > 0)
 
-    // Update connection
-    await sql`
-      UPDATE exchange_connections
-      SET preset_type_id = ${preset_type_id || null},
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ${id}
-    `
+const toBoolean = (value: unknown): boolean =>
+  value === true || value === 1 || value === "1" || value === "true" || value === "yes" || value === "on"
 
-    // Notify engine of preset type change
-    try {
-      await initRedis()
-      const connection = await getConnection(id)
-      await notifySettingsChanged(id, ["preset_type_id"])
-      const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
-      const coordinator = getGlobalTradeEngineCoordinator()
-      await coordinator.applyPendingChangesNow(id)
-      
-      // Recoordinate engine if needed
-      if (connection) {
-        const { isConnectionMainProcessing, hasConnectionCredentials, isTruthyFlag } = await import(
-          "@/lib/connection-state-utils"
-        )
-        const shouldRun =
-          isConnectionMainProcessing(connection) &&
-          (hasConnectionCredentials(connection, 5, true) ||
-            isTruthyFlag((connection as any).is_predefined) ||
-            isTruthyFlag((connection as any).is_testnet) ||
-            isTruthyFlag((connection as any).demo_mode))
-        if (shouldRun) {
-          await coordinator.startMissingEngines([connection])
-        }
-      }
-    } catch (applyErr) {
-      console.warn(
-        `[v0] [PresetType] coordinator recoordination failed for ${id}:`,
-        applyErr instanceof Error ? applyErr.message : String(applyErr),
-      )
-    }
+const toNumber = (value: unknown, fallback = 0): number => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
 
-    return NextResponse.json({ success: true })
-  } catch (error) {
-    console.error("Failed to assign preset type:", error)
-    return NextResponse.json({ error: "Failed to assign preset type" }, { status: 500 })
+async function readPresetType(presetTypeId: string): Promise<RedisHash | null> {
+  if (!presetTypeId) return null
+  const client = getRedisClient()
+  const candidates = await Promise.all([
+    // Canonical key used by preset-types/route.ts and preset-types-seed.ts.
+    client.hgetall(`preset_type:${presetTypeId}`).catch(() => null),
+    // Legacy SQL-shim storage used the plural table name.
+    client.hgetall(`preset_types:${presetTypeId}`).catch(() => null),
+    client.hgetall(`settings:preset_type:${presetTypeId}`).catch(() => null),
+  ])
+  return candidates.find(hasFields) || null
+}
+
+function serializePresetType(presetTypeId: string, stored: RedisHash) {
+  return {
+    id: presetTypeId,
+    name: stored.name || "Preset",
+    description: stored.description || null,
+    preset_trade_type: stored.preset_trade_type || "automatic",
+    max_positions_per_indication: toNumber(stored.max_positions_per_indication, 1),
+    max_positions_per_direction: toNumber(stored.max_positions_per_direction, 1),
+    max_positions_per_range: toNumber(stored.max_positions_per_range, 1),
+    timeout_per_indication: toNumber(stored.timeout_per_indication, 5),
+    timeout_after_position: toNumber(stored.timeout_after_position, 10),
+    block_enabled: toBoolean(stored.block_enabled),
+    block_only: toBoolean(stored.block_only),
+    dca_enabled: toBoolean(stored.dca_enabled),
+    dca_only: toBoolean(stored.dca_only),
+    auto_evaluate: toBoolean(stored.auto_evaluate),
+    evaluation_interval_hours: toNumber(stored.evaluation_interval_hours, 3),
+    is_active: toBoolean(stored.is_active),
   }
 }
 
-// GET /api/settings/connections/[id]/preset-type - Fetch preset type for connection
-export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+// PATCH /api/settings/connections/[id]/preset-type
+// Assign (or clear) a Preset Type through the same ordered, versioned settings
+// writer used by every other Main Connection setting. The former SQL-shaped
+// route was a no-op on the Redis backend and left the engine on the old preset.
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
   try {
     const { id } = await params
+    const body = await request.json()
+    if (!Object.prototype.hasOwnProperty.call(body || {}, "preset_type_id")) {
+      return NextResponse.json({ error: "preset_type_id is required (use null to clear)" }, { status: 400 })
+    }
 
-    // Get connection with preset type info
-    const result = await sql`
-      SELECT 
-        ec.preset_type_id,
-        pt.id as preset_id,
-        pt.name as preset_name,
-        pt.description as preset_description,
-        pt.preset_trade_type,
-        pt.max_positions_per_indication,
-        pt.max_positions_per_direction,
-        pt.max_positions_per_range,
-        pt.timeout_per_indication,
-        pt.timeout_after_position,
-        pt.block_enabled,
-        pt.block_only,
-        pt.dca_enabled,
-        pt.dca_only,
-        pt.auto_evaluate,
-        pt.evaluation_interval_hours,
-        pt.is_active
-      FROM exchange_connections ec
-      LEFT JOIN preset_types pt ON ec.preset_type_id = pt.id
-      WHERE ec.id = ${id}
-    `
-
-    const connection = result[0]
-
+    const presetTypeId = body.preset_type_id == null ? "" : String(body.preset_type_id).trim()
+    await initRedis()
+    const connection = await getConnection(id)
     if (!connection) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
 
+    const storedPresetType = presetTypeId ? await readPresetType(presetTypeId) : null
+    if (presetTypeId && !storedPresetType) {
+      return NextResponse.json({ error: "Preset type not found" }, { status: 404 })
+    }
+
+    if (String(connection.preset_type_id || "") === presetTypeId) {
+      return NextResponse.json({
+        success: true,
+        unchanged: true,
+        preset_type_id: presetTypeId || null,
+        presetType: storedPresetType ? serializePresetType(presetTypeId, storedPresetType) : null,
+      })
+    }
+
+    const settingsVersion = `${id}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`
+    const updatedAt = new Date().toISOString()
+    const value = presetTypeId || ""
+    const { completion } = await applyMainConnectionSettingsChange(id, connection, {
+      connectionPatch: {
+        preset_type_id: value,
+        settings_version: settingsVersion,
+        updated_at: updatedAt,
+      },
+      settingsPatch: {
+        preset_type_id: value,
+        settings_version: settingsVersion,
+      },
+      tradeEngineStatePatch: {
+        preset_type_id: value,
+        settings_version: settingsVersion,
+        updated_at: updatedAt,
+      },
+      changedFieldsOverride: ["preset_type_id"],
+      settingsVersion,
+      logTag: "PATCH /settings/connections/[id]/preset-type",
+    })
+
     return NextResponse.json({
-      presetType: connection.preset_id
-        ? {
-            id: connection.preset_id,
-            name: connection.preset_name,
-            description: connection.preset_description,
-            preset_trade_type: connection.preset_trade_type,
-            max_positions_per_indication: connection.max_positions_per_indication,
-            max_positions_per_direction: connection.max_positions_per_direction,
-            max_positions_per_range: connection.max_positions_per_range,
-            timeout_per_indication: connection.timeout_per_indication,
-            timeout_after_position: connection.timeout_after_position,
-            block_enabled: connection.block_enabled,
-            block_only: connection.block_only,
-            dca_enabled: connection.dca_enabled,
-            dca_only: connection.dca_only,
-            auto_evaluate: connection.auto_evaluate,
-            evaluation_interval_hours: connection.evaluation_interval_hours,
-            is_active: connection.is_active,
-          }
-        : null,
+      success: true,
+      preset_type_id: presetTypeId || null,
+      presetType: storedPresetType ? serializePresetType(presetTypeId, storedPresetType) : null,
+      settingsVersion,
+      recoordination: completion,
     })
   } catch (error) {
-    console.error("[v0] Failed to fetch preset type:", error)
-    return NextResponse.json({ error: "Failed to fetch preset type" }, { status: 500 })
+    console.error("[PresetType] Failed to assign preset type:", error)
+    return NextResponse.json(
+      { error: "Failed to assign preset type", details: error instanceof Error ? error.message : "Unknown error" },
+      { status: 500 },
+    )
+  }
+}
+
+// GET /api/settings/connections/[id]/preset-type
+// Read the canonical connection first. A connection without an assigned preset
+// is a valid state and returns 200/null; only a genuinely missing connection is
+// a 404. This keeps the information dialog complete in Redis-only production.
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const { id } = await params
+    await initRedis()
+    const connection = await getConnection(id)
+    if (!connection) {
+      return NextResponse.json({ error: "Connection not found" }, { status: 404 })
+    }
+
+    const presetTypeId = String(connection.preset_type_id || "").trim()
+    if (!presetTypeId) {
+      return NextResponse.json({ presetType: null, preset_type_id: null })
+    }
+
+    const storedPresetType = await readPresetType(presetTypeId)
+    if (!storedPresetType) {
+      // A dangling legacy assignment must not make the whole Connection Info
+      // dialog fail. Surface it explicitly so Settings can repair it.
+      return NextResponse.json({
+        presetType: null,
+        preset_type_id: presetTypeId,
+        warning: "Assigned preset type is not present in the preset store",
+      })
+    }
+
+    return NextResponse.json({
+      presetType: serializePresetType(presetTypeId, storedPresetType),
+      preset_type_id: presetTypeId,
+    })
+  } catch (error) {
+    console.error("[PresetType] Failed to fetch preset type:", error)
+    return NextResponse.json(
+      { error: "Failed to fetch preset type", details: error instanceof Error ? error.message : "Unknown error" },
+      { status: 500 },
+    )
   }
 }

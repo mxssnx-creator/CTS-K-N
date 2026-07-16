@@ -9,6 +9,7 @@ import { loadSettingsAsync } from "@/lib/settings-storage"
 import { allocateStateSwitchVersion, currentStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
 import { buildMissingTradeEngineWorkerDiagnostic } from "@/lib/trade-engine-worker-heartbeat"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
+import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 
 // POST toggle connection active status (inserted/enabled) - INDEPENDENT from Settings
 // When enabling, also triggers engine start for this connection
@@ -458,6 +459,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         is_enabled_dashboard: effectiveEnabled,
       },
     })
+    invalidateTradeEngineStatusCache()
     return NextResponse.json({
       success: true,
       changed: wasChange,
