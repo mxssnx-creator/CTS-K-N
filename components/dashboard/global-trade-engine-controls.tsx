@@ -1,10 +1,10 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { useState, useEffect, useRef } from "react"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Play, Pause, Square, Activity, Clock, Zap, Target } from "lucide-react"
+import { Play, Pause, Square, Activity, Target } from "lucide-react"
 import { toast } from "@/lib/simple-toast"
 import { PresetSelectionDialog } from "./preset-selection-dialog"
 
@@ -40,6 +40,8 @@ export function GlobalTradeEngineControls() {
   const [isResuming, setIsResuming] = useState(false)
   const [isStopping, setIsStopping] = useState(false)
   const [presetDialogOpen, setPresetDialogOpen] = useState(false)
+  const statusRequestSequenceRef = useRef(0)
+  const engineActionRef = useRef(false)
 
   useEffect(() => {
     // Load initial status immediately
@@ -56,6 +58,7 @@ export function GlobalTradeEngineControls() {
     window.addEventListener("connection-toggled", handleEngineStateChange)
     
     return () => {
+      statusRequestSequenceRef.current++
       clearInterval(interval)
       window.removeEventListener("engine-state-changed", handleEngineStateChange)
       window.removeEventListener("connection-toggled", handleEngineStateChange)
@@ -63,6 +66,7 @@ export function GlobalTradeEngineControls() {
   }, [])
 
   const loadStatus = async () => {
+    const sequence = ++statusRequestSequenceRef.current
     try {
       const response = await fetch("/api/trade-engine/status", {
         cache: "no-store",
@@ -73,6 +77,7 @@ export function GlobalTradeEngineControls() {
       })
       if (response.ok) {
         const data = await response.json()
+        if (sequence !== statusRequestSequenceRef.current) return
         const statusData: EngineStatus = {
           running: data.actualRuntimeStatus === "running" || data.running === true,
           paused: data.paused === true || data.paused === "true",
@@ -97,6 +102,8 @@ export function GlobalTradeEngineControls() {
   }
 
   const handleStart = async () => {
+    if (engineActionRef.current) return
+    engineActionRef.current = true
     setIsStarting(true)
     try {
       const response = await fetch("/api/trade-engine/start", { 
@@ -107,6 +114,7 @@ export function GlobalTradeEngineControls() {
 
       if (response.ok && data.success) {
         toast.success(data.message || "Global Trade Engine started successfully")
+        window.dispatchEvent(new CustomEvent("engine-state-changed", { detail: { action: "start", status: data.status || "running" } }))
         await loadStatus()
         setTimeout(loadStatus, 500)
         setTimeout(loadStatus, 1500)
@@ -120,18 +128,22 @@ export function GlobalTradeEngineControls() {
       // Refresh status even on exception to get accurate state
       await loadStatus()
     } finally {
+      engineActionRef.current = false
       setIsStarting(false)
     }
   }
 
   const handlePause = async () => {
+    if (engineActionRef.current) return
+    engineActionRef.current = true
     setIsPausing(true)
     try {
       const response = await fetch("/api/trade-engine/pause", { method: "POST" })
       const data = await response.json()
 
-      if (response.ok) {
+      if (response.ok && data.success !== false) {
         toast.success("Global Trade Engine paused")
+        window.dispatchEvent(new CustomEvent("engine-state-changed", { detail: { action: "pause", status: "paused" } }))
         await loadStatus()
         setTimeout(loadStatus, 500)
       } else {
@@ -142,18 +154,22 @@ export function GlobalTradeEngineControls() {
       toast.error("Failed to pause engine")
       await loadStatus()
     } finally {
+      engineActionRef.current = false
       setIsPausing(false)
     }
   }
 
   const handleResume = async () => {
+    if (engineActionRef.current) return
+    engineActionRef.current = true
     setIsResuming(true)
     try {
       const response = await fetch("/api/trade-engine/resume", { method: "POST" })
       const data = await response.json()
 
-      if (response.ok) {
+      if (response.ok && data.success !== false) {
         toast.success("Global Trade Engine resumed")
+        window.dispatchEvent(new CustomEvent("engine-state-changed", { detail: { action: "resume", status: "running" } }))
         await loadStatus()
         setTimeout(loadStatus, 500)
       } else {
@@ -164,18 +180,22 @@ export function GlobalTradeEngineControls() {
       toast.error("Failed to resume engine")
       await loadStatus()
     } finally {
+      engineActionRef.current = false
       setIsResuming(false)
     }
   }
 
   const handleStop = async () => {
+    if (engineActionRef.current) return
+    engineActionRef.current = true
     setIsStopping(true)
     try {
       const response = await fetch("/api/trade-engine/stop", { method: "POST" })
       const data = await response.json()
 
-      if (response.ok) {
+      if (response.ok && data.success !== false) {
         toast.success("Global Trade Engine stopped")
+        window.dispatchEvent(new CustomEvent("engine-state-changed", { detail: { action: "stop", status: "stopped" } }))
         await loadStatus()
         setTimeout(loadStatus, 500)
       } else {
@@ -186,6 +206,7 @@ export function GlobalTradeEngineControls() {
       toast.error("Failed to stop engine")
       await loadStatus()
     } finally {
+      engineActionRef.current = false
       setIsStopping(false)
     }
   }
@@ -229,24 +250,26 @@ export function GlobalTradeEngineControls() {
 
   const getStatusBadge = () => {
     if (!status) return <Badge variant="outline">Unknown</Badge>
+    if (status.paused)
+      return (
+        <Badge variant="outline" className="bg-yellow-500/10 text-yellow-600 dark:text-yellow-400">
+          Paused
+        </Badge>
+      )
     const intentRunning = status.operatorIntent === "running"
     const heartbeatFresh = status.workerAttached || status.connectionHeartbeatFresh || status.globalHeartbeatFresh
     if (!status.running && intentRunning && !heartbeatFresh) {
       return <Badge variant="outline" className="bg-amber-500/10 text-amber-700">Queued / waiting for worker</Badge>
     }
     if (!status.running) return <Badge variant="secondary">Stopped</Badge>
-    if (status.paused)
-      return (
-        <Badge variant="outline" className="bg-yellow-500/10 text-yellow-600">
-          Paused
-        </Badge>
-      )
     return (
       <Badge variant="default" className="bg-green-500/10 text-green-600">
         Running
       </Badge>
     )
   }
+
+  const engineActionPending = isStarting || isPausing || isResuming || isStopping
 
   return (
     <Card>
@@ -275,23 +298,23 @@ export function GlobalTradeEngineControls() {
         </div>
 
         {/* Control Buttons */}
-        <div className="flex gap-1.5 pt-2">
-          {!status?.running && (
-            <Button onClick={handleStart} disabled={isStarting} size="sm" className="flex-1 text-xs">
+        <div className="flex flex-wrap gap-1.5 pt-2">
+          {!status?.running && !status?.paused && (
+            <Button onClick={handleStart} disabled={engineActionPending} size="sm" className="min-w-24 flex-1 text-xs">
               <Play className="h-3 w-3 mr-1" />
               {isStarting ? "Starting..." : "Start"}
             </Button>
           )}
 
           {status?.running && !status?.paused && (
-            <Button onClick={handlePause} disabled={isPausing} variant="outline" size="sm" className="flex-1 text-xs">
+            <Button onClick={handlePause} disabled={engineActionPending} variant="outline" size="sm" className="min-w-24 flex-1 text-xs">
               <Pause className="h-3 w-3 mr-1" />
               {isPausing ? "..." : "Pause"}
             </Button>
           )}
 
-          {status?.running && status?.paused && (
-            <Button onClick={handleResume} disabled={isResuming} size="sm" className="flex-1 text-xs">
+          {status?.paused && (
+            <Button onClick={handleResume} disabled={engineActionPending} size="sm" className="min-w-24 flex-1 text-xs">
               <Play className="h-3 w-3 mr-1" />
               {isResuming ? "..." : "Resume"}
             </Button>
@@ -301,10 +324,10 @@ export function GlobalTradeEngineControls() {
           {(status?.running || status?.paused) && (
             <Button
               onClick={handleStop}
-              disabled={isStopping}
+              disabled={engineActionPending}
               variant="outline"
               size="sm"
-              className="flex-1 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 border-red-200 dark:border-red-800"
+              className="min-w-24 flex-1 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 border-red-200 dark:border-red-800"
             >
               <Square className="h-3 w-3 mr-1" />
               {isStopping ? "..." : "Stop"}
@@ -314,9 +337,10 @@ export function GlobalTradeEngineControls() {
           {/* Preset Selection Button */}
           <Button
             onClick={() => setPresetDialogOpen(true)}
+            disabled={engineActionPending}
             variant="outline"
             size="sm"
-            className="flex-1 text-xs"
+            className="min-w-24 flex-1 text-xs"
           >
             <Target className="h-3 w-3 mr-1" />
             Preset

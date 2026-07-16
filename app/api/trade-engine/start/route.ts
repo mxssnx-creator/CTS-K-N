@@ -7,6 +7,7 @@ import { checkProductionReadiness, productionReadinessJson } from "@/lib/product
 import { allocateStateSwitchVersion } from "@/lib/engine-refresh-queue"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import { isConnectionLiveTradeEnabled } from "@/lib/connection-state-utils"
+import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 
 export const dynamic = "force-dynamic"
 
@@ -75,6 +76,7 @@ function patchIndicationProcessorCaches(coordinator: any) {
  */
 export async function POST(request: NextRequest) {
   try {
+    invalidateTradeEngineStatusCache()
     console.log("[v0] [Trade Engine] Starting Global Trade Engine Coordinator (independent of connections)")
     
     // Do NOT clear global engine timers on Start.  In production a redundant
@@ -437,6 +439,7 @@ export async function POST(request: NextRequest) {
       "info",
       { resumedConnections, startedConnections, liveTradeEnabledConnections, liveTradeRequestedConnections }
     )
+    invalidateTradeEngineStatusCache()
 
     return NextResponse.json({
       success: true,
@@ -450,6 +453,7 @@ export async function POST(request: NextRequest) {
     })
 
   } catch (error) {
+    invalidateTradeEngineStatusCache()
     console.error("[v0] Failed to start Global Coordinator:", error)
     await SystemLogger.logError(error, "trade-engine", "POST /api/trade-engine/start")
 

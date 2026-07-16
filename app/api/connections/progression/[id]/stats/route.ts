@@ -60,6 +60,12 @@ function buildSettingsRecoordinationState(progHash: Record<string, string>, nowM
     return Math.max(0, Math.min(100, Math.round(x)))
   }
 
+  function ratioPercent(numerator: unknown, denominator: unknown): number {
+    const denominatorCount = n(denominator)
+    if (denominatorCount <= 0) return 0
+    return Math.max(0, Math.min(100, Math.round((n(numerator) / denominatorCount) * 1000) / 10))
+  }
+
 type OrderDirection = "long" | "short"
 type OrderKind = "placed" | "filled" | "failed"
 type OrderDirectionStats = Record<OrderKind, number>
@@ -1792,9 +1798,12 @@ export async function GET(
         const stagePassedRaw = useCross
           ? symPassed
           : n(dh.passed_sets || progHash[`strategy_${stage}_passed`])
-        const stagePassed = stagePassedRaw > 0
+        const stagePassedUnbounded = stagePassedRaw > 0
           ? stagePassedRaw
           : stratCounts[stage] || 0
+        const stagePassed = stageEvaluated > 0
+          ? Math.min(stagePassedUnbounded, stageEvaluated)
+          : 0
 
         // passRatio: prefer stored pass_rate (0-1 fraction from coordinator),
         // but cross-validate it against the actual counted values.
@@ -3359,12 +3368,12 @@ export async function GET(
         fillRate: (() => {
           const placed = n(progHash.live_orders_placed_count)
           const filled = n(progHash.live_orders_filled_count)
-          return placed > 0 ? Math.round((filled / placed) * 1000) / 10 : 0
+          return ratioPercent(filled, placed)
         })(),
         winRate: (() => {
           const closed = n(progHash.live_positions_closed_count)
           const wins   = n(progHash.live_wins_count)
-          return closed > 0 ? Math.round((wins / closed) * 1000) / 10 : 0
+          return ratioPercent(wins, closed)
         })(),
         // Per-symbol rows plus global directional totals; rows are empty when
         // no orders have been placed yet.
@@ -3440,7 +3449,7 @@ export async function GET(
           openScanned:     liveOpenScanned,
           symbolCount:     livePositionSetRelations.length,
           isExecution:     true,
-          fillRate:        Math.round((n(progHash.live_orders_filled_count) / Math.max(1, n(progHash.live_orders_placed_count))) * 1000) / 10,
+          fillRate:        ratioPercent(progHash.live_orders_filled_count, progHash.live_orders_placed_count),
           volumeUsdTotal:  Math.round(n(progHash.live_volume_usd_total) * 100) / 100,
         },
       },
@@ -3488,7 +3497,7 @@ export async function GET(
             winRate:         liveWinRate,
             avgPnl:          liveClosedCount > 0 ? Math.round((liveClosedSumPnl / liveClosedCount) * 100) / 100 : 0,
             volumeUsdTotal:  Math.round(n(progHash.live_volume_usd_total) * 100) / 100,
-            fillRate:        Math.round((n(progHash.live_orders_filled_count) / Math.max(1, n(progHash.live_orders_placed_count))) * 1000) / 10,
+            fillRate:        ratioPercent(progHash.live_orders_filled_count, progHash.live_orders_placed_count),
           },
           detail: livePositionSetRelations.slice(0, 200).map((p) => ({
             id:            p.id,

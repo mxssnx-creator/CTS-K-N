@@ -19,7 +19,7 @@ import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } 
  *                              `connection_settings.profitFactorMin.{stage}`
  *                              via PATCH /settings (merged, not replaced)
  *
- *   • Volume Factor          — single slider 0.1 – 10 step 0.1 default 1.0
+ *   • Volume Factor          — single slider 0.1 – 10 step 0.1 default 0.1
  *                              persists into the canonical Redis fields
  *                              `live_volume_factor` via POST /volume
  *                              (same endpoint the dashboard volume panel
@@ -35,11 +35,11 @@ import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } 
  *
  * Save model
  * ─────────
- * Every knob saves on commit (slider release / switch toggle) with a
- * 350 ms trailing debounce per-field so dragging a slider doesn't fire
- * one PATCH per pixel. Concurrent saves are coalesced — the latest
- * value always wins. A subtle inline status chip ("Saving…" → "Saved")
- * confirms the round-trip without stealing focus.
+ * Settings knobs save through a 200 ms accumulating debounce so adjacent
+ * edits land in one deep-merged PATCH; the volume slider uses 350 ms. Rapid
+ * drags therefore do not fire one request per pixel or drop sibling fields.
+ * A subtle inline status chip ("Saving…" → "Saved") confirms the round-trip
+ * without stealing focus.
  *
  * No selection → the bar renders disabled inputs with a tooltip
  * explaining that the operator must pick a connection first
@@ -70,6 +70,7 @@ import {
   TrendingUp,
 } from "lucide-react"
 import { useExchange } from "@/lib/exchange-context"
+import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
 
 // ── stage labels ────────────────────────────────────────────────────────
 //
@@ -186,6 +187,46 @@ function useDebouncedSaver<T extends (...args: any[]) => void | Promise<void>>(
   )
 }
 
+/**
+ * Collect partial settings changes into one deep-merged PATCH. A shared plain
+ * debounce drops whichever field fired first (for example min-step followed by
+ * max-trades); this accumulator preserves every touched field and sends one
+ * coherent hot-reload generation.
+ */
+function useDebouncedPatchSaver(
+  fn: (patch: Record<string, unknown>) => void | Promise<void>,
+  ms: number,
+) {
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const pendingRef = useRef<Record<string, unknown>>({})
+  const fnRef = useRef(fn)
+
+  useEffect(() => {
+    fnRef.current = fn
+    pendingRef.current = {}
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current)
+      timeoutRef.current = undefined
+    }
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
+      timeoutRef.current = undefined
+      pendingRef.current = {}
+    }
+  }, [fn])
+
+  return useCallback((patch: Record<string, unknown>) => {
+    pendingRef.current = mergeConnectionSettings(pendingRef.current, patch)
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    timeoutRef.current = setTimeout(() => {
+      const pending = pendingRef.current
+      pendingRef.current = {}
+      timeoutRef.current = undefined
+      void fnRef.current(pending)
+    }, ms)
+  }, [ms])
+}
+
 // ── component ──────────────────────────────────────────────────────────
 export function QuickstartOptionsBar() {
   const { selectedConnectionId } = useExchange()
@@ -210,16 +251,20 @@ export function QuickstartOptionsBar() {
     })
   }, [])
 
-  // Hydration state — `null` until the first fetch resolves so the
+  // Hydration state — false until the first fetch resolves so the
   // sliders don't flash defaults over saved values.
   const [hydrated, setHydrated] = useState(false)
+  const [hydratedConnectionId, setHydratedConnectionId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // Default false — hydrate() will set the correct value once the
   // settings fetch returns. Defaulting to true caused a false "Orders ON"
   // flash before the first fetch resolved.
   const [controlOrders, setControlOrders] = useState(false)
+  const controlOrdersRef = useRef(false)
   const [pfMin, setPfMin] = useState<ProfitFactorMin>(DEFAULT_PF_MIN)
   const [volumeFactor, setVolumeFactor] = useState<number>(0.1)
+  const volumeFactorRef = useRef(0.1)
+  const persistedVolumeFactorRef = useRef(0.1)
   const [minimalStepCount, setMinimalStepCount] = useState<number>(3)
   const [maxConcurrentTrades, setMaxConcurrentTrades] = useState<number>(10)
   const [blockEnabled, setBlockEnabled] = useState(true)
@@ -229,6 +274,9 @@ export function QuickstartOptionsBar() {
   // operator who never touches this control still gets trailing.
   const [trailingEnabled, setTrailingEnabled] = useState(true)
   const hydrateSequenceRef = useRef(0)
+  const settingsSaveSequenceRef = useRef(0)
+  const volumeSaveSequenceRef = useRef(0)
+  const liveSaveSequenceRef = useRef(0)
 
   // Per-field save status — drives the inline chip. We track a single
   // shared status because the operator typically only mutates one knob
@@ -263,6 +311,9 @@ export function QuickstartOptionsBar() {
     const sequence = ++hydrateSequenceRef.current
     if (!cid) {
       if (sequence === hydrateSequenceRef.current) {
+        controlOrdersRef.current = false
+        setControlOrders(false)
+        setHydratedConnectionId(null)
         setLoading(false)
         setHydrated(true)
       }
@@ -280,6 +331,9 @@ export function QuickstartOptionsBar() {
       ])
 
       if (sequence !== hydrateSequenceRef.current) return
+      if (!settingsRes.ok || !volumeRes.ok) {
+        throw new Error(`Settings hydration failed (${settingsRes.status}/${volumeRes.status})`)
+      }
 
       if (settingsRes.ok) {
         const data = await settingsRes.json()
@@ -296,7 +350,8 @@ export function QuickstartOptionsBar() {
         // previously enabled Control Orders.
         const liveRequested = toBooleanFlag(conn.live_trade_requested)
         const liveEffective = toBooleanFlag(conn.is_live_trade)
-        setControlOrders(liveRequested || liveEffective)
+        controlOrdersRef.current = liveRequested || liveEffective
+        setControlOrders(controlOrdersRef.current)
 
         // Profit-factor min — fall through both the new namespaced
         // location and a legacy flat one in case older settings drafts
@@ -339,25 +394,42 @@ export function QuickstartOptionsBar() {
       if (volumeRes.ok) {
         const data = await volumeRes.json()
         if (sequence !== hydrateSequenceRef.current) return
-        setVolumeFactor(clampVf(data?.live_volume_factor ?? 1))
+        const hydratedVolume = clampVf(data?.live_volume_factor ?? 0.1)
+        volumeFactorRef.current = hydratedVolume
+        persistedVolumeFactorRef.current = hydratedVolume
+        setVolumeFactor(hydratedVolume)
       }
+      if (sequence === hydrateSequenceRef.current) setHydratedConnectionId(cid)
     } catch (err) {
       console.error("[v0] [QSOptions] hydrate failed:", err)
+      if (sequence === hydrateSequenceRef.current) {
+        setHydratedConnectionId(null)
+        showError()
+      }
     } finally {
       if (sequence === hydrateSequenceRef.current) {
         setLoading(false)
         setHydrated(true)
       }
     }
-  }, [cid])
+  }, [cid, showError])
 
   useEffect(() => {
     setHydrated(false)
+    setHydratedConnectionId(null)
     void hydrate()
     return () => {
       hydrateSequenceRef.current++
     }
   }, [hydrate])
+
+  useEffect(() => {
+    // Invalidate responses that belong to the previously selected connection.
+    settingsSaveSequenceRef.current++
+    volumeSaveSequenceRef.current++
+    liveSaveSequenceRef.current++
+    setSaveStatus("idle")
+  }, [cid])
 
   // ── persistence primitives ───────────────────────────────────────────
   //
@@ -367,6 +439,7 @@ export function QuickstartOptionsBar() {
   const patchSettings = useCallback(
     async (patch: Record<string, unknown>) => {
       if (!cid) return
+      const sequence = ++settingsSaveSequenceRef.current
       setSaveStatus("saving")
       try {
         const res = await fetch(
@@ -377,18 +450,34 @@ export function QuickstartOptionsBar() {
             body: JSON.stringify(patch),
           },
         )
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = await res.json().catch(() => ({} as any))
+        if (!res.ok || data?.success === false) throw new Error(data?.error || `HTTP ${res.status}`)
+        if (sequence !== settingsSaveSequenceRef.current) return
         showSaved()
         // Notify ExchangeContext and ActiveConnectionCard that settings changed
         // so they reload without waiting for their natural poll cadence.
         if (typeof window !== "undefined") {
+          const settingsVersion = typeof data?.settingsVersion === "string" ? data.settingsVersion : undefined
+          const detail = {
+            connectionId: cid,
+            settings: patch,
+            settingsVersion,
+            recoordinationId: data?.recoordinationId ?? settingsVersion,
+            progressionEpoch: data?.progressionEpoch,
+          }
           window.dispatchEvent(
             new CustomEvent("connection-settings-updated", {
-              detail: { connectionId: cid, settings: patch },
+              detail,
             }),
           )
+          if (settingsVersion) {
+            window.dispatchEvent(new CustomEvent("connection-settings-recoordination-complete", {
+              detail: { ...detail, recoordination: data?.recoordination },
+            }))
+          }
         }
       } catch (err) {
+        if (sequence !== settingsSaveSequenceRef.current) return
         console.error("[v0] [QSOptions] PATCH settings failed:", err)
         showError()
       }
@@ -399,6 +488,7 @@ export function QuickstartOptionsBar() {
   const saveVolume = useCallback(
     async (next: number) => {
       if (!cid) return
+      const sequence = ++volumeSaveSequenceRef.current
       setSaveStatus("saving")
       try {
         const res = await fetch(
@@ -409,9 +499,35 @@ export function QuickstartOptionsBar() {
             body: JSON.stringify({ live_volume_factor: next }),
           },
         )
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = await res.json().catch(() => ({} as any))
+        if (!res.ok || data?.success === false) throw new Error(data?.error || `HTTP ${res.status}`)
+        if (sequence !== volumeSaveSequenceRef.current) return
+        const applied = Number(data?.live_volume_factor)
+        const appliedValue = Number.isFinite(applied) ? clampVf(applied) : next
+        volumeFactorRef.current = appliedValue
+        persistedVolumeFactorRef.current = appliedValue
+        setVolumeFactor(appliedValue)
         showSaved()
+        if (typeof window !== "undefined") {
+          const settingsVersion = typeof data?.settingsVersion === "string" ? data.settingsVersion : undefined
+          const detail = {
+            connectionId: cid,
+            settings: { live_volume_factor: appliedValue, volume_factor_live: appliedValue },
+            settingsVersion,
+            recoordinationId: data?.recoordinationId ?? settingsVersion,
+            progressionEpoch: data?.progressionEpoch,
+          }
+          window.dispatchEvent(new CustomEvent("connection-settings-updated", { detail }))
+          if (settingsVersion) {
+            window.dispatchEvent(new CustomEvent("connection-settings-recoordination-complete", {
+              detail: { ...detail, recoordination: data?.recoordination },
+            }))
+          }
+        }
       } catch (err) {
+        if (sequence !== volumeSaveSequenceRef.current) return
+        volumeFactorRef.current = persistedVolumeFactorRef.current
+        setVolumeFactor(persistedVolumeFactorRef.current)
         console.error("[v0] [QSOptions] POST volume failed:", err)
         showError()
       }
@@ -422,6 +538,7 @@ export function QuickstartOptionsBar() {
   const saveLiveTrade = useCallback(
     async (next: boolean, previous: boolean) => {
       if (!cid) return
+      const sequence = ++liveSaveSequenceRef.current
       setSaveStatus("saving")
       try {
         const res = await fetch(
@@ -432,7 +549,10 @@ export function QuickstartOptionsBar() {
             body: JSON.stringify({ is_live_trade: next }),
           },
         )
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({} as any))
+          throw new Error(errorData?.error || `HTTP ${res.status}`)
+        }
 
         // Read the server's actual resulting flag (may differ from `next` when
         // credentials are missing — server sets `live_trade_requested=true` but
@@ -453,6 +573,9 @@ export function QuickstartOptionsBar() {
           }
         } catch { /* keep optimistic value on parse failure */ }
 
+        if (sequence !== liveSaveSequenceRef.current) return
+        if (data?.success === false) throw new Error(data?.error || "Live Trade update failed")
+        controlOrdersRef.current = actualState
         setControlOrders(actualState)
         showSaved()
 
@@ -471,9 +594,11 @@ export function QuickstartOptionsBar() {
           )
         }
       } catch (err) {
+        if (sequence !== liveSaveSequenceRef.current) return
         // On network failure revert to the exact previous UI state. Using
         // `!next` made stale/double events look inverted when the user was
         // turning Control Orders off.
+        controlOrdersRef.current = previous
         setControlOrders(previous)
         console.error("[v0] [QSOptions] POST live-trade failed:", err)
         showError()
@@ -486,22 +611,40 @@ export function QuickstartOptionsBar() {
   // live-trade, update this bar's switch so both surfaces always agree.
   useEffect(() => {
     if (!cid) return
-    const handler = (e: Event) => {
+    const liveTradeHandler = (e: Event) => {
       const ev = e as CustomEvent
       if (ev.detail?.connectionId === cid && typeof ev.detail?.newState === "boolean") {
+        controlOrdersRef.current = ev.detail.newState
         setControlOrders(ev.detail.newState)
       }
     }
-    window.addEventListener("live-trade-toggled", handler)
-    return () => window.removeEventListener("live-trade-toggled", handler)
-  }, [cid])
+    const settingsHandler = (e: Event) => {
+      const ev = e as CustomEvent
+      if (ev.detail?.connectionId !== cid) return
+      const settings = ev.detail?.settings || {}
+      const factor = Number(settings.live_volume_factor ?? settings.volume_factor_live)
+      if (Number.isFinite(factor) && factor > 0) {
+        const normalized = clampVf(factor)
+        volumeFactorRef.current = normalized
+        persistedVolumeFactorRef.current = normalized
+        setVolumeFactor(normalized)
+      }
+      // Other surfaces can change PF/coordination fields too. Re-hydrate the
+      // complete selected snapshot immediately so every settings surface agrees.
+      void hydrate()
+    }
+    window.addEventListener("live-trade-toggled", liveTradeHandler)
+    window.addEventListener("connection-settings-updated", settingsHandler)
+    return () => {
+      window.removeEventListener("live-trade-toggled", liveTradeHandler)
+      window.removeEventListener("connection-settings-updated", settingsHandler)
+    }
+  }, [cid, hydrate])
 
-  // Debounced savers — one per knob group. Sliders rapid-fire on drag,
-  // switches fire once on toggle (debounce is harmless for them and
-  // keeps the call path uniform).
-  const debouncedSavePf     = useDebouncedSaver(patchSettings, 350)
+  // All connection-settings knobs share one accumulating saver, so adjacent
+  // edits become one deep-merged hot reload instead of cancelling each other.
+  const debouncedSaveSettings = useDebouncedPatchSaver(patchSettings, 200)
   const debouncedSaveVolume = useDebouncedSaver(saveVolume, 350)
-  const debouncedSaveCoord  = useDebouncedSaver(patchSettings, 100)
   // Live switch is intentionally NOT debounced: it is a safety-critical
   // operator intent bit, so send the exact checked value immediately and avoid
   // stale queued saves inverting rapid on/off clicks.
@@ -517,16 +660,17 @@ export function QuickstartOptionsBar() {
       // state to avoid stale-closure races between adjacent slider drags.
       setPfMin((prev) => {
         const next = { ...prev, [stage]: v }
-        debouncedSavePf({ profitFactorMin: next })
+        debouncedSaveSettings({ profitFactorMin: next })
         return next
       })
     },
-    [debouncedSavePf],
+    [debouncedSaveSettings],
   )
 
   const handleVolumeChange = useCallback(
     (raw: number) => {
       const v = clampVf(raw)
+      volumeFactorRef.current = v
       setVolumeFactor(v)
       debouncedSaveVolume(v)
     },
@@ -537,30 +681,30 @@ export function QuickstartOptionsBar() {
     (raw: number) => {
       const v = clampMsc(raw)
       setMinimalStepCount(v)
-      debouncedSaveCoord({
+      debouncedSaveSettings({
         minimal_step_count: v,
       })
     },
-    [debouncedSaveCoord],
+    [debouncedSaveSettings],
   )
 
   const handleMaxConcurrentTradesChange = useCallback(
     (raw: number) => {
       const v = clampMct(raw)
       setMaxConcurrentTrades(v)
-      debouncedSaveCoord({
+      debouncedSaveSettings({
         max_concurrent_trades: v,
       })
     },
-    [debouncedSaveCoord],
+    [debouncedSaveSettings],
   )
 
   const handleControlOrdersChange = useCallback(
     (next: boolean) => {
-      setControlOrders((previous) => {
-        void debouncedSaveLive(next, previous)
-        return next
-      })
+      const previous = controlOrdersRef.current
+      controlOrdersRef.current = next
+      setControlOrders(next)
+      void debouncedSaveLive(next, previous)
     },
     [debouncedSaveLive],
   )
@@ -568,49 +712,45 @@ export function QuickstartOptionsBar() {
   const handleTrailingChange = useCallback(
     (next: boolean) => {
       setTrailingEnabled(next)
-      // Merge with the current Block + DCA flags so PATCH doesn't drop
-      // them. The variants object is replace-merged in connection
-      // settings, so any unspecified key would be set back to default
-      // (= true) on the server, but we send all three explicitly to
-      // make the wire shape match the dashboard's mental model.
-      debouncedSaveCoord({
+      debouncedSaveSettings({
         coordination_settings: {
-          variants: { trailing: next, block: blockEnabled, dca: dcaEnabled },
+          variants: { trailing: next },
         },
       })
     },
-    [blockEnabled, dcaEnabled, debouncedSaveCoord],
+    [debouncedSaveSettings],
   )
 
   const handleBlockChange = useCallback(
     (next: boolean) => {
       setBlockEnabled(next)
-      // Merge with the current trailing + dca flags so PATCH doesn't
-      // drop them.
-      debouncedSaveCoord({
+      debouncedSaveSettings({
         coordination_settings: {
-          variants: { trailing: trailingEnabled, block: next, dca: dcaEnabled },
+          variants: { block: next },
         },
       })
     },
-    [trailingEnabled, dcaEnabled, debouncedSaveCoord],
+    [debouncedSaveSettings],
   )
 
   const handleDcaChange = useCallback(
     (next: boolean) => {
       setDcaEnabled(next)
-      debouncedSaveCoord({
+      debouncedSaveSettings({
         coordination_settings: {
-          variants: { trailing: trailingEnabled, block: blockEnabled, dca: next },
+          variants: { dca: next },
         },
       })
     },
-    [trailingEnabled, blockEnabled, debouncedSaveCoord],
+    [debouncedSaveSettings],
   )
 
   // ── render helpers ───────────────────────────────────────────────────
-  const disabled = !cid
-  const disabledReason = "Select a connection above first."
+  const selectionReady = !!cid && hydrated && !loading && hydratedConnectionId === cid
+  const disabled = !selectionReady
+  const disabledReason = !cid
+    ? "Select a connection above first."
+    : "Loading the selected connection's current settings."
 
   const statusChip = useMemo(() => {
     if (saveStatus === "saving") {
@@ -659,21 +799,21 @@ export function QuickstartOptionsBar() {
               state without expanding the panel. */}
           <div className="ml-2 flex items-center gap-1">
             <Badge
-              variant={controlOrders ? "default" : "outline"}
+              variant={selectionReady && controlOrders ? "default" : "outline"}
               className={`h-4 text-[9px] px-1.5 py-0 ${
-                controlOrders
+                selectionReady && controlOrders
                   ? "bg-green-600 hover:bg-green-700 text-white"
                   : ""
               }`}
             >
-              Orders {controlOrders ? "ON" : "OFF"}
+              Orders {selectionReady ? (controlOrders ? "ON" : "OFF") : "…"}
             </Badge>
             <Badge
               variant="outline"
               className="h-4 text-[9px] px-1.5 py-0 tabular-nums"
               title="Volume factor"
             >
-              Vol ×{volumeFactor.toFixed(1)}
+              Vol {selectionReady ? `×${volumeFactor.toFixed(1)}` : "…"}
             </Badge>
           </div>
 

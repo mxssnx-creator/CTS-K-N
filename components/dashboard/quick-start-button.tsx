@@ -179,7 +179,7 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
     { id: "test",    name: "Verify BingX Credentials",       status: "pending" },
     { id: "start",   name: "Start Global Trade Engine",      status: "pending" },
     { id: "enable",  name: ENABLE_STEP_LABEL,                status: "pending" },
-    { id: "engine",  name: "Launch Engine + Progression",    status: "pending" },
+    { id: "engine",  name: "Verify Engine + Progression",    status: "pending" },
   ])
 
 
@@ -293,13 +293,12 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
       await runStep("start", "STEP 4: Start Global Coordinator", async () => {
         const res = await timedFetch("/api/trade-engine/start", { method: "POST" }, COORDINATOR_START_TIMEOUT_MS)
         const d = await res.json().catch(() => ({}))
-        if (!res.ok && !d.success) throw new Error(d.error ?? `HTTP ${res.status}`)
+        if (!res.ok || d.success === false) throw new Error(d.error ?? `HTTP ${res.status}`)
         const n = d.resumedConnections?.length ?? 0
         return `Coordinator running${n > 0 ? ` | Resumed ${n}` : ""}`
       }, true)
 
       // STEP 5: Enable selected main connection using saved symbol/live-trade settings (REQUIRED)
-      let quickStartResponse: any = null
       await runStep("enable", "STEP 5: Enable selected Main Connection", async () => {
         const selectedName = displayConnectionName()
         let selectedSettingsPayload: { settings?: any; connection?: any } | null = null
@@ -326,7 +325,6 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
           body: JSON.stringify(quickStartBody),
         }, QUICKSTART_ENABLE_TIMEOUT_MS)
         const d = await res.json().catch(() => ({}))
-        quickStartResponse = d
         if (!res.ok && !d.success) throw new Error(d.error ?? `HTTP ${res.status}`)
         if (!d.success) throw new Error(d.error ?? "Enable returned failure")
         enabledConnectionId = d.connection?.id ?? selectedConnectionId ?? null
@@ -353,28 +351,24 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
         return `${d.connection?.name ?? displayConnectionName()} enabled | ${syms}`
       }, true)
 
-      // STEP 6: Launch per-connection engine (non-critical fallback)
-      await runStep("engine", "STEP 6: Launch BingX Engine", async () => {
+      // STEP 6: Verify the per-connection runtime. QuickStart already started
+      // the Main progression in step 5; never mutate the Live Trade intent here.
+      // The former fallback unconditionally posted is_live_trade=true, silently
+      // turning a saved paper configuration into a real-order request.
+      await runStep("engine", "STEP 6: Verify Engine + Progression", async () => {
         const connId = enabledConnectionId
         if (!connId) return "Skipped - no connection ID"
-        const res = await timedFetch(`/api/settings/connections/${connId}/live-trade`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ is_live_trade: true }),
-        }, 30000)
+        const res = await timedFetch(`/api/connections/${connId}/engine-states`, { method: "GET" }, 12000)
         const d = await res.json().catch(() => ({}))
-        if (res.ok && d.success) {
-          dispatchConnectionMutationEvents(buildConnectionMutationEventDetail(d, {
-            connectionId: connId,
-            engine: { action: "start", status: d.engineStatus },
-            source: "quick-start-button.liveTrade",
-          }))
-          return `Engine running | Status: ${d.engineStatus}`
-        }
-        return `Queued (${d.error ?? d.message ?? "coordinator processing"})`
+        if (!res.ok || d.success === false) throw new Error(d.error ?? `HTTP ${res.status}`)
+        const runtime = d.engineRunning === true || d.runningHint === true ? "running" : "queued"
+        const orders = d.live?.flag
+          ? (d.live?.effective ? "Live Orders enabled" : "Live Orders requested / blocked")
+          : "Paper processing"
+        return `Engine ${runtime} | ${orders}`
       })
 
-      toast.success(`Quick Start complete — ${displayConnectionName()} engine running.`)
+      toast.success(`Quick Start complete — ${displayConnectionName()} processing requested.`)
 
       // Fetch functional overview in background
       try {
@@ -408,24 +402,24 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
       case "error":
         return <AlertCircle className="w-4 h-4 text-red-500" />
       default:
-        return <div className="w-4 h-4 rounded-full border-2 border-gray-300" />
+        return <div className="w-4 h-4 rounded-full border-2 border-gray-300 dark:border-gray-600" />
     }
   }
 
   return (
-    <Card className="border-blue-200 bg-blue-50">
+    <Card className="border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950/30">
       <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
             <CardTitle className="text-lg flex items-center gap-2">
               <Zap className="w-5 h-5 text-blue-600" />
               Quick Start (BingX)
             </CardTitle>
             <CardDescription>
-              Initialize system, run migrations, test the connection, enable the selected Main Connection, and start the trade engine in one click
+              Initialize, migrate, and start the selected connection with its saved settings.
             </CardDescription>
           </div>
-          <Badge variant="outline" className="text-xs">
+          <Badge variant="outline" className="self-start text-xs">
             {isRunning ? "Running..." : "Ready"}
           </Badge>
         </div>
@@ -434,16 +428,16 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
         {/* Steps Progress */}
         <div className="space-y-2">
           {steps.map((step) => (
-            <div key={step.id} className="flex items-center gap-3 text-sm">
+            <div key={step.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
               {getStepIcon(step.status)}
               <span className="flex-1 font-medium">{step.name}</span>
-              {step.message && <span className="text-xs text-gray-600">{step.message}</span>}
+              {step.message && <span className="w-full pl-7 text-xs text-gray-600 dark:text-gray-300 sm:w-auto sm:pl-0">{step.message}</span>}
             </div>
           ))}
         </div>
 
         {/* Action Buttons */}
-        <div className="flex gap-2 pt-2">
+        <div className="flex flex-wrap gap-2 pt-2">
           <Button
             onClick={handleQuickStart}
             disabled={isRunning}
@@ -497,23 +491,22 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
          </div>
 
         {/* Info Box */}
-        <div className="bg-white rounded border border-blue-200 p-3 text-xs text-gray-600">
-          <p className="mb-2 font-semibold text-gray-700">This quick start will:</p>
+        <div className="rounded border border-blue-200 bg-white/80 p-3 text-xs text-gray-600 dark:border-blue-900 dark:bg-blue-950/30 dark:text-gray-300">
+          <p className="mb-2 font-semibold text-gray-700 dark:text-gray-200">This quick start will:</p>
           <ul className="list-disc list-inside space-y-1">
           <li>Initialize the complete system (preset types, connections)</li>
             <li>Run ALL database migrations (schema, indexes, TTL policies)</li>
             <li>Test BingX API connection (verify credentials & check balance)</li>
             <li>Start the trade engine</li>
-            <li>Enable the selected Main Connection using saved symbols/order/count settings</li>
-            <li>Enable the selected connection using saved symbols or symbol-order settings</li>
+            <li>Enable the selected Main Connection using its saved symbols, order, count, and Live Trade intent</li>
           </ul>
         </div>
 
         {/* Functional Overview - Displayed after successful completion */}
         {(functionalOverview || overallStats) && (
-          <div className="bg-green-50 rounded border border-green-200 p-3 text-xs">
-            <p className="mb-2 font-semibold text-green-700">Functional Overview (System Ready):</p>
-            <div className="grid grid-cols-2 gap-2 text-gray-700">
+          <div className="rounded border border-green-200 bg-green-50 p-3 text-xs dark:border-green-900 dark:bg-green-950/25">
+            <p className="mb-2 font-semibold text-green-700 dark:text-green-400">Functional Overview (System Ready):</p>
+            <div className="grid grid-cols-1 gap-2 text-gray-700 dark:text-gray-200 sm:grid-cols-2">
               {functionalOverview && (
                 <>
                   <div>
@@ -551,24 +544,24 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
 
         {/* Data Overview - Comprehensive prehistoric and processing stats */}
         {overallStats && (
-          <div className="bg-amber-50 rounded border border-amber-200 p-3 text-xs space-y-2">
-            <p className="mb-2 font-semibold text-amber-700">Data Overview (Prehistoric & Processing):</p>
+          <div className="space-y-2 rounded border border-amber-200 bg-amber-50 p-3 text-xs dark:border-amber-900 dark:bg-amber-950/25">
+            <p className="mb-2 font-semibold text-amber-700 dark:text-amber-400">Data Overview (Prehistoric & Processing):</p>
             
             {/* Prehistoric Data */}
             <div className="grid grid-cols-2 gap-2">
-              <div className="bg-white rounded p-2 text-center">
-                <div className="text-amber-700 font-bold">{overallStats.symbols.prehistoricLoaded}</div>
+              <div className="rounded bg-background/80 p-2 text-center">
+                <div className="font-bold text-amber-700 dark:text-amber-400">{overallStats.symbols.prehistoricLoaded}</div>
                 <div className="text-muted-foreground text-[10px]">Prehistoric Symbols</div>
               </div>
-              <div className="bg-white rounded p-2 text-center">
-                <div className="text-amber-700 font-bold">{overallStats.symbols.prehistoricDataSize}</div>
+              <div className="rounded bg-background/80 p-2 text-center">
+                <div className="font-bold text-amber-700 dark:text-amber-400">{overallStats.symbols.prehistoricDataSize}</div>
                 <div className="text-muted-foreground text-[10px]">Data Keys</div>
               </div>
             </div>
 
             {/* Intervals */}
-            <div className="bg-white rounded p-2 text-center">
-              <div className="text-blue-700 font-bold">{overallStats.intervalsProcessed}</div>
+            <div className="rounded bg-background/80 p-2 text-center">
+              <div className="font-bold text-blue-700 dark:text-blue-400">{overallStats.intervalsProcessed}</div>
               <div className="text-muted-foreground text-[10px]">Intervals Processed</div>
             </div>
 
@@ -576,32 +569,32 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
             <div className="space-y-1">
               <div className="text-muted-foreground text-[10px] font-medium">Indications by Type:</div>
               <div className="grid grid-cols-3 sm:grid-cols-6 gap-1">
-                <div className="bg-purple-50 rounded p-1 text-center">
-                  <div className="text-purple-700 font-bold text-sm">{overallStats.indicationsByType.direction}</div>
+                <div className="rounded bg-purple-50 p-1 text-center dark:bg-purple-950/30">
+                  <div className="text-sm font-bold text-purple-700 dark:text-purple-400">{overallStats.indicationsByType.direction}</div>
                   <div className="text-muted-foreground text-[8px]">Dir</div>
                 </div>
-                <div className="bg-purple-50 rounded p-1 text-center">
-                  <div className="text-purple-700 font-bold text-sm">{overallStats.indicationsByType.move}</div>
+                <div className="rounded bg-purple-50 p-1 text-center dark:bg-purple-950/30">
+                  <div className="text-sm font-bold text-purple-700 dark:text-purple-400">{overallStats.indicationsByType.move}</div>
                   <div className="text-muted-foreground text-[8px]">Move</div>
                 </div>
-                <div className="bg-purple-50 rounded p-1 text-center">
-                  <div className="text-purple-700 font-bold text-sm">{overallStats.indicationsByType.active}</div>
+                <div className="rounded bg-purple-50 p-1 text-center dark:bg-purple-950/30">
+                  <div className="text-sm font-bold text-purple-700 dark:text-purple-400">{overallStats.indicationsByType.active}</div>
                   <div className="text-muted-foreground text-[8px]">Act</div>
                 </div>
-                <div className="bg-purple-50 rounded p-1 text-center">
-                  <div className="text-purple-700 font-bold text-sm">{overallStats.indicationsByType.optimal}</div>
+                <div className="rounded bg-purple-50 p-1 text-center dark:bg-purple-950/30">
+                  <div className="text-sm font-bold text-purple-700 dark:text-purple-400">{overallStats.indicationsByType.optimal}</div>
                   <div className="text-muted-foreground text-[8px]">Opt</div>
                 </div>
-                <div className="bg-purple-50 rounded p-1 text-center">
-                  <div className="text-purple-700 font-bold text-sm">{overallStats.indicationsByType.auto}</div>
+                <div className="rounded bg-purple-50 p-1 text-center dark:bg-purple-950/30">
+                  <div className="text-sm font-bold text-purple-700 dark:text-purple-400">{overallStats.indicationsByType.auto}</div>
                   <div className="text-muted-foreground text-[8px]">Auto</div>
                 </div>
-                <div className="bg-purple-50 rounded p-1 text-center">
-                  <div className="text-purple-700 font-bold text-sm">{overallStats.indicationsByType.trend}</div>
+                <div className="rounded bg-purple-50 p-1 text-center dark:bg-purple-950/30">
+                  <div className="text-sm font-bold text-purple-700 dark:text-purple-400">{overallStats.indicationsByType.trend}</div>
                   <div className="text-muted-foreground text-[8px]">Trend</div>
                 </div>
               </div>
-              <div className="text-center text-purple-600 text-[10px]">
+              <div className="text-center text-[10px] text-purple-600 dark:text-purple-400">
                 Total: <span className="font-bold">{overallStats.indicationsByType.total}</span>
               </div>
             </div>
@@ -610,20 +603,20 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
             <div className="space-y-1">
               <div className="text-muted-foreground text-[10px] font-medium">Pseudo Positions:</div>
               <div className="grid grid-cols-4 gap-1">
-                <div className="bg-green-50 rounded p-1 text-center">
-                  <div className="text-green-700 font-bold text-sm">{overallStats.pseudoPositions.base}</div>
+                <div className="rounded bg-green-50 p-1 text-center dark:bg-green-950/30">
+                  <div className="text-sm font-bold text-green-700 dark:text-green-400">{overallStats.pseudoPositions.base}</div>
                   <div className="text-muted-foreground text-[8px]">Base</div>
                 </div>
-                <div className="bg-green-50 rounded p-1 text-center">
-                  <div className="text-green-700 font-bold text-sm">{overallStats.pseudoPositions.main}</div>
+                <div className="rounded bg-green-50 p-1 text-center dark:bg-green-950/30">
+                  <div className="text-sm font-bold text-green-700 dark:text-green-400">{overallStats.pseudoPositions.main}</div>
                   <div className="text-muted-foreground text-[8px]">Main</div>
                 </div>
-                <div className="bg-green-50 rounded p-1 text-center">
-                  <div className="text-green-700 font-bold text-sm">{overallStats.pseudoPositions.real}</div>
+                <div className="rounded bg-green-50 p-1 text-center dark:bg-green-950/30">
+                  <div className="text-sm font-bold text-green-700 dark:text-green-400">{overallStats.pseudoPositions.real}</div>
                   <div className="text-muted-foreground text-[8px]">Real</div>
                 </div>
-                <div className="bg-green-50 rounded p-1 text-center">
-                  <div className="text-green-700 font-bold text-sm">{overallStats.livePositions}</div>
+                <div className="rounded bg-green-50 p-1 text-center dark:bg-green-950/30">
+                  <div className="text-sm font-bold text-green-700 dark:text-green-400">{overallStats.livePositions}</div>
                   <div className="text-muted-foreground text-[8px]">Live</div>
                 </div>
               </div>
@@ -631,12 +624,12 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
 
             {/* Timing */}
             <div className="grid grid-cols-2 gap-2">
-              <div className="bg-orange-50 rounded p-2 text-center">
-                <div className="text-orange-700 font-bold">{overallStats.cycleTimeMs}</div>
+              <div className="rounded bg-orange-50 p-2 text-center dark:bg-orange-950/30">
+                <div className="font-bold text-orange-700 dark:text-orange-400">{overallStats.cycleTimeMs}</div>
                 <div className="text-muted-foreground text-[10px]">Cycle Time (ms)</div>
               </div>
-              <div className="bg-orange-50 rounded p-2 text-center">
-                <div className="text-orange-700 font-bold">{overallStats.totalDurationMs}</div>
+              <div className="rounded bg-orange-50 p-2 text-center dark:bg-orange-950/30">
+                <div className="font-bold text-orange-700 dark:text-orange-400">{overallStats.totalDurationMs}</div>
                 <div className="text-muted-foreground text-[10px]">Total Duration (ms)</div>
               </div>
             </div>

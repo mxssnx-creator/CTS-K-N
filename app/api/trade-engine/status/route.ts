@@ -3,15 +3,13 @@ import { getRedisClient, initRedis, getActiveConnectionsForEngine } from "@/lib/
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { buildMissingTradeEngineWorkerDiagnostic, readTradeEngineWorkerHeartbeat } from "@/lib/trade-engine-worker-heartbeat"
+import { readTradeEngineStatusCache, writeTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
 export const fetchCache = "force-no-store"
 
 const STATUS_CACHE_TTL_MS = Number(process.env.TRADE_ENGINE_STATUS_CACHE_MS || 1_500)
-const statusCacheGlobal = globalThis as unknown as {
-  __trade_engine_status_cache?: { expiresAt: number; body: unknown }
-}
 
 // RUNTIME FIX: Patch IndicationProcessor cache on every API call
 // This fixes the "Cannot read properties of undefined (reading 'get')" error
@@ -50,9 +48,9 @@ function patchIndicationProcessorCaches(coordinator: any) {
 export async function GET() {
   try {
     const now = Date.now()
-    const cached = statusCacheGlobal.__trade_engine_status_cache
-    if (cached && cached.expiresAt > now) {
-      return NextResponse.json(cached.body)
+    const cached = readTradeEngineStatusCache(now)
+    if (cached !== undefined) {
+      return NextResponse.json(cached)
     }
 
     await initRedis()
@@ -311,10 +309,7 @@ export async function GET() {
     }
 
     console.log(`[v0] [Status] Returning ${connectionStatuses.length} active connections, global running: ${isGloballyRunning}`)
-    statusCacheGlobal.__trade_engine_status_cache = {
-      expiresAt: Date.now() + Math.max(0, STATUS_CACHE_TTL_MS),
-      body: responseBody,
-    }
+    writeTradeEngineStatusCache(responseBody, STATUS_CACHE_TTL_MS)
     return NextResponse.json(responseBody)
   } catch (error) {
     console.error("[v0] [Status] Error:", error)

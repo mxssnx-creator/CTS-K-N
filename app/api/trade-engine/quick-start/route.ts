@@ -18,6 +18,7 @@ import {
   QUICKSTART_CONNECTION_TEST_TIMEOUT_MS,
   resolveQuickStartEngineBootWaitMs,
 } from "@/lib/quickstart-timeouts"
+import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -456,7 +457,8 @@ export async function POST(request: Request) {
       
       console.log(`${LOG_PREFIX}: Disabled ${connection.name}`)
       const disableLogs = await getProgressionLogs(connectionId)
-      
+      invalidateTradeEngineStatusCache()
+
       return NextResponse.json({
         success: true,
         action: "disable",
@@ -1585,7 +1587,8 @@ export async function POST(request: Request) {
     console.log(`${LOG_PREFIX}: Indications - Direction: ${dirInd}, Move: ${moveInd}, Active: ${actInd}, Optimal: ${optInd}, Auto: ${autoInd}, Trend: ${trendInd}`)
     console.log(`${LOG_PREFIX}: Pseudo Positions - Base: ${basePseudoPositions}, Main: ${mainPseudoPositions}, Real: ${realPseudoPositions}`)
     console.log(`${LOG_PREFIX}: Live Positions: ${livePositionsCount}, Cycle Duration: ${cycleDuration}ms`)
-    
+    invalidateTradeEngineStatusCache()
+
     return NextResponse.json({
       success: true,
       action: "enable",
