@@ -1,33 +1,73 @@
 #!/usr/bin/env node
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
+import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { setTimeout as sleep } from 'node:timers/promises'
 
-const self = process.pid
-const parent = process.ppid
-let output = ''
-try {
-  output = execSync('ps -eo pid,ppid,cmd', { encoding: 'utf8' })
-} catch {
-  process.exit(0)
-}
-
-const victims = []
-for (const line of output.split('\n').slice(1)) {
-  const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
-  if (!match) continue
-  const pid = Number(match[1])
-  const ppid = Number(match[2])
-  const cmd = match[3]
-  if (!Number.isFinite(pid) || pid === self || pid === parent) continue
-  const isNextDev3002 = /node .*node_modules\/\.bin\/next dev -p 3002/.test(cmd)
-  const isNextServerChild = /next-server \(v/.test(cmd) && ppid !== self && ppid !== parent
-  if (isNextDev3002 || isNextServerChild) victims.push(pid)
-}
-
-for (const pid of victims) {
-  try { process.kill(pid, 'SIGTERM') } catch {}
-}
-setTimeout(() => {
-  for (const pid of victims) {
-    try { process.kill(pid, 0); process.kill(pid, 'SIGKILL') } catch {}
+function readProcesses() {
+  try {
+    return execFileSync('ps', ['-eo', 'pid=,ppid=,args='], { encoding: 'utf8' })
+      .split('\n')
+      .map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/))
+      .filter(Boolean)
+      .map((match) => ({
+        pid: Number(match[1]),
+        ppid: Number(match[2]),
+        command: match[3],
+      }))
+  } catch {
+    return []
   }
-}, 250)
+}
+
+/**
+ * Stop only the Next development server bound to the requested test port and
+ * its descendants. Keeping this function importable prevents smoke runners
+ * from terminating themselves and avoids touching unrelated Next processes.
+ */
+export async function killTestDevPort(port = 3002) {
+  const processes = readProcesses()
+  const escapedPort = String(port).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const nextDevOnPort = new RegExp(
+    `(?:node_modules/(?:\\.bin/next|next/dist/bin/next)|\\bnext)\\s+dev(?:\\s|$).*?(?:-p|--port)(?:=|\\s+)${escapedPort}(?:\\s|$)`,
+  )
+  const roots = new Set(
+    processes
+      .filter(({ pid, command }) => pid !== process.pid && pid !== process.ppid && nextDevOnPort.test(command))
+      .map(({ pid }) => pid),
+  )
+
+  const victims = new Set(roots)
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const { pid, ppid } of processes) {
+      if (!victims.has(pid) && victims.has(ppid)) {
+        victims.add(pid)
+        changed = true
+      }
+    }
+  }
+
+  const ordered = [...victims].sort((a, b) => b - a)
+  for (const pid of ordered) {
+    try { process.kill(pid, 'SIGTERM') } catch {}
+  }
+  if (ordered.length === 0) return 0
+
+  await sleep(250)
+  for (const pid of ordered) {
+    try {
+      process.kill(pid, 0)
+      process.kill(pid, 'SIGKILL')
+    } catch {}
+  }
+  return ordered.length
+}
+
+const invokedDirectly = process.argv[1]
+  && import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+
+if (invokedDirectly) {
+  await killTestDevPort(Number(process.env.PORT || 3002))
+}

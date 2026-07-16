@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient, isRedisConnected, setSettings, getConnectionCountDiagnostics } from "@/lib/redis-db"
-import { runMigrations, getMigrationStatus } from "@/lib/redis-migrations"
+import { getMigrationStatus } from "@/lib/redis-migrations"
+import { consolidateDatabase } from "@/lib/database-consolidation"
 import { SystemLogger } from "@/lib/system-logger"
 
 export const dynamic = "force-dynamic"
@@ -25,44 +26,35 @@ export async function POST(request: NextRequest) {
       throw new Error(errorMsg)
     }
 
-    // Step 2: Run migrations
-    logs.push("Running pending migrations...")
+    // Step 2: Verify the migration barrier completed by initRedis().
+    logs.push("Verifying schema readiness...")
     try {
-      await runMigrations()
-      logs.push("✓ Migrations completed successfully")
-      console.log("[v0] Migrations completed")
+      const migrationStatus = await getMigrationStatus()
+      if (!migrationStatus.isMigrated) {
+        throw new Error(
+          `Schema is not ready (v${migrationStatus.currentVersion}/${migrationStatus.latestVersion})`,
+        )
+      }
+      logs.push(`✓ Migrations complete at schema v${migrationStatus.currentVersion}`)
+      console.log("[v0] Migrations verified")
     } catch (error) {
       const errorMsg = `Migration execution failed: ${error}`
       logs.push(`✗ ${errorMsg}`)
       throw new Error(errorMsg)
     }
 
-    // Step 3: Create indexes
-    logs.push("Creating database indexes...")
+    // Step 3: Force an explicit repair/rebuild for this administrative route.
+    logs.push("Consolidating structures and rebuilding maintained indexes...")
     try {
-      const client = getRedisClient()
-
-      // Connection indexes
-      await client.set("_index:connections:enabled", "true")
-      await client.set("_index:connections:by_exchange", "true")
-      await client.set("_index:connections:by_status", "true")
-      await client.set("_index:connections:by_testnet", "true")
-
-      // Trade indexes
-      await client.set("_index:trades:by_connection", "true")
-      await client.set("_index:trades:by_status", "true")
-      await client.set("_index:trades:by_symbol", "true")
-
-      // Position indexes
-      await client.set("_index:positions:by_symbol", "true")
-      await client.set("_index:positions:by_connection", "true")
-      await client.set("_index:positions:active", "true")
-
-      // Settings indexes
-      await client.set("_index:settings:keys", "true")
-
-      logs.push("✓ Indexes created successfully")
-      console.log("[v0] Indexes created")
+      const maintenance = await consolidateDatabase({ force: true })
+      if (maintenance.status === "busy") {
+        throw new Error("Database maintenance is already running in another worker")
+      }
+      logs.push(
+        `✓ Maintenance ${maintenance.status}: ${maintenance.connections} connections, ` +
+        `${maintenance.indexMemberships} index memberships`,
+      )
+      console.log("[v0] Database maintenance completed", maintenance)
     } catch (error) {
       const errorMsg = `Index creation failed: ${error}`
       logs.push(`✗ ${errorMsg}`)
@@ -80,9 +72,7 @@ export async function POST(request: NextRequest) {
         "cache": 24 * 60 * 60, // 1 day
       }
 
-      for (const [key, ttl] of Object.entries(ttlPolicies)) {
-        await setSettings(`ttl_policy:${key}`, ttl)
-      }
+      await setSettings("ttl_policies", ttlPolicies)
 
       logs.push("✓ TTL policies configured")
       console.log("[v0] TTL policies set")
@@ -94,11 +84,12 @@ export async function POST(request: NextRequest) {
     // Step 5: Get migration status and stats
     const status = await getMigrationStatus()
     const connectionCounts = await getConnectionCountDiagnostics()
-    const keyCount = connectionCounts.connection_hash_count
+    const keyCount = await getRedisClient().dbSize()
 
     logs.push(`Database Statistics:`)
     logs.push(`  - Schema Version: ${status.currentVersion}`)
-    logs.push(`  - Stored Connections: ${keyCount}`)
+    logs.push(`  - Stored Connections: ${connectionCounts.connection_hash_count}`)
+    logs.push(`  - Total Redis Keys: ${keyCount}`)
     logs.push(`  - Connection Hash Count: ${connectionCounts.connection_hash_count}`)
     logs.push(`  - Legacy Connection Set Count: ${connectionCounts.legacy_connection_set_count}`)
     logs.push(`  - Database Type: Redis`)
@@ -151,7 +142,7 @@ export async function POST(request: NextRequest) {
         status: {
           schema_version: status.currentVersion,
           target_schema_version: status.latestVersion,
-          is_up_to_date: status.currentVersion === status.latestVersion,
+          is_up_to_date: status.isMigrated === true,
           indexes_created: true,
           ttl_configured: true,
           optimizations_enabled: true,

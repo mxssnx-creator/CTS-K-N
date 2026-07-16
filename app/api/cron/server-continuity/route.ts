@@ -65,15 +65,10 @@ export async function GET(request: Request) {
       // active. On Vercel/serverless the runner intentionally no-ops, so this
       // single cron invocation runs the durable heartbeat tasks directly.
       //
-      // NOTE: live-position sync is intentionally NOT run here. It has its OWN
-      // dedicated portable scheduler call (`/api/cron/sync-live-positions`)
-      // because that route self-loops 4 sweeps over a ~55 s wall budget for a
-      // ~15 s effective reconcile cadence — the operator's "keep actively
-      // processing until positions close" requirement. Running it here as a
-      // sub-task forced it under runCronTask's 20 s timeout, truncating it to a
-      // single sweep AND contending on the same `cron:sync-live-positions:lock`
-      // (non-deterministic with the dedicated cron). The dedicated cron lets it
-      // use its full per-invocation budget natively. This route stays the
+      // NOTE: live-position sync is intentionally NOT run here. It has its own
+      // portable scheduler call (`/api/cron/sync-live-positions`) and token
+      // lock. Keeping both endpoints independent avoids duplicate exchange
+      // reconciliation and lets each report failures precisely. This route stays the
       // engine heartbeat: keep the engine auto-started and ticking (the engine's
       // own realtime processor reconciles open positions every ~5 s while it
       // runs; the dedicated sync cron is the engine-down safety net).

@@ -7,10 +7,11 @@ export async function POST() {
 
     // Redis auto-initializes on startup, migrations run automatically
     const { initRedis, getRedisClient } = await import("@/lib/redis-db")
-    const { runMigrations } = await import("@/lib/redis-migrations")
+    const { getMigrationStatus } = await import("@/lib/redis-migrations")
 
     await initRedis()
-    await runMigrations()
+    const migrationStatus = await getMigrationStatus()
+    if (!migrationStatus.isMigrated) throw new Error(migrationStatus.message)
 
     const client = getRedisClient()
     const dbSize = await client.dbSize()
@@ -19,13 +20,14 @@ export async function POST() {
 
     return NextResponse.json({
       success: true,
-      applied: 5,
+      applied: 0,
       skipped: 0,
       failed: 0,
       message: "Redis database initialized successfully",
       stats: {
         database_type: "redis",
         keys_count: dbSize,
+        schema_version: migrationStatus.currentVersion,
       },
     })
   } catch (error: any) {

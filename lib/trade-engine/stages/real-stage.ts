@@ -45,6 +45,7 @@ export interface RealPosition {
   //    the LivePosition the executor produces. ────────────────────────
   setKey?: string
   parentSetKey?: string
+  indicationType?: string
   setVariant?: "default" | "trailing" | "block" | "dca"
   axisWindows?: { prev: number; last: number; cont: number; pause: number }
   // Variant size multiplier carried to the live executor for volume scaling.
@@ -62,7 +63,7 @@ export interface RealPosition {
   // Historical performance snapshot from the originating StrategySet.
   // Forwarded through RealPosition → LivePosition for audit and future
   // re-scoring. Mirrors StrategySet.prevPos — see strategy-coordinator.ts.
-  prevPos?: { count: number; successRate: number; profitFactor: number; avgDDT: number }
+  prevPos?: { count: number; successRate: number; profitFactor: number; avgDDT: number; recentPnls?: number[] }
   // Optimized Preset lineage. Populated only when the connection runs in
   // Preset-only mode; Main Live positions remain unchanged.
   presetId?: string

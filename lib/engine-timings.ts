@@ -26,19 +26,17 @@
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 
 export interface EngineTimings {
-  // ── Cron self-loop cadence ────────────────────────────────────────────
-  // Vercel cron schedule minimum is 1 minute (`* * * * *`). To get sub-
-  // minute cadence the cron handler runs N iterations within one 60 s
-  // invocation, sleeping `cronSyncIntervalSeconds` between each. Effective
-  // sync cadence = `cronSyncIntervalSeconds`. Range: 5–60 s.
+  // ── Long-lived-server recovery cadence ────────────────────────────────
+  // The portable external scheduler always ticks once per minute. A
+  // long-lived Node/PM2/Docker process additionally reconciles open Live
+  // positions at this configurable cadence. No request handler sleeps or
+  // self-loops. Range: 5–60 s; default 15 s.
   cronSyncIntervalSeconds: number
 
   // ── Realtime-processor close path throttle ────────────────────────────
   // `RealtimeProcessor.maybeRunLiveSync()` is gated by this. Lower =
   // faster close-on-SL/TP detection but more REST calls to the exchange.
-  // Default 200 ms — matches the live exchange-positions update cadence
-  // so SL/TP cross detection and protection-order healing run in lock-
-  // step with the freshest price data the venue gives us.
+  // Default 1000 ms balances close/fill latency with exchange rate limits.
   liveSyncIntervalMs: number
 
   // ── Post-completion breath for live sync ──────────────────────────────
@@ -158,15 +156,8 @@ export interface EngineTimings {
 
 export const DEFAULT_ENGINE_TIMINGS: EngineTimings = {
   cronSyncIntervalSeconds:   15,
-  // Tuned for sub-second close response — was 5_000 ms, lowered to match
-  // the live exchange-positions cadence (~200 ms). Combined with the
-  // `liveSyncPauseMs` post-cycle breath this gives ~5 close-path sweeps
-  // per second while still letting each sweep finish cleanly.
-  // Tuned to 120 ms (≈8 sweeps/sec) for fastest safe close/fill detection
-  // on short-hold trades. Stays above the 100 ms floor (below that, sweeps
-  // outrun the exchange price tick and just burn REST quota). This is the
-  // start-to-start cadence for syncWithExchange (Loop C); raising above
-  // 1000 ms risks stale position state and double-close.
+  // One exchange reconciliation per second by default. The separate
+  // post-completion pause yields the event loop between completed sweeps.
   liveSyncIntervalMs:        1_000,
   liveSyncPauseMs:             250,
   heartbeatIntervalMs:       1_000,
@@ -189,9 +180,9 @@ export const DEFAULT_ENGINE_TIMINGS: EngineTimings = {
   //   and let pending microtasks/I-O callbacks drain. Not a pacing timer.
   prehistoricIntervalMs:       1_000,  // Loop A: 1 s cadence
   prehistoricCyclePauseMs:        50,  // Loop A: post-completion breath
-  realtimeIntervalMs:          1_000,  // Loop B: 200 ms cadence (faster signal→dispatch)
+  realtimeIntervalMs:          1_000,  // Loop B: 1 s cadence
   realtimeCyclePauseMs:          250,  // Loop B: post-completion breath
-  livePositionsCyclePauseMs:     500,  // Loop C: post-completion breath (interval = liveSyncIntervalMs 120 ms)
+  livePositionsCyclePauseMs:     500,  // Loop C: post-completion breath
   // ── Hedge Accumulation defaults (disabled until opted-in) ────────────────
    neutralizeEnabled:               false,
    neutralizeThresholdPct:          10,   // 10 % imbalance before reducing
@@ -207,11 +198,8 @@ export const DEFAULT_ENGINE_TIMINGS: EngineTimings = {
 // would silence the dashboard's "engine alive" indicator).
 export const ENGINE_TIMING_BOUNDS: Record<keyof EngineTimings, { min: number; max: number }> = {
   cronSyncIntervalSeconds:   { min: 5,           max: 60                  },
-  // Lower bound 100 ms — anything faster than the exchange's own price
-  // tick is wasted REST calls. Upper bound capped at 1000 ms (1 sweep/sec)
-  // — raising above this causes fill/close detection to lag by >1 tick,
-  // producing stale position state and double-close races.
-  // Default 200 ms = 5 sweeps/sec. Do not raise without explicit intent.
+  // A 500 ms floor avoids duplicate polling faster than typical venue ticks;
+  // the 5 s ceiling keeps closure/recovery latency bounded.
   liveSyncIntervalMs:        { min: 500,         max: 5_000               },
   liveSyncPauseMs:           { min: 100,         max: 1_000                 },
   heartbeatIntervalMs:       { min: 250,         max: 30_000              },

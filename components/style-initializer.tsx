@@ -1,6 +1,11 @@
 "use client"
 
 import { useEffect } from "react"
+import {
+  applyTopInfoLayer,
+  normalizeTopInfoLayer,
+  TOP_INFO_LAYER_STORAGE_KEY,
+} from "@/lib/top-info-layer"
 
 export function StyleInitializer() {
   useEffect(() => {
@@ -12,6 +17,9 @@ export function StyleInitializer() {
 
         root.classList.remove("style-default", "style-new-york", "style-minimal", "style-rounded", "style-compact")
         root.classList.add(`style-${savedStyle}`)
+
+        const savedTopInfoLayer = normalizeTopInfoLayer(localStorage.getItem(TOP_INFO_LAYER_STORAGE_KEY))
+        applyTopInfoLayer(root, savedTopInfoLayer)
       }
     } catch (error) {
       console.error("[v0] StyleInitializer error:", error)

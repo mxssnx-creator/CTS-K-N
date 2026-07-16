@@ -1364,8 +1364,8 @@ export function QuickstartSection() {
            * test (health → preflight → enable(1 symbol) → progression poll
            * → verify-engine → live-positions → disable). Streams per-phase
            * PASS/WARN/FAIL into a detailed dialog so operators can spot
-           * regressions without dropping to a terminal. Same button is
-           * also mounted in the dashboard PageHeader for top-level access.
+           * regressions without dropping to a terminal. It intentionally lives
+           * only here so the top title layer stays focused on live controls.
            */}
           <EngineProgressionTestButton />
 

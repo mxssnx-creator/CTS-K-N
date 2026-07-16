@@ -10,6 +10,17 @@
  */
 
 import { getRedisClient, getConnection, getAllConnections } from "@/lib/redis-db"
+import {
+  rebuildConnectionSecondaryIndexes,
+  syncConnectionSecondaryIndexes,
+} from "@/lib/database-indexes"
+import {
+  createDatabaseMaintenanceFingerprint,
+  DATABASE_MAINTENANCE_LOCK_KEY,
+  DATABASE_MAINTENANCE_STATUS_KEY,
+  ensureUnifiedProgressionKeysWithClient,
+} from "@/lib/database-maintenance"
+import { createRedisLockToken, releaseOwnedRedisLock } from "@/lib/redis-lock-utils"
 
 /**
  * PHASE 3 FIX 3.1: Unified progression key structure
@@ -17,60 +28,9 @@ import { getRedisClient, getConnection, getAllConnections } from "@/lib/redis-db
  * Maps old scattered keys to new consolidated structure:
  * progression:{connectionId} → hash with all progression data
  */
-export async function ensureUnifiedProgressionKeys(connectionId: string) {
+export async function ensureUnifiedProgressionKeys(connectionId: string): Promise<boolean> {
   const client = getRedisClient()
-
-  // Check if already using new format (try to read as hash)
-  try {
-    const existing = await client.hgetall(`progression:${connectionId}`)
-    if (existing && Object.keys(existing).length > 0) {
-      // Check if it has the new unified structure
-      if (existing.phase_message) {
-        console.log(`[v0] [DB] Progression key already unified for ${connectionId}`)
-        return
-      }
-    }
-  } catch {
-    // Not a hash, continue with consolidation
-  }
-
-  console.log(`[v0] [DB] Consolidating progression keys for ${connectionId}`)
-
-  // Read from old scattered keys
-  const oldProgression = await client.hgetall(`progression:${connectionId}`)
-  const oldCycles = await client.get(`progression:${connectionId}:cycles`)
-  const oldIndications = await client.get(`progression:${connectionId}:indications`)
-  const oldEngineState = await client.hgetall(`engine_state:${connectionId}`)
-  const oldTradeEngineState = await client.hgetall(`trade_engine_state:${connectionId}`)
-
-  // Build unified structure
-  const unified = {
-    cycles_completed: oldProgression?.cycles_completed || oldCycles || "0",
-    successful_cycles: oldProgression?.successful_cycles || "0",
-    failed_cycles: oldProgression?.failed_cycles || "0",
-    phase: oldProgression?.phase || oldTradeEngineState?.phase || "idle",
-    phase_progress: oldProgression?.progress || oldEngineState?.progress || "0",
-    phase_message: oldProgression?.detail || oldEngineState?.detail || "",
-    engine_started: oldEngineState?.started_at || oldTradeEngineState?.started_at || "",
-    last_cycle: oldProgression?.last_cycle || "",
-    last_indication_count: oldProgression?.indication_count || oldIndications || "0",
-    last_strategy_count: oldProgression?.strategy_count || "0",
-    symbols_count: oldTradeEngineState?.symbols_count || "0",
-    updated_at: new Date().toISOString(),
-  }
-
-  // Write to new unified key
-  await client.hset(`progression:${connectionId}`, unified)
-  console.log(`[v0] [DB] ✓ Consolidated progression keys for ${connectionId}`)
-
-  // Clean up old keys (keep for 24h backward compatibility)
-  try {
-    await client.expire(`progression:${connectionId}:cycles`, 86400)
-    await client.expire(`progression:${connectionId}:indications`, 86400)
-    await client.expire(`engine_state:${connectionId}`, 86400)
-  } catch (e) {
-    console.warn(`[v0] [DB] Could not expire old keys: ${e}`)
-  }
+  return ensureUnifiedProgressionKeysWithClient(client, connectionId)
 }
 
 /**
@@ -86,40 +46,7 @@ export async function updateConnectionIndex(connectionId: string) {
       return
     }
 
-    // Index 1: Main enabled connections (for quick queries)
-    const isAssigned = conn.is_assigned === "1" || conn.is_assigned === true
-    const isDashboardEnabled = conn.is_enabled_dashboard === "1" || conn.is_enabled_dashboard === true
-
-    if (isAssigned && isDashboardEnabled) {
-      await client.sadd("connections:main:enabled", connectionId)
-      console.log(`[v0] [DB] Added ${connectionId} to main:enabled index`)
-    } else {
-      await client.srem("connections:main:enabled", connectionId)
-    }
-
-    // Index 2: Exchange-specific connections
-    if (conn.exchange) {
-      const exchange = conn.exchange.toLowerCase()
-      await client.sadd(`connections:exchange:${exchange}`, connectionId)
-      console.log(`[v0] [DB] Added ${connectionId} to exchange:${exchange} index`)
-    }
-
-    // Index 3: Base enabled connections (for settings)
-    const isInserted = conn.is_inserted === "1" || conn.is_inserted === true
-    const isBaseEnabled = conn.is_enabled === "1" || conn.is_enabled === true
-
-    if (isInserted && isBaseEnabled) {
-      await client.sadd("connections:base:enabled", connectionId)
-    } else {
-      await client.srem("connections:base:enabled", connectionId)
-    }
-
-    // Index 4: All connections by status
-    if (conn.last_test_status === "success") {
-      await client.sadd("connections:working", connectionId)
-    } else {
-      await client.srem("connections:working", connectionId)
-    }
+    await syncConnectionSecondaryIndexes(client, conn)
   } catch (error) {
     console.error(`[v0] [DB] Error updating indexes for ${connectionId}:`, error)
   }
@@ -128,30 +55,21 @@ export async function updateConnectionIndex(connectionId: string) {
 /**
  * Rebuild all indexes (useful after data import or recovery)
  */
-export async function rebuildAllIndexes() {
+export async function rebuildAllIndexes(connections?: any[]) {
   console.log(`[v0] [DB] Rebuilding all connection indexes...`)
 
   try {
     const client = getRedisClient()
-
-    // Clear old indexes
-    await client.del(
-      "connections:main:enabled",
-      "connections:base:enabled",
-      "connections:working"
+    const allConnections = connections ?? await getAllConnections()
+    const rebuilt = await rebuildConnectionSecondaryIndexes(client, allConnections)
+    console.log(
+      `[v0] [DB] ✓ Rebuilt ${rebuilt.indexKeys} connection indexes ` +
+      `(${rebuilt.memberships} memberships, ${rebuilt.connections} connections)`,
     )
-
-    // Get all connections
-    const allConnections = await getAllConnections()
-
-    // Rebuild each index
-    for (const conn of allConnections) {
-      await updateConnectionIndex(conn.id)
-    }
-
-    console.log(`[v0] [DB] ✓ Rebuilt ${allConnections.length} connection indexes`)
+    return rebuilt
   } catch (error) {
     console.error(`[v0] [DB] Error rebuilding indexes:`, error)
+    throw error
   }
 }
 
@@ -236,24 +154,113 @@ export async function getMarketDataState(connectionId: string) {
 /**
  * PHASE 3: Complete database consolidation
  */
-export async function consolidateDatabase() {
-  console.log(`[v0] [DB] Starting database consolidation...`)
+export interface DatabaseConsolidationResult {
+  status: "completed" | "skipped" | "busy"
+  connections: number
+  progressionKeysUpdated: number
+  indexMemberships: number
+  fingerprint: string
+  durationMs: number
+}
+
+export async function consolidateDatabase(options: { force?: boolean } = {}): Promise<DatabaseConsolidationResult> {
+  const startedAt = Date.now()
+  const client = getRedisClient()
+  const [schemaVersionRaw, allConnections] = await Promise.all([
+    client.get("_schema_version"),
+    getAllConnections(),
+  ])
+  const schemaVersion = Number(schemaVersionRaw || 0)
+  const fingerprint = createDatabaseMaintenanceFingerprint(schemaVersion, allConnections)
+
+  const alreadyComplete = async () => {
+    const status = ((await client.hgetall(DATABASE_MAINTENANCE_STATUS_KEY).catch(() => ({}))) || {}) as Record<string, string>
+    return status.status === "completed" && status.fingerprint === fingerprint
+  }
+  if (!options.force && await alreadyComplete()) {
+    return {
+      status: "skipped",
+      connections: allConnections.length,
+      progressionKeysUpdated: 0,
+      indexMemberships: 0,
+      fingerprint,
+      durationMs: Date.now() - startedAt,
+    }
+  }
+
+  const token = createRedisLockToken("database-maintenance")
+  const acquired = await client.set(DATABASE_MAINTENANCE_LOCK_KEY, token, { NX: true, EX: 300 }).catch(() => null)
+  if (acquired !== "OK") {
+    return {
+      status: "busy",
+      connections: allConnections.length,
+      progressionKeysUpdated: 0,
+      indexMemberships: 0,
+      fingerprint,
+      durationMs: Date.now() - startedAt,
+    }
+  }
 
   try {
-    const allConnections = await getAllConnections()
-
-    // Step 1: Consolidate all progression keys
-    for (const conn of allConnections) {
-      await ensureUnifiedProgressionKeys(conn.id)
+    if (!options.force && await alreadyComplete()) {
+      return {
+        status: "skipped",
+        connections: allConnections.length,
+        progressionKeysUpdated: 0,
+        indexMemberships: 0,
+        fingerprint,
+        durationMs: Date.now() - startedAt,
+      }
     }
-    console.log(`[v0] [DB] ✓ Consolidated ${allConnections.length} progression keys`)
 
-    // Step 2: Rebuild all indexes
-    await rebuildAllIndexes()
+    console.log(`[v0] [DB] Starting database consolidation...`)
+    await client.hset(DATABASE_MAINTENANCE_STATUS_KEY, {
+      status: "running",
+      fingerprint,
+      schema_version: String(schemaVersion),
+      started_at: new Date().toISOString(),
+    })
 
+    let progressionKeysUpdated = 0
+    const batchSize = 12
+    for (let offset = 0; offset < allConnections.length; offset += batchSize) {
+      const batch = allConnections.slice(offset, offset + batchSize)
+      const updates = await Promise.all(
+        batch.map((connection) => ensureUnifiedProgressionKeysWithClient(client, connection.id)),
+      )
+      progressionKeysUpdated += updates.filter(Boolean).length
+    }
+    const indexes = await rebuildConnectionSecondaryIndexes(client, allConnections)
+    const completedAt = new Date().toISOString()
+    await client.hset(DATABASE_MAINTENANCE_STATUS_KEY, {
+      status: "completed",
+      fingerprint,
+      schema_version: String(schemaVersion),
+      connection_count: String(allConnections.length),
+      progression_keys_updated: String(progressionKeysUpdated),
+      index_keys: String(indexes.indexKeys),
+      index_memberships: String(indexes.memberships),
+      completed_at: completedAt,
+      last_error: "",
+    })
     console.log(`[v0] [DB] ✓ Database consolidation complete`)
+    return {
+      status: "completed",
+      connections: allConnections.length,
+      progressionKeysUpdated,
+      indexMemberships: indexes.memberships,
+      fingerprint,
+      durationMs: Date.now() - startedAt,
+    }
   } catch (error) {
+    await client.hset(DATABASE_MAINTENANCE_STATUS_KEY, {
+      status: "failed",
+      failed_at: new Date().toISOString(),
+      last_error: error instanceof Error ? error.message : String(error),
+    }).catch(() => 0)
     console.error(`[v0] [DB] Database consolidation failed:`, error)
     throw error
+  } finally {
+    await releaseOwnedRedisLock(client, DATABASE_MAINTENANCE_LOCK_KEY, token).catch(() => false)
   }
 }

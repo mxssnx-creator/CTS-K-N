@@ -94,6 +94,8 @@ describe("production continuity invariants", () => {
     expect(continuity).toContain("CONTINUITY_MINUTE_INTERVAL_MS = 60_000")
     expect(continuity).toContain("state.minuteTimer = setInterval")
     expect(migrations).toContain('name: "070-stable-site-instance-and-portable-minute-continuity"')
+    expect(migrations).toContain('name: "071-unified-database-maintenance-and-secondary-indexes"')
+    expect(migrations).toContain('MIGRATION_EXECUTION_LOCK_KEY = "system:database:migrations:lock"')
     expect(migrations).toContain("void promise.then(() =>")
     expect(instrumentation).toContain("critical startup failed; engines remain stopped")
     expect(instrumentation).toContain("scheduleStartupRetry()")

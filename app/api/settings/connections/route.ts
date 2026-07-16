@@ -112,6 +112,10 @@ export async function POST(request: Request) {
 
     // Generate unique connection ID based on exchange + API key
     const connectionId = generateConnectionIdFromApiKey(body.exchange, body.api_key)
+    const normalizedExchange = String(body.exchange).toLowerCase().replace(/[^a-z]/g, "")
+    const isBingX = normalizedExchange.includes("bingx")
+    const connectionMethod = body.connection_method || (isBingX ? "library" : "rest")
+    const connectionLibrary = body.connection_library || (isBingX && connectionMethod === "library" ? "sdk" : "native")
 
     // Create connection object with all required fields
     const connection = {
@@ -123,8 +127,8 @@ export async function POST(request: Request) {
       api_passphrase: body.api_passphrase || "",
       api_type: body.api_type || "perpetual_futures",
       api_subtype: body.api_type === "unified" ? (body.api_subtype || "perpetual") : undefined,
-      connection_method: body.connection_method || "rest",
-      connection_library: body.connection_library || "native",
+      connection_method: connectionMethod,
+      connection_library: connectionLibrary,
       margin_type: body.margin_type || "cross",
       position_mode: body.position_mode || "hedge",
       contract_type: body.contract_type || "usdt-perpetual",

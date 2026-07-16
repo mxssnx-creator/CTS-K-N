@@ -64,7 +64,7 @@ export function ExchangeSelectorTop({ variant = "header" }: ExchangeSelectorTopP
     <div className="w-full min-w-0">
       <div className="flex flex-col gap-1 min-w-0">
         <Select value={defaultValue} onValueChange={handleSelectConnection}>
-          <SelectTrigger className={isSidebar ? "w-full h-8 text-sm border-input bg-background hover:bg-muted" : "w-[220px] h-8 text-sm border-input bg-background hover:bg-muted"}>
+          <SelectTrigger className={isSidebar ? "w-full h-8 text-sm border-input bg-background hover:bg-muted" : "w-full max-w-[220px] h-8 text-sm border-input bg-background/90 hover:bg-muted"}>
             <SelectValue placeholder="Select connection" />
           </SelectTrigger>
           <SelectContent>

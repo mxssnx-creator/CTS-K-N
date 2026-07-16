@@ -1,6 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
-import { runMigrations } from "@/lib/redis-migrations"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -12,12 +11,8 @@ export async function POST(request: NextRequest) {
     // Initialize Redis
     await initRedis()
     
-    // Run migrations
-    await runMigrations()
-    
     const client = getRedisClient()
-    const keys = await client.keys("*")
-    const keyCount = keys ? keys.length : 0
+    const keyCount = await client.dbSize()
 
     return NextResponse.json({
       success: true,

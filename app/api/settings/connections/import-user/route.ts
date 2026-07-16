@@ -25,13 +25,20 @@ export async function POST() {
           continue
         }
 
+        if (!userConn.apiKey || !userConn.apiSecret) {
+          errors.push(`Skipped ${userConn.displayName}: server environment credentials are not configured`)
+          skipped++
+          continue
+        }
+
+        const isBingX = String(userConn.exchange).toLowerCase().replace(/[^a-z]/g, "").includes("bingx")
         await createConnection({
           id: userConn.id,
           name: userConn.name,
           exchange: userConn.exchange,
           api_type: userConn.apiType,
-          connection_method: "rest",
-          connection_library: "native",
+          connection_method: isBingX ? "library" : "rest",
+          connection_library: isBingX ? "sdk" : "native",
           api_key: userConn.apiKey,
           api_secret: userConn.apiSecret,
           margin_type: userConn.marginType || "cross",

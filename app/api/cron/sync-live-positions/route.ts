@@ -2,7 +2,6 @@ import { NextResponse } from "next/server"
 import { initRedis, getRedisClient, getAllConnections } from "@/lib/redis-db"
 import { reconcileLivePositions, syncWithExchange } from "@/lib/trade-engine/stages/live-stage"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
-import { getEngineTimings, refreshEngineTimings, ENGINE_TIMING_BOUNDS } from "@/lib/engine-timings"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"
@@ -11,24 +10,12 @@ export const maxDuration = 60
 /**
  * CRASH-RECOVERY / ENGINE-DOWN safety net for live positions.
  *
- * ──────────────────────────────────────────────────────────────────────
- *  Why this file self-loops instead of relying on Vercel cron alone
- * ──────────────────────────────────────────────────────────────────────
- *
- *  Vercel cron's minimum schedule granularity is ONE MINUTE (`* * * * *`).
- *  The operator wants 15-second cadence so an externally-closed position
- *  (SL/TP fired, manual close) is reflected in Redis within ~15 s rather
- *  than waiting up to 60 s for the next cron tick.
- *
- *  Solution: each cron invocation runs *multiple* sweeps inside its
- *  single 60-second `maxDuration` budget, sleeping `cronSyncIntervalSeconds`
- *  (default 15 s) between sweeps. With a 15 s cadence each cron run
- *  performs 4 sweeps (t=0, 15, 30, 45) and exits ~5 s before the next
- *  Vercel cron fires.
- *
- *  Effective sync cadence = `cronSyncIntervalSeconds` (live-tunable from
- *  /settings → System → Engine Timings → cron_sync_interval_seconds).
- *  Setting it to 60 = legacy one-sweep-per-cron behaviour.
+ * Each request performs exactly one bounded recovery sweep. The portable
+ * scheduler invokes it once per minute on any server platform; long-lived
+ * Node/PM2/Docker deployments additionally run the in-process 15-second
+ * recovery timer. Keeping sleeps out of the request avoids hosted-function
+ * duration limits and makes Vercel an optional target rather than a runtime
+ * dependency.
  *
  * ──────────────────────────────────────────────────────────────────────
  *  What each sweep does
@@ -51,16 +38,12 @@ export const maxDuration = 60
  * ──────────────────────────────────────────────────────────────────────
  *  Overlap guard
  * ──────────────────────────────────────────────────────────────────────
- *  The atomic SET-NX lock (TTL = 65 s, slightly longer than maxDuration)
- *  prevents two cron invocations from running concurrent sweeps. The
- *  lock is EXTENDED on every sleep boundary so a slow exchange cannot
- *  cause the lock to expire mid-flight and let a second invocation
- *  start. On clean exit the lock is DELeted so the next minute's tick
- *  can acquire immediately.
+ *  The atomic token-owned SET-NX lock prevents two scheduler/continuity
+ *  owners from running concurrent sweeps. Clean release verifies ownership.
  */
 
 const LOCK_KEY = "cron:sync-live-positions:lock"
-const LOCK_TTL_SECONDS = 65 // > maxDuration so an expired lock implies real crash
+const LOCK_TTL_SECONDS = 65
 
 interface SweepSummary {
   connectionsChecked: number
@@ -86,17 +69,6 @@ function newSummary(): SweepSummary {
     orphansSwept: 0,
     errors: 0,
   }
-}
-
-function mergeSummary(into: SweepSummary, from: SweepSummary): void {
-  into.connectionsChecked  += from.connectionsChecked
-  into.connectionsSkipped  += from.connectionsSkipped
-  into.positionsReconciled += from.positionsReconciled
-  into.positionsClosed     += from.positionsClosed
-  into.positionsUpdated    += from.positionsUpdated
-  into.protectionRearmed   += from.protectionRearmed
-  into.orphansSwept        += from.orphansSwept
-  into.errors              += from.errors
 }
 
 /**
@@ -216,25 +188,9 @@ export async function GET(request: Request) {
   const started = Date.now()
   await initRedis()
   const client = getRedisClient()
+  const token = `sync_${started}_${Math.random().toString(36).slice(2, 10)}`
 
-  // Refresh timings cache once at entry so this invocation sees the
-  // latest cron_sync_interval_seconds without having to wait for the
-  // 10s cache TTL.
-  await refreshEngineTimings({ force: true }).catch(() => {})
-
-  const timings = getEngineTimings()
-  // Clamp again defensively — UI already clamps but a hand-edited HSET
-  // could bypass that path.
-  const cadenceBounds = ENGINE_TIMING_BOUNDS.cronSyncIntervalSeconds
-  const intervalSec = Math.max(
-    cadenceBounds.min,
-    Math.min(cadenceBounds.max, timings.cronSyncIntervalSeconds || 15),
-  )
-  const intervalMs = intervalSec * 1000
-
-  // Atomic acquire — overlap guard. TTL slightly > maxDuration so a
-  // crashed invocation cannot permanently block subsequent runs.
-  const acquired = await client.set(LOCK_KEY, String(started), {
+  const acquired = await client.set(LOCK_KEY, token, {
     NX: true,
     EX: LOCK_TTL_SECONDS,
   })
@@ -247,68 +203,29 @@ export async function GET(request: Request) {
     })
   }
 
-  const total = newSummary()
-  let sweepCount = 0
-
   try {
-    // Budget: stop new sweeps once we are within 5 s of maxDuration so
-    // the in-flight sweep has time to finish and the lock to release
-    // cleanly before Vercel kills the function.
-    // maxDuration is 60 s, headroom 5 s → wall budget 55 s.
-    const WALL_BUDGET_MS = 55_000
-    const deadline = started + WALL_BUDGET_MS
-
-    while (Date.now() < deadline) {
-      const sweepStarted = Date.now()
-      const result = await runLivePositionRecoverySweep().catch((err) => {
-        console.warn("[SyncLivePositions] sweep failed:", err)
-        const errSummary = newSummary()
-        errSummary.errors = 1
-        return errSummary
-      })
-      mergeSummary(total, result)
-      sweepCount++
-
-      const sweepElapsed = Date.now() - sweepStarted
-      const sleepFor = Math.max(0, intervalMs - sweepElapsed)
-      const nextSweepStartsAt = Date.now() + sleepFor
-
-      // If the next sweep would start past the deadline, exit cleanly
-      // rather than busy-sleeping into the kill window.
-      if (nextSweepStartsAt + 2_000 > deadline) break
-
-      // Extend the lock so it never expires mid-sleep.
-      await client.set(LOCK_KEY, String(Date.now()), {
-        XX: true,
-        EX: LOCK_TTL_SECONDS,
-      }).catch(() => {})
-
-      // Sleep. Plain setTimeout — no abort signal needed because the
-      // surrounding function is single-tenant (lock holder).
-      await new Promise((resolve) => setTimeout(resolve, sleepFor))
-    }
-
-    await client.del(LOCK_KEY).catch(() => {})
+    const total = await runLivePositionRecoverySweep()
     return NextResponse.json({
       ok: true,
-      sweepCount,
-      intervalSec,
+      sweepCount: 1,
+      scheduleIntervalSec: 60,
       ms: Date.now() - started,
       ...total,
     })
   } catch (err) {
     console.error("[SyncLivePositions] Fatal:", err)
-    await client.del(LOCK_KEY).catch(() => {})
     return NextResponse.json(
       {
         ok: false,
-        sweepCount,
-        intervalSec,
+        sweepCount: 1,
+        scheduleIntervalSec: 60,
         error: err instanceof Error ? err.message : String(err),
         ms: Date.now() - started,
-        ...total,
       },
       { status: 500 },
     )
+  } finally {
+    const current = await client.get(LOCK_KEY).catch(() => null)
+    if (current === token) await client.del(LOCK_KEY).catch(() => {})
   }
 }

@@ -378,7 +378,9 @@ describe("live-order stranded-position guards", () => {
     expect(recoveryIndex).toBeGreaterThan(runningIndex)
     expect(historicIndex).toBeGreaterThan(recoveryIndex)
     expect(continuity).toContain("enqueueContinuityLiveRecoveryJob")
-    expect(continuity).toContain("LIVE_RECOVERY_INTERVAL_MS = 15_000")
+    expect(continuity).toContain("getLiveRecoveryIntervalMs")
+    expect(continuity).toContain("cronSyncIntervalSeconds")
+    expect(continuity).toContain("scheduleNextLiveRecovery")
     expect(recoveryCron).toContain("export async function runLivePositionRecoverySweep")
   })
 

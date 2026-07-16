@@ -80,6 +80,14 @@ interface OverallStats {
 }
 
 const ENABLE_STEP_LABEL = "Enable selected Main Connection"
+const DEFAULT_FETCH_TIMEOUT_MS = 12_000
+const MIGRATION_STEP_TIMEOUT_MS = 60_000
+const COORDINATOR_START_TIMEOUT_MS = 35_000
+// The server can spend up to 30s validating the exchange and another 25s
+// awaiting the production engine boot. Keep explicit headroom for symbol
+// selection, Redis writes, and response transfer so the browser never reports
+// failure while the server continues enabling live trading in the background.
+const QUICKSTART_ENABLE_TIMEOUT_MS = 75_000
 
 type QuickStartRequestBody = {
   action: "enable"
@@ -216,12 +224,37 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
     }
   }
 
-  // Timed fetch with configurable timeout (default 12s)
-  const timedFetch = (url: string, opts?: RequestInit, ms = 12000): Promise<Response> =>
-    Promise.race([
-      fetch(url, { ...opts, cache: "no-store" }),
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`Timeout ${ms / 1000}s: ${url}`)), ms)),
-    ])
+  // Timed fetch that aborts the underlying request. A Promise.race-only timeout
+  // leaves the mutating request alive, so the UI can show failure while the
+  // server still enables an engine later — unsafe and especially confusing in
+  // production.
+  const timedFetch = async (
+    url: string,
+    opts?: RequestInit,
+    ms = DEFAULT_FETCH_TIMEOUT_MS,
+  ): Promise<Response> => {
+    const controller = new AbortController()
+    const upstreamSignal = opts?.signal
+    const abortFromUpstream = () => controller.abort(upstreamSignal?.reason)
+    if (upstreamSignal?.aborted) abortFromUpstream()
+    else upstreamSignal?.addEventListener("abort", abortFromUpstream, { once: true })
+
+    let timedOut = false
+    const timeout = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, ms)
+
+    try {
+      return await fetch(url, { ...opts, cache: "no-store", signal: controller.signal })
+    } catch (error) {
+      if (timedOut) throw new Error(`Timeout ${ms / 1000}s: ${url}`)
+      throw error
+    } finally {
+      window.clearTimeout(timeout)
+      upstreamSignal?.removeEventListener("abort", abortFromUpstream)
+    }
+  }
 
   const handleQuickStart = async () => {
     setIsRunning(true)
@@ -239,7 +272,7 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
 
       // STEP 2: Migrations (non-critical)
       await runStep("migrate", "STEP 2: Migrations", async () => {
-        const res = await timedFetch("/api/install/database/migrate", { method: "POST" }, 20000)
+        const res = await timedFetch("/api/install/database/migrate", { method: "POST" }, MIGRATION_STEP_TIMEOUT_MS)
         if (!res.ok) return "Up to date"
         const d = await res.json().catch(() => ({}))
         const n = d.migrations?.length ?? d.ranCount ?? 0
@@ -260,7 +293,7 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
 
       // STEP 4: Start global coordinator (REQUIRED)
       await runStep("start", "STEP 4: Start Global Coordinator", async () => {
-        const res = await timedFetch("/api/trade-engine/start", { method: "POST" }, 20000)
+        const res = await timedFetch("/api/trade-engine/start", { method: "POST" }, COORDINATOR_START_TIMEOUT_MS)
         const d = await res.json().catch(() => ({}))
         if (!res.ok && !d.success) throw new Error(d.error ?? `HTTP ${res.status}`)
         const n = d.resumedConnections?.length ?? 0
@@ -293,7 +326,7 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(quickStartBody),
-        }, 25000)
+        }, QUICKSTART_ENABLE_TIMEOUT_MS)
         const d = await res.json().catch(() => ({}))
         quickStartResponse = d
         if (!res.ok && !d.success) throw new Error(d.error ?? `HTTP ${res.status}`)

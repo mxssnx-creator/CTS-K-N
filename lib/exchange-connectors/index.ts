@@ -89,9 +89,10 @@ export async function createExchangeConnector(
       return new BybitConnector(credentials, "bybit")
     }
     case "bingx": {
-      // Use official SDK client (bingx-api library) for instant order execution
-      // SDK handles connection pooling, signing, and timestamp sync automatically
-      // Falls back to manual REST if SDK initialization fails
+      // Prefer the installed `bingx-api` library for supported mainnet swap
+      // calls and fall back to the built-in signed BingX REST implementation.
+      // The npm package is community maintained; the REST contract remains the
+      // official exchange interface and safety fallback.
       const { BingXConnector } = await import("./bingx-connector")
       return new BingXConnector(credentials, "bingx")
     }

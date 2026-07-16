@@ -2,9 +2,10 @@
 // in `next.config.mjs` (the runtime guard in `instrumentation.ts` makes
 // sure the stub is never executed at request time).
 import * as crypto from "crypto"
-// Official BingX SDK for instant order execution with connection pooling
-// Note: SDK import is wrapped in try-catch during initialization
-import type { default as BingXClient } from "bingx-api"
+// Native `bingx-api` package fast path. BingX publishes the HTTP API contract,
+// while this npm package is community maintained; keep the signed REST path as
+// a production-safe fallback when the package cannot initialize or an endpoint
+// is not implemented by the package.
 import {
   BaseExchangeConnector,
   type ExchangeCredentials,
@@ -55,12 +56,14 @@ export class BingXConnector extends BaseExchangeConnector {
   getLastOrderHistorySnapshotStatus(): { ok: boolean; at: number; error?: string } {
     return { ...this.lastOrderHistorySnapshotStatus }
   }
-  // ── Official BingX SDK Client (with connection pooling & keep-alive) ──────
-  // The SDK handles all signature generation, retry logic, and connection pooling
-  // for significantly faster execution compared to manual REST calls.
+  // ── Native bingx-api package client ───────────────────────────────────────
+  // The library path is the default for supported mainnet-swap calls. The
+  // hand-signed BingX REST implementation remains the authoritative fallback.
   private sdkClient: any // BingX SDK client instance (supports swap mainnet)
   private sdkAccount: any
   private sdkInitPromise: Promise<void> | null = null
+  private sdkReady = false
+  private sdkLastError = ""
 
   // ── Static (process-wide) time-sync state ────────────────────────────────
   //
@@ -71,6 +74,7 @@ export class BingXConnector extends BaseExchangeConnector {
   private static sharedSyncPromise: Promise<void> | null = null
   private static lastSyncFailLogTs: number = 0
   private static lastTransportFailLogTs: number = 0
+  private static lastSdkFallbackLogTs: number = 0
 
   // Instance accessors delegate to the static shared state so the rest of
   // the class can use `this.timeOffset` / `this.lastTimeSync` / etc. without
@@ -108,12 +112,13 @@ export class BingXConnector extends BaseExchangeConnector {
   constructor(credentials: ExchangeCredentials, exchange: string = "bingx") {
     super(credentials, exchange)
     
-    // Initialize the official BingX SDK client with connection pooling
-    // SDK is dynamically loaded to avoid import issues in edge environments
+    // Initialize the native library client. The import remains dynamic so Edge
+    // bundles never evaluate its Node/NestJS dependency tree.
     this.sdkInitPromise = this.initializeSDKClient(credentials).catch(() => {
       // Fall back to manual REST if SDK fails to initialize
       this.sdkClient = null
       this.sdkAccount = null
+      this.sdkReady = false
     })
     
     // Kick off the first time-sync in the background (SDK handles this internally too)
@@ -131,7 +136,8 @@ export class BingXConnector extends BaseExchangeConnector {
         || (BingXModule as any)
       
       if (!BingXClient || typeof BingXClient !== "function") {
-        console.warn("[BingX] SDK client not found or not a constructor")
+        this.sdkLastError = "bingx-api client export is not a constructor"
+        console.warn(`[BingX] ${this.sdkLastError}`)
         return
       }
 
@@ -141,7 +147,8 @@ export class BingXConnector extends BaseExchangeConnector {
       const ApiAccount = (BingXModule as any).ApiAccount
 
       if (!requestExecutor || !ApiAccount) {
-        console.warn("[BingX] SDK executor/account exports not found")
+        this.sdkLastError = "bingx-api executor/account exports were not found"
+        console.warn(`[BingX] ${this.sdkLastError}`)
         return
       }
 
@@ -151,12 +158,16 @@ export class BingXConnector extends BaseExchangeConnector {
       // order services, forcing slow REST fallback in production.
       this.sdkClient = new BingXClient(requestExecutor)
       this.sdkAccount = new ApiAccount(credentials.apiKey, credentials.apiSecret)
+      this.sdkReady = true
+      this.sdkLastError = ""
       
       // CRITICAL FIX: Removed log spam that appeared 50+ times per cycle
       // SDK is initialized once per process, this log was noisy during development
       // console.log("[BingX] SDK client initialized (trade service + account enabled)")
     } catch (err) {
-      console.warn("[BingX] SDK initialization warning:", err instanceof Error ? err.message : String(err))
+      this.sdkReady = false
+      this.sdkLastError = err instanceof Error ? err.message : String(err)
+      console.warn("[BingX] bingx-api initialization warning:", this.sdkLastError)
       // Will fall back to manual REST
     }
   }
@@ -168,11 +179,37 @@ export class BingXConnector extends BaseExchangeConnector {
     }
   }
 
+  public getFastPathStatus(): {
+    ready: boolean
+    transport: "bingx-api" | "signed-rest-fallback"
+    package: "bingx-api"
+    officialPackage: false
+    lastError?: string
+  } {
+    return {
+      ready: this.sdkReady,
+      transport: this.sdkReady ? "bingx-api" : "signed-rest-fallback",
+      package: "bingx-api",
+      officialPackage: false,
+      ...(this.sdkLastError ? { lastError: this.sdkLastError } : {}),
+    }
+  }
+
+  private recordSdkFallback(operation: string, error: unknown): void {
+    this.sdkLastError = error instanceof Error ? error.message : String(error)
+    const now = Date.now()
+    if (now - BingXConnector.lastSdkFallbackLogTs > 30_000) {
+      BingXConnector.lastSdkFallbackLogTs = now
+      console.warn(`[BingX bingx-api] ${operation} fast path failed; using signed REST fallback: ${this.sdkLastError}`)
+    }
+  }
+
   private sdkSwapOrdersEnabled(): boolean {
     return (
       process.env.DISABLE_BINGX_SDK_ORDERS !== "1" &&
       !this.credentials.isTestnet &&
       this.credentials.apiType !== "spot" &&
+      this.sdkReady &&
       !!this.sdkClient &&
       !!this.sdkAccount
     )
@@ -184,10 +221,28 @@ export class BingXConnector extends BaseExchangeConnector {
     return (this.sdkClient as any).getTradeService?.() || (this.sdkClient as any).services?.TradeService || null
   }
 
+  private async getSdkAccountService(): Promise<any | null> {
+    await this.warmUpFastPath()
+    if (!this.sdkSwapOrdersEnabled()) return null
+    return (this.sdkClient as any).getAccountService?.() || (this.sdkClient as any).services?.AccountService || null
+  }
+
   private extractSdkOrderId(orderData: any): string | null {
     const info = orderData?.data?.order || orderData?.data || {}
     const id = info.orderId || info.orderID || info.id || orderData?.orderId
     return id ? String(id) : null
+  }
+
+  private normalizePositions(rows: any[]): any[] {
+    return rows.map((position: any) => ({
+      ...position,
+      positionAmt: position.positionAmt ?? position.contracts ?? position.positionSize ?? 0,
+      contracts: position.positionAmt ?? position.contracts ?? position.positionSize ?? 0,
+      size: position.positionAmt ?? position.contracts ?? position.positionSize ?? 0,
+      entryPrice: position.entryPrice ?? position.avgPrice ?? position.openPrice ?? 0,
+      avgPrice: position.entryPrice ?? position.avgPrice ?? position.openPrice ?? 0,
+      positionSide: String(position.positionSide ?? position.side ?? "BOTH").toUpperCase(),
+    }))
   }
 
   private getBaseUrl(): string {
@@ -483,6 +538,16 @@ export class BingXConnector extends BaseExchangeConnector {
     return code === 0 || code === "0"
   }
 
+  private isOrderAlreadyGone(data: any): boolean {
+    const code = String(data?.code ?? "")
+    const message = String(data?.msg ?? data?.message ?? "").toLowerCase()
+    return (
+      message.includes("order does not exist") ||
+      message.includes("order not exist") ||
+      (code === "109400" && message.includes("not exist"))
+    )
+  }
+
   /**
    * Safe JSON parse that preserves orderId precision.
    *
@@ -553,31 +618,41 @@ export class BingXConnector extends BaseExchangeConnector {
 
   async getBalance(): Promise<ExchangeConnectorResult> {
     try {
-      // OPTIMIZATION: Try official SDK first (connection pooling + instant response)
-      if (this.sdkClient) {
+      // Default mainnet-perpetual path: use the installed bingx-api account
+      // service. The previous implementation checked `this.sdkClient` before
+      // asynchronous initialization completed and called non-existent
+      // `account.balance()` / `balance.query()` methods, so production silently
+      // used REST on every request.
+      const accountService = await this.getSdkAccountService()
+      if (accountService?.getPerpetualSwapAccountAssetInformation) {
         try {
-          const apiType = this.credentials.apiType || "perpetual_futures"
-          let balanceData: any
-          
-          // SDK automatically handles signing, timestamps, and retries
-          const sdkAny = this.sdkClient as any
-          if (apiType === "spot") {
-            balanceData = await sdkAny.balance?.query?.()
-          } else {
-            balanceData = await sdkAny.account?.balance?.()
+          const response = await accountService.getPerpetualSwapAccountAssetInformation(this.sdkAccount)
+          if (!this.isBingXSuccess(response?.code)) {
+            throw new Error(`${response?.code ?? "unknown"}: ${response?.msg || "Library balance rejected"}`)
           }
-          
-          if (balanceData && balanceData.code === 0 && balanceData.data) {
-            // SDK response contains balance data - return in expected format
-            const result = {
-              success: true,
-              data: balanceData.data,
-            } as any
-            return result as ExchangeConnectorResult
+
+          const payload = response?.data?.balance ?? response?.data
+          const rows = Array.isArray(payload) ? payload : payload ? [payload] : []
+          if (rows.length === 0) throw new Error("Library balance response did not contain an asset")
+
+          const balances = rows.map((asset: any) => ({
+            asset: String(asset.asset || "UNKNOWN"),
+            free: Number(asset.availableMargin ?? asset.free ?? 0) || 0,
+            locked: Number(asset.freezedMargin ?? asset.frozenMargin ?? asset.locked ?? 0) || 0,
+            total: Number(asset.balance ?? asset.equity ?? 0) || 0,
+          }))
+          const usdtBalance = balances.find((asset) => asset.asset === "USDT")?.total ?? 0
+          this.sdkLastError = ""
+          this.logs.push(`[${new Date().toISOString()}] ✓ Account balance via bingx-api: ${usdtBalance.toFixed(4)} USDT`)
+          return {
+            success: true,
+            balance: usdtBalance,
+            balances,
+            capabilities: this.getCapabilities(),
+            logs: this.logs,
           }
         } catch (sdkErr) {
-          console.warn("[BingX SDK] getBalance fast-path failed, using REST fallback")
-          // Fall through to manual REST
+          this.recordSdkFallback("getBalance", sdkErr)
         }
       }
 
@@ -823,7 +898,7 @@ export class BingXConnector extends BaseExchangeConnector {
     options: PlaceOrderOptions = {},
   ): Promise<{ success: boolean; orderId?: string; error?: string; filledPrice?: number; avgPrice?: number; price?: number; filledQty?: number; executedQty?: number; status?: string }> {
     try {
-      // Use the official SDK as the default fast path for mainnet swap
+      // Use the bingx-api package as the default fast path for mainnet swap
       // orders, including reduce/close calls when the caller supplies one-way
       // reduceOnly semantics. Testnet/spot still use REST because the SDK
       // targets the mainnet swap endpoint.
@@ -863,7 +938,7 @@ export class BingXConnector extends BaseExchangeConnector {
             throw new Error(`${orderData.code}: ${orderData.msg || orderData.message || "SDK order rejected"}`)
           }
         } catch (sdkErr) {
-          console.warn("[BingX SDK] placeOrder fast-path failed, using REST fallback:", sdkErr instanceof Error ? sdkErr.message : String(sdkErr))
+          this.recordSdkFallback("placeOrder", sdkErr)
           // Fall through to manual REST
         }
       }
@@ -1186,7 +1261,7 @@ export class BingXConnector extends BaseExchangeConnector {
             throw new Error(`${sdkData.code}: ${sdkData.msg || sdkData.message || "SDK stop order rejected"}`)
           }
         } catch (sdkErr) {
-          console.warn("[BingX SDK] placeStopOrder fast-path failed, using REST fallback:", sdkErr instanceof Error ? sdkErr.message : String(sdkErr))
+          this.recordSdkFallback("placeStopOrder", sdkErr)
         }
       }
 
@@ -1237,10 +1312,6 @@ export class BingXConnector extends BaseExchangeConnector {
               this.log(`✓ ${orderType} placed on timestamp retry: ${id}`)
               return { success: true, orderId: String(id), orderPrice: stopRounded, stopPrice: stopRounded }
             }
-	            if (id) {
-	              this.log(`✓ ${orderType} placed on timestamp retry: ${id}`)
-	              return { success: true, orderId: String(id), clientOrderId: params.clientOrderID } as any
-	            }
             // Fall through to error handling if orderId was not found
           }
           Object.assign(data, tsData)
@@ -1269,10 +1340,6 @@ export class BingXConnector extends BaseExchangeConnector {
               this.log(`✓ ${orderType} placed on reduceOnly hedge retry: ${id2}`)
               return { success: true, orderId: String(id2), orderPrice: stopRounded, stopPrice: stopRounded }
             }
-	            if (id2) {
-	              this.log(`✓ ${orderType} placed on reduceOnly hedge retry: ${id2}`)
-	              return { success: true, orderId: String(id2), clientOrderId: params.clientOrderID } as any
-	            }
             // Fall through to error handling if orderId was not found
           }
           // Fall through to the normal error path with the retry's response.
@@ -1331,15 +1398,31 @@ export class BingXConnector extends BaseExchangeConnector {
     orderId: string,
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      // Sync server time before any signed request.
-      await this.syncServerTime()
-
       this.log(`Cancelling order ${orderId} for ${symbol}`)
 
       const isSpot = this.credentials.apiType === "spot"
+      const bingxSymbol = this.toBingXSymbol(symbol)
+
+      const tradeService = await this.getSdkTradeService()
+      if (!isSpot && tradeService?.cancelOrder) {
+        try {
+          const sdkData = await tradeService.cancelOrder(orderId, bingxSymbol, this.sdkAccount)
+          if (this.isBingXSuccess(sdkData?.code) || this.isOrderAlreadyGone(sdkData)) {
+            this.sdkLastError = ""
+            this.log(`✓ Order cancelled via bingx-api`)
+            return { success: true }
+          }
+          throw new Error(`${sdkData?.code ?? "unknown"}: ${sdkData?.msg || "Library cancel rejected"}`)
+        } catch (sdkError) {
+          this.recordSdkFallback("cancelOrder", sdkError)
+        }
+      }
+
+      // REST fallback uses the local exchange-clock correction.
+      await this.syncServerTime()
+
       const endpoint = isSpot ? "/openApi/spot/v1/trade/cancel" : "/openApi/swap/v2/trade/order"
       const method = isSpot ? "POST" : "DELETE"
-      const bingxSymbol = this.toBingXSymbol(symbol)
       const baseUrl = this.getBaseUrl()
 
       // LAZY URL BUILD: compute timestamp + signature inside the rate-limit slot
@@ -1393,12 +1476,7 @@ export class BingXConnector extends BaseExchangeConnector {
         // Also catch code=109400 when msg contains "not exist" (distinct from the
         // timestamp variant handled above which contains "timestamp").
         const code = String(data.code)
-        const msgLower = String(data.msg ?? "").toLowerCase()
-        const isOrderGone =
-          msgLower.includes("order does not exist") ||
-          msgLower.includes("order not exist") ||
-          (code === "109400" && msgLower.includes("not exist"))
-        if (isOrderGone) {
+        if (this.isOrderAlreadyGone(data)) {
           this.log(`Order ${orderId} already gone (code=${code}) — treating as cancelled`)
           return { success: true }
         }
@@ -1612,6 +1690,25 @@ export class BingXConnector extends BaseExchangeConnector {
       return []
     }
 
+    if (effectiveContractType === "usdt-perpetual" && symbol) {
+      const accountService = await this.getSdkAccountService()
+      if (accountService?.getPerpetualSwapPositions) {
+        try {
+          const sdkData = await accountService.getPerpetualSwapPositions(this.toBingXSymbol(symbol), this.sdkAccount)
+          if (!this.isBingXSuccess(sdkData?.code)) {
+            throw new Error(`${sdkData?.code ?? "unknown"}: ${sdkData?.msg || "Library positions request rejected"}`)
+          }
+          const rows = Array.isArray(sdkData?.data) ? sdkData.data : []
+          const positions = this.normalizePositions(rows)
+          this.sdkLastError = ""
+          this.lastPositionsSnapshotStatus = { ok: true, at: Date.now(), error: "" }
+          return positions
+        } catch (sdkError) {
+          this.recordSdkFallback("getPositions", sdkError)
+        }
+      }
+    }
+
     try {
       this.log(`Fetching positions${symbol ? ` for ${symbol}` : ""} (${effectiveContractType})`)
 
@@ -1652,19 +1749,7 @@ export class BingXConnector extends BaseExchangeConnector {
       //   entryPrice   — BingX v3 perpetual (average entry price)
       //   positionSide — "LONG" | "SHORT" (hedge mode) or "BOTH" (one-way)
       //   unrealizedPnl, markPrice, liquidationPrice — ancillary fields
-      const positions = raw.map((p: any) => ({
-        ...p,
-        // Canonical quantity: BingX uses `positionAmt` in v3; expose it
-        // under that name AND under `contracts` so both callers succeed.
-        positionAmt:   p.positionAmt  ?? p.contracts ?? p.positionSize ?? 0,
-        contracts:     p.positionAmt  ?? p.contracts ?? p.positionSize ?? 0,
-        size:          p.positionAmt  ?? p.contracts ?? p.positionSize ?? 0,
-        // Canonical entry price: BingX uses `avgPrice` OR `entryPrice`.
-        entryPrice:    p.entryPrice   ?? p.avgPrice  ?? p.openPrice    ?? 0,
-        avgPrice:      p.entryPrice   ?? p.avgPrice  ?? p.openPrice    ?? 0,
-        // Normalise positionSide capitalisation.
-        positionSide:  String(p.positionSide ?? p.side ?? "BOTH").toUpperCase(),
-      }))
+      const positions = this.normalizePositions(raw)
       this.lastPositionsSnapshotStatus = { ok: true, at: Date.now(), error: "" }
       return positions
     } catch (error) {
@@ -1914,6 +1999,29 @@ export class BingXConnector extends BaseExchangeConnector {
       const bingxSymbol = this.toBingXSymbol(symbol)
       this.log(`Setting leverage to ${leverage}x for ${bingxSymbol} on both sides`)
 
+      const tradeService = await this.getSdkTradeService()
+      if (tradeService?.switchLeverage) {
+        try {
+          const [sdkLong, sdkShort] = await Promise.all([
+            tradeService.switchLeverage(bingxSymbol, leverage, "LONG", this.sdkAccount),
+            tradeService.switchLeverage(bingxSymbol, leverage, "SHORT", this.sdkAccount),
+          ])
+          const sdkOk =
+            this.isBingXSuccess(sdkLong?.code) ||
+            this.isBingXSuccess(sdkShort?.code) ||
+            String(sdkLong?.code) === "80014" ||
+            String(sdkShort?.code) === "80014"
+          if (sdkOk) {
+            this.sdkLastError = ""
+            this.log(`✓ Leverage set to ${leverage}x via bingx-api`)
+            return { success: true }
+          }
+          throw new Error(`${sdkLong?.msg || sdkShort?.msg || "Library leverage update rejected"}`)
+        } catch (sdkError) {
+          this.recordSdkFallback("setLeverage", sdkError)
+        }
+      }
+
       // Previously this method always sent `side: "LONG"`, which meant any
       // SHORT position opened afterwards was stuck on the default leverage
       // (often 5x) regardless of what the engine requested — and in some
@@ -1987,6 +2095,29 @@ export class BingXConnector extends BaseExchangeConnector {
 
       const bingxSymbol = this.toBingXSymbol(symbol)
       this.log(`Setting margin type to ${marginType} for ${bingxSymbol}`)
+
+      const tradeService = await this.getSdkTradeService()
+      if (tradeService?.switchMarginMode) {
+        try {
+          const sdkData = await tradeService.switchMarginMode(
+            bingxSymbol,
+            marginType === "cross" ? "CROSSED" : "ISOLATED",
+            this.sdkAccount,
+          )
+          if (
+            this.isBingXSuccess(sdkData?.code) ||
+            String(sdkData?.code) === "101404" ||
+            /no need to change/i.test(String(sdkData?.msg || ""))
+          ) {
+            this.sdkLastError = ""
+            this.log(`✓ Margin type set to ${marginType} via bingx-api`)
+            return { success: true }
+          }
+          throw new Error(`${sdkData?.code ?? "unknown"}: ${sdkData?.msg || "Library margin update rejected"}`)
+        } catch (sdkError) {
+          this.recordSdkFallback("setMarginType", sdkError)
+        }
+      }
 
       // LAZY URL BUILD — timestamp/signature computed at send time inside
       // the rate-limit slot (see setLeverage for full rationale).
@@ -2447,10 +2578,29 @@ export class BingXConnector extends BaseExchangeConnector {
    */
   async closeAllPositions(symbol?: string): Promise<{ success: boolean; successful?: string[]; failed?: any[]; error?: string }> {
     try {
-      // Sync server time before any signed request
-      await this.syncServerTime()
-
       this.log(`[API] Closing all positions${symbol ? ` for ${symbol}` : ""}`)
+
+      const tradeService = await this.getSdkTradeService()
+      if (!symbol && tradeService?.closeAllPositions) {
+        try {
+          const sdkData = await tradeService.closeAllPositions(this.sdkAccount)
+          if (!this.isBingXSuccess(sdkData?.code)) {
+            throw new Error(`${sdkData?.code ?? "unknown"}: ${sdkData?.msg || "Library close-all rejected"}`)
+          }
+          const payload = sdkData?.data || {}
+          this.sdkLastError = ""
+          return {
+            success: true,
+            successful: Array.isArray(payload.success) ? payload.success : [],
+            failed: Array.isArray(payload.failed) ? payload.failed : [],
+          }
+        } catch (sdkError) {
+          this.recordSdkFallback("closeAllPositions", sdkError)
+        }
+      }
+
+      // Sync server time before the signed REST fallback.
+      await this.syncServerTime()
       
       const params: Record<string, any> = {
         timestamp: this.getTimestamp(),

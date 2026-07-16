@@ -1,12 +1,17 @@
 /**
  * User Exchange Connections Configuration
  * 
- * This file contains pre-configured exchange API credentials.
- * These connections can be quickly imported into the system.
- * 
- * SECURITY NOTE: In production, store credentials in environment variables
- * or use a secure secrets manager. This file should be added to .gitignore.
+ * This file contains import metadata for pre-configured exchange connections.
+ * Credentials are resolved server-side from environment variables and must
+ * never be committed to source control.
  */
+
+import { getBaseConnectionCredentials } from "@/lib/base-connection-credentials"
+
+const bybitCredentials = getBaseConnectionCredentials("bybit-x03")
+const bingxCredentials = getBaseConnectionCredentials("bingx-x01")
+const pionexCredentials = getBaseConnectionCredentials("pionex-x01")
+const orangexCredentials = getBaseConnectionCredentials("orangex-x01")
 
 export interface UserConnectionConfig {
   id: string
@@ -41,8 +46,8 @@ export const USER_CONNECTIONS: UserConnectionConfig[] = [
     displayName: "Bybit X03 (Unified)",
     apiType: "unified_trading",
     connectionType: "Unified",
-    apiKey: "4Gba1MjGbrTTfDAauP",
-    apiSecret: "QYtOgsHZThh3koyBUDK0DCMUjq3ihmD7YBB2",
+    apiKey: bybitCredentials.apiKey,
+    apiSecret: bybitCredentials.apiSecret,
     isTestnet: false,
     marginType: "cross",
     positionMode: "hedge",
@@ -64,19 +69,19 @@ export const USER_CONNECTIONS: UserConnectionConfig[] = [
     displayName: "BingX X01 (Futures)",
     apiType: "futures",
     connectionType: "Futures",
-    apiKey: "5MdpxA3eWbqSH3JZ5w6cdCK3Sd19Z2mPiNpmfAPfa5kmPB5bquHn8D8qDXzx2HhnyRLmrCQgpphI8DbLLZQw",
-    apiSecret: "5uRfPgalVBD9DFAD5McQfbpAWmtiYGiinwiWSMX4Bii9SNPigJXsM1KnLCXT1reH5Wzcvj6RQmIvJrCUgaIhuw",
+    apiKey: bingxCredentials.apiKey,
+    apiSecret: bingxCredentials.apiSecret,
     isTestnet: false,
     marginType: "cross",
     positionMode: "hedge",
     maxLeverage: 150,
     documentation: {
-      npm: "https://github.com/mnguyenz/bingx-api",
+      npm: "https://www.npmjs.com/package/bingx-api",
       pip: "https://github.com/ccxt/bingx-python",
       official: "https://bingx-api.github.io/docs/#/en-us/swapV2/introduce",
     },
     installCommands: {
-      npm: "npm install bingx-trading-api",
+      npm: "npm install bingx-api",
       pip: "pip install bingx",
     },
   },
@@ -87,8 +92,8 @@ export const USER_CONNECTIONS: UserConnectionConfig[] = [
     displayName: "Pionex X01 (Futures)",
     apiType: "futures",
     connectionType: "Futures",
-    apiKey: "5qYgjSMoB4yZHbyEmvUZXNS9CbxePn8JZPGVPX583dSavuradn5Ph2RBCKhMrZ2A36",
-    apiSecret: "BpIL7YjAyXkWIoLWgCw3PMmCCr1uJsIttSA8VMhBMBFcLX3mziuQUM1KQ31S1BYW",
+    apiKey: pionexCredentials.apiKey,
+    apiSecret: pionexCredentials.apiSecret,
     isTestnet: false,
     marginType: "cross",
     positionMode: "hedge",
@@ -108,8 +113,8 @@ export const USER_CONNECTIONS: UserConnectionConfig[] = [
     displayName: "OrangeX X01 (Futures)",
     apiType: "futures",
     connectionType: "Futures",
-    apiKey: "c0c89d0f",
-    apiSecret: "b89147149b54e11e36e1514b",
+    apiKey: orangexCredentials.apiKey,
+    apiSecret: orangexCredentials.apiSecret,
     isTestnet: false,
     marginType: "cross",
     positionMode: "hedge",

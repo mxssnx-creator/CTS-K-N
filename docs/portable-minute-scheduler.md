@@ -5,7 +5,7 @@ coordination works in two deployment shapes:
 
 1. A long-lived `next start`, Docker, PM2, systemd, or VPS process runs the
    in-process minute timer automatically. It also keeps live-position recovery
-   on its existing 15-second cadence.
+   on the configurable `cronSyncIntervalSeconds` cadence (15 seconds by default).
 2. A serverless deployment sets `DISABLE_IN_PROCESS_CONTINUITY=1` and runs one
    external scheduler process. The scheduler calls both protected continuity
    routes once per minute without overlapping its own ticks.

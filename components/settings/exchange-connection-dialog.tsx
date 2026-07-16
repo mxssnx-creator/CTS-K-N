@@ -83,8 +83,8 @@ const EXCHANGE_API_CONFIGS: Record<string, ExchangeConfig> = {
   },
   bingx: {
     name: "BingX",
-    library: "bingx-trading-api",
-    packageName: "bingx-trading-api",
+    library: "sdk",
+    packageName: "bingx-api",
     api_types: [
       {
         value: "perpetual_futures",
@@ -98,9 +98,9 @@ const EXCHANGE_API_CONFIGS: Record<string, ExchangeConfig> = {
       { value: "rest", label: "REST API", description: "Standard HTTP requests", priority: 1 },
       {
         value: "library",
-        label: "Python Library",
-        description: "BingX Trading API SDK",
-        packageName: "bingx-trading-api",
+        label: "Node Library",
+        description: "bingx-api fast path with signed REST fallback",
+        packageName: "bingx-api",
         priority: 2,
       },
     ],
@@ -533,7 +533,7 @@ export function ExchangeConnectionDialog({
       exchange: predefinition.id.split("-")[0],
       api_type: predefinition.apiType,
       connection_method: predefinition.connectionMethod,
-      connection_library: predefinition.id.split("-")[0] === "bybit" ? "pybit" : "bingx-trading-api",
+      connection_library: predefinition.connectionLibrary,
       api_key: predefinition.apiKey || "",
       api_secret: predefinition.apiSecret || "",
       margin_type: predefinition.marginType,

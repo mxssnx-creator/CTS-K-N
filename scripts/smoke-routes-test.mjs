@@ -2,15 +2,17 @@
 import { spawn } from 'node:child_process'
 import { rmSync, openSync, closeSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { killTestDevPort } from './kill-test-dev-port.mjs'
 
 const port = Number(process.env.PORT || 3002)
+const host = process.env.HOST || '127.0.0.1'
 const externalBase = process.env.BASE_URL || ''
-const base = externalBase || `http://localhost:${port}`
+const base = externalBase || `http://${host}:${port}`
 const ownsServer = !externalBase
 const logPath = `/tmp/cts-k-n-test-dev-${port}.log`
 
 async function killExisting() {
-  await import('./kill-test-dev-port.mjs')
+  await killTestDevPort(port)
   await sleep(300)
 }
 
@@ -39,7 +41,7 @@ if (ownsServer) {
   rmSync('.next', { recursive: true, force: true })
 
   const out = openSync(logPath, 'w')
-  child = spawn('npm', ['run', 'dev'], {
+  child = spawn('npm', ['run', 'dev', '--', '--hostname', host], {
     detached: true,
     stdio: ['ignore', out, out],
     env: { ...process.env, PORT: String(port) },

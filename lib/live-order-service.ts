@@ -1,4 +1,4 @@
-import { createExchangeConnector } from "@/lib/exchange-connectors/factory"
+import { createExchangeConnector, exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { getLiveOrderSafetyFailure } from "@/lib/live-order-safety"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { getConnection, getMarketData, getRedisClient, initRedis, savePosition } from "@/lib/redis-db"
@@ -105,14 +105,25 @@ export async function createLiveOrderConnector(connection: any, payload: Record<
     const { SimulatedConnector } = await import("@/lib/exchange-connectors/simulated-connector")
     return { connector: new SimulatedConnector({ apiKey: connection.api_key, apiSecret: connection.api_secret, isTestnet: isTruthyFlag(connection.is_testnet) }, "simulated"), mode: "simulated", willUseRealExchange }
   }
-  const connector = await createExchangeConnector(connection.exchange, {
-    apiKey: connection.api_key,
-    apiSecret: connection.api_secret,
-    apiPassphrase: connection.api_passphrase || "",
-    isTestnet: isTruthyFlag(connection.is_testnet),
-    apiType: connection.api_type,
-    contractType: connection.contract_type,
-  })
+  // Reuse the process-level connector so BingX library initialization,
+  // credentials, and HTTP transport are not rebuilt for every live order.
+  // Callers without a persisted connection id still get an isolated connector.
+  const connector = connection.id && typeof exchangeConnectorFactory?.getOrCreateConnector === "function"
+    ? await exchangeConnectorFactory.getOrCreateConnector(String(connection.id))
+    : await createExchangeConnector(connection.exchange, {
+        apiKey: connection.api_key,
+        apiSecret: connection.api_secret,
+        apiPassphrase: connection.api_passphrase || "",
+        isTestnet: isTruthyFlag(connection.is_testnet),
+        apiType: connection.api_type,
+        contractType: connection.contract_type,
+      })
+  if (!connector) {
+    throw Object.assign(new Error(`Could not initialize exchange connector for ${connection.id || connection.name || connection.exchange}`), {
+      statusCode: 503,
+      mode: "exchange_connector_unavailable",
+    })
+  }
   return { connector, mode: "live", willUseRealExchange }
 }
 

@@ -52,6 +52,7 @@ const CONNECTION_METHODS = [
 
 const CONNECTION_LIBRARIES = [
   { value: "native", label: "Native" },
+  { value: "sdk", label: "bingx-api" },
   { value: "ccxt", label: "CCXT" },
   { value: "exchange-lib", label: "Exchange SDK" },
   { value: "custom", label: "Custom" },
@@ -59,7 +60,7 @@ const CONNECTION_LIBRARIES = [
 
 const EXCHANGE_CONNECTION_METHODS: Record<string, string[]> = {
   bybit: ["rest", "websocket", "hybrid"],
-  bingx: ["rest", "websocket"],
+  bingx: ["library", "rest", "websocket"],
   binance: ["rest", "websocket", "hybrid"],
   okx: ["rest", "websocket", "hybrid"],
   gateio: ["rest", "websocket"],
@@ -88,8 +89,8 @@ function EditConnectionDialog({ connection, onSave, exchangeName }: { connection
     margin_type: connection.margin_type || "cross",
     position_mode: connection.position_mode || "hedge",
     is_testnet: connection.is_testnet || false,
-    connection_method: connection.connection_method || "rest",
-    connection_library: connection.connection_library || "native",
+    connection_method: connection.connection_method || (String(connection.exchange).toLowerCase() === "bingx" ? "library" : "rest"),
+    connection_library: connection.connection_library || (String(connection.exchange).toLowerCase() === "bingx" ? "sdk" : "native"),
     api_type: connection.api_type || "perpetual",
     api_subtype: connection.api_subtype || "perpetual",
     is_live_trade: connection.is_live_trade ?? false,
@@ -515,8 +516,8 @@ export default function ExchangeConnectionManager() {
           margin_type: c.margin_type || "cross",
           position_mode: c.position_mode || "hedge",
           api_type: c.api_type || "perpetual_futures",
-          connection_method: c.connection_method || "rest",
-          connection_library: c.connection_library || "library",
+          connection_method: c.connection_method || (String(c.exchange).toLowerCase() === "bingx" ? "library" : "rest"),
+          connection_library: c.connection_library || (String(c.exchange).toLowerCase() === "bingx" ? "sdk" : "native"),
         } as Connection))
 
       setConnections(validConnections)

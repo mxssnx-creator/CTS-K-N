@@ -3,6 +3,11 @@ import {
   GLOBAL_SITE_INSTANCE_KEY,
   GLOBAL_SITE_INSTANCE_ID_KEY,
 } from "./site-instance"
+import {
+  removeConnectionSecondaryIndexes,
+  syncConnectionSecondaryIndexes,
+} from "./database-indexes"
+import { scanRedisKeys } from "./redis-scan"
 
 /**
  * Redis Database Layer - High Performance Edition v3.0
@@ -2934,10 +2939,9 @@ export async function getConnection(id: string): Promise<any | null> {
 // ──────────�������─────────────────────────────────────────────��───────────────────
 // PERF: in-memory TTL cache for `getAllConnections`.
 // The dashboard polls every ~8s and each active card fans out multiple
-// per-connection requests. Without this cache we issue N KEYS + N HGETALL
-// ops per poll per component. A short TTL (1.5s) dedupes bursts without
-// introducing user-visible staleness (all writes invalidate the cache
-// immediately via `invalidateConnectionsCache()`).
+// per-connection requests. The maintained connection set avoids global KEYS;
+// this cache also deduplicates the remaining indexed HGETALL burst. A short
+// TTL (1.5s) avoids user-visible staleness, and every write invalidates it.
 // ──────────────────────���─────────────�������──────────────────��───────────────────
 const __CONN_CACHE_TTL_MS = 1500
 let __connCache: { at: number; value: any[] } | null = null
@@ -2959,22 +2963,31 @@ export async function getAllConnections(): Promise<any[]> {
     try {
       await initRedis()
       const client = getClient()
-      const [rawKeys, settingsKeys] = await Promise.all([
-        client.keys("connection:*"),
-        client.keys("settings:connection:*"),
+      const [indexedIds, tombstonedIds] = await Promise.all([
+        client.smembers("connections").catch(() => [] as string[]),
+        client.smembers("connections:tombstoned").catch(() => [] as string[]),
       ])
+      const tombstones = new Set((tombstonedIds || []).map(String))
+      const idSet = new Set((indexedIds || []).map(String).filter((id) => id && !tombstones.has(id)))
 
-      // Filter out special sibling keys up-front so we don't fan out HGETALLs
-      // for them (reduces Redis roundtrips in large deployments).
-      const realKeys = rawKeys.filter(
-        (k) =>
-          !k.includes(":settings:") &&
-          !k.includes(":stats:") &&
-          !k.includes(":logs:")
-      )
-      const idSet = new Set<string>()
-      for (const key of realKeys) idSet.add(key.replace(/^connection:/, ""))
-      for (const key of settingsKeys) idSet.add(key.replace(/^settings:connection:/, ""))
+      // The maintained `connections` set is the normal O(N) lookup path.
+      // SCAN is a recovery-only fallback for legacy/imported stores whose
+      // canonical index is empty; migration 071 repairs it durably.
+      if (idSet.size === 0) {
+        const [rawKeys, settingsKeys] = await Promise.all([
+          scanRedisKeys(client, "connection:*"),
+          scanRedisKeys(client, "settings:connection:*"),
+        ])
+        for (const key of rawKeys) {
+          const id = key.replace(/^connection:/, "")
+          if (id && !id.includes(":") && !tombstones.has(id)) idSet.add(id)
+        }
+        for (const key of settingsKeys) {
+          const id = key.replace(/^settings:connection:/, "")
+          if (id && !tombstones.has(id)) idSet.add(id)
+        }
+        if (idSet.size > 0) await client.sadd("connections", ...idSet).catch(() => 0)
+      }
 
       // Parallelize HGETALL across all connection ids and merge raw + settings
       // hashes the same way getConnection(id) does. Production credential edits
@@ -3082,6 +3095,11 @@ export async function saveConnection(connection: any): Promise<void> {
   if (!id) {
     throw new Error("Connection must have an id or name")
   }
+  const [previousRaw, previousSettings] = await Promise.all([
+    client.hgetall(`connection:${id}`).catch(() => ({})),
+    client.hgetall(`settings:connection:${id}`).catch(() => ({})),
+  ])
+  const previous = { id, ...(previousSettings || {}), ...(previousRaw || {}) }
   
   const data = flattenForHmset({
     ...connection,
@@ -3092,7 +3110,7 @@ export async function saveConnection(connection: any): Promise<void> {
   await Promise.all([
     client.hset(`connection:${id}`, data),
     client.sadd("connections", id),
-    syncMainEnabledConnectionIndex(client, { ...data, id }),
+    syncConnectionSecondaryIndexes(client, { ...data, id }, previous),
   ])
   invalidateConnectionsCache()
 }
@@ -3100,10 +3118,16 @@ export async function saveConnection(connection: any): Promise<void> {
 export async function deleteConnection(id: string): Promise<void> {
   await initRedis()
   const client = getClient()
+  const [raw, settings] = await Promise.all([
+    client.hgetall(`connection:${id}`).catch(() => ({})),
+    client.hgetall(`settings:connection:${id}`).catch(() => ({})),
+  ])
+  const previous = { id, ...(settings || {}), ...(raw || {}) }
   await Promise.all([
     client.del(`connection:${id}`),
+    client.del(`settings:connection:${id}`),
     client.srem("connections", id),
-    client.srem("connections:main:enabled", id),
+    removeConnectionSecondaryIndexes(client, previous),
   ])
   invalidateConnectionsCache()
 }
@@ -3749,13 +3773,7 @@ export function isConnectionMainEnabled(connection: any): boolean {
 }
 
 async function syncMainEnabledConnectionIndex(client: RedisClientLike, connection: any): Promise<void> {
-  const id = String(connection?.id || "").trim()
-  if (!id) return
-  if (isConnectionMainEnabled(connection)) {
-    await client.sadd("connections:main:enabled", id)
-  } else {
-    await client.srem("connections:main:enabled", id)
-  }
+  await syncConnectionSecondaryIndexes(client, connection)
 }
 
 export function isConnectionProcessingEnabled(connection: any): boolean {
@@ -3973,22 +3991,7 @@ export async function getActiveConnectionsForEngine(): Promise<any[]> {
 }
 
 export async function getAllConnectionsWithStatus(): Promise<any[]> {
-  const client = getRedisClient()
-  const keys = await client.keys("connection:*")
-  const connections: any[] = []
-  
-  for (const key of keys) {
-    if (key.includes(":settings") || key.includes(":state")) continue
-    const data = await client.hgetall(key)
-    if (data && Object.keys(data).length > 0) {
-      connections.push({
-        id: key.replace("connection:", ""),
-        ...data,
-      })
-    }
-  }
-  
-  return connections
+  return getAllConnections()
 }
 
 // ========== Additional CRUD Operations ==========
@@ -4015,7 +4018,7 @@ export async function createConnection(data: any): Promise<any> {
     await Promise.all([
       client.hset(`connection:${id}`, merged),
       client.sadd("connections", id),
-      syncMainEnabledConnectionIndex(client, merged),
+      syncConnectionSecondaryIndexes(client, merged, { id, ...existingConnection }),
     ])
     invalidateConnectionsCache()
     return merged
@@ -4075,7 +4078,7 @@ export async function updateConnection(id: string, updates: any): Promise<any> {
     client.hset(`settings:connection:${id}`, canonicalSettingsPatch),
   ])
   const updated = await client.hgetall(`connection:${id}`)
-  await syncMainEnabledConnectionIndex(client, updated)
+  await syncConnectionSecondaryIndexes(client, updated, { id, ...existing })
   invalidateConnectionsCache()
   return updated
 }
@@ -4591,99 +4594,4 @@ export function isSystemCreatedPosition(position: Record<string, string> | null 
   const trackingId = String(position.system_tracking_id || "").trim()
   // System tracking IDs follow format: sys-{connId}-{timestamp}-{random}
   return trackingId.startsWith("sys-") && trackingId.length > 10
-}
-
-/**
- * Soft reset: Clear all runtime data while preserving coordination framework
- * 
- * Coordination framework that is PRESERVED:
- * - axis_pos_acc:* (axis position accumulation ledgers)
- * - real_pi_acc:* (real PI accumulation structures)
- * - progression:* (progression metadata)
- * - strategy_count:* (strategy count tracking)
- * - pi_history:* (position history framework - structure kept, data cleared)
- * 
- * Allows new strategy progression runs to start fresh without rebuilding
- * the infrastructure. All runtime strategy data and positions are cleared.
- * 
- * @returns object with cleared key counts per bucket
- */
-export async function softResetWithCoordinationPreserved(): Promise<{
-  deleted: number
-  protected: number
-  buckets: Record<string, number>
-}> {
-  const client = getRedisClient()
-  
-  // Prefixes to preserve (coordination framework + credentials/settings)
-  const PRESERVED = [
-    "connection:",
-    "connections:tombstoned",
-    "settings:",
-    "app_settings",
-    "all_settings",
-    "migration:",
-    "_migration",
-    "_schema_version",
-    "predefinitions:",
-    "system:base_connections_seeded",
-    "auth:",
-    "session:",
-    "api_key:",
-    "axis_pos_acc:",      // COORDINATION FRAMEWORK
-    "real_pi_acc:",       // COORDINATION FRAMEWORK
-    "progression:",       // COORDINATION FRAMEWORK
-    "strategy_count:",    // COORDINATION FRAMEWORK
-  ]
-  
-  // Get all keys
-  const allKeys = await client.keys("*").catch(() => [] as string[])
-  
-  // Filter to keys to delete
-  const keysToDelete = allKeys.filter((k) => {
-    if (typeof k !== "string") return false
-    // Check if key should be preserved
-    for (const prefix of PRESERVED) {
-      if (k.startsWith(prefix)) return false
-    }
-    return true
-  })
-  
-  // Build bucket summary before deletion
-  const buckets: Record<string, number> = {}
-  for (const k of keysToDelete) {
-    const idx = k.indexOf(":")
-    const bucket = idx > 0 ? k.slice(0, idx) + ":*" : k
-    buckets[bucket] = (buckets[bucket] || 0) + 1
-  }
-  
-  // Delete in chunks
-  let deleted = 0
-  const CHUNK_SIZE = 500
-  for (let i = 0; i < keysToDelete.length; i += CHUNK_SIZE) {
-    const chunk = keysToDelete.slice(i, i + CHUNK_SIZE)
-    try {
-      const n = await client.del(...chunk)
-      deleted += typeof n === "number" ? n : chunk.length
-    } catch {
-      for (const k of chunk) {
-        try { await client.del(k); deleted++ } catch { /* skip */ }
-      }
-    }
-  }
-  
-  // Persist to disk
-  try {
-    if (typeof (client as any).persistNow === "function") {
-      await (client as any).persistNow().catch(() => null)
-    } else if (typeof (client as any).saveToDisk === "function") {
-      await (client as any).saveToDisk().catch(() => null)
-    }
-  } catch { /* non-critical */ }
-  
-  return {
-    deleted,
-    protected: allKeys.length - keysToDelete.length,
-    buckets,
-  }
 }

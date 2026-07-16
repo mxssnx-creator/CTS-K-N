@@ -80,9 +80,15 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
     // capturing stale `formData` — the dependency array only lists `exchange`
     // but the callback reads and spreads the whole form object.
     const apiTypes = EXCHANGE_API_TYPES[formData.exchange] || []
-    if (apiTypes.length > 0 && !apiTypes.includes(formData.api_type)) {
-      setFormData(prev => ({ ...prev, api_type: apiTypes[0] }))
-    }
+    setFormData(prev => ({
+      ...prev,
+      ...(apiTypes.length > 0 && !apiTypes.includes(prev.api_type) ? { api_type: apiTypes[0] } : {}),
+      ...(prev.exchange === "bingx"
+        ? { connection_method: "library", connection_library: "sdk" }
+        : prev.connection_library === "sdk"
+          ? { connection_library: "native" }
+          : {}),
+    }))
 
   }, [formData.exchange])
 
@@ -115,7 +121,7 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
     } else if (formData.connection_method === "websocket") {
       defaultLibrary = "native"
     } else if (formData.connection_method === "library") {
-      defaultLibrary = "original"
+      defaultLibrary = exchange === "bingx" ? "sdk" : "original"
     }
 
     if (formData.connection_library !== defaultLibrary) {
@@ -172,8 +178,8 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
       exchange: template.exchange,
       api_type: template.apiType,
       api_subtype: "perpetual",
-      connection_method: "rest",
-      connection_library: "native",
+      connection_method: template.connectionMethod,
+      connection_library: template.connectionLibrary,
       api_key: template.apiKey || "",
       api_secret: template.apiSecret || "",
       api_passphrase: "",
@@ -561,7 +567,11 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                       )}
                       {formData.connection_method === "library" && (
                         <>
-                          <SelectItem value="original"><span className="text-sm">Original - {EXCHANGE_LIBRARY_PACKAGES[formData.exchange] || "Exchange SDK"}</span></SelectItem>
+                          {formData.exchange === "bingx" ? (
+                            <SelectItem value="sdk"><span className="text-sm">bingx-api package (Default)</span></SelectItem>
+                          ) : (
+                            <SelectItem value="original"><span className="text-sm">Original - {EXCHANGE_LIBRARY_PACKAGES[formData.exchange] || "Exchange SDK"}</span></SelectItem>
+                          )}
                           <SelectItem value="ccxt"><span className="text-sm">CCXT</span></SelectItem>
                         </>
                       )}
@@ -580,7 +590,8 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                   </Select>
                   <p className="text-xs text-muted-foreground mt-0.5">
                     {formData.connection_library === "native" && "Built-in native implementation"}
-                    {formData.connection_library === "original" && `Official ${formData.exchange.toUpperCase()} SDK`}
+                    {formData.connection_library === "sdk" && "Native bingx-api package with signed REST fallback"}
+                    {formData.connection_library === "original" && `${formData.exchange.toUpperCase()} exchange library`}
                     {formData.connection_library === "ccxt" && "Universal CCXT library (cross-exchange)"}
                   </p>
                 </div>
@@ -764,12 +775,14 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="native">Native SDK (Recommended)</SelectItem>
+                    {formData.exchange === "bingx" && <SelectItem value="sdk">bingx-api package (Default)</SelectItem>}
                     <SelectItem value="ccxt">CCXT Universal Library</SelectItem>
                     <SelectItem value="library">Built-in Library</SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  {formData.connection_library === "native" && "Official exchange SDK - Best performance and feature support"}
+                  {formData.connection_library === "native" && "Built-in signed API implementation"}
+                  {formData.connection_library === "sdk" && "Native bingx-api fast path with signed REST fallback"}
                   {formData.connection_library === "ccxt" && "Universal library supporting 100+ exchanges"}
                   {formData.connection_library === "library" && "Built-in optimized connector"}
                 </p>

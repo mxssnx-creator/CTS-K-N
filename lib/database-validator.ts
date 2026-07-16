@@ -4,7 +4,8 @@
  */
 
 import { initRedis, getRedisClient, getAllConnections, setSettings, getSettings } from "@/lib/redis-db"
-import { runMigrations } from "@/lib/redis-migrations"
+import { getMigrationStatus, runMigrations } from "@/lib/redis-migrations"
+import { countRedisKeys } from "@/lib/redis-scan"
 
 export interface ValidationResult {
   valid: boolean
@@ -19,7 +20,19 @@ export interface ValidationResult {
   }
 }
 
-export async function validateDatabase(): Promise<ValidationResult> {
+export interface DatabaseValidationOptions {
+  migrationStatus?: any
+}
+
+async function countIndexedRecords(client: any, indexKey: string, fallbackPattern: string): Promise<number> {
+  if (typeof client?.exists === "function" && typeof client?.scard === "function") {
+    const exists = await client.exists(indexKey).catch(() => 0)
+    if (exists) return Number(await client.scard(indexKey).catch(() => 0)) || 0
+  }
+  return countRedisKeys(client, fallbackPattern)
+}
+
+export async function validateDatabase(options: DatabaseValidationOptions = {}): Promise<ValidationResult> {
   const result: ValidationResult = {
     valid: true,
     errors: [],
@@ -36,9 +49,17 @@ export async function validateDatabase(): Promise<ValidationResult> {
   try {
     await initRedis()
     const client = getRedisClient()
+    const [connections, connectionIds, settings, globalState, marketDataCount, tradeCount, positionCount] = await Promise.all([
+      getAllConnections(),
+      client.smembers("connections").catch(() => [] as string[]),
+      getSettings("system"),
+      client.hgetall("trade_engine:global").catch(() => ({})),
+      countRedisKeys(client, "market_data:*"),
+      countIndexedRecords(client, "idx:trades", "trade:*"),
+      countIndexedRecords(client, "idx:positions", "position:*"),
+    ])
 
     // Check 1: Connections exist
-    const connections = await getAllConnections()
     result.stats.connections = connections.length
 
     if (connections.length === 0) {
@@ -58,29 +79,34 @@ export async function validateDatabase(): Promise<ValidationResult> {
     }
 
     // Check 3: Connections set exists
-    const connectionIds = await client.smembers('connections')
     if (connectionIds.length === 0) {
-      result.errors.push("Connections set is empty")
       result.repairs.push("Rebuilding connections set...")
-      for (const conn of connections) {
-        await client.sadd('connections', conn.id)
-      }
+      const ids = connections.map((connection) => String(connection.id || "")).filter(Boolean)
+      if (ids.length > 0) await client.sadd("connections", ...ids)
     }
 
     // Check 4: Settings exist
-    const settings = await getSettings('system')
     result.stats.settings = settings ? Object.keys(settings).length : 0
 
-    // Check 5: Migration status
-    const migrationStatus = await client.get('migrations:status')
-    if (!migrationStatus) {
-      result.errors.push("Migration status not found")
-      result.repairs.push("Running migrations...")
+    // Check 5: Canonical migration status. `_schema_version` plus the database
+    // health hash are the durable contract used by the migration runner; the
+    // legacy `migrations:status` key is neither written nor authoritative.
+    let migrationStatus = options.migrationStatus ?? await getMigrationStatus()
+    if (!migrationStatus.isMigrated) {
+      result.repairs.push(
+        `Running migrations (v${migrationStatus.currentVersion} -> v${migrationStatus.latestVersion})...`,
+      )
       await runMigrations()
+      migrationStatus = await getMigrationStatus()
+      if (!migrationStatus.isMigrated) {
+        result.errors.push(
+          `Migration readiness failed (v${migrationStatus.currentVersion}/${migrationStatus.latestVersion})`,
+        )
+        result.valid = false
+      }
     }
 
     // Check 6: Trade engine global state
-    const globalState = await client.hgetall('trade_engine:global')
     if (!globalState || Object.keys(globalState).length === 0) {
       result.repairs.push("Initializing trade engine global state...")
       await client.hset('trade_engine:global', {
@@ -90,19 +116,15 @@ export async function validateDatabase(): Promise<ValidationResult> {
     }
 
     // Check 7: Market data exists
-    const marketDataKeys = await client.keys('market_data:*')
-    result.stats.marketData = marketDataKeys.length
+    result.stats.marketData = marketDataCount
 
-    if (marketDataKeys.length === 0) {
+    if (marketDataCount === 0) {
       result.errors.push("No market data found")
     }
 
-    // Check 8: Trades and positions indexes
-    const tradeKeys = await client.keys('trades:*')
-    result.stats.trades = tradeKeys.length
-
-    const positionKeys = await client.keys('positions:*')
-    result.stats.positions = positionKeys.length
+    // Check 8: Maintained O(1) indexes, with SCAN only for legacy recovery.
+    result.stats.trades = tradeCount
+    result.stats.positions = positionCount
 
     console.log('[v0] [DB Validate] Database validation complete:', result)
     return result
@@ -127,25 +149,19 @@ export async function repairDatabase(): Promise<ValidationResult> {
     await initRedis()
     const client = getRedisClient()
 
-    // Repair 1: Ensure migrations are run
-    await runMigrations()
-    result.repairs.push('Migrations completed')
+    // validateDatabase() already crossed the canonical init/migration barrier.
+    result.repairs.push('Migrations verified')
 
-    // Repair 2: Rebuild connection indexes
+    // Repair 2: Rebuild the canonical set and all maintained secondary indexes.
     const connections = await getAllConnections()
+    const ids = connections.map((connection) => String(connection.id || "")).filter(Boolean)
+    if (ids.length > 0) await client.sadd("connections", ...ids)
     for (const conn of connections) {
-      // Ensure connection is in main set
-      await client.sadd('connections', conn.id)
-      
-      // Ensure connection has updated_at
-      if (!conn.updated_at) {
-        await setSettings(`connection:${conn.id}`, {
-          ...conn,
-          updated_at: new Date().toISOString(),
-        })
-      }
+      if (!conn.updated_at) await setSettings(`connection:${conn.id}`, { ...conn, updated_at: new Date().toISOString() })
     }
-    result.repairs.push(`Rebuilt indexes for ${connections.length} connections`)
+    const { rebuildAllIndexes } = await import("@/lib/database-consolidation")
+    await rebuildAllIndexes(connections)
+    result.repairs.push(`Rebuilt canonical and secondary indexes for ${connections.length} connections`)
 
     // Repair 3: Initialize default settings if missing
     const defaultSettings = await getSettings('system')

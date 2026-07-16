@@ -10,8 +10,10 @@ import { resolveStopLossPercent } from "@/lib/tp-sl-ratio"
 import { emitPositionUpdate } from "@/lib/broadcast-helpers"
 import { StrategyConfigManager, type PseudoPosition as StrategyPseudoPosition } from "@/lib/strategy-config-manager"
 import { calculatePseudoClosePnl, PSEUDO_POSITION_CLOSE_COST_RATIO } from "@/lib/pseudo-position-costs"
+import { markStrategyPositionInactive, recordStrategyPositionEntry } from "@/lib/pos-history"
 
 const DIRECTION_CREATION_LOCK_TTL_MS = 15_000
+const POSITION_CLOSE_LOCK_TTL_MS = 60_000
 const REFRESH_DIRECTION_CREATION_LOCK_LUA = `
   if redis.call("GET", KEYS[1]) == ARGV[1] then
     return redis.call("PEXPIRE", KEYS[1], ARGV[2])
@@ -28,6 +30,52 @@ const RELEASE_DIRECTION_CREATION_LOCK_LUA = `
 interface DirectionCreationLock {
   key: string
   token: string
+}
+
+/**
+ * Mirror a confirmed paper position into the same idempotent Strategy Set
+ * ledger used by exchange-backed fills. Close-time calls deliberately book
+ * first and deactivate second so a transient create-time ledger failure is
+ * repaired without losing lifetime history.
+ */
+async function syncPseudoStrategyEntryLedger(
+  connectionId: string,
+  positionId: string,
+  position: Record<string, unknown>,
+  active: boolean,
+): Promise<void> {
+  const setKey = String(position.strategy_set_key || position.strategySetKey || "").trim()
+  if (!setKey) return
+  const parentSetKey = String(
+    position.parent_set_key || position.parentSetKey || setKey.split("#")[0] || setKey,
+  ).trim()
+  const symbol = String(position.symbol || "unknown")
+  const direction = String(position.side || position.direction || "long").toLowerCase() === "short"
+    ? "short"
+    : "long"
+  const embeddedAxis = setKey.match(/#axis:([^#]+)/)?.[1] || ""
+
+  try {
+    await recordStrategyPositionEntry({
+      connectionId,
+      positionId,
+      entryId: `${positionId}:initial`,
+      setKey,
+      parentSetKey,
+      symbol,
+      indicationType: String(
+        position.indication_type || position.indicationType || setKey.split(":")[1] || "unknown",
+      ),
+      direction,
+      axisKey: embeddedAxis,
+    })
+    if (!active) await markStrategyPositionInactive(connectionId, positionId)
+  } catch (error) {
+    console.warn(
+      `[v0] [PseudoPosMgr] Strategy entry ledger sync failed for ${positionId}:`,
+      error instanceof Error ? error.message : String(error),
+    )
+  }
 }
 
 async function evalDirectionCreationLock(
@@ -120,6 +168,11 @@ export class PseudoPositionManager {
    */
   private activeConfigKeysSetKey(): string {
     return `pseudo_positions:${this.connectionId}:active_config_keys`
+  }
+
+  /** Exact Base/Main/Real Set lineage for running-now coordination. */
+  private activeStrategySetKeysSetKey(): string {
+    return `pseudo_positions:${this.connectionId}:active_strategy_set_keys`
   }
 
   /**
@@ -274,6 +327,8 @@ export class PseudoPositionManager {
     trailingEnabled: boolean
     configSetKey?: string  // unique fingerprint of the config combination
     strategyConfigId?: string  // StrategyConfig.id (DB primary key) — optional link into the historic-fill Set keyspace
+    strategySetKey?: string // exact coordinated Set identity (not the config fingerprint)
+    parentSetKey?: string   // authoritative Base Set identity
     /**
      * Multi-step trailing — when present, forces `trailingEnabled = true`
      * and switches `realtime-processor.updateTrailingStop` to the 2-phase
@@ -406,6 +461,8 @@ export class PseudoPositionManager {
         indication_type: params.indicationType,
         side: params.side,
         config_set_key: configSetKey,
+        strategy_set_key: params.strategySetKey || "",
+        parent_set_key: params.parentSetKey || params.strategySetKey?.split("#")[0] || "",
         // Optional explicit link to the historic-fill Set namespace
         // (`strategy:{connId}:config:{strategy_config_id}:positions`).
         // When present, `closePosition` writes the closed row into that
@@ -473,12 +530,24 @@ export class PseudoPositionManager {
       createPipeline.sadd(this.positionsSetKey(), id)
       // Register this configSetKey as active for O(1) duplicate detection on next creation
       createPipeline.sadd(this.activeConfigKeysSetKey(), configSetKey)
+      if (params.strategySetKey) {
+        createPipeline.sadd(this.activeStrategySetKeysSetKey(), params.strategySetKey)
+        const parentSetKey = params.parentSetKey || params.strategySetKey.split("#")[0]
+        if (parentSetKey) createPipeline.sadd(this.activeStrategySetKeysSetKey(), parentSetKey)
+      }
       // P0-4: Register this position id into the per-direction set so
       // `canCreatePosition` can enforce the spec cap
       // (`maxActiveBasePseudoPositionsPerDirection`, default 1) via O(1)
       // SCARD on the very next call. Removed on close.
       createPipeline.sadd(this.activeByDirectionKey(params.side), id)
       await createPipeline.exec()
+
+      await syncPseudoStrategyEntryLedger(
+        this.connectionId,
+        id,
+        positionData,
+        true,
+      )
 
       this.invalidateCache()
       await this.updateActivePositionsCount()
@@ -642,9 +711,24 @@ export class PseudoPositionManager {
     reason: string,
     existingPosition?: Record<string, string> | null,
   ): Promise<void> {
+    let closeLock: DirectionCreationLock | null = null
     try {
-      const position = existingPosition ?? (await this.readPosition(positionId))
-      if (!position) return
+      const lockClient = getRedisClient()
+      closeLock = {
+        key: `pseudo:close_lock:${this.connectionId}:${positionId}`,
+        token: nanoid(24),
+      }
+      const acquired = await lockClient.set(closeLock.key, closeLock.token, {
+        NX: true,
+        PX: POSITION_CLOSE_LOCK_TTL_MS,
+      } as any)
+      if (!acquired) return
+
+      // Re-read after acquiring the token-owned close lease. The supplied
+      // snapshot is only a hot-path hint and may be stale; canonical status is
+      // the idempotency boundary for history, progression and closed indexes.
+      const position = await this.readPosition(positionId)
+      if (!position || String(position.status || "").toLowerCase() !== "open") return
 
       const entryPrice = parseFloat(position.entry_price || "0")
       const currentPrice = parseFloat(position.current_price || "0")
@@ -695,6 +779,10 @@ export class PseudoPositionManager {
         const gateKey = `pseudo:gate:${this.connectionId}:${configSetKey}`
         pipeline.del(gateKey)
       }
+      const strategySetKey = String(position.strategy_set_key || "").trim()
+      const parentSetKey = String(position.parent_set_key || "").trim()
+      if (strategySetKey) pipeline.srem(this.activeStrategySetKeysSetKey(), strategySetKey)
+      if (parentSetKey) pipeline.srem(this.activeStrategySetKeysSetKey(), parentSetKey)
       // P0-4: Free the per-direction slot so another position in the
       // same direction can open on the next cycle. Use the hash's
       // stored `side` so this stays correct for legacy positions that
@@ -816,6 +904,13 @@ export class PseudoPositionManager {
 
       await pipeline.exec()
 
+      await syncPseudoStrategyEntryLedger(
+        this.connectionId,
+        positionId,
+        position,
+        false,
+      )
+
       // Clear the per-tick price memo so a reused id can't be elided.
       this.lastWrittenPrice.delete(positionId)
 
@@ -880,6 +975,8 @@ export class PseudoPositionManager {
       })
     } catch (error) {
       console.error(`[v0] Failed to close position ${positionId}:`, error)
+    } finally {
+      if (closeLock) await this.releaseDirectionCreationLock(closeLock).catch(() => false)
     }
   }
 

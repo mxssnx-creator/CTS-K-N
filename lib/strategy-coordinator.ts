@@ -10,8 +10,10 @@
  *          Max 250 entries per Set; rearrange by performance when over limit.
  * 3. REAL: Select Sets where avgProfitFactor >= 1.4 (from main).
  *          Exchange-mirrored high-confidence strategies.
- * 4. LIVE: Select best 500 Sets (ranked by profitFactor) for real trading.
- *          One pseudo position per (indication_type, direction) Set.
+ * 4. LIVE: Reserve Sets with active positions, then admit the best remaining
+ *          candidates (ranked by profit factor) up to the configured cap.
+ *          Live mode uses exchange-backed positions; simulation uses pseudo
+ *          positions. Candidate Sets never count as position entries.
  *
  * Strategy counts always represent the number of SETS, not individual pseudo positions.
  */
@@ -60,13 +62,15 @@ export interface StrategyEvaluation {
 // through the same Standard/default and block/dca Adjust flow as every other
 // Base Set.
 export interface StrategySet {
-  setKey: string            // e.g. "direction:long" (Base) or "direction:long#block" (Main variant)
+  setKey: string            // e.g. "BTCUSDT:direction:long" or "BTCUSDT:direction:long#block"
   indicationType: string
   direction: "long" | "short"
   avgProfitFactor: number
   avgConfidence: number
   avgDrawdownTime: number
-  entryCount: number        // number of config entries in this set (max 250)
+  // Base: qualifying config entries (max 250). Axis projection: confirmed
+  // closed entries plus currently-active, ledger-backed entries for that side.
+  entryCount: number
   entries: StrategySetEntry[]
   createdAt?: string
   
@@ -137,10 +141,10 @@ export interface StrategySet {
    *
    * Each component records the **integer window** the Set was generated
    * under. We clamp to spec maxima:
-   *   - prev   : 0..12  (closed lookback, ctx.prevPosCount)
-   *   - last   : 0..4   (the magnitude of last-N wins or losses dimension)
-   *   - cont   : 0..8   (open continuous positions, ctx.continuousCount)
-   *   - pause  : 0..8   (last-N validation window, ctx.lastPosCount)
+   *   - prev   : 0 or 4..12 step 2 (realised-PnL PF lookback)
+   *   - last   : 0..4   (realised outcome lookback)
+   *   - cont   : 0..8   (confirmed active entries for this direction)
+   *   - pause  : 0..8   (validated pause state)
    *
    * 0 means "axis not active for this Set" — we still emit it so consumers
    * can dimensionalise stats by axis without re-deriving from ctx.
@@ -178,9 +182,9 @@ export interface StrategySet {
     /**
      * Last-axis outcome categorisation per operator spec:
      *
-     *   `pos` = aggregate of parent's last `last` COMPLETED entries was
-     *           profitable (mean PF ≥ 1.0).
-     *   `neg` = aggregate was unprofitable (mean PF < 1.0).
+     *   `pos` = aggregate of the parent's last `last` realised PnLs has
+     *           profit factor ≥ 1.0.
+     *   `neg` = that realised aggregate has profit factor < 1.0.
      *
      * pos / neg Sets are HEDGE-NET-ISOLATED: they represent two
      * different realised market regimes for the same axis triple and
@@ -239,6 +243,7 @@ export interface StrategySet {
     successRate: number
     profitFactor: number
     avgDDT: number
+    recentPnls?: number[]
   }
 }
 
@@ -259,7 +264,7 @@ export interface StrategySetEntry {
  * same snapshot without duplicating Redis round-trips.
  */
 export interface PositionContext {
-  /** Currently-open pseudo positions on the exchange (continuous) */
+  /** Currently-open positions in the authoritative active book (continuous). */
   continuousCount: number
   /** Count of the most recent N closed positions (default last 5) */
   lastPosCount: number
@@ -271,7 +276,7 @@ export interface PositionContext {
   lastLosses: number
   /** Total losers in the lookback window ������������� gates DCA recovery variants */
   prevLosses: number
-  /** Per-symbol open position count (for symbol-scoped variant decisions) */
+  /** Per-symbol authoritative open-position count for coordination decisions. */
   perSymbolOpen: Record<string, number>
   /**
    * Per-symbol, per-direction open position count.
@@ -281,8 +286,12 @@ export interface PositionContext {
    * short coordinations fully independent.
    */
   perSymbolOpenByDir: Record<string, { long: number; short: number }>
-  /** Exchange-backed open positions, kept separate from Real pseudo exposure. */
+  /** Diagnostic exchange-backed counts (also authoritative when Live is enabled). */
   perSymbolLiveOpenByDir: Record<string, { long: number; short: number }>
+  /** Exact active coordinated Set/Base keys by symbol (sorted, deduplicated). */
+  activeStrategySetKeysBySymbol: Record<string, string[]>
+  /** When true, active counts/lineage come from exchange-backed Live positions. */
+  liveTradingEnabled?: boolean
 }
 
 // ─── BASE-ANCHORED COORDINATION MODEL ────────────────────────────────────────
@@ -496,6 +505,67 @@ export function buildStrategyIndicationFingerprint(indications: any[]): string {
   return `${indications.length}|${latestTimestamp}|${(hash >>> 0).toString(36)}`
 }
 
+/** Stable fingerprint for every position-context field that changes Set output. */
+export function buildPositionContextFingerprint(ctx: PositionContext): string {
+  const symbols = new Set<string>([
+    ...Object.keys(ctx.perSymbolOpen || {}),
+    ...Object.keys(ctx.perSymbolOpenByDir || {}),
+    ...Object.keys(ctx.perSymbolLiveOpenByDir || {}),
+    ...Object.keys(ctx.activeStrategySetKeysBySymbol || {}),
+  ])
+  const symbolParts = [...symbols].sort().map((symbol) => {
+    const pseudo = ctx.perSymbolOpenByDir[symbol] || { long: 0, short: 0 }
+    const live = ctx.perSymbolLiveOpenByDir[symbol] || { long: 0, short: 0 }
+    const keys = [...(ctx.activeStrategySetKeysBySymbol?.[symbol] || [])].sort().join(",")
+    return `${symbol}:${ctx.perSymbolOpen[symbol] || 0}:${pseudo.long || 0}:${pseudo.short || 0}:${live.long || 0}:${live.short || 0}:${keys}`
+  })
+  return [
+    ctx.continuousCount,
+    ctx.lastPosCount,
+    ctx.prevPosCount,
+    ctx.lastWins,
+    ctx.lastLosses,
+    ctx.prevLosses,
+    ctx.liveTradingEnabled ? 1 : 0,
+    ...symbolParts,
+  ].join("|")
+}
+
+/**
+ * Reserve exact active Set lineages before admitting newly-ranked Live
+ * candidates. Active exposure is never evicted by a transient PF/DDT change
+ * or by the candidate cap; sibling Sets sharing only a parent are not active.
+ */
+export function selectLiveSetsWithActivePriority(
+  realSets: StrategySet[],
+  activeSetKeys: ReadonlySet<string>,
+  metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime">,
+  maxLive: number,
+): { selected: StrategySet[]; active: StrategySet[] } {
+  const active: StrategySet[] = []
+  const candidates: StrategySet[] = []
+  const seen = new Set<string>()
+  for (const set of realSets) {
+    if (seen.has(set.setKey)) continue
+    seen.add(set.setKey)
+    if (activeSetKeys.has(set.setKey)) {
+      active.push(set)
+    } else if (
+      set.avgProfitFactor >= metrics.minProfitFactor &&
+      set.avgDrawdownTime <= metrics.maxDrawdownTime
+    ) {
+      candidates.push(set)
+    }
+  }
+  active.sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
+  candidates.sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
+  const capacity = Math.max(0, Math.floor(maxLive) - active.length)
+  return {
+    active,
+    selected: active.concat(candidates.slice(0, capacity)),
+  }
+}
+
 // ─����������������������������������������� Position-Count Cartesian Axis Windows (operator spec) ────────────────────
 //
 // At Strategy Main, every Base Set that survives the Base→Main gate fans out
@@ -509,40 +579,35 @@ export function buildStrategyIndicationFingerprint(indications: any[]): string {
 //
 // SEMANTICS PER OPERATOR SPEC:
 //
-//   • previous (PF FILTER): For each `prev ∈ AXIS_PREV`, compute the
-//     aggregate (mean) profit-factor of the parent Base Set's LAST `prev`
-//     COMPLETED entries. If aggregate PF < `metrics.minProfitFactor` (the
+//   • previous (PF FILTER): For each `prev ∈ AXIS_PREV`, compute classic
+//     gross-profit / gross-loss PF over the Set bucket's LAST `prev`
+//     realised PnLs. If aggregate PF < `metrics.minProfitFactor` (the
 //     same Main PF threshold used by the Base→Main gate), the entire
 //     prev-row is REJECTED for this Base Set — no Sets emitted for that
 //     prev value. This implements: "previous 4-12 step 2; Calculate by
 //     Minimal Profitfactor as defined for Main".
 //
 //   • last (OUTCOME SPLIT): For each `last ∈ AXIS_LAST`, classify the
-//     parent's LAST `last` COMPLETED entries as either profitable
-//     (mean PF ≥ 1.0 → `outcome = "pos"`) or unprofitable
+//     bucket's LAST `last` realised PnLs as either profitable
+//     (PF ≥ 1.0 → `outcome = "pos"`) or unprofitable
 //     (`outcome = "neg"`). Both outcome variants are NOT emitted —
 //     only the realised outcome is tagged on the surviving Set,
 //     because pos and neg are different market regimes that should
 //     NOT hedge-net against each other.  Implements: "last 1-4 step 1;
 //     Calculate if Positive or Negative (Combined, own Sets for Pos. and Neg.)".
 //
-//   • continuous (POS-COUNT CONTRIB): For each `cont ∈ AXIS_CONT`, the
-//     emitted Set's `entryCount` = `baseDefault.entryCount + cont`. This
-//     is the "positions to be counted, inserted into the positions counts
-//     sets" semantic. Per spec: "continuous 3 → add actual and next 2
-//     positions to set" → `entryCount = base + 3` (base counts as 1 of 3,
-//     +2 more accumulate over subsequent intervals).
+//   • continuous (POS-COUNT CONTRIB): Emit only window values that have
+//     actually been reached by confirmed active entries in that direction.
+//     `entryCount` is realised closed history + the credited active window;
+//     candidate Sets and retry cycles never inflate it.
 //
 //   • direction (CARTESIAN): Both long and short axis Sets are emitted
 //     regardless of the parent's own direction, so the Real-stage hedge
 //     netter has both sides of every bucket to compare.
 //
-// IMPORTANT — "Do not Calculate the Open Positions, only positions already
-// Completed" (operator spec): `baseDefault.entries` is the parent's
-// historical entry array, where each entry is an already-completed
-// strategy position with a defined `profitFactor`. We treat the full
-// `entries` array as completed; open positions are tracked in the
-// separate pseudo-position store and never appear here.
+// IMPORTANT — Previous/Last use `prevPos.recentPnls`, populated only when a
+// position closes. Continuous is the separate active-entry dimension and is
+// sourced from the idempotent position ledger; the two inputs never mix.
 //
 // NO LOCK — recompute every cycle. The hedge netter in `evaluateRealSets`
 // detects per-bucket net-target deltas and the Live stage opens/closes
@@ -807,7 +872,8 @@ const AXIS_KEY_TABLE: ReadonlyMap<string, string> = (() => {
   return m
 })()
 function axisKeyOf(prev: number, last: number, cont: number, outcome: AxisOutcome, dir: AxisDir): string {
-  return AXIS_KEY_TABLE.get(`${prev}|${last}|${cont}|${outcome}|${dir}`)!
+  return AXIS_KEY_TABLE.get(`${prev}|${last}|${cont}|${outcome}|${dir}`) ??
+    `p${prev}_l${last}_c${cont}_o${outcome}_d${dir}`
 }
 
 export interface StrategyCoordinatorConfig {
@@ -994,10 +1060,9 @@ export class StrategyCoordinator {
   private readonly _coordinationTtlMs = 5_000
 
   /**
-   * Per-cycle snapshot of `pseudo_positions:{conn}:active_config_keys`.
-   * Populated at the start of createBaseSets so createMainSets and
-   * evaluateRealSets can determine "running-now" without re-issuing
-   * SMEMBERS on every (symbol, stage) call.
+   * Per-cycle snapshot of exact active Strategy Set lineage. It is populated
+   * at Base from PositionContext so Main, Real, and Live share one book:
+   * exchange-backed lineage in Live mode, pseudo lineage in simulation.
    *
    * Treated as stale after 30s — if the next createBaseSets did not run
    * for any reason (slow symbol, pause, etc.) Main/Real fall back to a
@@ -1016,18 +1081,37 @@ export class StrategyCoordinator {
    *
    * evaluateRealSets uses it to keep a Set valid_real while its live
    * position is open even if PF/DDT dips this cycle. Computed once per
-   * ~10 s and reused across every symbol in the same cycle, so a 10-symbol
+   * ~2 s and reused across every symbol in the same cycle, so a 10-symbol
    * connection loads the index once, not ten times.
    */
   private _liveSetKeysCache: { keys: Set<string>; at: number } | null = null
+  private _liveTradingModeCache: { enabled: boolean; at: number } | null = null
+
+  private async isLiveTradingEnabledForConnection(): Promise<boolean> {
+    const cached = this._liveTradingModeCache
+    if (cached && Date.now() - cached.at < 2_000) return cached.enabled
+    let enabled = false
+    try {
+      const [{ getConnection }, { isTruthyFlag }] = await Promise.all([
+        import("@/lib/redis-db"),
+        import("@/lib/connection-state-utils"),
+      ])
+      const connection = await getConnection(this.connectionId)
+      enabled = isTruthyFlag(connection?.is_live_trade) || isTruthyFlag(connection?.live_trade_enabled)
+    } catch {
+      enabled = false
+    }
+    this._liveTradingModeCache = { enabled, at: Date.now() }
+    return enabled
+  }
 
   private async getOpenLiveSetKeys(): Promise<Set<string>> {
     // Perf optimization: maintain an index of open live set keys in Redis so
     // coordinator doesn't need to fetch all positions every cycle. On live-stage
     // state transitions (position placed/closed), the index is updated. Within
-    // a coordinator cycle (typically 100-500ms), the 10s cache is valid.
+    // a coordinator cycle (typically 100-500ms), a short cache is sufficient.
     const cache = this._liveSetKeysCache
-    if (cache && Date.now() - cache.at < 10_000) return cache.keys
+    if (cache && Date.now() - cache.at < 2_000) return cache.keys
     
     const keys = new Set<string>()
     try {
@@ -1498,14 +1582,14 @@ export class StrategyCoordinator {
         return Number.isFinite(n) ? n : def
       }
 
-      this._coordinationSettings.axes.prev.enabled   = bool(s.axisPrevEnabled,   false)
-      this._coordinationSettings.axes.prev.maxWindow  = num(s.axisPrevMaxWindow,   0)
-      this._coordinationSettings.axes.last.enabled   = bool(s.axisLastEnabled,   false)
-      this._coordinationSettings.axes.last.maxWindow  = num(s.axisLastMaxWindow,   0)
-      this._coordinationSettings.axes.cont.enabled   = bool(s.axisContEnabled,   false)
-      this._coordinationSettings.axes.cont.maxWindow  = num(s.axisContMaxWindow,   0)
-      this._coordinationSettings.axes.pause.enabled  = bool(s.axisPauseEnabled,  false)
-      this._coordinationSettings.axes.pause.maxWindow = num(s.axisPauseMaxWindow,  0)
+      this._coordinationSettings.axes.prev.enabled   = bool(s.axisPrevEnabled,   true)
+      this._coordinationSettings.axes.prev.maxWindow  = num(s.axisPrevMaxWindow, 12)
+      this._coordinationSettings.axes.last.enabled   = bool(s.axisLastEnabled,   true)
+      this._coordinationSettings.axes.last.maxWindow  = num(s.axisLastMaxWindow, 4)
+      this._coordinationSettings.axes.cont.enabled   = bool(s.axisContEnabled,   true)
+      this._coordinationSettings.axes.cont.maxWindow  = num(s.axisContMaxWindow, 8)
+      this._coordinationSettings.axes.pause.enabled  = bool(s.axisPauseEnabled, true)
+      this._coordinationSettings.axes.pause.maxWindow = num(s.axisPauseMaxWindow, 8)
 
       // Adjust-variant toggles. Defaults: block=true, dca=false (spec: DCA off).
       // variantTrailingEnabled is kept only as a backwards-compatible stored
@@ -1674,7 +1758,7 @@ export class StrategyCoordinator {
       // Check fingerprint of position counts to skip redundant calculations when
       // no new positions have opened/closed. Prevents recalculating P&F/DDT every
       // cycle when the market hasn't generated new entries.
-      const posFingerprint = `${posCtx.continuousCount}|${posCtx.lastPosCount}|${posCtx.prevPosCount}`
+      const posFingerprint = buildPositionContextFingerprint(posCtx)
       const indicationFingerprint = buildStrategyIndicationFingerprint(indications)
       const prevFingerprint = (this as any)._lastPosFingerprint?.[symbol]
       const prevIndicationFingerprint = (this as any)._lastIndicationFingerprint?.[symbol]
@@ -1715,7 +1799,7 @@ export class StrategyCoordinator {
       // createLiveSets can resolve axis parent entries in O(1) instead of O(N).
       //
       // STAGE 1: BASE — one Set per (indication_type × direction)
-      const { result: baseResult, sets: baseSets, coordIndex } = await this.createBaseSets(symbol, indications)
+      const { result: baseResult, sets: baseSets, coordIndex } = await this.createBaseSets(symbol, indications, posCtx)
       results.push(baseResult)
       emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "base", data: baseResult })
       await new Promise<void>((resolve) => setImmediate(resolve))
@@ -1962,6 +2046,7 @@ export class StrategyCoordinator {
   private async createBaseSets(
     symbol: string,
     indications: any[],
+    posCtx?: PositionContext,
   ): Promise<{ result: StrategyEvaluation; sets: StrategySet[]; coordIndex: CoordIndex }> {
     // Group indications by (type × direction)
     const setMap = new Map<string, { indicationType: string; direction: "long" | "short"; indications: any[] }>()
@@ -1988,7 +2073,9 @@ export class StrategyCoordinator {
       } else {
         direction = "long"
       }
-      const key = `${ind.type || "direction"}:${direction}`
+      // Symbol-scoped identity prevents BTC and ETH Sets with the same
+      // indication/direction from colliding in BaseRegistry and live lineage.
+      const key = `${symbol}:${ind.type || "direction"}:${direction}`
       if (!setMap.has(key)) {
         setMap.set(key, { indicationType: ind.type || "direction", direction, indications: [] })
       }
@@ -2184,6 +2271,7 @@ export class StrategyCoordinator {
               successRate: posStats.successRate,
               profitFactor: posStats.profitFactor,
               avgDDT: posStats.avgDDT,
+              recentPnls: [...posStats.recentPnls],
             },
           }),
         }
@@ -2221,19 +2309,26 @@ export class StrategyCoordinator {
       // that are ACTIVELY processing — those that either:
       //   (a) currently hold ≥ 1 open pseudo-position, or
       //   (b) have ongoing position formation in progress this cycle.
-      // The canonical ground truth is membership in
-      // `pseudo_positions:{conn}:active_config_keys`, maintained
-      // atomically by PseudoPositionManager (added on open, removed on
-      // close). We read it once per cycle and cache on `this` so
-      // createMainSets / evaluateRealSets can reuse it without an extra
-      // SMEMBERS round-trip.
+      // Config fingerprints are not Strategy Set identities. Use the exact
+      // lineage collected in PositionContext (and its O(1) Redis index as a
+      // fallback) so Base/Main/Real agree on the same running Set.
       const activeKeys = new Set<string>(
-        (await client
-          .smembers(`pseudo_positions:${this.connectionId}:active_config_keys`)
-          .catch(() => [])) as string[],
+        posCtx?.activeStrategySetKeysBySymbol?.[symbol] || [],
       )
+      if (!posCtx) {
+        const indexed = (await client
+          .smembers(`pseudo_positions:${this.connectionId}:active_strategy_set_keys`)
+          .catch(() => [])) as string[]
+        for (const key of indexed) activeKeys.add(key)
+      }
+      for (const key of await this.getOpenLiveSetKeys().catch(() => new Set<string>())) {
+        activeKeys.add(key)
+      }
       this._activeKeysCache = { keys: activeKeys, cycleAt: Date.now() }
       const baseRunningNow = baseSets.filter((s) => activeKeys.has(s.setKey)).length
+      const baseTrailingRunningNow = baseSets.filter(
+        (s) => !!s.trailingProfile && activeKeys.has(s.setKey),
+      ).length
 
       // Fan-out all independent writes. The awaited chain used to add ~8 Redis
       // round-trips to every BASE cycle even when nothing had changed; issuing
@@ -2332,8 +2427,8 @@ export class StrategyCoordinator {
       // hgetalls this hash and aggregates by stage.
       writes.push(
         client.hset(`strategies_active:${this.connectionId}`, {
-          [`${symbol}:base`]:          String(baseSets.length),
-          [`${symbol}:base:trailing`]: String(baseTrailingSets),
+          [`${symbol}:base`]:          String(baseRunningNow),
+          [`${symbol}:base:trailing`]: String(baseTrailingRunningNow),
           // base:evaluated = same as base (every Base Set IS evaluated at Base stage)
           [`${symbol}:base:evaluated`]: String(baseSets.length),
         }),
@@ -2825,9 +2920,21 @@ export class StrategyCoordinator {
       // independent liveCont per direction so long and short axis Sets get
       // different entryCount values when one direction is more accumulated.
       const liveContByDir = ctx.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 }
+      const perBaseAxisLimit = Math.max(
+        1,
+        Math.ceil(MAIN_AXIS_SETS_CEILING / defaultByBaseKey.size),
+      )
       for (const defaultSet of defaultByBaseKey.values()) {
         if (axisCapHit) break
-        const expanded = this.expandAxisSets(defaultSet, minPF, liveCont, liveContByDir)
+        const remaining = MAIN_AXIS_SETS_CEILING - axisSetsAdded
+        const expanded = this.expandAxisSets(
+          defaultSet,
+          minPF,
+          liveCont,
+          liveContByDir,
+          symbolCtx.lastPosCount,
+          Math.min(perBaseAxisLimit, remaining),
+        )
         for (const axisSet of expanded) {
           mainSets.push(axisSet)
           axisSetsAdded++
@@ -3031,7 +3138,7 @@ export class StrategyCoordinator {
         ? cache!.keys
         : new Set<string>(
             (await client
-              .smembers(`pseudo_positions:${this.connectionId}:active_config_keys`)
+              .smembers(`pseudo_positions:${this.connectionId}:active_strategy_set_keys`)
               .catch(() => [])) as string[],
           )
       // mainProgressing: sets with at least one position entry — computed from
@@ -3044,8 +3151,7 @@ export class StrategyCoordinator {
       let mainProgressing = 0
       for (const s of mainSets) {
         if ((s.entryCount || 0) > 0) mainProgressing++
-        const parent = s.parentSetKey || s.setKey.split("#")[0]
-        if (activeKeys.has(parent)) mainRunningNow++
+        if (activeKeys.has(s.setKey)) mainRunningNow++
       }
 
       const writes: Promise<any>[] = [
@@ -3108,7 +3214,7 @@ export class StrategyCoordinator {
       // bucket was always 0, making the Main column on the dashboard empty.
       writes.push(
         client.hset(`strategies_active:${this.connectionId}`, {
-          [`${symbol}:main`]:           String(mainSets.length),
+          [`${symbol}:main`]:           String(mainRunningNow),
           // Parent funnel and expansion accounting are deliberately separate:
           // Main output can exceed Base input through valid axis/variant fan-out.
           [`${symbol}:main:evaluated`]: String(mainInputCount),
@@ -3545,7 +3651,7 @@ export class StrategyCoordinator {
        const c = getRedisClient()
        realActiveKeysForVP = new Set<string>(
          (await c
-           .smembers(`pseudo_positions:${this.connectionId}:active_config_keys`)
+           .smembers(`pseudo_positions:${this.connectionId}:active_strategy_set_keys`)
            .catch(() => [])) as string[],
        )
      } catch { /* ignore errors - empty set is fine */ }
@@ -3981,66 +4087,11 @@ export class StrategyCoordinator {
     // `leverage` directly. Tuning is BOUNDED ([0.5, 1.5] for size, max
     // 2× leverage from base) so a noisy/empty bucket can never explode
     // exposure; below the threshold we no-op.
-    //
-    // Per-Base ledger (`real_pi_acc:{conn}` HASH, key = parentSetKey)
-    // is incremented for every Real Set produced �� that's the dashboard
-    // accumulation column.
+    // Confirmed position counts are deliberately NOT written here. Real Sets
+    // are re-evaluated every cycle; entry accounting belongs to the Live fill
+    // path where `recordStrategyPositionEntry` can deduplicate a stable fill id.
     try {
-      const { bumpRealPosAccumulation, bumpValidPositions, bumpAxisPosAccumulation, bumpHedgePosAccumulation } = await import(
-        "@/lib/pos-history",
-      )
-      // Reuse `realActiveKeysForVP` already resolved at the function's top
-      // (smembers + getOpenLiveSetKeys). Performing a second fetch here was a
-      // redundant extra round-trip pair (one SMEMBERS + one live-positions scan)
-      // on every Real-stage cycle, adding ~2 Redis RTTs with zero benefit since
-      // the data can't change within the same async function call.
-      const accPipeline = getRedisClient().multi()
       for (const s of realSets) {
-        const parentKey = s.parentSetKey || s.setKey.split("#")[0]
-        bumpRealPosAccumulation(this.connectionId, parentKey, 1, accPipeline)
-
-        // ── Hedge pos-count accumulation per base Set (operator spec) ─
-        // "Do the accumulations for pos counts Sets at stage Real
-        // (hedging long, short for related same base Set)."
-        //
-        // For every Real Set, increment the per-Base hedge ledger by the
-        // Set's entryCount in its direction (long or short). This builds
-        // up the cumulative picture of how many position-slots each Base
-        // Set is running per side across all cycles, enabling net-hedge
-        // posture reads (long − short) per Base Set without a full scan.
-        // entryCount is used (not 1) so axis Sets with larger windows
-        // contribute proportionally to the hedge totals.
-        const hedgeDir = (s.axisWindows?.direction ?? s.direction ?? "long") as "long" | "short"
-        const hedgeEC  = s.entryCount > 0 ? s.entryCount : 1
-        bumpHedgePosAccumulation({
-          connectionId: this.connectionId,
-          parentSetKey: parentKey,
-          direction:    hedgeDir,
-          entryCount:   hedgeEC,
-          externalPipeline: accPipeline,
-        })
-
-        // ��─ Per-axis-Set continuous-count ledger (operator spec) ─────
-        // For axis Sets (the prev × last × cont × outcome × dir
-        // Cartesian fan-out at Main), record the rolling continuous
-        // count of Pis that have actually accumulated onto this axis
-        // bucket. Increment by `s.entryCount` (= baseEC + min(cont,
-        // liveCont) from expandAxisSets) so the ledger is the
-        // continuous-count rolling sum across cycles — exactly the
-        // metric the operator described as "ongoing continuous count
-        // of Pis to be added, counted onto the new sets". Pipelined
-        // alongside the existing accumulation writes for zero added
-        // round-trips.
-        if (s.axisWindows?.axisKey && s.entryCount > 0) {
-          bumpAxisPosAccumulation(
-            this.connectionId,
-            parentKey,
-            s.axisWindows.axisKey,
-            s.entryCount,
-            accPipeline,
-          )
-        }
-
         // ── Variant tuning — IMMUTABLE ENTRIES ──────────────────────────────
         // Tuning deltas are written onto the CoordRecord (sizeDelta /
         // leverageDelta / tunedAvgPF) instead of mutating entries[].sizeMultiplier
@@ -4092,26 +4143,7 @@ export class StrategyCoordinator {
           }
         }
 
-        // ── Valid Positions counter ──
-        // Only count Real Sets whose parent is currently RUNNING (= the
-        // "Combined" semantic). All Real Sets contribute to the lifetime
-        // "Overall" count regardless of running state.
-        // Compose into the shared `accPipeline` so a 30-Set burst writes
-        // once instead of 30 times — at 10 symbols this drops Real-stage
-        // round-trips by ~10x and is the main reason cycles stay flat
-        // past 4 symbols.
-        bumpValidPositions({
-          connectionId: this.connectionId,
-          symbol,
-          indicationType: s.indicationType,
-          direction: s.direction,
-          isRunningNow: realActiveKeysForVP.has(parentKey),
-          externalPipeline: accPipeline,
-        })
       }
-      ;(accPipeline as any).exec().catch((err: any) => {
-        console.error(`[v0] [StrategyFlow] ${symbol} accumulation pipeline failed:`, err?.message || err)
-      })
     } catch (tunerErr) {
       console.warn(`[v0] [StrategyFlow] ${symbol} Real tuner failed:`, tunerErr)
     }
@@ -4208,20 +4240,16 @@ export class StrategyCoordinator {
         ? realActiveCache!.keys
         : new Set<string>(
             (await client
-              .smembers(`pseudo_positions:${this.connectionId}:active_config_keys`)
+              .smembers(`pseudo_positions:${this.connectionId}:active_strategy_set_keys`)
               .catch(() => [])) as string[],
           )
       const realRunningNow = realSets.filter((s) => {
-        const base = (s.parentSetKey ?? s.setKey).split("#")[0]
-        return realActiveBaseKeys.has(base)
+        return realActiveBaseKeys.has(s.setKey)
       }).length
 
       // Open positions = sum of entryCount across the Real Sets that are
       // actively running now (each entry is one open position the Set holds).
-      const realOpenPositions = realSets.reduce((sum, s) => {
-        const base = (s.parentSetKey ?? s.setKey).split("#")[0]
-        return realActiveBaseKeys.has(base) ? sum + (s.entryCount || 0) : sum
-      }, 0)
+      const realOpenPositions = Math.max(0, posCtx?.perSymbolOpen?.[symbol] ?? 0)
       // Positions (entries) per running Set — averaged over running Sets only.
       const realPosPerRunningSet = realRunningNow > 0 ? realOpenPositions / realRunningNow : 0
 
@@ -4241,11 +4269,10 @@ export class StrategyCoordinator {
       //
       // Pre-compute the axis POSITION accumulation sum so the stats route
       // never needs extra round-trips on every dashboard refresh.
-      // Source: axis_pos_acc:{conn} ����� the hash bumpAxisPosAccumulation writes
-      // to in the Real tuner loop above. Each field is parentSetKey|axisKey and
-      // the value is the cumulative entryCount (= baseEC + min(cont,liveCont))
-      // across all cycles — exactly the "Accumulated" perspective the operator
-      // described as "ongoing continuous count of Pis added onto the new sets".
+      // Source: axis_pos_acc:{conn}, written idempotently by the confirmed
+      // position-entry ledger. Each field is parentSetKey|axisKey and its value
+      // is the number of accepted initial/accumulation fills assigned to that
+      // exact axis. Re-evaluating a Set does not increase this perspective.
       let realAccumulatedSum = 0
       try {
         const axisAccHash = (await client
@@ -4360,7 +4387,7 @@ export class StrategyCoordinator {
       // forward to Live evaluation �� not the raw post-filter count.
       writes.push(
         client.hset(`strategies_active:${this.connectionId}`, {
-          [`${symbol}:real`]:           String(realSets.length),
+          [`${symbol}:real`]:           String(realRunningNow),
           // real:evaluated = PF-eligible Main inputs plus Real related/axis-created
           // outputs. Cross-symbol sum in stats route matches the Real pass denominator.
           [`${symbol}:real:evaluated`]: String(realTotalEvaluated),
@@ -4582,8 +4609,9 @@ export class StrategyCoordinator {
   // ──�� STAGE 4: LIVE ─────────����─���────────��─────�����───��─────��─────��──────���───────��
 
   /**
-   * Select the best 500 Sets from REAL for live trading.
-   * Creates exactly ONE pseudo position per Set (per indication_type × direction).
+   * Keep every exact actively-backed REAL Set selected, then fill remaining
+   * capacity with the highest-quality candidates. Position materialisation is
+   * mode-specific and happens only after this selection step.
    */
   private async createLiveSets(
     symbol: string,
@@ -4689,8 +4717,26 @@ export class StrategyCoordinator {
       )
     }
 
-    // P0-2: Live filter axes are PF-min + DDT-max ONLY (then rank by
-    // avgProfitFactor and take top N). Confidence is advisory metadata.
+    const isLiveTradeEnabled = await this.isLiveTradingEnabledForConnection()
+    const activeStrategyKeys = new Set<string>()
+    if (!isLiveTradeEnabled) {
+      const cachedActive = this._activeKeysCache
+      if (cachedActive && Date.now() - cachedActive.cycleAt < 30_000) {
+        for (const key of cachedActive.keys) activeStrategyKeys.add(key)
+      } else {
+        const pseudoKeys = (await getRedisClient()
+          .smembers(`pseudo_positions:${this.connectionId}:active_strategy_set_keys`)
+          .catch(() => [])) as string[]
+        for (const key of pseudoKeys) activeStrategyKeys.add(key)
+      }
+    }
+    for (const key of await this.getOpenLiveSetKeys().catch(() => new Set<string>())) {
+      activeStrategyKeys.add(key)
+    }
+    // P0-2: Non-active Live candidates use the PF-min + DDT-max axes and rank
+    // by profit factor. A Set that owns an active position bypasses transient
+    // PF/DDT drift and is reserved ahead of candidates until that position is
+    // terminal; this prevents cap/ranking changes from orphaning exposure.
     //
     // LIVE EXCHANGE DISPATCH CAP: Cap to top maxLive sets after PF/DDT filtering.
     // The Real stage evaluates hundreds of profile variants (default, blocks
@@ -4698,14 +4744,14 @@ export class StrategyCoordinator {
     // (which caused BingX 100421 backlog) but allows block + default variants
     // to be tested together. The final dispatch loop (lines 4699-4715) enforces
     // per-variant per-direction caps (1 default, 1 block, 1 dca per direction).
-    const allQualifying = realSets
-      .filter(
-        (s) =>
-          s.avgProfitFactor >= metrics.minProfitFactor &&
-          s.avgDrawdownTime <= metrics.maxDrawdownTime,
-      )
-      .sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
-      .slice(0, maxLive)
+    const liveSelection = selectLiveSetsWithActivePriority(
+      realSets,
+      activeStrategyKeys,
+      metrics,
+      maxLive,
+    )
+    const activeLiveSets = liveSelection.active
+    const allQualifying = liveSelection.selected
 
     // Keep all qualifying sets (not filtered to 1 per direction).
     // Block overlays will be added at line 4670, and the final dispatch loop
@@ -4761,12 +4807,10 @@ export class StrategyCoordinator {
       _slim:      true,
     })
 
-    // Create pseudo positions from the LIVE-qualifying subset only.
-    // Previously received all `realSets` (up to 3000/symbol), causing N×3 Redis
-    // writes for sets that never reach live dispatch. `qualifying` is the capped
-    // Live subset (typically ≤500/symbol) — the only sets that semantically need
-    // pseudo-position records (they represent active dispatch candidates).
-    await this.createPseudoPositionsFromRealSets(symbol, qualifying)
+    // Qualifying Sets are candidates, not positions. The price-validated,
+    // direction-capped creation path below is the sole pseudo/live writer;
+    // materialising every candidate here created duplicate fake-price rows and
+    // polluted Continuous counts before any order/position existed.
 
     // Write live set count into progression hash — use hset so count reflects current cycle snapshot.
     // NOTE: strategies_real_total and strategy_evaluated_real are already written by evaluateRealSets.
@@ -4782,6 +4826,7 @@ export class StrategyCoordinator {
       const liveAvgPF  = qualifying.length > 0 ? qualifying.reduce((s, st) => s + st.avgProfitFactor, 0) / qualifying.length : 0
       const liveAvgDDT = qualifying.length > 0 ? qualifying.reduce((s, st) => s + (st.avgDrawdownTime || 0), 0) / qualifying.length : 0
       const passRatioLive = realSets.length > 0 ? qualifying.length / realSets.length : 0
+      const liveRunningNow = activeLiveSets.length
 
       // ── P1-1: Live-stage per-variant aggregation ──────────────────────
       // Same bucket shape as Main/Real. Drives the stats API's breakdown
@@ -4809,28 +4854,8 @@ export class StrategyCoordinator {
         lv.sumDDT  += (set.avgDrawdownTime || 0) * ec
       }
 
-      // ── bumpValidPositions — Live-promoted Set counter ─────────────────
-      // The `valid_positions:{conn}` hash tracks Sets reaching Live stage.
-      {
-        try {
-          const { bumpValidPositions } = await import("@/lib/pos-history")
-          const vpPipeline = getRedisClient().multi()
-          for (const set of qualifying) {
-            bumpValidPositions({
-              connectionId: this.connectionId,
-              symbol,
-              direction: set.direction,
-              indicationType: set.indicationType,
-              // Live sets are by definition currently running (they have
-              // open or in-formation positions). isRunningNow drives the
-              // `combined` (= active accumulation) counter in valid_positions.
-              isRunningNow: true,
-              externalPipeline: vpPipeline,
-            })
-          }
-          ;(vpPipeline as any).exec().catch(() => {})
-        } catch { /* non-critical — valid_positions counter is observability only */ }
-      }
+      // Position counters are fill-driven in live-stage. Merely qualifying a
+      // Set does not make it an entry and must not inflate lifetime/active data.
 
       const liveVariantWrites: Promise<any>[] = []
       for (const variant of ["default", "trailing", "block", "dca"] as const) {
@@ -4868,7 +4893,7 @@ export class StrategyCoordinator {
         // Without {symbol}:live fields the `stratCounts.live` bucket in the
         // stats route always returned 0, making the Live column empty.
         client.hset(`strategies_active:${this.connectionId}`, {
-          [`${symbol}:live`]:           String(qualifying.length),
+          [`${symbol}:live`]:           String(liveRunningNow),
           // live:evaluated = Real Sets that entered Live selection (= candidates)
           [`${symbol}:live:evaluated`]: String(realSets.length),
         }),
@@ -4884,14 +4909,10 @@ export class StrategyCoordinator {
           passed_sets:       String(qualifying.length),
           pass_rate:         String(passRatioLive.toFixed(4)),
           // ── ACTIVELY-RUNNING metrics (operator spec) ──────────������──
-          //   Live's `qualifying` Sets ARE the executed orders. They
-          //   are by definition "running" — exchange has accepted the
-          //   order or is holding the position. `sets_progressing` is
-          //   the real-stage input pool being ranked & capped this
-          //   cycle (i.e. candidates currently progressing toward live
-          //   execution).
-          sets_running_now:         String(qualifying.length),
-          sets_with_open_positions: String(qualifying.length),
+          // A qualifying Set is only a candidate. Running means its exact
+          // setKey owns a non-terminal pseudo or exchange-backed position.
+          sets_running_now:         String(liveRunningNow),
+          sets_with_open_positions: String(liveRunningNow),
           sets_progressing:         String(realSets.length),
           updated_at:        String(Date.now()),
           // Per-symbol fields — see createBaseSets for rationale.
@@ -4900,7 +4921,7 @@ export class StrategyCoordinator {
           // bundle so /stats's weighted-mean calculator skips them.
           [`s:${symbol}:created`]:    String(qualifying.length),
           [`s:${symbol}:entries`]:    String(qualifying.reduce((s, st) => s + (st.entryCount || 0), 0)),
-          [`s:${symbol}:running`]:    String(qualifying.length),
+          [`s:${symbol}:running`]:    String(liveRunningNow),
           [`s:${symbol}:progressing`]: String(realSets.length),
           [`s:${symbol}:passed`]:     String(qualifying.length),
           [`s:${symbol}:evaluated`]:  String(realSets.length),
@@ -4957,13 +4978,7 @@ export class StrategyCoordinator {
 
     if (qualifying.length > 0 && !skipLiveDispatch) {
       try {
-        // Use getConnection() as authoritative source — it reads connection:{id} hash via parseHash
-        // which handles boolean/string coercion. Raw hgetall may miss "true" vs "1" vs boolean true.
-        const { getConnection: getConn } = await import("@/lib/redis-db")
-        const connData = await getConn(this.connectionId)
-        const { isTruthyFlag } = await import("@/lib/connection-state-utils")
-        const isLiveTrade = isTruthyFlag(connData?.is_live_trade) || isTruthyFlag(connData?.live_trade_enabled)
-        if (isLiveTrade) {
+        if (isLiveTradeEnabled) {
           const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
           const { exchangeConnectorFactory } = await import("@/lib/exchange-connectors/factory")
           const connector = await exchangeConnectorFactory.getOrCreateConnector(this.connectionId)
@@ -5265,6 +5280,7 @@ export class StrategyCoordinator {
                     // structured fields are what downstream code reads.
                     setKey:       set.setKey,
                     parentSetKey: set.parentSetKey,
+                    indicationType: set.indicationType,
                     setVariant:   set.variant,
                     axisWindows:  set.axisWindows,
                     // Forward the variant size multiplier so VolumeCalculator
@@ -5387,10 +5403,11 @@ export class StrategyCoordinator {
       }
     }
 
-    // Create EXACTLY ONE pseudo position per Set (one per indication_type × direction combination).
-    // Each Set represents a unique (indication_type × direction) coordinate.
-    // We pick the highest-profitFactor entry from the Set as the representative config for the position.
-    if (qualifying.length > 0) {
+    // Simulation-only position materialisation. In Live mode the LiveStage
+    // record is authoritative and is created only after an accepted/simulated
+    // exchange order; creating pseudo candidates as well would double-count
+    // exposure and let rejected orders enter Continuous/pos-count axes.
+    if (qualifying.length > 0 && !isLiveTradeEnabled) {
       try {
         const posManager = new PseudoPositionManager(this.connectionId)
 
@@ -5484,6 +5501,8 @@ export class StrategyCoordinator {
                   profitFactor: bestEntry.profitFactor,
                   trailingEnabled: trailing,
                   configSetKey,
+                  strategySetKey: set.setKey,
+                  parentSetKey: set.parentSetKey || set.setKey.split("#")[0],
                   ...(profile && {
                     trailingStartRatio: profile.startRatio,
                     trailingStopRatio: profile.stopRatio,
@@ -5536,16 +5555,16 @@ export class StrategyCoordinator {
 
   // �����── HELPERS ────────────────────────���──────────��───────���─────────────────────
 
-  // Per-cycle position-context cache. The pseudo-position list is shared
-  // across all Main invocations within the same cycle to amortise Redis
-  // reads when many symbols go through the flow in rapid succession.
+  // Per-cycle position-context cache. The authoritative active book and the
+  // closed-position window are shared across all symbol invocations to
+  // amortise Redis reads during a coordination cycle.
   private positionContextCache: { ctx: PositionContext; ts: number } | null = null
   private readonly POSITION_CONTEXT_TTL_MS = 2000
 
   /**
    * Produce a neutral position context �� no open positions, no prior wins
    * or losses. Used for prehistoric/backtest runs and as a fallback when the
-   * pseudo-position read fails (keeps Main operational even if the position
+   * active-book read fails (keeps Main operational even if the position
    * index is temporarily unavailable).
    */
   private neutralPositionContext(): PositionContext {
@@ -5559,15 +5578,17 @@ export class StrategyCoordinator {
       perSymbolOpen: {},
       perSymbolOpenByDir: {},
       perSymbolLiveOpenByDir: {},
+      activeStrategySetKeysBySymbol: {},
+      liveTradingEnabled: false,
     }
   }
 
   /**
    * Fetch the per-cycle position coordination context used by MAIN to decide
-   * which additional related variant Sets to produce. Reads pseudo positions
-   * once and buckets them into continuous (active) vs last-N closed vs full
-   * lookback window. Results are cached for POSITION_CONTEXT_TTL_MS so
-   * symbols processed in rapid succession share a single Redis read.
+   * which additional related variant Sets to produce. It selects exactly one
+   * active source (exchange-backed Live or pseudo simulation), then combines
+   * that snapshot with closed-only Previous/Last history. Results are cached
+   * for POSITION_CONTEXT_TTL_MS so adjacent symbols share the reads.
    */
   private async getPositionContext(): Promise<PositionContext> {
     const now = Date.now()
@@ -5578,22 +5599,40 @@ export class StrategyCoordinator {
     try {
       const posManager = new PseudoPositionManager(this.connectionId)
       const active = await posManager.getActivePositions()
+      const liveTradingEnabled = await this.isLiveTradingEnabledForConnection()
 
-      // Build per-symbol open-position map from the active list (continuous
-      // positions). No extra Redis reads — getActivePositions already pulls
-      // the full hashes behind a 1s internal cache.
-      const perSymbolOpen: Record<string, number> = {}
-      // Direction-split variant: tracks long and short independently per
-      // symbol so expandAxisSets can give each direction its own liveCont.
+      // Build the pseudo simulation book by symbol/direction. When Live mode
+      // is enabled this remains diagnostic only; the exchange-backed book
+      // below becomes the active source for all coordination counts.
       const perSymbolOpenByDir: Record<string, { long: number; short: number }> = {}
+      const activeStrategySetKeySets: Record<string, Set<string>> = {}
       for (const p of active) {
         const sym = String(p.symbol || "")
         if (!sym) continue
-        perSymbolOpen[sym] = (perSymbolOpen[sym] ?? 0) + 1
         if (!perSymbolOpenByDir[sym]) perSymbolOpenByDir[sym] = { long: 0, short: 0 }
         const dir = String(p.direction || p.side || "long").toLowerCase()
         if (dir === "short") perSymbolOpenByDir[sym].short += 1
         else                 perSymbolOpenByDir[sym].long  += 1
+        // Pseudo positions are the authoritative simulation book only while
+        // exchange-backed Live trading is disabled. Once Live is enabled,
+        // stale/rejected pseudo candidates must not drive active Set lineage.
+        if (!liveTradingEnabled) {
+          if (!activeStrategySetKeySets[sym]) activeStrategySetKeySets[sym] = new Set<string>()
+          const strategySetKey = String(
+            p.strategy_set_key || p.strategySetKey || p.source_set_key || p.set_id || "",
+          ).trim()
+          const parentSetKey = String(
+            p.parent_set_key || p.parentSetKey || (strategySetKey ? strategySetKey.split("#")[0] : ""),
+          ).trim()
+          if (strategySetKey) activeStrategySetKeySets[sym].add(strategySetKey)
+          if (parentSetKey) activeStrategySetKeySets[sym].add(parentSetKey)
+          // Legacy rows only carry a config fingerprint. Derive the exact Base
+          // identity best-effort so they remain coordinated after rollout.
+          if (!strategySetKey && !parentSetKey) {
+            const indicationType = String(p.indication_type || p.indicationType || p.config_set_key || "direction").split(":")[0]
+            activeStrategySetKeySets[sym].add(`${sym}:${indicationType}:${dir === "short" ? "short" : "long"}`)
+          }
+        }
       }
 
       // Capture exchange-backed Live exposure once in the same per-cycle
@@ -5611,8 +5650,11 @@ export class StrategyCoordinator {
           const dir = String(p.direction || p.side || "long").toLowerCase()
           if (dir === "short") perSymbolLiveOpenByDir[sym].short += 1
           else                 perSymbolLiveOpenByDir[sym].long += 1
+          if (!activeStrategySetKeySets[sym]) activeStrategySetKeySets[sym] = new Set<string>()
+          if (p.setKey) activeStrategySetKeySets[sym].add(String(p.setKey))
+          if (p.parentSetKey) activeStrategySetKeySets[sym].add(String(p.parentSetKey))
         }
-      } catch { /* live exposure is best-effort; pseudo context remains valid */ }
+      } catch { /* fail-safe: Live mode remains empty rather than trusting pseudo candidates */ }
 
       // ── P-CTX-1: Read from dedicated closed-positions index ──────────
       // `closePosition()` in PseudoPositionManager removes the position id
@@ -5702,7 +5744,7 @@ export class StrategyCoordinator {
       // live + config-set close paths). When the pseudo window has < 2
       // samples, derive wins/losses from that overall window instead so the
       // gates exercise on real outcomes in BOTH dev and prod. Open-position
-      // fields (continuousCount / perSymbolOpen) stay pseudo-sourced — the
+      // fields (continuousCount / perSymbolOpen) stay active-book-sourced —
       // recorded history has no notion of "currently open".
       if (lastN.length < 2) {
         try {
@@ -5722,16 +5764,34 @@ export class StrategyCoordinator {
         } catch { /* best-effort; keep pseudo-derived values */ }
       }
 
+      // Select exactly one active-book source. Production/Live uses only
+      // confirmed exchange-backed positions; simulation uses pseudo positions.
+      // This avoids double-counting the pseudo mirror and, critically, prevents
+      // rejected production candidates from entering Continuous/pos-count axes.
+      const effectiveByDir = liveTradingEnabled
+        ? perSymbolLiveOpenByDir
+        : perSymbolOpenByDir
+      const effectivePerSymbolOpen: Record<string, number> = {}
+      for (const [sym, counts] of Object.entries(effectiveByDir)) {
+        effectivePerSymbolOpen[sym] = Math.max(0, counts.long) + Math.max(0, counts.short)
+      }
+      const effectiveContinuousCount = Object.values(effectivePerSymbolOpen)
+        .reduce((sum, count) => sum + count, 0)
+
       const ctx: PositionContext = {
-        continuousCount: active.length,
+        continuousCount: effectiveContinuousCount,
         lastPosCount:    Math.max(lastN.length, lastWins + lastLosses),
         prevPosCount,
         lastWins,
         lastLosses,
         prevLosses,
-        perSymbolOpen,
-        perSymbolOpenByDir,
+        perSymbolOpen: effectivePerSymbolOpen,
+        perSymbolOpenByDir: effectiveByDir,
         perSymbolLiveOpenByDir,
+        activeStrategySetKeysBySymbol: Object.fromEntries(
+          Object.entries(activeStrategySetKeySets).map(([sym, keys]) => [sym, [...keys].sort()]),
+        ),
+        liveTradingEnabled,
       }
 
       this.positionContextCache = { ctx, ts: now }
@@ -5764,7 +5824,7 @@ export class StrategyCoordinator {
    *     → closed pseudo positions within a 24h lookback window.
    * Intentional exceptions (fields based on OPEN state by design, per
    * spec) — gates on these fields are NOT closed-only:
-   *   - continuousCount  → # currently-open pseudo positions
+   *   - continuousCount  → # positions in the authoritative active book
    *                        (spec: "Continuous Positions" are active)
    *   - perSymbolOpen    → per-symbol open count for position-count axes.
    *                        Block itself is completed-position based and is
@@ -5786,7 +5846,7 @@ export class StrategyCoordinator {
     // We deliberately no longer require the transient position-context gate
     // (`p.gate(ctx)`) to pass for inclusion. Those conditions (recent wins for
     // trailing, completed-position recovery for block, recent losses for dca)
-    // rarely align with the pseudo-position lifecycle and were silently
+    // rarely align with the position lifecycle and were silently
     // suppressing activated variants — leaving block/dca permanently at 0 even
     // when the operator had turned them on. Activation is now the
     // single source of truth: toggle ON ⇒ the variant is emitted; toggle OFF
@@ -5829,17 +5889,18 @@ export class StrategyCoordinator {
    * StrategySetEntry shape always carries a defined PF for completed
    * historical evaluations, so this is mostly a defensive guard.
    */
-  private meanPFOfLastN(entries: StrategySetEntry[], n: number): number | null {
-    if (!entries || entries.length < n || n <= 0) return null
-    const slice = entries.slice(-n)
-    let sum = 0
-    let count = 0
-    for (const e of slice) {
-      const pf = Number(e.profitFactor)
-      if (Number.isFinite(pf)) { sum += pf; count++ }
+  private profitFactorOfRecentPnls(pnls: number[], n: number): number | null {
+    if (!pnls || n <= 0 || pnls.length < n) return null
+    let grossProfit = 0
+    let grossLoss = 0
+    for (const raw of pnls.slice(0, n)) {
+      const pnl = Number(raw)
+      if (!Number.isFinite(pnl)) return null
+      if (pnl > 0) grossProfit += pnl
+      else grossLoss += Math.abs(pnl)
     }
-    if (count === 0) return null
-    return sum / count
+    if (grossLoss > 0) return grossProfit / grossLoss
+    return grossProfit > 0 ? 99 : 0
   }
 
   /**
@@ -5849,25 +5910,17 @@ export class StrategyCoordinator {
    *   prev (4-12 step 2) × last (1-4 step 1) × cont (1-8 step 1) × dir
    *
    * With (precise spec semantics):
-   *   • prev   = PF FILTER on the parent's last N COMPLETED entries
-   *              (rejects whole prev-row when meanPF < `minPF`).
+   *   • prev   = PF FILTER on the bucket's last N realised PnLs
+   *              (rejects whole prev-row when PF < `minPF`).
    *              Spec: "Do not Calculate the Open Positions, only
    *              positions already Completed" — applies here.
-   *   • last   = OUTCOME SPLIT (pos / neg) based on parent's last M
-   *              COMPLETED entries' meanPF. ONE Set emitted per (last)
+   *   • last   = OUTCOME SPLIT (pos / neg) based on the last M realised
+   *              PnLs. ONE Set emitted per (last)
    *              tagged with the realised outcome. Open positions are
    *              also excluded from the outcome aggregate.
-   *   • cont   = OPEN-POSITION ACCUMULATION COUNT per spec
-   *              ("continuous 3: add actual and next 2 positions to
-   *              set"). The Set is configured to accumulate `cont`
-   *              OPEN positions on top of the base's completed count —
-   *              the currently-open one ("actual") plus `cont − 1`
-   *              future ones to be opened across subsequent intervals.
-   *              Encoded as `entryCount = baseEC + cont`, where baseEC
-   *              counts completed historic entries and cont counts the
-   *              open-position accumulation window. The Live stage's
-   *              `live_net_target` reconciliation drives partial
-   *              open/close orders as the window fills.
+   *   • cont   = CONFIRMED ACTIVE-ENTRY COUNT. Only reached windows are
+   *              materialised; retries and merely qualifying candidates
+   *              do not count. `entryCount = realisedClosed + creditedActive`.
    *   • dir    = Cartesian (long + short) so hedge-net has both sides.
    *
    * All axis Sets inherit `avgProfitFactor` / `avgDrawdownTime` /
@@ -5880,22 +5933,44 @@ export class StrategyCoordinator {
    * construction, per-entry stats) is via `parentSetKey` at execution
    * time — the in-memory axis Set is purely metadata.
    *
-   * Source of "only completed entries": `baseDefault.entries` is built
-   * by `strategy-sets-processor` from completed strategy evaluations
-   * only (each carries a defined `profitFactor`). The separate
-   * `getPositionContext()` P2-1 closed-only gate keeps open positions
-   * out of variant-selection state; together those two invariants give
-   * the prev/last calcs a closed-only contract end-to-end.
+   * Source of "only completed entries": `baseDefault.prevPos.recentPnls`
+   * comes from pos-history close records. Active exposure is read separately
+   * from PositionContext and is used only by Continuous.
    */
   private expandAxisSets(
     baseDefault: StrategySet,
     minPF: number,
     liveCont = 0,
     liveContByDir?: { long: number; short: number },
+    pauseCount = 0,
+    maxOutput = Number.POSITIVE_INFINITY,
   ): StrategySet[] {
     const axisSets: StrategySet[] = []
-    const baseEC = baseDefault.entryCount || 0
-    const entries = baseDefault.entries || []
+    if (maxOutput <= 0) return axisSets
+
+    const axes = this._coordinationSettings.axes
+    if (!axes.prev.enabled && !axes.last.enabled && !axes.cont.enabled && !axes.pause.enabled) {
+      return axisSets
+    }
+    const recentPnls = (baseDefault.prevPos?.recentPnls || [])
+      .map(Number)
+      .filter(Number.isFinite)
+    const prevValues: number[] = axes.prev.enabled
+      ? AXIS_PREV.filter((value) => value <= clampNumber(Math.floor(axes.prev.maxWindow), 0, 12))
+      : [0]
+    const lastValues: number[] = axes.last.enabled
+      ? AXIS_LAST.filter((value) => value <= clampNumber(Math.floor(axes.last.maxWindow), 0, 4))
+      : [0]
+    const pause = axes.pause.enabled
+      ? Math.min(
+          clampNumber(Math.floor(axes.pause.maxWindow), 0, 8),
+          Math.max(0, Math.floor(pauseCount)),
+        )
+      : 0
+    if (prevValues.length === 0 || lastValues.length === 0) return axisSets
+    if (axes.pause.enabled && !axes.prev.enabled && !axes.last.enabled && !axes.cont.enabled && pause === 0) {
+      return axisSets
+    }
 
     // Parent baseKey (strip any prior `#variant` / `#axis:*` suffixes)
     // so `parentSetKey` always points at the originating Base Set.
@@ -5912,38 +5987,43 @@ export class StrategyCoordinator {
     const inheritedPF   = baseDefault.avgProfitFactor ?? 1
     const inheritedDDT  = baseDefault.avgDrawdownTime ?? 0
     const inheritedConf = baseDefault.avgConfidence   ?? 0
+    const closedCount = recentPnls.length
+    const contMax = axes.cont.enabled
+      ? clampNumber(Math.floor(axes.cont.maxWindow), 0, 8)
+      : 0
+    const longOpen = Math.max(0, Math.floor(liveContByDir?.long ?? liveCont))
+    const shortOpen = Math.max(0, Math.floor(liveContByDir?.short ?? liveCont))
+    const contValues: number[] = axes.cont.enabled
+      ? AXIS_CONT.filter((value) => value <= Math.min(contMax, Math.max(longOpen, shortOpen)))
+      : [0]
+    if (contValues.length === 0) return axisSets
 
-    for (const prev of AXIS_PREV) {
+    axisLoop:
+    for (const prev of prevValues) {
       // ── prev FILTER (PF gate on last `prev` completed entries) ─────
       // Spec: prev "acts as a PF filter on the parent's last N completed
-      // entries". When the parent does not yet have N completed entries
-      // (warming up / fresh symbol), the filter is *undefined* — there
-      // is nothing to evaluate yet — and we ADMIT the prev row neutrally.
-      // The fan-out's purpose is the position-count axis (cont × dir);
-      // suppressing it during bootstrap collapses Main count to Base
-      // count, which is exactly the symptom we're fixing here. Once the
-      // parent accumulates ≥ N completed entries, the PF gate engages
-      // and the filter starts pruning legitimately.
-      const prevMeanPF = this.meanPFOfLastN(entries, prev)
-      if (prevMeanPF !== null && prevMeanPF < minPF) continue // gate engaged → skip whole prev row
+      // entries". Insufficient realised history is not evidence of a valid
+      // row, so the row is withheld until its PF can actually be evaluated.
+      const prevPF = prev === 0 ? inheritedPF : this.profitFactorOfRecentPnls(recentPnls, prev)
+      if (prevPF === null || prevPF < minPF) continue
 
-      for (const last of AXIS_LAST) {
+      for (const last of lastValues) {
         // ── last OUTCOME SPLIT ───────────────────────────���───────────
         // Spec: emit ONE Set per `last` value tagged with the realised
         // pos/neg outcome based on parent's last M completed entries'
-        // meanPF. When parent does not yet have M completed entries
-        // (warming up), the outcome is *undefined* — we emit BOTH
-        // `pos` AND `neg` projections so neither side is suppressed
-        // during bootstrap. Once the parent accumulates ≥ M entries
-        // the outcome resolves to a single side per cycle as before.
-        const lastMeanPF = this.meanPFOfLastN(entries, last)
-        const outcomes: Array<"pos" | "neg"> =
-          lastMeanPF === null ? ["pos", "neg"] : [lastMeanPF >= 1.0 ? "pos" : "neg"]
+        // PF. Insufficient realised history withholds this row; no positive
+        // or negative outcome is invented during bootstrap.
+        const lastPF = last === 0 ? inheritedPF : this.profitFactorOfRecentPnls(recentPnls, last)
+        if (lastPF === null) continue
+        const outcomes: Array<"pos" | "neg"> = [lastPF >= 1.0 ? "pos" : "neg"]
 
-        for (const cont of AXIS_CONT) {
+        for (const cont of contValues) {
           for (const dir of AXIS_DIRS) {
+            const dirLiveCont = dir === "short" ? shortOpen : longOpen
+            if (axes.cont.enabled && cont > dirLiveCont) continue
             for (const outcome of outcomes) {
-              const axisKey = axisKeyOf(prev, last, cont, outcome, dir)
+              if (axisSets.length >= maxOutput) break axisLoop
+              const axisKey = `${axisKeyOf(prev, last, cont, outcome, dir)}_u${pause}`
 
               // ── Live continuous-count cap (operator spec) ──────────
               // The `cont` axis dimension represents "actual + next N-1
@@ -5954,11 +6034,8 @@ export class StrategyCoordinator {
               // not a shared total that would always mirror both sides.
               // Falls back to the aggregate `liveCont` when the caller
               // does not provide per-direction data (e.g. prehistoric).
-              const dirLiveCont = liveContByDir
-                ? (dir === "short" ? liveContByDir.short : liveContByDir.long)
-                : liveCont
-              const credited = Math.min(cont, Math.max(0, dirLiveCont))
-              const ec = baseEC + credited
+              const credited = axes.cont.enabled ? Math.min(cont, dirLiveCont) : 0
+              const ec = Math.max(1, closedCount + credited)
 
               // ── Synthetic representative entry ─────���───────────────
               // One entry per axis Set so:
@@ -5970,7 +6047,16 @@ export class StrategyCoordinator {
               // writes sizeDelta onto the CoordRecord instead of mutating entries).
               // They can be safely reused across cycles without cloning.
               // Key encodes every field that varies: parentKey, axisKey, ec.
-              const axisLruKey = `${parentKey}:${axisKey}:ec${ec}`
+              const axisLruKey = [
+                parentKey,
+                axisKey,
+                `ec${ec}`,
+                `pf${inheritedPF.toFixed(4)}`,
+                `ddt${inheritedDDT.toFixed(2)}`,
+                `cf${inheritedConf.toFixed(4)}`,
+                `hc${baseDefault.prevPos?.count || 0}`,
+                `hpf${Number(baseDefault.prevPos?.profitFactor || 0).toFixed(4)}`,
+              ].join(":")
               const cachedAxisSet = StrategyCoordinator._axisLruGet(axisLruKey)
               if (cachedAxisSet) {
                 axisSets.push(cachedAxisSet)
@@ -5982,7 +6068,7 @@ export class StrategyCoordinator {
                   id: `${parentKey}#axis:${axisKey}#axis-synth`,
                   sizeMultiplier: 1,
                   leverage: 1,
-                  positionState: `axis:p${prev}|l${last}|c${cont}|${outcome}|${dir}`,
+                  positionState: `axis:p${prev}|l${last}|c${cont}|u${pause}|${outcome}|${dir}`,
                   profitFactor: inheritedPF,
                   drawdownTime: inheritedDDT,
                   confidence: inheritedConf,
@@ -6002,7 +6088,7 @@ export class StrategyCoordinator {
                     prev,
                     last,
                     cont,
-                    pause:     0,
+                    pause,
                     direction: dir,
                     axisKey,
                     outcome,
@@ -6083,7 +6169,7 @@ export class StrategyCoordinator {
    * Spec ranges:
    *   - Prev Positions         1-12   (13 buckets 0-12)
    *   - Last Positions W/L     1-4    (5 buckets each 0-4)
-   *   - Continuous Positions   1-10   (11 buckets 0-10)
+   *   - Continuous Positions   1-8    (9 buckets 0-8)
    *
    * The previous implementation under-bucketed (Math.min(5,...) for all
    * three context dimensions), which collapsed distinct spec-level
@@ -6092,8 +6178,9 @@ export class StrategyCoordinator {
    * semantically distinct context produces a distinct fingerprint.
    *
    * Coordinated-vars vs. materialised-Sets: we chose the coordinated
-   * approach — each qualifying base Set expands into at most
-   * 13×5×5×11 = 3,575 theoretical fingerprints, but in practice the
+   * approach — each qualifying base Set expands only for reached windows
+   * across Previous, Last, Continuous, and Pause, rather than eagerly
+   * materialising the entire Cartesian product. In practice the
    * operator only visits O(20-80) of them per symbol per run. The
    * alternative (materialising Sets for every combo) would blow the
    * 250-entry cap and thrash Redis with no accuracy win.
@@ -6101,8 +6188,8 @@ export class StrategyCoordinator {
    * ── P2-3: Closed-only contract for statistics-driven buckets ──────
    * `lastWins`, `lastLosses`, `prevPosCount`, `prevLosses` below are
    * closed-only by construction (see `getPositionContext` P2-1 gate).
-   * `continuousCount` is intentionally live — Continuous Positions
-   * denote currently-open pseudo positions per spec.
+   * `continuousCount` is intentionally active-book based — Continuous
+   * Positions denote confirmed currently-open positions per spec.
    */
   private variantFingerprint(
     baseSet: StrategySet,
@@ -6113,14 +6200,11 @@ export class StrategyCoordinator {
     const bEC = baseSet.entryCount
     // Clamp each context dimension to its spec maximum.
     // cont is live-open by spec; the other four are closed-only via
-    // the P2-1 gate in getPositionContext. lastPosCount remains in the
-    // fingerprint for axis-window coordination so 3/5/8-count pause-axis
-    // contexts do not collapse into the same cached Set.
     // the P2-1 gate in getPositionContext. lastPosCount is the Pause
     // variant's primary discriminator (1..8 windows) — adding it to the
     // fingerprint guarantees a 3-loss / 5-loss / 8-loss pause produce
     // distinct cached Sets instead of collapsing into the same bucket.
-    const cont = Math.min(10, Math.max(0, ctx.continuousCount))
+    const cont = Math.min(8, Math.max(0, ctx.continuousCount))
     const lW   = Math.min(4,  Math.max(0, ctx.lastWins))
     const lL   = Math.min(4,  Math.max(0, ctx.lastLosses))
     const lP   = Math.min(8,  Math.max(0, ctx.lastPosCount))
