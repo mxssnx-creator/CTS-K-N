@@ -1,7 +1,7 @@
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
 import { publishEngineEvent } from "@/lib/engine-event-bus"
 import { hasStrategyAffectingChange, hasSymbolAffectingChange, isGenericConnectionSettingsReload } from "@/lib/trade-engine/settings-change-fields"
-import { buildProgressionScope } from "@/lib/progression-scope"
+import { buildPrehistoricGateKeys, buildProgressionScope } from "@/lib/progression-scope"
 // Keep heap telemetry bundler-safe. Importing/requiring the Node `v8` built-in
 // from this hot server module makes Next dev's webpack resolver emit repeated
 // "Can't resolve 'v8'" warnings when the trade engine is pulled into route
@@ -143,6 +143,33 @@ function registerEngineTimer(timer: ReturnType<typeof setInterval>): void {
 
 function unregisterEngineTimer(timer: ReturnType<typeof setInterval>): void {
   engineGlobal.__engine_timers?.delete(timer)
+}
+
+async function readPrehistoricGate(
+  client: ReturnType<typeof getRedisClient>,
+  connectionId: string,
+  engineType: string,
+  gate: "done" | "firstpass:done" = "done",
+): Promise<boolean> {
+  const keys = buildPrehistoricGateKeys(connectionId, engineType, gate)
+  const [scoped, legacy] = await Promise.all([
+    client.get(keys.scoped).catch(() => null),
+    client.get(keys.legacy).catch(() => null),
+  ])
+  return scoped === "1" || legacy === "1"
+}
+
+function writePrehistoricGate(
+  client: ReturnType<typeof getRedisClient>,
+  connectionId: string,
+  engineType: string,
+  gate: "done" | "firstpass:done" = "done",
+): Promise<unknown[]> {
+  const keys = buildPrehistoricGateKeys(connectionId, engineType, gate)
+  return Promise.all([
+    client.set(keys.scoped, "1", { EX: 86400 }),
+    client.set(keys.legacy, "1", { EX: 86400 }),
+  ])
 }
 
 /**
@@ -449,6 +476,13 @@ export class TradeEngineManager {
   private strategyTimer?: NodeJS.Timeout
   private realtimeTimer?: NodeJS.Timeout
   private liveProgressionsArmed = false
+  /**
+   * The cold, full-range bootstrap and the continuous checkpoint replay both
+   * populate historical Sets. They must never run at the same time: doing so
+   * duplicates the most expensive work, drives heap/Redis growth, and can
+   * starve the first realtime cycle on a 12-symbol production start.
+   */
+  private prehistoricBootstrapInFlight = false
   private healthCheckTimer?: NodeJS.Timeout
   private heartbeatTimer?: NodeJS.Timeout
   private currentEngineType = "main"
@@ -535,6 +569,12 @@ export class TradeEngineManager {
   private settingsApplyQueued = false
   /** Prevents dirty-flag and hot-reload fast paths from recursively fanning out. */
   private immediateStrategyReevaluationInFlight = false
+  /**
+   * Coalesced settings pass waiting for the cold historic writer to finish.
+   * Running Base→Main→Real while that writer owns the Set graph duplicates
+   * work and can starve position protection on multi-symbol production boots.
+   */
+  private pendingImmediateStrategyReevaluation = false
 
   private componentHealth: {
     indications: ComponentHealth
@@ -637,6 +677,7 @@ export class TradeEngineManager {
     // BEFORE any await so a fast-fail in startup still leaves a usable
     // record of intended intervals.
     this.liveProgressionsArmed = false
+    this.pendingImmediateStrategyReevaluation = false
     this.startConfig = config
 
     // ── Symbols cache invalidation ──────────────────────────────────────
@@ -816,7 +857,10 @@ export class TradeEngineManager {
         console.warn("[v0] [Engine] Could not write progression solidity snapshot:", snapErr)
       }
 
-      const loaded = await loadMarketDataForEngine(symbols)
+      // A realtime tail can be created before the cold-history loader finishes.
+      // Requiring the history marker prevents that one-candle tail from making
+      // the remaining startup path believe a symbol is fully bootstrapped.
+      const loaded = await loadMarketDataForEngine(symbols, { requireHistory: true })
       if (loaded === 0) {
         console.warn(`[v0] [Engine] No market data loaded for symbols: ${symbols.join(", ")}`)
       }
@@ -842,7 +886,7 @@ export class TradeEngineManager {
         // path. The fix is idempotent (same value, 24h re-expire) and costs
         // exactly one Redis SET per engine boot.
         try {
-          await redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`, "1", { EX: 86400 } as any)
+          await writePrehistoricGate(redisClient, this.connectionId, this.currentEngineType)
         } catch (gateErr) {
           console.warn(
             `[v0] [Engine] Failed to re-arm prehistoric done gate on cache hit:`,
@@ -1001,22 +1045,6 @@ export class TradeEngineManager {
       // allows their first tick to fire. In non-cache-hit path, arm is called below.
       this.isRunning = true
 
-      // ── Spec contract (prehistoric → realtime ordering) ─────────────────
-      // All three live processors (indication / strategy / realtime) are
-      // ARMED here so their timer infrastructure is live, but every tick
-      // SELF-GATES on the `prehistoric:{id}:done` flag (set at the end of
-      // loadPrehistoricData). Until that flag flips the ticks return a
-      // "gated" outcome with zero counters bumped — guaranteeing realtime
-      // only evaluates the SET data that prehistoric calculations created,
-      // never half-filled or empty sets.
-      //
-      // We deliberately DO NOT run forced "immediate" indication/strategy
-      // warm-up cycles before prehistoric is complete: those bypass the
-      // tick gate and would poison `indications_count` / `strategy_cycle_count`
-      // with empty-set evaluations, which in turn flipped the dashboard
-      // phase auto-derivation straight to "live_trading" while the
-      // prehistoric calculator was still running. The first productive
-      // tick of each processor fires the moment the `:done` flag flips.
       // ── Three-progression contract (architectural spec) ──────────────
       // Three independent top-level loops, each on its own timer:
       //   A. Prehistoric Progression  (continuous, no-pause) → historical Sets fill
@@ -1038,21 +1066,18 @@ export class TradeEngineManager {
       // at least once, every live tick scores against an empty Set and
       // the first wave of indications is meaningless.
       //
-      // To enforce the gate we:
-      //   1. Start the Prehistoric loop first (and ONLY it).
-      //   2. Pass an `onFirstPassComplete` callback that arms the other
-      //      three progressions the moment the first historical cycle
-      //      writes the `prehistoric:{connId}:firstpass:done` flag.
-      //   3. The Prehistoric loop then continues running forever in the
-      //      background, refilling Sets from fresh market data each cycle.
-      //
-      // The callback path runs SYNCHRONOUSLY inside the prehistoric tick
-      // before scheduleNext, so the realtime loops are armed before the
-      // second prehistoric cycle even fires — no race window.
-      const armLiveProgressions = () => {
-        this.armLiveProgressions("prehistoric first-pass complete")
+      // A verified cache hit can enter the lightweight continuous replay
+      // immediately. On a cold start, loadPrehistoricDataInBackground owns
+      // historical writes exclusively; it starts this replay only after the
+      // one-time bootstrap settles. Running both writers concurrently used
+      // to duplicate the full Base/Main/Real graph, exceed 2 GB RSS, and
+      // prevent a 12-symbol production worker from reaching cycle one.
+      if (cacheHit) {
+        // Prioritise the first Realtime/LivePositions pass after attach. The
+        // cached historic data is already authoritative; incremental replay
+        // can wait a few seconds without affecting entry correctness.
+        this.schedulePrehistoricProgressionAfterRealtimeWarmup()
       }
-      this.startPrehistoricProgression(cacheHit ? undefined : armLiveProgressions)
 
       // Phase stays at `prehistoric_data` while the historical calculator
       // is filling sets. `loadPrehistoricData` updates the phase percent
@@ -1065,7 +1090,7 @@ export class TradeEngineManager {
         await this.updateProgressionPhase(
           "live_trading",
           100,
-          `Live trading ACTIVE - monitoring ${symbols.length} symbols (cached prehistoric)`,
+          `Live stage ACTIVE - monitoring ${symbols.length} symbols (cached prehistoric)`,
         )
       } else {
         await this.updateProgressionPhase(
@@ -1078,25 +1103,22 @@ export class TradeEngineManager {
 
       // Verify timers are running.
       //
-      // Under the prehistoric-gated startup contract, the realtime /
-      // indication / strategy timers are intentionally NOT armed at boot
-      // — they are armed by the `armLiveProgressions` callback the moment
-      // the Prehistoric Progression finishes its first pass (which can
-      // take 5-30 s on a fresh boot). So at +2 s the only timer we can
-      // assert is the prehistoric one. The live timers get their own
-      // confirmation log via `armLiveProgressions` itself.
+      // Under the prehistoric-gated startup contract, realtime indication /
+      // strategy timers are intentionally not armed on a cold boot. At +2 s
+      // either the full bootstrap promise or the continuous replay timer must
+      // be active; live timers get their own confirmation when the gate opens.
       setTimeout(async () => {
-        if (this.prehistoricTimer) {
+        if (this.prehistoricTimer || this.prehistoricBootstrapInFlight) {
           await logProgressionEvent(
             this.connectionId,
             "engine_started",
             "info",
             this.indicationTimer && this.realtimeTimer
               ? "All engine processors started"
-              : "Prehistoric Progression running — live processors gated until first pass completes",
+              : "Prehistoric bootstrap running — entry processors gated until completion",
           )
         } else {
-          console.error(`[v0] [Engine] Timer startup failed — prehistoric not armed`)
+          console.error(`[v0] [Engine] Startup failed — no prehistoric worker armed`)
         }
       }, 2000)
       this.startHealthMonitoring()
@@ -1256,9 +1278,18 @@ export class TradeEngineManager {
     console.log(
       `[v0] [Engine ${this.connectionId}] ${reason} — arming Realtime, Strategy heartbeat, and LivePositions loops.`,
     )
+    // Protection/adoption is the highest-priority runtime responsibility.
+    // Queue its zero-delay tick before the CPU-heavy 12-symbol Set pipeline so
+    // an existing exchange position is never left unmonitored during attach.
+    this.startRealtimeProcessor(this.startConfig.realtimeInterval)
     this.startIndicationProcessor(this.startConfig.indicationInterval)
     this.startStrategyProcessor(this.startConfig.strategyInterval)
-    this.startRealtimeProcessor(this.startConfig.realtimeInterval)
+    if (this.pendingImmediateStrategyReevaluation) {
+      // The newly armed indication tick is itself an immediate evaluation and
+      // reads the refreshed settings. Do not fan out a duplicate concurrent
+      // pass merely because one or more saves arrived during bootstrap.
+      this.pendingImmediateStrategyReevaluation = false
+    }
   }
 
   /**
@@ -1289,21 +1320,25 @@ export class TradeEngineManager {
     if (!this.isRunning || !this.startConfig) return false
 
     const reasons: string[] = []
-    try {
-      if (!this.indicationTimer) {
-        this.startIndicationProcessor(this.startConfig.indicationInterval)
-        reasons.push("indication")
+    // Entry-producing loops remain deliberately absent during cold bootstrap.
+    // A watchdog re-arm must not bypass that gate and race historical writes.
+    if (this.liveProgressionsArmed) {
+      try {
+        if (!this.indicationTimer) {
+          this.startIndicationProcessor(this.startConfig.indicationInterval)
+          reasons.push("indication")
+        }
+      } catch (e) {
+        console.error(`[v0] [Engine ${this.connectionId}] re-arm indication failed:`, e)
       }
-    } catch (e) {
-      console.error(`[v0] [Engine ${this.connectionId}] re-arm indication failed:`, e)
-    }
-    try {
-      if (!this.strategyTimer) {
-        this.startStrategyProcessor(this.startConfig.strategyInterval)
-        reasons.push("strategy")
+      try {
+        if (!this.strategyTimer) {
+          this.startStrategyProcessor(this.startConfig.strategyInterval)
+          reasons.push("strategy")
+        }
+      } catch (e) {
+        console.error(`[v0] [Engine ${this.connectionId}] re-arm strategy failed:`, e)
       }
-    } catch (e) {
-      console.error(`[v0] [Engine ${this.connectionId}] re-arm strategy failed:`, e)
     }
     try {
       if (!this.realtimeTimer) {
@@ -1314,8 +1349,8 @@ export class TradeEngineManager {
       console.error(`[v0] [Engine ${this.connectionId}] re-arm realtime failed:`, e)
     }
     try {
-      if (!this.prehistoricTimer) {
-        this.startPrehistoricProgression()
+      if (!this.prehistoricTimer && !this.prehistoricBootstrapInFlight) {
+        this.schedulePrehistoricProgressionAfterRealtimeWarmup()
         reasons.push("prehistoric")
       }
     } catch (e) {
@@ -1396,6 +1431,7 @@ export class TradeEngineManager {
 
     this.isRunning = false
     this.liveProgressionsArmed = false
+    this.pendingImmediateStrategyReevaluation = false
     // Capture epoch before zeroing so endProgression can use it for the
     // stale-stop guard (prevents a delayed stop() from closing a newer
     // progression that already started in a different worker/restart).
@@ -1457,6 +1493,13 @@ export class TradeEngineManager {
    * Allows engine to proceed to processor startup immediately
    */
   private loadPrehistoricDataInBackground(cacheKey: string, redisClient: ReturnType<typeof getRedisClient>): void {
+    if (this.prehistoricBootstrapInFlight) {
+      console.warn(`[v0] [Engine ${this.connectionId}] Ignoring duplicate prehistoric bootstrap request`)
+      return
+    }
+    this.prehistoricBootstrapInFlight = true
+    const generationEpoch = this.epoch
+
     this.updateProgressionPhase("prehistoric_data", 15, "Prehistoric calc starting — filling sets...")
       .then(() => withCycleDeadline(
         this.loadPrehistoricData(),
@@ -1464,6 +1507,7 @@ export class TradeEngineManager {
         PREHISTORIC_BOOTSTRAP_DEADLINE_MS,
       ))
       .then(async () => {
+        if (!this.isCurrentGeneration(generationEpoch)) return
         await redisClient.set(cacheKey, "1", { EX: 86400 })
         await setSettings(`trade_engine_state:${this.connectionId}`, {
           prehistoric_data_loaded: true,
@@ -1482,7 +1526,7 @@ export class TradeEngineManager {
           await this.updateProgressionPhase(
             "live_trading",
             100,
-            `Live trading ACTIVE — evaluating ${symCount} symbol${symCount === 1 ? "" : "s"} against prehistoric sets`,
+            `Live stage ACTIVE — evaluating ${symCount} symbol${symCount === 1 ? "" : "s"} against prehistoric sets`,
           )
           await setSettings(`trade_engine_state:${this.connectionId}`, {
             all_phases_started: true,
@@ -1499,6 +1543,7 @@ export class TradeEngineManager {
         }
       })
       .catch(async (err) => {
+        if (!this.isCurrentGeneration(generationEpoch)) return
         console.warn(`[v0] [Engine] Prehistoric loading error:`, err instanceof Error ? err.message : String(err))
         await setSettings(`trade_engine_state:${this.connectionId}`, {
           prehistoric_data_loaded: false,
@@ -1517,13 +1562,13 @@ export class TradeEngineManager {
           // only `:done` is written the replay loop spins forever without
           // ever calling the callback, leaving realtime permanently disabled.
           await Promise.all([
-            redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`, "1", { EX: 86400 }),
-            redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:firstpass:done`, "1", { EX: 86400 }),
+            writePrehistoricGate(redisClient, this.connectionId, this.currentEngineType, "done"),
+            writePrehistoricGate(redisClient, this.connectionId, this.currentEngineType, "firstpass:done"),
           ])
           await this.updateProgressionPhase(
             "live_trading",
             100,
-            `Live trading ACTIVE — prehistoric failed, running without prev-set enrichment`,
+            `Live stage ACTIVE — prehistoric failed, running without prev-set enrichment`,
           )
           this.armLiveProgressions("prehistoric failure fallback")
         } catch { /* best-effort */ }
@@ -1533,6 +1578,15 @@ export class TradeEngineManager {
           await loadMarketDataForEngine(fallbackSymbols)
         } catch (fallbackErr) {
           console.warn(`[v0] [Engine] Fallback market data failed:`, fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr))
+        }
+      })
+      .finally(() => {
+        this.prehistoricBootstrapInFlight = false
+        // The full-range bootstrap owns historical writes until it settles.
+        // Only then may the incremental checkpoint replay begin. Generation
+        // checking prevents a stopped/replaced manager from resurrecting work.
+        if (this.isCurrentGeneration(generationEpoch) && !this.prehistoricTimer) {
+          this.schedulePrehistoricProgressionAfterRealtimeWarmup()
         }
       })
   }
@@ -1700,8 +1754,8 @@ export class TradeEngineManager {
       // is finished. The interval itself stays effective whenever productive
       // work is available.
       await Promise.all([
-        redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:done`, "1", { EX: 86400 }),
-        redisClient.set(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:firstpass:done`, "1", { EX: 86400 }),
+        writePrehistoricGate(redisClient, this.connectionId, this.currentEngineType, "done"),
+        writePrehistoricGate(redisClient, this.connectionId, this.currentEngineType, "firstpass:done"),
       ])
 
       // Emit a log event (NOT a phase overwrite) so the dashboard can show
@@ -1875,6 +1929,8 @@ export class TradeEngineManager {
     let attemptedCycles = 0
     let totalDuration = 0
     let errorCount = 0
+    let lastRealtimeStartedAt = 0
+    let lastRealtimeCompletedAt = 0
 
     // Adaptive idle backoff. When prehistoric calc is complete and the cycle
     // produces zero indications we progressively increase the pause from the
@@ -1892,8 +1948,17 @@ export class TradeEngineManager {
       // weird runtime, etc.) we MUST still rearm — otherwise the engine
       // silently dies. Catch everything and try a default-pause fallback.
       try {
-        const base = getCyclePauseMsSync()
-        let pause = base
+        const timings = getEngineTimings()
+        const now = Date.now()
+        const intervalMs = timings.realtimeIntervalMs ?? 300
+        const cyclePauseMs = timings.realtimeCyclePauseMs ?? 50
+        const intervalRemaining = lastRealtimeStartedAt > 0
+          ? Math.max(0, intervalMs - (now - lastRealtimeStartedAt))
+          : 0
+        const completionPauseRemaining = lastRealtimeCompletedAt > 0
+          ? Math.max(0, cyclePauseMs - (now - lastRealtimeCompletedAt))
+          : 0
+        let pause = Math.max(intervalRemaining, completionPauseRemaining)
         if (wasProductive) {
           consecutiveEmptyCycles = 0
         } else {
@@ -1901,7 +1966,10 @@ export class TradeEngineManager {
           const prehistoricDone = prehistoricDoneFlag
           if (prehistoricDone && consecutiveEmptyCycles > 2) {
             const factor = Math.min(16, 1 << Math.min(4, consecutiveEmptyCycles - 2))
-            pause = Math.min(MAX_IDLE_PAUSE_MS, base * factor)
+            pause = Math.max(
+              pause,
+              Math.min(MAX_IDLE_PAUSE_MS, cyclePauseMs * factor),
+            )
           }
         }
         // Unregister the prior handle BEFORE overwriting it so the global
@@ -1930,8 +1998,11 @@ export class TradeEngineManager {
     const refreshPrehistoricDone = async () => {
       try {
         const client = getRedisClient()
-        const v = await client.get(`prehistoric:${connId}:done`)
-        prehistoricDoneFlag = v === "1"
+        prehistoricDoneFlag = await readPrehistoricGate(
+          client,
+          connId,
+          this.currentEngineType,
+        )
       } catch { /* keep last known value */ }
     }
     // Prime immediately and refresh every 3s
@@ -1954,6 +2025,7 @@ export class TradeEngineManager {
       }
 
       const startTime = Date.now()
+      lastRealtimeStartedAt = startTime
       // Local abort flag — when true, the finally block will NOT schedule the next cycle.
       let aborted = false
       // Productivity marker — tracks whether this cycle did meaningful work so
@@ -2043,8 +2115,7 @@ export class TradeEngineManager {
           prehistoricDoneFlag = true
           const client = getRedisClient()
           try {
-            await client.set(`prehistoric:${connId}:done`, "1")
-            await client.expire(`prehistoric:${connId}:done`, 86400)
+            await writePrehistoricGate(client, connId, this.currentEngineType)
           } catch (e) {
             console.error(`[v0] Failed to write safety valve done flag: ${e}`)
           }
@@ -2440,7 +2511,8 @@ export class TradeEngineManager {
         )
         console.error("[v0] Indication processor error:", error)
       } finally {
-        // Schedule next cycle after configurable pause so the event loop can breathe.
+        lastRealtimeCompletedAt = Date.now()
+        // Preserve start-to-start cadence plus a short post-completion breath.
         if (!aborted) scheduleNext(producedIndications)
       }
     }
@@ -2511,8 +2583,11 @@ export class TradeEngineManager {
     const refreshPrehistoricDone = async () => {
       try {
         const client = getRedisClient()
-        const v = await client.get(`prehistoric:${connId}:done`)
-        prehistoricDoneFlag = v === "1"
+        prehistoricDoneFlag = await readPrehistoricGate(
+          client,
+          connId,
+          this.currentEngineType,
+        )
       } catch { /* keep last known value */ }
     }
     void refreshPrehistoricDone()
@@ -2856,6 +2931,7 @@ export class TradeEngineManager {
     let cycleCount = 0
     let errorCount = 0
     let liveSyncInFlight = false
+    let lastSyncStartedAt = 0
     let lastSyncCompletedAt = 0
     // ── Connector reuse (memory-pressure fix) ───────────────────────────
     // The previous code constructed a BRAND-NEW exchange connector on EVERY
@@ -2902,6 +2978,7 @@ export class TradeEngineManager {
       } catch { /* ignore */ }
 
       liveSyncInFlight = true
+      lastSyncStartedAt = cycleStart
       try {
         // API workers must remain responsive. Vercel/serverless workers keep
         // exchange-side live position sync opt-in, while self-hosted production
@@ -3015,10 +3092,20 @@ export class TradeEngineManager {
         if (this.realtimeTimer) unregisterEngineTimer(this.realtimeTimer)
       } catch { /* stale handle is fine */ }
       const timings = getEngineTimings()
-      // Start-to-start cadence = liveSyncIntervalMs (default 200 ms).
-      // Subtract elapsed work time so a slow cycle doesn't slip cadence.
+      // Start-to-start cadence = liveSyncIntervalMs (default 200 ms), with
+      // an independent post-completion breath. Scheduling by the remaining
+      // gate time avoids accidentally adding the whole interval after work.
       const intervalMs = timings.liveSyncIntervalMs ?? 200
-      this.realtimeTimer = setTimeout(tickLivePositions, intervalMs)
+      const cyclePauseMs = timings.livePositionsCyclePauseMs ?? 50
+      const now = Date.now()
+      const intervalRemaining = lastSyncStartedAt > 0
+        ? Math.max(0, intervalMs - (now - lastSyncStartedAt))
+        : 0
+      const completionPauseRemaining = lastSyncCompletedAt > 0
+        ? Math.max(0, cyclePauseMs - (now - lastSyncCompletedAt))
+        : 0
+      const delayMs = Math.max(intervalRemaining, completionPauseRemaining)
+      this.realtimeTimer = setTimeout(tickLivePositions, delayMs)
       registerEngineTimer(this.realtimeTimer)
     }
 
@@ -3054,8 +3141,11 @@ export class TradeEngineManager {
     const refreshPrehistoricDone = async () => {
       try {
         const client = getRedisClient()
-        const v = await client.get(`prehistoric:${connId}:done`)
-        prehistoricDoneFlag = v === "1"
+        prehistoricDoneFlag = await readPrehistoricGate(
+          client,
+          connId,
+          this.currentEngineType,
+        )
       } catch { /* keep last known value */ }
     }
     void refreshPrehistoricDone()
@@ -3266,6 +3356,56 @@ export class TradeEngineManager {
   private prehistoricTimer?: ReturnType<typeof setTimeout>
 
   /**
+   * Start continuous historic catch-up only after the first complete realtime
+   * pipeline and LivePositions sync. Both historic replay and realtime execute
+   * Base→Main→Real on the same Node event loop; starting them together on a
+   * 12-symbol attach doubled peak memory and delayed protection/cycle one.
+   *
+   * The one-time bootstrap has already produced the authoritative history at
+   * every call site. This short poll therefore changes only scheduling, not the
+   * data gate. A bounded fallback keeps replay self-healing if the first live
+   * pipeline is unusually slow or repeatedly errors.
+   */
+  private schedulePrehistoricProgressionAfterRealtimeWarmup(): void {
+    if (!this.isRunning || this.prehistoricTimer || this.prehistoricBootstrapInFlight) return
+
+    const startedAt = Date.now()
+    const fallbackAfterMs = Math.max(
+      60_000,
+      Math.min(5 * 60_000, Number(process.env.PREHISTORIC_REPLAY_WARMUP_MAX_MS) || 120_000),
+    )
+
+    const poll = () => {
+      if (!this.isRunning) return
+      const realtimeReady = this.componentHealth.indications.cycleCount > 0
+      const livePositionsReady = this.componentHealth.realtime.cycleCount > 0
+      const fallbackDue = Date.now() - startedAt >= fallbackAfterMs
+
+      if ((realtimeReady && livePositionsReady) || fallbackDue) {
+        if (this.prehistoricTimer) {
+          unregisterEngineTimer(this.prehistoricTimer)
+          this.prehistoricTimer = undefined
+        }
+        if (fallbackDue && !(realtimeReady && livePositionsReady)) {
+          console.warn(
+            `[v0] [Engine ${this.connectionId}] starting continuous historic replay after warmup fallback ` +
+              `(realtimeReady=${realtimeReady}, livePositionsReady=${livePositionsReady})`,
+          )
+        }
+        this.startPrehistoricProgression()
+        return
+      }
+
+      if (this.prehistoricTimer) unregisterEngineTimer(this.prehistoricTimer)
+      this.prehistoricTimer = setTimeout(poll, 1_000)
+      registerEngineTimer(this.prehistoricTimer)
+    }
+
+    this.prehistoricTimer = setTimeout(poll, 1_000)
+    registerEngineTimer(this.prehistoricTimer)
+  }
+
+  /**
    * Start the Prehistoric Progression loop.
    *
    * @param onFirstPassComplete  Fired ONCE, after the very first cycle
@@ -3285,6 +3425,7 @@ export class TradeEngineManager {
    */
   private startPrehistoricProgression(
     onFirstPassComplete?: () => void,
+    initialDelayMs = 0,
   ): void {
     // Idempotency guard — see startIndicationProcessor. Prevents a leaked
     // duplicate Prehistoric loop if this is ever (re)armed while live.
@@ -3365,7 +3506,7 @@ export class TradeEngineManager {
         try {
           const { loadMarketDataForEngine } = await import("@/lib/market-data-loader")
           await withCycleDeadline(
-            loadMarketDataForEngine(symbols),
+            loadMarketDataForEngine(symbols, { requireHistory: true }),
             `Prehistoric ${connId} loadMarketData`,
             CYCLE_DEADLINE_MS,
           )
@@ -3390,12 +3531,14 @@ export class TradeEngineManager {
         // pass. This makes back-to-back cycles cheap once the catch-up
         // phase completes.
         //
-// Per-cycle safety cap: MAX_REPLAY_STEPS_PER_SYMBOL bounds the
+        // Per-cycle safety cap: MAX_REPLAY_STEPS_PER_SYMBOL bounds the
         // number of replay steps per symbol per cycle to prevent CPU starvation.
-        // Both dev and prod use the same conservative limit (30) to avoid
-        // exceeding the cycle deadline. The old prod value of 80 caused
-        // excessive CPU work per cycle, leading to deadline kills and "stuck" pipelines.
-        const MAX_REPLAY_STEPS_PER_SYMBOL = 30
+        // Both dev and prod default to five so LivePositions gets frequent
+        // event-loop turns; operators can raise it to 30 on dedicated workers.
+        const configuredReplaySteps = Number(process.env.PREHISTORIC_REPLAY_STEPS_PER_SYMBOL)
+        const MAX_REPLAY_STEPS_PER_SYMBOL = Number.isFinite(configuredReplaySteps)
+          ? Math.max(1, Math.min(30, Math.floor(configuredReplaySteps)))
+          : 5
         const client = getRedisClient()
 
         const replayOneSymbol = async (
@@ -3576,7 +3719,7 @@ export class TradeEngineManager {
           try {
             const client = getRedisClient()
             const gateWrites: Promise<unknown>[] = [
-              client.set(`prehistoric:${connId}:firstpass:done`, "1", { EX: 86400 }),
+              writePrehistoricGate(client, connId, this.currentEngineType, "firstpass:done"),
             ]
             if (firstPassFallbackDue) {
               // If the replay loop cannot find any candles/steps before the
@@ -3585,7 +3728,7 @@ export class TradeEngineManager {
               // in the background under its own deadline; opening the gate lets
               // realtime/live processing handle current candles and existing
               // positions instead of showing a stuck progression forever.
-              gateWrites.push(client.set(`prehistoric:${connId}:done`, "1", { EX: 86400 }))
+              gateWrites.push(writePrehistoricGate(client, connId, this.currentEngineType, "done"))
             }
             await Promise.all(gateWrites)
           } catch { /* non-critical */ }
@@ -3673,7 +3816,7 @@ export class TradeEngineManager {
     }
 
     // Kick off the first cycle immediately.
-    this.prehistoricTimer = setTimeout(tick, 0)
+    this.prehistoricTimer = setTimeout(tick, Math.max(0, initialDelayMs))
     registerEngineTimer(this.prehistoricTimer)
   }
 
@@ -4054,6 +4197,13 @@ export class TradeEngineManager {
       invalidatedCaches.push("realtime.prevSetCache")
     } catch { /* best-effort */ }
 
+    void import("@/lib/trade-engine/stages/live-stage")
+      .then(({ invalidateLiveStageSettingsCache }) => {
+        invalidateLiveStageSettingsCache(this.connectionId)
+      })
+      .catch(() => undefined)
+    invalidatedCaches.push("liveStage.systemCloseOnly")
+
     console.log(
       `[v0] [Engine ${this.connectionId}] strategy/coordination caches invalidated (${reason}); generation=${coordinatorReloadGeneration}; fields=[${changedFields.join(",")}]; caches=[${invalidatedCaches.join(",")}]`,
     )
@@ -4067,6 +4217,16 @@ export class TradeEngineManager {
    */
   public triggerImmediateStrategyReevaluation(reason = "settings-dirty"): void {
     if (!this.isRunning) return
+    // Cache/timing invalidation is already immediate in applyHotReload. The
+    // evaluation itself must wait for the authoritative historic Set graph;
+    // any number of saves during bootstrap collapse into one post-gate pass.
+    if (!this.liveProgressionsArmed || this.prehistoricBootstrapInFlight) {
+      this.pendingImmediateStrategyReevaluation = true
+      console.log(
+        `[v0] [Engine ${this.connectionId}] immediate strategy re-evaluation deferred until historic bootstrap completes (${reason})`,
+      )
+      return
+    }
     if (this.immediateStrategyReevaluationInFlight) return
     this.immediateStrategyReevaluationInFlight = true
     void (async () => {
@@ -4245,18 +4405,15 @@ export class TradeEngineManager {
         // Silent fail - heartbeat is non-critical
       }
 
-      // Refresh market data every 30s (every 3rd heartbeat) to keep live prices current.
-      // Skip reload if data is already fresh — the 1s envelope TTL is 24h but the
-      // loader itself writes a `market_data:BTCUSDT:1s` stamp; checking this prevents
-      // redundant exchange API calls from the heartbeat and prehistoric progression
-      // firing simultaneously.
+      // Every 30s, ensure every configured symbol has both a realtime tail and
+      // its chunked history index. `loadMarketDataForEngine` performs a batched
+      // per-symbol cache check and coalesces concurrent calls, so calling it for
+      // the whole set is cheap while still healing newly-added/missing symbols.
       if (heartbeatCount % 3 === 0) {
         try {
           const symbols = await this.getSymbols()
-          const client = getRedisClient()
-          const marketLoaded = await client.get("market_data:BTCUSDT:1s")
-          if (!marketLoaded) {
-            await loadMarketDataForEngine(symbols)
+          const loaded = await loadMarketDataForEngine(symbols, { requireHistory: true })
+          if (loaded > 0) {
             console.log(`[v0] [Heartbeat] Market data refreshed for ${symbols.length} symbols`)
           }
         } catch (refreshErr) {
@@ -4617,6 +4774,14 @@ export class TradeEngineManager {
       const symbolAffectingChange = hasSymbolAffectingChange(changedFields)
       const strategyAffectingChange = genericConnectionSettingsReload || hasStrategyAffectingChange(changedFields)
 
+      // System timing/neutralisation settings use a separate Redis hash from
+      // connection settings. Refresh that synchronous hot-loop snapshot before
+      // any immediate strategy pass so the pass cannot run once with the old
+      // cadence, position ceilings or hedge parameters.
+      const { refreshEngineTimings } = await import("@/lib/engine-timings")
+      await refreshEngineTimings({ force: true })
+      invalidatedCaches.push("engine.timings")
+
       if (symbolAffectingChange) {
         this.invalidateSymbolsCache()
         invalidatedCaches.push("engine.symbols")
@@ -4646,6 +4811,12 @@ export class TradeEngineManager {
       try {
         ;(this.pseudoPositionManager as any).invalidateCache?.()
         invalidatedCaches.push("pseudoPosition.activePositions")
+      } catch { /* best-effort */ }
+
+      try {
+        const { invalidateLiveStageSettingsCache } = await import("@/lib/trade-engine/stages/live-stage")
+        invalidateLiveStageSettingsCache(this.connectionId)
+        invalidatedCaches.push("liveStage.systemCloseOnly")
       } catch { /* best-effort */ }
 
       // Make the new generation visible to long-lived processors and to

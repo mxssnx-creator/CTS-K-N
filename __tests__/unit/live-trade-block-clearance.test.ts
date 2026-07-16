@@ -23,14 +23,21 @@ const coordinatorStartEngine = jest.fn(async () => true)
 jest.mock("@/lib/redis-db", () => ({
   initRedis: jest.fn(async () => undefined),
   getConnection: jest.fn(async (id: string) => store.get(id) || null),
+  getAllConnections: jest.fn(async () => Array.from(store.values())),
+  getRedisBackend: jest.fn(() => (process.env.REDIS_URL ? "redis" : "inline-local")),
   updateConnection: (...args: any[]) => updateConnection(...args),
   updateConnectionState: async (id: string, updates: any) => ({
     applied: true,
     connection: await updateConnection(id, updates),
   }),
-  persistNow: jest.fn(async () => undefined),
+  persistNow: jest.fn(async () => true),
   getRedisClient: jest.fn(() => ({
     hset: jest.fn(async () => undefined),
+    hdel: jest.fn(async () => 0),
+    hgetall: jest.fn(async () => ({})),
+    get: jest.fn(async () => null),
+    del: jest.fn(async () => 0),
+    expire: jest.fn(async () => 1),
     set: jest.fn(async () => undefined),
   })),
 }))
@@ -39,6 +46,17 @@ jest.mock("@/lib/trade-engine", () => ({
   getGlobalTradeEngineCoordinator: jest.fn(() => ({
     isEngineRunning: (...args: any[]) => coordinatorIsEngineRunning(...args),
     startEngine: (...args: any[]) => coordinatorStartEngine(...args),
+    applyPendingChangesNow: jest.fn(async () => undefined),
+    startMissingEngines: jest.fn(async () => undefined),
+    stopEngine: jest.fn(async () => undefined),
+  })),
+}))
+
+jest.mock("@/lib/events/emitter", () => ({
+  emitCanonicalEvent: jest.fn((event: Record<string, any>) => ({
+    ...event,
+    id: "test-event-id",
+    timestamp: new Date().toISOString(),
   })),
 }))
 
@@ -70,6 +88,7 @@ jest.mock("@/lib/settings-coordinator", () => ({
 jest.mock("@/lib/engine-refresh-queue", () => ({
   allocateStateSwitchVersion: jest.fn(async () => "test-switch-version"),
   queueEngineRefreshRequest: jest.fn(async () => undefined),
+  getQueuedEngineRefreshRequests: jest.fn(async () => []),
 }))
 
 jest.mock("@/lib/production-readiness", () => ({

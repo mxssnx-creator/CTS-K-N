@@ -6,6 +6,7 @@ import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 import { allocateStateSwitchVersion } from "@/lib/engine-refresh-queue"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
+import { isConnectionLiveTradeEnabled } from "@/lib/connection-state-utils"
 
 export const dynamic = "force-dynamic"
 
@@ -15,7 +16,7 @@ export const dynamic = "force-dynamic"
 function isLiveTradeRequested(connection: any): boolean {
   const truthy = (value: unknown) => value === true || value === 1 || value === "1" || value === "true"
   const requested = connection?.live_trade_requested
-  return truthy(requested) || truthy(connection?.is_live_trade) || truthy(connection?.live_trade_enabled)
+  return truthy(requested) || isConnectionLiveTradeEnabled(connection)
 }
 
 function validateLiveTradeRequirements(connection: any): { valid: boolean; reason: string; blockCode: string | null } {

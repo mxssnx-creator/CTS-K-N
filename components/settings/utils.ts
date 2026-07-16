@@ -124,9 +124,9 @@ export const initialSettings: Settings = {
   // production coordinator safety rails so the UI never advertises a value
   // higher than the engine can actually honour.
   strategyMaxEntriesPerSet: 250,
-  strategyMainAxisSetsCeiling: 50,
-  strategyRealSetsSafetyCeiling: 100,
-  maxRealSets: 100,
+  strategyMainAxisSetsCeiling: 20,
+  strategyRealSetsSafetyCeiling: 25,
+  maxRealSets: 25,
   strategyLiveSetsCeiling: 90,
 
   // System Configuration

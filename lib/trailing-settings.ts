@@ -5,8 +5,15 @@ export function trailingVariantKey(start: number, stop: number): string {
   return `${Number(start).toFixed(1)}:${Number(stop).toFixed(1)}`
 }
 
-export const DEFAULT_TRAILING_VARIANTS: string[] = TRAILING_START_RATIOS.flatMap(
+export const ALL_TRAILING_VARIANTS: string[] = TRAILING_START_RATIOS.flatMap(
   (start) => TRAILING_STOP_RATIOS.map((stop) => trailingVariantKey(start, stop)),
+)
+
+// High-performance default: one representative profile at every supported
+// start/stop band. Operators can still enable any or all of the full 5×5
+// matrix; fresh multi-symbol engines no longer fan out 25 profiles by default.
+export const DEFAULT_TRAILING_VARIANTS: string[] = TRAILING_START_RATIOS.map(
+  (start, index) => trailingVariantKey(start, TRAILING_STOP_RATIOS[index]),
 )
 
 export function parseStoredBoolean(value: unknown, fallback: boolean): boolean {
@@ -29,7 +36,7 @@ function parseTokens(raw: unknown): unknown[] {
 }
 
 export function normalizeTrailingVariants(raw: unknown): string[] {
-  const supported = new Set(DEFAULT_TRAILING_VARIANTS)
+  const supported = new Set(ALL_TRAILING_VARIANTS)
   const selected = new Set<string>()
   for (const token of parseTokens(raw)) {
     if (typeof token !== "string") continue
@@ -40,7 +47,7 @@ export function normalizeTrailingVariants(raw: unknown): string[] {
     const key = trailingVariantKey(start, stop)
     if (supported.has(key)) selected.add(key)
   }
-  return DEFAULT_TRAILING_VARIANTS.filter((key) => selected.has(key))
+  return ALL_TRAILING_VARIANTS.filter((key) => selected.has(key))
 }
 
 export interface TrailingProfile {

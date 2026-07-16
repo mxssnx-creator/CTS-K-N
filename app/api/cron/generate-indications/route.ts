@@ -19,7 +19,7 @@
  */
 import { NextResponse } from "next/server"
 import { isTruthyFlag, isConnectionInActivePanel } from "@/lib/connection-state-utils"
-import { getCronEngineEligibleConnections } from "@/lib/cron-engine-eligibility"
+import { filterCronFallbackConnections, getCronEngineEligibleConnections } from "@/lib/cron-engine-eligibility"
 import { StrategyCoordinator } from "@/lib/strategy-coordinator"
 import { fetchTopSymbols } from "@/lib/top-symbols"
 import { RealtimeProcessor } from "@/lib/trade-engine/realtime-processor"
@@ -372,11 +372,19 @@ export async function GET(request: Request) {
 
     _cronInFlight = true
 
-    const activeConnections = await getCronEngineEligibleConnections(
+    const candidateConnections = await getCronEngineEligibleConnections(
       getAssignedAndEnabledConnections,
       getQueuedEngineRefreshRequests,
       getConnection,
     )
+    const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
+    const localCoordinator = getGlobalTradeEngineCoordinator()
+    const ownership = await filterCronFallbackConnections(
+      candidateConnections,
+      client,
+      (connectionId) => localCoordinator?.isEngineRunning?.(connectionId) === true,
+    )
+    const activeConnections = ownership.eligible
 
     // Cron intentionally uses the same assigned-and-enabled connection set as
     // the engine coordinator, with only fresh queued start requests merged after
@@ -387,7 +395,10 @@ export async function GET(request: Request) {
         success: true,
         generated: 0,
         connections: 0,
-        message: "No active connections",
+        skippedFreshEngineOwners: ownership.skippedFreshOwners,
+        message: ownership.skippedFreshOwners > 0
+          ? "Healthy trade-engine owners already coordinate all active connections"
+          : "No active connections",
         timestamp: Date.now(),
       })
     }
@@ -490,6 +501,7 @@ export async function GET(request: Request) {
       success: true,
       generated: totalIndications,
       connections: activeConnections.length,
+      skippedFreshEngineOwners: ownership.skippedFreshOwners,
       strategies: { base: totalBase, main: totalMain, real: totalReal },
       timestamp: Date.now(),
     })

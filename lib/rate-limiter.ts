@@ -36,6 +36,16 @@ export class RateLimiter {
   queue: QueuedRequest[] = []
   requestTimestamps: number[] = []
   activeRequests = 0
+  /**
+   * Wake-up for a queue blocked only by a rolling time window.
+   *
+   * A completed request calls `drainQueue()`, but that call can still occur
+   * inside the same saturated one-second/minute window. Without a timer the
+   * queue then has no future event that can restart it; an entry, cancel or
+   * protection order can remain queued until an unrelated request arrives.
+   * Keep exactly one wake-up scheduled for the first expiring timestamp.
+   */
+  private windowWakeTimer: ReturnType<typeof setTimeout> | null = null
 
   // Exchange-specific rate limits
   static readonly EXCHANGE_LIMITS: Record<string, RateLimitConfig> = {
@@ -51,7 +61,11 @@ export class RateLimiter {
       // getOpenOrders, and placeOrder can pipeline without starving each other.
       // __STOP_SEM_LIMIT=6 in live-stage prevents SL/TP from monopolising all slots.
       requestsPerSecond: 10,
-      requestsPerMinute: 300,
+      // Keep the rolling minute ceiling consistent with the supported
+      // 10 req/s steady-state cadence. A 300/min ceiling silently halved the
+      // effective rate after 30 seconds, delaying cancel/protection work even
+      // though the one-second exchange budget was still respected.
+      requestsPerMinute: 600,
       maxConcurrent: 5,
     },
     binance: {
@@ -149,6 +163,11 @@ export class RateLimiter {
    * when it finishes so the queue stays moving without any global loop.
    */
   private drainQueue(): void {
+    if (this.windowWakeTimer) {
+      clearTimeout(this.windowWakeTimer)
+      this.windowWakeTimer = null
+    }
+
     while (this.queue.length > 0 && this.canMakeRequest()) {
       const request = this.queue.shift()!
 
@@ -195,6 +214,46 @@ export class RateLimiter {
         }
       })()
     }
+
+    // When concurrency is the only blocker, every active request's finally
+    // block will call drainQueue again. When a rolling rate window is the
+    // blocker there is no such future callback, so schedule the queue's own
+    // wake-up at the earliest timestamp expiry.
+    if (
+      this.queue.length > 0 &&
+      this.activeRequests < this.config.maxConcurrent &&
+      !this.canMakeRequest()
+    ) {
+      this.scheduleWindowWakeup()
+    }
+  }
+
+  private scheduleWindowWakeup(): void {
+    if (this.windowWakeTimer || this.queue.length === 0) return
+
+    const now = Date.now()
+    const recentSecond = this.requestTimestamps
+      .filter((ts) => now - ts < 1_000)
+      .sort((a, b) => a - b)
+    const recentMinute = this.requestTimestamps
+      .filter((ts) => now - ts < 60_000)
+      .sort((a, b) => a - b)
+    const delays: number[] = []
+
+    if (recentSecond.length >= this.config.requestsPerSecond) {
+      delays.push(1_001 - (now - recentSecond[0]))
+    }
+    if (recentMinute.length >= this.config.requestsPerMinute) {
+      delays.push(60_001 - (now - recentMinute[0]))
+    }
+
+    // Defensive fallback for a custom/mutated limiter configuration. In the
+    // normal path at least one rolling window is saturated here.
+    const delayMs = Math.max(1, Math.min(...(delays.length > 0 ? delays : [25])))
+    this.windowWakeTimer = setTimeout(() => {
+      this.windowWakeTimer = null
+      this.drainQueue()
+    }, delayMs)
   }
 
   canMakeRequest(): boolean {

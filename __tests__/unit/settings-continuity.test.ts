@@ -88,8 +88,10 @@ describe("settings continuity", () => {
         return patch
       }),
       getRedisClient: jest.fn(() => redis),
+      getRedisBackend: jest.fn(() => "inline-local"),
       getConnection: jest.fn().mockResolvedValue({ ...before, is_live_trade: "1" }),
       setSettings: jest.fn(async (key: string) => { writes.push(`settings:${key}`) }),
+      persistNow: jest.fn().mockResolvedValue(true),
     }))
     jest.doMock("@/lib/settings-coordinator", () => ({
       notifySettingsChanged,
@@ -142,6 +144,7 @@ describe("settings continuity", () => {
     jest.doMock("@/lib/redis-db", () => ({
       initRedis: jest.fn().mockResolvedValue(undefined),
       getRedisClient: jest.fn(() => ({ hset: jest.fn().mockResolvedValue(1) })),
+      getRedisBackend: jest.fn(() => "inline-local"),
       getConnection: jest.fn(async () => ({ ...stored })),
       updateConnection: jest.fn(async (_id: string, patch: Record<string, unknown>) => {
         activeCommits++
@@ -155,6 +158,7 @@ describe("settings continuity", () => {
         }
       }),
       setSettings: jest.fn().mockResolvedValue(undefined),
+      persistNow: jest.fn().mockResolvedValue(true),
     }))
     jest.doMock("@/lib/settings-coordinator", () => ({
       notifySettingsChanged: jest.fn(),

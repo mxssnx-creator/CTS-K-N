@@ -13,6 +13,7 @@ import { checkProductionReadiness, productionReadinessJson } from "@/lib/product
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
+import { buildPrehistoricGateKeys } from "@/lib/progression-scope"
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -388,6 +389,7 @@ export async function POST(request: Request) {
         is_assigned: "0",
         is_enabled: "0",
         is_live_trade: "0",
+        live_trade_enabled: "0",
         live_trade_requested: "0",
         live_trade_blocked_reason: "",
         state_switch_version: stateSwitchVersion,
@@ -645,7 +647,13 @@ export async function POST(request: Request) {
 
     console.log(`${LOG_PREFIX}: [2/4] Final symbol: ${symbols.join(", ")}`)
 
-    const effectiveSymbolCount = firstExistingSetting(existingConnectionSettings, ["symbol_count"], String(symbols.length))
+    const explicitSymbolRequest =
+      explicitSymbols !== undefined ||
+      (Number.isFinite(Number(body.symbolCount)) && Number(body.symbolCount) > 0) ||
+      typeof rawSymbols === "number"
+    const effectiveSymbolCount = explicitSymbolRequest
+      ? String(symbols.length)
+      : firstExistingSetting(existingConnectionSettings, ["symbol_count"], String(symbols.length))
 
     const symbolSelectionEpoch = `${Date.now()}:${Math.random().toString(36).slice(2)}`
 
@@ -821,6 +829,7 @@ export async function POST(request: Request) {
        // Keep the progression active even when the exchange is unreachable, but
        // do not let live-stage place venue orders unless usable credentials exist.
        is_live_trade: liveTradeEnabled ? "1" : "0",
+       live_trade_enabled: liveTradeEnabled ? "1" : "0",
        live_trade_requested: liveTradeRequested ? "1" : "0",
        live_trade_blocked_reason: liveTradeBlockedReason || "",
        state_switch_version: stateSwitchVersion,
@@ -873,6 +882,10 @@ export async function POST(request: Request) {
       symbol_count: effectiveSymbolCount,
       symbols: JSON.stringify(symbols),
       force_symbols: JSON.stringify(symbols),
+      active_symbols: JSON.stringify(symbols),
+      is_live_trade: liveTradeEnabled ? "1" : "0",
+      live_trade_enabled: liveTradeEnabled ? "1" : "0",
+      live_trade_requested: liveTradeRequested ? "1" : "0",
       // Strategy PF thresholds
       baseProfitFactor: resolvedBaseProfitFactor,
       mainProfitFactor: resolvedMainProfitFactor,
@@ -911,6 +924,7 @@ export async function POST(request: Request) {
        "is_assigned",
        "is_active",
        "is_live_trade",
+       "live_trade_enabled",
        "live_trade_requested",
        "live_trade_blocked_reason",
        "active_symbols",
@@ -972,6 +986,15 @@ export async function POST(request: Request) {
         quickstart_symbol_count: String(symbols.length),
         symbol_count: String(symbols.length),
         dev_symbol_count_override: String(symbols.length),
+        // Runtime safety state must change atomically with the connection and
+        // connection_settings mirrors. Leaving a migration's old "1" here
+        // made a paper QuickStart look live to long-lived engine workers even
+        // though the canonical connection correctly reported simulation.
+        is_live_trade: liveTradeEnabled ? "1" : "0",
+        live_trade_enabled: liveTradeEnabled ? "1" : "0",
+        live_trade_requested: liveTradeRequested ? "1" : "0",
+        live_trade_blocked_reason: liveTradeBlockedReason || "",
+        execution_mode: liveTradeEnabled ? "live" : "simulation",
         config_set_symbols_total: String(symbols.length),
         config_set_symbols_processed: "0",
         symbol_selection_epoch: symbolSelectionEpoch,
@@ -1222,11 +1245,15 @@ export async function POST(request: Request) {
             // clear stale runtime markers so startEngine does not mistake an
             // old crashed worker for an active owner, and reset only this
             // connection's fresh-run counters before the new engine is armed.
+            const doneGateKeys = buildPrehistoricGateKeys(connectionId, "main", "done")
+            const firstPassGateKeys = buildPrehistoricGateKeys(connectionId, "main", "firstpass:done")
             await Promise.allSettled([
               client.del(`engine_is_running:${connectionId}`).catch(() => 0),
-              client.del(`prehistoric:${connectionId}:done`),
+              client.del(doneGateKeys.scoped),
+              client.del(doneGateKeys.legacy),
               client.del(`prehistoric_loaded:${connectionId}`),
-              client.del(`prehistoric:${connectionId}:firstpass:done`),
+              client.del(firstPassGateKeys.scoped),
+              client.del(firstPassGateKeys.legacy),
               client.del(`prehistoric:${connectionId}:symbols`),
               client.hdel(
                 `prehistoric:${connectionId}`,

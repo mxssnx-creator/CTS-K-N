@@ -44,6 +44,8 @@ const PROGRESSION_RESTART_FIELDS = [
   "dcaTakeProfitMode", "dcaBreakevenProfitPct", "dcaCooldownSeconds",
   "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
+  "control_orders", "control_orders_enabled", "controlOrdersEnabled",
+  "system_settings",
 ]
 
 // Fields that can be hot-reloaded without restart
@@ -67,6 +69,8 @@ const HOT_RELOAD_FIELDS = [
   "dcaMaxSteps", "dcaStepVolumeMultipliers", "dcaStepDistancesPct",
   "dcaTakeProfitMode", "dcaBreakevenProfitPct", "dcaCooldownSeconds",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
+  "control_orders", "control_orders_enabled", "controlOrdersEnabled",
+  "system_settings",
 ]
 
 export type ChangeType = "restart" | "reload" | "cosmetic"

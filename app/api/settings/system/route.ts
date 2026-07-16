@@ -75,7 +75,10 @@ export async function PATCH(request: NextRequest) {
       await Promise.all(
         activeConns.map(async (conn: any) => {
           try {
-            await notifySettingsChanged(conn.id, changedKeys.length > 0 ? changedKeys : ["system_settings"])
+            // The generic marker guarantees a hot reload even for a newly
+            // added system key that is not yet known to the field classifier.
+            // The exact keys remain attached for audit/progression visibility.
+            await notifySettingsChanged(conn.id, Array.from(new Set(["system_settings", ...changedKeys])))
             const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
             await getGlobalTradeEngineCoordinator().applyPendingChangesNow(conn.id)
           } catch { /* non-critical */ }

@@ -286,6 +286,15 @@ export class GlobalTradeEngineCoordinator {
       return false
     }
 
+    // Idempotent local start: a healthy manager already owns its exact lock
+    // handle. Re-acquiring with selfOwnedIfAlive would mint a replacement
+    // token behind that manager's back; its next extender tick would then see
+    // a mismatch and stop the otherwise healthy generation.
+    if (this.engineManagers.get(connectionId)?.isEngineRunning === true) {
+      console.log(`[v0] [STARTUP LOCK] Engine already running locally for ${connectionId}, keeping existing owner token`)
+      return true
+    }
+
     // Self-heal background timers on every public entry-point — see
     // `ensureBackgroundTimers` doc-block. No-op if already armed.
     this.ensureBackgroundTimers()
@@ -347,16 +356,11 @@ export class GlobalTradeEngineCoordinator {
         // the raw hash alone made a healthy engine look "stalled" and triggered
         // spurious stop+restart cycles (multiple reinits / doubled progression).
         const remoteHeartbeatFresh = await isProcessorHeartbeatFresh(connectionId)
-        if (remoteHeartbeatFresh && !forceLocalTakeover) {
+        if (remoteHeartbeatFresh) {
           console.warn(
             `[v0] [STARTUP LOCK] Engine ${connectionId} is owned by another worker with a fresh heartbeat; not clearing distributed running flag`,
           )
           return true
-        }
-        if (remoteHeartbeatFresh && forceLocalTakeover) {
-          console.warn(
-            `[v0] [STARTUP LOCK] Engine ${connectionId} has only a distributed heartbeat; explicit local start is taking ownership`,
-          )
         }
         // Redis flag can become stale across crashes/restarts; clear stale state
         // before continuing. Leaving it set made status endpoints report a
@@ -399,15 +403,39 @@ export class GlobalTradeEngineCoordinator {
         const ownerHeartbeatFresh = await isProcessorHeartbeatFresh(connectionId, ownerHeartbeatFreshnessMs).catch(() => false)
 
         if (ownerHeartbeatFresh) {
-          if (!forceLocalTakeover) {
-            console.warn(
-              `[v0] [STARTUP LOCK] Engine ${connectionId} is owned by another worker (${acquired.existingOwner ?? "unknown"}) with a fresh heartbeat. Leaving existing owner untouched.`,
-            )
-            return true
-          }
           console.warn(
-            `[v0] [STARTUP LOCK] Engine ${connectionId} has a distributed owner (${acquired.existingOwner ?? "unknown"}); explicit local start is taking ownership.`,
+            `[v0] [STARTUP LOCK] Engine ${connectionId} is owned by another worker (${acquired.existingOwner ?? "unknown"}) with a fresh heartbeat. Leaving existing owner untouched.`,
           )
+          return true
+        }
+
+        // A newly acquired lock can precede the first processor heartbeat by a
+        // few seconds while the manager loads settings/market data. Treat the
+        // encoded lock epoch as a startup lease and never force-break it during
+        // that grace period. This closes the cross-bundle/API race where two
+        // explicit Start requests each believed the other had no heartbeat.
+        const ownerValue = String(acquired.existingOwner || "")
+        const ownerEpochSeparator = ownerValue.lastIndexOf(":")
+        const ownerEpoch = ownerEpochSeparator >= 0
+          ? Number(ownerValue.slice(ownerEpochSeparator + 1))
+          : NaN
+        const ownerWithinStartupGrace =
+          Number.isFinite(ownerEpoch) && Date.now() - ownerEpoch >= 0 && Date.now() - ownerEpoch < ownerHeartbeatFreshnessMs
+        if (ownerWithinStartupGrace) {
+          console.warn(
+            `[v0] [STARTUP LOCK] Engine ${connectionId} owner is still within startup grace; leaving lock untouched.`,
+          )
+          return true
+        }
+
+        // Passive starts/healing checks never steal an owner merely because a
+        // heartbeat is stale. Only an explicit takeover may recover after both
+        // heartbeat freshness and startup-grace checks have failed.
+        if (!forceLocalTakeover) {
+          console.warn(
+            `[v0] [STARTUP LOCK] Engine ${connectionId} has a stale distributed owner; passive start leaves its TTL/recovery path untouched.`,
+          )
+          return false
         }
 
         console.warn(

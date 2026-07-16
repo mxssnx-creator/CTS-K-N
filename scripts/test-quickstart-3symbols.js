@@ -55,6 +55,12 @@ async function main() {
   }
 
   if (serverDetected) {
+    if (process.env.ALLOW_REAL_ORDER_TEST !== "1") {
+      console.error("\n[SAFETY] Refusing to enable live exchange trading on a running server.");
+      console.error("Use `npm run test:quickstart-12` for the safe paper-engine soak.");
+      console.error("Set ALLOW_REAL_ORDER_TEST=1 only for an explicitly approved, credentialed exchange test.");
+      process.exit(2);
+    }
     console.log(`\n[1] Dev server detected — triggering quickstart via API with ${symbols.length} symbols + live enabled`);
 
     try {

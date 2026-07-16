@@ -32,6 +32,23 @@ export function buildProgressionScope(connectionId: string, engineType = DEFAULT
   }
 }
 
+/**
+ * Canonical engine-scoped historic gate plus the one-release legacy mirror.
+ * Writers update both; readers prefer `scoped` and fall back to `legacy` so a
+ * rolling deploy cannot strand old or new workers on opposite key names.
+ */
+export function buildPrehistoricGateKeys(
+  connectionId: string,
+  engineType = DEFAULT_ENGINE_TYPE,
+  gate: "done" | "firstpass:done" = "done",
+): { scoped: string; legacy: string } {
+  const scope = buildProgressionScope(connectionId, engineType)
+  return {
+    scoped: `${scope.prehistoricKey}:${gate}`,
+    legacy: `${scope.legacyProgressionKey.replace(/^progression:/, "prehistoric:")}:${gate}`,
+  }
+}
+
 export async function ensureScopedProgressionFromLegacy(
   client: any,
   connectionId: string,

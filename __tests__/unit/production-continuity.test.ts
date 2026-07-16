@@ -92,6 +92,8 @@ describe("production continuity invariants", () => {
 
     expect(vercel.crons).toBeUndefined()
     expect(continuity).toContain("CONTINUITY_MINUTE_INTERVAL_MS = 60_000")
+    expect(continuity).toContain("void enqueueContinuityAutoStartJob()")
+    expect(continuity).toContain("Defer the expensive indication/strategy fallback")
     expect(continuity).toContain("state.minuteTimer = setInterval")
     expect(migrations).toContain('name: "070-stable-site-instance-and-portable-minute-continuity"')
     expect(migrations).toContain('name: "071-unified-database-maintenance-and-secondary-indexes"')

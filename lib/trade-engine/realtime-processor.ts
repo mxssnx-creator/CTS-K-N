@@ -38,6 +38,7 @@ import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { getEngineTimings } from "@/lib/engine-timings"
 import { performanceProfiler } from "@/lib/performance-profiler"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { buildPrehistoricGateKeys } from "@/lib/progression-scope"
 
 // ── Module-level import memoization for live-sync hot paths ──────────
 // `fireSyncLiveFromPseudo` and `maybeRunLiveSync` were previously doing
@@ -167,8 +168,12 @@ export class RealtimeProcessor {
     this.prehistoricCheckedAt = now
     try {
       const client = getRedisClient()
-      const v = await client.get(`prehistoric:${this.connectionId}:done`)
-      this.prehistoricReady = v === "1"
+      const keys = buildPrehistoricGateKeys(this.connectionId, "main", "done")
+      const [scoped, legacy] = await Promise.all([
+        client.get(keys.scoped).catch(() => null),
+        client.get(keys.legacy).catch(() => null),
+      ])
+      this.prehistoricReady = scoped === "1" || legacy === "1"
     } catch {
       // Keep last-known value on transient failures.
     }
@@ -536,16 +541,37 @@ export class RealtimeProcessor {
       // family (which tracks tick existence regardless of work).
       try {
         const client = getRedisClient()
-        const progKey = `progression:${this.connectionId}`
-        await Promise.all([
-          client.hincrby(progKey, "pseudo_positions_updated_count", count),
-          client.hincrby(progKey, "pseudo_positions_update_cycles", 1),
-          client.hset(progKey, {
-            pseudo_positions_last_update_at: new Date().toISOString(),
-            pseudo_positions_last_count: String(count),
-          }),
-          client.expire(progKey, 7 * 24 * 60 * 60),
-        ])
+        const { getCurrentEpoch } = await import("./progression-lock")
+        const { hincrbyProgressionBatch, updateProgressionSnapshot } = await import("./progression-writes")
+        const currentEpoch = await getCurrentEpoch(this.connectionId)
+        if (currentEpoch) {
+          // Production reads the active epoch-scoped progression hash. Writing
+          // these metrics only to the legacy unscoped hash made genuine paper
+          // mark-to-market cycles appear as zero after a production boot.
+          await Promise.all([
+            hincrbyProgressionBatch(this.connectionId, {
+              pseudo_positions_updated_count: count,
+              pseudo_positions_update_cycles: 1,
+            }, { connectionId: this.connectionId, epoch: currentEpoch, logStaleRejects: false }),
+            updateProgressionSnapshot([
+              { field: "pseudo_positions_last_update_at", value: new Date().toISOString(), operation: "set" },
+              { field: "pseudo_positions_last_count", value: String(count), operation: "set" },
+            ], { connectionId: this.connectionId, epoch: currentEpoch, logStaleRejects: false }),
+          ])
+        } else {
+          // Standalone/tests without a progression owner retain the legacy
+          // visibility path rather than dropping useful diagnostics.
+          const progKey = `progression:${this.connectionId}`
+          await Promise.all([
+            client.hincrby(progKey, "pseudo_positions_updated_count", count),
+            client.hincrby(progKey, "pseudo_positions_update_cycles", 1),
+            client.hset(progKey, {
+              pseudo_positions_last_update_at: new Date().toISOString(),
+              pseudo_positions_last_count: String(count),
+            }),
+            client.expire(progKey, 7 * 24 * 60 * 60),
+          ])
+        }
       } catch {
         // Non-critical visibility metric — never break the realtime loop.
       }

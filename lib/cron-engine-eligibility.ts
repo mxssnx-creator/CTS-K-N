@@ -1,4 +1,68 @@
 import { isConnectionReadyForEngine } from "@/lib/connection-state-helpers"
+import { readTradeEngineWorkerHeartbeat } from "@/lib/trade-engine-worker-heartbeat"
+
+type CronOwnershipClient = {
+  get: (key: string) => Promise<unknown>
+  hgetall: (key: string) => Promise<Record<string, string> | null>
+}
+
+function isTruthyRunningFlag(value: unknown): boolean {
+  return value === true || value === 1 || value === "1" || value === "true"
+}
+
+function readConnectionHeartbeatMs(state: Record<string, string> | null | undefined): number {
+  const numeric = Number(state?.last_processor_heartbeat || 0)
+  if (Number.isFinite(numeric) && numeric > 0) return numeric
+  const iso = Date.parse(String(state?.last_live_positions_run || state?.updated_at || ""))
+  return Number.isFinite(iso) ? iso : 0
+}
+
+/**
+ * Remove connections already owned by a fresh TradeEngineManager.
+ *
+ * `generate-indications` is an engine-down/serverless fallback. Running its
+ * full Indication -> Strategy -> Real/Live pipeline beside a healthy manager
+ * duplicates Sets, races position dispatch, and roughly doubles cold-start
+ * memory. Local ownership is authoritative; distributed ownership requires
+ * both the per-connection running flag and a fresh connection/global
+ * heartbeat so a stale crash marker can never suppress recovery forever.
+ */
+export async function filterCronFallbackConnections(
+  connections: any[],
+  client: CronOwnershipClient,
+  isLocallyRunning: (connectionId: string) => boolean = () => false,
+  now = Date.now(),
+): Promise<{ eligible: any[]; skippedFreshOwners: number }> {
+  if (connections.length === 0) return { eligible: [], skippedFreshOwners: 0 }
+
+  const globalState = await client.hgetall("trade_engine:global").catch(() => null)
+  const globalHeartbeatFresh = readTradeEngineWorkerHeartbeat(globalState, now).fresh
+  const owned = await Promise.all(connections.map(async (connection) => {
+    const connectionId = String(connection?.id || "")
+    if (!connectionId) return false
+    if (isLocallyRunning(connectionId)) return true
+
+    const [runningFlag, settingsState, rawState] = await Promise.all([
+      client.get(`engine_is_running:${connectionId}`).catch(() => null),
+      client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => null),
+      client.hgetall(`trade_engine_state:${connectionId}`).catch(() => null),
+    ])
+    if (!isTruthyRunningFlag(runningFlag)) return false
+
+    const newestConnectionHeartbeat = Math.max(
+      readConnectionHeartbeatMs(settingsState),
+      readConnectionHeartbeatMs(rawState),
+    )
+    const connectionHeartbeatFresh =
+      newestConnectionHeartbeat > 0 && now - newestConnectionHeartbeat < 90_000
+    return connectionHeartbeatFresh || globalHeartbeatFresh
+  }))
+
+  return {
+    eligible: connections.filter((_, index) => !owned[index]),
+    skippedFreshOwners: owned.filter(Boolean).length,
+  }
+}
 
 export async function getCronEngineEligibleConnections(
   getAssignedAndEnabledConnections: () => Promise<any[]>,

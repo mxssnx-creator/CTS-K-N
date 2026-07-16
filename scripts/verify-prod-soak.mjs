@@ -8,6 +8,14 @@ const DURATION_MS = Math.max(MIN_DURATION_MS, Number(process.env.SOAK_DURATION_M
 const POLL_MS = Math.max(750, Number(process.env.SOAK_POLL_MS || 2_000))
 const SYMBOL_COUNT = Math.max(1, Math.min(32, Number(process.env.SYMBOL_COUNT || 12)))
 const START_SIMULATED_ENGINE = process.env.START_SIMULATED_ENGINE === "1"
+const RUNTIME_MODE = process.env.RUNTIME_MODE || "production"
+const RSS_GROWTH_LIMIT_KB = Math.max(
+  128 * 1024,
+  Number(
+    process.env.SOAK_RSS_GROWTH_LIMIT_KB ||
+    (RUNTIME_MODE === "development" ? 1024 * 1024 : 512 * 1024),
+  ),
+)
 const SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
   "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
@@ -76,10 +84,39 @@ async function main() {
   if (START_SIMULATED_ENGINE) {
     const quickStart = (await request("/api/trade-engine/quick-start", {
       method: "POST",
-      body: { action: "enable", connectionId, symbolCount: SYMBOLS.length, symbols: SYMBOLS },
+      // Explicit paper mode is essential: missing credentials must remain a
+      // hard block for requested live trading, while this bounded harness must
+      // exercise order/position lifecycle without touching an exchange.
+      body: {
+        action: "enable",
+        connectionId,
+        symbolCount: SYMBOLS.length,
+        symbols: SYMBOLS,
+        liveTrade: false,
+        is_live_trade: false,
+        // The normal Real-stage defaults intentionally require a longer
+        // position-history warmup than this bounded smoke. Mirror the fresh
+        // live-QuickStart bootstrap thresholds inside the isolated snapshot so
+        // Base -> Main -> Real -> Live/paper is exercised within one minute.
+        baseProfitFactor: 0.75,
+        mainProfitFactor: 0.75,
+        realProfitFactor: 0.75,
+        prevPosMinCount: 1,
+        mainEvalPosCount: 1,
+        realEvalPosCount: 1,
+      },
       timeoutMs: 120_000,
     })).json
     connectionId = String(quickStart?.connection?.id || connectionId)
+    const configuredSymbols = Array.isArray(quickStart?.connection?.symbols)
+      ? quickStart.connection.symbols.map(String)
+      : []
+    if (configuredSymbols.length !== SYMBOLS.length || configuredSymbols.some((symbol, index) => symbol !== SYMBOLS[index])) {
+      throw new Error(`QuickStart did not preserve the requested ${SYMBOLS.length}-symbol set`)
+    }
+    if (quickStart?.connection?.liveTradeRequested !== false || quickStart?.connection?.liveTradeEnabled !== false) {
+      throw new Error("Safe soak unexpectedly enabled live exchange trading")
+    }
 
     // Race the idempotent start lock deliberately; only one owner may attach.
     await Promise.all(Array.from({ length: 4 }, () => request("/api/trade-engine/start-all", {
@@ -108,6 +145,12 @@ async function main() {
   const siteIds = new Set()
   const bootIds = new Set()
   const latencies = []
+  const liveExecution = []
+  let simulatedPositionsPeak = 0
+  let realPositionsPeak = 0
+  let paperPositionsPeak = 0
+  let paperRunningSetsPeak = 0
+  let paperUpdateCyclesPeak = 0
   let rounds = 0
   let requests = 0
 
@@ -141,6 +184,47 @@ async function main() {
       }
     }
     progression.push(sample)
+
+    const engineInventory = byPath.get("/api/trade-engine/status-all")
+    const engine = Array.isArray(engineInventory?.engines)
+      ? engineInventory.engines.find((entry) => String(entry?.connectionId) === connectionId)
+      : null
+    const activeSymbols = Array.isArray(engine?.engineStatus?.symbols) ? engine.engineStatus.symbols.map(String) : []
+    if (!engine || activeSymbols.length !== SYMBOLS.length || activeSymbols.some((symbol, index) => symbol !== SYMBOLS[index])) {
+      throw new Error(`Engine is not coordinating the exact ${SYMBOLS.length}-symbol set`)
+    }
+    if (engine?.isLiveTrading !== false) throw new Error("Engine status reports live trading during safe paper soak")
+
+    const positions = byPath.get(`/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}`)
+    if (!Array.isArray(positions?.realPositions) || !Array.isArray(positions?.simulatedPositions)) {
+      throw new Error("Live-position API schema failed during soak")
+    }
+    if (positions?.dataIntegrity?.liveExecutionMode !== "simulation" || positions?.dataIntegrity?.liveTradeRequested !== false) {
+      throw new Error("Live-position API left explicit simulation mode during soak")
+    }
+    realPositionsPeak = Math.max(realPositionsPeak, positions.realPositions.length)
+    simulatedPositionsPeak = Math.max(simulatedPositionsPeak, positions.simulatedPositions.length)
+    if (realPositionsPeak > 0 || Number(positions?.counts?.real || 0) > 0) {
+      throw new Error("A real exchange position appeared during safe paper soak")
+    }
+    liveExecution.push({
+      ordersSimulated: finiteNonNegative(stats?.liveExecution?.ordersSimulated, "liveExecution.ordersSimulated"),
+      ordersPlaced: finiteNonNegative(stats?.liveExecution?.ordersPlaced, "liveExecution.ordersPlaced"),
+      positionsCreated: finiteNonNegative(stats?.liveExecution?.positionsCreated, "liveExecution.positionsCreated"),
+      positionsClosed: finiteNonNegative(stats?.liveExecution?.positionsClosed, "liveExecution.positionsClosed"),
+    })
+    paperPositionsPeak = Math.max(
+      paperPositionsPeak,
+      finiteNonNegative(stats?.openPositions?.pseudo?.open, "openPositions.pseudo.open"),
+    )
+    paperRunningSetsPeak = Math.max(
+      paperRunningSetsPeak,
+      finiteNonNegative(stats?.openPositions?.pseudo?.runningSets, "openPositions.pseudo.runningSets"),
+    )
+    paperUpdateCyclesPeak = Math.max(
+      paperUpdateCyclesPeak,
+      finiteNonNegative(stats?.realtime?.pseudoPositionUpdates?.updateCycles, "realtime.pseudoPositionUpdates.updateCycles"),
+    )
 
     const history = byPath.get(`/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}&limit=500`)
     if (!history?.success || !Array.isArray(history.rows) || history.rows.length > 500) {
@@ -202,20 +286,45 @@ async function main() {
     if (maxCycles <= firstCycles) {
       throw new Error(`System monitoring cycle counters did not advance (${firstCycles} → ${maxCycles})`)
     }
+    const peakLiveSets = Math.max(...progression.map((sample) => sample.live))
+    if (peakLiveSets < 1 || paperPositionsPeak < 1 || paperRunningSetsPeak < 1 || paperUpdateCyclesPeak < 1) {
+      throw new Error(
+        `Paper position lifecycle was not exercised (liveSets=${peakLiveSets}, ` +
+        `open=${paperPositionsPeak}, runningSets=${paperRunningSetsPeak}, updates=${paperUpdateCyclesPeak})`,
+      )
+    }
+    if (liveExecution.some((sample) => sample.ordersPlaced < sample.ordersSimulated)) {
+      throw new Error("Simulated order counters exceed canonical placed-order counters")
+    }
   }
 
   const rssSeries = memory.map((sample) => sample.rssKb).filter((value) => value > 0)
-  if (rssSeries.length > 1) {
+  // Production's prehistoric replay is an intentional startup allocation
+  // phase. Leak assessment begins only after engine cycles become productive;
+  // otherwise a bounded cold-start ramp is misclassified as a steady-state
+  // leak. Dev starts productive immediately and uses the full sample series.
+  const firstProductiveMemoryIndex = RUNTIME_MODE === "production"
+    ? memory.findIndex((sample) => sample.engineCycles > 0)
+    : 0
+  const leakSeries = firstProductiveMemoryIndex >= 0
+    ? rssSeries.slice(firstProductiveMemoryIndex)
+    : []
+  let rssLeakEvaluated = false
+  if (leakSeries.length >= 6) {
     // Historical bootstrap is allowed a temporary peak. Leak detection starts
     // after the first third of the soak and compares the final resident set to
     // that warm baseline; one-time allocations that are released do not fail.
-    const warmIndex = Math.min(rssSeries.length - 1, Math.floor(rssSeries.length / 3))
-    const warmBaseline = rssSeries[warmIndex]
-    const finalRss = rssSeries.at(-1)
-    if (finalRss - warmBaseline > 512 * 1024) {
+    const warmIndex = Math.min(leakSeries.length - 1, Math.floor(leakSeries.length / 3))
+    const warmBaseline = leakSeries[warmIndex]
+    const finalRss = leakSeries.at(-1)
+    rssLeakEvaluated = true
+    // Next dev retains compiler/HMR module graphs as routes are first touched;
+    // production has no compiler and therefore keeps the stricter 512 MiB
+    // post-warmup budget. Both remain overrideable for constrained hosts.
+    if (finalRss - warmBaseline > RSS_GROWTH_LIMIT_KB) {
       throw new Error(
         `Post-warmup RSS kept growing: baseline=${warmBaseline}KiB final=${finalRss}KiB ` +
-        `peak=${Math.max(...rssSeries)}KiB`,
+        `peak=${Math.max(...rssSeries)}KiB limit=${RSS_GROWTH_LIMIT_KB}KiB`,
       )
     }
   }
@@ -224,7 +333,7 @@ async function main() {
   const p95 = latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95))] || 0
   console.log(JSON.stringify({
     success: true,
-    mode: START_SIMULATED_ENGINE ? "production-simulated-engine" : "production-read-only",
+    mode: START_SIMULATED_ENGINE ? `${RUNTIME_MODE}-paper-engine` : `${RUNTIME_MODE}-read-only`,
     orderRequests: 0,
     durationMs: Date.now() - startedAt,
     symbols: SYMBOLS.length,
@@ -239,10 +348,20 @@ async function main() {
     rssStartKb: rssSeries[0] || 0,
     rssPeakKb: rssSeries.length ? Math.max(...rssSeries) : 0,
     rssEndKb: rssSeries.at(-1) || 0,
+    rssGrowthLimitKb: RSS_GROWTH_LIMIT_KB,
+    rssLeakEvaluated,
+    rssLeakSamples: leakSeries.length,
     databaseKeysStart: memory[0]?.databaseKeys || 0,
     databaseKeysEnd: memory.at(-1)?.databaseKeys || 0,
     engineCyclesStart: memory[0]?.engineCycles || 0,
     engineCyclesEnd: memory.at(-1)?.engineCycles || 0,
+    simulatedOrdersPeak: liveExecution.length ? Math.max(...liveExecution.map((sample) => sample.ordersSimulated)) : 0,
+    simulatedPositionsCreatedPeak: liveExecution.length ? Math.max(...liveExecution.map((sample) => sample.positionsCreated)) : 0,
+    simulatedPositionsPeak,
+    realPositionsPeak,
+    paperPositionsPeak,
+    paperRunningSetsPeak,
+    paperUpdateCyclesPeak,
     latencyP95Ms: p95,
   }, null, 2))
 }

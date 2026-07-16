@@ -124,6 +124,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const liveTradeChangedAt = new Date().toISOString()
     const previousValues = {
       is_live_trade: connection.is_live_trade,
+      live_trade_enabled: (connection as any).live_trade_enabled,
       live_trade_requested: (connection as any).live_trade_requested,
       state_switch_version: (connection as any).state_switch_version,
       live_trade_changed_at: (connection as any).live_trade_changed_at,
@@ -132,6 +133,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const connectionPatch = {
       ...(injectedCredentials ? { api_key: apiKey, api_secret: apiSecret } : {}),
       is_live_trade: toRedisFlag(liveTradeEffective),
+      live_trade_enabled: toRedisFlag(liveTradeEffective),
       live_trade_blocked_reason: liveTradeBlockedReason,
       // If Live is turned on while the main engine is not already running,
       // make the connection engine-eligible before coordinator.startEngine().
@@ -167,6 +169,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const booleanStateFields = new Set([
       "is_live_trade",
+      "live_trade_enabled",
       "live_trade_requested",
       "is_assigned",
       "is_active_inserted",
@@ -184,6 +187,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const newValues = {
       is_live_trade: updatedConnection.is_live_trade,
+      live_trade_enabled: (updatedConnection as any).live_trade_enabled,
       live_trade_requested: updatedConnection.live_trade_requested,
       state_switch_version: stateSwitchVersion,
       live_trade_changed_at: liveTradeChangedAt,

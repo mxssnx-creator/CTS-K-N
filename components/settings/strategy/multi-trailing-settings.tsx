@@ -53,7 +53,8 @@ export default function MultiTrailingSettings({
   settings,
   handleSettingChange,
 }: MultiTrailingSettingsProps) {
-  // Normalise to a Set for O(1) lookup; defaults to all 25 enabled when missing
+  // Normalise to a Set for O(1) lookup; missing settings use the curated
+  // five-profile diagonal while the operator can still enable all 25.
   const enabledSet = useMemo(() => {
     const raw = settings.strategyBaseTrailingVariants
     const list = normalizeTrailingVariants(raw === undefined ? DEFAULT_TRAILING_VARIANTS : raw)

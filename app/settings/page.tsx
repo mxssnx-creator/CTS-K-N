@@ -538,9 +538,9 @@ const initialSettings: Settings = {
   maxConcurrentOperations: 100, // 10-250, default 100
   cyclePauseMs: 50, // 10-200ms, step 10, default 50ms — pause between engine cycles
   strategyMaxEntriesPerSet: 250,
-  strategyMainAxisSetsCeiling: 50,
-  strategyRealSetsSafetyCeiling: 100,
-  maxRealSets: 100,
+  strategyMainAxisSetsCeiling: 20,
+  strategyRealSetsSafetyCeiling: 25,
+  maxRealSets: 25,
   strategyLiveSetsCeiling: 90,
   // prehistoric_range_hours is already set at line 366 above (first occurrence wins)
 

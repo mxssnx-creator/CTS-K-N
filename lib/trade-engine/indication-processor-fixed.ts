@@ -477,7 +477,9 @@ export class IndicationProcessor {
         await initRedis()
         const client = getRedisClient()
         const { loadMarketDataForEngine } = await import("@/lib/market-data-loader")
-        await loadMarketDataForEngine([symbol])
+        // Indicators need a rolling window, not merely a one-candle realtime
+        // tail that may have been written by the minute scheduler first.
+        await loadMarketDataForEngine([symbol], { requireHistory: true })
         SHARED_MARKET_DATA_CACHE.delete(symbol)
         
         // Spec §7: prefer the new :1s envelope, fall back to legacy :1m.

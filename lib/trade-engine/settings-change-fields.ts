@@ -71,10 +71,14 @@ const STRATEGY_AFFECTING_SETTING_FIELDS = new Set([
   "use_system_close_only",
   "margin_type",
   "position_mode",
+  "control_orders",
+  "control_orders_enabled",
+  "controlOrdersEnabled",
+  "system_settings",
 ])
 
 export function isGenericConnectionSettingsReload(fields: readonly string[]): boolean {
-  return fields.length === 0 || fields.some((field) => field === "connection_settings")
+  return fields.length === 0 || fields.some((field) => field === "connection_settings" || field === "system_settings")
 }
 
 export function hasSymbolAffectingChange(fields: readonly string[]): boolean {

@@ -1,3 +1,8 @@
+import {
+  isConnectionLiveTradeEnabled,
+  isConnectionPresetTradeEnabled,
+} from "@/lib/connection-state-utils"
+
 export type RealTradeBlockCode =
   | "disabled"
   | "credentials_missing"
@@ -83,8 +88,8 @@ export function evaluateRealTradeReadiness(
 ): RealTradeReadiness {
   const isPreset = intent === "preset"
   const enabled = isPreset
-    ? truthy(settings.is_preset_trade) || truthy(settings.preset_trade_enabled)
-    : truthy(settings.is_live_trade) || truthy(settings.live_trade_enabled)
+    ? isConnectionPresetTradeEnabled(settings)
+    : isConnectionLiveTradeEnabled(settings)
   const requested = enabled || truthy(isPreset ? settings.preset_trade_requested : settings.live_trade_requested)
   const credentialsValid = hasUsableLiveCredentials(settings)
   const explicitReason = String(

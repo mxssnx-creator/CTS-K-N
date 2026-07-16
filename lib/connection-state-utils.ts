@@ -2,6 +2,10 @@ export function isTruthyFlag(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true"
 }
 
+function isDefinedFlag(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== ""
+}
+
 export function hasConnectionCredentials(connection: any, minLength = 10, allowPlaceholder = true): boolean {
   const apiKey = connection?.api_key || connection?.apiKey || ""
   const apiSecret = connection?.api_secret || connection?.apiSecret || ""
@@ -62,11 +66,19 @@ export function isConnectionSystemEnabled(connection: any): boolean {
 }
 
 export function isConnectionLiveTradeEnabled(connection: any): boolean {
-  return isTruthyFlag(connection?.is_live_trade) || isTruthyFlag(connection?.live_trade_enabled)
+  // The canonical switch is authoritative when present. Falling back with a
+  // boolean OR lets a stale legacy `live_trade_enabled=1` override an explicit
+  // operator disable (`is_live_trade=0`) and can route paper intent to the
+  // blocked/live path.
+  return isDefinedFlag(connection?.is_live_trade)
+    ? isTruthyFlag(connection?.is_live_trade)
+    : isTruthyFlag(connection?.live_trade_enabled)
 }
 
 export function isConnectionPresetTradeEnabled(connection: any): boolean {
-  return isTruthyFlag(connection?.is_preset_trade) || isTruthyFlag(connection?.preset_trade_enabled)
+  return isDefinedFlag(connection?.is_preset_trade)
+    ? isTruthyFlag(connection?.is_preset_trade)
+    : isTruthyFlag(connection?.preset_trade_enabled)
 }
 
 export function isConnectionWorking(connection: any): boolean {

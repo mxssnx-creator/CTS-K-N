@@ -145,9 +145,14 @@ export function startServerContinuityRunner(): void {
     return
   }
 
-  // Run once immediately, then continuously once per minute. Individual job
-  // guards prevent overlap if a slow cycle reaches the next interval.
-  void enqueueContinuityMinuteJob()
+  // Auto-start and exit-only live-position recovery are safe and useful on the
+  // first process tick. Defer the expensive indication/strategy fallback until
+  // the first full minute boundary: initializeTradeEngineAutoStart() may have
+  // dispatched manager startup asynchronously, leaving a short window before
+  // engine_is_running/heartbeats are visible. Running generate-indications in
+  // that window creates a second full pipeline beside the manager bootstrap.
+  // External/serverless cron calls are unaffected and still execute on demand.
+  void enqueueContinuityAutoStartJob()
   void enqueueContinuityLiveRecoveryJob()
   state.minuteTimer = setInterval(() => {
     void enqueueContinuityMinuteJob()
