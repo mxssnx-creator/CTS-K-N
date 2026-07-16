@@ -10,10 +10,19 @@ const nextBin = "node_modules/next/dist/bin/next"
 const distDir = process.env.NEXT_DIST_DIR || ".next-prod"
 let outputTail = ""
 const snapshotPath = `/tmp/cts-prod-preview-${process.pid}.json`
+const UI_MAX_SYMBOLS = 32
+const maxSymbolsRequested = process.argv.includes("--max-symbols")
+const productionSoakSymbolCount = maxSymbolsRequested
+  ? UI_MAX_SYMBOLS
+  : Math.max(1, Math.min(UI_MAX_SYMBOLS, Number(process.env.PROD_SOAK_SYMBOL_COUNT || 12)))
 const soakSymbols = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
   "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
-].slice(0, Math.max(1, Math.min(12, Number(process.env.PROD_SOAK_SYMBOL_COUNT || 12))))
+  "UNIUSDT", "NEARUSDT", "OPUSDT", "ARBUSDT", "APTUSDT", "SUIUSDT",
+  "INJUSDT", "TIAUSDT", "SEIUSDT", "WLDUSDT", "PYTHUSDT", "JUPUSDT",
+  "TRXUSDT", "ETCUSDT", "FILUSDT", "AAVEUSDT", "RUNEUSDT", "FETUSDT",
+  "ICPUSDT", "HBARUSDT",
+].slice(0, productionSoakSymbolCount)
 
 // A prior interrupted invocation can leave the PID-derived snapshot behind.
 // Every harness run must begin from a clean database so restart persistence is
@@ -64,8 +73,8 @@ function runSoakVerifier() {
         BASE_URL: baseUrl,
         PORT: String(port),
         START_SIMULATED_ENGINE: "1",
-        SYMBOL_COUNT: process.env.PROD_SOAK_SYMBOL_COUNT || "12",
-        SOAK_DURATION_MS: process.env.PROD_SOAK_DURATION_MS || "120000",
+        SYMBOL_COUNT: String(productionSoakSymbolCount),
+        SOAK_DURATION_MS: process.env.PROD_SOAK_DURATION_MS || (maxSymbolsRequested ? "240000" : "120000"),
         RUNTIME_MODE: "production",
       },
       stdio: "inherit",
@@ -74,6 +83,21 @@ function runSoakVerifier() {
     verifier.once("exit", (code, signal) => {
       if (code === 0) resolve()
       else reject(new Error(`Production soak verifier exited code=${code} signal=${signal || "none"}`))
+    })
+  })
+}
+
+function runUiMaxVerifier() {
+  return new Promise((resolve, reject) => {
+    const verifier = spawn(process.execPath, ["scripts/verify-prod-ui-max.mjs"], {
+      cwd: process.cwd(),
+      env: { ...process.env, BASE_URL: baseUrl, PORT: String(port) },
+      stdio: "inherit",
+    })
+    verifier.once("error", reject)
+    verifier.once("exit", (code, signal) => {
+      if (code === 0) resolve()
+      else reject(new Error(`Production UI max-symbol verifier exited code=${code} signal=${signal || "none"}`))
     })
   })
 }
@@ -115,12 +139,12 @@ function startServer({ engines = false } = {}) {
       ALLOW_PROD_SIMULATED: "1",
       FORCE_SIMULATED: "1",
       FORCE_LIVE: "0",
-      V0_DEV_SYMBOL_COUNT: engines ? "12" : "4",
+      V0_DEV_SYMBOL_COUNT: engines ? String(productionSoakSymbolCount) : "4",
       ENGINE_SYMBOL_CONCURRENCY: engines ? (process.env.PREVIEW_ENGINE_SYMBOL_CONCURRENCY || "2") : "1",
       STRATEGY_FLOW_SYMBOL_CONCURRENCY: engines ? (process.env.PREVIEW_STRATEGY_SYMBOL_CONCURRENCY || "2") : "1",
       PREHISTORIC_SYMBOL_CONCURRENCY: process.env.PREVIEW_PREHISTORIC_SYMBOL_CONCURRENCY || "1",
       MARKET_DATA_LOAD_CONCURRENCY: "1",
-      CRON_SYMBOL_LIMIT: engines ? "12" : "4",
+      CRON_SYMBOL_LIMIT: engines ? String(productionSoakSymbolCount) : "4",
       CRON_SECRET: "prod-preview-cron-secret-1234567890",
       BINGX_API_KEY: "",
       BINGX_API_SECRET: "",
@@ -258,6 +282,7 @@ async function main() {
       throw new Error("Site identity rotated before simulated engine soak")
     }
     await runSoakVerifier()
+    if (maxSymbolsRequested) await runUiMaxVerifier()
 
     console.log(JSON.stringify({
       success: true,
@@ -268,7 +293,8 @@ async function main() {
       schemaVersion: after.schemaVersion,
       settingsPersisted: true,
       simulatedEngineSoakVerified: true,
-      simulatedEngineSymbols: Number(process.env.PROD_SOAK_SYMBOL_COUNT || 12),
+      simulatedEngineSymbols: productionSoakSymbolCount,
+      productionUiMaxSymbolsVerified: maxSymbolsRequested,
       realExchangeOrdersSubmitted: 0,
     }, null, 2))
   } finally {

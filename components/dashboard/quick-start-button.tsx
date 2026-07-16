@@ -15,6 +15,7 @@ import { QuickstartTestProcedureDialog } from "./quickstart-test-procedure-dialo
 import { QuickstartFullSystemTestDialog } from "./quickstart-full-system-test-dialog"
 import { EngineProcessingLogDialog } from "./engine-processing-log-dialog"
 import { useExchange } from "@/lib/exchange-context"
+import { QUICKSTART_ENABLE_TIMEOUT_MS } from "@/lib/quickstart-timeouts"
 
 interface QuickStartButtonProps {
   onQuickStartComplete?: () => void
@@ -85,11 +86,6 @@ const ENABLE_STEP_LABEL = "Enable selected Main Connection"
 const DEFAULT_FETCH_TIMEOUT_MS = 12_000
 const MIGRATION_STEP_TIMEOUT_MS = 60_000
 const COORDINATOR_START_TIMEOUT_MS = 35_000
-// The server can spend up to 30s validating the exchange and another 25s
-// awaiting the production engine boot. Keep explicit headroom for symbol
-// selection, Redis writes, and response transfer so the browser never reports
-// failure while the server continues enabling live trading in the background.
-const QUICKSTART_ENABLE_TIMEOUT_MS = 75_000
 
 type QuickStartRequestBody = {
   action: "enable"

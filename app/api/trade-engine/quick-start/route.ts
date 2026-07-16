@@ -14,6 +14,10 @@ import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinato
 import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import { buildPrehistoricGateKeys } from "@/lib/progression-scope"
+import {
+  QUICKSTART_CONNECTION_TEST_TIMEOUT_MS,
+  resolveQuickStartEngineBootWaitMs,
+} from "@/lib/quickstart-timeouts"
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -142,7 +146,9 @@ const DEFAULT_SYMBOLS = ["DRIFTUSDT"]
 // Reasonable default: 100 symbols for auto-picks; explicit lists can exceed this.
 const QUICKSTART_DEFAULT_SYMBOL_COUNT = 100
 const QUICKSTART_LIVE_VOLUME_FACTOR = "0.1"
-const QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS = Number(process.env.QUICKSTART_ENGINE_BOOT_WAIT_MS || 25_000)
+const QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS = resolveQuickStartEngineBootWaitMs(
+  process.env.QUICKSTART_ENGINE_BOOT_WAIT_MS,
+)
 
 function shouldAwaitQuickStartEngineBoot(): boolean {
   return (
@@ -497,10 +503,10 @@ export async function POST(request: Request) {
         
         const testResult = await awaitWithTimeout(
           connector.testConnection(),
-          30_000,
+          QUICKSTART_CONNECTION_TEST_TIMEOUT_MS,
           {
             success: false,
-            error: "Connection test timed out after 30s",
+            error: `Connection test timed out after ${QUICKSTART_CONNECTION_TEST_TIMEOUT_MS / 1000}s`,
             balance: 0,
             capabilities: connector.getCapabilities(),
             logs: [],

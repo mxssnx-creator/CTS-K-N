@@ -26,6 +26,10 @@ import { QuickstartConnectionControls } from "./quickstart-connection-controls"
 import { QuickstartOptionsBar } from "./quickstart-options-bar"
 import { useExchange } from "@/lib/exchange-context"
 import { useDashboardEvents } from "@/lib/dashboard-events"
+import {
+  QUICKSTART_ENABLE_TIMEOUT_MS,
+  QUICKSTART_UI_MAX_SYMBOLS,
+} from "@/lib/quickstart-timeouts"
 
 const toBooleanFlag = (value: unknown): boolean =>
   value === true || value === 1 || value === "1" || value === "true" || value === "yes" || value === "on"
@@ -414,7 +418,7 @@ export function QuickstartSection() {
   const [stats, setStats] = useState<LiveStats>(EMPTY_STATS)
   const [loadingStats, setLoadingStats] = useState(false)
 
-  // Quickstart controls — how many top-volatile symbols to process (1-10)
+  // Quickstart controls — how many top-volatile symbols to process (1-32)
   // and whether live exchange trading is currently enabled for the connection.
   // SSR-safe default (10); restored from localStorage in the mount effect below.
   const [symbolCount, setSymbolCount] = useState<number>(10)
@@ -827,9 +831,10 @@ export function QuickstartSection() {
       addLog(`Connected to ${conn.exchange?.toUpperCase() || "exchange"}`, "success")
       setActiveConnectionId(conn.id)
       // Seed live state from whatever the connection already says
-      setLiveTradeActive(liveTradeUiFlag(conn))
+      const effectiveLiveTrade = liveTradeUiFlag(conn)
+      setLiveTradeActive(effectiveLiveTrade)
 
-      const clampedCount = Math.max(1, Math.min(32, symbolCount))
+      const clampedCount = Math.max(1, Math.min(QUICKSTART_UI_MAX_SYMBOLS, symbolCount))
       addLog(
         clampedCount === 1
           ? "Fetching most volatile symbol (24h)..."
@@ -865,7 +870,14 @@ export function QuickstartSection() {
       const startRes = await fetch("/api/trade-engine/quick-start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ connectionId: conn.id, symbols: chosen }),
+        body: JSON.stringify({
+          action: "enable",
+          connectionId: conn.id,
+          symbols: chosen,
+          liveTrade: effectiveLiveTrade,
+          is_live_trade: effectiveLiveTrade,
+        }),
+        signal: AbortSignal.timeout(QUICKSTART_ENABLE_TIMEOUT_MS),
       })
 
       if (startRes.ok) {
@@ -1298,7 +1310,7 @@ export function QuickstartSection() {
           {/* Symbol count selector — controls how many top-volatile symbols the quickstart processes. */}
           <div
             className="flex items-center gap-1 h-7 px-1.5 rounded-md border bg-muted/30"
-            title="Number of top-volatile symbols to process (1-10)"
+            title={`Number of top-volatile symbols to process (1-${QUICKSTART_UI_MAX_SYMBOLS})`}
           >
             <span className="text-[10px] text-muted-foreground uppercase tracking-wide">Symbols</span>
             <Button
@@ -1316,8 +1328,8 @@ export function QuickstartSection() {
               size="sm"
               variant="ghost"
               className="h-5 w-5 p-0 rounded text-xs"
-              onClick={() => setSymbolCount(c => Math.min(32, c + 1))}
-              disabled={symbolCount >= 32 || isRunning || starting}
+              onClick={() => setSymbolCount(c => Math.min(QUICKSTART_UI_MAX_SYMBOLS, c + 1))}
+              disabled={symbolCount >= QUICKSTART_UI_MAX_SYMBOLS || isRunning || starting}
               aria-label="Increase symbol count"
             >
               +
