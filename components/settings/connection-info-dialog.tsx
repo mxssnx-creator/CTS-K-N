@@ -215,6 +215,162 @@ function BooleanBadge({ value, onLabel = "On", offLabel = "Off" }: { value: bool
   )
 }
 
+function RealVariantStatsCard({
+  label,
+  value,
+  adjust = false,
+}: {
+  label: string
+  value: unknown
+  adjust?: boolean
+}) {
+  const stats = asRecord(value)
+  const comparisonAvailable = asBoolean(stats.comparisonAvailable)
+  const differencePercent = comparisonAvailable ? asNumber(stats.differencePercent) : null
+  return (
+    <div className="rounded-xl border bg-background/70 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-sm font-semibold">{label}</p>
+        <Badge variant={adjust ? "secondary" : "outline"}>{adjust ? "Adjust" : "Strategy"}</Badge>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Positions</p>
+          <p className="mt-0.5 font-semibold tabular-nums">{formatNumber(stats.positions, 0)}</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">PF</p>
+          <p className="mt-0.5 font-semibold tabular-nums">{asNumber(stats.avgProfitFactor) > 0 ? formatNumber(stats.avgProfitFactor, 2) : "—"}</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">DDT</p>
+          <p className="mt-0.5 font-semibold tabular-nums">{asNumber(stats.avgDrawdownTime) > 0 ? `${formatNumber(stats.avgDrawdownTime, 1)} min` : "—"}</p>
+        </div>
+      </div>
+      {asText(stats.positionCountSource) === "evaluation-fallback" && (
+        <p className="mt-2 text-[10px] text-amber-700 dark:text-amber-300">
+          Position count uses the pre-ledger evaluation fallback for this running history.
+        </p>
+      )}
+      {adjust && (
+        <div className="mt-3 rounded-lg bg-muted/55 p-2 text-[11px] text-muted-foreground">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <span>
+              Without / with <strong className="font-semibold text-foreground tabular-nums">
+                {formatNumber(stats.withoutStrategyPositions, 0)} → {formatNumber(stats.withStrategyPositions, 0)}
+              </strong>
+            </span>
+            <span>
+              Δ <strong className="font-semibold text-foreground tabular-nums">+{formatNumber(stats.positionDifference, 0)}</strong>
+            </span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <span>Difference ratio</span>
+            <strong className="font-semibold text-foreground tabular-nums">
+              {differencePercent === null
+                ? "Awaiting Standard baseline"
+                : `+${differencePercent.toFixed(1)}% · 0.2 level ${formatNumber(stats.ratioLevel, 1)}`}
+            </strong>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RealStagePositionDetail({ value }: { value: unknown }) {
+  const detail = asRecord(value)
+  const overall = asRecord(detail.overall)
+  const strategyTypes = asRecord(detail.strategyTypes)
+  const adjustTypes = asRecord(detail.adjustTypes)
+  const symbols = Array.isArray(detail.symbols) ? detail.symbols.map(asRecord) : []
+  const hasConfirmedCounts = asText(overall.positionCountSource) === "confirmed-ledger"
+
+  return (
+    <SectionPanel
+      title="Real position detail"
+      description="Confirmed position entries, related-Base hedge offset, strategy performance, Adjust impact, and general symbol direction counts."
+      icon={<BarChart3 className="h-4 w-4" />}
+    >
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          label="Pos overall"
+          value={formatNumber(overall.positions, 0)}
+          hint={hasConfirmedCounts ? "Idempotent confirmed entries" : "Legacy evaluation fallback"}
+        />
+        <MetricCard
+          label="Pos with hedge"
+          value={formatNumber(overall.positionsWithHedge, 0)}
+          hint="Long/short offset only inside each related Base Set"
+          tone={asNumber(overall.hedgeReducedPositions) > 0 ? "success" : "default"}
+        />
+        <MetricCard
+          label="Long / Short"
+          value={`${formatNumber(overall.longPositions, 0)} / ${formatNumber(overall.shortPositions, 0)}`}
+          hint={`${formatNumber(overall.hedgedPairs, 0)} hedged pair${asNumber(overall.hedgedPairs) === 1 ? "" : "s"}`}
+        />
+        <MetricCard
+          label="Hedge offset"
+          value={`${formatNumber(overall.hedgeOffsetPercent, 1)}%`}
+          hint={`${formatNumber(overall.hedgeReducedPositions, 0)} position legs offset`}
+        />
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+        <div>
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Strategy types</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <RealVariantStatsCard label="Default" value={strategyTypes.default} />
+            <RealVariantStatsCard label="Trailing" value={strategyTypes.trailing} />
+          </div>
+        </div>
+        <div>
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Adjust types</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <RealVariantStatsCard label="Block" value={adjustTypes.block} adjust />
+            <RealVariantStatsCard label="DCA" value={adjustTypes.dca} adjust />
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Symbols · Long / Short positions</p>
+          <Badge variant="outline">{formatNumber(symbols.length, 0)} symbols</Badge>
+        </div>
+        {symbols.length > 0 ? (
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {symbols.map((symbol) => (
+              <div key={asText(symbol.symbol)} className="rounded-lg border bg-background/60 p-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold">{asText(symbol.symbol, "Unknown")}</span>
+                  <span className="text-[10px] text-muted-foreground tabular-nums">
+                    {formatNumber(symbol.grossPositions, 0)} → {formatNumber(symbol.positionsWithHedge, 0)} hedge
+                  </span>
+                </div>
+                <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px]">
+                  <span className="text-emerald-700 dark:text-emerald-300">Long <strong className="tabular-nums">{formatNumber(symbol.longPositions, 0)}</strong></span>
+                  <span className="text-rose-700 dark:text-rose-300">Short <strong className="tabular-nums">{formatNumber(symbol.shortPositions, 0)}</strong></span>
+                  <span className="ml-auto text-muted-foreground">pairs <strong className="text-foreground tabular-nums">{formatNumber(symbol.hedgedPairs, 0)}</strong></span>
+                </div>
+                {asNumber(symbol.unclassifiedPositions) > 0 && (
+                  <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-300">
+                    {formatNumber(symbol.unclassifiedPositions, 0)} legacy entries without direction
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
+            Symbol direction counts appear after the first confirmed Real position entry.
+          </div>
+        )}
+      </div>
+    </SectionPanel>
+  )
+}
+
 function RuntimeStateCard({
   title,
   description,
@@ -744,6 +900,8 @@ export function ConnectionInfoDialog({ open, onOpenChange, connectionId, connect
                       })}
                     </div>
                   </SectionPanel>
+
+                  <RealStagePositionDetail value={asRecord(derived.strategyDetail.real).positionStats} />
 
                   <div className="grid gap-4 lg:grid-cols-2">
                     <SectionPanel title="Strategy variants" description="Saved coordination gates applied during Main-stage Set creation." icon={<SlidersHorizontal className="h-4 w-4" />}>

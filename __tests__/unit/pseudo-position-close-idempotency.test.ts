@@ -61,6 +61,7 @@ describe("PseudoPositionManager close idempotency", () => {
       bySymbol: { BTCUSDT: 1 },
       byDirection: { long: 1, short: 0 },
       byType: { direction: 1 },
+      byVariant: { default: 1, trailing: 0, block: 0, dca: 0 },
     })
   })
 })

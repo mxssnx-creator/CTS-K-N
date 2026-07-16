@@ -46,6 +46,10 @@
  */
 
 import { getRedisClient } from "@/lib/redis-db"
+import {
+  inferRealStrategyVariant,
+  type RealStrategyVariant,
+} from "@/lib/strategy-real-stats"
 
 // ── Constants ──────────────────────────────────────────────────────────
 const TTL_SECONDS = 90 * 24 * 60 * 60 // 90 days — the run window we care about
@@ -687,6 +691,8 @@ export interface StrategyPositionEntryInput {
   indicationType: string
   direction: "long" | "short"
   axisKey?: string
+  /** Explicit Real-stage category; inferred from setKey when omitted. */
+  strategyVariant?: RealStrategyVariant
 }
 
 const RECORD_STRATEGY_ENTRY_LUA = `
@@ -708,6 +714,7 @@ const RECORD_STRATEGY_ENTRY_LUA = `
   redis.call('HINCRBY', KEYS[8], 'by_symbol:' .. ARGV[5], 1)
   redis.call('HINCRBY', KEYS[8], 'by_dir:' .. ARGV[7], 1)
   redis.call('HINCRBY', KEYS[8], 'by_type:' .. ARGV[6], 1)
+  redis.call('HINCRBY', KEYS[8], 'by_variant:' .. ARGV[11], 1)
   for i = 3, 8 do redis.call('EXPIRE', KEYS[i], ARGV[9]) end
   return 1
 `
@@ -727,6 +734,7 @@ export async function recordStrategyPositionEntry(
   const indicationType = String(input.indicationType || "unknown")
   const direction = input.direction === "short" ? "short" : "long"
   const axisKey = String(input.axisKey || "")
+  const strategyVariant = inferRealStrategyVariant(setKey, input.strategyVariant)
   const client = getRedisClient()
   const keys = [
     STRATEGY_ENTRY_IDS_KEY(connectionId),
@@ -749,6 +757,7 @@ export async function recordStrategyPositionEntry(
     axisKey,
     String(TTL_SECONDS),
     String(Date.now()),
+    strategyVariant,
   ]
 
   if (typeof client.eval === "function") {
@@ -780,6 +789,7 @@ export async function recordStrategyPositionEntry(
     pipeline.hincrby(keys[7], `by_symbol:${symbol}`, 1)
     pipeline.hincrby(keys[7], `by_dir:${direction}`, 1)
     pipeline.hincrby(keys[7], `by_type:${indicationType}`, 1)
+    pipeline.hincrby(keys[7], `by_variant:${strategyVariant}`, 1)
     for (let i = 2; i < keys.length; i++) pipeline.expire(keys[i], TTL_SECONDS)
   }
   await pipeline.exec()
@@ -849,6 +859,7 @@ export interface ValidPositionsSnapshot {
   bySymbol: Record<string, number>
   byDirection: Record<string, number>
   byType: Record<string, number>
+  byVariant: Record<RealStrategyVariant, number>
 }
 
 export async function getValidPositions(
@@ -861,6 +872,7 @@ export async function getValidPositions(
       bySymbol: {},
       byDirection: { long: 0, short: 0 },
       byType: {},
+      byVariant: { default: 0, trailing: 0, block: 0, dca: 0 },
     }
   }
   try {
@@ -890,6 +902,12 @@ export async function getValidPositions(
           .filter(([key]) => key.startsWith("by_type:"))
           .map(([key, val]) => [key.substring("by_type:".length), Number(val)]),
       ),
+      byVariant: {
+        default: Number(h["by_variant:default"] || 0),
+        trailing: Number(h["by_variant:trailing"] || 0),
+        block: Number(h["by_variant:block"] || 0),
+        dca: Number(h["by_variant:dca"] || 0),
+      },
     }
   } catch (err) {
     console.error(`[v0] [PosHistory] getValidPositions error:`, err)
@@ -899,6 +917,7 @@ export async function getValidPositions(
       bySymbol: {},
       byDirection: { long: 0, short: 0 },
       byType: {},
+      byVariant: { default: 0, trailing: 0, block: 0, dca: 0 },
     }
   }
 }
