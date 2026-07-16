@@ -74,7 +74,7 @@ interface StatsResponse {
     live?: { open: number; total?: number; positions?: number }
   }
   breakdown: {
-    indications: { direction: number; move: number; active: number; optimal: number; auto: number; total: number }
+    indications: { direction: number; move: number; active: number; activeAdvanced?: number; optimal: number; auto: number; trend?: number; total: number }
     strategies: { base: number; main: number; real: number; live: number; total: number
                   baseEvaluated: number; mainEvaluated: number; realEvaluated: number }
   }
@@ -314,6 +314,7 @@ export function QuickstartOverviewDialog() {
     { label: "Active Adv", value: (bd?.indications as any)?.activeAdvanced || 0 },
     { label: "Optimal",    value: bd?.indications.optimal        || 0 },
     { label: "Auto",       value: bd?.indications.auto           || 0 },
+    { label: "Trend",      value: bd?.indications.trend          || 0 },
   ]
   const totalIndByType = indTypes.reduce((s, r) => s + r.value, 0) || 1
   const evalMain5m  = win?.indications.last5m  || 0
@@ -819,12 +820,12 @@ export function QuickstartOverviewDialog() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(["direction", "move", "active", "activeAdvanced", "optimal", "auto"] as const).map((k) => {
+                    {(["direction", "move", "active", "activeAdvanced", "optimal", "auto", "trend"] as const).map((k) => {
                       const r = stats.activeProgressing!.indications![k]
                       if (!r || (r.sets === 0 && r.trackings === 0 && r.positions === 0)) return null
                       const labelMap: Record<string, string> = {
                         direction: "Direction", move: "Move", active: "Active",
-                        activeAdvanced: "Active Adv", optimal: "Optimal", auto: "Auto",
+                        activeAdvanced: "Active Adv", optimal: "Optimal", auto: "Auto", trend: "Trend",
                       }
                       return (
                         <tr key={k} className="border-b border-border/20 last:border-0">

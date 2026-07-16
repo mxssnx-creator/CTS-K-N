@@ -179,11 +179,11 @@ export class IntervalProgressionManager {
    * Get interval health status
    */
   async getIntervalHealth(connectionId: string): Promise<Record<string, any>> {
-    const types = ["direction", "move", "active", "optimal"] as const
+    const types = ["direction", "move", "active", "optimal", "trend"] as const
     const health: Record<string, any> = {}
 
-    // Pipeline the 4 config reads — they're independent keys and the
-    // dashboard polls this endpoint frequently, so serialising 4 RTTs
+    // Pipeline the config reads — they're independent keys and the
+    // dashboard polls this endpoint frequently, so serialising RTTs
     // shows up in p99 latency.
     const configs = await Promise.all(
       types.map((type) =>

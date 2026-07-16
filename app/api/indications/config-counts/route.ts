@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic"
  * GET /api/indications/config-counts
  *
  * Returns the number of POSSIBLE Independent Sets per Main indication type
- * (direction / move / active / optimal / auto), together with the calc
+ * (direction / move / active / optimal / auto / trend), together with the calc
  * parameters that produced each count (ranges, steps, time variations,
  * drawdown thresholds, etc.).
  *
@@ -39,6 +39,7 @@ export async function GET() {
     const [
       rawMin, rawMax, rawStep, rawTpDivisor,
       rawOptimalBase, rawAutoHrs, rawAutoWins,
+      rawTrendTimeframes, rawTrendDrawdowns, rawTrendLast, rawTrendActive,
     ] = await Promise.all([
       getAppSetting<unknown>("indicationRangeMin", null),
       getAppSetting<unknown>("indicationRangeMax", null),
@@ -47,6 +48,10 @@ export async function GET() {
       getAppSetting<unknown>("optimalBasePositionsLimit", null),
       getAppSetting<unknown>("autoDrawdownHours", null),
       getAppSetting<unknown>("autoTimeWindows", null),
+      getAppSetting<unknown>("trendTimeframesMinutes", [1, 3, 5, 10, 15, 30]),
+      getAppSetting<unknown>("trendDrawdownValues", [-1, -2, -3]),
+      getAppSetting<unknown>("trendLastSituationRatios", [0.5, 1]),
+      getAppSetting<unknown>("trendActiveSituationRatios", [0.5, 1]),
     ])
 
     // asPosInt guards against zeros / negatives / NaN that could leak
@@ -96,13 +101,19 @@ export async function GET() {
     //   Auto:    time windows × 2 directions × drawdown tiers
     const optimalConfigs = validRangeCount * 2
     const autoConfigs    = Math.max(1, autoTimeWins) * 2 * Math.max(1, autoDrawdownHrs)
+    const trendTimeframeCount = numericListCount(rawTrendTimeframes, [1, 3, 5, 10, 15, 30])
+    const trendDrawdownCount = numericListCount(rawTrendDrawdowns, [-1, -2, -3])
+    const trendLastCount = numericListCount(rawTrendLast, [0.5, 1])
+    const trendActiveCount = numericListCount(rawTrendActive, [0.5, 1])
+    const trendConfigs = trendTimeframeCount * trendDrawdownCount * trendLastCount * trendActiveCount
 
     const totalConfigs =
       (directionCat?.configurations ?? 0) +
       (moveCat?.configurations ?? 0) +
       (activeCat?.configurations ?? 0) +
       optimalConfigs +
-      autoConfigs
+      autoConfigs +
+      trendConfigs
 
     return NextResponse.json({
       totalPossibleSets: totalConfigs,
@@ -119,7 +130,7 @@ export async function GET() {
         autoDrawdownHours:         autoDrawdownHrs,
         autoTimeWindows:           autoTimeWins,
       },
-      // Per-type breakdown rendered as 5 rows on the dashboard.
+      // Per-type breakdown rendered in engine order, with Trend last.
       types: [
         {
           type: "direction",
@@ -188,6 +199,21 @@ export async function GET() {
           description:
             "Multi-timeframe adaptive Sets; the auto engine uses 8h/1h/30min/1–20min windows with alignment and drawdown gates.",
         },
+        {
+          type: "trend",
+          label: "Trend (coordinated)",
+          possibleSets: trendConfigs,
+          formula: `${trendTimeframeCount} timeframes × ${trendDrawdownCount} drawdowns × ${trendLastCount} last × ${trendActiveCount} active ratios`,
+          params: {
+            timeframes: trendTimeframeCount,
+            negativeDrawdowns: trendDrawdownCount,
+            lastSituations: trendLastCount,
+            activeSituations: trendActiveCount,
+            adaptiveTp: "avg 1m / PositionCost × min multiplier",
+          },
+          description:
+            "Independent Trend Sets coordinate overall direction, negative drawdown, recent-window continuation and the latest one-minute market change.",
+        },
       ],
       timestamp: new Date().toISOString(),
     })
@@ -208,4 +234,20 @@ function asPosInt(raw: any, fallback: number): number {
   const v = typeof raw === "object" && raw !== null && "value" in raw ? (raw as any).value : raw
   const n = Number(v)
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback
+}
+
+function numericListCount(raw: any, fallback: number[]): number {
+  const value = typeof raw === "object" && raw !== null && "value" in raw ? raw.value : raw
+  let parts: unknown[] = []
+  if (Array.isArray(value)) parts = value
+  else if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value)
+      parts = Array.isArray(parsed) ? parsed : value.split(",")
+    } catch {
+      parts = value.split(",")
+    }
+  }
+  const valid = parts.map(Number).filter(Number.isFinite)
+  return new Set(valid.length > 0 ? valid : fallback).size
 }

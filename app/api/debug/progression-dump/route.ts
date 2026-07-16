@@ -53,7 +53,7 @@ export async function GET(request: NextRequest) {
 
     // Read indication type counts
     const indTypeCounts: Record<string, string | null> = {}
-    for (const type of ["direction", "move", "active", "optimal", "auto"]) {
+    for (const type of ["direction", "move", "active", "optimal", "auto", "trend"]) {
       indTypeCounts[type] = await client.get(`indications:${id}:${type}:count`).catch(() => null)
     }
 

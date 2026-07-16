@@ -83,7 +83,7 @@ interface IndicationConfigCounts {
     optimalBasePositionsLimit: number
   }
   types: Array<{
-    type: "direction" | "move" | "active" | "optimal" | "auto"
+    type: "direction" | "move" | "active" | "optimal" | "auto" | "trend"
     label: string
     possibleSets: number
     formula: string
@@ -209,6 +209,7 @@ interface LiveStats {
   indActiveAdvanced: number
   indOptimal: number
   indAuto: number
+  indTrend: number
   stratBase: number
   stratMain: number
   stratReal: number
@@ -314,7 +315,7 @@ const EMPTY_STATS: LiveStats = {
   historicAvgProfitFactor: 0, historicAvgProfitFactorCount: 0, executedPositions: 0,
   indicationCycles: 0, strategyCycles: 0, realtimeCycles: 0, indicationsTotal: 0,
   strategiesTotal: 0, positionsOpen: 0, successRate: 0, avgCycleMs: 0, isActive: false,
-  indDirection: 0, indMove: 0, indActive: 0, indActiveAdvanced: 0, indOptimal: 0, indAuto: 0,
+  indDirection: 0, indMove: 0, indActive: 0, indActiveAdvanced: 0, indOptimal: 0, indAuto: 0, indTrend: 0,
   stratBase: 0, stratMain: 0, stratReal: 0, stratLive: 0,
   stageBase:  { ...EMPTY_STAGE }, stageMain: { ...EMPTY_STAGE },
   stageReal:  { ...EMPTY_STAGE }, stageLive: { ...EMPTY_STAGE },
@@ -470,6 +471,7 @@ export function QuickstartSection() {
       let indActAdv  = s.breakdown?.indications?.activeAdvanced || 0
       let indOpt     = s.breakdown?.indications?.optimal  || 0
       let indAuto    = s.breakdown?.indications?.auto     || 0
+      let indTrend   = s.breakdown?.indications?.trend    || 0
       let stratBase  = s.breakdown?.strategies?.base      || 0
       let stratMain  = s.breakdown?.strategies?.main      || 0
       let stratReal  = s.breakdown?.strategies?.real      || 0
@@ -490,6 +492,7 @@ export function QuickstartSection() {
             indActAdv  = e.indicationsByType?.activeAdvanced || e.indicationsByType?.active_advanced || 0
             indOpt     = e.indicationsByType?.optimal   || 0
             indAuto    = e.indicationsByType?.auto      || 0
+            indTrend   = e.indicationsByType?.trend     || 0
             stratBase  = e.baseStrategyCount  || 0
             stratMain  = e.mainStrategyCount  || 0
             stratReal  = e.realStrategyCount  || 0
@@ -577,6 +580,7 @@ export function QuickstartSection() {
         indActiveAdvanced:     indActAdv,
         indOptimal:            indOpt,
         indAuto:               indAuto,
+        indTrend:              indTrend,
         stratBase:             stratBase,
         stratMain:             stratMain,
         stratReal:             stratReal,
@@ -1128,6 +1132,7 @@ export function QuickstartSection() {
     { label: "Adv",  value: stats.indActiveAdvanced },
     { label: "Opt",  value: stats.indOptimal   },
     { label: "Auto", value: stats.indAuto      },
+    { label: "Trend", value: stats.indTrend    },
   ]
 
   // ── Combined pipeline progress ───────────────────────────────────────────
@@ -1798,7 +1803,7 @@ export function QuickstartSection() {
 
             {/* ── Indication Configuration Possible Counts (Sets) ────────
                 Renders the *possible* Set enumeration per Main indication
-                type (direction / move / active / optimal / auto), derived
+                type (direction / move / active / optimal / auto / trend), derived
                 purely from the current settings. Each row shows:
                   • the number of Independent Sets this type could spawn
                   • the formula (ranges × ratios × variations, etc.)
@@ -1863,6 +1868,7 @@ export function QuickstartSection() {
                       active:    "bg-amber-500/70",
                       optimal:   "bg-emerald-500/70",
                       auto:      "bg-rose-500/70",
+                      trend:     "bg-cyan-500/70",
                     }
                     return (
                       <div key={t.type} className="space-y-0.5">
@@ -1950,12 +1956,12 @@ export function QuickstartSection() {
                       </tr>
                     </thead>
                     <tbody>
-                      {(["direction", "move", "active", "activeAdvanced", "optimal", "auto"] as const).map((k) => {
+                      {(["direction", "move", "active", "activeAdvanced", "optimal", "auto", "trend"] as const).map((k) => {
                         const r = stats.apIndications[k] ?? EMPTY_AP_ROW
                         if (r.sets === 0 && r.trackings === 0 && r.positions === 0) return null
                         const labelMap: Record<string, string> = {
                           direction: "Direction", move: "Move", active: "Active",
-                          activeAdvanced: "Active Adv", optimal: "Optimal", auto: "Auto",
+                          activeAdvanced: "Active Adv", optimal: "Optimal", auto: "Auto", trend: "Trend",
                         }
                         return (
                           <tr key={k} className="border-b border-border/20 last:border-0">

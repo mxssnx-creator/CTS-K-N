@@ -191,6 +191,16 @@ interface Settings {
   trailingOptimalRanges: boolean
   simultaneousTrading: boolean
   positionIncrementAfterSituation: boolean
+  trendEnabled: boolean
+  trendTimeframesMinutes: number[] | string
+  trendDrawdownValues: number[] | string
+  trendLastSituationRatios: number[] | string
+  trendActiveSituationRatios: number[] | string
+  trendMinAgreement: number
+  trendTpMinMultiplier: number
+  trendTpMaxFactor: number
+  trendTpStep: number
+  databaseSizeTrend: number
   // Common Indicators - RSI
   rsiEnabled: boolean
   rsiPeriod: number
@@ -672,6 +682,16 @@ const initialSettings: Settings = {
   trailingOptimalRanges: false,
   simultaneousTrading: false,
   positionIncrementAfterSituation: false,
+  trendEnabled: true,
+  trendTimeframesMinutes: [1, 3, 5, 10, 15, 30],
+  trendDrawdownValues: [-1, -2, -3],
+  trendLastSituationRatios: [0.5, 1],
+  trendActiveSituationRatios: [0.5, 1],
+  trendMinAgreement: 0.6,
+  trendTpMinMultiplier: 2,
+  trendTpMaxFactor: 10,
+  trendTpStep: 1,
+  databaseSizeTrend: 250,
 
   // Common Indicators
   rsiEnabled: true, // Changed to true by default

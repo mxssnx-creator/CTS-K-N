@@ -74,6 +74,18 @@ const STRATEGY_AFFECTING_SETTING_FIELDS = new Set([
   "control_orders",
   "control_orders_enabled",
   "controlOrdersEnabled",
+  "trendEnabled",
+  "trendTimeframesMinutes",
+  "trendDrawdownValues",
+  "trendDrawdownFactors",
+  "trendLastSituationRatios",
+  "trendActiveSituationRatios",
+  "trendMinAgreement",
+  "trendTpMinMultiplier",
+  "trendTpMaxFactor",
+  "trendTpStep",
+  "databaseSizeTrend",
+  "positionCost",
   "system_settings",
 ])
 

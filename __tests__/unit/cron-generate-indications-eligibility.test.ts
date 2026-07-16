@@ -26,7 +26,8 @@ describe("generate-indications cron connection eligibility", () => {
     expect(fresh.eligible.map((connection) => connection.id)).toEqual(["fallback"])
     expect(fresh.skippedFreshOwners).toBe(2)
 
-    hashes.set("trade_engine:global", { last_heartbeat_at: String(now - 120_000) })
+    // A fresh global worker heartbeat belongs to the process, not to every
+    // connection. It must never hide a stale per-connection owner.
     const stale = await filterCronFallbackConnections([{ id: "stale" }], client, () => false, now)
     expect(stale.eligible.map((connection) => connection.id)).toEqual(["stale"])
     expect(stale.skippedFreshOwners).toBe(0)

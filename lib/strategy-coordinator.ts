@@ -255,6 +255,8 @@ export interface StrategySetEntry {
   profitFactor: number
   drawdownTime: number
   confidence: number
+  /** Adaptive Trend TP-factor ladder carried from indication evaluation. */
+  adaptiveTpFactors?: number[]
 }
 
 /**
@@ -2130,11 +2132,23 @@ export class StrategyCoordinator {
       } else {
         direction = "long"
       }
+      const indicationType = ind.type || "direction"
+      // Trend windows/configurations remain independent throughout Strategy
+      // coordination. Other indication types preserve the legacy type×direction
+      // grouping; Trend adds its evaluated parameter tuple to the identity.
+      const trendConfigSuffix = indicationType === "trend"
+        ? [
+            `tf${Number(ind.config?.timeframeMinutes ?? ind.metadata?.timeframeMinutes) || 0}`,
+            `dd${Number(ind.config?.drawdownFactor ?? ind.metadata?.configuredDrawdownFactor) || 0}`,
+            `last${Number(ind.config?.lastSituationRatio ?? ind.metadata?.configuredLastSituationRatio) || 0}`,
+            `active${Number(ind.config?.activeSituationRatio ?? ind.metadata?.configuredActiveSituationRatio) || 0}`,
+          ].join(":")
+        : ""
       // Symbol-scoped identity prevents BTC and ETH Sets with the same
       // indication/direction from colliding in BaseRegistry and live lineage.
-      const key = `${symbol}:${ind.type || "direction"}:${direction}`
+      const key = `${symbol}:${indicationType}:${direction}${trendConfigSuffix ? `:${trendConfigSuffix}` : ""}`
       if (!setMap.has(key)) {
-        setMap.set(key, { indicationType: ind.type || "direction", direction, indications: [] })
+        setMap.set(key, { indicationType, direction, indications: [] })
       }
       setMap.get(key)!.indications.push(ind)
     }
@@ -2262,6 +2276,18 @@ export class StrategyCoordinator {
           const pf = pfFromPF
           if (pf < this.PF_BASE_MIN) continue
 
+          const rawAdaptiveTpFactors =
+            ind.config?.tpFactors ??
+            ind.config?.tpRange?.factors ??
+            ind.metadata?.adaptiveTpRange?.factors
+          const adaptiveTpFactors = Array.isArray(rawAdaptiveTpFactors)
+            ? Array.from(new Set(
+                rawAdaptiveTpFactors
+                  .map(Number)
+                  .filter((factor: number) => Number.isFinite(factor) && factor > 0),
+              )).sort((left, right) => left - right)
+            : []
+
           entries.push({
             id: `${setKey}-${entryIdx}`,
             sizeMultiplier: 1.0,
@@ -2270,6 +2296,9 @@ export class StrategyCoordinator {
             profitFactor: pf,
             drawdownTime: 0,
             confidence: conf,
+            ...(group.indicationType === "trend" && adaptiveTpFactors.length > 0 && {
+              adaptiveTpFactors,
+            }),
           })
           entryIdx++
         }
@@ -5509,19 +5538,26 @@ export class StrategyCoordinator {
                 // Priority: set.entries (non-empty profile-variant sets) →
                 //   coordIndex.base.byKey O(1) lookup → O(N) realSets.find() fallback.
                 const _pseudoParentKey = set.parentSetKey || set.setKey.split("#")[0]
-                const effectiveEntries =
-                  set.entries.length > 0
+                const parentEntries = coordIndex
+                  ? (coordIndex.base.byKey.get(_pseudoParentKey)?.entries ?? [])
+                  : (realSets.find((s) => s.setKey === _pseudoParentKey)?.entries ?? [])
+                const effectiveEntries = set.axisWindows && parentEntries.length > 0
+                  ? parentEntries
+                  : set.entries.length > 0
                     ? set.entries
-                    : coordIndex
-                      ? (coordIndex.base.byKey.get(_pseudoParentKey)?.entries ?? [])
-                      : (realSets.find((s) => s.setKey === _pseudoParentKey)?.entries ?? [])
+                    : parentEntries
                 const bestEntry = effectiveEntries.reduce(
                   (best, e) => (e.profitFactor > best.profitFactor ? e : best),
                   effectiveEntries[0],
                 )
                 if (!bestEntry) return false
 
-                const tp = Math.max(0.5, (bestEntry.profitFactor - 1) * 100)
+                const adaptiveTrendTp = set.indicationType === "trend"
+                  ? bestEntry.adaptiveTpFactors?.find(
+                      (factor) => Number.isFinite(factor) && factor > 0,
+                    )
+                  : undefined
+                const tp = adaptiveTrendTp ?? Math.max(0.5, (bestEntry.profitFactor - 1) * 100)
                 const sl = Math.min(5, 100 / Math.max(1, bestEntry.profitFactor) * 0.5)
 
                 // Multi-step trailing — Set carries its own profile from

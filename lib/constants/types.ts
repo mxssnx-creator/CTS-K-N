@@ -12,6 +12,7 @@ export const INDICATION_TYPES = {
   ACTIVE: "active",
   OPTIMAL: "optimal",
   AUTO: "auto",
+  TREND: "trend",
 } as const
 
 export type IndicationType = (typeof INDICATION_TYPES)[keyof typeof INDICATION_TYPES]
@@ -22,12 +23,14 @@ export const INDICATION_TYPE_LABELS: Record<IndicationType, string> = {
   [INDICATION_TYPES.ACTIVE]: "Active",
   [INDICATION_TYPES.OPTIMAL]: "Optimal",
   [INDICATION_TYPES.AUTO]: "Auto",
+  [INDICATION_TYPES.TREND]: "Trend",
 }
 
 export const DEFAULT_INDICATION_TYPES: IndicationType[] = [
   INDICATION_TYPES.DIRECTION,
   INDICATION_TYPES.MOVE,
   INDICATION_TYPES.ACTIVE,
+  INDICATION_TYPES.TREND,
 ]
 
 // ============================================================================
@@ -284,7 +287,7 @@ export const INDICATION_CATEGORY_LABELS: Record<IndicationCategory, string> = {
 }
 
 export const INDICATION_CATEGORY_DESCRIPTIONS: Record<IndicationCategory, string> = {
-  [INDICATION_CATEGORIES.MAIN]: "Step-based position generation: Direction, Move, Active, Optimal",
+  [INDICATION_CATEGORIES.MAIN]: "Step-based position generation: Direction, Move, Active, Optimal, Auto, Trend",
   [INDICATION_CATEGORIES.COMMON]: "Technical indicators: RSI, MACD, Bollinger, ParabolicSAR, ADX, ATR",
 }
 
@@ -296,6 +299,7 @@ export const INDICATION_TO_CATEGORY: Record<string, IndicationCategory> = {
   active: INDICATION_CATEGORIES.MAIN,
   optimal: INDICATION_CATEGORIES.MAIN,
   auto: INDICATION_CATEGORIES.MAIN,
+  trend: INDICATION_CATEGORIES.MAIN,
   // Common indicators
   rsi: INDICATION_CATEGORIES.COMMON,
   macd: INDICATION_CATEGORIES.COMMON,

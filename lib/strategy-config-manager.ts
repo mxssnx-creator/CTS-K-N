@@ -366,6 +366,7 @@ export class StrategyConfigManager {
       "active_advanced",
       "optimal",
       "auto",
+      "trend",
     ])
     for (const seg of String(configSetKey).split(":")) {
       const s = seg.trim().toLowerCase()

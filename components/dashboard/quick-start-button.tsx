@@ -60,6 +60,7 @@ interface OverallStats {
     active: number
     optimal: number
     auto: number
+    trend: number
     total: number
   }
   pseudoPositions: {
@@ -69,6 +70,7 @@ interface OverallStats {
       move: number
       active: number
       optimal: number
+      trend: number
     }
     main: number
     real: number
@@ -577,7 +579,7 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
             {/* Indications by Type */}
             <div className="space-y-1">
               <div className="text-muted-foreground text-[10px] font-medium">Indications by Type:</div>
-              <div className="grid grid-cols-5 gap-1">
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-1">
                 <div className="bg-purple-50 rounded p-1 text-center">
                   <div className="text-purple-700 font-bold text-sm">{overallStats.indicationsByType.direction}</div>
                   <div className="text-muted-foreground text-[8px]">Dir</div>
@@ -597,6 +599,10 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
                 <div className="bg-purple-50 rounded p-1 text-center">
                   <div className="text-purple-700 font-bold text-sm">{overallStats.indicationsByType.auto}</div>
                   <div className="text-muted-foreground text-[8px]">Auto</div>
+                </div>
+                <div className="bg-purple-50 rounded p-1 text-center">
+                  <div className="text-purple-700 font-bold text-sm">{overallStats.indicationsByType.trend}</div>
+                  <div className="text-muted-foreground text-[8px]">Trend</div>
                 </div>
               </div>
               <div className="text-center text-purple-600 text-[10px]">

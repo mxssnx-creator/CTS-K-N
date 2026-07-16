@@ -42,6 +42,7 @@ type LogSummary = {
     active: number
     optimal: number
     auto: number
+    trend: number
   }
   
   strategyCounts?: {
@@ -123,7 +124,8 @@ export function ConnectionLogDialog({ open, onOpenChange, connectionId, connecti
           move: data.progressionState?.indicationEvaluatedMove || 0,
           active: data.progressionState?.indicationEvaluatedActive || 0,
           optimal: data.progressionState?.indicationEvaluatedOptimal || 0,
-          auto: data.progressionState?.indicationsCount || 0
+          auto: data.progressionState?.indicationsCount || 0,
+          trend: data.progressionState?.indicationEvaluatedTrend || 0,
         },
         
         strategyCounts: {

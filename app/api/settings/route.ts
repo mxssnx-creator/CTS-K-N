@@ -173,6 +173,16 @@ function getDefaultSettings(): Record<string, any> {
     dcaCooldownSeconds: DEFAULT_DCA_PROFILE.cooldownSeconds,
     positionCost: POSITION_COST_MIN_PERCENT,
     exchangePositionCost: POSITION_COST_MIN_PERCENT,
+    trendEnabled: true,
+    trendTimeframesMinutes: [1, 3, 5, 10, 15, 30],
+    trendDrawdownValues: [-1, -2, -3],
+    trendLastSituationRatios: [0.5, 1],
+    trendActiveSituationRatios: [0.5, 1],
+    trendMinAgreement: 0.6,
+    trendTpMinMultiplier: 2,
+    trendTpMaxFactor: 10,
+    trendTpStep: 1,
+    databaseSizeTrend: 250,
   }
   }
 

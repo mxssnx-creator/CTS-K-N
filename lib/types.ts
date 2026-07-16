@@ -53,7 +53,7 @@ export interface PseudoPosition {
   connection_id: string
   symbol: string
   direction?: "long" | "short"
-  indication_type: "direction" | "move" | "active" | "optimal" | "auto" // auto is new advanced type
+  indication_type: "direction" | "move" | "active" | "optimal" | "auto" | "trend"
   takeprofit_factor: number
   stoploss_ratio: number
   trailing_enabled: boolean
@@ -129,7 +129,7 @@ export interface RealPosition {
   opened_at: string
   closed_at?: string
 
-  indication_type?: "direction" | "move" | "active" | "optimal" | "auto"
+  indication_type?: "direction" | "move" | "active" | "optimal" | "auto" | "trend"
   indication_range?: number
   indication_interval?: number
   strategy_interval?: number
@@ -159,7 +159,7 @@ export interface TradingPosition extends RealPosition {
   volume_factor?: number
   base_volume?: number // Base volume before factor adjustment
   adjusted_volume?: number // Volume after applying volume_factor
-  indication_type?: "direction" | "move" | "active" | "optimal" | "auto" // Renamed active_advanced to auto
+  indication_type?: "direction" | "move" | "active" | "optimal" | "auto" | "trend"
 
   entry_timestamp?: string
   last_update_timestamp?: string
@@ -169,7 +169,7 @@ export interface TradingPosition extends RealPosition {
 }
 
 export interface IndicationConfig {
-  type: "direction" | "move" | "active" | "optimal" | "auto" // Renamed active_advanced to auto
+  type: "direction" | "move" | "active" | "optimal" | "auto" | "trend"
   range: number // 2-30 step 1 (for direction and move), 1-10 step 1 (for active)
   drawdown_ratio?: number // 0.1, 0.2, 0.3, 0.4, 0.5 step 0.1 (5 variations)
   price_change_ratio?: number // 0.1-1.0 for direction/move
@@ -670,7 +670,7 @@ export interface BasePseudoPosition {
   id: string
   symbol: string
   connection_id: string
-  indication_type: "direction" | "move" | "active" | "optimal" | "auto" // Renamed active_advanced to auto
+  indication_type: "direction" | "move" | "active" | "optimal" | "auto" | "trend"
   indication_range: number
   direction: "long" | "short"
 

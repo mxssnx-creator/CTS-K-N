@@ -1,19 +1,33 @@
 /**
  * Indication State Manager
  * Manages step-based indication calculations for Main System Trade mode
- * Implements: direction (2-30), move (2-30), active (0.5-2.5%), optimal (advanced) types
+ * Implements: direction (2-30), move (2-30), active (0.5-2.5%),
+ * optimal (advanced), active-advanced, and Trend (kept last) types
  * With validation timeout (15s) and position cooldown (20s)
  */
 
-import { getSettings, setSettings, getAppSetting } from "@/lib/redis-db"
-import { BasePseudoPositionManager } from "./base-pseudo-position-manager"
+import { getSettings, setSettings, getAppSetting, getAppSettings } from "@/lib/redis-db"
+import { BasePseudoPositionManager, type BasePositionConfig } from "./base-pseudo-position-manager"
 import { DataCleanupManager } from "./data-cleanup-manager"
 import { logProgressionEvent } from "./engine-progression-logs"
 import { buildStopLossRatios, DEFAULT_MAX_STOP_LOSS_RATIO } from "@/lib/stoploss-ratio-range"
+import {
+  buildAdaptiveTrendTpRange,
+  calculateTrendSignal,
+  DEFAULT_TREND_ACTIVE_SITUATION_RATIOS,
+  DEFAULT_TREND_DRAWDOWN_FACTORS,
+  DEFAULT_TREND_LAST_SITUATION_RATIOS,
+  DEFAULT_TREND_MIN_AGREEMENT,
+  DEFAULT_TREND_TIMEFRAMES_MINUTES,
+  DEFAULT_TREND_TP_MAX_FACTOR,
+  DEFAULT_TREND_TP_MIN_MULTIPLIER,
+  DEFAULT_TREND_TP_STEP,
+  type TrendSignal,
+} from "@/lib/trend-indication"
 
 export interface IndicationState {
   symbol: string
-  type: "direction" | "move" | "active" | "optimal" | "active_advanced" // Added active_advanced type
+  type: "direction" | "move" | "active" | "optimal" | "active_advanced" | "trend"
   range: number | null
   lastValidated: Date | null
   lastPositionClosed: Date | null
@@ -27,6 +41,19 @@ export class IndicationStateManager {
   private validationTimeout = 15 // seconds
   private positionCooldown = 20 // seconds
   private maxPositionsPerConfig = 1
+  private trendEnabled = true
+  private trendTimeframesMinutes: number[] = [...DEFAULT_TREND_TIMEFRAMES_MINUTES]
+  private trendDrawdownFactors: number[] = [...DEFAULT_TREND_DRAWDOWN_FACTORS]
+  private trendLastSituationRatios: number[] = [...DEFAULT_TREND_LAST_SITUATION_RATIOS]
+  private trendActiveSituationRatios: number[] = [...DEFAULT_TREND_ACTIVE_SITUATION_RATIOS]
+  private trendMinAgreement = DEFAULT_TREND_MIN_AGREEMENT
+  private trendPositionCostPct = 0.02
+  private trendTpMinMultiplier = DEFAULT_TREND_TP_MIN_MULTIPLIER
+  private trendTpMaxFactor = DEFAULT_TREND_TP_MAX_FACTOR
+  private trendTpStep = DEFAULT_TREND_TP_STEP
+  private settingsLoadedAt = 0
+  private readonly SETTINGS_CACHE_TTL = 1_000
+  private settingsRefreshPromise: Promise<void> | null = null
 
   // Performance optimization: Cache and batch processing
   private priceCache: Map<string, { price: number; timestamp: number }> = new Map()
@@ -36,8 +63,10 @@ export class IndicationStateManager {
   // on every range in the batch loop (up to 29 sequential reads per cycle).
   private positionsCache: Map<string, { positions: any[]; ts: number }> = new Map()
   private readonly POSITIONS_CACHE_TTL = 500 // 500 ms — refreshed each processing cycle
+  private positionAppendQueues: Map<string, Promise<void>> = new Map()
 
   private basePseudoManager: BasePseudoPositionManager
+  private readonly settingsReady: Promise<void>
 
 
   private async getStopLossRatios(): Promise<number[]> {
@@ -53,13 +82,16 @@ export class IndicationStateManager {
   constructor(connectionId: string) {
     this.connectionId = connectionId
     this.basePseudoManager = new BasePseudoPositionManager(connectionId)
-    this.loadSettings()
+    this.settingsReady = this.loadSettings()
   }
 
   private async loadSettings(): Promise<void> {
     try {
       // Load settings from Redis instead of SQL
-      const indicationSettings = await getSettings("indication_settings")
+      const [indicationSettings, appSettings] = await Promise.all([
+        getSettings("indication_settings"),
+        getAppSettings(),
+      ])
       
       if (indicationSettings) {
         this.validationTimeout = Number.parseInt(String(indicationSettings.validationTimeout || "15"))
@@ -79,6 +111,43 @@ export class IndicationStateManager {
         )
       }
 
+      const settings = appSettings || {}
+      this.trendEnabled = settings.trendEnabled !== false && settings.trendEnabled !== "false"
+      const parsedTrendTimeframes = this.parseNumericList(
+        settings.trendTimeframesMinutes,
+        this.trendTimeframesMinutes,
+      ).map((value) => Math.round(value)).filter((value) => value >= 1 && value <= 60)
+      this.trendTimeframesMinutes = parsedTrendTimeframes.length > 0
+        ? Array.from(new Set(parsedTrendTimeframes)).sort((left, right) => left - right)
+        : [...DEFAULT_TREND_TIMEFRAMES_MINUTES]
+      const parsedTrendDrawdowns = this.parseNumericList(
+        settings.trendDrawdownValues ?? settings.trendDrawdownFactors,
+        this.trendDrawdownFactors,
+      ).map((value) => value > 0 ? -value : value).filter((value) => value < 0)
+      this.trendDrawdownFactors = parsedTrendDrawdowns.length > 0
+        ? Array.from(new Set(parsedTrendDrawdowns)).sort((left, right) => right - left)
+        : [...DEFAULT_TREND_DRAWDOWN_FACTORS]
+      const parsedTrendLastRatios = this.parseNumericList(
+        settings.trendLastSituationRatios,
+        this.trendLastSituationRatios,
+      ).filter((value) => value > 0)
+      this.trendLastSituationRatios = parsedTrendLastRatios.length > 0
+        ? Array.from(new Set(parsedTrendLastRatios))
+        : [...DEFAULT_TREND_LAST_SITUATION_RATIOS]
+      const parsedTrendActiveRatios = this.parseNumericList(
+        settings.trendActiveSituationRatios,
+        this.trendActiveSituationRatios,
+      ).filter((value) => value > 0)
+      this.trendActiveSituationRatios = parsedTrendActiveRatios.length > 0
+        ? Array.from(new Set(parsedTrendActiveRatios))
+        : [...DEFAULT_TREND_ACTIVE_SITUATION_RATIOS]
+      this.trendMinAgreement = Math.max(0.5, Math.min(1, Number(settings.trendMinAgreement) || this.trendMinAgreement))
+      this.trendPositionCostPct = Math.max(0.000001, Number(settings.positionCost) || this.trendPositionCostPct)
+      this.trendTpMinMultiplier = Math.max(0.1, Number(settings.trendTpMinMultiplier) || this.trendTpMinMultiplier)
+      this.trendTpMaxFactor = Math.max(0.1, Number(settings.trendTpMaxFactor) || this.trendTpMaxFactor)
+      this.trendTpStep = Math.max(0.01, Number(settings.trendTpStep) || this.trendTpStep)
+      this.settingsLoadedAt = Date.now()
+
       console.log(
         `[v0] Loaded indication settings: validation=${this.validationTimeout}s, cooldown=${this.positionCooldown}s, maxPerConfig=${this.maxPositionsPerConfig}`,
       )
@@ -88,6 +157,64 @@ export class IndicationStateManager {
       this.validationTimeout = 15
       this.positionCooldown = 0.1
       this.maxPositionsPerConfig = 1
+      this.settingsLoadedAt = Date.now()
+    }
+  }
+
+  private parseNumericList(raw: any, fallback: number[]): number[] {
+    let values: unknown[] = []
+    if (Array.isArray(raw)) {
+      values = raw
+    } else if (typeof raw === "string") {
+      try {
+        const parsed = JSON.parse(raw)
+        values = Array.isArray(parsed) ? parsed : raw.split(",")
+      } catch {
+        values = raw.split(",")
+      }
+    } else {
+      values = fallback
+    }
+    const parsed = values.map(Number).filter((value: number) => Number.isFinite(value))
+    return parsed.length > 0 ? Array.from(new Set(parsed)) : fallback
+  }
+
+  private async refreshSettingsIfNeeded(): Promise<void> {
+    await this.settingsReady
+    if (Date.now() - this.settingsLoadedAt < this.SETTINGS_CACHE_TTL) return
+
+    // Twelve symbols commonly enter this path together. Coalesce their
+    // settings refresh into one read pair so an instant reconfiguration does
+    // not create a burst of duplicate Redis traffic on the hot path.
+    if (!this.settingsRefreshPromise) {
+      this.settingsRefreshPromise = this.loadSettings().finally(() => {
+        this.settingsRefreshPromise = null
+      })
+    }
+    await this.settingsRefreshPromise
+  }
+
+  /** Serialize read/append/write mutations per position pool to prevent lost
+   * updates when several ranges or activity windows qualify in parallel. */
+  private async appendPositions(positionKey: string, entries: any[]): Promise<void> {
+    if (entries.length === 0) return
+
+    const previous = this.positionAppendQueues.get(positionKey) ?? Promise.resolve()
+    const operation = previous.catch(() => undefined).then(async () => {
+      const raw = (await getSettings(positionKey)) as any[]
+      const current = Array.isArray(raw) ? raw : []
+      const combined = [...current, ...entries]
+      await setSettings(positionKey, combined)
+      this.positionsCache.set(positionKey, { positions: combined, ts: Date.now() })
+    })
+    this.positionAppendQueues.set(positionKey, operation)
+
+    try {
+      await operation
+    } finally {
+      if (this.positionAppendQueues.get(positionKey) === operation) {
+        this.positionAppendQueues.delete(positionKey)
+      }
     }
   }
 
@@ -123,6 +250,7 @@ export class IndicationStateManager {
    */
   private async executeIndicationProcessing(symbol: string): Promise<void> {
     const startTime = Date.now()
+    await this.refreshSettingsIfNeeded()
     
     // Log start of indication processing
     await logProgressionEvent(this.connectionId, "indications_processing", "info", `Processing all indication types for ${symbol}`, {
@@ -147,10 +275,11 @@ export class IndicationStateManager {
       this.processActiveIndications(symbol, currentPrice),
       this.processOptimalIndications(symbol, currentPrice, minRange, maxRange),
       this.processActiveAdvancedIndications(symbol, currentPrice),
+      this.processTrendIndications(symbol, currentPrice),
     ])
 
     // Log results for each type
-    const types = ["direction", "move", "active", "optimal", "active_advanced"]
+    const types = ["direction", "move", "active", "optimal", "active_advanced", "trend"]
     let totalIndications = 0
     let totalPositions = 0
     
@@ -264,9 +393,13 @@ export class IndicationStateManager {
     threshold: number | null,
     timeWindow: number | null,
     lastPartRatio: number | null,
+    direction: "long" | "short" | null = null,
+    activeSituationRatio: number | null = null,
   ): Promise<boolean> {
     try {
-      const positionsKey = `positions:${this.connectionId}:${symbol}:${type}`
+      const positionsKey = type === "active_advanced"
+        ? `positions_advanced:${this.connectionId}:${symbol}`
+        : `positions:${this.connectionId}:${symbol}:${type}`
       // Use the in-memory cache to avoid re-reading the same Redis key on every
       // range in the inner batch loop (up to 29 reads per direction/move cycle).
       const now = Date.now()
@@ -284,6 +417,9 @@ export class IndicationStateManager {
         if (range !== null && pos.indication_range !== range) continue
         if (threshold !== null && pos.activity_ratio !== threshold) continue
         if (timeWindow !== null && pos.time_window !== timeWindow) continue
+        if (lastPartRatio !== null && pos.last_part_ratio !== lastPartRatio) continue
+        if (direction !== null && pos.direction !== direction) continue
+        if (activeSituationRatio !== null && pos.active_situation_ratio !== activeSituationRatio) continue
         activeCount++
       }
 
@@ -543,6 +679,220 @@ export class IndicationStateManager {
   }
 
   /**
+   * Trend Type (kept last): coordinated 1/3/5/10/15/30-minute calculations
+   * across independent negative-drawdown, recent-situation and active-market
+   * configurations. The strongest passing configuration in each timeframe is
+   * materialised into Base pseudo positions; every passing combination is
+   * still retained independently by IndicationSetsProcessor.
+   */
+  private async processTrendIndications(
+    symbol: string,
+    currentPrice: number,
+  ): Promise<{ indications: number; positions: number } | void> {
+    if (!this.trendEnabled) return { indications: 0, positions: 0 }
+
+    const pricesKey = `market_prices:${this.connectionId}:${symbol}`
+    const historicalPrices = ((await getSettings(pricesKey)) as any[]) || []
+    const prices = this.normalizeTrendPricesOldestFirst(historicalPrices, currentPrice)
+    const largestWindow = Math.max(...this.trendTimeframesMinutes)
+    if (prices.length < largestWindow + 1) return { indications: 0, positions: 0 }
+
+    const adaptiveTpRange = buildAdaptiveTrendTpRange({
+      pricesOldestFirst: prices,
+      positionCostPct: this.trendPositionCostPct,
+      minMultiplier: this.trendTpMinMultiplier,
+      maxFactor: this.trendTpMaxFactor,
+      step: this.trendTpStep,
+      averageWindowMinutes: largestWindow,
+    })
+
+    let indicationCount = 0
+    let positionCount = 0
+    for (const timeframeMinutes of this.trendTimeframesMinutes) {
+      let best: {
+        signal: TrendSignal
+        drawdownFactor: number
+        lastSituationRatio: number
+        activeSituationRatio: number
+      } | null = null
+
+      for (const drawdownFactor of this.trendDrawdownFactors) {
+        for (const lastSituationRatio of this.trendLastSituationRatios) {
+          for (const activeSituationRatio of this.trendActiveSituationRatios) {
+            const signal = calculateTrendSignal(prices, {
+              timeframeMinutes,
+              drawdownFactor,
+              lastSituationRatio,
+              activeSituationRatio,
+              positionCostPct: this.trendPositionCostPct,
+              minAgreement: this.trendMinAgreement,
+            })
+            if (!signal || (best && signal.signalScore <= best.signal.signalScore)) continue
+            best = { signal, drawdownFactor, lastSituationRatio, activeSituationRatio }
+          }
+        }
+      }
+
+      if (!best) continue
+      const stateKey =
+        `${symbol}-trend-${timeframeMinutes}-${best.drawdownFactor}` +
+        `-${best.lastSituationRatio}-${best.activeSituationRatio}-${best.signal.direction}`
+      if (!(await this.canCreateIndication(stateKey))) continue
+      if (!(await this.canCreatePosition(
+        symbol,
+        "trend",
+        timeframeMinutes,
+        Math.abs(best.drawdownFactor),
+        timeframeMinutes,
+        best.lastSituationRatio,
+        best.signal.direction,
+        best.activeSituationRatio,
+      ))) continue
+
+      indicationCount++
+      positionCount += await this.createTrendBasePseudoPositions(
+        symbol,
+        currentPrice,
+        timeframeMinutes,
+        best,
+        adaptiveTpRange,
+      )
+      await this.updateIndicationState(stateKey)
+    }
+
+    return { indications: indicationCount, positions: positionCount }
+  }
+
+  private normalizeTrendPricesOldestFirst(historicalPrices: any[], currentPrice: number): number[] {
+    const rows = historicalPrices
+      .map((entry: any, index: number) => {
+        const rawPrice = typeof entry === "number" ? entry : entry?.price ?? entry?.close
+        const price = Number(rawPrice)
+        const rawTimestamp = entry?.timestamp ?? entry?.time
+        const numericTimestamp = Number(rawTimestamp)
+        const timestamp = Number.isFinite(numericTimestamp) && numericTimestamp > 0
+          ? numericTimestamp < 10_000_000_000 ? numericTimestamp * 1000 : numericTimestamp
+          : Date.parse(String(rawTimestamp ?? ""))
+        return Number.isFinite(price) && price > 0
+          ? { price, timestamp: Number.isFinite(timestamp) ? timestamp : null, index }
+          : null
+      })
+      .filter((entry): entry is { price: number; timestamp: number | null; index: number } => entry !== null)
+
+    const allTimestamped = rows.length > 0 && rows.every((entry) => entry.timestamp !== null)
+    const prices = allTimestamped
+      ? rows.slice().sort((left, right) => Number(left.timestamp) - Number(right.timestamp)).map((entry) => entry.price)
+      : rows.slice().reverse().map((entry) => entry.price)
+
+    if (Number.isFinite(currentPrice) && currentPrice > 0) {
+      const latest = prices[prices.length - 1]
+      if (!latest || Math.abs(latest - currentPrice) / currentPrice > 1e-10) prices.push(currentPrice)
+    }
+    return prices.slice(-61)
+  }
+
+  private async createTrendBasePseudoPositions(
+    symbol: string,
+    entryPrice: number,
+    timeframeMinutes: number,
+    best: {
+      signal: TrendSignal
+      drawdownFactor: number
+      lastSituationRatio: number
+      activeSituationRatio: number
+    },
+    adaptiveTpRange: ReturnType<typeof buildAdaptiveTrendTpRange>,
+  ): Promise<number> {
+    const allStopLossRatios = await this.getStopLossRatios()
+    const middleIndex = Math.floor((allStopLossRatios.length - 1) / 2)
+    const stopLossRatios = Array.from(new Set([
+      allStopLossRatios[0],
+      allStopLossRatios[middleIndex],
+      allStopLossRatios[allStopLossRatios.length - 1],
+    ].filter((value): value is number => Number.isFinite(value))))
+    const trailingOptions = [
+      { enabled: false, start: null, stop: null },
+      { enabled: true, start: 0.6, stop: 0.2 },
+    ]
+    const positionsKey = `positions:${this.connectionId}:${symbol}:trend`
+    const newPositions: any[] = []
+    const now = new Date().toISOString()
+    const baseConfigs: BasePositionConfig[] = []
+
+    for (const takeprofitFactor of adaptiveTpRange.factors) {
+      for (const stoplossRatio of stopLossRatios) {
+        for (const trailing of trailingOptions) {
+          baseConfigs.push({
+            symbol,
+            indicationType: "trend",
+            range: timeframeMinutes,
+            direction: best.signal.direction,
+            tpFactor: takeprofitFactor,
+            slRatio: stoplossRatio,
+            trailingEnabled: trailing.enabled,
+            trailStart: trailing.start,
+            trailStop: trailing.stop,
+            drawdownRatio: best.drawdownFactor,
+            marketChangeRange: timeframeMinutes,
+            lastPartRatio: best.lastSituationRatio,
+            activeSituationRatio: best.activeSituationRatio,
+          })
+        }
+      }
+    }
+
+    const basePositionIds = await this.basePseudoManager.getOrCreateEligibleBasePositions(baseConfigs)
+    baseConfigs.forEach((config, index) => {
+      const basePositionId = basePositionIds[index]
+      if (!basePositionId) return
+      newPositions.push({
+        connection_id: this.connectionId,
+        symbol,
+        indication_type: "trend",
+        indication_range: timeframeMinutes,
+        time_window: timeframeMinutes,
+        activity_ratio: Math.abs(best.drawdownFactor),
+        takeprofit_factor: config.tpFactor,
+        stoploss_ratio: config.slRatio,
+        trailing_enabled: config.trailingEnabled,
+        trail_start: config.trailStart,
+        trail_stop: config.trailStop,
+        entry_price: entryPrice,
+        current_price: entryPrice,
+        direction: best.signal.direction,
+        status: "active",
+        base_position_id: basePositionId,
+        position_level: 1,
+        drawdown_ratio: best.drawdownFactor,
+        last_part_ratio: best.lastSituationRatio,
+        active_situation_ratio: best.activeSituationRatio,
+        trend_metrics: best.signal.metadata,
+        adaptive_tp_range: adaptiveTpRange,
+        created_at: now,
+      })
+    })
+
+    if (newPositions.length > 0) {
+      await this.appendPositions(positionsKey, newPositions)
+      await logProgressionEvent(
+        this.connectionId,
+        "base_pseudo_created",
+        "info",
+        `Created ${newPositions.length} adaptive Trend base pseudo positions for ${symbol}`,
+        {
+          symbol,
+          indicationType: "trend",
+          direction: best.signal.direction,
+          timeframeMinutes,
+          adaptiveTpRange,
+          createdCount: newPositions.length,
+        },
+      )
+    }
+    return newPositions.length
+  }
+
+  /**
    * Evaluate Active Advanced indication with market change calculations
    */
   private async evaluateActiveAdvanced(
@@ -704,41 +1054,45 @@ export class IndicationStateManager {
       // Read once, collect all new entries, write once.
       // Previous impl: read+write inside the inner loop — O(N) round-trips.
       const advancedKey = `positions_advanced:${this.connectionId}:${symbol}`
-      const existingAdvanced = ((await getSettings(advancedKey)) as any[]) || []
       const newAdvanced: any[] = []
       const now = new Date().toISOString()
+      const baseConfigs: BasePositionConfig[] = []
 
       for (const tpFactor of tpFactors) {
         for (const slRatio of slRatios) {
           for (const trailingConfig of trailingOptions) {
-            const basePositionId = await this.basePseudoManager.getOrCreateBasePosition(
+            baseConfigs.push({
               symbol,
-              "active_advanced",
-              activityRatio,
+              indicationType: "active_advanced",
+              range: activityRatio,
               direction,
               tpFactor,
               slRatio,
-              trailingConfig.enabled,
-              trailingConfig.start,
-              trailingConfig.stop,
-              metrics.drawdown / 100,
-              timeWindow,
-              metrics.continuationRatio,
-            )
+              trailingEnabled: trailingConfig.enabled,
+              trailStart: trailingConfig.start,
+              trailStop: trailingConfig.stop,
+              drawdownRatio: metrics.drawdown / 100,
+              marketChangeRange: timeWindow,
+              lastPartRatio: metrics.continuationRatio,
+            })
+          }
+        }
+      }
 
-            if (!basePositionId) continue
-            if (!(await this.basePseudoManager.canCreatePosition(basePositionId))) continue
-
-            newAdvanced.push({
+      const basePositionIds = await this.basePseudoManager.getOrCreateEligibleBasePositions(baseConfigs)
+      baseConfigs.forEach((config, index) => {
+        const basePositionId = basePositionIds[index]
+        if (!basePositionId) return
+        newAdvanced.push({
               connection_id: this.connectionId,
               symbol,
               indication_type: "active_advanced",
               activity_ratio: activityRatio,
-              takeprofit_factor: tpFactor,
-              stoploss_ratio: slRatio,
-              trailing_enabled: trailingConfig.enabled,
-              trail_start: trailingConfig.start,
-              trail_stop: trailingConfig.stop,
+              takeprofit_factor: config.tpFactor,
+              stoploss_ratio: config.slRatio,
+              trailing_enabled: config.trailingEnabled,
+              trail_start: config.trailStart,
+              trail_stop: config.trailStop,
               entry_price: entryPrice,
               current_price: entryPrice,
               direction,
@@ -753,13 +1107,11 @@ export class IndicationStateManager {
               drawdown_ratio: metrics.drawdown / 100,
               continuation_ratio: metrics.continuationRatio,
               created_at: now,
-            })
-          }
-        }
-      }
+        })
+      })
 
       if (newAdvanced.length > 0) {
-        await setSettings(advancedKey, [...existingAdvanced, ...newAdvanced])
+        await this.appendPositions(advancedKey, newAdvanced)
       }
 
       const createdCount = newAdvanced.length
@@ -801,42 +1153,45 @@ export class IndicationStateManager {
       // Previous impl: read+write the positions list inside the inner loop —
       // O(N) round-trips where N = tpFactors × slRatios × trailing = up to 528.
       const positionsKey = `positions:${this.connectionId}:${symbol}:${indicationType}`
-      const existingPositions = ((await getSettings(positionsKey)) as any[]) || []
       const newPositions: any[] = []
       const now = new Date().toISOString()
+      const baseConfigs: BasePositionConfig[] = []
 
       for (const tpFactor of tpFactors) {
         for (const slRatio of slRatios) {
           for (const trailingConfig of trailingOptions) {
-            // Get or create base position for THIS SPECIFIC config
-            const basePositionId = await this.basePseudoManager.getOrCreateBasePosition(
+            baseConfigs.push({
               symbol,
               indicationType,
-              range || 0,
+              range: range || 0,
               direction,
               tpFactor,
               slRatio,
-              trailingConfig.enabled,
-              trailingConfig.start,
-              trailingConfig.stop,
-              0.3, // Default drawdown for non-optimal
-              range || 3, // Use range as market change
-              1.5, // Default last part ratio
-            )
+              trailingEnabled: trailingConfig.enabled,
+              trailStart: trailingConfig.start,
+              trailStop: trailingConfig.stop,
+              drawdownRatio: 0.3,
+              marketChangeRange: range || 3,
+              lastPartRatio: 1.5,
+            })
+          }
+        }
+      }
 
-            if (!basePositionId) continue
-            if (!(await this.basePseudoManager.canCreatePosition(basePositionId))) continue
-
-            newPositions.push({
+      const basePositionIds = await this.basePseudoManager.getOrCreateEligibleBasePositions(baseConfigs)
+      baseConfigs.forEach((config, index) => {
+        const basePositionId = basePositionIds[index]
+        if (!basePositionId) return
+        newPositions.push({
               connection_id: this.connectionId,
               symbol,
               indication_type: indicationType,
               indication_range: range || 0,
-              takeprofit_factor: tpFactor,
-              stoploss_ratio: slRatio,
-              trailing_enabled: trailingConfig.enabled,
-              trail_start: trailingConfig.start,
-              trail_stop: trailingConfig.stop,
+              takeprofit_factor: config.tpFactor,
+              stoploss_ratio: config.slRatio,
+              trailing_enabled: config.trailingEnabled,
+              trail_start: config.trailStart,
+              trail_stop: config.trailStop,
               entry_price: entryPrice,
               current_price: entryPrice,
               direction,
@@ -844,14 +1199,12 @@ export class IndicationStateManager {
               base_position_id: basePositionId,
               position_level: 1,
               created_at: now,
-            })
-          }
-        }
-      }
+        })
+      })
 
       // Single write for all positions from this cycle.
       if (newPositions.length > 0) {
-        await setSettings(positionsKey, [...existingPositions, ...newPositions])
+        await this.appendPositions(positionsKey, newPositions)
       }
 
       const createdCount = newPositions.length

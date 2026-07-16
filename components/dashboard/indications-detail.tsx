@@ -50,7 +50,7 @@ export function IndicationsDetail({ connectionId }: { connectionId: string }) {
     )
   }
 
-  const types = ["direction", "move", "active", "active_advanced", "optimal", "auto"]
+  const types = ["direction", "move", "active", "active_advanced", "optimal", "auto", "trend"]
 
   return (
     <div className="flex flex-col gap-4">

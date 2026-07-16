@@ -63,7 +63,7 @@ export function IndicationFilters({ filters, onFiltersChange }: IndicationFilter
         <div className="space-y-2">
           <Label>Indication Types</Label>
           <div className="flex gap-2">
-            {["direction", "move", "active"].map((type) => (
+            {["direction", "move", "active", "optimal", "auto", "trend"].map((type) => (
               <Badge
                 key={type}
                 variant={filters.type.includes(type) ? "default" : "outline"}

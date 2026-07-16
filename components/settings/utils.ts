@@ -204,6 +204,19 @@ export const initialSettings: Settings = {
   simultaneousTrading: false,
   positionIncrementAfterSituation: false,
 
+  // Trend is the final Main indication type. Each configured tuple owns an
+  // independent Set; Base TP factors adapt to one-minute movement/PositionCost.
+  trendEnabled: true,
+  trendTimeframesMinutes: [1, 3, 5, 10, 15, 30],
+  trendDrawdownValues: [-1, -2, -3],
+  trendLastSituationRatios: [0.5, 1],
+  trendActiveSituationRatios: [0.5, 1],
+  trendMinAgreement: 0.6,
+  trendTpMinMultiplier: 2,
+  trendTpMaxFactor: 10,
+  trendTpStep: 1,
+  databaseSizeTrend: 250,
+
   // Common Indicators
   rsiEnabled: true, // Changed to true by default
   rsiPeriod: 14,

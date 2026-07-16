@@ -31,7 +31,7 @@ interface EngineStatus {
   summary?: {
     symbolsActive?: number
     prehistoricDataSize?: number
-    indicationTypes?: { direction?: number; move?: number; active?: number; optimal?: number; auto?: number; total?: number }
+    indicationTypes?: { direction?: number; move?: number; active?: number; optimal?: number; auto?: number; trend?: number; total?: number }
     strategyCounts?: { base?: number; main?: number; real?: number }
     realtimeCycles?: number
   }

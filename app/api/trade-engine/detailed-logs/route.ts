@@ -18,7 +18,7 @@ function isTruthy(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true"
 }
 
-const INDICATION_TYPES = ["direction", "move", "active", "optimal", "auto"] as const
+const INDICATION_TYPES = ["direction", "move", "active", "optimal", "auto", "trend"] as const
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -96,7 +96,7 @@ async function countIndicationsByType(client: ReturnType<typeof getRedisClient>,
       acc.total += item.count
       return acc
     },
-    { direction: 0, move: 0, active: 0, optimal: 0, auto: 0, total: 0 } as Record<string, number>,
+    { direction: 0, move: 0, active: 0, optimal: 0, auto: 0, trend: 0, total: 0 } as Record<string, number>,
   )
 
   if (result.total > 0) {
@@ -279,7 +279,7 @@ export async function GET(request: Request) {
             ? (state as any).active_symbols
             : []
 
-        const [indicationsByType, strategyCounts, strategyEvaluations, basePseudoCount, mainPseudoCount, realPseudoCount, baseDirection, baseMove, baseActive, baseOptimal, livePositionsCount, prehistoricSymbols, prehistoricDataKeys] =
+        const [indicationsByType, strategyCounts, strategyEvaluations, basePseudoCount, mainPseudoCount, realPseudoCount, baseDirection, baseMove, baseActive, baseOptimal, baseTrend, livePositionsCount, prehistoricSymbols, prehistoricDataKeys] =
           await Promise.all([
             countIndicationsByType(client, conn.id),
             countStrategiesByType(client, conn.id, symbols),
@@ -291,6 +291,7 @@ export async function GET(request: Request) {
             client.scard(`base_pseudo:${conn.id}:move`).catch(() => 0),
             client.scard(`base_pseudo:${conn.id}:active`).catch(() => 0),
             client.scard(`base_pseudo:${conn.id}:optimal`).catch(() => 0),
+            client.scard(`base_pseudo:${conn.id}:trend`).catch(() => 0),
             client.scard(`positions:${conn.id}:live`).catch(() => 0),
             client.scard(`prehistoric:${conn.id}:symbols`).catch(() => 0),
             client.keys(`prehistoric:${conn.id}:*`).then((keys) => keys.length).catch(() => 0),
@@ -334,6 +335,7 @@ export async function GET(request: Request) {
             move: baseMove,
             active: baseActive,
             optimal: baseOptimal,
+            trend: baseTrend,
           },
           livePositions: livePositionsCount,
           // Live exchange execution metrics sourced from the progression hash
@@ -382,10 +384,11 @@ export async function GET(request: Request) {
         acc.active += item.indicationsByType.active || 0
         acc.optimal += item.indicationsByType.optimal || 0
         acc.auto += item.indicationsByType.auto || 0
+        acc.trend += item.indicationsByType.trend || 0
         acc.total += item.indicationsByType.total || 0
         return acc
       },
-      { direction: 0, move: 0, active: 0, optimal: 0, auto: 0, total: 0 },
+      { direction: 0, move: 0, active: 0, optimal: 0, auto: 0, trend: 0, total: 0 },
     )
 
     const aggregatedStrategyCounts = perConnection.reduce(
@@ -511,9 +514,10 @@ export async function GET(request: Request) {
         acc.move += item.basePseudoByIndication.move
         acc.active += item.basePseudoByIndication.active
         acc.optimal += item.basePseudoByIndication.optimal
+        acc.trend += item.basePseudoByIndication.trend
         return acc
       },
-      { direction: 0, move: 0, active: 0, optimal: 0 },
+      { direction: 0, move: 0, active: 0, optimal: 0, trend: 0 },
     )
 
     const summary = {

@@ -69,7 +69,7 @@ function normaliseTimestamp(raw: string | number | undefined): string {
  * Primary path: the cron `generate-indications` writes Redis hashes:
  *   indications:{connId}:{type}:latest
  *   Fields: symbol, value, confidence, profitFactor, timestamp
- *   Known types: direction, move, active, optimal, auto
+ *   Known types: direction, move, active, optimal, auto, trend
  *   TTL: 1 hour
  *
  * Fallback: the legacy IndicationConfigManager keys if canonical hashes
@@ -84,7 +84,7 @@ async function getRealIndications(connectionId: string): Promise<Indication[]> {
     if (!client) return []
 
     // ── Primary path: canonical engine hashes ───────────────────────────────
-    const KNOWN_TYPES = ["direction", "move", "active", "optimal", "auto"]
+    const KNOWN_TYPES = ["direction", "move", "active", "optimal", "auto", "trend"]
     const canonicalKeys = KNOWN_TYPES.map((t) => `indications:${connectionId}:${t}:latest`)
 
     const hashes = await Promise.all(

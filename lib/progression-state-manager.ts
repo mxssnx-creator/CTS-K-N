@@ -40,6 +40,7 @@
  * ║      indications_direction_count        indications_move_count        ║
  * ║      indications_active_count           indications_active_advanced_count
  * ║      indications_optimal_count          indications_auto_count        ║
+ * ║      indications_trend_count                                         ║
  * ║      ▸ Adding a new type to `DEFAULT_LIMITS` in                        ║
  * ║        `lib/indication-sets-processor.ts` REQUIRES adding the counter  ║
  * ║        to (a) `ProgressionState`, (b) `getProgressionState` parser,    ║
@@ -142,6 +143,7 @@ export interface ProgressionState {
   indicationsActiveAdvancedCount?: number
   indicationsOptimalCount?: number
   indicationsAutoCount?: number
+  indicationsTrendCount?: number
   indicationsCount?: number
   
   // Strategy-set counters
@@ -221,6 +223,7 @@ export class ProgressionStateManager {
           "indications_direction_count", "indications_move_count",
           "indications_active_count", "indications_active_advanced_count",
           "indications_optimal_count", "indications_auto_count",
+          "indications_trend_count",
           "strategies_base_total", "strategies_main_total", "strategies_real_total",
           "strategies_base_evaluated", "strategies_main_evaluated", "strategies_real_evaluated",
           "indication_cycle_count", "indication_live_cycle_count",
@@ -290,6 +293,7 @@ export class ProgressionStateManager {
         indicationsActiveAdvancedCount: parseInt(data.indications_active_advanced_count || "0", 10),
         indicationsOptimalCount: parseInt(data.indications_optimal_count || "0", 10),
         indicationsAutoCount: parseInt(data.indications_auto_count || "0", 10),
+        indicationsTrendCount: parseInt(data.indications_trend_count || "0", 10),
         strategiesBaseTotal: parseInt(data.strategies_base_total || "0", 10),
         strategiesMainTotal: parseInt(data.strategies_main_total || "0", 10),
         strategiesRealTotal: parseInt(data.strategies_real_total || "0", 10),
@@ -925,6 +929,7 @@ export class ProgressionStateManager {
         indications_active_advanced_count: "0",
         indications_optimal_count: "0",
         indications_auto_count: "0",
+        indications_trend_count: "0",
         // Indication-Set aggregate counters — used by getIndicationTracking
         indications_count: "0",
         indication_sets_total: "0",

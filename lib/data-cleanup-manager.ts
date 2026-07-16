@@ -39,6 +39,7 @@ export class DataCleanupManager {
       case "move": return 30
       case "optimal": return 120
       case "active_advanced": return 90
+      case "trend": return 30
       default: return 60
     }
   }

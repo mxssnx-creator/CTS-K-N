@@ -192,6 +192,7 @@ const QUICKSTART_ZERO_COUNTERS: Record<string, string> = {
   indications_active_advanced_count: "0",
   indications_optimal_count: "0",
   indications_auto_count: "0",
+  indications_trend_count: "0",
   strategies_count: "0",
   strategies_base_total: "0",
   strategies_main_total: "0",
@@ -1454,6 +1455,7 @@ export async function POST(request: Request) {
       activeIndications,
       optimalIndications,
       autoIndications,
+      trendIndications,
       stratBase,
       stratMain,
       stratReal,
@@ -1471,6 +1473,7 @@ export async function POST(request: Request) {
       basePseudoMove,
       basePseudoActive,
       basePseudoOptimal,
+      basePseudoTrend,
     ] = await Promise.all([
       getSettings(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string,unknown>)),
       client.get(`indications:${connectionId}:count`).catch(() => null),
@@ -1482,6 +1485,7 @@ export async function POST(request: Request) {
       client.get(`indications:${connectionId}:active:count`).catch(() => null),
       client.get(`indications:${connectionId}:optimal:count`).catch(() => null),
       client.get(`indications:${connectionId}:auto:count`).catch(() => null),
+      client.get(`indications:${connectionId}:trend:count`).catch(() => null),
       client.get(`strategies:${connectionId}:base:count`).catch(() => null),
       client.get(`strategies:${connectionId}:main:count`).catch(() => null),
       client.get(`strategies:${connectionId}:real:count`).catch(() => null),
@@ -1500,6 +1504,7 @@ export async function POST(request: Request) {
       client.scard(`base_pseudo:${connectionId}:move`).catch(() => 0),
       client.scard(`base_pseudo:${connectionId}:active`).catch(() => 0),
       client.scard(`base_pseudo:${connectionId}:optimal`).catch(() => 0),
+      client.scard(`base_pseudo:${connectionId}:trend`).catch(() => 0),
     ])
 
     const safeEngineState = (engineState ?? {}) as Record<string, unknown>
@@ -1510,6 +1515,7 @@ export async function POST(request: Request) {
     const actInd  = toNumber(activeIndications)
     const optInd  = toNumber(optimalIndications)
     const autoInd = toNumber(autoIndications)
+    const trendInd = toNumber(trendIndications)
     const cycleDuration = Number(
       safeEngineState?.last_cycle_duration ||
       safeProgressionState?.last_cycle_duration ||
@@ -1542,7 +1548,8 @@ export async function POST(request: Request) {
         active: actInd,
         optimal: optInd,
         auto: autoInd,
-        total: indCount || dirInd + moveInd + actInd + optInd + autoInd,
+        trend: trendInd,
+        total: indCount || dirInd + moveInd + actInd + optInd + autoInd + trendInd,
       },
       strategyCounts,
       strategyEvaluated,
@@ -1553,6 +1560,7 @@ export async function POST(request: Request) {
           move: basePseudoMove,
           active: basePseudoActive,
           optimal: basePseudoOptimal,
+          trend: basePseudoTrend,
         },
         main: mainPseudoPositions,
         real: realPseudoPositions,
@@ -1568,7 +1576,7 @@ export async function POST(request: Request) {
     
     console.log(`${LOG_PREFIX}: === COMPREHENSIVE STATS ===`)
     console.log(`${LOG_PREFIX}: Symbols: ${symbols.length}, Prehistoric: ${prehistoricSymbols}`)
-    console.log(`${LOG_PREFIX}: Indications - Direction: ${dirInd}, Move: ${moveInd}, Active: ${actInd}, Optimal: ${optInd}`)
+    console.log(`${LOG_PREFIX}: Indications - Direction: ${dirInd}, Move: ${moveInd}, Active: ${actInd}, Optimal: ${optInd}, Auto: ${autoInd}, Trend: ${trendInd}`)
     console.log(`${LOG_PREFIX}: Pseudo Positions - Base: ${basePseudoPositions}, Main: ${mainPseudoPositions}, Real: ${realPseudoPositions}`)
     console.log(`${LOG_PREFIX}: Live Positions: ${livePositionsCount}, Cycle Duration: ${cycleDuration}ms`)
     
