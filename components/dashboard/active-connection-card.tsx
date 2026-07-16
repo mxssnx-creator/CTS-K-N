@@ -122,6 +122,47 @@ interface ActiveConnectionCardProps {
   globalEngineQueued?: boolean
 }
 
+interface RealVariantDetailStats {
+  positions: number
+  sets: number
+  avgProfitFactor: number
+  avgDrawdownTime: number
+  differencePercent?: number | null
+  ratioStep?: number
+  ratioLevel?: number | null
+  withoutStrategyPositions?: number
+  withStrategyPositions?: number
+  positionCountSource?: "confirmed-ledger" | "evaluation-fallback"
+}
+
+interface RealStagePositionDetailStats {
+  overall: {
+    positions: number
+    positionsWithHedge: number
+    hedgeReducedPositions: number
+    hedgedPairs: number
+    longPositions: number
+    shortPositions: number
+    hedgeOffsetPercent: number
+  }
+  strategyTypes: {
+    default: RealVariantDetailStats
+    trailing: RealVariantDetailStats
+  }
+  adjustTypes: {
+    block: RealVariantDetailStats
+    dca: RealVariantDetailStats
+  }
+  symbols: Array<{
+    symbol: string
+    longPositions: number
+    shortPositions: number
+    grossPositions: number
+    positionsWithHedge: number
+    hedgedPairs: number
+  }>
+}
+
 export function ActiveConnectionCard({
   connection,
   expanded,
@@ -265,6 +306,7 @@ export function ActiveConnectionCard({
     realOpen: number
     liveOpenPositions: number
     liveVolumeUsd: number
+    realPositionStats: RealStagePositionDetailStats | null
     // ── Per-symbol roll-ups (live exchange) ─────────────────────
     // `liveBySymbol`     — open positions grouped by symbol/direction.
     //                       Source: `openPositions.live.bySymbol` from /stats.
@@ -931,6 +973,9 @@ export function ActiveConnectionCard({
           liveVolumeUsd:         Number(data?.openPositions?.live?.marginUsd)
                                    || Number(data?.openPositions?.live?.volumeUsd)
                                    || 0,
+          realPositionStats:     sd.real?.positionStats && typeof sd.real.positionStats === "object"
+                                   ? sd.real.positionStats as RealStagePositionDetailStats
+                                   : null,
           // Per-symbol roll-ups (see type declaration above).
           liveBySymbol:          Array.isArray(data?.openPositions?.live?.bySymbol)
                                    ? data.openPositions.live.bySymbol
@@ -1788,6 +1833,7 @@ export function ActiveConnectionCard({
                       prehistoricStats.stratMain > 0 ||
                       prehistoricStats.stratReal > 0 ||
                       prehistoricStats.livePositionsCreated > 0 ||
+                      prehistoricStats.realPositionStats !== null ||
                       // Also surface the section during pure prehistoric
                       // processing — the historic PF aggregate is written
                       // even before any Set is "created" in the realtime
@@ -2000,6 +2046,94 @@ export function ActiveConnectionCard({
                             </div>
                           )
                         ))}
+                        {prehistoricStats.realPositionStats && (() => {
+                          const realDetail = prehistoricStats.realPositionStats
+                          const overall = realDetail.overall || {
+                            positions: 0,
+                            positionsWithHedge: 0,
+                            hedgeReducedPositions: 0,
+                            hedgedPairs: 0,
+                            longPositions: 0,
+                            shortPositions: 0,
+                            hedgeOffsetPercent: 0,
+                          }
+                          const emptyVariant: RealVariantDetailStats = {
+                            positions: 0,
+                            sets: 0,
+                            avgProfitFactor: 0,
+                            avgDrawdownTime: 0,
+                          }
+                          const variantRows = [
+                            { label: "Default", value: realDetail.strategyTypes?.default || emptyVariant, adjust: false },
+                            { label: "Trailing", value: realDetail.strategyTypes?.trailing || emptyVariant, adjust: false },
+                            { label: "Block", value: realDetail.adjustTypes?.block || emptyVariant, adjust: true },
+                            { label: "DCA", value: realDetail.adjustTypes?.dca || emptyVariant, adjust: true },
+                          ]
+                          const symbols = Array.isArray(realDetail.symbols) ? realDetail.symbols : []
+                          return (
+                            <div className="mt-1.5 space-y-2 rounded-lg border border-emerald-300/60 bg-emerald-50/55 p-2 dark:border-emerald-800/60 dark:bg-emerald-950/20">
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
+                                <span className="font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-300">Real position detail</span>
+                                <span className="text-muted-foreground">
+                                  Overall <strong className="text-foreground tabular-nums">{nonNegativeMetric(overall.positions).toLocaleString()}</strong>
+                                </span>
+                                <span className="text-muted-foreground">
+                                  with hedge <strong className="text-emerald-700 dark:text-emerald-300 tabular-nums">{nonNegativeMetric(overall.positionsWithHedge).toLocaleString()}</strong>
+                                </span>
+                                <span className="text-muted-foreground">
+                                  L <strong className="text-emerald-700 dark:text-emerald-300 tabular-nums">{nonNegativeMetric(overall.longPositions).toLocaleString()}</strong>
+                                  {" / "}S <strong className="text-rose-700 dark:text-rose-300 tabular-nums">{nonNegativeMetric(overall.shortPositions).toLocaleString()}</strong>
+                                </span>
+                                <span className="ml-auto text-muted-foreground">
+                                  offset <strong className="text-foreground tabular-nums">{nonNegativeMetric(overall.hedgeOffsetPercent).toFixed(1)}%</strong>
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
+                                {variantRows.map(({ label, value, adjust }) => {
+                                  const ratioAvailable = adjust && value.differencePercent !== null && value.differencePercent !== undefined && Number.isFinite(Number(value.differencePercent))
+                                  return (
+                                    <div key={label} className="rounded border border-border/70 bg-background/75 p-1.5 text-[9px]">
+                                      <div className="flex items-center justify-between gap-1">
+                                        <span className="font-semibold">{label}</span>
+                                        <span
+                                          className="text-muted-foreground tabular-nums"
+                                          title={value.positionCountSource === "evaluation-fallback" ? "Pre-ledger evaluation fallback" : "Idempotent confirmed positions"}
+                                        >
+                                          {nonNegativeMetric(value.positions).toLocaleString()} pos{value.positionCountSource === "evaluation-fallback" ? "*" : ""}
+                                        </span>
+                                      </div>
+                                      <div className="mt-0.5 flex flex-wrap gap-x-2 text-muted-foreground">
+                                        <span>PF <strong className="text-foreground">{nonNegativeMetric(value.avgProfitFactor) > 0 ? nonNegativeMetric(value.avgProfitFactor).toFixed(2) : "—"}</strong></span>
+                                        <span>DDT <strong className="text-foreground">{nonNegativeMetric(value.avgDrawdownTime) > 0 ? `${nonNegativeMetric(value.avgDrawdownTime).toFixed(0)}m` : "—"}</strong></span>
+                                      </div>
+                                      {adjust && (
+                                        <div className="mt-0.5 text-muted-foreground" title="Additional positions versus Default + Trailing, banded in 0.2 ratio steps.">
+                                          ratio <strong className="text-foreground tabular-nums">
+                                            {ratioAvailable
+                                              ? `+${nonNegativeMetric(value.differencePercent).toFixed(1)}% · 0.2→${nonNegativeMetric(value.ratioLevel).toFixed(1)}`
+                                              : "—"}
+                                          </strong>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                              {symbols.length > 0 && (
+                                <div className="flex flex-wrap gap-1" aria-label="Real positions by symbol and direction">
+                                  {symbols.slice(0, 12).map((symbol) => (
+                                    <span key={symbol.symbol} className="rounded border border-border/70 bg-background/75 px-1.5 py-0.5 text-[9px] text-muted-foreground">
+                                      <strong className="text-foreground">{symbol.symbol}</strong>{" "}
+                                      <span className="text-emerald-700 dark:text-emerald-300">L:{nonNegativeMetric(symbol.longPositions)}</span>{" "}
+                                      <span className="text-rose-700 dark:text-rose-300">S:{nonNegativeMetric(symbol.shortPositions)}</span>{" "}
+                                      <span>{nonNegativeMetric(symbol.grossPositions)}→{nonNegativeMetric(symbol.positionsWithHedge)}</span>
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })()}
                       </div>
                     )}
 

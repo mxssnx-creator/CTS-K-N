@@ -144,6 +144,27 @@ describe("Main Connections dashboard contracts", () => {
     expect(source).toContain("min-w-[650px]")
   })
 
+  test("Real stage surfaces hedge, variant, Adjust ratio, and symbol direction detail", () => {
+    const infoDialog = read("components/settings/connection-info-dialog.tsx")
+    const activeCard = read("components/dashboard/active-connection-card.tsx")
+    const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
+
+    for (const source of [infoDialog, activeCard]) {
+      expect(source).toContain("Real position detail")
+      expect(source).toContain("Default")
+      expect(source).toContain("Trailing")
+      expect(source).toContain("Block")
+      expect(source).toContain("DCA")
+    }
+    expect(infoDialog).toContain("Pos with hedge")
+    expect(infoDialog).toContain("Difference ratio")
+    expect(infoDialog).toContain("Symbols · Long / Short positions")
+    expect(activeCard).toContain('aria-label="Real positions by symbol and direction"')
+    expect(statsRoute).toContain("buildRealStagePositionStats")
+    expect(statsRoute).toContain("hasCompleteRealVariantPositionLedger")
+    expect(statsRoute).toContain("positionStats: realStagePositionStats")
+  })
+
   test("preset assignment reads and writes the canonical Redis connection", () => {
     const route = read("app/api/settings/connections/[id]/preset-type/route.ts")
     const recoordinator = read("lib/connection-recoordinator.ts")

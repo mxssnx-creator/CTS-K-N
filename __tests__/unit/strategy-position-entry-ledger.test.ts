@@ -50,12 +50,14 @@ describe("confirmed strategy-position entry ledger", () => {
       bySymbol: { BTCUSDT: 1 },
       byDirection: { long: 1, short: 0 },
       byType: { direction: 1 },
+      byVariant: { default: 1, trailing: 0, block: 0, dca: 0 },
     })
 
     const client = getRedisClient()
     expect(await client.hget(`strategy_set_entry_counts:${connectionId}`, input.setKey)).toBe("1")
     expect(await client.hget(`real_pi_acc:${connectionId}`, input.parentSetKey)).toBe("1")
     expect(await client.hget(`axis_pos_acc:${connectionId}`, `${input.parentSetKey}|${input.axisKey}`)).toBe("1")
+    expect(await client.hget(`valid_positions_v2:${connectionId}`, "by_variant:default")).toBe("1")
   })
 
   test("closing removes only active membership and preserves lifetime entries", async () => {

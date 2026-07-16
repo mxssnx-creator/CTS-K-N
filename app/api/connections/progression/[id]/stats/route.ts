@@ -6,6 +6,10 @@ import { getGlobalCoordinator } from "@/lib/trade-engine"
 import { normalizeSymbolList } from "@/lib/trade-engine/symbol-selection-ownership"
 import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
 import { loadClosedPositionSnapshots } from "@/lib/trade-history"
+import {
+  buildRealStagePositionStats,
+  hasCompleteRealVariantPositionLedger,
+} from "@/lib/strategy-real-stats"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -483,6 +487,7 @@ export async function GET(
       axisWindowsHashRaw,
       ordersBySymbolRaw,
       hedgePosAccHashRaw,
+      validPositionsHashRaw,
       strategyDetailBaseHashRaw,
       strategyDetailMainHashRaw,
       strategyDetailRealHashRaw,
@@ -530,6 +535,10 @@ export async function GET(
       // in the Real stage tuner loop. Fields: `{parentSetKey}:{long|short|sets_long|sets_short|ts}`
       // Consumed to surface long/short hedge breakdown per base Set in strategyDetail.real.
       client.hgetall(`hedge_pos_acc:${connectionId}`).catch(() => null),
+      // Idempotent, confirmed position-entry ledger. Unlike Real evaluation
+      // counters this increments once per accepted fill/pseudo position and is
+      // therefore the canonical source for detailed position counts.
+      client.hgetall(`valid_positions_v2:${connectionId}`).catch(() => null),
       // Per-symbol strategy detail for the Base stage (performance tier source).
       // Previously this hash was never fetched — buildSpecPerformance for "base"
       // was incorrectly reading from the Main hash, causing the dashboard's Base
@@ -569,6 +578,7 @@ export async function GET(
     const axisWindowsHash: Record<string, string> = (axisWindowsHashRaw as unknown as Record<string, string>) || {}
     const ordersBySymbolHash: Record<string, string> = (ordersBySymbolRaw as unknown as Record<string, string>) || {}
     const hedgePosAccHash: Record<string, string> = (hedgePosAccHashRaw as unknown as Record<string, string>) || {}
+    const validPositionsHash: Record<string, string> = (validPositionsHashRaw as unknown as Record<string, string>) || {}
     const strategyDetailBaseHash: Record<string, string> = (strategyDetailBaseHashRaw as Record<string, string>) || {}
     const strategyDetailMainHash: Record<string, string> = (strategyDetailMainHashRaw as Record<string, string>) || {}
     const strategyDetailRealHash: Record<string, string> = (strategyDetailRealHashRaw as Record<string, string>) || {}
@@ -1574,6 +1584,7 @@ export async function GET(
     // `strategyVariants`.
     const variantKeys = ["default", "trailing", "block", "dca"] as const
     const variantDetail: Record<string, Record<string, number>> = {}
+    const hasConfirmedVariantCounts = hasCompleteRealVariantPositionLedger(validPositionsHash)
     await Promise.all(
       variantKeys.map(async (variant) => {
         // CANONICAL SOURCE = `strategy_variant_real:` (cumulative via hincrby).
@@ -1596,18 +1607,23 @@ export async function GET(
         let avgPosPerSet       = parseFloat(h.avg_pos_per_set   || "0")
         if (!(avgPosPerSet > 0) && createdSets > 0)  avgPosPerSet    = entriesCount / createdSets
         let avgProfitFactor    = parseFloat(h.avg_profit_factor || "0")
-        // avgPF fallback: sumPfX1000 is the sum of each SET's PF×1000.
-        // Divide by createdSets (not entriesCount) to get the average PF per set.
-        // Dividing by entriesCount gave avg PF per entry (~0.6), which is wrong.
-        if (!(avgProfitFactor > 0) && createdSets > 0) avgProfitFactor = (sumPfX1000 / 1000) / createdSets
+        // sumPfX1000 / sumDdtX10 are entry-weighted at the Real writer.
+        // Divide by entriesCount, matching the writer's own recompute pass.
+        // The old createdSets denominator inflated PF/DDT whenever a Set
+        // contained multiple confirmed position slots.
+        if (!(avgProfitFactor > 0) && entriesCount > 0) avgProfitFactor = (sumPfX1000 / 1000) / entriesCount
         let avgDrawdownTime    = parseFloat(h.avg_drawdown_time || "0")
-        // Similarly: sumDdtX10 is sum of each SET's DDT×10; divide by createdSets.
-        if (!(avgDrawdownTime > 0) && createdSets > 0) avgDrawdownTime = (sumDdtX10 / 10) / createdSets
+        if (!(avgDrawdownTime > 0) && entriesCount > 0) avgDrawdownTime = (sumDdtX10 / 10) / entriesCount
         const passRateRaw      = parseFloat(h.pass_rate         || "0")
         variantDetail[variant] = {
           createdSets,
           passedSets,
           entriesCount,
+          // Confirmed, idempotent entries take precedence. Older runs that
+          // predate by_variant fields retain the evaluation-count fallback.
+          positionsCount: hasConfirmedVariantCounts
+            ? n(validPositionsHash[`by_variant:${variant}`])
+            : entriesCount,
           avgPosPerSet:     isFinite(avgPosPerSet)    ? Math.round(avgPosPerSet * 100) / 100      : 0,
           avgProfitFactor:  isFinite(avgProfitFactor) ? Math.round(avgProfitFactor * 1000) / 1000 : 0,
           avgDrawdownTime:  isFinite(avgDrawdownTime) ? Math.round(avgDrawdownTime * 10) / 10     : 0,
@@ -1640,6 +1656,7 @@ export async function GET(
       createdSets:    variantTotals.createdSets,
       passedSets:     variantTotals.passedSets,
       entriesCount:   variantTotals.entriesCount,
+      positionsCount: variantKeys.reduce((sum, variant) => sum + variantDetail[variant].positionsCount, 0),
       avgProfitFactor: variantTotals.weightSum > 0
         ? Math.round((variantTotals.weightedPF / variantTotals.weightSum) * 1000) / 1000
         : 0,
@@ -1650,6 +1667,18 @@ export async function GET(
         ? Math.round((variantTotals.passedSets / variantTotals.createdSets) * 1000) / 10
         : 0,
     }
+
+    const realStagePositionStats = buildRealStagePositionStats({
+      validPositionsHash,
+      hedgePosAccHash,
+      strategyVariants: {
+        default: variantDetail.default,
+        trailing: variantDetail.trailing,
+        block: variantDetail.block,
+        dca: variantDetail.dca,
+        overall: variantOverall,
+      },
+    })
 
     // ── STRATEGY DETAIL fields ───────────────────────────────────────────────
     // Per-stage avg positions per set, created sets, avg profit factor, avg processing time
@@ -1943,6 +1972,10 @@ export async function GET(
                   statAccumulated: n(dh.stat_accumulated),
                   statGeneral:     n(dh.stat_general) || stageEvaluated || stratCounts.real || 0,
                   statCombined:    n(dh.stat_combined) || setsRunningNow || stratCounts.real || 0,
+                  // Canonical, idempotent Real-position view: Overall before/
+                  // after related-Base hedge netting, Standard vs Trailing,
+                  // Adjust Block/DCA comparisons, and symbol long/short counts.
+                  positionStats: realStagePositionStats,
                   // ── Hedge pos-count accumulation (long/short per base Set) ──
                   hedgePosAcc: {
                     totalLongEntries:  hedgeTotalLong,
