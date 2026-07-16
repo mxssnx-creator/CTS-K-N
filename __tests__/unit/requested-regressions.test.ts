@@ -5,6 +5,13 @@ const repo = path.resolve(__dirname, "../..")
 const read = (file: string) => fs.readFileSync(path.join(repo, file), "utf8")
 
 describe("requested regression guardrails", () => {
+  test("progression dump remains explicitly enabled and admin authenticated", () => {
+    const source = read("app/api/debug/progression-dump/route.ts")
+    expect(source).toContain('process.env.REDIS_DEBUG_ENABLED !== "1"')
+    expect(source).toContain('authorizeAdminBearer(request.headers.get("authorization"))')
+    expect(source.indexOf("authorizeAdminBearer")).toBeLessThan(source.indexOf("await initRedis()"))
+  })
+
   test("progression stats preserve valid strategy fan-out and clamp only Live to Real", () => {
     const coordinator = read("lib/strategy-coordinator.ts")
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
@@ -885,6 +892,53 @@ describe("requested regression guardrails", () => {
     expect(previewRunner).toContain('process.env.NEXT_DIST_DIR || ".next-prod"')
     expect(previewRunner).toContain("NEXT_DIST_DIR: distDir")
     expect(previewRunner).toContain('existsSync(`${distDir}/BUILD_ID`)')
+    expect(previewRunner).toContain('ALLOW_PROD_SIMULATED: "1"')
+  })
+
+  test("12-symbol dev/prod soaks prove paper execution without live exchange requests", () => {
+    const pkg = JSON.parse(read("package.json"))
+    const soak = read("scripts/verify-prod-soak.mjs")
+    const devRunner = read("scripts/run-dev-preview-check.mjs")
+    const liveQuickstart = read("scripts/test-quickstart-3symbols.js")
+
+    expect(pkg.scripts["test:quickstart-12"]).toBe("node scripts/run-dev-preview-check.mjs")
+    expect(devRunner).toContain('RUNTIME_MODE: "development"')
+    expect(devRunner).toContain('BINGX_API_KEY: ""')
+    expect(soak).toContain("liveTrade: false")
+    expect(soak).toContain("is_live_trade: false")
+    expect(soak).toContain("realEvalPosCount: 1")
+    expect(soak).toContain("Paper position lifecycle was not exercised")
+    expect(soak).toContain("openPositions?.pseudo?.runningSets")
+    expect(soak).toContain('RUNTIME_MODE === "development" ? 1024 * 1024 : 512 * 1024')
+    expect(soak).toContain('memory.findIndex((sample) => sample.engineCycles > 0)')
+    expect(soak).toContain("A real exchange position appeared during safe paper soak")
+    expect(liveQuickstart).toContain('process.env.ALLOW_REAL_ORDER_TEST !== "1"')
+  })
+
+  test("engine history readiness is checked per configured symbol", () => {
+    const engine = read("lib/trade-engine/engine-manager.ts")
+    const indication = read("lib/trade-engine/indication-processor-fixed.ts")
+
+    expect(engine.match(/loadMarketDataForEngine\(symbols, \{ requireHistory: true \}\)/g)?.length).toBeGreaterThanOrEqual(3)
+    expect(indication).toContain("loadMarketDataForEngine([symbol], { requireHistory: true })")
+    expect(engine).not.toContain('client.get("market_data:BTCUSDT:1s")')
+  })
+
+  test("production pseudo-position updates use the active scoped progression epoch", () => {
+    const realtime = read("lib/trade-engine/realtime-processor.ts")
+
+    expect(realtime).toContain("const currentEpoch = await getCurrentEpoch(this.connectionId)")
+    expect(realtime).toContain("hincrbyProgressionBatch(this.connectionId")
+    expect(realtime).toContain("pseudo_positions_update_cycles: 1")
+    expect(realtime).toContain("Standalone/tests without a progression owner")
+  })
+
+  test("dense Real-stage cap warnings are throttled per symbol", () => {
+    const strategy = read("lib/strategy-coordinator.ts")
+
+    expect(strategy).toContain("function shouldLogRealCap")
+    expect(strategy).toContain("shouldLogRealCap(`early:${this.connectionId}:${symbol}`)")
+    expect(strategy).toContain("shouldLogRealCap(`fair:${this.connectionId}:${symbol}`)")
   })
 
   test("production status routes merge raw and settings-prefixed engine heartbeat state", () => {
@@ -1557,7 +1611,8 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("Engine ${this.connectionId} prehistoric bootstrap")
     expect(source).toContain("FIRST_PASS_GATE_FALLBACK_MS")
     expect(source).toContain("first-pass fallback opened live gates")
-    expect(source).toContain('client.set(`prehistoric:${connId}:done`, "1", { EX: 86400 })')
+    expect(source).toContain('writePrehistoricGate(client, connId, this.currentEngineType, "done")')
+    expect(source).toContain("schedulePrehistoricProgressionAfterRealtimeWarmup")
   })
 
   test("production cron route uses canonical ind-strat pipeline for all configured symbols", () => {

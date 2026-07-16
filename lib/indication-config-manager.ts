@@ -249,27 +249,25 @@ export class IndicationConfigManager {
     const activeRatioOptions = [0.6, 0.7, 0.8]
     const lastPartRatioOptions = [0.2, 0.3, 0.4]
 
-    // Build all config objects in memory first — no I/O yet.
+    // Build a balanced high-performance core: eight representative variants
+    // for each indication type. The old nested loop stopped globally at 100,
+    // so early types monopolised the universe and a 12-symbol cold start had
+    // to materialise thousands of redundant Set calculations before realtime
+    // could begin.
     const pending: Array<Omit<IndicationConfig, "connectionId" | "createdAt">> = []
     let idCounter = 1
-    outer: for (const type of types) {
-      for (const steps of stepsOptions) {
-        for (const drawdown of drawdownOptions) {
-          for (const activeRatio of activeRatioOptions) {
-            for (const lastPartRatio of lastPartRatioOptions) {
-              pending.push({
-                id: `ind_${this.connectionId}_${idCounter++}`,
-                steps,
-                drawdown_ratio: drawdown,
-                active_ratio: activeRatio,
-                last_part_ratio: lastPartRatio,
-                type,
-                enabled: true,
-              })
-              if (pending.length >= 100) break outer
-            }
-          }
-        }
+    const VARIANTS_PER_TYPE = 8
+    for (const type of types) {
+      for (let variant = 0; variant < VARIANTS_PER_TYPE; variant++) {
+        pending.push({
+          id: `ind_${this.connectionId}_${idCounter++}`,
+          steps: stepsOptions[variant % stepsOptions.length],
+          drawdown_ratio: drawdownOptions[variant % drawdownOptions.length],
+          active_ratio: activeRatioOptions[(variant + Math.floor(variant / 3)) % activeRatioOptions.length],
+          last_part_ratio: lastPartRatioOptions[(variant * 2) % lastPartRatioOptions.length],
+          type,
+          enabled: true,
+        })
       }
     }
 

@@ -120,9 +120,9 @@ function getDefaultSettings(): Record<string, any> {
     // Strategy pipeline ceilings. Seeded here so fresh installs expose the
     // same limits the coordinator enforces in production.
     strategyMaxEntriesPerSet: 250,
-    strategyMainAxisSetsCeiling: 50,
-    strategyRealSetsSafetyCeiling: 100,
-    maxRealSets: 100,
+    strategyMainAxisSetsCeiling: 20,
+    strategyRealSetsSafetyCeiling: 25,
+    maxRealSets: 25,
     strategyLiveSetsCeiling: 90,
     strategyBaseTrailingEnabled: true,
     strategyBaseTrailingVariants: DEFAULT_TRAILING_VARIANTS,

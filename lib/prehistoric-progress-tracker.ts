@@ -4,6 +4,7 @@
  */
 
 import { getRedisClient } from "@/lib/redis-db"
+import { buildPrehistoricGateKeys } from "@/lib/progression-scope"
 
 export interface PrehistoricProgress {
   connectionId: string
@@ -157,7 +158,7 @@ export class PrehistoricProgressTracker {
     const client = getRedisClient()
     if (!client) return
 
-    const doneKey = `prehistoric:${this.connectionId}:done`
+    const doneKeys = buildPrehistoricGateKeys(this.connectionId, "main", "done")
     let retries = 3
     let success = false
 
@@ -172,8 +173,10 @@ export class PrehistoricProgressTracker {
         })
         
         // Write the critical realtime gate flag — must be durable
-        await client.set(doneKey, "1")
-        await client.expire(doneKey, 86400) // 24h ttl
+        await Promise.all([
+          client.set(doneKeys.scoped, "1", { EX: 86400 }),
+          client.set(doneKeys.legacy, "1", { EX: 86400 }),
+        ])
         
         success = true
         if (process.env.NODE_ENV !== "test" && !process.env.JEST_WORKER_ID) {

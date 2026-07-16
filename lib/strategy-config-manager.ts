@@ -427,26 +427,22 @@ export class StrategyConfigManager {
     const takeprofitOptions = [0.01, 0.02, 0.05, 0.1]
     const stoplossOptions = [0.005, 0.01, 0.02, 0.05]
 
+    // Eight representative parameter combinations per strategy family keep
+    // Default/Block/DCA/Trailing coordination responsive without letting the
+    // first family monopolise a global 100-config cutoff.
+    const VARIANTS_PER_TYPE = 8
     for (const type of types) {
-      for (const posCostStep of positionCostSteps) {
-        for (const tp of takeprofitOptions) {
-          for (const sl of stoplossOptions) {
-            const config = await this.createConfig({
-              id: `strat_${this.connectionId}_${idCounter++}`,
-              position_cost_step: posCostStep,
-              takeprofit: tp,
-              stoploss: sl,
-              trailing: false,
-              type,
-              enabled: true,
-            })
-            configs.push(config)
-
-            if (configs.length >= 100) {
-              return configs
-            }
-          }
-        }
+      for (let variant = 0; variant < VARIANTS_PER_TYPE; variant++) {
+        const config = await this.createConfig({
+          id: `strat_${this.connectionId}_${idCounter++}`,
+          position_cost_step: positionCostSteps[variant % positionCostSteps.length],
+          takeprofit: takeprofitOptions[(variant + Math.floor(variant / 4)) % takeprofitOptions.length],
+          stoploss: stoplossOptions[(variant * 2 + Math.floor(variant / 4)) % stoplossOptions.length],
+          trailing: false,
+          type,
+          enabled: true,
+        })
+        configs.push(config)
       }
     }
 

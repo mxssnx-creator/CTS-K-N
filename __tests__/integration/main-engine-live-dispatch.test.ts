@@ -75,17 +75,25 @@ const fakeRedis = {
   },
 }
 
-const placeOrder = jest.fn(async () => ({
-  success: true,
-  orderId: "bingx-entry-1",
-  status: "filled",
-  filledQty: 0.01,
-  filledPrice: 100,
-}))
-const placeStopOrder = jest.fn(async (_symbol: string, _side: string, _quantity: number, _trigger: number, kind: string) => ({
-  success: true,
-  orderId: `bingx-${kind}-1`,
-}))
+let firstEntryRequestAt = 0
+let protectionRequestTimes: number[] = []
+const placeOrder = jest.fn(async (symbol: string) => {
+  if (firstEntryRequestAt === 0) firstEntryRequestAt = performance.now()
+  return {
+    success: true,
+    orderId: `bingx-entry-${symbol}`,
+    status: "filled",
+    filledQty: 0.01,
+    filledPrice: 100,
+  }
+})
+const placeStopOrder = jest.fn(async (symbol: string, _side: string, _quantity: number, _trigger: number, kind: string) => {
+  protectionRequestTimes.push(performance.now())
+  return {
+    success: true,
+    orderId: `bingx-${kind}-${symbol}`,
+  }
+})
 const applySelectedPresetToRealPosition = jest.fn(async (_connectionId: string, position: Record<string, any>) => ({
   ...position,
   stopLoss: 2,
@@ -188,6 +196,22 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     lists.clear()
     sets.clear()
     jest.clearAllMocks()
+    firstEntryRequestAt = 0
+    protectionRequestTimes = []
+    placeOrder.mockImplementation(async (symbol: string) => {
+      if (firstEntryRequestAt === 0) firstEntryRequestAt = performance.now()
+      return {
+        success: true,
+        orderId: `bingx-entry-${symbol}`,
+        status: "filled",
+        filledQty: 0.01,
+        filledPrice: 100,
+      }
+    })
+    placeStopOrder.mockImplementation(async (symbol: string, _side: string, _quantity: number, _trigger: number, kind: string) => {
+      protectionRequestTimes.push(performance.now())
+      return { success: true, orderId: `bingx-${kind}-${symbol}` }
+    })
     connection.is_live_trade = "1"
     connection.live_trade_requested = "1"
     connection.is_preset_trade = "0"
@@ -205,6 +229,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
 
   test("routes a qualifying Main real position to the exchange connector, not simulation", async () => {
     const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const dispatchStartedAt = performance.now()
     const result = await executeLivePosition(connection.id, {
       id: "real-main-1",
       connectionId: connection.id,
@@ -235,12 +260,56 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(result).toMatchObject({
       status: "open",
       executionMode: "live",
-      orderId: "bingx-entry-1",
+      orderId: "bingx-entry-BTCUSDT",
       executedQuantity: 0.01,
       averageExecutionPrice: 100,
     })
     expect(result.status).not.toBe("simulated")
     expect(placeStopOrder).toHaveBeenCalledTimes(2)
+    expect(firstEntryRequestAt - dispatchStartedAt).toBeLessThan(300)
+    expect(Math.max(...protectionRequestTimes) - dispatchStartedAt).toBeLessThan(1_000)
+    expect(performance.now() - dispatchStartedAt).toBeLessThan(1_000)
+  })
+
+  test("drains more than six simultaneous control-order legs without overlap or stranding", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    let activeStops = 0
+    let peakActiveStops = 0
+    const completedStops: string[] = []
+    placeStopOrder.mockImplementation(async (symbol: string, _side: string, _quantity: number, _trigger: number, kind: string) => {
+      protectionRequestTimes.push(performance.now())
+      activeStops++
+      peakActiveStops = Math.max(peakActiveStops, activeStops)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      completedStops.push(`${symbol}:${kind}`)
+      activeStops--
+      return { success: true, orderId: `bingx-${kind}-${symbol}` }
+    })
+
+    const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+    const startedAt = performance.now()
+    const results = await Promise.all(symbols.map((symbol, index) =>
+      executeLivePosition(connection.id, {
+        id: `real-burst-${index}`,
+        connectionId: connection.id,
+        symbol,
+        direction: "long",
+        quantity: 0,
+        entryPrice: 100,
+        leverage: 2,
+        stopLoss: 1,
+        takeProfit: 2,
+        status: "pending",
+        timestamp: Date.now(),
+      } as any, recordingConnector),
+    ))
+
+    expect(results.every((position) => position.status === "open")).toBe(true)
+    expect(completedStops).toHaveLength(8)
+    expect(new Set(completedStops).size).toBe(8)
+    expect(peakActiveStops).toBeLessThanOrEqual(6)
+    expect(activeStops).toBe(0)
+    expect(performance.now() - startedAt).toBeLessThan(1_000)
   })
 
   test("does not call the exchange or create a simulated position when Main Live is requested but blocked", async () => {

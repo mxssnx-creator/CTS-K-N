@@ -8,6 +8,7 @@ import {
   upsertDcaLeg,
 } from "@/lib/dca-strategy"
 import {
+  ALL_TRAILING_VARIANTS,
   DEFAULT_TRAILING_VARIANTS,
   buildTrailingProfiles,
   normalizeTrailingVariants,
@@ -23,7 +24,8 @@ describe("bounded trailing configuration", () => {
 
   test("accepts only the supported 5x5 matrix and removes duplicates", () => {
     expect(normalizeTrailingVariants('["0.3:0.1","0.3:0.1","99:99","bad"]')).toEqual(["0.3:0.1"])
-    expect(normalizeTrailingVariants(DEFAULT_TRAILING_VARIANTS)).toHaveLength(25)
+    expect(normalizeTrailingVariants(ALL_TRAILING_VARIANTS)).toHaveLength(25)
+    expect(DEFAULT_TRAILING_VARIANTS).toEqual(["0.3:0.1", "0.6:0.2", "0.9:0.3", "1.2:0.4", "1.5:0.5"])
   })
 
   test("builds stable bounded profiles and clamps the minimum step", () => {

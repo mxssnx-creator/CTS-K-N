@@ -16,6 +16,7 @@ import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { buildProgressionScope } from "@/lib/progression-scope"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { resolvePrehistoricConfigLimit, selectBalancedConfigs } from "./balanced-config-selection"
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
@@ -255,15 +256,24 @@ export class ConfigSetProcessor {
     let missingIntervalsLoaded = 0
 
     const tConfigsStart = Date.now()
-    const [indicationConfigs, strategyConfigs] = await Promise.all([
+    const [allIndicationConfigs, allStrategyConfigs] = await Promise.all([
       this.indicationManager.getEnabledConfigs(),
       this.strategyManager.getEnabledConfigs(),
     ])
+    const indicationConfigs = selectBalancedConfigs(
+      allIndicationConfigs,
+      resolvePrehistoricConfigLimit("indication", allIndicationConfigs.length),
+    )
+    const strategyConfigs = selectBalancedConfigs(
+      allStrategyConfigs,
+      resolvePrehistoricConfigLimit("strategy", allStrategyConfigs.length),
+    )
     const tConfigsMs = Date.now() - tConfigsStart
 
     console.log(
-      `[v0] [ConfigSetProcessor] loaded ${indicationConfigs.length} indication configs, ` +
-      `${strategyConfigs.length} strategy configs (in ${tConfigsMs}ms)`
+      `[v0] [ConfigSetProcessor] selected balanced bootstrap core: ` +
+      `${indicationConfigs.length}/${allIndicationConfigs.length} indication configs, ` +
+      `${strategyConfigs.length}/${allStrategyConfigs.length} strategy configs (in ${tConfigsMs}ms)`
     )
 
     // Store range/concurrency metadata for dashboard. One write is enough;
@@ -280,7 +290,9 @@ export class ConfigSetProcessor {
         symbol_concurrency: String(SYMBOL_CONCURRENCY),
         config_type_concurrency: String(CONFIG_TYPE_CONCURRENCY),
         indication_configs: String(indicationConfigs.length),
+        indication_configs_available: String(allIndicationConfigs.length),
         strategy_configs: String(strategyConfigs.length),
+        strategy_configs_available: String(allStrategyConfigs.length),
         config_concurrency: String(CONFIG_CONCURRENCY),
         candles_loaded: "0",
         intervals_processed: "0",

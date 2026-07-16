@@ -178,11 +178,11 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                     <div className="flex items-center justify-between">
                       <Label>Main Axis Sets per Symbol</Label>
                       <span className="text-sm font-semibold tabular-nums">
-                        {(settings.strategyMainAxisSetsCeiling ?? 50).toLocaleString()}
+                        {(settings.strategyMainAxisSetsCeiling ?? 20).toLocaleString()}
                       </span>
                     </div>
                     <Slider
-                      value={[settings.strategyMainAxisSetsCeiling ?? 50]}
+                      value={[settings.strategyMainAxisSetsCeiling ?? 20]}
                       onValueChange={(v) => handleSettingChange("strategyMainAxisSetsCeiling", v[0])}
                       min={10}
                       max={5000}
@@ -190,7 +190,7 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                     />
                     <p className="text-xs text-muted-foreground">
                       Per-symbol ceiling for Main-stage position-count axis fan-out.
-                      Default <strong>50</strong> in production.
+                      Default <strong>20</strong> for responsive multi-symbol cycles.
                     </p>
                   </div>
 
@@ -198,14 +198,14 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                     <div className="flex items-center justify-between">
                       <Label>Real Sets Safety Ceiling</Label>
                       <span className="text-sm font-semibold tabular-nums">
-                        {(settings.strategyRealSetsSafetyCeiling ?? 100).toLocaleString()}
+                        {(settings.strategyRealSetsSafetyCeiling ?? 25).toLocaleString()}
                       </span>
                     </div>
                     <Slider
-                      value={[settings.strategyRealSetsSafetyCeiling ?? 100]}
+                      value={[settings.strategyRealSetsSafetyCeiling ?? 25]}
                       onValueChange={(v) => {
                         handleSettingChange("strategyRealSetsSafetyCeiling", v[0])
-                        if ((settings.maxRealSets ?? 100) > v[0]) handleSettingChange("maxRealSets", v[0])
+                        if ((settings.maxRealSets ?? 25) > v[0]) handleSettingChange("maxRealSets", v[0])
                       }}
                       min={25}
                       max={25000}
@@ -221,14 +221,14 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                     <div className="flex items-center justify-between">
                       <Label>Max Real Sets per Cycle</Label>
                       <span className="text-sm font-semibold tabular-nums">
-                        {(settings.maxRealSets ?? 100).toLocaleString()}
+                        {(settings.maxRealSets ?? 25).toLocaleString()}
                       </span>
                     </div>
                     <Slider
-                      value={[Math.min(settings.maxRealSets ?? 100, settings.strategyRealSetsSafetyCeiling ?? 100)]}
+                      value={[Math.min(settings.maxRealSets ?? 25, settings.strategyRealSetsSafetyCeiling ?? 25)]}
                       onValueChange={(v) => handleSettingChange("maxRealSets", v[0])}
                       min={25}
-                      max={settings.strategyRealSetsSafetyCeiling ?? 100}
+                      max={settings.strategyRealSetsSafetyCeiling ?? 25}
                       step={25}
                     />
                     <p className="text-xs text-muted-foreground">

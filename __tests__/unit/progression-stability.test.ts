@@ -106,8 +106,8 @@ describe('Progression State Manager - Stability Tests', () => {
 
       expect(routeSource).toContain('getSettings(scope.engineProgressionKey)')
       expect(routeSource).toContain('getSettings(`engine_progression:${connectionId}`)')
-      expect(routeSource).toContain('client?.get(`${scope.prehistoricKey}:done`)')
-      expect(routeSource).toContain('client?.get(`prehistoric:${connectionId}:done`)')
+      expect(routeSource).toContain('client?.get(prehistoricGateKeys.scoped)')
+      expect(routeSource).toContain('client?.get(prehistoricGateKeys.legacy)')
 
       expect(writesSource).toContain('legacyProgressionKey(connectionId, engineType)')
       expect(writesSource).toContain('(client as any).hset(legacyKey, fields)')

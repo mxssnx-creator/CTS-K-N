@@ -44,6 +44,7 @@ import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import {
+  ALL_TRAILING_VARIANTS,
   DEFAULT_TRAILING_VARIANTS,
   TRAILING_START_RATIOS,
   TRAILING_STOP_RATIOS,
@@ -322,7 +323,7 @@ export function StrategyCoordinationSection({
   const setTrailingVariants = (next: Set<string>) => {
     onChange({
       ...value,
-      trailingVariants: DEFAULT_TRAILING_VARIANTS.filter((key) => next.has(key)),
+      trailingVariants: ALL_TRAILING_VARIANTS.filter((key) => next.has(key)),
     })
   }
   const toggleTrailingVariant = (start: number, stop: number) => {
@@ -438,7 +439,7 @@ export function StrategyCoordinationSection({
               size="sm"
               variant="outline"
               disabled={!value.variants.trailing || enabledTrailingVariants.size === 25}
-              onClick={() => setTrailingVariants(new Set(DEFAULT_TRAILING_VARIANTS))}
+              onClick={() => setTrailingVariants(new Set(ALL_TRAILING_VARIANTS))}
             >
               Enable all
             </Button>

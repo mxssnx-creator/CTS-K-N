@@ -203,20 +203,28 @@ export class IndicationSetsProcessor {
    * hot-path append helper enforce compaction without touching the settings
    * hash on every fill.
    */
-  // Dev mode uses a minimal range grid so the 4-GB v0 sandbox VM can run the
-  // full indication → strategy → live pipeline without OOM.
-  //   Full grid: 29 ranges × 3 dd × 2 lp × 3 fm = 522 keys/type/symbol
-  //              × 5 types × 3 symbols = 7,830 keys/cycle → accumulates fast
-  //   Dev  grid:  3 ranges × 2 dd × 1 lp × 2 fm = 12  keys/type/symbol
-  //              × 5 types × 3 symbols = 180 keys/cycle — easily evictable
-  private directionMoveRanges: number[] = Array.from({ length: 29 }, (_, i) => i + 2) // 2..30
-  private optimalRanges: number[] = Array.from({ length: 29 }, (_, i) => i + 2)
+  // Balanced production grid. The previous implicit default materialised
+  // 1,329 candidate configs per symbol (15,948 for a 12-symbol cycle) before
+  // Strategy processing even began. These five representative windows retain
+  // short/medium/long coverage while keeping the default at 104 candidates per
+  // symbol. Operators can still provide the full lists/ranges in Settings or
+  // opt into the legacy grid with INDICATION_FULL_CONFIG_GRID=1.
+  private directionMoveRanges: number[] = process.env.INDICATION_FULL_CONFIG_GRID === "1"
+    ? Array.from({ length: 29 }, (_, i) => i + 2)
+    : [2, 5, 10, 20, 30]
+  private optimalRanges: number[] = [...this.directionMoveRanges]
   private drawdownRatios: number[] = [0.5, 1.0, 1.5]
   private lastPartRatios: number[] = [0.25, 0.5]
-  private factorMultipliers: number[] = [0.9, 1.0, 1.1]
-  private activeThresholds: number[] = [0.5, 1.0, 1.5, 2.0, 2.5]
+  private factorMultipliers: number[] = process.env.INDICATION_FULL_CONFIG_GRID === "1"
+    ? [0.9, 1.0, 1.1]
+    : [1.0]
+  private activeThresholds: number[] = process.env.INDICATION_FULL_CONFIG_GRID === "1"
+    ? [0.5, 1.0, 1.5, 2.0, 2.5]
+    : [0.5, 1.5, 2.5]
   private activeTimeRatios: number[] = [0.5, 1.0]
-  private activeAdvancedActivityRatios: number[] = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+  private activeAdvancedActivityRatios: number[] = process.env.INDICATION_FULL_CONFIG_GRID === "1"
+    ? [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+    : [0.5, 1.5, 3.0]
   private activeAdvancedMinPositions = 3
   private activeAdvancedContinuationRatio = 0.6
   private shortPriceHistoryWarnings: Set<string> = new Set()
@@ -226,10 +234,15 @@ export class IndicationSetsProcessor {
   private outcomeTakerFeePct = 0.001
   private outcomeSlippagePct = 0.0006
   private outcomeAttachmentConcurrency = DEFAULT_OUTCOME_ATTACHMENT_CONCURRENCY
+  private readonly settingsReady: Promise<void>
 
   constructor(connectionId: string) {
     this.connectionId = connectionId
-    this.loadSettings()
+    // Every pipeline call constructs a fresh processor. Preserve the async
+    // load promise and await it before generating the grid; fire-and-forget
+    // loading let the first (and often only) call use stale defaults, so an
+    // operator's just-saved range/ratio settings were ignored for one cycle.
+    this.settingsReady = this.loadSettings()
   }
 
   private getSetIndexKeys(symbol: string, type: string): string[] {
@@ -521,6 +534,7 @@ export class IndicationSetsProcessor {
     const TIMEOUT_MS = 15000 // 15 second timeout per symbol
     
     try {
+      await this.settingsReady
       await this.closePendingRealtimeOutcomes(symbol, marketData)
       if (!marketData) {
         console.warn(`[v0] [IndicationSets] Invalid market data for ${symbol}`)

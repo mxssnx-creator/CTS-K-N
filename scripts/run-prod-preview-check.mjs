@@ -10,6 +10,10 @@ const nextBin = "node_modules/next/dist/bin/next"
 const distDir = process.env.NEXT_DIST_DIR || ".next-prod"
 let outputTail = ""
 const snapshotPath = `/tmp/cts-prod-preview-${process.pid}.json`
+const soakSymbols = [
+  "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
+  "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "ATOMUSDT", "LTCUSDT",
+].slice(0, Math.max(1, Math.min(12, Number(process.env.PROD_SOAK_SYMBOL_COUNT || 12))))
 
 // A prior interrupted invocation can leave the PID-derived snapshot behind.
 // Every harness run must begin from a clean database so restart persistence is
@@ -18,6 +22,9 @@ rmSync(snapshotPath, { force: true })
 
 function keepTail(chunk) {
   outputTail = `${outputTail}${String(chunk)}`.slice(-12_000)
+  if (process.env.PROD_PREVIEW_SERVER_LOGS === "1") {
+    process.stderr.write(chunk)
+  }
 }
 
 async function waitForReady(child, timeoutMs = 60_000) {
@@ -58,7 +65,8 @@ function runSoakVerifier() {
         PORT: String(port),
         START_SIMULATED_ENGINE: "1",
         SYMBOL_COUNT: process.env.PROD_SOAK_SYMBOL_COUNT || "12",
-        SOAK_DURATION_MS: process.env.PROD_SOAK_DURATION_MS || "90000",
+        SOAK_DURATION_MS: process.env.PROD_SOAK_DURATION_MS || "120000",
+        RUNTIME_MODE: "production",
       },
       stdio: "inherit",
     })
@@ -93,11 +101,18 @@ function startServer({ engines = false } = {}) {
       ...process.env,
       NODE_ENV: "production",
       NEXT_DIST_DIR: distDir,
-      DISABLE_TRADE_ENGINE_AUTOSTART: engines ? "0" : "1",
+      // The engine soak starts its exact basket through the awaited QuickStart
+      // request below. Keep boot auto-start off in this harness so a default
+      // migration basket cannot begin a stale prehistoric generation before
+      // the test has asserted the explicit 12-symbol/Paper configuration.
+      // Production auto-start/healing is exercised by its dedicated unit and
+      // restart-state tests; the shipped default remains enabled.
+      DISABLE_TRADE_ENGINE_AUTOSTART: "1",
       DISABLE_TRADE_ENGINE_IN_PROCESS: engines ? "0" : "1",
       DISABLE_IN_PROCESS_CONTINUITY: engines ? "0" : "1",
       ALLOW_PROD_INLINE_REDIS: "1",
       ALLOW_INLINE_REDIS_LIVE_TRADING: "0",
+      ALLOW_PROD_SIMULATED: "1",
       FORCE_SIMULATED: "1",
       FORCE_LIVE: "0",
       V0_DEV_SYMBOL_COUNT: engines ? "12" : "4",
@@ -193,6 +208,42 @@ async function main() {
       throw new Error("Saved connection settings did not survive production restart")
     }
 
+    // Persist the exact safe soak basket before the real production auto-start
+    // boot. Starting with the migration's default 20-symbol/live-requested
+    // template and changing it only after auto-start races two expensive
+    // prehistoric generations: the stale bootstrap can keep allocating and
+    // writing while the newly selected basket is already active. This setup is
+    // also a restart-persistence assertion for QuickStart settings: the third
+    // process must auto-start directly on this exact paper-only basket.
+    const preconfigured = await requestJson("/api/trade-engine/quick-start", {
+      method: "POST",
+      body: JSON.stringify({
+        action: "enable",
+        connectionId: after.connectionId,
+        symbols: soakSymbols,
+        symbolCount: soakSymbols.length,
+        liveTrade: false,
+        is_live_trade: false,
+        baseProfitFactor: 0.75,
+        mainProfitFactor: 0.75,
+        realProfitFactor: 0.75,
+        prevPosMinCount: 1,
+        mainEvalPosCount: 1,
+        realEvalPosCount: 1,
+      }),
+    })
+    const persistedSymbols = Array.isArray(preconfigured?.connection?.symbols)
+      ? preconfigured.connection.symbols.map(String)
+      : []
+    if (
+      persistedSymbols.length !== soakSymbols.length ||
+      persistedSymbols.some((symbol, index) => symbol !== soakSymbols[index]) ||
+      preconfigured?.connection?.liveTradeRequested !== false ||
+      preconfigured?.connection?.liveTradeEnabled !== false
+    ) {
+      throw new Error("Could not persist the safe production soak basket before auto-start")
+    }
+
     await stopServer(secondServer)
     secondServer = undefined
 
@@ -229,5 +280,6 @@ async function main() {
 
 main().catch((error) => {
   console.error("[run-prod-preview-check] failed:", error instanceof Error ? error.message : String(error))
+  if (outputTail) console.error(`[run-prod-preview-check] server tail:\n${outputTail}`)
   process.exit(1)
 })

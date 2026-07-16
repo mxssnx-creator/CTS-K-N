@@ -84,9 +84,9 @@ const DEFAULT_TIMINGS: EngineTimings = {
   liveSyncIntervalMs:          200,
   liveSyncPauseMs:              50,
   heartbeatIntervalMs:       1_000,
-  strategyFlowMinIntervalMs: 1_500,
-  strategyFlowHardThrottleMs:  750,
-  strategyFlowMaxIntervalMs: 15_000,
+  strategyFlowMinIntervalMs:   300,
+  strategyFlowHardThrottleMs:  250,
+  strategyFlowMaxIntervalMs: 5_000,
   lockExtendIntervalMs:     15_000,
   maxPositionHoldMs:    4 * 60 * 60 * 1000,
   progressionBufferFlushMs:  3_000,
@@ -104,7 +104,7 @@ const DEFAULT_TIMINGS: EngineTimings = {
   prehistoricCyclePauseMs:      50,
   realtimeIntervalMs:        300,
   realtimeCyclePauseMs:         50,
-  livePositionsCyclePauseMs:    300,
+  livePositionsCyclePauseMs:     50,
 // ── Hedge / Directional Accumulation defaults ──────────────────────────────
    // Disabled by default to preserve existing behaviour for existing installs.
    // Operator enables explicitly once the accumulator behaviour is wanted.
@@ -363,6 +363,14 @@ export function SystemSettings() {
             api_place_order_timeout_ms:    timings.apiPlaceOrderTimeoutMs,
             api_cancel_order_timeout_ms:   timings.apiCancelOrderTimeoutMs,
             api_position_timeout_ms:       timings.apiPositionTimeoutMs,
+            // Three independent progression loops. These fields were shown in
+            // the UI but historically omitted from PATCH, so edits appeared to
+            // save while the engine kept the old values.
+            prehistoric_interval_ms:       timings.prehistoricIntervalMs,
+            prehistoric_cycle_pause_ms:    timings.prehistoricCyclePauseMs,
+            realtime_interval_ms:          timings.realtimeIntervalMs,
+            realtime_cycle_pause_ms:       timings.realtimeCyclePauseMs,
+            live_positions_cycle_pause_ms: timings.livePositionsCyclePauseMs,
             // ── Hedge / Directional Accumulation settings ───────────────────
             normalize_enabled:             timings.normalizeEnabled,
             normalize_threshold_pct:       timings.normalizeThresholdPct,

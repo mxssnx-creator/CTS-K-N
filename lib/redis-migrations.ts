@@ -13,6 +13,7 @@ import {
 } from "./database-maintenance"
 import { createRedisLockToken, releaseOwnedRedisLock, renewOwnedRedisLock } from "./redis-lock-utils"
 import { scanRedisKeys } from "./redis-scan"
+import { ALL_TRAILING_VARIANTS, DEFAULT_TRAILING_VARIANTS } from "./trailing-settings"
 
 /**
  * Reset the in-process migration guards.
@@ -3709,6 +3710,97 @@ const migrations: Migration[] = [
         "system:database:coordination:maintenance",
       ).catch(() => 0)
       await client.set("_schema_version", "70")
+    },
+  },
+  {
+    version: 72,
+    name: "072-subsecond-live-coordination-profile",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      const existing = ((await client.hgetall("settings:system").catch(() => ({}))) || {}) as Record<string, string>
+      const patch: Record<string, string> = {}
+      const replaceLegacyDefault = (field: string, value: string, legacyValues: string[]) => {
+        const current = String(existing[field] ?? "")
+        if (!current || legacyValues.includes(current)) patch[field] = value
+      }
+
+      replaceLegacyDefault("live_sync_interval_ms", "200", ["500", "1000"])
+      replaceLegacyDefault("live_sync_pause_ms", "50", ["100", "250"])
+      replaceLegacyDefault("live_positions_cycle_pause_ms", "50", ["300", "500"])
+      replaceLegacyDefault("realtime_interval_ms", "300", ["500", "1000"])
+      replaceLegacyDefault("realtime_cycle_pause_ms", "50", ["100", "200", "250"])
+      replaceLegacyDefault("strategy_flow_min_interval_ms", "300", ["1500", "5000"])
+      replaceLegacyDefault("strategy_flow_hard_throttle_ms", "250", ["750", "2500", "10000"])
+      replaceLegacyDefault("strategy_flow_max_interval_ms", "5000", ["15000", "30000"])
+      replaceLegacyDefault("strategy_flow_symbol_concurrency_dev", "4", ["1"])
+      replaceLegacyDefault("strategy_flow_symbol_concurrency_prod", "4", ["1"])
+      patch.live_coordination_profile = "subsecond-200-300ms"
+      patch.updated_at = now
+
+      await Promise.all([
+        client.hset("settings:system", patch),
+        client.hset("system:database:coordination:performance", {
+          ...patch,
+          schema_version: "72",
+        }),
+      ])
+      console.log("[v0] Migration 072: applied sub-second Live/Strategy coordination defaults without replacing custom timing values")
+    },
+    down: async (client: any) => {
+      await client.hdel("settings:system", "live_coordination_profile").catch(() => 0)
+      await client.set("_schema_version", "71")
+    },
+  },
+  {
+    version: 73,
+    name: "073-balanced-multisymbol-strategy-budgets",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      const keys = ["app_settings", "all_settings", "settings:system"]
+      for (const key of keys) {
+        const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+        const replaceLegacyDefault = (field: string, next: string, legacy: string[]) => {
+          const current = String(existing[field] ?? "")
+          if (!current || legacy.includes(current)) patch[field] = next
+        }
+        // Replace only absent/known legacy defaults; custom operator budgets
+        // survive the migration unchanged.
+        replaceLegacyDefault("strategyMainAxisSetsCeiling", "20", ["50"])
+        replaceLegacyDefault("strategyRealSetsSafetyCeiling", "25", ["100"])
+        replaceLegacyDefault("maxRealSets", "25", ["100"])
+        const rawTrailing = String(existing.strategyBaseTrailingVariants ?? "")
+        let trailingTokens: string[] = []
+        if (rawTrailing) {
+          try {
+            const parsed = JSON.parse(rawTrailing)
+            if (Array.isArray(parsed)) trailingTokens = parsed.map(String)
+          } catch {
+            trailingTokens = rawTrailing.split(/[|,\s]+/).filter(Boolean)
+          }
+        }
+        const storedTrailing = new Set(trailingTokens)
+        const isLegacyFullMatrix =
+          storedTrailing.size === ALL_TRAILING_VARIANTS.length &&
+          ALL_TRAILING_VARIANTS.every((token) => storedTrailing.has(token))
+        if (!rawTrailing || isLegacyFullMatrix) {
+          patch.strategyBaseTrailingVariants = JSON.stringify(DEFAULT_TRAILING_VARIANTS)
+        }
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, { ...patch, updated_at: now }).catch(() => 0)
+        }
+      }
+      await client.hset("system:database:coordination:performance", {
+        strategy_main_axis_sets_per_symbol: "20",
+        strategy_real_sets_per_symbol: "25",
+        strategy_budget_profile: "balanced-12-symbol",
+        schema_version: "73",
+        updated_at: now,
+      }).catch(() => 0)
+      console.log("[v0] Migration 073: applied balanced 12-symbol Strategy budgets without replacing custom values")
+    },
+    down: async (client: any) => {
+      await client.set("_schema_version", "72")
     },
   },
 ]

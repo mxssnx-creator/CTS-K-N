@@ -4,7 +4,7 @@ import { getProgressionLogs, forceFlushLogs } from "@/lib/engine-progression-log
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { normalizeSymbolList } from "@/lib/trade-engine/symbol-selection-ownership"
-import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
+import { buildPrehistoricGateKeys, buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
 import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
 
 export const dynamic = "force-dynamic"
@@ -281,9 +281,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // (which can be non-zero on engine restart from a previous live run).
     // The downstream auto-derivation only kicks in once prehistoric is
     // truly complete, so the user always sees the honest phase + percent.
+    const prehistoricGateKeys = buildPrehistoricGateKeys(connectionId, scope.engineType, "done")
     const prehistoricDoneRaw =
-      await client?.get(`${scope.prehistoricKey}:done`).catch(() => null) ||
-      await client?.get(`prehistoric:${connectionId}:done`).catch(() => null)
+      await client?.get(prehistoricGateKeys.scoped).catch(() => null) ||
+      await client?.get(prehistoricGateKeys.legacy).catch(() => null)
     const prehistoricDone = String(prehistoricDoneRaw) === "1"
 
     if (engineRunning && !prehistoricDone) {
@@ -303,7 +304,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       // realtime cycles regressed the visible UI back to 90% forever.
       phase = "live_trading"
       progress = 100
-      detail = progression.detail || `Live trading ACTIVE — evaluating ${configuredSymbolCount || "configured"} symbols`
+      detail = progression.detail || `Live stage ACTIVE — evaluating ${configuredSymbolCount || "configured"} symbols`
     } else if (indicationCycleCount > 100 || progressionState.cyclesCompleted > 100) {
       phase = "live_trading"
       progress = 100
@@ -374,11 +375,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         // truth for the list of processed symbols, and the `:done` marker
         // lets us flip to 100% even if the hash's `is_complete` field was
         // written before a hot reload.
-        const [prehistoricDataRaw, prehistoricSymbolsSet, doneMarker] = await Promise.all([
-          client.hgetall(`prehistoric:${connectionId}`).catch(() => null),
-          client.smembers(`prehistoric:${connectionId}:symbols`).catch(() => [] as string[]),
-          client.get(`prehistoric:${connectionId}:done`).catch(() => null),
+        const [prehistoricDataRaw, prehistoricSymbolsSet, scopedDoneMarker, legacyDoneMarker] = await Promise.all([
+          client.hgetall(scope.prehistoricKey).catch(() => null),
+          client.smembers(`${scope.prehistoricKey}:symbols`).catch(() => [] as string[]),
+          client.get(prehistoricGateKeys.scoped).catch(() => null),
+          client.get(prehistoricGateKeys.legacy).catch(() => null),
         ])
+        const doneMarker = scopedDoneMarker || legacyDoneMarker
         const prehistoricData = (prehistoricDataRaw as Record<string, string> | null) || {}
         const processedSet = Array.isArray(prehistoricSymbolsSet) ? prehistoricSymbolsSet : []
 

@@ -105,6 +105,38 @@ describe("Main Trade Engine live execution readiness", () => {
     })
   })
 
+  test("an explicit canonical OFF switch overrides a stale legacy ON alias", () => {
+    process.env.REDIS_URL = "redis://shared-test"
+    const result = evaluateRealTradeReadiness({
+      ...credentialed,
+      is_live_trade: "0",
+      live_trade_enabled: "1",
+      live_trade_requested: "0",
+    })
+
+    expect(result).toMatchObject({
+      requested: false,
+      enabled: false,
+      executionMode: "simulation",
+      blockCode: "disabled",
+    })
+  })
+
+  test("legacy live alias remains supported when the canonical switch is absent", () => {
+    process.env.REDIS_URL = "redis://shared-test"
+    const result = evaluateRealTradeReadiness({
+      ...credentialed,
+      live_trade_enabled: "1",
+    })
+
+    expect(result).toMatchObject({
+      requested: true,
+      enabled: true,
+      executionMode: "live",
+      blockCode: null,
+    })
+  })
+
   test("authorizes the independently enabled Preset engine without changing Main Live intent", () => {
     process.env.REDIS_URL = "redis://shared-test"
     const settings = {

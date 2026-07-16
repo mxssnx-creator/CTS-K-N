@@ -38,7 +38,11 @@ import {
   logLiveOrderFinal,
   type LiveOrderTrace,
 } from "@/lib/live-order-logger"
-import { isTruthyFlag } from "@/lib/connection-state-utils"
+import {
+  isConnectionLiveTradeEnabled,
+  isConnectionPresetTradeEnabled,
+  isTruthyFlag,
+} from "@/lib/connection-state-utils"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import {
   advanceBlockCountPausesOnPositionClose,
@@ -728,9 +732,6 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
   // Persist a position snapshot. This helper is intentionally a plain write;
   // status-sensitive callers must use mutatePositionWithVersionCheck() before
   // saving so Redis checks the stored status/version atomically.
-  if (!position.version) position.version = 0
-  position.version++
-  
   const { getRedisClient } = await import("@/lib/redis-db")
   const client = getRedisClient()
   const keepDurable = async (key: string): Promise<void> => {
@@ -745,6 +746,18 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
   const terminalStatuses = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
   
   try {
+    const incomingTerminal = terminalStatuses.has(String(position.status || "").toLowerCase())
+    if (!incomingTerminal) {
+      // A close path can finish while an older mark/protection snapshot is
+      // still awaiting Redis I/O. Never let that stale non-terminal writer
+      // resurrect the archived position or reinsert it into the open index.
+      const moved = await client
+        .get(`live:positions:${position.connectionId}:moved:${position.id}`)
+        .catch(() => null)
+      if (moved) return
+    }
+    if (!position.version) position.version = 0
+    position.version++
     position.updatedAt = Date.now()
     await client.hset(posKey, {
       ...position,
@@ -2759,14 +2772,21 @@ async function closeIfProtectionTriggerAlreadyCrossed(
     },
   )
   await savePosition(pos).catch(() => {})
-  await closeLivePosition(pos.connectionId, pos.id, referencePrice, connector, "protection_trigger_already_crossed")
+  const closeResult = await closeLivePosition(
+    pos.connectionId,
+    pos.id,
+    referencePrice,
+    connector,
+    "protection_trigger_already_crossed",
+  )
+  if (closeResult) Object.assign(pos, closeResult)
   return true
 }
 
-function priceDrifted(current: number | undefined, desired: number): boolean {
+function priceDrifted(current: number | undefined, desired: number, tolerance = 0.0025): boolean {
   if (!desired || desired <= 0) return false
   if (!current || current <= 0) return true // never placed or lost
-  return Math.abs(current - desired) / desired > 0.0025
+  return Math.abs(current - desired) / desired > tolerance
 }
 
 /**
@@ -2801,18 +2821,15 @@ function priceDrifted(current: number | undefined, desired: number): boolean {
 // MIN_REARM_MS (30 s) — for static SL/TP price drift: long enough to absorb
 //   a normal oscillation window (BTC 0.5% range typically resolves in ~5-15 s).
 //
-// TRAILING_REARM_MS (5 s) �� for trailing ratchet advances: the trailing stop
-//   machine ratchets approximately every strategy cycle (~5 s). A 30 s cooldown
-//   here means the exchange order would lag the ratchet by up to 5 cycles, leaving
-//   the position underprotected while the trailing level was moving in our favour.
-//   5 s gives one-cycle latency: worst case the ratchet advances, we wait one
-//   cycle, then update. The shorter cooldown only applies when trailingActive=true
-//   and the absolute trailingStopPrice has actually moved — not on every tick.
+// TRAILING_REARM_MS (200 ms) — trailing is an active protection contract, not
+//   a static configuration edit. Once the ratchet advances, cancel/replace the
+//   exchange stop on the next fast-path cycle. The trailing state machine's own
+//   minimum step prevents tick-noise from generating a replace storm.
 //
 // Missing-order re-arms (stopLossOrderId = undefined after liveness-verify)
 // bypass all cooldowns and always place immediately.
 const MIN_REARM_MS = 30_000
-const TRAILING_REARM_MS = 5_000
+const TRAILING_REARM_MS = 200
 
 // ── System-close-only flag, micro-cached ─────────────────────────────
 //
@@ -2823,6 +2840,16 @@ const TRAILING_REARM_MS = 5_000
 // of position-level calls into one Redis round-trip.
 const SYSTEM_CLOSE_TTL_MS = 2000
 const systemCloseCacheByConnection = new Map<string, { value: boolean; at: number; inflight?: Promise<boolean> }>()
+
+/**
+ * Settings-save fast path. The normal two-second TTL remains the
+ * cross-process/read-failure fallback, but an in-process hot reload must not
+ * keep arming (or suppressing) venue control orders from a stale flag.
+ */
+export function invalidateLiveStageSettingsCache(connectionId?: string): void {
+  if (connectionId) systemCloseCacheByConnection.delete(connectionId)
+  else systemCloseCacheByConnection.clear()
+}
 
 function parseSystemCloseFlag(value: unknown): boolean {
   return value === true || value === "true" || value === "1" || value === 1
@@ -2993,6 +3020,7 @@ async function updateProtectionOrders(
 
   const { desiredSl, desiredTp } = computeDesiredProtectionPrices(pos)
   const closeSide: "buy" | "sell" = pos.direction === "long" ? "sell" : "buy"
+  const priceDriftTolerance = pos.trailingActive ? 0.0001 : 0.0025
 
   // A protection request can reach the venue even when its HTTP response is
   // lost. `prepareProtectionSubmission()` persists the client id before the
@@ -3113,7 +3141,7 @@ async function updateProtectionOrders(
   // First, collect cancellation promises for both legs (if needed)
   const slCancelPromise = (async () => {
     if (desiredSl > 0 && pos.stopLossOrderId && 
-        (priceDrifted(pos.stopLossPrice, desiredSl) || qtyDrifted)) {
+        (priceDrifted(pos.stopLossPrice, desiredSl, priceDriftTolerance) || qtyDrifted)) {
       // Need to re-arm SL — cancel the old one first
       return await cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "StopLoss")
         .catch((err) => {
@@ -3130,7 +3158,7 @@ async function updateProtectionOrders(
 
   const tpCancelPromise = (async () => {
     if (desiredTp > 0 && pos.takeProfitOrderId && 
-        (priceDrifted(pos.takeProfitPrice, desiredTp) || qtyDrifted)) {
+        (priceDrifted(pos.takeProfitPrice, desiredTp, priceDriftTolerance) || qtyDrifted)) {
       // Need to re-arm TP — cancel the old one first
       return await cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "TakeProfit")
         .catch((err) => {
@@ -3186,7 +3214,7 @@ async function updateProtectionOrders(
       (
         !pos.stopLossOrderId
           ? true  // no order at all → arm immediately regardless of cooldown
-          : (priceDrifted(pos.stopLossPrice, desiredSl) || qtyDrifted) &&
+          : (priceDrifted(pos.stopLossPrice, desiredSl, priceDriftTolerance) || qtyDrifted) &&
             // Trailing ratchets use a shorter cooldown so exchange orders track
             // the ratcheted level within one strategy cycle (~5 s). Static price
             // drift uses the full 30 s cooldown to absorb oscillation noise.
@@ -3276,7 +3304,7 @@ async function updateProtectionOrders(
       (
         !pos.takeProfitOrderId
           ? true  // no order at all → arm immediately
-          : (priceDrifted(pos.takeProfitPrice, desiredTp) || qtyDrifted) &&
+          : (priceDrifted(pos.takeProfitPrice, desiredTp, priceDriftTolerance) || qtyDrifted) &&
             Date.now() - (pos.takeProfitLastArmedAt ?? 0) >=
               (pos.trailingActive ? TRAILING_REARM_MS : MIN_REARM_MS)
       )
@@ -3524,10 +3552,8 @@ export async function executeLivePosition(
   // strategy order. In Preset-only mode the active optimized preset is applied
   // before SL/TP/trailing fields are copied into the LivePosition.
   const initialConnectionSettings = (await getConnection(connectionId).catch(() => null)) || {}
-  const mainModeEnabled = isTruthyFlag((initialConnectionSettings as any).is_live_trade) ||
-    isTruthyFlag((initialConnectionSettings as any).live_trade_enabled)
-  const presetModeEnabled = isTruthyFlag((initialConnectionSettings as any).is_preset_trade) ||
-    isTruthyFlag((initialConnectionSettings as any).preset_trade_enabled)
+  const mainModeEnabled = isConnectionLiveTradeEnabled(initialConnectionSettings)
+  const presetModeEnabled = isConnectionPresetTradeEnabled(initialConnectionSettings)
   const executionIntent: "main" | "preset" = presetModeEnabled && !mainModeEnabled ? "preset" : "main"
   if (executionIntent === "preset") {
     const { applySelectedPresetToRealPosition } = await import("@/lib/preset-store")
@@ -4307,7 +4333,11 @@ export async function executeLivePosition(
     // exchange environment, so do NOT block it here; the connector routes to
     // the testnet endpoint when is_testnet is true.
     const { getConnection: reCheckConn } = await import("@/lib/redis-db")
-    const { isTruthyFlag: reCheckTruthy } = await import("@/lib/connection-state-utils")
+    const {
+      isConnectionLiveTradeEnabled: reCheckMainEnabled,
+      isConnectionPresetTradeEnabled: reCheckPresetEnabled,
+      isTruthyFlag: reCheckTruthy,
+    } = await import("@/lib/connection-state-utils")
     const freshSettings = (await reCheckConn(connectionId)) || {}
     const positionMode = String((freshSettings as any).position_mode || (freshSettings as any).positionMode || "").toLowerCase()
     const hedgeMode = positionMode.includes("hedge") || positionMode.includes("dual")
@@ -4318,8 +4348,8 @@ export async function executeLivePosition(
           clientOrderId: orderTrace.exchangeTrackingId,
         }
       : { hedgeMode: false, clientOrderId: orderTrace.exchangeTrackingId }
-    const freshMainModeEnabled = reCheckTruthy(freshSettings.is_live_trade) || reCheckTruthy(freshSettings.live_trade_enabled)
-    const freshPresetModeEnabled = reCheckTruthy(freshSettings.is_preset_trade) || reCheckTruthy(freshSettings.preset_trade_enabled)
+    const freshMainModeEnabled = reCheckMainEnabled(freshSettings)
+    const freshPresetModeEnabled = reCheckPresetEnabled(freshSettings)
     const freshExecutionIntent: "main" | "preset" = freshPresetModeEnabled && !freshMainModeEnabled ? "preset" : "main"
     const freshReadiness = evaluateRealTradeReadiness(freshSettings, freshExecutionIntent)
     const isStillLive = freshReadiness.canPlaceRealOrders
@@ -4926,14 +4956,12 @@ export async function executeLivePosition(
         reason: `fill via=${fill.status}`,
         extra: { orderId: livePosition.orderId, attempts: placeAttempt },
       })
-      // BingX hedge-mode positions need a brief settling period after a
-      // market order fills before a STOP/TP_MARKET can reference them.
-      // Even when the fill is confirmed by pollOrderFill / getPosition,
-      // the exchange position registry may lag by ~1-2 s. This 2 s wait
-      // (combined with the 4 s retry inside placeProtectionOrder for
-      // code=109420) gives a total 6 s window — sufficient for all
-      // observed symbols including DOGE, ADA, and SOL.
-      await new Promise((r) => setTimeout(r, 2000))
+      // Arm SL/TP immediately after an authoritative inline/polled fill.
+      // A fixed venue-settling sleep delayed every healthy order by two
+      // seconds and left the freshly opened position unnecessarily
+      // unprotected. BingX's eventual-consistency case is already handled
+      // narrowly by the 109420 retry in placeProtectionOrder, so fast fills
+      // stay on the sub-second path while lagging symbols still self-heal.
     } else {
       // D) Protection-deferred guard: if neither order polling nor direct
       // exchange-position reads confirm a position size, do NOT synthesize a
@@ -5074,7 +5102,14 @@ export async function executeLivePosition(
           `${LOG_PREFIX} ${crossedLeg} PRICE_CROSSED for ${realPosition.symbol} — triggering immediate force-close`,
         )
         livePosition.closeReason = "protection_price_crossed_at_placement"
-        await closeLivePosition(connectionId, livePosition.id, 0, exchangeConnector, `${crossedLeg} price crossed market at initial placement`)
+        const closeResult = await closeLivePosition(
+          connectionId,
+          livePosition.id,
+          0,
+          exchangeConnector,
+          `${crossedLeg} price crossed market at initial placement`,
+        )
+        if (closeResult) Object.assign(livePosition, closeResult)
         return livePosition
       }
 
@@ -5366,9 +5401,10 @@ export async function updateLivePositionFill(
  *      doesn't race against a still-active reduce-only sitting in the
  *      book (which would either double-fire or leave a stale order
  *      glued to the user's account).
- *   2. Issue the actual close on the exchange (best-effort; if it fails
- *      we still mark the Redis record closed so reconcile picks it up
- *      next pass — better than leaking the lock).
+ *   2. Issue the actual close on the exchange. A failed/unconfirmed venue
+ *      close rolls the local record back to its prior open state and re-arms
+ *      protection; only authoritative success/already-gone confirmation may
+ *      enter the terminal archive.
  *   3. Compute realized PnL + margin-based ROI (matches exchange ROE).
  *   4. Persist via savePosition() �� that helper already handles the
  *      open-index ���� closed-archive move idempotently. We do NOT touch
@@ -5465,11 +5501,10 @@ export async function closeLivePosition(
     }
 
     if (hasSystemOrderId && exchangeConnector && typeof exchangeConnector.closePosition === "function") {
-      // maxRetries=2, per-attempt timeout=25s, backoff=500ms/1s.
-      // Total worst-case: 25s + 0.5s + 25s + 1s + 25s ≈ 76s.
-      // SYNC_PER_POS_TIMEOUT_MS=55s fires before a third attempt can land,
-      // so in practice the loop runs at most 2 attempts (50s) before the
-      // outer sync timeout triggers the DB-close fallback.
+      // maxRetries=2, per-attempt timeout=35s, one 500ms backoff.
+      // The outer per-position sync deadline bounds the caller; if the venue
+      // remains unresponsive the local position stays open for the next
+      // authoritative recovery pass.
       const maxRetries = 2
       const backoffMs = [500, 1000]
       const CLOSE_ATTEMPT_TIMEOUT_MS = 35_000
@@ -5987,9 +6022,9 @@ export async function calculateLivePositionStats(
 /**
  * Detect whether the latest mark price has crossed the position's
  * desired SL or TP threshold and — if so — force-close the position
- * via `closeLivePosition`. Returns the cross reason ("sl_hit" / "tp_hit")
- * when a close was triggered (whether or not it succeeded), otherwise
- * `null`.
+ * via `closeLivePosition`. Returns the cross reason only after a confirmed
+ * terminal transition, `close_unconfirmed` when the exchange close failed
+ * and the position remains tracked/open, otherwise `null`.
  *
  * This is the safety net the user described as "check pos if to be
  * updated or closed also independent of the control orders". Even if
@@ -6014,7 +6049,7 @@ async function checkAndForceCloseOnSltpCross(
   pos: LivePosition,
   markPrice: number,
   exchangeConnector: any,
-): Promise<"sl_hit" | "tp_hit" | null> {
+): Promise<"sl_hit" | "tp_hit" | "close_unconfirmed" | null> {
   if (!Number.isFinite(markPrice) || markPrice <= 0) return null
   if (pos.executedQuantity <= 0) return null
   
@@ -6115,14 +6150,23 @@ async function checkAndForceCloseOnSltpCross(
   )
 
   try {
-    await closeLivePosition(connectionId, pos.id, markPrice, exchangeConnector, crossReason as unknown as string)
+    const closed = await closeLivePosition(
+      connectionId,
+      pos.id,
+      markPrice,
+      exchangeConnector,
+      crossReason as unknown as string,
+    )
+    if (closed?.status === "closed") return crossReason
+    if (closed) Object.assign(pos, closed)
+    return "close_unconfirmed"
   } catch (closeErr) {
     console.warn(
       `${LOG_PREFIX} force-close on ${crossReason!} failed for ${pos.id}:`,
       closeErr instanceof Error ? closeErr.message : String(closeErr),
     )
   }
-  return crossReason
+  return "close_unconfirmed"
 }
 
 /**
@@ -6249,11 +6293,13 @@ async function orphanCloseExpiredPositions(
         } catch { /* sweep is best-effort */ }
       }
 
-      await closeLivePosition(connectionId, pos.id, exitPrice, connector, reason).catch((err) => {
+      const closeResult = await closeLivePosition(connectionId, pos.id, exitPrice, connector, reason).catch((err) => {
         console.warn(`${LOG_PREFIX} [orphan-close] closeLivePosition failed for ${pos.id}:`, err instanceof Error ? err.message : String(err))
         summary.errors++
+        return null
       })
-      summary.closed++
+      if (closeResult?.status === "closed") summary.closed++
+      else if (closeResult) summary.errors++
     }
   } catch (err) {
     console.warn(`${LOG_PREFIX} [orphan-close] sweep error:`, err instanceof Error ? err.message : String(err))
@@ -6668,7 +6714,8 @@ export async function reconcileLivePositions(
             exchangeConnector,
           )
           if (crossed) {
-            delta.closed++
+            if (crossed !== "close_unconfirmed") delta.closed++
+            else delta.updated++
             return delta
           }
 
@@ -6694,8 +6741,15 @@ export async function reconcileLivePositions(
               `Max hold time exceeded for ${pos.symbol} — force-closing (reconcile)`,
               { positionId: pos.id, heldMs, maxHoldMs: MAX_HOLD_TIME_MS, exitPrice },
             )
-            await closeLivePosition(connectionId, pos.id, exitPrice, exchangeConnector, "max_hold_time_exceeded")
-            delta.closed++
+            const closeResult = await closeLivePosition(
+              connectionId,
+              pos.id,
+              exitPrice,
+              exchangeConnector,
+              "max_hold_time_exceeded",
+            )
+            if (closeResult?.status === "closed") delta.closed++
+            else delta.updated++
             return delta
           }
 
@@ -6989,7 +7043,7 @@ export async function processSimulatedPositions(
             null,
           )
           if (crossed) {
-            summary.closed++
+            if (crossed !== "close_unconfirmed") summary.closed++
             continue
           }
         }
@@ -7010,8 +7064,9 @@ export async function processSimulatedPositions(
             `Max hold time exceeded for simulated ${pos.symbol} — force-closing`,
             { positionId: pos.id, heldMs, maxHoldMs: MAX_HOLD_TIME_MS, exitPrice },
           )
-          await closeLivePosition(connectionId, pos.id, exitPrice, null, "max_hold_time_exceeded")
-          summary.closed++
+          const closeResult = await closeLivePosition(connectionId, pos.id, exitPrice, null, "max_hold_time_exceeded")
+          if (closeResult?.status === "closed") summary.closed++
+          else summary.errors++
           continue
         }
         // Persist refreshed mark price so the dashboard reads fresh data.
@@ -8125,7 +8180,12 @@ export async function recalculateAndApplySLTP(
   connectionId: string,
   livePositionId: string,
   exchangeConnector: any,
-  overrides?: { stopLossPct?: number; takeProfitPct?: number },
+  overrides?: {
+    stopLossPct?: number
+    takeProfitPct?: number
+    trailingActive?: boolean
+    trailingStopPrice?: number
+  },
 ): Promise<LivePosition | null> {
   await initRedis()
   const client = getRedisClient()
@@ -8144,12 +8204,17 @@ export async function recalculateAndApplySLTP(
   // after 100 ms so operator-triggered overrides still apply promptly in the
   // gap between ticks rather than silently no-opping.
   const LOCK_KEY = `live_sync_lock:${connectionId}`
-  const LOCK_TTL = 5 // seconds — far shorter than the 30 s reconcile TTL
+  const LOCK_TTL = 30
+  const lockToken = `recalc:${process.pid}:${Date.now()}:${nanoid(10)}`
   let lockAcquired = false
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const setResult = await (client.set(LOCK_KEY, "recalcSLTP", { NX: true, EX: LOCK_TTL }) as any)
+  let stopLockLeaseRefresh: (() => void) | null = null
+  // Fast bounded contention wait: most sync passes complete inside one
+  // 200–300 ms cadence. Never overlap a still-running reconcile; if it remains
+  // busy, the next pseudo ratchet/sync pass retries from durable state.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const setResult = await (client.set(LOCK_KEY, lockToken, { NX: true, EX: LOCK_TTL }) as any)
     if (setResult === "OK") { lockAcquired = true; break }
-    if (attempt === 0) await new Promise(r => setTimeout(r, 100))
+    if (attempt < 4) await new Promise(r => setTimeout(r, 50))
   }
   if (!lockAcquired) {
     // Lock still held after one retry — skip this tick; the main sync loop
@@ -8157,6 +8222,12 @@ export async function recalculateAndApplySLTP(
     console.warn(`${LOG_PREFIX} recalculateAndApplySLTP: lock busy for ${connectionId}, skipping tick`)
     return null
   }
+  stopLockLeaseRefresh = startRedisLockLeaseRefresh(
+    client,
+    LOCK_KEY,
+    lockToken,
+    LOCK_TTL * 1000,
+  )
 
   try {
     const key = `live:position:${livePositionId}`
@@ -8187,6 +8258,15 @@ export async function recalculateAndApplySLTP(
       : null
     if (normalizedOverrideSl) position.stopLoss = normalizedOverrideSl.value
     if (overrides?.takeProfitPct !== undefined) position.takeProfit = overrides.takeProfitPct
+    if (overrides && Object.prototype.hasOwnProperty.call(overrides, "trailingActive")) {
+      position.trailingActive = overrides.trailingActive === true
+    }
+    if (overrides && Object.prototype.hasOwnProperty.call(overrides, "trailingStopPrice")) {
+      const nextTrailingStop = Number(overrides.trailingStopPrice)
+      position.trailingStopPrice = Number.isFinite(nextTrailingStop) && nextTrailingStop > 0
+        ? nextTrailingStop
+        : undefined
+    }
 
     const slChanged = position.stopLoss !== prevStopLossPct
     const tpChanged = position.takeProfit !== prevTakeProfitPct
@@ -8216,16 +8296,11 @@ export async function recalculateAndApplySLTP(
       )
     }
 
-    // ── Bug-3 fix: fetch live order IDs and pass to updateProtectionOrders ��──
-    // Without `liveOrderIds` the liveness-verification block in
-    // `updateProtectionOrders` is skipped entirely (guarded by
-    // `if (liveOrderIds && …)`). If a SL/TP order silently disappeared on the
-    // exchange (filled early, cancelled, expired), `pos.stopLossOrderId` is
-    // still set, `priceDrifted()` returns false, and the leg is never
-    // re-armed �� leaving the position unprotected. Passing liveOrderIds here
-    // ensures the verify step runs on every operator-triggered recalc.
-    const liveOrderIds = await fetchLiveOrderIdSet(exchangeConnector)
-    await updateProtectionOrders(exchangeConnector, position, "manual_recalc", liveOrderIds ?? undefined)
+    // Direct override/trailing updates already know the recorded order IDs and
+    // intentionally avoid an extra open-orders snapshot RTT on the critical
+    // path. cancelProtectionOrder treats already-gone IDs as success; the
+    // 200 ms canonical sync independently performs full liveness healing.
+    await updateProtectionOrders(exchangeConnector, position, "manual_recalc", null)
     position.updatedAt = Date.now()
     await savePosition(position)
 
@@ -8257,10 +8332,11 @@ export async function recalculateAndApplySLTP(
     console.error(`${LOG_PREFIX} recalculateAndApplySLTP error:`, err)
     return null
   } finally {
-    // Always release the lock so the main sync loop is not blocked past our
-    // 5 s TTL. del() is a no-op if we never successfully acquired it.
+    stopLockLeaseRefresh?.()
+    // Token-checked release: an old slow call must never delete a newer
+    // reconcile owner's lock after its own lease changed hands.
     if (lockAcquired) {
-      await client.del(LOCK_KEY).catch(() => {})
+      await evalLockLua(client, RELEASE_LOCK_LUA, LOCK_KEY, [lockToken]).catch(() => 0)
     }
   }
 }
@@ -8454,18 +8530,11 @@ export async function syncLiveFromPseudo(
           // trailing ratchet on every tick, not only on recalc ticks.
           const prevTrailingActive = livePos.trailingActive
           const prevTrailingStopPrice = livePos.trailingStopPrice
-          livePos.trailingActive = trailingActive
-          livePos.trailingStopPrice = (trailingActive && trailingStopPrice > 0) ? trailingStopPrice : undefined
-          // If the trailing state changed, persist it immediately so other
-          // callers (reconcile, syncWithExchange) always read the latest ratchet
-          // from Redis even if the no-op guard below skips recalculateAndApplySLTP.
+          const nextTrailingStopPrice =
+            trailingActive && trailingStopPrice > 0 ? trailingStopPrice : undefined
           const trailingStateChanged =
-            prevTrailingActive !== livePos.trailingActive ||
-            prevTrailingStopPrice !== livePos.trailingStopPrice
-          if (trailingStateChanged) {
-            // Best-effort async save — don't await on the hot path.
-            savePosition(livePos).catch(() => {})
-          }
+            prevTrailingActive !== trailingActive ||
+            prevTrailingStopPrice !== nextTrailingStopPrice
 
           // ── Per-tick no-op guard ──────────────────────────────────────────
           // syncLiveFromPseudo fires on EVERY realtime cycle (200–300 ms) but
@@ -8520,6 +8589,8 @@ export async function syncLiveFromPseudo(
           await recalculateAndApplySLTP(connectionId, livePos.id, exchangeConnector, {
             stopLossPct: effectiveSlPct,
             takeProfitPct: tpPct,
+            trailingActive,
+            trailingStopPrice: nextTrailingStopPrice,
           })
         } catch (err) {
           console.warn(

@@ -895,6 +895,14 @@ export interface StrategyCoordinatorConfig {
 // because a new StrategyCoordinator is created each cron tick. Keyed by
 // "main:<connectionId>" and "real:<connectionId>". 60 s quiet period.
 const _bootstrapLoggedAt: Record<string, number> = {}
+const _realCapLoggedAt: Record<string, number> = {}
+
+function shouldLogRealCap(key: string, intervalMs = 30_000): boolean {
+  const now = Date.now()
+  if (_realCapLoggedAt[key] && now - _realCapLoggedAt[key] < intervalMs) return false
+  _realCapLoggedAt[key] = now
+  return true
+}
 
 /**
  * Per-connection StrategyCoordinator cache.
@@ -919,12 +927,63 @@ export function getStrategyCoordinator(connectionId: string): StrategyCoordinato
 }
 
 export class StrategyCoordinator {
-  static forceNextSettingsReload(_connectionId: string): number {
-    return Date.now()
+  static forceNextSettingsReload(connectionId: string): number {
+    const generation = Date.now()
+    const coordinator = _strategyCoordinatorInstances.get(connectionId)
+    if (coordinator) coordinator.invalidateSettingsCaches()
+    return generation
   }
   private connectionId: string
   constructor(connectionId: string) {
     this.connectionId = connectionId
+  }
+
+  /**
+   * Drop every memo that can preserve an operator setting or a Set graph
+   * derived from one. The settings API calls this through
+   * `forceNextSettingsReload()` before triggering an immediate flow pass.
+   *
+   * This used to be a timestamp-only no-op, so 5–10 minute caches for
+   * prev-position windows and live position cost survived a successful
+   * settings save. The unchanged position/indication fingerprint could then
+   * reuse the old Real Sets indefinitely. Resetting both inputs and derived
+   * graphs makes the next 200–300 ms cycle a genuine recoordination while
+   * leaving active Live positions and their durable Set lineage untouched.
+   */
+  private invalidateSettingsCaches(): void {
+    this._pfThresholdsLoadedAt = 0
+    this._hedgeLoadedAt = 0
+    this._coordinationLoadedAt = 0
+
+    this._prevPosMinCountValue = -1
+    this._prevPosMinCountAt = 0
+    this._prevPosWindowValue = -1
+    this._prevPosWindowAt = 0
+
+    this._cachedExchangeMaxLive = null
+    this._cachedExchangeMaxLiveAt = 0
+    this._cachedLivePositionCost = null
+    this._cachedLivePositionCostAt = 0
+    this._strategyFlowSymbolConcurrencyCache = null
+    this._compactionThresholdPctCache = null
+
+    this._activeKeysCache = null
+    this._liveSetKeysCache = null
+    this._liveTradingModeCache = null
+    this.positionContextCache = null
+
+    ;(this as any)._trailingVariantsCache = undefined
+    ;(this as any)._lastPosFingerprint = {}
+    ;(this as any)._lastIndicationFingerprint = {}
+    ;(this as any)._lastRealSets = {}
+    ;(this as any)._lastCoordIndex = {}
+
+    // These LRUs contain Sets produced with settings-dependent thresholds,
+    // axes and variant profiles. Settings changes are rare; clearing the
+    // bounded process-wide maps is safer than attempting to infer every
+    // historical fingerprint format for one connection.
+    StrategyCoordinator._fpLru.clear()
+    StrategyCoordinator._axisLruMap.clear()
   }
   private config: StrategyCoordinatorConfig = {
     maxEntriesPerSet: 250,
@@ -934,12 +993,10 @@ export class StrategyCoordinator {
     // calibrated to prevent InlineLocalRedis growth past the 1200 MB
     // eviction trigger between 4s cleanup cycles.
     maxLiveSets: 400,
-    // Real Sets default to the safety ceiling (20000). "Unlimited" (Infinity)
-    // previously bypassed the OOM-protection ceiling because the enforcement
-    // used `??` (Infinity is not nullish) — next-server was OOM-killed at the
-    // 4GB heap limit during live multi-symbol runs. The evaluate path also
-    // hard-clamps with Math.min as defense in depth.
-    maxRealSets: 20000,
+    // A bounded per-symbol Real core keeps 12-symbol cycles sub-minute while
+    // variant-fair ranking preserves the best Default/Trailing/Block/DCA Sets.
+    // Operators can raise this through Settings on workers with more capacity.
+    maxRealSets: 25,
     pruneStrategy: "hybrid",
   }
 
@@ -1092,12 +1149,12 @@ export class StrategyCoordinator {
     if (cached && Date.now() - cached.at < 2_000) return cached.enabled
     let enabled = false
     try {
-      const [{ getConnection }, { isTruthyFlag }] = await Promise.all([
+      const [{ getConnection }, { isConnectionLiveTradeEnabled }] = await Promise.all([
         import("@/lib/redis-db"),
         import("@/lib/connection-state-utils"),
       ])
       const connection = await getConnection(this.connectionId)
-      enabled = isTruthyFlag(connection?.is_live_trade) || isTruthyFlag(connection?.live_trade_enabled)
+      enabled = isConnectionLiveTradeEnabled(connection)
     } catch {
       enabled = false
     }
@@ -2533,11 +2590,10 @@ export class StrategyCoordinator {
     let liveQuickstartOn = false
     try {
       const { getConnection: getConn } = await import("@/lib/redis-db")
-      const { isTruthyFlag } = await import("@/lib/connection-state-utils")
+      const { isConnectionLiveTradeEnabled, isTruthyFlag } = await import("@/lib/connection-state-utils")
       const conn = await getConn(this.connectionId).catch(() => null as any)
       liveQuickstartOn =
-        isTruthyFlag(conn?.is_live_trade) ||
-        isTruthyFlag(conn?.live_trade_enabled) ||
+        isConnectionLiveTradeEnabled(conn) ||
         isTruthyFlag(conn?.live_trade_requested)
       if (liveQuickstartOn) {
         const relaxed = Math.min(mainMinPF, 0.75)
@@ -2901,11 +2957,11 @@ export class StrategyCoordinator {
       if (!configuredAxisCeiling) {
         ;(globalThis as any).__axis_sets_ceiling = _boundedDynCeiling
       }
-      // Instance field is null when unconfigured (new code) or 50 when the
-      // singleton was constructed under old code. Treat null OR the old sentinel
-      // 50 as "not explicitly set" so the dynamic default applies.
+      // Any positive settings value is an explicit operator ceiling. The old
+      // `> 50` test silently ignored the UI default of exactly 50 (and every
+      // lower high-performance value), so the dynamic VM ceiling won instead.
       const _instanceCeiling =
-        this.strategyMainAxisSetsCeiling !== null && this.strategyMainAxisSetsCeiling > 50
+        this.strategyMainAxisSetsCeiling !== null && this.strategyMainAxisSetsCeiling > 0
           ? this.strategyMainAxisSetsCeiling
           : null
       const MAIN_AXIS_SETS_CEILING =
@@ -3614,11 +3670,10 @@ export class StrategyCoordinator {
       let realMinPF = metricsReal.minProfitFactor
       try {
         const { getConnection: getConn } = await import("@/lib/redis-db")
-        const { isTruthyFlag } = await import("@/lib/connection-state-utils")
+        const { isConnectionLiveTradeEnabled, isTruthyFlag } = await import("@/lib/connection-state-utils")
         const conn = await getConn(this.connectionId).catch(() => null as any)
         const liveOn =
-          isTruthyFlag(conn?.is_live_trade) ||
-          isTruthyFlag(conn?.live_trade_enabled) ||
+          isConnectionLiveTradeEnabled(conn) ||
           isTruthyFlag(conn?.live_trade_requested)
         if (liveOn) {
           // Position count relaxation (already present)
@@ -3760,7 +3815,7 @@ export class StrategyCoordinator {
     // that would be discarded. Cap the top-PF sets here so hedge netting works with
     // a bounded input. This prevents 3244→60 set reduction happening after memory
     // is already allocated. Constant defined inline since we need it before hedge-net.
-    const _defaultRealCap = process.env.NODE_ENV === "production" ? 100 : 60
+    const _defaultRealCap = 25
     const rawRealCeiling = Number(process.env.STRATEGY_REAL_SETS_CEILING ?? "")
     const _realOutputCap =
       (Number.isFinite(rawRealCeiling) && rawRealCeiling > 0 ? Math.floor(rawRealCeiling) : null) ??
@@ -3770,9 +3825,11 @@ export class StrategyCoordinator {
     const realSetsCap = Math.min(this.config.maxRealSets ?? _realOutputCap, _realOutputCap)
     
     if (realQualifying.length > realSetsCap) {
-      console.warn(
-        `[v0] [RealStage] ${this.connectionId}: Capping ${realQualifying.length} → ${realSetsCap} before hedge netting`
-      )
+      if (shouldLogRealCap(`early:${this.connectionId}:${symbol}`)) {
+        console.warn(
+          `[v0] [RealStage] ${this.connectionId}/${symbol}: Capping ${realQualifying.length} → ${realSetsCap} before hedge netting`,
+        )
+      }
       realQualifying.length = realSetsCap  // Truncate in-place
     }
     
@@ -4052,12 +4109,14 @@ export class StrategyCoordinator {
       }
       // Restore global PF-desc ordering for the downstream hedge/dispatch path.
       realSets = reserved.concat(fill).sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
-      console.warn(
-        `[v0] [RealStage] ${this.connectionId}: ${realPostHedge.length} Real Sets exceeds ` +
-        `safety ceiling ${realSetsCap}; kept top ${realSetsCap} by rank with per-variant ` +
-        `reserve (floor ${floorPerVariant}/variant: ${JSON.stringify(keptPerVariant)}). ` +
-        `Set maxRealSets in Settings to override.`,
-      )
+      if (shouldLogRealCap(`fair:${this.connectionId}:${symbol}`)) {
+        console.warn(
+          `[v0] [RealStage] ${this.connectionId}/${symbol}: ${realPostHedge.length} Real Sets exceeds ` +
+          `safety ceiling ${realSetsCap}; kept top ${realSetsCap} by rank with per-variant ` +
+          `reserve (floor ${floorPerVariant}/variant: ${JSON.stringify(keptPerVariant)}). ` +
+          `Set maxRealSets in Settings to override.`,
+        )
+      }
     }
 
     // ── Populate CoordIndex.validRealKeys — O(N) single pass ───────────────

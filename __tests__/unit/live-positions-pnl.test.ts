@@ -22,6 +22,8 @@ jest.mock("@/lib/redis-db", () => ({
 
 jest.mock("@/lib/connection-state-utils", () => ({
   isTruthyFlag: (value: unknown) => value === true || value === "1" || value === 1,
+  isConnectionLiveTradeEnabled: (connection: Record<string, unknown>) =>
+    connection?.is_live_trade === true || connection?.is_live_trade === "1" || connection?.is_live_trade === 1,
 }))
 
 describe("live positions PnL enrichment", () => {

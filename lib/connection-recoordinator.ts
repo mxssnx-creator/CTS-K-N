@@ -247,7 +247,7 @@ export async function applyMainConnectionSettingsChange(
   stateTransitionApplied: boolean
 }> {
   return runSerializedSettingsCommit(id, async () => {
-    const { initRedis, updateConnection, updateConnectionState, getRedisBackend, getRedisClient, getConnection, setSettings } = await import("@/lib/redis-db")
+    const { initRedis, updateConnection, updateConnectionState, getRedisBackend, getRedisClient, getConnection, setSettings, persistNow } = await import("@/lib/redis-db")
     await initRedis()
     const settingsPatch = opts.settingsPatch || {}
     const redis = getRedisClient()
@@ -402,6 +402,16 @@ export async function applyMainConnectionSettingsChange(
       settingsVersion: opts.settingsVersion,
       changedFieldsOverride,
     })
+    // InlineLocalRedis is process-local; a settings response is not durable
+    // until its snapshot has crossed the disk barrier. Without this awaited
+    // flush an immediate production restart can restore the previous symbols,
+    // live flags, and strategy thresholds even though the PATCH/QuickStart
+    // response already reported success. Network Redis persistNow() is a cheap
+    // no-op, so this remains one shared route contract for both backends.
+    const persisted = await persistNow().catch(() => false)
+    if (getRedisBackend() === "inline-local" && !persisted) {
+      throw new Error(`Settings for ${id} were applied in memory but could not be persisted before response`)
+    }
     return { connection: after, completion, stateTransitionApplied: true }
   })
 }
