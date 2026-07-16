@@ -179,17 +179,17 @@ function aggregateOrdersBySymbol(
     return Math.round(x * m) / m
   }
 
-  const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto"] as const
+  const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto", "trend"] as const
 
   function aggregateIndicationSnapshot(hash: Record<string, string> | null | undefined): {
     counts: Record<string, number>
     activeSets: Record<string, number>
   } {
     const counts: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, trend: 0,
     }
     const activeSets: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, trend: 0,
     }
     const fields = hash && typeof hash === "object" ? hash : {}
 
@@ -200,7 +200,7 @@ function aggregateOrdersBySymbol(
     // data does not show false zeroes until the next cron tick rewrites scoped
     // fields.
     const hasScopedField: Record<string, boolean> = {
-      direction: false, move: false, active: false, active_advanced: false, optimal: false, auto: false,
+      direction: false, move: false, active: false, active_advanced: false, optimal: false, auto: false, trend: false,
     }
     for (const field of Object.keys(fields)) {
       const idx = field.lastIndexOf(":")
@@ -404,7 +404,7 @@ function aggregateOrdersBySymbol(
  *                                                            // — independent of 250 cap }
  *               ↑ strategiesTotal = Real-stage output (NOT sum of stages)
  *   breakdown: {
- *     indications: { direction, move, active, activeAdvanced, optimal, auto, total }
+ *     indications: { direction, move, active, activeAdvanced, optimal, auto, trend, total }
  *     strategies:  { base, main, real, live, total,
  *                    baseEvaluated, mainEvaluated, realEvaluated }
  *                    ↑ `total` = Real-stage count only, per pipeline rule above
@@ -1335,7 +1335,7 @@ export async function GET(
     //   - its own cumulative counter `indications_{type}_count` on progression:{id}
     //   - its own per-cycle increment via hincrby in EngineManager.startIndicationProcessor
     // `auto` is a synthetic legacy alias retained for back-compat with old runs.
-    const indTypes = ["direction", "move", "active", "active_advanced", "optimal", "auto"] as const
+    const indTypes = ["direction", "move", "active", "active_advanced", "optimal", "auto", "trend"] as const
     const indCounts: Record<string, number> = {}
     await Promise.all(
       indTypes.map(async (type) => {
@@ -1369,7 +1369,7 @@ export async function GET(
     // and all activeCounts come back zero — exactly the right "nothing
     // alive" semantic for the UI.
     const activeIndByType: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, trend: 0,
     }
     const activeStratByStage: Record<string, number> = {
       base: 0, main: 0, real: 0, live: 0,
@@ -1387,7 +1387,7 @@ export async function GET(
     // nothing qualified that cycle) are excluded so the number tracks
     // currently-progressing pools, not all-ever-touched pools.
     const activeSetsIndByType: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, trend: 0,
     }
     const activeSetsStratByStage: Record<string, number> = {
       base: 0, main: 0, real: 0, live: 0,
@@ -2750,7 +2750,7 @@ export async function GET(
         // three processors since the engine started.
         framesProcessed,
         // `indTotal` is the better canonical count: it is the per-type
-        // summation (direction + move + active + optimal + auto) which
+        // summation (direction + move + active + optimal + auto + trend) which
         // falls back to `indicationsTotal` (progHash.indications_count)
         // when no per-type keys exist. Using `indicationsTotal` alone
         // here caused the realtime.indicationsTotal tile to show 0
@@ -2805,6 +2805,7 @@ export async function GET(
           activeAdvanced: indCounts.active_advanced || 0,
           optimal:        indCounts.optimal        || 0,
           auto:           indCounts.auto           || 0,
+          trend:          indCounts.trend          || 0,
           total:          indTotal,
         },
         strategies: {
@@ -2860,6 +2861,7 @@ export async function GET(
           activeAdvanced: activeIndByType.active_advanced  || 0,
           optimal:        activeIndByType.optimal          || 0,
           auto:           activeIndByType.auto             || 0,
+          trend:          activeIndByType.trend            || 0,
           total:          activeIndTotal,
         },
         strategies: {
@@ -2912,6 +2914,7 @@ export async function GET(
           activeAdvanced: { sets: activeSetsIndByType.active_advanced || 0, trackings: indCounts.active_advanced || 0, positions: activeIndByType.active_advanced  || 0 },
           optimal:        { sets: activeSetsIndByType.optimal         || 0, trackings: indCounts.optimal         || 0, positions: activeIndByType.optimal          || 0 },
           auto:           { sets: activeSetsIndByType.auto            || 0, trackings: indCounts.auto            || 0, positions: activeIndByType.auto             || 0 },
+          trend:          { sets: activeSetsIndByType.trend           || 0, trackings: indCounts.trend           || 0, positions: activeIndByType.trend            || 0 },
           total:          { sets: activeSetsIndTotal,                       trackings: indTotal,                       positions: activeIndTotal },
         },
         strategies: (() => {

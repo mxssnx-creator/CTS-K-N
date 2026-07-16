@@ -207,6 +207,18 @@ export interface Settings {
   simultaneousTrading: boolean
   positionIncrementAfterSituation: boolean
 
+  // Trend Indication Settings (final Main indication type)
+  trendEnabled: boolean
+  trendTimeframesMinutes: number[] | string
+  trendDrawdownValues: number[] | string
+  trendLastSituationRatios: number[] | string
+  trendActiveSituationRatios: number[] | string
+  trendMinAgreement: number
+  trendTpMinMultiplier: number
+  trendTpMaxFactor: number
+  trendTpStep: number
+  databaseSizeTrend: number
+
   // Common Indicators
   rsiEnabled: boolean
   rsiPeriod: number

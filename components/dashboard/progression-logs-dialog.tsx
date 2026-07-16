@@ -52,7 +52,7 @@ interface StatsShape {
     avgCycleTimeMs: number
   }
   breakdown: {
-    indications: { direction: number; move: number; active: number; optimal: number; auto: number; total: number }
+    indications: { direction: number; move: number; active: number; optimal: number; auto: number; trend?: number; total: number }
     strategies: { base: number; main: number; real: number; live: number; total: number; baseEvaluated: number; mainEvaluated: number; realEvaluated: number }
   }
   // ── Active-now snapshot ────────────────────────────────────────
@@ -65,7 +65,7 @@ interface StatsShape {
   //      rollup; used as a fallback so older API revs still surface
   //      a non-zero "alive now" number.
   activeCounts?: {
-    indications?: { direction?: number; move?: number; active?: number; optimal?: number; total?: number }
+    indications?: { direction?: number; move?: number; active?: number; optimal?: number; trend?: number; total?: number }
     strategies?:  { base?: number; main?: number; real?: number; total?: number }
   }
   activeProgressing?: {
@@ -196,6 +196,7 @@ export function ProgressionLogsDialog({
     move:      Number(ac?.indications?.move)      || Number(ap?.indications?.move?.sets)      || 0,
     active:    Number(ac?.indications?.active)    || Number(ap?.indications?.active?.sets)    || 0,
     optimal:   Number(ac?.indications?.optimal)   || Number(ap?.indications?.optimal?.sets)   || 0,
+    trend:     Number(ac?.indications?.trend)     || Number(ap?.indications?.trend?.sets)     || 0,
     total:     Number(ac?.indications?.total)     || Number(ap?.indications?.total?.sets)     || 0,
   }
   const activeStrategies = {
@@ -215,6 +216,7 @@ export function ProgressionLogsDialog({
     { label: "Active Adv", value: (bd?.indications as any)?.activeAdvanced || 0 },
     { label: "Optimal",    value: bd?.indications.optimal        || 0 },
     { label: "Auto",       value: bd?.indications.auto           || 0 },
+    { label: "Trend",      value: bd?.indications.trend          || 0 },
   ]
   const totalIndByType = indTypes.reduce((s, r) => s + r.value, 0) || 1
 
@@ -382,7 +384,7 @@ export function ProgressionLogsDialog({
                         className="p-3 rounded-lg bg-violet-50 dark:bg-violet-950/40"
                         title={
                           `Indications passing thresholds this cycle: ${fmt(activeIndications.total)}\n` +
-                          `Per-type alive: D=${fmt(activeIndications.direction)} M=${fmt(activeIndications.move)} A=${fmt(activeIndications.active)} O=${fmt(activeIndications.optimal)}\n` +
+                          `Per-type alive: D=${fmt(activeIndications.direction)} M=${fmt(activeIndications.move)} A=${fmt(activeIndications.active)} O=${fmt(activeIndications.optimal)} T=${fmt(activeIndications.trend)}\n` +
                           `Cumulative since run start: ${fmt(rt?.indicationsTotal || 0)}`
                         }
                       >
@@ -397,7 +399,8 @@ export function ProgressionLogsDialog({
                           D {fmt(activeIndications.direction)} ·
                           M {fmt(activeIndications.move)} ·
                           A {fmt(activeIndications.active)} ·
-                          O {fmt(activeIndications.optimal)}
+                          O {fmt(activeIndications.optimal)} ·
+                          T {fmt(activeIndications.trend)}
                         </div>
                       </div>
                       <div

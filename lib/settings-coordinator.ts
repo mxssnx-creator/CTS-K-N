@@ -45,6 +45,9 @@ const PROGRESSION_RESTART_FIELDS = [
   "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
   "control_orders", "control_orders_enabled", "controlOrdersEnabled",
+  "trendEnabled", "trendTimeframesMinutes", "trendDrawdownValues", "trendDrawdownFactors",
+  "trendLastSituationRatios", "trendActiveSituationRatios", "trendMinAgreement",
+  "trendTpMinMultiplier", "trendTpMaxFactor", "trendTpStep", "databaseSizeTrend", "positionCost",
   "system_settings",
 ]
 
@@ -70,6 +73,9 @@ const HOT_RELOAD_FIELDS = [
   "dcaTakeProfitMode", "dcaBreakevenProfitPct", "dcaCooldownSeconds",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
   "control_orders", "control_orders_enabled", "controlOrdersEnabled",
+  "trendEnabled", "trendTimeframesMinutes", "trendDrawdownValues", "trendDrawdownFactors",
+  "trendLastSituationRatios", "trendActiveSituationRatios", "trendMinAgreement",
+  "trendTpMinMultiplier", "trendTpMaxFactor", "trendTpStep", "databaseSizeTrend", "positionCost",
   "system_settings",
 ]
 

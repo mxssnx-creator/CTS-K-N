@@ -45,7 +45,7 @@ export function AnalyticsFilters({ filter, onFilterChange }: AnalyticsFiltersPro
   }
 
   const symbols = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "BCHUSDT", "LINKUSDT", "DOGEUSDT"]
-  const indicationTypes = ["direction", "move", "active"]
+  const indicationTypes = ["direction", "move", "active", "optimal", "auto", "trend"]
   const strategyTypes = ["Base", "Main", "Real", "Block", "DCA"] // Updated from Partial/Count to Main/Real
 
   const toggleArrayItem = (array: string[], item: string) => {

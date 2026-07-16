@@ -54,6 +54,7 @@ export type SetCompactionType =
   | "indication.active"
   | "indication.optimal"
   | "indication.active_advanced"
+  | "indication.trend"
   // Strategy-sets pools (per `lib/strategy-sets-processor.ts`)
   | "strategy.base"
   | "strategy.main"

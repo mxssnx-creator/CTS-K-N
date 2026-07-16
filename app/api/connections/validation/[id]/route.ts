@@ -35,6 +35,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       `indication_set:${connectionId}:move`,
       `indication_set:${connectionId}:active`,
       `indication_set:${connectionId}:optimal`,
+      `indication_set:${connectionId}:trend`,
     ]
 
     const validationResults = {

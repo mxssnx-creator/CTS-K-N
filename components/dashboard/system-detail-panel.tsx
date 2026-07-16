@@ -77,6 +77,7 @@ interface SystemDetailData {
       active: number;
       optimal: number;
       auto: number;
+      trend: number;
       total: number;
     };
     strategies: {
@@ -268,11 +269,13 @@ export function SystemDetailPanel() {
             active: progressionState?.indicationEvaluatedActive ?? 0,
             optimal: progressionState?.indicationEvaluatedOptimal ?? 0,
             auto: 0,
+            trend: progressionState?.indicationEvaluatedTrend ?? 0,
             total:
               (progressionState?.indicationEvaluatedDirection ?? 0) +
               (progressionState?.indicationEvaluatedMove ?? 0) +
               (progressionState?.indicationEvaluatedActive ?? 0) +
-              (progressionState?.indicationEvaluatedOptimal ?? 0),
+              (progressionState?.indicationEvaluatedOptimal ?? 0) +
+              (progressionState?.indicationEvaluatedTrend ?? 0),
           },
           strategies: {
             base: progressionState?.setsBaseCount ?? 0,
@@ -673,7 +676,7 @@ export function SystemDetailPanel() {
                     count={systemData?.processing.indications.total}
                     color="purple"
                   />
-                  <div className="grid grid-cols-5 gap-1">
+                  <div className="grid grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-6">
                     <StatTile
                       label="Direction"
                       value={systemData?.processing.indications.direction ?? 0}
@@ -697,6 +700,11 @@ export function SystemDetailPanel() {
                     <StatTile
                       label="Auto"
                       value={systemData?.processing.indications.auto ?? 0}
+                      color="purple"
+                    />
+                    <StatTile
+                      label="Trend"
+                      value={systemData?.processing.indications.trend ?? 0}
                       color="purple"
                     />
                   </div>

@@ -95,7 +95,7 @@ interface SettingsPreset {
 // DATA SHAPES
 // ─────────────────────────────────────────────────────────────────────
 
-const INDICATION_TYPES = ["direction", "move", "active", "optimal", "auto"] as const
+const INDICATION_TYPES = ["direction", "move", "active", "optimal", "auto", "trend"] as const
 type IndicationType = (typeof INDICATION_TYPES)[number]
 
 interface IndicationParams {

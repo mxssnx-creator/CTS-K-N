@@ -1,4 +1,4 @@
-export const INDICATION_PROFILE_TYPES = ["direction", "move", "active", "optimal", "auto"] as const
+export const INDICATION_PROFILE_TYPES = ["direction", "move", "active", "optimal", "auto", "trend"] as const
 export type IndicationProfileType = (typeof INDICATION_PROFILE_TYPES)[number]
 
 export interface IndicationProfileParams {
@@ -16,6 +16,7 @@ export const DEFAULT_MAIN_INDICATION_PROFILE: IndicationChannelProfile = {
   active:    { enabled: true,  range: 15, timeout: 60, interval: 5 },
   optimal:   { enabled: false, range: 20, timeout: 60, interval: 5 },
   auto:      { enabled: false, range: 25, timeout: 90, interval: 15 },
+  trend:     { enabled: true,  range: 30, timeout: 60, interval: 1 },
 }
 
 export const DEFAULT_PRESET_INDICATION_PROFILE: IndicationChannelProfile = {
@@ -24,6 +25,7 @@ export const DEFAULT_PRESET_INDICATION_PROFILE: IndicationChannelProfile = {
   active:    { enabled: false, range: 20, timeout: 90, interval: 5 },
   optimal:   { enabled: true,  range: 25, timeout: 90, interval: 5 },
   auto:      { enabled: false, range: 30, timeout: 120, interval: 15 },
+  trend:     { enabled: false, range: 30, timeout: 120, interval: 5 },
 }
 
 function bool(value: unknown, fallback: boolean): boolean {

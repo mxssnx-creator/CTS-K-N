@@ -172,6 +172,7 @@ export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { 
             Active:    s.breakdown?.indications?.active    || 0,
             Optimal:   s.breakdown?.indications?.optimal   || 0,
             Auto:      s.breakdown?.indications?.auto      || 0,
+            Trend:     s.breakdown?.indications?.trend     || 0,
           },
           strategies: {
             base: s.breakdown?.strategies?.base || 0,

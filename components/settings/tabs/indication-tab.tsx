@@ -5,7 +5,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
+import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+
+const TREND_TIMEFRAMES = [1, 3, 5, 10, 15, 30]
 
 interface IndicationTabProps {
   settings: any
@@ -22,6 +25,23 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
     return <div>Loading settings...</div>
   }
 
+  const numericListValue = (value: unknown, fallback: number[]) =>
+    Array.isArray(value) ? value.join(", ") : typeof value === "string" ? value : fallback.join(", ")
+  const trendTimeframeValues: unknown[] = Array.isArray(settings.trendTimeframesMinutes)
+    ? settings.trendTimeframesMinutes
+    : String(settings.trendTimeframesMinutes || "1,3,5,10,15,30").split(",")
+  const selectedTrendTimeframes = new Set<number>(
+    trendTimeframeValues
+      .map((value) => Number(value))
+      .filter((value): value is number => Number.isFinite(value)),
+  )
+  const toggleTrendTimeframe = (minutes: number, enabled: boolean) => {
+    const next = new Set(selectedTrendTimeframes)
+    if (enabled) next.add(minutes)
+    else if (next.size > 1) next.delete(minutes)
+    handleSettingChange("trendTimeframesMinutes", Array.from(next).sort((left, right) => left - right))
+  }
+
   return (
     <Tabs value={indicationSubTab} onValueChange={setIndicationSubTab}>
       <TabsList>
@@ -31,10 +51,11 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
 
       <TabsContent value="main" className="space-y-4">
         <Tabs value={indicationMainSubTab} onValueChange={setIndicationMainSubTab}>
-          <TabsList>
+          <TabsList className="h-auto w-full flex-wrap justify-start">
             <TabsTrigger value="main">Main (Direction/Move/Active)</TabsTrigger>
             <TabsTrigger value="optimal">Optimal</TabsTrigger>
             <TabsTrigger value="auto">Auto</TabsTrigger>
+            <TabsTrigger value="trend">Trend</TabsTrigger>
           </TabsList>
 
           <TabsContent value="main" className="space-y-4">
@@ -523,6 +544,155 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                       onCheckedChange={(checked) => handleSettingChange("autoLearningMode", checked)}
                     />
                   </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="trend" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Trend Indication Settings</CardTitle>
+                <CardDescription>
+                  Coordinate multi-window trend, drawdown, recent and active market situations in independent Sets
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>Enable Trend Indication</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Runs Trend as the final Main indication type
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings.trendEnabled !== false}
+                    onCheckedChange={(checked) => handleSettingChange("trendEnabled", checked)}
+                  />
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <Label>Calculation windows</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Each enabled one-minute candle window creates independent Trend configurations
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                    {TREND_TIMEFRAMES.map((minutes) => (
+                      <div key={minutes} className="flex items-center justify-between rounded-lg border p-3">
+                        <Label>{minutes} min</Label>
+                        <Switch
+                          checked={selectedTrendTimeframes.has(minutes)}
+                          onCheckedChange={(checked) => toggleTrendTimeframe(minutes, checked)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-3">
+                  <div className="space-y-2">
+                    <Label>Negative drawdown factors</Label>
+                    <Input
+                      value={numericListValue(settings.trendDrawdownValues, [-1, -2, -3])}
+                      onChange={(event) => handleSettingChange("trendDrawdownValues", event.target.value)}
+                      placeholder="-1, -2, -3"
+                    />
+                    <p className="text-xs text-muted-foreground">Negative PositionCost multiples, one Set per value</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Last-situation ratios</Label>
+                    <Input
+                      value={numericListValue(settings.trendLastSituationRatios, [0.5, 1])}
+                      onChange={(event) => handleSettingChange("trendLastSituationRatios", event.target.value)}
+                      placeholder="0.5, 1"
+                    />
+                    <p className="text-xs text-muted-foreground">Required recent per-minute strength vs. 1m average</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Active-situation ratios</Label>
+                    <Input
+                      value={numericListValue(settings.trendActiveSituationRatios, [0.5, 1])}
+                      onChange={(event) => handleSettingChange("trendActiveSituationRatios", event.target.value)}
+                      placeholder="0.5, 1"
+                    />
+                    <p className="text-xs text-muted-foreground">Required last market change vs. 1m average</p>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Minimum directional agreement (50-100%)</Label>
+                    <Slider
+                      min={0.5}
+                      max={1}
+                      step={0.05}
+                      value={[settings.trendMinAgreement ?? 0.6]}
+                      onValueChange={([value]) => handleSettingChange("trendMinAgreement", value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Current: {Math.round((settings.trendMinAgreement ?? 0.6) * 100)}%
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Trend Set database size (50-750)</Label>
+                    <Slider
+                      min={50}
+                      max={750}
+                      step={50}
+                      value={[settings.databaseSizeTrend ?? 250]}
+                      onValueChange={([value]) => handleSettingChange("databaseSizeTrend", value)}
+                    />
+                    <p className="text-xs text-muted-foreground">Current: {settings.databaseSizeTrend ?? 250} per Set</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4 rounded-lg border p-4">
+                  <div>
+                    <Label>Adaptive Base pseudo-position TP range</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Minimum = average absolute 1m market change ÷ PositionCost × multiplier; maximum and step bound the ladder
+                    </p>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <div className="space-y-2">
+                      <Label>Minimum multiplier (default ×2)</Label>
+                      <Slider
+                        min={0.5}
+                        max={5}
+                        step={0.5}
+                        value={[settings.trendTpMinMultiplier ?? 2]}
+                        onValueChange={([value]) => handleSettingChange("trendTpMinMultiplier", value)}
+                      />
+                      <p className="text-xs text-muted-foreground">Current: ×{settings.trendTpMinMultiplier ?? 2}</p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Maximum TP factor</Label>
+                      <Slider
+                        min={2}
+                        max={22}
+                        step={1}
+                        value={[settings.trendTpMaxFactor ?? 10]}
+                        onValueChange={([value]) => handleSettingChange("trendTpMaxFactor", value)}
+                      />
+                      <p className="text-xs text-muted-foreground">Current: {settings.trendTpMaxFactor ?? 10}</p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>TP factor step</Label>
+                      <Slider
+                        min={0.25}
+                        max={5}
+                        step={0.25}
+                        value={[settings.trendTpStep ?? 1]}
+                        onValueChange={([value]) => handleSettingChange("trendTpStep", value)}
+                      />
+                      <p className="text-xs text-muted-foreground">Current: {settings.trendTpStep ?? 1}</p>
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Example: 1m average / PositionCost = 3, multiplier ×2 → minimum 6; max 10 and step 1 → 6, 7, 8, 9, 10.
+                  </p>
                 </div>
               </CardContent>
             </Card>

@@ -80,7 +80,7 @@ export async function GET() {
       } catch { /* non-critical */ }
 
       // Per-type indication counts — prefer progression hash fields
-      const indicationTypes = ["direction", "move", "active", "optimal", "auto"] as const
+      const indicationTypes = ["direction", "move", "active", "optimal", "auto", "trend"] as const
       for (const type of indicationTypes) {
         const fromHash = parseInt(progHash[`indications_${type}_count`] || "0", 10)
         const fromKey  = fromHash > 0 ? fromHash :

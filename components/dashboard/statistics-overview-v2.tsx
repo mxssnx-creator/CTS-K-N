@@ -1156,12 +1156,12 @@ export function StatisticsOverviewV2() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(["direction", "move", "active", "activeAdvanced", "optimal", "auto"] as const).map((k) => {
+                  {(["direction", "move", "active", "activeAdvanced", "optimal", "auto", "trend"] as const).map((k) => {
                     const r = stats.apIndications?.[k]
                     if (!r || (r.sets === 0 && r.trackings === 0 && r.positions === 0)) return null
                     const labelMap: Record<string, string> = {
                       direction: "Direction", move: "Move", active: "Active",
-                      activeAdvanced: "Active Adv", optimal: "Optimal", auto: "Auto",
+                      activeAdvanced: "Active Adv", optimal: "Optimal", auto: "Auto", trend: "Trend",
                     }
                     return (
                       <tr key={k} className="border-b border-border/20 last:border-0">

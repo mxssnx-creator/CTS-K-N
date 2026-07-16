@@ -128,7 +128,7 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
     maxOpenPositions: 0,
     comprehensiveStats: null as null | {
       symbols: { prehistoricLoaded: number; prehistoricDataSize: number; intervalsProcessed: number }
-      indicationsByType: { direction: number; move: number; active: number; optimal: number; auto: number; total: number }
+      indicationsByType: { direction: number; move: number; active: number; optimal: number; auto: number; trend: number; total: number }
       pseudoPositions: { base: number; main: number; real: number; total: number }
       livePositions: number
     }
@@ -166,6 +166,7 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
     const activeIndications    = parseInt(ph.indications_active_count    || "0", 10)
     const optimalIndications   = parseInt(ph.indications_optimal_count   || "0", 10)
     const autoIndications      = parseInt(ph.indications_auto_count      || "0", 10)
+    const trendIndications     = parseInt(ph.indications_trend_count     || "0", 10)
     const liveOrdersPlaced = Math.max(0, parseInt(ph.live_orders_placed_count || "0", 10) || 0)
     const liveOrdersFilled = Math.max(0, parseInt(ph.live_orders_filled_count || "0", 10) || 0)
     const liveOrdersFailed = Math.max(0, parseInt(ph.live_orders_failed_count || "0", 10) || 0)
@@ -236,7 +237,8 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
           active: activeIndications,
           optimal: optimalIndications,
           auto: autoIndications,
-          total: totalIndicationsCount || (directionIndications + moveIndications + activeIndications + optimalIndications + autoIndications),
+          trend: trendIndications,
+          total: totalIndicationsCount || (directionIndications + moveIndications + activeIndications + optimalIndications + autoIndications + trendIndications),
         },
         pseudoPositions: {
           base: baseSets,

@@ -1,5 +1,4 @@
 import { isConnectionReadyForEngine } from "@/lib/connection-state-helpers"
-import { readTradeEngineWorkerHeartbeat } from "@/lib/trade-engine-worker-heartbeat"
 
 type CronOwnershipClient = {
   get: (key: string) => Promise<unknown>
@@ -24,8 +23,10 @@ function readConnectionHeartbeatMs(state: Record<string, string> | null | undefi
  * full Indication -> Strategy -> Real/Live pipeline beside a healthy manager
  * duplicates Sets, races position dispatch, and roughly doubles cold-start
  * memory. Local ownership is authoritative; distributed ownership requires
- * both the per-connection running flag and a fresh connection/global
- * heartbeat so a stale crash marker can never suppress recovery forever.
+ * both the per-connection running flag and a fresh per-connection heartbeat.
+ * A global heartbeat cannot prove ownership of a specific connection: using
+ * it as a fallback lets one healthy engine suppress recovery for every stale
+ * sibling connection indefinitely.
  */
 export async function filterCronFallbackConnections(
   connections: any[],
@@ -35,8 +36,6 @@ export async function filterCronFallbackConnections(
 ): Promise<{ eligible: any[]; skippedFreshOwners: number }> {
   if (connections.length === 0) return { eligible: [], skippedFreshOwners: 0 }
 
-  const globalState = await client.hgetall("trade_engine:global").catch(() => null)
-  const globalHeartbeatFresh = readTradeEngineWorkerHeartbeat(globalState, now).fresh
   const owned = await Promise.all(connections.map(async (connection) => {
     const connectionId = String(connection?.id || "")
     if (!connectionId) return false
@@ -55,7 +54,7 @@ export async function filterCronFallbackConnections(
     )
     const connectionHeartbeatFresh =
       newestConnectionHeartbeat > 0 && now - newestConnectionHeartbeat < 90_000
-    return connectionHeartbeatFresh || globalHeartbeatFresh
+    return connectionHeartbeatFresh
   }))
 
   return {

@@ -92,7 +92,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
          lastUpdate: progressionState.lastUpdate?.toISOString() || null
        },
        
-       // Indications by type (direction, move, active, optimal, auto)
+       // Indications by type (direction, move, active, optimal, auto, trend)
        indicationsCounts: {
          direction: progressionState.indicationsDirectionCount || 0,
          move: progressionState.indicationsMoveCount || 0,

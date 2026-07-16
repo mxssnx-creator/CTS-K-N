@@ -626,6 +626,7 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                       { key: "indication.active",    label: "Indication · Active" },
                       { key: "indication.optimal",   label: "Indication · Optimal" },
                       { key: "indication.active_advanced", label: "Indication · Active Advanced" },
+                      { key: "indication.trend", label: "Indication · Trend" },
                       { key: "strategy.base",        label: "Strategy · Base" },
                       { key: "strategy.main",        label: "Strategy · Main" },
                       { key: "strategy.real",        label: "Strategy · Real" },

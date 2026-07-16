@@ -1,6 +1,6 @@
 /**
  * Indication Processor - Module-Level Caching (Fixed)
- * Processes independent indication sets for each type (Direction, Move, Active, Optimal)
+ * Processes independent indication sets for each type (Direction, Move, Active, Optimal, Auto, Trend)
  * Each type maintains its own 250-entry pool calculated independently
  * 
  * FIX: All caching uses module-level functions to avoid `this` context issues
@@ -69,6 +69,18 @@ import { IndicationSetsProcessor } from "@/lib/indication-sets-processor"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { trackIndicationStats } from "@/lib/statistics-tracker"
 import { StepBasedIndicators } from "@/lib/step-based-indicators"
+import {
+  buildAdaptiveTrendTpRange,
+  calculateTrendSignal,
+  DEFAULT_TREND_ACTIVE_SITUATION_RATIOS,
+  DEFAULT_TREND_DRAWDOWN_FACTORS,
+  DEFAULT_TREND_LAST_SITUATION_RATIOS,
+  DEFAULT_TREND_MIN_AGREEMENT,
+  DEFAULT_TREND_TIMEFRAMES_MINUTES,
+  DEFAULT_TREND_TP_MAX_FACTOR,
+  DEFAULT_TREND_TP_MIN_MULTIPLIER,
+  DEFAULT_TREND_TP_STEP,
+} from "@/lib/trend-indication"
 
 // Pre-import modules at module load time (not per-call)
 import { initRedis, getRedisClient, getMarketData, saveIndication, getSettings, getAppSettings, storeIndications } from "@/lib/redis-db"
@@ -164,6 +176,16 @@ async function getSettingsCachedModule(): Promise<any> {
       minProfitFactor: settings.minProfitFactor || 1.2,
       minConfidence: settings.minConfidence || 0.6,
       timeframes: settings.timeframes || ["1h", "4h", "1d"],
+      trendEnabled: settings.trendEnabled !== false && settings.trendEnabled !== "false",
+      trendTimeframesMinutes: settings.trendTimeframesMinutes || [...DEFAULT_TREND_TIMEFRAMES_MINUTES],
+      trendDrawdownValues: settings.trendDrawdownValues || [...DEFAULT_TREND_DRAWDOWN_FACTORS],
+      trendLastSituationRatios: settings.trendLastSituationRatios || [...DEFAULT_TREND_LAST_SITUATION_RATIOS],
+      trendActiveSituationRatios: settings.trendActiveSituationRatios || [...DEFAULT_TREND_ACTIVE_SITUATION_RATIOS],
+      trendMinAgreement: Number(settings.trendMinAgreement) || DEFAULT_TREND_MIN_AGREEMENT,
+      positionCost: Number(settings.positionCost) || 0.02,
+      trendTpMinMultiplier: Number(settings.trendTpMinMultiplier) || DEFAULT_TREND_TP_MIN_MULTIPLIER,
+      trendTpMaxFactor: Number(settings.trendTpMaxFactor) || DEFAULT_TREND_TP_MAX_FACTOR,
+      trendTpStep: Number(settings.trendTpStep) || DEFAULT_TREND_TP_STEP,
     }
 
     MODULE_SETTINGS_CACHE = { data: indicationSettings, timestamp: now }
@@ -173,8 +195,60 @@ async function getSettingsCachedModule(): Promise<any> {
       minProfitFactor: 1.2,
       minConfidence: 0.6,
       timeframes: ["1h", "4h", "1d"],
+      trendEnabled: true,
+      trendTimeframesMinutes: [...DEFAULT_TREND_TIMEFRAMES_MINUTES],
+      trendDrawdownValues: [...DEFAULT_TREND_DRAWDOWN_FACTORS],
+      trendLastSituationRatios: [...DEFAULT_TREND_LAST_SITUATION_RATIOS],
+      trendActiveSituationRatios: [...DEFAULT_TREND_ACTIVE_SITUATION_RATIOS],
+      trendMinAgreement: DEFAULT_TREND_MIN_AGREEMENT,
+      positionCost: 0.02,
+      trendTpMinMultiplier: DEFAULT_TREND_TP_MIN_MULTIPLIER,
+      trendTpMaxFactor: DEFAULT_TREND_TP_MAX_FACTOR,
+      trendTpStep: DEFAULT_TREND_TP_STEP,
     }
   }
+}
+
+function parseNumericSettingList(raw: unknown, fallback: readonly number[]): number[] {
+  let values: unknown[] = []
+  if (Array.isArray(raw)) values = raw
+  else if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw)
+      values = Array.isArray(parsed) ? parsed : raw.split(",")
+    } catch {
+      values = raw.split(",")
+    }
+  }
+  const parsed = values.map(Number).filter(Number.isFinite)
+  return parsed.length > 0 ? Array.from(new Set(parsed)) : [...fallback]
+}
+
+function timestampMs(value: unknown): number | null {
+  const numeric = Number(value)
+  if (Number.isFinite(numeric) && numeric > 0) return numeric < 10_000_000_000 ? numeric * 1000 : numeric
+  const parsed = Date.parse(String(value ?? ""))
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/** Collapse arbitrary-frequency candles to deterministic one-minute closes. */
+function oneMinuteClosesOldestFirst(candles: any[]): number[] {
+  const rows = candles
+    .map((candle: any, index: number) => ({
+      price: Number(candle?.close ?? candle?.c ?? candle?.price),
+      timestamp: timestampMs(candle?.timestamp ?? candle?.time ?? candle?.t),
+      index,
+    }))
+    .filter((row) => Number.isFinite(row.price) && row.price > 0)
+  if (rows.length === 0) return []
+
+  const allTimestamped = rows.every((row) => row.timestamp !== null)
+  if (!allTimestamped) return rows.map((row) => row.price).slice(-61)
+
+  rows.sort((left, right) => Number(left.timestamp) - Number(right.timestamp) || left.index - right.index)
+  const byMinute = new Map<number, number>()
+  for (const row of rows) byMinute.set(Math.floor(Number(row.timestamp) / 60_000), row.price)
+  return Array.from(byMinute.values()).slice(-61)
 }
 
 export class IndicationProcessor {
@@ -295,7 +369,8 @@ export class IndicationProcessor {
   }
 
   /**
-   * Process historical indications - builds up all 4 independent type sets
+   * Process historical indications - builds all independent set-backed types,
+   * including Trend as the final Main type
    * Prehistoric phase only: evaluation, no trade execution
    */
   async processHistoricalIndications(symbol: string, startDate: Date, endDate: Date): Promise<void> {
@@ -358,21 +433,22 @@ export class IndicationProcessor {
         recordsProcessed++
       }
 
-      // Fan out all 4 stat reads in parallel — was 4 serial awaits.
-      const [directionStats, moveStats, activeStats, optimalStats] = await Promise.all([
+      // Fan out all stat reads in parallel.
+      const [directionStats, moveStats, activeStats, optimalStats, trendStats] = await Promise.all([
         setsProcessor.getSetStats(symbol, "direction"),
         setsProcessor.getSetStats(symbol, "move"),
         setsProcessor.getSetStats(symbol, "active"),
         setsProcessor.getSetStats(symbol, "optimal"),
+        setsProcessor.getSetStats(symbol, "trend"),
       ])
 
       const ProgressionManager = await getProgressionManager()
       await ProgressionManager.incrementPrehistoricCycle(this.connectionId, symbol)
 
-      const totalEntries = (directionStats?.currentEntries || 0) + (moveStats?.currentEntries || 0) + (activeStats?.currentEntries || 0) + (optimalStats?.currentEntries || 0)
+      const totalEntries = (directionStats?.currentEntries || 0) + (moveStats?.currentEntries || 0) + (activeStats?.currentEntries || 0) + (optimalStats?.currentEntries || 0) + (trendStats?.currentEntries || 0)
       
       console.log(
-        `[v0] [PrehistoricIndication] COMPLETE: ${symbol} | Records=${recordsProcessed} | Total Entries=${totalEntries} | Direction=${directionStats?.currentEntries || 0}/250 Move=${moveStats?.currentEntries || 0}/250 Active=${activeStats?.currentEntries || 0}/250 Optimal=${optimalStats?.currentEntries || 0}/250`
+        `[v0] [PrehistoricIndication] COMPLETE: ${symbol} | Records=${recordsProcessed} | Total Entries=${totalEntries} | Direction=${directionStats?.currentEntries || 0}/250 Move=${moveStats?.currentEntries || 0}/250 Active=${activeStats?.currentEntries || 0}/250 Optimal=${optimalStats?.currentEntries || 0}/250 Trend=${trendStats?.currentEntries || 0}/250`
       )
 
       // CRITICAL: Save prehistoric indications to Redis so realtime phase can access them
@@ -392,6 +468,9 @@ export class IndicationProcessor {
         if (optimalStats && Object.keys(optimalStats).length > 0) {
           prehistoricIndications.push({ type: "optimal", ...optimalStats, phase: "prehistoric" })
         }
+        if (trendStats && Object.keys(trendStats).length > 0) {
+          prehistoricIndications.push({ type: "trend", ...trendStats, phase: "prehistoric" })
+        }
         
         for (const ind of prehistoricIndications) {
           await saveIndication({ ...ind, connection_id: `${this.connectionId}:${symbol}:prehistoric` })
@@ -406,6 +485,7 @@ export class IndicationProcessor {
         move: moveStats,
         active: activeStats,
         optimal: optimalStats,
+        trend: trendStats,
         dataPoints: historicalData.length,
         recordsProcessed,
         totalEntriesCalculated: totalEntries,
@@ -471,6 +551,7 @@ export class IndicationProcessor {
       if (!this.marketDataCache) {
         this.marketDataCache = new Map()
       }
+      const indicationSettings = await getSettingsCachedModule()
       
       let marketData = await this.getLatestMarketDataCached(symbol)
       if (!marketData) {
@@ -602,6 +683,8 @@ export class IndicationProcessor {
       //   active    — candle volume > recent-volume average (elevated activity)
       //   optimal   — strong confidence + strong body (conf ≥ 0.72 AND body-ratio ≥ 0.55)
       //   auto      — step-based indicator alignment across short/mid/long windows
+      //   trend     — final type; coordinated multi-minute trend + negative
+      //               drawdown + recent/active situation validation
       //
       // The scoring below is derived from the real candle data already in scope
       // (currentOpen/High/Low/Close/Volume, candles[], stepIndicators), so we
@@ -676,9 +759,66 @@ export class IndicationProcessor {
         }
       })()
 
+      const trendEvaluations = (() => {
+        if (indicationSettings.trendEnabled === false) return []
+        const prices = oneMinuteClosesOldestFirst(candles)
+        const timeframes = parseNumericSettingList(
+          indicationSettings.trendTimeframesMinutes,
+          DEFAULT_TREND_TIMEFRAMES_MINUTES,
+        ).map((value) => Math.round(value)).filter((value) => value >= 1 && value <= 60)
+        const drawdowns = parseNumericSettingList(
+          indicationSettings.trendDrawdownValues,
+          DEFAULT_TREND_DRAWDOWN_FACTORS,
+        ).map((value) => value > 0 ? -value : value).filter((value) => value < 0)
+        const lastRatios = parseNumericSettingList(
+          indicationSettings.trendLastSituationRatios,
+          DEFAULT_TREND_LAST_SITUATION_RATIOS,
+        ).filter((value) => value > 0)
+        const activeRatios = parseNumericSettingList(
+          indicationSettings.trendActiveSituationRatios,
+          DEFAULT_TREND_ACTIVE_SITUATION_RATIOS,
+        ).filter((value) => value > 0)
+        if (prices.length < 2 || timeframes.length === 0 || drawdowns.length === 0 || lastRatios.length === 0 || activeRatios.length === 0) {
+          return []
+        }
+
+        const strongestByTimeframe: Array<NonNullable<ReturnType<typeof calculateTrendSignal>>> = []
+        for (const timeframeMinutes of timeframes) {
+          let best: ReturnType<typeof calculateTrendSignal> = null
+          for (const drawdownFactor of drawdowns) {
+            for (const lastSituationRatio of lastRatios) {
+              for (const activeSituationRatio of activeRatios) {
+                const signal = calculateTrendSignal(prices, {
+                  timeframeMinutes,
+                  drawdownFactor,
+                  lastSituationRatio,
+                  activeSituationRatio,
+                  positionCostPct: Number(indicationSettings.positionCost) || 0.02,
+                  minAgreement: Number(indicationSettings.trendMinAgreement) || DEFAULT_TREND_MIN_AGREEMENT,
+                })
+                if (signal && (!best || signal.signalScore > best.signalScore)) best = signal
+              }
+            }
+          }
+          if (best) strongestByTimeframe.push(best)
+        }
+        if (strongestByTimeframe.length === 0) return []
+
+        const adaptiveTpRange = buildAdaptiveTrendTpRange({
+          pricesOldestFirst: prices,
+          positionCostPct: Number(indicationSettings.positionCost) || 0.02,
+          minMultiplier: Number(indicationSettings.trendTpMinMultiplier) || DEFAULT_TREND_TP_MIN_MULTIPLIER,
+          maxFactor: Number(indicationSettings.trendTpMaxFactor) || DEFAULT_TREND_TP_MAX_FACTOR,
+          step: Number(indicationSettings.trendTpStep) || DEFAULT_TREND_TP_STEP,
+          averageWindowMinutes: Math.max(...timeframes),
+        })
+        return strongestByTimeframe.map((signal) => ({ signal, adaptiveTpRange }))
+      })()
+
       // Loop over primary + hedge directions. Each condition is independent
       // so in a calm market only `direction` fires; on a big bullish candle
-      // with elevated volume, all five fire.
+      // with elevated volume, all legacy types can fire. Trend is appended
+      // once after this loop so it is always the final indication type.
       const pairs: Array<["long" | "short", number, number, boolean]> = [
         [primaryDir,   primaryConf,   primaryPF,   true],   // primary
         [secondaryDir, secondaryConf, secondaryPF, false],  // hedge
@@ -759,6 +899,24 @@ export class IndicationProcessor {
         }
       }
 
+      // 6. Trend — deliberately appended last. Emit the strongest independent
+      // configuration for every enabled timeframe (up to 1/3/5/10/15/30m),
+      // while IndicationSetsProcessor retains every passing parameter tuple.
+      for (const trendEvaluation of trendEvaluations) {
+        indications.push({
+          type: "trend",
+          symbol,
+          value: currentClose,
+          profitFactor: trendEvaluation.signal.signalScore,
+          confidence: trendEvaluation.signal.confidence,
+          timestamp: now,
+          metadata: {
+            ...trendEvaluation.signal.metadata,
+            adaptiveTpRange: trendEvaluation.adaptiveTpRange,
+          },
+        })
+      }
+
       // Store indication payloads (raw JSON list, per-type TTL keys).
       await storeIndications(this.connectionId, symbol, indications)
 
@@ -805,6 +963,7 @@ export class IndicationProcessor {
           active_advanced: 0,
           optimal: 0,
           auto: 0,
+          trend: 0,
         }
         for (const ind of indications) {
           typeCounts[ind.type] = (typeCounts[ind.type] ?? 0) + 1

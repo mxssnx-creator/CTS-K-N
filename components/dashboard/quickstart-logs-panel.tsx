@@ -45,6 +45,7 @@ interface ProgressionState {
   indicationEvaluatedMove?: number
   indicationEvaluatedActive?: number
   indicationEvaluatedOptimal?: number
+  indicationEvaluatedTrend?: number
   setsBaseCount?: number
   setsMainCount?: number
   setsRealCount?: number
@@ -171,6 +172,7 @@ export function QuickstartLogsPanel({ connectionId, className = "" }: Quickstart
                 <Badge variant="secondary">Move {progressionState.indicationEvaluatedMove || 0}</Badge>
                 <Badge variant="secondary">Active {progressionState.indicationEvaluatedActive || 0}</Badge>
                 <Badge variant="secondary">Optimal {progressionState.indicationEvaluatedOptimal || 0}</Badge>
+                <Badge variant="secondary">Trend {progressionState.indicationEvaluatedTrend || 0}</Badge>
                 <Badge variant="outline">Base/Main/Real sets {progressionState.setsBaseCount || 0}/{progressionState.setsMainCount || 0}/{progressionState.setsRealCount || 0}</Badge>
                 {progressionState.processingCompleteness && (
                   <Badge variant={progressionState.processingCompleteness.hasErrors ? "destructive" : "outline"}>

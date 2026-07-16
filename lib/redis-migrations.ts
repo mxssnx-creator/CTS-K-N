@@ -1328,6 +1328,7 @@ const migrations: Migration[] = [
           indications_active_advanced_count: have.indications_active_advanced_count ?? "0",
           indications_optimal_count: have.indications_optimal_count ?? "0",
           indications_auto_count: have.indications_auto_count ?? "0",
+          indications_trend_count: have.indications_trend_count ?? "0",
 
           // ── Strategy Set Counters ──
           strategies_base_total: have.strategies_base_total ?? "0",
@@ -3801,6 +3802,56 @@ const migrations: Migration[] = [
     },
     down: async (client: any) => {
       await client.set("_schema_version", "72")
+    },
+  },
+  {
+    version: 74,
+    name: "074-trend-indication-adaptive-base-ranges",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      const defaults: Record<string, string> = {
+        trendEnabled: "true",
+        trendTimeframesMinutes: JSON.stringify([1, 3, 5, 10, 15, 30]),
+        trendDrawdownValues: JSON.stringify([-1, -2, -3]),
+        trendLastSituationRatios: JSON.stringify([0.5, 1]),
+        trendActiveSituationRatios: JSON.stringify([0.5, 1]),
+        trendMinAgreement: "0.6",
+        trendTpMinMultiplier: "2",
+        trendTpMaxFactor: "10",
+        trendTpStep: "1",
+        databaseSizeTrend: "250",
+      }
+
+      // Cover both historical raw hashes and the canonical `setSettings()`
+      // mirrors read by getAppSettings(). Existing operator values always win.
+      for (const key of [
+        "settings:app_settings",
+        "settings:all_settings",
+        "app_settings",
+        "all_settings",
+        "settings:system",
+      ]) {
+        const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+        for (const [field, value] of Object.entries(defaults)) {
+          if (existing[field] === undefined || existing[field] === "") patch[field] = value
+        }
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, { ...patch, updated_at: now }).catch(() => 0)
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        trend_indication_type: "enabled-final-main-type",
+        trend_timeframes_minutes: "1,3,5,10,15,30",
+        trend_adaptive_tp_profile: "avg-1m-position-cost-x2-max10-step1",
+        schema_version: "74",
+        updated_at: now,
+      }).catch(() => 0)
+      console.log("[v0] Migration 074: seeded Trend indication and adaptive Base TP defaults without replacing operator values")
+    },
+    down: async (client: any) => {
+      await client.set("_schema_version", "73")
     },
   },
 ]

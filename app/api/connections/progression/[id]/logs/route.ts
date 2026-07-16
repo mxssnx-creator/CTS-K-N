@@ -78,13 +78,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       active:    toNumber(progHashForLogs["indications_active_count"]),
       optimal:   toNumber(progHashForLogs["indications_optimal_count"]),
       auto:      toNumber(progHashForLogs["indications_auto_count"]),
+      trend:     toNumber(progHashForLogs["indications_trend_count"]),
     }
     const indicationsByTypeTotal =
       indicationsByType.direction +
       indicationsByType.move +
       indicationsByType.active +
       indicationsByType.optimal +
-      indicationsByType.auto
+      indicationsByType.auto +
+      indicationsByType.trend
 
     const mergedLogs = logs.length > 0
       ? logs
@@ -110,6 +112,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       indicationMoveCount,
       indicationActiveCount,
       indicationOptimalCount,
+      indicationTrendCount,
       redisDbSize,
       redisMemoryInfo,
     ] = await Promise.all([
@@ -126,6 +129,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       toNumber(await client.get(`indications:${connectionId}:move:evaluated`).catch(() => 0)),
       toNumber(await client.get(`indications:${connectionId}:active:evaluated`).catch(() => 0)),
       toNumber(await client.get(`indications:${connectionId}:optimal:evaluated`).catch(() => 0)),
+      toNumber(await client.get(`indications:${connectionId}:trend:evaluated`).catch(() => 0)),
       client.dbSize().catch(() => 0),
       client.info().catch(() => ""),
     ])
@@ -173,6 +177,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         indicationEvaluatedMove: sanitizeNonNegative(indicationMoveCount),
         indicationEvaluatedActive: sanitizeNonNegative(indicationActiveCount),
         indicationEvaluatedOptimal: sanitizeNonNegative(indicationOptimalCount),
+        indicationEvaluatedTrend: sanitizeNonNegative(indicationTrendCount),
         prehistoricSymbolsProcessed: sanitizeNonNegative(engineState?.config_set_symbols_processed),
         prehistoricCandlesProcessed: sanitizeNonNegative(engineState?.config_set_candles_processed),
         prehistoricSymbolsProcessedCount: sanitizeNonNegative(prehistoricSymbolsSet || engineState?.config_set_symbols_processed),
