@@ -250,7 +250,10 @@ async function main() {
         `[prod-soak] round=${rounds} rss=${latestMemory.rssKb}KiB heap=${latestMemory.heapUsedKb}KiB ` +
         `keys=${latestMemory.databaseKeys} cycles=${latestMemory.engineCycles} score=${progression.at(-1)?.score || 0}`,
       )
-      if (rounds % 10 === 0) {
+      // The raw progression dump is intentionally unavailable in production.
+      // Canonical monitoring/stats above remain the production assertion; only
+      // development soaks may add the debug-only Redis breakdown.
+      if (rounds % 10 === 0 && RUNTIME_MODE !== "production") {
         const raw = (await request(`/api/debug/progression-dump?id=${encodeURIComponent(connectionId)}`)).json
         const selectCycles = (value = {}) => Object.fromEntries(
           Object.entries(value).filter(([key]) => key === "cycle_count" || key.endsWith("_cycle_count")),
