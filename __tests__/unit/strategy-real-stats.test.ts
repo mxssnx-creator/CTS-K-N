@@ -2,6 +2,7 @@ import {
   ADJUST_POSITION_DIFFERENCE_RATIO_STEP,
   buildRealStagePositionStats,
   inferRealStrategyVariant,
+  isOpenLiveExposureStatus,
 } from "@/lib/strategy-real-stats"
 
 describe("Strategy Stage Real detailed position stats", () => {
@@ -14,7 +15,7 @@ describe("Strategy Stage Real detailed position stats", () => {
     expect(inferRealStrategyVariant(setKey)).toBe(expected)
   })
 
-  test("combines confirmed variants, related-Base hedge netting, and symbol directions", () => {
+  test("keeps full Overall counts while exposing hedge and current open directions separately", () => {
     const result = buildRealStagePositionStats({
       validPositionsHash: {
         overall: "10",
@@ -43,18 +44,44 @@ describe("Strategy Stage Real detailed position stats", () => {
         dca: { createdSets: 1, passedSets: 1, entriesCount: 100, avgProfitFactor: 1.6, avgDrawdownTime: 7 },
         overall: { entriesCount: 1_000 },
       },
+      overallSets: 12,
+      overallOrders: 8,
+      openPositions: {
+        source: "live-exchange",
+        bySymbol: [
+          { symbol: "BTCUSDT", long: 2, short: 1 },
+          { symbol: "ETHUSDT", long: 0, short: 3 },
+        ],
+      },
     })
 
     expect(result.overall).toMatchObject({
+      sets: 12,
       positions: 10,
-      positionsWithHedge: 4,
-      hedgeReducedPositions: 6,
+      orders: 8,
+      positionCountSource: "confirmed-ledger",
+    })
+    expect(result.overall).not.toHaveProperty("positionsWithHedge")
+    expect(result.openPositions).toEqual({
+      positions: 6,
+      symbolCount: 2,
+      longPositions: 2,
+      shortPositions: 4,
+      longSymbolCount: 1,
+      shortSymbolCount: 2,
+      source: "live-exchange",
+      bySymbol: [
+        { symbol: "BTCUSDT", longPositions: 2, shortPositions: 1, positions: 3 },
+        { symbol: "ETHUSDT", longPositions: 0, shortPositions: 3, positions: 3 },
+      ],
+    })
+    expect(result.hedge).toMatchObject({
+      grossPositions: 10,
+      remainingPositions: 4,
+      offsetPositionLegs: 6,
       hedgedPairs: 3,
-      longPositions: 5,
-      shortPositions: 5,
       hedgeOffsetRatio: 0.6,
       hedgeOffsetPercent: 60,
-      positionCountSource: "confirmed-ledger",
     })
     expect(result.strategyTypes.default.positions).toBe(4)
     expect(result.strategyTypes.trailing.positions).toBe(2)
@@ -76,31 +103,11 @@ describe("Strategy Stage Real detailed position stats", () => {
       differencePercent: 16.7,
       ratioLevel: 0.2,
     })
-    expect(result.symbols).toEqual([
-      {
-        symbol: "BTCUSDT",
-        longPositions: 4,
-        shortPositions: 2,
-        grossPositions: 6,
-        positionsWithHedge: 2,
-        hedgedPairs: 2,
-        unclassifiedPositions: 0,
-      },
-      {
-        symbol: "ETHUSDT",
-        longPositions: 1,
-        shortPositions: 3,
-        grossPositions: 4,
-        positionsWithHedge: 2,
-        hedgedPairs: 1,
-        unclassifiedPositions: 0,
-      },
-    ])
   })
 
   test("never offsets unrelated Base strategies even when their global directions match", () => {
     const result = buildRealStagePositionStats({
-      validPositionsHash: { overall: "10" },
+      validPositionsHash: { overall: "4" },
       hedgePosAccHash: {
         "BTCUSDT:direction:long": "5",
         "BTCUSDT:direction:short": "0",
@@ -109,9 +116,11 @@ describe("Strategy Stage Real detailed position stats", () => {
       },
     })
 
-    expect(result.overall.positions).toBe(10)
-    expect(result.overall.positionsWithHedge).toBe(10)
-    expect(result.overall.hedgeReducedPositions).toBe(0)
+    // The independent hedge ledger can be larger than the Overall position
+    // ledger, but must never inflate or reduce Overall.
+    expect(result.overall.positions).toBe(4)
+    expect(result.hedge.remainingPositions).toBe(10)
+    expect(result.hedge.offsetPositionLegs).toBe(0)
   })
 
   test("uses evaluation counts only for pre-ledger variant history", () => {
@@ -127,7 +136,6 @@ describe("Strategy Stage Real detailed position stats", () => {
 
     expect(result.overall).toMatchObject({
       positions: 12,
-      positionsWithHedge: 12,
       positionCountSource: "evaluation-fallback",
     })
     expect(result.strategyTypes.default).toMatchObject({
@@ -157,5 +165,54 @@ describe("Strategy Stage Real detailed position stats", () => {
       positions: 6,
       positionCountSource: "evaluation-fallback",
     })
+  })
+
+  test("aggregates only the supplied current snapshot by unique symbol and direction", () => {
+    const result = buildRealStagePositionStats({
+      validPositionsHash: { overall: "99" },
+      openPositions: {
+        source: "real-stage",
+        bySymbol: [
+          { symbol: " btcusdt ", long: 1, short: 0 },
+          { symbol: "BTCUSDT", longPositions: 2, shortPositions: 1 },
+          { symbol: "ETHUSDT", long: 0, short: 2 },
+          { symbol: "", long: 100, short: 100 },
+        ],
+      },
+    })
+
+    expect(result.overall.positions).toBe(99)
+    expect(result.openPositions).toMatchObject({
+      positions: 6,
+      symbolCount: 2,
+      longPositions: 3,
+      shortPositions: 3,
+      longSymbolCount: 1,
+      shortSymbolCount: 2,
+      source: "real-stage",
+    })
+    expect(result.openPositions.bySymbol[0]).toEqual({
+      symbol: "BTCUSDT",
+      longPositions: 3,
+      shortPositions: 1,
+      positions: 4,
+    })
+  })
+
+  test.each([
+    ["open", true],
+    ["filled", true],
+    ["partially_filled", true],
+    ["simulated", true],
+    ["closing", true],
+    ["closing_partial", true],
+    ["pending", false],
+    ["pending_fill", false],
+    ["placed", false],
+    ["placed_unconfirmed", false],
+    ["rejected", false],
+    ["closed", false],
+  ])("classifies %s as open exposure=%s", (status, expected) => {
+    expect(isOpenLiveExposureStatus(status)).toBe(expected)
   })
 })

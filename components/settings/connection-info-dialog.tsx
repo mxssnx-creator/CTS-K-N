@@ -281,39 +281,75 @@ function RealVariantStatsCard({
 function RealStagePositionDetail({ value }: { value: unknown }) {
   const detail = asRecord(value)
   const overall = asRecord(detail.overall)
+  const openPositions = asRecord(detail.openPositions)
+  const hedge = asRecord(detail.hedge)
   const strategyTypes = asRecord(detail.strategyTypes)
   const adjustTypes = asRecord(detail.adjustTypes)
-  const symbols = Array.isArray(detail.symbols) ? detail.symbols.map(asRecord) : []
+  const symbols = Array.isArray(openPositions.bySymbol) ? openPositions.bySymbol.map(asRecord) : []
   const hasConfirmedCounts = asText(overall.positionCountSource) === "confirmed-ledger"
+  const openSource = asText(openPositions.source)
+  const openSourceLabel = openSource === "live-exchange"
+    ? "Live exchange"
+    : openSource === "real-stage"
+      ? "Real stage"
+      : "No open positions"
 
   return (
     <SectionPanel
       title="Real position detail"
-      description="Confirmed position entries, related-Base hedge offset, strategy performance, Adjust impact, and general symbol direction counts."
+      description="Full Real Set, position and order totals; separate hedge coordination; strategy performance; and the current open symbol/direction snapshot."
       icon={<BarChart3 className="h-4 w-4" />}
     >
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
-          label="Pos overall"
+          label="Sets overall"
+          value={formatNumber(overall.sets, 0)}
+          hint="Full Real Set count; hedge is not subtracted"
+        />
+        <MetricCard
+          label="Positions overall"
           value={formatNumber(overall.positions, 0)}
-          hint={hasConfirmedCounts ? "Idempotent confirmed entries" : "Legacy evaluation fallback"}
+          hint={hasConfirmedCounts ? "Full idempotent position ledger" : "Full legacy evaluation fallback"}
         />
         <MetricCard
-          label="Pos with hedge"
-          value={formatNumber(overall.positionsWithHedge, 0)}
-          hint="Long/short offset only inside each related Base Set"
-          tone={asNumber(overall.hedgeReducedPositions) > 0 ? "success" : "default"}
+          label="Orders overall"
+          value={formatNumber(overall.orders, 0)}
+          hint="All placed execution orders; hedge is not subtracted"
         />
         <MetricCard
-          label="Long / Short"
-          value={`${formatNumber(overall.longPositions, 0)} / ${formatNumber(overall.shortPositions, 0)}`}
-          hint={`${formatNumber(overall.hedgedPairs, 0)} hedged pair${asNumber(overall.hedgedPairs) === 1 ? "" : "s"}`}
+          label="Open now"
+          value={formatNumber(openPositions.positions, 0)}
+          hint={`${formatNumber(openPositions.symbolCount, 0)} symbols · L ${formatNumber(openPositions.longPositions, 0)} / S ${formatNumber(openPositions.shortPositions, 0)}`}
+          tone={asNumber(openPositions.positions) > 0 ? "success" : "default"}
         />
-        <MetricCard
-          label="Hedge offset"
-          value={`${formatNumber(overall.hedgeOffsetPercent, 1)}%`}
-          hint={`${formatNumber(overall.hedgeReducedPositions, 0)} position legs offset`}
-        />
+      </div>
+
+      <div className="mt-4 rounded-xl border border-sky-200/80 bg-sky-50/55 p-3 dark:border-sky-900/70 dark:bg-sky-950/20">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-xs font-semibold">Hedge coordination</p>
+            <p className="mt-0.5 text-[10px] text-muted-foreground">Related-Base confirmed entries, shown separately and never netted out of Overall.</p>
+          </div>
+          <Badge variant="outline">Separate from Overall</Badge>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Long / Short entries</p>
+            <p className="mt-0.5 font-semibold tabular-nums">{formatNumber(hedge.totalLongEntries, 0)} / {formatNumber(hedge.totalShortEntries, 0)}</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Hedged pairs</p>
+            <p className="mt-0.5 font-semibold tabular-nums">{formatNumber(hedge.hedgedPairs, 0)}</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Offset legs</p>
+            <p className="mt-0.5 font-semibold tabular-nums">{formatNumber(hedge.offsetPositionLegs, 0)} · {formatNumber(hedge.hedgeOffsetPercent, 1)}%</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Remaining exposure</p>
+            <p className="mt-0.5 font-semibold tabular-nums">{formatNumber(hedge.remainingPositions, 0)}</p>
+          </div>
+        </div>
       </div>
 
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
@@ -335,8 +371,13 @@ function RealStagePositionDetail({ value }: { value: unknown }) {
 
       <div className="mt-4">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Symbols · Long / Short positions</p>
-          <Badge variant="outline">{formatNumber(symbols.length, 0)} symbols</Badge>
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Open symbols · Long / Short positions</p>
+            <p className="mt-0.5 text-[10px] text-muted-foreground">
+              {formatNumber(openPositions.longSymbolCount, 0)} symbols Long · {formatNumber(openPositions.shortSymbolCount, 0)} symbols Short
+            </p>
+          </div>
+          <Badge variant="outline">{openSourceLabel} · {formatNumber(openPositions.symbolCount, 0)} symbols</Badge>
         </div>
         {symbols.length > 0 ? (
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
@@ -345,25 +386,19 @@ function RealStagePositionDetail({ value }: { value: unknown }) {
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-semibold">{asText(symbol.symbol, "Unknown")}</span>
                   <span className="text-[10px] text-muted-foreground tabular-nums">
-                    {formatNumber(symbol.grossPositions, 0)} → {formatNumber(symbol.positionsWithHedge, 0)} hedge
+                    {formatNumber(symbol.positions, 0)} open
                   </span>
                 </div>
                 <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px]">
                   <span className="text-emerald-700 dark:text-emerald-300">Long <strong className="tabular-nums">{formatNumber(symbol.longPositions, 0)}</strong></span>
                   <span className="text-rose-700 dark:text-rose-300">Short <strong className="tabular-nums">{formatNumber(symbol.shortPositions, 0)}</strong></span>
-                  <span className="ml-auto text-muted-foreground">pairs <strong className="text-foreground tabular-nums">{formatNumber(symbol.hedgedPairs, 0)}</strong></span>
                 </div>
-                {asNumber(symbol.unclassifiedPositions) > 0 && (
-                  <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-300">
-                    {formatNumber(symbol.unclassifiedPositions, 0)} legacy entries without direction
-                  </p>
-                )}
               </div>
             ))}
           </div>
         ) : (
           <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
-            Symbol direction counts appear after the first confirmed Real position entry.
+            No currently open Real or exchange position is present.
           </div>
         )}
       </div>

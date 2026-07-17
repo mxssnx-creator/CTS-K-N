@@ -137,12 +137,31 @@ interface RealVariantDetailStats {
 
 interface RealStagePositionDetailStats {
   overall: {
+    sets: number
     positions: number
-    positionsWithHedge: number
-    hedgeReducedPositions: number
-    hedgedPairs: number
+    orders: number
+  }
+  openPositions: {
+    positions: number
+    symbolCount: number
     longPositions: number
     shortPositions: number
+    longSymbolCount: number
+    shortSymbolCount: number
+    source: "live-exchange" | "real-stage" | "none"
+    bySymbol: Array<{
+      symbol: string
+      longPositions: number
+      shortPositions: number
+      positions: number
+    }>
+  }
+  hedge: {
+    totalLongEntries: number
+    totalShortEntries: number
+    hedgedPairs: number
+    offsetPositionLegs: number
+    remainingPositions: number
     hedgeOffsetPercent: number
   }
   strategyTypes: {
@@ -153,14 +172,6 @@ interface RealStagePositionDetailStats {
     block: RealVariantDetailStats
     dca: RealVariantDetailStats
   }
-  symbols: Array<{
-    symbol: string
-    longPositions: number
-    shortPositions: number
-    grossPositions: number
-    positionsWithHedge: number
-    hedgedPairs: number
-  }>
 }
 
 export function ActiveConnectionCard({
@@ -2049,12 +2060,26 @@ export function ActiveConnectionCard({
                         {prehistoricStats.realPositionStats && (() => {
                           const realDetail = prehistoricStats.realPositionStats
                           const overall = realDetail.overall || {
+                            sets: 0,
                             positions: 0,
-                            positionsWithHedge: 0,
-                            hedgeReducedPositions: 0,
-                            hedgedPairs: 0,
+                            orders: 0,
+                          }
+                          const openPositions = realDetail.openPositions || {
+                            positions: 0,
+                            symbolCount: 0,
                             longPositions: 0,
                             shortPositions: 0,
+                            longSymbolCount: 0,
+                            shortSymbolCount: 0,
+                            source: "none" as const,
+                            bySymbol: [],
+                          }
+                          const hedge = realDetail.hedge || {
+                            totalLongEntries: 0,
+                            totalShortEntries: 0,
+                            hedgedPairs: 0,
+                            offsetPositionLegs: 0,
+                            remainingPositions: 0,
                             hedgeOffsetPercent: 0,
                           }
                           const emptyVariant: RealVariantDetailStats = {
@@ -2069,23 +2094,40 @@ export function ActiveConnectionCard({
                             { label: "Block", value: realDetail.adjustTypes?.block || emptyVariant, adjust: true },
                             { label: "DCA", value: realDetail.adjustTypes?.dca || emptyVariant, adjust: true },
                           ]
-                          const symbols = Array.isArray(realDetail.symbols) ? realDetail.symbols : []
+                          const symbols = Array.isArray(openPositions.bySymbol) ? openPositions.bySymbol : []
+                          const openSource = openPositions.source === "live-exchange"
+                            ? "Live"
+                            : openPositions.source === "real-stage"
+                              ? "Real"
+                              : "No open"
                           return (
                             <div className="mt-1.5 space-y-2 rounded-lg border border-emerald-300/60 bg-emerald-50/55 p-2 dark:border-emerald-800/60 dark:bg-emerald-950/20">
                               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
                                 <span className="font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-300">Real position detail</span>
                                 <span className="text-muted-foreground">
-                                  Overall <strong className="text-foreground tabular-nums">{nonNegativeMetric(overall.positions).toLocaleString()}</strong>
+                                  Overall Sets <strong className="text-foreground tabular-nums">{nonNegativeMetric(overall.sets).toLocaleString()}</strong>
                                 </span>
                                 <span className="text-muted-foreground">
-                                  with hedge <strong className="text-emerald-700 dark:text-emerald-300 tabular-nums">{nonNegativeMetric(overall.positionsWithHedge).toLocaleString()}</strong>
+                                  Pos <strong className="text-foreground tabular-nums">{nonNegativeMetric(overall.positions).toLocaleString()}</strong>
                                 </span>
                                 <span className="text-muted-foreground">
-                                  L <strong className="text-emerald-700 dark:text-emerald-300 tabular-nums">{nonNegativeMetric(overall.longPositions).toLocaleString()}</strong>
-                                  {" / "}S <strong className="text-rose-700 dark:text-rose-300 tabular-nums">{nonNegativeMetric(overall.shortPositions).toLocaleString()}</strong>
+                                  Orders <strong className="text-foreground tabular-nums">{nonNegativeMetric(overall.orders).toLocaleString()}</strong>
                                 </span>
                                 <span className="ml-auto text-muted-foreground">
-                                  offset <strong className="text-foreground tabular-nums">{nonNegativeMetric(overall.hedgeOffsetPercent).toFixed(1)}%</strong>
+                                  {openSource} open <strong className="text-foreground tabular-nums">{nonNegativeMetric(openPositions.positions).toLocaleString()}</strong>
+                                  {" · "}{nonNegativeMetric(openPositions.symbolCount).toLocaleString()} symbols
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-border/70 bg-background/70 px-2 py-1 text-[9px] text-muted-foreground">
+                                <span className="font-semibold uppercase tracking-wide text-foreground">Open directions</span>
+                                <span>
+                                  L <strong className="text-emerald-700 dark:text-emerald-300 tabular-nums">{nonNegativeMetric(openPositions.longPositions)}</strong>
+                                  {" / "}S <strong className="text-rose-700 dark:text-rose-300 tabular-nums">{nonNegativeMetric(openPositions.shortPositions)}</strong>
+                                </span>
+                                <span>{nonNegativeMetric(openPositions.longSymbolCount)} Long symbols · {nonNegativeMetric(openPositions.shortSymbolCount)} Short symbols</span>
+                                <span className="ml-auto" title="Related-Base hedge history is informational and never reduces Overall Sets, positions or orders.">
+                                  Hedge extra: <strong className="text-foreground tabular-nums">{nonNegativeMetric(hedge.hedgedPairs)} pairs</strong>
+                                  {" · "}{nonNegativeMetric(hedge.offsetPositionLegs)} legs / {nonNegativeMetric(hedge.hedgeOffsetPercent).toFixed(1)}%
                                 </span>
                               </div>
                               <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
@@ -2120,13 +2162,13 @@ export function ActiveConnectionCard({
                                 })}
                               </div>
                               {symbols.length > 0 && (
-                                <div className="flex flex-wrap gap-1" aria-label="Real positions by symbol and direction">
+                                <div className="flex flex-wrap gap-1" aria-label="Currently open Real positions by symbol and direction">
                                   {symbols.slice(0, 12).map((symbol) => (
                                     <span key={symbol.symbol} className="rounded border border-border/70 bg-background/75 px-1.5 py-0.5 text-[9px] text-muted-foreground">
                                       <strong className="text-foreground">{symbol.symbol}</strong>{" "}
                                       <span className="text-emerald-700 dark:text-emerald-300">L:{nonNegativeMetric(symbol.longPositions)}</span>{" "}
                                       <span className="text-rose-700 dark:text-rose-300">S:{nonNegativeMetric(symbol.shortPositions)}</span>{" "}
-                                      <span>{nonNegativeMetric(symbol.grossPositions)}→{nonNegativeMetric(symbol.positionsWithHedge)}</span>
+                                      <span>{nonNegativeMetric(symbol.positions)} open</span>
                                     </span>
                                   ))}
                                 </div>
