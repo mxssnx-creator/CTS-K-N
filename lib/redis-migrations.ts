@@ -3866,7 +3866,7 @@ const migrations: Migration[] = [
       let realRowsRemoved = 0
 
       const purgeLegacyRowSet = async (indexKey: string, rowPrefix: string): Promise<number> => {
-        const ids = ((await client.smembers(indexKey).catch(() => [])) || []).map(String).filter(Boolean)
+        const ids: string[] = ((await client.smembers(indexKey).catch(() => [])) || []).map(String).filter(Boolean)
         let removed = 0
         for (let offset = 0; offset < ids.length; offset += 250) {
           const keys = ids.slice(offset, offset + 250).map((id) => `${rowPrefix}:${id}`)

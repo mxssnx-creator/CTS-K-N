@@ -3,6 +3,7 @@ import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { createExchangeConnector } from "@/lib/exchange-connectors/factory"
 import { getVenueMinQty } from "@/lib/exchange-min-qty"
 import { getLiveOrderSafetyFailure } from "@/lib/live-order-safety"
+import { authorizeAdminBearer } from "@/lib/admin-auth"
 import type { ExchangeConnection } from "@/lib/types"
 
 const LOG_PREFIX = "[v0] [LiveOrdersTest]"
@@ -146,6 +147,13 @@ interface FullTestReport {
 export const dynamic = "force-dynamic"
 export async function POST(req: NextRequest) {
   try {
+    const authorization = authorizeAdminBearer(req.headers.get("authorization"))
+    if (!authorization.ok) {
+      return NextResponse.json(
+        { success: false, error: authorization.error },
+        { status: authorization.status },
+      )
+    }
     await initRedis()
     const body = await req.json()
     const { connectionId } = body
