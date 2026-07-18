@@ -9,6 +9,7 @@ import { loadClosedPositionSnapshots } from "@/lib/trade-history"
 import {
   buildRealStagePositionStats,
   hasCompleteRealVariantPositionLedger,
+  isOpenLiveExposureStatus,
 } from "@/lib/strategy-real-stats"
 
 export const runtime = "nodejs"
@@ -944,6 +945,7 @@ export async function GET(
       string,
       Array<{ realPositionId: string }>
     >()
+    const realBySymbolMap = new Map<string, { long: number; short: number }>()
     try {
       // Use the connection-scoped position-id list instead of O(N) client.keys().
       // `real:positions:{connectionId}` is maintained by the Real stage (lpush on
@@ -972,6 +974,9 @@ export async function GET(
               const arr = realSymDirIdx.get(joinKey) || []
               arr.push({ realPositionId: String(pos.id) })
               realSymDirIdx.set(joinKey, arr)
+              const symbolEntry = realBySymbolMap.get(sym) || { long: 0, short: 0 }
+              symbolEntry[dir]++
+              realBySymbolMap.set(sym, symbolEntry)
             }
           } catch { /* skip malformed */ }
         }
@@ -1071,10 +1076,11 @@ export async function GET(
         for (const pos of rawList) {
           if (!pos) continue
           try {
-            // Exclude closed/cancelled; accept every in-flight state
-            // where exchange exposure is still on the books.
+            // Only filled/exposed lifecycle states are open positions. Pending,
+            // placed, unconfirmed and rejected rows remain order information and
+            // must not inflate the current symbol/direction position snapshot.
             const status = String(pos.status || "").toLowerCase()
-            if (status === "closed" || status === "cancelled" || status === "error") continue
+            if (!isOpenLiveExposureStatus(status)) continue
 
             const sym = String(pos.symbol || "").trim().toUpperCase()
             const dir = String(pos.direction || "").trim().toLowerCase()
@@ -1303,6 +1309,13 @@ export async function GET(
         unrealizedPnl: Math.round(v.unrealizedPnl * 100) / 100,
       }))
       .sort((a, b) => (b.long + b.short) - (a.long + a.short))
+    const realBySymbol = Array.from(realBySymbolMap.entries())
+      .map(([symbol, value]) => ({
+        symbol,
+        long: value.long,
+        short: value.short,
+      }))
+      .sort((a, b) => (b.long + b.short) - (a.long + a.short) || a.symbol.localeCompare(b.symbol))
 
     // engineProgression phase and engine_state status are the canonical source of
     // truth for whether the engine is actively running. realtimeIndicationCycles
@@ -1691,6 +1704,17 @@ export async function GET(
     const realStagePositionStats = buildRealStagePositionStats({
       validPositionsHash,
       hedgePosAccHash,
+      overallSets: n(progHash.strategies_real_total) || stratCounts.real || variantOverall.passedSets,
+      overallOrders: n(progHash.live_orders_placed_count),
+      // Current open positions are a separate snapshot. Prefer actual exchange
+      // exposure in live mode; fall back to open Real-stage promotions in
+      // paper/dev operation. Neither source changes the cumulative Overall or
+      // related-Base hedge ledgers.
+      openPositions: liveBySymbol.length > 0
+        ? { source: "live-exchange", bySymbol: liveBySymbol }
+        : realBySymbol.length > 0
+          ? { source: "real-stage", bySymbol: realBySymbol }
+          : { source: "none", bySymbol: [] },
       strategyVariants: {
         default: variantDetail.default,
         trailing: variantDetail.trailing,
@@ -1992,9 +2016,10 @@ export async function GET(
                   statAccumulated: n(dh.stat_accumulated),
                   statGeneral:     n(dh.stat_general) || stageEvaluated || stratCounts.real || 0,
                   statCombined:    n(dh.stat_combined) || setsRunningNow || stratCounts.real || 0,
-                  // Canonical, idempotent Real-position view: Overall before/
-                  // after related-Base hedge netting, Standard vs Trailing,
-                  // Adjust Block/DCA comparisons, and symbol long/short counts.
+                  // Canonical Real-position view: full Overall Set/position/order
+                  // ledgers, a separate related-Base hedge ledger, Standard vs
+                  // Trailing and Adjust comparisons, plus the current open
+                  // symbol/direction snapshot.
                   positionStats: realStagePositionStats,
                   // ── Hedge pos-count accumulation (long/short per base Set) ──
                   hedgePosAcc: {

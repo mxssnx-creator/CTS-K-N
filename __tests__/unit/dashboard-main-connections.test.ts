@@ -144,7 +144,7 @@ describe("Main Connections dashboard contracts", () => {
     expect(source).toContain("min-w-[650px]")
   })
 
-  test("Real stage surfaces hedge, variant, Adjust ratio, and symbol direction detail", () => {
+  test("Real stage keeps Overall full and separates hedge from current open directions", () => {
     const infoDialog = read("components/settings/connection-info-dialog.tsx")
     const activeCard = read("components/dashboard/active-connection-card.tsx")
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
@@ -156,12 +156,18 @@ describe("Main Connections dashboard contracts", () => {
       expect(source).toContain("Block")
       expect(source).toContain("DCA")
     }
-    expect(infoDialog).toContain("Pos with hedge")
+    expect(infoDialog).toContain("Sets overall")
+    expect(infoDialog).toContain("Positions overall")
+    expect(infoDialog).toContain("Orders overall")
+    expect(infoDialog).toContain("Separate from Overall")
     expect(infoDialog).toContain("Difference ratio")
-    expect(infoDialog).toContain("Symbols · Long / Short positions")
-    expect(activeCard).toContain('aria-label="Real positions by symbol and direction"')
+    expect(infoDialog).toContain("Open symbols · Long / Short positions")
+    expect(activeCard).toContain('aria-label="Currently open Real positions by symbol and direction"')
+    expect(activeCard).toContain("Hedge extra")
     expect(statsRoute).toContain("buildRealStagePositionStats")
     expect(statsRoute).toContain("hasCompleteRealVariantPositionLedger")
+    expect(statsRoute).toContain("isOpenLiveExposureStatus")
+    expect(statsRoute).toContain('source: "live-exchange"')
     expect(statsRoute).toContain("positionStats: realStagePositionStats")
   })
 
