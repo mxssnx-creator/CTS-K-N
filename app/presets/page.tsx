@@ -57,6 +57,7 @@ interface OptimizerSettings {
   maxCandlesPerRun: number
   blockEnabled: boolean
   blockVolumeRatio: number
+  blockProfitFactorRatio: number
   blockMaxStack: number
   blockPauseCountRatio: number
   blockActiveRealEnabled: boolean
@@ -586,8 +587,9 @@ export default function PresetsPage() {
                   <Switch checked={draft.blockEnabled} onCheckedChange={(checked) => setDraft({ ...draft, blockEnabled: checked })} />
                 </div>
               </div>
-              <div className={draft.blockEnabled ? "grid gap-2 md:grid-cols-3" : "grid gap-2 md:grid-cols-3 pointer-events-none"}>
+              <div className={draft.blockEnabled ? "grid gap-2 md:grid-cols-2 xl:grid-cols-4" : "grid gap-2 md:grid-cols-2 xl:grid-cols-4 pointer-events-none"}>
                 <NumberField label="Volume ratio" value={draft.blockVolumeRatio} min={0.25} max={3} step={0.05} onChange={(value) => setDraft({ ...draft, blockVolumeRatio: value })} />
+                <NumberField label="ProfitFactor factor" value={draft.blockProfitFactorRatio} min={0.2} max={5} step={0.1} onChange={(value) => setDraft({ ...draft, blockProfitFactorRatio: value })} />
                 <NumberField label="Independent counts" value={draft.blockMaxStack} min={1} max={10} step={1} onChange={(value) => setDraft({ ...draft, blockMaxStack: value })} />
                 <NumberField label="Post-profit pause ratio" value={draft.blockPauseCountRatio} min={1} max={4} step={0.5} onChange={(value) => setDraft({ ...draft, blockPauseCountRatio: value })} />
               </div>

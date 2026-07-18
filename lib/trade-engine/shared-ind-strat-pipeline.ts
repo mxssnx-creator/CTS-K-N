@@ -48,6 +48,7 @@ import { IndicationProcessor } from "./indication-processor-fixed"
 import { StrategyProcessor } from "./strategy-processor"
 import type { RealtimeProcessor } from "./realtime-processor"
 import { IndicationSetsProcessor } from "@/lib/indication-sets-processor"
+import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 export type PipelineMode = "historical" | "realtime"
 
@@ -434,7 +435,7 @@ export async function runIndStratCycle(
       process.env.DISABLE_API_STRATEGY_FLOW !== "1" &&
       process.env.ENABLE_API_STRATEGY_FLOW !== "0" &&
       process.env.ENABLE_API_STRATEGY_FLOW !== "false" &&
-      (process.env.VERCEL !== "1" ||
+      (!isServerlessDeploymentRuntime() ||
         process.env.ENABLE_API_STRATEGY_FLOW === "1" ||
         process.env.ENABLE_API_STRATEGY_FLOW === "true") &&
       deps.enableStrategyFlow !== false

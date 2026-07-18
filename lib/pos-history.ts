@@ -672,6 +672,24 @@ const STRATEGY_SET_ENTRY_COUNTS_KEY = (connectionId: string) =>
   `strategy_set_entry_counts:${connectionId}`
 const STRATEGY_PARENT_ENTRY_COUNTS_KEY = (connectionId: string) =>
   `strategy_parent_entry_counts:${connectionId}`
+const STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY = (connectionId: string) =>
+  `strategy_set_active_entry_counts:${connectionId}`
+const STRATEGY_POSITION_SET_MEMBERSHIPS_KEY = (connectionId: string, positionId: string) =>
+  `strategy_position_set_memberships:${connectionId}:${positionId}`
+const STRATEGY_SET_CLOSE_IDS_KEY = (connectionId: string) =>
+  `strategy_set_close_ids:${connectionId}`
+const STRATEGY_SET_CLOSED_COUNTS_KEY = (connectionId: string) =>
+  `strategy_set_closed_counts:${connectionId}`
+const STRATEGY_SET_KEYS_KEY = (connectionId: string) =>
+  `strategy_set_keys:${connectionId}`
+const STRATEGY_ACTIVE_SET_KEYS_KEY = (connectionId: string) =>
+  `strategy_active_set_keys:${connectionId}`
+const STRATEGY_CLOSED_SET_KEYS_KEY = (connectionId: string) =>
+  `strategy_closed_set_keys:${connectionId}`
+const STRATEGY_LEDGER_TOTALS_KEY = (connectionId: string) =>
+  `strategy_ledger_totals:${connectionId}`
+const strategySetResultRingKey = (connectionId: string, setKey: string) =>
+  `strategy_set_result_ring:${connectionId}:${setKey}`
 const VALID_POS_V2_KEY = (connectionId: string) =>
   `valid_positions_v2:${connectionId}`
 const VALID_POS_ACTIVE_V2_KEY = (connectionId: string) =>
@@ -697,10 +715,26 @@ export interface StrategyPositionEntryInput {
 
 const RECORD_STRATEGY_ENTRY_LUA = `
   local inserted = redis.call('SADD', KEYS[1], ARGV[1])
-  redis.call('SADD', KEYS[2], ARGV[2])
   redis.call('EXPIRE', KEYS[1], ARGV[9])
-  redis.call('EXPIRE', KEYS[2], ARGV[9])
   if inserted == 0 then return 0 end
+  redis.call('SADD', KEYS[2], ARGV[2])
+  local membershipInserted = redis.call('SADD', KEYS[9], ARGV[3])
+  redis.call('SADD', KEYS[11], ARGV[3])
+  if membershipInserted == 1 then
+    redis.call('HINCRBY', KEYS[10], ARGV[3], 1)
+    redis.call('SADD', KEYS[12], ARGV[3])
+    redis.call('HINCRBY', KEYS[13], 'active_memberships', 1)
+  end
+  redis.call('EXPIRE', KEYS[2], ARGV[9])
+  redis.call('EXPIRE', KEYS[9], ARGV[9])
+  redis.call('EXPIRE', KEYS[10], ARGV[9])
+  redis.call('EXPIRE', KEYS[11], ARGV[9])
+  redis.call('EXPIRE', KEYS[12], ARGV[9])
+  redis.call('EXPIRE', KEYS[13], ARGV[9])
+  redis.call('HINCRBY', KEYS[13], 'exact_entries', 1)
+  if ARGV[8] ~= '' then
+    redis.call('HINCRBY', KEYS[13], 'axis_entries', 1)
+  end
   redis.call('HINCRBY', KEYS[3], ARGV[3], 1)
   redis.call('HINCRBY', KEYS[4], ARGV[4], 1)
   redis.call('HINCRBY', KEYS[5], ARGV[4], 1)
@@ -745,6 +779,11 @@ export async function recordStrategyPositionEntry(
     `axis_pos_acc:${connectionId}`,
     `hedge_pos_acc:${connectionId}`,
     VALID_POS_V2_KEY(connectionId),
+    STRATEGY_POSITION_SET_MEMBERSHIPS_KEY(connectionId, positionId),
+    STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId),
+    STRATEGY_SET_KEYS_KEY(connectionId),
+    STRATEGY_ACTIVE_SET_KEYS_KEY(connectionId),
+    STRATEGY_LEDGER_TOTALS_KEY(connectionId),
   ]
   const args = [
     entryId,
@@ -773,43 +812,394 @@ export async function recordStrategyPositionEntry(
   }
 
   const inserted = Number(await client.sadd(keys[0], entryId)) === 1
+  // A late reconciliation retry for an already-booked fill must not recreate
+  // active Set membership after the position has closed. Lua is atomic; on
+  // adapter-safe fallbacks the entry-id SADD remains the authoritative gate.
+  if (!inserted) {
+    await client.expire(keys[0], TTL_SECONDS).catch(() => 0)
+    return false
+  }
+  const membershipInserted = Number(await client.sadd(keys[8], setKey)) === 1
   const pipeline = client.multi()
   pipeline.sadd(keys[1], positionId)
   pipeline.expire(keys[0], TTL_SECONDS)
   pipeline.expire(keys[1], TTL_SECONDS)
-  if (inserted) {
-    pipeline.hincrby(keys[2], setKey, 1)
-    pipeline.hincrby(keys[3], parentSetKey, 1)
-    pipeline.hincrby(keys[4], parentSetKey, 1)
-    if (axisKey) pipeline.hincrby(keys[5], `${parentSetKey}|${axisKey}`, 1)
-    pipeline.hincrby(keys[6], `${parentSetKey}:${direction}`, 1)
-    pipeline.hincrby(keys[6], `${parentSetKey}:sets_${direction}`, 1)
-    pipeline.hset(keys[6], `${parentSetKey}:ts`, String(Date.now()))
-    pipeline.hincrby(keys[7], "overall", 1)
-    pipeline.hincrby(keys[7], `by_symbol:${symbol}`, 1)
-    pipeline.hincrby(keys[7], `by_dir:${direction}`, 1)
-    pipeline.hincrby(keys[7], `by_type:${indicationType}`, 1)
-    pipeline.hincrby(keys[7], `by_variant:${strategyVariant}`, 1)
-    for (let i = 2; i < keys.length; i++) pipeline.expire(keys[i], TTL_SECONDS)
+  pipeline.expire(keys[8], TTL_SECONDS)
+  pipeline.sadd(keys[10], setKey)
+  if (membershipInserted) {
+    pipeline.hincrby(keys[9], setKey, 1)
+    pipeline.sadd(keys[11], setKey)
+    pipeline.hincrby(keys[12], "active_memberships", 1)
   }
+  pipeline.expire(keys[9], TTL_SECONDS)
+  pipeline.expire(keys[10], TTL_SECONDS)
+  pipeline.expire(keys[11], TTL_SECONDS)
+  pipeline.expire(keys[12], TTL_SECONDS)
+  pipeline.hincrby(keys[12], "exact_entries", 1)
+  if (axisKey) pipeline.hincrby(keys[12], "axis_entries", 1)
+  pipeline.hincrby(keys[2], setKey, 1)
+  pipeline.hincrby(keys[3], parentSetKey, 1)
+  pipeline.hincrby(keys[4], parentSetKey, 1)
+  if (axisKey) pipeline.hincrby(keys[5], `${parentSetKey}|${axisKey}`, 1)
+  pipeline.hincrby(keys[6], `${parentSetKey}:${direction}`, 1)
+  pipeline.hincrby(keys[6], `${parentSetKey}:sets_${direction}`, 1)
+  pipeline.hset(keys[6], `${parentSetKey}:ts`, String(Date.now()))
+  pipeline.hincrby(keys[7], "overall", 1)
+  pipeline.hincrby(keys[7], `by_symbol:${symbol}`, 1)
+  pipeline.hincrby(keys[7], `by_dir:${direction}`, 1)
+  pipeline.hincrby(keys[7], `by_type:${indicationType}`, 1)
+  pipeline.hincrby(keys[7], `by_variant:${strategyVariant}`, 1)
+  for (let i = 2; i <= 7; i++) pipeline.expire(keys[i], TTL_SECONDS)
   await pipeline.exec()
   return inserted
 }
 
-/** Remove a terminal position from the active Set without changing history. */
+export interface StrategyPositionCloseOutcome {
+  /** Net realised PnL after trading costs. */
+  pnl: number
+  /** Position drawdown/hold duration in minutes. */
+  drawdownMinutes?: number
+}
+
+const DEACTIVATE_STRATEGY_POSITION_LUA = `
+  local removed = redis.call('SREM', KEYS[1], ARGV[1])
+  local memberships = redis.call('SMEMBERS', KEYS[2])
+  for _, setKey in ipairs(memberships) do
+    local current = tonumber(redis.call('HGET', KEYS[3], setKey) or '0')
+    if current > 1 then
+      redis.call('HINCRBY', KEYS[3], setKey, -1)
+    elseif current == 1 then
+      redis.call('HDEL', KEYS[3], setKey)
+      redis.call('SREM', KEYS[4], setKey)
+    end
+  end
+  local activeTotal = tonumber(redis.call('HGET', KEYS[5], 'active_memberships') or '0')
+  if activeTotal > #memberships then
+    redis.call('HINCRBY', KEYS[5], 'active_memberships', -#memberships)
+  else
+    redis.call('HSET', KEYS[5], 'active_memberships', 0)
+  end
+  redis.call('DEL', KEYS[2])
+  redis.call('EXPIRE', KEYS[1], ARGV[2])
+  redis.call('EXPIRE', KEYS[3], ARGV[2])
+  redis.call('EXPIRE', KEYS[4], ARGV[2])
+  redis.call('EXPIRE', KEYS[5], ARGV[2])
+  return removed + #memberships
+`
+
+const RECORD_STRATEGY_CLOSE_OUTCOMES_LUA = `
+  local inserted = 0
+  for argIndex = 5, #ARGV do
+    local setKey = ARGV[argIndex]
+    local closeIdentity = ARGV[1] .. '|' .. setKey
+    if redis.call('SADD', KEYS[1], closeIdentity) == 1 then
+      redis.call('HINCRBY', KEYS[2], setKey, 1)
+      redis.call('SADD', KEYS[3], setKey)
+      redis.call('HINCRBY', KEYS[4], 'exact_closed', 1)
+      redis.call('LPUSH', KEYS[argIndex], ARGV[2])
+      redis.call('LTRIM', KEYS[argIndex], 0, tonumber(ARGV[4]) - 1)
+      redis.call('EXPIRE', KEYS[argIndex], ARGV[3])
+      inserted = inserted + 1
+    end
+  end
+  for keyIndex = 1, 4 do redis.call('EXPIRE', KEYS[keyIndex], ARGV[3]) end
+  return inserted
+`
+
+/**
+ * Remove a terminal position from every exact Strategy Set membership.
+ *
+ * When a realised outcome is supplied, the result is also appended exactly
+ * once to each Set's bounded result ring. That ring is the authoritative
+ * Previous/Last/PF/DDT input for later Main-stage evaluation of this specific
+ * pos-count Set; retries and restart reconciliation cannot double-book it.
+ */
 export async function markStrategyPositionInactive(
   connectionId: string,
   positionId: string,
+  outcome?: StrategyPositionCloseOutcome,
 ): Promise<boolean> {
   if (!connectionId || !positionId) return false
   try {
-    return Number(await getRedisClient().srem(
+    const client = getRedisClient()
+    const membershipKey = STRATEGY_POSITION_SET_MEMBERSHIPS_KEY(connectionId, positionId)
+    // Read before the atomic delete so the same exact memberships can receive
+    // the terminal result. Concurrent retries may read the same list, but the
+    // per-position/set close-id SADD below makes result booking idempotent.
+    const memberships = Array.from(new Set(
+      ((await client.smembers(membershipKey).catch(() => [])) || [])
+        .map(String)
+        .filter(Boolean),
+    ))
+    const keys = [
       VALID_POS_ACTIVE_V2_KEY(connectionId),
-      positionId,
-    )) > 0
+      membershipKey,
+      STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId),
+      STRATEGY_ACTIVE_SET_KEYS_KEY(connectionId),
+      STRATEGY_LEDGER_TOTALS_KEY(connectionId),
+    ]
+    let deactivated = 0
+    if (typeof client.eval === "function") {
+      try {
+        deactivated = Number(await client.eval(DEACTIVATE_STRATEGY_POSITION_LUA, {
+          keys,
+          arguments: [positionId, String(TTL_SECONDS)],
+        })) || 0
+      } catch {
+        // Fall through to the adapter-safe implementation. If Lua committed
+        // before a network error, the deleted membership Set prevents a
+        // second decrement.
+      }
+    }
+    if (deactivated === 0) {
+      const remainingMemberships = ((await client.smembers(membershipKey).catch(() => [])) || [])
+        .map(String)
+        .filter(Boolean)
+      const removed = Number(await client.srem(VALID_POS_ACTIVE_V2_KEY(connectionId), positionId)) || 0
+      const countReads = client.multi()
+      for (const setKey of remainingMemberships) {
+        countReads.hget(STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId), setKey)
+      }
+      countReads.hget(STRATEGY_LEDGER_TOTALS_KEY(connectionId), "active_memberships")
+      const countResults = await countReads.exec().catch(() => [])
+      const pipeline = client.multi()
+      remainingMemberships.forEach((setKey, index) => {
+        const current = Math.max(0, Number(pipelineValue(countResults?.[index])) || 0)
+        if (current > 1) pipeline.hincrby(STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId), setKey, -1)
+        else if (current === 1) {
+          pipeline.hdel(STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId), setKey)
+          pipeline.srem(STRATEGY_ACTIVE_SET_KEYS_KEY(connectionId), setKey)
+        }
+      })
+      if (remainingMemberships.length > 0) {
+        const activeTotal = Math.max(
+          0,
+          Number(pipelineValue(countResults?.[remainingMemberships.length])) || 0,
+        )
+        pipeline.hset(
+          STRATEGY_LEDGER_TOTALS_KEY(connectionId),
+          "active_memberships",
+          String(Math.max(0, activeTotal - remainingMemberships.length)),
+        )
+      }
+      pipeline.del(membershipKey)
+      pipeline.expire(VALID_POS_ACTIVE_V2_KEY(connectionId), TTL_SECONDS)
+      pipeline.expire(STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId), TTL_SECONDS)
+      pipeline.expire(STRATEGY_ACTIVE_SET_KEYS_KEY(connectionId), TTL_SECONDS)
+      pipeline.expire(STRATEGY_LEDGER_TOTALS_KEY(connectionId), TTL_SECONDS)
+      await pipeline.exec()
+      deactivated = removed + remainingMemberships.length
+    }
+
+    const pnl = Number(outcome?.pnl)
+    if (memberships.length > 0 && Number.isFinite(pnl)) {
+      const ddt = Math.max(0, Number(outcome?.drawdownMinutes || 0))
+      const record = `${pnl.toFixed(6)}|0|${ddt.toFixed(3)}`
+      const closeIdsKey = STRATEGY_SET_CLOSE_IDS_KEY(connectionId)
+      const closedCountsKey = STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId)
+      const closedSetKeysKey = STRATEGY_CLOSED_SET_KEYS_KEY(connectionId)
+      const ledgerTotalsKey = STRATEGY_LEDGER_TOTALS_KEY(connectionId)
+      let bookedWithLua = false
+      if (typeof client.eval === "function") {
+        try {
+          await client.eval(RECORD_STRATEGY_CLOSE_OUTCOMES_LUA, {
+            keys: [
+              closeIdsKey,
+              closedCountsKey,
+              closedSetKeysKey,
+              ledgerTotalsKey,
+              ...memberships.map((setKey) => strategySetResultRingKey(connectionId, setKey)),
+            ],
+            arguments: [
+              positionId,
+              record,
+              String(TTL_SECONDS),
+              String(RING_CAP),
+              ...memberships,
+            ],
+          })
+          bookedWithLua = true
+        } catch {
+          // Adapter-safe batched fallback below. A committed Lua call leaves
+          // close ids behind, so the fallback remains idempotent.
+        }
+      }
+      if (!bookedWithLua) {
+        const dedupe = client.multi()
+        for (const setKey of memberships) dedupe.sadd(closeIdsKey, `${positionId}|${setKey}`)
+        const dedupeResults = await dedupe.exec()
+        const insertedSetKeys = memberships.filter((_setKey, index) => {
+          const raw = dedupeResults?.[index]
+          const value = Array.isArray(raw) ? raw[1] : raw
+          return Number(value) === 1
+        })
+        if (insertedSetKeys.length > 0) {
+          const pipeline = client.multi()
+          for (const setKey of insertedSetKeys) {
+            const ringKey = strategySetResultRingKey(connectionId, setKey)
+            pipeline.hincrby(closedCountsKey, setKey, 1)
+            pipeline.sadd(closedSetKeysKey, setKey)
+            pipeline.lpush(ringKey, record)
+            pipeline.ltrim(ringKey, 0, RING_CAP - 1)
+            pipeline.expire(ringKey, TTL_SECONDS)
+          }
+          pipeline.hincrby(ledgerTotalsKey, "exact_closed", insertedSetKeys.length)
+          pipeline.expire(closeIdsKey, TTL_SECONDS)
+          pipeline.expire(closedCountsKey, TTL_SECONDS)
+          pipeline.expire(closedSetKeysKey, TTL_SECONDS)
+          pipeline.expire(ledgerTotalsKey, TTL_SECONDS)
+          await pipeline.exec()
+        }
+      }
+    }
+    return deactivated > 0
   } catch {
     return false
   }
+}
+
+export interface StrategySetLedgerSnapshot {
+  /** Confirmed entries accumulated over the Set lifetime. */
+  entries: Record<string, number>
+  /** Currently active positions entered into the exact Set. */
+  active: Record<string, number>
+  /** Terminal realised positions booked into the Set result ring. */
+  closed: Record<string, number>
+}
+
+function numericHash(hash: Record<string, string> | null | undefined): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const [key, value] of Object.entries(hash || {})) {
+    const count = Number(value)
+    if (Number.isFinite(count) && count > 0) out[key] = count
+  }
+  return out
+}
+
+/** Load exact-Set lifetime, active, and closed counts in three parallel reads. */
+export async function getStrategySetLedgerSnapshot(
+  connectionId: string,
+): Promise<StrategySetLedgerSnapshot> {
+  try {
+    const client = getRedisClient()
+    const [entries, active, closed] = await Promise.all([
+      client.hgetall(STRATEGY_SET_ENTRY_COUNTS_KEY(connectionId)).catch(() => ({})),
+      client.hgetall(STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId)).catch(() => ({})),
+      client.hgetall(STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId)).catch(() => ({})),
+    ])
+    return {
+      entries: numericHash(entries as Record<string, string>),
+      active: numericHash(active as Record<string, string>),
+      closed: numericHash(closed as Record<string, string>),
+    }
+  } catch {
+    return { entries: {}, active: {}, closed: {} }
+  }
+}
+
+function pipelineValue(raw: unknown): unknown {
+  return Array.isArray(raw) && raw.length === 2 ? raw[1] : raw
+}
+
+/**
+ * Candidate-specific exact-Set ledger lookup. Main uses this after calculating
+ * its bounded Set-key list, so the hot path reads only fields that can be
+ * emitted this cycle rather than cloning three potentially long-lived hashes.
+ */
+export async function getStrategySetLedgerBatch(
+  connectionId: string,
+  setKeys: string[],
+): Promise<StrategySetLedgerSnapshot> {
+  const unique = Array.from(new Set(setKeys.map(String).filter(Boolean)))
+  if (unique.length === 0) return { entries: {}, active: {}, closed: {} }
+  try {
+    const client = getRedisClient()
+    const pipeline = client.multi()
+    for (const setKey of unique) {
+      pipeline.hget(STRATEGY_SET_ENTRY_COUNTS_KEY(connectionId), setKey)
+      pipeline.hget(STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId), setKey)
+      pipeline.hget(STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId), setKey)
+    }
+    const results = await pipeline.exec()
+    const snapshot: StrategySetLedgerSnapshot = { entries: {}, active: {}, closed: {} }
+    unique.forEach((setKey, index) => {
+      const offset = index * 3
+      const entries = Number(pipelineValue(results?.[offset])) || 0
+      const active = Number(pipelineValue(results?.[offset + 1])) || 0
+      const closed = Number(pipelineValue(results?.[offset + 2])) || 0
+      if (entries > 0) snapshot.entries[setKey] = entries
+      if (active > 0) snapshot.active[setKey] = active
+      if (closed > 0) snapshot.closed[setKey] = closed
+    })
+    return snapshot
+  } catch {
+    return { entries: {}, active: {}, closed: {} }
+  }
+}
+
+export interface StrategyLedgerTotals {
+  exactEntries: number
+  axisEntries: number
+  activeMemberships: number
+  exactClosed: number
+}
+
+/** O(1) totals index for dashboard/Real hot paths; no full HASH scan required. */
+export async function getStrategyLedgerTotals(connectionId: string): Promise<StrategyLedgerTotals> {
+  try {
+    const hash = await getRedisClient().hgetall(STRATEGY_LEDGER_TOTALS_KEY(connectionId))
+    return {
+      exactEntries: Math.max(0, Number(hash.exact_entries) || 0),
+      axisEntries: Math.max(0, Number(hash.axis_entries) || 0),
+      activeMemberships: Math.max(0, Number(hash.active_memberships) || 0),
+      exactClosed: Math.max(0, Number(hash.exact_closed) || 0),
+    }
+  } catch {
+    return { exactEntries: 0, axisEntries: 0, activeMemberships: 0, exactClosed: 0 }
+  }
+}
+
+/** Exact active Set-key listing, maintained transactionally with membership counts. */
+export async function getActiveStrategySetKeys(connectionId: string): Promise<Set<string>> {
+  try {
+    return new Set((await getRedisClient().smembers(STRATEGY_ACTIVE_SET_KEYS_KEY(connectionId))).map(String))
+  } catch {
+    return new Set()
+  }
+}
+
+/**
+ * Read bounded realised-performance windows for exact Strategy Sets.
+ * Only keys known to have closes should be passed by the caller, keeping the
+ * Main hot path proportional to active/validated Sets instead of all history.
+ */
+export async function getStrategySetWindowBatch(
+  connectionId: string,
+  setKeys: string[],
+  window = 12,
+): Promise<Map<string, PosWindowStats>> {
+  const unique = Array.from(new Set(setKeys.map(String).filter(Boolean)))
+  const out = new Map<string, PosWindowStats>()
+  if (unique.length === 0) return out
+  try {
+    const winN = Math.min(RING_CAP, Math.max(1, Math.floor(window)))
+    const client = getRedisClient()
+    const pipeline = client.multi()
+    for (const setKey of unique) {
+      pipeline.lrange(strategySetResultRingKey(connectionId, setKey), 0, winN - 1)
+    }
+    const results = (await (pipeline as any).exec()) as any[]
+    unique.forEach((setKey, index) => {
+      const raw = results?.[index]
+      const records = (Array.isArray(raw) && raw.length === 2 && Array.isArray(raw[1])
+        ? raw[1]
+        : raw) as string[] | undefined
+      out.set(setKey, deriveWindow(Array.isArray(records) ? records : [], winN))
+    })
+  } catch {
+    // Missing per-Set history is a normal bootstrap state.
+  }
+  return out
 }
 
 const VALID_POS_KEY = (connectionId: string) =>

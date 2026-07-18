@@ -6,6 +6,10 @@ export const LIVE_OPEN_STATUSES = [
   "pending",
   "pending_fill",
   "placed_unconfirmed",
+  // A close/control-order mutation is still active exposure until the venue
+  // and durable ledger both confirm a terminal state.
+  "closing",
+  "closing_partial",
 ] as const
 
 export type LiveOpenStatus = (typeof LIVE_OPEN_STATUSES)[number]

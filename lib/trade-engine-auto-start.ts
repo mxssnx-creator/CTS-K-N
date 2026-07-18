@@ -7,6 +7,8 @@
  * the coordinator is stopped/paused, healing is skipped.
  */
 
+import { isServerlessDeploymentRuntime } from "./deployment-runtime"
+
 async function loadRedisDb() {
   return import("./redis-db")
 }
@@ -56,10 +58,7 @@ function shouldArmInProcessMonitor(): boolean {
   // default. Serverless/edge deployments still use the awaited healing sweep
   // and deployment cron because timers are not durable after responses return.
   if (process.env.DISABLE_TRADE_ENGINE_AUTOSTART === "1") return false
-  // VERCEL=1 or VERCEL_ENV=production/preview indicates serverless environment
-  // where in-process timers are not durable.
-  const isVercel = process.env.VERCEL === "1" || !!process.env.VERCEL_ENV || process.env.NEXT_RUNTIME === "edge"
-  return !isVercel
+  return !isServerlessDeploymentRuntime()
 }
 
 async function getQueuedRefreshRequestList() {
@@ -241,6 +240,14 @@ async function runTradeEngineHealingSweepInternal({ isStartup }: HealingSweepOpt
       const fields = readiness.missingFields.map((item) => item.field).join(", ")
       console.warn(`[v0] [AutoStart] Healing sweep skipped: production readiness failed (${fields})`)
       return { startedCount: 0, eligibleCount: 0, skipped: "production_readiness_failed", error: fields }
+    }
+    if (isServerlessDeploymentRuntime()) {
+      return {
+        startedCount: 0,
+        eligibleCount: 0,
+        skipped: "serverless_runtime_requires_external_engine_owner",
+        error: "Request workers cannot own durable trade-engine timers; run one long-lived engine owner against the same shared Redis.",
+      }
     }
     const { initRedis, getRedisClient, getAssignedAndEnabledConnections, getConnection } = await loadRedisDb()
     const { loadSettingsAsync } = await import("./settings-storage")

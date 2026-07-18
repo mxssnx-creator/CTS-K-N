@@ -15,7 +15,7 @@ export const progressionFingerprintFields = [
   "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep",
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
-  "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio",
+  "blockVolumeRatio", "blockProfitFactorRatio", "blockMaxStack", "blockPauseCountRatio",
   "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount",
   "live_volume_factor", "preset_volume_factor", "volume_factor_live", "volume_factor_preset",

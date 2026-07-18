@@ -1,4 +1,5 @@
 import { getRedisClient } from "@/lib/redis-db"
+import { getDeploymentRuntimeLabel, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 type RuntimeStartupStatus = "starting" | "ready" | "error"
 
@@ -27,10 +28,7 @@ export function getRuntimeBootId(): string {
 export function getContinuitySchedulerMode(): "external-minute" | "in-process-minute" {
   const external =
     process.env.DISABLE_IN_PROCESS_CONTINUITY === "1" ||
-    process.env.CTS_DEPLOYMENT_RUNTIME === "cloudflare-workers" ||
-    process.env.VERCEL === "1" ||
-    Boolean(process.env.VERCEL_ENV) ||
-    process.env.NEXT_RUNTIME === "edge"
+    isServerlessDeploymentRuntime()
   return external ? "external-minute" : "in-process-minute"
 }
 
@@ -46,6 +44,7 @@ async function persistStartupState(
     boot_id: getRuntimeBootId(),
     source,
     runtime: process.env.NEXT_RUNTIME || "nodejs",
+    deployment_runtime: getDeploymentRuntimeLabel(),
     node_env: process.env.NODE_ENV || "development",
     scheduler_mode: getContinuitySchedulerMode(),
     process_id: String(process.pid),

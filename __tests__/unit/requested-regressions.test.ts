@@ -564,18 +564,24 @@ describe("requested regression guardrails", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
 
-    expect(source).toContain("Block is not materialized as its own Main/Real Set")
+    expect(source).toContain("Build and validate the complete count ladder before Live selection")
     expect(source).toContain('activeVariants.filter((p) => p.name !== "block")')
-    expect(source).toContain("EVERY block size [1..blockMaxStack]")
+    expect(source).toContain("buildIndependentBlockCountOverlaysForReal")
     expect(source).toContain("blockMaxStack:    10")
     expect(source).toContain("Math.max(1, Math.min(10, this._coordinationSettings.blockMaxStack | 0))")
-    expect(source).toContain("const orderedBlockCounts = [")
-    expect(source).toContain("for (const blockCount of orderedBlockCounts)")
-    expect(source).toContain("setKey: `${source.setKey}#block:${blockCount}`")
+    expect(source).toContain("for (let blockCount = 1; blockCount <= maxStack; blockCount++)")
+    expect(source).toContain("const setKey = `${source.setKey}#block:${blockCount}`")
+    expect(source).toContain("getStrategySetWindowBatch(this.connectionId, candidateKeys, resultWindow)")
+    expect(source).toContain("calculateBlockMinimumProfitFactor(")
+    expect(source).toContain("blockProfitFactorRatio: profitFactorRatio")
+    expect(source).toContain("const dispatchCandidates = qualifying")
     expect(source).toContain("Active Real/Live-position Block handling belongs to REAL")
     expect(source).toContain("buildActiveRealBlockOverlaysForReal")
     expect(source).toContain("blockActiveRealEnabled && !this._coordinationSettings.blockActiveLiveEnabled")
-    expect(source).toContain("setKey: `${source.setKey}#block:active:${boundedCount}`")
+    expect(source).toContain('scope === "global"')
+    expect(source).toContain("`${source.setKey}#block:active:${boundedCount}`")
+    expect(source).toContain("`${source.setKey}#block:set:${boundedCount}`")
+    expect(source).toContain("getStrategySetLedgerBatch(")
     expect(statsRoute).toContain("const realValidatedActivePositions = realOpen || realDetailRunning || 0")
     expect(source).toContain("calculateBlockVolumeMultiplier(")
     expect(source).toContain("variantSizeMultiplier: blockCalculatedVolumeMultiplier")
@@ -639,10 +645,9 @@ describe("requested regression guardrails", () => {
     const source = read("lib/trade-engine.ts")
 
     expect(source).toContain("private canOwnEngineRuntime()")
-    expect(source).toContain('process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1"')
-    expect(source).toContain('process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"')
-    expect(source).toContain('const isVercel = process.env.VERCEL === "1" || !!process.env.VERCEL_ENV')
-    expect(source).toContain('!explicitForegroundAllowed && !forceLocalTakeover')
+    expect(source).toContain("hasExplicitServerlessForegroundOptIn")
+    expect(source).toContain("isServerlessDeploymentRuntime")
+    expect(source).toContain("isServerlessWorker && !explicitForegroundAllowed")
     expect(source).toContain("queued-only in this production API worker")
     expect(source).toContain("Leaving start request queued")
     expect(source).not.toContain("runningUnderProdStart")
@@ -653,13 +658,13 @@ describe("requested regression guardrails", () => {
     const sharedPipeline = read("lib/trade-engine/shared-ind-strat-pipeline.ts")
     const indicationSets = read("lib/indication-sets-processor.ts")
 
-    expect(engineManager).toContain('process.env.VERCEL !== "1" ||')
+    expect(engineManager).toContain('!isServerlessDeploymentRuntime() ||')
     expect(engineManager).toContain('process.env.ENABLE_API_REALTIME_PROGRESSION === "1"')
     expect(engineManager).toContain('process.env.ENABLE_API_LIVE_POSITIONS_SYNC === "1"')
     expect(engineManager).toContain('return process.env.NODE_ENV === "production" ? 90_000 : 180_000')
-    expect(sharedPipeline).toContain('process.env.VERCEL !== "1" ||')
+    expect(sharedPipeline).toContain('!isServerlessDeploymentRuntime() ||')
     expect(sharedPipeline).toContain('process.env.DISABLE_API_STRATEGY_FLOW !== "1"')
-    expect(indicationSets).toContain('process.env.VERCEL !== "1" ||')
+    expect(indicationSets).toContain('!isServerlessDeploymentRuntime() ||')
   })
 
   test("event-driven health monitoring keeps a periodic missed-heartbeat safety sweep", () => {
@@ -1075,20 +1080,25 @@ describe("requested regression guardrails", () => {
   })
 
 
-  test("production Vercel forceLocalTakeover can attach a local engine runtime", () => {
+  test("serverless forceLocalTakeover cannot bypass explicit foreground worker opt-in", () => {
     const source = read("lib/trade-engine.ts")
 
-    expect(source).toContain("const isVercelServerlessWorker = process.env.VERCEL === \"1\" || !!process.env.VERCEL_ENV")
-    expect(source).toContain("if (isVercelServerlessWorker && !explicitForegroundAllowed && !forceLocalTakeover)")
-    expect(source).not.toContain('process.env.VERCEL === "1" || !!process.env.VERCEL_ENV\n        && !explicitForegroundAllowed && !forceLocalTakeover')
+    expect(source).toContain("const isServerlessWorker = isServerlessDeploymentRuntime()")
+    expect(source).toContain("if (isServerlessWorker && !explicitForegroundAllowed)")
+    expect(source).toContain("const forceLocalTakeover = options.forceLocalTakeover === true || config.allowInProcessStart === true")
+    expect(source).not.toContain("isServerlessWorker && !explicitForegroundAllowed && !forceLocalTakeover")
   })
 
   test("production status poll runs awaited healing before reporting no runtime", () => {
     const source = read("app/api/trade-engine/status/route.ts")
 
     expect(source).toContain("runTradeEngineHealingSweep({ isStartup: false })")
-    expect(source).toContain("before reporting a degraded/no-runtime coordinator")
-    expect(source).toContain("coordinatorEngineCount = coordinator?.getActiveEngineCount() || 0")
+    expect(source).toContain("Long-lived Node owners can self-heal during a status read")
+    expect(source).toContain("const coordinatorEngineCount = coordinator?.getActiveEngineCount() || 0")
+    expect(source).toContain("let effectiveCoordinatorEngineCount = coordinatorEngineCount")
+    expect(source.indexOf("await runTradeEngineHealingSweep({ isStartup: false })")).toBeLessThan(
+      source.indexOf("const hasLocalEngineRuntime = effectiveCoordinatorEngineCount > 0"),
+    )
   })
 
   test("status-all derives running state from operator intent and fresh engine status", () => {
@@ -2171,6 +2181,7 @@ describe("requested regression guardrails", () => {
       "axisContMaxWindow",
       "axisPauseMaxWindow",
       "blockVolumeRatio",
+      "blockProfitFactorRatio",
       "blockMaxStack",
       "blockPauseCountRatio",
       "blockActiveRealEnabled",
@@ -2284,7 +2295,7 @@ describe("requested regression guardrails", () => {
         axisLastEnabled: "false",
         axisContEnabled: "true",
         axisPauseEnabled: "false",
-        axisPrevMaxWindow: "2",
+        axisPrevMaxWindow: "4",
         axisLastMaxWindow: "3",
         axisContMaxWindow: "4",
         axisPauseMaxWindow: "5",

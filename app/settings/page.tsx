@@ -355,12 +355,14 @@ interface Settings {
   presetTrailingEnabled?: boolean
   presetBlockEnabled?: boolean
   presetBlockVolumeRatio?: number
+  presetBlockProfitFactorRatio?: number
   presetBlockMaxStack?: number
   presetBlockPauseCountRatio?: number
   presetBlockActiveRealEnabled?: boolean
   presetBlockActiveLiveEnabled?: boolean
   variantBlockEnabled?: boolean
   blockVolumeRatio?: number
+  blockProfitFactorRatio?: number
   blockMaxStack?: number
   blockPauseCountRatio?: number
   blockActiveRealEnabled?: boolean
@@ -642,12 +644,14 @@ const initialSettings: Settings = {
   presetMaxCandlesPerRun: 6000,
   presetBlockEnabled: true,
   presetBlockVolumeRatio: 1,
+  presetBlockProfitFactorRatio: 0.8,
   presetBlockMaxStack: 10,
   presetBlockPauseCountRatio: 1,
   presetBlockActiveRealEnabled: true,
   presetBlockActiveLiveEnabled: true,
   variantBlockEnabled: true,
   blockVolumeRatio: 1,
+  blockProfitFactorRatio: 0.8,
   blockMaxStack: 10,
   blockPauseCountRatio: 1,
   blockActiveRealEnabled: true,
@@ -916,12 +920,14 @@ export default function SettingsPage() {
     presetMaxCandlesPerRun: initialSettings.presetMaxCandlesPerRun ?? 6000,
     presetBlockEnabled: initialSettings.presetBlockEnabled ?? true,
     presetBlockVolumeRatio: initialSettings.presetBlockVolumeRatio ?? initialSettings.blockVolumeRatio ?? 1,
+    presetBlockProfitFactorRatio: initialSettings.presetBlockProfitFactorRatio ?? initialSettings.blockProfitFactorRatio ?? 0.8,
     presetBlockMaxStack: initialSettings.presetBlockMaxStack ?? initialSettings.blockMaxStack ?? 10,
     presetBlockPauseCountRatio: initialSettings.presetBlockPauseCountRatio ?? initialSettings.blockPauseCountRatio ?? 1,
     presetBlockActiveRealEnabled: initialSettings.presetBlockActiveRealEnabled ?? initialSettings.blockActiveRealEnabled ?? true,
     presetBlockActiveLiveEnabled: initialSettings.presetBlockActiveLiveEnabled ?? initialSettings.blockActiveLiveEnabled ?? true,
     variantBlockEnabled: initialSettings.variantBlockEnabled ?? initialSettings.presetBlockEnabled ?? true,
     blockVolumeRatio: initialSettings.blockVolumeRatio ?? initialSettings.presetBlockVolumeRatio ?? 1,
+    blockProfitFactorRatio: initialSettings.blockProfitFactorRatio ?? initialSettings.presetBlockProfitFactorRatio ?? 0.8,
     blockMaxStack: initialSettings.blockMaxStack ?? initialSettings.presetBlockMaxStack ?? 10,
     blockPauseCountRatio: initialSettings.blockPauseCountRatio ?? initialSettings.presetBlockPauseCountRatio ?? 1,
     blockActiveRealEnabled: initialSettings.blockActiveRealEnabled ?? initialSettings.presetBlockActiveRealEnabled ?? true,

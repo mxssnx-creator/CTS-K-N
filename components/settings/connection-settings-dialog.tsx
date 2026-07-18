@@ -512,6 +512,7 @@ export function ConnectionSettingsDialog({
             axes:     { ...DEFAULT_COORDINATION_SETTINGS.axes,     ...(coord.axes     || {}) },
             variants: { ...DEFAULT_COORDINATION_SETTINGS.variants, ...(coord.variants || {}) },
             blockVolumeRatio: typeof coord.blockVolumeRatio === "number" ? coord.blockVolumeRatio : DEFAULT_COORDINATION_SETTINGS.blockVolumeRatio,
+            blockProfitFactorRatio: typeof coord.blockProfitFactorRatio === "number" ? coord.blockProfitFactorRatio : DEFAULT_COORDINATION_SETTINGS.blockProfitFactorRatio,
             blockMaxStack:    typeof coord.blockMaxStack    === "number" ? coord.blockMaxStack    : DEFAULT_COORDINATION_SETTINGS.blockMaxStack,
             blockPauseCountRatio: typeof coord.blockPauseCountRatio === "number" ? coord.blockPauseCountRatio : DEFAULT_COORDINATION_SETTINGS.blockPauseCountRatio,
             blockActiveRealEnabled: typeof coord.blockActiveRealEnabled === "boolean" ? coord.blockActiveRealEnabled : DEFAULT_COORDINATION_SETTINGS.blockActiveRealEnabled,

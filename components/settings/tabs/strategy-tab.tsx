@@ -77,6 +77,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
   }
   const presetBlockEnabled = settings.presetBlockEnabled !== false
   const presetBlockVolumeRatio = Number(settings.presetBlockVolumeRatio ?? settings.blockVolumeRatio ?? 1)
+  const presetBlockProfitFactorRatio = Number(settings.presetBlockProfitFactorRatio ?? settings.blockProfitFactorRatio ?? 0.8)
   const presetBlockMaxStack = Number(settings.presetBlockMaxStack ?? settings.blockMaxStack ?? 10)
   const presetBlockPauseCountRatio = Number(settings.presetBlockPauseCountRatio ?? settings.blockPauseCountRatio ?? 1)
   const presetBlockActiveRealEnabled = settings.presetBlockActiveRealEnabled ?? settings.blockActiveRealEnabled ?? true
@@ -719,7 +720,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       Every valid Block count is coordinated independently. Exchange add quantity = current position base × (active Block count × volume ratio); its volume state remains attached until that position closes profitably, followed by its own count pause.
                     </p>
                   </div>
-                  <div className={presetBlockEnabled ? "grid gap-4 md:grid-cols-3" : "grid gap-4 md:grid-cols-3 pointer-events-none"}>
+                  <div className={presetBlockEnabled ? "grid gap-4 md:grid-cols-2 xl:grid-cols-4" : "grid gap-4 md:grid-cols-2 xl:grid-cols-4 pointer-events-none"}>
                     <PresetOptimizerSlider
                       label="Volume ratio"
                       value={presetBlockVolumeRatio}
@@ -727,6 +728,14 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       max={3}
                       step={0.05}
                       onChange={(value) => updatePresetBlockSetting("presetBlockVolumeRatio", "blockVolumeRatio", value)}
+                    />
+                    <PresetOptimizerSlider
+                      label="ProfitFactor factor"
+                      value={presetBlockProfitFactorRatio}
+                      min={0.2}
+                      max={5}
+                      step={0.1}
+                      onChange={(value) => updatePresetBlockSetting("presetBlockProfitFactorRatio", "blockProfitFactorRatio", value)}
                     />
                     <PresetOptimizerSlider
                       label="Independent Block counts"

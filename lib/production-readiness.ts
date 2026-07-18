@@ -1,6 +1,11 @@
 import * as RedisDb from "./redis-db"
 import { getAssignedAndEnabledConnections, getRedisBackend, getRedisClient, initRedis } from "./redis-db"
 import { getLatestMigrationVersion, getMigrationBundleHealth } from "./redis-migrations"
+import {
+  getDeploymentRuntimeLabel,
+  isKiloDeploymentRuntime,
+  isServerlessDeploymentRuntime,
+} from "./deployment-runtime"
 
 export type ProductionReadinessMissingField = {
   field: string
@@ -63,14 +68,54 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
       : typeof (RedisDb as any).getRedisBackend === "function"
         ? (RedisDb as any).getRedisBackend()
         : "unknown"
-  const inlineRedisAllowed = process.env.ALLOW_PROD_INLINE_REDIS !== "0" || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1"
+  const serverlessRuntime = isServerlessDeploymentRuntime()
+  const inlineRedisAllowed =
+    !serverlessRuntime &&
+    (process.env.ALLOW_PROD_INLINE_REDIS !== "0" || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1")
   if (process.env.NODE_ENV === "production" && backend === "inline-local" && !inlineRedisAllowed) {
     missingFields.push({
       field: "redis_backend",
       expected: "redis-network",
       actual: backend,
-      details: { reason: "inline-local Redis was explicitly disabled with ALLOW_PROD_INLINE_REDIS=0" },
+      details: {
+        deploymentRuntime: getDeploymentRuntimeLabel(),
+        reason: serverlessRuntime
+          ? "serverless request workers require shared Redis for settings, migrations, counters, and engine-owner coordination"
+          : "inline-local Redis was explicitly disabled with ALLOW_PROD_INLINE_REDIS=0",
+      },
     })
+  }
+  if (
+    process.env.NODE_ENV === "production" &&
+    backend === "inline-local" &&
+    isKiloDeploymentRuntime() &&
+    !serverlessRuntime
+  ) {
+    const snapshotPath = String(process.env.V0_REDIS_SNAPSHOT_PATH || "").trim()
+    const persistentVolumeDeclared = process.env.CTS_INLINE_REDIS_PERSISTENT_VOLUME === "1"
+    const absoluteNonTmpPath = snapshotPath.startsWith("/") && !snapshotPath.startsWith("/tmp/")
+    if (!persistentVolumeDeclared || !absoluteNonTmpPath) {
+      missingFields.push({
+        field: "inline_redis_persistent_snapshot",
+        expected: "absolute non-/tmp V0_REDIS_SNAPSHOT_PATH on a persistent volume",
+        actual: snapshotPath || null,
+        details: {
+          deploymentRuntime: getDeploymentRuntimeLabel(),
+          persistentVolumeDeclared,
+          reason: "Kilo long-lived Inline Redis requires an explicitly mounted persistent volume; container/tmp storage is not a cross-restart durability contract",
+        },
+      })
+    } else {
+      const persisted = await RedisDb.persistNow().catch(() => false)
+      if (!persisted) {
+        missingFields.push({
+          field: "inline_redis_snapshot_write",
+          expected: "atomic snapshot write succeeds",
+          actual: "failed",
+          details: { snapshotPath, deploymentRuntime: getDeploymentRuntimeLabel() },
+        })
+      }
+    }
   }
 
   const schemaVersion = await client.get("_schema_version").catch(() => null)

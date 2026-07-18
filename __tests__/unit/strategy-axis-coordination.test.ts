@@ -6,6 +6,10 @@ import {
   StrategyCoordinator,
   type StrategySet,
 } from "@/lib/strategy-coordinator"
+import {
+  normalizeStrategyAxes,
+  normalizeStrategyAxisMaxWindow,
+} from "@/lib/strategy-axis-settings"
 
 function baseSet(recentPnls: number[]): StrategySet {
   return {
@@ -36,6 +40,68 @@ function baseSet(recentPnls: number[]): StrategySet {
 }
 
 describe("strategy position-count axis coordination", () => {
+  test("normalizes legacy/invalid axis maxima to the exact engine grid", () => {
+    expect(normalizeStrategyAxisMaxWindow("prev", 2)).toBe(4)
+    expect(normalizeStrategyAxisMaxWindow("prev", 5)).toBe(4)
+    expect(normalizeStrategyAxisMaxWindow("prev", 11)).toBe(10)
+    expect(normalizeStrategyAxisMaxWindow("prev", 99)).toBe(12)
+
+    expect(normalizeStrategyAxes({
+      prev: { enabled: true, maxWindow: 5 },
+      last: { enabled: false, maxWindow: 9 },
+    }, {
+      axisContEnabled: "false",
+      axisContMaxWindow: "4",
+      axisPauseMaxWindow: "0",
+    })).toEqual({
+      prev: { enabled: true, maxWindow: 4 },
+      last: { enabled: false, maxWindow: 4 },
+      cont: { enabled: false, maxWindow: 4 },
+      pause: { enabled: true, maxWindow: 1 },
+    })
+  })
+
+  test.each(Array.from({ length: 16 }, (_, mask) => [mask]))(
+    "generates the complete enabled-axis configuration matrix (mask %i)",
+    (mask) => {
+      const coordinator = new StrategyCoordinator(`axis-matrix-${mask}`) as any
+      const enabled = (bit: number) => (mask & (1 << bit)) !== 0
+      coordinator._coordinationSettings.axes = {
+        prev: { enabled: enabled(0), maxWindow: 12 },
+        last: { enabled: enabled(1), maxWindow: 4 },
+        cont: { enabled: enabled(2), maxWindow: 8 },
+        pause: { enabled: enabled(3), maxWindow: 8 },
+      }
+
+      const sets = coordinator.expandAxisSets(
+        baseSet([2, 1, 3, 1, 2, 1, 3, 1, 2, 1, 3, 1]),
+        1.2,
+        3,
+        { long: 3, short: 2 },
+        2,
+        5_000,
+      ) as StrategySet[]
+
+      if (mask === 0) {
+        expect(sets).toEqual([])
+        return
+      }
+
+      const expected = (enabled(0) ? 5 : 1) * (enabled(1) ? 4 : 1) * (enabled(2) ? 5 : 2)
+      expect(sets).toHaveLength(expected)
+      expect(new Set(sets.map((set) => set.setKey)).size).toBe(expected)
+      for (const set of sets) {
+        if (enabled(0)) expect(set.axisWindows?.prev).toBeGreaterThanOrEqual(4)
+        else expect(set.axisWindows?.prev).toBe(0)
+        if (enabled(1)) expect(set.axisWindows?.last).toBeGreaterThanOrEqual(1)
+        else expect(set.axisWindows?.last).toBe(0)
+        if (enabled(2)) expect(set.axisWindows?.cont).toBeGreaterThanOrEqual(1)
+        else expect(set.axisWindows?.cont).toBe(0)
+        expect(set.axisWindows?.pause).toBe(enabled(3) ? 2 : 0)
+      }
+    },
+  )
+
   test("uses closed PnLs and direction-specific live counts", () => {
     const coordinator = new StrategyCoordinator("axis-test") as any
     coordinator._coordinationSettings.axes = {

@@ -129,6 +129,8 @@ function getDefaultSettings(): Record<string, any> {
     blockAdjustment: true,
     variantBlockEnabled: true,
     blockVolumeRatio: 1,
+    blockProfitFactorRatio: 0.8,
+    presetBlockProfitFactorRatio: 0.8,
     blockMaxStack: 10,
     blockPauseCountRatio: 1,
     blockActiveRealEnabled: true,

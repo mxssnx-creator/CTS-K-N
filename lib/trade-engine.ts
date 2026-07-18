@@ -55,6 +55,7 @@ import {
 import { clearEngineRefreshRequest, ENGINE_REFRESH_REQUEST_TTL_MS, getQueuedEngineRefreshRequests, recordEngineRefreshRequestFailure } from "./engine-refresh-queue"
 import { processQueuedEngineRefreshRequests } from "./engine-refresh-queue"
 import { onEngineEvent, publishEngineEvent } from "./engine-event-bus"
+import { hasExplicitServerlessForegroundOptIn, isServerlessDeploymentRuntime } from "./deployment-runtime"
 
 // Re-export TradeEngine class and config from subdirectory for convenient imports
 export { TradeEngine, type TradeEngineConfig, TRADE_SERVICE_NAME } from "./trade-engine/trade-engine"
@@ -136,7 +137,7 @@ export class GlobalTradeEngineCoordinator {
     // Explicit disable override (highest priority).
     if (process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1") return false
     // Edge / serverless request workers cannot own durable long-running loops.
-    if (process.env.NEXT_RUNTIME === "edge") return false
+    if (isServerlessDeploymentRuntime() && !hasExplicitServerlessForegroundOptIn()) return false
     // Dev / test always own the runtime for local UX.
     if (process.env.NODE_ENV !== "production") return true
 
@@ -146,22 +147,8 @@ export class GlobalTradeEngineCoordinator {
     // monitor + continuity runner for long-lived prod Node processes) and what
     // `startEngine()` below already permits for non-Vercel prod.
     //
-    // The ONLY production case that must stay queued-only is a Vercel/
-    // serverless request worker with no durable timers/loops — and only when
-    // the operator has NOT explicitly opted into a foreground worker via BOTH
-    // flags. Previously this returned `isDev || allowExplicit`, which made
-    // every standalone production deployment unable to own the runtime, so
-    // engines never started and the coordinator reported "stopped"/"degraded"
-    // in production while dev worked fine.
-    // PRODUCTION FIX: Enable strategy flow by default in production.
-    // VERCEL/VERCEL_ENV indicates serverless environment but the healing sweep
-    // explicitly calls startEngine with forceLocalTakeover which overrides this check.
-    // Legacy guard equivalent: const isVercel = process.env.VERCEL === "1" || !!process.env.VERCEL_ENV
-    const isVercel = !!process.env.VERCEL || !!process.env.VERCEL_ENV
-    const explicitForegroundAllowed =
-      process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1" &&
-      process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"
-    if (isVercel && !explicitForegroundAllowed) return false
+    // The serverless case was rejected above. Every remaining production
+    // runtime is an explicitly long-lived owner and may start by default.
     return true
   }
 
@@ -260,9 +247,7 @@ export class GlobalTradeEngineCoordinator {
    */
   async startEngine(connectionId: string, config: EngineConfig, options: StartEngineOptions = {}): Promise<boolean> {
     const forceLocalTakeover = options.forceLocalTakeover === true || config.allowInProcessStart === true
-    const explicitForegroundAllowed =
-      process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1" &&
-      process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"
+    const explicitForegroundAllowed = hasExplicitServerlessForegroundOptIn()
 
     if (process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1" || process.env.NEXT_RUNTIME === "edge") {
       console.warn(
@@ -271,10 +256,10 @@ export class GlobalTradeEngineCoordinator {
       return false
     }
 
-    const isVercelServerlessWorker = process.env.VERCEL === "1" || !!process.env.VERCEL_ENV
-    if (isVercelServerlessWorker && !explicitForegroundAllowed && !forceLocalTakeover) {
+    const isServerlessWorker = isServerlessDeploymentRuntime()
+    if (isServerlessWorker && !explicitForegroundAllowed) {
       console.warn(
-        `[v0] [Coordinator] startEngine(${connectionId}) skipped — Vercel serverless workers are queued-only for passive starts without explicit foreground worker flags. Leaving start request queued.`,
+        `[v0] [Coordinator] startEngine(${connectionId}) skipped — serverless request workers are queued-only without explicit foreground worker flags. Leaving start request queued for a long-lived owner.`,
       )
       return false
     }

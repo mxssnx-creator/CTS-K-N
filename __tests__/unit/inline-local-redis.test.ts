@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "fs/promises"
+import { mkdtemp, readdir, rm, stat } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
 
@@ -176,6 +176,68 @@ describe("InlineLocalRedis compatibility and persistence", () => {
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  })
+
+  it("restores settings, pending order ownership, and exact Set indexes after abrupt memory loss", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "inline-redis-crash-"))
+    const snapshotPath = join(dir, "redis-snapshot.json")
+    process.env.V0_REDIS_SNAPSHOT_PATH = snapshotPath
+
+    try {
+      const writer = new InlineLocalRedis()
+      await writer.hset("connection_settings:conn-live", {
+        settings_version: "generation-2",
+        dcaMaxSteps: "4",
+        blockVolumeRatio: "0.75",
+      })
+      await writer.hset("live_positions:conn-live:position-1", {
+        id: "position-1",
+        status: "placed_unconfirmed",
+        pendingEntryClientOrderId: "cts-entry-position-1",
+        setKey: "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0",
+      })
+      await writer.sadd("live_positions:conn-live", "position-1")
+      await writer.hset("strategy_set_entry_counts:conn-live", { "set:exact": "1" })
+      await writer.hset("strategy_set_active_entry_counts:conn-live", { "set:exact": "1" })
+      await writer.sadd("strategy_active_set_keys:conn-live", "set:exact")
+      await writer.hset("strategy_ledger_totals:conn-live", {
+        exact_entries: "1",
+        active_memberships: "1",
+      })
+
+      await expect(writer.persistNow()).resolves.toBe(true)
+      const firstMtime = (await stat(snapshotPath)).mtimeMs
+      await expect(writer.saveToDisk()).resolves.toBe(true)
+      expect((await stat(snapshotPath)).mtimeMs).toBe(firstMtime)
+      expect((await readdir(dir)).filter((name) => name.endsWith(".tmp"))).toEqual([])
+
+      // Drop every in-memory Map without running a graceful-exit flush. The new
+      // instance must reconstruct the last crossed disk barrier exactly.
+      resetInlineGlobals()
+      const reader = new InlineLocalRedis()
+      await expect(reader.loadFromDisk()).resolves.toBe(true)
+      await expect(reader.hget("connection_settings:conn-live", "settings_version")).resolves.toBe("generation-2")
+      await expect(reader.hgetall("live_positions:conn-live:position-1")).resolves.toMatchObject({
+        status: "placed_unconfirmed",
+        pendingEntryClientOrderId: "cts-entry-position-1",
+      })
+      await expect(reader.smembers("live_positions:conn-live")).resolves.toEqual(["position-1"])
+      await expect(reader.smembers("strategy_active_set_keys:conn-live")).resolves.toEqual(["set:exact"])
+      await expect(reader.hgetall("strategy_ledger_totals:conn-live")).resolves.toMatchObject({
+        exact_entries: "1",
+        active_memberships: "1",
+      })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("caps the periodic recovery checkpoint at exactly one minute", () => {
+    const fs = require("fs")
+    const source = fs.readFileSync(join(process.cwd(), "lib/redis-db.ts"), "utf8")
+    expect(source).toContain("const defaultInterval = 60_000")
+    expect(source).toContain("Math.max(5_000, Math.min(60_000, Math.floor(configuredInterval)))")
+    expect(source).toContain("if (evicted > 0) this.markDirty()")
   })
 
   it("keeps sorted sets ordered while updating duplicate members and slicing score ranges", async () => {

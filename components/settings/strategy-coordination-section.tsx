@@ -51,6 +51,7 @@ import {
   trailingVariantKey,
 } from "@/lib/trailing-settings"
 import { DEFAULT_DCA_PROFILE, type DcaTakeProfitMode } from "@/lib/dca-strategy"
+import { STRATEGY_AXIS_SPECS } from "@/lib/strategy-axis-settings"
 
 export interface CoordinationSettings {
   // ── Position-Count axes ─────────────────────────────────────────────
@@ -73,6 +74,7 @@ export interface CoordinationSettings {
   // for every blockCount in [1..blockMaxStack]. pause count is derived as
   // round(blockCount × blockPauseCountRatio).
   blockVolumeRatio: number // 0.25..3.0 per spec band (UI clamps; engine re-clamps)
+  blockProfitFactorRatio: number // 0.2..5.0 × default PF × count volume increment
   blockMaxStack:    number // 1..10 block sizes processed independently
   blockPauseCountRatio: number // 1..4, step 0.5
   blockActiveRealEnabled: boolean // active real-position Block overlay, default true
@@ -187,6 +189,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
     dca:      false, // off by default per operator spec
   },
   blockVolumeRatio: 1.0,
+  blockProfitFactorRatio: 0.8,
   blockMaxStack:    10,
   blockPauseCountRatio: 1.0,
   blockActiveRealEnabled: true,
@@ -218,22 +221,28 @@ const AXES: Array<{
   key: keyof CoordinationSettings["axes"]
   label: string
   range: string
+  floor: number
   ceiling: number
+  step: number
   description: string
 }> = [
   {
     key: "prev",
     label: "Previous",
-    range: "1–12",
-    ceiling: 12,
+    range: "4–12 · step 2",
+    floor: STRATEGY_AXIS_SPECS.prev.min,
+    ceiling: STRATEGY_AXIS_SPECS.prev.max,
+    step: STRATEGY_AXIS_SPECS.prev.step,
     description:
-      "Closed-position lookback bucket. Step-1 windows control how far back the coordinator reads when validating Sets.",
+      "Closed-position PF lookback. Exact windows 4, 6, 8, 10 and 12 are evaluated independently.",
   },
   {
     key: "last",
     label: "Last (of previous)",
     range: "1–4",
-    ceiling: 4,
+    floor: STRATEGY_AXIS_SPECS.last.min,
+    ceiling: STRATEGY_AXIS_SPECS.last.max,
+    step: STRATEGY_AXIS_SPECS.last.step,
     description:
       "Magnitude of the last-N wins / losses dimension. Drives trailing aggressiveness and the pause count-axis.",
   },
@@ -241,7 +250,9 @@ const AXES: Array<{
     key: "cont",
     label: "Continuous",
     range: "1–8",
-    ceiling: 8,
+    floor: STRATEGY_AXIS_SPECS.cont.min,
+    ceiling: STRATEGY_AXIS_SPECS.cont.max,
+    step: STRATEGY_AXIS_SPECS.cont.step,
     description:
       "Open continuous positions. Larger windows allow longer add-on stacks before the gate closes.",
   },
@@ -249,7 +260,9 @@ const AXES: Array<{
     key: "pause",
     label: "Position-count Pause",
     range: "1–8",
-    ceiling: 8,
+    floor: STRATEGY_AXIS_SPECS.pause.min,
+    ceiling: STRATEGY_AXIS_SPECS.pause.max,
+    step: STRATEGY_AXIS_SPECS.pause.step,
     description:
       "Last-N count window used to pause/calibrate further position-count calculations. This stays under axis semantics and is not a dispatchable strategy variant.",
   },
@@ -352,7 +365,7 @@ export function StrategyCoordinationSection({
             <div>
               <CardTitle className="text-sm">Position-Count Axes</CardTitle>
               <CardDescription className="text-xs">
-                Step-1 windows that gate Main-stage related Set creation. Each
+                Canonical windows that gate Main-stage related Set creation. Each
                 validated Base Set fans out into related Sets across these
                 axes. Counts surface in the dashboard&apos;s axis strip.
               </CardDescription>
@@ -395,9 +408,9 @@ export function StrategyCoordinationSection({
                   </Label>
                   <Slider
                     value={[state.maxWindow]}
-                    min={1}
+                    min={axis.floor}
                     max={axis.ceiling}
-                    step={1}
+                    step={axis.step}
                     onValueChange={(v) =>
                       setAxis(axis.key, { maxWindow: v[0] })
                     }
@@ -848,6 +861,50 @@ export function StrategyCoordinationSection({
                   </div>
                 )
               })}
+            </div>
+          </div>
+
+          {/* Count-specific ProfitFactor ratio */}
+          <div className="rounded-lg border border-border/60 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <Label className="text-sm font-semibold">ProfitFactor</Label>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Minimum PF factor calculated separately for every Block
+                  count: Default PF × this factor × that count&apos;s actual
+                  volume increment. The same latest-position window as the
+                  source/default calculation is used. Default 0.8.
+                </p>
+              </div>
+              <Badge variant="outline" className="text-[10px] tabular-nums">
+                0.2–5.0
+              </Badge>
+            </div>
+            <div className="flex items-center gap-3 pt-1">
+              <Slider
+                value={[value.blockProfitFactorRatio]}
+                min={0.2}
+                max={5}
+                step={0.1}
+                onValueChange={(v) =>
+                  onChange({ ...value, blockProfitFactorRatio: Number(v[0].toFixed(1)) })
+                }
+                disabled={!value.variants.block}
+                className="flex-1"
+              />
+              <span className="text-xs font-semibold tabular-nums w-10 text-right">
+                {value.blockProfitFactorRatio.toFixed(1)}×
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 pt-1 text-[11px]">
+              {[1, 2, 3].map((count) => (
+                <div key={count} className="rounded-md border border-border/60 p-2">
+                  <span className="text-muted-foreground">Block {count}</span>
+                  <p className="mt-0.5 font-mono font-semibold tabular-nums">
+                    PF × {(value.blockProfitFactorRatio * count * value.blockVolumeRatio).toFixed(2)}
+                  </p>
+                </div>
+              ))}
             </div>
           </div>
 

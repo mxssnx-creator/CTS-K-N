@@ -15,7 +15,7 @@ export interface BlockLegState {
 }
 
 export function parseBlockCount(setKey: unknown): number | null {
-  const match = String(setKey || "").match(/#block:(?:active:)?(\d+)(?:$|[#:_-])/i)
+  const match = String(setKey || "").match(/#block:(?:(?:active|set):)?(\d+)(?:$|[#:_-])/i)
   if (!match) return null
   const count = Math.floor(Number(match[1]))
   return Number.isFinite(count) && count >= 1 && count <= 10 ? count : null
@@ -33,6 +33,26 @@ export function calculateBlockVolumeMultiplier(
 ): number {
   if (![baseVolumeMultiplier, blockCount, volumeRatio].every((value) => Number.isFinite(value) && value > 0)) return 0
   return baseVolumeMultiplier * (Math.floor(blockCount) * volumeRatio)
+}
+
+/**
+ * Count-specific Block ProfitFactor floor.
+ *
+ * The operator-controlled ratio is proportional to the normal/default stage
+ * ProfitFactor and the actual volume increment of this independent Block
+ * count. Keeping this pure and unrounded prevents Count 1..N from sharing a
+ * threshold or inheriting another count's result through presentation
+ * rounding.
+ */
+export function calculateBlockMinimumProfitFactor(
+  defaultMinimumProfitFactor: number,
+  blockProfitFactorRatio: number,
+  volumeIncrementFactor: number,
+): number {
+  if (![defaultMinimumProfitFactor, blockProfitFactorRatio, volumeIncrementFactor]
+    .every((value) => Number.isFinite(value) && value > 0)) return 0
+  const boundedRatio = Math.max(0.2, Math.min(5, blockProfitFactorRatio))
+  return defaultMinimumProfitFactor * boundedRatio * volumeIncrementFactor
 }
 
 /** The exact add-on quantity for this position and this independent Block count. */
@@ -136,6 +156,16 @@ export async function getUnavailableBlockSetKeys(
     } catch { /* ignore malformed legacy pause */ }
   }
   return unavailable
+}
+
+/** Exact Block Set keys currently backed by a non-terminal live position. */
+export async function getActiveBlockSetKeys(
+  redis: any,
+  connectionId: string,
+  symbol: string,
+): Promise<Set<string>> {
+  const active = await redis.hgetall(activeKey(connectionId, symbol)).catch(() => ({}))
+  return new Set(Object.keys(active || {}))
 }
 
 /**

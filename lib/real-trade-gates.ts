@@ -2,6 +2,10 @@ import {
   isConnectionLiveTradeEnabled,
   isConnectionPresetTradeEnabled,
 } from "@/lib/connection-state-utils"
+import {
+  isKiloDeploymentRuntime,
+  isServerlessDeploymentRuntime,
+} from "@/lib/deployment-runtime"
 
 export type RealTradeBlockCode =
   | "disabled"
@@ -36,7 +40,21 @@ function hasSharedRedisConfig(): boolean {
 }
 
 function isInlineRedisLiveTradingAllowed(): boolean {
-  return process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1"
+  // A local opt-in can be acceptable for one explicitly single-process Node
+  // owner. It must never bypass shared coordination on Kilo/Vercel/Lambda/
+  // Cloudflare where requests can land on different ephemeral workers.
+  if (isServerlessDeploymentRuntime() || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1") {
+    return false
+  }
+  if (isKiloDeploymentRuntime()) {
+    const snapshotPath = String(process.env.V0_REDIS_SNAPSHOT_PATH || "").trim()
+    return (
+      process.env.CTS_INLINE_REDIS_PERSISTENT_VOLUME === "1" &&
+      snapshotPath.startsWith("/") &&
+      !snapshotPath.startsWith("/tmp/")
+    )
+  }
+  return true
 }
 
 /**

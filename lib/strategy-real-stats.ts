@@ -24,6 +24,27 @@ export interface RealAdjustPositionStats extends RealVariantPositionStats {
   ratioStep: number
   ratioLevel: number | null
   comparisonAvailable: boolean
+  /** Block-only operator factor; absent for DCA. */
+  profitFactorRatio?: number
+  /** Block-only Default/Real PF baseline used by the proportional formula. */
+  defaultMinimumProfitFactor?: number
+  /** Block-only independently evaluated Count 1..N results. */
+  countEvaluations?: RealBlockCountProfitFactorStats[]
+}
+
+export interface RealBlockCountProfitFactorStats {
+  count: number
+  evaluated: number
+  passed: number
+  emitted: number
+  rejected: number
+  active: number
+  paused: number
+  avgObservedProfitFactor: number
+  avgMinimumProfitFactor: number
+  avgVolumeIncrement: number
+  sampleCount: number
+  window: number
 }
 
 export interface RealHedgeBaseStats {
@@ -244,6 +265,11 @@ export function buildRealStagePositionStats(input: {
   strategyVariants?: Partial<Record<RealStrategyVariant | "overall", NumericRecord>> | null
   overallSets?: unknown
   overallOrders?: unknown
+  blockProfitFactor?: {
+    ratio?: unknown
+    defaultMinimumProfitFactor?: unknown
+    countEvaluations?: RealBlockCountProfitFactorStats[] | null
+  } | null
   openPositions?: {
     source?: RealOpenPositionSource
     bySymbol?: Array<{
@@ -411,7 +437,14 @@ export function buildRealStagePositionStats(input: {
       trailing: trailingStats,
     },
     adjustTypes: {
-      block: buildAdjustStats(blockStats, withoutAdjustPositions),
+      block: {
+        ...buildAdjustStats(blockStats, withoutAdjustPositions),
+        profitFactorRatio: rounded(count(input.blockProfitFactor?.ratio), 2),
+        defaultMinimumProfitFactor: rounded(count(input.blockProfitFactor?.defaultMinimumProfitFactor), 3),
+        countEvaluations: Array.isArray(input.blockProfitFactor?.countEvaluations)
+          ? input.blockProfitFactor!.countEvaluations
+          : [],
+      },
       dca: buildAdjustStats(dcaStats, withoutAdjustPositions),
     },
     hedge: {

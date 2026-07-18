@@ -26,6 +26,8 @@
  *   initializeTradeEngineAutoStart() → startServerContinuityRunner()
  */
 
+import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+
 // Guard against double-execution across HMR / module re-evaluation. Failed
 // startup attempts are not cached: a long-lived Node process retries after one
 // minute, while serverless platforms naturally retry on a later invocation.
@@ -37,11 +39,8 @@ const bootGuard = globalThis as unknown as {
 
 function canRetryInProcess(): boolean {
   return !(
-    process.env.CTS_DEPLOYMENT_RUNTIME === "cloudflare-workers" ||
     process.env.DISABLE_IN_PROCESS_CONTINUITY === "1" ||
-    process.env.VERCEL === "1" ||
-    Boolean(process.env.VERCEL_ENV) ||
-    process.env.NEXT_RUNTIME === "edge"
+    isServerlessDeploymentRuntime()
   )
 }
 

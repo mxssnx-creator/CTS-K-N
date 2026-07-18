@@ -78,6 +78,16 @@ const PROTECTED_PREFIXES = [
   "api_key:",             // Stored API keys
   "axis_pos_acc:",        // Axis position accumulation ledger (coordination framework)
   "real_pi_acc:",         // Real PI accumulation (coordination framework)
+  "strategy_pos_entry_ids:", // Idempotent confirmed-fill identities
+  "strategy_set_entry_counts:", // Exact Set lifetime entry ledger
+  "strategy_set_active_entry_counts:", // Exact Set active memberships
+  "strategy_set_closed_counts:", // Exact Set terminal result counts
+  "strategy_set_result_ring:", // Exact Set bounded PF/DDT history
+  "strategy_position_set_memberships:", // Open-position exact Set ownership
+  "strategy_set_keys:",   // Exact Set listing index
+  "strategy_active_set_keys:", // Active exact Set listing index
+  "strategy_closed_set_keys:", // Closed exact Set listing index
+  "strategy_ledger_totals:", // O(1) exact/axis/active/closed totals
   "progression:",         // Progression metadata (coordination framework)
   "strategy_count:",      // Strategy count tracking (coordination framework)
   "pi_history:",          // Position history structure (coordination framework - base structure only, data will be cleared separately)

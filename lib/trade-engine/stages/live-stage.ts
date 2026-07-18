@@ -53,6 +53,7 @@ import {
   type BlockLegState,
 } from "@/lib/block-count-state"
 import {
+  buildDcaStepSetKey,
   calculateDcaAddQuantity,
   calculateDcaTakeProfitPrice,
   normalizeDcaProfile,
@@ -374,6 +375,13 @@ interface LivePosition {
   blockBaseQuantity?: number
   blockBaseVolumeMultiplier?: number
   blockVolumeRatio?: number
+  blockProfitFactorRatio?: number
+  blockDefaultMinimumProfitFactor?: number
+  blockMinimumProfitFactor?: number
+  blockObservedProfitFactor?: number
+  blockProfitFactorWindow?: number
+  blockProfitFactorSampleCount?: number
+  blockCount?: number
   blockCalculatedVolumeMultiplier?: number
   blockLegs?: BlockLegState[]
   dcaProfile?: DcaProfile
@@ -550,7 +558,10 @@ function normalizeStopLossPercent(rawStopLoss: unknown): { value: number; adjust
   return { value: n, adjusted: false }
 }
 
-const POSITION_MUTATION_LOCK_TTL_MS = 90_000
+// Short crash-recovery TTL plus token-owned lease renewal: healthy long venue
+// calls keep exclusivity, while a SIGKILL releases a stranded mutation slot in
+// at most ten seconds instead of the previous ninety-second blind interval.
+const POSITION_MUTATION_LOCK_TTL_MS = 10_000
 
 function positionHashKey(connectionId: string, positionId: string): string {
   return `live_positions:${connectionId}:${positionId}`
@@ -606,13 +617,31 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
 }
 
 async function readLivePositionSnapshot(client: any, connectionId: string, positionId: string): Promise<LivePosition | null> {
-  const legacyRaw = await client.get(`live:position:${positionId}`).catch(() => null)
+  const [legacyRaw, hash] = await Promise.all([
+    client.get(`live:position:${positionId}`).catch(() => null),
+    client.hgetall(positionHashKey(connectionId, positionId)).catch(() => null),
+  ])
+  let legacy: LivePosition | null = null
   if (legacyRaw) {
-    try { return JSON.parse(legacyRaw as string) as LivePosition } catch { /* fall through */ }
+    try { legacy = JSON.parse(legacyRaw as string) as LivePosition } catch { /* malformed legacy mirror */ }
   }
-  const hash = await client.hgetall(positionHashKey(connectionId, positionId)).catch(() => null)
-  if (hash && Object.keys(hash).length > 0) return parseRedisHashPosition(hash)
-  return null
+  const hashPosition = hash && Object.keys(hash).length > 0
+    ? parseRedisHashPosition(hash)
+    : null
+  if (!legacy) return hashPosition
+  if (!hashPosition) return legacy
+
+  // Atomic status/version transitions land in the hash first. A crash between
+  // that transition and the JSON mirror used to make readers return the stale
+  // JSON snapshot (often `open`) and ignore a newer hash (`closing`/`closed`).
+  // Merge the newer source over the older so auxiliary fields survive while
+  // the authoritative lifecycle/version can never regress after restart.
+  const hashIsNewer =
+    Number(hashPosition.version || 0) > Number(legacy.version || 0) ||
+    Number(hashPosition.updatedAt || 0) > Number(legacy.updatedAt || 0)
+  return hashIsNewer
+    ? { ...legacy, ...hashPosition }
+    : { ...hashPosition, ...legacy }
 }
 
 async function evalRedis(client: any, script: string, keys: string[], args: string[]): Promise<any> {
@@ -817,7 +846,20 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       for (const setKey of liveSetLineageKeys) {
         await client.srem(liveSetIndexKey, setKey).catch(() => 0)
       }
-      await markStrategyPositionInactive(position.connectionId, position.id)
+      const openedAt = Number(position.createdAt || position.timestamp || 0)
+      const closedAt = Number(position.closedAt || position.updatedAt || Date.now())
+      await markStrategyPositionInactive(
+        position.connectionId,
+        position.id,
+        String(position.status).toLowerCase() === "closed"
+          ? {
+              pnl: Number.isFinite(Number(position.realizedPnL)) ? Number(position.realizedPnL) : 0,
+              drawdownMinutes: openedAt > 0 && closedAt > openedAt
+                ? (closedAt - openedAt) / 60_000
+                : 0,
+            }
+          : undefined,
+      )
     } else {
       await client.lrem(openIndexKey, 0, position.id).catch(() => 0)
       await client.lpush(openIndexKey, position.id).catch(() => 0)
@@ -845,6 +887,23 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       return savePosition(position, retries + 1)
     }
     throw err
+  }
+}
+
+/**
+ * Inline Redis is process memory backed by a snapshot file. Before any real
+ * exchange mutation leaves the process, force a snapshot barrier so a SIGKILL
+ * cannot erase the client-order id or lifecycle state needed for idempotent
+ * restart recovery. Shared network Redis is already durable at write return.
+ */
+async function persistCriticalLiveState(reason: string): Promise<void> {
+  const { getRedisBackend, persistNow } = await import("@/lib/redis-db")
+  if (getRedisBackend() !== "inline-local") return
+  const persisted = await persistNow()
+  if (!persisted) {
+    throw new Error(
+      `Refusing exchange mutation: Inline Redis could not persist critical state (${reason})`,
+    )
   }
 }
 
@@ -1028,6 +1087,7 @@ async function prepareProtectionSubmission(
   )
   pushStep(position, "protection_submission_prepared", true, `${leg} clientOrderId=${clientOrderId}`)
   await savePosition(position)
+  await persistCriticalLiveState(`protection:${position.id}:${leg}`)
   return clientOrderId
 }
 async function tryAcquireLock(connId: string, symbol: string, direction: string): Promise<string | null> {
@@ -1145,9 +1205,13 @@ async function resolveAccumulationPlan(
       client.hgetall(`settings:connection_settings:${connId}`).catch(() => ({})),
     ])
     const dcaProfile = normalizeDcaProfile({
+      // Position-local data is the last profile that actually executed and is
+      // retained as a crash-recovery fallback. Current persisted settings are
+      // layered afterwards so an operator save affects the very next DCA
+      // decision instead of being shadowed until the position closes.
+      ...(existing.dcaProfile || {}),
       ...(legacy || {}),
       ...(canonical || {}),
-      ...(existing.dcaProfile || {}),
       ...(real?.dcaProfile || {}),
     })
     const referencePrice = Number(existing.initialEntryPrice ?? existing.averageExecutionPrice ?? existing.entryPrice ?? 0)
@@ -1192,13 +1256,16 @@ async function accumulateIntoSimulatedPosition(
   const lockId = `accumulate-sim:${process.pid}:${Date.now()}:${nanoid(8)}`
   if (!await acquirePositionMutationLock(connId, existing.id, lockId)) return existing
   try {
-    if (real?.setKey && existing.accumulatedSetKeys?.includes(real.setKey)) return existing
     const plan = await resolveAccumulationPlan(connId, existing, real, price)
     if (!plan) {
       pushStep(existing, "accumulate_skip", false, `${real?.setVariant || "adjustment"} trigger not ready`)
       await savePosition(existing)
       return existing
     }
+    const accumulationSetKey = plan.variant === "dca" && plan.dcaStep
+      ? buildDcaStepSetKey(String(real?.setKey || "dca"), plan.dcaStep)
+      : String(real?.setKey || "")
+    if (accumulationSetKey && existing.accumulatedSetKeys?.includes(accumulationSetKey)) return existing
     const prevExec = Number(existing.executedQuantity || 0)
     const prevAvg = Number(existing.averageExecutionPrice || existing.entryPrice || price)
     const filledQty = plan.addQty
@@ -1213,7 +1280,7 @@ async function accumulateIntoSimulatedPosition(
       draft.initialEntryPrice ??= prevAvg
       draft.blockBaseQuantity ??= prevExec
       draft.fills = [...(draft.fills || []), { timestamp: Date.now(), quantity: filledQty, price, fee: 0, feeAsset: "" }]
-      draft.accumulatedSetKeys = [...new Set([...(draft.accumulatedSetKeys || []), ...(real?.setKey ? [real.setKey] : [])])]
+      draft.accumulatedSetKeys = [...new Set([...(draft.accumulatedSetKeys || []), ...(accumulationSetKey ? [accumulationSetKey] : [])])]
       if (plan.variant === "block") {
         const leg = buildBlockLegState(real, filledQty, undefined, undefined, {
           baseQuantity: plan.blockBaseQuantity,
@@ -1225,7 +1292,7 @@ async function accumulateIntoSimulatedPosition(
       if (plan.variant === "dca" && plan.dcaStep) {
         draft.dcaProfile = plan.dcaProfile
         draft.dcaLegs = upsertDcaLeg(draft.dcaLegs, {
-          setKey: String(real?.setKey || `dca:${plan.dcaStep}`),
+          setKey: accumulationSetKey || `dca#step:${plan.dcaStep}`,
           step: plan.dcaStep,
           baseQuantity: draft.initialExecutedQuantity || prevExec,
           volumeMultiplier: plan.dcaVolumeMultiplier || 1,
@@ -1245,18 +1312,18 @@ async function accumulateIntoSimulatedPosition(
           takeProfitPct: draft.takeProfit || 0,
         })
       }
-      pushStep(draft, "accumulate", true, `simulated +${filledQty} @ ${price} (setKey=${real?.setKey || "n/a"})`)
+      pushStep(draft, "accumulate", true, `simulated +${filledQty} @ ${price} (setKey=${accumulationSetKey || "n/a"})`)
     })
     if (mutated) {
       Object.assign(existing, mutated)
       await savePosition(existing)
-      if (real?.setKey) {
+      if (accumulationSetKey) {
         await recordConfirmedStrategyEntry(
           connId,
           existing,
-          `${existing.id}:set:${real.setKey}`,
+          `${existing.id}:set:${accumulationSetKey}`,
           {
-            setKey: real.setKey,
+            setKey: accumulationSetKey,
             parentSetKey: real.parentSetKey,
             indicationType: real.indicationType,
             axisWindows: real.axisWindows,
@@ -1281,6 +1348,12 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     pushStep(existing, "accumulate_skip", false, "position mutation lock already held — accumulation deferred")
     return existing
   }
+  const stopPositionLockLeaseRefresh = startRedisLockLeaseRefresh(
+    getRedisClient(),
+    positionMutationLockKey(connId, existing.id),
+    lockId,
+    POSITION_MUTATION_LOCK_TTL_MS,
+  )
 
   try {
     existing.accumulatedSetKeys ||= []
@@ -1289,7 +1362,10 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       await savePosition(existing)
       return existing
     }
-    if (real?.setKey && existing.accumulatedSetKeys.includes(real.setKey)) {
+    // Block/default overlays execute once per exact Set key. DCA is repeatable
+    // by configured step and is deduped after resolveAccumulationPlan derives
+    // its stable `#step:N` identity below.
+    if (real?.setKey && real?.setVariant !== "dca" && existing.accumulatedSetKeys.includes(real.setKey)) {
       pushStep(existing, "accumulate_skip", false, `setKey ${real.setKey} already accumulated`)
       await savePosition(existing)
       return existing
@@ -1333,6 +1409,14 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       await savePosition(existing)
       return existing
     }
+    const accumulationSetKey = plan.variant === "dca" && plan.dcaStep
+      ? buildDcaStepSetKey(String(real?.setKey || "dca"), plan.dcaStep)
+      : String(real?.setKey || "")
+    if (accumulationSetKey && existing.accumulatedSetKeys.includes(accumulationSetKey)) {
+      pushStep(existing, "accumulate_skip", false, `setKey ${accumulationSetKey} already accumulated`)
+      await savePosition(existing)
+      return existing
+    }
 
     const symbol = String(real?.symbol || existing.symbol || "")
     const direction: "long" | "short" = real?.direction === "short" || existing.direction === "short" ? "short" : "long"
@@ -1345,7 +1429,7 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     if (plan.dcaProfile) existing.dcaProfile = plan.dcaProfile
     existing.pendingAccumulation = {
       clientOrderId,
-      setKey: String(real?.setKey || ""),
+      setKey: accumulationSetKey,
       parentSetKey: String(real?.parentSetKey || ""),
       indicationType: String(real?.indicationType || ""),
       axisKey: axisKeyFromLineage(String(real?.setKey || ""), real?.axisWindows),
@@ -1364,12 +1448,13 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       referencePrice: existing.initialEntryPrice,
     }
     appendClientOrderTracking(existing, clientOrderId, "accumulation", {
-      setKey: real?.setKey,
+      setKey: accumulationSetKey,
       requestedQuantity: plan.addQty,
       variant: plan.variant,
     })
     pushStep(existing, "accumulation_submission_prepared", true, `clientOrderId=${clientOrderId} qty=${plan.addQty}`)
     await savePosition(existing)
+    await persistCriticalLiveState(`accumulation:${existing.id}`)
 
     let orderRes: any
     try {
@@ -1425,7 +1510,7 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       draft.averageExecutionPrice = newExec > 0 ? ((prevAvg * prevExec) + (filledPrice * filledQty)) / newExec : prevAvg
       draft.volumeUsd = newExec * draft.averageExecutionPrice
       draft.fills = [...(draft.fills || []), { timestamp: Date.now(), quantity: filledQty, price: filledPrice, fee: 0, feeAsset: "USDT" }]
-      draft.accumulatedSetKeys = [...new Set([...(draft.accumulatedSetKeys || []), ...(real?.setKey ? [real.setKey] : [])])]
+      draft.accumulatedSetKeys = [...new Set([...(draft.accumulatedSetKeys || []), ...(accumulationSetKey ? [accumulationSetKey] : [])])]
       draft.pendingAccumulation = undefined
       if (plan.variant === "block") {
         const leg = buildBlockLegState(real, filledQty, clientOrderId, String(orderId), {
@@ -1438,7 +1523,7 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       if (plan.variant === "dca" && plan.dcaStep) {
         draft.dcaProfile = plan.dcaProfile
         draft.dcaLegs = upsertDcaLeg(draft.dcaLegs, {
-          setKey: String(real?.setKey || `dca:${plan.dcaStep}`),
+          setKey: accumulationSetKey || `dca#step:${plan.dcaStep}`,
           step: plan.dcaStep,
           baseQuantity: draft.initialExecutedQuantity || prevExec,
           volumeMultiplier: plan.dcaVolumeMultiplier || 1,
@@ -1493,6 +1578,7 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     pushStep(existing, "accumulate_error", false, err instanceof Error ? err.message : String(err))
     try { await savePosition(existing) } catch { /* best-effort */ }
   } finally {
+    stopPositionLockLeaseRefresh()
     await releasePositionMutationLock(connId, existing.id, lockId).catch(() => false)
   }
   return existing
@@ -3620,6 +3706,13 @@ export async function executeLivePosition(
     sizeMultiplier: realPosition.sizeMultiplier,
     blockBaseVolumeMultiplier: realPosition.blockBaseVolumeMultiplier,
     blockVolumeRatio: realPosition.blockVolumeRatio,
+    blockProfitFactorRatio: realPosition.blockProfitFactorRatio,
+    blockDefaultMinimumProfitFactor: realPosition.blockDefaultMinimumProfitFactor,
+    blockMinimumProfitFactor: realPosition.blockMinimumProfitFactor,
+    blockObservedProfitFactor: realPosition.blockObservedProfitFactor,
+    blockProfitFactorWindow: realPosition.blockProfitFactorWindow,
+    blockProfitFactorSampleCount: realPosition.blockProfitFactorSampleCount,
+    blockCount: realPosition.blockCount,
     blockCalculatedVolumeMultiplier: realPosition.blockCalculatedVolumeMultiplier,
     accumulatedSetKeys: realPosition.setKey ? [realPosition.setKey] : [],
     // ── Set-config propagation (Relations → Live Protection) ──────────
@@ -4406,6 +4499,7 @@ export async function executeLivePosition(
     })
     pushStep(livePosition, "entry_submission_prepared", true, `clientOrderId=${orderTrace.exchangeTrackingId}`)
     await savePosition(livePosition)
+    await persistCriticalLiveState(`entry:${livePosition.id}`)
 
     // Strong diagnostic log right before real money order attempt
     console.log(
@@ -5425,6 +5519,7 @@ export async function closeLivePosition(
   const client = getRedisClient()
   const lockId = `close:${closeReason}:${process.pid}:${Date.now()}:${nanoid(8)}`
   let mutationLockHeld = false
+  let stopPositionLockLeaseRefresh: (() => void) | null = null
 
   try {
     const position = await readLivePositionSnapshot(client, connectionId, livePositionId)
@@ -5434,7 +5529,13 @@ export async function closeLivePosition(
     const locked = await acquirePositionMutationLock(connectionId, livePositionId, lockId)
     if (!locked) return null
     mutationLockHeld = true
-    const transitioned = await mutatePositionWithVersionCheck(position, ["open", "filled", "partially_filled", "placed", "pending_fill", "placed_unconfirmed", "simulated"], draft => {
+    stopPositionLockLeaseRefresh = startRedisLockLeaseRefresh(
+      client,
+      positionMutationLockKey(connectionId, livePositionId),
+      lockId,
+      POSITION_MUTATION_LOCK_TTL_MS,
+    )
+    const transitioned = await mutatePositionWithVersionCheck(position, ["open", "filled", "partially_filled", "placed", "pending_fill", "placed_unconfirmed", "simulated", "closing", "closing_partial"], draft => {
       draft.status = "closing"
       draft.lockedAt = Date.now()
       draft.lockedBy = lockId
@@ -5444,6 +5545,12 @@ export async function closeLivePosition(
       return null
     }
     Object.assign(position, transitioned)
+    // Mirror the atomic hash transition into the JSON/index snapshot and, for
+    // Inline Redis, flush it to disk before cancellation/close requests leave
+    // the process. A restart can now distinguish and reconcile an interrupted
+    // close instead of resurrecting the prior open snapshot.
+    await savePosition(position)
+    await persistCriticalLiveState(`close:${position.id}`)
 
     // ── Ownership guard ──────────────────────────────────��─────────────
     // Derived FIRST — before building any cancellation promises — so we
@@ -5871,6 +5978,8 @@ export async function closeLivePosition(
     }
     console.error(`${LOG_PREFIX} Error closing live position:`, err)
     return null
+  } finally {
+    stopPositionLockLeaseRefresh?.()
   }
 }
 
@@ -6425,7 +6534,7 @@ export async function reconcileLivePositions(
     // Load live-positions index (single Redis round-trip, filtered in-memory)
     const allOpen = await getLivePositions(connectionId)
     const openPositions = allOpen.filter(
-      (p) => p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed",
+      (p) => p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "closing" || p.status === "closing_partial",
     )
     if (openPositions.length === 0 && !reconcileMode) {
       await orphanCloseExpiredPositions(connectionId, exchangeConnector, summary)
@@ -6584,6 +6693,36 @@ export async function reconcileLivePositions(
             positionsToSave.push(pos) // BATCH: collect instead of save immediately
             delta.updated++
           }
+          return delta
+        }
+
+        // Crash-recovery state: the prior worker durably transitioned this
+        // position to `closing` before its venue request, then disappeared.
+        // Wait only for the short token-lock lease; afterwards re-read the
+        // authoritative venue snapshot and finish the same idempotent close.
+        if (pos.status === "closing" || pos.status === "closing_partial") {
+          const lockedAt = Number(pos.lockedAt || 0)
+          if (lockedAt > 0 && Date.now() - lockedAt <= POSITION_MUTATION_LOCK_TTL_MS + 1_000) {
+            return delta
+          }
+          if (!exPos && !recordExchangeAbsence(pos)) return delta
+          const exitPrice = Number(
+            (exPos as any)?.markPrice ??
+            (exPos as any)?.lastPrice ??
+            pos.exchangeData?.markPrice ??
+            pos.averageExecutionPrice ??
+            pos.entryPrice ??
+            0,
+          )
+          const recovered = await closeLivePosition(
+            connectionId,
+            pos.id,
+            exitPrice,
+            exPos ? exchangeConnector : null,
+            exPos ? "crash_recovery_pending_close" : "exchange_externally_closed",
+          )
+          if (recovered?.status === "closed") delta.closed++
+          else if (recovered) delta.updated++
           return delta
         }
 
@@ -7234,7 +7373,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
     const allOpen = allOpenRaw.filter((p) => !TERMINAL_SYNC_STATUSES.has(String(p.status)))
 
     const openPositions = allOpen.filter(
-      (p) => p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed",
+      (p) => p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "closing" || p.status === "closing_partial",
     )
 
     // If the operator requested live trading but the transport test failed,
@@ -7652,7 +7791,10 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         if (!position || !position.id) return
         
         // RC1: Skip if already closed or locked
-        if (position.status === "closed" || position.lockedAt && position.lockedAt > Date.now() - 60_000) {
+        if (
+          position.status === "closed" ||
+          (position.lockedAt && position.lockedAt > Date.now() - (POSITION_MUTATION_LOCK_TTL_MS + 1_000))
+        ) {
           return
         }
         
@@ -7662,6 +7804,26 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
           if (!recordExchangeAbsence(position)) return
         } else {
           clearExchangeAbsence(position)
+        }
+        if (position.status === "closing" || position.status === "closing_partial") {
+          const lockedAt = Number(position.lockedAt || 0)
+          if (lockedAt > 0 && Date.now() - lockedAt <= POSITION_MUTATION_LOCK_TTL_MS + 1_000) return
+          const exitPrice = Number(
+            exchangePos?.markPrice ??
+            exchangePos?.lastPrice ??
+            position.exchangeData?.markPrice ??
+            position.averageExecutionPrice ??
+            position.entryPrice ??
+            0,
+          )
+          await closeLivePosition(
+            connectionId,
+            position.id,
+            exitPrice,
+            exchangePos ? exchangeConnector : null,
+            exchangePos ? "crash_recovery_pending_close" : "exchange_externally_closed",
+          )
+          return
         }
         if (exchangePos) {
           // Mirror reconcileLivePositions' field extraction so both paths

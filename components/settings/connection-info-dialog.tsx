@@ -227,6 +227,9 @@ function RealVariantStatsCard({
   const stats = asRecord(value)
   const comparisonAvailable = asBoolean(stats.comparisonAvailable)
   const differencePercent = comparisonAvailable ? asNumber(stats.differencePercent) : null
+  const countEvaluations = Array.isArray(stats.countEvaluations)
+    ? stats.countEvaluations.map(asRecord)
+    : []
   return (
     <div className="rounded-xl border bg-background/70 p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
@@ -271,6 +274,39 @@ function RealVariantStatsCard({
                 ? "Awaiting Standard baseline"
                 : `+${differencePercent.toFixed(1)}% · 0.2 level ${formatNumber(stats.ratioLevel, 1)}`}
             </strong>
+          </div>
+        </div>
+      )}
+      {label === "Block" && countEvaluations.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Independent pos-count PF
+            </p>
+            <Badge variant="outline" className="text-[10px] tabular-nums">
+              {formatNumber(stats.profitFactorRatio, 1)}× Default PF
+            </Badge>
+          </div>
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {countEvaluations.map((row) => {
+              const observed = asNumber(row.avgObservedProfitFactor)
+              const minimum = asNumber(row.avgMinimumProfitFactor)
+              const passing = observed >= minimum && minimum > 0
+              return (
+                <div key={asNumber(row.count)} className="rounded-lg border bg-muted/35 p-2 text-[10px]">
+                  <div className="flex items-center justify-between gap-2">
+                    <strong className="text-foreground">Count {formatNumber(row.count, 0)}</strong>
+                    <span className={passing ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>
+                      PF {formatNumber(observed, 2)} / min {formatNumber(minimum, 2)}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap justify-between gap-x-2 text-muted-foreground">
+                    <span>{formatNumber(row.emitted, 0)} emitted / {formatNumber(row.evaluated, 0)} evaluated</span>
+                    <span>{formatNumber(row.avgVolumeIncrement, 2)}× vol · {formatNumber(row.active, 0)} active · {formatNumber(row.paused, 0)} paused</span>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
@@ -613,6 +649,7 @@ export function ConnectionInfoDialog({ open, onOpenChange, connectionId, connect
   const mainTradeEffective = asBoolean(derived.mainTradeState.effective)
   const executionMode = asText(derived.mainTradeState.executionMode, mainTradeEffective ? "real" : "simulation")
   const statsSettingsRecoordination = asRecord(derived.stats.settingsRecoordination)
+  const statsRecalculation = asRecord(derived.stats.statsRecalculation)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -849,6 +886,11 @@ export function ConnectionInfoDialog({ open, onOpenChange, connectionId, connect
                       <DetailRow label="Last strategy run" value={formatTimestamp(derived.progressionMetrics.lastStrategyRun)} />
                       <DetailRow label="Settings version" value={asText(statsSettingsRecoordination.appliedVersion, statsSettingsRecoordination.requestedVersion, derived.connection.settings_version, "Not reported")} mono />
                       <DetailRow label="Recoordination state" value={titleCase(asText(statsSettingsRecoordination.status, statsSettingsRecoordination.phase, "Current"))} />
+                      <DetailRow label="Stats recalculation" value={titleCase(asText(statsRecalculation.status, "Idle"))} />
+                      <DetailRow label="Stats updated" value={formatTimestamp(statsRecalculation.completedAt)} />
+                      {statsRecalculation.lastError ? (
+                        <DetailRow label="Stats error" value={asText(statsRecalculation.lastError)} />
+                      ) : null}
                     </div>
                   </SectionPanel>
                 </TabsContent>

@@ -2,6 +2,7 @@ import {
   advanceBlockCountPausesOnPositionClose,
   buildBlockLegState,
   calculateBlockAddQuantity,
+  calculateBlockMinimumProfitFactor,
   calculateBlockVolumeMultiplier,
   getUnavailableBlockSetKeys,
   parseBlockCount,
@@ -36,6 +37,7 @@ describe("independent Block count lifecycle", () => {
   test("parses regular and active Real Block count keys", () => {
     expect(parseBlockCount("move:long#block:7")).toBe(7)
     expect(parseBlockCount("move:long#block:active:4")).toBe(4)
+    expect(parseBlockCount("move:long#block:set:6")).toBe(6)
     expect(parseBlockCount("move:long#default")).toBeNull()
   })
 
@@ -72,6 +74,22 @@ describe("independent Block count lifecycle", () => {
     expect(calculateBlockAddQuantity(1, 1, 1)).toBe(1)
     // Example: Block 1 left a current base of 2; valid Block 3 adds 2 × (3 × 1).
     expect(calculateBlockAddQuantity(2, 3, 1)).toBe(6)
+  })
+
+  test("calculates a separate proportional minimum PF for every Block count", () => {
+    const defaultPf = 1.2
+    const factor = 0.8
+    const baseVolume = 1.25
+    const thresholds = Array.from({ length: 10 }, (_, index) => {
+      const count = index + 1
+      const volumeIncrement = calculateBlockVolumeMultiplier(baseVolume, count, 1)
+      return calculateBlockMinimumProfitFactor(defaultPf, factor, volumeIncrement)
+    })
+    expect(thresholds[0]).toBeCloseTo(1.2, 8)
+    expect(thresholds[9]).toBeCloseTo(12, 8)
+    expect(new Set(thresholds).size).toBe(10)
+    expect(calculateBlockMinimumProfitFactor(defaultPf, 0.01, 1)).toBeCloseTo(0.24, 8)
+    expect(calculateBlockMinimumProfitFactor(defaultPf, 9, 1)).toBeCloseTo(6, 8)
   })
 
   test.each([0.25, 0.75, 1, 1.5, 3])(

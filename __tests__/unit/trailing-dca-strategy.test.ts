@@ -1,6 +1,7 @@
 import {
   DEFAULT_DCA_PROFILE,
   adverseMovePct,
+  buildDcaStepSetKey,
   calculateDcaAddQuantity,
   calculateDcaTakeProfitPrice,
   normalizeDcaProfile,
@@ -36,6 +37,19 @@ describe("bounded trailing configuration", () => {
 })
 
 describe("DCA profile and progression", () => {
+  test("assigns a stable independent Set identity to every configured DCA step", () => {
+    const base = "BTCUSDT:direction:long#dca"
+    const keys = Array.from({ length: 4 }, (_, index) => buildDcaStepSetKey(base, index + 1))
+    expect(keys).toEqual([
+      `${base}#step:1`,
+      `${base}#step:2`,
+      `${base}#step:3`,
+      `${base}#step:4`,
+    ])
+    expect(new Set(keys).size).toBe(4)
+    expect(buildDcaStepSetKey(`${base}#step:1`, 2)).toBe(`${base}#step:2`)
+  })
+
   test("normalizes detailed settings and enforces sequential trigger distances", () => {
     const profile = normalizeDcaProfile({
       dcaMaxSteps: "9",

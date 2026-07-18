@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getBaseConnectionCredentials } from "@/lib/base-connection-credentials"
 import { isTruthyFlag } from "@/lib/boolean-utils"
+import { getDeploymentRuntimeLabel, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -184,6 +185,9 @@ export async function GET(request: NextRequest) {
         system: {
           version: "3.2",
           environment: process.env.NODE_ENV || "development",
+          deployment_runtime: getDeploymentRuntimeLabel(),
+          serverless: isServerlessDeploymentRuntime(),
+          engine_owner: isServerlessDeploymentRuntime() ? "external-long-lived-required" : "in-process-capable",
           site_instance_id: siteInstanceId,
           site_instance_scope: sharedRedis ? "shared-cross-instance" : "process-local",
           timestamp: new Date().toISOString(),
@@ -214,9 +218,14 @@ export async function GET(request: NextRequest) {
           },
         },
         warnings: sharedRedis
-          ? []
+          ? (isServerlessDeploymentRuntime()
+              ? ["Serverless API is passive; one long-lived engine owner and the external one-minute scheduler must use this same shared Redis."]
+              : [])
           : [
               "Database backend is process-local; site identity and settings can reset when the worker restarts.",
+              ...(isServerlessDeploymentRuntime()
+                ? ["Serverless deployments require shared Redis; InlineLocalRedis cannot coordinate settings, progression, or stats across workers."]
+                : []),
               "Real exchange order placement remains blocked until shared Redis is configured.",
             ],
       },

@@ -14,6 +14,8 @@ describe("live position status grouping", () => {
     { id: "pending-1", status: "pending" },
     { id: "pending-fill-1", status: "pending_fill" },
     { id: "placed-unconfirmed-1", status: "placed_unconfirmed" },
+    { id: "closing-1", status: "closing" },
+    { id: "closing-partial-1", status: "closing_partial" },
     { id: "closed-1", status: "closed" },
     { id: "error-1", status: "error" },
     { id: "simulated-1", status: "simulated" },
@@ -29,9 +31,11 @@ describe("live position status grouping", () => {
       "pending",
       "pending_fill",
       "placed_unconfirmed",
+      "closing",
+      "closing_partial",
     ])
 
-    expect(countLiveOpenPositions(regressionFixture)).toBe(7)
+    expect(countLiveOpenPositions(regressionFixture)).toBe(9)
     expect(regressionFixture.filter((position) => isLiveOpenStatus(position.status)).map((position) => position.status)).toEqual([
       "open",
       "filled",
@@ -40,6 +44,8 @@ describe("live position status grouping", () => {
       "pending",
       "pending_fill",
       "placed_unconfirmed",
+      "closing",
+      "closing_partial",
     ])
   })
 

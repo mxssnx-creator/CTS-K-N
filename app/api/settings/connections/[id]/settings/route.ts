@@ -22,6 +22,7 @@ import {
 } from "@/lib/active-indication-profile"
 import { changedSettingKeys, settingsValuesEqual } from "@/lib/settings-diff"
 import { maskConnectionSecrets, maskConnectionSettings } from "@/lib/connection-secrets"
+import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
 
 const FALLBACK_SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -44,6 +45,20 @@ function serializeConnectionSettingsHash(settings: Record<string, unknown>): Rec
     else out[key] = JSON.stringify(value)
   }
   return out
+}
+
+function normalizeCoordinationAxesInSettings(settings: Record<string, any>): void {
+  const rawCoord = settings.coordination_settings ?? settings.coordinationSettings
+  if (!rawCoord || typeof rawCoord !== "object") return
+  const normalized = {
+    ...rawCoord,
+    axes: normalizeStrategyAxes(
+      rawCoord.axes && typeof rawCoord.axes === "object" ? rawCoord.axes : undefined,
+      settings,
+    ),
+  }
+  settings.coordination_settings = normalized
+  settings.coordinationSettings = normalized
 }
 
 const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
@@ -77,6 +92,7 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "axisContMaxWindow",
   "axisPauseMaxWindow",
   "blockVolumeRatio",
+  "blockProfitFactorRatio",
   "blockMaxStack",
   "blockPauseCountRatio",
   "blockActiveRealEnabled",
@@ -172,7 +188,7 @@ export async function GET(
           // Axis max-window values
           "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
           // Block strategy tuning
-          "blockVolumeRatio", "blockMaxStack", "blockPauseCountRatio",
+          "blockVolumeRatio", "blockProfitFactorRatio", "blockMaxStack", "blockPauseCountRatio",
           "dcaMaxSteps", "dcaBreakevenProfitPct", "dcaCooldownSeconds",
           // PF / DDT / stage thresholds
           "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
@@ -244,6 +260,10 @@ export async function GET(
     ))
     const coordinationSettings = {
       ...storedCoord,
+      axes: normalizeStrategyAxes(
+        storedCoord.axes && typeof storedCoord.axes === "object" ? storedCoord.axes : undefined,
+        settings,
+      ),
       variants: {
         ...storedVariants,
         trailing: asBoolean(firstDefined(
@@ -271,6 +291,17 @@ export async function GET(
         1.0,
         0.25,
         3.0,
+      ),
+      blockProfitFactorRatio: asBoundedNumber(
+        firstDefined(
+          storedCoord.blockProfitFactorRatio,
+          storedCoord.blockProfitFactor,
+          settings.blockProfitFactorRatio,
+          settings.blockProfitFactor,
+        ),
+        0.8,
+        0.2,
+        5.0,
       ),
       blockMaxStack: Math.floor(asBoundedNumber(
         firstDefined(storedCoord.blockMaxStack, settings.blockMaxStack),
@@ -344,6 +375,7 @@ export async function PUT(
       : connection.connection_settings || {}
     const incomingSettings = body.settings && typeof body.settings === "object" ? body.settings : {}
     const mergedSettings = mergeConnectionSettings(currentSettings, incomingSettings)
+    normalizeCoordinationAxesInSettings(mergedSettings)
     const hasSymbols = Array.isArray(body.symbols)
     if (hasSymbols) {
       const symbols = body.symbols.map(String).map((symbol: string) => symbol.trim()).filter(Boolean)
@@ -465,6 +497,7 @@ export async function PATCH(
       : connection.connection_settings || {}
 
     const merged = mergeConnectionSettings(current, settings)
+    normalizeCoordinationAxesInSettings(merged)
     let activeIndicationPatch: Record<string, string> | undefined
     let activeIndicationsChanged = false
     if (incomingIndicationChannels && typeof incomingIndicationChannels === "object") {
@@ -748,6 +781,8 @@ export async function PATCH(
       }
       const bvr = Number(coord.blockVolumeRatio)
       if (Number.isFinite(bvr) && bvr > 0) flatKnobs.blockVolumeRatio = String(Math.max(0.25, Math.min(3.0, bvr)))
+      const bpfr = Number(coord.blockProfitFactorRatio ?? coord.blockProfitFactor)
+      if (Number.isFinite(bpfr) && bpfr > 0) flatKnobs.blockProfitFactorRatio = String(Math.max(0.2, Math.min(5.0, bpfr)))
       const bms = Number(coord.blockMaxStack)
       if (Number.isFinite(bms) && bms >= 1) flatKnobs.blockMaxStack = String(Math.min(10, Math.max(1, Math.floor(bms))))
       const bpcr = Number(coord.blockPauseCountRatio)

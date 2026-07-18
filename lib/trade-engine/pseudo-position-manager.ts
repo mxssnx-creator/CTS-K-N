@@ -69,7 +69,24 @@ async function syncPseudoStrategyEntryLedger(
       direction,
       axisKey: embeddedAxis,
     })
-    if (!active) await markStrategyPositionInactive(connectionId, positionId)
+    if (!active) {
+      const pnl = Number(
+        position.realized_pnl ?? position.realizedPnL ?? position.pnl ?? position.result ?? 0,
+      )
+      const openedAt = Date.parse(String(
+        position.opened_at ?? position.entry_time ?? position.created_at ?? "",
+      ))
+      const closedAt = Date.parse(String(
+        position.closed_at ?? position.exit_time ?? position.updated_at ?? "",
+      ))
+      const drawdownMinutes = Number.isFinite(openedAt) && Number.isFinite(closedAt) && closedAt > openedAt
+        ? (closedAt - openedAt) / 60_000
+        : 0
+      await markStrategyPositionInactive(connectionId, positionId, {
+        pnl: Number.isFinite(pnl) ? pnl : 0,
+        drawdownMinutes,
+      })
+    }
   } catch (error) {
     console.warn(
       `[v0] [PseudoPosMgr] Strategy entry ledger sync failed for ${positionId}:`,

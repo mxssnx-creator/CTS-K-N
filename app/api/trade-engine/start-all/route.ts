@@ -68,20 +68,11 @@ async function handleStartAll() {
 
     for (const connection of activeConnections) {
       try {
-        // Reset evaluated counters for fresh start
+        // A start/restart resumes the durable progression. Do not delete the
+        // evaluated counters here: they are continuity evidence used by stats,
+        // restart recovery, and Main position-count Set calculations. The
+        // explicit reset/admin workflows own destructive progression cleanup.
         await initRedis()
-        const evalKeys = [
-          `strategies:${connection.id}:base:evaluated`,
-          `strategies:${connection.id}:main:evaluated`,
-          `strategies:${connection.id}:real:evaluated`,
-        ]
-        for (const key of evalKeys) {
-          try {
-            await getRedisClient().del(key)
-          } catch (delErr) {
-            console.warn(`[START-ALL] Failed to delete ${key}:`, delErr)
-          }
-        }
 
         const engineConfig = {
           connectionId: connection.id,

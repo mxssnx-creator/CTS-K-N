@@ -294,6 +294,7 @@ import { fetchTopSymbols } from "@/lib/top-symbols"
 import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from "@/lib/progression-fingerprint"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { DEFAULT_SYMBOL_COUNT, getExplicitLocalSymbolCap } from "@/lib/symbol-selection-defaults"
+import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 /**
  * Main realtime symbol work overlaps Redis/market-data waits with a small,
@@ -2128,7 +2129,7 @@ export class TradeEngineManager {
         // realtime progression opt-in, while self-hosted production workers
         // must run by default or progression appears stuck in production.
         const apiRealtimeProgressionEnabled =
-          process.env.VERCEL !== "1" ||
+          !isServerlessDeploymentRuntime() ||
           process.env.ENABLE_API_REALTIME_PROGRESSION === "1" ||
           process.env.ENABLE_API_REALTIME_PROGRESSION === "true"
         if (!apiRealtimeProgressionEnabled) {
@@ -2985,7 +2986,7 @@ export class TradeEngineManager {
         // exchange-side live position sync opt-in, while self-hosted production
         // workers run it by default so live progress does not freeze.
         const apiLiveSyncEnabled =
-          process.env.VERCEL !== "1" ||
+          !isServerlessDeploymentRuntime() ||
           process.env.ENABLE_API_LIVE_POSITIONS_SYNC === "1" ||
           process.env.ENABLE_API_LIVE_POSITIONS_SYNC === "true"
         if (!apiLiveSyncEnabled) {
@@ -3965,7 +3966,7 @@ export class TradeEngineManager {
           let effectiveForceSymbols = forceSymbols.map(String).filter(Boolean)
           const localSymbolCapActive =
             process.env.NODE_ENV === "development" ||
-            (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")
+            (process.env.NODE_ENV === "production" && !isServerlessDeploymentRuntime())
           if (localSymbolCapActive) {
             const stateCap = Number((connState as any)?.dev_symbol_count_override)
             const devCap = Number.isFinite(stateCap) && stateCap >= 1
@@ -4026,7 +4027,7 @@ export class TradeEngineManager {
         //   V0_DEV_SYMBOL_COUNT=10 → resolve operator symbols, then slice to 10
         //   unset                  → no process-only cap; durable settings own N
         const _isLocalRun = process.env.NODE_ENV === "development" ||
-          (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")
+          (process.env.NODE_ENV === "production" && !isServerlessDeploymentRuntime())
         if (_isLocalRun) {
           const stateCap = Number(
             (connState as any)?.dev_symbol_count_override ??
@@ -4147,7 +4148,7 @@ export class TradeEngineManager {
     // Apply dev symbol cap (devCap was stashed on the resolve function to
     // avoid a closure variable that could race with concurrent calls).
     if (process.env.NODE_ENV === "development" ||
-        (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")) {
+        (process.env.NODE_ENV === "production" && !isServerlessDeploymentRuntime())) {
       const devCap = (resolve as any)._devCap
       if (typeof devCap === "number" && resolved.length > devCap) {
         resolved = resolved.slice(0, devCap)
@@ -4652,6 +4653,16 @@ export class TradeEngineManager {
       const patch = {
         settings_recoordination_pending: "0",
         strategy_recompute_requested: "0",
+        // Stats are assembled on demand from the authoritative progression,
+        // Set, position, and order hashes. Applying the settings generation
+        // invalidates every affected cache and therefore completes the dirty
+        // marker; leaving it at "1" made the UI report a recalculation that no
+        // background consumer could ever clear.
+        stats_recalculation_requested: "0",
+        stats_recalculation_completed: "1",
+        stats_recalculation_completed_at: completedAt,
+        stats_recalculation_applied_version: appliedVersion,
+        stats_recalculation_applied_event_id: appliedEventId,
         settings_recoordination_completed_at: completedAt,
         settings_recoordination_applied_at: completedAt,
         settings_recoordination_applied_version: appliedVersion,
@@ -4668,6 +4679,8 @@ export class TradeEngineManager {
       await Promise.all([
         getRedisClient().hdel?.(scope.progressionKey, "settings_recoordination_last_error"),
         getRedisClient().hdel?.(scope.legacyProgressionKey, "settings_recoordination_last_error"),
+        getRedisClient().hdel?.(scope.progressionKey, "stats_recalculation_last_error"),
+        getRedisClient().hdel?.(scope.legacyProgressionKey, "stats_recalculation_last_error"),
       ])
     } catch (stampErr) {
       console.warn(
@@ -4688,6 +4701,10 @@ export class TradeEngineManager {
       const patch = {
         settings_recoordination_pending: "0",
         strategy_recompute_requested: "1",
+        stats_recalculation_requested: "1",
+        stats_recalculation_completed: "0",
+        stats_recalculation_last_error: error instanceof Error ? error.message : String(error),
+        stats_recalculation_failed_at: new Date().toISOString(),
         settings_recoordination_last_error: error instanceof Error ? error.message : String(error),
         settings_recoordination_failed_at: new Date().toISOString(),
         ...(requestedVersion ? { settings_recoordination_requested_version: requestedVersion } : {}),

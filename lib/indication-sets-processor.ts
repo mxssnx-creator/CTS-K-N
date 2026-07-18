@@ -29,6 +29,7 @@
  */
 
 import { getRedisClient, initRedis, getSettings, getAppSettings, setSettings } from "@/lib/redis-db"
+import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { emitIndicationUpdate } from "@/lib/broadcast-helpers"
 import {
@@ -642,7 +643,7 @@ export class IndicationSetsProcessor {
       }
 
       const apiSetFillEnabled =
-        process.env.VERCEL !== "1" ||
+        !isServerlessDeploymentRuntime() ||
         process.env.ENABLE_API_INDICATION_SET_FILL === "1" ||
         process.env.ENABLE_API_INDICATION_SET_FILL === "true"
       if (!apiSetFillEnabled) {

@@ -30,9 +30,18 @@ import {
 } from "@/lib/sets-compaction"
 import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
 import {
+  calculateBlockMinimumProfitFactor,
   calculateBlockVolumeMultiplier,
+  getActiveBlockSetKeys,
   getUnavailableBlockSetKeys,
 } from "@/lib/block-count-state"
+import {
+  getStrategySetLedgerBatch,
+  getStrategyLedgerTotals,
+  getStrategySetWindowBatch,
+  type StrategySetLedgerSnapshot,
+} from "@/lib/pos-history"
+import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
 
 export interface EvaluationMetrics {
   maxDrawdownTime: number
@@ -71,6 +80,10 @@ export interface StrategySet {
   // Base: qualifying config entries (max 250). Axis projection: confirmed
   // closed entries plus currently-active, ledger-backed entries for that side.
   entryCount: number
+  /** Exact confirmed positions currently entered into this Set. */
+  confirmedActiveCount?: number
+  /** Exact realised positions whose PF/DDT result is booked into this Set. */
+  confirmedClosedCount?: number
   entries: StrategySetEntry[]
   createdAt?: string
   
@@ -130,6 +143,20 @@ export interface StrategySet {
   variantLeverage?: number
   blockBaseVolumeMultiplier?: number
   blockVolumeRatio?: number
+  /** Operator ratio applied to Default PF and this count's volume increment. */
+  blockProfitFactorRatio?: number
+  /** Default/Real stage PF floor used as the formula baseline. */
+  blockDefaultMinimumProfitFactor?: number
+  /** Exact independent minimum PF calculated for this Block count. */
+  blockMinimumProfitFactor?: number
+  /** PF observed over this Block Set's own latest-position window. */
+  blockObservedProfitFactor?: number
+  /** Number of latest closed positions used by both default and Block PF. */
+  blockProfitFactorWindow?: number
+  /** Exact closed results currently available in this Block Set window. */
+  blockProfitFactorSampleCount?: number
+  /** Independent count encoded in this Block Set identity. */
+  blockCount?: number
   blockCalculatedVolumeMultiplier?: number
   /**
    * ── Position-count axis windows that this Set satisfies ────────────
@@ -1035,6 +1062,7 @@ export class StrategyCoordinator {
     this._activeKeysCache.clear()
     this._liveSetKeysCache = null
     this._liveTradingModeCache = null
+    this._strategyLedgerTotalsCache = null
     this.positionContextCache = null
 
     ;(this as any)._trailingVariantsCache = undefined
@@ -1132,6 +1160,7 @@ export class StrategyCoordinator {
      * completed-position block count is not the driver for that cycle.
      */
     blockVolumeRatio: number
+    blockProfitFactorRatio: number
     blockMaxStack:    number
     blockPauseCountRatio: number
     blockActiveRealEnabled: boolean
@@ -1171,6 +1200,7 @@ export class StrategyCoordinator {
       dca:      false, // ← OFF by default (per spec); parser also defaults false
     },
     blockVolumeRatio: 1.0,
+    blockProfitFactorRatio: 0.8,
     blockMaxStack:    10,
     blockPauseCountRatio: 1.0,
     blockActiveRealEnabled: true,
@@ -1208,6 +1238,15 @@ export class StrategyCoordinator {
    */
   private _liveSetKeysCache: { keys: Set<string>; at: number } | null = null
   private _liveTradingModeCache: { enabled: boolean; at: number } | null = null
+  private _strategyLedgerTotalsCache: { axisEntries: number; at: number } | null = null
+
+  private async getCachedAxisEntryTotal(): Promise<number> {
+    const cached = this._strategyLedgerTotalsCache
+    if (cached && Date.now() - cached.at < 1_000) return cached.axisEntries
+    const axisEntries = (await getStrategyLedgerTotals(this.connectionId)).axisEntries
+    this._strategyLedgerTotalsCache = { axisEntries, at: Date.now() }
+    return axisEntries
+  }
 
   private async isLiveTradingEnabledForConnection(): Promise<boolean> {
     const cached = this._liveTradingModeCache
@@ -1699,19 +1738,7 @@ export class StrategyCoordinator {
         if (val === "false" || val === false) return false
         return def
       }
-      const num = (val: unknown, def: number): number => {
-        const n = Number(val)
-        return Number.isFinite(n) ? n : def
-      }
-
-      this._coordinationSettings.axes.prev.enabled   = bool(s.axisPrevEnabled,   true)
-      this._coordinationSettings.axes.prev.maxWindow  = num(s.axisPrevMaxWindow, 12)
-      this._coordinationSettings.axes.last.enabled   = bool(s.axisLastEnabled,   true)
-      this._coordinationSettings.axes.last.maxWindow  = num(s.axisLastMaxWindow, 4)
-      this._coordinationSettings.axes.cont.enabled   = bool(s.axisContEnabled,   true)
-      this._coordinationSettings.axes.cont.maxWindow  = num(s.axisContMaxWindow, 8)
-      this._coordinationSettings.axes.pause.enabled  = bool(s.axisPauseEnabled, true)
-      this._coordinationSettings.axes.pause.maxWindow = num(s.axisPauseMaxWindow, 8)
+      this._coordinationSettings.axes = normalizeStrategyAxes(undefined, s)
 
       // Adjust-variant toggles. Defaults: block=true, dca=false (spec: DCA off).
       // variantTrailingEnabled is kept only as a backwards-compatible stored
@@ -1730,6 +1757,10 @@ export class StrategyCoordinator {
       const bvr = Number(s.blockVolumeRatio)
       if (Number.isFinite(bvr) && bvr > 0) {
         this._coordinationSettings.blockVolumeRatio = Math.max(0.25, Math.min(3.0, bvr))
+      }
+      const bpfr = Number(s.blockProfitFactorRatio ?? s.blockProfitFactor)
+      if (Number.isFinite(bpfr) && bpfr > 0) {
+        this._coordinationSettings.blockProfitFactorRatio = Math.max(0.2, Math.min(5, bpfr))
       }
       const bms = Number(s.blockMaxStack)
       if (Number.isFinite(bms) && bms >= 1) {
@@ -3072,9 +3103,13 @@ export class StrategyCoordinator {
         1,
         Math.ceil(MAIN_AXIS_SETS_CEILING / defaultByBaseKey.size),
       )
+      // Generate the bounded candidate list first, then load only those exact
+      // ledger fields in one pipeline. This avoids both N-per-Base round trips
+      // and three full connection-wide HGETALL clones on every symbol cycle.
+      const axisCandidates: StrategySet[] = []
       for (const defaultSet of defaultByBaseKey.values()) {
         if (axisCapHit) break
-        const remaining = MAIN_AXIS_SETS_CEILING - axisSetsAdded
+        const remaining = MAIN_AXIS_SETS_CEILING - axisCandidates.length
         const expanded = this.expandAxisSets(
           defaultSet,
           minPF,
@@ -3083,41 +3118,48 @@ export class StrategyCoordinator {
           symbolCtx.lastPosCount,
           Math.min(perBaseAxisLimit, remaining),
         )
-        for (const axisSet of expanded) {
-          mainSets.push(axisSet)
-          axisSetsAdded++
+        axisCandidates.push(...expanded)
+        if (axisCandidates.length >= MAIN_AXIS_SETS_CEILING) axisCapHit = true
+      }
+      const exactSetLedger = await getStrategySetLedgerBatch(
+        this.connectionId,
+        axisCandidates.map((set) => set.setKey),
+      )
+      const expandedWithLedger = await this.applyExactPositionSetLedger(
+        axisCandidates,
+        exactSetLedger,
+        metrics,
+      )
+      for (const axisSet of expandedWithLedger) {
+        mainSets.push(axisSet)
+        axisSetsAdded++
 
-          // ── Register axis SetCoordRecord ──────────����─────────────────
-          // Axis sets carry a synthetic entry but their quality data lives
-          // on the parent Base Set. Recording the parentKey here enables
-          // createLiveSets to do a O(1) base lookup instead of O(N) find().
-          if (coordIndex) {
-            const axisRec: SetCoordRecord = {
-              coordKey:           axisSet.setKey,
-              parentKey:          axisSet.parentSetKey || axisSet.setKey.split("#")[0],
-              variant:            "default",
-              axisWindows:        axisSet.axisWindows ?? null,
-              status:             "valid_main",
-              overrideDirection:  axisSet.axisWindows?.direction as "long" | "short" | undefined,
-              overrideEntryCount: axisSet.entryCount,
-              // ── Scalar value carrier (axis projection of parent default) ──
-              avgProfitFactor:    axisSet.avgProfitFactor,
-              avgDrawdownTime:    axisSet.avgDrawdownTime,
-              avgConfidence:      axisSet.avgConfidence,
-              entryCount:         axisSet.entryCount,
-              indicationType:     axisSet.indicationType,
-              direction:          (axisSet.axisWindows?.direction as "long" | "short" | undefined) ?? axisSet.direction,
-              prevPos:            axisSet.prevPos,
-              trailingProfile:    axisSet.trailingProfile,
-            }
-            registerCoordRecord(coordIndex, axisRec)
+        // ── Register axis SetCoordRecord ──────────────────────────────
+        // Axis sets carry a synthetic entry but their quality data lives
+        // on the parent Base Set. Recording the parentKey here enables
+        // createLiveSets to do a O(1) base lookup instead of O(N) find().
+        if (coordIndex) {
+          const axisRec: SetCoordRecord = {
+            coordKey:           axisSet.setKey,
+            parentKey:          axisSet.parentSetKey || axisSet.setKey.split("#")[0],
+            variant:            "default",
+            axisWindows:        axisSet.axisWindows ?? null,
+            status:             "valid_main",
+            overrideDirection:  axisSet.axisWindows?.direction as "long" | "short" | undefined,
+            overrideEntryCount: axisSet.entryCount,
+            // ── Scalar value carrier (axis projection of parent default) ──
+            avgProfitFactor:    axisSet.avgProfitFactor,
+            avgDrawdownTime:    axisSet.avgDrawdownTime,
+            avgConfidence:      axisSet.avgConfidence,
+            entryCount:         axisSet.entryCount,
+            indicationType:     axisSet.indicationType,
+            direction:          (axisSet.axisWindows?.direction as "long" | "short" | undefined) ?? axisSet.direction,
+            prevPos:            axisSet.prevPos,
+            trailingProfile:    axisSet.trailingProfile,
           }
-
-          if (axisSetsAdded >= MAIN_AXIS_SETS_CEILING) {
-            axisCapHit = true
-            break
-          }
+          registerCoordRecord(coordIndex, axisRec)
         }
+
       }
       if (axisCapHit) {
         console.warn(
@@ -3202,6 +3244,14 @@ export class StrategyCoordinator {
     let axisSetsCount         = 0
     let axisLong              = 0
     let axisShort             = 0
+    const axisWindowSnapshot: Record<string, string> = {}
+    const axisWindowMax = { prev: 12, last: 4, cont: 8, pause: 8 } as const
+    for (const [axis, maxWindow] of Object.entries(axisWindowMax)) {
+      for (let window = 0; window <= maxWindow; window++) {
+        axisWindowSnapshot[`s:${symbol}:${axis}_${window}_sets`] = "0"
+        axisWindowSnapshot[`s:${symbol}:${axis}_${window}_pos`] = "0"
+      }
+    }
     const uniqueBaseSetsProduced = new Set<string>()
     for (const set of mainSets) {
       // Variant tag — sets always carry an authoritative .variant field;
@@ -3229,6 +3279,16 @@ export class StrategyCoordinator {
       if (axDir) {
         axisSetsCount++
         if (axDir === "long") axisLong++; else axisShort++
+        // Exact current Main-stage axis snapshot. `sets` counts calculated
+        // pos-count Sets; `pos` counts confirmed ledger entries booked into
+        // those exact Sets (never the synthetic projection entry).
+        for (const axis of ["prev", "last", "cont", "pause"] as const) {
+          const window = Math.max(0, Math.floor(Number(set.axisWindows?.[axis] || 0)))
+          const setField = `s:${symbol}:${axis}_${window}_sets`
+          const posField = `s:${symbol}:${axis}_${window}_pos`
+          axisWindowSnapshot[setField] = String(Number(axisWindowSnapshot[setField] || 0) + 1)
+          axisWindowSnapshot[posField] = String(Number(axisWindowSnapshot[posField] || 0) + ec)
+        }
       } else {
         mainProfileEntries += ec
       }
@@ -3335,6 +3395,12 @@ export class StrategyCoordinator {
           [`s:${symbol}:ts`]:         String(Date.now()),
         }),
         client.expire(mainDetailKey, 86400),
+        client.hset(`axis_windows:${this.connectionId}`, {
+          ...axisWindowSnapshot,
+          [`s:${symbol}:updated_at`]: String(Date.now()),
+          updated_at: String(Date.now()),
+        }),
+        client.expire(`axis_windows:${this.connectionId}`, 7 * 24 * 60 * 60),
         client.hset(`strategy_detail:${this.connectionId}:base`, {
           passed_sets: String(baseSets.length),
           pass_rate:   String(passRatioMain.toFixed(4)),
@@ -3625,46 +3691,78 @@ export class StrategyCoordinator {
 
     const maxStack = Math.max(1, Math.min(10, this._coordinationSettings.blockMaxStack | 0))
     const ratio = this._coordinationSettings.blockVolumeRatio
+    const profitFactorRatio = this._coordinationSettings.blockProfitFactorRatio
     const pauseRatio = this._coordinationSettings.blockPauseCountRatio
     const overlays: StrategySet[] = []
+    const eligibleSources = Array.from(new Map(
+      sourceSets
+        .filter((set) => set.variant !== "dca" && set.variant !== "block" && !String(set.setKey).includes("#block:"))
+        .map((set) => [set.setKey, set]),
+    ).values())
+    const exactActiveLedger = await getStrategySetLedgerBatch(
+      this.connectionId,
+      eligibleSources.map((set) => set.setKey),
+    )
+    const overlayKeys = new Set<string>()
 
-    for (const dir of ["long", "short"] as const) {
-      const realCount = this._coordinationSettings.blockActiveRealEnabled ? activeRealByDir[dir] : 0
-      const liveCount = this._coordinationSettings.blockActiveLiveEnabled ? activeLiveByDir[dir] : 0
-      const activeCount = Math.max(realCount, liveCount)
-      if (activeCount <= 0) continue
-      const source = sourceSets.find((s) => s.direction === dir && s.variant !== "dca" && !String(s.setKey).includes("#block:active:"))
-      if (!source) continue
-
-      const boundedCount = Math.min(Math.max(1, activeCount), maxStack)
+    const addOverlay = (
+      source: StrategySet,
+      requestedCount: number,
+      scope: "global" | "set",
+    ): void => {
+      const boundedCount = Math.min(Math.max(1, requestedCount), maxStack)
       const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
         blockConfig.size,
         boundedCount,
         ratio,
       )
+      const blockMinimumProfitFactor = calculateBlockMinimumProfitFactor(
+        metrics.minProfitFactor,
+        profitFactorRatio,
+        blockCalculatedVolumeMultiplier,
+      )
+      const blockObservedProfitFactor =
+        (source.avgProfitFactor || metrics.minProfitFactor) * blockConfig.pfBias
       const pauseWindow = Math.max(1, Math.min(32, Math.round(boundedCount * pauseRatio)))
       const parentSetKey = source.parentSetKey || source.setKey
       const axisWindows = {
         ...(source.axisWindows || { prev: 0, last: 0, cont: 0, pause: 0 }),
         cont: boundedCount,
         pause: pauseWindow,
-        axisKey: `block:active:${boundedCount}:pause${pauseWindow}`,
+        axisKey: `block:${scope}:${boundedCount}:pause${pauseWindow}`,
       }
+      // Keep the established `#block:active:N` identity for the direction-wide
+      // Real exposure overlay. Exact per-Set overlays use a distinct key so
+      // their own fills/PF/DDT and pause logistics never collapse into the
+      // aggregate stage-level calculation.
+      const setKey = scope === "global"
+        ? `${source.setKey}#block:active:${boundedCount}`
+        : `${source.setKey}#block:set:${boundedCount}`
+      if (overlayKeys.has(setKey)) return
+      overlayKeys.add(setKey)
       const overlay: StrategySet = {
         ...source,
-        setKey: `${source.setKey}#block:active:${boundedCount}`,
+        setKey,
         parentSetKey,
         variant: "block",
         axisWindows,
-        avgProfitFactor: Math.max(
-          metrics.minProfitFactor,
-          (source.avgProfitFactor || metrics.minProfitFactor) * blockConfig.pfBias,
-        ),
-        avgDrawdownTime: (source.avgDrawdownTime || 0) + (blockConfig.ddtBias * boundedCount),
+        avgProfitFactor: blockObservedProfitFactor,
+        // Volume count does not multiply elapsed drawdown time. Until this
+        // exact Set has its own closed window, apply the Block profile bias
+        // once; count-multiplication deadlocked higher counts before they
+        // could ever produce their first independent result.
+        avgDrawdownTime: (source.avgDrawdownTime || 0) + blockConfig.ddtBias,
         variantSizeMultiplier: blockCalculatedVolumeMultiplier,
         variantLeverage: blockConfig.leverage,
         blockBaseVolumeMultiplier: blockConfig.size,
         blockVolumeRatio: ratio,
+        blockProfitFactorRatio: profitFactorRatio,
+        blockDefaultMinimumProfitFactor: metrics.minProfitFactor,
+        blockMinimumProfitFactor,
+        blockObservedProfitFactor,
+        blockProfitFactorWindow: Math.max(1, this._prevPosWindowValue > 0 ? this._prevPosWindowValue : 25),
+        blockProfitFactorSampleCount: 0,
+        blockCount: boundedCount,
         blockCalculatedVolumeMultiplier,
         status: "valid_real",
       }
@@ -3691,6 +3789,209 @@ export class StrategyCoordinator {
       }
     }
 
+    // Direction-wide active Real/Live exposure calculation.
+    for (const dir of ["long", "short"] as const) {
+      const realCount = this._coordinationSettings.blockActiveRealEnabled ? activeRealByDir[dir] : 0
+      const liveCount = this._coordinationSettings.blockActiveLiveEnabled ? activeLiveByDir[dir] : 0
+      const activeCount = Math.max(realCount, liveCount)
+      if (activeCount <= 0) continue
+      const source = eligibleSources.find((set) => set.direction === dir)
+      if (source) addOverlay(source, activeCount, "global")
+    }
+
+    // Exact per-Set calculation. Counts come from confirmed position
+    // memberships, not candidate evaluations, so each Set retains independent
+    // Block volume, PF/DDT result ring and cooldown state across restarts.
+    for (const source of eligibleSources) {
+      const directionActive = Math.max(
+        this._coordinationSettings.blockActiveRealEnabled ? activeRealByDir[source.direction] : 0,
+        this._coordinationSettings.blockActiveLiveEnabled ? activeLiveByDir[source.direction] : 0,
+      )
+      const exactCount = exactActiveLedger.active[source.setKey] || 0
+      if (directionActive > 0 && exactCount > 0) addOverlay(source, exactCount, "set")
+    }
+
+    return overlays
+  }
+
+  /**
+   * Build and validate the complete count ladder before Live selection.
+   *
+   * Every source Set × Block count has an exact Set identity, its own result
+   * ring, volume increment, PF floor and pause/active state. No count inherits
+   * another count's PF decision. A count with an open exchange position is
+   * retained even when its latest PF falls below the new floor; it leaves the
+   * active book only through the normal close/reconciliation lifecycle.
+   */
+  private async buildIndependentBlockCountOverlaysForReal(
+    symbol: string,
+    sourceSets: StrategySet[],
+    metrics: EvaluationMetrics,
+    coordIndex?: CoordIndex,
+    activeSetKeys: ReadonlySet<string> = new Set<string>(),
+  ): Promise<StrategySet[]> {
+    if (!this._coordinationSettings.variants.block) return []
+
+    const blockProfile = this.variantProfiles().find((profile) => profile.name === "block")
+    const blockConfig = blockProfile?.configs.slice().sort((left, right) => right.pfBias - left.pfBias)[0]
+    if (!blockConfig) return []
+
+    const sources = Array.from(new Map(
+      sourceSets
+        .filter((set) => set.variant !== "block" && set.variant !== "dca" && !String(set.setKey).includes("#block:"))
+        .map((set) => [set.setKey, set]),
+    ).values())
+    if (sources.length === 0) return []
+
+    const maxStack = Math.max(1, Math.min(10, this._coordinationSettings.blockMaxStack | 0))
+    const volumeRatio = this._coordinationSettings.blockVolumeRatio
+    const profitFactorRatio = this._coordinationSettings.blockProfitFactorRatio
+    const pauseRatio = this._coordinationSettings.blockPauseCountRatio
+    const resultWindow = Math.max(1, Math.min(600, this._prevPosWindowValue > 0 ? this._prevPosWindowValue : 25))
+    const candidateKeys = sources.flatMap((source) =>
+      Array.from({ length: maxStack }, (_, index) => `${source.setKey}#block:${index + 1}`),
+    )
+    const client = getRedisClient()
+    const [exactWindows, unavailableKeys, indexedActiveKeys] = await Promise.all([
+      getStrategySetWindowBatch(this.connectionId, candidateKeys, resultWindow),
+      this.getUnavailableBlockKeys(symbol),
+      getActiveBlockSetKeys(client, this.connectionId, symbol),
+    ])
+    const activeKeys = new Set<string>([...activeSetKeys, ...indexedActiveKeys])
+    const overlays: StrategySet[] = []
+    const countStats = Array.from({ length: 10 }, (_, index) => ({
+      count: index + 1,
+      evaluated: 0,
+      passed: 0,
+      emitted: 0,
+      rejected: 0,
+      active: 0,
+      paused: 0,
+      observedPfSum: 0,
+      minimumPfSum: 0,
+      volumeIncrementSum: 0,
+      sampleCount: 0,
+    }))
+
+    for (const source of sources) {
+      for (let blockCount = 1; blockCount <= maxStack; blockCount++) {
+        const setKey = `${source.setKey}#block:${blockCount}`
+        const ownWindow = exactWindows.get(setKey)
+        const hasCompleteOwnWindow = Boolean(ownWindow?.hasSignal && ownWindow.count >= resultWindow)
+        const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
+          blockConfig.size,
+          blockCount,
+          volumeRatio,
+        )
+        const blockMinimumProfitFactor = calculateBlockMinimumProfitFactor(
+          metrics.minProfitFactor,
+          profitFactorRatio,
+          blockCalculatedVolumeMultiplier,
+        )
+        const inheritedObservedPf = (source.avgProfitFactor || 0) * blockConfig.pfBias
+        const blockObservedProfitFactor = hasCompleteOwnWindow
+          ? Number(ownWindow?.profitFactor || 0)
+          : inheritedObservedPf
+        const blockObservedDrawdown = hasCompleteOwnWindow && Number(ownWindow?.avgDDT) > 0
+          ? Number(ownWindow?.avgDDT)
+          : (source.avgDrawdownTime || 0) + blockConfig.ddtBias
+        const isActive = activeKeys.has(setKey)
+        const isPaused = unavailableKeys.has(setKey) && !isActive
+        const passesPerformance =
+          blockObservedProfitFactor >= blockMinimumProfitFactor &&
+          blockObservedDrawdown <= metrics.maxDrawdownTime
+        const emit = isActive || (passesPerformance && !isPaused)
+        const stats = countStats[blockCount - 1]
+        stats.evaluated++
+        stats.observedPfSum += blockObservedProfitFactor
+        stats.minimumPfSum += blockMinimumProfitFactor
+        stats.volumeIncrementSum += blockCalculatedVolumeMultiplier
+        stats.sampleCount += Number(ownWindow?.count || 0)
+        if (passesPerformance) stats.passed++
+        else stats.rejected++
+        if (isActive) stats.active++
+        if (isPaused) stats.paused++
+        if (!emit) continue
+        stats.emitted++
+
+        const pauseWindow = Math.max(1, Math.min(32, Math.round(blockCount * pauseRatio)))
+        const parentSetKey = source.parentSetKey || source.setKey
+        const axisWindows = {
+          ...(source.axisWindows || { prev: 0, last: 0, cont: 0, pause: 0 }),
+          cont: blockCount,
+          pause: pauseWindow,
+          axisKey: `block:${blockCount}:pause${pauseWindow}`,
+        }
+        const overlay: StrategySet = {
+          ...source,
+          setKey,
+          parentSetKey,
+          variant: "block",
+          axisWindows,
+          avgProfitFactor: blockObservedProfitFactor,
+          avgDrawdownTime: blockObservedDrawdown,
+          entryCount: Math.max(source.entryCount || 0, Number(ownWindow?.count || 0)),
+          variantSizeMultiplier: blockCalculatedVolumeMultiplier,
+          variantLeverage: blockConfig.leverage,
+          blockBaseVolumeMultiplier: blockConfig.size,
+          blockVolumeRatio: volumeRatio,
+          blockProfitFactorRatio: profitFactorRatio,
+          blockDefaultMinimumProfitFactor: metrics.minProfitFactor,
+          blockMinimumProfitFactor,
+          blockObservedProfitFactor,
+          blockProfitFactorWindow: resultWindow,
+          blockProfitFactorSampleCount: Number(ownWindow?.count || 0),
+          blockCount,
+          blockCalculatedVolumeMultiplier,
+          status: "valid_real",
+          ...(isActive ? { _hasLivePositions: true } : {}),
+        } as StrategySet
+        overlays.push(overlay)
+
+        if (coordIndex && !coordIndex.byCoordKey.has(setKey)) {
+          registerCoordRecord(coordIndex, {
+            coordKey: setKey,
+            parentKey: parentSetKey,
+            variant: "block",
+            axisWindows,
+            status: "valid_real",
+            avgProfitFactor: overlay.avgProfitFactor,
+            avgDrawdownTime: overlay.avgDrawdownTime,
+            avgConfidence: overlay.avgConfidence,
+            entryCount: overlay.entryCount,
+            indicationType: overlay.indicationType,
+            direction: overlay.direction,
+            prevPos: overlay.prevPos,
+            trailingProfile: overlay.trailingProfile,
+            _setView: overlay,
+            _hasLivePositions: isActive,
+          })
+        }
+      }
+    }
+
+    const snapshot: Record<string, string> = {
+      [`s:${symbol}:max_stack`]: String(maxStack),
+      [`s:${symbol}:profit_factor_ratio`]: String(profitFactorRatio),
+      [`s:${symbol}:default_min_pf`]: String(metrics.minProfitFactor),
+      [`s:${symbol}:window`]: String(resultWindow),
+      [`s:${symbol}:updated_at`]: String(Date.now()),
+    }
+    for (const stats of countStats) {
+      const prefix = `s:${symbol}:c:${stats.count}`
+      snapshot[`${prefix}:evaluated`] = String(stats.evaluated)
+      snapshot[`${prefix}:passed`] = String(stats.passed)
+      snapshot[`${prefix}:emitted`] = String(stats.emitted)
+      snapshot[`${prefix}:rejected`] = String(stats.rejected)
+      snapshot[`${prefix}:active`] = String(stats.active)
+      snapshot[`${prefix}:paused`] = String(stats.paused)
+      snapshot[`${prefix}:avg_observed_pf`] = String(stats.evaluated > 0 ? stats.observedPfSum / stats.evaluated : 0)
+      snapshot[`${prefix}:avg_min_pf`] = String(stats.evaluated > 0 ? stats.minimumPfSum / stats.evaluated : 0)
+      snapshot[`${prefix}:avg_volume_increment`] = String(stats.evaluated > 0 ? stats.volumeIncrementSum / stats.evaluated : 0)
+      snapshot[`${prefix}:sample_count`] = String(stats.sampleCount)
+    }
+    await client.hset(`strategy_block_pf_stats:${this.connectionId}`, snapshot).catch(() => 0)
+    await client.expire(`strategy_block_pf_stats:${this.connectionId}`, 7 * 24 * 60 * 60).catch(() => 0)
     return overlays
   }
 
@@ -4077,11 +4378,35 @@ export class StrategyCoordinator {
       (a, b) => b.avgProfitFactor - a.avgProfitFactor,
     )
 
-    // Active-position Block overlays: inject block Sets derived from currently
-    // running real positions before the Real-stage cap. These are counted
-    // automatically in realRelatedCreated = realSets.length - mainPFEligible
-    // since they flow through realPostHedge → realSets.
+    // Materialize the complete regular Block ladder at Real. Each count is
+    // evaluated here (not synthesized later during Live dispatch), so Real
+    // stats, exact histories and pause/active lifecycle all observe the same
+    // count-specific Set graph that Live consumes.
     let realStageRelatedCreated = 0
+    try {
+      const independentBlockCounts = await this.buildIndependentBlockCountOverlaysForReal(
+        symbol,
+        realPostHedge,
+        metrics,
+        coordIndex,
+        realActiveKeysForVP,
+      )
+      if (independentBlockCounts.length > 0) {
+        realStageRelatedCreated += independentBlockCounts.length
+        realPostHedge = realPostHedge
+          .concat(independentBlockCounts)
+          .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+      }
+    } catch (err) {
+      console.warn(
+        `[v0] [StrategyFlow] ${symbol} independent Block count evaluation failed:`,
+        err instanceof Error ? err.message : String(err),
+      )
+    }
+
+    // Active-position Block overlays are additional direction-wide/exact-Set
+    // views of running exposure. They remain distinct from the regular
+    // `#block:N` ladder above and therefore cannot collapse its own results.
     try {
       const activePositionBlockOverlays = await this.buildActiveRealBlockOverlaysForReal(
         symbol,
@@ -4171,9 +4496,11 @@ export class StrategyCoordinator {
     // with the global PF ranking (mostly `default`). Non-default variants get
     // NO axis fan-out, so their counts are small and reserving for them is
     // cheap while keeping the total within the real output cap (OOM ceiling intact).
-    let realSets: StrategySet[]
-    if (realPostHedge.length <= realSetsCap) {
-      realSets = realPostHedge
+    const reservedBlockSets = realPostHedge.filter((set) => set.variant === "block")
+    const capCandidates = realPostHedge.filter((set) => set.variant !== "block")
+    let cappedNonBlockSets: StrategySet[]
+    if (capCandidates.length <= realSetsCap) {
+      cappedNonBlockSets = capCandidates
     } else {
       // Up to ~30% of the cap is split across the 4 non-default variant types;
       // the remaining ~70% goes to the global PF ranking. Floor of 1 ensures
@@ -4182,7 +4509,7 @@ export class StrategyCoordinator {
       const reserved: StrategySet[] = []
       const reservedKeys = new Set<string>()
       const keptPerVariant: Record<string, number> = {}
-      for (const s of realPostHedge) {
+      for (const s of capCandidates) {
         if (reserved.length >= realSetsCap) break
         const v = (s.variant as string) ?? "default"
         if (v === "default") continue
@@ -4194,22 +4521,29 @@ export class StrategyCoordinator {
       }
       const remaining = Math.max(0, realSetsCap - reserved.length)
       const fill: StrategySet[] = []
-      for (const s of realPostHedge) {
+      for (const s of capCandidates) {
         if (fill.length >= remaining) break
         if (reservedKeys.has(s.setKey)) continue
         fill.push(s)
       }
       // Restore global PF-desc ordering for the downstream hedge/dispatch path.
-      realSets = reserved.concat(fill).sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
+      cappedNonBlockSets = reserved.concat(fill).sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
       if (shouldLogRealCap(`fair:${this.connectionId}:${symbol}`)) {
         console.warn(
-          `[v0] [RealStage] ${this.connectionId}/${symbol}: ${realPostHedge.length} Real Sets exceeds ` +
-          `safety ceiling ${realSetsCap}; kept top ${realSetsCap} by rank with per-variant ` +
+          `[v0] [RealStage] ${this.connectionId}/${symbol}: ${capCandidates.length} non-Block Real Sets exceeds ` +
+          `safety ceiling ${realSetsCap}; kept top ${realSetsCap} plus ${reservedBlockSets.length} ` +
+          `independently evaluated Block count Sets, with per-variant ` +
           `reserve (floor ${floorPerVariant}/variant: ${JSON.stringify(keptPerVariant)}). ` +
           `Set maxRealSets in Settings to override.`,
         )
       }
     }
+    // Block counts are bounded by `realSetsCap × blockMaxStack` and must never
+    // be silently collapsed by the generic Real funnel cap; doing so would make
+    // Count N's calculations depend on which unrelated Set ranked above it.
+    const realSets = Array.from(new Map(
+      cappedNonBlockSets.concat(reservedBlockSets).map((set) => [set.setKey, set]),
+    ).values()).sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
 
     // ── Populate CoordIndex.validRealKeys — O(N) single pass ───────────────
     // Stamp every surviving real set's coord record as `valid_real` and
@@ -4428,13 +4762,10 @@ export class StrategyCoordinator {
       // exact axis. Re-evaluating a Set does not increase this perspective.
       let realAccumulatedSum = 0
       try {
-        const axisAccHash = (await client
-          .hgetall(`axis_pos_acc:${this.connectionId}`)
-          .catch(() => ({} as Record<string, string>))) as Record<string, string>
-        for (const v of Object.values(axisAccHash || {})) {
-          const num = Number(v)
-          if (Number.isFinite(num)) realAccumulatedSum += num
-        }
+        // O(1) scalar maintained by the confirmed-entry ledger. The former
+        // HGETALL(axis_pos_acc) ran once per symbol and became progressively
+        // slower across long sessions as exact Set fields accumulated.
+        realAccumulatedSum = await this.getCachedAxisEntryTotal()
       } catch { /* fallback: 0 */ }
 
       const writes: Promise<any>[] = [
@@ -5169,83 +5500,10 @@ export class StrategyCoordinator {
             // always dropped because `sawLong=true` was already set by the
             // default set, meaning block strategy NEVER dispatched.
             //
-            // Block overlay model:
-            // Block is not materialized as its own Main/Real Set. When active,
-            // it overlays the best already-qualified Set for each direction for
-            // EVERY block size [1..blockMaxStack]. The block count is coordinated
-            // from previous completed-position recovery logic (not active open
-            // positions) and each count receives its own setKey/pause window so
-            // performance and cooldown can be tracked independently. If the
-            // operator enables Active Real/Live Position Block, Real stage already
-            // materializes the running-exposure overlay before caps/stats/tuning;
-            // Live consumes that Real Set instead of creating it here. DCA remains a materialized
-            // Adjust Set because its reduce/close state has separate evaluation
-            // and stats semantics.
-            let dispatchCandidates = qualifying
-            if (this._coordinationSettings.variants.block) {
-              try {
-                const maxStack = Math.max(1, Math.min(10, this._coordinationSettings.blockMaxStack | 0))
-                const ratio = this._coordinationSettings.blockVolumeRatio
-                const pauseRatio = this._coordinationSettings.blockPauseCountRatio
-                const blockProfile = this.variantProfiles().find((p) => p.name === "block")
-                const blockConfig = blockProfile?.configs
-                  .slice()
-                  .sort((a, b) => b.pfBias - a.pfBias)[0]
-
-                if (blockConfig) {
-                  const blockOverlays: StrategySet[] = []
-                  const unavailableBlockKeys = await this.getUnavailableBlockKeys(symbol)
-                  const orderedBlockCounts = [
-                    ...Array.from({ length: maxStack }, (_, index) => index + 1),
-                  ]
-                  for (const dir of ["long", "short"] as const) {
-                    const source = qualifying.find((s) => s.direction === dir && s.variant !== "dca" && s.variant !== "block")
-                    if (!source) continue
-                    for (const blockCount of orderedBlockCounts) {
-                      const blockSetKey = `${source.setKey}#block:${blockCount}`
-                      if (unavailableBlockKeys.has(blockSetKey)) continue
-                      const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
-                        blockConfig.size,
-                        blockCount,
-                        ratio,
-                      )
-                      const pauseWindow = Math.max(1, Math.min(32, Math.round(blockCount * pauseRatio)))
-                      blockOverlays.push({
-                        ...source,
-                        setKey: `${source.setKey}#block:${blockCount}`,
-                        parentSetKey: source.parentSetKey || source.setKey,
-                        variant: "block",
-                        axisWindows: {
-                          ...(source.axisWindows || { prev: 0, last: 0, cont: 0, pause: 0 }),
-                          cont: blockCount,
-                          pause: pauseWindow,
-                          axisKey: `block:${blockCount}:pause${pauseWindow}`,
-                        },
-                        avgProfitFactor: Math.max(
-                          metrics.minProfitFactor,
-                          (source.avgProfitFactor || metrics.minProfitFactor) * blockConfig.pfBias,
-                        ),
-                        avgDrawdownTime: (source.avgDrawdownTime || 0) + (blockConfig.ddtBias * blockCount),
-                        variantSizeMultiplier: blockCalculatedVolumeMultiplier,
-                        variantLeverage: blockConfig.leverage,
-                        blockBaseVolumeMultiplier: blockConfig.size,
-                        blockVolumeRatio: ratio,
-                        blockCalculatedVolumeMultiplier,
-                      })
-                    }
-                  }
-                  if (blockOverlays.length > 0) {
-                    dispatchCandidates = [...qualifying, ...blockOverlays]
-                      .sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
-                  }
-                }
-              } catch (err) {
-                console.warn(
-                  `[v0] [StrategyFlow] ${symbol} block overlay coordination failed:`,
-                  err instanceof Error ? err.message : String(err),
-                )
-              }
-            }
+            // Block count Sets were already independently evaluated at Real.
+            // Live consumes that exact list; synthesizing another ladder here
+            // would bypass the count-specific PF gate and duplicate identities.
+            const dispatchCandidates = qualifying
 
             const dispatchSets: StrategySet[] = []
             {
@@ -5441,6 +5699,13 @@ export class StrategyCoordinator {
                     sizeMultiplier: effectiveSizeMult,
                     blockBaseVolumeMultiplier: set.blockBaseVolumeMultiplier,
                     blockVolumeRatio: set.blockVolumeRatio,
+                    blockProfitFactorRatio: set.blockProfitFactorRatio,
+                    blockDefaultMinimumProfitFactor: set.blockDefaultMinimumProfitFactor,
+                    blockMinimumProfitFactor: set.blockMinimumProfitFactor,
+                    blockObservedProfitFactor: set.blockObservedProfitFactor,
+                    blockProfitFactorWindow: set.blockProfitFactorWindow,
+                    blockProfitFactorSampleCount: set.blockProfitFactorSampleCount,
+                    blockCount: set.blockCount,
                     blockCalculatedVolumeMultiplier: set.blockCalculatedVolumeMultiplier,
                     // ── Set-config propagation to Live ───������─────────────────
                     // Forward the Set's trailing profile and historical
@@ -6094,6 +6359,66 @@ export class StrategyCoordinator {
    * comes from pos-history close records. Active exposure is read separately
    * from PositionContext and is used only by Continuous.
    */
+  /**
+   * Overlay exact confirmed-position membership onto freshly calculated Main
+   * pos-count Sets. Axis projections decide which Sets are candidates; only a
+   * confirmed fill/paper entry books a position into the exact Set ledger.
+   * Later PF/DDT/Previous/Last validation then reads that Set's own bounded
+   * realised-result ring instead of repeatedly treating the parent projection
+   * or a synthetic entry as a new position.
+   */
+  private async applyExactPositionSetLedger(
+    axisSets: StrategySet[],
+    ledger: StrategySetLedgerSnapshot,
+    metrics: EvaluationMetrics,
+  ): Promise<StrategySet[]> {
+    if (axisSets.length === 0) return axisSets
+    const resultKeys = axisSets
+      .map((set) => set.setKey)
+      .filter((setKey) => (ledger.closed[setKey] || 0) > 0)
+    const windows = await getStrategySetWindowBatch(this.connectionId, resultKeys, 12)
+    const hydrated: StrategySet[] = []
+
+    for (const set of axisSets) {
+      const exactEntries = Math.max(0, ledger.entries[set.setKey] || 0)
+      const activeEntries = Math.max(0, ledger.active[set.setKey] || 0)
+      const closedEntries = Math.max(0, ledger.closed[set.setKey] || 0)
+      const ownWindow = windows.get(set.setKey)
+      const previousWindow = Math.max(1, Number(set.axisWindows?.prev || 1))
+      const hasOwnValidationWindow = !!ownWindow && ownWindow.count >= previousWindow
+      const ownPfFails = hasOwnValidationWindow && ownWindow!.profitFactor < metrics.minProfitFactor
+      const ownDdtFails = hasOwnValidationWindow && ownWindow!.avgDDT > metrics.maxDrawdownTime
+
+      // Active exposure remains valid until terminal reconciliation, even if
+      // its newly-realised Set statistics have deteriorated. A candidate with
+      // no exposure is withheld once its own full window fails Main PF/DDT.
+      if (activeEntries === 0 && (ownPfFails || ownDdtFails)) continue
+
+      hydrated.push({
+        ...set,
+        // This is the actual position-entry count for the exact new Set. The
+        // synthetic representative in entries[] is calculation metadata only.
+        entryCount: exactEntries,
+        confirmedActiveCount: activeEntries,
+        confirmedClosedCount: closedEntries,
+        ...(ownWindow && ownWindow.count > 0
+          ? {
+              avgProfitFactor: ownWindow.profitFactor,
+              avgDrawdownTime: ownWindow.avgDDT,
+              prevPos: {
+                count: ownWindow.count,
+                successRate: ownWindow.successRate,
+                profitFactor: ownWindow.profitFactor,
+                avgDDT: ownWindow.avgDDT,
+                recentPnls: [...ownWindow.recentPnls],
+              },
+            }
+          : {}),
+      })
+    }
+    return hydrated
+  }
+
   private expandAxisSets(
     baseDefault: StrategySet,
     minPF: number,

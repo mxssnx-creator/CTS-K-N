@@ -14,7 +14,6 @@ import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { QuickstartComprehensiveLogDialog } from "./quickstart-comprehensive-log-dialog"
 import { QuickstartOverviewDialog } from "./quickstart-overview-dialog"
-import { EngineProgressionTestButton } from "./engine-progression-test-dialog"
 // Top-of-card controls strip — connection picker (add base connection
 // to Active panel) + Reset DB button. Lives in its own file because
 // QuickStart is already large; mounting it as a single child keeps
@@ -1377,15 +1376,6 @@ export function QuickstartSection() {
           {/* dialog launchers */}
           <QuickstartOverviewDialog />
           <QuickstartComprehensiveLogDialog />
-          {/*
-           * Engine progression test — one-click runner for the 7-phase E2E
-           * test (health → preflight → enable(1 symbol) → progression poll
-           * → verify-engine → live-positions → disable). Streams per-phase
-           * PASS/WARN/FAIL into a detailed dialog so operators can spot
-           * regressions without dropping to a terminal. It intentionally lives
-           * only here so the top title layer stays focused on live controls.
-           */}
-          <EngineProgressionTestButton />
 
           {/* legacy event buttons */}
           {[

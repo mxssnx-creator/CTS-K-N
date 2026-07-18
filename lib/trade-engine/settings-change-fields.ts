@@ -42,6 +42,7 @@ const STRATEGY_AFFECTING_SETTING_FIELDS = new Set([
   "axisContMaxWindow",
   "axisPauseMaxWindow",
   "blockVolumeRatio",
+  "blockProfitFactorRatio",
   "blockMaxStack",
   "blockPauseCountRatio",
   "blockActiveRealEnabled",

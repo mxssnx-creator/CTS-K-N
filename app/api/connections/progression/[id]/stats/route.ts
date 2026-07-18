@@ -36,21 +36,63 @@ function buildSettingsRecoordinationState(progHash: Record<string, string>, nowM
   const startedMs = startedAt ? Date.parse(startedAt) : NaN
   const pending = progHash.settings_recoordination_pending === "1" || progHash.settings_recoordination_pending === "true"
   const isStale = pending && Number.isFinite(startedMs) && nowMs - startedMs > SETTINGS_RECOORDINATION_STALE_MS
+  const lastError = progHash.settings_recoordination_last_error || null
+  const completed = !pending && Boolean(
+    progHash.settings_recoordination_completed_at || progHash.settings_recoordination_applied_version,
+  )
   return {
     pending: pending && !isStale,
     stale: isStale,
+    completed,
+    status: lastError ? "failed" : isStale ? "stale" : pending ? "pending" : completed ? "current" : "idle",
     warning: isStale
       ? `Settings recoordination marker is stale (${Math.round((nowMs - startedMs) / 1000)}s old)`
       : null,
     startedAt: startedAt || null,
     completedAt: progHash.settings_recoordination_completed_at || null,
     failedAt: progHash.settings_recoordination_failed_at || null,
-    lastError: progHash.settings_recoordination_last_error || null,
+    lastError,
     requestedVersion: progHash.settings_recoordination_requested_version || null,
     requestedEventId: progHash.settings_recoordination_requested_event_id || null,
     appliedVersion: progHash.settings_recoordination_applied_version || null,
     appliedEventId: progHash.settings_recoordination_applied_event_id || null,
     fields: (() => { try { return JSON.parse(progHash.settings_recoordination_fields || "[]") } catch { return [] } })(),
+  }
+}
+
+function buildStatsRecalculationState(progHash: Record<string, string>, nowMs = Date.now()) {
+  const requestedAt = progHash.stats_recalculation_requested_at || ""
+  const requestedMs = requestedAt ? Date.parse(requestedAt) : NaN
+  const requested = progHash.stats_recalculation_requested === "1" || progHash.stats_recalculation_requested === "true"
+  const stale = requested && Number.isFinite(requestedMs) && nowMs - requestedMs > SETTINGS_RECOORDINATION_STALE_MS
+  const fields = (() => {
+    try {
+      const parsed = JSON.parse(progHash.stats_recalculation_fields || "[]")
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  })()
+  const lastError = progHash.stats_recalculation_last_error || null
+  const completed = !requested && progHash.stats_recalculation_completed === "1"
+
+  return {
+    pending: requested && !stale,
+    stale,
+    completed,
+    status: lastError ? "failed" : stale ? "stale" : requested ? "pending" : completed ? "current" : "idle",
+    warning: stale
+      ? `Stats recalculation marker is stale (${Math.round((nowMs - requestedMs) / 1000)}s old)`
+      : null,
+    requestedAt: requestedAt || null,
+    completedAt: progHash.stats_recalculation_completed_at || null,
+    failedAt: progHash.stats_recalculation_failed_at || null,
+    lastError,
+    requestedVersion: progHash.stats_recalculation_requested_version || null,
+    requestedEventId: progHash.stats_recalculation_requested_event_id || null,
+    appliedVersion: progHash.stats_recalculation_applied_version || null,
+    appliedEventId: progHash.stats_recalculation_applied_event_id || null,
+    fields,
   }
 }
 
@@ -502,6 +544,7 @@ export async function GET(
       strategyDetailMainHashRaw,
       strategyDetailRealHashRaw,
       strategyDetailLiveHashRaw,
+      blockProfitFactorStatsHashRaw,
     ] = await Promise.all([
       client.hgetall(scope.progressionKey).catch(() => null),
       activeProgressionKey === scope.legacyProgressionKey ? Promise.resolve(activeProgressionRaw) : client.hgetall(scope.legacyProgressionKey).catch(() => null),
@@ -562,6 +605,8 @@ export async function GET(
       client.hgetall(`strategy_detail:${connectionId}:real`).catch(() => null),
       // Live-stage detail also carries compact dispatch selected/suppressed summaries.
       client.hgetall(`strategy_detail:${connectionId}:live`).catch(() => null),
+      // Count-specific Block PF snapshots written during Real evaluation.
+      client.hgetall(`strategy_block_pf_stats:${connectionId}`).catch(() => null),
     ])
 
     const scopedProgHash: Record<string, string> = scopedProgHashRaw || {}
@@ -593,6 +638,7 @@ export async function GET(
     const strategyDetailMainHash: Record<string, string> = (strategyDetailMainHashRaw as Record<string, string>) || {}
     const strategyDetailRealHash: Record<string, string> = (strategyDetailRealHashRaw as Record<string, string>) || {}
     const strategyDetailLiveHash: Record<string, string> = (strategyDetailLiveHashRaw as Record<string, string>) || {}
+    const blockProfitFactorStatsHash: Record<string, string> = (blockProfitFactorStatsHashRaw as Record<string, string>) || {}
     const ordersBySymbolAggregation = aggregateOrdersBySymbol(ordersBySymbolHash)
 
     const rawEs = (engineState as Record<string, any>) || {}
@@ -1701,11 +1747,74 @@ export async function GET(
         : 0,
     }
 
+    // ── Independent Block Count ProfitFactor evaluation ────────────────
+    // Each symbol writer publishes Count 1..10 as a current snapshot. Fold
+    // only the active symbol basket and keep every count separate; averaging
+    // Count 1 with Count 2 would recreate the shared-state bug this ledger is
+    // designed to prevent.
+    const blockPfPerSymbolCount = new Map<string, Record<string, number>>()
+    let blockProfitFactorRatio = 0
+    let blockDefaultMinimumProfitFactor = 0
+    let blockProfitFactorWindow = 0
+    for (const [field, raw] of Object.entries(blockProfitFactorStatsHash)) {
+      const meta = field.match(/^s:([^:]+):(profit_factor_ratio|default_min_pf|window)$/)
+      if (meta) {
+        const symbol = meta[1].toUpperCase()
+        if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
+        const value = n(raw)
+        if (meta[2] === "profit_factor_ratio" && value > 0) blockProfitFactorRatio = value
+        if (meta[2] === "default_min_pf" && value > 0) blockDefaultMinimumProfitFactor = value
+        if (meta[2] === "window" && value > 0) blockProfitFactorWindow = Math.max(blockProfitFactorWindow, value)
+        continue
+      }
+      const match = field.match(/^s:([^:]+):c:(\d+):(evaluated|passed|emitted|rejected|active|paused|avg_observed_pf|avg_min_pf|avg_volume_increment|sample_count)$/)
+      if (!match) continue
+      const symbol = match[1].toUpperCase()
+      if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
+      const countValue = Math.floor(Number(match[2]))
+      if (countValue < 1 || countValue > 10) continue
+      const key = `${symbol}|${countValue}`
+      const row = blockPfPerSymbolCount.get(key) || { count: countValue }
+      row[match[3]] = n(raw)
+      blockPfPerSymbolCount.set(key, row)
+    }
+    const blockCountProfitFactorStats = Array.from({ length: 10 }, (_, index) => {
+      const countValue = index + 1
+      const rows = Array.from(blockPfPerSymbolCount.values()).filter((row) => row.count === countValue)
+      const evaluated = rows.reduce((sum, row) => sum + n(row.evaluated), 0)
+      const weighted = (field: string): number => {
+        if (rows.length === 0) return 0
+        const denominator = rows.reduce((sum, row) => sum + Math.max(1, n(row.evaluated)), 0)
+        return denominator > 0
+          ? rows.reduce((sum, row) => sum + n(row[field]) * Math.max(1, n(row.evaluated)), 0) / denominator
+          : 0
+      }
+      return {
+        count: countValue,
+        evaluated,
+        passed: rows.reduce((sum, row) => sum + n(row.passed), 0),
+        emitted: rows.reduce((sum, row) => sum + n(row.emitted), 0),
+        rejected: rows.reduce((sum, row) => sum + n(row.rejected), 0),
+        active: rows.reduce((sum, row) => sum + n(row.active), 0),
+        paused: rows.reduce((sum, row) => sum + n(row.paused), 0),
+        avgObservedProfitFactor: nf(weighted("avg_observed_pf"), 3),
+        avgMinimumProfitFactor: nf(weighted("avg_min_pf"), 3),
+        avgVolumeIncrement: nf(weighted("avg_volume_increment"), 3),
+        sampleCount: rows.reduce((sum, row) => sum + n(row.sample_count), 0),
+        window: blockProfitFactorWindow,
+      }
+    }).filter((row) => row.evaluated > 0 || row.active > 0 || row.paused > 0)
+
     const realStagePositionStats = buildRealStagePositionStats({
       validPositionsHash,
       hedgePosAccHash,
       overallSets: n(progHash.strategies_real_total) || stratCounts.real || variantOverall.passedSets,
       overallOrders: n(progHash.live_orders_placed_count),
+      blockProfitFactor: {
+        ratio: blockProfitFactorRatio,
+        defaultMinimumProfitFactor: blockDefaultMinimumProfitFactor,
+        countEvaluations: blockCountProfitFactorStats,
+      },
       // Current open positions are a separate snapshot. Prefer actual exchange
       // exposure in live mode; fall back to open Real-stage promotions in
       // paper/dev operation. Neither source changes the cumulative Overall or
@@ -2680,6 +2789,7 @@ export async function GET(
     )
     const lastUpdate = progHash.last_update || realtimeHash.last_cycle_at || new Date().toISOString()
     const settingsRecoordination = buildSettingsRecoordinationState(progHash)
+    const statsRecalculation = buildStatsRecalculationState(progHash)
 
     let redisDbEntries = 0
     try { redisDbEntries = await client.dbSize() } catch { /* non-critical */ }
@@ -2752,6 +2862,7 @@ export async function GET(
       success: true,
       connectionId,
       settingsRecoordination,
+      statsRecalculation,
 
       historic: {
         symbolsProcessed:       historicSymbolsProcessed,
@@ -3134,10 +3245,32 @@ export async function GET(
         const buildAxis = (axis: "prev" | "last" | "cont" | "pause", maxN: number) => {
           const out: Array<{ window: number; sets: number; pos: number }> = []
           for (let i = 0; i <= maxN; i++) {
+            let perSymbolSets = 0
+            let perSymbolPos = 0
+            let foundPerSymbol = false
+            const setsSuffix = `:${axis}_${i}_sets`
+            const posSuffix = `:${axis}_${i}_pos`
+            for (const [field, rawValue] of Object.entries(axisWindowsHash)) {
+              if (!field.startsWith("s:")) continue
+              const symbolEnd = field.indexOf(":", 2)
+              if (symbolEnd <= 2) continue
+              const fieldSymbol = field.slice(2, symbolEnd).toUpperCase()
+              if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(fieldSymbol)) continue
+              if (field.endsWith(setsSuffix)) {
+                foundPerSymbol = true
+                perSymbolSets += n(rawValue)
+              } else if (field.endsWith(posSuffix)) {
+                foundPerSymbol = true
+                perSymbolPos += n(rawValue)
+              }
+            }
             out.push({
               window: i,
-              sets: n(axisWindowsHash[`${axis}_${i}_sets`]),
-              pos:  n(axisWindowsHash[`${axis}_${i}_pos`]),
+              // Current writers publish per-symbol snapshots so parallel
+              // symbol workers cannot overwrite one another. Fall back to the
+              // legacy aggregate fields during rolling upgrades.
+              sets: foundPerSymbol ? perSymbolSets : n(axisWindowsHash[`${axis}_${i}_sets`]),
+              pos:  foundPerSymbol ? perSymbolPos : n(axisWindowsHash[`${axis}_${i}_pos`]),
             })
           }
           return out

@@ -47,8 +47,8 @@ describe("GlobalTradeEngineCoordinator.startEngine lock contention", () => {
 
     expect(startEngine).toContain("const forceLocalTakeover = options.forceLocalTakeover === true || config.allowInProcessStart === true")
     expect(startEngine).toContain('process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1" || process.env.NEXT_RUNTIME === "edge"')
-    expect(startEngine).toContain('process.env.VERCEL === "1" || !!process.env.VERCEL_ENV')
-    expect(startEngine).toContain("Vercel serverless workers are queued-only for passive starts without explicit foreground worker flags")
+    expect(startEngine).toContain("const isServerlessWorker = isServerlessDeploymentRuntime()")
+    expect(startEngine).toContain("serverless request workers are queued-only without explicit foreground worker flags")
     expect(startEngine).toContain("if (!forceLocalTakeover && !this.canOwnEngineRuntime())")
     expect(startEngine).toContain("queued-only in this production API worker")
   })
@@ -89,10 +89,12 @@ describe("GlobalTradeEngineCoordinator.startEngine lock contention", () => {
       source.indexOf("async startEngine(connectionId: string"),
       source.indexOf("// Self-heal background timers"),
     )
+    const runtime = read("lib/deployment-runtime.ts")
 
-    expect(canOwn).toContain("const isVercel = !!process.env.VERCEL || !!process.env.VERCEL_ENV")
-    expect(canOwn).toContain('process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1"')
-    expect(canOwn).toContain('process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"')
+    expect(canOwn).toContain("isServerlessDeploymentRuntime()")
+    expect(canOwn).toContain("hasExplicitServerlessForegroundOptIn()")
+    expect(runtime).toContain('process.env.ALLOW_API_TRADE_ENGINE_FOREGROUND === "1"')
+    expect(runtime).toContain('process.env.ENABLE_TRADE_ENGINE_IN_PROCESS === "1"')
     expect(startEngine).toContain("config.allowInProcessStart === true")
     expect(startEngine).toContain("options.forceLocalTakeover === true")
     expect(startEngine).toContain("!forceLocalTakeover && !this.canOwnEngineRuntime()")

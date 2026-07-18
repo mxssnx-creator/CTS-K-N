@@ -56,6 +56,24 @@ The second calculation uses the quantity confirmed after the first leg. Thus
 non-consecutive Blocks retain independent calculations while still coordinating
 against the one authoritative exchange position.
 
+## Independent minimum ProfitFactor
+
+Every `blockCount` is validated independently at the Real stage before Live
+selection. Its minimum ProfitFactor is proportional to the normal/default Real
+threshold and that count's actual volume increment:
+
+```text
+blockMinPF = defaultMinPF × blockProfitFactorRatio × blockVolumeIncrement
+blockVolumeIncrement = blockBaseVolumeMultiplier × blockCount × blockVolumeRatio
+```
+
+`blockProfitFactorRatio` is configurable from `0.2..5.0` and defaults to
+`0.8`. The exact Block Set reads the same latest-position window as the normal
+PF calculation. Until that complete own window exists, it uses its source Set's
+observed PF plus the Block profile bias; results from another Block count are
+never reused. Active counts remain valid until their exchange position closes,
+even if a later settings change raises their current minimum.
+
 ## Data flow
 
 ```text
@@ -82,6 +100,12 @@ strategyType?: "standard" | "adjust"
 baseMultiplier?: number
 blockBaseVolumeMultiplier?: number
 blockVolumeRatio?: number
+blockProfitFactorRatio?: number
+blockDefaultMinimumProfitFactor?: number
+blockMinimumProfitFactor?: number
+blockObservedProfitFactor?: number
+blockProfitFactorWindow?: number
+blockProfitFactorSampleCount?: number
 blockCount?: number
 blockCalculatedVolumeMultiplier?: number
 ```
@@ -133,8 +157,10 @@ request is observed.
 - [x] Non-consecutive counts retain independent volume metadata.
 - [x] Count range is clamped to `1..10` (default `10`).
 - [x] Ratio is clamped to `0.25..3.0` (default `1.0`).
+- [x] PF ratio is clamped to `0.2..5.0` (default `0.8`).
+- [x] Count 1..N each use an exact Set key, own PF/DDT window, own minimum PF,
+      own active/pause state, and own Real-stage statistics.
 - [x] Active Real and Active Live toggles persist independently.
 - [x] Partial fills and restart recovery retain exact order/quantity state.
 - [x] Concurrent close-PnL pause updates cannot lose a decrement.
 - [x] Standard and DCA paths remain separate from existing-position Block sizing.
-

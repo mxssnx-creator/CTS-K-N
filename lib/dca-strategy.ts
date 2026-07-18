@@ -36,6 +36,20 @@ export interface DcaLegState {
   filledAt?: number
 }
 
+/**
+ * Stable exact-Set identity for one confirmed DCA leg.
+ *
+ * The Real-stage DCA candidate itself is stable across cycles (for example
+ * `base#dca`). Reusing that key as the accumulation dedupe identity made the
+ * first fill suppress steps 2..4 forever. Each configured step is a distinct
+ * confirmed Set entry, while retries of the same step remain idempotent.
+ */
+export function buildDcaStepSetKey(setKey: string, step: number): string {
+  const base = String(setKey || "").trim().replace(/#step:\d+$/i, "")
+  const normalizedStep = Math.max(1, Math.min(4, Math.floor(Number(step) || 1)))
+  return base ? `${base}#step:${normalizedStep}` : `dca#step:${normalizedStep}`
+}
+
 function parseArray(raw: unknown): unknown[] {
   if (Array.isArray(raw)) return raw
   if (typeof raw !== "string" || !raw.trim()) return []

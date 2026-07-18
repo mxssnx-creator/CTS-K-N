@@ -15,6 +15,7 @@
 
 import { createInternalCronRequest } from "@/lib/cron-auth"
 import { getEngineTimings } from "@/lib/engine-timings"
+import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 type ContinuityGlobal = typeof globalThis & {
   __cts_continuity_runner?: {
@@ -53,10 +54,7 @@ function shouldSkipInProcessTimers(): boolean {
   // default. Serverless/edge deployments still use deployment cron because
   // in-process timers are not durable after responses return.
   if (process.env.DISABLE_IN_PROCESS_CONTINUITY === "1") return true
-  if (process.env.CTS_DEPLOYMENT_RUNTIME === "cloudflare-workers") return true
-  // VERCEL=1 or VERCEL_ENV=production/preview indicates serverless environment
-  const isVercel = process.env.VERCEL === "1" || !!process.env.VERCEL_ENV || process.env.NEXT_RUNTIME === "edge"
-  return isVercel
+  return isServerlessDeploymentRuntime()
 }
 
 export async function enqueueContinuityIndicationJob(): Promise<void> {

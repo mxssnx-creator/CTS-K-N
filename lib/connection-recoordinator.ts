@@ -102,6 +102,7 @@ const STRATEGY_COORDINATION_SETTING_FIELDS = new Set([
   "strategyBaseTrailingVariants",
   "trailingMinStep",
   "blockVolumeRatio",
+  "blockProfitFactorRatio",
   "blockMaxStack",
   "blockPauseCountRatio",
   "blockActiveRealEnabled",
@@ -145,6 +146,7 @@ const LIVE_ORDER_SETTING_FIELDS = new Set([
   "volume_factor_preset",
   "volume_step_ratio",
   "blockVolumeRatio",
+  "blockProfitFactorRatio",
   "blockActiveLiveEnabled",
   "dcaMaxSteps",
   "dcaStepVolumeMultipliers",
@@ -821,7 +823,10 @@ export async function recoordinateAfterSettingsChange(
       if (symbolsChanged || strategyOrCoordinationChanged) {
         await hsetProgressionMarkers({
           stats_recalculation_requested: "1",
+          stats_recalculation_completed: "0",
           stats_recalculation_requested_at: new Date().toISOString(),
+          stats_recalculation_requested_version: requestedSettingsVersion,
+          stats_recalculation_requested_event_id: requestedSettingsEventId,
           stats_recalculation_fields: JSON.stringify(normalizedChangedFields),
         }).catch(() => 0)
       }

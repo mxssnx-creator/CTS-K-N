@@ -174,7 +174,7 @@ export class InlineLocalRedis implements RedisClientLike {
     // Run cleanup every 60 seconds to remove expired keys
     this.startTTLCleanup();
     
-    // Schedule periodic disk snapshots every 5 minutes
+    // Schedule an atomic disk snapshot at least once per minute.
     this.startPersistence();
   }
 
@@ -191,7 +191,7 @@ export class InlineLocalRedis implements RedisClientLike {
   //   • saveToDisk():       JSON-serialise data, write atomically (tmp + rename)
   //   • saveToDiskSync():   same, blocking — used in SIGTERM/SIGINT/beforeExit
   //   • loadFromDisk():     read + restore Maps/Sets; rename corrupt file aside
-  //   • startPersistence(): once-per-process 5-min interval + signal handlers
+  //   • startPersistence(): once-per-process 60-second interval + signal handlers
   //
   // Notes:
   //   • Defaults to `<cwd>/.v0-data/redis-snapshot.json`, falls back to
@@ -219,6 +219,17 @@ export class InlineLocalRedis implements RedisClientLike {
   // In-process write mutex — prevents concurrent saveToDisk() calls from the
   // same worker from racing each other.
   private static saveInProgress = false
+  // Monotonic dirty generation. A periodic tick with no writes since the last
+  // successful snapshot returns immediately, avoiding JSON allocation and disk
+  // I/O for idle deployments. If writes land while an async snapshot is being
+  // flushed, the versions differ and the next tick/critical persist writes the
+  // newer generation instead of incorrectly treating it as durable.
+  private static mutationVersion = 0
+  private static persistedVersion = -1
+
+  private markDirty(): void {
+    InlineLocalRedis.mutationVersion++
+  }
 
   /** Resolve snapshot path; honours `V0_REDIS_SNAPSHOT_PATH` env override. */
   private async resolveSnapshotPath(): Promise<{ dir: string; file: string } | null> {
@@ -272,6 +283,7 @@ export class InlineLocalRedis implements RedisClientLike {
       lists: Array.from(d.lists.entries()),
       sorted_sets: Array.from(d.sorted_sets.entries()).map(([k, z]) => [k, z.entries]),
       ttl: Array.from(d.ttl.entries()),
+      mutationVersion: InlineLocalRedis.mutationVersion,
     })
   }
 
@@ -340,13 +352,18 @@ export class InlineLocalRedis implements RedisClientLike {
     } catch {
       return false
     }
-    // Try primary path, then `/tmp` fallback.
-    const candidates = [target, await this.tmpFallbackPath()].filter(Boolean) as Array<{ file: string }>
+    // An explicit path is an operator durability contract. Never silently
+    // restore from `/tmp` when that path is configured: an ephemeral fallback
+    // could resurrect a different/stale database and falsely report success.
+    const candidates = process.env.V0_REDIS_SNAPSHOT_PATH
+      ? [target]
+      : [target, await this.tmpFallbackPath()].filter(Boolean) as Array<{ file: string }>
     for (const c of candidates) {
       try {
         const raw = await fs.readFile(c.file, "utf8")
         const parsed = JSON.parse(raw)
         if (this.applySnapshot(parsed)) {
+          InlineLocalRedis.persistedVersion = InlineLocalRedis.mutationVersion
           const keys =
             this.data.strings.size + this.data.hashes.size + this.data.sets.size +
             this.data.lists.size + this.data.sorted_sets.size
@@ -373,6 +390,7 @@ export class InlineLocalRedis implements RedisClientLike {
     // In-process mutex: if a save is already in flight from this worker,
     // skip rather than race on the .tmp file.
     if (InlineLocalRedis.saveInProgress) return false
+    if (InlineLocalRedis.persistedVersion === InlineLocalRedis.mutationVersion) return true
     InlineLocalRedis.saveInProgress = true
     try {
       const primary = await this.resolveSnapshotPath()
@@ -384,18 +402,36 @@ export class InlineLocalRedis implements RedisClientLike {
       } catch {
         return false
       }
+      const snapshotVersion = InlineLocalRedis.mutationVersion
       const json = this.buildSnapshot()
-      // Try primary then `/tmp` fallback so a read-only cwd doesn't lose data.
-      const candidates = [primary, await this.tmpFallbackPath()].filter(Boolean) as Array<{ dir: string; file: string }>
+      // With an explicit persistent-volume path, fail closed instead of
+      // silently succeeding on ephemeral `/tmp`.
+      const candidates = process.env.V0_REDIS_SNAPSHOT_PATH
+        ? [primary]
+        : [primary, await this.tmpFallbackPath()].filter(Boolean) as Array<{ dir: string; file: string }>
       for (const c of candidates) {
         try {
           await fs.mkdir(c.dir, { recursive: true })
           // Use a per-PID suffix so concurrent Next.js workers never collide
           // on the same .tmp file (previously caused ENOENT on rename).
           const tmpPath = `${c.file}.${InlineLocalRedis.writeSuffix}.tmp`
-          await fs.writeFile(tmpPath, json, "utf8")
+          const handle = await fs.open(tmpPath, "w")
+          try {
+            await handle.writeFile(json, "utf8")
+            await handle.sync()
+          } finally {
+            await handle.close()
+          }
           // Atomic on POSIX — readers either see old or new, never partial.
           await fs.rename(tmpPath, c.file)
+          // Persist the directory entry as well. Some filesystems can otherwise
+          // lose a just-renamed file after a power loss even though file data was
+          // fsynced. Unsupported directory fsync is harmless.
+          try {
+            const dirHandle = await fs.open(c.dir, "r")
+            try { await dirHandle.sync() } finally { await dirHandle.close() }
+          } catch {}
+          InlineLocalRedis.persistedVersion = snapshotVersion
           return true
         } catch (err) {
           // Try next fallback. Only warn after we've exhausted everything.
@@ -439,16 +475,30 @@ export class InlineLocalRedis implements RedisClientLike {
     const explicit = process.env.V0_REDIS_SNAPSHOT_PATH
     const primaryFile = explicit || pathMod.join(process.cwd(), ".v0-data", "redis-snapshot.json")
     const tmpFile = pathMod.join("/tmp", "v0-redis-snapshot.json")
+    if (InlineLocalRedis.persistedVersion === InlineLocalRedis.mutationVersion) return true
+    const snapshotVersion = InlineLocalRedis.mutationVersion
     const json = this.buildSnapshot()
     const suffix = InlineLocalRedis.writeSuffix
-    for (const file of [primaryFile, tmpFile]) {
+    const candidates = explicit ? [primaryFile] : [primaryFile, tmpFile]
+    for (const file of candidates) {
       try {
         const dir = pathMod.dirname(file)
         fsSync.mkdirSync(dir, { recursive: true })
         // PID-unique tmp file prevents cross-worker rename races (ENOENT).
         const tmp = `${file}.${suffix}.tmp`
-        fsSync.writeFileSync(tmp, json, "utf8")
+        const fd = fsSync.openSync(tmp, "w")
+        try {
+          fsSync.writeFileSync(fd, json, "utf8")
+          fsSync.fsyncSync(fd)
+        } finally {
+          fsSync.closeSync(fd)
+        }
         fsSync.renameSync(tmp, file)
+        try {
+          const dirFd = fsSync.openSync(dir, "r")
+          try { fsSync.fsyncSync(dirFd) } finally { fsSync.closeSync(dirFd) }
+        } catch {}
+        InlineLocalRedis.persistedVersion = snapshotVersion
         return true
       } catch {
         continue
@@ -463,14 +513,21 @@ export class InlineLocalRedis implements RedisClientLike {
     InlineLocalRedis.persistenceTickStarted = true
 
     // ── Continuous session persistence ──
-    // 3-minute snapshot interval ensures continuous operation across rebuilds,
-    // page refreshes, and restarts. Data is restored on startup, maintaining
-    // engine progress, UI state, and trading history without interruption.
+    // The default recovery checkpoint is exactly one minute in every runtime.
+    // Critical order transitions still flush synchronously before exchange
+    // mutation; this periodic checkpoint covers settings and recomputable
+    // progression/stats state without putting disk I/O in every 200–300 ms
+    // engine cycle. An explicit override may request a faster checkpoint, but
+    // is capped at 60 seconds so persistence can never become less frequent.
     // unref() so this timer never holds the process open during a graceful exit.
-    const THREE_MIN_MS = 3 * 60 * 1000 // 3 minutes for continuous session state
+    const configuredInterval = Number(process.env.INLINE_REDIS_SNAPSHOT_INTERVAL_MS)
+    const defaultInterval = 60_000
+    const snapshotIntervalMs = Number.isFinite(configuredInterval) && configuredInterval > 0
+      ? Math.max(5_000, Math.min(60_000, Math.floor(configuredInterval)))
+      : defaultInterval
     const t = setInterval(() => {
       this.saveToDisk().catch(() => { /* warned inside saveToDisk */ })
-    }, THREE_MIN_MS)
+    }, snapshotIntervalMs)
     if (typeof t.unref === "function") t.unref()
 
     // Flush-on-exit handlers (idempotent).
@@ -812,6 +869,16 @@ export class InlineLocalRedis implements RedisClientLike {
       if (k.startsWith("strategy_count:"))   return true  // strategy count totals
       if (k.startsWith("real_pi_acc:"))      return true  // real PI accumulation
       if (k.startsWith("axis_pos_acc:"))     return true  // axis position accumulation
+      if (k.startsWith("strategy_pos_entry_ids:")) return true
+      if (k.startsWith("strategy_set_entry_counts:")) return true
+      if (k.startsWith("strategy_set_active_entry_counts:")) return true
+      if (k.startsWith("strategy_set_closed_counts:")) return true
+      if (k.startsWith("strategy_set_result_ring:")) return true
+      if (k.startsWith("strategy_position_set_memberships:")) return true
+      if (k.startsWith("strategy_set_keys:")) return true
+      if (k.startsWith("strategy_active_set_keys:")) return true
+      if (k.startsWith("strategy_closed_set_keys:")) return true
+      if (k.startsWith("strategy_ledger_totals:")) return true
       if (k.startsWith("app_settings"))      return true  // global app settings
       if (k.startsWith("trade_engine:"))     return true  // engine state
       if (k.startsWith("_migration"))        return true  // migration markers
@@ -1040,6 +1107,12 @@ export class InlineLocalRedis implements RedisClientLike {
       }
     }
 
+    // Most bucket removals go through deleteKey(), but terminal-position trims
+    // and oversized membership-set replacement mutate their Maps directly.
+    // Ensure every pressure-eviction pass is included in the next durable
+    // snapshot even when it only used one of those direct paths.
+    if (evicted > 0) this.markDirty()
+
     if (evicted > 10) {
       console.log(`[v0] [Redis Memory] Evicted ${evicted} old records to reduce memory pressure`)
       // Nudge V8 GC if --expose-gc was passed (dev start script uses it).
@@ -1066,6 +1139,9 @@ export class InlineLocalRedis implements RedisClientLike {
   }
   
   private deleteKey(key: string): void {
+    const existed = this.data.strings.has(key) || this.data.hashes.has(key) ||
+      this.data.sets.has(key) || this.data.lists.has(key) ||
+      this.data.sorted_sets.has(key) || this.data.ttl?.has(key)
     this.cleanupSecondaryIndexesForDeletedKey(key)
     this.data.strings.delete(key)
     this.data.hashes.delete(key)
@@ -1073,6 +1149,7 @@ export class InlineLocalRedis implements RedisClientLike {
     this.data.lists.delete(key)
     this.data.sorted_sets.delete(key)
     this.data.ttl?.delete(key)
+    if (existed) this.markDirty()
   }
 
   private cleanupSecondaryIndexesForDeletedKey(key: string): void {
@@ -1187,6 +1264,7 @@ export class InlineLocalRedis implements RedisClientLike {
       this.data.ttl = new Map()
     }
     this.data.ttl.set(key, Date.now() + seconds * 1000)
+    this.markDirty()
   }
 
   private trackOperation(): void {
@@ -1259,16 +1337,19 @@ export class InlineLocalRedis implements RedisClientLike {
       if (options.XX && !exists) return null
     }
     this.data.strings.set(key, value)
+    this.markDirty()
     if (options?.EX) {
       this.setKeyTTL(key, options.EX)
     } else if (options?.PX && Number.isFinite(options.PX) && options.PX > 0) {
       this.data.ttl.set(key, Date.now() + options.PX)
+      this.markDirty()
     }
     return "OK"
   }
   
   async setex(key: string, seconds: number, value: string): Promise<void> {
     this.data.strings.set(key, value)
+    this.markDirty()
     this.setKeyTTL(key, seconds)
   }
 
@@ -1279,11 +1360,13 @@ export class InlineLocalRedis implements RedisClientLike {
   async incrby(key: string, increment: number): Promise<number> {
     if (this.isExpired(key)) {
       this.data.strings.set(key, String(increment))
+      this.markDirty()
       return increment
     }
     const current = parseInt(this.data.strings.get(key) || "0", 10)
     const newValue = current + increment
     this.data.strings.set(key, String(newValue))
+    this.markDirty()
     return newValue
   }
 
@@ -1305,12 +1388,14 @@ export class InlineLocalRedis implements RedisClientLike {
   }
 
   async flushDb(): Promise<void> {
+    const hadData = await this.dbSize() > 0 || (this.data.ttl?.size || 0) > 0
     this.data.strings.clear()
     this.data.hashes.clear()
     this.data.sets.clear()
     this.data.lists.clear()
     this.data.sorted_sets.clear()
     this.data.ttl?.clear()
+    if (hadData) this.markDirty()
   }
 
   /**
@@ -1384,6 +1469,11 @@ export class InlineLocalRedis implements RedisClientLike {
    * next request (e.g. after connection-flag resets in clear-progressions).
    */
   async persistNow(): Promise<boolean> {
+    const deadline = Date.now() + 5_000
+    while (InlineLocalRedis.saveInProgress && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    if (InlineLocalRedis.saveInProgress) return false
     return this.saveToDisk()
   }
 
@@ -1393,11 +1483,13 @@ export class InlineLocalRedis implements RedisClientLike {
     // Support both hset(key, { field: value }) and hset(key, "field", "value")
     if (typeof dataOrField === "string" && value !== undefined) {
       this.data.hashes.set(key, { ...existing, [dataOrField]: value })
+      this.markDirty()
       return 1
     }
     const data = dataOrField as Record<string, string>
     const updates = Object.keys(data).length
     this.data.hashes.set(key, { ...existing, ...data })
+    if (updates > 0) this.markDirty()
     return updates
   }
 
@@ -1410,6 +1502,7 @@ export class InlineLocalRedis implements RedisClientLike {
       obj[args[i]] = args[i + 1]
     }
     this.data.hashes.set(key, { ...this.data.hashes.get(key), ...obj })
+    if (Object.keys(obj).length > 0) this.markDirty()
   }
 
   async hgetall(key: string): Promise<Record<string, string>> {
@@ -1449,6 +1542,7 @@ export class InlineLocalRedis implements RedisClientLike {
     if (Object.keys(hash).length === 0) {
       this.data.hashes.delete(key)
     }
+    if (deleted > 0) this.markDirty()
     return deleted
   }
 
@@ -1458,6 +1552,7 @@ export class InlineLocalRedis implements RedisClientLike {
     const newValue = currentValue + increment
     hash[field] = String(newValue)
     this.data.hashes.set(key, hash)
+    this.markDirty()
     return newValue
   }
 
@@ -1467,6 +1562,7 @@ export class InlineLocalRedis implements RedisClientLike {
     const newValue = currentValue + increment
     hash[field] = String(newValue)
     this.data.hashes.set(key, hash)
+    this.markDirty()
     return newValue
   }
 
@@ -1478,7 +1574,9 @@ export class InlineLocalRedis implements RedisClientLike {
       if (member) set.add(member)
     }
     this.data.sets.set(key, set)
-    return set.size - sizeBefore
+    const added = set.size - sizeBefore
+    if (added > 0) this.markDirty()
+    return added
   }
 
   async scard(key: string): Promise<number> {
@@ -1507,6 +1605,7 @@ export class InlineLocalRedis implements RedisClientLike {
     }
     if (set.size === 0) this.data.sets.delete(key)
     else this.data.sets.set(key, set)
+    if (removed > 0) this.markDirty()
     return removed
   }
 
@@ -1529,6 +1628,7 @@ export class InlineLocalRedis implements RedisClientLike {
       list.unshift(value)
     }
     this.data.lists.set(key, list)
+    if (values.length > 0) this.markDirty()
     return list.length
   }
 
@@ -1536,6 +1636,7 @@ export class InlineLocalRedis implements RedisClientLike {
     const list = this.data.lists.get(key) || []
     list.push(...values)
     this.data.lists.set(key, list)
+    if (values.length > 0) this.markDirty()
     return list.length
   }
 
@@ -1556,6 +1657,7 @@ export class InlineLocalRedis implements RedisClientLike {
     const normalizedStop = stop < 0 ? len + stop : stop
     const trimmed = list.slice(normalizedStart, normalizedStop + 1)
     this.data.lists.set(key, trimmed)
+    if (trimmed.length !== list.length) this.markDirty()
   }
 
   async llen(key: string): Promise<number> {
@@ -1605,6 +1707,7 @@ export class InlineLocalRedis implements RedisClientLike {
     } else {
       this.data.lists.set(key, list)
     }
+    if (removed > 0) this.markDirty()
     return removed
   }
 
@@ -1632,6 +1735,7 @@ export class InlineLocalRedis implements RedisClientLike {
     if (!list || list.length === 0) return null
     const head = list.shift() ?? null
     if (list.length === 0) this.data.lists.delete(key)
+    if (head !== null) this.markDirty()
     return head
   }
 
@@ -1641,6 +1745,7 @@ export class InlineLocalRedis implements RedisClientLike {
     if (!list || list.length === 0) return null
     const tail = list.pop() ?? null
     if (list.length === 0) this.data.lists.delete(key)
+    if (tail !== null) this.markDirty()
     return tail
   }
 
@@ -1700,12 +1805,14 @@ export class InlineLocalRedis implements RedisClientLike {
       zset.memberIndex.set(member, entry)
       zset.entries.splice(this.insertionIndex(zset.entries, entry), 0, entry)
       this.data.sorted_sets.set(key, zset)
+      this.markDirty()
       return 0
     }
 
     zset.memberIndex.set(member, entry)
     zset.entries.splice(this.insertionIndex(zset.entries, entry), 0, entry)
     this.data.sorted_sets.set(key, zset)
+    this.markDirty()
     return 1
   }
 
@@ -1732,6 +1839,7 @@ export class InlineLocalRedis implements RedisClientLike {
     zset.entries.splice(start, removed.length)
     if (zset.entries.length === 0) this.data.sorted_sets.delete(key)
     else this.data.sorted_sets.set(key, zset)
+    this.markDirty()
     return removed.length
   }
 
@@ -2640,6 +2748,7 @@ const NUMERIC_HASH_FIELDS = new Set([
   "symbol_count", "symbolCount",
   "block_max_stack", "blockMaxStack",
   "block_volume_ratio", "blockVolumeRatio",
+  "block_profit_factor_ratio", "blockProfitFactorRatio",
   "block_pause_count_ratio", "blockPauseCountRatio",
   "max_concurrent_trades", "maxConcurrentTrades",
   "prev_pos_min_count", "prevPosMinCount",

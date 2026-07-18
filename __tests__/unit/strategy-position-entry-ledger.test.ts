@@ -1,5 +1,7 @@
 import { getRedisClient } from "@/lib/redis-db"
 import {
+  getStrategySetLedgerSnapshot,
+  getStrategySetWindowBatch,
   getValidPositions,
   markStrategyPositionInactive,
   recordStrategyPositionEntry,
@@ -10,6 +12,14 @@ describe("confirmed strategy-position entry ledger", () => {
   const keys = [
     `strategy_pos_entry_ids:${connectionId}`,
     `strategy_set_entry_counts:${connectionId}`,
+    `strategy_set_active_entry_counts:${connectionId}`,
+    `strategy_set_close_ids:${connectionId}`,
+    `strategy_set_closed_counts:${connectionId}`,
+    `strategy_set_keys:${connectionId}`,
+    `strategy_active_set_keys:${connectionId}`,
+    `strategy_closed_set_keys:${connectionId}`,
+    `strategy_ledger_totals:${connectionId}`,
+    `strategy_position_set_memberships:${connectionId}:position-1`,
     `strategy_parent_entry_counts:${connectionId}`,
     `valid_positions_v2:${connectionId}`,
     `valid_positions_active_v2:${connectionId}`,
@@ -55,17 +65,71 @@ describe("confirmed strategy-position entry ledger", () => {
 
     const client = getRedisClient()
     expect(await client.hget(`strategy_set_entry_counts:${connectionId}`, input.setKey)).toBe("1")
+    expect(await client.hget(`strategy_set_active_entry_counts:${connectionId}`, input.setKey)).toBe("1")
+    expect(await client.smembers(`strategy_position_set_memberships:${connectionId}:position-1`)).toEqual([input.setKey])
+    expect(await client.smembers(`strategy_active_set_keys:${connectionId}`)).toEqual([input.setKey])
+    expect(await client.hgetall(`strategy_ledger_totals:${connectionId}`)).toMatchObject({
+      exact_entries: "1",
+      axis_entries: "1",
+      active_memberships: "1",
+    })
     expect(await client.hget(`real_pi_acc:${connectionId}`, input.parentSetKey)).toBe("1")
     expect(await client.hget(`axis_pos_acc:${connectionId}`, `${input.parentSetKey}|${input.axisKey}`)).toBe("1")
     expect(await client.hget(`valid_positions_v2:${connectionId}`, "by_variant:default")).toBe("1")
   })
 
   test("closing removes only active membership and preserves lifetime entries", async () => {
-    await expect(markStrategyPositionInactive(connectionId, "position-1")).resolves.toBe(true)
-    await expect(markStrategyPositionInactive(connectionId, "position-1")).resolves.toBe(false)
+    await expect(markStrategyPositionInactive(connectionId, "position-1", {
+      pnl: 2.5,
+      drawdownMinutes: 7,
+    })).resolves.toBe(true)
+    await expect(markStrategyPositionInactive(connectionId, "position-1", {
+      pnl: 2.5,
+      drawdownMinutes: 7,
+    })).resolves.toBe(false)
 
     const snapshot = await getValidPositions(connectionId)
     expect(snapshot.overall).toBe(1)
     expect(snapshot.combined).toBe(0)
+
+    const setKey = "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u1"
+    await expect(getStrategySetLedgerSnapshot(connectionId)).resolves.toEqual({
+      entries: { [setKey]: 1 },
+      active: {},
+      closed: { [setKey]: 1 },
+    })
+    const windows = await getStrategySetWindowBatch(connectionId, [setKey], 1)
+    expect(windows.get(setKey)).toMatchObject({
+      count: 1,
+      profitFactor: 99,
+      avgDDT: 7,
+      recentPnls: [2.5],
+    })
+    expect(await getRedisClient().hgetall(`strategy_ledger_totals:${connectionId}`)).toMatchObject({
+      exact_entries: "1",
+      axis_entries: "1",
+      active_memberships: "0",
+      exact_closed: "1",
+    })
+
+    // A delayed exchange/order reconciliation retry after terminal close must
+    // remain a no-op. It may not resurrect the position's active Set ownership.
+    await expect(recordStrategyPositionEntry({
+      connectionId,
+      positionId: "position-1",
+      entryId: "position-1:initial",
+      setKey,
+      parentSetKey: "BTCUSDT:direction:long",
+      symbol: "BTCUSDT",
+      indicationType: "direction",
+      direction: "long",
+      axisKey: "p4_l1_c1_opos_dlong_u1",
+    })).resolves.toBe(false)
+    await expect(getStrategySetLedgerSnapshot(connectionId)).resolves.toEqual({
+      entries: { [setKey]: 1 },
+      active: {},
+      closed: { [setKey]: 1 },
+    })
+    expect(await getRedisClient().scard(`valid_positions_active_v2:${connectionId}`)).toBe(0)
   })
 })

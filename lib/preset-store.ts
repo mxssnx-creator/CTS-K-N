@@ -274,6 +274,7 @@ function settingsFromApp(app: Record<string, any>): PresetOptimizerSettings {
     maxCandlesPerRun: app.presetMaxCandlesPerRun,
     blockEnabled: app.presetBlockEnabled ?? app.variantBlockEnabled ?? app.blockAdjustment,
     blockVolumeRatio: app.presetBlockVolumeRatio ?? app.blockVolumeRatio,
+    blockProfitFactorRatio: app.presetBlockProfitFactorRatio ?? app.blockProfitFactorRatio,
     blockMaxStack: app.presetBlockMaxStack ?? app.blockMaxStack,
     blockPauseCountRatio: app.presetBlockPauseCountRatio ?? app.blockPauseCountRatio,
     blockActiveRealEnabled: app.presetBlockActiveRealEnabled ?? app.blockActiveRealEnabled,
@@ -310,6 +311,7 @@ function settingsToApp(settings: PresetOptimizerSettings): Record<string, unknow
     presetMaxCandlesPerRun: settings.maxCandlesPerRun,
     presetBlockEnabled: settings.blockEnabled,
     presetBlockVolumeRatio: settings.blockVolumeRatio,
+    presetBlockProfitFactorRatio: settings.blockProfitFactorRatio,
     presetBlockMaxStack: settings.blockMaxStack,
     presetBlockPauseCountRatio: settings.blockPauseCountRatio,
     presetBlockActiveRealEnabled: settings.blockActiveRealEnabled,
@@ -328,6 +330,8 @@ function overlayPresetBlockSettings(
       connectionSettings.presetBlockEnabled ?? connectionSettings.variantBlockEnabled ?? app.presetBlockEnabled,
     presetBlockVolumeRatio:
       connectionSettings.presetBlockVolumeRatio ?? connectionSettings.blockVolumeRatio ?? app.presetBlockVolumeRatio,
+    presetBlockProfitFactorRatio:
+      connectionSettings.presetBlockProfitFactorRatio ?? connectionSettings.blockProfitFactorRatio ?? app.presetBlockProfitFactorRatio,
     presetBlockMaxStack:
       connectionSettings.presetBlockMaxStack ?? connectionSettings.blockMaxStack ?? app.presetBlockMaxStack,
     presetBlockPauseCountRatio:
@@ -343,6 +347,7 @@ function runtimeBlockSettings(settings: PresetOptimizerSettings): Record<string,
   return {
     variantBlockEnabled: String(settings.blockEnabled),
     blockVolumeRatio: String(settings.blockVolumeRatio),
+    blockProfitFactorRatio: String(settings.blockProfitFactorRatio),
     blockMaxStack: String(settings.blockMaxStack),
     blockPauseCountRatio: String(settings.blockPauseCountRatio),
     blockActiveRealEnabled: String(settings.blockActiveRealEnabled),
@@ -363,6 +368,7 @@ async function persistConnectionBlockSettings(
   const changedFields = [
     currentSettings.blockEnabled !== settings.blockEnabled ? "variantBlockEnabled" : null,
     currentSettings.blockVolumeRatio !== settings.blockVolumeRatio ? "blockVolumeRatio" : null,
+    currentSettings.blockProfitFactorRatio !== settings.blockProfitFactorRatio ? "blockProfitFactorRatio" : null,
     currentSettings.blockMaxStack !== settings.blockMaxStack ? "blockMaxStack" : null,
     currentSettings.blockPauseCountRatio !== settings.blockPauseCountRatio ? "blockPauseCountRatio" : null,
     currentSettings.blockActiveRealEnabled !== settings.blockActiveRealEnabled ? "blockActiveRealEnabled" : null,

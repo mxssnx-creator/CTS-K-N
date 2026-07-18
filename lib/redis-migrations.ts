@@ -4160,6 +4160,147 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "78")
     },
   },
+  {
+    version: 80,
+    name: "080-index-exact-strategy-set-ledgers-and-minute-snapshots",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      let indexedSets = 0
+      let activeSets = 0
+      let closedSets = 0
+
+      const positiveHash = async (key: string): Promise<Record<string, number>> => {
+        const raw = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const out: Record<string, number> = {}
+        for (const [field, value] of Object.entries(raw)) {
+          const count = Number(value)
+          if (Number.isFinite(count) && count > 0) out[field] = count
+        }
+        return out
+      }
+
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        const [entries, active, closed, axis] = await Promise.all([
+          positiveHash(`strategy_set_entry_counts:${id}`),
+          positiveHash(`strategy_set_active_entry_counts:${id}`),
+          positiveHash(`strategy_set_closed_counts:${id}`),
+          positiveHash(`axis_pos_acc:${id}`),
+        ])
+        const entryKeys = Object.keys(entries)
+        const activeKeys = Object.keys(active)
+        const closedKeys = Object.keys(closed)
+        if (entryKeys.length > 0) await client.sadd(`strategy_set_keys:${id}`, ...entryKeys)
+        if (activeKeys.length > 0) await client.sadd(`strategy_active_set_keys:${id}`, ...activeKeys)
+        if (closedKeys.length > 0) await client.sadd(`strategy_closed_set_keys:${id}`, ...closedKeys)
+        const totals = {
+          exact_entries: String(Object.values(entries).reduce((sum, value) => sum + value, 0)),
+          axis_entries: String(Object.values(axis).reduce((sum, value) => sum + value, 0)),
+          active_memberships: String(Object.values(active).reduce((sum, value) => sum + value, 0)),
+          exact_closed: String(Object.values(closed).reduce((sum, value) => sum + value, 0)),
+          rebuilt_at: new Date().toISOString(),
+        }
+        await client.hset(`strategy_ledger_totals:${id}`, totals)
+        indexedSets += entryKeys.length
+        activeSets += activeKeys.length
+        closedSets += closedKeys.length
+
+        // Previous uses the canonical 4..12 step-2 grid. Normalize only the
+        // flattened hot-path hashes; nested JSON is normalized on every API
+        // read/write and therefore never overrides these canonical fields.
+        for (const settingsKey of [
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          const rawPrev = await client.hget(settingsKey, "axisPrevMaxWindow").catch(() => null)
+          if (rawPrev == null || rawPrev === "") continue
+          const parsed = Number(rawPrev)
+          const clamped = Math.max(4, Math.min(12, Number.isFinite(parsed) ? Math.floor(parsed) : 12))
+          const normalized = 4 + Math.floor((clamped - 4) / 2) * 2
+          if (String(normalized) !== String(rawPrev)) {
+            await client.hset(settingsKey, "axisPrevMaxWindow", String(normalized))
+          }
+        }
+      }
+
+      const now = new Date().toISOString()
+      await client.hset("system:database:coordination:performance", {
+        exact_strategy_set_ledger: "candidate-indexed-v2",
+        strategy_set_listing_indexes: "lifetime-active-closed",
+        inline_snapshot_interval_ms: "60000",
+        indexed_exact_sets: String(indexedSets),
+        indexed_active_sets: String(activeSets),
+        indexed_closed_sets: String(closedSets),
+        schema_version: "80",
+        updated_at: now,
+      }).catch(() => 0)
+      console.log(`[v0] Migration 080: indexed exact=${indexedSets}, active=${activeSets}, closed=${closedSets}`)
+    },
+    down: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        await client.del(
+          `strategy_set_keys:${id}`,
+          `strategy_active_set_keys:${id}`,
+          `strategy_closed_set_keys:${id}`,
+          `strategy_ledger_totals:${id}`,
+        ).catch(() => 0)
+      }
+      await client.set("_schema_version", "79")
+    },
+  },
+  {
+    version: 81,
+    name: "081-seed-independent-block-profit-factor-ratio",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      let seededHashes = 0
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        for (const key of [
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          const existing = await client.hget(key, "blockProfitFactorRatio").catch(() => null)
+          if (existing != null && existing !== "") continue
+          await client.hset(key, "blockProfitFactorRatio", "0.8")
+          seededHashes++
+        }
+      }
+      // Fresh databases can reach migration 081 before the canonical Base
+      // connections are created. Seed the global fallback as well; the
+      // per-connection Settings save will then materialize its own value.
+      for (const key of ["settings:app_settings", "settings:all_settings"]) {
+        const existing = await client.hget(key, "blockProfitFactorRatio").catch(() => null)
+        if (existing == null || existing === "") {
+          await client.hset(key, "blockProfitFactorRatio", "0.8")
+          seededHashes++
+        }
+      }
+      const now = new Date().toISOString()
+      await client.hset("system:database:coordination:performance", {
+        independent_block_profit_factor: "default-pf-x-ratio-x-volume-increment-v1",
+        block_profit_factor_ratio_default: "0.8",
+        block_profit_factor_ratio_range: "0.2-5.0",
+        block_profit_factor_seeded_hashes: String(seededHashes),
+        schema_version: "81",
+        updated_at: now,
+      }).catch(() => 0)
+      console.log(`[v0] Migration 081: seeded independent Block PF ratio in ${seededHashes} settings hashes`)
+    },
+    down: async (client: any) => {
+      // Operator values and realised count histories are intentionally kept.
+      await client.set("_schema_version", "80")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {
@@ -4244,6 +4385,17 @@ async function ensureBaseConnections(client: any): Promise<{ createdOrUpdated: n
 
   // Default symbol count is one; explicit environment/settings choices can scale it.
   const DEFAULT_SYMBOL_COUNT = String(Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1))
+  const ensureBlockProfitFactorDefault = async (connectionId: string): Promise<void> => {
+    for (const key of [
+      `connection_settings:${connectionId}`,
+      `settings:connection_settings:${connectionId}`,
+    ]) {
+      const existing = await client.hget(key, "blockProfitFactorRatio").catch(() => null)
+      if (existing == null || existing === "") {
+        await client.hset(key, "blockProfitFactorRatio", "0.8").catch(() => 0)
+      }
+    }
+  }
 
   // bybit-x03 is NO LONGER in this list: it is once again a canonical base
   // connection (see BASE_CONNECTION_CONFIG) and is always inited + visible
@@ -4431,6 +4583,7 @@ if (!hasExisting) {
       }
 
       if (hasRealCredentials) credentialsInjected++
+      await ensureBlockProfitFactorDefault(cfg.id)
       createdOrUpdated++
       continue
     }
@@ -4515,6 +4668,7 @@ if (!hasExisting) {
     }
     // Always re-assert index membership; HSET above doesn't manage it.
     await client.sadd("connections", cfg.id)
+    await ensureBlockProfitFactorDefault(cfg.id)
 
     if (didChange) createdOrUpdated++
   }

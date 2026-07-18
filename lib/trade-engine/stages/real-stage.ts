@@ -54,6 +54,13 @@ export interface RealPosition {
   /** Immutable Block sizing inputs used by Live adjustment execution. */
   blockBaseVolumeMultiplier?: number
   blockVolumeRatio?: number
+  blockProfitFactorRatio?: number
+  blockDefaultMinimumProfitFactor?: number
+  blockMinimumProfitFactor?: number
+  blockObservedProfitFactor?: number
+  blockProfitFactorWindow?: number
+  blockProfitFactorSampleCount?: number
+  blockCount?: number
   blockCalculatedVolumeMultiplier?: number
   // Exchange-cost-aware protection diagnostics supplied by the strategy
   // coordinator. Live execution treats this as explanatory metadata; the

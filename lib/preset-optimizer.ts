@@ -38,6 +38,7 @@ export interface PresetOptimizerSettings {
   maxCandlesPerRun: number
   blockEnabled: boolean
   blockVolumeRatio: number
+  blockProfitFactorRatio: number
   blockMaxStack: number
   blockPauseCountRatio: number
   blockActiveRealEnabled: boolean
@@ -64,6 +65,7 @@ export const DEFAULT_PRESET_OPTIMIZER_SETTINGS: PresetOptimizerSettings = {
   maxCandlesPerRun: 6_000,
   blockEnabled: true,
   blockVolumeRatio: 1,
+  blockProfitFactorRatio: 0.8,
   blockMaxStack: 10,
   blockPauseCountRatio: 1,
   blockActiveRealEnabled: true,
@@ -264,6 +266,7 @@ export function normalizePresetOptimizerSettings(raw: Record<string, unknown> = 
     maxCandlesPerRun: snap(raw.maxCandlesPerRun, 500, 20_000, 100, d.maxCandlesPerRun),
     blockEnabled: booleanSetting(raw.blockEnabled, d.blockEnabled),
     blockVolumeRatio: snap(raw.blockVolumeRatio, 0.25, 3, 0.05, d.blockVolumeRatio),
+    blockProfitFactorRatio: snap(raw.blockProfitFactorRatio, 0.2, 5, 0.1, d.blockProfitFactorRatio),
     blockMaxStack: snap(raw.blockMaxStack, 1, 10, 1, d.blockMaxStack),
     blockPauseCountRatio: snap(raw.blockPauseCountRatio, 1, 4, 0.5, d.blockPauseCountRatio),
     blockActiveRealEnabled: booleanSetting(raw.blockActiveRealEnabled, d.blockActiveRealEnabled),

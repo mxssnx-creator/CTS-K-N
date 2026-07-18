@@ -4,6 +4,7 @@ import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { buildMissingTradeEngineWorkerDiagnostic, readTradeEngineWorkerHeartbeat } from "@/lib/trade-engine-worker-heartbeat"
 import { readTradeEngineStatusCache, writeTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
+import { getDeploymentRuntimeLabel, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -110,14 +111,15 @@ export async function GET() {
     const coordinatorEngineCount = coordinator?.getActiveEngineCount() || 0
     let effectiveCoordinatorEngineCount = coordinatorEngineCount
 
-    // Production repair: a status poll often is the first warm invocation after
-    // a Vercel/serverless cold start. If Redis says the operator intent is
-    // running but this process has no local manager yet, run one awaited
-    // healing sweep before reporting a degraded/no-runtime coordinator. The
-    // sweep uses forceLocalTakeover for eligible queued starts, so production
-    // progress/relation coordinations can attach immediately instead of waiting
-    // for a separate cron tick.
-    if (isGloballyRunning && !isGloballyPaused && effectiveCoordinatorEngineCount === 0) {
+    // Long-lived Node owners can self-heal during a status read. Serverless
+    // request workers stay queued-only; pretending to attach an engine here
+    // creates a short-lived timer that disappears after the response.
+    if (
+      !isServerlessDeploymentRuntime() &&
+      isGloballyRunning &&
+      !isGloballyPaused &&
+      effectiveCoordinatorEngineCount === 0
+    ) {
       try {
         const { runTradeEngineHealingSweep } = await import("@/lib/trade-engine-auto-start")
         await runTradeEngineHealingSweep({ isStartup: false })
@@ -171,6 +173,8 @@ export async function GET() {
         summary: { total: 0, running: 0, stopped: 0, totalTrades: 0, totalPositions: 0, errors: 0 },
         analysis,
         diagnostics: {
+          deploymentRuntime: getDeploymentRuntimeLabel(),
+          serverless: isServerlessDeploymentRuntime(),
           worker: workerDiagnostic,
         },
         requirements: {
@@ -292,6 +296,8 @@ export async function GET() {
       activeWorkerId: engineHash.active_worker_id || null,
       lastHeartbeatAt: globalHeartbeatAt || null,
       diagnostics: {
+        deploymentRuntime: getDeploymentRuntimeLabel(),
+        serverless: isServerlessDeploymentRuntime(),
         rootCause:
           workerDiagnostic.error ||
           (isGloballyRunning && activeEngineCount === 0
@@ -301,7 +307,9 @@ export async function GET() {
           activeEngineCount === 0
             ? "No local engine runtime is attached yet; explicit UI actions and continuity sweeps will attach engine work in this process."
             : null,
-        requiredWorkerEnv: "Optional for dedicated-worker deployments: set ENABLE_TRADE_ENGINE_AUTOSTART=1 on exactly one long-lived worker/process; normal production Node processes auto-start foreground work from boot and continuity sweeps unless disabled.",
+        requiredWorkerEnv: isServerlessDeploymentRuntime()
+          ? "Required: run exactly one long-lived engine owner against the same shared Redis; the API deployment remains passive and uses an external one-minute scheduler."
+          : "Optional for dedicated-worker deployments: set ENABLE_TRADE_ENGINE_AUTOSTART=1 on exactly one long-lived worker/process; normal production Node processes auto-start foreground work from boot and continuity sweeps unless disabled.",
         worker: workerDiagnostic,
       },
       connections: connectionStatuses,
