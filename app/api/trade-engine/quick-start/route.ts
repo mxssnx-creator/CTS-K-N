@@ -19,6 +19,7 @@ import {
   resolveQuickStartEngineBootWaitMs,
 } from "@/lib/quickstart-timeouts"
 import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
+import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -144,8 +145,9 @@ const LOG_PREFIX = `[v0] [QuickStart] ${API_VERSION}`
 // Default fallback symbol. Normal quickstart auto-picks top symbols by volatility (no hard cap).
 const DEFAULT_SYMBOLS = ["DRIFTUSDT"]
 // Max symbols limited only by exchange API response or memory constraints.
-// Reasonable default: 100 symbols for auto-picks; explicit lists can exceed this.
-const QUICKSTART_DEFAULT_SYMBOL_COUNT = 100
+// Start safely with one dynamically selected symbol. Explicit UI/API choices
+// can still scale up to the exchange/runtime limit.
+const QUICKSTART_DEFAULT_SYMBOL_COUNT = DEFAULT_SYMBOL_COUNT
 const QUICKSTART_LIVE_VOLUME_FACTOR = "0.1"
 const QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS = resolveQuickStartEngineBootWaitMs(
   process.env.QUICKSTART_ENGINE_BOOT_WAIT_MS,
@@ -849,7 +851,7 @@ export async function POST(request: Request) {
        symbol_count: String(symbols.length),
        // Local/self-hosted production uses this cap to protect memory. Keep it
        // aligned with the explicit QuickStart request before recoordination/start
-       // so a 12-symbol smoke does not get silently sliced back to the default 4.
+       // so an explicit multi-symbol smoke is never sliced back to the safe default one.
        dev_symbol_count_override: String(symbols.length),
        // Persist the resolved sizing knobs to the connection hash too because
        // some engine paths read directly from the connection snapshot.

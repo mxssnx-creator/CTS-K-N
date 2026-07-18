@@ -293,6 +293,7 @@ import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { fetchTopSymbols } from "@/lib/top-symbols"
 import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from "@/lib/progression-fingerprint"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { DEFAULT_SYMBOL_COUNT, getExplicitLocalSymbolCap } from "@/lib/symbol-selection-defaults"
 
 /**
  * Main realtime symbol work overlaps Redis/market-data waits with a small,
@@ -3966,12 +3967,13 @@ export class TradeEngineManager {
             process.env.NODE_ENV === "development" ||
             (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")
           if (localSymbolCapActive) {
-            const devCapSource =
-              (connState as any)?.dev_symbol_count_override ??
-              process.env.V0_DEV_SYMBOL_COUNT ??
-              "4"
-            const devCap = Math.max(1, parseInt(String(devCapSource), 10) || 4)
-            effectiveForceSymbols = effectiveForceSymbols.slice(0, devCap)
+            const stateCap = Number((connState as any)?.dev_symbol_count_override)
+            const devCap = Number.isFinite(stateCap) && stateCap >= 1
+              ? Math.floor(stateCap)
+              : getExplicitLocalSymbolCap()
+            if (devCap) {
+              effectiveForceSymbols = effectiveForceSymbols.slice(0, devCap)
+            }
           }
           const sortedForce = [...effectiveForceSymbols].sort()
           const sortedCache = [...this._symbolsCache].sort()
@@ -4012,7 +4014,7 @@ export class TradeEngineManager {
         // ── DEV / LOCAL-PROD SYMBOL CAP ───────────────────────────────────
         // In development the InlineLocalRedis emulator holds ALL state on the
         // Node.js heap, so symbol count directly controls peak RSS. The cap
-        // is controlled by V0_DEV_SYMBOL_COUNT (env var, default "4") so it
+        // is controlled by an explicit V0_DEV_SYMBOL_COUNT env override so it
         // can be raised to 10+ on a larger-RAM VM without touching code.
         //
         // ALSO applied when running `next start` locally (NODE_ENV=production
@@ -4022,16 +4024,17 @@ export class TradeEngineManager {
         // Behaviour:
         //   V0_DEV_SYMBOL_COUNT=1  → resolve operator symbols, then slice to 1
         //   V0_DEV_SYMBOL_COUNT=10 → resolve operator symbols, then slice to 10
-        //   unset                  → default 4 (supports the standard 4-symbol live config)
+        //   unset                  → no process-only cap; durable settings own N
         const _isLocalRun = process.env.NODE_ENV === "development" ||
           (process.env.NODE_ENV === "production" && process.env.VERCEL !== "1")
         if (_isLocalRun) {
-          const devCapSource =
+          const stateCap = Number(
             (connState as any)?.dev_symbol_count_override ??
-            (connSettings as any)?.dev_symbol_count_override ??
-            process.env.V0_DEV_SYMBOL_COUNT ??
-            "4"
-          const devCap = Math.max(1, parseInt(String(devCapSource), 10) || 4)
+            (connSettings as any)?.dev_symbol_count_override,
+          )
+          const devCap = Number.isFinite(stateCap) && stateCap >= 1
+            ? Math.floor(stateCap)
+            : getExplicitLocalSymbolCap()
           // IMPORTANT: never short-circuit to ["BTCUSDT"] here. That made
           // local/self-hosted production ignore operator-selected force_symbols
           // / active_symbols before the ownership guard ran, so ConfigSetProcessor
@@ -4039,7 +4042,7 @@ export class TradeEngineManager {
           // the user's list and refused to write progress. The dashboard then
           // stayed at 0/N symbols with no indication/strategy calculations.
           // Resolve the real list first, then slice it at the end if needed.
-          ;(resolve as any)._devCap = devCap
+          ;(resolve as any)._devCap = devCap ?? undefined
         }
 
         if (connState && typeof connState === "object") {
@@ -4111,9 +4114,9 @@ export class TradeEngineManager {
             (connSettings as any)?.exchange ?? (connState as any)?.exchange ?? "bingx",
           ).toLowerCase()
           let count = Number(
-            (connState as any)?.symbol_count ?? (connSettings as any)?.symbol_count ?? 6,
+            (connState as any)?.symbol_count ?? (connSettings as any)?.symbol_count ?? DEFAULT_SYMBOL_COUNT,
           )
-          if (!Number.isFinite(count) || count < 1) count = 6
+          if (!Number.isFinite(count) || count < 1) count = DEFAULT_SYMBOL_COUNT
           try {
             const top = await fetchTopSymbols(exchange, count, "volatility_1h")
             const syms = (top.symbols ?? []).map((s) => String(s.symbol)).filter(Boolean)
@@ -4131,12 +4134,12 @@ export class TradeEngineManager {
           }
         }
 
-        // Fallback to the 4 standard majors so the engine always has something
-        // sensible to trade rather than an obscure / illiquid symbol.
-        return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+        // One liquid major is the safe operator-neutral fallback. Multi-symbol
+        // baskets are selected dynamically or explicitly in settings.
+        return ["BTCUSDT"]
       } catch (error) {
         console.error("[v0] Failed to get symbols, using fallback:", error instanceof Error ? error.message : String(error))
-        return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+        return ["BTCUSDT"]
       }
     }
 
