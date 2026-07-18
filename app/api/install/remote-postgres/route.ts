@@ -467,11 +467,14 @@ export async function POST(request: Request) {
     const script = buildRemoteScript(input)
 
     tempDir = await mkdtemp(path.join(tmpdir(), "cts-remote-install-"))
+    const knownHostsPath = path.join(tempDir, "known_hosts")
     const sshArgs = [
       "-p",
       String(input.port),
       "-o",
       "StrictHostKeyChecking=accept-new",
+      "-o",
+      `UserKnownHostsFile=${knownHostsPath}`,
       "-o",
       "ServerAliveInterval=30",
       "-o",

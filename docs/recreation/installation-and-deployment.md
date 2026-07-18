@@ -93,7 +93,9 @@ The API validates host/ports/names/branch/repository/directory/environment,
 blocks dangerous directories and environment injection, stores a supplied SSH
 key in a private temporary directory, uses `BatchMode` when applicable, requires
 passwordless sudo, checks capacity, clones a disposable revision for preflight,
-then delegates installation to `scripts/install.sh`. Secrets are base64-carried
+then delegates installation to `scripts/install.sh`. Each request uses its own
+temporary `known_hosts` file, so a read-only service home neither breaks the SSH
+client nor shares target trust between requests. Secrets are base64-carried
 inside SSH stdin rather than exposed in command arguments.
 
 Existing checkouts must be clean, match the requested origin, and fast-forward.

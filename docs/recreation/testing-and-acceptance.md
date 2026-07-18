@@ -71,7 +71,10 @@ boundary with disposable executables. It sends authenticated preflight and
 install requests through the real API route, validates clone/bootstrap,
 noninteractive arguments, seed Redis transport, runtime selection and returned
 service contract. This is the highest safe remote coverage without a supplied
-external host.
+external host for the mutating install mode. Release validation should also run
+the non-mutating mode through a real disposable SSH protocol target when the
+test environment can provide one, including private-key authentication and a
+clone of the exact pushed revision.
 
 ### Genuine remote host
 

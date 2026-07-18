@@ -61,6 +61,7 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).not.toContain("FORCE_LIVE=1")
     expect(installer).toContain("ADMIN_SECRET,\nCRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET")
     expect(remoteRoute).toContain('command -v base64 >/dev/null 2>&1 || fatal "base64 is required')
+    expect(remoteRoute).toContain('`UserKnownHostsFile=${knownHostsPath}`')
     expect(envExample).not.toMatch(/^[A-Z_][A-Z0-9_]*=[^\r\n#]*[ \t]+#/m)
     expect(envExample).toContain("ENCRYPTION_KEY=replace_me_encryption_key")
     expect(envExample).toContain("NEXT_PUBLIC_APP_URL=http://localhost:3002\n")

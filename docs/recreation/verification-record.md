@@ -10,16 +10,16 @@ executed.
 
 | Check | Result |
 | --- | --- |
-| Source base before handoff commit | `15cbbd353c64e6be35f99562a331f7b1e07cd1d7` on `main` |
+| Source base before handoff commit | `51f179fa12c13b5a0e57947454321c637f23f32b` on `main` |
 | Validation host | Linux 6.12.47 x86_64; Node 24.14.0 |
 | Package manager | exact `pnpm 10.28.1` through Corepack |
 | Frozen dependency install | pass, offline, lockfile unchanged |
 | Shell/JS/JSON/source syntax | pass |
 | TypeScript | pass |
 | ESLint | pass |
-| Jest | 83 suites, 509 tests, 0 failures |
+| Jest | 83 suites, 510 tests, 0 failures |
 | Next 15.5.18 optimized build | pass; 40 static pages generated |
-| Release-tree secret scan | pass; 1,122 files inspected, 0 findings |
+| Release-tree secret scan | pass; 1,121 files inspected, 0 findings |
 | Redis schema | v81, sequential migration inventory |
 
 ## Strategy correctness evidence
@@ -47,9 +47,10 @@ executed.
 | Check | Result |
 | --- | --- |
 | Canonical independent-host preflight | pass; apt host, free port 45671, 37 GiB free disk, 21 GiB RAM |
-| Remote API route contract | pass; authentication, validation, disposable clone, preflight/install, seed transport, and auto/systemd/PM2 contract through the SSH boundary fixture |
+| Remote API route contract | pass; authentication, validation, disposable clone, preflight/install, seed transport, and auto/systemd/PM2 contract through the SSH boundary fixture; an additional real OpenSSH/key-auth loopback run cloned the pushed `main` and completed the canonical non-mutating preflight over the SSH protocol |
 | Portable minute scheduler | pass; both required paths, 60,000 ms interval |
-| Full Vercel builder | pass; local provider simulation reproduced and eliminated read-only `corepack enable` EROFS, Next 15's zero-byte `export-marker.json`, and stale `export-detail.json` false-static classification; final output contains 149 routes, dynamic/API functions, 23 MiB artifacts, and no invalid JSON |
+| Clean reconstruction/Vercel builder | pass from an empty Git archive with no `node_modules`; exact pnpm 10.28.1 restored 1,272 locked packages and provider packaging produced 149 routes, 67 function entries, 116 valid JSON manifests, and no invalid JSON |
+| Full Vercel builder | pass locally; provider simulation reproduced and eliminated read-only `corepack enable` EROFS, Next 15's zero-byte `export-marker.json`, and stale `export-detail.json` false-static classification; dynamic/API functions are retained |
 | OpenNext 1.20.1 build | pass; generated `.open-next/worker.js` |
 | Wrangler 4.86.0 dry-run | pass; 808 assets, 28,793.40 KiB upload / 4,272.51 KiB gzip |
 | Local Workerd Kilo runtime | pass; health, schema v81, Kilo ownership, admin auth, remote-owner fail-closed route, scheduled continuity and live recovery |
@@ -59,11 +60,19 @@ OpenNext/Wrangler emitted their documented experimental `secrets`-field and
 generated direct-eval bundling warnings. The bundle, Wrangler dry-run, and real
 Workerd route/scheduled-event execution all completed successfully.
 
-No genuine remote host was supplied, and the validation container has no SSH
-server, systemd runtime, PM2 runtime, Docker, or Podman target. Therefore the
-test did not claim a real external machine installation. The non-mutating
-current-host preflight and the complete disposable SSH/bootstrap route test are
-the maximum safe coverage available without external host authority.
+No genuine external remote host was supplied, and the validation container has
+no systemd runtime, PM2 runtime, Docker, or Podman target. Therefore the test
+does not claim a complete external-machine installation. The real OpenSSH
+loopback run covered the network protocol, private-key authentication,
+per-request host-key isolation, API streaming, GitHub revision clone, cleanup,
+and canonical non-mutating preflight. The disposable SSH/bootstrap boundary
+test additionally covered install mode without changing a real host.
+
+The pushed GitHub revision's Vercel integration still reports a provider-side
+failure. The same revision succeeds in both populated and empty-checkout local
+Vercel builders, but the protected deployment logs require Vercel project
+access or a `VERCEL_TOKEN`; no remote Vercel success is claimed without that
+evidence.
 
 No Cloudflare account/token, shared production Redis, public deployment URL,
 or distinct long-lived owner secret was supplied. The real Kilo upload was not
