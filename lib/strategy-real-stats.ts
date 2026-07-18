@@ -46,28 +46,31 @@ export interface RealHedgeBaseStats {
   lastUpdated: number
 }
 
-export interface RealSymbolPositionStats {
+export type RealOpenPositionSource = "live-exchange" | "real-stage" | "none"
+
+export interface RealOpenSymbolPositionStats {
   symbol: string
   longPositions: number
   shortPositions: number
-  grossPositions: number
-  positionsWithHedge: number
-  hedgedPairs: number
-  unclassifiedPositions: number
+  positions: number
 }
 
 export interface RealStagePositionStats {
   overall: {
+    sets: number
     positions: number
-    positionsWithHedge: number
-    hedgeReducedPositions: number
-    hedgedPairs: number
+    orders: number
+    positionCountSource: "confirmed-ledger" | "evaluation-fallback"
+  }
+  openPositions: {
+    positions: number
+    symbolCount: number
     longPositions: number
     shortPositions: number
-    unclassifiedPositions: number
-    hedgeOffsetRatio: number
-    hedgeOffsetPercent: number
-    positionCountSource: "confirmed-ledger" | "evaluation-fallback"
+    longSymbolCount: number
+    shortSymbolCount: number
+    source: RealOpenPositionSource
+    bySymbol: RealOpenSymbolPositionStats[]
   }
   strategyTypes: {
     default: RealVariantPositionStats
@@ -77,7 +80,6 @@ export interface RealStagePositionStats {
     block: RealAdjustPositionStats
     dca: RealAdjustPositionStats
   }
-  symbols: RealSymbolPositionStats[]
   hedge: {
     totalLongEntries: number
     totalShortEntries: number
@@ -85,11 +87,32 @@ export interface RealStagePositionStats {
     totalShortSets: number
     netEntries: number
     grossPositions: number
-    positionsWithHedge: number
+    remainingPositions: number
+    offsetPositionLegs: number
+    hedgeOffsetRatio: number
+    hedgeOffsetPercent: number
     hedgedPairs: number
     baseCount: number
     perBase: RealHedgeBaseStats[]
   }
+}
+
+export const OPEN_LIVE_EXPOSURE_STATUSES = new Set([
+  "open",
+  "filled",
+  "partially_filled",
+  "simulated",
+  "closing",
+  "closing_partial",
+])
+
+/**
+ * Orders that are merely pending/placed/rejected are not open positions.
+ * Keep this predicate shared by the stats route and its focused tests so the
+ * direction snapshot always represents exposure that is actually on-book.
+ */
+export function isOpenLiveExposureStatus(status: unknown): boolean {
+  return OPEN_LIVE_EXPOSURE_STATUSES.has(String(status || "").trim().toLowerCase())
 }
 
 function count(value: unknown): number {
@@ -219,6 +242,18 @@ export function buildRealStagePositionStats(input: {
   validPositionsHash?: Record<string, string> | null
   hedgePosAccHash?: Record<string, string> | null
   strategyVariants?: Partial<Record<RealStrategyVariant | "overall", NumericRecord>> | null
+  overallSets?: unknown
+  overallOrders?: unknown
+  openPositions?: {
+    source?: RealOpenPositionSource
+    bySymbol?: Array<{
+      symbol?: unknown
+      long?: unknown
+      short?: unknown
+      longPositions?: unknown
+      shortPositions?: unknown
+    }> | null
+  } | null
 }): RealStagePositionStats {
   const validPositionsHash = input.validPositionsHash || {}
   const hedgeHash = input.hedgePosAccHash || {}
@@ -260,7 +295,6 @@ export function buildRealStagePositionStats(input: {
     hedgeByBase.set(parentSetKey, entry)
   }
 
-  const symbolMap = new Map<string, RealSymbolPositionStats>()
   const perBase: RealHedgeBaseStats[] = []
   let totalLongEntries = 0
   let totalShortEntries = 0
@@ -305,76 +339,72 @@ export function buildRealStagePositionStats(input: {
       lastUpdated: entry.ts,
     })
 
-    const symbolEntry = symbolMap.get(symbol) || {
-      symbol,
-      longPositions: 0,
-      shortPositions: 0,
-      grossPositions: 0,
-      positionsWithHedge: 0,
-      hedgedPairs: 0,
-      unclassifiedPositions: 0,
-    }
-    symbolEntry.longPositions += entry.long
-    symbolEntry.shortPositions += entry.short
-    symbolEntry.grossPositions += grossPositions
-    // Sum the per-Base net; do not net unrelated Base strategies together.
-    symbolEntry.positionsWithHedge += positionsWithHedge
-    symbolEntry.hedgedPairs += baseHedgedPairs
-    symbolMap.set(symbol, symbolEntry)
-  }
-
-  // Preserve symbols already counted by the confirmed ledger even if an older
-  // run did not yet have direction-aware hedge fields. Their direction remains
-  // explicitly unclassified instead of being guessed.
-  for (const [field, rawValue] of Object.entries(validPositionsHash)) {
-    if (!field.startsWith("by_symbol:")) continue
-    const symbol = field.slice("by_symbol:".length).trim().toUpperCase() || "UNKNOWN"
-    const confirmedForSymbol = count(rawValue)
-    const symbolEntry = symbolMap.get(symbol) || {
-      symbol,
-      longPositions: 0,
-      shortPositions: 0,
-      grossPositions: 0,
-      positionsWithHedge: 0,
-      hedgedPairs: 0,
-      unclassifiedPositions: 0,
-    }
-    const unmatched = Math.max(0, confirmedForSymbol - symbolEntry.grossPositions)
-    symbolEntry.unclassifiedPositions = unmatched
-    symbolEntry.grossPositions += unmatched
-    symbolEntry.positionsWithHedge += unmatched
-    symbolMap.set(symbol, symbolEntry)
   }
 
   perBase.sort((left, right) =>
     Math.abs(right.net) - Math.abs(left.net) || left.parentSetKey.localeCompare(right.parentSetKey),
   )
-  const symbols = Array.from(symbolMap.values()).sort((left, right) =>
-    right.grossPositions - left.grossPositions || left.symbol.localeCompare(right.symbol),
-  )
 
   const confirmedOverall = count(validPositionsHash.overall)
   const evaluationFallback = count(variants.overall?.positionsCount ?? variants.overall?.entriesCount)
-  const positions = Math.max(confirmedOverall, hedgeGrossPositions) || evaluationFallback
-  const unmatchedOverall = Math.max(0, positions - hedgeGrossPositions)
-  const positionsWithHedge = Math.min(positions, hedgeNettedPositions + unmatchedOverall)
-  const hedgeReducedPositions = Math.max(0, positions - positionsWithHedge)
-  const hedgeOffsetRatio = positions > 0 ? hedgeReducedPositions / positions : 0
+  const confirmedVariantPositions = REAL_STRATEGY_VARIANTS.reduce(
+    (sum, variant) => sum + count(validPositionsHash[`by_variant:${variant}`]),
+    0,
+  )
+  // Overall is its own full ledger. Hedge history must never increase or
+  // reduce it; hedge is exposed independently below.
+  const positions = confirmedOverall || (hasConfirmedVariantCounts ? confirmedVariantPositions : 0) || evaluationFallback
+  const overallSets = count(
+    input.overallSets ?? variants.overall?.passedSets ?? variants.overall?.createdSets,
+  )
+  const overallOrders = count(input.overallOrders)
+
+  const openSymbolMap = new Map<string, RealOpenSymbolPositionStats>()
+  for (const rawRow of input.openPositions?.bySymbol || []) {
+    const symbol = String(rawRow?.symbol || "").trim().toUpperCase()
+    if (!symbol) continue
+    const longPositions = Math.floor(count(rawRow.long ?? rawRow.longPositions))
+    const shortPositions = Math.floor(count(rawRow.short ?? rawRow.shortPositions))
+    if (longPositions + shortPositions <= 0) continue
+    const existing = openSymbolMap.get(symbol) || {
+      symbol,
+      longPositions: 0,
+      shortPositions: 0,
+      positions: 0,
+    }
+    existing.longPositions += longPositions
+    existing.shortPositions += shortPositions
+    existing.positions = existing.longPositions + existing.shortPositions
+    openSymbolMap.set(symbol, existing)
+  }
+  const openBySymbol = Array.from(openSymbolMap.values()).sort((left, right) =>
+    right.positions - left.positions || left.symbol.localeCompare(right.symbol),
+  )
+  const openLongPositions = openBySymbol.reduce((sum, row) => sum + row.longPositions, 0)
+  const openShortPositions = openBySymbol.reduce((sum, row) => sum + row.shortPositions, 0)
+  const hedgeOffsetPositionLegs = Math.max(0, hedgeGrossPositions - hedgeNettedPositions)
+  const hedgeOffsetRatio = hedgeGrossPositions > 0
+    ? hedgeOffsetPositionLegs / hedgeGrossPositions
+    : 0
 
   return {
     overall: {
+      sets: overallSets,
       positions,
-      positionsWithHedge,
-      hedgeReducedPositions,
-      hedgedPairs,
-      longPositions: totalLongEntries,
-      shortPositions: totalShortEntries,
-      unclassifiedPositions: unmatchedOverall,
-      hedgeOffsetRatio: rounded(hedgeOffsetRatio, 3),
-      hedgeOffsetPercent: rounded(hedgeOffsetRatio * 100, 1),
-      positionCountSource: confirmedOverall > 0 || hedgeGrossPositions > 0
+      orders: overallOrders,
+      positionCountSource: confirmedOverall > 0 || (hasConfirmedVariantCounts && confirmedVariantPositions > 0)
         ? "confirmed-ledger"
         : "evaluation-fallback",
+    },
+    openPositions: {
+      positions: openLongPositions + openShortPositions,
+      symbolCount: openBySymbol.length,
+      longPositions: openLongPositions,
+      shortPositions: openShortPositions,
+      longSymbolCount: openBySymbol.filter((row) => row.longPositions > 0).length,
+      shortSymbolCount: openBySymbol.filter((row) => row.shortPositions > 0).length,
+      source: openBySymbol.length > 0 ? input.openPositions?.source || "real-stage" : "none",
+      bySymbol: openBySymbol,
     },
     strategyTypes: {
       default: defaultStats,
@@ -384,7 +414,6 @@ export function buildRealStagePositionStats(input: {
       block: buildAdjustStats(blockStats, withoutAdjustPositions),
       dca: buildAdjustStats(dcaStats, withoutAdjustPositions),
     },
-    symbols,
     hedge: {
       totalLongEntries,
       totalShortEntries,
@@ -392,7 +421,10 @@ export function buildRealStagePositionStats(input: {
       totalShortSets,
       netEntries: totalLongEntries - totalShortEntries,
       grossPositions: hedgeGrossPositions,
-      positionsWithHedge: hedgeNettedPositions,
+      remainingPositions: hedgeNettedPositions,
+      offsetPositionLegs: hedgeOffsetPositionLegs,
+      hedgeOffsetRatio: rounded(hedgeOffsetRatio, 3),
+      hedgeOffsetPercent: rounded(hedgeOffsetRatio * 100, 1),
       hedgedPairs,
       baseCount: hedgeByBase.size,
       perBase,
