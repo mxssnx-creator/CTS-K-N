@@ -32,9 +32,11 @@ describe("coherent strategy snapshots and schema v78", () => {
   test("migrations are sequential through the coherent schema", () => {
     const source = read("lib/redis-migrations.ts")
     const versions = Array.from(source.matchAll(/version:\s*(\d+)/g), (match) => Number(match[1]))
-    expect(versions.at(-1)).toBe(78)
+    expect(versions.at(-1)).toBe(79)
     expect(versions.every((version, index) => version === index + 1)).toBe(true)
     expect(source).toContain('name: "075-bound-high-frequency-statistics-storage"')
+    expect(source).toContain('name: "079-repair-hourly-statistics-rollups"')
+    expect(source).toContain('high_frequency_statistics_storage: "bounded-hourly-rollups-v2"')
     expect(source).toContain('name: "076-dynamic-symbol-selection-default-one"')
     expect(source).toContain('name: "077-indexed-current-indication-snapshots"')
     expect(source).toContain('name: "078-coherent-strategy-set-snapshots"')

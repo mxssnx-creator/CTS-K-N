@@ -4119,6 +4119,47 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "77")
     },
   },
+  {
+    version: 79,
+    name: "079-repair-hourly-statistics-rollups",
+    up: async (client: any) => {
+      const purgeIndexedRows = async (indexKey: string, rowPrefix: string): Promise<number> => {
+        const ids: string[] = ((await client.smembers(indexKey).catch(() => [])) || [])
+          .map(String)
+          .filter(Boolean)
+        let removed = 0
+        for (let offset = 0; offset < ids.length; offset += 250) {
+          const keys = ids.slice(offset, offset + 250).map((id) => `${rowPrefix}:${id}`)
+          if (keys.length > 0) removed += Number(await client.del(...keys).catch(() => 0)) || 0
+        }
+        await client.del(indexKey).catch(() => 0)
+        return removed
+      }
+
+      // Migration 075 removed the legacy rows that existed at that point, but
+      // the SQL compatibility shim kept creating new rows afterward. Version
+      // 079 repairs already-upgraded installations after the runtime writer is
+      // switched to bounded hourly hashes.
+      const [indicationRowsRemoved, realRowsRemoved] = await Promise.all([
+        purgeIndexedRows("indications", "indications"),
+        purgeIndexedRows("strategies_real", "strategies_real"),
+      ])
+      const now = new Date().toISOString()
+      await client.hset("system:database:coordination:performance", {
+        high_frequency_statistics_storage: "bounded-hourly-rollups-v2",
+        statistics_rollup_retention_hours: String(8 * 24),
+        repaired_indication_rows_removed: String(indicationRowsRemoved),
+        repaired_strategy_real_rows_removed: String(realRowsRemoved),
+        schema_version: "79",
+        updated_at: now,
+      }).catch(() => 0)
+      console.log(`[v0] Migration 079: removed ${indicationRowsRemoved + realRowsRemoved} post-075 high-frequency statistic rows`)
+    },
+    down: async (client: any) => {
+      // Purged telemetry rows are intentionally not recreated on rollback.
+      await client.set("_schema_version", "78")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {

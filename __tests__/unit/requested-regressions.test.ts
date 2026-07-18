@@ -2489,5 +2489,18 @@ describe("requested regression guardrails", () => {
     expect(testingOrder).toContain("authorizeAdminBearer")
   })
 
+  test("high-frequency indication and Real statistics use bounded hourly rollups", () => {
+    const tracker = read("lib/statistics-tracker.ts")
+    const dbShim = read("lib/db.ts")
+    const migrations = read("lib/redis-migrations.ts")
+
+    expect(tracker).toContain("statistics:hourly:${kind}:${connectionId}")
+    expect(tracker).toContain("STATISTICS_ROLLUP_MAX_HOURS = 7 * 24")
+    expect(tracker).not.toContain("INSERT INTO indications")
+    expect(tracker).not.toContain("INSERT INTO strategies_real")
+    expect(dbShim).toContain("HIGH_FREQUENCY_ROLLUP_ONLY_TABLES")
+    expect(migrations).toContain('name: "079-repair-hourly-statistics-rollups"')
+  })
+
 
 })

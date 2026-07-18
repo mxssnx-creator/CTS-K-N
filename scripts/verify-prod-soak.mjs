@@ -9,6 +9,7 @@ const POLL_MS = Math.max(750, Number(process.env.SOAK_POLL_MS || 2_000))
 const SYMBOL_COUNT = Math.max(1, Math.min(32, Number(process.env.SYMBOL_COUNT || 12)))
 const START_SIMULATED_ENGINE = process.env.START_SIMULATED_ENGINE === "1"
 const RUNTIME_MODE = process.env.RUNTIME_MODE || "production"
+const DEBUG_ADMIN_SECRET = String(process.env.SOAK_ADMIN_SECRET || "")
 const RSS_GROWTH_LIMIT_KB = Math.max(
   128 * 1024,
   Number(
@@ -27,13 +28,14 @@ const SYMBOLS = [
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-async function request(pathname, { method = "GET", body, timeoutMs = 30_000 } = {}) {
+async function request(pathname, { method = "GET", body, timeoutMs = 30_000, headers = {} } = {}) {
   const started = Date.now()
   const response = await fetch(new URL(pathname, BASE_URL), {
     method,
     headers: {
       Accept: "application/json",
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      ...headers,
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     cache: "no-store",
@@ -254,7 +256,13 @@ async function main() {
       // Canonical monitoring/stats above remain the production assertion; only
       // development soaks may add the debug-only Redis breakdown.
       if (rounds % 10 === 0 && RUNTIME_MODE !== "production") {
-        const raw = (await request(`/api/debug/progression-dump?id=${encodeURIComponent(connectionId)}`)).json
+        if (DEBUG_ADMIN_SECRET.length < 16) {
+          throw new Error("SOAK_ADMIN_SECRET is required for the authenticated development progression dump")
+        }
+        const raw = (await request(
+          `/api/debug/progression-dump?id=${encodeURIComponent(connectionId)}`,
+          { headers: { Authorization: `Bearer ${DEBUG_ADMIN_SECRET}` } },
+        )).json
         const selectCycles = (value = {}) => Object.fromEntries(
           Object.entries(value).filter(([key]) => key === "cycle_count" || key.endsWith("_cycle_count")),
         )
