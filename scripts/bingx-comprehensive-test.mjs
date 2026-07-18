@@ -63,13 +63,20 @@ function log(color, ...args) {
 }
 
 async function fetchStats() {
-  try {
-    const res = await fetch(`${BASE_URL}/api/connections/progression/${CONN_ID}/stats`)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return await res.json()
-  } catch (err) {
-    throw new Error(`Failed to fetch stats: ${err.message}`)
+  let lastError = null
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(`${BASE_URL}/api/connections/progression/${CONN_ID}/stats`, {
+        signal: AbortSignal.timeout(20_000),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return await res.json()
+    } catch (err) {
+      lastError = err
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 500))
+    }
   }
+  throw new Error(`Failed to fetch stats after 3 attempts: ${lastError?.message || String(lastError)}`)
 }
 
 async function validateStrategyProgression(stats) {
@@ -90,6 +97,11 @@ async function validateStrategyProgression(stats) {
       'prehistoric_processing',
       'prehistoric_data',
       'live_trading',
+      'realtime',
+      'indications',
+      'strategies',
+      'idle',
+      'paused',
       'stopped',
     ]
     assert(validPhases.includes(stats.metadata.phase), `Invalid phase: ${stats.metadata.phase}`)
