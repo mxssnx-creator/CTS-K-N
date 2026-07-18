@@ -53,17 +53,32 @@ function hasBingxCredentials() {
 }
 
 async function fetchBingxTickers() {
-  const urls = [
-    'https://open-api.bingx.com/openApi/swap/v2/quote/ticker',
-    'https://open-api.bingx.com/openApi/swap/v2/quote/contracts',
+  const origins = [
+    'https://open-api.bingx.com',
+    'https://open-api.bingx.pro',
   ]
-  for (const url of urls) {
-    const res = await fetch(url, { signal: AbortSignal.timeout(15000) })
-    if (!res.ok) throw new Error(`BingX public API ${url} returned HTTP ${res.status}`)
-    const json = await res.json()
-    if (json && (Array.isArray(json.data) || json.data)) return { url, json }
+  const paths = [
+    '/openApi/swap/v2/quote/ticker',
+    '/openApi/swap/v2/quote/contracts',
+  ]
+  const errors = []
+
+  for (const pathname of paths) {
+    for (const origin of origins) {
+      const url = `${origin}${pathname}`
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(15000) })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const json = await res.json()
+        if (json && (Array.isArray(json.data) || json.data)) return { url, json }
+        errors.push(`${url}: no usable data`)
+      } catch (error) {
+        errors.push(`${url}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
   }
-  throw new Error('BingX public API returned no usable data')
+
+  throw new Error(`BingX public API returned no usable data (${errors.join('; ')})`)
 }
 
 async function main() {
@@ -104,6 +119,7 @@ async function main() {
 
   if (symbols.length < 1 || symbols.length > 32) process.exit(1)
   if (!result.success) process.exit(1)
+  process.exit(0)
 }
 
 main().catch((err) => {

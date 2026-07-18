@@ -93,6 +93,15 @@ check_endpoint "/api/trade-engine/functional-overview"
 check_endpoint "/api/data/positions?connectionId=bingx-x01"
 verify_cron
 
+if command -v node >/dev/null 2>&1 && [ -f "scripts/verify-deployment-contract.mjs" ]; then
+  if node scripts/verify-deployment-contract.mjs "$BASE_URL"; then
+    echo "[Deploy Verify] PASS schema, persistence, identity, and continuity contract"
+  else
+    echo "[Deploy Verify] FAIL schema, persistence, identity, or continuity contract"
+    FAILURES=$((FAILURES + 1))
+  fi
+fi
+
 if [ "$FAILURES" -gt 0 ]; then
   echo "[Deploy Verify] FAILED with ${FAILURES} verification error(s)"
   exit 1
