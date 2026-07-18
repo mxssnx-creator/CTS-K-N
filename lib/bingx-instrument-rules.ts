@@ -1,4 +1,6 @@
-const BINGX_CONTRACTS_URL = "https://open-api.bingx.com/openApi/swap/v2/quote/contracts"
+import { fetchBingXPublic } from "@/lib/bingx-public-api"
+
+const BINGX_CONTRACTS_PATH = "/openApi/swap/v2/quote/contracts"
 
 export interface BingXInstrumentRules {
   symbol: string
@@ -110,11 +112,9 @@ export async function fetchBingXInstrumentRules(
   symbol: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<BingXInstrumentRules> {
-  const response = await fetchImpl(BINGX_CONTRACTS_URL, {
+  const response = await fetchBingXPublic(BINGX_CONTRACTS_PATH, {
     method: "GET",
-    headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(15_000),
-  })
+  }, { timeoutMs: 15_000, fetchImpl })
   if (!response.ok) throw new Error(`BingX contracts request failed with HTTP ${response.status}`)
   const payload = await response.json()
   const code = (payload as any)?.code

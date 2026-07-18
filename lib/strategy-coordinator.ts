@@ -4919,7 +4919,11 @@ export class StrategyCoordinator {
     // at line 4699-4715 enforces per-variant caps (1 default + 1 block + 1 DCA).
     let qualifying = allQualifying
 
-    // Testnet fallback: if no qualifying Real sets, promote the top Real or top Main set so live dispatch can run.
+    // Testnet fallback: if Real produced candidates but the Live PF/DDT filter
+    // rejected all of them, promote the top Real Set so the test pipeline can
+    // exercise dispatch without breaking Real -> Live lineage. Never synthesize
+    // Live directly from Main: that made Live=1 while Real=0 during QuickStart
+    // and could create a position with no authoritative Real parent.
     // CRITICAL: Always verify actual is_testnet on connection record.
     try {
       const conn = await (await import("@/lib/redis-db")).getConnection(this.connectionId)
@@ -4928,26 +4932,6 @@ export class StrategyCoordinator {
         if (realSets.length > 0) {
           qualifying = [realSets.sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)[0]]
           console.log(`[v0] [StrategyFlow] ${this.connectionId}:${symbol} dev fallback - promoted top REAL set for live dispatch`)
-        } else {
-          // Try to seed from MAIN as a last resort
-          const mainKey = `strategies:${this.connectionId}:${symbol}:main:sets`
-          const mainStored = await getSettings(mainKey)
-          const mainSets = mainStored && typeof mainStored === "object" ? (Array.isArray((mainStored as any).sets) ? (mainStored as any).sets : Array.isArray(mainStored) ? mainStored : []) : []
-          if (mainSets.length > 0) {
-            const top = mainSets.sort((a: any, b: any) => (b.avgProfitFactor || 0) - (a.avgProfitFactor || 0))[0]
-            const synth: any = {
-              ...top,
-              setKey: top.setKey || `${symbol}:${top.direction || "long"}:dev-seed`,
-              parentSetKey: top.setKey || null,
-              avgProfitFactor: Math.max(0.9, top.avgProfitFactor || 0.9),
-              avgDrawdownTime: top.avgDrawdownTime || 0,
-              entries: top.entries && top.entries.length > 0 ? top.entries : [{ profitFactor: Math.max(1.0, (top.avgProfitFactor || 1.0)), leverage: 1, confidence: 0.85, sizeMultiplier: 1 }],
-              entryCount: top.entryCount || (top.entries ? top.entries.length : 1),
-              status: "valid_real",
-            }
-            qualifying = [synth]
-            console.log(`[v0] [StrategyFlow] ${this.connectionId}:${symbol} dev fallback - injected synthetic qualifying set from MAIN`)
-          }
         }
       }
     } catch (e) { /* non-fatal */ }

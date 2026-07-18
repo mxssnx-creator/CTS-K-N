@@ -147,6 +147,7 @@ async function main() {
   const siteIds = new Set()
   const bootIds = new Set()
   const latencies = []
+  const steadyLatencies = []
   const liveExecution = []
   let simulatedPositionsPeak = 0
   let realPositionsPeak = 0
@@ -163,6 +164,11 @@ async function main() {
     rounds++
     requests += responses.length
     latencies.push(...responses.map((response) => response.latencyMs))
+    // Exclude the first five rounds from the steady-state latency contract.
+    // Next dev compiles route chunks on first access and production performs
+    // cold initialization/migration reads; neither is representative of the
+    // continuously running API/order coordination hot path.
+    if (rounds > 5) steadyLatencies.push(...responses.map((response) => response.latencyMs))
 
     const byPath = new Map(paths.map((path, index) => [path, responses[index].json]))
     const init = byPath.get("/api/system/init-status")
@@ -364,7 +370,17 @@ async function main() {
   }
 
   latencies.sort((a, b) => a - b)
+  steadyLatencies.sort((a, b) => a - b)
   const p95 = latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95))] || 0
+  const steadyP95 = steadyLatencies[
+    Math.min(steadyLatencies.length - 1, Math.floor(steadyLatencies.length * 0.95))
+  ] || p95
+  const steadyP95LimitMs = RUNTIME_MODE === "production" ? 1_000 : 3_000
+  if (steadyP95 > steadyP95LimitMs) {
+    throw new Error(
+      `Steady-state API p95 ${steadyP95}ms exceeds ${steadyP95LimitMs}ms ${RUNTIME_MODE} limit`,
+    )
+  }
   console.log(JSON.stringify({
     success: true,
     mode: START_SIMULATED_ENGINE ? `${RUNTIME_MODE}-paper-engine` : `${RUNTIME_MODE}-read-only`,
@@ -400,6 +416,8 @@ async function main() {
     paperRunningSetsPeak,
     paperUpdateCyclesPeak,
     latencyP95Ms: p95,
+    steadyLatencyP95Ms: steadyP95,
+    steadyLatencyP95LimitMs: steadyP95LimitMs,
   }, null, 2))
 }
 

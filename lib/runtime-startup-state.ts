@@ -27,6 +27,7 @@ export function getRuntimeBootId(): string {
 export function getContinuitySchedulerMode(): "external-minute" | "in-process-minute" {
   const external =
     process.env.DISABLE_IN_PROCESS_CONTINUITY === "1" ||
+    process.env.CTS_DEPLOYMENT_RUNTIME === "cloudflare-workers" ||
     process.env.VERCEL === "1" ||
     Boolean(process.env.VERCEL_ENV) ||
     process.env.NEXT_RUNTIME === "edge"

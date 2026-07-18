@@ -1,73 +1,101 @@
-#!/bin/bash
-# Post-Deployment Verification Script
-# Runs after Vercel deployment to verify all systems are operational
-# Called by Vercel's post-deployment webhook
+#!/usr/bin/env bash
+# Portable post-deployment verification for Vercel, Kilo/Cloudflare, and Node hosts.
 
-set -e
+set -uo pipefail
 
-DEPLOYMENT_URL="${VERCEL_URL}"
-TIMEOUT=30
+RAW_DEPLOYMENT_URL="${DEPLOYMENT_URL:-${VERCEL_URL:-${NEXT_PUBLIC_APP_URL:-}}}"
+READ_TIMEOUT_SECONDS="${DEPLOY_VERIFY_TIMEOUT_SECONDS:-30}"
+CRON_TIMEOUT_SECONDS="${DEPLOY_VERIFY_CRON_TIMEOUT_SECONDS:-75}"
+FAILURES=0
 
-if [ -z "$DEPLOYMENT_URL" ]; then
-  echo "ERROR: VERCEL_URL not set"
+if [ -z "$RAW_DEPLOYMENT_URL" ]; then
+  echo "[Deploy Verify] ERROR: set DEPLOYMENT_URL, VERCEL_URL, or NEXT_PUBLIC_APP_URL"
   exit 1
 fi
 
-echo "[Deploy Verify] Starting post-deployment verification..."
-echo "[Deploy Verify] Target URL: https://$DEPLOYMENT_URL"
-echo "[Deploy Verify] Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+case "$RAW_DEPLOYMENT_URL" in
+  http://*|https://*) BASE_URL="${RAW_DEPLOYMENT_URL%/}" ;;
+  *) BASE_URL="https://${RAW_DEPLOYMENT_URL%/}" ;;
+esac
 
-# Helper function for HTTP health checks
+http_status() {
+  local endpoint="$1"
+  local timeout_seconds="$2"
+  shift 2
+  local status
+  status="$(curl --silent --show-error --output /dev/null --write-out "%{http_code}" \
+    --max-time "$timeout_seconds" "$@" "${BASE_URL}${endpoint}" 2>/dev/null)"
+  printf '%s' "${status:-000}"
+}
+
 check_endpoint() {
-  local endpoint=$1
-  local expected_status=$2
-  local url="https://$DEPLOYMENT_URL$endpoint"
-  
-  echo -n "[Deploy Verify] Checking $endpoint... "
-  
-  status=$(curl -s -o /dev/null -w "%{http_code}" --max-time $TIMEOUT "$url" 2>/dev/null || echo "000")
-  
+  local endpoint="$1"
+  local expected_status="${2:-200}"
+  local status
+  status="$(http_status "$endpoint" "$READ_TIMEOUT_SECONDS")"
   if [ "$status" = "$expected_status" ]; then
-    echo "✓ ($status)"
-    return 0
+    echo "[Deploy Verify] PASS ${endpoint} (HTTP ${status})"
   else
-    echo "✗ (got $status, expected $expected_status)"
-    return 1
+    echo "[Deploy Verify] FAIL ${endpoint} (HTTP ${status}, expected ${expected_status})"
+    FAILURES=$((FAILURES + 1))
   fi
 }
 
-# Allow self-signed certs in development (GitHub Actions environment)
-export CURL_CA_BUNDLE=""
+verify_cron() {
+  local endpoint="/api/cron/server-continuity"
+  local unauthenticated_status
+  local cron_secret="${CRON_SECRET:-}"
+  unauthenticated_status="$(http_status "$endpoint" "$READ_TIMEOUT_SECONDS")"
 
-# Step 1: Health check endpoints
-echo "[Deploy Verify] ◆ Testing API endpoints..."
-check_endpoint "/api/health" "200" || true
-check_endpoint "/api/health/database" "200" || true
+  case "$unauthenticated_status" in
+    401)
+      echo "[Deploy Verify] PASS cron rejects unauthenticated traffic; bearer secret is configured"
+      ;;
+    503)
+      if [ "${DEPLOYMENT_CRON_MODE:-}" = "cloudflare-scheduled" ] || \
+         [ "${CTS_DEPLOYMENT_RUNTIME:-}" = "cloudflare-workers" ]; then
+        echo "[Deploy Verify] PASS external cron is fail-closed; Cloudflare scheduled handler owns the minute trigger"
+      else
+        echo "[Deploy Verify] FAIL CRON_SECRET is missing for the portable/external minute scheduler"
+        FAILURES=$((FAILURES + 1))
+      fi
+      ;;
+    *)
+      echo "[Deploy Verify] FAIL unauthenticated cron returned HTTP ${unauthenticated_status}; expected 401 or fail-closed 503"
+      FAILURES=$((FAILURES + 1))
+      ;;
+  esac
 
-# Step 2: Database initialization verification
-echo "[Deploy Verify] ◆ Verifying database initialization..."
-check_endpoint "/api/install/database/status" "200" || true
+  if [ "${#cron_secret}" -ge 16 ]; then
+    local status
+    for endpoint in /api/cron/server-continuity /api/cron/sync-live-positions; do
+      status="$(http_status "$endpoint" "$CRON_TIMEOUT_SECONDS" --header "Authorization: Bearer ${cron_secret}")"
+      if [ "$status" = "200" ]; then
+        echo "[Deploy Verify] PASS authorized minute tick ${endpoint} (HTTP 200)"
+      else
+        echo "[Deploy Verify] FAIL authorized minute tick ${endpoint} (HTTP ${status})"
+        FAILURES=$((FAILURES + 1))
+      fi
+    done
+  fi
+}
 
-# Step 3: Settings endpoint accessibility
-echo "[Deploy Verify] ◆ Testing settings endpoints..."
-check_endpoint "/api/settings" "200" || true
+echo "[Deploy Verify] Target: ${BASE_URL}"
+echo "[Deploy Verify] Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
-# Step 4: Cron job endpoints (should be callable)
-echo "[Deploy Verify] ◆ Testing cron endpoints..."
-check_endpoint "/api/cron/sync-live-positions" "200" || true
-check_endpoint "/api/cron/generate-indications" "200" || true
+check_endpoint "/api/health"
+check_endpoint "/api/health/database"
+check_endpoint "/api/system/init-status"
+check_endpoint "/api/install/database/status"
+check_endpoint "/api/settings"
+check_endpoint "/api/trade-engine/status"
+check_endpoint "/api/trade-engine/functional-overview"
+check_endpoint "/api/data/positions?connectionId=bingx-x01"
+verify_cron
 
-# Step 5: Engine status endpoints
-echo "[Deploy Verify] ◆ Testing engine endpoints..."
-check_endpoint "/api/trade-engine/status" "200" || true
-check_endpoint "/api/trade-engine/functional-overview" "200" || true
+if [ "$FAILURES" -gt 0 ]; then
+  echo "[Deploy Verify] FAILED with ${FAILURES} verification error(s)"
+  exit 1
+fi
 
-# Step 6: Data endpoints
-echo "[Deploy Verify] ◆ Testing data endpoints..."
-check_endpoint "/api/data/positions" "200" || true
-
-# Final summary
-echo ""
-echo "[Deploy Verify] ✓ Post-deployment verification completed"
-echo "[Deploy Verify] Deployment is ready for production"
-echo "[Deploy Verify] URL: https://$DEPLOYMENT_URL"
+echo "[Deploy Verify] READY: all required production checks passed"

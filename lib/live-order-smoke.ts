@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto"
 import { createExchangeConnector } from "@/lib/exchange-connectors"
 import type { BaseExchangeConnector } from "@/lib/exchange-connectors/base-connector"
-import { getConnection, getRedisClient, initRedis } from "@/lib/redis-db"
+import { getConnection, getRedisBackend, getRedisClient, initRedis } from "@/lib/redis-db"
 import { getLiveOrderSafetyFailure } from "@/lib/live-order-safety"
 import { createRedisLockToken, releaseOwnedRedisLock } from "@/lib/redis-lock-utils"
 import {
@@ -189,6 +189,18 @@ export async function runLiveOrderSmoke(input: RunLiveOrderSmokeInput): Promise<
   }
 
   await initRedis()
+  const redisBackend = getRedisBackend()
+  const coordinationGatePassed =
+    redisBackend === "redis-network" || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1"
+  report.checks.coordinationGatePassed = coordinationGatePassed
+  if (!coordinationGatePassed) {
+    report.errors.push(
+      "Live-order smoke requires shared Redis coordination; InlineLocalRedis can reset or split across production workers.",
+    )
+    report.finishedAt = new Date().toISOString()
+    report.timingMs.total = Date.now() - startedMs
+    return report
+  }
   const client = getRedisClient()
   const connection = await getConnection(report.connectionId)
   if (!connection) {

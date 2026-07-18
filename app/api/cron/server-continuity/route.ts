@@ -11,6 +11,16 @@ export const maxDuration = 60
 
 const LOCK_KEY = "cron:server-continuity:lock"
 const LOCK_TTL_SECONDS = 55
+const DIAGNOSTIC_KEY = "system:coordination:continuity"
+
+function requestSource(request: Request): string {
+  if (request.headers.get("x-cloudflare-cron") === "1") return "cloudflare-scheduled"
+  if (request.headers.get("x-cron-source")) return String(request.headers.get("x-cron-source"))
+  if ((request.headers.get("user-agent") || "").includes("cts-portable-minute-scheduler")) {
+    return "portable-minute-scheduler"
+  }
+  return "external-authorized"
+}
 
 async function runCronTask(
   name: string,
@@ -81,13 +91,25 @@ export async function GET(request: Request) {
         }),
       ])
       const failedTasks = tasks.filter((task) => !task.ok)
+      const finishedAt = Date.now()
+      await client.hset(DIAGNOSTIC_KEY, {
+        interval_seconds: "60",
+        portable_scheduler_supported: "1",
+        last_tick_at: new Date(finishedAt).toISOString(),
+        last_tick_ms: String(finishedAt),
+        last_tick_duration_ms: String(finishedAt - startedAt),
+        last_tick_source: requestSource(request),
+        last_tick_result: failedTasks.length > 0 ? "degraded" : "ok",
+        last_tick_failed_tasks: failedTasks.map((task) => task.name).join(","),
+        updated_at: new Date(finishedAt).toISOString(),
+      }).catch(() => 0)
 
       return NextResponse.json({
         success: true,
         degraded: failedTasks.length > 0,
         tasks,
         warnings: failedTasks.map((task) => `${task.name}: ${task.error || "failed"}`),
-        durationMs: Date.now() - startedAt,
+        durationMs: finishedAt - startedAt,
       })
     } finally {
       const current = await client.get(LOCK_KEY).catch(() => null)

@@ -53,6 +53,7 @@ function shouldSkipInProcessTimers(): boolean {
   // default. Serverless/edge deployments still use deployment cron because
   // in-process timers are not durable after responses return.
   if (process.env.DISABLE_IN_PROCESS_CONTINUITY === "1") return true
+  if (process.env.CTS_DEPLOYMENT_RUNTIME === "cloudflare-workers") return true
   // VERCEL=1 or VERCEL_ENV=production/preview indicates serverless environment
   const isVercel = process.env.VERCEL === "1" || !!process.env.VERCEL_ENV || process.env.NEXT_RUNTIME === "edge"
   return isVercel
@@ -103,7 +104,22 @@ export async function enqueueContinuityLiveRecoveryJob(): Promise<void> {
   state.liveRecoveryInFlight = true
   try {
     const { runLivePositionRecoverySweep } = await import("@/app/api/cron/sync-live-positions/route")
-    await runLivePositionRecoverySweep()
+    const startedAt = Date.now()
+    const result = await runLivePositionRecoverySweep()
+    const finishedAt = Date.now()
+    const { getRedisClient } = await import("@/lib/redis-db")
+    await getRedisClient().hset("system:coordination:live-recovery", {
+      interval_seconds: String(getLiveRecoveryIntervalMs() / 1_000),
+      last_tick_at: new Date(finishedAt).toISOString(),
+      last_tick_ms: String(finishedAt),
+      last_tick_duration_ms: String(finishedAt - startedAt),
+      last_tick_source: "in-process-live-recovery",
+      last_tick_result: result.errors > 0 ? "degraded" : "ok",
+      last_connections_checked: String(result.connectionsChecked),
+      last_positions_reconciled: String(result.positionsReconciled),
+      last_errors: String(result.errors),
+      updated_at: new Date(finishedAt).toISOString(),
+    }).catch(() => 0)
   } catch (err) {
     console.warn(
       "[v0] [Continuity] live-position recovery tick failed:",
@@ -116,10 +132,24 @@ export async function enqueueContinuityLiveRecoveryJob(): Promise<void> {
 
 /** One portable minute tick for indication generation and intent healing. */
 export async function enqueueContinuityMinuteJob(): Promise<void> {
+  const startedAt = Date.now()
   await Promise.all([
     enqueueContinuityAutoStartJob(),
     enqueueContinuityIndicationJob(),
   ])
+  const finishedAt = Date.now()
+  const { getRedisClient } = await import("@/lib/redis-db")
+  await getRedisClient().hset("system:coordination:continuity", {
+    interval_seconds: "60",
+    portable_scheduler_supported: "1",
+    last_tick_at: new Date(finishedAt).toISOString(),
+    last_tick_ms: String(finishedAt),
+    last_tick_duration_ms: String(finishedAt - startedAt),
+    last_tick_source: "in-process-minute",
+    last_tick_result: "ok",
+    last_tick_failed_tasks: "",
+    updated_at: new Date(finishedAt).toISOString(),
+  }).catch(() => 0)
 }
 
 export function isServerContinuityRunnerStarted(): boolean {

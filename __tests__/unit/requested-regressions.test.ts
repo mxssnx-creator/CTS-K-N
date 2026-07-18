@@ -27,8 +27,9 @@ describe("requested regression guardrails", () => {
     expect(statsRoute).toContain("[STATS-VALIDATION]")
     expect(statsRoute).toContain("Main and Real materialise related/adjusted Sets")
     expect(statsRoute).not.toContain("stratCounts.real = stratCounts.main")
-    expect(statsRoute).toContain("stratCounts.live > stratCounts.real")
+    expect(statsRoute).toContain("if (stratCounts.live > stratCounts.real)")
     expect(statsRoute).toContain("stratCounts.live = stratCounts.real")
+    expect(coordinator).not.toContain("dev fallback - injected synthetic qualifying set from MAIN")
 
     const snapshot = { main: 10, real: 12, live: 14 }
     const normalizedReal = snapshot.real
@@ -2500,6 +2501,47 @@ describe("requested regression guardrails", () => {
     expect(tracker).not.toContain("INSERT INTO strategies_real")
     expect(dbShim).toContain("HIGH_FREQUENCY_ROLLUP_ONLY_TABLES")
     expect(migrations).toContain('name: "079-repair-hourly-statistics-rollups"')
+  })
+
+  test("production status APIs distinguish connected inline state from durable shared Redis", () => {
+    const persistence = read("app/api/persistence/status/route.ts")
+    const database = read("app/api/settings/database-status/route.ts")
+    const initStatus = read("app/api/system/init-status/route.ts")
+
+    expect(persistence).toContain('const shared = backend === "redis-network"')
+    expect(persistence).toContain('status: shared ? "ok" : "degraded"')
+    expect(persistence).toContain("cross_instance_durable: shared")
+    expect(persistence).toContain("Configure shared Redis before enabling real exchange order placement")
+    expect(persistence).not.toContain('last_snapshot: "Within last 3 minutes"')
+
+    expect(database).toContain("isSharedConfigured: shared")
+    expect(database).toContain("isCrossInstanceDurable: shared")
+    expect(database).toContain('"inline://process-local"')
+    expect(database).not.toContain('"redis://connected"')
+
+    expect(initStatus).toContain("site_instance_scope: sharedRedis ? \"shared-cross-instance\" : \"process-local\"")
+    expect(initStatus).toContain("cross_instance_durable: sharedRedis")
+    expect(initStatus).toContain("last_tick_fresh: continuityAgeMs !== null && continuityAgeMs <= 90_000")
+    expect(initStatus).toContain("last_tick_fresh: liveRecoveryAgeMs !== null && liveRecoveryAgeMs <= 90_000")
+  })
+
+  test("live smoke and Cloudflare deployment fail closed around non-durable engine ownership", () => {
+    const smoke = read("lib/live-order-smoke.ts")
+    const wrangler = read("wrangler.jsonc")
+    const continuity = read("app/api/cron/server-continuity/route.ts")
+    const recovery = read("app/api/cron/sync-live-positions/route.ts")
+
+    expect(smoke).toContain('redisBackend === "redis-network" || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1"')
+    expect(smoke).toContain("Live-order smoke requires shared Redis coordination")
+    expect(wrangler).toContain('"DISABLE_IN_PROCESS_CONTINUITY": "1"')
+    expect(wrangler).toContain('"DISABLE_TRADE_ENGINE_IN_PROCESS": "1"')
+    expect(continuity).toContain('last_tick_source: requestSource(request)')
+    expect(recovery).toContain('DIAGNOSTIC_KEY = "system:coordination:live-recovery"')
+    expect(recovery).toContain('last_tick_source: requestSource(request)')
+    expect(read("scripts/run-prod-preview-check.mjs")).toContain("await runPostDeployVerifier()")
+    expect(read("scripts/verify-prod-preview.mjs")).toContain('REQUIRE_FRESH_CONTINUITY === "1"')
+    expect(read("scripts/post-deploy-verify.sh")).toContain('/api/data/positions?connectionId=bingx-x01')
+    expect(read("scripts/verify-prod-soak.mjs")).toContain('RUNTIME_MODE === "production" ? 1_000 : 3_000')
   })
 
 

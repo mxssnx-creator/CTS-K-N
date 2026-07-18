@@ -1566,7 +1566,7 @@ export async function GET(
     // it selects directly from the bounded Real output and must remain a subset.
     // A stats read can still race the Real/Live writes, so clamp only that true
     // subset invariant and expose the writer race through a throttled warning.
-    if (stratCounts.real > 0 && stratCounts.live > stratCounts.real) {
+    if (stratCounts.live > stratCounts.real) {
       throttledStatsWarn(
         `${connectionId}:live-gt-real`,
         `[STATS-VALIDATION] ${connectionId}: live (${stratCounts.live}) > real (${stratCounts.real}). ` +

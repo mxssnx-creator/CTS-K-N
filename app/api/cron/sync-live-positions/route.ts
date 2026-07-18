@@ -44,6 +44,16 @@ export const maxDuration = 60
 
 const LOCK_KEY = "cron:sync-live-positions:lock"
 const LOCK_TTL_SECONDS = 65
+const DIAGNOSTIC_KEY = "system:coordination:live-recovery"
+
+function requestSource(request: Request): string {
+  if (request.headers.get("x-cloudflare-cron") === "1") return "cloudflare-scheduled"
+  if (request.headers.get("x-cron-source")) return String(request.headers.get("x-cron-source"))
+  if ((request.headers.get("user-agent") || "").includes("cts-portable-minute-scheduler")) {
+    return "portable-minute-scheduler"
+  }
+  return "external-authorized"
+}
 
 interface SweepSummary {
   connectionsChecked: number
@@ -205,15 +215,39 @@ export async function GET(request: Request) {
 
   try {
     const total = await runLivePositionRecoverySweep()
+    const finishedAt = Date.now()
+    await client.hset(DIAGNOSTIC_KEY, {
+      interval_seconds: "60",
+      last_tick_at: new Date(finishedAt).toISOString(),
+      last_tick_ms: String(finishedAt),
+      last_tick_duration_ms: String(finishedAt - started),
+      last_tick_source: requestSource(request),
+      last_tick_result: total.errors > 0 ? "degraded" : "ok",
+      last_connections_checked: String(total.connectionsChecked),
+      last_positions_reconciled: String(total.positionsReconciled),
+      last_errors: String(total.errors),
+      updated_at: new Date(finishedAt).toISOString(),
+    }).catch(() => 0)
     return NextResponse.json({
       ok: true,
       sweepCount: 1,
       scheduleIntervalSec: 60,
-      ms: Date.now() - started,
+      ms: finishedAt - started,
       ...total,
     })
   } catch (err) {
     console.error("[SyncLivePositions] Fatal:", err)
+    const failedAt = Date.now()
+    await client.hset(DIAGNOSTIC_KEY, {
+      interval_seconds: "60",
+      last_tick_at: new Date(failedAt).toISOString(),
+      last_tick_ms: String(failedAt),
+      last_tick_duration_ms: String(failedAt - started),
+      last_tick_source: requestSource(request),
+      last_tick_result: "error",
+      last_error: err instanceof Error ? err.message : String(err),
+      updated_at: new Date(failedAt).toISOString(),
+    }).catch(() => 0)
     return NextResponse.json(
       {
         ok: false,

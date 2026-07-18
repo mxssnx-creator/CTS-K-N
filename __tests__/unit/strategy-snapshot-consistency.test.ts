@@ -19,6 +19,10 @@ describe("coherent strategy snapshots and schema v78", () => {
     expect(source).toContain("coherentActiveCounts.real")
     expect(source).toContain("coherentActiveCounts.live")
     expect(source).toContain("`${symbol}:snapshot:ts`")
+    expect(source).not.toContain("dev fallback - injected synthetic qualifying set from MAIN")
+
+    const stats = read("app/api/connections/progression/[id]/stats/route.ts")
+    expect(stats).toContain("if (stratCounts.live > stratCounts.real)")
   })
 
   test("persists bounded v2 derived scalars and fails closed on unsafe v1", () => {

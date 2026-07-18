@@ -12,7 +12,7 @@ export const runtime = "nodejs"
  */
 export async function GET(request: NextRequest) {
   try {
-    const { initRedis, isRedisConnected, getRedisStats, getAllConnections } = await import("@/lib/redis-db")
+    const { initRedis, isRedisConnected, getRedisBackend, getRedisStats, getAllConnections } = await import("@/lib/redis-db")
     const { getMigrationStatus } = await import("@/lib/redis-migrations")
 
     // Try to connect to Redis.
@@ -23,6 +23,8 @@ export async function GET(request: NextRequest) {
     // therefore probe the client directly via a fast hget rather than relying
     // on the module-scoped boolean or the (now-dead) resolved promise.
     await initRedis()
+    const redisBackend = getRedisBackend()
+    const sharedRedis = redisBackend === "redis-network"
     const { getRedisClient: _probeClient } = await import("@/lib/redis-db")
     let connected = isRedisConnected()
     if (!connected) {
@@ -85,11 +87,13 @@ export async function GET(request: NextRequest) {
     // Get actual key count directly (most reliable)
     const { getRedisClient } = await import("@/lib/redis-db")
     const client = getRedisClient()
-    const [startupHash, startupCompletedAtKey, durableSiteId, siteHash] = await Promise.all([
+    const [startupHash, startupCompletedAtKey, durableSiteId, siteHash, continuityHash, liveRecoveryHash] = await Promise.all([
       client.hgetall("system:startup").catch(() => ({} as Record<string, string>)),
       client.get("system:startup:completed_at").catch(() => null),
       client.get("site:unique_instance:id").catch(() => null),
       client.hgetall("site:unique_instance").catch(() => ({} as Record<string, string>)),
+      client.hgetall("system:coordination:continuity").catch(() => ({} as Record<string, string>)),
+      client.hgetall("system:coordination:live-recovery").catch(() => ({} as Record<string, string>)),
     ])
     const startupStatus = String((startupHash as Record<string, string>)?.status || "")
     const instrumentationBootCompletedAt =
@@ -103,6 +107,12 @@ export async function GET(request: NextRequest) {
       (typeof durableSiteId === "string" ? durableSiteId : null) ||
       (siteHash as Record<string, string>)?.site_session_id ||
       null
+    const continuityLastTickMs = Number((continuityHash as Record<string, string>)?.last_tick_ms || 0)
+    const liveRecoveryLastTickMs = Number((liveRecoveryHash as Record<string, string>)?.last_tick_ms || 0)
+    const nowMs = Date.now()
+    const tickAge = (value: number) => value > 0 && Number.isFinite(value) ? Math.max(0, nowMs - value) : null
+    const continuityAgeMs = tickAge(continuityLastTickMs)
+    const liveRecoveryAgeMs = tickAge(liveRecoveryLastTickMs)
     const allKeys = await client.keys("*").catch(() => [])
     const actualKeyCount = Array.isArray(allKeys) ? allKeys.length : 0
 
@@ -152,6 +162,9 @@ export async function GET(request: NextRequest) {
         database: {
           type: "redis",
           connected,
+          backend: redisBackend,
+          shared: sharedRedis,
+          cross_instance_durable: sharedRedis,
         },
         migrations: {
           current_version: migrationStatus.currentVersion,
@@ -172,6 +185,7 @@ export async function GET(request: NextRequest) {
           version: "3.2",
           environment: process.env.NODE_ENV || "development",
           site_instance_id: siteInstanceId,
+          site_instance_scope: sharedRedis ? "shared-cross-instance" : "process-local",
           timestamp: new Date().toISOString(),
           startup: {
             completed: startupCompleted,
@@ -183,7 +197,28 @@ export async function GET(request: NextRequest) {
             last_error: (startupHash as Record<string, string>)?.last_error || null,
             redis_key: "system:startup:completed_at",
           },
+          continuity: {
+            interval_seconds: Number((continuityHash as Record<string, string>)?.interval_seconds || 60),
+            last_tick_at: (continuityHash as Record<string, string>)?.last_tick_at || null,
+            last_tick_age_ms: continuityAgeMs,
+            last_tick_fresh: continuityAgeMs !== null && continuityAgeMs <= 90_000,
+            last_tick_source: (continuityHash as Record<string, string>)?.last_tick_source || null,
+            last_tick_result: (continuityHash as Record<string, string>)?.last_tick_result || null,
+            live_recovery: {
+              last_tick_at: (liveRecoveryHash as Record<string, string>)?.last_tick_at || null,
+              last_tick_age_ms: liveRecoveryAgeMs,
+              last_tick_fresh: liveRecoveryAgeMs !== null && liveRecoveryAgeMs <= 90_000,
+              last_tick_source: (liveRecoveryHash as Record<string, string>)?.last_tick_source || null,
+              last_tick_result: (liveRecoveryHash as Record<string, string>)?.last_tick_result || null,
+            },
+          },
         },
+        warnings: sharedRedis
+          ? []
+          : [
+              "Database backend is process-local; site identity and settings can reset when the worker restarts.",
+              "Real exchange order placement remains blocked until shared Redis is configured.",
+            ],
       },
       { status: 200 }
     )

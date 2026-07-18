@@ -11,6 +11,7 @@ const distDir = process.env.NEXT_DIST_DIR || ".next-prod"
 let outputTail = ""
 const snapshotPath = `/tmp/cts-prod-preview-${process.pid}.json`
 const UI_MAX_SYMBOLS = 32
+const PREVIEW_CRON_SECRET = "prod-preview-cron-secret-1234567890"
 const maxSymbolsRequested = process.argv.includes("--max-symbols")
 const uiOnlyRequested = process.argv.includes("--ui-only")
 const productionSoakSymbolCount = maxSymbolsRequested || uiOnlyRequested
@@ -54,13 +55,37 @@ function runVerifier() {
   return new Promise((resolve, reject) => {
     const verifier = spawn(process.execPath, ["scripts/verify-prod-preview.mjs"], {
       cwd: process.cwd(),
-      env: { ...process.env, BASE_URL: baseUrl, PORT: String(port) },
+      env: {
+        ...process.env,
+        BASE_URL: baseUrl,
+        PORT: String(port),
+        REQUIRE_FRESH_CONTINUITY: "1",
+      },
       stdio: "inherit",
     })
     verifier.once("error", reject)
     verifier.once("exit", (code, signal) => {
       if (code === 0) resolve()
       else reject(new Error(`Preview verifier exited code=${code} signal=${signal || "none"}`))
+    })
+  })
+}
+
+function runPostDeployVerifier() {
+  return new Promise((resolve, reject) => {
+    const verifier = spawn("bash", ["scripts/post-deploy-verify.sh"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        DEPLOYMENT_URL: baseUrl,
+        CRON_SECRET: PREVIEW_CRON_SECRET,
+      },
+      stdio: "inherit",
+    })
+    verifier.once("error", reject)
+    verifier.once("exit", (code, signal) => {
+      if (code === 0) resolve()
+      else reject(new Error(`Post-deploy verifier exited code=${code} signal=${signal || "none"}`))
     })
   })
 }
@@ -146,7 +171,7 @@ function startServer({ engines = false } = {}) {
       PREHISTORIC_SYMBOL_CONCURRENCY: process.env.PREVIEW_PREHISTORIC_SYMBOL_CONCURRENCY || "1",
       MARKET_DATA_LOAD_CONCURRENCY: "1",
       CRON_SYMBOL_LIMIT: engines ? String(productionSoakSymbolCount) : "4",
-      CRON_SECRET: "prod-preview-cron-secret-1234567890",
+      CRON_SECRET: PREVIEW_CRON_SECRET,
       BINGX_API_KEY: "",
       BINGX_API_SECRET: "",
       BYBIT_API_KEY: "",
@@ -222,6 +247,7 @@ async function main() {
 
     firstServer = startServer()
     await waitForReady(firstServer)
+    await runPostDeployVerifier()
     await runVerifier()
     const before = await readRestartState()
     if (!before.connectionId) throw new Error("No connection available for restart persistence check")
