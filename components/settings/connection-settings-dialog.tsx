@@ -1,6 +1,7 @@
 "use client"
 
 import { DEFAULT_VOLUME_STEP_RATIO, MAX_VOLUME_STEP_RATIO, MIN_VOLUME_FACTOR, MIN_VOLUME_STEP_RATIO } from "@/lib/constants"
+import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import {
   Dialog,
@@ -179,7 +180,7 @@ const DEFAULT_OVERVIEW_SETTINGS: OverviewSettings = {
 const DEFAULT_SYMBOLS_SETTINGS: SymbolsSettings = {
   symbols: [],
   symbolOrder: "volatility_1h",
-  symbolCount: 20,
+  symbolCount: DEFAULT_SYMBOL_COUNT,
 }
 
 // Operator-spec defaults: base PF 1.0, main/real PF 1.2; max positions
@@ -212,7 +213,7 @@ export function ConnectionSettingsDialog({
   const [overview, setOverview] = useState<OverviewSettings>(DEFAULT_OVERVIEW_SETTINGS)
 
   // ── Symbols state ───────────────────────────────────────────────
-  // Operator spec: default symbolOrder = volatility_1h, symbolCount = 20
+  // Default is one dynamic 1h-volatility symbol; operators can scale instantly.
   const [symbolsCfg, setSymbolsCfg] = useState<SymbolsSettings>(DEFAULT_SYMBOLS_SETTINGS)
   const [symbolInput, setSymbolInput] = useState("")
   const [exchangeSymbols, setExchangeSymbols] = useState<string[]>([])

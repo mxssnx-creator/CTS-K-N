@@ -632,7 +632,7 @@ export class InlineLocalRedis implements RedisClientLike {
       const rssSoftMB   = Math.round(usableMB * 0.72)
       // RSS hard: 82% of usable — critical eviction + sleep above this (was 75%).
       const rssHardMB   = Math.round(usableMB * 0.82)
-      const _nSyms      = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "4", 10) || 4)
+      const _nSyms      = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1)
       const maxKeys     = Math.round(1_000 + _nSyms * 800 * Math.max(1, usableMB / 2_048))
       const prev = globalCleanup.__redis_mem_limits
       const changed = !prev || prev.rssHardMB !== rssHardMB
@@ -848,7 +848,7 @@ export class InlineLocalRedis implements RedisClientLike {
     // larger machines don't need more indication/strategy keys, they just have
     // more headroom before OOM. Scaling caps with RAM was the root cause of
     // the 5+ GB RSS on the 8 GB VM (indication_set floor was 5000 × large hashes).
-    const _N = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "4", 10) || 4)
+    const _N = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1)
 
     const CAPS: Record<string, number> = {
       // Pseudo-positions: hard cap independent of RAM — 200 per symbol is plenty

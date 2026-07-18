@@ -14,6 +14,10 @@ import {
 import { createRedisLockToken, releaseOwnedRedisLock, renewOwnedRedisLock } from "./redis-lock-utils"
 import { scanRedisKeys } from "./redis-scan"
 import { ALL_TRAILING_VARIANTS, DEFAULT_TRAILING_VARIANTS } from "./trailing-settings"
+import {
+  DEFAULT_SYMBOL_COUNT as CANONICAL_DEFAULT_SYMBOL_COUNT,
+  DEFAULT_SYMBOL_ORDER,
+} from "./symbol-selection-defaults"
 
 /**
  * Reset the in-process migration guards.
@@ -3056,7 +3060,7 @@ const migrations: Migration[] = [
     version: 55,
     name: "055-default-volume-0.1-and-6-symbols-by-volatility",
     up: async (client: any) => {
-      const symbolCount = String(Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "4", 10) || 4))
+      const symbolCount = String(Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1))
       const connIds = ["bingx-x01", "bybit-x03"]
 
       for (const connId of connIds) {
@@ -3158,7 +3162,7 @@ const migrations: Migration[] = [
     version: 57,
     name: "057-symbol-count-repin",
     up: async (client: any) => {
-      const devSymCount = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "4", 10) || 4)
+      const devSymCount = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1)
       const connId = "bingx-x01"
       const hashes = [
         `connection:${connId}`,
@@ -3242,7 +3246,7 @@ const migrations: Migration[] = [
     version: 59,
     name: "059-multi-symbol-support",
     up: async (client: any) => {
-      const devSymCount = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "4", 10) || 4)
+      const devSymCount = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1)
       const connId = "bingx-x01"
       const hashes = [
         `connection:${connId}`,
@@ -3854,6 +3858,308 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "73")
     },
   },
+  {
+    version: 75,
+    name: "075-bound-high-frequency-statistics-storage",
+    up: async (client: any) => {
+      let indicationRowsRemoved = 0
+      let realRowsRemoved = 0
+
+      const purgeLegacyRowSet = async (indexKey: string, rowPrefix: string): Promise<number> => {
+        const ids: string[] = ((await client.smembers(indexKey).catch(() => [])) || []).map(String).filter(Boolean)
+        let removed = 0
+        for (let offset = 0; offset < ids.length; offset += 250) {
+          const keys = ids.slice(offset, offset + 250).map((id) => `${rowPrefix}:${id}`)
+          if (keys.length > 0) removed += Number(await client.del(...keys).catch(() => 0)) || 0
+        }
+        await client.del(indexKey).catch(() => 0)
+        return removed
+      }
+
+      indicationRowsRemoved = await purgeLegacyRowSet("indications", "indications")
+      realRowsRemoved = await purgeLegacyRowSet("strategies_real", "strategies_real")
+      const now = new Date().toISOString()
+      await client.hset("system:database:coordination:performance", {
+        high_frequency_statistics_storage: "bounded-counters-latest",
+        legacy_indication_rows_removed: String(indicationRowsRemoved),
+        legacy_strategy_real_rows_removed: String(realRowsRemoved),
+        schema_version: "75",
+        updated_at: now,
+      }).catch(() => 0)
+      console.log(`[v0] Migration 075: removed ${indicationRowsRemoved + realRowsRemoved} legacy high-frequency statistic rows`)
+    },
+    down: async (client: any) => {
+      // Purged telemetry rows are intentionally not recreated on rollback.
+      await client.set("_schema_version", "74")
+    },
+  },
+  {
+    version: 76,
+    name: "076-dynamic-symbol-selection-default-one",
+    up: async (client: any) => {
+      const now = new Date().toISOString()
+      const defaultPatch = {
+        symbol_count: String(CANONICAL_DEFAULT_SYMBOL_COUNT),
+        symbol_order: DEFAULT_SYMBOL_ORDER,
+      }
+
+      for (const key of ["settings:app_settings", "settings:all_settings", "app_settings", "all_settings", "settings:system"]) {
+        const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+        if (!String(existing.symbol_count || existing.symbolCount || "").trim()) patch.symbol_count = defaultPatch.symbol_count
+        if (!String(existing.symbol_order || existing.symbolOrder || "").trim()) patch.symbol_order = defaultPatch.symbol_order
+        if (Object.keys(patch).length > 0) await client.hset(key, { ...patch, updated_at: now }).catch(() => 0)
+      }
+
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      let normalized = 0
+      const legacySeedCounts = new Set(["4", "10", "12", "15", "20", "100"])
+      const seededSymbols = new Set(["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"])
+      const parseSymbols = (value: unknown): string[] => {
+        if (Array.isArray(value)) return value.map(String).map((s) => s.trim().toUpperCase()).filter(Boolean)
+        const raw = String(value ?? "").trim()
+        if (!raw) return []
+        try {
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed)) return parsed.map(String).map((s) => s.trim().toUpperCase()).filter(Boolean)
+        } catch { /* comma-separated legacy value */ }
+        return raw.split(/[|,\s]+/).map((s) => s.trim().toUpperCase()).filter(Boolean)
+      }
+
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        const keys = [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]
+        const rows = await Promise.all(keys.map((key) => client.hgetall(key).catch(() => ({}))))
+        const merged = Object.assign({}, ...rows) as Record<string, string>
+        const count = String(merged.symbol_count || merged.symbolCount || "").trim()
+        const force = parseSymbols(merged.force_symbols)
+        const active = parseSymbols(merged.active_symbols)
+        const selected = parseSymbols(merged.selected_symbols)
+        const explicitVersion = Number(merged.settings_version || merged.symbol_selection_version || 0) > 0
+        const explicitEpoch = Boolean(String(merged.symbol_selection_epoch || merged.quickstart_symbol_generation || "").trim())
+        const manualFlag = [merged.symbol_mode, merged.symbol_selection_mode, merged.manual_symbols]
+          .some((value) => /manual|fixed|explicit|true|1/i.test(String(value || "")))
+        const configuredSymbols = [...force, ...active, ...selected]
+        const onlyKnownSeedSymbols = configuredSymbols.length > 0 && configuredSymbols.every((symbol) => seededSymbols.has(symbol))
+        const looksLikeLegacySeed = legacySeedCounts.has(count) && (configuredSymbols.length === 0 || onlyKnownSeedSymbols)
+
+        // Preserve every versioned/manual operator choice. Only rewrite the
+        // old unversioned seeded baskets that previous migrations injected.
+        if (!looksLikeLegacySeed || explicitVersion || explicitEpoch || manualFlag) continue
+        const patch = {
+          ...defaultPatch,
+          force_symbols: "",
+          active_symbols: "",
+          selected_symbols: "",
+          dev_symbol_count_override: "",
+          symbol_selection_source: "dynamic-default",
+          symbol_recoordination_requested_at: now,
+          updated_at: now,
+        }
+        await Promise.all(keys.map(async (key, index) => {
+          if (index < 2 || Object.keys((rows[index] || {}) as object).length > 0) {
+            await client.hset(key, patch).catch(() => 0)
+          }
+        }))
+        normalized++
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        dynamic_symbol_default_count: String(CANONICAL_DEFAULT_SYMBOL_COUNT),
+        dynamic_symbol_default_order: DEFAULT_SYMBOL_ORDER,
+        unversioned_seeded_baskets_normalized: String(normalized),
+        schema_version: "76",
+        updated_at: now,
+      }).catch(() => 0)
+      console.log(`[v0] Migration 076: defaulted dynamic selection to one symbol; normalized=${normalized}`)
+    },
+    down: async (client: any) => {
+      await client.set("_schema_version", "75")
+    },
+  },
+  {
+    version: 77,
+    name: "077-indexed-current-indication-snapshots",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const types = ["direction", "move", "active", "active_advanced", "optimal", "auto", "trend"]
+      let indexedSymbols = 0
+      let legacyStringsRemoved = 0
+
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        await client.del(`indications:${id}`).catch(() => 0)
+        for (const type of types) {
+          const key = `indications:${id}:${type}`
+          // Delete only legacy scalar strings. WRONGTYPE means a current list/
+          // hash and must be preserved.
+          const scalar = await client.get(key).then((value: unknown) => ({ ok: true, value })).catch(() => ({ ok: false, value: null }))
+          if (scalar.ok && scalar.value !== null) {
+            legacyStringsRemoved += Number(await client.del(key).catch(() => 0)) || 0
+          }
+        }
+        const keys = await scanRedisKeys(client, `indications:current:${id}:*`)
+        const prefix = `indications:current:${id}:`
+        const symbols = Array.from(new Set(keys.map((key) => String(key).slice(prefix.length)).filter(Boolean)))
+        if (symbols.length > 0) {
+          await client.sadd(`idx:indications:current:${id}`, ...symbols).catch(() => 0)
+          indexedSymbols += symbols.length
+        }
+      }
+
+      const now = new Date().toISOString()
+      await client.hset("system:database:coordination:performance", {
+        current_indication_snapshots: "per-symbol-indexed",
+        current_indication_symbols_indexed: String(indexedSymbols),
+        legacy_indication_strings_removed: String(legacyStringsRemoved),
+        schema_version: "77",
+        updated_at: now,
+      }).catch(() => 0)
+      console.log(`[v0] Migration 077: indexed ${indexedSymbols} current indication symbol snapshots`)
+    },
+    down: async (client: any) => {
+      await client.set("_schema_version", "76")
+    },
+  },
+  {
+    version: 78,
+    name: "078-coherent-strategy-set-snapshots",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      let staleFieldsRemoved = 0
+      let unsafeRealSnapshotsRemoved = 0
+      const parseSymbols = (value: unknown): string[] => {
+        if (Array.isArray(value)) return value.map(String).map((s) => s.trim().toUpperCase()).filter(Boolean)
+        const raw = String(value ?? "").trim()
+        if (!raw) return []
+        try {
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed)) return parsed.map(String).map((s) => s.trim().toUpperCase()).filter(Boolean)
+        } catch { /* legacy delimiter format */ }
+        return raw.split(/[|,\s]+/).map((s) => s.trim().toUpperCase()).filter(Boolean)
+      }
+
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        const settingsRows = await Promise.all([
+          client.hgetall(`connection:${id}`).catch(() => ({})),
+          client.hgetall(`settings:connection:${id}`).catch(() => ({})),
+          client.hgetall(`connection_settings:${id}`).catch(() => ({})),
+          client.hgetall(`settings:trade_engine_state:${id}`).catch(() => ({})),
+        ])
+        const merged = Object.assign({}, ...settingsRows) as Record<string, string>
+        let selected = parseSymbols(merged.force_symbols)
+        if (selected.length === 0) selected = parseSymbols(merged.active_symbols)
+        if (selected.length === 0) selected = parseSymbols(merged.selected_symbols)
+        if (selected.length === 0) {
+          const nestedRaw = String(merged.connection_settings || "").trim()
+          if (nestedRaw) {
+            try {
+              const nested = JSON.parse(nestedRaw)
+              selected = parseSymbols(nested.force_symbols || nested.active_symbols || nested.selected_symbols)
+            } catch { /* malformed legacy nested settings */ }
+          }
+        }
+        const selectedSet = new Set(selected)
+        if (selectedSet.size > 0) {
+          for (const key of [
+            `strategies_active:${id}`,
+            `indications_active:${id}`,
+            `indications_window:${id}:last5`,
+            `indications_window:${id}:last60min`,
+          ]) {
+            const hash = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+            const staleFields = Object.keys(hash).filter((field) => {
+              const separator = field.indexOf(":")
+              if (separator <= 0) return false
+              return !selectedSet.has(field.slice(0, separator).toUpperCase())
+            })
+            for (let offset = 0; offset < staleFields.length; offset += 250) {
+              const batch = staleFields.slice(offset, offset + 250)
+              if (batch.length > 0) staleFieldsRemoved += Number(await client.hdel(key, ...batch).catch(() => 0)) || 0
+            }
+          }
+        }
+
+        const realKeys = await scanRedisKeys(client, `strategies:${id}:*:real:sets`)
+        for (const realKey of realKeys) {
+          const raw = await client.get(realKey).catch(() => null)
+          if (typeof raw !== "string" || !raw.trim()) continue
+          let stored: any
+          try { stored = JSON.parse(raw) } catch { continue }
+          const unsafeV1 = stored?._slim === true && Array.isArray(stored?.setKeys) && !Array.isArray(stored?.sets)
+          if (!unsafeV1) continue
+          const liveKey = String(realKey).replace(/:real:sets$/, ":live:sets")
+          unsafeRealSnapshotsRemoved += Number(await client.del(realKey, liveKey).catch(() => 0)) || 0
+        }
+      }
+
+      const now = new Date().toISOString()
+      await client.hset("system:database:coordination:performance", {
+        strategy_active_snapshot: "symbol-local-atomic-real-live-v2",
+        strategy_real_snapshot: "bounded-derived-scalars-v2",
+        stale_symbol_snapshot_fields_removed: String(staleFieldsRemoved),
+        unsafe_real_v1_snapshots_removed: String(unsafeRealSnapshotsRemoved),
+        schema_version: "78",
+        updated_at: now,
+      }).catch(() => 0)
+      console.log(`[v0] Migration 078: removed stale fields=${staleFieldsRemoved}, unsafe Real/Live snapshots=${unsafeRealSnapshotsRemoved}`)
+    },
+    down: async (client: any) => {
+      await client.set("_schema_version", "77")
+    },
+  },
+  {
+    version: 79,
+    name: "079-repair-hourly-statistics-rollups",
+    up: async (client: any) => {
+      const purgeIndexedRows = async (indexKey: string, rowPrefix: string): Promise<number> => {
+        const ids: string[] = ((await client.smembers(indexKey).catch(() => [])) || [])
+          .map(String)
+          .filter(Boolean)
+        let removed = 0
+        for (let offset = 0; offset < ids.length; offset += 250) {
+          const keys = ids.slice(offset, offset + 250).map((id) => `${rowPrefix}:${id}`)
+          if (keys.length > 0) removed += Number(await client.del(...keys).catch(() => 0)) || 0
+        }
+        await client.del(indexKey).catch(() => 0)
+        return removed
+      }
+
+      // Migration 075 removed the legacy rows that existed at that point, but
+      // the SQL compatibility shim kept creating new rows afterward. Version
+      // 079 repairs already-upgraded installations after the runtime writer is
+      // switched to bounded hourly hashes.
+      const [indicationRowsRemoved, realRowsRemoved] = await Promise.all([
+        purgeIndexedRows("indications", "indications"),
+        purgeIndexedRows("strategies_real", "strategies_real"),
+      ])
+      const now = new Date().toISOString()
+      await client.hset("system:database:coordination:performance", {
+        high_frequency_statistics_storage: "bounded-hourly-rollups-v2",
+        statistics_rollup_retention_hours: String(8 * 24),
+        repaired_indication_rows_removed: String(indicationRowsRemoved),
+        repaired_strategy_real_rows_removed: String(realRowsRemoved),
+        schema_version: "79",
+        updated_at: now,
+      }).catch(() => 0)
+      console.log(`[v0] Migration 079: removed ${indicationRowsRemoved + realRowsRemoved} post-075 high-frequency statistic rows`)
+    },
+    down: async (client: any) => {
+      // Purged telemetry rows are intentionally not recreated on rollback.
+      await client.set("_schema_version", "78")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {
@@ -3936,8 +4242,8 @@ async function ensureBaseConnections(client: any): Promise<{ createdOrUpdated: n
   let createdOrUpdated = 0
   let credentialsInjected = 0
 
-  // Default symbol count: 4 for all modes. Controlled via V0_DEV_SYMBOL_COUNT env var.
-  const DEFAULT_SYMBOL_COUNT = String(Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "4", 10) || 4))
+  // Default symbol count is one; explicit environment/settings choices can scale it.
+  const DEFAULT_SYMBOL_COUNT = String(Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1))
 
   // bybit-x03 is NO LONGER in this list: it is once again a canonical base
   // connection (see BASE_CONNECTION_CONFIG) and is always inited + visible
@@ -4232,7 +4538,7 @@ if (!hasExisting) {
   _g.__v0_devBootGuardDone = true
   //
   // 1. ENFORCE SYMBOL COUNT on bingx-x01.
-  //    V0_DEV_SYMBOL_COUNT controls how many symbols to use (default 4).
+  //    V0_DEV_SYMBOL_COUNT controls how many symbols to use (default 1).
   //    When set to 1 we pin force_symbols=["BTCUSDT"] as the cheapest safe
   //    fixture. When set to N>1 we write symbol_count=N and symbol_order=
   //    volatility_1h so getSymbols() resolves the top-N dynamically.
@@ -4246,7 +4552,7 @@ if (!hasExisting) {
   //    dangling index members and expired dedup locks are safe to remove here.
   {
     const DEV_CONN  = "bingx-x01"
-    const devSymCount = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "4", 10) || 4)
+    const devSymCount = Math.max(1, parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? "1", 10) || 1)
     // All key namespaces that getSymbols() reads.
     const devHashes = [
       `connection:${DEV_CONN}`,

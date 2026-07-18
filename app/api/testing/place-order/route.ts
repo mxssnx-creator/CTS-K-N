@@ -1,11 +1,19 @@
 import { NextRequest, NextResponse } from "next/server"
 import { initRedis } from "@/lib/redis-db"
 import { placeLiveOrder } from "@/lib/live-order-service"
+import { authorizeAdminBearer } from "@/lib/admin-auth"
 
 export const dynamic = "force-dynamic"
 
 export async function POST(req: NextRequest) {
   try {
+    const authorization = authorizeAdminBearer(req.headers.get("authorization"))
+    if (!authorization.ok) {
+      return NextResponse.json(
+        { success: false, error: authorization.error },
+        { status: authorization.status },
+      )
+    }
     await initRedis()
     const body = await req.json()
     const { connectionId, symbol, side, quantity, leverage } = body

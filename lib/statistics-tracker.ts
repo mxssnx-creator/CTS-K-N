@@ -1,5 +1,29 @@
-import { query } from "@/lib/db"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
+
+const HOUR_MS = 60 * 60 * 1000
+const STATISTICS_ROLLUP_MAX_HOURS = 7 * 24
+const STATISTICS_ROLLUP_RETENTION_SECONDS = 8 * 24 * 60 * 60
+
+type RollupKind = "indications" | "strategies"
+
+function safeMetric(value: unknown): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function metricType(value: string): string {
+  return String(value || "unknown").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "_") || "unknown"
+}
+
+function rollupKey(kind: RollupKind, connectionId: string, timestamp = Date.now()): string {
+  return `statistics:hourly:${kind}:${connectionId}:${Math.floor(timestamp / HOUR_MS)}`
+}
+
+function rollupKeys(kind: RollupKind, connectionId: string, hoursBack: number, timestamp = Date.now()): string[] {
+  const count = Math.max(1, Math.min(STATISTICS_ROLLUP_MAX_HOURS, Math.ceil(safeMetric(hoursBack) || 24)))
+  const current = Math.floor(timestamp / HOUR_MS)
+  return Array.from({ length: count }, (_, offset) => `statistics:hourly:${kind}:${connectionId}:${current - offset}`)
+}
 
 /**
  * Track indication statistics - called after each indication processing cycle
@@ -14,44 +38,50 @@ export async function trackIndicationStats(
   confidence: number
 ): Promise<void> {
   try {
-    await query(
-      `INSERT INTO indications (connection_id, symbol, type, value, confidence, calculated_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-      [connectionId, symbol, indicationType, value, confidence]
-    )
-  } catch (e) {
-    console.warn(`[v0] [Stats] Failed to track indication in DB:`, e instanceof Error ? e.message : String(e))
-  }
-
-  // Track in Redis using counters (not unbounded sets) for dashboard counts.
-  // Fan out all writes concurrently so we don't pay 9 sequential Redis
-  // round-trips for every indication result.
-  //
-  // NOTE: Do NOT increment progression hash counters here.
-  // Processors (engine-manager, config-set-processor) already write aggregate
-  // counts to progression:{connectionId}:indications_count on their cycle completion.
-  // Tracking per-indication here would double-count (statement-level vs. aggregate-level).
-  //
-  // DEV-MODE BYPASS — must be before any client calls (Promise construction fires
-  // the write synchronously in InlineLocalRedis). 20 symbols × 4 types × 3 keys
-  // = 240 keys/cycle; skip entirely in dev (reads are non-critical for engine).
-  if (process.env.NODE_ENV === "development") return
-  try {
     await initRedis()
     const client = getRedisClient()
+    const type = metricType(indicationType)
+    const hourlyKey = rollupKey("indications", connectionId)
 
-    const typeCountKey = `indications:${connectionId}:${indicationType}:count`
+    // One expiring hash per connection/hour replaces the former SQL-shim
+    // INSERT-per-result path. At 15 symbols and hundreds of cycles the old
+    // path created tens of thousands of permanent hashes in two minutes.
+    // The hourly form stays bounded to 168 hashes per connection while still
+    // preserving 24h/7d aggregate statistics.
+    const writes: Promise<any>[] = [
+      client.hincrby(hourlyKey, `${type}:count`, 1),
+      client.hincrbyfloat(hourlyKey, `${type}:value_sum`, safeMetric(value)),
+      client.hincrbyfloat(hourlyKey, `${type}:confidence_sum`, safeMetric(confidence)),
+      client.hset(hourlyKey, `${type}:latest`, JSON.stringify({ symbol, value, confidence, timestamp: Date.now() })),
+      client.expire(hourlyKey, STATISTICS_ROLLUP_RETENTION_SECONDS),
+    ]
+
+    // Track in Redis using counters (not unbounded sets) for dashboard counts.
+    // Fan out all writes concurrently so we don't pay sequential round-trips
+    // for every indication result.
+  //
+    // NOTE: Do NOT increment progression hash counters here. Processors already
+    // own those aggregates; tracking each result would double-count them.
+    // Development keeps only the bounded hourly rollup and skips legacy flat
+    // counters so high-volume HMR tests remain lightweight.
+    if (process.env.NODE_ENV === "development") {
+      await Promise.all(writes)
+      return
+    }
+
+    const typeCountKey = `indications:${connectionId}:${type}:count`
     const totalCountKey = `indications:${connectionId}:count`
-    const latestKey = `indications:${connectionId}:${indicationType}:latest`
+    const latestKey = `indications:${connectionId}:${type}:latest`
 
-    await Promise.all([
+    writes.push(
       client.incr(typeCountKey),
       client.expire(typeCountKey, 86400),
       client.incr(totalCountKey),
       client.expire(totalCountKey, 86400),
       client.set(latestKey, JSON.stringify({ symbol, value, confidence, timestamp: Date.now() })),
       client.expire(latestKey, 3600),
-    ])
+    )
+    await Promise.all(writes)
   } catch (e) {
     console.error(`[v0] [Stats] Failed to track indication in Redis:`, e instanceof Error ? e.message : String(e))
   }
@@ -71,33 +101,42 @@ export async function trackStrategyStats(
   drawdownTimeMinutes: number
 ): Promise<void> {
   try {
-    await query(
-      `INSERT INTO strategies_real (connection_id, symbol, type, count, passed_count, avg_profit_factor, avg_drawdown_time, evaluated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-      [connectionId, symbol, strategyType, totalCreated, passedCount, profitFactor, Math.round(drawdownTimeMinutes)]
-    )
-  } catch (e) {
-    console.warn(`[v0] [Stats] Failed to track strategy:`, e instanceof Error ? e.message : String(e))
-  }
-
-  // DEV-MODE BYPASS: These per-strategy-type Redis writes (count, eval, passed,
-  // latest) are written per symbol × per strategy type × per cycle. At 20 symbols
-  // × 10 types × 5 keys each = 1000 new keys/cycle in the InlineLocalRedis Map.
-  // This is the primary source of the 58-key/20.1MB strategies:bingx-x01 family.
-  // IMPORTANT: the bypass must be BEFORE any client.incrby/set calls — Promise
-  // construction fires the write immediately in InlineLocalRedis (no lazy eval).
-  if (process.env.NODE_ENV === "development") return
-  try {
     await initRedis()
     const client = getRedisClient()
-
-    const typeCountKey = `strategies:${connectionId}:${strategyType}:count`
-    const totalCountKey = `strategies:${connectionId}:count`
-    const evalKey = `strategies:${connectionId}:${strategyType}:evaluated`
-    const passedKey = `strategies:${connectionId}:${strategyType}:passed`
-    const latestKey = `strategies:${connectionId}:${strategyType}:latest`
-
+    const type = metricType(strategyType)
+    const hourlyKey = rollupKey("strategies", connectionId)
     const writes: Promise<any>[] = [
+      client.hincrby(hourlyKey, `${type}:count`, 1),
+      client.hincrbyfloat(hourlyKey, `${type}:created_sum`, safeMetric(totalCreated)),
+      client.hincrbyfloat(hourlyKey, `${type}:passed_sum`, safeMetric(passedCount)),
+      client.hincrbyfloat(hourlyKey, `${type}:pf_sum`, safeMetric(profitFactor)),
+      client.hincrbyfloat(hourlyKey, `${type}:ddt_sum`, safeMetric(drawdownTimeMinutes)),
+      client.hset(hourlyKey, `${type}:latest`, JSON.stringify({
+        symbol,
+        totalCreated,
+        passedCount,
+        profitFactor,
+        drawdownTimeMinutes,
+        timestamp: Date.now(),
+      })),
+      client.expire(hourlyKey, STATISTICS_ROLLUP_RETENTION_SECONDS),
+    ]
+
+    // Development keeps the bounded hourly rollup but skips the compatibility
+    // flat counters. Production retains both because existing dashboards still
+    // consume the flat 24h/latest fields.
+    if (process.env.NODE_ENV === "development") {
+      await Promise.all(writes)
+      return
+    }
+
+    const typeCountKey = `strategies:${connectionId}:${type}:count`
+    const totalCountKey = `strategies:${connectionId}:count`
+    const evalKey = `strategies:${connectionId}:${type}:evaluated`
+    const passedKey = `strategies:${connectionId}:${type}:passed`
+    const latestKey = `strategies:${connectionId}:${type}:latest`
+
+    writes.push(
       client.incrby(typeCountKey, 1),
       client.expire(typeCountKey, 86400),
       client.incrby(totalCountKey, 1),
@@ -107,7 +146,7 @@ export async function trackStrategyStats(
         JSON.stringify({ symbol, totalCreated, passedCount, profitFactor, drawdownTimeMinutes, timestamp: Date.now() }),
       ),
       client.expire(latestKey, 3600),
-    ]
+    )
     if (totalCreated > 0) {
       writes.push(client.incrby(evalKey, totalCreated), client.expire(evalKey, 86400))
     }
@@ -118,7 +157,7 @@ export async function trackStrategyStats(
     // NOTE: Per-stage progression hash fields (strategies_base_total, strategies_main_total,
     // strategies_real_total, strategy_evaluated_*) are written exclusively by StrategyCoordinator
     // to avoid double-counting. trackStrategyStats only writes to the flat counter keys above
-    // and to the SQL strategies_real table for historical analytics.
+    // while the hourly rollup above owns historical analytics.
   } catch (e) {
     console.error(`[v0] [Stats] Failed to track strategy in Redis:`, e instanceof Error ? e.message : String(e))
   }
@@ -129,14 +168,27 @@ export async function trackStrategyStats(
  */
 export async function getIndicationStats(connectionId: string, hoursBack: number = 24): Promise<any> {
   try {
-    const stats = await query(
-      `SELECT type, COUNT(*) as count, AVG(value) as avg_value, AVG(confidence) as avg_confidence
-       FROM indications
-       WHERE connection_id = ? AND calculated_at > datetime('now', ?)
-       GROUP BY type`,
-      [connectionId, `-${hoursBack} hours`]
-    )
-    return stats || []
+    await initRedis()
+    const client = getRedisClient()
+    const rows = await Promise.all(rollupKeys("indications", connectionId, hoursBack).map((key) => client.hgetall(key).catch(() => ({}))))
+    const totals = new Map<string, { count: number; value: number; confidence: number }>()
+    for (const row of rows) {
+      for (const [field, raw] of Object.entries(row || {})) {
+        const match = field.match(/^(.+):(count|value_sum|confidence_sum)$/)
+        if (!match) continue
+        const current = totals.get(match[1]) || { count: 0, value: 0, confidence: 0 }
+        if (match[2] === "count") current.count += safeMetric(raw)
+        if (match[2] === "value_sum") current.value += safeMetric(raw)
+        if (match[2] === "confidence_sum") current.confidence += safeMetric(raw)
+        totals.set(match[1], current)
+      }
+    }
+    return Array.from(totals.entries()).map(([type, total]) => ({
+      type,
+      count: total.count,
+      avg_value: total.count > 0 ? total.value / total.count : 0,
+      avg_confidence: total.count > 0 ? total.confidence / total.count : 0,
+    }))
   } catch (e) {
     console.warn(`[v0] [Stats] Failed to get indication stats:`, e instanceof Error ? e.message : String(e))
     return []
@@ -148,15 +200,31 @@ export async function getIndicationStats(connectionId: string, hoursBack: number
  */
 export async function getStrategyStats(connectionId: string, hoursBack: number = 24): Promise<any> {
   try {
-    const stats = await query(
-      `SELECT type, COUNT(*) as count, SUM(passed_count) as total_passed, 
-              AVG(avg_profit_factor) as avg_profit_factor, AVG(avg_drawdown_time) as avg_drawdown_time
-       FROM strategies_real
-       WHERE connection_id = ? AND evaluated_at > datetime('now', ?)
-       GROUP BY type`,
-      [connectionId, `-${hoursBack} hours`]
-    )
-    return stats || []
+    await initRedis()
+    const client = getRedisClient()
+    const rows = await Promise.all(rollupKeys("strategies", connectionId, hoursBack).map((key) => client.hgetall(key).catch(() => ({}))))
+    const totals = new Map<string, { count: number; created: number; passed: number; pf: number; ddt: number }>()
+    for (const row of rows) {
+      for (const [field, raw] of Object.entries(row || {})) {
+        const match = field.match(/^(.+):(count|created_sum|passed_sum|pf_sum|ddt_sum)$/)
+        if (!match) continue
+        const current = totals.get(match[1]) || { count: 0, created: 0, passed: 0, pf: 0, ddt: 0 }
+        if (match[2] === "count") current.count += safeMetric(raw)
+        if (match[2] === "created_sum") current.created += safeMetric(raw)
+        if (match[2] === "passed_sum") current.passed += safeMetric(raw)
+        if (match[2] === "pf_sum") current.pf += safeMetric(raw)
+        if (match[2] === "ddt_sum") current.ddt += safeMetric(raw)
+        totals.set(match[1], current)
+      }
+    }
+    return Array.from(totals.entries()).map(([type, total]) => ({
+      type,
+      count: total.count,
+      total_created: total.created,
+      total_passed: total.passed,
+      avg_profit_factor: total.count > 0 ? total.pf / total.count : 0,
+      avg_drawdown_time: total.count > 0 ? total.ddt / total.count : 0,
+    }))
   } catch (e) {
     console.warn(`[v0] [Stats] Failed to get strategy stats:`, e instanceof Error ? e.message : String(e))
     return []

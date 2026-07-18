@@ -35,6 +35,12 @@ export {
 import { getRedisClient, initRedis as initRedisDb, getAllConnections as redisGetAll, getSettings as redisGetSettings, setSettings as redisSetSettings, getConnection as redisGetConnection, getMarketData as redisGetMarketData, saveMarketData as redisSetMarketData } from "./redis-db"
 import { nanoid } from "nanoid"
 
+// These former SQL event tables are intentionally aggregate-only. Routing
+// every indication/Real-stage evaluation to one Redis hash minted more than
+// 67k permanent keys in a two-minute 15-symbol production soak. Callers must
+// use statistics-tracker's bounded hourly rollups instead.
+const HIGH_FREQUENCY_ROLLUP_ONLY_TABLES = new Set(["indications", "strategies_real"])
+
 /** Always returns "redis" */
 export function getDatabaseType(): string {
   return "redis"
@@ -305,6 +311,12 @@ async function routeQuery(queryText: string, params: any[] = []): Promise<{ rows
       const tableMatch = upper.match(/INTO\s+(\w+)/i)
       if (tableMatch) {
         const table = tableMatch[1].toLowerCase()
+        if (HIGH_FREQUENCY_ROLLUP_ONLY_TABLES.has(table)) {
+          return {
+            rows: [{ id: `bounded-hourly-rollup:${table}`, created_at: new Date().toISOString() }],
+            rowCount: 0,
+          }
+        }
         const id = nanoid()
         const client = getRedisClient()
         

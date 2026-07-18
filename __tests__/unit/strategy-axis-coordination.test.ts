@@ -1,4 +1,7 @@
 import {
+  compactStrategySetForStorage,
+  coordinateActiveRealLiveCounts,
+  hydrateStrategySetSnapshots,
   selectLiveSetsWithActivePriority,
   StrategyCoordinator,
   type StrategySet,
@@ -117,5 +120,53 @@ describe("strategy position-count axis coordination", () => {
 
     expect(result.selected).toHaveLength(2)
     expect(new Set(result.selected.map((set) => set.setKey))).toEqual(new Set([first.setKey, second.setKey]))
+  })
+
+  test("round-trips derived Real Set scalars through compact v2 snapshots", () => {
+    const base = baseSet([2, -1, 3, -1])
+    const derived: StrategySet = {
+      ...base,
+      setKey: `${base.setKey}#block:active:2`,
+      parentSetKey: base.setKey,
+      variant: "block",
+      variantSizeMultiplier: 1.4,
+      variantLeverage: 3,
+      blockVolumeRatio: 0.7,
+      axisWindows: { prev: 4, last: 2, cont: 1, pause: 0, direction: "long", outcome: "pos" },
+    }
+
+    const compact = compactStrategySetForStorage(derived)
+    expect(compact).not.toHaveProperty("entries")
+    const hydrated = hydrateStrategySetSnapshots([compact], [base])
+    expect(hydrated).toHaveLength(1)
+    expect(hydrated[0]).toMatchObject({
+      setKey: derived.setKey,
+      parentSetKey: base.setKey,
+      variant: "block",
+      variantSizeMultiplier: 1.4,
+      variantLeverage: 3,
+      blockVolumeRatio: 0.7,
+      axisWindows: derived.axisWindows,
+    })
+    expect(hydrated[0].entries).toBe(base.entries)
+  })
+
+  test("fails closed when a compact derived snapshot has no Base parent", () => {
+    const derived = {
+      ...baseSet([]),
+      setKey: "BTCUSDT:direction:long#dca",
+      parentSetKey: "missing-base",
+      variant: "dca" as const,
+    }
+    expect(hydrateStrategySetSnapshots([compactStrategySetForStorage(derived)], [])).toEqual([])
+  })
+
+  test("coordinates Real and Live counts from one exact active snapshot", () => {
+    const real = [
+      { ...baseSet([]), setKey: "real:active" },
+      { ...baseSet([]), setKey: "real:candidate" },
+    ]
+    const counts = coordinateActiveRealLiveCounts(real, [real[0]], new Set(["real:active"]))
+    expect(counts).toEqual({ real: 1, live: 1, liveEvaluated: 2 })
   })
 })

@@ -10,6 +10,11 @@ coordination works in two deployment shapes:
    external scheduler process. The scheduler calls both protected continuity
    routes once per minute without overlapping its own ticks.
 
+Cloudflare/OpenNext deployments use the checked-in `custom-worker.ts` scheduled
+handler and the `* * * * *` trigger in `wrangler.jsonc`. The same config marks
+request workers with `DISABLE_TRADE_ENGINE_IN_PROCESS=1`; a request worker must
+never claim it can retain a sub-second engine loop after a response ends.
+
 ## External scheduler process
 
 Set the same secret in the application and scheduler environment:
@@ -46,7 +51,11 @@ existing `scheduled()` worker remains supported through `wrangler.jsonc`.
   are appropriate only for one long-lived server and cannot coordinate several
   machines.
 - Run exactly one dedicated engine owner. Passive API workers should set
-  `DISABLE_TRADE_ENGINE_AUTOSTART=1` and `DISABLE_IN_PROCESS_CONTINUITY=1`.
+  `DISABLE_TRADE_ENGINE_IN_PROCESS=1` and `DISABLE_IN_PROCESS_CONTINUITY=1`.
+- The one-minute scheduler is a continuity/recovery safety net. Actual
+  200–300 ms market processing and order coordination requires one long-lived
+  Node engine owner (for example `next start` under Docker, PM2, or systemd)
+  connected to the same shared Redis as the UI/API deployment.
 - Do not expose `CRON_SECRET` through a `NEXT_PUBLIC_` variable.
 - Verify configuration with `pnpm test:scheduler:minute`, then run
   `pnpm scheduler:minute:once` against the deployment.

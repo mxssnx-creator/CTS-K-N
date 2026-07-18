@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-/** Safe 12-symbol development-mode engine soak with paper positions only. */
+/** Safe bounded development-mode engine soak with paper positions only. */
 
 import { spawn } from "node:child_process"
 import { rmSync } from "node:fs"
@@ -10,6 +10,11 @@ const port = Number(process.env.PORT || 3103)
 const baseUrl = `http://127.0.0.1:${port}`
 const nextBin = "node_modules/next/dist/bin/next"
 const snapshotPath = `/tmp/cts-dev-preview-${process.pid}.json`
+const debugAdminSecret = `cts-dev-soak-${process.pid}-admin-secret`
+const maxSymbolsRequested = process.argv.includes("--max-symbols")
+const devSoakSymbolCount = maxSymbolsRequested
+  ? 32
+  : Math.max(1, Math.min(32, Number(process.env.DEV_SOAK_SYMBOL_COUNT || 12)))
 let outputTail = ""
 
 rmSync(snapshotPath, { force: true })
@@ -40,9 +45,10 @@ function runSoakVerifier() {
         BASE_URL: baseUrl,
         PORT: String(port),
         START_SIMULATED_ENGINE: "1",
-        SYMBOL_COUNT: "12",
+        SYMBOL_COUNT: String(devSoakSymbolCount),
         SOAK_DURATION_MS: process.env.DEV_SOAK_DURATION_MS || "60000",
         RUNTIME_MODE: "development",
+        SOAK_ADMIN_SECRET: debugAdminSecret,
       },
       stdio: "inherit",
     })
@@ -75,12 +81,14 @@ async function main() {
       ALLOW_PROD_SIMULATED: "1",
       FORCE_SIMULATED: "1",
       FORCE_LIVE: "0",
-      V0_DEV_SYMBOL_COUNT: "12",
+      V0_DEV_SYMBOL_COUNT: String(devSoakSymbolCount),
       ENGINE_SYMBOL_CONCURRENCY: process.env.DEV_ENGINE_SYMBOL_CONCURRENCY || "2",
       STRATEGY_FLOW_SYMBOL_CONCURRENCY: process.env.DEV_STRATEGY_SYMBOL_CONCURRENCY || "2",
       PREHISTORIC_SYMBOL_CONCURRENCY: process.env.DEV_PREHISTORIC_SYMBOL_CONCURRENCY || "1",
       MARKET_DATA_LOAD_CONCURRENCY: "1",
-      CRON_SYMBOL_LIMIT: "12",
+      CRON_SYMBOL_LIMIT: String(devSoakSymbolCount),
+      REDIS_DEBUG_ENABLED: "1",
+      ADMIN_SECRET: debugAdminSecret,
       BINGX_API_KEY: "",
       BINGX_API_SECRET: "",
       BYBIT_API_KEY: "",
@@ -104,7 +112,7 @@ async function main() {
     console.log(JSON.stringify({
       success: true,
       mode: "development-paper-engine",
-      symbols: 12,
+      symbols: devSoakSymbolCount,
       realExchangeOrdersSubmitted: 0,
     }, null, 2))
   } finally {

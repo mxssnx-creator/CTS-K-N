@@ -42,7 +42,7 @@ describe("GlobalTradeEngineCoordinator.startEngine lock contention", () => {
     const source = read("lib/trade-engine.ts")
     const startEngine = source.slice(
       source.indexOf("async startEngine(connectionId: string"),
-      source.indexOf("// Self-heal background timers"),
+      source.indexOf("// Step 2: Check if already running", source.indexOf("async startEngine(connectionId: string")),
     )
 
     expect(startEngine).toContain("const forceLocalTakeover = options.forceLocalTakeover === true || config.allowInProcessStart === true")
@@ -51,6 +51,32 @@ describe("GlobalTradeEngineCoordinator.startEngine lock contention", () => {
     expect(startEngine).toContain("Vercel serverless workers are queued-only for passive starts without explicit foreground worker flags")
     expect(startEngine).toContain("if (!forceLocalTakeover && !this.canOwnEngineRuntime())")
     expect(startEngine).toContain("queued-only in this production API worker")
+  })
+
+  test("stopped generations are detached before restart and during global pause", () => {
+    const source = read("lib/trade-engine.ts")
+    const startEngine = source.slice(
+      source.indexOf("async startEngine(connectionId: string"),
+      source.indexOf("// Step 2: Check if already running", source.indexOf("async startEngine(connectionId: string")),
+    )
+    const pauseBlock = source.slice(
+      source.indexOf("async pause(): Promise<void>"),
+      source.indexOf("async resume(options:", source.indexOf("async pause(): Promise<void>")),
+    )
+
+    expect(startEngine).toContain("const existingManager = this.engineManagers.get(connectionId)")
+    expect(startEngine).toContain("if (existingManager?.isEngineRunning === true)")
+    expect(startEngine).toContain("this.engineManagers.delete(connectionId)")
+    expect(startEngine.indexOf("this.startingEngines.add(connectionId)")).toBeLessThan(
+      startEngine.indexOf("this.engineManagers.delete(connectionId)"),
+    )
+
+    expect(pauseBlock).toContain("await manager.stop()")
+    expect(pauseBlock).toContain("if (this.engineManagers.get(connectionId) === manager)")
+    expect(pauseBlock).toContain("this.engineManagers.delete(connectionId)")
+    expect(pauseBlock.indexOf("await manager.stop()")).toBeLessThan(
+      pauseBlock.indexOf("this.engineManagers.delete(connectionId)"),
+    )
   })
 
   test("dev and explicit long-lived node start paths are not blocked by the queued-only production gate", () => {

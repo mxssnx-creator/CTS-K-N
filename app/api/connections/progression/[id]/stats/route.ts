@@ -192,7 +192,10 @@ function aggregateOrdersBySymbol(
 
   const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto", "trend"] as const
 
-  function aggregateIndicationSnapshot(hash: Record<string, string> | null | undefined): {
+  function aggregateIndicationSnapshot(
+    hash: Record<string, string> | null | undefined,
+    allowedSymbols?: ReadonlySet<string>,
+  ): {
     counts: Record<string, number>
     activeSets: Record<string, number>
   } {
@@ -216,12 +219,18 @@ function aggregateOrdersBySymbol(
     for (const field of Object.keys(fields)) {
       const idx = field.lastIndexOf(":")
       if (idx <= 0) continue
+      const symbol = field.slice(0, idx).toUpperCase()
+      if (allowedSymbols && allowedSymbols.size > 0 && !allowedSymbols.has(symbol)) continue
       const type = field.slice(idx + 1)
       if (type in hasScopedField) hasScopedField[type] = true
     }
 
     for (const [field, raw] of Object.entries(fields)) {
       const idx = field.lastIndexOf(":")
+      if (idx > 0) {
+        const symbol = field.slice(0, idx).toUpperCase()
+        if (allowedSymbols && allowedSymbols.size > 0 && !allowedSymbols.has(symbol)) continue
+      }
       const type = idx > 0 ? field.slice(idx + 1) : field
       if (!(type in counts)) continue
       if (idx <= 0 && hasScopedField[type]) continue
@@ -645,6 +654,12 @@ export async function GET(
     const engineProgressSubTotal = ep?.phase === "prehistoric_data" ? n(ep?.sub_total) : 0
     const activeSnapshotSymbolTotal = n(activeProgression.symbol_count)
     const currentSelectedSymbols = normalizeSymbolList((connection as any)?.force_symbols || (connection as any)?.active_symbols || (connection as any)?.selected_symbols)
+    const activeStatsSymbolList = currentSelectedSymbols.length > 0
+      ? currentSelectedSymbols
+      : canonicalSelectedSymbols.length > 0
+        ? canonicalSelectedSymbols
+        : quickstartSymbols
+    const activeStatsSymbolFilter = new Set(activeStatsSymbolList.map((symbol) => symbol.toUpperCase()))
     const canonicalCurrentTotal = activeSnapshotSymbolTotal > 0
       ? activeSnapshotSymbolTotal
       : activeQuickstartTotal > 0
@@ -1446,7 +1461,10 @@ export async function GET(
         ? (_stratActiveHash as Record<string, string>)
         : null
       if (indActiveHash && typeof indActiveHash === "object") {
-        const snapshot = aggregateIndicationSnapshot(indActiveHash as Record<string, string>)
+        const snapshot = aggregateIndicationSnapshot(
+          indActiveHash as Record<string, string>,
+          activeStatsSymbolFilter,
+        )
         for (const type of INDICATION_TYPES) {
           activeIndByType[type] = snapshot.counts[type] || 0
           activeSetsIndByType[type] = snapshot.activeSets[type] || 0
@@ -1463,6 +1481,8 @@ export async function GET(
           // which never matches "base:evaluated" — the root cause of baseEvaluated=0.
           const firstColon = field.indexOf(":")
           if (firstColon <= 0) continue
+          const fieldSymbol = field.slice(0, firstColon).toUpperCase()
+          if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(fieldSymbol)) continue
           const suffix = field.slice(firstColon + 1)   // e.g. "base", "main", "real", "base:evaluated"
           const numVal = n(val)
           // Fields ending in ":evaluated" are written by the engine to give cross-symbol
@@ -1559,7 +1579,7 @@ export async function GET(
     // it selects directly from the bounded Real output and must remain a subset.
     // A stats read can still race the Real/Live writes, so clamp only that true
     // subset invariant and expose the writer race through a throttled warning.
-    if (stratCounts.real > 0 && stratCounts.live > stratCounts.real) {
+    if (stratCounts.live > stratCounts.real) {
       throttledStatsWarn(
         `${connectionId}:live-gt-real`,
         `[STATS-VALIDATION] ${connectionId}: live (${stratCounts.live}) > real (${stratCounts.real}). ` +
@@ -2204,6 +2224,7 @@ export async function GET(
       for (const k of Object.keys(dh)) {
         if (!k.startsWith("s:") || !k.endsWith(":ts")) continue
         const symbol = k.slice(2, -3)
+        if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol.toUpperCase())) continue
         const ts = Number(dh[k] || "0") || 0
         const fresh = (nowMs - ts) <= FRESH_MS
         const sCreated     = Number(dh[`s:${symbol}:created`]    || 0) || 0

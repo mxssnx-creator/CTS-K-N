@@ -18,6 +18,7 @@
  *   last_update              — HSET (ISO timestamp)
  */
 import { NextResponse } from "next/server"
+import { fetchBingXPublic } from "@/lib/bingx-public-api"
 import { isTruthyFlag, isConnectionInActivePanel } from "@/lib/connection-state-utils"
 import { filterCronFallbackConnections, getCronEngineEligibleConnections } from "@/lib/cron-engine-eligibility"
 import { StrategyCoordinator } from "@/lib/strategy-coordinator"
@@ -141,9 +142,10 @@ async function fetchLivePriceFromExchange(symbol: string): Promise<{
   try {
     // BingX public ticker endpoint — no auth required
     const bingxSymbol = symbol.replace("USDT", "-USDT")
-    const res = await fetch(
-      `https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol=${bingxSymbol}`,
-      { signal: AbortSignal.timeout(4000), cache: "no-store" }
+    const res = await fetchBingXPublic(
+      `/openApi/swap/v2/quote/ticker?symbol=${bingxSymbol}`,
+      { cache: "no-store" },
+      { timeoutMs: 4000 },
     )
     if (res.ok) {
       const data = await res.json()

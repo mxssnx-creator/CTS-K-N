@@ -4352,7 +4352,8 @@ export async function executeLivePosition(
     const freshPresetModeEnabled = reCheckPresetEnabled(freshSettings)
     const freshExecutionIntent: "main" | "preset" = freshPresetModeEnabled && !freshMainModeEnabled ? "preset" : "main"
     const freshReadiness = evaluateRealTradeReadiness(freshSettings, freshExecutionIntent)
-    const isStillLive = freshReadiness.canPlaceRealOrders
+    const supervisedSmokeId = await client.get("live_order_smoke:active").catch(() => null)
+    const isStillLive = freshReadiness.canPlaceRealOrders && !supervisedSmokeId
     
     const isTestnetConnection = reCheckTruthy(freshSettings.is_testnet)
     if (isTestnetConnection) {
@@ -4371,8 +4372,9 @@ export async function executeLivePosition(
       livePosition.executionMode = "blocked"
       livePosition.executionBlockCode = freshReadiness.blockCode || undefined
       livePosition.executionBlockReason = freshReadiness.blockReason || undefined
-      livePosition.statusReason =
-        `Exchange order blocked before placement (${freshReadiness.blockCode || "unknown"}): ${freshReadiness.blockReason}`
+      livePosition.statusReason = supervisedSmokeId
+        ? `Exchange order blocked before placement: supervised live-order smoke ${supervisedSmokeId} owns the account gate`
+        : `Exchange order blocked before placement (${freshReadiness.blockCode || "unknown"}): ${freshReadiness.blockReason}`
       pushStep(livePosition, "entry", false, livePosition.statusReason)
       await savePosition(livePosition)
       await incrementMetric(connectionId, "live_orders_blocked_count")

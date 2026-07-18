@@ -568,6 +568,69 @@ export function selectLiveSetsWithActivePriority(
   }
 }
 
+/**
+ * Scalar-only Real Set snapshot persisted between coordinator cycles.
+ *
+ * Base entries are deliberately omitted: every derived Axis/Block/DCA/
+ * Trailing Set references the immutable parent Base Set and reuses that
+ * parent's entries when the snapshot is hydrated. This keeps the Redis value
+ * bounded without losing the per-derived-Set scalars that Live dispatch needs.
+ */
+export type CompactStrategySetSnapshot = Omit<StrategySet, "entries">
+
+export function compactStrategySetForStorage(set: StrategySet): CompactStrategySetSnapshot {
+  const snapshot = { ...set } as StrategySet & Record<string, unknown>
+  delete (snapshot as Partial<StrategySet>).entries
+  // Defensive exclusions for transient coordination views that may be added
+  // by internal hot paths through structural typing.
+  delete snapshot._setView
+  delete snapshot._hasLivePositions
+  return snapshot as CompactStrategySetSnapshot
+}
+
+/**
+ * Reattach compact Real snapshots to their immutable Base entries.
+ * Snapshots whose parent no longer exists fail closed instead of fabricating
+ * an executable Set without a verified configuration entry.
+ */
+export function hydrateStrategySetSnapshots(
+  snapshots: CompactStrategySetSnapshot[],
+  baseSets: StrategySet[],
+): StrategySet[] {
+  const baseByKey = new Map(baseSets.map((set) => [set.setKey, set] as const))
+  const hydrated: StrategySet[] = []
+  const seen = new Set<string>()
+
+  for (const snapshot of snapshots) {
+    const setKey = String(snapshot?.setKey || "")
+    if (!setKey || seen.has(setKey)) continue
+    const parentKey = snapshot.parentSetKey || setKey.split("#")[0]
+    const base = baseByKey.get(setKey) || baseByKey.get(parentKey)
+    if (!base || !Array.isArray(base.entries) || base.entries.length === 0) continue
+    hydrated.push({
+      ...base,
+      ...snapshot,
+      entries: base.entries,
+    })
+    seen.add(setKey)
+  }
+
+  return hydrated
+}
+
+/** One coherent active-count snapshot shared by Real and Live writers. */
+export function coordinateActiveRealLiveCounts(
+  realSets: StrategySet[],
+  liveSets: StrategySet[],
+  activeSetKeys: ReadonlySet<string>,
+): { real: number; live: number; liveEvaluated: number } {
+  return {
+    real: realSets.reduce((count, set) => count + (activeSetKeys.has(set.setKey) ? 1 : 0), 0),
+    live: liveSets.reduce((count, set) => count + (activeSetKeys.has(set.setKey) ? 1 : 0), 0),
+    liveEvaluated: realSets.length,
+  }
+}
+
 // ─����������������������������������������� Position-Count Cartesian Axis Windows (operator spec) ────────────────────
 //
 // At Strategy Main, every Base Set that survives the Base→Main gate fans out
@@ -969,7 +1032,7 @@ export class StrategyCoordinator {
     this._strategyFlowSymbolConcurrencyCache = null
     this._compactionThresholdPctCache = null
 
-    this._activeKeysCache = null
+    this._activeKeysCache.clear()
     this._liveSetKeysCache = null
     this._liveTradingModeCache = null
     this.positionContextCache = null
@@ -1127,7 +1190,7 @@ export class StrategyCoordinator {
    * for any reason (slow symbol, pause, etc.) Main/Real fall back to a
    * fresh fetch instead of trusting old data.
    */
-  private _activeKeysCache: { keys: Set<string>; cycleAt: number } | null = null
+  private _activeKeysCache = new Map<string, { keys: Set<string>; cycleAt: number }>()
 
   /**
    * Per-connection cache of the `setKey`s (and `parentSetKey`s) that
@@ -2410,7 +2473,7 @@ export class StrategyCoordinator {
       for (const key of await this.getOpenLiveSetKeys().catch(() => new Set<string>())) {
         activeKeys.add(key)
       }
-      this._activeKeysCache = { keys: activeKeys, cycleAt: Date.now() }
+      this._activeKeysCache.set(symbol, { keys: activeKeys, cycleAt: Date.now() })
       const baseRunningNow = baseSets.filter((s) => activeKeys.has(s.setKey)).length
       const baseTrailingRunningNow = baseSets.filter(
         (s) => !!s.trailingProfile && activeKeys.has(s.setKey),
@@ -3217,7 +3280,7 @@ export class StrategyCoordinator {
       const redisKey = `progression:${this.connectionId}`
 
       // ── Running-now resolution for Main (cloned/filtered Sets) ──
-      const cache = this._activeKeysCache
+      const cache = this._activeKeysCache.get(symbol)
       const cacheFresh = cache && Date.now() - cache.cycleAt < 30_000
       const activeKeys = cacheFresh
         ? cache!.keys
@@ -4251,7 +4314,7 @@ export class StrategyCoordinator {
       } catch { /* non-critical */ }
     }
 
-    // Persist REAL sets — slim format (set keys only).
+    // Persist REAL sets — compact scalar snapshot format v2.
     // Full Base Set blobs are already persisted at `base:sets` and are the single
     // authoritative source for entries/quality data. Writing only the qualifying
     // key list cuts this payload from ~N×2-5 KB to N×~30 bytes per symbol per cycle.
@@ -4265,7 +4328,9 @@ export class StrategyCoordinator {
     // the key list is only needed for structural queries which tolerate stale data.
     const realKey = `strategies:${this.connectionId}:${symbol}:real:sets`
     await setSettings(realKey, {
+      formatVersion: 2,
       setKeys: realSets.map((s) => s.setKey),
+      sets: realSets.map(compactStrategySetForStorage),
       count:   realSets.length,
       created: new Date(),
       _slim:   true,
@@ -4322,7 +4387,7 @@ export class StrategyCoordinator {
       // the Main-stage logic and guarantees REAL running <= MAIN running,
       // making the cascade filter visible in the dashboard.
       // Reuse _activeKeysCache populated by createBaseSets this cycle.
-      const realActiveCache = this._activeKeysCache
+      const realActiveCache = this._activeKeysCache.get(symbol)
       const realCacheFresh = realActiveCache && Date.now() - realActiveCache.cycleAt < 30_000
       const realActiveBaseKeys = realCacheFresh
         ? realActiveCache!.keys
@@ -4717,15 +4782,21 @@ export class StrategyCoordinator {
       const stored  = await getSettings(realKey) as any
       if (stored && typeof stored === "object") {
         if (stored._slim && Array.isArray(stored.setKeys)) {
-          // ── Slim format: key list only — resolve full Sets from Base ───
-          // Base sets carry entries/quality data and are always written as
-          // full blobs. A single base:sets read is cheaper than deserialising
-          // the old full Real blob, and the result is always fresh-cycle data.
+          // ── Compact format v2: derived scalars + parent Base entries ───
           const baseKey  = `strategies:${this.connectionId}:${symbol}:base:sets`
           const baseSt   = await getSettings(baseKey) as any
           const baseArr: StrategySet[] = Array.isArray(baseSt?.sets) ? baseSt.sets : []
-          const keySet   = new Set<string>(stored.setKeys as string[])
-          realSets       = baseArr.filter((s) => keySet.has(s.setKey))
+          if (stored.formatVersion === 2 && Array.isArray(stored.sets)) {
+            realSets = hydrateStrategySetSnapshots(
+              stored.sets as CompactStrategySetSnapshot[],
+              baseArr,
+            )
+          } else {
+            // Legacy v1 stored only Set keys. Exact Base keys can still be
+            // recovered safely; derived keys cannot and therefore fail closed.
+            const keySet = new Set<string>(stored.setKeys as string[])
+            realSets = baseArr.filter((s) => keySet.has(s.setKey))
+          }
         } else {
           // Legacy full-blob format — tolerate during rollout period.
           realSets = Array.isArray(stored.sets) ? stored.sets : Array.isArray(stored) ? stored : []
@@ -4807,16 +4878,14 @@ export class StrategyCoordinator {
 
     const isLiveTradeEnabled = await this.isLiveTradingEnabledForConnection()
     const activeStrategyKeys = new Set<string>()
-    if (!isLiveTradeEnabled) {
-      const cachedActive = this._activeKeysCache
-      if (cachedActive && Date.now() - cachedActive.cycleAt < 30_000) {
-        for (const key of cachedActive.keys) activeStrategyKeys.add(key)
-      } else {
+    const cachedActive = this._activeKeysCache.get(symbol)
+    if (cachedActive && Date.now() - cachedActive.cycleAt < 30_000) {
+      for (const key of cachedActive.keys) activeStrategyKeys.add(key)
+    } else if (!isLiveTradeEnabled) {
         const pseudoKeys = (await getRedisClient()
           .smembers(`pseudo_positions:${this.connectionId}:active_strategy_set_keys`)
           .catch(() => [])) as string[]
         for (const key of pseudoKeys) activeStrategyKeys.add(key)
-      }
     }
     for (const key of await this.getOpenLiveSetKeys().catch(() => new Set<string>())) {
       activeStrategyKeys.add(key)
@@ -4838,15 +4907,23 @@ export class StrategyCoordinator {
       metrics,
       maxLive,
     )
-    const activeLiveSets = liveSelection.active
     const allQualifying = liveSelection.selected
+    const coherentActiveCounts = coordinateActiveRealLiveCounts(
+      realSets,
+      allQualifying,
+      activeStrategyKeys,
+    )
 
     // Keep all qualifying sets (not filtered to 1 per direction).
     // Block overlays will be added at line 4670, and the final dispatch loop
     // at line 4699-4715 enforces per-variant caps (1 default + 1 block + 1 DCA).
     let qualifying = allQualifying
 
-    // Testnet fallback: if no qualifying Real sets, promote the top Real or top Main set so live dispatch can run.
+    // Testnet fallback: if Real produced candidates but the Live PF/DDT filter
+    // rejected all of them, promote the top Real Set so the test pipeline can
+    // exercise dispatch without breaking Real -> Live lineage. Never synthesize
+    // Live directly from Main: that made Live=1 while Real=0 during QuickStart
+    // and could create a position with no authoritative Real parent.
     // CRITICAL: Always verify actual is_testnet on connection record.
     try {
       const conn = await (await import("@/lib/redis-db")).getConnection(this.connectionId)
@@ -4855,26 +4932,6 @@ export class StrategyCoordinator {
         if (realSets.length > 0) {
           qualifying = [realSets.sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)[0]]
           console.log(`[v0] [StrategyFlow] ${this.connectionId}:${symbol} dev fallback - promoted top REAL set for live dispatch`)
-        } else {
-          // Try to seed from MAIN as a last resort
-          const mainKey = `strategies:${this.connectionId}:${symbol}:main:sets`
-          const mainStored = await getSettings(mainKey)
-          const mainSets = mainStored && typeof mainStored === "object" ? (Array.isArray((mainStored as any).sets) ? (mainStored as any).sets : Array.isArray(mainStored) ? mainStored : []) : []
-          if (mainSets.length > 0) {
-            const top = mainSets.sort((a: any, b: any) => (b.avgProfitFactor || 0) - (a.avgProfitFactor || 0))[0]
-            const synth: any = {
-              ...top,
-              setKey: top.setKey || `${symbol}:${top.direction || "long"}:dev-seed`,
-              parentSetKey: top.setKey || null,
-              avgProfitFactor: Math.max(0.9, top.avgProfitFactor || 0.9),
-              avgDrawdownTime: top.avgDrawdownTime || 0,
-              entries: top.entries && top.entries.length > 0 ? top.entries : [{ profitFactor: Math.max(1.0, (top.avgProfitFactor || 1.0)), leverage: 1, confidence: 0.85, sizeMultiplier: 1 }],
-              entryCount: top.entryCount || (top.entries ? top.entries.length : 1),
-              status: "valid_real",
-            }
-            qualifying = [synth]
-            console.log(`[v0] [StrategyFlow] ${this.connectionId}:${symbol} dev fallback - injected synthetic qualifying set from MAIN`)
-          }
         }
       }
     } catch (e) { /* non-fatal */ }
@@ -4914,7 +4971,7 @@ export class StrategyCoordinator {
       const liveAvgPF  = qualifying.length > 0 ? qualifying.reduce((s, st) => s + st.avgProfitFactor, 0) / qualifying.length : 0
       const liveAvgDDT = qualifying.length > 0 ? qualifying.reduce((s, st) => s + (st.avgDrawdownTime || 0), 0) / qualifying.length : 0
       const passRatioLive = realSets.length > 0 ? qualifying.length / realSets.length : 0
-      const liveRunningNow = activeLiveSets.length
+      const liveRunningNow = coherentActiveCounts.live
 
       // ── P1-1: Live-stage per-variant aggregation ──────────────────────
       // Same bucket shape as Main/Real. Drives the stats API's breakdown
@@ -4981,9 +5038,14 @@ export class StrategyCoordinator {
         // Without {symbol}:live fields the `stratCounts.live` bucket in the
         // stats route always returned 0, making the Live column empty.
         client.hset(`strategies_active:${this.connectionId}`, {
-          [`${symbol}:live`]:           String(liveRunningNow),
+          // Real and Live are written atomically from the exact same Set and
+          // position snapshot. This prevents readers from observing a Real
+          // count from symbol/cycle N beside a Live count from N-1.
+          [`${symbol}:real`]:           String(coherentActiveCounts.real),
+          [`${symbol}:live`]:           String(coherentActiveCounts.live),
           // live:evaluated = Real Sets that entered Live selection (= candidates)
-          [`${symbol}:live:evaluated`]: String(realSets.length),
+          [`${symbol}:live:evaluated`]: String(coherentActiveCounts.liveEvaluated),
+          [`${symbol}:snapshot:ts`]:    String(Date.now()),
         }),
         client.expire(`strategies_active:${this.connectionId}`, 600),
         client.expire(redisKey, 7 * 24 * 60 * 60),

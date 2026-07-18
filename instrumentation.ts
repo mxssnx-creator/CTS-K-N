@@ -37,6 +37,8 @@ const bootGuard = globalThis as unknown as {
 
 function canRetryInProcess(): boolean {
   return !(
+    process.env.CTS_DEPLOYMENT_RUNTIME === "cloudflare-workers" ||
+    process.env.DISABLE_IN_PROCESS_CONTINUITY === "1" ||
     process.env.VERCEL === "1" ||
     Boolean(process.env.VERCEL_ENV) ||
     process.env.NEXT_RUNTIME === "edge"

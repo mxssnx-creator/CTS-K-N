@@ -27,8 +27,9 @@ describe("requested regression guardrails", () => {
     expect(statsRoute).toContain("[STATS-VALIDATION]")
     expect(statsRoute).toContain("Main and Real materialise related/adjusted Sets")
     expect(statsRoute).not.toContain("stratCounts.real = stratCounts.main")
-    expect(statsRoute).toContain("stratCounts.live > stratCounts.real")
+    expect(statsRoute).toContain("if (stratCounts.live > stratCounts.real)")
     expect(statsRoute).toContain("stratCounts.live = stratCounts.real")
+    expect(coordinator).not.toContain("dev fallback - injected synthetic qualifying set from MAIN")
 
     const snapshot = { main: 10, real: 12, live: 14 }
     const normalizedReal = snapshot.real
@@ -461,11 +462,11 @@ describe("requested regression guardrails", () => {
 
   test("dev symbol cap honors operator-selected symbols before slicing", () => {
     const source = read("lib/trade-engine/engine-manager.ts")
+    const defaults = read("lib/symbol-selection-defaults.ts")
 
     expect(source).toContain("dev_symbol_count_override")
-    // Default is now 4 (previously 1 — changed to match the 4-symbol live-trade
-    // default so engines start with all four symbols without needing an explicit env override).
-    expect(source).toMatch(/process\.env\.V0_DEV_SYMBOL_COUNT\s*\?\?\s*"4"/)
+    expect(source).toContain("getExplicitLocalSymbolCap")
+    expect(defaults).toContain("DEFAULT_SYMBOL_COUNT = 1")
     expect(source).toContain('never short-circuit to ["BTCUSDT"] here')
     expect(source).not.toContain('if (devCap === 1) return ["BTCUSDT"]')
   })
@@ -847,10 +848,12 @@ describe("requested regression guardrails", () => {
 
   test("symbol cache compares dev-capped force symbols to prevent per-tick invalidation churn", () => {
     const source = read("lib/trade-engine/engine-manager.ts")
+    const defaults = read("lib/symbol-selection-defaults.ts")
 
     expect(source).toContain("effectiveForceSymbols = effectiveForceSymbols.slice(0, devCap)")
     expect(source).toContain("localSymbolCapActive")
-    expect(source).toContain("process.env.V0_DEV_SYMBOL_COUNT")
+    expect(source).toContain("getExplicitLocalSymbolCap")
+    expect(defaults).toContain("env.V0_DEV_SYMBOL_COUNT")
     expect(source).toContain("force_symbols=[BTC,ETH,...] vs cache=[BTC] invalidates")
   })
 
@@ -1215,63 +1218,72 @@ describe("requested regression guardrails", () => {
     ["1", true],
   ])("testing place-order forwards Redis is_testnet %s as connector isTestnet=%s", async (isTestnetFlag, expectedIsTestnet) => {
     jest.resetModules()
+    const previousAdminSecret = process.env.ADMIN_SECRET
+    const testAdminSecret = "test-admin-secret-32-characters"
+    process.env.ADMIN_SECRET = testAdminSecret
 
-    const hgetall = jest.fn().mockResolvedValue({
-      name: "Test Connection",
-      exchange: "bingx",
-      api_key: "test-api-key",
-      api_secret: "test-api-secret",
-      api_passphrase: "test-passphrase",
-      api_type: "swap",
-      contract_type: "perpetual",
-      is_testnet: isTestnetFlag,
-      margin_type: "cross",
-      position_mode: "one_way",
-      connection_method: "api",
-      connection_library: "ccxt",
-    })
-    const hget = jest.fn().mockResolvedValue(null)
-    const hincrby = jest.fn().mockResolvedValue(1)
-    const hincrbyfloat = jest.fn().mockResolvedValue(1)
-    const createExchangeConnector = jest.fn().mockResolvedValue({
-      placeOrder: jest.fn().mockResolvedValue({ success: true, orderId: "order-1" }),
-    })
+    try {
+      const hgetall = jest.fn().mockResolvedValue({
+        name: "Test Connection",
+        exchange: "bingx",
+        api_key: "test-api-key",
+        api_secret: "test-api-secret",
+        api_passphrase: "test-passphrase",
+        api_type: "swap",
+        contract_type: "perpetual",
+        is_testnet: isTestnetFlag,
+        margin_type: "cross",
+        position_mode: "one_way",
+        connection_method: "api",
+        connection_library: "ccxt",
+      })
+      const hget = jest.fn().mockResolvedValue(null)
+      const hincrby = jest.fn().mockResolvedValue(1)
+      const hincrbyfloat = jest.fn().mockResolvedValue(1)
+      const createExchangeConnector = jest.fn().mockResolvedValue({
+        placeOrder: jest.fn().mockResolvedValue({ success: true, orderId: "order-1" }),
+      })
 
-    jest.doMock("@/lib/redis-db", () => ({
-      initRedis: jest.fn().mockResolvedValue(undefined),
-      getRedisClient: jest.fn(() => ({ hgetall, hget, hincrby, hincrbyfloat })),
-      savePosition: jest.fn().mockResolvedValue(undefined),
-      getMarketData: jest.fn().mockResolvedValue(null),
-    }))
-    jest.doMock("@/lib/exchange-connectors/factory", () => ({
-      createExchangeConnector,
-    }))
-    jest.doMock("@/lib/live-order-safety", () => ({
-      getLiveOrderSafetyFailure: jest.fn(() => null),
-    }))
+      jest.doMock("@/lib/redis-db", () => ({
+        initRedis: jest.fn().mockResolvedValue(undefined),
+        getRedisClient: jest.fn(() => ({ hgetall, hget, hincrby, hincrbyfloat })),
+        savePosition: jest.fn().mockResolvedValue(undefined),
+        getMarketData: jest.fn().mockResolvedValue(null),
+      }))
+      jest.doMock("@/lib/exchange-connectors/factory", () => ({
+        createExchangeConnector,
+      }))
+      jest.doMock("@/lib/live-order-safety", () => ({
+        getLiveOrderSafetyFailure: jest.fn(() => null),
+      }))
 
-    const { POST } = await import("../../app/api/testing/place-order/route")
+      const { POST } = await import("../../app/api/testing/place-order/route")
 
-    const response = await POST({
-      json: async () => ({
-        connectionId: "conn-1",
-        symbol: "BTCUSDT",
-        side: "buy",
-        quantity: 0.001,
-        leverage: 1,
-      }),
-    } as any)
-    const payload = await response.json()
+      const response = await POST({
+        headers: new Headers({ authorization: `Bearer ${testAdminSecret}` }),
+        json: async () => ({
+          connectionId: "conn-1",
+          symbol: "BTCUSDT",
+          side: "buy",
+          quantity: 0.001,
+          leverage: 1,
+        }),
+      } as any)
+      const payload = await response.json()
 
-    expect(payload.success).toBe(true)
-    expect(createExchangeConnector).toHaveBeenCalledWith(
-      "bingx",
-      expect.objectContaining({
-        isTestnet: expectedIsTestnet,
-        apiType: "swap",
-        contractType: "perpetual",
-      }),
-    )
+      expect(payload.success).toBe(true)
+      expect(createExchangeConnector).toHaveBeenCalledWith(
+        "bingx",
+        expect.objectContaining({
+          isTestnet: expectedIsTestnet,
+          apiType: "swap",
+          contractType: "perpetual",
+        }),
+      )
+    } finally {
+      if (previousAdminSecret === undefined) delete process.env.ADMIN_SECRET
+      else process.env.ADMIN_SECRET = previousAdminSecret
+    }
   })
 
   test("queued settings refreshes hot-apply one connection and do not reinitialize all engines", () => {
@@ -2452,8 +2464,84 @@ describe("requested regression guardrails", () => {
     expect(quickStart).toContain("dev_symbol_count_override: String(symbols.length)")
     expect(quickStart).toContain("tradeEngineStatePatch: {")
     expect(quickStart).toContain("config_set_symbols_total: String(symbols.length)")
-    expect(quickStart).toContain("so a 12-symbol smoke does not get silently sliced back to the default 4")
+    expect(quickStart).toContain("so an explicit multi-symbol smoke is never sliced back to the safe default one")
     expect(manager).toContain("(connSettings as any)?.dev_symbol_count_override")
+  })
+
+  test("supervised live smoke is admin-gated, SDK-first, and cleans up authoritatively", () => {
+    const route = read("app/api/admin/live-order-smoke/route.ts")
+    const smoke = read("lib/live-order-smoke.ts")
+    const connector = read("lib/exchange-connectors/bingx-connector.ts")
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const legacyTest = read("app/api/test/live-orders-test/route.ts")
+    const testingOrder = read("app/api/testing/place-order/route.ts")
+
+    expect(route).toContain("authorizeAdminBearer")
+    expect(route).toContain("getLiveOrderSafetyFailure")
+    expect(smoke).toContain("authoritativeAccountSnapshot")
+    expect(smoke).toContain("accountFlatBefore")
+    expect(smoke).toContain("accountFlatAfter")
+    expect(smoke).toContain("cleanupComplete")
+    expect(smoke).toContain('transport === "bingx-api"')
+    expect(connector).toContain("SDK_ACK_WITHOUT_ORDER_ID")
+    expect(connector).toContain("REST retry suppressed to prevent a duplicate order")
+    expect(liveStage).toContain('client.get("live_order_smoke:active")')
+    expect(legacyTest).toContain("authorizeAdminBearer")
+    expect(testingOrder).toContain("authorizeAdminBearer")
+  })
+
+  test("high-frequency indication and Real statistics use bounded hourly rollups", () => {
+    const tracker = read("lib/statistics-tracker.ts")
+    const dbShim = read("lib/db.ts")
+    const migrations = read("lib/redis-migrations.ts")
+
+    expect(tracker).toContain("statistics:hourly:${kind}:${connectionId}")
+    expect(tracker).toContain("STATISTICS_ROLLUP_MAX_HOURS = 7 * 24")
+    expect(tracker).not.toContain("INSERT INTO indications")
+    expect(tracker).not.toContain("INSERT INTO strategies_real")
+    expect(dbShim).toContain("HIGH_FREQUENCY_ROLLUP_ONLY_TABLES")
+    expect(migrations).toContain('name: "079-repair-hourly-statistics-rollups"')
+  })
+
+  test("production status APIs distinguish connected inline state from durable shared Redis", () => {
+    const persistence = read("app/api/persistence/status/route.ts")
+    const database = read("app/api/settings/database-status/route.ts")
+    const initStatus = read("app/api/system/init-status/route.ts")
+
+    expect(persistence).toContain('const shared = backend === "redis-network"')
+    expect(persistence).toContain('status: shared ? "ok" : "degraded"')
+    expect(persistence).toContain("cross_instance_durable: shared")
+    expect(persistence).toContain("Configure shared Redis before enabling real exchange order placement")
+    expect(persistence).not.toContain('last_snapshot: "Within last 3 minutes"')
+
+    expect(database).toContain("isSharedConfigured: shared")
+    expect(database).toContain("isCrossInstanceDurable: shared")
+    expect(database).toContain('"inline://process-local"')
+    expect(database).not.toContain('"redis://connected"')
+
+    expect(initStatus).toContain("site_instance_scope: sharedRedis ? \"shared-cross-instance\" : \"process-local\"")
+    expect(initStatus).toContain("cross_instance_durable: sharedRedis")
+    expect(initStatus).toContain("last_tick_fresh: continuityAgeMs !== null && continuityAgeMs <= 90_000")
+    expect(initStatus).toContain("last_tick_fresh: liveRecoveryAgeMs !== null && liveRecoveryAgeMs <= 90_000")
+  })
+
+  test("live smoke and Cloudflare deployment fail closed around non-durable engine ownership", () => {
+    const smoke = read("lib/live-order-smoke.ts")
+    const wrangler = read("wrangler.jsonc")
+    const continuity = read("app/api/cron/server-continuity/route.ts")
+    const recovery = read("app/api/cron/sync-live-positions/route.ts")
+
+    expect(smoke).toContain('redisBackend === "redis-network" || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1"')
+    expect(smoke).toContain("Live-order smoke requires shared Redis coordination")
+    expect(wrangler).toContain('"DISABLE_IN_PROCESS_CONTINUITY": "1"')
+    expect(wrangler).toContain('"DISABLE_TRADE_ENGINE_IN_PROCESS": "1"')
+    expect(continuity).toContain('last_tick_source: requestSource(request)')
+    expect(recovery).toContain('DIAGNOSTIC_KEY = "system:coordination:live-recovery"')
+    expect(recovery).toContain('last_tick_source: requestSource(request)')
+    expect(read("scripts/run-prod-preview-check.mjs")).toContain("await runPostDeployVerifier()")
+    expect(read("scripts/verify-prod-preview.mjs")).toContain('REQUIRE_FRESH_CONTINUITY === "1"')
+    expect(read("scripts/post-deploy-verify.sh")).toContain('/api/data/positions?connectionId=bingx-x01')
+    expect(read("scripts/verify-prod-soak.mjs")).toContain('RUNTIME_MODE === "production" ? 1_000 : 3_000')
   })
 
 

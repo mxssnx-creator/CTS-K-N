@@ -17,6 +17,8 @@
 //                     symbol (up to `limit`×top-candidates). A parallel batch with
 //                     concurrency=8 keeps total latency < 2s for 20 symbols.
 
+import { fetchBingXPublic } from "@/lib/bingx-public-api"
+
 export type SortKey = "volume" | "volatility" | "volatility_1h"
 export type Ticker = { symbol: string; priceChangePercent: number; volume: number; atr1h?: number }
 
@@ -74,12 +76,8 @@ async function fetch1hAtr(exchange: string, symbol: string): Promise<number> {
     if (exchange === "bingx") {
       // BingX swap klines: symbol uses hyphen format (BTC-USDT)
       const bingxSym = symbol.replace(/USDT$/, "-USDT")
-      const url =
-        `https://open-api.bingx.com/openApi/swap/v2/quote/klines?symbol=${encodeURIComponent(bingxSym)}&interval=1h&limit=2`
-      const res = await fetch(url, {
-        headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(4000),
-      })
+      const url = `/openApi/swap/v2/quote/klines?symbol=${encodeURIComponent(bingxSym)}&interval=1h&limit=2`
+      const res = await fetchBingXPublic(url, {}, { timeoutMs: 4000 })
       if (res.ok) {
         const data = await res.json()
         // BingX klines: [{ open, high, low, close, volume, time }, ...]
@@ -265,10 +263,7 @@ export async function fetchTopSymbols(
         console.warn("[TopSymbols] Bybit API error, using default:", bybitErr instanceof Error ? bybitErr.message : bybitErr)
       }
     } else if (exchange === "bingx") {
-      const res = await fetch("https://open-api.bingx.com/openApi/swap/v2/quote/ticker", {
-        headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(5000),
-      })
+      const res = await fetchBingXPublic("/openApi/swap/v2/quote/ticker", {}, { timeoutMs: 5000 })
       if (!res.ok) throw new Error(`BingX ticker HTTP ${res.status}`)
       const data = await res.json()
       tickers = (data?.data || [])

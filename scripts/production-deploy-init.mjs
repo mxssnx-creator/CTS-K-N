@@ -1,194 +1,117 @@
 #!/usr/bin/env node
 
-/**
- * Production Deployment Initialization Script
- * Runs on Vercel after build completes to set up production runtime environment
- * 
- * Usage: node scripts/production-deploy-init.mjs
- * Called by: vercel.json build hook or post-deploy workflow
- */
+/** Portable production startup/migration verification for Node 20+. */
 
-import fetch from 'node-fetch'
-import { setTimeout as sleep } from 'timers/promises'
+import process from "node:process"
+import { setTimeout as sleep } from "node:timers/promises"
 
-const API_URL = process.env.VERCEL_PROJECT_PRODUCTION_URL 
-  ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-  : process.env.NEXT_PUBLIC_API_URL
-  ? process.env.NEXT_PUBLIC_API_URL
-  : 'http://localhost:3002'
+function resolveBaseUrl() {
+  const raw =
+    process.env.DEPLOYMENT_URL ||
+    process.env.VERCEL_PROJECT_PRODUCTION_URL ||
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    "http://127.0.0.1:3002"
+  const normalized = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
+  return new URL(normalized).toString().replace(/\/$/, "")
+}
 
-console.log(`[Prod Init] Starting production deployment initialization`)
-console.log(`[Prod Init] API URL: ${API_URL}`)
-console.log(`[Prod Init] Environment: ${process.env.NODE_ENV || 'production'}`)
-console.log(`[Prod Init] Timestamp: ${new Date().toISOString()}`)
+const BASE_URL = resolveBaseUrl()
 
-async function waitForApiReady(maxAttempts = 30, delayMs = 2000) {
-  console.log(`[Prod Init] Waiting for API to be ready (max ${maxAttempts * delayMs / 1000}s)...`)
-  
-  for (let i = 0; i < maxAttempts; i++) {
+async function request(pathname, { method = "GET", body, timeoutMs = 30_000 } = {}) {
+  const response = await fetch(new URL(pathname, BASE_URL), {
+    method,
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  const text = await response.text()
+  let payload = null
+  try { payload = text ? JSON.parse(text) : null } catch { /* reported below */ }
+  if (!response.ok) {
+    throw new Error(`${method} ${pathname} returned HTTP ${response.status}: ${text.slice(0, 240)}`)
+  }
+  if (payload === null) throw new Error(`${method} ${pathname} returned invalid JSON`)
+  return payload
+}
+
+async function waitForHealth(maxAttempts = 30) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const response = await fetch(`${API_URL}/api/system/status`, {
-        method: 'GET',
-        timeout: 5000,
-      })
-      
-      if (response.ok) {
-        console.log(`[Prod Init] ✓ API is ready`)
-        return true
-      }
-    } catch (err) {
-      // Still waiting...
+      const health = await request("/api/health", { timeoutMs: 5_000 })
+      if (health?.status || health?.alive === true) return
+    } catch {
+      // The deployment may still be warming or migrating.
     }
-    
-    if (i < maxAttempts - 1) {
-      process.stdout.write('.')
-      await sleep(delayMs)
-    }
+    if (attempt < maxAttempts) await sleep(2_000)
   }
-  
-  console.warn(`[Prod Init] ⚠ API did not respond after ${maxAttempts * delayMs / 1000}s - continuing anyway`)
-  return false
+  throw new Error("API did not become healthy within 60 seconds")
 }
 
-async function initializeConnections() {
-  console.log(`[Prod Init] Initializing trading connections...`)
-  
-  try {
-    const response = await fetch(`${API_URL}/api/settings/connections`, {
-      method: 'GET',
-      timeout: 10000,
-    })
-    
-    if (response.ok) {
-      const connections = await response.json()
-      console.log(`[Prod Init] ✓ Found ${connections?.length || 0} connections`)
-      
-      // List them
-      for (const conn of (connections || [])) {
-        console.log(`[Prod Init]   - ${conn.id}: ${conn.exchange} (enabled: ${conn.is_enabled_dashboard})`)
-      }
-    }
-  } catch (err) {
-    console.warn(`[Prod Init] ⚠ Could not fetch connections: ${err.message}`)
-  }
+async function initialize() {
+  const result = await request("/api/system/initialize", {
+    method: "POST",
+    body: {},
+    timeoutMs: 90_000,
+  })
+  if (result?.success !== true) throw new Error(`System initialization failed: ${JSON.stringify(result)}`)
 }
 
-async function triggerMigrations() {
-  console.log(`[Prod Init] Triggering database migrations...`)
-  
-  try {
-    const response = await fetch(`${API_URL}/api/system/initialize`, {
-      method: 'POST',
-      timeout: 30000,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'migrate', force: false }),
-    })
-    
-    if (response.ok) {
-      const result = await response.json()
-      console.log(`[Prod Init] ✓ Migrations completed: version ${result.version}`)
-      return true
-    } else {
-      console.warn(`[Prod Init] ⚠ Migration request returned ${response.status}`)
-    }
-  } catch (err) {
-    console.warn(`[Prod Init] ⚠ Could not trigger migrations: ${err.message}`)
+async function waitForReadiness(maxAttempts = 45) {
+  let last = null
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    last = await request("/api/system/init-status", { timeoutMs: 30_000 })
+    const current = Number(last?.migrations?.current_version)
+    const latest = Number(last?.migrations?.latest_version)
+    if (last?.ready === true && current === latest && latest > 0) return last
+    if (last?.status === "error") throw new Error(`Startup entered error state: ${JSON.stringify(last)}`)
+    if (attempt < maxAttempts) await sleep(2_000)
   }
-  
-  return false
+  throw new Error(`Startup/migrations were not ready within 90 seconds: ${JSON.stringify(last)}`)
 }
 
-async function verifyProgressionState() {
-  console.log(`[Prod Init] Verifying progression state...`)
-  
-  try {
-    const response = await fetch(`${API_URL}/api/connections/progression/bingx-x01/stats`, {
-      method: 'GET',
-      timeout: 10000,
-    })
-    
-    if (response.ok) {
-      const stats = await response.json()
-      console.log(`[Prod Init] ✓ Progression state found`)
-      console.log(`[Prod Init]   Phase: ${stats?.metadata?.phase}`)
-      console.log(`[Prod Init]   Symbols: ${stats?.metadata?.symbols}`)
-    }
-  } catch (err) {
-    console.warn(`[Prod Init] ⚠ Could not verify progression: ${err.message}`)
-  }
-}
-
-async function runHealthChecks() {
-  console.log(`[Prod Init] Running health checks...`)
-  
-  const checks = [
-    { name: 'System Status', url: '/api/system/status' },
-    { name: 'Trade Engine', url: '/api/trade-engine/status' },
-    { name: 'Connections', url: '/api/settings/connections' },
-    { name: 'Dashboard Data', url: '/api/dashboard' },
-  ]
-  
-  let passed = 0
-  for (const check of checks) {
-    try {
-      const response = await fetch(`${API_URL}${check.url}`, {
-        method: 'GET',
-        timeout: 5000,
-      })
-      
-      if (response.status < 300) {
-        console.log(`[Prod Init] ✓ ${check.name}`)
-        passed++
-      } else {
-        console.warn(`[Prod Init] ✗ ${check.name} (HTTP ${response.status})`)
-      }
-    } catch (err) {
-      console.warn(`[Prod Init] ✗ ${check.name} (${err.message})`)
-    }
-  }
-  
-  console.log(`[Prod Init] Health checks: ${passed}/${checks.length} passed`)
-  return passed === checks.length
+async function verifyCoreApis() {
+  const [connectionsPayload, settings, engine, database] = await Promise.all([
+    request("/api/connections"),
+    request("/api/settings"),
+    request("/api/trade-engine/status"),
+    request("/api/settings/database-status"),
+  ])
+  const connections = Array.isArray(connectionsPayload)
+    ? connectionsPayload
+    : connectionsPayload?.connections
+  if (!Array.isArray(connections) || connections.length < 1) throw new Error("No initialized connection exists")
+  if (!settings || typeof settings !== "object") throw new Error("Settings API schema is invalid")
+  if (!engine || typeof engine !== "object") throw new Error("Trade-engine status schema is invalid")
+  if (!database?.isConnected) throw new Error("Database status is not connected")
+  return { connectionCount: connections.length, database }
 }
 
 async function main() {
-  console.log(`\n${'='.repeat(70)}`)
-  console.log(`PRODUCTION DEPLOYMENT INITIALIZATION`)
-  console.log(`${'='.repeat(70)}\n`)
-  
-  // Wait for API to be ready
-  await waitForApiReady()
-  
-  // Initialize connections
-  await initializeConnections()
-  
-  // Trigger migrations (if needed)
-  await triggerMigrations()
-  
-  // Wait a bit for migrations to complete
-  await sleep(2000)
-  
-  // Verify progression state
-  await verifyProgressionState()
-  
-  // Run health checks
-  const healthy = await runHealthChecks()
-  
-  console.log(`\n${'='.repeat(70)}`)
-  if (healthy) {
-    console.log(`✓ PRODUCTION DEPLOYMENT READY`)
-    console.log(`Timestamp: ${new Date().toISOString()}`)
-    console.log(`API URL: ${API_URL}`)
-  } else {
-    console.warn(`⚠ PRODUCTION DEPLOYMENT PARTIAL (some checks failed)`)
-    console.warn(`Please verify manually or check logs`)
-  }
-  console.log(`${'='.repeat(70)}\n`)
-  
-  process.exit(healthy ? 0 : 1)
+  const startedAt = Date.now()
+  console.log(`[Prod Init] Target ${BASE_URL}`)
+  await waitForHealth()
+  await initialize()
+  const readiness = await waitForReadiness()
+  const core = await verifyCoreApis()
+
+  console.log(JSON.stringify({
+    success: true,
+    baseUrl: BASE_URL,
+    schemaVersion: readiness.migrations.current_version,
+    siteInstanceId: readiness.system.site_instance_id,
+    databaseBackend: core.database.backend,
+    sharedRedis: core.database.isSharedConfigured,
+    connectionCount: core.connectionCount,
+    durationMs: Date.now() - startedAt,
+  }, null, 2))
 }
 
-main().catch(err => {
-  console.error(`[Prod Init] Fatal error:`, err.message)
-  process.exit(1)
+main().catch((error) => {
+  console.error(`[Prod Init] FAILED: ${error instanceof Error ? error.message : String(error)}`)
+  process.exitCode = 1
 })

@@ -4,6 +4,11 @@
   "main": "./custom-worker.ts",
   "compatibility_date": "2026-06-29",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "CTS_DEPLOYMENT_RUNTIME": "cloudflare-workers",
+    "DISABLE_IN_PROCESS_CONTINUITY": "1",
+    "DISABLE_TRADE_ENGINE_IN_PROCESS": "1"
+  },
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"

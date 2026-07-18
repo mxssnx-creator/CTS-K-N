@@ -30,6 +30,7 @@ import {
   QUICKSTART_ENABLE_TIMEOUT_MS,
   QUICKSTART_UI_MAX_SYMBOLS,
 } from "@/lib/quickstart-timeouts"
+import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
 
 const toBooleanFlag = (value: unknown): boolean =>
   value === true || value === 1 || value === "1" || value === "true" || value === "yes" || value === "on"
@@ -420,8 +421,8 @@ export function QuickstartSection() {
 
   // Quickstart controls — how many top-volatile symbols to process (1-32)
   // and whether live exchange trading is currently enabled for the connection.
-  // SSR-safe default (10); restored from localStorage in the mount effect below.
-  const [symbolCount, setSymbolCount] = useState<number>(10)
+  // SSR-safe default; restored from localStorage in the mount effect below.
+  const [symbolCount, setSymbolCount] = useState<number>(DEFAULT_SYMBOL_COUNT)
   const [liveTradeActive, setLiveTradeActive] = useState<boolean>(false)
   const [liveTradeLoading, setLiveTradeLoading] = useState<boolean>(false)
   // Connection the quickstart actually bound to on last start (or the

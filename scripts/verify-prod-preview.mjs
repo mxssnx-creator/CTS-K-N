@@ -129,14 +129,33 @@ async function main() {
   }
   const siteInstanceIds = new Set(initReads.map((item) => item.system.site_instance_id))
   if (siteInstanceIds.size !== 1) throw new Error("Site instance changed across repeated UI/API reads")
+  const continuity = initReads[0]?.system?.continuity || {}
+  if (Number(continuity.interval_seconds) !== 60) {
+    throw new Error(`Continuity interval is not one minute: ${continuity.interval_seconds}`)
+  }
+  if (process.env.REQUIRE_FRESH_CONTINUITY === "1" && continuity.last_tick_fresh !== true) {
+    throw new Error(`A fresh one-minute continuity tick was required: ${JSON.stringify(continuity)}`)
+  }
 
   const unauthorizedCron = await fetch(new URL("/api/cron/server-continuity", BASE_URL), {
     headers: { Accept: "application/json" },
     cache: "no-store",
     signal: AbortSignal.timeout(10_000),
   })
-  if (unauthorizedCron.status !== 401) {
-    throw new Error(`Protected cron accepted an unauthenticated request (HTTP ${unauthorizedCron.status})`)
+  const unauthorizedCronBody = await unauthorizedCron.text()
+  let cronProtectionMode = "unknown"
+  if (unauthorizedCron.status === 401) {
+    cronProtectionMode = "bearer-secret-configured"
+  } else if (
+    unauthorizedCron.status === 503 &&
+    unauthorizedCronBody.includes("CRON_SECRET is not configured")
+  ) {
+    cronProtectionMode = "fail-closed-secret-unconfigured"
+  } else {
+    throw new Error(
+      `Protected cron returned unexpected unauthenticated status HTTP ${unauthorizedCron.status}: ` +
+      unauthorizedCronBody.slice(0, 160),
+    )
   }
 
   for (const page of PAGES) {
@@ -237,6 +256,9 @@ async function main() {
     startupBootId: initReads[0]?.system?.startup?.boot_id || null,
     schemaVersion: initReads[0]?.migrations?.current_version || null,
     protectedCronVerified: true,
+    cronProtectionMode,
+    continuityFresh: continuity.last_tick_fresh === true,
+    continuitySource: continuity.last_tick_source || null,
     durationMs: Date.now() - startedAt,
   }, null, 2))
 }
