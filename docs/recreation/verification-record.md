@@ -49,7 +49,7 @@ executed.
 | Canonical independent-host preflight | pass; apt host, free port 45671, 37 GiB free disk, 21 GiB RAM |
 | Remote API route contract | pass; authentication, validation, disposable clone, preflight/install, seed transport, and auto/systemd/PM2 contract through the SSH boundary fixture |
 | Portable minute scheduler | pass; both required paths, 60,000 ms interval |
-| Direct Vercel build entry point | pass locally after restoring the previously deployed `vercel-build` path; optimized compile, type/lint validation, 40 static pages, traces, and post-build normalization completed |
+| Full Vercel builder | pass; local provider simulation reproduced and eliminated read-only `corepack enable` EROFS, Next 15's zero-byte `export-marker.json`, and stale `export-detail.json` false-static classification; final output contains 149 routes, dynamic/API functions, 23 MiB artifacts, and no invalid JSON |
 | OpenNext 1.20.1 build | pass; generated `.open-next/worker.js` |
 | Wrangler 4.86.0 dry-run | pass; 808 assets, 28,793.40 KiB upload / 4,272.51 KiB gzip |
 | Local Workerd Kilo runtime | pass; health, schema v81, Kilo ownership, admin auth, remote-owner fail-closed route, scheduled continuity and live recovery |

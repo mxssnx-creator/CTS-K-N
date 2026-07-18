@@ -14,6 +14,6 @@
       "maxDuration": 45
     }
   },
-  "installCommand": "corepack enable && corepack prepare pnpm@10.28.1 --activate && pnpm install --frozen-lockfile",
-  "buildCommand": "corepack enable && corepack prepare pnpm@10.28.1 --activate && pnpm run vercel-build"
+  "installCommand": "corepack pnpm@10.28.1 install --frozen-lockfile",
+  "buildCommand": "corepack pnpm@10.28.1 run vercel-build"
 }

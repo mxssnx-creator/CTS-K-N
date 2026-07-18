@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, unlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const file = 'next-env.d.ts'
@@ -54,6 +54,44 @@ function isValidJson(filePath) {
   } catch {
     return false
   }
+}
+
+// Next 15 can leave export-marker.json as a zero-byte file after an otherwise
+// successful provider build. @vercel/next parses this build-owned marker before
+// packaging functions and fails with `Unexpected end of JSON input`. CTS-K-N
+// does not define exportPathMap/static export; rebuild only an absent/invalid
+// marker from the serialized Next config and validate the result immediately.
+const exportMarker = join(distDir, 'export-marker.json')
+const requiredServerFiles = join(distDir, 'required-server-files.json')
+const serializedNextConfig = isValidJson(requiredServerFiles)
+  ? JSON.parse(readFileSync(requiredServerFiles, 'utf8'))?.config ?? {}
+  : {}
+const isStaticExport = serializedNextConfig.output === 'export'
+if (!isValidJson(exportMarker)) {
+  if (isStaticExport) {
+    throw new Error(`[next-env] ${exportMarker} is invalid for an output: export build`)
+  }
+  writeFileSync(exportMarker, `${JSON.stringify({
+    version: 1,
+    hasExportPathMap: false,
+    exportTrailingSlash: serializedNextConfig.trailingSlash === true,
+    isNextImageImported: false,
+  }, null, 2)}\n`)
+  console.warn(`[next-env] restored invalid ${exportMarker} for provider packaging`)
+}
+
+if (!isValidJson(exportMarker)) {
+  throw new Error(`[next-env] ${exportMarker} is missing or is not valid JSON`)
+}
+
+// A late Next 15 export worker can also recreate export-detail.json after the
+// normal server build has already unlinked it. @vercel/next interprets any
+// successful export detail as an intentional static-only deployment and drops
+// every API/server function. Preserve it only for an explicit output: export.
+const exportDetail = join(distDir, 'export-detail.json')
+if (!isStaticExport && existsSync(exportDetail)) {
+  unlinkSync(exportDetail)
+  console.warn(`[next-env] removed stale ${exportDetail} from non-static build`)
 }
 
 // Standalone builds keep a second complete manifest. Recover only from that

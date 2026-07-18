@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { POST } from "@/app/api/install/remote-postgres/route"
@@ -64,8 +64,11 @@ describe("production installation and Kilo deployment contract", () => {
     expect(envExample).not.toMatch(/^[A-Z_][A-Z0-9_]*=[^\r\n#]*[ \t]+#/m)
     expect(envExample).toContain("ENCRYPTION_KEY=replace_me_encryption_key")
     expect(envExample).toContain("NEXT_PUBLIC_APP_URL=http://localhost:3002\n")
-    expect(JSON.parse(vercelConfig).buildCommand).toContain("pnpm run vercel-build")
-    expect(JSON.parse(vercelConfig).buildCommand).not.toContain("vercel-build-setup")
+    const vercel = JSON.parse(vercelConfig)
+    expect(vercel.installCommand).toBe("corepack pnpm@10.28.1 install --frozen-lockfile")
+    expect(vercel.buildCommand).toBe("corepack pnpm@10.28.1 run vercel-build")
+    expect(vercel.installCommand).not.toContain("corepack enable")
+    expect(vercel.buildCommand).not.toContain("vercel-build-setup")
     execFileSync("bash", ["-n", "scripts/install.sh"], { cwd: process.cwd() })
     expect(await readFile(path.join(process.cwd(), "pnpm-workspace.yaml"), "utf8"))
       .toContain("onlyBuiltDependencies:")
@@ -127,7 +130,38 @@ describe("production installation and Kilo deployment contract", () => {
     expect(buildNormalizer).toContain("resolve(src) !== resolve(dest)")
     expect(buildNormalizer).toContain("isValidJson(src)")
     expect(buildNormalizer).toContain("standaloneManifest")
+    expect(buildNormalizer).toContain("export-marker.json")
+    expect(buildNormalizer).toContain("hasExportPathMap: false")
+    expect(buildNormalizer).toContain("serializedNextConfig.output === 'export'")
+    expect(buildNormalizer).toContain("removed stale ${exportDetail}")
     execFileSync(process.execPath, ["--check", "scripts/kilo-deploy.mjs"], { cwd: process.cwd() })
+  })
+
+  it("repairs invalid Next provider markers without false static-export packaging", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "cts-vercel-manifests-"))
+    const dist = path.join(root, ".next")
+    const normalizer = path.join(process.cwd(), "scripts/normalize-next-env.mjs")
+    try {
+      await mkdir(dist, { recursive: true })
+      await Promise.all([
+        writeFile(path.join(root, "next-env.d.ts"), ""),
+        writeFile(path.join(dist, "routes-manifest.json"), "{}\n"),
+        writeFile(path.join(dist, "required-server-files.json"), '{"config":{"trailingSlash":false}}\n'),
+        writeFile(path.join(dist, "export-marker.json"), ""),
+        writeFile(path.join(dist, "export-detail.json"), '{"version":1,"success":true,"outDirectory":"out"}\n'),
+      ])
+
+      execFileSync(process.execPath, [normalizer], { cwd: root })
+      expect(JSON.parse(await readFile(path.join(dist, "export-marker.json"), "utf8"))).toMatchObject({
+        version: 1,
+        hasExportPathMap: false,
+        exportTrailingSlash: false,
+      })
+      await expect(readFile(path.join(dist, "export-detail.json"), "utf8"))
+        .rejects.toMatchObject({ code: "ENOENT" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it("deduplicates Kilo and independent-server schedulers by durable minute bucket", async () => {
