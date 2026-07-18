@@ -11,6 +11,7 @@ export const maxDuration = 60
 
 const LOCK_KEY = "cron:server-continuity:lock"
 const LOCK_TTL_SECONDS = 55
+const MINUTE_DEDUP_PREFIX = "cron:server-continuity:minute"
 const DIAGNOSTIC_KEY = "system:coordination:continuity"
 
 function requestSource(request: Request): string {
@@ -65,6 +66,19 @@ export async function GET(request: Request) {
   try {
     await initRedis()
     const client = getRedisClient()
+    // Kilo Cron and a dedicated-server scheduler may intentionally coexist for
+    // failover. A durable minute bucket guarantees that only the first owner
+    // executes this tick even when the short execution lock is released before
+    // the second owner arrives.
+    const minuteBucket = Math.floor(startedAt / 60_000)
+    const minuteAccepted = await client.set(
+      `${MINUTE_DEDUP_PREFIX}:${minuteBucket}`,
+      requestSource(request),
+      { NX: true, EX: 180 },
+    ).catch(() => null)
+    if (minuteAccepted !== "OK") {
+      return NextResponse.json({ success: true, skipped: true, reason: "continuity minute already completed" })
+    }
     const acquired = await client.set(LOCK_KEY, token, { NX: true, EX: LOCK_TTL_SECONDS }).catch(() => null)
     if (acquired !== "OK") {
       return NextResponse.json({ success: true, skipped: true, reason: "continuity tick already running" })

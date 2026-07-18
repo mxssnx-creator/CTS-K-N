@@ -28,6 +28,18 @@ export interface RealAdjustPositionStats extends RealVariantPositionStats {
   profitFactorRatio?: number
   /** Block-only Default/Real PF baseline used by the proportional formula. */
   defaultMinimumProfitFactor?: number
+  /** Shared normal/Block last-N window and activation threshold. */
+  profitFactorWindow?: number
+  profitFactorMinimumSampleCount?: number
+  /** Active Real/Live Block overlays evaluated under the same PF contract. */
+  activeOverlayEvaluation?: {
+    evaluated: number
+    passed: number
+    emitted: number
+    rejected: number
+    paused: number
+    active: number
+  }
   /** Block-only independently evaluated Count 1..N results. */
   countEvaluations?: RealBlockCountProfitFactorStats[]
 }
@@ -268,6 +280,9 @@ export function buildRealStagePositionStats(input: {
   blockProfitFactor?: {
     ratio?: unknown
     defaultMinimumProfitFactor?: unknown
+    window?: unknown
+    minimumSampleCount?: unknown
+    activeOverlayEvaluation?: RealAdjustPositionStats["activeOverlayEvaluation"]
     countEvaluations?: RealBlockCountProfitFactorStats[] | null
   } | null
   openPositions?: {
@@ -441,6 +456,16 @@ export function buildRealStagePositionStats(input: {
         ...buildAdjustStats(blockStats, withoutAdjustPositions),
         profitFactorRatio: rounded(count(input.blockProfitFactor?.ratio), 2),
         defaultMinimumProfitFactor: rounded(count(input.blockProfitFactor?.defaultMinimumProfitFactor), 3),
+        profitFactorWindow: Math.max(0, Math.floor(count(input.blockProfitFactor?.window))),
+        profitFactorMinimumSampleCount: Math.max(0, Math.floor(count(input.blockProfitFactor?.minimumSampleCount))),
+        activeOverlayEvaluation: input.blockProfitFactor?.activeOverlayEvaluation || {
+          evaluated: 0,
+          passed: 0,
+          emitted: 0,
+          rejected: 0,
+          paused: 0,
+          active: 0,
+        },
         countEvaluations: Array.isArray(input.blockProfitFactor?.countEvaluations)
           ? input.blockProfitFactor!.countEvaluations
           : [],

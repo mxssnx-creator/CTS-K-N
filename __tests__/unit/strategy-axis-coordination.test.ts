@@ -3,6 +3,7 @@ import {
   coordinateActiveRealLiveCounts,
   hydrateStrategySetSnapshots,
   selectLiveSetsWithActivePriority,
+  selectRealSetsWithActiveAndVariantPriority,
   StrategyCoordinator,
   type StrategySet,
 } from "@/lib/strategy-coordinator"
@@ -186,6 +187,47 @@ describe("strategy position-count axis coordination", () => {
 
     expect(result.selected).toHaveLength(2)
     expect(new Set(result.selected.map((set) => set.setKey))).toEqual(new Set([first.setKey, second.setKey]))
+  })
+
+  test("keeps exact active Real Sets and reserves enabled adjustment variants before the safety cap", () => {
+    const defaults = Array.from({ length: 8 }, (_, index) => ({
+      ...baseSet([]),
+      setKey: `default:${index}`,
+      variant: "default" as const,
+      avgProfitFactor: 10 - index,
+    }))
+    const active = {
+      ...baseSet([]),
+      setKey: "default:active-low-pf",
+      variant: "default" as const,
+      avgProfitFactor: 0.1,
+    }
+    const dca = {
+      ...baseSet([]),
+      setKey: "adjust:dca",
+      variant: "dca" as const,
+      avgProfitFactor: 0.2,
+    }
+    const trailing = {
+      ...baseSet([]),
+      setKey: "adjust:trailing",
+      variant: "trailing" as const,
+      avgProfitFactor: 0.3,
+    }
+
+    const result = selectRealSetsWithActiveAndVariantPriority(
+      [...defaults, active, dca, trailing],
+      new Set([active.setKey]),
+      4,
+    )
+
+    expect(result.selected).toHaveLength(4)
+    expect(result.selected.map((set) => set.setKey)).toEqual(expect.arrayContaining([
+      active.setKey,
+      dca.setKey,
+      trailing.setKey,
+    ]))
+    expect(result.reservedByVariant).toMatchObject({ dca: 1, trailing: 1 })
   })
 
   test("round-trips derived Real Set scalars through compact v2 snapshots", () => {

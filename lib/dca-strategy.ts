@@ -145,6 +145,70 @@ export function normalizeDcaProfile(raw: unknown): DcaProfile {
   }
 }
 
+function hasOwn(source: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(source, key)
+}
+
+/**
+ * Merge partial DCA setting layers in ascending priority.
+ *
+ * Persisted hashes use flat `dca*` field names while a position snapshot uses
+ * normalized names. A plain object spread leaves both aliases present, after
+ * which `normalizeDcaProfile` would prefer the older normalized value. This
+ * helper canonicalizes every supplied layer as it is applied so the newest
+ * operator save always wins, including legacy per-step fields.
+ */
+export function mergeDcaProfileSources(...sources: unknown[]): DcaProfile {
+  const merged: Record<string, unknown> = {}
+  for (const raw of sources) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue
+    const source = raw as Record<string, unknown>
+    const current = normalizeDcaProfile(merged)
+    Object.assign(merged, source)
+
+    if (hasOwn(source, "maxSteps") || hasOwn(source, "dcaMaxSteps")) {
+      merged.maxSteps = source.maxSteps ?? source.dcaMaxSteps
+    }
+
+    if (hasOwn(source, "stepVolumeMultipliers") || hasOwn(source, "dcaStepVolumeMultipliers")) {
+      merged.stepVolumeMultipliers = source.stepVolumeMultipliers ?? source.dcaStepVolumeMultipliers
+    } else if ([1, 2, 3, 4].some((step) => hasOwn(source, `dcaStepVolume${step}`))) {
+      const values: unknown[] = [...current.stepVolumeMultipliers]
+      for (let index = 0; index < 4; index++) {
+        const key = `dcaStepVolume${index + 1}`
+        if (hasOwn(source, key)) values[index] = source[key]
+      }
+      merged.stepVolumeMultipliers = values
+    }
+
+    if (hasOwn(source, "stepDistancesPct") || hasOwn(source, "dcaStepDistancesPct")) {
+      merged.stepDistancesPct = source.stepDistancesPct ?? source.dcaStepDistancesPct
+    } else if ([1, 2, 3, 4].some((step) => hasOwn(source, `dcaStepDistance${step}`))) {
+      const values: unknown[] = [...current.stepDistancesPct]
+      for (let index = 0; index < 4; index++) {
+        const key = `dcaStepDistance${index + 1}`
+        if (hasOwn(source, key)) values[index] = source[key]
+      }
+      merged.stepDistancesPct = values
+    }
+
+    if (
+      hasOwn(source, "takeProfitMode") ||
+      hasOwn(source, "dcaTakeProfitMode") ||
+      hasOwn(source, "dcaTakeProfitAdjustment")
+    ) {
+      merged.takeProfitMode = source.takeProfitMode ?? source.dcaTakeProfitMode ?? source.dcaTakeProfitAdjustment
+    }
+    if (hasOwn(source, "breakevenProfitPct") || hasOwn(source, "dcaBreakevenProfitPct")) {
+      merged.breakevenProfitPct = source.breakevenProfitPct ?? source.dcaBreakevenProfitPct
+    }
+    if (hasOwn(source, "cooldownSeconds") || hasOwn(source, "dcaCooldownSeconds")) {
+      merged.cooldownSeconds = source.cooldownSeconds ?? source.dcaCooldownSeconds
+    }
+  }
+  return normalizeDcaProfile(merged)
+}
+
 export function adverseMovePct(direction: "long" | "short", referencePrice: number, currentPrice: number): number {
   if (!Number.isFinite(referencePrice) || referencePrice <= 0) return 0
   if (!Number.isFinite(currentPrice) || currentPrice <= 0) return 0

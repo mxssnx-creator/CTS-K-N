@@ -21,18 +21,34 @@ type WorkerScheduledController = {
 
 type WorkerEnvironment = {
   CRON_SECRET?: string
+  NEXT_PUBLIC_APP_URL?: string
+  DEPLOYMENT_URL?: string
   [key: string]: unknown
 }
 
-const INTERNAL_ORIGIN = "https://cts-v-yd.internal"
 const CRON_PATHS = [
   "/api/cron/server-continuity",
   "/api/cron/sync-live-positions",
 ] as const
 
-async function invokeCronPath(path: (typeof CRON_PATHS)[number], env: WorkerEnvironment, ctx: WorkerExecutionContext): Promise<void> {
+async function invokeCronPath(path: (typeof CRON_PATHS)[number], env: WorkerEnvironment, _ctx: WorkerExecutionContext): Promise<void> {
   const cronSecret = String(env?.CRON_SECRET || "").trim()
-  const request = new Request(`${INTERNAL_ORIGIN}${path}`, {
+  if (cronSecret.length < 16) {
+    throw new Error("CRON_SECRET is missing or too short; scheduled continuity is fail-closed")
+  }
+  const rawOrigin = String(env?.NEXT_PUBLIC_APP_URL || env?.DEPLOYMENT_URL || "").trim()
+  let origin: URL
+  try {
+    origin = new URL(rawOrigin)
+  } catch {
+    throw new Error("NEXT_PUBLIC_APP_URL (or DEPLOYMENT_URL) must be configured for scheduled continuity")
+  }
+  const loopback = origin.hostname === "127.0.0.1" || origin.hostname === "localhost" || origin.hostname === "::1"
+  if (origin.protocol !== "https:" && !(origin.protocol === "http:" && loopback)) {
+    throw new Error("Scheduled continuity requires an HTTPS public deployment URL")
+  }
+
+  const request = new Request(new URL(path, origin), {
     method: "GET",
     headers: {
       "User-Agent": "cloudflare-scheduled-worker",
@@ -41,7 +57,11 @@ async function invokeCronPath(path: (typeof CRON_PATHS)[number], env: WorkerEnvi
     },
   })
 
-  const response = await handler.fetch(request, env, ctx)
+  // Re-enter OpenNext with the real deployment origin. OpenNext validates the
+  // request host; an invented internal hostname fails before route dispatch.
+  // Calling the generated handler avoids an external network round-trip and
+  // preserves the same worker environment/shared Redis bindings.
+  const response = await handler.fetch(request, env, _ctx)
   if (!response.ok) {
     const text = await response.text().catch(() => "")
     throw new Error(`${path} failed with ${response.status}${text ? `: ${text.slice(0, 500)}` : ""}`)
@@ -52,16 +72,26 @@ export default {
   fetch: handler.fetch,
 
   async scheduled(_controller: WorkerScheduledController, env: WorkerEnvironment, ctx: WorkerExecutionContext) {
-    const tasks = CRON_PATHS.map((path) => invokeCronPath(path, env, ctx))
-    const results = await Promise.allSettled(tasks)
-    const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")
-    if (failures.length > 0) {
-      throw new Error(
-        failures
+    console.log("[CTS-K-N scheduled continuity] event received")
+    const work = Promise.allSettled(CRON_PATHS.map((path) => invokeCronPath(path, env, ctx))).then((results) => {
+      const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      if (failures.length > 0) {
+        const message = failures
           .map((failure) => (failure.reason instanceof Error ? failure.reason.message : String(failure.reason)))
-          .join("; "),
-      )
+          .join("; ")
+        console.error(`[CTS-K-N scheduled continuity] ${message}`)
+        throw new Error(message)
+      }
+    })
+
+    // Scheduled handlers should extend their lifetime with waitUntil. This also
+    // avoids a local-workerd self-fetch deadlock caused by awaiting a nested
+    // request to the same worker before the ScheduledEvent can yield.
+    if (ctx.waitUntil) {
+      ctx.waitUntil(work)
+      return
     }
+    await work
   },
 }
 

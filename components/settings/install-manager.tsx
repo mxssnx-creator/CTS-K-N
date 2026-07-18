@@ -27,6 +27,9 @@ interface InstallStatus {
   databaseType: string
   tableCount: number
   migrationsApplied: number
+  latestMigration: number
+  serverless: boolean
+  engineOwner: string
   error: string | null
 }
 
@@ -36,8 +39,10 @@ export default function InstallManager() {
   const [installing, setInstalling] = useState(false)
   const [installLog, setInstallLog] = useState<string[]>([])
   const [activeTab, setActiveTab] = useState("status")
-  const [remoteForm, setRemoteForm] = useState({ host: "", port: "22", username: "root", password: "", sshKey: "", repoUrl: "", branch: "main", installDir: "/opt/cts-k-n", appPort: "3002", redisUrl: "" })
+  const [remoteForm, setRemoteForm] = useState({ adminSecret: "", host: "", port: "22", username: "root", password: "", sshKey: "", repoUrl: "https://github.com/mxssnx-creator/CTS-K-N.git", branch: "main", runtime: "auto", installDir: "/opt/cts-k-n", appPort: "3002", serviceUser: "cts-kn", redisUrl: "" })
   const [remoteInstalling, setRemoteInstalling] = useState(false)
+  const [remoteMode, setRemoteMode] = useState<"preflight" | "install" | null>(null)
+  const [remotePreflightPassed, setRemotePreflightPassed] = useState(false)
   const [remoteLog, setRemoteLog] = useState<string[]>([])
   
   const loadStatus = async () => {
@@ -46,28 +51,23 @@ export default function InstallManager() {
       const response = await fetch("/api/system/init-status")
       const data = await response.json()
       
-      // Consider installed if migrations are applied (version > 0) OR if keys exist
-      const hasMigrations = (data.migrations?.current_version || 0) > 0
-      const hasKeys = (data.statistics?.total_keys || 0) > 0
-      const isInstalled = data.initialized || hasMigrations || hasKeys
+      const currentMigration = Number(data.migrations?.current_version || 0)
+      const latestMigration = Number(data.migrations?.latest_version || 0)
+      const hasMigrations = latestMigration > 0 && currentMigration === latestMigration && data.migrations?.up_to_date === true
+      const isInstalled = data.initialized === true && data.database?.connected === true && hasMigrations
       
       setStatus({
         isInstalled,
         databaseConnected: data.database?.connected || false,
         databaseType: data.database?.type || "redis",
         tableCount: data.statistics?.total_keys || 0,
-        migrationsApplied: data.migrations?.current_version || 0,
+        migrationsApplied: currentMigration,
+        latestMigration,
+        serverless: data.system?.serverless === true,
+        engineOwner: data.system?.engine_owner || "unknown",
         error: data.status === "error" ? data.message : null,
       })
       
-      console.log("[v0] Install status loaded:", { 
-        initialized: data.initialized, 
-        hasMigrations, 
-        hasKeys, 
-        isInstalled,
-        keys: data.statistics?.total_keys,
-        version: data.migrations?.current_version
-      })
     } catch (error) {
       console.error("[v0] Error loading init status:", error)
       toast.error("Failed to check initialization status")
@@ -195,23 +195,36 @@ export default function InstallManager() {
 
   const updateRemoteForm = (key: keyof typeof remoteForm, value: string) => {
     setRemoteForm(prev => ({ ...prev, [key]: value }))
+    setRemotePreflightPassed(false)
   }
 
-  const runRemoteInstall = async () => {
+  const runRemoteInstall = async (mode: "preflight" | "install") => {
     if (!remoteForm.host.trim() || !remoteForm.username.trim()) {
       toast.error("Remote host and SSH username are required")
       return
     }
+    if (remoteForm.adminSecret.trim().length < 16) {
+      toast.error("The current site's ADMIN_SECRET is required")
+      return
+    }
+    if (mode === "install" && !remotePreflightPassed) {
+      toast.error("Run and pass the remote preflight first")
+      return
+    }
+    if (mode === "install" && !confirm(`Install or upgrade CTS-K-N on ${remoteForm.host}:${remoteForm.appPort}?`)) return
 
     setRemoteInstalling(true)
-    setRemoteLog(["Connecting over SSH and starting production deployment..."])
+    setRemoteMode(mode)
+    setRemoteLog([mode === "preflight" ? "Running non-persistent remote production preflight..." : "Connecting over SSH and starting the verified production deployment..."])
 
     try {
+      const { adminSecret, ...payload } = remoteForm
       const response = await fetch("/api/install/remote-postgres", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminSecret}` },
         body: JSON.stringify({
-          ...remoteForm,
+          ...payload,
+          mode,
           port: Number(remoteForm.port || 22),
           appPort: Number(remoteForm.appPort || 3002),
           repoUrl: remoteForm.repoUrl || undefined,
@@ -223,19 +236,21 @@ export default function InstallManager() {
       const data = await response.json()
       setRemoteLog(prev => [...prev, ...(data.logs || []), data.message || data.error || "Remote install finished"])
       if (!response.ok || !data.success) throw new Error(data.error || "Remote install failed")
-      toast.success(`Remote service started: ${data.url}`)
+      if (mode === "preflight") {
+        setRemotePreflightPassed(true)
+        toast.success("Remote preflight passed; installation is now unlocked")
+      } else {
+        toast.success(`Remote app and scheduler verified: ${data.url}`)
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Remote install failed"
       setRemoteLog(prev => [...prev, `✗ ${message}`])
       toast.error(message)
     } finally {
       setRemoteInstalling(false)
+      setRemoteMode(null)
     }
   }
-
-  useEffect(() => {
-    loadStatus()
-  }, [])
 
   if (loading) {
     return (
@@ -351,8 +366,8 @@ export default function InstallManager() {
                   </div>
                   <div className="flex items-center justify-between p-2 bg-muted/50 rounded">
                     <span>Schema Version</span>
-                    <Badge variant={status.migrationsApplied > 0 ? "default" : "secondary"}>
-                      v{status.migrationsApplied}
+                    <Badge variant={status.isInstalled ? "default" : "secondary"}>
+                      v{status.migrationsApplied}/{status.latestMigration}
                     </Badge>
                   </div>
                 </div>
@@ -514,7 +529,7 @@ export default function InstallManager() {
 
                   <div className="p-4 border rounded-lg space-y-2">
                     <p className="text-sm font-semibold text-muted-foreground">Schema Version</p>
-                    <p className="text-lg font-bold">{status.migrationsApplied}</p>
+                    <p className="text-lg font-bold">{status.migrationsApplied}/{status.latestMigration}</p>
                     <p className="text-xs text-muted-foreground">Current migration level</p>
                   </div>
                 </div>
@@ -624,15 +639,30 @@ export default function InstallManager() {
           <Card>
             <CardHeader>
               <CardTitle>Install Remote on Server through SSH</CardTitle>
-              <CardDescription>Deploy, build, install a systemd service, start it, and keep it running continuously on a remote Linux server.</CardDescription>
+              <CardDescription>Deploy, validate, build, and keep the app plus its minute scheduler running through systemd or PM2 on a remote Linux server.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <Alert>
                 <Server className="h-4 w-4" />
                 <AlertDescription className="text-xs">
-                  The remote server needs sudo rights. SSH private-key auth is recommended; password auth requires sshpass on this web server.
+                  A successful non-persistent preflight is required before installation. The target needs passwordless sudo. SSH private-key auth is recommended; password auth additionally requires sshpass on this API host.
                 </AlertDescription>
               </Alert>
+
+              {status.serverless && (
+                <Alert>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription className="text-xs">
+                    This Kilo/serverless UI proxies SSH work to a long-lived owner. Configure REMOTE_INSTALL_OWNER_URL and REMOTE_INSTALL_OWNER_SECRET on Kilo, or open this page directly on the independent server.
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              <div className="space-y-2">
+                <Label htmlFor="remote-admin-secret">Current site ADMIN_SECRET</Label>
+                <Input id="remote-admin-secret" type="password" autoComplete="off" value={remoteForm.adminSecret} onChange={(e) => updateRemoteForm("adminSecret", e.target.value)} placeholder="Required to authorize this administrative action" />
+                <p className="text-xs text-muted-foreground">Used only as the bearer authorization header. It is not copied to the remote server.</p>
+              </div>
 
               <div className="grid md:grid-cols-3 gap-4">
                 <div className="space-y-2">
@@ -663,11 +693,24 @@ export default function InstallManager() {
               <div className="grid md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="remote-repo">Repository URL</Label>
-                  <Input id="remote-repo" value={remoteForm.repoUrl} onChange={(e) => updateRemoteForm("repoUrl", e.target.value)} placeholder="https://github.com/your-org/CTS-K-N.git" />
+                  <Input id="remote-repo" value={remoteForm.repoUrl} onChange={(e) => updateRemoteForm("repoUrl", e.target.value)} placeholder="https://github.com/mxssnx-creator/CTS-K-N.git" />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="remote-branch">Branch</Label>
                   <Input id="remote-branch" value={remoteForm.branch} onChange={(e) => updateRemoteForm("branch", e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="remote-runtime">Process Runtime</Label>
+                  <select
+                    id="remote-runtime"
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={remoteForm.runtime}
+                    onChange={(event) => updateRemoteForm("runtime", event.target.value)}
+                  >
+                    <option value="auto">Auto-detect (recommended)</option>
+                    <option value="systemd">systemd</option>
+                    <option value="pm2">PM2</option>
+                  </select>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="remote-dir">Install Directory</Label>
@@ -677,6 +720,10 @@ export default function InstallManager() {
                   <Label htmlFor="remote-app-port">App Port</Label>
                   <Input id="remote-app-port" value={remoteForm.appPort} onChange={(e) => updateRemoteForm("appPort", e.target.value)} />
                 </div>
+                <div className="space-y-2">
+                  <Label htmlFor="remote-service-user">Unprivileged Service User</Label>
+                  <Input id="remote-service-user" value={remoteForm.serviceUser} onChange={(e) => updateRemoteForm("serviceUser", e.target.value)} />
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -684,10 +731,23 @@ export default function InstallManager() {
                 <Input id="remote-redis" value={remoteForm.redisUrl} onChange={(e) => updateRemoteForm("redisUrl", e.target.value)} placeholder="redis://127.0.0.1:6379" />
               </div>
 
-              <Button onClick={runRemoteInstall} disabled={remoteInstalling} className="w-full">
-                {remoteInstalling ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Server className="h-4 w-4 mr-2" />}
-                {remoteInstalling ? "Installing and starting remote service..." : "Install Remote on Server through SSH"}
-              </Button>
+              <div className="grid gap-2 md:grid-cols-2">
+                <Button onClick={() => runRemoteInstall("preflight")} disabled={remoteInstalling} variant="outline">
+                  {remoteInstalling && remoteMode === "preflight" ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
+                  {remoteInstalling && remoteMode === "preflight" ? "Running remote preflight..." : "Run Remote Preflight"}
+                </Button>
+                <Button onClick={() => runRemoteInstall("install")} disabled={remoteInstalling || !remotePreflightPassed}>
+                  {remoteInstalling && remoteMode === "install" ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : remotePreflightPassed ? <Server className="h-4 w-4 mr-2" /> : <XCircle className="h-4 w-4 mr-2" />}
+                  {remoteInstalling && remoteMode === "install" ? "Installing and verifying..." : remotePreflightPassed ? "Install / Upgrade Remote Server" : "Preflight Required"}
+                </Button>
+              </div>
+
+              {remotePreflightPassed && (
+                <Alert>
+                  <CheckCircle2 className="h-4 w-4 text-green-600" />
+                  <AlertDescription className="text-xs">Preflight passed for the current form values. The full installation is unlocked.</AlertDescription>
+                </Alert>
+              )}
 
               {remoteLog.length > 0 && (
                 <div className="bg-muted/50 p-4 rounded-lg space-y-1 text-xs font-mono max-h-72 overflow-y-auto">
@@ -699,41 +759,33 @@ export default function InstallManager() {
         </TabsContent>
       </Tabs>
 
-      {/* NPX Installation Instructions */}
+      {/* Production installation instructions */}
       <Card>
         <CardHeader>
-          <CardTitle>NPX Installation</CardTitle>
-          <CardDescription>Install and deploy CTS v3.1 using NPX commands</CardDescription>
+          <CardTitle>Production Server Installation</CardTitle>
+          <CardDescription>Use the checked-in, versioned installer on a long-lived Linux server</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-3">
             <div>
-              <p className="text-sm font-medium mb-2">Quick Start with shadcn CLI</p>
+              <p className="text-sm font-medium mb-2">1. Clone the verified repository</p>
               <div className="bg-muted/50 p-3 rounded-lg font-mono text-sm">
-                <code className="text-primary">npx shadcn@latest init</code>
+                <code>git clone https://github.com/mxssnx-creator/CTS-K-N.git /opt/cts-k-n</code>
               </div>
-              <p className="text-xs text-muted-foreground mt-1.5">
-                Recommended method: Uses shadcn CLI to set up the project with all components
-              </p>
             </div>
 
             <div>
-              <p className="text-sm font-medium mb-2">Add Components</p>
+              <p className="text-sm font-medium mb-2">2. Run the non-mutating preflight</p>
               <div className="bg-muted/50 p-3 rounded-lg font-mono text-sm space-y-1">
-                <div><code className="text-primary">npx shadcn@latest add button card dialog</code></div>
+                <div><code>cd /opt/cts-k-n</code></div>
+                <div><code className="text-primary">bash scripts/install.sh --preflight-only --skip-system-packages</code></div>
               </div>
-              <p className="text-xs text-muted-foreground mt-1.5">
-                Add individual shadcn/ui components as needed
-              </p>
             </div>
 
             <div>
-              <p className="text-sm font-medium mb-2">Alternative: Clone from GitHub</p>
+              <p className="text-sm font-medium mb-2">3. Install app, scheduler, Redis contract, and boot services</p>
               <div className="bg-muted/50 p-3 rounded-lg font-mono text-sm space-y-1">
-                <div><code>git clone https://github.com/your-repo/cts-v3.1.git</code></div>
-                <div><code>cd cts-v3.1</code></div>
-                <div><code className="text-primary">npm install</code></div>
-                <div><code className="text-primary">npm run dev</code></div>
+                <div><code className="text-primary">sudo bash scripts/install.sh --runtime systemd --service-user cts-kn --create-service-user --non-interactive</code></div>
               </div>
             </div>
           </div>
@@ -741,7 +793,7 @@ export default function InstallManager() {
           <Alert>
             <Download className="h-4 w-4" />
             <AlertDescription className="text-xs">
-              <strong>Note:</strong> After installation, run the database initialization from the Status tab above to create all required tables and configure the system.
+              <strong>Result:</strong> The installer does not report success until the complete test/build/migration contract, shared Redis, minute scheduler, service restart, durable site identity, and fresh continuity ticks have passed.
             </AlertDescription>
           </Alert>
         </CardContent>

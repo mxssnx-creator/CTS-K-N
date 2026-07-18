@@ -6,14 +6,15 @@ coordination works in two deployment shapes:
 1. A long-lived `next start`, Docker, PM2, systemd, or VPS process runs the
    in-process minute timer automatically. It also keeps live-position recovery
    on the configurable `cronSyncIntervalSeconds` cadence (15 seconds by default).
-2. A serverless deployment sets `DISABLE_IN_PROCESS_CONTINUITY=1` and runs one
-   external scheduler process. The scheduler calls both protected continuity
-   routes once per minute without overlapping its own ticks.
+2. A generic serverless deployment sets `DISABLE_IN_PROCESS_CONTINUITY=1` and
+   runs one external scheduler process. The scheduler calls both protected
+   continuity routes once per minute without overlapping its own ticks.
 
-Cloudflare/OpenNext deployments use the checked-in `custom-worker.ts` scheduled
-handler and the `* * * * *` trigger in `wrangler.jsonc`. The same config marks
-request workers with `DISABLE_TRADE_ENGINE_IN_PROCESS=1`; a request worker must
-never claim it can retain a sub-second engine loop after a response ends.
+Kilo/Cloudflare/OpenNext deployments use the checked-in `custom-worker.ts`
+scheduled handler and the `* * * * *` trigger in `wrangler.jsonc`; they do not
+need a second external minute process. The same config marks request workers
+with `DISABLE_TRADE_ENGINE_IN_PROCESS=1`; a request worker must never claim it
+can retain a sub-second engine loop after a response ends.
 
 ## External scheduler process
 
@@ -43,7 +44,8 @@ The scheduler calls these routes in parallel:
 - `/api/cron/sync-live-positions`
 
 Both require `Authorization: Bearer $CRON_SECRET` in production. Cloudflare's
-existing `scheduled()` worker remains supported through `wrangler.jsonc`.
+`scheduled()` handler invokes the same protected routes internally with the
+same Worker environment and shared Redis bindings.
 
 ## Deployment rules
 

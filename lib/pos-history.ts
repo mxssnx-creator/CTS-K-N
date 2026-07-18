@@ -906,6 +906,76 @@ const RECORD_STRATEGY_CLOSE_OUTCOMES_LUA = `
   return inserted
 `
 
+async function recordStrategyCloseOutcomes(
+  client: ReturnType<typeof getRedisClient>,
+  connectionId: string,
+  positionId: string,
+  memberships: string[],
+  outcome?: StrategyPositionCloseOutcome,
+): Promise<void> {
+  const pnl = Number(outcome?.pnl)
+  if (memberships.length === 0 || !Number.isFinite(pnl)) return
+
+  const ddt = Math.max(0, Number(outcome?.drawdownMinutes || 0))
+  const record = `${pnl.toFixed(6)}|0|${ddt.toFixed(3)}`
+  const closeIdsKey = STRATEGY_SET_CLOSE_IDS_KEY(connectionId)
+  const closedCountsKey = STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId)
+  const closedSetKeysKey = STRATEGY_CLOSED_SET_KEYS_KEY(connectionId)
+  const ledgerTotalsKey = STRATEGY_LEDGER_TOTALS_KEY(connectionId)
+  let bookedWithLua = false
+  if (typeof client.eval === "function") {
+    try {
+      await client.eval(RECORD_STRATEGY_CLOSE_OUTCOMES_LUA, {
+        keys: [
+          closeIdsKey,
+          closedCountsKey,
+          closedSetKeysKey,
+          ledgerTotalsKey,
+          ...memberships.map((setKey) => strategySetResultRingKey(connectionId, setKey)),
+        ],
+        arguments: [
+          positionId,
+          record,
+          String(TTL_SECONDS),
+          String(RING_CAP),
+          ...memberships,
+        ],
+      })
+      bookedWithLua = true
+    } catch {
+      // Adapter-safe batched fallback below. A committed Lua call leaves close
+      // ids behind, so the fallback remains idempotent.
+    }
+  }
+  if (bookedWithLua) return
+
+  const dedupe = client.multi()
+  for (const setKey of memberships) dedupe.sadd(closeIdsKey, `${positionId}|${setKey}`)
+  const dedupeResults = await dedupe.exec()
+  const insertedSetKeys = memberships.filter((_setKey, index) => {
+    const raw = dedupeResults?.[index]
+    const value = Array.isArray(raw) ? raw[1] : raw
+    return Number(value) === 1
+  })
+  if (insertedSetKeys.length === 0) return
+
+  const pipeline = client.multi()
+  for (const setKey of insertedSetKeys) {
+    const ringKey = strategySetResultRingKey(connectionId, setKey)
+    pipeline.hincrby(closedCountsKey, setKey, 1)
+    pipeline.sadd(closedSetKeysKey, setKey)
+    pipeline.lpush(ringKey, record)
+    pipeline.ltrim(ringKey, 0, RING_CAP - 1)
+    pipeline.expire(ringKey, TTL_SECONDS)
+  }
+  pipeline.hincrby(ledgerTotalsKey, "exact_closed", insertedSetKeys.length)
+  pipeline.expire(closeIdsKey, TTL_SECONDS)
+  pipeline.expire(closedCountsKey, TTL_SECONDS)
+  pipeline.expire(closedSetKeysKey, TTL_SECONDS)
+  pipeline.expire(ledgerTotalsKey, TTL_SECONDS)
+  await pipeline.exec()
+}
+
 /**
  * Remove a terminal position from every exact Strategy Set membership.
  *
@@ -931,6 +1001,11 @@ export async function markStrategyPositionInactive(
         .map(String)
         .filter(Boolean),
     ))
+    // Book the terminal result before deleting memberships. Close IDs make
+    // this idempotent; if the process stops between these two phases, a retry
+    // can still discover the membership and finish deactivation without ever
+    // losing the realised PF/DDT sample.
+    await recordStrategyCloseOutcomes(client, connectionId, positionId, memberships, outcome)
     const keys = [
       VALID_POS_ACTIVE_V2_KEY(connectionId),
       membershipKey,
@@ -991,67 +1066,6 @@ export async function markStrategyPositionInactive(
       deactivated = removed + remainingMemberships.length
     }
 
-    const pnl = Number(outcome?.pnl)
-    if (memberships.length > 0 && Number.isFinite(pnl)) {
-      const ddt = Math.max(0, Number(outcome?.drawdownMinutes || 0))
-      const record = `${pnl.toFixed(6)}|0|${ddt.toFixed(3)}`
-      const closeIdsKey = STRATEGY_SET_CLOSE_IDS_KEY(connectionId)
-      const closedCountsKey = STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId)
-      const closedSetKeysKey = STRATEGY_CLOSED_SET_KEYS_KEY(connectionId)
-      const ledgerTotalsKey = STRATEGY_LEDGER_TOTALS_KEY(connectionId)
-      let bookedWithLua = false
-      if (typeof client.eval === "function") {
-        try {
-          await client.eval(RECORD_STRATEGY_CLOSE_OUTCOMES_LUA, {
-            keys: [
-              closeIdsKey,
-              closedCountsKey,
-              closedSetKeysKey,
-              ledgerTotalsKey,
-              ...memberships.map((setKey) => strategySetResultRingKey(connectionId, setKey)),
-            ],
-            arguments: [
-              positionId,
-              record,
-              String(TTL_SECONDS),
-              String(RING_CAP),
-              ...memberships,
-            ],
-          })
-          bookedWithLua = true
-        } catch {
-          // Adapter-safe batched fallback below. A committed Lua call leaves
-          // close ids behind, so the fallback remains idempotent.
-        }
-      }
-      if (!bookedWithLua) {
-        const dedupe = client.multi()
-        for (const setKey of memberships) dedupe.sadd(closeIdsKey, `${positionId}|${setKey}`)
-        const dedupeResults = await dedupe.exec()
-        const insertedSetKeys = memberships.filter((_setKey, index) => {
-          const raw = dedupeResults?.[index]
-          const value = Array.isArray(raw) ? raw[1] : raw
-          return Number(value) === 1
-        })
-        if (insertedSetKeys.length > 0) {
-          const pipeline = client.multi()
-          for (const setKey of insertedSetKeys) {
-            const ringKey = strategySetResultRingKey(connectionId, setKey)
-            pipeline.hincrby(closedCountsKey, setKey, 1)
-            pipeline.sadd(closedSetKeysKey, setKey)
-            pipeline.lpush(ringKey, record)
-            pipeline.ltrim(ringKey, 0, RING_CAP - 1)
-            pipeline.expire(ringKey, TTL_SECONDS)
-          }
-          pipeline.hincrby(ledgerTotalsKey, "exact_closed", insertedSetKeys.length)
-          pipeline.expire(closeIdsKey, TTL_SECONDS)
-          pipeline.expire(closedCountsKey, TTL_SECONDS)
-          pipeline.expire(closedSetKeysKey, TTL_SECONDS)
-          pipeline.expire(ledgerTotalsKey, TTL_SECONDS)
-          await pipeline.exec()
-        }
-      }
-    }
     return deactivated > 0
   } catch {
     return false

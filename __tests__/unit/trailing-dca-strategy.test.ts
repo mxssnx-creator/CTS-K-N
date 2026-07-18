@@ -4,6 +4,7 @@ import {
   buildDcaStepSetKey,
   calculateDcaAddQuantity,
   calculateDcaTakeProfitPrice,
+  mergeDcaProfileSources,
   normalizeDcaProfile,
   resolveNextDcaStep,
   upsertDcaLeg,
@@ -73,6 +74,26 @@ describe("DCA profile and progression", () => {
     expect(normalizeDcaProfile({
       dcaStepDistancesPct: [5, 1, 2, 0.5],
     }).stepDistancesPct).toEqual([5, 5, 5, 5])
+  })
+
+  test("merges later flat settings over a normalized position profile", () => {
+    const merged = mergeDcaProfileSources(
+      normalizeDcaProfile({
+        maxSteps: 4,
+        stepVolumeMultipliers: [0.4, 0.8, 1.2, 1.6],
+        stepDistancesPct: [0.5, 1, 1.5, 2],
+        cooldownSeconds: 30,
+      }),
+      {
+        dcaStepVolumeMultipliers: JSON.stringify([0.4, 1.1, 1.2, 1.6]),
+        dcaStepDistance2: "1.25",
+        dcaCooldownSeconds: "0",
+      },
+    )
+
+    expect(merged.stepVolumeMultipliers).toEqual([0.4, 1.1, 1.2, 1.6])
+    expect(merged.stepDistancesPct).toEqual([0.5, 1.25, 1.5, 2])
+    expect(merged.cooldownSeconds).toBe(0)
   })
 
   test("calculates adverse moves symmetrically for long and short", () => {

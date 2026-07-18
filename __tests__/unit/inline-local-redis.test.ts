@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm, stat } from "fs/promises"
+import { mkdtemp, readFile, readdir, rm, stat } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
 
@@ -8,6 +8,13 @@ function resetInlineGlobals() {
   delete (globalThis as any).__redis_data
   delete (globalThis as any).__redis_load_promise
   delete (globalThis as any).__redis_snapshot_loaded
+  delete (globalThis as any).__redis_snapshot_save_promise
+  delete (globalThis as any).__redis_snapshot_mutation_version
+  delete (globalThis as any).__redis_snapshot_persisted_version
+  delete (globalThis as any).__redis_snapshot_write_counter
+  delete (globalThis as any).__redis_persistence_tick_started
+  delete (globalThis as any).__redis_persistence_signals_attached
+  delete (globalThis as any).__redis_snapshot_last_error_warn
   delete (globalThis as any).__redis_cleanup_started
   delete (globalThis as any).__db_ops_tracker
 }
@@ -227,6 +234,28 @@ describe("InlineLocalRedis compatibility and persistence", () => {
         exact_entries: "1",
         active_memberships: "1",
       })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("serializes concurrent critical snapshots and keeps the newest valid generation", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "inline-redis-concurrent-"))
+    const snapshotPath = join(dir, "redis-snapshot.json")
+    process.env.V0_REDIS_SNAPSHOT_PATH = snapshotPath
+
+    try {
+      const writer = new InlineLocalRedis()
+      const barriers: Array<Promise<boolean>> = []
+      for (let index = 0; index < 40; index++) {
+        await writer.set("concurrent:latest", String(index))
+        barriers.push(writer.persistNow())
+      }
+      await expect(Promise.all(barriers)).resolves.toEqual(Array(40).fill(true))
+
+      const parsed = JSON.parse(await readFile(snapshotPath, "utf8"))
+      expect(new Map(parsed.strings).get("concurrent:latest")).toBe("39")
+      expect((await readdir(dir)).filter((name) => name.endsWith(".tmp"))).toEqual([])
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

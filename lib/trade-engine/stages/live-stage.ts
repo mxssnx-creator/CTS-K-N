@@ -48,6 +48,7 @@ import {
   advanceBlockCountPausesOnPositionClose,
   buildBlockLegState,
   calculateBlockAddQuantity,
+  calculateBlockVolumeIncrementRatio,
   parseBlockCount,
   syncActiveBlockCountIndex,
   type BlockLegState,
@@ -56,6 +57,7 @@ import {
   buildDcaStepSetKey,
   calculateDcaAddQuantity,
   calculateDcaTakeProfitPrice,
+  mergeDcaProfileSources,
   normalizeDcaProfile,
   resolveNextDcaStep,
   upsertDcaLeg,
@@ -357,6 +359,7 @@ interface LivePosition {
     blockBaseQuantity?: number
     blockBaseVolumeMultiplier?: number
     blockVolumeRatio?: number
+    blockVolumeIncrementRatio?: number
     blockCalculatedVolumeMultiplier?: number
     dcaStep?: number
     dcaVolumeMultiplier?: number
@@ -382,6 +385,7 @@ interface LivePosition {
   blockProfitFactorWindow?: number
   blockProfitFactorSampleCount?: number
   blockCount?: number
+  blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
   blockLegs?: BlockLegState[]
   dcaProfile?: DcaProfile
@@ -1204,16 +1208,16 @@ async function resolveAccumulationPlan(
       client.hgetall(`connection_settings:${connId}`).catch(() => ({})),
       client.hgetall(`settings:connection_settings:${connId}`).catch(() => ({})),
     ])
-    const dcaProfile = normalizeDcaProfile({
+    const dcaProfile = mergeDcaProfileSources(
       // Position-local data is the last profile that actually executed and is
       // retained as a crash-recovery fallback. Current persisted settings are
       // layered afterwards so an operator save affects the very next DCA
       // decision instead of being shadowed until the position closes.
-      ...(existing.dcaProfile || {}),
-      ...(legacy || {}),
-      ...(canonical || {}),
-      ...(real?.dcaProfile || {}),
-    })
+      existing.dcaProfile,
+      legacy,
+      canonical,
+      real?.dcaProfile,
+    )
     const referencePrice = Number(existing.initialEntryPrice ?? existing.averageExecutionPrice ?? existing.entryPrice ?? 0)
     const next = resolveNextDcaStep({
       direction: existing.direction || "long",
@@ -1441,6 +1445,10 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       blockBaseQuantity: plan.blockBaseQuantity,
       blockBaseVolumeMultiplier: Number(real?.blockBaseVolumeMultiplier || 1),
       blockVolumeRatio: Number(real?.blockVolumeRatio || 1),
+      blockVolumeIncrementRatio: Number(
+        real?.blockVolumeIncrementRatio ||
+        (plan.blockCount ? calculateBlockVolumeIncrementRatio(plan.blockCount, Number(real?.blockVolumeRatio || 1)) : 1),
+      ),
       blockCalculatedVolumeMultiplier: Number(real?.blockCalculatedVolumeMultiplier || real?.sizeMultiplier || 1),
       dcaStep: plan.dcaStep,
       dcaVolumeMultiplier: plan.dcaVolumeMultiplier,
@@ -1616,6 +1624,7 @@ async function reconcileAuthoritativeExchangeQuantity(
         blockCount: pending.blockCount,
         blockBaseVolumeMultiplier: pending.blockBaseVolumeMultiplier,
         blockVolumeRatio: pending.blockVolumeRatio,
+        blockVolumeIncrementRatio: pending.blockVolumeIncrementRatio,
         blockCalculatedVolumeMultiplier: pending.blockCalculatedVolumeMultiplier,
       }, exactAdded, pending.clientOrderId, pending.orderId, {
         baseQuantity: pending.blockBaseQuantity,
@@ -3713,6 +3722,7 @@ export async function executeLivePosition(
     blockProfitFactorWindow: realPosition.blockProfitFactorWindow,
     blockProfitFactorSampleCount: realPosition.blockProfitFactorSampleCount,
     blockCount: realPosition.blockCount,
+    blockVolumeIncrementRatio: realPosition.blockVolumeIncrementRatio,
     blockCalculatedVolumeMultiplier: realPosition.blockCalculatedVolumeMultiplier,
     accumulatedSetKeys: realPosition.setKey ? [realPosition.setKey] : [],
     // ── Set-config propagation (Relations → Live Protection) ──────────

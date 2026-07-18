@@ -61,6 +61,7 @@ export interface RealPosition {
   blockProfitFactorWindow?: number
   blockProfitFactorSampleCount?: number
   blockCount?: number
+  blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
   // Exchange-cost-aware protection diagnostics supplied by the strategy
   // coordinator. Live execution treats this as explanatory metadata; the

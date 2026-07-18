@@ -119,10 +119,21 @@ write(
   toTsv(["route", "dynamic_segments", "imported_components", "source"], pageRows),
 )
 
-const trackedFiles = git(["ls-files", "-z"])
+// Include new, non-ignored files as well as files already tracked by Git. The
+// recreation kit is generated before the release commit, so limiting this to
+// the index would silently omit exactly the new source/docs being handed off.
+const trackedFiles = git(["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
   .split("\0")
   .filter(Boolean)
+  // A path staged/tracked in the index can simultaneously be deleted in the
+  // handoff worktree. Deleted artifacts are intentionally absent from the
+  // recreation source and must not be statted or listed.
+  .filter((source) => existsSync(path.join(root, source)))
   .sort()
+
+const workingTreeStatus = git(["status", "--short", "--untracked-files=all"])
+  .split("\n")
+  .filter(Boolean)
 
 const environmentUses = new Map()
 function addEnvironmentUse(name, source, kind) {
@@ -247,9 +258,11 @@ const apiGroupSummary = Object.fromEntries(
 
 const summary = {
   project: "CTS-K-N",
-  baselineCommit: git(["rev-parse", "HEAD"]),
-  baselineTree: git(["rev-parse", "HEAD^{tree}"]),
-  commitTimestamp: git(["show", "-s", "--format=%cI", "HEAD"]),
+  sourceRevisionBeforeHandoffCommit: git(["rev-parse", "HEAD"]),
+  sourceTreeBeforeHandoffCommit: git(["rev-parse", "HEAD^{tree}"]),
+  sourceRevisionTimestamp: git(["show", "-s", "--format=%cI", "HEAD"]),
+  workingTreeChangesIncluded: workingTreeStatus.length > 0,
+  workingTreeStatusEntryCount: workingTreeStatus.length,
   nodeRequirement: packageJson.engines?.node || null,
   packageManager: packageJson.packageManager || null,
   framework: {
@@ -258,7 +271,7 @@ const summary = {
     typescript: packageJson.devDependencies?.typescript || null,
   },
   counts: {
-    trackedFilesExcludingGeneratedManifests: fileRows.length,
+    projectFilesExcludingGeneratedManifests: fileRows.length,
     apiRoutes: apiRows.length,
     apiMethods: apiRows.reduce((sum, row) => sum + (row.methods ? row.methods.split(",").length : 0), 0),
     uiPages: pageRows.length,

@@ -1,0 +1,44 @@
+route	dynamic_segments	imported_components	source
+/		dashboard-shell,dashboard/dashboard	app/page.tsx
+/active-exchange		dashboard/exchange-statistics,ui/alert,ui/badge,ui/card,ui/select	app/active-exchange/page.tsx
+/additional		ui/card	app/additional/page.tsx
+/additional/chat-history		ui/button	app/additional/chat-history/page.tsx
+/additional/volume-corrections		ui/alert,ui/button,ui/card,ui/tabs	app/additional/volume-corrections/page.tsx
+/admin/check-tables		ui/button,ui/card	app/admin/check-tables/page.tsx
+/admin/migrate		ui/button,ui/card	app/admin/migrate/page.tsx
+/alerts		alerts/alert-history-table,alerts/create-alert-dialog,alerts/notification-settings,ui/alert-dialog,ui/badge,ui/button,ui/card,ui/switch,ui/tabs	app/alerts/page.tsx
+/analysis		analysis/calculation-demo,analysis/position-breakdown,page-header,ui/badge,ui/card,ui/select,ui/tabs	app/analysis/page.tsx
+/autotest		page-header,test-dashboard	app/autotest/page.tsx
+/health			app/health/page.tsx
+/indications		indications/indication-filters-advanced,indications/indication-row-compact,page-header,ui/button,ui/card	app/indications/page.tsx
+/live-trading		live-trading/position-row-compact,page-header,ui/button,ui/card	app/live-trading/page.tsx
+/login		ui/button,ui/card,ui/input,ui/label	app/login/page.tsx
+/logistics		auth-guard,page-header,ui/badge,ui/button,ui/collapsible,ui/progress	app/logistics/page.tsx
+/main		dashboard/dashboard	app/main/page.tsx
+/main/realtime		realtime/market-data-monitor,realtime/position-monitor	app/main/realtime/page.tsx
+/minimal		auth-guard,ui/button	app/minimal/page.tsx
+/minimal-test			app/minimal-test/page.tsx
+/monitoring		emergency-stop-button,monitoring/backup-manager,monitoring/monitoring-alerts,monitoring/trade-engine-status,page-header,pnl-dashboard,system/system-verification-panel,ui/badge,ui/button,ui/card,ui/input,ui/scroll-area,ui/select,ui/tabs	app/monitoring/page.tsx
+/monitoring-advanced		ui/badge,ui/card,ui/tabs	app/monitoring-advanced/page.tsx
+/portfolios		dashboard/orders-history,dashboard/portfolio-overview,dashboard/positions-table	app/portfolios/page.tsx
+/portfolios/[id]	[id]	dashboard/portfolio-metrics,dashboard/positions-table,dashboard/risk-settings,ui/button	app/portfolios/[id]/page.tsx
+/presets		page-header,ui/button,ui/card,ui/input,ui/label,ui/slider,ui/switch	app/presets/page.tsx
+/register		ui/button,ui/card,ui/input,ui/label	app/register/page.tsx
+/sets		ui/badge,ui/button,ui/card,ui/dialog,ui/input,ui/label,ui/select,ui/slider,ui/switch,ui/textarea	app/sets/page.tsx
+/settings		auth-guard,page-header,settings/auto-indication-settings,settings/connection-settings-header,settings/exchange-connection-manager,settings/install-manager,settings/logs-viewer,settings/statistics-overview,settings/tabs/exchange-tab,settings/tabs/indication-tab,settings/tabs/overall-tab,settings/tabs/strategy-tab,settings/tabs/system-tab,ui/badge,ui/button,ui/card,ui/input,ui/label,ui/select,ui/separator,ui/slider,ui/switch,ui/tabs	app/settings/page.tsx
+/settings/connections			app/settings/connections/page.tsx
+/settings/indications/auto		ui/button,ui/card,ui/input,ui/label,ui/switch	app/settings/indications/auto/page.tsx
+/settings/indications/common		ui/button,ui/card,ui/checkbox,ui/input,ui/label	app/settings/indications/common/page.tsx
+/settings/indications/main		ui/badge,ui/button,ui/card,ui/checkbox,ui/input,ui/label,ui/slider,ui/switch	app/settings/indications/main/page.tsx
+/settings/indications/optimal		ui/alert,ui/button,ui/card,ui/checkbox,ui/input,ui/label	app/settings/indications/optimal/page.tsx
+/simple		auth-guard,ui/card	app/simple/page.tsx
+/statistics		page-header,settings/statistics-overview,statistics/adjust-strategy-stats,statistics/analytics-filters,statistics/block-strategy-stats,statistics/preset-trade-stats,statistics/strategy-performance-table,ui/badge,ui/button,ui/card,ui/progress,ui/tabs	app/statistics/page.tsx
+/strategies		page-header,strategies/strategy-filters-advanced,strategies/strategy-row-compact,ui/badge,ui/button,ui/card	app/strategies/page.tsx
+/structure		page-header,ui/badge,ui/button,ui/card,ui/progress,ui/tabs	app/structure/page.tsx
+/test			app/test/page.tsx
+/test-layout			app/test-layout/page.tsx
+/test-simple			app/test-simple/page.tsx
+/testing/connection		page-header,ui/badge,ui/button,ui/card,ui/input,ui/label,ui/select,ui/switch,ui/tabs	app/testing/connection/page.tsx
+/testing/engine		page-header,ui/badge,ui/button,ui/card,ui/input,ui/label,ui/progress,ui/select,ui/switch	app/testing/engine/page.tsx
+/testing/orders		ui/alert,ui/button,ui/card	app/testing/orders/page.tsx
+/tracking		ui/alert,ui/badge,ui/button,ui/card,ui/progress,ui/select,ui/separator,ui/tabs	app/tracking/page.tsx

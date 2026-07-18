@@ -1756,8 +1756,17 @@ export async function GET(
     let blockProfitFactorRatio = 0
     let blockDefaultMinimumProfitFactor = 0
     let blockProfitFactorWindow = 0
+    let blockProfitFactorMinimumSampleCount = 0
+    const blockActiveOverlayEvaluation = {
+      evaluated: 0,
+      passed: 0,
+      emitted: 0,
+      rejected: 0,
+      paused: 0,
+      active: 0,
+    }
     for (const [field, raw] of Object.entries(blockProfitFactorStatsHash)) {
-      const meta = field.match(/^s:([^:]+):(profit_factor_ratio|default_min_pf|window)$/)
+      const meta = field.match(/^s:([^:]+):(profit_factor_ratio|default_min_pf|window|minimum_sample_count)$/)
       if (meta) {
         const symbol = meta[1].toUpperCase()
         if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
@@ -1765,6 +1774,17 @@ export async function GET(
         if (meta[2] === "profit_factor_ratio" && value > 0) blockProfitFactorRatio = value
         if (meta[2] === "default_min_pf" && value > 0) blockDefaultMinimumProfitFactor = value
         if (meta[2] === "window" && value > 0) blockProfitFactorWindow = Math.max(blockProfitFactorWindow, value)
+        if (meta[2] === "minimum_sample_count" && value > 0) {
+          blockProfitFactorMinimumSampleCount = Math.max(blockProfitFactorMinimumSampleCount, value)
+        }
+        continue
+      }
+      const activeMeta = field.match(/^s:([^:]+):active:(evaluated|passed|emitted|rejected|paused|open)$/)
+      if (activeMeta) {
+        const symbol = activeMeta[1].toUpperCase()
+        if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
+        const key = activeMeta[2] === "open" ? "active" : activeMeta[2]
+        blockActiveOverlayEvaluation[key as keyof typeof blockActiveOverlayEvaluation] += n(raw)
         continue
       }
       const match = field.match(/^s:([^:]+):c:(\d+):(evaluated|passed|emitted|rejected|active|paused|avg_observed_pf|avg_min_pf|avg_volume_increment|sample_count)$/)
@@ -1783,10 +1803,12 @@ export async function GET(
       const rows = Array.from(blockPfPerSymbolCount.values()).filter((row) => row.count === countValue)
       const evaluated = rows.reduce((sum, row) => sum + n(row.evaluated), 0)
       const weighted = (field: string): number => {
-        if (rows.length === 0) return 0
-        const denominator = rows.reduce((sum, row) => sum + Math.max(1, n(row.evaluated)), 0)
+        // A symbol with no candidates publishes zero-valued count fields to
+        // clear an older snapshot. It must not receive an artificial weight
+        // of one and dilute symbols that actually evaluated this Block count.
+        const denominator = rows.reduce((sum, row) => sum + n(row.evaluated), 0)
         return denominator > 0
-          ? rows.reduce((sum, row) => sum + n(row[field]) * Math.max(1, n(row.evaluated)), 0) / denominator
+          ? rows.reduce((sum, row) => sum + n(row[field]) * n(row.evaluated), 0) / denominator
           : 0
       }
       return {
@@ -1813,6 +1835,9 @@ export async function GET(
       blockProfitFactor: {
         ratio: blockProfitFactorRatio,
         defaultMinimumProfitFactor: blockDefaultMinimumProfitFactor,
+        window: blockProfitFactorWindow,
+        minimumSampleCount: blockProfitFactorMinimumSampleCount,
+        activeOverlayEvaluation: blockActiveOverlayEvaluation,
         countEvaluations: blockCountProfitFactorStats,
       },
       // Current open positions are a separate snapshot. Prefer actual exchange

@@ -43,6 +43,12 @@ const fakeRedis = {
     delete hash[field]
     return 1
   },
+  async hincrby(key: string, field: string, delta: number) {
+    const hash = hashes.get(key) || {}
+    hash[field] = String((Number(hash[field]) || 0) + Number(delta || 0))
+    hashes.set(key, hash)
+    return Number(hash[field])
+  },
   async lrem(key: string, _count: number, value: string) {
     const before = lists.get(key) || []
     const after = before.filter((item) => item !== value)
@@ -63,6 +69,10 @@ const fakeRedis = {
     lists.set(key, (lists.get(key) || []).slice(start, end + 1))
     return "OK"
   },
+  async lrange(key: string, start: number, end: number) {
+    const list = lists.get(key) || []
+    return list.slice(start, end < 0 ? undefined : end + 1)
+  },
   async sadd(key: string, value: string) {
     const set = sets.get(key) || new Set<string>()
     const before = set.size
@@ -72,6 +82,24 @@ const fakeRedis = {
   },
   async srem(key: string, value: string) {
     return sets.get(key)?.delete(value) ? 1 : 0
+  },
+  async smembers(key: string) {
+    return Array.from(sets.get(key) || [])
+  },
+  async scard(key: string) {
+    return sets.get(key)?.size || 0
+  },
+  multi() {
+    const operations: Array<() => Promise<any>> = []
+    const pipeline: any = {}
+    for (const method of ["sadd", "expire", "hincrby", "hset"] as const) {
+      pipeline[method] = (...args: any[]) => {
+        operations.push(() => (fakeRedis as any)[method](...args))
+        return pipeline
+      }
+    }
+    pipeline.exec = async () => Promise.all(operations.map((operation) => operation()))
+    return pipeline
   },
 }
 
@@ -108,6 +136,7 @@ const applySelectedPresetToRealPosition = jest.fn(async (_connectionId: string, 
 const recordingConnector = {
   placeOrder,
   placeStopOrder,
+  cancelOrder: jest.fn(async () => ({ success: true })),
   setLeverage: jest.fn(async () => ({ success: true })),
   setMarginType: jest.fn(async () => ({ success: true })),
   getPosition: jest.fn(async () => ({
@@ -271,6 +300,184 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(firstEntryRequestAt - dispatchStartedAt).toBeLessThan(300)
     expect(Math.max(...protectionRequestTimes) - dispatchStartedAt).toBeLessThan(1_000)
     expect(performance.now() - dispatchStartedAt).toBeLessThan(1_000)
+  })
+
+  test("attaches independent Block counts and sequential DCA steps to one confirmed parent", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const baseSetKey = "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0"
+    const common = {
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long" as const,
+      quantity: 0,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending" as const,
+      timestamp: Date.now(),
+      parentSetKey: "BTCUSDT:direction:long",
+      indicationType: "direction",
+    }
+
+    const parent = await executeLivePosition(connection.id, {
+      ...common,
+      id: "real-adjust-parent",
+      entryPrice: 100,
+      setKey: baseSetKey,
+      setVariant: "default",
+    } as any, recordingConnector)
+    expect(parent).toMatchObject({ status: "open", executedQuantity: 0.01, setKey: baseSetKey })
+
+    const blockSetKey = `${baseSetKey}#block:2`
+    const afterBlock = await executeLivePosition(connection.id, {
+      ...common,
+      id: "real-adjust-block-2",
+      entryPrice: 100,
+      setKey: blockSetKey,
+      setVariant: "block",
+      blockCount: 2,
+      blockVolumeRatio: 0.5,
+      blockVolumeIncrementRatio: 1,
+      blockBaseVolumeMultiplier: 1.25,
+      blockCalculatedVolumeMultiplier: 1.25,
+    } as any, recordingConnector)
+    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.01, 10)
+    expect(afterBlock).toMatchObject({
+      id: parent.id,
+      status: "open",
+      executedQuantity: 0.02,
+      accumulatedSetKeys: expect.arrayContaining([baseSetKey, blockSetKey]),
+    })
+    expect(afterBlock.blockLegs).toEqual([
+      expect.objectContaining({
+        setKey: blockSetKey,
+        blockCount: 2,
+        baseQuantity: 0.01,
+        requestedQuantity: 0.01,
+        quantity: 0.01,
+        positionQuantityAfter: 0.02,
+        volumeIncrementRatio: 1,
+      }),
+    ])
+
+    const dcaSetKey = `${baseSetKey}#dca`
+    const dcaProfile = {
+      maxSteps: 4,
+      stepVolumeMultipliers: [1.5, 2, 2.3, 2.5],
+      stepDistancesPct: [0.5, 1, 1.5, 2],
+      takeProfitMode: "average",
+      breakevenProfitPct: 0.2,
+      cooldownSeconds: 0,
+    }
+    const afterDcaOne = await executeLivePosition(connection.id, {
+      ...common,
+      id: "real-adjust-dca-1",
+      entryPrice: 99,
+      setKey: dcaSetKey,
+      setVariant: "dca",
+      dcaProfile,
+    } as any, recordingConnector)
+    expect(placeOrder.mock.calls[2]?.[2]).toBeCloseTo(0.015, 10)
+    expect(afterDcaOne.dcaLegs).toEqual([
+      expect.objectContaining({
+        setKey: `${dcaSetKey}#step:1`,
+        step: 1,
+        baseQuantity: 0.01,
+        requestedQuantity: 0.015,
+      }),
+    ])
+
+    const afterDcaTwo = await executeLivePosition(connection.id, {
+      ...common,
+      id: "real-adjust-dca-2",
+      entryPrice: 98,
+      setKey: dcaSetKey,
+      setVariant: "dca",
+      dcaProfile,
+    } as any, recordingConnector)
+    expect(placeOrder.mock.calls[3]?.[2]).toBeCloseTo(0.02, 10)
+    expect(afterDcaTwo.dcaLegs?.map((leg: any) => leg.setKey)).toEqual([
+      `${dcaSetKey}#step:1`,
+      `${dcaSetKey}#step:2`,
+    ])
+    expect(afterDcaTwo.accumulatedSetKeys).toEqual(expect.arrayContaining([
+      blockSetKey,
+      `${dcaSetKey}#step:1`,
+      `${dcaSetKey}#step:2`,
+    ]))
+  })
+
+  test("applies persisted DCA setting changes to the very next independent step", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const baseSetKey = "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0"
+    const dcaSetKey = `${baseSetKey}#dca`
+    const common = {
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long" as const,
+      quantity: 0,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending" as const,
+      timestamp: Date.now(),
+      parentSetKey: "BTCUSDT:direction:long",
+      indicationType: "direction",
+    }
+
+    await executeLivePosition(connection.id, {
+      ...common,
+      id: "real-settings-parent",
+      entryPrice: 100,
+      setKey: baseSetKey,
+      setVariant: "default",
+    } as any, recordingConnector)
+
+    await fakeRedis.hset(`connection_settings:${connection.id}`, {
+      dcaMaxSteps: "4",
+      dcaStepVolumeMultipliers: JSON.stringify([0.4, 0.8, 1.2, 1.6]),
+      dcaStepDistancesPct: JSON.stringify([0.5, 1, 1.5, 2]),
+      dcaCooldownSeconds: "0",
+    })
+    const afterStepOne = await executeLivePosition(connection.id, {
+      ...common,
+      id: "real-settings-dca-1",
+      entryPrice: 99,
+      setKey: dcaSetKey,
+      setVariant: "dca",
+    } as any, recordingConnector)
+    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.004, 10)
+    expect(afterStepOne.dcaLegs).toEqual([
+      expect.objectContaining({
+        setKey: `${dcaSetKey}#step:1`,
+        step: 1,
+        requestedQuantity: 0.004,
+        volumeMultiplier: 0.4,
+      }),
+    ])
+
+    // The canonical hash is written by current Settings routes. It must
+    // override the position-local crash-recovery profile immediately rather
+    // than waiting for the parent position to close.
+    await fakeRedis.hset(`settings:connection_settings:${connection.id}`, {
+      dcaStepVolumeMultipliers: JSON.stringify([0.4, 1.1, 1.2, 1.6]),
+      dcaStepDistancesPct: JSON.stringify([0.5, 1, 1.5, 2]),
+      dcaCooldownSeconds: "0",
+    })
+    const afterStepTwo = await executeLivePosition(connection.id, {
+      ...common,
+      id: "real-settings-dca-2",
+      entryPrice: 98,
+      setKey: dcaSetKey,
+      setVariant: "dca",
+    } as any, recordingConnector)
+    expect(placeOrder.mock.calls[2]?.[2]).toBeCloseTo(0.011, 10)
+    expect(afterStepTwo.dcaLegs?.map((leg: any) => leg.setKey)).toEqual([
+      `${dcaSetKey}#step:1`,
+      `${dcaSetKey}#step:2`,
+    ])
+    expect(afterStepTwo.dcaLegs?.[1]).toEqual(expect.objectContaining({ volumeMultiplier: 1.1 }))
+    expect(afterStepTwo.dcaLegs?.[1]?.requestedQuantity).toBeCloseTo(0.011, 10)
   })
 
   test("drains more than six simultaneous control-order legs without overlap or stranding", async () => {

@@ -4,6 +4,8 @@ export interface BlockLegState {
   quantity: number
   baseVolumeMultiplier: number
   volumeRatio: number
+  /** Exact count × operator ratio used by add quantity and Block PF. */
+  volumeIncrementRatio: number
   volumeMultiplier: number
   baseQuantity?: number
   requestedQuantity?: number
@@ -35,6 +37,15 @@ export function calculateBlockVolumeMultiplier(
   return baseVolumeMultiplier * (Math.floor(blockCount) * volumeRatio)
 }
 
+/** Actual add-on ratio relative to the currently confirmed position size. */
+export function calculateBlockVolumeIncrementRatio(
+  blockCount: number,
+  volumeRatio: number,
+): number {
+  if (![blockCount, volumeRatio].every((value) => Number.isFinite(value) && value > 0)) return 0
+  return Math.floor(blockCount) * volumeRatio
+}
+
 /**
  * Count-specific Block ProfitFactor floor.
  *
@@ -62,7 +73,7 @@ export function calculateBlockAddQuantity(
   volumeRatio: number,
 ): number {
   if (![positionBaseQuantity, blockCount, volumeRatio].every((value) => Number.isFinite(value) && value > 0)) return 0
-  return positionBaseQuantity * (Math.floor(blockCount) * volumeRatio)
+  return positionBaseQuantity * calculateBlockVolumeIncrementRatio(blockCount, volumeRatio)
 }
 
 export function buildBlockLegState(
@@ -82,6 +93,10 @@ export function buildBlockLegState(
     quantity: Math.max(0, Number(quantity) || 0),
     baseVolumeMultiplier,
     volumeRatio,
+    volumeIncrementRatio: positive(
+      source?.blockVolumeIncrementRatio,
+      calculateBlockVolumeIncrementRatio(blockCount, volumeRatio),
+    ),
     volumeMultiplier: positive(
       source?.blockCalculatedVolumeMultiplier,
       calculateBlockVolumeMultiplier(baseVolumeMultiplier, blockCount, volumeRatio),

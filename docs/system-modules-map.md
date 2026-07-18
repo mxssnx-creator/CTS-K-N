@@ -60,10 +60,10 @@ flowchart TB
   end
 
   subgraph Production["Production Deployment"]
-    Build["pnpm install + pnpm build"]
-    Systemd["systemd service\nRestart=always"]
+    Build["Frozen install + full validation + build"]
+    Runtime["systemd or PM2\napp + minute scheduler"]
     RemoteSSH["Remote SSH installer"]
-    Verify["HTTP health verification"]
+    Verify["Schema + HTTP + persistence + restart verification"]
   end
 
   User --> Browser
@@ -79,7 +79,7 @@ flowchart TB
   Monitoring --> Browser
   Persistence --> Monitoring
   InstallAPI --> RemoteSSH
-  RemoteSSH --> Build --> Systemd --> Verify
+  RemoteSSH --> Build --> Runtime --> Verify
   Health --> Verify
   CronAPI --> Core
 ```
@@ -135,7 +135,7 @@ sequenceDiagram
   participant Redis as Redis service
   participant App as CTS-K-N app service
 
-  Operator->>UI: Fill host, SSH auth, repo, branch, install dir, app port, Redis URL
+  Operator->>UI: Fill host, SSH auth, repo, branch, runtime, install dir, app port, Redis URL
   UI->>API: Submit remote install request
   API->>API: Validate host/user and sanitize install inputs
   API->>API: Create temporary SSH key file when private key is provided
@@ -145,11 +145,13 @@ sequenceDiagram
   Server->>Redis: Enable/start local Redis when available
   Server->>Server: Clone or pull repository branch into install directory
   Server->>Server: Write .env.production and .env.local
-  Server->>Server: pnpm install --frozen-lockfile && pnpm run build
-  Server->>App: Install systemd unit with Restart=always
-  Server->>App: systemctl enable --now and restart service
+  Server->>Server: Frozen install, typecheck, lint, Jest, production build
+  Server->>App: Install app + scheduler under systemd or PM2
+  Server->>App: Enable reboot startup and restart both processes
   App->>Server: Serve HTTP on configured port
-  Server->>App: Verify /api/system/health or root page responds
+  Server->>App: Initialize schema and run authenticated scheduler tick
+  Server->>App: Verify /api/health, shared persistence, identity and continuity
+  Server->>App: Restart and repeat the production contract
   Server-->>API: Return stdout/stderr logs
   API-->>UI: Return success/error, service name, URL, logs
   UI-->>Operator: Show live deployment result and logs
@@ -202,7 +204,7 @@ flowchart TB
 flowchart TB
   subgraph RemoteHost["Remote Linux Host"]
     subgraph OS["Operating system"]
-      Systemd["systemd: cts-k-n.service\nRestart=always, RestartSec=5"]
+      Supervisor["systemd or PM2\nreboot startup + restart delay"]
       RedisLocal["redis-server\noptional local persistence"]
     end
 
@@ -213,17 +215,20 @@ flowchart TB
       NodeModules["pnpm dependencies"]
     end
 
-    Service["pnpm start\nnext start -p PORT"]
-    HealthAPI["/api/system/health\n/health / readiness APIs"]
+    Service["next start\nlong-lived engine owner"]
+    Scheduler["portable 60-second scheduler"]
+    HealthAPI["/api/health\nreadiness + deployment contract"]
   end
 
   Internet["Operator browser / reverse proxy"] --> Service
-  Systemd --> Service
+  Supervisor --> Service
+  Supervisor --> Scheduler
   Service --> HealthAPI
+  Scheduler --> Service
   Service --> RedisLocal
   Service --> ExternalRedis["External Redis / Upstash\nwhen REDIS_URL points outside host"]
   Service --> ExchangeAPIs["Exchange APIs"]
-  RemoteInstaller["Settings remote SSH installer"] --> Systemd
+  RemoteInstaller["Settings remote SSH installer"] --> Supervisor
   RemoteInstaller --> AppDir
 ```
 
@@ -231,6 +236,7 @@ flowchart TB
 
 - The browser never calls exchanges directly; it calls Next.js API routes, and server-side modules call exchange connectors.
 - Redis is the central coordination layer for settings, progress, positions, logs, health, and metrics.
-- Self-hosted production should run as a long-lived `next start` process, ideally under `systemd` with `Restart=always`.
+- Self-hosted production runs one long-lived `next start` engine owner and one portable minute scheduler under systemd or PM2.
+- Kilo/Cloudflare request workers own HTTP and the scheduled recovery trigger; a distinct long-lived owner is required for sub-second engine processing and SSH installation.
 - Multi-instance or serverless production should use a shared durable Redis URL instead of relying on the inline local fallback.
 - Remote SSH deployment requires a sudo-capable SSH user. Private-key auth is preferred; password auth only works when `sshpass` is installed on the web server that runs the installer endpoint.

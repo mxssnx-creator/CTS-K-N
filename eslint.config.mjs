@@ -6,6 +6,9 @@ export default [
     ignores: [
       ".next/**",
       ".next-*/**",
+      ".open-next/**",
+      ".wrangler/**",
+      ".cts-runtime/**",
       "node_modules/**",
       "dist/**",
       "build/**",

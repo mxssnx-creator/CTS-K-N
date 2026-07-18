@@ -20,12 +20,13 @@ post-position pause lifecycle.
 - Gate: every valid count in `1..blockMaxStack` is evaluated independently.
 - Default state: variant, Active Real, and Active Live are enabled.
 - Existing position: the Block is an add-on to the same symbol/direction parent.
-- Fresh position: the propagated strategy multiplier sizes the initial order.
+- No parent: the Block waits; it never opens a standalone adjustment position.
 - Each count remains unavailable only while its own leg is active or paused.
 
 ### DCA
 
-- Gate: loss-driven (`prevLosses >= 1`).
+- Gate: the DCA strategy toggle is the inclusion gate; each adverse-price step
+  is resolved independently against the confirmed initial entry at Live.
 - Uses its own configured multiplier and does not reuse the Block formula.
 
 ## Block volume formula
@@ -64,21 +65,21 @@ threshold and that count's actual volume increment:
 
 ```text
 blockMinPF = defaultMinPF × blockProfitFactorRatio × blockVolumeIncrement
-blockVolumeIncrement = blockBaseVolumeMultiplier × blockCount × blockVolumeRatio
+blockVolumeIncrement = blockCount × blockVolumeRatio
 ```
 
 `blockProfitFactorRatio` is configurable from `0.2..5.0` and defaults to
-`0.8`. The exact Block Set reads the same latest-position window as the normal
-PF calculation. Until that complete own window exists, it uses its source Set's
-observed PF plus the Block profile bias; results from another Block count are
-never reused. Active counts remain valid until their exchange position closes,
-even if a later settings change raises their current minimum.
+`0.8`. The exact Block Set reads the same latest-position window and uses the
+same minimum-sample threshold as the normal PF calculation. Until enough own
+samples exist, it uses its source Set's observed PF; results from another Block
+count are never reused. Active counts remain valid until their exchange
+position closes, even if a later settings change raises their current minimum.
 
 ## Data flow
 
 ```text
-Main/variant coordination
-  sourceBaseMultiplier × (blockCount × ratio)
+Real-stage independent Count coordination
+  blockCount × ratio
   → StrategySet Block metadata
   → RealPosition Block metadata
   → Live add-on from confirmed current exchange quantity
@@ -87,9 +88,10 @@ Main/variant coordination
   → exact aggregate quantity reconciled and SL/TP re-armed
 ```
 
-The Main-stage multiplier is needed for a fresh Block entry. Once a same-side
-position exists, Live uses the authoritative current exchange quantity instead
-of synthesizing a base quantity from configuration.
+The Main/Real multiplier remains lineage and audit metadata. Live only executes
+a Block against an authoritative same-side Standard/Trailing parent and uses
+that parent's confirmed exchange quantity; it never synthesizes a standalone
+Block entry from configuration.
 
 ## Persisted fields
 

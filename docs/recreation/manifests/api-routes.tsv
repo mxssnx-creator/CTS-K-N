@@ -1,0 +1,280 @@
+route	methods	group	dynamic	max_duration_seconds	auth_signals	source
+/api/additional/chat-history	GET	additional	force-dynamic		none-detected	app/api/additional/chat-history/route.ts
+/api/additional/chat-history/stats	GET	additional	force-dynamic		none-detected	app/api/additional/chat-history/stats/route.ts
+/api/admin/check-tables	GET	admin	force-dynamic		none-detected	app/api/admin/check-tables/route.ts
+/api/admin/clear-progressions	POST	admin	force-dynamic		session	app/api/admin/clear-progressions/route.ts
+/api/admin/end-test-progress	GET,POST	admin	force-dynamic		none-detected	app/api/admin/end-test-progress/route.ts
+/api/admin/force-reinit	POST	admin	force-dynamic		none-detected	app/api/admin/force-reinit/route.ts
+/api/admin/init-database-direct	POST	admin	force-dynamic		none-detected	app/api/admin/init-database-direct/route.ts
+/api/admin/live-order-smoke	POST	admin	force-dynamic	60	admin	app/api/admin/live-order-smoke/route.ts
+/api/admin/migrations/status	GET	admin	force-dynamic		none-detected	app/api/admin/migrations/status/route.ts
+/api/admin/reinit-db	POST	admin	force-dynamic		none-detected	app/api/admin/reinit-db/route.ts
+/api/admin/reset-and-init	POST	admin	force-dynamic		none-detected	app/api/admin/reset-and-init/route.ts
+/api/admin/run-migrations	POST	admin	force-dynamic		none-detected	app/api/admin/run-migrations/route.ts
+/api/alerts	DELETE,GET,POST	alerts	force-dynamic		none-detected	app/api/alerts/route.ts
+/api/audit-logs	GET	audit-logs	force-dynamic		none-detected	app/api/audit-logs/route.ts
+/api/auth/login	POST	auth	force-dynamic		session	app/api/auth/login/route.ts
+/api/auth/logout	POST	auth	force-dynamic		session	app/api/auth/logout/route.ts
+/api/auth/me	GET	auth	force-dynamic		session	app/api/auth/me/route.ts
+/api/auth/register	POST	auth	force-dynamic		session	app/api/auth/register/route.ts
+/api/auto-optimal/calculate	POST	auto-optimal	force-dynamic		none-detected	app/api/auto-optimal/calculate/route.ts
+/api/backtest-results	GET	backtest-results	force-dynamic		none-detected	app/api/backtest-results/route.ts
+/api/backtest-results/[id]	GET	backtest-results	force-dynamic		none-detected	app/api/backtest-results/[id]/route.ts
+/api/backup/auto	GET,POST	backup	force-dynamic		none-detected	app/api/backup/auto/route.ts
+/api/broadcast/health	GET	broadcast	force-dynamic		none-detected	app/api/broadcast/health/route.ts
+/api/broadcast/stats	GET	broadcast	force-dynamic		none-detected	app/api/broadcast/stats/route.ts
+/api/connections	GET	connections	force-dynamic	30	none-detected	app/api/connections/route.ts
+/api/connections/[id]/engine-states	GET	connections	force-dynamic	15	none-detected	app/api/connections/[id]/engine-states/route.ts
+/api/connections/counts	GET	connections	force-dynamic	30	none-detected	app/api/connections/counts/route.ts
+/api/connections/progression/[id]	GET	connections	force-dynamic	30	session	app/api/connections/progression/[id]/route.ts
+/api/connections/progression/[id]/logs	DELETE,GET	connections	force-dynamic	30	none-detected	app/api/connections/progression/[id]/logs/route.ts
+/api/connections/progression/[id]/stats	GET	connections	force-dynamic	30	session	app/api/connections/progression/[id]/stats/route.ts
+/api/connections/progression/[id]/tracking/indications	GET	connections	force-dynamic	30	none-detected	app/api/connections/progression/[id]/tracking/indications/route.ts
+/api/connections/progression/[id]/tracking/strategies	GET	connections	force-dynamic	30	none-detected	app/api/connections/progression/[id]/tracking/strategies/route.ts
+/api/connections/status	GET	connections	force-dynamic	30	none-detected	app/api/connections/status/route.ts
+/api/connections/status/[id]	GET	connections	force-dynamic	30	none-detected	app/api/connections/status/[id]/route.ts
+/api/connections/validation/[id]	GET	connections	force-dynamic		none-detected	app/api/connections/validation/[id]/route.ts
+/api/cron/generate-indications	GET,POST	cron	force-dynamic	60	cron	app/api/cron/generate-indications/route.ts
+/api/cron/schedule-indications	GET,POST	cron	force-dynamic	60	cron	app/api/cron/schedule-indications/route.ts
+/api/cron/server-continuity	GET,POST	cron	force-dynamic	60	cron	app/api/cron/server-continuity/route.ts
+/api/cron/sync-live-positions	GET	cron	force-dynamic	60	cron	app/api/cron/sync-live-positions/route.ts
+/api/data/indications	GET	data	force-dynamic		none-detected	app/api/data/indications/route.ts
+/api/data/positions	GET	data	force-dynamic		none-detected	app/api/data/positions/route.ts
+/api/data/positions/[id]	DELETE	data	force-dynamic		none-detected	app/api/data/positions/[id]/route.ts
+/api/data/presets	GET	data	force-dynamic		none-detected	app/api/data/presets/route.ts
+/api/data/strategies	GET	data	force-dynamic		none-detected	app/api/data/strategies/route.ts
+/api/database/change-type	POST	database	force-dynamic		none-detected	app/api/database/change-type/route.ts
+/api/database/cleanup-historical	POST	database	force-dynamic		none-detected	app/api/database/cleanup-historical/route.ts
+/api/database/reorganize	POST	database	force-dynamic		none-detected	app/api/database/reorganize/route.ts
+/api/database/type	GET	database	force-dynamic		none-detected	app/api/database/type/route.ts
+/api/debug	GET,POST	debug	force-dynamic		none-detected	app/api/debug/route.ts
+/api/debug/progression-dump	GET	debug	force-dynamic		admin	app/api/debug/progression-dump/route.ts
+/api/debug/redis-state	GET	debug	force-dynamic		admin	app/api/debug/redis-state/route.ts
+/api/debug/system-verification	GET	debug	force-dynamic		none-detected	app/api/debug/system-verification/route.ts
+/api/engine-logs	GET	engine-logs	force-dynamic	60	none-detected	app/api/engine-logs/route.ts
+/api/engine-metrics	GET	engine-metrics	force-dynamic	60	none-detected	app/api/engine-metrics/route.ts
+/api/engine-progress	GET	engine-progress	force-dynamic		none-detected	app/api/engine-progress/route.ts
+/api/engine-symbols	GET	engine-symbols	force-dynamic		none-detected	app/api/engine-symbols/route.ts
+/api/engine/intervals	GET	engine	force-dynamic		none-detected	app/api/engine/intervals/route.ts
+/api/engine/reconnect	POST	engine	force-dynamic		none-detected	app/api/engine/reconnect/route.ts
+/api/engine/startup	GET,POST	engine	force-dynamic	60	none-detected	app/api/engine/startup/route.ts
+/api/engine/strategies	GET	engine	force-dynamic		none-detected	app/api/engine/strategies/route.ts
+/api/engine/system-status	GET	engine	force-dynamic		none-detected	app/api/engine/system-status/route.ts
+/api/engine/verify	GET	engine	force-dynamic		none-detected	app/api/engine/verify/route.ts
+/api/exchange-positions	GET,POST	exchange-positions	force-dynamic		none-detected	app/api/exchange-positions/route.ts
+/api/exchange-positions/coordination-logs	GET	exchange-positions	force-dynamic		none-detected	app/api/exchange-positions/coordination-logs/route.ts
+/api/exchange-positions/statistics	GET	exchange-positions	force-dynamic		none-detected	app/api/exchange-positions/statistics/route.ts
+/api/exchange-positions/symbols-stats	GET	exchange-positions	force-dynamic		none-detected	app/api/exchange-positions/symbols-stats/route.ts
+/api/exchange/[exchange]/top-symbols	GET	exchange	force-dynamic		none-detected	app/api/exchange/[exchange]/top-symbols/route.ts
+/api/exchange/live-summary	GET	exchange	force-dynamic		none-detected	app/api/exchange/live-summary/route.ts
+/api/exchanges	GET	exchanges	force-dynamic		none-detected	app/api/exchanges/route.ts
+/api/exchanges/retention	GET,POST	exchanges	force-dynamic		none-detected	app/api/exchanges/retention/route.ts
+/api/health	GET	health	force-dynamic		none-detected	app/api/health/route.ts
+/api/health/database	GET	health	force-dynamic		none-detected	app/api/health/database/route.ts
+/api/health/liveness	GET	health	force-dynamic		none-detected	app/api/health/liveness/route.ts
+/api/health/readiness	GET	health	force-dynamic		none-detected	app/api/health/readiness/route.ts
+/api/health/startup-complete	POST	health	force-dynamic		none-detected	app/api/health/startup-complete/route.ts
+/api/indications/config-counts	GET	indications	force-dynamic		none-detected	app/api/indications/config-counts/route.ts
+/api/init	GET	init	force-dynamic		none-detected	app/api/init/route.ts
+/api/install/backup/create	POST	install	force-dynamic		none-detected	app/api/install/backup/create/route.ts
+/api/install/backup/delete	DELETE	install	force-dynamic		none-detected	app/api/install/backup/delete/route.ts
+/api/install/backup/download	GET	install	force-dynamic		none-detected	app/api/install/backup/download/route.ts
+/api/install/backup/list	GET	install	force-dynamic		none-detected	app/api/install/backup/list/route.ts
+/api/install/backup/restore	POST	install	force-dynamic		none-detected	app/api/install/backup/restore/route.ts
+/api/install/configure	POST	install	force-dynamic		none-detected	app/api/install/configure/route.ts
+/api/install/database/flush	POST	install	force-dynamic		admin	app/api/install/database/flush/route.ts
+/api/install/database/init	POST	install	force-dynamic		none-detected	app/api/install/database/init/route.ts
+/api/install/database/migrate	GET,POST	install	force-dynamic		none-detected	app/api/install/database/migrate/route.ts
+/api/install/database/migrations-info	GET,POST	install	force-dynamic		none-detected	app/api/install/database/migrations-info/route.ts
+/api/install/database/reset	POST	install	force-dynamic		none-detected	app/api/install/database/reset/route.ts
+/api/install/database/status	GET	install	force-dynamic		none-detected	app/api/install/database/status/route.ts
+/api/install/dependencies	POST	install	force-dynamic		none-detected	app/api/install/dependencies/route.ts
+/api/install/diagnostics	POST	install	force-dynamic		none-detected	app/api/install/diagnostics/route.ts
+/api/install/download-deployment	POST	install	force-dynamic		none-detected	app/api/install/download-deployment/route.ts
+/api/install/export	POST	install	force-dynamic		none-detected	app/api/install/export/route.ts
+/api/install/import	POST	install	force-dynamic		none-detected	app/api/install/import/route.ts
+/api/install/initialize	POST	install	force-dynamic		none-detected	app/api/install/initialize/route.ts
+/api/install/remote-postgres	POST	install	force-dynamic	3	admin	app/api/install/remote-postgres/route.ts
+/api/install/status	GET	install	force-dynamic		none-detected	app/api/install/status/route.ts
+/api/install/system-info	GET	install	force-dynamic		none-detected	app/api/install/system-info/route.ts
+/api/install/test-connection	POST	install	force-dynamic		none-detected	app/api/install/test-connection/route.ts
+/api/logistics/queue	GET	logistics	force-dynamic		none-detected	app/api/logistics/queue/route.ts
+/api/logs	GET,POST	logs	force-dynamic		none-detected	app/api/logs/route.ts
+/api/main/indications-stats	GET	main	force-dynamic		none-detected	app/api/main/indications-stats/route.ts
+/api/main/strategies-evaluation	GET	main	force-dynamic		none-detected	app/api/main/strategies-evaluation/route.ts
+/api/main/system-stats-v2	GET	main	force-dynamic	30	none-detected	app/api/main/system-stats-v2/route.ts
+/api/main/system-stats-v3	GET	main	force-dynamic		none-detected	app/api/main/system-stats-v3/route.ts
+/api/market-data	GET,POST	market-data	force-dynamic		none-detected	app/api/market-data/route.ts
+/api/market/prices	GET	market	force-dynamic		none-detected	app/api/market/prices/route.ts
+/api/metrics	GET	metrics	force-dynamic		none-detected	app/api/metrics/route.ts
+/api/metrics/json	GET	metrics	force-dynamic		none-detected	app/api/metrics/json/route.ts
+/api/metrics/processing	GET	metrics	force-dynamic		none-detected	app/api/metrics/processing/route.ts
+/api/monitoring/alerts	GET,POST	monitoring	force-dynamic		none-detected	app/api/monitoring/alerts/route.ts
+/api/monitoring/comprehensive	GET	monitoring	force-dynamic		none-detected	app/api/monitoring/comprehensive/route.ts
+/api/monitoring/errors	DELETE,GET,PATCH	monitoring	force-dynamic		none-detected	app/api/monitoring/errors/route.ts
+/api/monitoring/export	GET	monitoring	force-dynamic		none-detected	app/api/monitoring/export/route.ts
+/api/monitoring/health	GET	monitoring	force-dynamic		none-detected	app/api/monitoring/health/route.ts
+/api/monitoring/intervals/[id]	GET	monitoring	force-dynamic		none-detected	app/api/monitoring/intervals/[id]/route.ts
+/api/monitoring/logs	GET,POST	monitoring	force-dynamic		none-detected	app/api/monitoring/logs/route.ts
+/api/monitoring/logs/export	GET	monitoring	force-dynamic		none-detected	app/api/monitoring/logs/export/route.ts
+/api/monitoring/site	GET,POST	monitoring	force-dynamic		none-detected	app/api/monitoring/site/route.ts
+/api/monitoring/stats	GET	monitoring	force-dynamic		none-detected	app/api/monitoring/stats/route.ts
+/api/monitoring/strategies/[id]	GET	monitoring	force-dynamic		none-detected	app/api/monitoring/strategies/[id]/route.ts
+/api/monitoring/system	GET	monitoring	force-dynamic		none-detected	app/api/monitoring/system/route.ts
+/api/monitoring/toast	POST	monitoring	force-dynamic		none-detected	app/api/monitoring/toast/route.ts
+/api/orders	GET,POST	orders	force-dynamic		session	app/api/orders/route.ts
+/api/performance/metrics	GET	performance			none-detected	app/api/performance/metrics/route.ts
+/api/persistence/status	GET	persistence	force-dynamic		session	app/api/persistence/status/route.ts
+/api/portfolios	GET,POST	portfolios	force-dynamic		none-detected	app/api/portfolios/route.ts
+/api/portfolios/[id]/history	GET	portfolios	force-dynamic		none-detected	app/api/portfolios/[id]/history/route.ts
+/api/portfolios/[id]/metrics	GET	portfolios	force-dynamic		none-detected	app/api/portfolios/[id]/metrics/route.ts
+/api/positions	GET,POST	positions	force-dynamic		none-detected	app/api/positions/route.ts
+/api/positions/[id]	DELETE,GET,PATCH	positions	force-dynamic		none-detected	app/api/positions/[id]/route.ts
+/api/positions/evaluate-readiness	GET	positions	force-dynamic		none-detected	app/api/positions/evaluate-readiness/route.ts
+/api/positions/stats	GET	positions	force-dynamic		session	app/api/positions/stats/route.ts
+/api/preset-coordination-engine/[id]/[presetTypeId]/start	POST	preset-coordination-engine	force-dynamic		none-detected	app/api/preset-coordination-engine/[id]/[presetTypeId]/start/route.ts
+/api/preset-coordination-engine/[id]/[presetTypeId]/status	GET	preset-coordination-engine	force-dynamic		none-detected	app/api/preset-coordination-engine/[id]/[presetTypeId]/status/route.ts
+/api/preset-coordination-engine/[id]/[presetTypeId]/stop	POST	preset-coordination-engine	force-dynamic		none-detected	app/api/preset-coordination-engine/[id]/[presetTypeId]/stop/route.ts
+/api/preset-optimizer	GET,PATCH,POST	preset-optimizer	force-dynamic	300	none-detected	app/api/preset-optimizer/route.ts
+/api/preset-sets	GET,POST	preset-sets	force-dynamic		none-detected	app/api/preset-sets/route.ts
+/api/preset-sets/[id]	DELETE,GET,PUT	preset-sets	force-dynamic		none-detected	app/api/preset-sets/[id]/route.ts
+/api/preset-sets/[id]/evaluate	POST	preset-sets	force-dynamic		none-detected	app/api/preset-sets/[id]/evaluate/route.ts
+/api/preset-sets/evaluator/start	POST	preset-sets	force-dynamic		none-detected	app/api/preset-sets/evaluator/start/route.ts
+/api/preset-sets/evaluator/stop	POST	preset-sets	force-dynamic		none-detected	app/api/preset-sets/evaluator/stop/route.ts
+/api/preset-trade-engine/[id]/[presetId]/start	POST	preset-trade-engine	force-dynamic		none-detected	app/api/preset-trade-engine/[id]/[presetId]/start/route.ts
+/api/preset-trade-engine/[id]/[presetId]/stop	POST	preset-trade-engine	force-dynamic		none-detected	app/api/preset-trade-engine/[id]/[presetId]/stop/route.ts
+/api/preset-types	GET,POST	preset-types	force-dynamic		none-detected	app/api/preset-types/route.ts
+/api/preset-types/[id]	DELETE,GET,PUT	preset-types	force-dynamic		none-detected	app/api/preset-types/[id]/route.ts
+/api/preset-types/[id]/statistics	GET	preset-types	force-dynamic		none-detected	app/api/preset-types/[id]/statistics/route.ts
+/api/presets	GET,POST	presets	force-dynamic		none-detected	app/api/presets/route.ts
+/api/presets/[id]	DELETE,GET,PUT	presets	force-dynamic		none-detected	app/api/presets/[id]/route.ts
+/api/presets/[id]/active-configs	GET	presets	force-dynamic		none-detected	app/api/presets/[id]/active-configs/route.ts
+/api/presets/[id]/add-to-connections	POST	presets	force-dynamic		none-detected	app/api/presets/[id]/add-to-connections/route.ts
+/api/presets/[id]/backtest	POST	presets	force-dynamic		none-detected	app/api/presets/[id]/backtest/route.ts
+/api/presets/[id]/strategies	GET	presets	force-dynamic		none-detected	app/api/presets/[id]/strategies/route.ts
+/api/presets/[id]/symbol-performance	GET	presets	force-dynamic		none-detected	app/api/presets/[id]/symbol-performance/route.ts
+/api/presets/[id]/test	POST	presets	force-dynamic		none-detected	app/api/presets/[id]/test/route.ts
+/api/presets/activate	POST	presets	force-dynamic		none-detected	app/api/presets/activate/route.ts
+/api/presets/init-predefined	POST	presets	force-dynamic		none-detected	app/api/presets/init-predefined/route.ts
+/api/progression	GET,POST	progression	force-dynamic		none-detected	app/api/progression/route.ts
+/api/quickstart/prehistoric-log	GET	quickstart	force-dynamic		none-detected	app/api/quickstart/prehistoric-log/route.ts
+/api/risk/metrics	POST	risk	force-dynamic		none-detected	app/api/risk/metrics/route.ts
+/api/settings	GET,POST,PUT	settings	force-dynamic		none-detected	app/api/settings/route.ts
+/api/settings/connection-settings	DELETE,GET,POST	settings	force-dynamic		none-detected	app/api/settings/connection-settings/route.ts
+/api/settings/connections	GET,POST	settings	force-dynamic	30	none-detected	app/api/settings/connections/route.ts
+/api/settings/connections/[id]	DELETE,GET,PATCH,PUT	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/route.ts
+/api/settings/connections/[id]/active	DELETE,POST	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/active/route.ts
+/api/settings/connections/[id]/active-indications	GET,PUT	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/active-indications/route.ts
+/api/settings/connections/[id]/capabilities	POST	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/capabilities/route.ts
+/api/settings/connections/[id]/dashboard	POST	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/dashboard/route.ts
+/api/settings/connections/[id]/enable	POST	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/enable/route.ts
+/api/settings/connections/[id]/indications	GET,PUT	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/indications/route.ts
+/api/settings/connections/[id]/live-trade	POST	settings	force-dynamic	15	none-detected	app/api/settings/connections/[id]/live-trade/route.ts
+/api/settings/connections/[id]/log	GET	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/log/route.ts
+/api/settings/connections/[id]/logs	GET	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/logs/route.ts
+/api/settings/connections/[id]/preset-toggle	POST	settings	force-dynamic	15	none-detected	app/api/settings/connections/[id]/preset-toggle/route.ts
+/api/settings/connections/[id]/preset-type	GET,PATCH	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/preset-type/route.ts
+/api/settings/connections/[id]/settings	GET,PATCH,PUT	settings	force-dynamic	30	none-detected	app/api/settings/connections/[id]/settings/route.ts
+/api/settings/connections/[id]/settings-presets	DELETE,GET,POST	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/settings-presets/route.ts
+/api/settings/connections/[id]/statistics	GET	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/statistics/route.ts
+/api/settings/connections/[id]/strategies	GET,PUT	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/strategies/route.ts
+/api/settings/connections/[id]/symbols	GET	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/symbols/route.ts
+/api/settings/connections/[id]/test	POST	settings	force-dynamic	120	none-detected	app/api/settings/connections/[id]/test/route.ts
+/api/settings/connections/[id]/toggle	POST	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/toggle/route.ts
+/api/settings/connections/[id]/toggle-dashboard	POST,PUT	settings	force-dynamic	15	none-detected	app/api/settings/connections/[id]/toggle-dashboard/route.ts
+/api/settings/connections/[id]/volume	GET,POST	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/volume/route.ts
+/api/settings/connections/active	GET	settings	force-dynamic		none-detected	app/api/settings/connections/active/route.ts
+/api/settings/connections/add-to-active	POST	settings	force-dynamic		none-detected	app/api/settings/connections/add-to-active/route.ts
+/api/settings/connections/auto-test	POST	settings	force-dynamic		none-detected	app/api/settings/connections/auto-test/route.ts
+/api/settings/connections/available	GET	settings	force-dynamic		none-detected	app/api/settings/connections/available/route.ts
+/api/settings/connections/batch-test	POST	settings	force-dynamic		none-detected	app/api/settings/connections/batch-test/route.ts
+/api/settings/connections/health	GET	settings	force-dynamic		none-detected	app/api/settings/connections/health/route.ts
+/api/settings/connections/import-user	GET,POST	settings	force-dynamic		none-detected	app/api/settings/connections/import-user/route.ts
+/api/settings/connections/init-predefined	POST	settings	force-dynamic		none-detected	app/api/settings/connections/init-predefined/route.ts
+/api/settings/connections/live-trade-status	GET	settings	force-dynamic		none-detected	app/api/settings/connections/live-trade-status/route.ts
+/api/settings/connections/reset-dashboard-state	POST	settings	force-dynamic		none-detected	app/api/settings/connections/reset-dashboard-state/route.ts
+/api/settings/connections/setup-bingx-real	GET,POST	settings	force-dynamic		none-detected	app/api/settings/connections/setup-bingx-real/route.ts
+/api/settings/connections/test	POST	settings	force-dynamic		none-detected	app/api/settings/connections/test/route.ts
+/api/settings/connections/test-bingx	GET	settings	force-dynamic		none-detected	app/api/settings/connections/test-bingx/route.ts
+/api/settings/connections/test/log	GET	settings	force-dynamic		none-detected	app/api/settings/connections/test/log/route.ts
+/api/settings/database-status	GET	settings	force-dynamic		none-detected	app/api/settings/database-status/route.ts
+/api/settings/export	GET	settings	force-dynamic		none-detected	app/api/settings/export/route.ts
+/api/settings/import	POST	settings	force-dynamic		none-detected	app/api/settings/import/route.ts
+/api/settings/indications/active-advanced	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/active-advanced/route.ts
+/api/settings/indications/common	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/common/route.ts
+/api/settings/indications/main	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/main/route.ts
+/api/settings/risk-and-engines	GET,POST	settings	force-dynamic		none-detected	app/api/settings/risk-and-engines/route.ts
+/api/settings/set-limits	GET,POST	settings	force-dynamic		none-detected	app/api/settings/set-limits/route.ts
+/api/settings/system	GET,PATCH	settings	force-dynamic		none-detected	app/api/settings/system/route.ts
+/api/startup/initialize	POST	startup	force-dynamic		none-detected	app/api/startup/initialize/route.ts
+/api/strategies	GET,POST	strategies	force-dynamic		none-detected	app/api/strategies/route.ts
+/api/strategies/overview	GET	strategies	force-dynamic		none-detected	app/api/strategies/overview/route.ts
+/api/structure/metrics	GET	structure	force-dynamic		none-detected	app/api/structure/metrics/route.ts
+/api/structure/modules	GET	structure	force-dynamic		none-detected	app/api/structure/modules/route.ts
+/api/symbol-data/load	DELETE,GET,POST	symbol-data	force-dynamic		session	app/api/symbol-data/load/route.ts
+/api/symbols	GET	symbols	force-dynamic	30	none-detected	app/api/symbols/route.ts
+/api/system/complete-workflow	GET	system	force-dynamic		none-detected	app/api/system/complete-workflow/route.ts
+/api/system/demo-setup	GET,POST	system	force-dynamic		none-detected	app/api/system/demo-setup/route.ts
+/api/system/fix-connections	GET,POST	system	force-dynamic		none-detected	app/api/system/fix-connections/route.ts
+/api/system/generate-safe-indications	GET	system	force-dynamic		none-detected	app/api/system/generate-safe-indications/route.ts
+/api/system/health	GET	system	force-dynamic		none-detected	app/api/system/health/route.ts
+/api/system/health-check	GET	system	force-dynamic		none-detected	app/api/system/health-check/route.ts
+/api/system/init-status	GET	system	force-dynamic		session	app/api/system/init-status/route.ts
+/api/system/initialize	POST	system	force-dynamic		none-detected	app/api/system/initialize/route.ts
+/api/system/initialize-defaults	GET,POST	system	force-dynamic		none-detected	app/api/system/initialize-defaults/route.ts
+/api/system/inject-credentials	GET,POST	system	force-dynamic		none-detected	app/api/system/inject-credentials/route.ts
+/api/system/integration-test	GET	system	force-dynamic		none-detected	app/api/system/integration-test/route.ts
+/api/system/log	POST	system	force-dynamic		none-detected	app/api/system/log/route.ts
+/api/system/migration-status	GET	system	force-dynamic		none-detected	app/api/system/migration-status/route.ts
+/api/system/monitoring	GET	system	force-dynamic		none-detected	app/api/system/monitoring/route.ts
+/api/system/restart-service	POST	system	force-dynamic		none-detected	app/api/system/restart-service/route.ts
+/api/system/startup-diagnostics	GET	system	force-dynamic		none-detected	app/api/system/startup-diagnostics/route.ts
+/api/system/status	GET	system	force-dynamic		session	app/api/system/status/route.ts
+/api/system/verify-apis	GET	system	force-dynamic		none-detected	app/api/system/verify-apis/route.ts
+/api/system/verify-complete	GET	system	force-dynamic		none-detected	app/api/system/verify-complete/route.ts
+/api/system/verify-engine	GET	system	force-dynamic		none-detected	app/api/system/verify-engine/route.ts
+/api/system/verify-startup	GET	system	force-dynamic		none-detected	app/api/system/verify-startup/route.ts
+/api/test/live-orders-test	POST	test	force-dynamic		admin	app/api/test/live-orders-test/route.ts
+/api/testing/connection/[test]	POST	testing	force-dynamic		none-detected	app/api/testing/connection/[test]/route.ts
+/api/testing/engine/[step]	POST	testing	force-dynamic		none-detected	app/api/testing/engine/[step]/route.ts
+/api/testing/place-order	POST	testing	force-dynamic		admin	app/api/testing/place-order/route.ts
+/api/tracking/overview	GET	tracking	force-dynamic		none-detected	app/api/tracking/overview/route.ts
+/api/trade-engine/auto-setup	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/auto-setup/route.ts
+/api/trade-engine/auto-start	GET,POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/auto-start/route.ts
+/api/trade-engine/detailed-logs	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/detailed-logs/route.ts
+/api/trade-engine/diagnostic	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/diagnostic/route.ts
+/api/trade-engine/emergency-stop	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/emergency-stop/route.ts
+/api/trade-engine/enable-symbols	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/enable-symbols/route.ts
+/api/trade-engine/fix-testnet	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/fix-testnet/route.ts
+/api/trade-engine/fix-testnet-database	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/fix-testnet-database/route.ts
+/api/trade-engine/functional-overview	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/functional-overview/route.ts
+/api/trade-engine/generate-indications	GET,POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/generate-indications/route.ts
+/api/trade-engine/health	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/health/route.ts
+/api/trade-engine/metrics	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/metrics/route.ts
+/api/trade-engine/metrics/[id]	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/metrics/[id]/route.ts
+/api/trade-engine/pause	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/pause/route.ts
+/api/trade-engine/pnl-stats	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/pnl-stats/route.ts
+/api/trade-engine/prehistoric-progress	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/prehistoric-progress/route.ts
+/api/trade-engine/progression	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/progression/route.ts
+/api/trade-engine/quick-start	POST	trade-engine	force-dynamic		session	app/api/trade-engine/quick-start/route.ts
+/api/trade-engine/quick-start/ready	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/quick-start/ready/route.ts
+/api/trade-engine/restart	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/restart/route.ts
+/api/trade-engine/resume	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/resume/route.ts
+/api/trade-engine/start	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/start/route.ts
+/api/trade-engine/start-all	GET,POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/start-all/route.ts
+/api/trade-engine/startup-debug	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/startup-debug/route.ts
+/api/trade-engine/status	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/status/route.ts
+/api/trade-engine/status-all	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/status-all/route.ts
+/api/trade-engine/stop	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/stop/route.ts
+/api/trade-engine/structured-logs	GET,POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/structured-logs/route.ts
+/api/trade-engine/toggle-symbol	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/toggle-symbol/route.ts
+/api/trades/[id]	GET	trades	force-dynamic		none-detected	app/api/trades/[id]/route.ts
+/api/trading/engine-stats	GET	trading	force-dynamic		none-detected	app/api/trading/engine-stats/route.ts
+/api/trading/live-positions	GET	trading	force-dynamic		none-detected	app/api/trading/live-positions/route.ts
+/api/trading/progression-debug	GET	trading	force-dynamic		none-detected	app/api/trading/progression-debug/route.ts
+/api/trading/stats	GET	trading	force-dynamic		none-detected	app/api/trading/stats/route.ts
+/api/trading/trade-history	GET	trading	force-dynamic	30	none-detected	app/api/trading/trade-history/route.ts
+/api/volume/calculate	POST	volume	force-dynamic		none-detected	app/api/volume/calculate/route.ts
+/api/volume/history/[id]	GET	volume	force-dynamic		none-detected	app/api/volume/history/[id]/route.ts
+/api/workflow-logs/[id]	DELETE,GET	workflow-logs	force-dynamic		none-detected	app/api/workflow-logs/[id]/route.ts
+/api/ws	GET	ws	force-dynamic		none-detected	app/api/ws/route.ts

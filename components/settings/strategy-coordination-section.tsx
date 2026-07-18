@@ -21,8 +21,8 @@
  *    of the axes:
  *      • Default       (always on; not toggleable)
  *      • Trailing      (gated on lastWins ≥ 2 + no continuous)
- *      • Block         (gated on continuousCount 1..2; INDEPENDENT of
- *                       Pos-count axes per the user's spec)
+ *      • Block         (Count 1..N independently evaluated from exact Set
+ *                       history; INDEPENDENT of Pos-count axes)
  *      • DCA           (gated on prevLosses ≥ 1; INDEPENDENT of axes)
  *
  * Pause is intentionally modeled only as a Position-Count axis above; it

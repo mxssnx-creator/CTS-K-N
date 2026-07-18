@@ -31,6 +31,7 @@ import {
 import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
 import {
   calculateBlockMinimumProfitFactor,
+  calculateBlockVolumeIncrementRatio,
   calculateBlockVolumeMultiplier,
   getActiveBlockSetKeys,
   getUnavailableBlockSetKeys,
@@ -157,6 +158,8 @@ export interface StrategySet {
   blockProfitFactorSampleCount?: number
   /** Independent count encoded in this Block Set identity. */
   blockCount?: number
+  /** Exact count × operator volume ratio used by PF and add quantity. */
+  blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
   /**
    * ── Position-count axis windows that this Set satisfies ────────────
@@ -592,6 +595,64 @@ export function selectLiveSetsWithActivePriority(
   return {
     active,
     selected: active.concat(candidates.slice(0, capacity)),
+  }
+}
+
+/**
+ * Apply the Real-stage memory ceiling without orphaning active exposure or
+ * letting the much larger Default axis fan-out erase enabled Adjust variants.
+ * Active exact Sets are retained even above the nominal ceiling. Remaining
+ * capacity reserves a fair floor for every present non-default variant (most
+ * importantly DCA) and is then filled by the global PF ranking.
+ */
+export function selectRealSetsWithActiveAndVariantPriority(
+  inputSets: StrategySet[],
+  activeSetKeys: ReadonlySet<string>,
+  maximum: number,
+): { selected: StrategySet[]; active: StrategySet[]; reservedByVariant: Record<string, number> } {
+  const cap = Math.max(0, Math.floor(maximum))
+  const ordered = Array.from(new Map(
+    inputSets
+      .slice()
+      .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+      .map((set) => [set.setKey, set]),
+  ).values())
+  const active = ordered.filter((set) => activeSetKeys.has(set.setKey))
+  const candidates = ordered.filter((set) => !activeSetKeys.has(set.setKey))
+  const capacity = Math.max(0, cap - active.length)
+  if (capacity === 0) return { selected: active, active, reservedByVariant: {} }
+
+  const variantNames = Array.from(new Set(
+    candidates
+      .map((set) => String(set.variant || "default"))
+      .filter((variant) => variant !== "default" && variant !== "block"),
+  ))
+  const floorPerVariant = variantNames.length > 0
+    ? Math.max(1, Math.floor((capacity * 0.3) / variantNames.length))
+    : 0
+  const reserved: StrategySet[] = []
+  const reservedKeys = new Set<string>()
+  const reservedByVariant: Record<string, number> = {}
+  for (const variant of variantNames) {
+    for (const set of candidates) {
+      if (reserved.length >= capacity) break
+      if (String(set.variant || "default") !== variant || reservedKeys.has(set.setKey)) continue
+      const kept = reservedByVariant[variant] || 0
+      if (kept >= floorPerVariant) break
+      reserved.push(set)
+      reservedKeys.add(set.setKey)
+      reservedByVariant[variant] = kept + 1
+    }
+  }
+
+  const fill = candidates
+    .filter((set) => !reservedKeys.has(set.setKey))
+    .slice(0, Math.max(0, capacity - reserved.length))
+  return {
+    active,
+    reservedByVariant,
+    selected: active.concat(reserved, fill)
+      .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor),
   }
 }
 
@@ -3704,33 +3765,18 @@ export class StrategyCoordinator {
       eligibleSources.map((set) => set.setKey),
     )
     const overlayKeys = new Set<string>()
-
-    const addOverlay = (
+    const candidates: Array<{
+      source: StrategySet
+      boundedCount: number
+      scope: "global" | "set"
+      setKey: string
+    }> = []
+    const addCandidate = (
       source: StrategySet,
       requestedCount: number,
       scope: "global" | "set",
     ): void => {
       const boundedCount = Math.min(Math.max(1, requestedCount), maxStack)
-      const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
-        blockConfig.size,
-        boundedCount,
-        ratio,
-      )
-      const blockMinimumProfitFactor = calculateBlockMinimumProfitFactor(
-        metrics.minProfitFactor,
-        profitFactorRatio,
-        blockCalculatedVolumeMultiplier,
-      )
-      const blockObservedProfitFactor =
-        (source.avgProfitFactor || metrics.minProfitFactor) * blockConfig.pfBias
-      const pauseWindow = Math.max(1, Math.min(32, Math.round(boundedCount * pauseRatio)))
-      const parentSetKey = source.parentSetKey || source.setKey
-      const axisWindows = {
-        ...(source.axisWindows || { prev: 0, last: 0, cont: 0, pause: 0 }),
-        cont: boundedCount,
-        pause: pauseWindow,
-        axisKey: `block:${scope}:${boundedCount}:pause${pauseWindow}`,
-      }
       // Keep the established `#block:active:N` identity for the direction-wide
       // Real exposure overlay. Exact per-Set overlays use a distinct key so
       // their own fills/PF/DDT and pause logistics never collapse into the
@@ -3740,6 +3786,108 @@ export class StrategyCoordinator {
         : `${source.setKey}#block:set:${boundedCount}`
       if (overlayKeys.has(setKey)) return
       overlayKeys.add(setKey)
+      candidates.push({ source, boundedCount, scope, setKey })
+    }
+
+    // Direction-wide active Real/Live exposure calculation.
+    for (const dir of ["long", "short"] as const) {
+      const realCount = this._coordinationSettings.blockActiveRealEnabled ? activeRealByDir[dir] : 0
+      const liveCount = this._coordinationSettings.blockActiveLiveEnabled ? activeLiveByDir[dir] : 0
+      const activeCount = Math.max(realCount, liveCount)
+      if (activeCount <= 0) continue
+      const source = eligibleSources.find((set) => set.direction === dir)
+      if (source) addCandidate(source, activeCount, "global")
+    }
+
+    // Exact per-Set calculation. Counts come from confirmed position
+    // memberships, not candidate evaluations, so each Set retains independent
+    // Block volume, PF/DDT result ring and cooldown state across restarts.
+    for (const source of eligibleSources) {
+      const directionActive = Math.max(
+        this._coordinationSettings.blockActiveRealEnabled ? activeRealByDir[source.direction] : 0,
+        this._coordinationSettings.blockActiveLiveEnabled ? activeLiveByDir[source.direction] : 0,
+      )
+      const exactCount = exactActiveLedger.active[source.setKey] || 0
+      if (directionActive > 0 && exactCount > 0) addCandidate(source, exactCount, "set")
+    }
+
+    const resultWindow = Math.max(1, Math.min(600, this._prevPosWindowValue > 0 ? this._prevPosWindowValue : 25))
+    const minimumSampleCount = Math.max(
+      1,
+      Math.min(resultWindow, this._prevPosMinCountValue > 0 ? this._prevPosMinCountValue : 5),
+    )
+    const client = getRedisClient()
+    const statsKey = `strategy_block_pf_stats:${this.connectionId}`
+    if (candidates.length === 0) {
+      // Clear the per-cycle active overlay snapshot instead of leaving the
+      // previous cycle's non-zero values visible after the last parent closes.
+      await client.hset(statsKey, {
+        [`s:${symbol}:active:evaluated`]: "0",
+        [`s:${symbol}:active:passed`]: "0",
+        [`s:${symbol}:active:emitted`]: "0",
+        [`s:${symbol}:active:rejected`]: "0",
+        [`s:${symbol}:active:paused`]: "0",
+        [`s:${symbol}:active:open`]: "0",
+        [`s:${symbol}:active:updated_at`]: String(Date.now()),
+        [`s:${symbol}:window`]: String(resultWindow),
+        [`s:${symbol}:minimum_sample_count`]: String(minimumSampleCount),
+        [`s:${symbol}:profit_factor_ratio`]: String(profitFactorRatio),
+        [`s:${symbol}:default_min_pf`]: String(metrics.minProfitFactor),
+      }).catch(() => 0)
+      await client.expire(statsKey, 7 * 24 * 60 * 60).catch(() => 0)
+      return overlays
+    }
+    const [exactWindows, unavailableKeys, activeBlockKeys] = await Promise.all([
+      getStrategySetWindowBatch(this.connectionId, candidates.map((candidate) => candidate.setKey), resultWindow),
+      this.getUnavailableBlockKeys(symbol),
+      getActiveBlockSetKeys(client, this.connectionId, symbol),
+    ])
+    let passed = 0
+    let rejected = 0
+    let paused = 0
+    let active = 0
+
+    for (const { source, boundedCount, scope, setKey } of candidates) {
+      const ownWindow = exactWindows.get(setKey)
+      const hasOwnPerformanceSignal = Boolean(ownWindow && ownWindow.count >= minimumSampleCount)
+      const blockVolumeIncrementRatio = calculateBlockVolumeIncrementRatio(boundedCount, ratio)
+      const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
+        blockConfig.size,
+        boundedCount,
+        ratio,
+      )
+      const blockMinimumProfitFactor = calculateBlockMinimumProfitFactor(
+        metrics.minProfitFactor,
+        profitFactorRatio,
+        blockVolumeIncrementRatio,
+      )
+      const blockObservedProfitFactor = hasOwnPerformanceSignal
+        ? Number(ownWindow?.profitFactor || 0)
+        : (source.avgProfitFactor || metrics.minProfitFactor)
+      const blockObservedDrawdown = hasOwnPerformanceSignal && Number(ownWindow?.avgDDT) > 0
+        ? Number(ownWindow?.avgDDT)
+        : (source.avgDrawdownTime || 0) + blockConfig.ddtBias
+      const isActiveBlock = activeBlockKeys.has(setKey)
+      const isPaused = unavailableKeys.has(setKey) && !isActiveBlock
+      const passesPerformance =
+        blockObservedProfitFactor >= blockMinimumProfitFactor &&
+        blockObservedDrawdown <= metrics.maxDrawdownTime
+      if (passesPerformance) passed++
+      else rejected++
+      if (isPaused) paused++
+      if (isActiveBlock) active++
+      // Existing exposure stays represented until terminal reconciliation;
+      // a new active-position add-on must still clear its own PF/DDT and pause.
+      if (!isActiveBlock && (!passesPerformance || isPaused)) continue
+
+      const pauseWindow = Math.max(1, Math.min(32, Math.round(boundedCount * pauseRatio)))
+      const parentSetKey = source.parentSetKey || source.setKey
+      const axisWindows = {
+        ...(source.axisWindows || { prev: 0, last: 0, cont: 0, pause: 0 }),
+        cont: boundedCount,
+        pause: pauseWindow,
+        axisKey: `block:${scope}:${boundedCount}:pause${pauseWindow}`,
+      }
       const overlay: StrategySet = {
         ...source,
         setKey,
@@ -3751,7 +3899,7 @@ export class StrategyCoordinator {
         // exact Set has its own closed window, apply the Block profile bias
         // once; count-multiplication deadlocked higher counts before they
         // could ever produce their first independent result.
-        avgDrawdownTime: (source.avgDrawdownTime || 0) + blockConfig.ddtBias,
+        avgDrawdownTime: blockObservedDrawdown,
         variantSizeMultiplier: blockCalculatedVolumeMultiplier,
         variantLeverage: blockConfig.leverage,
         blockBaseVolumeMultiplier: blockConfig.size,
@@ -3760,11 +3908,13 @@ export class StrategyCoordinator {
         blockDefaultMinimumProfitFactor: metrics.minProfitFactor,
         blockMinimumProfitFactor,
         blockObservedProfitFactor,
-        blockProfitFactorWindow: Math.max(1, this._prevPosWindowValue > 0 ? this._prevPosWindowValue : 25),
-        blockProfitFactorSampleCount: 0,
+        blockProfitFactorWindow: resultWindow,
+        blockProfitFactorSampleCount: Number(ownWindow?.count || 0),
         blockCount: boundedCount,
+        blockVolumeIncrementRatio,
         blockCalculatedVolumeMultiplier,
         status: "valid_real",
+        ...(isActiveBlock ? { _hasLivePositions: true } : {}),
       }
       overlays.push(overlay)
 
@@ -3784,32 +3934,25 @@ export class StrategyCoordinator {
           prevPos: overlay.prevPos,
           trailingProfile: overlay.trailingProfile,
           _setView: overlay,
-          _hasLivePositions: true,
+          _hasLivePositions: isActiveBlock,
         })
       }
     }
 
-    // Direction-wide active Real/Live exposure calculation.
-    for (const dir of ["long", "short"] as const) {
-      const realCount = this._coordinationSettings.blockActiveRealEnabled ? activeRealByDir[dir] : 0
-      const liveCount = this._coordinationSettings.blockActiveLiveEnabled ? activeLiveByDir[dir] : 0
-      const activeCount = Math.max(realCount, liveCount)
-      if (activeCount <= 0) continue
-      const source = eligibleSources.find((set) => set.direction === dir)
-      if (source) addOverlay(source, activeCount, "global")
-    }
-
-    // Exact per-Set calculation. Counts come from confirmed position
-    // memberships, not candidate evaluations, so each Set retains independent
-    // Block volume, PF/DDT result ring and cooldown state across restarts.
-    for (const source of eligibleSources) {
-      const directionActive = Math.max(
-        this._coordinationSettings.blockActiveRealEnabled ? activeRealByDir[source.direction] : 0,
-        this._coordinationSettings.blockActiveLiveEnabled ? activeLiveByDir[source.direction] : 0,
-      )
-      const exactCount = exactActiveLedger.active[source.setKey] || 0
-      if (directionActive > 0 && exactCount > 0) addOverlay(source, exactCount, "set")
-    }
+    await client.hset(statsKey, {
+      [`s:${symbol}:active:evaluated`]: String(candidates.length),
+      [`s:${symbol}:active:passed`]: String(passed),
+      [`s:${symbol}:active:emitted`]: String(overlays.length),
+      [`s:${symbol}:active:rejected`]: String(rejected),
+      [`s:${symbol}:active:paused`]: String(paused),
+      [`s:${symbol}:active:open`]: String(active),
+      [`s:${symbol}:active:updated_at`]: String(Date.now()),
+      [`s:${symbol}:window`]: String(resultWindow),
+      [`s:${symbol}:minimum_sample_count`]: String(minimumSampleCount),
+      [`s:${symbol}:profit_factor_ratio`]: String(profitFactorRatio),
+      [`s:${symbol}:default_min_pf`]: String(metrics.minProfitFactor),
+    }).catch(() => 0)
+    await client.expire(statsKey, 7 * 24 * 60 * 60).catch(() => 0)
 
     return overlays
   }
@@ -3823,6 +3966,51 @@ export class StrategyCoordinator {
    * retained even when its latest PF falls below the new floor; it leaves the
    * active book only through the normal close/reconciliation lifecycle.
    */
+  private async clearBlockProfitFactorStats(
+    symbol: string,
+    metrics: EvaluationMetrics,
+  ): Promise<void> {
+    const resultWindow = Math.max(1, Math.min(600, this._prevPosWindowValue > 0 ? this._prevPosWindowValue : 25))
+    const minimumSampleCount = Math.max(
+      1,
+      Math.min(resultWindow, this._prevPosMinCountValue > 0 ? this._prevPosMinCountValue : 5),
+    )
+    const snapshot: Record<string, string> = {
+      [`s:${symbol}:max_stack`]: "0",
+      [`s:${symbol}:profit_factor_ratio`]: String(this._coordinationSettings.blockProfitFactorRatio),
+      [`s:${symbol}:default_min_pf`]: String(metrics.minProfitFactor),
+      [`s:${symbol}:window`]: String(resultWindow),
+      [`s:${symbol}:minimum_sample_count`]: String(minimumSampleCount),
+      [`s:${symbol}:updated_at`]: String(Date.now()),
+      [`s:${symbol}:active:evaluated`]: "0",
+      [`s:${symbol}:active:passed`]: "0",
+      [`s:${symbol}:active:emitted`]: "0",
+      [`s:${symbol}:active:rejected`]: "0",
+      [`s:${symbol}:active:paused`]: "0",
+      [`s:${symbol}:active:open`]: "0",
+      [`s:${symbol}:active:updated_at`]: String(Date.now()),
+    }
+    for (let blockCount = 1; blockCount <= 10; blockCount++) {
+      const prefix = `s:${symbol}:c:${blockCount}`
+      for (const field of [
+        "evaluated",
+        "passed",
+        "emitted",
+        "rejected",
+        "active",
+        "paused",
+        "avg_observed_pf",
+        "avg_min_pf",
+        "avg_volume_increment",
+        "sample_count",
+      ]) snapshot[`${prefix}:${field}`] = "0"
+    }
+    const client = getRedisClient()
+    const key = `strategy_block_pf_stats:${this.connectionId}`
+    await client.hset(key, snapshot).catch(() => 0)
+    await client.expire(key, 7 * 24 * 60 * 60).catch(() => 0)
+  }
+
   private async buildIndependentBlockCountOverlaysForReal(
     symbol: string,
     sourceSets: StrategySet[],
@@ -3830,24 +4018,37 @@ export class StrategyCoordinator {
     coordIndex?: CoordIndex,
     activeSetKeys: ReadonlySet<string> = new Set<string>(),
   ): Promise<StrategySet[]> {
-    if (!this._coordinationSettings.variants.block) return []
+    if (!this._coordinationSettings.variants.block) {
+      await this.clearBlockProfitFactorStats(symbol, metrics)
+      return []
+    }
 
     const blockProfile = this.variantProfiles().find((profile) => profile.name === "block")
     const blockConfig = blockProfile?.configs.slice().sort((left, right) => right.pfBias - left.pfBias)[0]
-    if (!blockConfig) return []
+    if (!blockConfig) {
+      await this.clearBlockProfitFactorStats(symbol, metrics)
+      return []
+    }
 
     const sources = Array.from(new Map(
       sourceSets
         .filter((set) => set.variant !== "block" && set.variant !== "dca" && !String(set.setKey).includes("#block:"))
         .map((set) => [set.setKey, set]),
     ).values())
-    if (sources.length === 0) return []
+    if (sources.length === 0) {
+      await this.clearBlockProfitFactorStats(symbol, metrics)
+      return []
+    }
 
     const maxStack = Math.max(1, Math.min(10, this._coordinationSettings.blockMaxStack | 0))
     const volumeRatio = this._coordinationSettings.blockVolumeRatio
     const profitFactorRatio = this._coordinationSettings.blockProfitFactorRatio
     const pauseRatio = this._coordinationSettings.blockPauseCountRatio
     const resultWindow = Math.max(1, Math.min(600, this._prevPosWindowValue > 0 ? this._prevPosWindowValue : 25))
+    const minimumSampleCount = Math.max(
+      1,
+      Math.min(resultWindow, this._prevPosMinCountValue > 0 ? this._prevPosMinCountValue : 5),
+    )
     const candidateKeys = sources.flatMap((source) =>
       Array.from({ length: maxStack }, (_, index) => `${source.setKey}#block:${index + 1}`),
     )
@@ -3877,7 +4078,14 @@ export class StrategyCoordinator {
       for (let blockCount = 1; blockCount <= maxStack; blockCount++) {
         const setKey = `${source.setKey}#block:${blockCount}`
         const ownWindow = exactWindows.get(setKey)
-        const hasCompleteOwnWindow = Boolean(ownWindow?.hasSignal && ownWindow.count >= resultWindow)
+        // Match the normal PF calculation exactly: read the same last-N
+        // window, activate realised history at the same min-sample threshold,
+        // and use however many positions are currently available up to N.
+        const hasOwnPerformanceSignal = Boolean(ownWindow && ownWindow.count >= minimumSampleCount)
+        const blockVolumeIncrementRatio = calculateBlockVolumeIncrementRatio(
+          blockCount,
+          volumeRatio,
+        )
         const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
           blockConfig.size,
           blockCount,
@@ -3886,13 +4094,13 @@ export class StrategyCoordinator {
         const blockMinimumProfitFactor = calculateBlockMinimumProfitFactor(
           metrics.minProfitFactor,
           profitFactorRatio,
-          blockCalculatedVolumeMultiplier,
+          blockVolumeIncrementRatio,
         )
-        const inheritedObservedPf = (source.avgProfitFactor || 0) * blockConfig.pfBias
-        const blockObservedProfitFactor = hasCompleteOwnWindow
+        const inheritedObservedPf = source.avgProfitFactor || 0
+        const blockObservedProfitFactor = hasOwnPerformanceSignal
           ? Number(ownWindow?.profitFactor || 0)
           : inheritedObservedPf
-        const blockObservedDrawdown = hasCompleteOwnWindow && Number(ownWindow?.avgDDT) > 0
+        const blockObservedDrawdown = hasOwnPerformanceSignal && Number(ownWindow?.avgDDT) > 0
           ? Number(ownWindow?.avgDDT)
           : (source.avgDrawdownTime || 0) + blockConfig.ddtBias
         const isActive = activeKeys.has(setKey)
@@ -3905,7 +4113,7 @@ export class StrategyCoordinator {
         stats.evaluated++
         stats.observedPfSum += blockObservedProfitFactor
         stats.minimumPfSum += blockMinimumProfitFactor
-        stats.volumeIncrementSum += blockCalculatedVolumeMultiplier
+        stats.volumeIncrementSum += blockVolumeIncrementRatio
         stats.sampleCount += Number(ownWindow?.count || 0)
         if (passesPerformance) stats.passed++
         else stats.rejected++
@@ -3942,6 +4150,7 @@ export class StrategyCoordinator {
           blockProfitFactorWindow: resultWindow,
           blockProfitFactorSampleCount: Number(ownWindow?.count || 0),
           blockCount,
+          blockVolumeIncrementRatio,
           blockCalculatedVolumeMultiplier,
           status: "valid_real",
           ...(isActive ? { _hasLivePositions: true } : {}),
@@ -3975,7 +4184,18 @@ export class StrategyCoordinator {
       [`s:${symbol}:profit_factor_ratio`]: String(profitFactorRatio),
       [`s:${symbol}:default_min_pf`]: String(metrics.minProfitFactor),
       [`s:${symbol}:window`]: String(resultWindow),
+      [`s:${symbol}:minimum_sample_count`]: String(minimumSampleCount),
       [`s:${symbol}:updated_at`]: String(Date.now()),
+      // This method runs before active-overlay construction every cycle. Clear
+      // its current snapshot first; the active method overwrites these fields
+      // only when an enabled, confirmed parent exists.
+      [`s:${symbol}:active:evaluated`]: "0",
+      [`s:${symbol}:active:passed`]: "0",
+      [`s:${symbol}:active:emitted`]: "0",
+      [`s:${symbol}:active:rejected`]: "0",
+      [`s:${symbol}:active:paused`]: "0",
+      [`s:${symbol}:active:open`]: "0",
+      [`s:${symbol}:active:updated_at`]: String(Date.now()),
     }
     for (const stats of countStats) {
       const prefix = `s:${symbol}:c:${stats.count}`
@@ -4218,12 +4438,23 @@ export class StrategyCoordinator {
     const realSetsCap = Math.min(this.config.maxRealSets ?? _realOutputCap, _realOutputCap)
     
     if (realQualifying.length > realSetsCap) {
+      const capActiveKeys = new Set(realActiveKeysForVP)
+      for (const set of realQualifying) {
+        if ((set as any)._hasLivePositions === true) capActiveKeys.add(set.setKey)
+      }
+      const capped = selectRealSetsWithActiveAndVariantPriority(
+        realQualifying,
+        capActiveKeys,
+        realSetsCap,
+      )
       if (shouldLogRealCap(`early:${this.connectionId}:${symbol}`)) {
         console.warn(
-          `[v0] [RealStage] ${this.connectionId}/${symbol}: Capping ${realQualifying.length} → ${realSetsCap} before hedge netting`,
+          `[v0] [RealStage] ${this.connectionId}/${symbol}: Capping ${realQualifying.length} → ` +
+          `${capped.selected.length} before hedge netting; active=${capped.active.length}, ` +
+          `variantReserve=${JSON.stringify(capped.reservedByVariant)}`,
         )
       }
-      realQualifying.length = realSetsCap  // Truncate in-place
+      realQualifying.splice(0, realQualifying.length, ...capped.selected)
     }
     
     const realSorted = realQualifying   // alias — hedge-net reads realSorted
@@ -5459,11 +5690,18 @@ export class StrategyCoordinator {
 
     if (qualifying.length > 0 && !skipLiveDispatch) {
       try {
+        const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+        let connector: any = null
         if (isLiveTradeEnabled) {
-          const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
           const { exchangeConnectorFactory } = await import("@/lib/exchange-connectors/factory")
-          const connector = await exchangeConnectorFactory.getOrCreateConnector(this.connectionId)
-          if (connector) {
+          connector = await exchangeConnectorFactory.getOrCreateConnector(this.connectionId)
+        }
+        // The LiveStage owns both exchange and paper execution. Running the
+        // same ordered path in simulation is essential: Standard creates the
+        // confirmed parent first, then Block/DCA adjust that parent. The old
+        // direct pseudo fan-out opened adjustment variants as standalone
+        // positions and never exercised their real quantity/step lifecycle.
+        if (!isLiveTradeEnabled || connector) {
             // Dispatch live positions. Each pipeline call is heavyweight:
             // price fetch → volume calc → leverage → order → fill poll →
             // SL/TP → sync. With 10+ symbols �� N qualifying Sets per symbol,
@@ -5706,6 +5944,7 @@ export class StrategyCoordinator {
                     blockProfitFactorWindow: set.blockProfitFactorWindow,
                     blockProfitFactorSampleCount: set.blockProfitFactorSampleCount,
                     blockCount: set.blockCount,
+                    blockVolumeIncrementRatio: set.blockVolumeIncrementRatio,
                     blockCalculatedVolumeMultiplier: set.blockCalculatedVolumeMultiplier,
                     // ── Set-config propagation to Live ───������─────────────────
                     // Forward the Set's trailing profile and historical
@@ -5764,9 +6003,8 @@ export class StrategyCoordinator {
                 `[v0] [StrategyFlow] ${symbol} LIVE summary — placed=${placed} filled=${filled} rejected=${rejected} errored=${errored} (throttled)`
               )
             }
-          } else {
-            console.warn(`[v0] [StrategyFlow] ${symbol} LIVE: live_trade=true but connector not available`)
-          }
+        } else {
+          console.warn(`[v0] [StrategyFlow] ${symbol} LIVE: live_trade=true but connector not available`)
         }
       } catch (liveErr) {
         console.warn(`[v0] [StrategyFlow] ${symbol} LIVE: Real exchange execution error:`, liveErr instanceof Error ? liveErr.message : String(liveErr))
@@ -5818,11 +6056,10 @@ export class StrategyCoordinator {
       }
     }
 
-    // Simulation-only position materialisation. In Live mode the LiveStage
-    // record is authoritative and is created only after an accepted/simulated
-    // exchange order; creating pseudo candidates as well would double-count
-    // exposure and let rejected orders enter Continuous/pos-count axes.
-    if (qualifying.length > 0 && !isLiveTradeEnabled) {
+    // Prehistoric/backfill mode intentionally skips LiveStage dispatch. It may
+    // still materialise non-adjustment pseudo candidates for historical
+    // evaluation, but Block/DCA can never exist without a confirmed parent.
+    if (qualifying.length > 0 && !isLiveTradeEnabled && skipLiveDispatch) {
       try {
         const posManager = new PseudoPositionManager(this.connectionId)
 
@@ -5857,8 +6094,11 @@ export class StrategyCoordinator {
           // Pseudo-position creation is local Redis work with per-Set idempotency
           // enforced inside createPosition (one active pseudo position per Set).
           // Safe to fan out in parallel — no exchange calls, no shared balance.
-          const creations = await Promise.all(
-            qualifying.map(async (set) => {
+          const historicalCandidates = qualifying.filter(
+            (set) => set.variant !== "block" && set.variant !== "dca",
+          )
+          await Promise.all(
+            historicalCandidates.map(async (set) => {
               try {
                 // Axis Sets carry one synthetic representative entry; for SL/TP
                 // derivation we need the full entries[] from the Base Set.
@@ -6186,11 +6426,13 @@ export class StrategyCoordinator {
         } catch { /* best-effort; keep pseudo-derived values */ }
       }
 
-      // Select exactly one active-book source. Production/Live uses only
-      // confirmed exchange-backed positions; simulation uses pseudo positions.
-      // This avoids double-counting the pseudo mirror and, critically, prevents
-      // rejected production candidates from entering Continuous/pos-count axes.
-      const effectiveByDir = liveTradingEnabled
+      // Select exactly one active-book source. Normal paper execution now uses
+      // LiveStage's `simulated` records so Block/DCA share the exchange path's
+      // confirmed-parent semantics. Legacy/prehistoric runs still use pseudo
+      // positions when no LiveStage simulation book exists. Never sum both.
+      const hasLiveStageSimulationBook = !liveTradingEnabled &&
+        Object.keys(perSymbolLiveOpenByDir).length > 0
+      const effectiveByDir = liveTradingEnabled || hasLiveStageSimulationBook
         ? perSymbolLiveOpenByDir
         : perSymbolOpenByDir
       const effectivePerSymbolOpen: Record<string, number> = {}
@@ -6250,7 +6492,7 @@ export class StrategyCoordinator {
    *                        (spec: "Continuous Positions" are active)
    *   - perSymbolOpen    → per-symbol open count for position-count axes.
    *                        Block itself is completed-position based and is
-   *                        overlaid at Live dispatch.
+   *                        expanded into independent Count Sets at Real.
    * Every other axis used below is closed-only. This invariant keeps
    * Main-stage factor coordination free of floating mark-to-market
    * pollution while allowing the few gates that MUST reference live
@@ -6272,8 +6514,8 @@ export class StrategyCoordinator {
     // suppressing activated variants — leaving block/dca permanently at 0 even
     // when the operator had turned them on. Activation is now the
     // single source of truth: toggle ON ⇒ the variant is emitted; toggle OFF
-    // ⇒ it contributes nothing. Block volume-ratio scaling is applied later by
-    // the Live dispatch overlay for every configured block count.
+    // ⇒ it contributes nothing. Exact Block volume-ratio scaling is applied by
+    // the independent Real-stage Count Sets for every configured count.
     const filtered = all.filter((p) => {
       if (p.name === "default") return true
       if (p.name === "trailing") return false
@@ -6293,11 +6535,12 @@ export class StrategyCoordinator {
    * semantic coverage (each variant now produces a DEDICATED Set instead of
    * being scattered across one big hybrid Set).
    *
-   * Gate predicates encode the user's coordination spec:
+   * Profiles encode the user's coordination spec; activation toggles are the
+   * inclusion gate for Adjust variants:
    *   default  — always on (validates & mirrors the Base Set)
    *   trailing — legacy placeholder only; real trailing Sets are created at BASE
-   *   block    — completed-position block-count overlays at Live dispatch
-   *   dca      — recent losses to recover with averaged entries
+   *   block    — independent completed-position Count Sets created at Real
+   *   dca      — enabled recovery Set; price/step readiness is checked at Live
    */
   /**
    * Compute the mean profit-factor of the last `n` COMPLETED entries.
@@ -6613,11 +6856,11 @@ export class StrategyCoordinator {
       {
         name: "block",
         // ── Block gate: setting-driven; actual block counts are completed-pos
-        // overlays generated at Live dispatch, not open-position gates. ─────
+        // overlays generated at Real stage, not open-position gates. ────────
         //
         // The cap (`blockMaxStack`) is operator-controlled (defaults to 10).
         // Each blockCount 1..blockMaxStack is emitted independently as a
-        // transient execution overlay over the selected Set.
+        // independent Real-stage Set over every eligible selected Set.
         gate: () => true,
         // ── Block sub-configs ─ size is the Set's historical coordination
         // base multiplier. Exchange add quantity is calculated independently
@@ -6634,7 +6877,7 @@ export class StrategyCoordinator {
       },
       {
         name: "dca",
-        gate: (c) => c.prevLosses >= 1,
+        gate: () => true,
         configs: [
           { size: 0.5, leverage: 1, state: "reduce", pfBias: 0.98, ddtBias: 20 },
           { size: 0.5, leverage: 1, state: "close",  pfBias: 0.95, ddtBias: 30 },
@@ -6738,9 +6981,9 @@ export class StrategyCoordinator {
     // Dispatch selects the Base `bestEntry` by max PF, so the variant's
     // coordinated sizing must come from the surviving config with the highest
     // PF bias (the one that "wins" alongside that entry). Track it here so the
-    // block vol-ratio-scaled `size` and the variant `leverage` survive the
-    // slim path and reach dispatch. `selectActiveVariants` has already folded
-    // the block vol-ratio into `cfg.size`, so reading it verbatim is correct.
+    // profile `size` and variant `leverage` survive the slim path and reach
+    // dispatch. Independent Block Count Sets later replace this legacy profile
+    // value with their exact count × volume-ratio multiplier.
     let repConfig: { size: number; leverage: number; pfBias: number } | null = null
 
     outer: for (const baseEntry of baseSet.entries) {

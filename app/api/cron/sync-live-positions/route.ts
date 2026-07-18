@@ -44,6 +44,7 @@ export const maxDuration = 60
 
 const LOCK_KEY = "cron:sync-live-positions:lock"
 const LOCK_TTL_SECONDS = 65
+const MINUTE_DEDUP_PREFIX = "cron:sync-live-positions:minute"
 const DIAGNOSTIC_KEY = "system:coordination:live-recovery"
 
 function requestSource(request: Request): string {
@@ -199,6 +200,21 @@ export async function GET(request: Request) {
   await initRedis()
   const client = getRedisClient()
   const token = `sync_${started}_${Math.random().toString(36).slice(2, 10)}`
+
+  const minuteBucket = Math.floor(started / 60_000)
+  const minuteAccepted = await client.set(
+    `${MINUTE_DEDUP_PREFIX}:${minuteBucket}`,
+    requestSource(request),
+    { NX: true, EX: 180 },
+  ).catch(() => null)
+  if (minuteAccepted !== "OK") {
+    return NextResponse.json({
+      ok: true,
+      skipped: true,
+      reason: "live-recovery minute already completed",
+      ms: Date.now() - started,
+    })
+  }
 
   const acquired = await client.set(LOCK_KEY, token, {
     NX: true,

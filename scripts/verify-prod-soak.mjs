@@ -304,10 +304,24 @@ async function main() {
       throw new Error(`System monitoring cycle counters did not advance (${firstCycles} → ${maxCycles})`)
     }
     const peakLiveSets = Math.max(...progression.map((sample) => sample.live))
-    if (peakLiveSets < 1 || paperPositionsPeak < 1 || paperRunningSetsPeak < 1 || paperUpdateCyclesPeak < 1) {
+    const simulatedOrdersPeak = Math.max(...liveExecution.map((sample) => sample.ordersSimulated))
+    const simulatedCreatedPeak = Math.max(...liveExecution.map((sample) => sample.positionsCreated))
+    // `openPositions.pseudo` is the upstream strategy-evaluation ledger, not
+    // the executed paper-order store. Those short-lived rows may legitimately
+    // close before a 2-second poll while LiveStage's simulated positions remain
+    // authoritative and fully filled. Prove the paper lifecycle from its real
+    // durable/API surfaces instead of requiring an unrelated pseudo row to be
+    // open at sample time.
+    if (
+      peakLiveSets < 1 ||
+      simulatedPositionsPeak < 1 ||
+      simulatedOrdersPeak < 1 ||
+      simulatedCreatedPeak < 1
+    ) {
       throw new Error(
         `Paper position lifecycle was not exercised (liveSets=${peakLiveSets}, ` +
-        `open=${paperPositionsPeak}, runningSets=${paperRunningSetsPeak}, updates=${paperUpdateCyclesPeak})`,
+        `simulatedPositions=${simulatedPositionsPeak}, simulatedOrders=${simulatedOrdersPeak}, ` +
+        `positionsCreated=${simulatedCreatedPeak})`,
       )
     }
     if (liveExecution.some((sample) => sample.ordersPlaced < sample.ordersSimulated)) {

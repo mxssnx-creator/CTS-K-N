@@ -28,6 +28,19 @@ export interface SecurityEvent {
   details?: any
 }
 
+function resolveEncryptionSecret(explicit?: string): string {
+  const secret = String(explicit || process.env.ENCRYPTION_KEY || "").trim()
+  if (secret.length >= 16 && !/^(?:replace|change|your)[_-]?/i.test(secret)) return secret
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("ENCRYPTION_KEY must contain at least 16 non-placeholder characters in production")
+  }
+  return "cts-k-n-development-only-encryption-key"
+}
+
+function encryptionKey(secret: string): Buffer {
+  return crypto.createHash("sha256").update(secret, "utf8").digest()
+}
+
 /**
  * Security Manager
  */
@@ -169,19 +182,11 @@ export class SecurityManager {
       return data
     }
 
-    try {
-      const encryptionKey = key || process.env.ENCRYPTION_KEY || 'default-key'
-      const iv = crypto.randomBytes(16)
-      const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(encryptionKey.padEnd(32)), iv)
-
-      let encrypted = cipher.update(data, 'utf8', 'hex')
-      encrypted += cipher.final('hex')
-
-      return iv.toString('hex') + ':' + encrypted
-    } catch (error) {
-      console.error('[SECURITY] Encryption failed:', error)
-      return data
-    }
+    const secret = resolveEncryptionSecret(key)
+    const iv = crypto.randomBytes(12)
+    const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(secret), iv)
+    const encrypted = Buffer.concat([cipher.update(data, "utf8"), cipher.final()])
+    return `v2:${iv.toString("hex")}:${cipher.getAuthTag().toString("hex")}:${encrypted.toString("hex")}`
   }
 
   /**
@@ -192,24 +197,25 @@ export class SecurityManager {
       return encrypted
     }
 
-    try {
-      const encryptionKey = key || process.env.ENCRYPTION_KEY || 'default-key'
-      const [iv, data] = encrypted.split(':')
-
-      const decipher = crypto.createDecipheriv(
-        'aes-256-cbc',
-        Buffer.from(encryptionKey.padEnd(32)),
-        Buffer.from(iv, 'hex')
-      )
-
-      let decrypted = decipher.update(data, 'hex', 'utf8')
-      decrypted += decipher.final('utf8')
-
-      return decrypted
-    } catch (error) {
-      console.error('[SECURITY] Decryption failed:', error)
-      return encrypted
+    const secret = resolveEncryptionSecret(key)
+    const parts = encrypted.split(":")
+    if (parts[0] === "v2" && parts.length === 4) {
+      const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey(secret), Buffer.from(parts[1], "hex"))
+      decipher.setAuthTag(Buffer.from(parts[2], "hex"))
+      return Buffer.concat([
+        decipher.update(Buffer.from(parts[3], "hex")),
+        decipher.final(),
+      ]).toString("utf8")
     }
+
+    // Read compatibility for values emitted by the legacy AES-CBC format.
+    // Legacy encryption only succeeded for secrets whose padded UTF-8 value
+    // was exactly 32 bytes; new writes always use authenticated v2/GCM.
+    if (parts.length !== 2) throw new Error("Encrypted payload format is invalid")
+    const legacyKey = Buffer.from(secret.padEnd(32).slice(0, 32), "utf8")
+    if (legacyKey.length !== 32) throw new Error("Legacy encryption key is invalid")
+    const decipher = crypto.createDecipheriv("aes-256-cbc", legacyKey, Buffer.from(parts[0], "hex"))
+    return decipher.update(parts[1], "hex", "utf8") + decipher.final("utf8")
   }
 
   /**

@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { useExchange } from "@/lib/exchange-context"
 import { toast } from "@/lib/simple-toast"
@@ -209,6 +210,41 @@ function NumberField({
         step={step}
         onChange={(event) => onChange(Number(event.target.value))}
         className="h-8 text-xs tabular-nums"
+      />
+    </div>
+  )
+}
+
+function SliderField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string
+  value: number
+  min: number
+  max: number
+  step: number
+  onChange: (value: number) => void
+}) {
+  const bounded = Math.max(min, Math.min(max, Number.isFinite(value) ? value : min))
+  const digits = step < 1 ? (step < 0.1 ? 2 : 1) : 0
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-[11px] text-muted-foreground">{label}</Label>
+        <span className="text-[11px] font-medium tabular-nums">{bounded.toFixed(digits)}×</span>
+      </div>
+      <Slider
+        aria-label={label}
+        value={[bounded]}
+        min={min}
+        max={max}
+        step={step}
+        onValueChange={([next]) => onChange(Number(next.toFixed(digits)))}
       />
     </div>
   )
@@ -589,7 +625,7 @@ export default function PresetsPage() {
               </div>
               <div className={draft.blockEnabled ? "grid gap-2 md:grid-cols-2 xl:grid-cols-4" : "grid gap-2 md:grid-cols-2 xl:grid-cols-4 pointer-events-none"}>
                 <NumberField label="Volume ratio" value={draft.blockVolumeRatio} min={0.25} max={3} step={0.05} onChange={(value) => setDraft({ ...draft, blockVolumeRatio: value })} />
-                <NumberField label="ProfitFactor factor" value={draft.blockProfitFactorRatio} min={0.2} max={5} step={0.1} onChange={(value) => setDraft({ ...draft, blockProfitFactorRatio: value })} />
+                <SliderField label="ProfitFactor factor" value={draft.blockProfitFactorRatio} min={0.2} max={5} step={0.1} onChange={(value) => setDraft({ ...draft, blockProfitFactorRatio: value })} />
                 <NumberField label="Independent counts" value={draft.blockMaxStack} min={1} max={10} step={1} onChange={(value) => setDraft({ ...draft, blockMaxStack: value })} />
                 <NumberField label="Post-profit pause ratio" value={draft.blockPauseCountRatio} min={1} max={4} step={0.5} onChange={(value) => setDraft({ ...draft, blockPauseCountRatio: value })} />
               </div>

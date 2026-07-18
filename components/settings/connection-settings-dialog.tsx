@@ -1148,7 +1148,7 @@ export function ConnectionSettingsDialog({
                     {(["trailing", "block", "dca"] as const).map((key) => {
                       const labels: Record<string, { label: string; desc: string }> = {
                         trailing: { label: "Trailing", desc: "Fires on consecutive wins — aggressive momentum follow." },
-                        block:    { label: "Block",    desc: "Add-on entries when continuousCount is 1–2 (independent of axes)." },
+                        block:    { label: "Block",    desc: "Count 1..N add-on Sets, each evaluated independently from its own history." },
                         dca:      { label: "DCA",      desc: "Dollar-cost averaging after prior losses (independent of axes)." },
                       }
                       const enabled = typeof coordination.variants[key] === "boolean" ? coordination.variants[key] : (key !== "dca")

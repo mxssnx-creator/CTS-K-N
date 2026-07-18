@@ -68,6 +68,16 @@ const globalForRedis = globalThis as unknown as {
   // builds the instance early would otherwise make the loader think the
   // snapshot was already applied and skip it, booting with an empty store.
   __redis_snapshot_loaded?: boolean
+  // Process-global snapshot state. Next production route bundles can evaluate
+  // this module more than once inside one PID; class statics are therefore not
+  // a sufficient mutex or generation counter.
+  __redis_snapshot_save_promise?: Promise<boolean>
+  __redis_snapshot_mutation_version?: number
+  __redis_snapshot_persisted_version?: number
+  __redis_snapshot_write_counter?: number
+  __redis_persistence_tick_started?: boolean
+  __redis_persistence_signals_attached?: boolean
+  __redis_snapshot_last_error_warn?: number
   // Global equivalent of the module-scoped `isConnected` flag. Allows fresh
   // Next.js dev route modules (which re-evaluate and get isConnected=false) to
   // see the real connected state without re-running initRedis/migrations.
@@ -210,25 +220,26 @@ export class InlineLocalRedis implements RedisClientLike {
   // of disk failures — the only observable effect of a broken disk is a
   // single rate-limited warning per minute and no cross-restart recovery.
 
-  private static persistenceTickStarted = false
-  private static signalsAttached = false
-  private static lastSaveErrorWarn = 0
-  // Per-process unique suffix so concurrent Next.js workers never collide on
-  // the same `.tmp` file, which caused the ENOENT "rename .tmp -> final" race.
-  private static readonly writeSuffix = `${process.pid ?? Math.random().toString(36).slice(2)}`
-  // In-process write mutex — prevents concurrent saveToDisk() calls from the
-  // same worker from racing each other.
-  private static saveInProgress = false
-  // Monotonic dirty generation. A periodic tick with no writes since the last
-  // successful snapshot returns immediately, avoiding JSON allocation and disk
-  // I/O for idle deployments. If writes land while an async snapshot is being
-  // flushed, the versions differ and the next tick/critical persist writes the
-  // newer generation instead of incorrectly treating it as durable.
-  private static mutationVersion = 0
-  private static persistedVersion = -1
-
   private markDirty(): void {
-    InlineLocalRedis.mutationVersion++
+    globalForRedis.__redis_snapshot_mutation_version = this.mutationVersion() + 1
+  }
+
+  private mutationVersion(): number {
+    return globalForRedis.__redis_snapshot_mutation_version ?? 0
+  }
+
+  private persistedVersion(): number {
+    return globalForRedis.__redis_snapshot_persisted_version ?? -1
+  }
+
+  private markPersisted(version: number): void {
+    globalForRedis.__redis_snapshot_persisted_version = Math.max(this.persistedVersion(), version)
+  }
+
+  private nextWriteSuffix(): string {
+    const counter = (globalForRedis.__redis_snapshot_write_counter ?? 0) + 1
+    globalForRedis.__redis_snapshot_write_counter = counter
+    return `${process.pid ?? "browser"}.${counter}.${Date.now()}`
   }
 
   /** Resolve snapshot path; honours `V0_REDIS_SNAPSHOT_PATH` env override. */
@@ -283,7 +294,7 @@ export class InlineLocalRedis implements RedisClientLike {
       lists: Array.from(d.lists.entries()),
       sorted_sets: Array.from(d.sorted_sets.entries()).map(([k, z]) => [k, z.entries]),
       ttl: Array.from(d.ttl.entries()),
-      mutationVersion: InlineLocalRedis.mutationVersion,
+      mutationVersion: this.mutationVersion(),
     })
   }
 
@@ -318,8 +329,8 @@ export class InlineLocalRedis implements RedisClientLike {
   /** Single rate-limited warning per minute so a broken disk doesn't spam logs. */
   private warnRateLimited(msg: string, err: unknown): void {
     const now = Date.now()
-    if (now - InlineLocalRedis.lastSaveErrorWarn < 60_000) return
-    InlineLocalRedis.lastSaveErrorWarn = now
+    if (now - (globalForRedis.__redis_snapshot_last_error_warn ?? 0) < 60_000) return
+    globalForRedis.__redis_snapshot_last_error_warn = now
     const detail = err instanceof Error ? err.message : String(err)
     console.warn(`[v0] [Redis Persistence] ${msg}: ${detail}`)
   }
@@ -363,7 +374,7 @@ export class InlineLocalRedis implements RedisClientLike {
         const raw = await fs.readFile(c.file, "utf8")
         const parsed = JSON.parse(raw)
         if (this.applySnapshot(parsed)) {
-          InlineLocalRedis.persistedVersion = InlineLocalRedis.mutationVersion
+          this.markPersisted(this.mutationVersion())
           const keys =
             this.data.strings.size + this.data.hashes.size + this.data.sets.size +
             this.data.lists.size + this.data.sorted_sets.size
@@ -387,11 +398,24 @@ export class InlineLocalRedis implements RedisClientLike {
   }
 
   async saveToDisk(): Promise<boolean> {
-    // In-process mutex: if a save is already in flight from this worker,
-    // skip rather than race on the .tmp file.
-    if (InlineLocalRedis.saveInProgress) return false
-    if (InlineLocalRedis.persistedVersion === InlineLocalRedis.mutationVersion) return true
-    InlineLocalRedis.saveInProgress = true
+    // The same source module may be bundled/evaluated independently by several
+    // Next route chunks in one process. Coordinate through globalThis so those
+    // copies cannot write/rename the same snapshot concurrently.
+    const existing = globalForRedis.__redis_snapshot_save_promise
+    if (existing) return existing
+    if (this.persistedVersion() >= this.mutationVersion()) return true
+    const write = this.saveToDiskUnlocked()
+    globalForRedis.__redis_snapshot_save_promise = write
+    try {
+      return await write
+    } finally {
+      if (globalForRedis.__redis_snapshot_save_promise === write) {
+        delete globalForRedis.__redis_snapshot_save_promise
+      }
+    }
+  }
+
+  private async saveToDiskUnlocked(): Promise<boolean> {
     try {
       const primary = await this.resolveSnapshotPath()
       if (!primary) return false
@@ -402,7 +426,7 @@ export class InlineLocalRedis implements RedisClientLike {
       } catch {
         return false
       }
-      const snapshotVersion = InlineLocalRedis.mutationVersion
+      const snapshotVersion = this.mutationVersion()
       const json = this.buildSnapshot()
       // With an explicit persistent-volume path, fail closed instead of
       // silently succeeding on ephemeral `/tmp`.
@@ -412,9 +436,9 @@ export class InlineLocalRedis implements RedisClientLike {
       for (const c of candidates) {
         try {
           await fs.mkdir(c.dir, { recursive: true })
-          // Use a per-PID suffix so concurrent Next.js workers never collide
-          // on the same .tmp file (previously caused ENOENT on rename).
-          const tmpPath = `${c.file}.${InlineLocalRedis.writeSuffix}.tmp`
+          // Keep every physical attempt unique as an extra fail-safe for a
+          // synchronous shutdown flush or another JS realm.
+          const tmpPath = `${c.file}.${this.nextWriteSuffix()}.tmp`
           const handle = await fs.open(tmpPath, "w")
           try {
             await handle.writeFile(json, "utf8")
@@ -431,7 +455,7 @@ export class InlineLocalRedis implements RedisClientLike {
             const dirHandle = await fs.open(c.dir, "r")
             try { await dirHandle.sync() } finally { await dirHandle.close() }
           } catch {}
-          InlineLocalRedis.persistedVersion = snapshotVersion
+          this.markPersisted(snapshotVersion)
           return true
         } catch (err) {
           // Try next fallback. Only warn after we've exhausted everything.
@@ -442,8 +466,9 @@ export class InlineLocalRedis implements RedisClientLike {
         }
       }
       return false
-    } finally {
-      InlineLocalRedis.saveInProgress = false
+    } catch (error) {
+      this.warnRateLimited("snapshot save failed", error)
+      return false
     }
   }
 
@@ -475,17 +500,15 @@ export class InlineLocalRedis implements RedisClientLike {
     const explicit = process.env.V0_REDIS_SNAPSHOT_PATH
     const primaryFile = explicit || pathMod.join(process.cwd(), ".v0-data", "redis-snapshot.json")
     const tmpFile = pathMod.join("/tmp", "v0-redis-snapshot.json")
-    if (InlineLocalRedis.persistedVersion === InlineLocalRedis.mutationVersion) return true
-    const snapshotVersion = InlineLocalRedis.mutationVersion
+    if (this.persistedVersion() >= this.mutationVersion()) return true
+    const snapshotVersion = this.mutationVersion()
     const json = this.buildSnapshot()
-    const suffix = InlineLocalRedis.writeSuffix
     const candidates = explicit ? [primaryFile] : [primaryFile, tmpFile]
     for (const file of candidates) {
       try {
         const dir = pathMod.dirname(file)
         fsSync.mkdirSync(dir, { recursive: true })
-        // PID-unique tmp file prevents cross-worker rename races (ENOENT).
-        const tmp = `${file}.${suffix}.tmp`
+        const tmp = `${file}.${this.nextWriteSuffix()}.tmp`
         const fd = fsSync.openSync(tmp, "w")
         try {
           fsSync.writeFileSync(fd, json, "utf8")
@@ -498,7 +521,7 @@ export class InlineLocalRedis implements RedisClientLike {
           const dirFd = fsSync.openSync(dir, "r")
           try { fsSync.fsyncSync(dirFd) } finally { fsSync.closeSync(dirFd) }
         } catch {}
-        InlineLocalRedis.persistedVersion = snapshotVersion
+        this.markPersisted(snapshotVersion)
         return true
       } catch {
         continue
@@ -509,8 +532,8 @@ export class InlineLocalRedis implements RedisClientLike {
 
   async startPersistence(): Promise<boolean> {
     if (typeof process === "undefined" || !process.versions?.node) return false
-    if (InlineLocalRedis.persistenceTickStarted) return true
-    InlineLocalRedis.persistenceTickStarted = true
+    if (globalForRedis.__redis_persistence_tick_started) return true
+    globalForRedis.__redis_persistence_tick_started = true
 
     // ── Continuous session persistence ──
     // The default recovery checkpoint is exactly one minute in every runtime.
@@ -531,8 +554,8 @@ export class InlineLocalRedis implements RedisClientLike {
     if (typeof t.unref === "function") t.unref()
 
     // Flush-on-exit handlers (idempotent).
-    if (!InlineLocalRedis.signalsAttached) {
-      InlineLocalRedis.signalsAttached = true
+    if (!globalForRedis.__redis_persistence_signals_attached) {
+      globalForRedis.__redis_persistence_signals_attached = true
       const flush = () => { try { this.saveToDiskSync() } catch {} }
       // setMaxListeners is a NodeEventEmitter API; guard for ts safety.
       try { (process as any).setMaxListeners?.(50) } catch {}
@@ -1469,12 +1492,17 @@ export class InlineLocalRedis implements RedisClientLike {
    * next request (e.g. after connection-flag resets in clear-progressions).
    */
   async persistNow(): Promise<boolean> {
+    const requiredVersion = this.mutationVersion()
     const deadline = Date.now() + 5_000
-    while (InlineLocalRedis.saveInProgress && Date.now() < deadline) {
+    while (Date.now() < deadline) {
+      const inFlight = globalForRedis.__redis_snapshot_save_promise
+      if (inFlight) await inFlight.catch(() => false)
+      if (this.persistedVersion() >= requiredVersion) return true
+      await this.saveToDisk()
+      if (this.persistedVersion() >= requiredVersion) return true
       await new Promise((resolve) => setTimeout(resolve, 25))
     }
-    if (InlineLocalRedis.saveInProgress) return false
-    return this.saveToDisk()
+    return false
   }
 
   async hset(key: string, dataOrField: Record<string, string> | string, value?: string): Promise<number> {

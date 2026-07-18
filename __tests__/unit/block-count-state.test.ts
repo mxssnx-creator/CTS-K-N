@@ -3,6 +3,7 @@ import {
   buildBlockLegState,
   calculateBlockAddQuantity,
   calculateBlockMinimumProfitFactor,
+  calculateBlockVolumeIncrementRatio,
   calculateBlockVolumeMultiplier,
   getUnavailableBlockSetKeys,
   parseBlockCount,
@@ -79,14 +80,13 @@ describe("independent Block count lifecycle", () => {
   test("calculates a separate proportional minimum PF for every Block count", () => {
     const defaultPf = 1.2
     const factor = 0.8
-    const baseVolume = 1.25
     const thresholds = Array.from({ length: 10 }, (_, index) => {
       const count = index + 1
-      const volumeIncrement = calculateBlockVolumeMultiplier(baseVolume, count, 1)
+      const volumeIncrement = calculateBlockVolumeIncrementRatio(count, 1)
       return calculateBlockMinimumProfitFactor(defaultPf, factor, volumeIncrement)
     })
-    expect(thresholds[0]).toBeCloseTo(1.2, 8)
-    expect(thresholds[9]).toBeCloseTo(12, 8)
+    expect(thresholds[0]).toBeCloseTo(0.96, 8)
+    expect(thresholds[9]).toBeCloseTo(9.6, 8)
     expect(new Set(thresholds).size).toBe(10)
     expect(calculateBlockMinimumProfitFactor(defaultPf, 0.01, 1)).toBeCloseTo(0.24, 8)
     expect(calculateBlockMinimumProfitFactor(defaultPf, 9, 1)).toBeCloseTo(6, 8)
@@ -99,6 +99,10 @@ describe("independent Block count lifecycle", () => {
       for (let blockCount = 1; blockCount <= 10; blockCount++) {
         expect(calculateBlockAddQuantity(positionBase, blockCount, ratio)).toBeCloseTo(
           positionBase * (blockCount * ratio),
+          8,
+        )
+        expect(calculateBlockVolumeIncrementRatio(blockCount, ratio)).toBeCloseTo(
+          blockCount * ratio,
           8,
         )
       }

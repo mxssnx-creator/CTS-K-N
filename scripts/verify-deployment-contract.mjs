@@ -16,7 +16,9 @@ const migrationSource = readFileSync(
 )
 const migrationVersions = Array.from(migrationSource.matchAll(/\bversion:\s*(\d+)\s*,/g), (match) => Number(match[1]))
 const expectedSchemaVersion = Math.max(0, ...migrationVersions)
-const cloudflareRuntime = process.env.CTS_DEPLOYMENT_RUNTIME === "cloudflare-workers"
+const cloudflareRuntime = ["cloudflare-workers", "kilo-deploy"].includes(
+  String(process.env.CTS_DEPLOYMENT_RUNTIME || "").trim().toLowerCase(),
+)
 const requireSharedPersistence = process.env.REQUIRE_SHARED_PERSISTENCE === "1" || (
   cloudflareRuntime && process.env.ALLOW_PROCESS_LOCAL_DEPLOY_VERIFY !== "1"
 )

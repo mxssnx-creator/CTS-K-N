@@ -1,0 +1,279 @@
+{
+  "project": "CTS-K-N",
+  "sourceRevisionBeforeHandoffCommit": "15cbbd353c64e6be35f99562a331f7b1e07cd1d7",
+  "sourceTreeBeforeHandoffCommit": "1bc9266652b03982b43e3faedd3562ac133491d9",
+  "sourceRevisionTimestamp": "2026-07-18T16:30:28+02:00",
+  "workingTreeChangesIncluded": true,
+  "workingTreeStatusEntryCount": 114,
+  "nodeRequirement": ">=20.16",
+  "packageManager": "pnpm@10.28.1",
+  "framework": {
+    "next": "15.5.18",
+    "react": "19.2.0",
+    "typescript": "^5.8.3"
+  },
+  "counts": {
+    "projectFilesExcludingGeneratedManifests": 1113,
+    "apiRoutes": 279,
+    "apiMethods": 356,
+    "uiPages": 43,
+    "environmentVariables": 195,
+    "redisMigrations": 81,
+    "testsAndVerifiers": 105
+  },
+  "apiGroups": {
+    "additional": {
+      "routes": 2,
+      "methods": 2
+    },
+    "admin": {
+      "routes": 10,
+      "methods": 11
+    },
+    "alerts": {
+      "routes": 1,
+      "methods": 3
+    },
+    "audit-logs": {
+      "routes": 1,
+      "methods": 1
+    },
+    "auth": {
+      "routes": 4,
+      "methods": 4
+    },
+    "auto-optimal": {
+      "routes": 1,
+      "methods": 1
+    },
+    "backtest-results": {
+      "routes": 2,
+      "methods": 2
+    },
+    "backup": {
+      "routes": 1,
+      "methods": 2
+    },
+    "broadcast": {
+      "routes": 2,
+      "methods": 2
+    },
+    "connections": {
+      "routes": 11,
+      "methods": 12
+    },
+    "cron": {
+      "routes": 4,
+      "methods": 7
+    },
+    "data": {
+      "routes": 5,
+      "methods": 5
+    },
+    "database": {
+      "routes": 4,
+      "methods": 4
+    },
+    "debug": {
+      "routes": 4,
+      "methods": 5
+    },
+    "engine": {
+      "routes": 6,
+      "methods": 7
+    },
+    "engine-logs": {
+      "routes": 1,
+      "methods": 1
+    },
+    "engine-metrics": {
+      "routes": 1,
+      "methods": 1
+    },
+    "engine-progress": {
+      "routes": 1,
+      "methods": 1
+    },
+    "engine-symbols": {
+      "routes": 1,
+      "methods": 1
+    },
+    "exchange": {
+      "routes": 2,
+      "methods": 2
+    },
+    "exchange-positions": {
+      "routes": 4,
+      "methods": 5
+    },
+    "exchanges": {
+      "routes": 2,
+      "methods": 3
+    },
+    "health": {
+      "routes": 5,
+      "methods": 5
+    },
+    "indications": {
+      "routes": 1,
+      "methods": 1
+    },
+    "init": {
+      "routes": 1,
+      "methods": 1
+    },
+    "install": {
+      "routes": 22,
+      "methods": 24
+    },
+    "logistics": {
+      "routes": 1,
+      "methods": 1
+    },
+    "logs": {
+      "routes": 1,
+      "methods": 2
+    },
+    "main": {
+      "routes": 4,
+      "methods": 4
+    },
+    "market": {
+      "routes": 1,
+      "methods": 1
+    },
+    "market-data": {
+      "routes": 1,
+      "methods": 2
+    },
+    "metrics": {
+      "routes": 3,
+      "methods": 3
+    },
+    "monitoring": {
+      "routes": 13,
+      "methods": 18
+    },
+    "orders": {
+      "routes": 1,
+      "methods": 2
+    },
+    "performance": {
+      "routes": 1,
+      "methods": 1
+    },
+    "persistence": {
+      "routes": 1,
+      "methods": 1
+    },
+    "portfolios": {
+      "routes": 3,
+      "methods": 4
+    },
+    "positions": {
+      "routes": 4,
+      "methods": 7
+    },
+    "preset-coordination-engine": {
+      "routes": 3,
+      "methods": 3
+    },
+    "preset-optimizer": {
+      "routes": 1,
+      "methods": 3
+    },
+    "preset-sets": {
+      "routes": 5,
+      "methods": 8
+    },
+    "preset-trade-engine": {
+      "routes": 2,
+      "methods": 2
+    },
+    "preset-types": {
+      "routes": 3,
+      "methods": 6
+    },
+    "presets": {
+      "routes": 10,
+      "methods": 13
+    },
+    "progression": {
+      "routes": 1,
+      "methods": 2
+    },
+    "quickstart": {
+      "routes": 1,
+      "methods": 1
+    },
+    "risk": {
+      "routes": 1,
+      "methods": 1
+    },
+    "settings": {
+      "routes": 47,
+      "methods": 74
+    },
+    "startup": {
+      "routes": 1,
+      "methods": 1
+    },
+    "strategies": {
+      "routes": 2,
+      "methods": 3
+    },
+    "structure": {
+      "routes": 2,
+      "methods": 2
+    },
+    "symbol-data": {
+      "routes": 1,
+      "methods": 3
+    },
+    "symbols": {
+      "routes": 1,
+      "methods": 1
+    },
+    "system": {
+      "routes": 21,
+      "methods": 25
+    },
+    "test": {
+      "routes": 1,
+      "methods": 1
+    },
+    "testing": {
+      "routes": 3,
+      "methods": 3
+    },
+    "tracking": {
+      "routes": 1,
+      "methods": 1
+    },
+    "trade-engine": {
+      "routes": 29,
+      "methods": 33
+    },
+    "trades": {
+      "routes": 1,
+      "methods": 1
+    },
+    "trading": {
+      "routes": 5,
+      "methods": 5
+    },
+    "volume": {
+      "routes": 2,
+      "methods": 2
+    },
+    "workflow-logs": {
+      "routes": 1,
+      "methods": 2
+    },
+    "ws": {
+      "routes": 1,
+      "methods": 1
+    }
+  },
+  "generatedManifestDirectoryExcludedFromProjectFileChecksums": "docs/recreation/manifests/"
+}

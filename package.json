@@ -1,5 +1,5 @@
 {
-  "name": "my-v0-project",
+  "name": "cts-k-n",
   "version": "0.1.1",
   "private": true,
   "scripts": {
@@ -22,6 +22,16 @@
     "vercel-build-setup": "bash scripts/vercel-build-setup.sh",
     "post-deploy-verify": "bash scripts/post-deploy-verify.sh",
     "test:deployment-contract": "node scripts/verify-deployment-contract.mjs",
+    "install:preflight": "bash scripts/install.sh --preflight-only --skip-system-packages",
+    "kilo:preflight": "node scripts/kilo-deploy-preflight.mjs",
+    "kilo:preflight:runtime": "KILO_REQUIRE_RUNTIME_ENV=1 node scripts/kilo-deploy-preflight.mjs",
+    "kilo:build": "pnpm run kilo:preflight && opennextjs-cloudflare build",
+    "kilo:preview": "pnpm run kilo:build && opennextjs-cloudflare preview",
+    "kilo:preview:verify": "pnpm run kilo:build && node scripts/test-kilo-runtime.mjs",
+    "kilo:dry-run": "pnpm run kilo:build && wrangler deploy --dry-run",
+    "kilo:deploy": "node scripts/kilo-deploy.mjs",
+    "kilo:verify": "CTS_DEPLOYMENT_RUNTIME=kilo-deploy REQUIRE_SHARED_PERSISTENCE=1 REQUIRE_FRESH_CONTINUITY=1 bash scripts/post-deploy-verify.sh",
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "deploy:local": "vercel",
     "deploy:prod": "vercel --prod",
     "prebuild": "node scripts/verify-source-syntax.mjs && rm -rf \"${NEXT_DIST_DIR:-.next}\"",
@@ -44,10 +54,15 @@
     "test:prod-soak": "node scripts/verify-prod-soak.mjs",
     "scheduler:minute": "node scripts/run-minute-scheduler.mjs",
     "scheduler:minute:once": "node scripts/run-minute-scheduler.mjs --once",
-    "test:scheduler:minute": "node scripts/test-minute-scheduler.mjs"
+    "test:scheduler:minute": "node scripts/test-minute-scheduler.mjs",
+    "test:kilo-runtime": "node scripts/test-kilo-runtime.mjs",
+    "security:scan": "node scripts/scan-release-secrets.mjs",
+    "docs:recreation": "node scripts/generate-recreation-manifests.mjs",
+    "docs:recreation:verify": "node scripts/verify-recreation-manifests.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
+    "@opennextjs/cloudflare": "1.20.1",
     "@radix-ui/react-accordion": "1.2.2",
     "@radix-ui/react-alert-dialog": "1.1.4",
     "@radix-ui/react-aspect-ratio": "1.1.1",
@@ -127,7 +142,8 @@
     "tsx": "^4.21.0",
     "tw-animate-css": "1.3.3",
     "typescript": "^5.8.3",
-    "vercel": "latest"
+    "vercel": "latest",
+    "wrangler": "4.86.0"
   },
   "engines": {
     "node": ">=20.16"

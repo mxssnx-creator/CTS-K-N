@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, resolve } from 'node:path'
 
 const file = 'next-env.d.ts'
 if (!existsSync(file)) process.exit(0)
@@ -31,7 +31,11 @@ const distDir = process.env.NEXT_DIST_DIR || '.next'
 const src = join(distDir, 'routes-manifest.json')
 const dest = join('.next', 'routes-manifest.json')
 
-if (distDir !== '.next' && existsSync(src)) {
+// Compare canonical paths, not the raw NEXT_DIST_DIR text. Build controllers
+// may express the default directory as `.next/` or an absolute path; copying a
+// file onto itself truncates it to zero bytes on some filesystems and leaves
+// OpenNext with an unreadable manifest.
+if (resolve(src) !== resolve(dest) && existsSync(src)) {
   try {
     mkdirSync('.next', { recursive: true })
     copyFileSync(src, dest)
@@ -40,4 +44,29 @@ if (distDir !== '.next' && existsSync(src)) {
     // Non-fatal: dev server will regenerate on first request.
     console.warn('[next-env] could not copy routes-manifest.json:', err.message)
   }
+}
+
+function isValidJson(filePath) {
+  if (!existsSync(filePath)) return false
+  try {
+    JSON.parse(readFileSync(filePath, 'utf8'))
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Standalone builds keep a second complete manifest. Recover only from that
+// build-owned copy and then validate again; never let a successful Next build
+// hand an empty/partial routing contract to OpenNext or a production preview.
+if (!isValidJson(src)) {
+  const standaloneManifest = join(distDir, 'standalone', '.next', 'routes-manifest.json')
+  if (resolve(standaloneManifest) !== resolve(src) && isValidJson(standaloneManifest)) {
+    copyFileSync(standaloneManifest, src)
+    console.warn(`[next-env] restored invalid routes-manifest.json from ${standaloneManifest}`)
+  }
+}
+
+if (!isValidJson(src)) {
+  throw new Error(`[next-env] ${src} is missing or is not valid JSON`)
 }
