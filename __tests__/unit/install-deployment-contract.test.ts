@@ -40,10 +40,11 @@ describe("production installation and Kilo deployment contract", () => {
   })
 
   it("keeps the canonical host installer fail-closed and complete", async () => {
-    const [installer, envExample, remoteRoute] = await Promise.all([
+    const [installer, envExample, remoteRoute, vercelConfig] = await Promise.all([
       readFile(path.join(process.cwd(), "scripts/install.sh"), "utf8"),
       readFile(path.join(process.cwd(), ".env.example"), "utf8"),
       readFile(path.join(process.cwd(), "app/api/install/remote-postgres/route.ts"), "utf8"),
+      readFile(path.join(process.cwd(), "vercel.json"), "utf8"),
     ])
     expect(installer).toContain('PNPM_VERSION="10.28.1"')
     expect(installer).toContain("--preflight-only")
@@ -63,6 +64,8 @@ describe("production installation and Kilo deployment contract", () => {
     expect(envExample).not.toMatch(/^[A-Z_][A-Z0-9_]*=[^\r\n#]*[ \t]+#/m)
     expect(envExample).toContain("ENCRYPTION_KEY=replace_me_encryption_key")
     expect(envExample).toContain("NEXT_PUBLIC_APP_URL=http://localhost:3002\n")
+    expect(JSON.parse(vercelConfig).buildCommand).toContain("pnpm run vercel-build")
+    expect(JSON.parse(vercelConfig).buildCommand).not.toContain("vercel-build-setup")
     execFileSync("bash", ["-n", "scripts/install.sh"], { cwd: process.cwd() })
     expect(await readFile(path.join(process.cwd(), "pnpm-workspace.yaml"), "utf8"))
       .toContain("onlyBuiltDependencies:")
