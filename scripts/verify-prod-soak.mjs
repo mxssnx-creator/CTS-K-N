@@ -309,6 +309,29 @@ async function main() {
     }
   }
 
+  // Cold bootstrap legitimately creates the fixed indication-set inventory.
+  // Once the final third begins, the key count must plateau: a per-cycle row
+  // writer previously grew this series from ~45k to ~70k in one minute.
+  const databaseKeySeries = memory.map((sample) => sample.databaseKeys)
+  const databaseStableSeries = databaseKeySeries.slice(Math.floor(databaseKeySeries.length * 2 / 3))
+  const databaseStableGrowth = databaseStableSeries.length > 0
+    ? Math.max(...databaseStableSeries) - Math.min(...databaseStableSeries)
+    : 0
+  const databaseStableGrowthLimit = Math.max(500, SYMBOLS.length * 50)
+  const databaseAbsoluteLimit = Math.max(5_000, SYMBOLS.length * 500)
+  if (databaseStableGrowth > databaseStableGrowthLimit) {
+    throw new Error(
+      `Database keys did not plateau after bootstrap: growth=${databaseStableGrowth} ` +
+      `limit=${databaseStableGrowthLimit}`,
+    )
+  }
+  if ((databaseKeySeries.at(-1) || 0) > databaseAbsoluteLimit) {
+    throw new Error(
+      `Database key count exceeds bounded ${SYMBOLS.length}-symbol budget: ` +
+      `${databaseKeySeries.at(-1)} > ${databaseAbsoluteLimit}`,
+    )
+  }
+
   const rssSeries = memory.map((sample) => sample.rssKb).filter((value) => value > 0)
   // Production's prehistoric replay is an intentional startup allocation
   // phase. Leak assessment begins only after engine cycles become productive;
@@ -364,6 +387,9 @@ async function main() {
     rssLeakSamples: leakSeries.length,
     databaseKeysStart: memory[0]?.databaseKeys || 0,
     databaseKeysEnd: memory.at(-1)?.databaseKeys || 0,
+    databaseStableGrowth,
+    databaseStableGrowthLimit,
+    databaseAbsoluteLimit,
     engineCyclesStart: memory[0]?.engineCycles || 0,
     engineCyclesEnd: memory.at(-1)?.engineCycles || 0,
     simulatedOrdersPeak: liveExecution.length ? Math.max(...liveExecution.map((sample) => sample.ordersSimulated)) : 0,

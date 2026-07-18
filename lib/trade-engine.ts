@@ -290,7 +290,8 @@ export class GlobalTradeEngineCoordinator {
     // handle. Re-acquiring with selfOwnedIfAlive would mint a replacement
     // token behind that manager's back; its next extender tick would then see
     // a mismatch and stop the otherwise healthy generation.
-    if (this.engineManagers.get(connectionId)?.isEngineRunning === true) {
+    const existingManager = this.engineManagers.get(connectionId)
+    if (existingManager?.isEngineRunning === true) {
       console.log(`[v0] [STARTUP LOCK] Engine already running locally for ${connectionId}, keeping existing owner token`)
       return true
     }
@@ -314,6 +315,19 @@ export class GlobalTradeEngineCoordinator {
       return false
     }
     this.startingEngines.add(connectionId)
+
+    // A stopped manager is a completed engine generation, not a reusable
+    // runtime shell. In particular, pause can stop a manager while its
+    // non-blocking prehistoric bootstrap is still unwinding. Reusing that
+    // object makes the new start see `prehistoricBootstrapInFlight=true`,
+    // skip its own bootstrap and report "running" with no productive timer.
+    // Drop the inactive generation only AFTER claiming the synchronous start
+    // guard: otherwise a concurrent caller could detach a manager whose
+    // start() is in progress and orphan a live engine outside this map.
+    if (this.engineManagers.get(connectionId) === existingManager && existingManager) {
+      this.engineManagers.delete(connectionId)
+      console.log(`[v0] [STARTUP LOCK] Discarded stopped engine generation for ${connectionId}`)
+    }
 
     try {
       const { initRedis, getConnection } = await import("@/lib/redis-db")
@@ -1502,7 +1516,16 @@ for (const connection of validConnections) {
         const manager = this.engineManagers.get(connectionId)
         if (manager?.isEngineRunning) {
           await manager.stop()
-          console.log(`[v0] [Coordinator] ✓ Stopped local engine for connection: ${connectionId}`)
+          // A stopped manager may still have an asynchronous prehistoric
+          // promise unwinding. Never leave that completed generation in the
+          // coordinator map for resume() to reuse (see startEngine guard).
+          if (this.engineManagers.get(connectionId) === manager) {
+            this.engineManagers.delete(connectionId)
+          }
+          console.log(`[v0] [Coordinator] ✓ Stopped and detached local engine for connection: ${connectionId}`)
+        } else if (manager && this.engineManagers.get(connectionId) === manager) {
+          this.engineManagers.delete(connectionId)
+          console.log(`[v0] [Coordinator] ✓ Detached inactive local engine for connection: ${connectionId}`)
         }
       } catch (error) {
         console.error(`[v0] [Coordinator] Failed to stop engine for connection ${connectionId}:`, error)
