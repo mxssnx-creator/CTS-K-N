@@ -373,6 +373,10 @@ The architecture assumed a separate long-lived engine-owner worker, but the repo
   per-Set calculations + GLOBALIZED stats/history correct (no per-Set split).
   Wired `combinedPosCounts`/`accumulatedSetKeys` through StrategySet → RealPosition
   → LivePosition. `live_net_target:{conn}` net remainder now also written for axis buckets.
+- [x] Extracted combine block to testable `combinePosCountAxisSets` private method;
+  added regression test (27 axis-coordination tests pass). Volume calcs verified
+  via unit + integration tests: 77 unit pass (1 pre-existing deploy-contract
+  failure unrelated), 15 integration pass, typecheck + lint clean.
 - [x] Block per-Set volume already derives from Base Set `blockConfig.size`
   (`buildBlockOverlays`); axis Sets now carry their own reduced volume ratio.
 - NOTE: deeper items in the request (live-stage pis partial open/close cycle
