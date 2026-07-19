@@ -237,9 +237,21 @@ export async function GET(
     // forms. Quick Start and migrations may only have flat HASH fields while
     // the Settings UI consumes `coordination_settings`; without this merge an
     // explicitly saved Block toggle could appear reset on reconnect.
-    const storedCoord = (
-      settings.coordination_settings ?? settings.coordinationSettings ?? {}
-    ) as Record<string, any>
+    //
+    // The PATCH route mirrors nested objects into the `connection_settings:{id}`
+    // hash via serializeConnectionSettingsHash(), which JSON-stringifies them
+    // (coordination_settings => "{...}"). That string must be parsed to an
+    // object BEFORE spreading: spreading a raw string splays it into a
+    // char-indexed object ({'0':'{','1':'"',...}) which breaks
+    // coordination.variants.* reads and makes the dialog save throw.
+    const parseIfString = (value: unknown): any => {
+      if (typeof value === "string") {
+        try { return JSON.parse(value) } catch { return undefined }
+      }
+      return value
+    }
+    const rawCoord = parseIfString(settings.coordination_settings) ?? parseIfString(settings.coordinationSettings)
+    const storedCoord = (rawCoord && typeof rawCoord === "object" ? rawCoord : {}) as Record<string, any>
     const storedVariants = (storedCoord.variants || {}) as Record<string, any>
     const firstDefined = (...values: unknown[]): unknown =>
       values.find((value) => value !== undefined && value !== null && value !== "")
