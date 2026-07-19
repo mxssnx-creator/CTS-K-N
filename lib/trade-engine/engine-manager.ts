@@ -178,7 +178,7 @@ function writePrehistoricGate(
  * Value comes from the `app_settings.cyclePauseMs` key in Redis, clamped to
  * [10, 200]. Default 50 ms.
  *
- * ── Live-settings contract ────────────────────────────────────────────
+ * ── Live-settings contract ────────���───────────────────────────────────
  * Cached in-memory so cycle scheduling never blocks on Redis I/O, BUT the
  * cache is tied to the global `settings_version` counter (bumped by every
  * write via `setAppSettings` / `bumpSettingsVersion`), not a wall-clock
@@ -3097,8 +3097,8 @@ export class TradeEngineManager {
       // Start-to-start cadence = liveSyncIntervalMs (default 200 ms), with
       // an independent post-completion breath. Scheduling by the remaining
       // gate time avoids accidentally adding the whole interval after work.
-      const intervalMs = timings.liveSyncIntervalMs ?? 2000  // Increased from 200ms to 2s to reduce API rate limiting
-      const cyclePauseMs = timings.livePositionsCyclePauseMs ?? 500  // Increased from 50ms to 500ms
+      const intervalMs = timings.liveSyncIntervalMs ?? 200
+      const cyclePauseMs = timings.livePositionsCyclePauseMs ?? 50
       const now = Date.now()
       const intervalRemaining = lastSyncStartedAt > 0
         ? Math.max(0, intervalMs - (now - lastSyncStartedAt))
@@ -4560,7 +4560,7 @@ export class TradeEngineManager {
 
   // ───���─────────────────────────────────────────────────���──────────────
   //  Live settings reload
-  // ────��───────────���───────────────────────────────────────────────────
+  // ────��───────────���─────────────────────────────────────��─────────────
 
   /**
    * Starts the per-connection settings watcher. This is event-based:
