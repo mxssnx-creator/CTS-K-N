@@ -279,7 +279,7 @@ describe("strategy position-count axis coordination", () => {
   })
 
   test("combines hedge-netted pos-count axis Sets into one live order per direction with summed volume", () => {
-    const coordinator = new StrategyCoordinator("combine-pis") as any
+    const coordinator = new StrategyCoordinator("combine-pos") as any
     const longA = {
       setKey: "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong",
       parentSetKey: "BTCUSDT:direction:long",

@@ -6808,7 +6808,7 @@ export class StrategyCoordinator {
     // The Real-stage tuner walks `set.entries` to mutate sizeMultiplier /
     // leverage per-cycle. Axis Sets now carry one synthetic representative
     // entry so the tuner fires and variant aggregates count correctly.
-    // Per spec ("ongoing continuous count of Pis to be added, counted
+    // Per spec ("ongoing continuous count of Pos to be added, counted
     // onto the new sets") each axis Set gets ONE faithful pos-coord
     // projection inherited from the parent Base default — flagged with
     // `#axis-synth` so downstream consumers can recognise it.
@@ -6894,7 +6894,7 @@ export class StrategyCoordinator {
                 // and changed every cycle, preventing cache hits.
                 const synthEntry: StrategySetEntry = {
                   id: `${parentKey}#axis:${axisKey}#axis-synth`,
-                  // Pis-count Sets trade at the configured pos-counts volume
+                  // Pos-count Sets trade at the configured pos-counts volume
                   // ratio (default 0.05) — a fraction of the Base volume.
                   sizeMultiplier: posCountsVolumeRatio,
                   leverage: 1,
@@ -6923,7 +6923,7 @@ export class StrategyCoordinator {
                     axisKey,
                     outcome,
                   },
-                  // Pis-count Sets carry their reduced volume ratio for Live dispatch.
+                  // Pos-count Sets carry their reduced volume ratio for Live dispatch.
                   posCountsVolumeRatio,
                   trailingProfile: baseDefault.trailingProfile,
                   ...(baseDefault.prevPos && { prevPos: baseDefault.prevPos }),
