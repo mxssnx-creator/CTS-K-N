@@ -8,6 +8,7 @@ import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { getMaxLeverageForExchange } from "@/lib/leverage-policy"
 import type { MainPosition } from "./main-stage"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { STAGE_2_2_MAX_LONG_POSITIONS, STAGE_2_2_MAX_SHORT_POSITIONS, MIN_PROFIT_FACTOR, MAX_DRAWDOWN_TIME_MS } from "@/lib/constants"
 
 const LOG_PREFIX = "[v0] [RealPositionStage]"
 
@@ -383,7 +384,7 @@ function createRealPosition(
       consistencyRatio: ratios.consistency,
     },
     status: "ready",
-    // ── Phase 2: Variant Lineage & Strategy Type ──────────────────────────
+    // ── Phase 2: Variant Lineage & Strategy Type ──────────────────────���───
     // Carries the StrategySet's variant type, strategy classification, axis windows,
     // and size multiplier so the live executor applies correct position sizing.
     // 

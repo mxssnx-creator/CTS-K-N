@@ -6,6 +6,7 @@ import { getRedisClient, initRedis } from "@/lib/redis-db"
 import type { ExchangeConnection } from "@/lib/types"
 import type { IndicationSignal } from "./indication-stage"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { STAGE_1_MAX_LONG_POSITIONS, STAGE_1_MAX_SHORT_POSITIONS } from "@/lib/constants"
 
 const LOG_PREFIX = "[v0] [BasePositionStage]"
 
@@ -38,8 +39,9 @@ export async function generateBasePositions(
 ): Promise<BasePosition[]> {
   await initRedis()
   const client = getRedisClient()
-  const maxLong = config.maxLongPositions || 1
-  const maxShort = config.maxShortPositions || 1
+  // Use stage configuration constants as defaults, allow override via config
+  const maxLong = config.maxLongPositions ?? STAGE_1_MAX_LONG_POSITIONS
+  const maxShort = config.maxShortPositions ?? STAGE_1_MAX_SHORT_POSITIONS
   const basePositions: BasePosition[] = []
 
   console.log(
