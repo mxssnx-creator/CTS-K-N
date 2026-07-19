@@ -1,9 +1,21 @@
 /**
- * Volume Calculator (TDZ fix: accountBalance declared before balanceCap block)
- * Calculates position volume based on base volume factor, leverage, and risk management
- * Calculates position volume ONLY at Exchange level when actual orders are executed
- * This calculator is ONLY used by ExchangePositionManager
- * Base/Main/Real pseudo positions do NOT use volume - they use counts and ratios
+ * Volume Calculator - Ratio-Based System
+ * 
+ * Calculates position volume based on ratio multipliers where ratio 1.0 = system default
+ * 
+ * RATIO-BASED SYSTEM:
+ *   - Ratio 1.0 (default): Base volume for live trading (system internal default)
+ *   - Ratio > 1.0: Higher volumes for strategy evaluations and optimizations
+ *   - Ratio < 1.0: Lower volumes for conservative testing
+ *   - Live exchange volume = base_notional * ratio
+ *   - Strategy internal calculations use higher ratios
+ * 
+ * Features:
+ *   - Position volume calculated based on base volume factor, leverage, and risk management
+ *   - Volume calculated at Exchange level when actual orders are executed
+ *   - ONLY used by ExchangePositionManager
+ *   - Base/Main/Real pseudo positions use counts and ratios (no absolute volumes)
+ *   - Per-engine volume factors (main_volume_factor, preset_volume_factor) applied to live orders
  * 
  * Redis-native: All data stored in Redis via redis-db
  */
@@ -26,6 +38,11 @@ interface VolumeCalculationParams {
 
   // ── LIVE-only engine factor (spec: pseudo positions are ratio-only) ──
   //
+  // RATIO-BASED VOLUME SYSTEM:
+  //   - System internal default ratio = 1.0 (identity, no multiplier)
+  //   - Live exchange volume = base_notional * ratio * engine_factor
+  //   - Strategy internal calcs can use higher ratios for optimization
+  //
   // Which Trade Engine is asking for sizing? Determines which volume-
   // factor multiplier (if any) is applied to the LIVE notional.
   //
@@ -41,6 +58,10 @@ interface VolumeCalculationParams {
   tradeMode?: "main" | "preset"
 
   // Volume scaling factors applied at the LIVE-EXECUTION layer only.
+  // These are RATIO MULTIPLIERS where:
+  //   - 1.0 = system baseline (no scaling from engine factor)
+  //   - >1.0 = higher volume for aggregated/optimized orders
+  //   - <1.0 = lower volume for conservative testing
   // Live-engine factors default to the canonical minimum 0.1 when missing
   // or invalid. Bounded to [0.1, 10] inside `calculatePositionVolume` so a misconfigured
   // setting can never blow out a live order to 100× the intended size.
@@ -50,6 +71,7 @@ interface VolumeCalculationParams {
   // Applied after liveEngineFactor; absent/undefined → 1.0 (no scaling).
   // Clamped to [0.1, 5] — narrower than engine factor's [0.1, 10] since
   // this comes from automated variantProfiles, not operator overrides.
+  // RATIO-based: 1.0 = no variant scaling, >1 = larger, <1 = smaller
   sizeMultiplier?: number
 }
 
@@ -201,11 +223,21 @@ export class VolumeCalculator {
 
     // ── Resolve the engine-specific volume factor (Live-only) ──────
     //
+    // RATIO-BASED SYSTEM:
+    //   - Default ratio = 1.0 (system internal baseline, no scaling)
+    //   - Live orders = base_notional * liveEngineFactor * variantMult
+    //   - Strategy calcs = pseudo positions use ratio-only (no absolute volume)
+    //
     // Only applied when the CALLER explicitly identifies as a Live trade
     // engine via `tradeMode`. The Strategy stack (Base/Main/Real pseudo
     // positions) never sets `tradeMode`, so it always sees a 1.0
     // identity multiplier here — pseudo positions stay strictly ratio-based per
     // spec ("at Strategies, pseudo pos use ratios for volume calcs").
+    //
+    // Ratio multipliers:
+    //   - 1.0 = identity (default, no engine scaling)
+    //   - >1.0 = higher volumes for aggregation and optimization
+    //   - <1.0 = lower volumes for conservative sizing
     //
     // Bounds: [0.1, 10]. A misconfigured 0 or negative collapses the
     // position to zero (the universal $5 floor would clamp back up but
