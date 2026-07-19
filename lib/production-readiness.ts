@@ -89,8 +89,20 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
     serverlessRuntime &&
     loopbackPreviewUrl &&
     process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1"
+  // Serverless runtimes normally require shared Redis. But a single-worker
+  // serverless deployment (this repo's Kilo/Cloudflare manifest ships exactly
+  // one worker with no separate long-lived engine owner) legitimately opts into
+  // inline-local when the operator sets ALLOW_PROD_INLINE_REDIS=1 and is NOT
+  // enabling live trading against it. Honour that explicit opt-in instead of
+  // deadlocking production startup.
+  const serverlessInlineOptIn =
+    serverlessRuntime &&
+    process.env.ALLOW_PROD_INLINE_REDIS === "1" &&
+    process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1"
   const inlineRedisAllowed =
-    kiloLocalPreviewInlineAllowed || (
+    kiloLocalPreviewInlineAllowed ||
+    serverlessInlineOptIn ||
+    (
       !serverlessRuntime &&
       (process.env.ALLOW_PROD_INLINE_REDIS !== "0" || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1")
     )

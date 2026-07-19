@@ -168,6 +168,42 @@ export class GlobalTradeEngineCoordinator {
   }
 
   /**
+   * True when no other worker currently owns a fresh engine heartbeat. Used by
+   * the serverless/Cloudflare production path: when a deployment ships a single
+   * serverless worker with no separate long-lived engine owner, that worker
+   * must take ownership itself instead of staying permanently queued-only.
+   *
+   * An absent external owner is inferred from:
+   *   • no fresh global trade_engine:global worker heartbeat from another pid, and
+   *   • no fresh per-connection processor heartbeat for any assigned connection.
+   * If any fresh heartbeat exists we report an owner is present so a genuine
+   * external owner is never usurped.
+   */
+  async hasNoExternalEngineOwner(): Promise<boolean> {
+    try {
+      const { initRedis, getRedisClient, getAssignedAndEnabledConnections } = await import("@/lib/redis-db")
+      const { isProcessorHeartbeatFresh } = await import("@/lib/engine-heartbeat")
+      await initRedis()
+      const client = getRedisClient()
+      const globalState = (await client.hgetall("trade_engine:global")) as Record<string, string> | null
+      const workerHeartbeatAt = Number(globalState?.last_heartbeat_at || 0)
+      const workerFresh = workerHeartbeatAt > 0 && Date.now() - workerHeartbeatAt < 90_000
+      if (workerFresh) return false
+      const connections = await getAssignedAndEnabledConnections().catch(() => [] as any[])
+      for (const conn of connections) {
+        const id = String(conn?.id || "")
+        if (!id) continue
+        if (await isProcessorHeartbeatFresh(id).catch(() => false)) return false
+      }
+      return true
+    } catch {
+      // When we cannot determine ownership, be conservative and assume an owner
+      // exists elsewhere so we do not double-start processing.
+      return false
+    }
+  }
+
+  /**
    * Redis `trade_engine:global.status` is the operator-intent source of truth.
    * Connection engines may only be started/restarted while the global
    * coordinator is explicitly enabled.  This prevents settings saves,
@@ -249,22 +285,38 @@ export class GlobalTradeEngineCoordinator {
     const forceLocalTakeover = options.forceLocalTakeover === true || config.allowInProcessStart === true
     const explicitForegroundAllowed = hasExplicitServerlessForegroundOptIn()
 
+    const engineOwnerWorker = process.env.CTS_ENGINE_OWNER_WORKER === "1"
     if (process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1" || process.env.NEXT_RUNTIME === "edge") {
-      console.warn(
-        `[v0] [Coordinator] startEngine(${connectionId}) skipped — in-process trade engine runtime is disabled or running on edge.`,
-      )
-      return false
+      if (!engineOwnerWorker) {
+        console.warn(
+          `[v0] [Coordinator] startEngine(${connectionId}) skipped — in-process trade engine runtime is disabled or running on edge.`,
+        )
+        return false
+      }
     }
 
     const isServerlessWorker = isServerlessDeploymentRuntime()
-    if (isServerlessWorker && !explicitForegroundAllowed) {
-      console.warn(
-        `[v0] [Coordinator] startEngine(${connectionId}) skipped — serverless request workers are queued-only without explicit foreground worker flags. Leaving start request queued for a long-lived owner.`,
-      )
-      return false
-    }
+    // SERVERLESS OWNER TAKEOVER: when no external engine owner holds a fresh
+    // heartbeat, this serverless/Cloudflare worker IS the owner (the
+    // production manifests deploy a single worker with no separate owner, and
+    // flag it with CTS_ENGINE_OWNER_WORKER=1). It may then attach the engine
+    // for the lifetime of its invocation; the once-per-minute continuity cron
+    // re-attaches it so processing continues. forceLocalTakeover alone does
+    // NOT bypass this guard — an API request worker must never silently claim
+    // durable engine ownership without either the explicit foreground opt-in,
+    // the owner-worker flag, or proof that no external owner exists.
+    const serverlessOwnsEngine =
+      engineOwnerWorker ||
+      (isServerlessWorker && !explicitForegroundAllowed && (await this.hasNoExternalEngineOwner()))
 
-    if (!forceLocalTakeover && !this.canOwnEngineRuntime()) {
+    if (isServerlessWorker && !explicitForegroundAllowed) {
+      if (!serverlessOwnsEngine) {
+        console.warn(
+          `[v0] [Coordinator] startEngine(${connectionId}) skipped — serverless request workers are queued-only without explicit foreground worker flags or an absent external owner. Leaving start request queued for a long-lived owner.`,
+        )
+        return false
+      }
+    } else if (!forceLocalTakeover && !this.canOwnEngineRuntime()) {
       console.warn(
         `[v0] [Coordinator] startEngine(${connectionId}) skipped — queued-only in this production API worker. Leaving start request queued.`,
       )
