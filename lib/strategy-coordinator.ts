@@ -162,6 +162,12 @@ export interface StrategySet {
   blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
   /**
+   * Position-Count (Pis) Sets volume ratio applied to this Main-stage
+   * additional pos-count Set. Carried through Real/Live so Live dispatch
+   * sizes the open exchange order at this fraction of the base volume.
+   */
+  posCountsVolumeRatio?: number
+  /**
    * ── Position-count axis windows that this Set satisfies ────────────
    *
    * Spec: *"the created additional related Sets based on Pos counts.. step 1
@@ -1227,22 +1233,11 @@ export class StrategyCoordinator {
     blockActiveRealEnabled: boolean
     blockActiveLiveEnabled: boolean
     /**
-     * ── Stage-validation min-position thresholds (operator spec) ──────
-     *
-     * `mainEvalPosCount` — minimum `entryCount` a Base Set must contain
-     *   before its profitFactor + drawdownTime are evaluated for
-     *   promotion to Main. Below this threshold the Set is SKIPPED at
-     *   Main (not validated, not counted as passed). Range 5..50 step 5,
-     *   default 15.
-     *
-     * `realEvalPosCount` — same semantics for Main → Real. Default 10.
-     *
-     * Skipping (rather than failing) is intentional: low-position Sets
-     * naturally re-enter the validation pool on subsequent cycles once
-     * enough pseudo-positions have closed. This matches the operator's
-     * "if less pos exist in set then do not validate" requirement and
-     * preserves count integrity (no false-negative `passed_sets` writes).
+     * Position-Count (Pis) Sets volume ratio — applied ONLY to the
+     * additional pos-count (axis) Sets created at Main stage so they trade
+     * at a fraction of the base volume. Default 0.05 (0.01–0.25).
      */
+    posCountsVolumeRatio: number
     mainEvalPosCount: number
     realEvalPosCount: number
   } = {
@@ -1266,6 +1261,12 @@ export class StrategyCoordinator {
     blockPauseCountRatio: 1.0,
     blockActiveRealEnabled: true,
     blockActiveLiveEnabled: true,
+    /**
+     * Position-Count (Pis) Sets volume ratio. Applied ONLY to the additional
+     * pos-count (axis) Sets created at Main stage so they trade at a fraction
+     * of the base volume. Default 0.05 (range 0.01–0.25 step 0.01).
+     */
+    posCountsVolumeRatio: 0.05,
     mainEvalPosCount: 15,
     realEvalPosCount: 10,
   }
@@ -1833,6 +1834,14 @@ export class StrategyCoordinator {
       }
       this._coordinationSettings.blockActiveRealEnabled = bool(s.blockActiveRealEnabled, true)
       this._coordinationSettings.blockActiveLiveEnabled = bool(s.blockActiveLiveEnabled, true)
+
+      // ── Position-Count (Pis) Sets volume ratio ───────────────
+      // Applied only to the Main-stage additional pos-count (axis) Sets so
+      // they trade at a fraction of the base volume. Default 0.05.
+      const pcvr = Number(s.posCountsVolumeRatio)
+      if (Number.isFinite(pcvr) && pcvr > 0) {
+        this._coordinationSettings.posCountsVolumeRatio = Math.max(0.01, Math.min(0.25, Number(pcvr.toFixed(2))))
+      }
     } catch {
       // use last-known values on any Redis error
     }
@@ -5946,6 +5955,12 @@ export class StrategyCoordinator {
                     blockCount: set.blockCount,
                     blockVolumeIncrementRatio: set.blockVolumeIncrementRatio,
                     blockCalculatedVolumeMultiplier: set.blockCalculatedVolumeMultiplier,
+                    // Position-Count (Pis) Sets volume ratio — forwarded so the
+                    // Real position (and Live exchange order) sizes the additional
+                    // Main-stage axis Sets at this reduced fraction of base volume.
+                    ...(set.posCountsVolumeRatio && set.posCountsVolumeRatio > 0
+                      ? { posCountsVolumeRatio: set.posCountsVolumeRatio }
+                      : {}),
                     // ── Set-config propagation to Live ───������─────────────────
                     // Forward the Set's trailing profile and historical
                     // performance snapshot into the RealPosition so that
@@ -6677,6 +6692,11 @@ export class StrategyCoordinator {
     if (!axes.prev.enabled && !axes.last.enabled && !axes.cont.enabled && !axes.pause.enabled) {
       return axisSets
     }
+    // Position-Count (Pis) Sets volume ratio: the additional pos-count axis
+    // Sets created at Main stage trade at this fraction of the base volume
+    // (default 0.05) so they never inflate exposure like the Base/Default
+    // Sets. Applied to the synthetic representative entry's sizeMultiplier.
+    const posCountsVolumeRatio = clampNumber(this._coordinationSettings.posCountsVolumeRatio ?? 0.05, 0.01, 0.25)
     const recentPnls = (baseDefault.prevPos?.recentPnls || [])
       .map(Number)
       .filter(Number.isFinite)
@@ -6791,7 +6811,9 @@ export class StrategyCoordinator {
                 // and changed every cycle, preventing cache hits.
                 const synthEntry: StrategySetEntry = {
                   id: `${parentKey}#axis:${axisKey}#axis-synth`,
-                  sizeMultiplier: 1,
+                  // Pis-count Sets trade at the configured pos-counts volume
+                  // ratio (default 0.05) — a fraction of the Base volume.
+                  sizeMultiplier: posCountsVolumeRatio,
                   leverage: 1,
                   positionState: `axis:p${prev}|l${last}|c${cont}|u${pause}|${outcome}|${dir}`,
                   profitFactor: inheritedPF,
@@ -6818,6 +6840,8 @@ export class StrategyCoordinator {
                     axisKey,
                     outcome,
                   },
+                  // Pis-count Sets carry their reduced volume ratio for Live dispatch.
+                  posCountsVolumeRatio,
                   trailingProfile: baseDefault.trailingProfile,
                   ...(baseDefault.prevPos && { prevPos: baseDefault.prevPos }),
                 }

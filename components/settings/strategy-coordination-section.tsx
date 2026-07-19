@@ -84,6 +84,15 @@ export interface CoordinationSettings {
   // encoding and are validated again by the engine before Base fan-out.
   trailingVariants: string[]
 
+  /**
+   * ── Position-Count (Pis) Sets volume ratio ───────────────────────
+   * Independent volume ratio applied ONLY to the pos-count (axis) Sets
+   * created at Main stage. Kept deliberately small (default 0.05) so
+   * the additional axis-related Sets trade at a fraction of the base
+   * volume. Range 0.01..0.25 step 0.01.
+   * Backed by `connection_settings:{conn}.posCountsVolumeRatio`.
+   */
+  posCountsVolumeRatio: number
   // DCA is a sequential, price-triggered add-on ladder. Every volume is
   // relative to the confirmed initial position quantity (never the growing
   // aggregate), preventing exponential exposure growth.
@@ -195,6 +204,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockActiveRealEnabled: true,
   blockActiveLiveEnabled: true,
   trailingVariants: [...DEFAULT_TRAILING_VARIANTS],
+  posCountsVolumeRatio: 0.05,
   dcaMaxSteps: DEFAULT_DCA_PROFILE.maxSteps,
   dcaStepVolumeMultipliers: [...DEFAULT_DCA_PROFILE.stepVolumeMultipliers],
   dcaStepDistancesPct: [...DEFAULT_DCA_PROFILE.stepDistancesPct],
@@ -1010,6 +1020,58 @@ export function StrategyCoordinationSection({
                 {value.blockPauseCountRatio.toFixed(1)}×
               </span>
             </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Position-Count (Pis) Sets Volume Ratio card ─────────────
+          Operator spec: lower the volume for the pis-counts (axis) Sets
+          to ratio 0.05. Slider 0.01–0.25 step 0.01, default 0.05.
+          Applies ONLY to the Main-stage additional pos-count (axis) Sets,
+          never to the Base/Default/Block volumes. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <CardTitle className="text-sm">
+                Position-Count (Pis) Sets Volume Ratio
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Volume ratio applied only to the additional pos-count Sets
+                created at Main stage. Kept small so the axis-related Sets
+                trade at a fraction of the base volume.
+              </CardDescription>
+            </div>
+            <Badge variant="outline" className="text-[10px] tabular-nums">
+              0.01–0.25
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="rounded-lg border border-border/60 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <Label className="text-sm font-semibold">Pis Volume Ratio</Label>
+              <span className="text-xs font-semibold tabular-nums w-12 text-right">
+                {value.posCountsVolumeRatio.toFixed(2)}×
+              </span>
+            </div>
+            <div className="flex items-center gap-3 pt-1">
+              <Slider
+                value={[value.posCountsVolumeRatio]}
+                min={0.01}
+                max={0.25}
+                step={0.01}
+                onValueChange={(v) =>
+                  onChange({ ...value, posCountsVolumeRatio: Number(v[0].toFixed(2)) })
+                }
+                className="flex-1"
+              />
+            </div>
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              Axis (position-count) Sets only. Base, Default and Block
+              Sets keep their own independent volume ratios. Engine clamps to
+              0.01–0.25 even if the UI is bypassed.
+            </p>
           </div>
         </CardContent>
       </Card>

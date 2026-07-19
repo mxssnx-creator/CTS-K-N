@@ -338,7 +338,11 @@ function createRealPosition(
   const sizeMultiplier = 
     strategyType === "adjust" && variantSource?.baseMultiplier
       ? variantSource.baseMultiplier  // Block/DCA: use computed volume-ratio scaled multiplier
-      : 1.0  // Standard: use 1.0, continuousCount scaling applied separately
+      // Position-Count (Pis) Sets: the additional Main-stage axis Sets carry
+      // their own reduced volume ratio so they trade at a fraction of base.
+      : variantSource?.posCountsVolumeRatio && variantSource.posCountsVolumeRatio > 0
+        ? variantSource.posCountsVolumeRatio
+        : 1.0  // Standard: use 1.0, continuousCount scaling applied separately
   const setVariant = variantSource?.variant || variantSource?.setVariant || "default"
   const axisWindows = variantSource?.axisWindows
   const setKey = variantSource?.setKey

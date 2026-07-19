@@ -112,6 +112,10 @@ interface Settings {
   stageMinPosCountMain: number  // Main→Real  (coord default 15)
   stageMinPosCountReal: number  // Real→Live  (coord default 10)
 
+  // Position-Count (Pis) Sets volume ratio — applied ONLY to the additional
+  // pos-count axis Sets created at Main stage. Default 0.05 (range 0.01–0.25).
+  posCountsVolumeRatio: number
+
   mainEngineIntervalMs: number
   presetEngineIntervalMs: number
   activeOrderHandlingIntervalMs: number
@@ -526,6 +530,9 @@ const initialSettings: Settings = {
   stageMinPosCountBase: 0,   // 0 = coordinator default (15)
   stageMinPosCountMain: 0,   // 0 = coordinator default (15)
   stageMinPosCountReal: 0,   // 0 = coordinator default (10)
+
+  // Position-Count (Pis) Sets volume ratio (Main-stage axis Sets only).
+  posCountsVolumeRatio: 0.05,   // 0.01–0.25 step 0.01, default 0.05
 
   // Trade Engine Intervals (milliseconds)
   mainEngineIntervalMs: 100, // 50-1000ms, step 50, default 200ms

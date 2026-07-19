@@ -341,3 +341,33 @@ The architecture assumed a separate long-lived engine-owner worker, but the repo
 - Cron continuity runs healing sweep successfully; Start/Stop/Pause/Resume all work; settings PATCH + bingx test work.
 - `scripts/verify-prod-ui-max.mjs` passes (QuickStart 32 symbols, settings/volume hot-reload, main toggle, 4 global controls, status relationships, 0 real orders).
 - `bun typecheck`, `bun lint`, `bun test:unit` (494), `bun test:integration` (15) all green.
+
+## Session 2026-07-19 — strategy calc / volume / progress fixes
+
+- [x] Connection progress "symbols processed stuck 0/#" ROOT CAUSE fixed in
+  `lib/trade-engine/config-set-processor.ts`: the per-symbol progress writes
+  (skip/error/progressWrite paths) were gated behind `stillOwnsCurrentSelection()`
+  and early-returned when the epoch/symbol-selection mismatched, leaving the
+  `symbols_processed` hash at the run-start seed `0` while the total was shown.
+  Ownership now only gates STARTING work; completed work is always recorded.
+- [x] Added `posCountsVolumeRatio` (Position-Count / Pis Sets volume ratio),
+  default `0.05`, range `0.01–0.25` step `0.01`. Wired through:
+  `app/settings/page.tsx` Settings interface + default; `components/settings/tabs/
+  strategy-tab.tsx` Stage Evaluation Thresholds slider; `components/settings/
+  strategy-coordination-section.tsx` CoordinationSettings interface + default +
+  Pis Volume Ratio card; `components/settings/connection-settings-dialog.tsx`
+  read-through + per-connection persistence; `lib/strategy-coordinator.ts`
+  `_coordinationSettings` load/read + `expandAxisSets` applies it to the
+  synthetic axis-set entry `sizeMultiplier`; `lib/trade-engine/stages/real-stage.ts`
+  `createRealPosition` uses `posCountsVolumeRatio` for standard/axis sets;
+  propagated from axis Set → mainPos → RealPosition → Live dispatch.
+- [x] Lowered `VolumeCalculator` variant floor `0.1 → 0.01` so the 0.05
+  Pis ratio is honoured for the additional Main-stage axis Sets (was clamped up).
+- [x] Block per-Set volume already derives from Base Set `blockConfig.size`
+  (`buildBlockOverlays`); axis Sets now carry their own reduced volume ratio.
+- NOTE: deeper items in the request (live-stage pis partial open/close cycle
+  reconciliation, Main-stage pis-counts hedge-net DIFF display, and
+  per-variant/per-Set PnL separation in portfolio-analytics) were reviewed but
+  intentionally NOT changed this session: each requires multi-file domain edits
+  to a live trading engine with live-order risk and lacked a safe, verifiable
+  unit-level assertion. They need a dedicated follow-up with regression tests.

@@ -319,7 +319,10 @@ export class VolumeCalculator {
       const clampVariant = (raw: number | undefined): number => {
         const n = Number(raw)
         if (!Number.isFinite(n) || n <= 0) return 1
-        return Math.max(0.1, Math.min(5, n))
+        // Floor lowered to 0.01 to honour the Position-Count (Pis) Sets
+        // volume ratio (default 0.05) — a deliberate, operator-configured
+        // low-volume ratio for the additional Main-stage axis Sets.
+        return Math.max(0.01, Math.min(5, n))
       }
       const variantMult = clampVariant(sizeMultiplier)
 

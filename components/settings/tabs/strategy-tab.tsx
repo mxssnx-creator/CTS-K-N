@@ -877,7 +877,28 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                         </span>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        0 = coordinator default (10)
+                          0 = coordinator default (10)
+                        </p>
+                      </div>
+
+                    {/* Position-Count (Pis) Sets Volume Ratio */}
+                    <div className="space-y-2 md:col-span-3">
+                      <Label>Position-Count (Pis) Sets Volume Ratio</Label>
+                      <div className="flex items-center gap-3">
+                        <Slider
+                          min={0.01}
+                          max={0.25}
+                          step={0.01}
+                          value={[Number(settings.posCountsVolumeRatio ?? 0.05)]}
+                          onValueChange={([v]) => handleSettingChange("posCountsVolumeRatio", Number(v.toFixed(2)))}
+                          className="flex-1"
+                        />
+                        <span className="text-sm font-semibold w-14 text-right">
+                          {(Number(settings.posCountsVolumeRatio ?? 0.05)).toFixed(2)}×
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Volume ratio for Main-stage additional pos-count Sets only (0.01–0.25).
                       </p>
                     </div>
                   </div>

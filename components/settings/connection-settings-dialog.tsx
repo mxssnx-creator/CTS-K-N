@@ -517,6 +517,7 @@ export function ConnectionSettingsDialog({
             blockPauseCountRatio: typeof coord.blockPauseCountRatio === "number" ? coord.blockPauseCountRatio : DEFAULT_COORDINATION_SETTINGS.blockPauseCountRatio,
             blockActiveRealEnabled: typeof coord.blockActiveRealEnabled === "boolean" ? coord.blockActiveRealEnabled : DEFAULT_COORDINATION_SETTINGS.blockActiveRealEnabled,
             blockActiveLiveEnabled: typeof coord.blockActiveLiveEnabled === "boolean" ? coord.blockActiveLiveEnabled : DEFAULT_COORDINATION_SETTINGS.blockActiveLiveEnabled,
+            posCountsVolumeRatio: typeof coord.posCountsVolumeRatio === "number" && coord.posCountsVolumeRatio >= 0.01 && coord.posCountsVolumeRatio <= 0.25 ? coord.posCountsVolumeRatio : DEFAULT_COORDINATION_SETTINGS.posCountsVolumeRatio,
             trailingVariants: normalizeTrailingVariants(rawTrailing ?? DEFAULT_TRAILING_VARIANTS),
             dcaMaxSteps: dca.maxSteps,
             dcaStepVolumeMultipliers: dca.stepVolumeMultipliers,

@@ -337,14 +337,17 @@ export class ConfigSetProcessor {
         if (candles.length === 0) {
           console.log(`[v0] [ConfigSetProcessor] ⚠ no candles for ${symbol} — skipping`)
           symbolsWithoutData++
+          // Always count progress for work this instance performed; ownership
+          // only governs whether to START work, not whether to record it. A
+          // stale-selection event is logged but must NOT suppress the processed
+          // count (that caused the "0/#" stuck-progress bug).
           if (!(await stillOwnsCurrentSelection())) {
-            await logProgressionEvent(this.connectionId, "config_set_symbol_skipped_stale_selection", "info", `Ignoring stale prehistoric skip progress for ${symbol}`, {
+            await logProgressionEvent(this.connectionId, "config_set_symbol_skipped_stale_selection", "info", `Symbol ${symbol} skipped (selection no longer owned) but still counted toward progress`, {
               symbol,
               stage: "prehistoric",
               canonicalSymbolsTotal,
               staleSymbolsTotal: symbols.length,
             }).catch(() => {})
-            return
           }
           // CRITICAL ("0/N stuck" + stalled progress-bar fix): a symbol with
           // no prehistoric candles must STILL count toward the processed
@@ -465,7 +468,17 @@ export class ConfigSetProcessor {
         // distinct processed set was correct. SADD gives us an idempotent
         // "new symbol" signal, then SCARD becomes the displayed count.
         const progressWrite = (async () => {
-          if (!(await stillOwnsCurrentSelection())) return
+          // Ownership only decides whether to DO the work; the work this
+          // instance already performed must always be recorded so the
+          // displayed processed count can reach the total (fixes "0/#").
+          if (!(await stillOwnsCurrentSelection())) {
+            await logProgressionEvent(this.connectionId, "config_set_symbol_progress_stale_selection", "info", `Recording progress for ${symbol} though selection is no longer owned`, {
+              symbol,
+              stage: "prehistoric",
+              canonicalSymbolsTotal,
+              staleSymbolsTotal: symbols.length,
+            }).catch(() => {})
+          }
           const added = Number(await client.sadd(prehistoricSymbolsKey, symbol).catch(() => 0)) || 0
           await client.expire(prehistoricSymbolsKey, 86400).catch(() => 0)
           if (added > 0) {
@@ -583,14 +596,15 @@ export class ConfigSetProcessor {
       } catch (error) {
         console.error(`[v0] [ConfigSetProcessor] ✗ ${symbol}:`, error instanceof Error ? error.message : String(error))
         errors++
+        // Always count progress even when the selection is no longer owned;
+        // ownership gates STARTING work, not recording it (fixes stuck <100%).
         if (!(await stillOwnsCurrentSelection())) {
-          await logProgressionEvent(this.connectionId, "config_set_symbol_error_stale_selection", "info", `Ignoring stale prehistoric error progress for ${symbol}`, {
+          await logProgressionEvent(this.connectionId, "config_set_symbol_error_stale_selection", "info", `Symbol ${symbol} errored (selection no longer owned) but still counted toward progress`, {
             symbol,
             error: error instanceof Error ? error.message : String(error),
             canonicalSymbolsTotal,
             staleSymbolsTotal: symbols.length,
           }).catch(() => {})
-          return
         }
         // CRITICAL ("stuck below 100%" fix): a symbol that throws mid-process
         // must STILL count toward progress, otherwise the SCARD-derived
