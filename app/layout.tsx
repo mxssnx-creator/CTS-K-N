@@ -1,4 +1,4 @@
-import type { Metadata } from "next"
+import type { Metadata, Viewport } from "next"
 import "./globals.css"
 import { Providers } from "@/components/providers"
 import { IndicationGeneratorProvider } from "@/components/indication-generator-hook"
@@ -10,13 +10,21 @@ export const metadata: Metadata = {
   description: "Trading control",
 }
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  themeColor: "#1a1a2e",
+}
+
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning className="bg-background">
       <head>
         {/*
          * Kilo/OpenNext currently transforms the inline next-themes bootstrap
