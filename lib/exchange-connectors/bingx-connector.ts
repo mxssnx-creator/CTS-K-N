@@ -1498,7 +1498,7 @@ export class BingXConnector extends BaseExchangeConnector {
 
       let data = await this.safeJson(response)
 
-      // ── Timestamp-mismatch retry (code 100421 / 109400-timestamp) ──────
+      // ── Timestamp-mismatch retry (code 100421 / 109400-timestamp) ────�����─
       // The serial stuck-placed loop can span 20-30s; by the time the 3rd+
       // position calls cancelOrder the cached offset may have drifted just
       // past BingX's ±1000ms window and produces code 100421.  Re-sync once
@@ -3193,7 +3193,18 @@ export class BingXConnector extends BaseExchangeConnector {
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
-      this.logError(`✗ Failed to get open order: ${errorMsg}`)
+      // Suppress logging for expected transient errors: order already filled/cancelled/not found/timestamp mismatch
+      const isExpectedError =
+        errorMsg.includes("order does not exist") ||
+        errorMsg.includes("order not exist") ||
+        errorMsg.includes("code=109421") ||
+        errorMsg.includes("code=100421") ||
+        errorMsg.includes("timestamp")
+      
+      if (!isExpectedError) {
+        this.logError(`✗ Failed to get open order: ${errorMsg}`)
+      }
+      
       return {
         success: false,
         error: errorMsg,
@@ -3241,7 +3252,18 @@ export class BingXConnector extends BaseExchangeConnector {
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
-      this.logError(`✗ Failed to get order: ${errorMsg}`)
+      // Suppress logging for expected transient errors: order already filled/cancelled/not found/timestamp mismatch
+      const isExpectedError =
+        errorMsg.includes("order does not exist") ||
+        errorMsg.includes("order not exist") ||
+        errorMsg.includes("code=109421") ||
+        errorMsg.includes("code=100421") ||
+        errorMsg.includes("timestamp")
+      
+      if (!isExpectedError) {
+        this.logError(`✗ Failed to get order: ${errorMsg}`)
+      }
+      
       return {
         success: false,
         error: errorMsg,

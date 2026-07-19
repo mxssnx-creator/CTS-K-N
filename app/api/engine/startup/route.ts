@@ -7,12 +7,25 @@ import { NextRequest, NextResponse } from "next/server"
 import { TradeEngineManager } from "@/lib/trade-engine/engine-manager"
 import { getSettings, setSettings, initRedis } from "@/lib/redis-db"
 import { loadMarketDataForEngine } from "@/lib/market-data-loader"
+import { validateProductionStartup } from "@/lib/startup-validation"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
 
 export async function POST(request: NextRequest) {
   try {
+    // Run comprehensive startup validation
+    const validation = await validateProductionStartup()
+    if (!validation.passed) {
+      return NextResponse.json(
+        {
+          error: "Startup validation failed",
+          validation,
+        },
+        { status: 500 }
+      )
+    }
+
     await initRedis()
 
     const { symbols = [] } = await request.json()
