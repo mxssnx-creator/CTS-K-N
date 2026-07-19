@@ -55,12 +55,12 @@ export class RateLimiter {
       maxConcurrent: 5,
     },
     bingx: {
-      // BingX actual limits: 30 req/2min per IP during high activity (code 109429)
-      // Reduced conservatively to prevent rate limit errors and ensure stable trading.
-      // With 2s cycle intervals, 30 req/2min = 0.25 req/s steady-state, safe margin.
-      requestsPerSecond: 1,  // Reduced from 10 to prevent bursting
-      requestsPerMinute: 30,  // Hard cap to match observed BingX limit
-      maxConcurrent: 2,      // Reduced from 5 to allow lower throughput per cycle
+      // BingX exchange default rate limits
+      // Standard: 10 req/s, 600 req/min per IP
+      // Rate limiter handles queuing and backoff automatically
+      requestsPerSecond: 10,
+      requestsPerMinute: 600,
+      maxConcurrent: 5,
     },
     binance: {
       requestsPerSecond: 10,
