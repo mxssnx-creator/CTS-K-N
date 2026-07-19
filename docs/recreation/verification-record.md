@@ -1,4 +1,4 @@
-# Release verification record — 2026-07-18
+# Release verification record — 2026-07-19
 
 This record captures the final acceptance evidence for the Block PF/position
 count/DCA, deployment, installation, durability, and recreation handoff. All
@@ -10,7 +10,7 @@ executed.
 
 | Check | Result |
 | --- | --- |
-| Source base before handoff commit | `51f179fa12c13b5a0e57947454321c637f23f32b` on `main` |
+| Source base before this handoff commit | `7557195ee73e8e1081a4673f7670011c49581768` on `main` |
 | Validation host | Linux 6.12.47 x86_64; Node 24.14.0 |
 | Package manager | exact `pnpm 10.28.1` through Corepack |
 | Frozen dependency install | pass, offline, lockfile unchanged |
@@ -19,6 +19,7 @@ executed.
 | ESLint | pass |
 | Jest | 83 suites, 510 tests, 0 failures |
 | Next 15.5.18 optimized build | pass; 40 static pages generated |
+| Isolated `.next-prod` build | pass; custom-dist static generation serialized after reproducing/eliminating an `ENOTEMPTY` export cleanup race |
 | Release-tree secret scan | pass; 1,121 files inspected, 0 findings |
 | Redis schema | v81, sequential migration inventory |
 
@@ -46,19 +47,26 @@ executed.
 
 | Check | Result |
 | --- | --- |
-| Canonical independent-host preflight | pass; apt host, free port 45671, 37 GiB free disk, 21 GiB RAM |
+| Canonical independent-host preflight | pass; apt host, free port 45671, 44 GiB free disk, 21 GiB RAM |
 | Remote API route contract | pass; authentication, validation, disposable clone, preflight/install, seed transport, and auto/systemd/PM2 contract through the SSH boundary fixture; an additional real OpenSSH/key-auth loopback run cloned the pushed `main` and completed the canonical non-mutating preflight over the SSH protocol |
 | Portable minute scheduler | pass; both required paths, 60,000 ms interval |
 | Clean reconstruction/Vercel builder | pass from an empty Git archive with no `node_modules`; exact pnpm 10.28.1 restored 1,272 locked packages and provider packaging produced 149 routes, 67 function entries, 116 valid JSON manifests, and no invalid JSON |
 | Full Vercel builder | pass locally; provider simulation reproduced and eliminated read-only `corepack enable` EROFS, Next 15's zero-byte `export-marker.json`, and stale `export-detail.json` false-static classification; dynamic/API functions are retained |
 | OpenNext 1.20.1 build | pass; generated `.open-next/worker.js` |
-| Wrangler 4.86.0 dry-run | pass; 808 assets, 28,793.40 KiB upload / 4,272.51 KiB gzip |
-| Local Workerd Kilo runtime | pass; health, schema v81, Kilo ownership, admin auth, remote-owner fail-closed route, scheduled continuity and live recovery |
+| Wrangler 4.86.0 dry-run | pass; 811 assets, 28,797.85 KiB upload / 4,269.19 KiB gzip |
+| Local Workerd Kilo runtime | pass; health, schema v81, 72 served UI scripts, Block-PF/volume changes, external-owner queue, all global/connection state switches, live fail-closed, admin auth, remote-owner fail-closed route, scheduled continuity and live recovery |
 | Credential-less `kilo:deploy` | expected fail-closed before upload; 10 required runtime/owner/controller inputs absent |
 
 OpenNext/Wrangler emitted their documented experimental `secrets`-field and
 generated direct-eval bundling warnings. The bundle, Wrangler dry-run, and real
 Workerd route/scheduled-event execution all completed successfully.
+
+The Workerd state-switch run found and fixed three Kilo-specific truthfulness
+issues: settings recoordination no longer reports a local apply without an
+attached manager; status no longer treats coordinator intent as runtime proof;
+and global Start/Resume now accepts Redis-parsed Boolean flags, allocates a new
+switch generation, and durably queues each enabled connection for the distinct
+long-lived owner instead of claiming that a request worker started it.
 
 No genuine external remote host was supplied, and the validation container has
 no systemd runtime, PM2 runtime, Docker, or Podman target. Therefore the test
@@ -80,22 +88,22 @@ attempted after preflight rejected those missing inputs.
 
 ## Production/live behavior evidence
 
-The maximum production preview completed a 240,130 ms soak with 32 symbols,
+The final maximum production preview completed a 240,123 ms soak with 32 symbols,
 120 rounds, 1,320 API requests, and 400 engine cycles. Progress advanced from
-835 to 12,179; 64 simulated orders/positions were created and zero real orders
-were placed. Database keys grew from 655 to 6,996, with a stable-window delta
-of 185 (budget 1,600) and absolute count below 16,000. Steady p95 latency was
-126 ms (budget 1,000 ms). The UI test rendered dashboard/assets/info for all 32
-symbols, completed QuickStart in 11,478 ms, and exercised settings/volume hot
+855 to 11,970; 64 simulated orders/positions were created and zero real orders
+were placed. Database keys grew from 651 to 7,171, with a stable-window delta
+of 236 (budget 1,600) and absolute count below 16,000. Steady p95 latency was
+127 ms (budget 1,000 ms). The UI test rendered dashboard/assets/info for all 32
+symbols, completed QuickStart in 8,500 ms, and exercised settings/volume hot
 reload, connection toggles, pause/resume/stop/start, and relationship views.
 Restart identity, simulation persistence, snapshot concurrency, and recovery
-checks passed. Peak RSS was 2,027,232 KiB and remained inside the verifier's
-warm-baseline budget.
+checks passed. Peak RSS was 1,784,804 KiB, ended at 1,465,828 KiB, and passed
+the verifier's warm-sample leak check.
 
 The final public BingX read-only stress fetched 6,400 candles for 32 symbols
 and ran six ticker rounds: 39 attempts, zero authenticated requests, zero order
-requests, zero retries, zero timeouts, 710.9 ms average / 2,917.4 ms maximum
-latency, and +2.03 MiB heap.
+requests, zero retries, zero timeouts, 924.6 ms average / 4,408.6 ms maximum
+latency, and +2.02 MiB heap.
 
 A real exchange open/protect/close-flat smoke was not executed because no
 authorized credentials or initial account-flat proof was available. This is a

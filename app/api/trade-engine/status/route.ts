@@ -101,10 +101,13 @@ export async function GET() {
       })
     }
 
-    // Only a local coordinator manager proves in-process runtime liveness here.
-    // Per-connection processor heartbeats are folded into the final response
-    // after connection statuses are loaded below.
-    const hasRuntimeProof = coordinatorRunning
+    // Only an attached local engine manager proves in-process runtime
+    // liveness here. coordinator.isRunning() is the coordinator's local
+    // operator-intent flag and can be true immediately after Resume even when
+    // this Kilo/serverless request worker is deliberately forbidden from
+    // owning any trade loop. Per-connection processor heartbeats are folded
+    // into the final response after connection statuses are loaded below.
+    const hasRuntimeProof = (coordinator?.getActiveEngineCount() || 0) > 0
     
     // Get active connections
     const connections = await getActiveConnectionsForEngine()
@@ -305,7 +308,9 @@ export async function GET() {
             : null),
         hint:
           activeEngineCount === 0
-            ? "No local engine runtime is attached yet; explicit UI actions and continuity sweeps will attach engine work in this process."
+            ? isServerlessDeploymentRuntime()
+              ? "No fresh external engine-owner heartbeat is attached. UI actions are persisted and queued in shared Redis; a distinct long-lived owner must consume them."
+              : "No local engine runtime is attached yet; explicit UI actions and continuity sweeps will attach engine work in this process."
             : null,
         requiredWorkerEnv: isServerlessDeploymentRuntime()
           ? "Required: run exactly one long-lived engine owner against the same shared Redis; the API deployment remains passive and uses an external one-minute scheduler."

@@ -69,9 +69,31 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
         ? (RedisDb as any).getRedisBackend()
         : "unknown"
   const serverlessRuntime = isServerlessDeploymentRuntime()
+  const appUrl = String(process.env.NEXT_PUBLIC_APP_URL || process.env.DEPLOYMENT_URL || "")
+  let loopbackPreviewUrl = false
+  try {
+    const hostname = new URL(appUrl).hostname
+    loopbackPreviewUrl = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1"
+  } catch {
+    loopbackPreviewUrl = false
+  }
+  // The real Workerd acceptance test needs to exercise start/resume/settings
+  // handoff while using its disposable process-local database. Keep this
+  // escape hatch narrower than every production deploy path: it is absent
+  // from wrangler.jsonc, requires an explicit flag plus a loopback app URL,
+  // and is disabled if Inline Redis live placement is ever enabled. It cannot
+  // make a public Kilo deployment or a real-order path ready.
+  const kiloLocalPreviewInlineAllowed =
+    process.env.KILO_LOCAL_PREVIEW_INLINE_REDIS === "1" &&
+    isKiloDeploymentRuntime() &&
+    serverlessRuntime &&
+    loopbackPreviewUrl &&
+    process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1"
   const inlineRedisAllowed =
-    !serverlessRuntime &&
-    (process.env.ALLOW_PROD_INLINE_REDIS !== "0" || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1")
+    kiloLocalPreviewInlineAllowed || (
+      !serverlessRuntime &&
+      (process.env.ALLOW_PROD_INLINE_REDIS !== "0" || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1")
+    )
   if (process.env.NODE_ENV === "production" && backend === "inline-local" && !inlineRedisAllowed) {
     missingFields.push({
       field: "redis_backend",

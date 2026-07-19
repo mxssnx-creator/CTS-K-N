@@ -1017,7 +1017,14 @@ export async function recoordinateAfterSettingsChange(
         )
         try {
           await coordinator.startMissingEngines([after])
-          appliedLocally = true
+          // startMissingEngines() can legitimately return without attaching a
+          // local manager when this code is running in a Kilo/serverless
+          // request worker, or when another process owns the distributed
+          // engine lock.  The durable refresh request is still authoritative,
+          // but the API must not claim that this short-lived process applied
+          // the settings.  Only a manager that is actually running in this
+          // process proves the local fast-path completed.
+          appliedLocally = coordinator.isEngineRunning(id)
         } catch (startErr) {
           console.warn(
             `[v0] [${opts.logTag}] Local start after settings save failed for ${id}; queued refresh remains authoritative:`,

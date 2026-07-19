@@ -44,7 +44,7 @@ DATABASE_TYPE	application-runtime	no	yes	2	.env.example,app/api/install/configur
 DATABASE_URL	application-runtime	yes	yes	2	.env.example,lib/logger.ts
 DB_PATH	application-runtime	no	yes	2	.env.example,lib/db-audit.ts
 DEPLOY_VERIFY_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-deployment-contract.mjs
-DEPLOYMENT_URL	application-runtime	no	yes	6	.env.example,lib/deployment-runtime.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/production-deploy-init.mjs,scripts/verify-deployment-contract.mjs
+DEPLOYMENT_URL	application-runtime	no	yes	7	.env.example,lib/deployment-runtime.ts,lib/production-readiness.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/production-deploy-init.mjs,scripts/verify-deployment-contract.mjs
 DEV_ENGINE_SYMBOL_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
 DEV_PREHISTORIC_SYMBOL_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
 DEV_SOAK_DURATION_MS	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
@@ -56,7 +56,7 @@ DISABLE_BINGX_SDK_ORDERS	application-runtime	no	no	1	lib/exchange-connectors/bin
 DISABLE_IN_PROCESS_CONTINUITY	application-runtime	no	yes	6	.env.example,__tests__/unit/trade-history-stability.test.ts,app/api/system/initialize/route.ts,instrumentation.ts,lib/runtime-startup-state.ts,lib/server-continuity-runner.ts
 DISABLE_PROD_CRON_STRATEGIES	test-or-operator-tool	no	yes	1	.env.example
 DISABLE_TRADE_ENGINE_AUTOSTART	application-runtime	no	yes	6	.env.example,__tests__/unit/trade-history-stability.test.ts,app/api/system/initialize/route.ts,instrumentation.ts,lib/server-continuity-runner.ts,lib/trade-engine-auto-start.ts
-DISABLE_TRADE_ENGINE_IN_PROCESS	application-runtime	no	yes	8	.env.example,__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/trade-engine-start-lock.test.ts,app/api/settings/connections/[id]/enable/route.ts,app/api/settings/connections/[id]/live-trade/route.ts,app/api/settings/connections/[id]/preset-toggle/route.ts,app/api/settings/connections/[id]/toggle-dashboard/route.ts,lib/trade-engine.ts
+DISABLE_TRADE_ENGINE_IN_PROCESS	application-runtime	no	yes	9	.env.example,__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/trade-engine-start-lock.test.ts,app/api/settings/connections/[id]/enable/route.ts,app/api/settings/connections/[id]/live-trade/route.ts,app/api/settings/connections/[id]/preset-toggle/route.ts,app/api/settings/connections/[id]/toggle-dashboard/route.ts,app/api/trade-engine/start/route.ts,lib/trade-engine.ts
 DRIFT_INTERVAL_MS	test-or-operator-tool	no	no	1	scripts/autotest-drift.mjs
 DRIFT_MAX_RUNS	test-or-operator-tool	no	no	1	scripts/autotest-drift.mjs
 ENABLE_API_INDICATION_SET_FILL	application-runtime	no	no	1	lib/indication-sets-processor.ts
@@ -87,6 +87,7 @@ JWT_SECRET	application-runtime	yes	yes	3	.env.example,lib/auth.ts,scripts/kilo-d
 KILO_DEPLOY	application-runtime	no	no	1	lib/deployment-runtime.ts
 KILO_DEPLOYMENT	application-runtime	no	yes	2	.env.example,lib/deployment-runtime.ts
 KILO_DEPLOYMENT_ID	application-runtime	no	no	1	lib/deployment-runtime.ts
+KILO_LOCAL_PREVIEW_INLINE_REDIS	application-runtime	no	no	1	lib/production-readiness.ts
 KILO_PREVIEW_INSPECTOR_PORT	test-or-operator-tool	no	no	1	scripts/test-kilo-runtime.mjs
 KILO_PREVIEW_PORT	test-or-operator-tool	no	no	1	scripts/test-kilo-runtime.mjs
 KILO_REQUIRE_DEPLOY_CREDENTIALS	test-or-operator-tool	no	no	1	scripts/kilo-deploy-preflight.mjs
@@ -107,12 +108,12 @@ NEXT_DIST_DIR	application-runtime	no	no	4	__tests__/unit/requested-regressions.t
 NEXT_PHASE	platform-provided	no	no	1	lib/redis-db.ts
 NEXT_PUBLIC_ALLOW_BROWSER_BOOTSTRAP	application-runtime	no	no	1	components/engine-auto-initializer.tsx
 NEXT_PUBLIC_API_URL	test-or-operator-tool	no	no	2	scripts/autotest-drift.mjs,scripts/production-deploy-init.mjs
-NEXT_PUBLIC_APP_URL	application-runtime	no	yes	8	.env.example,app/api/settings/connections/route.ts,lib/deployment-runtime.ts,next.config.mjs,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/production-deploy-init.mjs,scripts/verify-deployment-contract.mjs
+NEXT_PUBLIC_APP_URL	application-runtime	no	yes	9	.env.example,app/api/settings/connections/route.ts,lib/deployment-runtime.ts,lib/production-readiness.ts,next.config.mjs,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/production-deploy-init.mjs,scripts/verify-deployment-contract.mjs
 NEXT_PUBLIC_BINGX_API_KEY	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
 NEXT_PUBLIC_BINGX_API_SECRET	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
 NEXT_PUBLIC_ENABLE_BROWSER_INDICATION_CRON	application-runtime	no	yes	2	.env.example,components/indication-generator-hook.tsx
 NEXT_PUBLIC_QUICKSTART_AWAIT_ENGINE_BOOT	application-runtime	no	no	1	app/api/trade-engine/quick-start/route.ts
-NEXT_RUNTIME	platform-provided	no	no	14	__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/requested-regressions.test.ts,__tests__/unit/trade-engine-start-lock.test.ts,app/api/settings/connections/[id]/enable/route.ts,app/api/settings/connections/[id]/live-trade/route.ts,app/api/settings/connections/[id]/preset-toggle/route.ts,app/api/settings/connections/[id]/toggle-dashboard/route.ts,instrumentation.ts,lib/deployment-runtime.ts,lib/engine-refresh-queue.ts,lib/metrics-collector.ts,lib/pre-startup.ts,lib/runtime-startup-state.ts,lib/trade-engine.ts
+NEXT_RUNTIME	platform-provided	no	no	15	__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/requested-regressions.test.ts,__tests__/unit/trade-engine-start-lock.test.ts,app/api/settings/connections/[id]/enable/route.ts,app/api/settings/connections/[id]/live-trade/route.ts,app/api/settings/connections/[id]/preset-toggle/route.ts,app/api/settings/connections/[id]/toggle-dashboard/route.ts,app/api/trade-engine/start/route.ts,instrumentation.ts,lib/deployment-runtime.ts,lib/engine-refresh-queue.ts,lib/metrics-collector.ts,lib/pre-startup.ts,lib/runtime-startup-state.ts,lib/trade-engine.ts
 NEXTAUTH_URL	test-or-operator-tool	no	yes	1	.env.example
 NODE_ENV	platform-provided	no	no	45	.kilocode/rules/memory-bank/context.md,FIXES-APPLIED-SESSION-33.md,__tests__/unit/env-credential-loading.test.ts,__tests__/unit/orders-route-concurrency.test.ts,__tests__/unit/production-continuity.test.ts,__tests__/unit/requested-regressions.test.ts,app/api/monitoring/comprehensive/route.ts,app/api/positions/[id]/route.ts,app/api/positions/route.ts,app/api/positions/stats/route.ts,app/api/settings/connections/[id]/live-trade/route.ts,app/api/settings/connections/[id]/preset-toggle/route.ts,app/api/symbol-data/load/route.ts,app/api/system/health/route.ts,app/api/system/init-status/route.ts,app/api/trade-engine/quick-start/route.ts,app/error.tsx,app/global-error.tsx,components/engine-auto-initializer.tsx,components/error-boundary.tsx,components/indication-generator-hook.tsx,lib/auth.ts,lib/cron-auth.ts,lib/env-credentials.ts,lib/error-logger.ts,lib/exchange-connectors/base-connector.ts,lib/exchange-connectors/factory.ts,lib/exchange-connectors/index.ts,lib/live-order-service.ts,lib/prehistoric-progress-tracker.ts,lib/production-readiness.ts,lib/redis-db.ts,lib/redis-migrations.ts,lib/runtime-startup-state.ts,lib/security-hardening.ts,lib/site-logger.ts,lib/startup-coordinator.ts,lib/statistics-tracker.ts,lib/strategy-coordinator.ts,lib/strategy-evaluator.ts,lib/symbol-data-processor.ts,lib/trade-engine.ts,lib/trade-engine/engine-manager.ts,next.config.mjs,scripts/inject-bingx-creds.js
 ORANGEX_API_KEY	test-or-operator-tool	yes	yes	1	.env.example

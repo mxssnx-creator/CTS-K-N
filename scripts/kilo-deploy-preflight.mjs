@@ -97,6 +97,10 @@ function main() {
   assert(wrangler.vars?.DISABLE_IN_PROCESS_CONTINUITY === "1", "request-worker continuity ownership is disabled")
   assert(wrangler.vars?.DISABLE_TRADE_ENGINE_IN_PROCESS === "1", "request-worker engine ownership is disabled")
   assert(wrangler.vars?.ALLOW_PROD_INLINE_REDIS === "0", "process-local production Redis fallback is blocked")
+  assert(
+    wrangler.vars?.KILO_LOCAL_PREVIEW_INLINE_REDIS === undefined,
+    "local Inline Redis preview override is not shipped to production",
+  )
   assert(wrangler.secrets?.required?.includes("ADMIN_SECRET"), "ADMIN_SECRET is a required Worker secret")
   assert(wrangler.secrets?.required?.includes("CRON_SECRET"), "CRON_SECRET is a required Worker secret")
   assert(wrangler.secrets?.required?.includes("ENCRYPTION_KEY"), "ENCRYPTION_KEY is a required Worker secret")

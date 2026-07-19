@@ -88,8 +88,11 @@ successful installation test.
 
 - `kilo:preflight`: versions/config/handler/schema/required secrets;
 - `kilo:dry-run`: OpenNext build plus Wrangler bundle without deploy;
-- `test:kilo-runtime`: real local Workerd, health/migrations/runtime ownership,
-  scheduled event and fresh continuity/recovery;
+- `test:kilo-runtime`: real local Workerd serving the OpenNext UI and API;
+  verifies dashboard/settings/preset assets, Block PF and volume read-after-write,
+  durable external-owner handoff, Disable/Enable, requested/effective Live state,
+  Pause/Resume/Stop/Start, live-order authentication/placement fail-closed,
+  zero real positions/orders, scheduled event and fresh continuity/recovery;
 - `kilo:deploy`: authenticated remote deployment plus production contract;
 - `kilo:verify`: post-deploy schema/persistence/continuity proof.
 
@@ -111,6 +114,11 @@ pnpm test:stress-32
 Record duration, peak RSS, event-loop/route timeouts, symbol counts and any
 degraded fallback. A script skipped for missing external prerequisites must be
 listed as unexecuted, not passed.
+
+For side-by-side production previews, build with `NEXT_DIST_DIR=.next-prod`.
+The configuration serializes only that custom-dist static-generation phase to
+avoid Next 15 export-directory `ENOTEMPTY` races on overlay/network filesystems;
+normal and Kilo `.next` builds retain their regular parallelism.
 
 ## Live exchange acceptance
 

@@ -219,6 +219,18 @@ describe("requested regression guardrails", () => {
     expect(source).toContain('is_live_trade: credentialCheck.valid ? "1" : "0"')
     expect(source).toContain('live_trade_requested: "0"')
     expect(source).toContain('engine_type: "main"')
+    expect(source).toContain("const startedLocally = coordinator.isEngineRunning(conn.id)")
+    expect(source).toContain('reason: "global_start_external_owner"')
+    expect(source).toContain('coordinator_status: queuedForOwner ? "queued_for_owner" : "running"')
+    expect(source).toContain("isConnectionAssignedToMain(conn)")
+    expect(source).toContain("isConnectionProcessingEnabled(conn)")
+    expect(source).toContain("isTruthyFlag(conn.paused_by_global)")
+    expect(source).toContain("isTruthyFlag(conn.paused_preset_by_global)")
+    expect(source).toContain("const stateSwitchVersion = await allocateStateSwitchVersion(conn.id, conn)")
+    expect(source).toContain('state_switch_action: "global_start"')
+    expect(source).not.toContain('conn.is_assigned === "1" && conn.is_enabled_dashboard === "1"')
+    expect(source).toContain("if (startedLocally) startedConnections.push(conn.id)")
+    expect(source).not.toContain("            startedConnections.push(conn.id)")
     expect(source).not.toContain("Ensure live trade is enabled")
     expect(source).not.toContain("cleared stale block so exchange orders can proceed")
     expect(source).not.toMatch(/\.\.\.liveTradeUpdate,[\s\S]{0,160}is_live_trade:\s*"1"/)
@@ -892,6 +904,7 @@ describe("requested regression guardrails", () => {
 
   test("production build cleanup respects NEXT_DIST_DIR for parallel dev/prod verification", () => {
     const pkg = JSON.parse(read("package.json"))
+    const nextConfig = read("next.config.mjs")
 
     expect(pkg.scripts.prebuild).toContain('rm -rf "${NEXT_DIST_DIR:-.next}"')
     expect(pkg.scripts["prevercel-build"]).toContain('rm -rf "${NEXT_DIST_DIR:-.next}"')
@@ -906,6 +919,9 @@ describe("requested regression guardrails", () => {
     expect(previewRunner).toContain("NEXT_DIST_DIR: distDir")
     expect(previewRunner).toContain('existsSync(`${distDir}/BUILD_ID`)')
     expect(previewRunner).toContain('ALLOW_PROD_SIMULATED: "1"')
+    expect(nextConfig).toContain("usesIsolatedBuildDirectory")
+    expect(nextConfig).toContain("staticGenerationMaxConcurrency: 1")
+    expect(nextConfig).toContain("staticGenerationMinPagesPerWorker: 1")
   })
 
   test("12-symbol dev/prod soaks prove paper execution without live exchange requests", () => {
@@ -1202,6 +1218,7 @@ describe("requested regression guardrails", () => {
     expect(bootBlock).toContain('actual_status: "stopped"')
     expect(bootBlock).not.toMatch(/^\s*status: "running"/m)
 
+    expect(statusRoute).toContain("const hasRuntimeProof = (coordinator?.getActiveEngineCount() || 0) > 0")
     expect(statusRoute).toContain("const effectivelyRunning = isGloballyRunning && !isGloballyPaused && (hasLocalEngineRuntime || hasRuntimeProof || distributedEngineCount > 0)")
     expect(statusRoute).toContain('actualStatus: effectivelyRunning ? "running" : (isGloballyPaused ? "paused" : "degraded")')
     expect(statusRoute).toContain("last_heartbeat_at")

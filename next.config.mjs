@@ -1,6 +1,9 @@
 // Migration 028 — high-perf: axis 800×, real 5000×, rssHard 82%, BingX 5 concurrent, stopSem 6
 
 const localServerActionAllowedOrigins = ["localhost:3002", "127.0.0.1:3002"]
+const usesIsolatedBuildDirectory = Boolean(
+  process.env.NEXT_DIST_DIR && process.env.NEXT_DIST_DIR !== ".next",
+)
 
 function normalizeAllowedOrigin(value) {
   const trimmed = value?.trim()
@@ -87,6 +90,19 @@ const nextConfig = {
     serverActions: {
       allowedOrigins: getServerActionAllowedOrigins(),
     },
+    // Next 15 can race its export workers while removing the temporary
+    // `<distDir>/export` tree on overlay/network filesystems. It surfaces as
+    // ENOTEMPTY only for our side-by-side `.next-prod` build, after every page
+    // already rendered successfully. Keep normal/Kilo builds fully parallel,
+    // but serialize static generation for an explicitly isolated distDir so
+    // the documented independent production-preview build is deterministic.
+    ...(usesIsolatedBuildDirectory
+      ? {
+          cpus: 1,
+          staticGenerationMaxConcurrency: 1,
+          staticGenerationMinPagesPerWorker: 1,
+        }
+      : {}),
     // instrumentation.ts is auto-discovered by Next.js and remains the
     // deterministic server-side boot sequence entry point.
   },

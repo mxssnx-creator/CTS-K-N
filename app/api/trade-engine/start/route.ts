@@ -4,9 +4,17 @@ import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
-import { allocateStateSwitchVersion } from "@/lib/engine-refresh-queue"
+import {
+  allocateStateSwitchVersion,
+  queueEngineRefreshRequest,
+} from "@/lib/engine-refresh-queue"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
-import { isConnectionLiveTradeEnabled } from "@/lib/connection-state-utils"
+import {
+  isConnectionAssignedToMain,
+  isConnectionLiveTradeEnabled,
+  isConnectionProcessingEnabled,
+  isTruthyFlag,
+} from "@/lib/connection-state-utils"
 import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 
 export const dynamic = "force-dynamic"
@@ -171,6 +179,8 @@ export async function POST(request: NextRequest) {
     // previously-disabled live switch back on.
     let resumedConnections: string[] = []
     let startedConnections: string[] = []
+    const ownerQueuedConnections = new Set<string>()
+    const reconciledMainConnections = new Set<string>()
     let liveTradeEnabledConnections: string[] = []
     let liveTradeRequestedConnections: string[] = []
     try {
@@ -186,7 +196,7 @@ export async function POST(request: NextRequest) {
         for (const connId of pausedIds) {
           try {
             const conn = await getConnection(connId)
-            if (conn && conn.paused_by_global === "1") {
+            if (conn && isTruthyFlag(conn.paused_by_global)) {
               const liveTradeRequested = isLiveTradeRequested(conn)
               const staleLiveTradeBlockReason = String((conn as any).live_trade_blocked_reason || "").trim()
               const credentialCheck = liveTradeRequested
@@ -252,7 +262,10 @@ export async function POST(request: NextRequest) {
                 )
               }
               
-              // Restart the engine
+              // Restart locally when this process owns durable timers. Kilo /
+              // serverless request workers deliberately return false here; in
+              // that case persist an explicit per-connection owner request and
+              // never claim the connection was resumed in this process.
               await coordinator.startEngine(connId, {
                 connectionId: connId,
                 connection_name: conn.name,
@@ -263,15 +276,27 @@ export async function POST(request: NextRequest) {
                 strategyInterval: settings?.strategyUpdateIntervalMs ? settings.strategyUpdateIntervalMs / 1000 : 1,
                 realtimeInterval: settings?.realtimeIntervalMs ? settings.realtimeIntervalMs / 1000 : 0.3,
               }, { markAssigned: true, forceLocalTakeover: true })
+              const resumedLocally = coordinator.isEngineRunning(connId)
+              if (!resumedLocally) {
+                await queueEngineRefreshRequest({
+                  connectionId: connId,
+                  action: "start",
+                  state_switch_version: stateSwitchVersion,
+                  reason: "global_start_resume_external_owner",
+                  timestamp: new Date().toISOString(),
+                })
+                ownerQueuedConnections.add(connId)
+              }
               
               if (liveTradeRequested && credentialCheck.valid) {
                 liveTradeEnabledConnections.push(connId)
               } else if (liveTradeRequested) {
                 liveTradeRequestedConnections.push(connId)
               }
-              resumedConnections.push(connId)
+              if (resumedLocally) resumedConnections.push(connId)
+              reconciledMainConnections.add(connId)
               console.log(
-                `[v0] [Trade Engine] Resumed paused connection: ${connId} ${conn.name} ` +
+                `[v0] [Trade Engine] ${resumedLocally ? "Resumed" : "Queued resume for owner"} paused connection: ${connId} ${conn.name} ` +
                 `(live_trade_${!liveTradeRequested ? "disabled" : credentialCheck.valid ? "enabled" : "requested_only"}${credentialCheck.reason ? `: ${credentialCheck.reason}` : ""})`,
               )
             }
@@ -288,26 +313,37 @@ export async function POST(request: NextRequest) {
       const allConnections = await getAllConnections()
       for (const conn of allConnections) {
         // Only handle assigned main connections that are enabled
-        if (conn.is_assigned === "1" && conn.is_enabled_dashboard === "1" &&
-            !resumedConnections.includes(conn.id)) {
+        if (
+          isConnectionAssignedToMain(conn) &&
+          isConnectionProcessingEnabled(conn) &&
+          !reconciledMainConnections.has(conn.id)
+        ) {
           try {
             const liveTradeRequested = isLiveTradeRequested(conn)
             const staleLiveTradeBlockReason = String((conn as any).live_trade_blocked_reason || "").trim()
             const credentialCheck = liveTradeRequested
               ? validateLiveTradeRequirements(conn)
               : { valid: false, reason: "", blockCode: null }
+            // Global Start is itself a newer operator transition. Allocate and
+            // persist a fresh generation even when Live is disabled, otherwise
+            // an older queued stop/start at the same generation can supersede
+            // this click before the external owner sees it.
+            const stateSwitchVersion = await allocateStateSwitchVersion(conn.id, conn)
+            const updatedConn = {
+              ...(liveTradeRequested
+                ? {
+                    is_live_trade: credentialCheck.valid ? "1" : "0",
+                    live_trade_blocked_reason: credentialCheck.valid ? "" : credentialCheck.reason,
+                    live_trade_requested: "1",
+                  }
+                : {}),
+              state_switch_version: stateSwitchVersion,
+              state_switch_action: "global_start",
+              updated_at: new Date().toISOString(),
+            }
+            const transition = await updateConnectionState(conn.id, updatedConn, stateSwitchVersion)
+            if (!transition.applied) continue
             if (liveTradeRequested) {
-              const stateSwitchVersion = await allocateStateSwitchVersion(conn.id, conn)
-              const updatedConn = {
-                is_live_trade: credentialCheck.valid ? "1" : "0",
-                live_trade_blocked_reason: credentialCheck.valid ? "" : credentialCheck.reason,
-                live_trade_requested: "1",
-                state_switch_version: stateSwitchVersion,
-                state_switch_action: "global_start",
-                updated_at: new Date().toISOString(),
-              }
-              const transition = await updateConnectionState(conn.id, updatedConn, stateSwitchVersion)
-              if (!transition.applied) continue
               if (staleLiveTradeBlockReason) {
                 await logProgressionEvent(
                   conn.id,
@@ -340,7 +376,10 @@ export async function POST(request: NextRequest) {
               )
             }
             
-            // Start the engine for this connection
+            // Start the engine for this connection. A successful method call
+            // is not itself proof of local ownership: startEngine() may leave
+            // work with another distributed owner. Check the manager map and
+            // otherwise queue an explicit durable start request.
             await coordinator.startEngine(conn.id, {
               connectionId: conn.id,
               connection_name: conn.name,
@@ -351,15 +390,26 @@ export async function POST(request: NextRequest) {
               strategyInterval: settings?.strategyUpdateIntervalMs ? settings.strategyUpdateIntervalMs / 1000 : 1,
               realtimeInterval: settings?.realtimeIntervalMs ? settings.realtimeIntervalMs / 1000 : 0.3,
             }, { markAssigned: true, forceLocalTakeover: true })
+            const startedLocally = coordinator.isEngineRunning(conn.id)
+            if (!startedLocally) {
+              await queueEngineRefreshRequest({
+                connectionId: conn.id,
+                action: "start",
+                state_switch_version: stateSwitchVersion,
+                reason: "global_start_external_owner",
+                timestamp: new Date().toISOString(),
+              })
+              ownerQueuedConnections.add(conn.id)
+            }
             
             if (liveTradeRequested && credentialCheck.valid) {
               liveTradeEnabledConnections.push(conn.id)
             } else if (liveTradeRequested) {
               liveTradeRequestedConnections.push(conn.id)
             }
-            startedConnections.push(conn.id)
+            if (startedLocally) startedConnections.push(conn.id)
             console.log(
-              `[v0] [Trade Engine] Started assigned connection: ${conn.id} ${conn.name} ` +
+              `[v0] [Trade Engine] ${startedLocally ? "Started" : "Queued start for owner"} assigned connection: ${conn.id} ${conn.name} ` +
               `(live_trade_${!liveTradeRequested ? "disabled" : credentialCheck.valid ? "enabled" : "requested_only"}${credentialCheck.reason ? `: ${credentialCheck.reason}` : ""})`,
             )
           } catch (startErr) {
@@ -377,7 +427,7 @@ export async function POST(request: NextRequest) {
         for (const connId of pausedPresetIds) {
           try {
             const conn = await getConn2(connId)
-            if (conn && conn.paused_preset_by_global === "1") {
+            if (conn && isTruthyFlag(conn.paused_preset_by_global)) {
               const stateSwitchVersion = await allocateStateSwitchVersion(connId, conn)
               const transition = await updateConnState2(connId, {
                 is_preset_trade: "1",
@@ -423,6 +473,11 @@ export async function POST(request: NextRequest) {
       console.warn("[v0] [Trade Engine] Coordinator worker startup warning:", engineStartError)
     }
 
+    const queuedConnections = [...ownerQueuedConnections]
+    const requestWorkerRequiresOwner =
+      process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1" || process.env.NEXT_RUNTIME === "edge"
+    const localEngineCount = coordinator.getActiveEngineCount()
+    const queuedForOwner = requestWorkerRequiresOwner && localEngineCount === 0
     const resumeMsg = resumedConnections.length > 0
       ? ` Resumed ${resumedConnections.length} previously paused connection(s).`
       : ""
@@ -432,22 +487,42 @@ export async function POST(request: NextRequest) {
     const liveTradeMsg = liveTradeEnabledConnections.length > 0 || liveTradeRequestedConnections.length > 0
       ? ` Live trading enabled for ${liveTradeEnabledConnections.length} connection(s); requested-only for ${liveTradeRequestedConnections.length} connection(s).`
       : ""
+    const ownerQueueMsg = queuedConnections.length > 0
+      ? ` Queued ${queuedConnections.length} connection(s) for the external engine owner.`
+      : queuedForOwner
+        ? " Waiting for the external engine owner."
+        : ""
     
-    console.log("[v0] [Trade Engine] Global Coordinator is running and ready." + resumeMsg + startedMsg + liveTradeMsg)
+    console.log(
+      `[v0] [Trade Engine] Global Coordinator intent is running${queuedForOwner ? "; external owner required" : " and local runtime attached"}.` +
+      resumeMsg + startedMsg + liveTradeMsg + ownerQueueMsg,
+    )
     await SystemLogger.logTradeEngine(
-      `Global Coordinator started.${resumeMsg}${startedMsg}${liveTradeMsg}`,
+      `Global Coordinator start accepted.${resumeMsg}${startedMsg}${liveTradeMsg}${ownerQueueMsg}`,
       "info",
-      { resumedConnections, startedConnections, liveTradeEnabledConnections, liveTradeRequestedConnections }
+      {
+        resumedConnections,
+        startedConnections,
+        queuedConnections,
+        queuedForOwner,
+        liveTradeEnabledConnections,
+        liveTradeRequestedConnections,
+      }
     )
     invalidateTradeEngineStatusCache()
 
     return NextResponse.json({
       success: true,
-      message: `Global Trade Engine Coordinator started and ready.${resumeMsg}${startedMsg}${liveTradeMsg}`,
-      coordinator_status: "running",
+      message: queuedForOwner
+        ? `Global Trade Engine start intent saved and queued for the external owner.${resumeMsg}${startedMsg}${liveTradeMsg}${ownerQueueMsg}`
+        : `Global Trade Engine Coordinator started and ready.${resumeMsg}${startedMsg}${liveTradeMsg}`,
+      coordinator_status: queuedForOwner ? "queued_for_owner" : "running",
+      workerAttached: localEngineCount > 0,
+      queuedForOwner,
       alreadyRunning: wasAlreadyRunning,
       resumedConnections,
       startedConnections,
+      queuedConnections,
       liveTradeEnabledConnections,
       liveTradeRequestedConnections,
     })
