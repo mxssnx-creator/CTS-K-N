@@ -29,6 +29,11 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Fix route handlers `localStartAllowed` pattern (NODE_ENV → VERCEL) for self-hosted production
 - [x] Fixed `pre-startup.ts` symbol seeding to preserve existing snapshot values (no overwrite of `force_symbols`)
 - [x] Updated redis-snapshot.json with complete bingx-x01 configuration: API credentials, 5 symbols (BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT, ADAUSDT), live_volume_factor=0.1, market data placeholder entries
+- [x] Connection progress 0/# fix - production symbol cap now resolves after force_symbols read
+- [x] `posCountsVolumeRatio` 0.05 wiring - Settings interface, sliders, coordination-section, expandAxisSets
+- [x] Axis Sets hedge netting + `combinePosCountAxisSets` extraction with regression test
+- [x] VolumeCalculator variant floor lowered 0.1 → 0.01
+- [x] `coordination_settings` char-indexed object bug fix in GET handler (parseIfString before spread)
 
 ## Current Structure
 
@@ -385,3 +390,9 @@ The architecture assumed a separate long-lived engine-owner worker, but the repo
   intentionally NOT changed this session: each requires multi-file domain edits
   to a live trading engine with live-order risk and lacked a safe, verifiable
   unit-level assertion. They need a dedicated follow-up with regression tests.
+- [x] Fixed `coordination_settings` char-indexed object bug in GET handler: when
+  `serializeConnectionSettingsHash` stores `coordination_settings` as a JSON string
+  and the GET route spreads it directly, the string gets splayed into a character-
+  indexed object ({'0':'{','1':'"',...}). Fix: parse string via `parseIfString`
+  before spreading (app/api/settings/connections/[id]/settings/route.ts:247-254).
+  Verified: GET returns proper object with `posCountsVolumeRatio: 0.05`.
