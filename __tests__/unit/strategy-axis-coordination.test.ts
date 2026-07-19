@@ -277,4 +277,65 @@ describe("strategy position-count axis coordination", () => {
     const counts = coordinateActiveRealLiveCounts(real, [real[0]], new Set(["real:active"]))
     expect(counts).toEqual({ real: 1, live: 1, liveEvaluated: 2 })
   })
+
+  test("combines hedge-netted pos-count axis Sets into one live order per direction with summed volume", () => {
+    const coordinator = new StrategyCoordinator("combine-pis") as any
+    const longA = {
+      setKey: "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong",
+      parentSetKey: "BTCUSDT:direction:long",
+      direction: "long" as const,
+      variant: "default" as const,
+      axisWindows: { prev: 4, last: 1, cont: 1, pause: 0, direction: "long", outcome: "pos", axisKey: "p4_l1_c1_opos_dlong" },
+      posCountsVolumeRatio: 0.05,
+      avgProfitFactor: 2.0,
+      avgConfidence: 0.9,
+      avgDrawdownTime: 10,
+      entryCount: 3,
+      entries: [{ id: "e", sizeMultiplier: 0.05, leverage: 1, positionState: "new", profitFactor: 2, drawdownTime: 10, confidence: 0.9 }],
+      indicationType: "direction",
+    }
+    const longB = {
+      ...longA,
+      setKey: "BTCUSDT:direction:long#axis:p4_l2_c2_opos_dlong",
+      posCountsVolumeRatio: 0.06,
+      entryCount: 2,
+      avgProfitFactor: 1.5,
+      entries: [{ id: "e2", sizeMultiplier: 0.06, leverage: 1, positionState: "new", profitFactor: 1.5, drawdownTime: 12, confidence: 0.85 }],
+    }
+    const shortA = {
+      ...longA,
+      setKey: "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dshort",
+      direction: "short" as const,
+      posCountsVolumeRatio: 0.04,
+      avgProfitFactor: 1.8,
+      entries: [{ id: "e3", sizeMultiplier: 0.04, leverage: 1, positionState: "new", profitFactor: 1.8, drawdownTime: 11, confidence: 0.88 }],
+    }
+    const nonAxis = { setKey: "BTCUSDT:direction:long", direction: "long" as const, variant: "default" as const, avgProfitFactor: 1.2 }
+    const input = [longA, longB, shortA, nonAxis]
+
+    const result = coordinator.combinePosCountAxisSets(input, "BTCUSDT")
+
+    // Non-axis set passes through unchanged
+    expect(result).toContainEqual(nonAxis)
+
+    // Axis sets collapsed: 2 long -> 1 combined, 1 short -> 1 combined
+    const axisResults = result.filter((s: any) => !!(s.axisWindows?.direction))
+    expect(axisResults).toHaveLength(2)
+
+    const combinedLong = axisResults.find((s: any) => s.direction === "long")
+    expect(combinedLong).toBeDefined()
+    expect(combinedLong.setKey).toBe("BTCUSDT:poscounts:combined:long")
+    expect(combinedLong.combinedPosCounts).toBe(true)
+    expect(combinedLong.accumulatedSetKeys).toEqual([longA.setKey, longB.setKey])
+    expect(combinedLong.posCountsVolumeRatio).toBeCloseTo(0.11, 4)
+    expect(combinedLong.sizeMultiplier).toBeCloseTo(0.11, 4)
+    expect(combinedLong.entryCount).toBe(5)
+
+    const combinedShort = axisResults.find((s: any) => s.direction === "short")
+    expect(combinedShort).toBeDefined()
+    expect(combinedShort.setKey).toBe("BTCUSDT:poscounts:combined:short")
+    expect(combinedShort.accumulatedSetKeys).toEqual([shortA.setKey])
+    expect(combinedShort.posCountsVolumeRatio).toBeCloseTo(0.04, 4)
+  })
+
 })

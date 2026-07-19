@@ -5357,7 +5357,49 @@ export class StrategyCoordinator {
    * capacity with the highest-quality candidates. Position materialisation is
    * mode-specific and happens only after this selection step.
    */
-  private async createLiveSets(
+
+  /** Combine hedge-netted pos-count (axis) Sets per symbol+direction into
+   *  ONE live dispatch Set with summed volume. Member identities are preserved
+   *  in `accumulatedSetKeys`; per-Set calcs and global stats stay correct. */
+  private combinePosCountAxisSets(sets: StrategySet[], symbol: string): StrategySet[] {
+    const axisSets = sets.filter((s) => !!(s.axisWindows?.direction) && (s.posCountsVolumeRatio ?? 0) > 0)
+    if (axisSets.length === 0) return sets
+    const nonAxis = sets.filter((s) => !(s.axisWindows?.direction) || (s.posCountsVolumeRatio ?? 0) <= 0)
+    const byDir: Record<"long" | "short", StrategySet[]> = { long: [], short: [] }
+    for (const s of axisSets) byDir[(s.direction === "short" ? "short" : "long")].push(s)
+    const combined: StrategySet[] = []
+    for (const dir of ["long", "short"] as const) {
+      const members = byDir[dir]
+      if (members.length === 0) continue
+      const totalRatio = members.reduce((sum, s) => sum + (s.posCountsVolumeRatio ?? 0.05), 0)
+      const combinedEntryCount = members.reduce((sum, s) => sum + (s.entryCount ?? 0), 0)
+      const wSum = members.reduce((sum, s) => sum + (s.avgProfitFactor ?? 1) * ((s.entryCount ?? 1) || 1), 0)
+      const wDen = members.reduce((sum, s) => sum + ((s.entryCount ?? 1) || 1), 0)
+      const combinedSet: StrategySet = {
+        ...members[0],
+        setKey: `${symbol}:poscounts:combined:${dir}`,
+        parentSetKey: members[0].parentSetKey,
+        direction: dir,
+        variant: "default",
+        avgProfitFactor: wDen > 0 ? wSum / wDen : (members[0].avgProfitFactor ?? 1),
+        avgConfidence: members.reduce((sum, s) => sum + (s.avgConfidence ?? 0), 0) / members.length,
+        avgDrawdownTime: members.reduce((sum, s) => sum + (s.avgDrawdownTime ?? 0), 0) / members.length,
+        entryCount: combinedEntryCount,
+        entries: members[0].entries,
+        axisWindows: { ...members[0].axisWindows!, direction: dir, axisKey: `combined:${dir}` },
+        posCountsVolumeRatio: Number(totalRatio.toFixed(4)),
+        sizeMultiplier: Number(totalRatio.toFixed(4)),
+        combinedPosCounts: true,
+        accumulatedSetKeys: members.map((m) => m.setKey),
+        indicationType: members[0].indicationType,
+      }
+      combined.push(combinedSet)
+    }
+    return [...nonAxis, ...combined]
+  }
+
+
+    private async createLiveSets(
     symbol: string,
     inputSets?: StrategySet[],
     coordIndex?: CoordIndex,
@@ -5808,51 +5850,10 @@ export class StrategyCoordinator {
               }
             }
 
-            // ── Combine pos-count (axis) Sets into ONE live order per direction ──
-            // Operator spec: the additional Main-stage pos-count Sets, after hedge
-            // netting (long/short → |L − S| dominant direction), are combined into
-            // a SINGLE live exchange order per symbol+direction with their volumes
-            // summed. Individual Set identities are preserved in `accumulatedSetKeys`
-            // and each Set's own PF/DDT/entry calculations remain intact; only the
-            // LIVE order count is reduced (one order, not one-per-set). Global stats
-            // (PnL, history) stay aggregated — no per-Set split.
-            {
-              const axisSets = dispatchSets.filter((s) => !!(s.axisWindows?.direction) && (s.posCountsVolumeRatio ?? 0) > 0)
-              if (axisSets.length > 0) {
-                const nonAxis = dispatchSets.filter((s) => !(s.axisWindows?.direction) || (s.posCountsVolumeRatio ?? 0) <= 0)
-                const byDir: Record<"long" | "short", StrategySet[]> = { long: [], short: [] }
-                for (const s of axisSets) byDir[(s.direction === "short" ? "short" : "long")].push(s)
-                const combined: StrategySet[] = []
-                for (const dir of ["long", "short"] as const) {
-                  const members = byDir[dir]
-                  if (members.length === 0) continue
-                  const totalRatio = members.reduce((sum, s) => sum + (s.posCountsVolumeRatio ?? 0.05), 0)
-                  const combinedEntryCount = members.reduce((sum, s) => sum + (s.entryCount ?? 0), 0)
-                  const wSum = members.reduce((sum, s) => sum + (s.avgProfitFactor ?? 1) * ((s.entryCount ?? 1) || 1), 0)
-                  const wDen = members.reduce((sum, s) => sum + ((s.entryCount ?? 1) || 1), 0)
-                  const combinedSet: StrategySet = {
-                    ...members[0],
-                    setKey: `${symbol}:poscounts:combined:${dir}`,
-                    parentSetKey: members[0].parentSetKey,
-                    direction: dir,
-                    variant: "default",
-                    avgProfitFactor: wDen > 0 ? wSum / wDen : (members[0].avgProfitFactor ?? 1),
-                    avgConfidence: members.reduce((sum, s) => sum + (s.avgConfidence ?? 0), 0) / members.length,
-                    avgDrawdownTime: members.reduce((sum, s) => sum + (s.avgDrawdownTime ?? 0), 0) / members.length,
-                    entryCount: combinedEntryCount,
-                    entries: members[0].entries,
-                    axisWindows: { ...members[0].axisWindows!, direction: dir, axisKey: `combined:${dir}` },
-                    posCountsVolumeRatio: Number(totalRatio.toFixed(4)),
-                    sizeMultiplier: Number(totalRatio.toFixed(4)),
-                    combinedPosCounts: true,
-                    accumulatedSetKeys: members.map((m) => m.setKey),
-                    indicationType: members[0].indicationType,
-                  }
-                  combined.push(combinedSet)
-                }
-                dispatchSets = [...nonAxis, ...combined]
-              }
-            }
+            // Combine hedge-netted pos-count (axis) Sets per symbol+direction into
+            // ONE live dispatch Set with summed volume so the live pipeline opens
+            // a SINGLE exchange order for all surviving pos-count Sets.
+            dispatchSets = this.combinePosCountAxisSets(dispatchSets, symbol)
 
             const dispatchOrder = (set: StrategySet): number => {
               if (set.variant === "block") return 1
