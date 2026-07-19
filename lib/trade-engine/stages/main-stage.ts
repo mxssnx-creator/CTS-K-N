@@ -7,6 +7,7 @@
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import type { BasePosition } from "./base-stage"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { STAGE_2_MAX_LONG_POSITIONS, STAGE_2_MAX_SHORT_POSITIONS, MIN_PROFIT_FACTOR } from "@/lib/constants"
 
 const LOG_PREFIX = "[v0] [MainPositionStage]"
 
