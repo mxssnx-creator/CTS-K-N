@@ -136,25 +136,45 @@ function clearPositionCache(connId: string): void {
 const protectionQuotaBackoff = new Map<string, number>()
 const PROTECTION_QUOTA_BACKOFF_MS = 60_000  // 60 s per-connection cooldown
 
-function isProtectionQuotaBlocked(connId: string): boolean {
+const triggerFrequencyBackoff = new Map<string, number>()
+const TRIGGER_FREQUENCY_BACKOFF_MS = 30_000  // 30 s per-connection cooldown (BingX code 100410)
+
+function isProtectionQuotaBlocked(connId: string) {
   const until = protectionQuotaBackoff.get(connId)
-  if (!until) return false
-  if (Date.now() >= until) {
+  if (until && until > Date.now()) return true
+  if (until) {
     protectionQuotaBackoff.delete(connId)
-    return false
   }
-  return true
+  return false
 }
 
-function markProtectionQuotaExhausted(connId: string): void {
+function markProtectionQuotaExhausted(connId: string) {
   const until = Date.now() + PROTECTION_QUOTA_BACKOFF_MS
-  // Only log on the first hit to avoid log spam.
   if (!protectionQuotaBackoff.has(connId)) {
-    console.warn(
+    console.log(
       `${LOG_PREFIX} [ProtectionQuota] ${connId}: code=110206 quota exceeded — suspending SL/TP placement for ${PROTECTION_QUOTA_BACKOFF_MS / 1000}s`,
     )
   }
   protectionQuotaBackoff.set(connId, until)
+}
+
+function isTriggerFrequencyBlocked(connId: string) {
+  const until = triggerFrequencyBackoff.get(connId)
+  if (until && until > Date.now()) return true
+  if (until) {
+    triggerFrequencyBackoff.delete(connId)
+  }
+  return false
+}
+
+function markTriggerFrequencyThrottled(connId: string) {
+  const until = Date.now() + TRIGGER_FREQUENCY_BACKOFF_MS
+  if (!triggerFrequencyBackoff.has(connId)) {
+    console.warn(
+      `${LOG_PREFIX} [TriggerFrequency] ${connId}: code=100410 endpoint throttled — suspending cancellations for ${TRIGGER_FREQUENCY_BACKOFF_MS / 1000}s`,
+    )
+  }
+  triggerFrequencyBackoff.set(connId, until)
 }
 
 /**
@@ -2057,7 +2077,7 @@ function extractMinOrderQty(payload: unknown): number | undefined {
 /**
  * Poll an order until it reaches a terminal fill state or the timeout elapses.
  *
- * ── Fast-ramp polling schedule ───────────────────────────────────────
+ * ── Fast-ramp polling schedule ───────────────────���───────────────────
  * Market orders on most venues acknowledge as `FILLED` within 100-300 ms;
  * a flat 800 ms poll interval therefore wastes ~600 ms on every entry
  * before we can place SL/TP. The new schedule:
@@ -2336,7 +2356,7 @@ async function sweepOrphanProtectionOrders(
     // Manual/foreign orders never match the durable ownership allow-list.
     if (!ownershipMatches) continue
     if (ordId == null || String(ordId).length === 0) continue
-    const ok = await cancelProtectionOrder(connector, symbol, String(ordId), "OrphanSweep")
+    const ok = await cancelProtectionOrder(connector, symbol, String(ordId), "OrphanSweep", position.connectionId)
     if (ok) result.cancelled++
   }
 
@@ -2353,6 +2373,7 @@ async function cancelProtectionOrder(
   symbol: string,
   orderId: string | undefined,
   label: string,
+  connectionId?: string,
 ): Promise<boolean> {
   if (!orderId) return false
   try {
@@ -2386,6 +2407,14 @@ async function cancelProtectionOrder(
     ) {
       console.log(`${LOG_PREFIX} ${label} already gone: ${orderId} (${res?.error})`)
       return true
+    }
+    // ── BingX code 100410: trigger frequency limit throttling ──────────────────────
+    // When we hit BingX's endpoint trigger frequency limit, activate the 30s backoff
+    // to stop hammering this specific connector with cancellation attempts.
+    if (errStr.includes("code=100410") && connectionId) {
+      markTriggerFrequencyThrottled(connectionId)
+      console.warn(`${LOG_PREFIX} [TriggerFrequency] ${label} cancel failed: ${orderId} — ${res?.error}`)
+      return false
     }
     console.warn(`${LOG_PREFIX} ${label} cancel failed: ${orderId} — ${res?.error}`)
     return false
@@ -2570,7 +2599,7 @@ async function placeProtectionOrder(
       }
     }
 
-    // ── code=109420: "position not exist" ──────────────────────────────────
+    // ── code=109420: "position not exist" ────���─────────────────────────────
     // BingX hedge-mode positions need a short settling period after a market
     // order is accepted before a STOP/TP can reference them. In the
     // unconfirmed-fill path the 2 s post-fill wait (live-stage ~line 2795)
@@ -3043,6 +3072,14 @@ async function updateProtectionOrders(
     return result
   }
 
+  // ── code=100410 trigger frequency limit backoff gate ────────────────────────────────
+  // When BingX returns "endpoint trigger frequency limit rule is currently in the disabled
+  // period", we suspend ALL cancellation and placement attempts for TRIGGER_FREQUENCY_BACKOFF_MS.
+  // This is a harder limit than quota and prevents the connector from hammering the endpoint.
+  if (isTriggerFrequencyBlocked(pos.connectionId)) {
+    return result
+  }
+
   // ── System-close-only mode (cached) ───────────────────────────────
   // Reconcile fans out across every live position on every tick, so
   // calling `getAppSettings()` here would issue one HGETALL per
@@ -3060,8 +3097,8 @@ async function updateProtectionOrders(
       parseSystemCloseFlag((pos as any)?.use_system_close_only)
     if (systemCloseOnly) {
       const cancels: Array<Promise<unknown>> = []
-      if (pos.stopLossOrderId) cancels.push(cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "SystemCloseSweep-SL").catch(() => false))
-      if (pos.takeProfitOrderId) cancels.push(cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "SystemCloseSweep-TP").catch(() => false))
+      if (pos.stopLossOrderId) cancels.push(cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "SystemCloseSweep-SL", pos.connectionId).catch(() => false))
+      if (pos.takeProfitOrderId) cancels.push(cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "SystemCloseSweep-TP", pos.connectionId).catch(() => false))
       if (cancels.length > 0) {
         await Promise.allSettled(cancels)
         console.log(`${LOG_PREFIX} [system-close] ${pos.symbol} — swept ${cancels.length} stale control order(s)`)
@@ -3238,7 +3275,7 @@ async function updateProtectionOrders(
     if (desiredSl > 0 && pos.stopLossOrderId && 
         (priceDrifted(pos.stopLossPrice, desiredSl, priceDriftTolerance) || qtyDrifted)) {
       // Need to re-arm SL — cancel the old one first
-      return await cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "StopLoss")
+      return await cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "StopLoss", pos.connectionId)
         .catch((err) => {
           console.warn(
             `${LOG_PREFIX} StopLoss cancel failed for ${pos.symbol}:`,
@@ -3255,7 +3292,7 @@ async function updateProtectionOrders(
     if (desiredTp > 0 && pos.takeProfitOrderId && 
         (priceDrifted(pos.takeProfitPrice, desiredTp, priceDriftTolerance) || qtyDrifted)) {
       // Need to re-arm TP — cancel the old one first
-      return await cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "TakeProfit")
+      return await cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "TakeProfit", pos.connectionId)
         .catch((err) => {
           console.warn(
             `${LOG_PREFIX} TakeProfit cancel failed for ${pos.symbol}:`,
@@ -3278,7 +3315,7 @@ async function updateProtectionOrders(
       // reconcile pass retries; resetting it here would orphan the
       // exchange-side order and produce a phantom unprotected position
       // from our POV.
-      const cancelled = await cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "StopLoss")
+      const cancelled = await cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "StopLoss", pos.connectionId)
       if (cancelled) {
         pos.stopLossOrderId = undefined
         pos.stopLossPrice = 0
@@ -3381,7 +3418,7 @@ async function updateProtectionOrders(
 
   const tpLeg = (async () => {
     if (desiredTp <= 0 && pos.takeProfitOrderId) {
-      const cancelled = await cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "TakeProfit")
+      const cancelled = await cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "TakeProfit", pos.connectionId)
       if (cancelled) {
         pos.takeProfitOrderId = undefined
         pos.takeProfitPrice = 0
@@ -5594,12 +5631,12 @@ export async function closeLivePosition(
     if (exchangeConnector && hasSystemOrderId) {
       if (position.stopLossOrderId) {
         cancellationPromises.push(
-          cancelProtectionOrder(exchangeConnector, position.symbol, position.stopLossOrderId, "StopLoss"),
+          cancelProtectionOrder(exchangeConnector, position.symbol, position.stopLossOrderId, "StopLoss", position.connectionId),
         )
       }
       if (position.takeProfitOrderId) {
         cancellationPromises.push(
-          cancelProtectionOrder(exchangeConnector, position.symbol, position.takeProfitOrderId, "TakeProfit"),
+          cancelProtectionOrder(exchangeConnector, position.symbol, position.takeProfitOrderId, "TakeProfit", position.connectionId),
         )
       }
     }
@@ -6399,8 +6436,8 @@ async function orphanCloseExpiredPositions(
       // Best-effort cancel protection orders first (connector may be partially working)
       if (connector) {
         const cancels: Promise<any>[] = []
-        if (pos.stopLossOrderId) cancels.push(cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "StopLoss").catch(() => {}))
-        if (pos.takeProfitOrderId) cancels.push(cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "TakeProfit").catch(() => {}))
+        if (pos.stopLossOrderId) cancels.push(cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "StopLoss", pos.connectionId).catch(() => {}))
+        if (pos.takeProfitOrderId) cancels.push(cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "TakeProfit", pos.connectionId).catch(() => {}))
         if (cancels.length) await Promise.all(cancels).catch(() => {})
         // Same orphan-sweep used inside `closeLivePosition`. Wired here
         // too so max-hold-expired positions also get the chaos-prevention
@@ -6980,12 +7017,12 @@ export async function reconcileLivePositions(
             const cancellations: Promise<boolean>[] = []
             if (pos.stopLossOrderId) {
               cancellations.push(
-                cancelProtectionOrder(exchangeConnector, pos.symbol, pos.stopLossOrderId, "StopLoss"),
+                cancelProtectionOrder(exchangeConnector, pos.symbol, pos.stopLossOrderId, "StopLoss", pos.connectionId),
               )
             }
             if (pos.takeProfitOrderId) {
               cancellations.push(
-                cancelProtectionOrder(exchangeConnector, pos.symbol, pos.takeProfitOrderId, "TakeProfit"),
+                cancelProtectionOrder(exchangeConnector, pos.symbol, pos.takeProfitOrderId, "TakeProfit", pos.connectionId),
               )
             }
             await Promise.all(cancellations).catch(() => {})
