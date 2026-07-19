@@ -55,18 +55,12 @@ export class RateLimiter {
       maxConcurrent: 5,
     },
     bingx: {
-      // BingX actual limits: 100 req/10s per IP for reads, 20 req/s for orders.
-      // With exchange-close retries eliminated (session 36), queue pressure is
-      // much lower. Raise to 10 req/s and 5 concurrent so getPositions,
-      // getOpenOrders, and placeOrder can pipeline without starving each other.
-      // __STOP_SEM_LIMIT=6 in live-stage prevents SL/TP from monopolising all slots.
-      requestsPerSecond: 10,
-      // Keep the rolling minute ceiling consistent with the supported
-      // 10 req/s steady-state cadence. A 300/min ceiling silently halved the
-      // effective rate after 30 seconds, delaying cancel/protection work even
-      // though the one-second exchange budget was still respected.
-      requestsPerMinute: 600,
-      maxConcurrent: 5,
+      // BingX actual limits: 30 req/2min per IP during high activity (code 109429)
+      // Reduced conservatively to prevent rate limit errors and ensure stable trading.
+      // With 2s cycle intervals, 30 req/2min = 0.25 req/s steady-state, safe margin.
+      requestsPerSecond: 1,  // Reduced from 10 to prevent bursting
+      requestsPerMinute: 30,  // Hard cap to match observed BingX limit
+      maxConcurrent: 2,      // Reduced from 5 to allow lower throughput per cycle
     },
     binance: {
       requestsPerSecond: 10,

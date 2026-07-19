@@ -3097,8 +3097,8 @@ export class TradeEngineManager {
       // Start-to-start cadence = liveSyncIntervalMs (default 200 ms), with
       // an independent post-completion breath. Scheduling by the remaining
       // gate time avoids accidentally adding the whole interval after work.
-      const intervalMs = timings.liveSyncIntervalMs ?? 200
-      const cyclePauseMs = timings.livePositionsCyclePauseMs ?? 50
+      const intervalMs = timings.liveSyncIntervalMs ?? 2000  // Increased from 200ms to 2s to reduce API rate limiting
+      const cyclePauseMs = timings.livePositionsCyclePauseMs ?? 500  // Increased from 50ms to 500ms
       const now = Date.now()
       const intervalRemaining = lastSyncStartedAt > 0
         ? Math.max(0, intervalMs - (now - lastSyncStartedAt))
