@@ -363,6 +363,16 @@ The architecture assumed a separate long-lived engine-owner worker, but the repo
   propagated from axis Set → mainPos → RealPosition → Live dispatch.
 - [x] Lowered `VolumeCalculator` variant floor `0.1 → 0.01` so the 0.05
   Pis ratio is honoured for the additional Main-stage axis Sets (was clamped up).
+- [x] CORRECTION (operator clarified Pis = pos-counts): pos-count axis Sets now
+  participate in Real-stage hedge netting (long/short per bucket collapse to
+  |L − S| dominant direction) in `evaluateRealSets`. After netting, surviving
+  pos-count Sets of the same symbol+direction are COMBINED into ONE live
+  exchange order with summed volume (`createLiveSets` builds a combined Set:
+  `posCountsVolumeRatio`/`sizeMultiplier` = sum of member ratios,
+  `accumulatedSetKeys` = all member setKeys, `combinedPosCounts: true`). Keeps
+  per-Set calculations + GLOBALIZED stats/history correct (no per-Set split).
+  Wired `combinedPosCounts`/`accumulatedSetKeys` through StrategySet → RealPosition
+  → LivePosition. `live_net_target:{conn}` net remainder now also written for axis buckets.
 - [x] Block per-Set volume already derives from Base Set `blockConfig.size`
   (`buildBlockOverlays`); axis Sets now carry their own reduced volume ratio.
 - NOTE: deeper items in the request (live-stage pis partial open/close cycle

@@ -80,6 +80,11 @@ export interface RealPosition {
   presetRank?: number
   presetPositionCostPct?: number
   presetProfitFactor?: number
+  /** Combined position-count (axis) Set flag — multiple hedge-netted pos-count
+   *  Sets merged into ONE live exchange order. Member identities preserved. */
+  combinedPosCounts?: boolean
+  /** All member Set keys of a combined pos-count order (for global stats / lineage). */
+  accumulatedSetKeys?: string[]
 }
 
 /**
@@ -407,6 +412,12 @@ function createRealPosition(
     ...(setVariant && setVariant !== "default" && { setVariant: setVariant as any }),
     ...(axisWindows && { axisWindows }),
     sizeMultiplier,
+    // Combined pos-count (axis) Sets: flag + all member Set keys so the single
+    // live order keeps full lineage for GLOBAL (not per-Set) stats and history.
+    ...(variantSource?.combinedPosCounts ? { combinedPosCounts: true } : {}),
+    ...(variantSource?.accumulatedSetKeys && variantSource.accumulatedSetKeys.length > 0
+      ? { accumulatedSetKeys: variantSource.accumulatedSetKeys }
+      : {}),
   }
 }
 

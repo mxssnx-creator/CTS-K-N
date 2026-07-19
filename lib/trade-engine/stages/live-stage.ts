@@ -433,6 +433,10 @@ interface LivePosition {
   parentSetKey?: string
   setVariant?: "default" | "trailing" | "block" | "dca" | "pause"
   accumulatedSetKeys?: string[]
+  /** Combined position-count (axis) Set: multiple hedge-netted pos-count Sets
+   *  merged into this ONE live exchange order. Member keys live in
+   *  accumulatedSetKeys. Global stats stay aggregated (no per-Set split). */
+  combinedPosCounts?: boolean
   // ── Set-config propagation (Set Relations → Position Protection) ──────────
   // The originating StrategySet's trailing profile and historical performance
   // snapshot are carried into the live position so that:
@@ -3598,7 +3602,11 @@ export async function executeLivePosition(
       setVariant:     realPosition.setVariant,
       axisWindows:    realPosition.axisWindows,
       sizeMultiplier: realPosition.sizeMultiplier,
-      accumulatedSetKeys: realPosition.setKey ? [realPosition.setKey] : [],
+      accumulatedSetKeys:
+      Array.isArray(realPosition.accumulatedSetKeys) && realPosition.accumulatedSetKeys.length > 0
+        ? realPosition.accumulatedSetKeys
+        : (realPosition.setKey ? [realPosition.setKey] : []),
+    combinedPosCounts: realPosition.combinedPosCounts ?? false,
       // Set-config propagation: carry trailing profile and prevPos from the
       // originating StrategySet so the position is config-aware even when it
       // does not actually execute (for audit-trail completeness).

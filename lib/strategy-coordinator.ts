@@ -167,6 +167,15 @@ export interface StrategySet {
    * sizes the open exchange order at this fraction of the base volume.
    */
   posCountsVolumeRatio?: number
+  /** True when this Set is a combined position-count (axis) Set that merges
+   *  multiple hedge-netted pos-count Sets into a SINGLE live exchange order
+   *  (combined volume). Individual member identities are preserved in
+   *  `accumulatedSetKeys` so per-Set calculations and global stats stay correct. */
+  combinedPosCounts?: boolean
+  /** Combined pos-count Sets: all member Set keys preserved for lineage / global stats. */
+  accumulatedSetKeys?: string[]
+  /** Combined pos-count Sets: total summed volume ratio (used as sizeMultiplier at live dispatch). */
+  sizeMultiplier?: number
   /**
    * ── Position-count axis windows that this Set satisfies ────────────
    *
@@ -4504,14 +4513,29 @@ export class StrategyCoordinator {
     const passthrough: StrategySet[] = []
     const axisPassthrough: StrategySet[] = []
     let axisSetsCounted = 0
+    const bucketAxisFlag = new Map<string, boolean>() // true = axis bucket
     for (const s of realSorted) {
       const dir = s.axisWindows?.direction
       if (!dir || !s.axisWindows) { 
         passthrough.push(s)
         continue 
       }
-      // Axis Sets bypass hedge netting — each axis tuple is a valid config
-      axisPassthrough.push(s)
+      // ── Position-Count (Pis) axis Sets now participate in hedge netting ──
+      // Operator spec: the additional pos-count Sets are netted long vs short
+      // within each (prev × last × cont × outcome) tuple so the LIVE dispatch
+      // only opens the |L − S| dominant-direction remainder — a single combined
+      // order. Previously axis Sets bypassed netting so both directions flowed
+      // to Live independently, multiplying orders/exposure. We bucket them by
+      // the SAME axis identity WITHOUT direction so long/short collapse. The
+      // `axis:` prefix keeps them separate from profile-variant buckets; the
+      // netted survivors are later combined into one live order per symbol+dir.
+      const aw = s.axisWindows
+      const outcome = aw?.outcome ?? "pos"
+      const parentKey = s.parentSetKey ?? s.setKey.split("#")[0]
+      const bucketKey = `axis:${parentKey}|${symbol}|${s.indicationType}|p${aw?.prev ?? 0}|l${aw?.last ?? 0}|c${aw?.cont ?? 0}|o${outcome}`
+      let b = hedgeBuckets.get(bucketKey)
+      if (!b) { b = { long: [], short: [] }; hedgeBuckets.set(bucketKey, b); bucketAxisFlag.set(bucketKey, true) }
+      if (dir === "short") b.short.push(s); else b.long.push(s)
       axisSetsCounted++
     }
     const netted: StrategySet[] = []
@@ -4519,7 +4543,7 @@ export class StrategyCoordinator {
     let netCancelled = 0
     for (const s of passthrough) {
       const aw = s.axisWindows
-      // ── CRITICAL FIX: Profile-variant Sets always go to hedging ��─
+      // ── CRITICAL FIX: Profile-variant Sets always go to hedging ──
       // Sets in `passthrough` are profile-variant (default/trailing/block/DCA)
       // and MUST participate in hedge netting. Previously, sets without
       // axisWindows were auto-added to netted, bypassing the netting logic.
@@ -4530,7 +4554,7 @@ export class StrategyCoordinator {
       const outcome = aw?.outcome ?? "pos"
       const parentKey = s.parentSetKey ?? s.setKey.split("#")[0]
       // ── Variant-INDEPENDENT bucketing (operator spec: each activated
-      // variant is handled independently) ─────────���────────────────────────
+      // variant is handled independently) ───────────────────────────────────
       // The bucket key MUST include the variant. Without it, every variant
       // derived from the same Base Set + axis context (default/trailing/block/
       // dca/pause) collapsed into ONE hedge bucket and competed against each
@@ -4548,7 +4572,7 @@ export class StrategyCoordinator {
       if (dir === "short") b.short.push(s); else b.long.push(s)
     }
 
-    // Apply hedge netting only to profile-variant Sets
+    // Apply hedge netting to BOTH profile-variant Sets and axis (pos-count) Sets
     for (const [bucketKey, b] of hedgeBuckets) {
       const L = b.long.length
       const S = b.short.length
@@ -4566,19 +4590,15 @@ export class StrategyCoordinator {
       //   total   = L + S
       //   survivors = remainder = |L − S|
       //   cancelled = (L + S) − |L − S| = 2 × min(L, S)
-      //
-      // Previous formula `min(L,S)*2 + max(0, winnerPool.length − remainder)`
-      // overcounted: winnerPool.length = max(L,S), so the extra term adds
-      // max(L,S) − |L−S| = min(L,S) — doubling the min(L,S) cancellation.
-      // E.g. L=5, S=3 → previous gave 6+3=9 but correct is (5+3)−2=6.
       netCancelled += L + S - remainder
+      // Axis buckets record the net dominant-direction remainder so the live
+      // combine step can aggregate the |L − S| survivors into one order.
       netTargetWrites[bucketKey] = `${winnerDir}:${remainder}`
     }
-
     // `netted` contains hedge-bucket survivors (winnerPool.slice(0, remainder))
-    // All profile-variant sets participate in hedging — none bypass via pass-through.
-    // `axisPassthrough` contains axis Sets that skip hedging entirely.
-    // Together they form realPostHedge: (netted hedge survivors) + (axis pass-through)
+    // All profile-variant AND axis (pos-count) Sets now participate in hedge
+    // netting: netted[] holds the |L − S| dominant-direction survivors of both.
+    // `axisPassthrough` is retained as an empty placeholder for compatibility.
     //
     // Bootstrap fallback: when ALL profile-variant Sets are in OPPOSING direction
     // pairs that cancel each other AND there are no axis sets, the netting
@@ -5752,7 +5772,7 @@ export class StrategyCoordinator {
             // would bypass the count-specific PF gate and duplicate identities.
             const dispatchCandidates = qualifying
 
-            const dispatchSets: StrategySet[] = []
+            let dispatchSets: StrategySet[] = []
             {
               let sawNewLong  = false
               let sawNewShort = false
@@ -5785,6 +5805,52 @@ export class StrategyCoordinator {
                 if (sawNewLong && sawNewShort && sawDcaLong && sawDcaShort && sawBlockLong && sawBlockShort) {
                   break
                 }
+              }
+            }
+
+            // ── Combine pos-count (axis) Sets into ONE live order per direction ──
+            // Operator spec: the additional Main-stage pos-count Sets, after hedge
+            // netting (long/short → |L − S| dominant direction), are combined into
+            // a SINGLE live exchange order per symbol+direction with their volumes
+            // summed. Individual Set identities are preserved in `accumulatedSetKeys`
+            // and each Set's own PF/DDT/entry calculations remain intact; only the
+            // LIVE order count is reduced (one order, not one-per-set). Global stats
+            // (PnL, history) stay aggregated — no per-Set split.
+            {
+              const axisSets = dispatchSets.filter((s) => !!(s.axisWindows?.direction) && (s.posCountsVolumeRatio ?? 0) > 0)
+              if (axisSets.length > 0) {
+                const nonAxis = dispatchSets.filter((s) => !(s.axisWindows?.direction) || (s.posCountsVolumeRatio ?? 0) <= 0)
+                const byDir: Record<"long" | "short", StrategySet[]> = { long: [], short: [] }
+                for (const s of axisSets) byDir[(s.direction === "short" ? "short" : "long")].push(s)
+                const combined: StrategySet[] = []
+                for (const dir of ["long", "short"] as const) {
+                  const members = byDir[dir]
+                  if (members.length === 0) continue
+                  const totalRatio = members.reduce((sum, s) => sum + (s.posCountsVolumeRatio ?? 0.05), 0)
+                  const combinedEntryCount = members.reduce((sum, s) => sum + (s.entryCount ?? 0), 0)
+                  const wSum = members.reduce((sum, s) => sum + (s.avgProfitFactor ?? 1) * ((s.entryCount ?? 1) || 1), 0)
+                  const wDen = members.reduce((sum, s) => sum + ((s.entryCount ?? 1) || 1), 0)
+                  const combinedSet: StrategySet = {
+                    ...members[0],
+                    setKey: `${symbol}:poscounts:combined:${dir}`,
+                    parentSetKey: members[0].parentSetKey,
+                    direction: dir,
+                    variant: "default",
+                    avgProfitFactor: wDen > 0 ? wSum / wDen : (members[0].avgProfitFactor ?? 1),
+                    avgConfidence: members.reduce((sum, s) => sum + (s.avgConfidence ?? 0), 0) / members.length,
+                    avgDrawdownTime: members.reduce((sum, s) => sum + (s.avgDrawdownTime ?? 0), 0) / members.length,
+                    entryCount: combinedEntryCount,
+                    entries: members[0].entries,
+                    axisWindows: { ...members[0].axisWindows!, direction: dir, axisKey: `combined:${dir}` },
+                    posCountsVolumeRatio: Number(totalRatio.toFixed(4)),
+                    sizeMultiplier: Number(totalRatio.toFixed(4)),
+                    combinedPosCounts: true,
+                    accumulatedSetKeys: members.map((m) => m.setKey),
+                    indicationType: members[0].indicationType,
+                  }
+                  combined.push(combinedSet)
+                }
+                dispatchSets = [...nonAxis, ...combined]
               }
             }
 
@@ -5835,7 +5901,13 @@ export class StrategyCoordinator {
                 // Variant base sizing: prefer the variant's OWN coordinated
                 // multiplier (block vol-ratio-scaled, dca 0.5×) carried on the
                 // slim Set; fall back to the Base entry (1×) for Base/axis Sets.
-                const variantBaseMult = set.variantSizeMultiplier ?? bestEntry.sizeMultiplier ?? 1
+                // Combined pos-count (axis) Sets already carry their TOTAL summed
+                // volume ratio in `posCountsVolumeRatio` (and `sizeMultiplier`). Use
+                // it directly so the single live order sizes to the combined volume
+                // of every netted pos-count Set, not just the first member's ratio.
+                const variantBaseMult = set.combinedPosCounts
+                  ? (set.posCountsVolumeRatio ?? set.sizeMultiplier ?? 1)
+                  : (set.variantSizeMultiplier ?? bestEntry.sizeMultiplier ?? 1)
                 // Real-stage tuner delta is a BOUNDED adjustment ON TOP of the
                 // variant base (clamped [0.5,2.0]); it must not erase the
                 // variant's notional. VolumeCalculator applies the final
@@ -5960,6 +6032,16 @@ export class StrategyCoordinator {
                     // Main-stage axis Sets at this reduced fraction of base volume.
                     ...(set.posCountsVolumeRatio && set.posCountsVolumeRatio > 0
                       ? { posCountsVolumeRatio: set.posCountsVolumeRatio }
+                      : {}),
+                    // Combined pos-count (axis) Sets: flag + all member Set keys so
+                    // the single live order keeps full lineage for GLOBAL stats.
+                    ...(set.combinedPosCounts
+                      ? {
+                          combinedPosCounts: true,
+                          accumulatedSetKeys: set.accumulatedSetKeys && set.accumulatedSetKeys.length > 0
+                            ? set.accumulatedSetKeys
+                            : [set.setKey],
+                        }
                       : {}),
                     // ── Set-config propagation to Live ───������─────────────────
                     // Forward the Set's trailing profile and historical
