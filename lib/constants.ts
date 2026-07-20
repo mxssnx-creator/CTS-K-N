@@ -15,6 +15,11 @@ export const MAX_VOLUME_STEP_RATIO = 1.8
 // - Ratio < 1.0: Lower volume for conservative testing
 export const BASE_VOLUME_RATIO = 1.0  // Identity ratio - 1:1 with notional
 
+// Pos-count axis Set volume ratio (independent from Base volume)
+export const DEFAULT_POS_COUNT_VOLUME_RATIO = 0.05
+export const MIN_POS_COUNT_VOLUME_RATIO = 0.01
+export const MAX_POS_COUNT_VOLUME_RATIO = 0.25
+
 // ────────────────────────────────────────────────────────────────────────────
 // STRATEGY STAGE CONFIGURATION (Base, Main, Real)
 // ────────────────────────────────────────────────────────────────────────────

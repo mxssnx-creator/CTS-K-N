@@ -2077,6 +2077,8 @@ export async function GET(
           setsWithOpenPositions: setsRunningNow,
           // Main stage only: count of axis "additional Pos-Count Sets" created
           axisSets: stage === "main" ? n(dh.axis_sets || progHash.strategies_main_axis_sets) : 0,
+          // Main stage axis Sets after hedge netting (|L − S| survivors).
+          mainAxisNetted: stage === "main" ? n(dh.axis_sets_after_hedge || progHash.axis_sets_after_hedge) : 0,
           // Real-only 4-perspective stats (overall/accumulated/general/combined).
           // For non-Real stages the fields are 0 — the dialog only renders
           // the 4-tile panel when stage === "real".

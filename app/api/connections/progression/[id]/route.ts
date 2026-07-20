@@ -375,14 +375,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         // truth for the list of processed symbols, and the `:done` marker
         // lets us flip to 100% even if the hash's `is_complete` field was
         // written before a hot reload.
-        const [prehistoricDataRaw, prehistoricSymbolsSet, scopedDoneMarker, legacyDoneMarker] = await Promise.all([
+        const [prehistoricDataRaw, prehistoricSymbolsSet, scopedDoneMarker, legacyDoneMarker, legacyPrehistoricRaw] = await Promise.all([
           client.hgetall(scope.prehistoricKey).catch(() => null),
           client.smembers(`${scope.prehistoricKey}:symbols`).catch(() => [] as string[]),
           client.get(prehistoricGateKeys.scoped).catch(() => null),
           client.get(prehistoricGateKeys.legacy).catch(() => null),
+          client.hgetall(`prehistoric:${connectionId}`).catch(() => null),
         ])
         const doneMarker = scopedDoneMarker || legacyDoneMarker
         const prehistoricData = (prehistoricDataRaw as Record<string, string> | null) || {}
+        const legacyPrehistoric = (legacyPrehistoricRaw as Record<string, string> | null) || {}
         const processedSet = Array.isArray(prehistoricSymbolsSet) ? prehistoricSymbolsSet : []
 
         if (Object.keys(prehistoricData).length > 0 || processedSet.length > 0 || doneMarker) {
@@ -414,8 +416,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
           //      `:*:completed` markers are repaired by migrations instead of
           //      scanned from the UI poll path.
           const hashProcessed = Number(prehistoricData.symbols_processed || 0)
+          const legacyHashProcessed = Number(legacyPrehistoric.symbols_processed || 0)
+          const progHashCount = toNumber(progHash.prehistoric_symbols_processed_count)
+          const engineStateProcessed = toNumber(engineState?.config_set_symbols_processed)
           const setProcessed = processedSet.length
-          let processed = Math.max(hashProcessed, setProcessed)
+          let processed = Math.max(hashProcessed, legacyHashProcessed, progHashCount, engineStateProcessed, setProcessed)
           // Do not fall back to a Redis KEYS scan here. In production that scan
           // can block large keyspaces and make the progress endpoint itself
           // look like the stall. Modern processors write both the hash and the
@@ -461,8 +466,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const subItem = progression?.sub_item || (phase === "prehistoric_data" ? "symbols" : "")
     const storedSubCurrent = Number(progression?.sub_current) || 0
     const storedSubTotal = Number(progression?.sub_total) || 0
+    const prehistoricProcessedFallback = Math.max(
+      toNumber(engineState?.config_set_symbols_processed),
+      toNumber(progHash.prehistoric_symbols_processed_count),
+    )
     const subCurrent = phase === "prehistoric_data"
-      ? Math.max(storedSubCurrent, prehistoricProgress.symbolsProcessed)
+      ? Math.max(storedSubCurrent, prehistoricProgress.symbolsProcessed, prehistoricProcessedFallback)
       : storedSubCurrent
     const subTotal = phase === "prehistoric_data"
       ? Math.max(storedSubTotal, prehistoricProgress.symbolsTotal, configuredSymbolCount)

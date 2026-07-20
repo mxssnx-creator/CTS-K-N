@@ -70,8 +70,8 @@ describe("independent Block count lifecycle", () => {
   })
 
   test("calculates every Block independently from that position's current base volume", () => {
-    expect(calculateBlockVolumeMultiplier(1, 1, 1)).toBe(1)
-    expect(calculateBlockVolumeMultiplier(2, 3, 1)).toBe(6)
+    expect(calculateBlockVolumeMultiplier(1, 1, 1)).toBe(2)
+    expect(calculateBlockVolumeMultiplier(2, 3, 1)).toBe(8)
     expect(calculateBlockAddQuantity(1, 1, 1)).toBe(1)
     // Example: Block 1 left a current base of 2; valid Block 3 adds 2 × (3 × 1).
     expect(calculateBlockAddQuantity(2, 3, 1)).toBe(6)

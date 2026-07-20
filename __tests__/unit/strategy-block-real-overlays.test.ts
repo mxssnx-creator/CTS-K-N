@@ -185,8 +185,8 @@ describe("Real-stage Block overlays", () => {
     expect(after.map((set) => set.blockVolumeIncrementRatio)).toEqual([1.5, 3])
     expect(after[0].blockMinimumProfitFactor).toBeCloseTo(2.16, 10)
     expect(after[1].blockMinimumProfitFactor).toBeCloseTo(4.32, 10)
-    expect(after[0].variantSizeMultiplier).toBeCloseTo(1.875, 10)
-    expect(after[1].variantSizeMultiplier).toBeCloseTo(3.75, 10)
+    expect(after[0].variantSizeMultiplier).toBeCloseTo(3.125, 10)
+    expect(after[1].variantSizeMultiplier).toBeCloseTo(5, 10)
     await client.del(`strategy_block_pf_stats:${connectionId}`)
   })
 

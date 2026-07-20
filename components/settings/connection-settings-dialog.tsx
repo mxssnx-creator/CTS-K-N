@@ -142,6 +142,7 @@ interface OverviewSettings {
   volumeFactorLive:   number
   volumeFactorPreset: number
   volumeStepRatio: number
+  posCountsVolumeRatio: number
   marginMode:  "cross" | "isolated"
   volumeType:  "usdt" | "contract" | "spot"
   positionMode: "one_way" | "hedge"
@@ -169,6 +170,7 @@ const DEFAULT_OVERVIEW_SETTINGS: OverviewSettings = {
   volumeFactorLive: MIN_VOLUME_FACTOR,
   volumeFactorPreset: MIN_VOLUME_FACTOR,
   volumeStepRatio: DEFAULT_VOLUME_STEP_RATIO,
+  posCountsVolumeRatio: 0.05,
   marginMode: "cross",
   volumeType: "usdt",
   positionMode: "one_way",
@@ -458,6 +460,7 @@ export function ConnectionSettingsDialog({
           volumeFactorLive:   parseVolumeFactor(settings.volume_factor_live, parseVolumeFactor(conn.live_volume_factor, MIN_VOLUME_FACTOR)),
           volumeFactorPreset: parseVolumeFactor(settings.volume_factor_preset, parseVolumeFactor(conn.preset_volume_factor, MIN_VOLUME_FACTOR)),
           volumeStepRatio:   parseVolumeStepRatio(settings.volume_step_ratio ?? conn.volume_step_ratio),
+          posCountsVolumeRatio: typeof settings.posCountsVolumeRatio === "number" && settings.posCountsVolumeRatio >= 0.01 && settings.posCountsVolumeRatio <= 0.25 ? settings.posCountsVolumeRatio : 0.05,
           marginMode:  (settings.margin_mode || conn.margin_type || "cross") as "cross" | "isolated",
           volumeType:  (settings.volume_type || (conn.api_type === "futures_inverse" ? "contract" : conn.api_type === "spot" ? "spot" : "usdt")) as "usdt" | "contract" | "spot",
           positionMode: (settings.position_mode || conn.position_mode || "one_way") as "one_way" | "hedge",
@@ -1187,6 +1190,25 @@ export function ConnectionSettingsDialog({
                     value={overview.volumeStepRatio}
                     onChange={(v) => setOverview(p => ({ ...p, volumeStepRatio: v }))}
                   />
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium">Pos-Count Sets Volume Ratio</Label>
+                    <div className="flex items-center gap-3">
+                      <Slider
+                        min={0.01}
+                        max={0.25}
+                        step={0.01}
+                        value={[overview.posCountsVolumeRatio ?? 0.05]}
+                        onValueChange={([v]) => setOverview(p => ({ ...p, posCountsVolumeRatio: Number(v.toFixed(2)) }))}
+                        className="flex-1"
+                      />
+                      <span className="text-xs text-muted-foreground tabular-nums w-10 text-right">
+                        {(overview.posCountsVolumeRatio ?? 0.05).toFixed(2)}×
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground">
+                      Independent volume fraction for additional pos-count axis Sets (default 0.05).
+                    </p>
+                  </div>
 
                   <Separator className="my-4" />
                   <SectionHeading icon={ListFilter} title="Position Mode" subtitle="Margin and volume denomination applied to all orders." />

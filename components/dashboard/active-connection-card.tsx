@@ -256,6 +256,7 @@ export function ActiveConnectionCard({
     // Strategy stages
     stratBase: number
     stratMain: number
+    stratMainAxisNetted: number
     stratReal: number
     stratLive: number
     // Stage ratios and metrics
@@ -899,6 +900,7 @@ export function ActiveConnectionCard({
           indicationsTotal:     ind.total     || 0,
           stratBase:  strat.base || 0,
           stratMain:  strat.main || 0,
+          stratMainAxisNetted: strat.mainAxisNetted || 0,
           stratReal:  strat.real || 0,
           stratLive:  strat.live || 0,
           basePassRatio:       boundedPercentage(sd.base?.passRatio),
@@ -1877,6 +1879,7 @@ export function ActiveConnectionCard({
                           {
                             label: "Main",
                             count:     prehistoricStats.stratMain,
+                            axisNetted: prehistoricStats.stratMainAxisNetted || 0,
                             evaluated: prehistoricStats.mainEvaluated,
                             passed:    prehistoricStats.mainPassed,
                             passRatio: prehistoricStats.mainPassRatio,
@@ -1915,7 +1918,7 @@ export function ActiveConnectionCard({
                             color: "text-amber-600 dark:text-amber-400",
                             isLive: true,
                           },
-                        ].map(({ label, count, evaluated, passed, passRatio, avgPF, avgDDT, avgPosEval, countPosEval, color, isLive }) => (
+                        ].map(({ label, count, axisNetted = 0, evaluated, passed, passRatio, avgPF, avgDDT, avgPosEval, countPosEval, color, isLive }) => (
                           // Render the row whenever ANY metric for the stage
                           // has data — count, evaluated/passed, OR an avg
                           // profit factor. Previously this was gated on
@@ -1930,9 +1933,16 @@ export function ActiveConnectionCard({
                               {/* Main row: label, sets/positions count, pass/fill ratio, PF */}
                               <div className="flex items-center gap-2 text-[10px]">
                                 <span className={`font-semibold w-7 shrink-0 ${color}`}>{label}</span>
-                                <span className="font-semibold tabular-nums">
-                                  {count >= 1000 ? `${(count / 1000).toFixed(1)}K` : count} {isLive ? "pos" : "sets"}
-                                </span>
+                                 <span className="font-semibold tabular-nums">
+                                   {count >= 1000 ? `${(count / 1000).toFixed(1)}K` : count} {isLive ? "pos" : "sets"}
+                                 </span>
+                                 {label === "Main" && axisNetted > 0 && (
+                                   <span className="text-muted-foreground">
+                                     <span className="text-purple-700 dark:text-purple-300 font-semibold tabular-nums">
+                                       {axisNetted}
+                                     </span> axis (net)
+                                   </span>
+                                 )}
                                 {/* ── Open-position count for Real stage ───────
                                     Real-stage's `count` field is the cumulative
                                     Set tally — it does NOT surface the actual

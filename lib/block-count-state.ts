@@ -34,7 +34,7 @@ export function calculateBlockVolumeMultiplier(
   volumeRatio: number,
 ): number {
   if (![baseVolumeMultiplier, blockCount, volumeRatio].every((value) => Number.isFinite(value) && value > 0)) return 0
-  return baseVolumeMultiplier * (Math.floor(blockCount) * volumeRatio)
+  return baseVolumeMultiplier * (1 + Math.floor(blockCount) * volumeRatio)
 }
 
 /** Actual add-on ratio relative to the currently confirmed position size. */

@@ -747,7 +747,7 @@ export async function PATCH(
     const flatKnobs: Record<string, string> = {}
     const knobKeys = [
       "prevPosMinCount", "prevPosWindow", "mainEvalPosCount", "realEvalPosCount",
-      "minStep", "maxStopLossRatio", "trailingMinStep",
+      "minStep", "maxStopLossRatio", "trailingMinStep", "posCountsVolumeRatio",
     ] as const
     for (const k of knobKeys) {
       const v = merged[k]

@@ -4595,6 +4595,14 @@ export class StrategyCoordinator {
       // combine step can aggregate the |L − S| survivors into one order.
       netTargetWrites[bucketKey] = `${winnerDir}:${remainder}`
     }
+    const axisSetsAfterHedge = netted.filter((s) => !!(s.axisWindows?.direction)).length
+    try {
+      const detailClient = getRedisClient()
+      await detailClient.hset(`strategy_detail:${this.connectionId}:main`, {
+        [`s:${symbol}:axis_sets_after_hedge`]: String(axisSetsAfterHedge),
+        [`axis_sets_after_hedge`]: String(axisSetsAfterHedge),
+      }).catch(() => {})
+    } catch { /* non-critical */ }
     // `netted` contains hedge-bucket survivors (winnerPool.slice(0, remainder))
     // All profile-variant AND axis (pos-count) Sets now participate in hedge
     // netting: netted[] holds the |L − S| dominant-direction survivors of both.
