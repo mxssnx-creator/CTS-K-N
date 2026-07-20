@@ -1414,10 +1414,10 @@ export async function POST(request: Request) {
         })()
         const shouldAwaitBoot = process.env.NODE_ENV === "test" || shouldAwaitQuickStartEngineBoot()
         const engineBootResult = shouldAwaitBoot
-          ? await awaitWithTimeout(engineBoot, QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS, { started: false, queued: true })
+          ? await awaitWithTimeout(engineBoot, QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS, { started: false, queued: true, error: `timed out after ${QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS}ms` })
           : { started: false, queued: true }
         if (shouldAwaitBoot && !engineBootResult.started && engineBootResult.error) {
-          console.warn(`${LOG_PREFIX} awaited engine boot failed for ${connection.name}: ${engineBootResult.error}`)
+          console.warn(`${LOG_PREFIX} awaited engine boot did not complete for ${connection.name}: ${engineBootResult.error}`)
         }
       }
     
