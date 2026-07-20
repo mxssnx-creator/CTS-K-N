@@ -44,6 +44,19 @@ function serializeConnectionSettingsHash(settings: Record<string, unknown>): Rec
     else if (typeof value === "number" || typeof value === "boolean") out[key] = String(value)
     else out[key] = JSON.stringify(value)
   }
+  // The pos-count axis Sets volume ratio must stay within [0.01, 0.25]
+  // (default 0.05) wherever it is persisted. `serializeConnectionSettingsHash`
+  // is the single chokepoint that writes the flat connection-settings hash the
+  // GET handler reads back, so clamp it here as a final guarantee — the
+  // deep-merge and route-level clamps may leave an unclamped top-level value
+  // that this hash would otherwise echo verbatim.
+  for (const ratioKey of ["posCountsVolumeRatio", "pos_counts_volume_ratio"]) {
+    if (out[ratioKey] === undefined) continue
+    const n = Number(out[ratioKey])
+    if (Number.isFinite(n) && n > 0) {
+      out[ratioKey] = String(Math.max(0.01, Math.min(0.25, n)))
+    }
+  }
   return out
 }
 
