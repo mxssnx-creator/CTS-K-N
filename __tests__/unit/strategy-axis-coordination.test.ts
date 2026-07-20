@@ -12,6 +12,8 @@ import {
   normalizeStrategyAxisMaxWindow,
 } from "@/lib/strategy-axis-settings"
 
+const AXIS_CONT = [1, 2, 3, 4, 5, 6, 7, 8] as const
+
 function baseSet(recentPnls: number[]): StrategySet {
   return {
     setKey: "BTCUSDT:direction:long",
@@ -88,16 +90,45 @@ describe("strategy position-count axis coordination", () => {
         return
       }
 
-      const expected = (enabled(0) ? 5 : 1) * (enabled(1) ? 4 : 1) * (enabled(2) ? 5 : 2)
+      const prevOptions = enabled(0) ? [0, 4, 6, 8, 10, 12] : [0]
+      const lastOptions = enabled(1) ? [0, 1, 2, 3, 4] : [0]
+      const contMax = enabled(2) ? 8 : 0
+      const maxLiveOpen = Math.max(3, 2)
+      const contOptions = enabled(2)
+        ? [0, ...AXIS_CONT.filter((v) => v <= Math.min(contMax, maxLiveOpen))]
+        : [0]
+
+      const dirs = ["long", "short"] as const
+      const longOpen = 3
+      const shortOpen = 2
+      const expected = prevOptions.reduce((sum, prev) => {
+        return sum + lastOptions.reduce((s2, last) => {
+          return s2 + contOptions.reduce((s3, cont) => {
+            const longOk = cont <= longOpen
+            const shortOk = cont <= shortOpen
+            return s3 + (longOk ? 1 : 0) + (shortOk ? 1 : 0)
+          }, 0)
+        }, 0)
+      }, 0)
+
       expect(sets).toHaveLength(expected)
       expect(new Set(sets.map((set) => set.setKey)).size).toBe(expected)
       for (const set of sets) {
-        if (enabled(0)) expect(set.axisWindows?.prev).toBeGreaterThanOrEqual(4)
-        else expect(set.axisWindows?.prev).toBe(0)
-        if (enabled(1)) expect(set.axisWindows?.last).toBeGreaterThanOrEqual(1)
-        else expect(set.axisWindows?.last).toBe(0)
-        if (enabled(2)) expect(set.axisWindows?.cont).toBeGreaterThanOrEqual(1)
-        else expect(set.axisWindows?.cont).toBe(0)
+        if (enabled(0)) {
+          expect([0, 4, 6, 8, 10, 12]).toContain(set.axisWindows?.prev)
+        } else {
+          expect(set.axisWindows?.prev).toBe(0)
+        }
+        if (enabled(1)) {
+          expect([0, 1, 2, 3, 4]).toContain(set.axisWindows?.last)
+        } else {
+          expect(set.axisWindows?.last).toBe(0)
+        }
+        if (enabled(2)) {
+          expect([0, 1, 2, 3]).toContain(set.axisWindows?.cont)
+        } else {
+          expect(set.axisWindows?.cont).toBe(0)
+        }
         expect(set.axisWindows?.pause).toBe(enabled(3) ? 2 : 0)
       }
     },
@@ -121,15 +152,17 @@ describe("strategy position-count axis coordination", () => {
       100,
     ) as StrategySet[]
 
-    expect(sets).toHaveLength(6)
+    expect(sets).toHaveLength(30)
     expect(sets.every((set) => set.setKey.includes("_u3"))).toBe(true)
-    expect(sets.filter((set) => set.direction === "long")).toHaveLength(4)
-    expect(sets.filter((set) => set.direction === "short")).toHaveLength(2)
+    expect(sets.every((set) => set.axisWindows?.pause === 3)).toBe(true)
+    expect(sets.every((set) => [0, 4].includes(set.axisWindows?.prev))).toBe(true)
+    expect(sets.every((set) => [0, 1, 2].includes(set.axisWindows?.last))).toBe(true)
+    expect(sets.every((set) => [0, 1, 2].includes(set.axisWindows?.cont))).toBe(true)
     expect(sets.some((set) => set.axisWindows?.cont === 2 && set.direction === "short")).toBe(false)
     expect(Math.max(...sets.map((set) => set.entryCount))).toBe(6)
   })
 
-  test("does not speculate Previous/Last Sets without completed positions", () => {
+  test("emits the p0_l0_c0 no-filter baseline even without completed positions", () => {
     const coordinator = new StrategyCoordinator("axis-empty") as any
     coordinator._coordinationSettings.axes = {
       prev: { enabled: true, maxWindow: 12 },
@@ -137,7 +170,10 @@ describe("strategy position-count axis coordination", () => {
       cont: { enabled: true, maxWindow: 8 },
       pause: { enabled: true, maxWindow: 8 },
     }
-    expect(coordinator.expandAxisSets(baseSet([]), 1.2, 2, { long: 1, short: 1 }, 0, 100)).toEqual([])
+    const sets = coordinator.expandAxisSets(baseSet([]), 1.2, 2, { long: 1, short: 1 }, 0, 100)
+    expect(sets).toHaveLength(4)
+    expect(sets.every((set) => set.axisWindows?.prev === 0 && set.axisWindows?.last === 0)).toBe(true)
+    expect(sets.every((set) => [0, 1].includes(set.axisWindows?.cont))).toBe(true)
   })
 
   test("enforces the output budget while Continuous runs independently", () => {
@@ -337,5 +373,4 @@ describe("strategy position-count axis coordination", () => {
     expect(combinedShort.accumulatedSetKeys).toEqual([shortA.setKey])
     expect(combinedShort.posCountsVolumeRatio).toBeCloseTo(0.04, 4)
   })
-
 })
