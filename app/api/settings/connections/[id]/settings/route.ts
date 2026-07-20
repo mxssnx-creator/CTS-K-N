@@ -95,6 +95,7 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "blockProfitFactorRatio",
   "blockMaxStack",
   "blockPauseCountRatio",
+  "posCountsVolumeRatio",
   "blockActiveRealEnabled",
   "blockActiveLiveEnabled",
   "strategyBaseTrailingEnabled",
@@ -189,7 +190,7 @@ export async function GET(
           "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
           // Block strategy tuning
           "blockVolumeRatio", "blockProfitFactorRatio", "blockMaxStack", "blockPauseCountRatio",
-          "dcaMaxSteps", "dcaBreakevenProfitPct", "dcaCooldownSeconds",
+          "posCountsVolumeRatio", "dcaMaxSteps", "dcaBreakevenProfitPct", "dcaCooldownSeconds",
           // PF / DDT / stage thresholds
           "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
           "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
@@ -310,7 +311,7 @@ export async function GET(
           storedCoord.blockProfitFactor,
           settings.blockProfitFactorRatio,
           settings.blockProfitFactor,
-        ),
+       ),
         0.8,
         0.2,
         5.0,
@@ -335,6 +336,12 @@ export async function GET(
         storedCoord.blockActiveLiveEnabled,
         settings.blockActiveLiveEnabled,
       ), true),
+      posCountsVolumeRatio: asBoundedNumber(
+        firstDefined(storedCoord.posCountsVolumeRatio, settings.posCountsVolumeRatio),
+        0.05,
+        0.01,
+        0.25,
+      ),
       trailingVariants,
       dcaMaxSteps: dca.maxSteps,
       dcaStepVolumeMultipliers: dca.stepVolumeMultipliers,
@@ -801,6 +808,8 @@ export async function PATCH(
       if (Number.isFinite(bpcr) && bpcr > 0) flatKnobs.blockPauseCountRatio = String(Math.max(1, Math.min(4, Math.round(bpcr * 2) / 2)))
       if (typeof coord.blockActiveRealEnabled === "boolean") flatKnobs.blockActiveRealEnabled = String(coord.blockActiveRealEnabled)
       if (typeof coord.blockActiveLiveEnabled === "boolean") flatKnobs.blockActiveLiveEnabled = String(coord.blockActiveLiveEnabled)
+      const pvr = Number(coord.posCountsVolumeRatio)
+      if (Number.isFinite(pvr) && pvr > 0) flatKnobs.posCountsVolumeRatio = String(Math.max(0.01, Math.min(0.25, pvr)))
 
       const normalizedTrailing = normalizeTrailingVariants(
         coord.trailingVariants ?? merged.strategyBaseTrailingVariants ?? DEFAULT_TRAILING_VARIANTS,
