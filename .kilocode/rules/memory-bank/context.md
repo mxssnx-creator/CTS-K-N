@@ -34,6 +34,7 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Axis Sets hedge netting + `combinePosCountAxisSets` extraction with regression test
 - [x] VolumeCalculator variant floor lowered 0.1 → 0.01
 - [x] `coordination_settings` char-indexed object bug fix in GET handler (parseIfString before spread)
+- [x] `posCountsVolumeRatio` 0.05 added to GET/PATCH coordinationSettings object and flatKnobs persistence
 
 ## Current Structure
 
