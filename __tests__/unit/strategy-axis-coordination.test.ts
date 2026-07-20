@@ -43,6 +43,29 @@ function baseSet(recentPnls: number[]): StrategySet {
 }
 
 describe("strategy position-count axis coordination", () => {
+  test("explicit flat axis disable flag overrides inherited nested enabled state", () => {
+    // Regression: an operator toggle that sends only the top-level
+    // `axisContEnabled: false` (no nested `axes`) must disable the cont axis
+    // even though the previously stored `axes.cont.enabled` was true. The flat
+    // flag is authoritative when explicitly provided.
+    expect(normalizeStrategyAxes(
+      { cont: { enabled: true, maxWindow: 8 } },
+      { axisContEnabled: false },
+    ).cont.enabled).toBe(false)
+
+    // A boolean true flat flag must also win over an inherited nested false.
+    expect(normalizeStrategyAxes(
+      { cont: { enabled: false, maxWindow: 8 } },
+      { axisContEnabled: true },
+    ).cont.enabled).toBe(true)
+
+    // String flat flags are still honoured.
+    expect(normalizeStrategyAxes(
+      { cont: { enabled: true, maxWindow: 8 } },
+      { axisContEnabled: "false" },
+    ).cont.enabled).toBe(false)
+  })
+
   test("normalizes legacy/invalid axis maxima to the exact engine grid", () => {
     expect(normalizeStrategyAxisMaxWindow("prev", 2)).toBe(4)
     expect(normalizeStrategyAxisMaxWindow("prev", 5)).toBe(4)

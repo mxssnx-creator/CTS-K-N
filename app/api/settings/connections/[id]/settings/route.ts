@@ -517,6 +517,24 @@ export async function PATCH(
 
     const merged = mergeConnectionSettings(current, settings)
     normalizeCoordinationAxesInSettings(merged)
+    // Keep the canonical nested coordination object in sync with the top-level
+    // knob. The Settings UI may send `posCountsVolumeRatio` either at the top
+    // level or inside `coordinationSettings`; GET re-derives the value from the
+    // nested object, so whichever form arrives must propagate to both stores.
+    // Clamp at the source (top-level AND nested) so an out-of-range value can
+    // never be persisted into the connection settings or the recoordination
+    // snapshot.
+    const rawPcvr = Number(merged.posCountsVolumeRatio)
+    if (Number.isFinite(rawPcvr) && rawPcvr > 0) {
+      const clampedPcvr = Math.max(0.01, Math.min(0.25, rawPcvr))
+      merged.posCountsVolumeRatio = clampedPcvr
+      const coord = (merged.coordination_settings && typeof merged.coordination_settings === "object"
+        ? merged.coordination_settings
+        : merged.coordinationSettings) as Record<string, unknown> | undefined
+      if (coord && typeof coord === "object") {
+        coord.posCountsVolumeRatio = clampedPcvr
+      }
+    }
     let activeIndicationPatch: Record<string, string> | undefined
     let activeIndicationsChanged = false
     if (incomingIndicationChannels && typeof incomingIndicationChannels === "object") {

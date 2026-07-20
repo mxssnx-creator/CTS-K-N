@@ -46,8 +46,20 @@ export function normalizeStrategyAxes(
   for (const axis of Object.keys(STRATEGY_AXIS_SPECS) as StrategyAxisKey[]) {
     const cap = axis.charAt(0).toUpperCase() + axis.slice(1)
     const state = nested?.[axis]
+    const flatFlag = flat[`axis${cap}Enabled`]
+    // An explicit flat enable/disable flag (sent at the top level, as a boolean
+    // or the legacy string "true"/"false" via `coordinationSettings.axis{Cap}Enabled`)
+    // MUST win over the nested `axes.{cap}.enabled` value inherited from
+    // previously stored settings. Otherwise an operator toggle that only sends
+    // the flat flag would be silently ignored because the stored nested
+    // `enabled: true` is "defined" and shadows it.
+    const enabled = flatFlag !== undefined
+      ? storedBoolean(flatFlag, true)
+      : typeof state?.enabled === "boolean"
+        ? state.enabled
+        : true
     out[axis] = {
-      enabled: storedBoolean(state?.enabled ?? flat[`axis${cap}Enabled`], true),
+      enabled,
       maxWindow: normalizeStrategyAxisMaxWindow(
         axis,
         state?.maxWindow ?? flat[`axis${cap}MaxWindow`],
