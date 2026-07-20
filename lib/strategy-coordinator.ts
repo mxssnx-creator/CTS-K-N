@@ -6791,11 +6791,20 @@ export class StrategyCoordinator {
     const recentPnls = (baseDefault.prevPos?.recentPnls || [])
       .map(Number)
       .filter(Number.isFinite)
+    // ── Axis window value lists ──────────────────────────────────────────
+    // The `0` window is the "no axis filter" baseline: it means "use the
+    // inherited PF / no continuous-count requirement" and MUST always be
+    // present so the p0_l0_c0 default axis Set is emitted even when there is
+    // zero realised position history (prev/last PF gates fall back to the
+    // inherited PF for the 0 window). Without it, enabling an axis with no
+    // history would withhold every axis Set — the operator-specified default
+    // we always want. When an axis dimension is DISABLED it contributes only
+    // its `0` baseline (no window fan-out).
     const prevValues: number[] = axes.prev.enabled
-      ? AXIS_PREV.filter((value) => value <= clampNumber(Math.floor(axes.prev.maxWindow), 0, 12))
+      ? [0, ...AXIS_PREV.filter((value) => value <= clampNumber(Math.floor(axes.prev.maxWindow), 0, 12))]
       : [0]
     const lastValues: number[] = axes.last.enabled
-      ? AXIS_LAST.filter((value) => value <= clampNumber(Math.floor(axes.last.maxWindow), 0, 4))
+      ? [0, ...AXIS_LAST.filter((value) => value <= clampNumber(Math.floor(axes.last.maxWindow), 0, 4))]
       : [0]
     const pause = axes.pause.enabled
       ? Math.min(
@@ -6829,8 +6838,12 @@ export class StrategyCoordinator {
       : 0
     const longOpen = Math.max(0, Math.floor(liveContByDir?.long ?? liveCont))
     const shortOpen = Math.max(0, Math.floor(liveContByDir?.short ?? liveCont))
+    // `cont=0` is the baseline (no continuous-count requirement) and must be
+    // present whenever the cont axis is enabled so axis Sets survive before
+    // any live position has accrued. Non-zero windows are then bounded by the
+    // larger of the operator maxWindow and the actual direction open count.
     const contValues: number[] = axes.cont.enabled
-      ? AXIS_CONT.filter((value) => value <= Math.min(contMax, Math.max(longOpen, shortOpen)))
+      ? [0, ...AXIS_CONT.filter((value) => value <= Math.min(contMax, Math.max(longOpen, shortOpen)))]
       : [0]
     if (contValues.length === 0) return axisSets
 
