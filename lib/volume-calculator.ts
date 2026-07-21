@@ -24,6 +24,7 @@ import { initRedis, getSettings, getAppSettings, setSettings, getRedisClient, ge
 import { getMaxLeverageForExchange } from "@/lib/leverage-policy"
 import { DEFAULT_VOLUME_STEP_RATIO, MAX_VOLUME_STEP_RATIO, MIN_VOLUME_STEP_RATIO } from "@/lib/constants"
 import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
+import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
 
 interface VolumeCalculationParams {
   baseVolumeFactor?: number
@@ -62,8 +63,8 @@ interface VolumeCalculationParams {
   //   - 1.0 = system baseline (no scaling from engine factor)
   //   - >1.0 = higher volume for aggregated/optimized orders
   //   - <1.0 = lower volume for conservative testing
-  // Live-engine factors default to the canonical minimum 0.1 when missing
-  // or invalid. Bounded to [0.1, 10] inside `calculatePositionVolume` so a misconfigured
+  // Live-engine factors default to identity ratio 1 when missing or invalid.
+  // Bounded to [0.01, 10] inside `calculatePositionVolume` so a misconfigured
   // setting can never blow out a live order to 100× the intended size.
   mainVolumeFactor?: number
   presetVolumeFactor?: number
@@ -239,7 +240,10 @@ export class VolumeCalculator {
     //   - >1.0 = higher volumes for aggregation and optimization
     //   - <1.0 = lower volumes for conservative sizing
     //
-    // Bounds: [0.1, 10]. A misconfigured 0 or negative collapses the
+    // Bounds: [0.01, 10]. Ratio 1 is the exchange-minimum baseline;
+    // smaller ratios are retained in `calculatedVolume` for pos-count hedge
+    // aggregation. That target is sent only once the COMBINED ratio reaches
+    // the venue minimum; it must never be rounded up per individual Set.
     // position to zero (the universal $5 floor would clamp back up but
     // we'd still log misleading numbers); a runaway 100× value would
     // silently blow live orders. Clipping here means the slider's UI
@@ -247,8 +251,8 @@ export class VolumeCalculator {
     // POST bypasses the UI.
     const clampFactor = (raw: number | undefined): number => {
       const n = Number(raw)
-      if (!Number.isFinite(n) || n <= 0) return 0.1
-      return Math.max(0.1, Math.min(10, n))
+      if (!Number.isFinite(n) || n <= 0) return 1
+      return Math.max(0.01, Math.min(10, n))
     }
     const liveEngineFactor =
       tradeMode === "preset" ? clampFactor(presetVolumeFactor)
@@ -327,8 +331,15 @@ export class VolumeCalculator {
       const variantMult = clampVariant(sizeMultiplier)
 
       const posAvg = positionsAverage && positionsAverage > 0 ? positionsAverage : 1
-      const positionSizeUsd = (accountBalance * positionCost * liveEngineFactor * variantMult) / posAvg
-      const calculatedVolume = positionSizeUsd / currentPrice
+      // Live execution is venue-minimum based. Ratio 1 means exactly one
+      // exchange-minimum order; higher ratios scale that minimum. The
+      // position-cost formula remains the pseudo/strategy reference and is
+      // deliberately not allowed to inflate a default live order.
+      const positionCostNotionalUsd = (accountBalance * positionCost) / posAvg
+      const positionSizeUsd = tradeMode
+        ? (effectiveMin * currentPrice * liveEngineFactor * variantMult)
+        : (positionCostNotionalUsd * variantMult)
+      const calculatedVolume = currentPrice > 0 ? positionSizeUsd / currentPrice : 0
       const { final, adjusted, reason } = clampUp(calculatedVolume)
 
       // Surface multiplier provenance in the adjustment reason only when
@@ -410,7 +421,7 @@ export class VolumeCalculator {
    *
    *   per-connection override (saved by VolumeConfigurationPanel)
    *   > global setting (Settings → Overall → Volume Configuration)
-   *   > 0.1 (canonical minimum when unset)
+   *   > 1.0 (canonical exchange-minimum ratio when unset)
    *
    * Trade-mode resolution from connection flags:
    *   - `is_preset_trade === true` AND `is_live_trade !== true` → "preset"
@@ -449,7 +460,7 @@ export class VolumeCalculator {
     //   3. Global app_settings hash written by migration 034 → `volume_factor_live`
     //   4. Legacy UI-named variant                          → `mainTradeVolumeFactor`
     //   5. Snake-case UI variant                            → `main_trade_volume_factor`
-    //   6. Canonical minimum (0.1) when unset
+      //   6. Canonical identity ratio (1.0) when unset
     //
     // Key-name history:
     //   Migration 034 writes `volume_factor_live` to app_settings.
@@ -462,21 +473,21 @@ export class VolumeCalculator {
         ?? app["volume_factor_live"]
         ?? app["mainTradeVolumeFactor"]
         ?? app["main_trade_volume_factor"],
-      0.1,
+      1,
     )
 
     // Priority stack for the preset volume factor:
     //   1. Per-connection `preset_volume_factor`
     //   2. Global `volume_factor_preset` (migration 034)
     //   3. Legacy UI variants
-    //   4. Canonical minimum (0.1) when unset
+    //   4. Canonical identity ratio (1.0) when unset
     const presetVolumeFactor = num(
       conn["preset_volume_factor"]
         ?? app["preset_volume_factor"]
         ?? app["volume_factor_preset"]
         ?? app["presetTradeVolumeFactor"]
         ?? app["preset_trade_volume_factor"],
-      0.1,
+      1,
     )
 
     const rawStep = num(
@@ -606,7 +617,7 @@ export class VolumeCalculator {
 
       // ── Position cost resolution ─────────────────────────────────────
       // Priority: canonical per-connection settings overlay > connection:{id}
-      // direct fields > global app_settings > built-in default 0.02%. Resolve
+      // direct fields > global app_settings > built-in default 0.1%. Resolve
       // this AFTER all overlays; the old order calculated it before direct
       // connection/canonical settings were merged, producing default-sized live
       // orders despite saved operator sizing.
@@ -614,13 +625,9 @@ export class VolumeCalculator {
         settings.exchangePositionCost ??
         settings.positionCost ??
         settings.exchange_position_cost ??
-        "0.02"
-      const positionCostPercent = parseFloat(String(positionCostRaw))
-      const clampedPositionCostPercent =
-        Number.isFinite(positionCostPercent) && positionCostPercent > 0
-          ? Math.max(0.02, Math.min(1.0, positionCostPercent))
-          : 0.02
-      const positionCost = clampedPositionCostPercent / 100  // 0.02% absolute fallback
+        POSITION_COST_PERCENT_DEFAULT
+      const clampedPositionCostPercent = normalizePositionCostPercent(positionCostRaw)
+      const positionCost = clampedPositionCostPercent / 100
 
       // ── Positions-average resolution ─────────────────────────────────
       const positionsAverage = (() => {
@@ -669,8 +676,8 @@ export class VolumeCalculator {
       // Live-stage callers pass tradeMode: "main" | "preset" explicitly.
       // Strategy callers omit it → liveEngineFactor stays 1.0.
       let resolvedMode: "main" | "preset" | undefined = options.tradeMode
-      let mainVolumeFactor = 0.1
-      let presetVolumeFactor = 0.1
+      let mainVolumeFactor = 1
+      let presetVolumeFactor = 1
       let volumeStepRatio = DEFAULT_VOLUME_STEP_RATIO
       if (resolvedMode === "main" || resolvedMode === "preset") {
         // Pass BOTH the connection record (has live_volume_factor written

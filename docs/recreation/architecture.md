@@ -7,7 +7,7 @@ CTS-K-N is one logical system with two supported production topologies.
 ```mermaid
 flowchart TB
   U["Browser / operator"] --> W["Next.js control plane"]
-  W --> R["Shared Redis + schema v81"]
+  W --> R["Shared Redis + schema v82"]
   C["Minute continuity owner"] --> W
   E["Long-lived trade-engine owner"] --> R
   E --> X["Exchange APIs"]

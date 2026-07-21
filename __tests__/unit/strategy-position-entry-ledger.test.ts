@@ -132,4 +132,40 @@ describe("confirmed strategy-position entry ledger", () => {
     })
     expect(await getRedisClient().scard(`valid_positions_active_v2:${connectionId}`)).toBe(0)
   })
+
+  test("active position and exact Set memberships have no clock and remain identical across long cycle reads", async () => {
+    // This test is intentionally placed after close in source order only for
+    // Jest readability; use an independent active identity so the lifecycle is
+    // not coupled to the earlier terminal-position assertions.
+    const activeId = "position-durable"
+    const setKey = "BTCUSDT:move:long#axis:p12_l4_c8_opos_dlong_u8"
+    await recordStrategyPositionEntry({
+      connectionId,
+      positionId: activeId,
+      entryId: `${activeId}:initial`,
+      setKey,
+      parentSetKey: "BTCUSDT:move:long",
+      symbol: "BTCUSDT",
+      indicationType: "move",
+      direction: "long",
+      axisKey: "p12_l4_c8_opos_dlong_u8",
+    })
+
+    const activeKeys = [
+      `valid_positions_active_v2:${connectionId}`,
+      `strategy_position_set_memberships:${connectionId}:${activeId}`,
+      `strategy_set_active_entry_counts:${connectionId}`,
+      `strategy_active_set_keys:${connectionId}`,
+      `strategy_ledger_totals:${connectionId}`,
+    ]
+    for (const key of activeKeys) expect(await getRedisClient().ttl(key)).toBe(-1)
+
+    const snapshots = await Promise.all(Array.from({ length: 40 }, () => getStrategySetLedgerSnapshot(connectionId)))
+    expect(snapshots.every((snapshot) => snapshot.active[setKey] === 1)).toBe(true)
+    expect(await getRedisClient().sismember(`valid_positions_active_v2:${connectionId}`, activeId)).toBe(1)
+
+    await expect(markStrategyPositionInactive(connectionId, activeId, { pnl: -0.5, drawdownMinutes: 12 })).resolves.toBe(true)
+    expect(await getRedisClient().sismember(`valid_positions_active_v2:${connectionId}`, activeId)).toBe(0)
+    await getRedisClient().del(`strategy_position_set_memberships:${connectionId}:${activeId}`)
+  })
 })

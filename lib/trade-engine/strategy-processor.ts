@@ -51,6 +51,16 @@ interface FlowThrottleEntry {
 
 // Map<`${connectionId}:${symbol}`, FlowThrottleEntry>
 const flowThrottle = new Map<string, FlowThrottleEntry>()
+const flowSummaryLogAt = new Map<string, number>()
+const FLOW_SUMMARY_LOG_INTERVAL_MS = 15_000
+
+function shouldLogFlowSummary(connectionId: string, symbol: string, now = Date.now()): boolean {
+  const key = `${connectionId}:${symbol}`
+  const previous = flowSummaryLogAt.get(key) || 0
+  if (now - previous < FLOW_SUMMARY_LOG_INTERVAL_MS) return false
+  flowSummaryLogAt.set(key, now)
+  return true
+}
 
 /**
  * Release all throttle entries for a connection — called from the
@@ -66,6 +76,9 @@ export function clearFlowThrottleForConnection(connectionId: string): void {
   const prefix = `${connectionId}:`
   for (const key of flowThrottle.keys()) {
     if (key.startsWith(prefix)) flowThrottle.delete(key)
+  }
+  for (const key of flowSummaryLogAt.keys()) {
+    if (key.startsWith(prefix)) flowSummaryLogAt.delete(key)
   }
 }
 
@@ -277,6 +290,7 @@ export class StrategyProcessor {
       let realLiveReady = 0
       const stageSummary: Record<string, any> = {}
       const statsWrites: Promise<any>[] = []
+      const logFlowSummary = shouldLogFlowSummary(this.connectionId, symbol)
 
       for (const result of results) {
         stageSummary[result.type] = {
@@ -306,10 +320,12 @@ export class StrategyProcessor {
           : result.type === "live"
             ? `${result.passedEvaluation}/${result.totalCreated} candidates passed, ${result.dispatchSelected ?? result.passedEvaluation} dispatch selected, ${result.dispatchSuppressed ?? 0} suppressed`
             : `${result.passedEvaluation}/${result.totalCreated} Sets passed`
-        console.log(
-          `[v0] [StrategyFlow] ${symbol} ${result.type.toUpperCase()}: ${stageLabel} | ` +
-          `PF=${result.avgProfitFactor.toFixed(2)} | DDT=${Math.round(result.avgDrawdownTime)}min`
-        )
+        if (logFlowSummary) {
+          console.log(
+            `[v0] [StrategyFlow] ${symbol} ${result.type.toUpperCase()}: ${stageLabel} | ` +
+            `PF=${result.avgProfitFactor.toFixed(2)} | DDT=${Math.round(result.avgDrawdownTime)}min`
+          )
+        }
 
         statsWrites.push(
           trackStrategyStats(
@@ -328,14 +344,21 @@ export class StrategyProcessor {
       if (statsWrites.length > 0) await Promise.all(statsWrites)
 
       if (realLiveReady > 0) {
-        console.log(`[v0] [StrategyFlow] ${symbol}: READY FOR TRADING - ${realLiveReady} live Sets selected`)
+        if (logFlowSummary) {
+          console.log(`[v0] [StrategyFlow] ${symbol}: READY FOR TRADING - ${realLiveReady} live Sets selected`)
+        }
 
-        await logProgressionEvent(this.connectionId, `strategies_realtime`, "info", `Strategy flow completed for ${symbol}`, {
-          stageSummary,
-          realEvaluated,
-          realLiveReady,
-          indicationsProcessed: indications.length,
-        })
+        // One bounded event per symbol/window is enough for diagnostics. The
+        // prior per-flow write added thousands of equivalent Redis events and
+        // megabytes of dev stdout during a short five-symbol soak.
+        if (logFlowSummary) {
+          await logProgressionEvent(this.connectionId, `strategies_realtime`, "info", `Strategy flow completed for ${symbol}`, {
+            stageSummary,
+            realEvaluated,
+            realLiveReady,
+            indicationsProcessed: indications.length,
+          })
+        }
       }
 
       // `strategiesEvaluated` here is the REAL-stage count, NOT a sum across

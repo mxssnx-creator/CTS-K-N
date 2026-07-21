@@ -85,6 +85,11 @@ export interface RealPosition {
   combinedPosCounts?: boolean
   /** All member Set keys of a combined pos-count order (for global stats / lineage). */
   accumulatedSetKeys?: string[]
+  posCountsSetRatios?: Record<string, number>
+  posCountsTargetFlat?: boolean
+  posCountsLongSetCount?: number
+  posCountsShortSetCount?: number
+  posCountsNetSetCount?: number
 }
 
 /**
@@ -206,11 +211,18 @@ export async function evaluateToRealPositions(
         // Store real position
         const key = `real:position:${realPosition.id}`
         const indexKey = `real:positions:index:${connectionId}`
+        // An approved Real position is live strategy state, not a cache. It
+        // must remain available through arbitrarily many cycles until the
+        // position is explicitly closed. PERSIST also heals records written
+        // by older releases with the former seven-day TTL.
         await Promise.all([
-          client.setex(key, 604800, JSON.stringify(realPosition)),
+          (async () => {
+            await client.set(key, JSON.stringify(realPosition))
+            await client.persist(key)
+          })(),
           (async () => {
             await client.sadd(indexKey, realPosition.id)
-            await client.expire(indexKey, 604800)
+            await client.persist(indexKey)
           })(),
         ])
 
@@ -418,6 +430,9 @@ function createRealPosition(
     ...(variantSource?.accumulatedSetKeys && variantSource.accumulatedSetKeys.length > 0
       ? { accumulatedSetKeys: variantSource.accumulatedSetKeys }
       : {}),
+    ...(variantSource?.posCountsSetRatios
+      ? { posCountsSetRatios: { ...variantSource.posCountsSetRatios } }
+      : {}),
   }
 }
 
@@ -472,9 +487,10 @@ export async function updateRealPositionStatus(
     if (data) {
       const position: RealPosition = JSON.parse(data)
       position.status = status
-      await client.setex(key, 604800, JSON.stringify(position))
-      await client.sadd(`real:positions:index:${position.connectionId}`, position.id)
-      await client.expire(`real:positions:index:${position.connectionId}`, 604800)
+      await client.set(key, JSON.stringify(position))
+      const indexKey = `real:positions:index:${position.connectionId}`
+      await client.sadd(indexKey, position.id)
+      await Promise.all([client.persist(key), client.persist(indexKey)])
 
       console.log(`${LOG_PREFIX} Updated position ${positionId} status to ${status}`)
     }

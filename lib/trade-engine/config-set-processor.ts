@@ -150,7 +150,8 @@ export class ConfigSetProcessor {
     symbols: string[],
     rangeStart?: Date,
     rangeEnd?: Date,
-    timeframeSec: number = 1
+    timeframeSec: number = 1,
+    options: { finalizePhase?: boolean } = {},
   ): Promise<ProcessingResult> {
     const startTime = Date.now()
     const now = new Date()
@@ -198,6 +199,7 @@ export class ConfigSetProcessor {
     const progressionScope = buildProgressionScope(this.connectionId, "main")
     const prehistoricKey = progressionScope.prehistoricKey
     const prehistoricSymbolsKey = `${prehistoricKey}:symbols`
+    const alreadyProcessedSymbols = Number(await client.scard(prehistoricSymbolsKey).catch(() => 0)) || 0
     const engineProgressionKey = progressionScope.engineProgressionKey
     const legacyEngineProgressionKey = `engine_progression:${this.connectionId}`
     const mirrorProgressHash = async (patch: Record<string, any>) => {
@@ -297,7 +299,10 @@ export class ConfigSetProcessor {
         candles_loaded: "0",
         intervals_processed: "0",
         missing_intervals: "0",
-        symbols_processed: "0",
+        // Portable/serverless owners may process a large selection in bounded
+        // chunks. Never regress the visible X/N count to zero at the start of
+        // the next chunk; the SET remains the monotonic source of truth.
+        symbols_processed: String(clampProcessedToTotal(alreadyProcessedSymbols, canonicalSymbolsTotal)),
         updated_at: new Date().toISOString(),
       }).catch(() => 0)
     } catch { /* non-critical */ }
@@ -372,7 +377,7 @@ export class ConfigSetProcessor {
             // Advance the dashboard percent bar even for data-less symbols,
             // using the SAME `engine_progression` schema the main path writes.
             const totalSyms = Math.max(1, canonicalSymbolsTotal)
-            const skipPct = Math.min(95, 15 + Math.round((symbolsProcessed / totalSyms) * 80))
+            const skipPct = Math.min(95, 15 + Math.round((distinctSkipProcessed / totalSyms) * 80))
             void setEngineProgress({
               phase: "prehistoric_data",
               progress: skipPct,
@@ -648,13 +653,17 @@ export class ConfigSetProcessor {
     await mapWithConcurrency(symbols, SYMBOL_CONCURRENCY, processOneSymbol)
 
     const duration = Date.now() - startTime
+    const finalDistinctProcessed = clampProcessedToTotal(
+      Number(await client.scard(prehistoricSymbolsKey).catch(() => symbolsProcessed)) || 0,
+      canonicalSymbolsTotal,
+    )
     const result: ProcessingResult = {
       indicationConfigs: indicationConfigs.length,
       indicationResults: totalIndicationResults,
       strategyConfigs: strategyConfigs.length,
       strategyPositions: totalStrategyPositions,
       symbolsTotal: canonicalSymbolsTotal,
-      symbolsProcessed: clampProcessedToTotal(symbolsProcessed, canonicalSymbolsTotal),
+      symbolsProcessed: finalDistinctProcessed,
       symbolsWithoutData,
       candlesProcessed,
       errors,
@@ -859,7 +868,9 @@ export class ConfigSetProcessor {
     // calc is done" signal. Without this call the phase stayed `active`
     // forever even though processing had finished.
     try {
-      await ProgressionStateManager.completePrehistoricPhase(this.connectionId, symbols.length)
+      if (options.finalizePhase !== false) {
+        await ProgressionStateManager.completePrehistoricPhase(this.connectionId, canonicalSymbolsTotal)
+      }
     } catch (err) {
       console.warn(
         `[v0] [ConfigSetProcessor] completePrehistoricPhase failed:`,
@@ -905,10 +916,12 @@ export class ConfigSetProcessor {
       )
     }
 
-    emitEngineStageAck(this.connectionId, "prehistoric_data", "ack", "Prehistoric processing completed", { symbolsProcessed, candlesProcessed, totalIndicationResults, totalStrategyPositions })
-    emitEngineStageAck(this.connectionId, "base_sets", "ack", "Base set stage completed", { totalStrategyPositions })
-    emitEngineStageAck(this.connectionId, "main_sets", "ack", "Main set stage completed", { totalStrategyPositions })
-    emitEngineStageAck(this.connectionId, "real_sets", "ack", "Real set stage completed", { totalStrategyPositions })
+    if (options.finalizePhase !== false) {
+      emitEngineStageAck(this.connectionId, "prehistoric_data", "ack", "Prehistoric processing completed", { symbolsProcessed: finalDistinctProcessed, candlesProcessed, totalIndicationResults, totalStrategyPositions })
+      emitEngineStageAck(this.connectionId, "base_sets", "ack", "Base set stage completed", { totalStrategyPositions })
+      emitEngineStageAck(this.connectionId, "main_sets", "ack", "Main set stage completed", { totalStrategyPositions })
+      emitEngineStageAck(this.connectionId, "real_sets", "ack", "Real set stage completed", { totalStrategyPositions })
+    }
 
     return result
   }

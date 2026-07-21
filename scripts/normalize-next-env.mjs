@@ -19,6 +19,27 @@ if (current !== desired) {
   console.log('[next-env] normalized next-env.d.ts route types reference to .next')
 }
 
+// Next automatically appends the active custom dist directory to
+// tsconfig.include. Keeping both `.next/types` and `.next-prod/types` makes a
+// later standalone `tsc --noEmit` merge two incompatible generated Route
+// unions even though each build passed Next's own type validation. The custom
+// build has already validated its generated types, so restore the repository's
+// canonical single `.next` type universe after that build completes.
+const distDir = process.env.NEXT_DIST_DIR || '.next'
+if (resolve(distDir) !== resolve('.next') && existsSync('tsconfig.json')) {
+  try {
+    const tsconfig = JSON.parse(readFileSync('tsconfig.json', 'utf8'))
+    const customTypesInclude = `${distDir.replace(/\/+$/, '')}/types/**/*.ts`
+    if (Array.isArray(tsconfig.include) && tsconfig.include.includes(customTypesInclude)) {
+      tsconfig.include = tsconfig.include.filter((entry) => entry !== customTypesInclude)
+      writeFileSync('tsconfig.json', `${JSON.stringify(tsconfig, null, 2)}\n`)
+      console.log(`[next-env] removed isolated ${customTypesInclude} from canonical TypeScript includes`)
+    }
+  } catch (error) {
+    throw new Error(`[next-env] could not normalize custom dist TypeScript includes: ${error.message}`)
+  }
+}
+
 // ── routes-manifest.json cross-copy ────────────────────────────────────────
 // When NEXT_DIST_DIR=.next-prod the production build writes the full manifest
 // to .next-prod/routes-manifest.json.  The dev server (Turbopack) only writes
@@ -27,7 +48,6 @@ if (current !== desired) {
 // Next.js internals that read the manifest from .next/ at request time — if
 // they see the stub they throw ENOENT and crash.  Copying the real manifest
 // into .next/ after each production build prevents the crash.
-const distDir = process.env.NEXT_DIST_DIR || '.next'
 const src = join(distDir, 'routes-manifest.json')
 const dest = join('.next', 'routes-manifest.json')
 
@@ -66,6 +86,23 @@ const requiredServerFiles = join(distDir, 'required-server-files.json')
 const serializedNextConfig = isValidJson(requiredServerFiles)
   ? JSON.parse(readFileSync(requiredServerFiles, 'utf8'))?.config ?? {}
   : {}
+
+// OpenNext reads this file immediately after the Next lifecycle finishes.
+// Next 15 can leave it as a zero-byte file on overlay filesystems even though
+// required-server-files.json contains the complete image configuration. Repair
+// that exact build-owned contract before provider packaging begins.
+const imagesManifest = join(distDir, 'images-manifest.json')
+if (!isValidJson(imagesManifest)) {
+  const images = serializedNextConfig.images && typeof serializedNextConfig.images === 'object'
+    ? serializedNextConfig.images
+    : {}
+  writeFileSync(imagesManifest, `${JSON.stringify({ version: 1, images }, null, 2)}\n`)
+  console.warn(`[next-env] restored invalid ${imagesManifest} from serialized Next config`)
+}
+if (!isValidJson(imagesManifest)) {
+  throw new Error(`[next-env] ${imagesManifest} is missing or is not valid JSON`)
+}
+
 const isStaticExport = serializedNextConfig.output === 'export'
 if (!isValidJson(exportMarker)) {
   if (isStaticExport) {

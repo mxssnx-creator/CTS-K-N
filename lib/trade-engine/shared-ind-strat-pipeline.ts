@@ -437,7 +437,11 @@ export async function runIndStratCycle(
       process.env.ENABLE_API_STRATEGY_FLOW !== "false" &&
       (!isServerlessDeploymentRuntime() ||
         process.env.ENABLE_API_STRATEGY_FLOW === "1" ||
-        process.env.ENABLE_API_STRATEGY_FLOW === "true") &&
+        process.env.ENABLE_API_STRATEGY_FLOW === "true" ||
+        // The bounded scheduled owner is an explicit, awaited strategy owner;
+        // unlike a generic serverless HTTP request it is safe and required to
+        // advance Main/Real/Live before the invocation returns.
+        deps.enableStrategyFlow === true) &&
       deps.enableStrategyFlow !== false
     // Live dispatch can still be skipped independently by CRON_LIVE_DISPATCH=0.
     if (result.indicationCount > 0 && apiStrategyFlowEnabled) {

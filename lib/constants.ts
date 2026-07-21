@@ -1,5 +1,5 @@
 // Volume factor for live exchange positions (scaling multiplier)
-export const MIN_VOLUME_FACTOR = 0.1
+export const MIN_VOLUME_FACTOR = 1
 
 // Volume step ratio system - ratio-based defaults
 // Default ratio 1.0 = system internal baseline

@@ -11,7 +11,6 @@ import { Progress } from "@/components/ui/progress"
 import { AnalyticsFilters } from "@/components/statistics/analytics-filters"
 import { StrategyPerformanceTable } from "@/components/statistics/strategy-performance-table"
 import { AnalyticsEngine } from "@/lib/analytics"
-import { TradingEngine } from "@/lib/trading"
 import type { AnalyticsFilter, StrategyAnalytics, SymbolAnalytics, TimeSeriesData } from "@/lib/analytics"
 import type { TradingPosition } from "@/lib/trading"
 import {
@@ -67,6 +66,7 @@ import { PresetTradeStats } from "@/components/statistics/preset-trade-stats"
 import { StatisticsOverview } from "@/components/settings/statistics-overview"
 import { useExchange } from "@/lib/exchange-context"
 import { PageHeader } from "@/components/page-header"
+import { TradeHistoryTable, type TradeHistoryRow } from "@/components/dashboard/trade-history-table"
 
 // Enhanced types for comprehensive analytics
 interface OptimalStrategyMetrics {
@@ -126,8 +126,10 @@ export default function StatisticsPage() {
   const [strategyAnalytics, setStrategyAnalytics] = useState<StrategyAnalytics[]>([])
   const [symbolAnalytics, setSymbolAnalytics] = useState<SymbolAnalytics[]>([])
   const [timeSeriesData, setTimeSeriesData] = useState<TimeSeriesData[]>([])
-  const [mockPositions, setMockPositions] = useState<TradingPosition[]>([])
+  const [positions, setPositions] = useState<TradingPosition[]>([])
+  const [tradeHistory, setTradeHistory] = useState<TradeHistoryRow[]>([])
   const [settings, setSettings] = useState<any>(null)
+  const [reloadGeneration, setReloadGeneration] = useState(0)
 
   // Enhanced analytics state
   const [optimalStrategies, setOptimalStrategies] = useState<OptimalStrategyMetrics[]>([])
@@ -147,8 +149,18 @@ export default function StatisticsPage() {
         console.log("[v0] [Statistics] Loading connections for exchange:", selectedExchange || "all")
         const response = await fetch(url)
         const data = await response.json()
-        const activeConnections = data.connections?.filter((c: any) => c.is_enabled) || []
-        setHasRealConnections(activeConnections.length > 0)
+        const inventory = Array.isArray(data?.connections) ? data.connections : []
+        const isTruthy = (value: unknown) => value === true || value === 1 || value === "1" || value === "true"
+        const realConnections = inventory.filter((c: any) =>
+          c?.id && !String(c.id).startsWith("demo") && c.id !== "demo-mode",
+        )
+        const activeConnections = realConnections.filter((c: any) =>
+          isTruthy(c.is_enabled_dashboard) ||
+          isTruthy(c.is_active_inserted) ||
+          isTruthy(c.is_inserted) ||
+          isTruthy(c.is_enabled),
+        )
+        setHasRealConnections(realConnections.length > 0)
 
         const settingsResponse = await fetch("/api/settings")
         if (settingsResponse.ok) {
@@ -156,56 +168,59 @@ export default function StatisticsPage() {
           setSettings(settingsData.settings || {})
         }
 
-        if (activeConnections.length === 0) {
-          // No real connections configured — fall back to demo positions so
-          // the analytics views remain explorable on a fresh install.
-          const tradingEngine = new TradingEngine()
-          const connections = ["bingx-x01", "pionex-x01"]
-          const positions: TradingPosition[] = []
-
-          connections.forEach((connectionId) => {
-            tradingEngine.generateMockPositions(connectionId, 50)
-            positions.push(...tradingEngine.getOpenPositions(connectionId))
-            positions.push(...tradingEngine.getClosedPositions(connectionId, 100))
-          })
-
-          setMockPositions(positions)
-          const engine = new AnalyticsEngine(positions)
+        if (realConnections.length === 0) {
+          // Statistics must never invent profitable/loss-making rows on an
+          // unconfigured production install. Render an honest zero dataset.
+          const engine = new AnalyticsEngine([])
+          setPositions([])
+          setTradeHistory([])
           setAnalyticsEngine(engine)
           updateAnalytics(engine, filter)
         } else {
-          // Real connections exist — pull the actual positions for the
-          // currently-selected exchange connection (or merge all active ones
-          // if the user hasn't picked one yet) and feed them into the
-          // analytics engine. This was the last page still running on
-          // fabricated mock data even when the user had live connections.
+          // Merge the live/open position view with the dedicated, exchange-
+          // backed closed-trade history. The old page read only active pseudo
+          // positions and hard-coded realized_pnl=0, making PnL, PF, win rate,
+          // history and time-series wrong even while the dashboard was correct.
           try {
             const scopeIds: string[] = selectedConnectionId
               ? [selectedConnectionId]
-              : activeConnections.map((c: any) => c.id).filter(Boolean)
+              : (activeConnections.length > 0 ? activeConnections : realConnections)
+                  .map((c: any) => String(c.id || ""))
+                  .filter(Boolean)
 
             const responses = await Promise.all(
-              scopeIds.map((id: string) =>
-                fetch(`/api/data/positions?connectionId=${encodeURIComponent(id)}`, { cache: "no-store" })
-                  .then((r) => (r.ok ? r.json() : null))
-                  .catch(() => null),
-              ),
+              scopeIds.map(async (id: string) => {
+                const [open, history] = await Promise.all([
+                  fetch(`/api/data/positions?connectionId=${encodeURIComponent(id)}`, { cache: "no-store" })
+                    .then((r) => (r.ok ? r.json() : null))
+                    .catch(() => null),
+                  fetch(`/api/trading/trade-history?connection_id=${encodeURIComponent(id)}&limit=500`, { cache: "no-store" })
+                    .then((r) => (r.ok ? r.json() : null))
+                    .catch(() => null),
+                ])
+                return { id, open, history }
+              }),
             )
 
             const merged: TradingPosition[] = []
+            const historyRows: TradeHistoryRow[] = []
+            const seen = new Set<string>()
             for (const payload of responses) {
-              if (payload && payload.success && Array.isArray(payload.data)) {
-                for (const p of payload.data) {
+              if (payload.open?.success && Array.isArray(payload.open.data)) {
+                for (const p of payload.open.data) {
                   // Shape payload from /api/data/positions (camelCase) into the
                   // snake_case TradingPosition the AnalyticsEngine consumes.
+                  const id = String(p.id || `${payload.id}:open:${p.symbol || "unknown"}`)
+                  if (seen.has(id)) continue
+                  seen.add(id)
                   const entryPrice = Number(p.entryPrice) || 0
                   const currentPrice = Number(p.currentPrice) || 0
                   const quantity = Number(p.quantity) || 0
                   const leverage = Number(p.leverage) || 1
                   const unrealized = Number(p.unrealizedPnl) || 0
                   merged.push({
-                    id: p.id,
-                    connection_id: payload.connectionId || "",
+                    id,
+                    connection_id: payload.id,
                     symbol: p.symbol,
                     strategy_type: "real",
                     volume: quantity,
@@ -216,7 +231,7 @@ export default function StatisticsPage() {
                     profit_loss: unrealized,
                     status: p.status === "closed" ? "closed" : "open",
                     opened_at: p.createdAt || new Date().toISOString(),
-                    closed_at: p.status === "closed" ? p.createdAt : undefined,
+                    closed_at: p.status === "closed" ? (p.closedAt || p.updatedAt || p.createdAt) : undefined,
                     position_side: String(p.side || "LONG").toLowerCase() as "long" | "short",
                     leverage,
                     indication_type: "direction",
@@ -230,14 +245,58 @@ export default function StatisticsPage() {
                   } as TradingPosition)
                 }
               }
+
+              if (payload.history?.success && Array.isArray(payload.history.rows)) {
+                for (const row of payload.history.rows) {
+                  if (row && row.id && row.symbol && (row.direction === "long" || row.direction === "short")) {
+                    historyRows.push(row as TradeHistoryRow)
+                  }
+                  const id = String(row.id || row.positionId || row.orderId || `${payload.id}:closed:${row.symbol}:${row.closedAt}`)
+                  if (seen.has(id)) continue
+                  seen.add(id)
+                  const entryPrice = Number(row.entryPrice) || 0
+                  const exitPrice = Number(row.exitPrice) || entryPrice
+                  const quantity = Math.abs(Number(row.quantity) || 0)
+                  const volumeUsd = Math.abs(Number(row.volumeUsd) || entryPrice * quantity)
+                  const realizedPnl = Number(row.realizedPnl) || 0
+                  const fees = Math.abs(Number(row.fees) || 0)
+                  const openedAt = Number(row.openedAt) || Number(row.closedAt) || Date.now()
+                  const closedAt = Number(row.closedAt) || openedAt
+                  merged.push({
+                    id,
+                    connection_id: payload.id,
+                    symbol: String(row.symbol || "UNKNOWN"),
+                    strategy_type: String(row.setVariant || "live"),
+                    volume: quantity,
+                    entry_price: entryPrice,
+                    current_price: exitPrice,
+                    profit_loss: realizedPnl,
+                    status: "closed",
+                    opened_at: new Date(openedAt).toISOString(),
+                    closed_at: new Date(closedAt).toISOString(),
+                    position_side: row.direction === "short" ? "short" : "long",
+                    leverage: 1,
+                    indication_type: "direction",
+                    unrealized_pnl: 0,
+                    realized_pnl: realizedPnl,
+                    margin_used: volumeUsd,
+                    fees_paid: fees,
+                    hold_time: Math.max(0, Number(row.holdMinutes) || (closedAt - openedAt) / 60_000),
+                    max_profit: Math.max(0, realizedPnl),
+                    max_loss: Math.min(0, realizedPnl),
+                  } as TradingPosition)
+                }
+              }
             }
 
-            setMockPositions(merged)
+            setPositions(merged)
+            setTradeHistory(historyRows)
             const engine = new AnalyticsEngine(merged)
             setAnalyticsEngine(engine)
             updateAnalytics(engine, filter)
           } catch (err) {
             console.error("[v0] [Statistics] Failed to load real positions:", err)
+            setTradeHistory([])
           }
         }
       } catch (error) {
@@ -248,7 +307,7 @@ export default function StatisticsPage() {
     }
 
     initialize()
-  }, [selectedExchange, selectedConnectionId])
+  }, [selectedExchange, selectedConnectionId, reloadGeneration])
 
   const updateAnalytics = (engine: AnalyticsEngine, currentFilter: AnalyticsFilter) => {
     const strategies = engine.generateStrategyAnalytics(currentFilter)
@@ -611,43 +670,21 @@ export default function StatisticsPage() {
     )
   }
 
-  if (hasRealConnections) {
-    return (
-      <div className="p-4">
-        <PageHeader title="Advanced Statistics" description="Analytics are populating with real trading data from your active connections." />
-        <Card className="mt-4">
-          <CardContent className="py-12 text-center space-y-2">
-            <BarChart3 className="h-12 w-12 text-muted-foreground/50 mx-auto" />
-            <div className="text-sm text-muted-foreground">
-              Real-data view is active. Statistics will appear here as your engine generates trades.
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
-  /*
-   * Modernized the mock-data view:
-   *   - Shared PageHeader replaces the bespoke `<h1>` + big icon.
-   *   - Full-width demo-data banner moved above the header for visibility.
-   *   - The 6-card big stats row swapped for the compact icon-pill pattern
-   *     used across the rest of the sidebar so vertical space is reclaimed
-   *     for the charts below.
-   */
   return (
     <div className="p-4 space-y-4">
-      <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
-        <div className="flex items-start gap-2">
-          <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
-          <div>
-            <div className="text-xs font-semibold text-foreground">Using Mock Data</div>
-            <div className="text-xs text-muted-foreground">
-              No active exchange connections found. Enable a connection in Settings to see real statistics.
+      {!hasRealConnections && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
+            <div>
+              <div className="text-xs font-semibold text-foreground">No exchange data yet</div>
+              <div className="text-xs text-muted-foreground">
+                No exchange connection is configured. Statistics remain at honest zero values until a connection produces positions or trades.
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
 
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <PageHeader
@@ -660,7 +697,10 @@ export default function StatisticsPage() {
             AI Analysis
           </Badge>
           <Button
-            onClick={() => analyticsEngine && updateAnalytics(analyticsEngine, filter)}
+            onClick={() => {
+              if (analyticsEngine) updateAnalytics(analyticsEngine, filter)
+              setReloadGeneration((generation) => generation + 1)
+            }}
             size="sm"
             className="h-8 text-xs"
           >
@@ -709,7 +749,7 @@ export default function StatisticsPage() {
 
         <div className="lg:col-span-3">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-5">
+            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-4 xl:grid-cols-11">
               <TabsTrigger value="overview" className="flex items-center gap-2">
                 <BarChart3 className="h-4 w-4" />
                 Overview
@@ -749,6 +789,10 @@ export default function StatisticsPage() {
               <TabsTrigger value="config" className="flex items-center gap-2">
                 <Cpu className="h-4 w-4" />
                 Config
+              </TabsTrigger>
+              <TabsTrigger value="history" className="flex items-center gap-2">
+                <Activity className="h-4 w-4" />
+                History
               </TabsTrigger>
             </TabsList>
 
@@ -1601,12 +1645,12 @@ export default function StatisticsPage() {
             </TabsContent>
 
             <TabsContent value="preset" className="space-y-6">
-              <PresetTradeStats filter={filter} positions={mockPositions} />
+              <PresetTradeStats filter={filter} positions={positions} />
             </TabsContent>
 
             <TabsContent value="adjust" className="space-y-6">
               <AdjustStrategyStats
-                positions={mockPositions
+                positions={positions
                   .filter((p) => p.status === "closed")
                   .map((p) => ({
                     id: p.id,
@@ -1634,7 +1678,7 @@ export default function StatisticsPage() {
 
             <TabsContent value="block" className="space-y-6">
               <BlockStrategyStats
-                positions={mockPositions
+                positions={positions
                   .filter((p) => p.status === "closed")
                   .map((p) => ({
                     id: p.id,
@@ -1672,6 +1716,15 @@ export default function StatisticsPage() {
                   </CardContent>
                 </Card>
               )}
+            </TabsContent>
+
+            <TabsContent value="history" className="space-y-4">
+              <TradeHistoryTable
+                trades={tradeHistory}
+                limit={500}
+                visibleWindow={50}
+                onRefresh={() => setReloadGeneration((generation) => generation + 1)}
+              />
             </TabsContent>
           </Tabs>
         </div>

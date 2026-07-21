@@ -11,7 +11,7 @@ As of July 19, 2026, the live trading system has been successfully configured an
 Two critical environment variables were added to enable live trading:
 
 ```env
-CRON_SECRET='production-cron-secret-key-over-16-characters-1234567890'
+CRON_SECRET='<generate-a-unique-secret-of-at-least-32-characters>'
 ALLOW_INLINE_REDIS_LIVE_TRADING='1'
 ```
 

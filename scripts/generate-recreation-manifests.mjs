@@ -131,6 +131,19 @@ const trackedFiles = git(["ls-files", "--cached", "--others", "--exclude-standar
   .filter((source) => existsSync(path.join(root, source)))
   .sort()
 
+// `git ls-files` can contain gitlink entries (mode 160000). Their worktree
+// representation is a directory, not an archived project file, and attempting
+// to read/hash it throws EISDIR. The recreation inventory is deliberately a
+// byte-verifiable file manifest, so include only filesystem files/symlinks
+// that resolve to files. Gitlink revisions remain part of the parent Git tree.
+const projectSourceFiles = trackedFiles.filter((source) => {
+  try {
+    return statSync(path.join(root, source)).isFile()
+  } catch {
+    return false
+  }
+})
+
 const workingTreeStatus = git(["status", "--short", "--untracked-files=all"])
   .split("\n")
   .filter(Boolean)
@@ -142,7 +155,7 @@ function addEnvironmentUse(name, source, kind) {
   environmentUses.get(name).kinds.add(kind)
 }
 
-for (const source of trackedFiles) {
+for (const source of projectSourceFiles) {
   const file = path.join(root, source)
   if (!existsSync(file) || statSync(file).size > 5_000_000) continue
   let body
@@ -210,7 +223,7 @@ for (const match of migrationBody.matchAll(migrationPattern)) {
 migrationRows.sort((a, b) => a.version - b.version)
 write("redis-migrations.tsv", toTsv(["version", "name", "source"], migrationRows))
 
-const testRows = trackedFiles
+const testRows = projectSourceFiles
   .filter((source) =>
     source.startsWith("__tests__/") ||
     source.startsWith("scripts/regression/") ||
@@ -230,7 +243,7 @@ const testRows = trackedFiles
 
 write("tests-and-verifiers.tsv", toTsv(["category", "source"], testRows))
 
-const fileRows = trackedFiles
+const fileRows = projectSourceFiles
   .filter((source) => !source.startsWith(outputPrefix))
   .map((source) => {
     const file = path.join(root, source)
@@ -243,7 +256,7 @@ const fileRows = trackedFiles
   })
 
 write("project-files.tsv", toTsv(["sha256", "bytes", "source"], fileRows))
-write("source-tree.txt", `${trackedFiles.filter((source) => !source.startsWith(outputPrefix)).join("\n")}\n`)
+write("source-tree.txt", `${projectSourceFiles.filter((source) => !source.startsWith(outputPrefix)).join("\n")}\n`)
 
 const packageJson = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"))
 const apiGroupSummary = Object.fromEntries(

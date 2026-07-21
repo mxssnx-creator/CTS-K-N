@@ -13,7 +13,7 @@ import Link from "next/link"
 
 export default function PortfolioDetailPage() {
   const params = useParams()
-  const portfolioId = Number.parseInt(params.id as string)
+  const portfolioId = Number.parseInt(String(params?.id ?? ""), 10)
 
   const [metrics, setMetrics] = useState<any>(null)
   const [riskLimits, setRiskLimits] = useState<any>(null)
@@ -21,7 +21,11 @@ export default function PortfolioDetailPage() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetchPortfolioData()
+    if (!Number.isSafeInteger(portfolioId) || portfolioId <= 0) {
+      setLoading(false)
+      return
+    }
+    void fetchPortfolioData()
   }, [portfolioId])
 
   const fetchPortfolioData = async () => {

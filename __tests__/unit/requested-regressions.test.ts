@@ -448,6 +448,19 @@ describe("requested regression guardrails", () => {
     expect(symbolStatsRoute).not.toContain("For now, return mock symbols")
   })
 
+  test("statistics page renders real open and closed exchange data without demo fallbacks", () => {
+    const source = read("app/statistics/page.tsx")
+
+    expect(source).toContain("/api/data/positions?connectionId=")
+    expect(source).toContain("/api/trading/trade-history?connection_id=")
+    expect(source).toContain("realized_pnl: realizedPnl")
+    expect(source).toContain("fees_paid: fees")
+    expect(source).toContain("No exchange data yet")
+    expect(source).not.toContain("generateMockPositions")
+    expect(source).not.toContain("Using Mock Data")
+    expect(source).not.toContain("if (hasRealConnections) {")
+  })
+
   test("pseudo position close PnL and PF inputs are net of 0.1% position cost", () => {
     const helper = read("lib/pseudo-position-costs.ts")
     const pseudoManager = read("lib/trade-engine/pseudo-position-manager.ts")
@@ -611,7 +624,7 @@ describe("requested regression guardrails", () => {
     expect(liveStage).toContain("Block Set ${realPosition.setKey || \"unknown\"} waits for authoritative parent fill")
     expect(liveStage).toContain("real?.sizeMultiplier ?? existing.sizeMultiplier")
     expect(liveStage).toContain("calculateBlockAddQuantity(blockBaseQuantity, blockCount, blockVolumeRatio)")
-    expect(liveStage).toContain("addQty = currentPositionQty × (activeBlockCount × blockVolumeRatio)")
+    expect(liveStage).toContain("addQty = baseSetQty × (blockCount × ratio)")
     expect(liveStage).toContain("exact fill deferred to reconciliation")
     expect(liveStage).toContain('p.status === "simulated"')
     expect(liveStage).toContain("accumulateIntoSimulatedPosition")
@@ -919,7 +932,8 @@ describe("requested regression guardrails", () => {
     expect(previewRunner).toContain("NEXT_DIST_DIR: distDir")
     expect(previewRunner).toContain('existsSync(`${distDir}/BUILD_ID`)')
     expect(previewRunner).toContain('ALLOW_PROD_SIMULATED: "1"')
-    expect(nextConfig).toContain("usesIsolatedBuildDirectory")
+    expect(nextConfig).toContain("zero-byte")
+    expect(nextConfig).toContain("cpus: 1")
     expect(nextConfig).toContain("staticGenerationMaxConcurrency: 1")
     expect(nextConfig).toContain("staticGenerationMinPagesPerWorker: 1")
   })
@@ -948,8 +962,8 @@ describe("requested regression guardrails", () => {
     const engine = read("lib/trade-engine/engine-manager.ts")
     const indication = read("lib/trade-engine/indication-processor-fixed.ts")
 
-    expect(engine.match(/loadMarketDataForEngine\(symbols, \{ requireHistory: true \}\)/g)?.length).toBeGreaterThanOrEqual(3)
-    expect(indication).toContain("loadMarketDataForEngine([symbol], { requireHistory: true })")
+    expect(engine.match(/loadMarketDataForEngine\(symbols, \{ requireHistory: true, connectionId: this\.connectionId \}\)/g)?.length).toBeGreaterThanOrEqual(3)
+    expect(indication).toContain("loadMarketDataForEngine([symbol], { requireHistory: true, connectionId: this.connectionId })")
     expect(engine).not.toContain('client.get("market_data:BTCUSDT:1s")')
   })
 
@@ -1219,7 +1233,8 @@ describe("requested regression guardrails", () => {
     expect(bootBlock).not.toMatch(/^\s*status: "running"/m)
 
     expect(statusRoute).toContain("const hasRuntimeProof = (coordinator?.getActiveEngineCount() || 0) > 0")
-    expect(statusRoute).toContain("const effectivelyRunning = isGloballyRunning && !isGloballyPaused && (hasLocalEngineRuntime || hasRuntimeProof || distributedEngineCount > 0)")
+    expect(statusRoute).toContain("const effectivelyRunning = isGloballyRunning && !isGloballyPaused &&")
+    expect(statusRoute).toContain("hasLocalEngineRuntime || hasRuntimeProof || distributedEngineCount > 0 || scheduledEngineCount > 0")
     expect(statusRoute).toContain('actualStatus: effectivelyRunning ? "running" : (isGloballyPaused ? "paused" : "degraded")')
     expect(statusRoute).toContain("last_heartbeat_at")
   })
@@ -1602,7 +1617,8 @@ describe("requested regression guardrails", () => {
     expect(progressionRoute).toContain('const globalIntent = globalState?.operator_intent || globalState?.desired_status || globalState?.status || ""')
     expect(progressionRoute).toContain('const [scopedEngineState, scopedRawEngineState, legacySettingsEngineState, legacyRawEngineState] = await Promise.all')
     expect(progressionRoute).toContain('const activeProgressionSymbolCount = toNumber(progHash.symbol_count) || toNumber(progHash.quickstart_symbol_count)')
-    expect(progressionRoute).toContain('prehistoricProgress.percentComplete = 100')
+    expect(progressionRoute).toContain('const finalHistoricProgress = calculateHistoricProgress(')
+    expect(progressionRoute).not.toContain('prehistoricProgress.percentComplete = 100')
     expect(progressionRoute).toContain('const processorHeartbeat = await getFreshestProcessorHeartbeat(connectionId).catch(() => 0)')
     expect(progressionRoute).toContain('hasFreshProcessorHeartbeat ||')
 
@@ -1892,7 +1908,8 @@ describe("requested regression guardrails", () => {
     expect(recoordinator).toContain("const destructiveProgressionChange = symbolsChanged || modeChanged")
     expect(recoordinator).toContain("const liveOrderSettingsChanged = hasAnyChangedField(normalizedChangedFields, LIVE_ORDER_SETTING_FIELDS)")
     expect(recoordinator).toContain("const requiresProgressRecoordination = destructiveProgressionChange || strategyOrCoordinationChanged")
-    expect(recoordinator).toContain("if (requiresProgressRecoordination)")
+    expect(recoordinator).toContain("if (requiresProgressRecoordination || liveOrderSettingsChanged)")
+    expect(recoordinator).toContain('settings_recoordination_reason: "live-order-settings-reload:queued-for-processing"')
     expect(recoordinator).toContain("strategy_recompute_requested")
     expect(recoordinator).toContain('reason: "live-sizing-order-protection-settings"')
     expect(recoordinator).toContain("Strategy/coordination changes deliberately stay hot-reload-only")
@@ -2161,6 +2178,9 @@ describe("requested regression guardrails", () => {
   test("BingX live order/control path defaults to the bingx-api library fast path", () => {
     const bingx = read("lib/exchange-connectors/bingx-connector.ts")
     const factory = read("lib/exchange-connectors/factory.ts")
+    const marketData = read("lib/market-data-loader.ts")
+    const connectionTests = read("lib/connection-test-scheduler.ts")
+    const engineManager = read("lib/trade-engine/engine-manager.ts")
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const migrations = read("lib/redis-migrations.ts")
 
@@ -2168,6 +2188,10 @@ describe("requested regression guardrails", () => {
     expect(bingx).toContain("tradeService.tradeOrder")
     expect(bingx).toContain('recordSdkFallback("placeStopOrder"')
     expect(factory).toContain('connectionLibrary: this.resolveExchangeName(connection) === "bingx" ? "sdk"')
+    expect(marketData).toContain("exchangeConnectorFactory.getOrCreateConnector(String(conn.id))")
+    expect(engineManager).toContain('connectionId: this.connectionId')
+    expect(connectionTests).toContain("exchangeConnectorFactory.getOrCreateConnector(connection.id)")
+    expect(connectionTests).not.toContain("isTestnet: false, // Always mainnet")
     expect(liveStage).toContain("EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000")
     expect(liveStage).toContain("const [slOrderId, tpOrderId] = await Promise.all")
     expect(migrations).toContain("066-bingx-sdk-fast-order-default")

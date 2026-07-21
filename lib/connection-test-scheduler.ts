@@ -2,7 +2,8 @@
 // Handles on-creation testing and periodic 5-minute background testing with rate limit respect
 
 import { getRedisClient, initRedis } from "@/lib/redis-db"
-import { createExchangeConnector } from "@/lib/exchange-connectors/factory"
+import { createExchangeConnector, exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
+import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { getExchangeRateLimit } from "@/lib/api-type-mapper"
 import type { ExchangeConnection } from "@/lib/types"
 
@@ -60,14 +61,22 @@ export async function testConnectionImmediate(
       throw new Error("Invalid or missing API credentials")
     }
 
-    // Create exchange connector
-    const connector = await createExchangeConnector(connection.exchange, {
+    // Prefer the connector resolved from the current persisted connection.
+    // For BingX this is the bingx-api SDK fast path, and its fingerprint is
+    // rebuilt whenever credentials, API type, testnet or position mode change.
+    // The direct path remains only for the narrow pre-save creation test.
+    const storedConnector = connection.id
+      ? await exchangeConnectorFactory.getOrCreateConnector(connection.id)
+      : null
+    const connector = storedConnector || await createExchangeConnector(connection.exchange, {
       apiKey: connection.api_key,
       apiSecret: connection.api_secret,
       apiPassphrase: connection.api_passphrase || "",
-      isTestnet: false, // Always mainnet
+      isTestnet: isTruthyFlag(connection.is_testnet),
       apiType: connection.api_type,
       contractType: connection.contract_type,
+      connectionMethod: String(connection.exchange || "").toLowerCase().includes("bingx") ? "library" : connection.connection_method,
+      connectionLibrary: String(connection.exchange || "").toLowerCase().includes("bingx") ? "sdk" : connection.connection_library,
     })
 
     // Test connection with 30-second timeout

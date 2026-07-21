@@ -129,8 +129,8 @@ export function ConnectionCard({
   const [availablePresetTypes, setAvailablePresetTypes] = useState<PresetType[]>([])
   const [engineStatus, setEngineStatus] = useState<any>(null)
   const [testingProgress, setTestingProgress] = useState(0)
-  const [volumeFactorLive, setVolumeFactorLive] = useState(0.1)
-  const [volumeFactorPreset, setVolumeFactorPreset] = useState(0.1)
+  const [volumeFactorLive, setVolumeFactorLive] = useState(1)
+  const [volumeFactorPreset, setVolumeFactorPreset] = useState(1)
 
   // Added state for strategy configuration
   const [activeIndications, setActiveIndications] = useState<ActiveIndicationConfig>({
@@ -563,7 +563,7 @@ export function ConnectionCard({
   const updateVolumeFactor = async (type: "live" | "preset", value: number) => {
     try {
       // Validate value range
-      const validatedValue = Math.max(0.1, Math.min(10.0, value))
+      const validatedValue = Math.max(1, Math.min(10.0, value))
 
       const response = await fetch(`/api/settings/connections/${connection.id}/settings`)
       if (!response.ok) throw new Error("Failed to load settings")
@@ -1213,7 +1213,7 @@ export function ConnectionCard({
               <div className="flex items-center gap-3">
                 <Slider
                   id={`volume-live-${connection.id}`}
-                  min={0.1}
+                  min={1}
                   max={10}
                   step={0.1}
                   value={[volumeFactorLive]}
@@ -1231,7 +1231,7 @@ export function ConnectionCard({
               <div className="flex items-center gap-3">
                 <Slider
                   id={`volume-preset-${connection.id}`}
-                  min={0.1}
+                  min={1}
                   max={10}
                   step={0.1}
                   value={[volumeFactorPreset]}

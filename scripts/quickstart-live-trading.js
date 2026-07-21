@@ -5,7 +5,7 @@
  * 
  * Triggers the full quickstart flow with:
  * - 32 symbols (auto-picked volatile ones)
- * - Minimal volume (live_volume_factor=0.1 forced by API)
+ * - Minimal exchange volume (live_volume_factor ratio=1 forced by API)
  * - Live trade enabled (is_live_trade=1 forced by API)
  * 
  * This makes "npm run quickstart" actually work instead of failing on missing file.
@@ -40,7 +40,7 @@ async function waitForHealth(timeoutMs = 90000) {
 async function main() {
   console.log("[Quickstart] Starting live trading quickstart test (dev or production server)...");
   console.log(`[Quickstart] Target: ${BASE}`);
-  console.log("[Quickstart] Config: 32 symbols, minimal volume (0.1), live trade ENABLED");
+  console.log("[Quickstart] Config: 32 symbols, minimal exchange volume (ratio 1), live trade ENABLED");
 
   try {
     // First check if server is up (dev mode). Next.js dev can spend several

@@ -23,6 +23,82 @@ const getHeapStatistics: (() => { heap_size_limit?: number; heap_total_size?: nu
 
 const _ENGINE_BUILD_VERSION = "11.0.0"
 
+const ACK_APPLIED_SETTINGS_GENERATION_LUA = `
+local currentSettings = redis.call('HGET', KEYS[1], 'settings_recoordination_requested_version') or ''
+local currentStats = redis.call('HGET', KEYS[1], 'stats_recalculation_requested_version') or ''
+local settingsAcked = 0
+local statsAcked = 0
+if ARGV[1] ~= '' and currentSettings == ARGV[1] then
+  redis.call('HSET', KEYS[1],
+    'settings_recoordination_pending', '0',
+    'settings_recoordination_completed', '1',
+    'settings_recoordination_completed_at', ARGV[3],
+    'settings_recoordination_applied_at', ARGV[3],
+    'settings_recoordination_applied_version', ARGV[1],
+    'settings_recoordination_applied_event_id', ARGV[2],
+    'settings_recoordination_applied_fields', ARGV[4],
+    'strategy_recompute_requested', '0')
+  settingsAcked = 1
+end
+if ARGV[1] ~= '' and currentStats == ARGV[1] then
+  redis.call('HSET', KEYS[1],
+    'stats_recalculation_requested', '0',
+    'stats_recalculation_completed', '1',
+    'stats_recalculation_completed_at', ARGV[3],
+    'stats_recalculation_applied_version', ARGV[1],
+    'stats_recalculation_applied_event_id', ARGV[2])
+  statsAcked = 1
+end
+return settingsAcked * 2 + statsAcked
+`
+
+async function acknowledgeAppliedSettingsGeneration(
+  client: any,
+  progressionKey: string,
+  appliedVersion: string,
+  appliedEventId: string,
+  appliedFields: string[],
+  completedAt: string,
+): Promise<boolean> {
+  const fieldsJson = JSON.stringify(appliedFields)
+  if (typeof client?.eval === "function") {
+    const result = await client.eval(ACK_APPLIED_SETTINGS_GENERATION_LUA, {
+      keys: [progressionKey],
+      arguments: [appliedVersion, appliedEventId, completedAt, fieldsJson],
+    })
+    return Number(result) >= 2
+  }
+
+  // The inline preview backend is single-process and has no Lua support.
+  // Compare immediately before writing so a superseded settings generation
+  // is never acknowledged by an older engine event.
+  const current = (await client.hgetall(progressionKey).catch(() => ({}))) as Record<string, string>
+  const patch: Record<string, string> = {}
+  if (current.settings_recoordination_requested_version === appliedVersion) {
+    Object.assign(patch, {
+      settings_recoordination_pending: "0",
+      settings_recoordination_completed: "1",
+      settings_recoordination_completed_at: completedAt,
+      settings_recoordination_applied_at: completedAt,
+      settings_recoordination_applied_version: appliedVersion,
+      settings_recoordination_applied_event_id: appliedEventId,
+      settings_recoordination_applied_fields: fieldsJson,
+      strategy_recompute_requested: "0",
+    })
+  }
+  if (current.stats_recalculation_requested_version === appliedVersion) {
+    Object.assign(patch, {
+      stats_recalculation_requested: "0",
+      stats_recalculation_completed: "1",
+      stats_recalculation_completed_at: completedAt,
+      stats_recalculation_applied_version: appliedVersion,
+      stats_recalculation_applied_event_id: appliedEventId,
+    })
+  }
+  if (Object.keys(patch).length > 0) await client.hset(progressionKey, patch)
+  return current.settings_recoordination_requested_version === appliedVersion
+}
+
 // CRITICAL FIX: Define totalStrategiesEvaluated in global scope as fallback
 // This allows stale closures from old code to continue without ReferenceError
 // The variable is defined but not used - new code doesn't reference it
@@ -569,6 +645,10 @@ export class TradeEngineManager {
   private settingsApplying = false
   /** Coalesces a newer durable envelope that arrives while one is applying. */
   private settingsApplyQueued = false
+  /** Lets the request fast-path wait for an already-running watcher apply. */
+  private settingsApplyWaiters: Array<() => void> = []
+  /** Last generation actually consumed by this owner; used to close marker/event races. */
+  private lastAppliedSettingsEvent?: import("@/lib/settings-coordinator").SettingsChangeEvent
   /** Prevents dirty-flag and hot-reload fast paths from recursively fanning out. */
   private immediateStrategyReevaluationInFlight = false
   /**
@@ -862,7 +942,7 @@ export class TradeEngineManager {
       // A realtime tail can be created before the cold-history loader finishes.
       // Requiring the history marker prevents that one-candle tail from making
       // the remaining startup path believe a symbol is fully bootstrapped.
-      const loaded = await loadMarketDataForEngine(symbols, { requireHistory: true })
+      const loaded = await loadMarketDataForEngine(symbols, { requireHistory: true, connectionId: this.connectionId })
       if (loaded === 0) {
         console.warn(`[v0] [Engine] No market data loaded for symbols: ${symbols.join(", ")}`)
       }
@@ -1577,7 +1657,7 @@ export class TradeEngineManager {
         // Fallback: load minimal market data
         try {
           const fallbackSymbols = ["DRIFTUSDT"]
-          await loadMarketDataForEngine(fallbackSymbols)
+          await loadMarketDataForEngine(fallbackSymbols, { connectionId: this.connectionId })
         } catch (fallbackErr) {
           console.warn(`[v0] [Engine] Fallback market data failed:`, fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr))
         }
@@ -3508,7 +3588,7 @@ export class TradeEngineManager {
         try {
           const { loadMarketDataForEngine } = await import("@/lib/market-data-loader")
           await withCycleDeadline(
-            loadMarketDataForEngine(symbols, { requireHistory: true }),
+            loadMarketDataForEngine(symbols, { requireHistory: true, connectionId: this.connectionId }),
             `Prehistoric ${connId} loadMarketData`,
             CYCLE_DEADLINE_MS,
           )
@@ -4343,6 +4423,7 @@ export class TradeEngineManager {
         writes.push(client.hset("trade_engine:global", {
           actual_status: "running",
           active_worker_id: `engine-manager:${process.pid}`,
+          runtime_owner_mode: "long-lived-engine-manager",
           last_heartbeat_at: String(now),
           last_heartbeat_iso: new Date(now).toISOString(),
           updated_at: new Date(now).toISOString(),
@@ -4392,6 +4473,7 @@ export class TradeEngineManager {
           getRedisClient().hset("trade_engine:global", {
             actual_status: "running",
             active_worker_id: `engine-manager:${process.pid}`,
+            runtime_owner_mode: "long-lived-engine-manager",
             last_heartbeat_at: String(now),
             last_heartbeat_iso: new Date(now).toISOString(),
             updated_at: new Date(now).toISOString(),
@@ -4416,7 +4498,7 @@ export class TradeEngineManager {
       if (heartbeatCount % 3 === 0) {
         try {
           const symbols = await this.getSymbols()
-          const loaded = await loadMarketDataForEngine(symbols, { requireHistory: true })
+          const loaded = await loadMarketDataForEngine(symbols, { requireHistory: true, connectionId: this.connectionId })
           if (loaded > 0) {
             console.log(`[v0] [Heartbeat] Market data refreshed for ${symbols.length} symbols`)
           }
@@ -4640,6 +4722,14 @@ export class TradeEngineManager {
       /* best effort */
     }
     await this.applyPendingSettingsChange()
+    // notifySettingsChanged emits to the watcher before the request path has
+    // finished archiving its progression marker. Re-ACK the generation after
+    // that serialized marker write. The exact-version CAS makes this harmless
+    // when the watcher already won and prevents an older event clearing a
+    // newer save.
+    if (this.lastAppliedSettingsEvent) {
+      await this.stampSettingsRecoordinationApplied(this.lastAppliedSettingsEvent)
+    }
   }
 
   private async stampSettingsRecoordinationApplied(
@@ -4650,37 +4740,18 @@ export class TradeEngineManager {
       const eventValues = (event.newValues || {}) as Record<string, unknown>
       const appliedVersion = String(eventValues.settings_version || eventValues.updated_at || event.timestamp || completedAt)
       const appliedEventId = String(eventValues.settings_event_id || appliedVersion)
-      const patch = {
-        settings_recoordination_pending: "0",
-        strategy_recompute_requested: "0",
-        // Stats are assembled on demand from the authoritative progression,
-        // Set, position, and order hashes. Applying the settings generation
-        // invalidates every affected cache and therefore completes the dirty
-        // marker; leaving it at "1" made the UI report a recalculation that no
-        // background consumer could ever clear.
-        stats_recalculation_requested: "0",
-        stats_recalculation_completed: "1",
-        stats_recalculation_completed_at: completedAt,
-        stats_recalculation_applied_version: appliedVersion,
-        stats_recalculation_applied_event_id: appliedEventId,
-        settings_recoordination_completed_at: completedAt,
-        settings_recoordination_applied_at: completedAt,
-        settings_recoordination_applied_version: appliedVersion,
-        settings_recoordination_applied_event_id: appliedEventId,
-        settings_recoordination_requested_version: appliedVersion,
-        settings_recoordination_requested_event_id: appliedEventId,
-        settings_recoordination_applied_fields: JSON.stringify(event.changedFields || []),
-      }
       const scope = buildProgressionScope(this.connectionId, this.currentEngineType)
+      const client = getRedisClient()
+      await client.hset(scope.progressionKey, { connection_id: this.connectionId, engine_type: scope.engineType })
       await Promise.all([
-        getRedisClient().hset(scope.progressionKey, { ...patch, connection_id: this.connectionId, engine_type: scope.engineType }),
-        getRedisClient().hset(scope.legacyProgressionKey, patch),
+        acknowledgeAppliedSettingsGeneration(client, scope.progressionKey, appliedVersion, appliedEventId, event.changedFields || [], completedAt),
+        acknowledgeAppliedSettingsGeneration(client, scope.legacyProgressionKey, appliedVersion, appliedEventId, event.changedFields || [], completedAt),
       ])
       await Promise.all([
-        getRedisClient().hdel?.(scope.progressionKey, "settings_recoordination_last_error"),
-        getRedisClient().hdel?.(scope.legacyProgressionKey, "settings_recoordination_last_error"),
-        getRedisClient().hdel?.(scope.progressionKey, "stats_recalculation_last_error"),
-        getRedisClient().hdel?.(scope.legacyProgressionKey, "stats_recalculation_last_error"),
+        client.hdel?.(scope.progressionKey, "settings_recoordination_last_error"),
+        client.hdel?.(scope.legacyProgressionKey, "settings_recoordination_last_error"),
+        client.hdel?.(scope.progressionKey, "stats_recalculation_last_error"),
+        client.hdel?.(scope.legacyProgressionKey, "stats_recalculation_last_error"),
       ])
     } catch (stampErr) {
       console.warn(
@@ -4731,6 +4802,7 @@ export class TradeEngineManager {
   private async applyPendingSettingsChange(): Promise<void> {
     if (this.settingsApplying) {
       this.settingsApplyQueued = true
+      await new Promise<void>((resolve) => this.settingsApplyWaiters.push(resolve))
       return
     }
     this.settingsApplying = true
@@ -4764,6 +4836,7 @@ export class TradeEngineManager {
         // that newer/merged envelope before releasing the local mutex.
         const cleared = await clearPendingChanges(this.connectionId, event)
         await this.stampSettingsRecoordinationApplied(event)
+        this.lastAppliedSettingsEvent = event
         if (!cleared) this.settingsApplyQueued = true
       } while (this.settingsApplyQueued)
     } catch (err) {
@@ -4774,6 +4847,8 @@ export class TradeEngineManager {
       )
     } finally {
       this.settingsApplying = false
+      const waiters = this.settingsApplyWaiters.splice(0)
+      for (const resolve of waiters) resolve()
     }
   }
 

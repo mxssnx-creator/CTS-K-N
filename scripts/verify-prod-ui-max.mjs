@@ -303,8 +303,8 @@ async function main() {
     const originalVolume = (await request(
       `/api/settings/connections/${encodeURIComponent(connectionId)}/volume?t=${Date.now()}`,
     )).data
-    const originalLiveVolume = Number(originalVolume?.live_volume_factor ?? 0.1)
-    const nextLiveVolume = originalLiveVolume === 0.2 ? 0.3 : 0.2
+    const originalLiveVolume = Number(originalVolume?.live_volume_factor ?? 1)
+    const nextLiveVolume = originalLiveVolume === 1.2 ? 1.3 : 1.2
     const volumeUpdate = (await request(
       `/api/settings/connections/${encodeURIComponent(connectionId)}/volume`,
       { method: "POST", body: { live_volume_factor: nextLiveVolume }, timeoutMs: 30_000 },

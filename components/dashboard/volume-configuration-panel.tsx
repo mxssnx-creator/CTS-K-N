@@ -65,7 +65,7 @@ export function VolumeConfigurationPanel({
         <Slider
           value={[liveVolumeFactor]}
           onValueChange={(value) => onLiveVolumeChange(value[0])}
-          min={0.1}
+          min={1}
           max={10}
           step={0.1}
           className="w-full"
@@ -98,7 +98,7 @@ export function VolumeConfigurationPanel({
         <Slider
           value={[presetVolumeFactor]}
           onValueChange={(value) => onPresetVolumeChange(value[0])}
-          min={0.1}
+          min={1}
           max={10}
           step={0.1}
           className="w-full"

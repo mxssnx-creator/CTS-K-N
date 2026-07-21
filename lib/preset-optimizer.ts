@@ -1198,7 +1198,7 @@ export function optimizePresetsForSymbol(input: {
   allCandles = []
   if (candles !== ranged) ranged = []
   const indicatorConfigs = buildCommonIndicatorConfigurations(input.commonSettings || {}, settings)
-  const positionCostPct = clamp(finite(input.positionCostPct, 0.02), 0.000001, 100)
+  const positionCostPct = clamp(finite(input.positionCostPct, 0.1), 0.000001, 100)
   const takeProfitRatios = rangeValues(settings.takeProfit)
   const stopLossRatios = rangeValues(settings.stopLossRatio)
   const trailingConfigurations = buildTrailingConfigurations(settings)

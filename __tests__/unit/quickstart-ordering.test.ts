@@ -135,8 +135,8 @@ describe("QuickStart route ordering", () => {
     expect(redisDb.updateConnection).not.toHaveBeenCalled()
     expect(recoordinator.applyMainConnectionSettingsChange).toHaveBeenCalledTimes(1)
     expect(recoordinator.applyMainConnectionSettingsChange).toHaveBeenCalledWith("conn-1", expect.objectContaining({ id: "conn-1" }), expect.objectContaining({
-      connectionPatch: expect.objectContaining({ live_volume_factor: "0.1" }),
-      settingsPatch: expect.objectContaining({ live_volume_factor: "0.1", volume_factor_live: "0.1" }),
+      connectionPatch: expect.objectContaining({ live_volume_factor: "1" }),
+      settingsPatch: expect.objectContaining({ live_volume_factor: "1", volume_factor_live: "1" }),
       changedFieldsOverride: expect.arrayContaining(["live_volume_factor", "connection_settings.live_volume_factor"]),
     }))
     expect(callOrder.indexOf("applyMainConnectionSettingsChange")).toBeGreaterThanOrEqual(0)

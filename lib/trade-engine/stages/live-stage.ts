@@ -69,6 +69,21 @@ import {
   recordStrategyPositionEntry,
 } from "@/lib/pos-history"
 import { getLivePositionSetLineageKeys } from "@/lib/live-position-lineage"
+import {
+  resolveCombinedPosCountDelta,
+  resolveCombinedPosCountTargetQuantity,
+} from "@/lib/pos-count-live-target"
+import {
+  allocateQuantityAcrossSets,
+  allocateQuantityByRatios,
+  decideControlOrderBarrier,
+  isActiveControlOrderStatus,
+  isFilledControlOrderStatus,
+  reconcileCumulativeReduction,
+  upsertPartialOrderExecution,
+  type PartialOrderExecution,
+  type PartialOrderExecutionSource,
+} from "@/lib/live-order-coordination"
 
 const LOG_PREFIX = "[v0] [LivePositionStage]"
 const MIN_EXCHANGE_STOP_LOSS_PERCENT = 0.2
@@ -370,6 +385,9 @@ interface LivePosition {
     parentSetKey?: string
     indicationType?: string
     axisKey?: string
+    accumulatedSetKeys?: string[]
+    posCountsSetRatios?: Record<string, number>
+    combinedPosCounts?: boolean
     requestedQuantity: number
     positionQuantityBefore: number
     orderId?: string
@@ -386,6 +404,46 @@ interface LivePosition {
     dcaTriggerDistancePct?: number
     referencePrice?: number
     absenceConfirmations?: number
+  }
+  /** Durable reduce-order state. A partial/unknown response is reconciled on
+   * later cycles before another reduce order may be submitted. */
+  pendingReduction?: {
+    clientOrderId: string
+    orderId?: string
+    requestedQuantity: number
+    targetQuantity: number
+    positionQuantityBefore: number
+    targetMemberKeys: string[]
+    targetSetRatios?: Record<string, number>
+    appliedFilledQuantity?: number
+    submittedAt: number
+    absenceConfirmations?: number
+  }
+  /** Durable system action marker. Protection reconciliation observes this and
+   * cannot place a new control order while close/reduce coordination is active. */
+  pendingSystemAction?: {
+    token: string
+    reason: string
+    phase: "control_wait" | "system_submit" | "system_verify" | "partial_wait"
+    startedAt: number
+    updatedAt: number
+    controlOrderIds?: string[]
+    clientOrderId?: string
+    orderId?: string
+    requestedQuantity?: number
+    appliedFilledQuantity?: number
+    absenceConfirmations?: number
+  }
+  /** Durable protection-to-quantity barrier. A position-size mutation cannot
+   * outlive a failed authoritative snapshot and then continue from stale size. */
+  pendingQuantityMutation?: {
+    token: string
+    reason: string
+    phase: "control_cancel" | "position_verify"
+    controlOrderIds: string[]
+    quantityBefore: number
+    startedAt: number
+    updatedAt: number
   }
   pendingProtectionOrders?: Record<string, {
     clientOrderId: string
@@ -437,6 +495,21 @@ interface LivePosition {
    *  merged into this ONE live exchange order. Member keys live in
    *  accumulatedSetKeys. Global stats stay aggregated (no per-Set split). */
   combinedPosCounts?: boolean
+  posCountsTargetFlat?: boolean
+  posCountsLongSetCount?: number
+  posCountsShortSetCount?: number
+  posCountsNetSetCount?: number
+  /** Current authoritative open quantity distributed over exact member Sets. */
+  posCountsSetQuantities?: Record<string, number>
+  /** Exact surviving Strategy-Set ratio parts after the long/short hedge. */
+  posCountsSetRatios?: Record<string, number>
+  /** Total confirmed entry quantity over the position lifetime. */
+  totalExecutedQuantity?: number
+  /** Quantity already reduced by control/system/target partial executions. */
+  closedQuantity?: number
+  /** Bounded, idempotent partial-order audit/quantity ledger. */
+  partialOrderExecutions?: PartialOrderExecution[]
+  protectionMode?: "exchange_control" | "system_close" | "system_close_fallback"
   // ── Set-config propagation (Set Relations → Position Protection) ──────────
   // The originating StrategySet's trailing profile and historical performance
   // snapshot are carried into the live position so that:
@@ -482,6 +555,29 @@ async function recordConfirmedStrategyEntry(
     axisWindows?: LivePosition["axisWindows"]
   },
 ): Promise<boolean> {
+  const combinedMemberKeys = !lineage && position.combinedPosCounts
+    ? [...new Set((position.accumulatedSetKeys || []).map(String).filter(Boolean))]
+    : []
+  if (combinedMemberKeys.length > 0) {
+    let inserted = false
+    for (let index = 0; index < combinedMemberKeys.length; index++) {
+      const memberSetKey = combinedMemberKeys[index]
+      const memberInserted = await recordStrategyPositionEntry({
+        connectionId,
+        positionId: position.id,
+        entryId: `${entryId}:member:${memberSetKey}`,
+        setKey: memberSetKey,
+        parentSetKey: memberSetKey.split("#")[0] || memberSetKey,
+        symbol: position.symbol,
+        indicationType: String(position.indicationType || memberSetKey.split(":")[1] || "unknown"),
+        direction: position.direction === "short" || position.side === "short" ? "short" : "long",
+        axisKey: axisKeyFromLineage(memberSetKey, position.axisWindows),
+        countGlobalPosition: index === 0,
+      })
+      inserted = memberInserted || inserted
+    }
+    return inserted
+  }
   const setKey = String(lineage?.setKey || position.setKey || "").trim()
   if (!setKey) return false
   const direction = position.direction === "short" || position.side === "short" ? "short" : "long"
@@ -567,6 +663,137 @@ function pushStep(position: LivePosition, step: string, ok: boolean, detail: str
   }
 }
 
+function extractExchangeOpenQuantity(position: any): number {
+  if (!position) return 0
+  const raw = Number(
+    position.contracts ??
+    position.positionAmt ??
+    position.position_amount ??
+    position.quantity ??
+    position.size ??
+    0,
+  )
+  return Number.isFinite(raw) ? Math.abs(raw) : 0
+}
+
+function allocatePositionSetQuantities(
+  position: Pick<LivePosition, "combinedPosCounts" | "posCountsSetRatios" | "accumulatedSetKeys" | "setKey">,
+  quantity: number,
+  setKeys?: string[],
+): Record<string, number> {
+  const keys = setKeys || position.accumulatedSetKeys || (position.setKey ? [position.setKey] : [])
+  return position.combinedPosCounts
+    ? allocateQuantityByRatios(quantity, position.posCountsSetRatios, keys)
+    : allocateQuantityAcrossSets(quantity, keys)
+}
+
+function applyReductionObservation(
+  position: LivePosition,
+  input: {
+    executionId: string
+    source: PartialOrderExecutionSource
+    status: string
+    requestedQuantity: number
+    reportedFilledQuantity: number
+    previouslyAppliedQuantity?: number
+    authoritativeQuantity?: number | null
+    price?: number
+    orderId?: string
+    clientOrderId?: string
+    setKeys?: string[]
+    setRatios?: Record<string, number>
+  },
+): ReturnType<typeof reconcileCumulativeReduction> {
+  const before = Math.max(0, Number(position.executedQuantity || 0))
+  const result = reconcileCumulativeReduction(
+    before,
+    input.reportedFilledQuantity,
+    Number(input.previouslyAppliedQuantity || 0),
+    input.authoritativeQuantity,
+  )
+  if (!(result.deltaApplied > 0)) return result
+
+  const closedBefore = Math.max(0, Number(position.closedQuantity || 0))
+  position.totalExecutedQuantity = Math.max(
+    Number(position.totalExecutedQuantity || 0),
+    before + closedBefore,
+    Number(position.initialExecutedQuantity || 0),
+  )
+  position.closedQuantity = Number((closedBefore + result.deltaApplied).toFixed(12))
+  position.executedQuantity = result.nextQuantity
+  position.quantity = result.nextQuantity
+  position.remainingQuantity = 0
+  position.volumeUsd = result.nextQuantity * Number(position.averageExecutionPrice || position.entryPrice || 0)
+
+  const executionPrice = Number(input.price || position.markPrice || position.averageExecutionPrice || position.entryPrice || 0)
+  const entryPrice = Number(position.averageExecutionPrice || position.entryPrice || 0)
+  if (executionPrice > 0 && entryPrice > 0) {
+    const realizedDelta = result.deltaApplied * (
+      position.direction === "short"
+        ? entryPrice - executionPrice
+        : executionPrice - entryPrice
+    )
+    position.realizedPnL = Number((Number(position.realizedPnL || 0) + realizedDelta).toFixed(8))
+  }
+
+  const setKeys = Array.from(new Set(
+    (input.setKeys || position.accumulatedSetKeys || (position.setKey ? [position.setKey] : []))
+      .map(String)
+      .filter(Boolean),
+  ))
+  const beforeSetKeys = Array.from(new Set([
+    ...Object.keys(position.posCountsSetQuantities || {}),
+    ...(position.accumulatedSetKeys || []),
+    ...(position.setKey ? [position.setKey] : []),
+  ].map(String).filter(Boolean)))
+  const setQuantitiesBefore = position.combinedPosCounts
+    ? (Object.keys(position.posCountsSetQuantities || {}).length > 0
+        ? { ...(position.posCountsSetQuantities || {}) }
+        : allocatePositionSetQuantities(position, before, beforeSetKeys))
+    : allocateQuantityAcrossSets(before, beforeSetKeys)
+  const setQuantitiesAfter = position.combinedPosCounts
+    ? allocateQuantityByRatios(result.nextQuantity, input.setRatios || position.posCountsSetRatios, setKeys)
+    : allocateQuantityAcrossSets(result.nextQuantity, setKeys)
+  const setQuantityDeltas = Object.fromEntries(
+    Array.from(new Set([...Object.keys(setQuantitiesBefore), ...Object.keys(setQuantitiesAfter)]))
+      .map((setKey) => [
+        setKey,
+        Number(((setQuantitiesAfter[setKey] || 0) - (setQuantitiesBefore[setKey] || 0)).toFixed(12)),
+      ]),
+  )
+  if (position.combinedPosCounts) {
+    if (input.setRatios) position.posCountsSetRatios = { ...input.setRatios }
+    position.posCountsSetQuantities = setQuantitiesAfter
+  }
+  position.partialOrderExecutions = upsertPartialOrderExecution(position.partialOrderExecutions, {
+    id: input.executionId,
+    source: input.source,
+    orderId: input.orderId,
+    clientOrderId: input.clientOrderId,
+    status: input.status,
+    requestedQuantity: input.requestedQuantity,
+    cumulativeFilledQuantity: result.cumulativeApplied,
+    appliedQuantity: result.cumulativeApplied,
+    positionQuantityBefore: before + Number(input.previouslyAppliedQuantity || 0),
+    positionQuantityAfter: result.nextQuantity,
+    price: executionPrice,
+    setKeys,
+    setQuantitiesBefore,
+    setQuantities: setQuantitiesAfter,
+    setQuantityDeltas,
+    updatedAt: Date.now(),
+  })
+  position.updatedAt = Date.now()
+  pushStep(
+    position,
+    "partial_order_reconciled",
+    true,
+    `${input.source} ${input.orderId || input.clientOrderId || input.executionId}: ` +
+      `-${result.deltaApplied} open=${result.nextQuantity}`,
+  )
+  return result
+}
+
 function normalizeStopLossPercent(rawStopLoss: unknown): { value: number; adjusted: boolean; reason?: string } {
   const n = Number(rawStopLoss)
   if (!Number.isFinite(n) || n <= 0) {
@@ -641,6 +868,30 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     accumulatedSetKeys: Array.isArray(hash.accumulatedSetKeys)
       ? hash.accumulatedSetKeys
       : safeJsonParse<string[]>(hash.accumulatedSetKeys, []),
+    pendingAccumulation: typeof hash.pendingAccumulation === "string"
+      ? safeJsonParse<LivePosition["pendingAccumulation"]>(hash.pendingAccumulation, undefined)
+      : hash.pendingAccumulation,
+    pendingReduction: typeof hash.pendingReduction === "string"
+      ? safeJsonParse<LivePosition["pendingReduction"]>(hash.pendingReduction, undefined)
+      : hash.pendingReduction,
+    pendingSystemAction: typeof hash.pendingSystemAction === "string"
+      ? safeJsonParse<LivePosition["pendingSystemAction"]>(hash.pendingSystemAction, undefined)
+      : hash.pendingSystemAction,
+    pendingQuantityMutation: typeof hash.pendingQuantityMutation === "string"
+      ? safeJsonParse<LivePosition["pendingQuantityMutation"]>(hash.pendingQuantityMutation, undefined)
+      : hash.pendingQuantityMutation,
+    pendingProtectionOrders: typeof hash.pendingProtectionOrders === "string"
+      ? safeJsonParse<LivePosition["pendingProtectionOrders"]>(hash.pendingProtectionOrders, undefined)
+      : hash.pendingProtectionOrders,
+    posCountsSetQuantities: typeof hash.posCountsSetQuantities === "string"
+      ? safeJsonParse<Record<string, number>>(hash.posCountsSetQuantities, {})
+      : hash.posCountsSetQuantities,
+    posCountsSetRatios: typeof hash.posCountsSetRatios === "string"
+      ? safeJsonParse<Record<string, number>>(hash.posCountsSetRatios, {})
+      : hash.posCountsSetRatios,
+    partialOrderExecutions: Array.isArray(hash.partialOrderExecutions)
+      ? hash.partialOrderExecutions
+      : safeJsonParse<PartialOrderExecution[]>(hash.partialOrderExecutions, []),
   } as LivePosition
 }
 
@@ -801,6 +1052,7 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
   const openIndexKey = `live:positions:${position.connectionId}`
   const closedIndexKey = `live:positions:${position.connectionId}:closed`
   const terminalStatuses = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
+  let evictedClosedIds: string[] = []
   
   try {
     const incomingTerminal = terminalStatuses.has(String(position.status || "").toLowerCase())
@@ -819,10 +1071,7 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
     await client.hset(posKey, {
       ...position,
     } as any)
-    await client.set(jsonKey, JSON.stringify(position), { EX: 7 * 24 * 60 * 60 } as any).catch(async () => {
-      await client.set(jsonKey, JSON.stringify(position)).catch(() => null)
-      await client.expire(jsonKey, 7 * 24 * 60 * 60).catch(() => 0)
-    })
+    await client.set(jsonKey, JSON.stringify(position)).catch(() => null)
 
     // Maintain explicit reconciliation indexes from the live-stage hot path, not
     // only from the generic Redis DB helper. Production exchange sync, crash
@@ -869,6 +1118,8 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       if (alreadyClosed === null || alreadyClosed === undefined) {
         await client.lpush(closedIndexKey, position.id).catch(() => 0)
       }
+      evictedClosedIds = ((await client.lrange(closedIndexKey, 500, -1).catch(() => [])) || []).map(String)
+      await client.ltrim(closedIndexKey, 0, 499).catch(() => {})
       await client.set(`live:positions:${position.connectionId}:moved:${position.id}`, String(Date.now())).catch(() => null)
       await client.expire(`live:positions:${position.connectionId}:moved:${position.id}`, 60 * 60).catch(() => 0)
       for (const setKey of liveSetLineageKeys) {
@@ -897,13 +1148,20 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       await client.expire(liveSetIndexKey, 24 * 60 * 60).catch(() => 0)
     }
     await keepDurable(liveSetIndexKey)
+    await keepDurable(openIndexKey)
+    await keepDurable(closedIndexKey)
+    await keepDurable(posKey)
+    await keepDurable(jsonKey)
     await syncActiveBlockCountIndex(client, position)
-    await Promise.all([
-      client.expire(posKey, 7 * 24 * 60 * 60).catch(() => 0),
-      client.expire(openIndexKey, 7 * 24 * 60 * 60).catch(() => 0),
-      client.expire(closedIndexKey, 30 * 24 * 60 * 60).catch(() => 0),
-      client.ltrim(closedIndexKey, 0, 499).catch(() => 0),
-    ])
+    // The closed index is a permanent bounded ring. Delete only records that
+    // were actually evicted from its 500-row retention window; active and
+    // retained terminal records never expire merely because time passed.
+    if (evictedClosedIds.length > 0) {
+      await client.del(...evictedClosedIds.flatMap((id) => [
+        `live_positions:${position.connectionId}:${id}`,
+        `live:position:${id}`,
+      ])).catch(() => 0)
+    }
   } catch (err) {
     console.warn(
       `${LOG_PREFIX} [RC2] savePosition failed for ${position.symbol}/${position.id}:`,
@@ -1213,15 +1471,15 @@ async function resolveAccumulationPlan(
   if (real?.setVariant === "block") {
     const blockCount = parseBlockCount(real?.setKey)
     const blockVolumeRatio = Number(real?.blockVolumeRatio ?? existing.blockVolumeRatio ?? 1)
-    // Each independent Block count uses the authoritative quantity currently
-    // confirmed on the position. After Block 1 fills, Block 3 therefore starts
-    // from the new aggregate basis, matching the operator formula and keeping
-    // the exact basis on that Block leg for restart/reconciliation audit.
-    const blockBaseQuantity = Number(existing.executedQuantity ?? existing.quantity ?? 0)
+    // Every Block count is derived from the immutable Base-Set leg (ratio 1),
+    // never from the already-expanded aggregate. Using current executed
+    // quantity here compounded Block 1 into Block 3 and was the main source of
+    // runaway live volumes across cycles.
+    const blockBaseQuantity = Number(
+      existing.initialExecutedQuantity ?? existing.blockBaseQuantity ?? existing.executedQuantity ?? existing.quantity ?? 0,
+    )
     if (!blockCount || blockBaseQuantity <= 0 || blockVolumeRatio <= 0) return null
-    // Per independent Block set: addQty = currentPositionQty × (activeBlockCount × blockVolumeRatio).
-    // currentPositionQty is snapshotted per leg in pendingAccumulation; later
-    // Blocks intentionally use the newly exchange-confirmed aggregate quantity.
+    // Per independent Block set: addQty = baseSetQty × (blockCount × ratio).
     const addQty = calculateBlockAddQuantity(blockBaseQuantity, blockCount, blockVolumeRatio)
     return { addQty, variant: "block", blockCount, blockBaseQuantity }
   }
@@ -1272,6 +1530,11 @@ async function resolveAccumulationPlan(
   ).catch(() => null)
   let addQty = Number(volumeResult?.finalVolume || volumeResult?.volume || 0)
   if (!Number.isFinite(addQty) || addQty <= 0) addQty = price > 0 ? 5 / price : 0
+  if (real?.combinedPosCounts) {
+    const delta = resolveCombinedPosCountDelta(Number(existing.executedQuantity || 0), addQty)
+    if (delta.action !== "increase") return null
+    addQty = delta.quantity
+  }
   return Number.isFinite(addQty) && addQty > 0 ? { addQty, variant: "default" } : null
 }
 
@@ -1293,7 +1556,7 @@ async function accumulateIntoSimulatedPosition(
     const accumulationSetKey = plan.variant === "dca" && plan.dcaStep
       ? buildDcaStepSetKey(String(real?.setKey || "dca"), plan.dcaStep)
       : String(real?.setKey || "")
-    if (accumulationSetKey && existing.accumulatedSetKeys?.includes(accumulationSetKey)) return existing
+    if (!real?.combinedPosCounts && accumulationSetKey && existing.accumulatedSetKeys?.includes(accumulationSetKey)) return existing
     const prevExec = Number(existing.executedQuantity || 0)
     const prevAvg = Number(existing.averageExecutionPrice || existing.entryPrice || price)
     const filledQty = plan.addQty
@@ -1305,10 +1568,20 @@ async function accumulateIntoSimulatedPosition(
       draft.averageExecutionPrice = newExec > 0 ? ((prevAvg * prevExec) + (price * filledQty)) / newExec : prevAvg
       draft.volumeUsd = newExec * draft.averageExecutionPrice
       draft.initialExecutedQuantity ??= prevExec
+      draft.totalExecutedQuantity = Math.max(
+        Number(draft.totalExecutedQuantity || 0),
+        newExec + Number(draft.closedQuantity || 0),
+      )
       draft.initialEntryPrice ??= prevAvg
       draft.blockBaseQuantity ??= prevExec
       draft.fills = [...(draft.fills || []), { timestamp: Date.now(), quantity: filledQty, price, fee: 0, feeAsset: "" }]
-      draft.accumulatedSetKeys = [...new Set([...(draft.accumulatedSetKeys || []), ...(accumulationSetKey ? [accumulationSetKey] : [])])]
+      draft.accumulatedSetKeys = real?.combinedPosCounts
+        ? Array.from(new Set<string>((Array.isArray(real.accumulatedSetKeys) ? real.accumulatedSetKeys : []).map((value: unknown) => String(value)).filter(Boolean)))
+        : [...new Set([...(draft.accumulatedSetKeys || []), ...(accumulationSetKey ? [accumulationSetKey] : [])])]
+      if (real?.combinedPosCounts) {
+        draft.posCountsSetRatios = { ...(real?.posCountsSetRatios || draft.posCountsSetRatios || {}) }
+        draft.posCountsSetQuantities = allocatePositionSetQuantities(draft, newExec, draft.accumulatedSetKeys)
+      }
       if (plan.variant === "block") {
         const leg = buildBlockLegState(real, filledQty, undefined, undefined, {
           baseQuantity: plan.blockBaseQuantity,
@@ -1345,7 +1618,9 @@ async function accumulateIntoSimulatedPosition(
     if (mutated) {
       Object.assign(existing, mutated)
       await savePosition(existing)
-      if (accumulationSetKey) {
+      if (real?.combinedPosCounts) {
+        await recordConfirmedStrategyEntry(connId, existing, `${existing.id}:combined:${Date.now()}`)
+      } else if (accumulationSetKey) {
         await recordConfirmedStrategyEntry(
           connId,
           existing,
@@ -1385,7 +1660,7 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
 
   try {
     existing.accumulatedSetKeys ||= []
-    if (existing.accumulatedSetKeys.length >= MAX_ACCUMULATIONS_PER_POSITION) {
+    if (!real?.combinedPosCounts && existing.accumulatedSetKeys.length >= MAX_ACCUMULATIONS_PER_POSITION) {
       pushStep(existing, "accumulate_skip", false, `cap reached (${MAX_ACCUMULATIONS_PER_POSITION} accumulations) — merge suppressed`)
       await savePosition(existing)
       return existing
@@ -1393,7 +1668,7 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     // Block/default overlays execute once per exact Set key. DCA is repeatable
     // by configured step and is deduped after resolveAccumulationPlan derives
     // its stable `#step:N` identity below.
-    if (real?.setKey && real?.setVariant !== "dca" && existing.accumulatedSetKeys.includes(real.setKey)) {
+    if (!real?.combinedPosCounts && real?.setKey && real?.setVariant !== "dca" && existing.accumulatedSetKeys.includes(real.setKey)) {
       pushStep(existing, "accumulate_skip", false, `setKey ${real.setKey} already accumulated`)
       await savePosition(existing)
       return existing
@@ -1431,6 +1706,11 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       await savePosition(existing)
     }
 
+    if (!await settleControlOrdersBeforeQuantityMutation(connector, existing, "accumulation")) {
+      await savePosition(existing)
+      return existing
+    }
+
     const plan = await resolveAccumulationPlan(connId, existing, real, price)
     if (!plan || !Number.isFinite(plan.addQty) || plan.addQty <= 0) {
       pushStep(existing, "accumulate_skip", false, `${real?.setVariant || "adjustment"} trigger/quantity not ready`)
@@ -1440,7 +1720,7 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     const accumulationSetKey = plan.variant === "dca" && plan.dcaStep
       ? buildDcaStepSetKey(String(real?.setKey || "dca"), plan.dcaStep)
       : String(real?.setKey || "")
-    if (accumulationSetKey && existing.accumulatedSetKeys.includes(accumulationSetKey)) {
+    if (!real?.combinedPosCounts && accumulationSetKey && existing.accumulatedSetKeys.includes(accumulationSetKey)) {
       pushStep(existing, "accumulate_skip", false, `setKey ${accumulationSetKey} already accumulated`)
       await savePosition(existing)
       return existing
@@ -1461,6 +1741,11 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       parentSetKey: String(real?.parentSetKey || ""),
       indicationType: String(real?.indicationType || ""),
       axisKey: axisKeyFromLineage(String(real?.setKey || ""), real?.axisWindows),
+      accumulatedSetKeys: real?.combinedPosCounts
+        ? Array.from(new Set<string>((Array.isArray(real.accumulatedSetKeys) ? real.accumulatedSetKeys : []).map((value: unknown) => String(value)).filter(Boolean)))
+        : undefined,
+      posCountsSetRatios: real?.combinedPosCounts ? { ...(real?.posCountsSetRatios || {}) } : undefined,
+      combinedPosCounts: real?.combinedPosCounts === true,
       requestedQuantity: plan.addQty,
       positionQuantityBefore: Number(existing.executedQuantity || 0),
       submittedAt: Date.now(),
@@ -1512,7 +1797,7 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       await savePosition(existing)
       return existing
     }
-    existing.pendingAccumulation.orderId = String(orderId)
+    if (existing.pendingAccumulation) existing.pendingAccumulation.orderId = String(orderId)
     await savePosition(existing)
 
     let filledQty = parseFloat(String(orderRes.filledQty ?? orderRes.executedQty ?? orderRes.cumQty ?? "0")) || 0
@@ -1541,8 +1826,18 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       draft.remainingQuantity = Math.max(0, draft.quantity - newExec)
       draft.averageExecutionPrice = newExec > 0 ? ((prevAvg * prevExec) + (filledPrice * filledQty)) / newExec : prevAvg
       draft.volumeUsd = newExec * draft.averageExecutionPrice
+      draft.totalExecutedQuantity = Math.max(
+        Number(draft.totalExecutedQuantity || 0),
+        newExec + Number(draft.closedQuantity || 0),
+      )
       draft.fills = [...(draft.fills || []), { timestamp: Date.now(), quantity: filledQty, price: filledPrice, fee: 0, feeAsset: "USDT" }]
-      draft.accumulatedSetKeys = [...new Set([...(draft.accumulatedSetKeys || []), ...(accumulationSetKey ? [accumulationSetKey] : [])])]
+      draft.accumulatedSetKeys = real?.combinedPosCounts
+        ? Array.from(new Set<string>((Array.isArray(real.accumulatedSetKeys) ? real.accumulatedSetKeys : []).map((value: unknown) => String(value)).filter(Boolean)))
+        : [...new Set([...(draft.accumulatedSetKeys || []), ...(accumulationSetKey ? [accumulationSetKey] : [])])]
+      if (real?.combinedPosCounts) {
+        draft.posCountsSetRatios = { ...(pending.posCountsSetRatios || real?.posCountsSetRatios || draft.posCountsSetRatios || {}) }
+        draft.posCountsSetQuantities = allocatePositionSetQuantities(draft, newExec, draft.accumulatedSetKeys)
+      }
       draft.pendingAccumulation = undefined
       if (plan.variant === "block") {
         const leg = buildBlockLegState(real, filledQty, clientOrderId, String(orderId), {
@@ -1587,7 +1882,13 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     Object.assign(existing, mutated)
     await incrementMetric(connId, "live_orders_accumulated_count")
     await savePosition(existing)
-    if (pending.setKey) {
+    if (pending.combinedPosCounts) {
+      await recordConfirmedStrategyEntry(
+        connId,
+        existing,
+        `${existing.id}:combined:${pending.clientOrderId}`,
+      )
+    } else if (pending.setKey) {
       await recordConfirmedStrategyEntry(
         connId,
         existing,
@@ -1616,15 +1917,455 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
   return existing
 }
 
+function isActiveLiveStatus(position: LivePosition): boolean {
+  return ["open", "filled", "partially_filled", "placed", "pending_fill", "placed_unconfirmed", "simulated"]
+    .includes(String(position.status || ""))
+}
+
+async function findOpenCombinedPosCountPositions(connId: string, symbol: string): Promise<LivePosition[]> {
+  const normalized = String(symbol || "").toUpperCase().replace(/[-_]/g, "")
+  const positions = await getLivePositions(connId)
+  return positions.filter((position) =>
+    position.combinedPosCounts === true &&
+    isActiveLiveStatus(position) &&
+    String(position.symbol || "").toUpperCase().replace(/[-_]/g, "") === normalized,
+  )
+}
+
+async function fetchAuthoritativeOpenQuantity(
+  connector: any,
+  symbol: string,
+  direction: "long" | "short",
+): Promise<{ ok: boolean; quantity: number; position: any | null }> {
+  if (!connector || typeof connector.getPosition !== "function") {
+    return { ok: false, quantity: 0, position: null }
+  }
+  try {
+    const position = await withTimeout(
+      connector.getPosition(symbol, direction) as Promise<any>,
+      EXCHANGE_TIMEOUT_GET_ORDER_MS,
+      `getPosition(${symbol} ${direction})`,
+    )
+    if (position) {
+      return { ok: true, quantity: extractExchangeOpenQuantity(position), position }
+    }
+    const snapshotStatus = typeof connector.getLastPositionsSnapshotStatus === "function"
+      ? connector.getLastPositionsSnapshotStatus()
+      : null
+    return {
+      ok: snapshotStatus?.ok === true,
+      quantity: 0,
+      position: null,
+    }
+  } catch {
+    return { ok: false, quantity: 0, position: null }
+  }
+}
+
+async function reduceCombinedPosCountPosition(
+  connectionId: string,
+  position: LivePosition,
+  targetQuantity: number,
+  targetMemberKeys: string[],
+  targetSetRatios: Record<string, number>,
+  price: number,
+  connector: any,
+): Promise<LivePosition> {
+  const initialQuantity = Number(position.executedQuantity || 0)
+  const initialDelta = resolveCombinedPosCountDelta(initialQuantity, targetQuantity)
+  if (initialDelta.action !== "reduce") return position
+  if (targetQuantity <= 0 || initialDelta.quantity >= initialQuantity * (1 - 1e-8)) {
+    return (await closeLivePosition(
+      connectionId,
+      position.id,
+      price,
+      position.status === "simulated" ? undefined : connector,
+      "poscounts_target_flat",
+    )) || position
+  }
+
+  if (position.status === "simulated") {
+    const mutated = await mutatePositionWithVersionCheck(position, ["simulated"], draft => {
+      draft.accumulatedSetKeys = [...new Set(targetMemberKeys)]
+      draft.posCountsNetSetCount = targetMemberKeys.length
+      applyReductionObservation(draft, {
+        executionId: `${draft.id}:poscounts-sim:${targetQuantity}`,
+        source: "poscounts_reduce",
+        status: "filled",
+        requestedQuantity: initialDelta.quantity,
+        reportedFilledQuantity: initialDelta.quantity,
+        authoritativeQuantity: targetQuantity,
+        price,
+        setKeys: targetMemberKeys,
+        setRatios: targetSetRatios,
+      })
+      draft.posCountsSetQuantities = allocatePositionSetQuantities(draft, targetQuantity, targetMemberKeys)
+      pushStep(draft, "poscounts_target_reduce", true, `${initialQuantity} → ${targetQuantity} (simulation)`)
+    })
+    if (mutated) Object.assign(position, mutated)
+    await savePosition(position)
+    return position
+  }
+
+  if (!connector || typeof connector.placeOrder !== "function") {
+    pushStep(position, "poscounts_target_reduce", false, "exchange connector unavailable")
+    await savePosition(position)
+    return position
+  }
+
+  const lockId = `poscounts-reduce:${process.pid}:${Date.now()}:${nanoid(8)}`
+  if (!await acquirePositionMutationLock(connectionId, position.id, lockId)) {
+    pushStep(position, "poscounts_target_reduce", false, "position action already in progress — reduction deferred")
+    return position
+  }
+  const stopLease = startRedisLockLeaseRefresh(
+    getRedisClient(),
+    positionMutationLockKey(connectionId, position.id),
+    lockId,
+    POSITION_MUTATION_LOCK_TTL_MS,
+  )
+
+  try {
+    const fresh = await readLivePositionSnapshot(getRedisClient(), connectionId, position.id)
+    if (fresh) Object.assign(position, fresh)
+    const direction: "long" | "short" = position.direction === "short" ? "short" : "long"
+    const side: "buy" | "sell" = direction === "long" ? "sell" : "buy"
+
+    // Recover/reconcile an earlier reduce submission before considering a new
+    // order. This is the durable multi-cycle/idempotency barrier.
+    if (position.pendingReduction) {
+      const pending = position.pendingReduction
+      let observed: any = null
+      if (pending.orderId && typeof connector.getOrder === "function") {
+        observed = await withTimeout(
+          connector.getOrder(position.symbol, pending.orderId) as Promise<any>,
+          EXCHANGE_TIMEOUT_GET_ORDER_MS,
+          `getOrder(poscounts-reduce ${pending.orderId})`,
+        ).catch(() => null)
+      }
+      if (!observed) {
+        observed = await recoverEntryOrderByClientId(connector, position.symbol, pending.clientOrderId)
+      }
+      if (observed?.orderId || observed?.id) pending.orderId = String(observed.orderId || observed.id)
+
+      const status = String(observed?.status || "pending").toLowerCase()
+      const reportedFilled = Number(observed?.filledQty ?? observed?.executedQty ?? observed?.cumQty ?? 0) || 0
+      const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+      const applied = applyReductionObservation(position, {
+        executionId: `${position.id}:poscounts:${pending.clientOrderId}`,
+        source: "poscounts_reduce",
+        status,
+        requestedQuantity: pending.requestedQuantity,
+        reportedFilledQuantity: reportedFilled,
+        previouslyAppliedQuantity: pending.appliedFilledQuantity,
+        authoritativeQuantity: authoritative.ok ? authoritative.quantity : null,
+        price: Number(observed?.filledPrice ?? observed?.avgPrice ?? price),
+        orderId: pending.orderId,
+        clientOrderId: pending.clientOrderId,
+        setKeys: pending.targetMemberKeys,
+        setRatios: pending.targetSetRatios,
+      })
+      pending.appliedFilledQuantity = applied.cumulativeApplied
+
+      if (!observed) {
+        const liveOrderIds = await fetchLiveOrderIdSet(connector)
+        const pendingVisible = liveOrderIds?.has(pending.orderId || "") || liveOrderIds?.has(pending.clientOrderId)
+        if (pendingVisible || liveOrderIds === null || !authoritative.ok) {
+          position.pendingReduction = pending
+          pushStep(position, "poscounts_reduce_wait", true, `clientOrderId=${pending.clientOrderId}; authoritative order state pending`)
+          await savePosition(position)
+          return position
+        }
+        pending.absenceConfirmations = Number(pending.absenceConfirmations || 0) + 1
+        const targetReached = authoritative.quantity <= pending.targetQuantity * (1 + 1e-8)
+        if (!targetReached && pending.absenceConfirmations < 2) {
+          position.pendingReduction = pending
+          await savePosition(position)
+          return position
+        }
+        position.pendingReduction = undefined
+        await savePosition(position)
+      }
+
+      const terminal = isFilledControlOrderStatus(status) || ["cancelled", "canceled", "rejected", "expired"].includes(status)
+      if (observed && (isActiveControlOrderStatus(status) || (!terminal && !authoritative.ok))) {
+        position.pendingReduction = pending
+        pushStep(position, "poscounts_reduce_wait", true, `order=${pending.orderId || pending.clientOrderId} status=${status}; no duplicate submitted`)
+        await savePosition(position)
+        return position
+      }
+      position.pendingReduction = undefined
+      await savePosition(position)
+    }
+
+    if (!await settleControlOrdersBeforeQuantityMutation(connector, position, "poscounts_reduce")) {
+      await savePosition(position)
+      return position
+    }
+
+    const currentQuantity = Number(position.executedQuantity || 0)
+    const delta = resolveCombinedPosCountDelta(currentQuantity, targetQuantity)
+    if (delta.action !== "reduce") {
+      position.accumulatedSetKeys = [...new Set(targetMemberKeys)]
+      position.posCountsSetQuantities = allocatePositionSetQuantities(position, currentQuantity, targetMemberKeys)
+      await savePosition(position)
+      return position
+    }
+
+    const clientOrderId = makeDurableClientOrderId("pc-reduce", position)
+    position.pendingReduction = {
+      clientOrderId,
+      requestedQuantity: delta.quantity,
+      targetQuantity,
+      positionQuantityBefore: currentQuantity,
+      targetMemberKeys: [...new Set(targetMemberKeys)],
+      targetSetRatios: { ...targetSetRatios },
+      appliedFilledQuantity: 0,
+      submittedAt: Date.now(),
+    }
+    pushStep(position, "poscounts_reduction_prepared", true, `clientOrderId=${clientOrderId} qty=${delta.quantity}`)
+    await savePosition(position)
+    await persistCriticalLiveState(`poscounts-reduce:${position.id}`)
+
+    let response: any
+    try {
+      response = await connector.placeOrder(
+        position.symbol,
+        side,
+        delta.quantity,
+        undefined,
+        "market",
+        {
+          positionSide: direction === "long" ? "LONG" : "SHORT",
+          reduceOnly: true,
+          clientOrderId,
+        },
+      )
+    } catch (error) {
+      response = { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+    let orderId = response?.orderId || response?.id
+    if (!orderId) {
+      const recovered = await recoverEntryOrderByClientId(connector, position.symbol, clientOrderId)
+      if (recovered) {
+        response = { ...response, ...recovered, success: recovered.success !== false }
+        orderId = recovered.orderId || recovered.id
+      }
+    }
+    if (orderId && position.pendingReduction) position.pendingReduction.orderId = String(orderId)
+    if (!response?.success || !orderId) {
+      pushStep(position, "poscounts_target_reduce", false, `${response?.error || "submission unconfirmed"}; durable clientOrderId retained`)
+      await savePosition(position)
+      return position
+    }
+
+    let filledQuantity = Number(response.filledQty ?? response.executedQty ?? response.cumQty ?? 0) || 0
+    let filledPrice = Number(response.filledPrice ?? response.avgPrice ?? response.price ?? price) || price
+    let fillStatus = String(response.status || "pending").toLowerCase()
+    if (!(filledQuantity > 0)) {
+      const fill = await pollOrderFill(connector, position.symbol, String(orderId), 5_000)
+      filledQuantity = fill.filledQty
+      filledPrice = fill.filledPrice || filledPrice
+      fillStatus = fill.status
+    }
+    const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+    const pending = position.pendingReduction!
+    const applied = applyReductionObservation(position, {
+      executionId: `${position.id}:poscounts:${pending.clientOrderId}`,
+      source: "poscounts_reduce",
+      status: fillStatus,
+      requestedQuantity: pending.requestedQuantity,
+      reportedFilledQuantity: filledQuantity,
+      previouslyAppliedQuantity: pending.appliedFilledQuantity,
+      authoritativeQuantity: authoritative.ok ? authoritative.quantity : null,
+      price: filledPrice,
+      orderId: String(orderId),
+      clientOrderId: pending.clientOrderId,
+      setKeys: pending.targetMemberKeys,
+      setRatios: pending.targetSetRatios,
+    })
+    pending.appliedFilledQuantity = applied.cumulativeApplied
+    const terminal = isFilledControlOrderStatus(fillStatus) || applied.cumulativeApplied >= pending.requestedQuantity * (1 - 1e-8)
+    position.pendingReduction = terminal ? undefined : pending
+    position.accumulatedSetKeys = [...new Set(targetMemberKeys)]
+    position.posCountsNetSetCount = targetMemberKeys.length
+    position.posCountsSetQuantities = allocatePositionSetQuantities(position, position.executedQuantity, targetMemberKeys)
+    await savePosition(position)
+
+    if (!terminal) {
+      pushStep(position, "poscounts_reduce_wait", true, `orderId=${orderId}; partial=${applied.cumulativeApplied}/${pending.requestedQuantity}`)
+      return position
+    }
+
+    position.stopLossLastArmedAt = undefined
+    position.takeProfitLastArmedAt = undefined
+    await updateProtectionOrders(connector, position, "poscounts_partial_rearm", null).catch((error) => {
+      pushStep(position, "poscounts_partial_rearm", false, error instanceof Error ? error.message : String(error))
+    })
+    await savePosition(position)
+    return position
+  } finally {
+    stopLease()
+    await releasePositionMutationLock(connectionId, position.id, lockId).catch(() => false)
+  }
+}
+
+/** Reconcile the single physical pos-count order to the newest hedged target.
+ * Returns null only when no target position exists yet and the caller should
+ * continue through the normal fresh-entry path. */
+async function reconcileCombinedPosCountTarget(
+  connectionId: string,
+  realPosition: RealPosition,
+  connector: any,
+  executionIntent: "main" | "preset",
+  liveExecutionEnabled: boolean,
+): Promise<LivePosition | null> {
+  const existingPositions = await findOpenCombinedPosCountPositions(connectionId, realPosition.symbol)
+  let price = Number(realPosition.entryPrice || 0)
+  if (!(price > 0)) price = await fetchCurrentPrice(realPosition.symbol)
+
+  if (realPosition.posCountsTargetFlat || !(Number(realPosition.sizeMultiplier) > 0)) {
+    let lastClosed: LivePosition | null = null
+    for (const position of existingPositions) {
+      const closed = await closeLivePosition(
+        connectionId,
+        position.id,
+        price || position.averageExecutionPrice || position.entryPrice,
+        position.status === "simulated" ? undefined : connector,
+        "poscounts_target_flat",
+      )
+      if (closed) lastClosed = closed
+    }
+    return lastClosed || {
+      id: `live:${connectionId}:${realPosition.symbol}:poscounts:flat:${Date.now()}`,
+      connectionId,
+      symbol: realPosition.symbol,
+      direction: realPosition.direction,
+      entryPrice: price,
+      quantity: 0,
+      executedQuantity: 0,
+      remainingQuantity: 0,
+      averageExecutionPrice: 0,
+      leverage: realPosition.leverage,
+      marginType: "cross",
+      fills: [],
+      status: "closed",
+      statusReason: "Position-count hedge target is flat",
+      combinedPosCounts: true,
+      posCountsTargetFlat: true,
+      accumulatedSetKeys: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+  }
+
+  if (!(price > 0)) return existingPositions[0] || null
+  const targetVolume = await VolumeCalculator.calculateVolumeForConnection(
+    connectionId,
+    realPosition.symbol,
+    price,
+    { tradeMode: executionIntent, sizeMultiplier: realPosition.sizeMultiplier },
+  ).catch(() => null)
+  const targetQuantity = resolveCombinedPosCountTargetQuantity(targetVolume)
+  if (!(targetQuantity > 0)) {
+    let lastClosed: LivePosition | null = null
+    for (const position of existingPositions) {
+      const closed = await closeLivePosition(
+        connectionId,
+        position.id,
+        price || position.averageExecutionPrice || position.entryPrice,
+        position.status === "simulated" ? undefined : connector,
+        "poscounts_target_below_exchange_minimum",
+      )
+      if (closed) lastClosed = closed
+    }
+    return lastClosed || {
+      id: `live:${connectionId}:${realPosition.symbol}:poscounts:below-min:${Date.now()}`,
+      connectionId,
+      symbol: realPosition.symbol,
+      direction: realPosition.direction,
+      entryPrice: price,
+      quantity: 0,
+      executedQuantity: 0,
+      remainingQuantity: 0,
+      averageExecutionPrice: 0,
+      leverage: realPosition.leverage,
+      marginType: "cross",
+      fills: [],
+      status: "closed",
+      statusReason: "Combined position-count ratio remains below the exchange minimum",
+      combinedPosCounts: true,
+      accumulatedSetKeys: [],
+      posCountsLongSetCount: realPosition.posCountsLongSetCount,
+      posCountsShortSetCount: realPosition.posCountsShortSetCount,
+      posCountsNetSetCount: realPosition.posCountsNetSetCount,
+      posCountsSetRatios: { ...(realPosition.posCountsSetRatios || {}) },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+  }
+
+  const opposite = existingPositions.filter((position) => position.direction !== realPosition.direction)
+  for (const position of opposite) {
+    const closed = await closeLivePosition(
+      connectionId,
+      position.id,
+      price,
+      position.status === "simulated" ? undefined : connector,
+      "poscounts_target_direction_flip",
+    )
+    if (!closed || closed.status !== "closed") return closed || position
+  }
+
+  const existing = existingPositions.find((position) => position.direction === realPosition.direction)
+  if (!existing) return null
+  const targetMemberKeys = [...new Set((realPosition.accumulatedSetKeys || []).map(String).filter(Boolean))]
+  existing.combinedPosCounts = true
+  existing.posCountsLongSetCount = realPosition.posCountsLongSetCount
+  existing.posCountsShortSetCount = realPosition.posCountsShortSetCount
+  existing.posCountsNetSetCount = realPosition.posCountsNetSetCount
+  const targetSetRatios = { ...(realPosition.posCountsSetRatios || {}) }
+  const delta = resolveCombinedPosCountDelta(Number(existing.executedQuantity || 0), targetQuantity)
+  if (delta.action === "increase") {
+    return existing.status === "simulated" || !liveExecutionEnabled
+      ? accumulateIntoSimulatedPosition(connectionId, existing, realPosition, price)
+      : accumulateIntoLivePosition(connectionId, existing, realPosition, price, connector)
+  }
+  if (delta.action === "reduce") {
+    return reduceCombinedPosCountPosition(connectionId, existing, targetQuantity, targetMemberKeys, targetSetRatios, price, connector)
+  }
+  existing.accumulatedSetKeys = targetMemberKeys
+  existing.posCountsSetRatios = targetSetRatios
+  existing.posCountsSetQuantities = allocatePositionSetQuantities(existing, targetQuantity, targetMemberKeys)
+  existing.updatedAt = Date.now()
+  await savePosition(existing)
+  return existing
+}
+
 async function reconcileAuthoritativeExchangeQuantity(
   position: LivePosition,
   exchangeQuantity: number,
   exchangeEntryPrice: number,
 ): Promise<boolean> {
-  if (!Number.isFinite(exchangeQuantity) || exchangeQuantity <= 0) return false
+  if (!Number.isFinite(exchangeQuantity) || exchangeQuantity < 0) return false
   const before = Number(position.executedQuantity || 0)
-  const tolerance = Math.max(1e-12, exchangeQuantity * 1e-8)
+  const tolerance = Math.max(1e-12, Math.max(before, exchangeQuantity) * 1e-8)
   if (Math.abs(before - exchangeQuantity) <= tolerance) return false
+
+  if (exchangeQuantity < before) {
+    applyReductionObservation(position, {
+      executionId: `${position.id}:exchange-qty:${exchangeQuantity}`,
+      source: "exchange_reconcile",
+      status: exchangeQuantity > 0 ? "partially_filled" : "filled",
+      requestedQuantity: before,
+      reportedFilledQuantity: before - exchangeQuantity,
+      authoritativeQuantity: exchangeQuantity,
+      price: exchangeEntryPrice || position.markPrice || position.averageExecutionPrice,
+      setKeys: position.accumulatedSetKeys,
+    })
+    position.submissionState = "confirmed"
+    return true
+  }
 
   const pending = position.pendingAccumulation
   const exactAdded = Math.max(0, exchangeQuantity - Number(pending?.positionQuantityBefore ?? before))
@@ -1635,13 +2376,17 @@ async function reconcileAuthoritativeExchangeQuantity(
   position.initialExecutedQuantity ??= before > 0 ? before : exchangeQuantity
   position.initialEntryPrice ??= position.averageExecutionPrice || position.entryPrice
   position.blockBaseQuantity ??= position.initialExecutedQuantity
+  position.totalExecutedQuantity = Math.max(
+    Number(position.totalExecutedQuantity || 0),
+    exchangeQuantity + Number(position.closedQuantity || 0),
+  )
   position.volumeUsd = exchangeQuantity * Number(position.averageExecutionPrice || position.entryPrice || 0)
   position.submissionState = "confirmed"
 
   if (pending && exactAdded > 0) {
-    position.accumulatedSetKeys = [
-      ...new Set([...(position.accumulatedSetKeys || []), ...(pending.setKey ? [pending.setKey] : [])]),
-    ]
+    position.accumulatedSetKeys = pending.combinedPosCounts
+      ? [...new Set((pending.accumulatedSetKeys || []).map(String).filter(Boolean))]
+      : [...new Set([...(position.accumulatedSetKeys || []), ...(pending.setKey ? [pending.setKey] : [])])]
     if (pending.variant === "block") {
       const leg = buildBlockLegState({
         setKey: pending.setKey,
@@ -1684,6 +2429,13 @@ async function reconcileAuthoritativeExchangeQuantity(
     }
     position.pendingAccumulation = undefined
   }
+  if (position.combinedPosCounts) {
+    position.posCountsSetQuantities = allocatePositionSetQuantities(
+      position,
+      exchangeQuantity,
+      position.accumulatedSetKeys,
+    )
+  }
   pushStep(
     position,
     "exchange_quantity_reconciled",
@@ -1691,7 +2443,13 @@ async function reconcileAuthoritativeExchangeQuantity(
     `authoritative exchange quantity ${before} → ${exchangeQuantity}${exactAdded > 0 ? ` (+${exactAdded})` : ""}`,
   )
   position.updatedAt = Date.now()
-  if (pending && exactAdded > 0 && pending.setKey) {
+  if (pending && exactAdded > 0 && pending.combinedPosCounts) {
+    await recordConfirmedStrategyEntry(
+      position.connectionId,
+      position,
+      `${position.id}:combined:${pending.clientOrderId}`,
+    )
+  } else if (pending && exactAdded > 0 && pending.setKey) {
     await recordConfirmedStrategyEntry(
       position.connectionId,
       position,
@@ -3067,12 +3825,43 @@ async function updateProtectionOrders(
     return result
   }
 
+  // A control-order reconciliation, partial reduction, or system close owns
+  // the position mutation until its exchange effect is authoritative. Never
+  // arm/cancel another protection leg in parallel: doing so can create a
+  // second reduce-only action against a stale quantity.
+  if (
+    pos.status === "closing" ||
+    pos.status === "closing_partial" ||
+    pos.pendingSystemAction ||
+    pos.pendingReduction ||
+    pos.pendingAccumulation ||
+    pos.pendingQuantityMutation
+  ) {
+    pushStep(
+      pos,
+      "protection_deferred_for_position_action",
+      true,
+      `[${reason}] waiting for ${pos.pendingSystemAction?.phase ||
+        (pos.pendingReduction
+          ? `reduction:${pos.pendingReduction.orderId || pos.pendingReduction.clientOrderId}`
+          : pos.pendingAccumulation
+            ? `accumulation:${pos.pendingAccumulation.orderId || pos.pendingAccumulation.clientOrderId}`
+            : pos.pendingQuantityMutation?.phase || pos.status)}`,
+    )
+    return result
+  }
+
   // ── code=110206 quota backoff gate ────────────────────────────────
   // When the account's TP/SL order count has hit the exchange cap, all
   // placement attempts are suspended for PROTECTION_QUOTA_BACKOFF_MS.
   // This prevents the ~150/min cycle rate from flooding BingX with
   // rejected requests that fill the log and consume rate-limit budget.
   if (isProtectionQuotaBlocked(pos.connectionId)) {
+    if (pos.protectionMode !== "system_close_fallback") {
+      pos.protectionMode = "system_close_fallback"
+      result.changed = true
+      pushStep(pos, "protection_quota_system_fallback", true, "exchange control-order quota is blocked; system close remains active")
+    }
     return result
   }
 
@@ -3100,22 +3889,31 @@ async function updateProtectionOrders(
       parseSystemCloseFlag((pos as any)?.useSystemCloseOnly) ||
       parseSystemCloseFlag((pos as any)?.use_system_close_only)
     if (systemCloseOnly) {
-      const cancels: Array<Promise<unknown>> = []
-      if (pos.stopLossOrderId) cancels.push(cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "SystemCloseSweep-SL", pos.connectionId).catch(() => false))
-      if (pos.takeProfitOrderId) cancels.push(cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "SystemCloseSweep-TP", pos.connectionId).catch(() => false))
-      if (cancels.length > 0) {
-        await Promise.allSettled(cancels)
-        console.log(`${LOG_PREFIX} [system-close] ${pos.symbol} — swept ${cancels.length} stale control order(s)`)
+      const cancellations = await Promise.all([
+        pos.stopLossOrderId
+          ? cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "SystemCloseSweep-SL", pos.connectionId).catch(() => false)
+          : Promise.resolve(true),
+        pos.takeProfitOrderId
+          ? cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "SystemCloseSweep-TP", pos.connectionId).catch(() => false)
+          : Promise.resolve(true),
+      ])
+      if (pos.stopLossOrderId && cancellations[0]) {
         pos.stopLossOrderId = undefined
-        pos.takeProfitOrderId = undefined
         pos.stopLossPrice = 0
+        result.changed = true
+      }
+      if (pos.takeProfitOrderId && cancellations[1]) {
+        pos.takeProfitOrderId = undefined
         pos.takeProfitPrice = 0
         result.changed = true
       }
-      ;(pos as any).protectionMode = "system_close"
+      if (!cancellations.every(Boolean)) {
+        pushStep(pos, "system_close_control_wait", true, "control cancellation not yet authoritative")
+      }
+      pos.protectionMode = "system_close"
       return result
-    } else if ((pos as any).protectionMode === "system_close") {
-      delete (pos as any).protectionMode
+    } else if (pos.protectionMode === "system_close") {
+      delete pos.protectionMode
       result.changed = true
     }
   } catch (modeErr) {
@@ -3404,6 +4202,9 @@ async function updateProtectionOrders(
           // connection for PROTECTION_QUOTA_BACKOFF_MS. Do NOT clear orderId/price
           // so existing armed orders (if any) remain tracked.
           markProtectionQuotaExhausted(pos.connectionId)
+          pos.protectionMode = "system_close_fallback"
+          result.changed = true
+          pushStep(pos, "protection_quota_system_fallback", true, "SL quota exhausted; using system-side trigger handling")
           // Leave existing stopLossOrderId / stopLossPrice unchanged.
         } else if (slIdOk) {
           pos.stopLossOrderId = id!
@@ -3476,6 +4277,9 @@ async function updateProtectionOrders(
         if (id === "QUOTA_EXCEEDED") {
           // Mirror of the SL leg: suspend placement, preserve existing order data.
           markProtectionQuotaExhausted(pos.connectionId)
+          pos.protectionMode = "system_close_fallback"
+          result.changed = true
+          pushStep(pos, "protection_quota_system_fallback", true, "TP quota exhausted; using system-side trigger handling")
         } else if (tpIdOk) {
           pos.takeProfitOrderId = id!
           pos.takeProfitPrice = desiredTp
@@ -3513,6 +4317,7 @@ async function updateProtectionOrders(
   // the next tick. We keep result.changed for the pushStep / save path below.
   if (result.slPlaced || result.tpPlaced) {
     pos.protectionArmedQuantity = effectiveQty
+    pos.protectionMode = "exchange_control"
   }
 
   if (result.changed) {
@@ -3607,6 +4412,11 @@ export async function executeLivePosition(
         ? realPosition.accumulatedSetKeys
         : (realPosition.setKey ? [realPosition.setKey] : []),
     combinedPosCounts: realPosition.combinedPosCounts ?? false,
+    posCountsTargetFlat: realPosition.posCountsTargetFlat ?? false,
+    posCountsLongSetCount: realPosition.posCountsLongSetCount,
+    posCountsShortSetCount: realPosition.posCountsShortSetCount,
+    posCountsNetSetCount: realPosition.posCountsNetSetCount,
+    posCountsSetRatios: { ...(realPosition.posCountsSetRatios || {}) },
       // Set-config propagation: carry trailing profile and prevPos from the
       // originating StrategySet so the position is config-aware even when it
       // does not actually execute (for audit-trail completeness).
@@ -3671,7 +4481,16 @@ export async function executeLivePosition(
       setVariant:     realPosition.setVariant,
       axisWindows:    realPosition.axisWindows,
       sizeMultiplier: realPosition.sizeMultiplier,
-      accumulatedSetKeys: realPosition.setKey ? [realPosition.setKey] : [],
+      accumulatedSetKeys:
+        Array.isArray(realPosition.accumulatedSetKeys) && realPosition.accumulatedSetKeys.length > 0
+          ? realPosition.accumulatedSetKeys
+          : (realPosition.setKey ? [realPosition.setKey] : []),
+      combinedPosCounts: realPosition.combinedPosCounts ?? false,
+      posCountsTargetFlat: realPosition.posCountsTargetFlat ?? false,
+      posCountsLongSetCount: realPosition.posCountsLongSetCount,
+      posCountsShortSetCount: realPosition.posCountsShortSetCount,
+      posCountsNetSetCount: realPosition.posCountsNetSetCount,
+      posCountsSetRatios: { ...(realPosition.posCountsSetRatios || {}) },
       trailingProfile: realPosition.trailingProfile,
       prevPos:         realPosition.prevPos,
     }
@@ -3769,7 +4588,16 @@ export async function executeLivePosition(
     blockCount: realPosition.blockCount,
     blockVolumeIncrementRatio: realPosition.blockVolumeIncrementRatio,
     blockCalculatedVolumeMultiplier: realPosition.blockCalculatedVolumeMultiplier,
-    accumulatedSetKeys: realPosition.setKey ? [realPosition.setKey] : [],
+    accumulatedSetKeys:
+      Array.isArray(realPosition.accumulatedSetKeys) && realPosition.accumulatedSetKeys.length > 0
+        ? realPosition.accumulatedSetKeys
+        : (realPosition.setKey ? [realPosition.setKey] : []),
+    combinedPosCounts: realPosition.combinedPosCounts ?? false,
+    posCountsTargetFlat: realPosition.posCountsTargetFlat ?? false,
+    posCountsLongSetCount: realPosition.posCountsLongSetCount,
+    posCountsShortSetCount: realPosition.posCountsShortSetCount,
+    posCountsNetSetCount: realPosition.posCountsNetSetCount,
+    posCountsSetRatios: { ...(realPosition.posCountsSetRatios || {}) },
     // ── Set-config propagation (Relations → Live Protection) ──────────
     // The trailing profile and historical performance snapshot from the
     // originating StrategySet travel through RealPosition → LivePosition
@@ -3891,6 +4719,24 @@ export async function executeLivePosition(
       ])
       console.warn(`${LOG_PREFIX} ${livePosition.statusReason}`)
       return livePosition
+    }
+
+    // Position-count Sets own one physical exchange target per symbol. Every
+    // cycle reconciles the existing quantity to the newest long/short hedge:
+    // increase only the positive delta, reduce only the negative delta, close
+    // on flat, and close-then-open on a direction flip. Ordinary dedup/merge
+    // logic is additive and therefore cannot implement this target contract.
+    if (realPosition.combinedPosCounts) {
+      const reconciled = await reconcileCombinedPosCountTarget(
+        connectionId,
+        realPosition,
+        exchangeConnector,
+        executionIntent,
+        isLiveTradeEnabled,
+      )
+      if (reconciled) return reconciled
+      // null means this is the first non-flat target; continue through the
+      // normal fresh-entry path, which creates and protects the physical order.
     }
 
     // isBlockVariant and _lockDirSuffix are hoisted to function scope (before
@@ -4175,8 +5021,16 @@ export async function executeLivePosition(
       livePosition.averageExecutionPrice = simEntryPrice
       livePosition.volumeUsd = simQty * simEntryPrice
       livePosition.initialExecutedQuantity = simQty
+      livePosition.totalExecutedQuantity = simQty
       livePosition.initialEntryPrice = simEntryPrice
       livePosition.blockBaseQuantity = simQty
+      if (livePosition.combinedPosCounts) {
+        livePosition.posCountsSetQuantities = allocatePositionSetQuantities(
+          livePosition,
+          simQty,
+          livePosition.accumulatedSetKeys,
+        )
+      }
       livePosition.fills = [
         {
           timestamp: Date.now(),
@@ -5078,8 +5932,19 @@ export async function executeLivePosition(
       livePosition.remainingQuantity = Math.max(0, computedVolume - fill.filledQty)
       livePosition.averageExecutionPrice = fill.filledPrice || currentPrice
       livePosition.initialExecutedQuantity ??= fill.filledQty
+      livePosition.totalExecutedQuantity = Math.max(
+        Number(livePosition.totalExecutedQuantity || 0),
+        fill.filledQty,
+      )
       livePosition.initialEntryPrice ??= fill.filledPrice || currentPrice
       livePosition.blockBaseQuantity ??= fill.filledQty
+      if (livePosition.combinedPosCounts) {
+        livePosition.posCountsSetQuantities = allocatePositionSetQuantities(
+          livePosition,
+          fill.filledQty,
+          livePosition.accumulatedSetKeys,
+        )
+      }
       livePosition.fills!.push({
         timestamp: Date.now(),
         quantity: fill.filledQty,
@@ -5544,15 +6409,419 @@ export async function updateLivePositionFill(
   }
 }
 
+type ControlBarrierOutcome = {
+  decision: "wait" | "proceed_system" | "exchange_closed"
+  authoritativeQuantity?: number
+  detail: string
+}
+
+function controlOrderStatus(order: any): string {
+  return String(order?.status ?? order?.orderStatus ?? order?.state ?? "unknown").toLowerCase()
+}
+
+function controlOrderFilledQuantity(order: any): number {
+  const value = Number(
+    order?.filledQty ?? order?.executedQty ?? order?.cumQty ??
+    order?.filledQuantity ?? order?.executedQuantity ?? 0,
+  )
+  return Number.isFinite(value) && value > 0 ? value : 0
+}
+
+function controlOrderFillPrice(order: any, fallback: number): number {
+  const value = Number(order?.filledPrice ?? order?.avgPrice ?? order?.averagePrice ?? order?.price ?? fallback)
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+/**
+ * Serialize venue control orders and a system close.
+ *
+ * A trigger order may fill between any two HTTP calls. Therefore an unknown,
+ * open, partially-filled, or response-lost control order always wins the
+ * current cycle. The system close is permitted only after the control order
+ * has either changed the authoritative position or its cancellation is
+ * confirmed absent from an authoritative open-order snapshot.
+ */
+async function settleControlOrdersBeforeSystemClose(
+  connector: any,
+  position: LivePosition,
+  closeReason: string,
+  fallbackPrice: number,
+): Promise<ControlBarrierOutcome> {
+  const action = position.pendingSystemAction || {
+    token: `system-close:${position.id}:${nanoid(8)}`,
+    reason: closeReason,
+    phase: "control_wait" as const,
+    startedAt: Date.now(),
+    updatedAt: Date.now(),
+  }
+  action.reason = closeReason
+  action.updatedAt = Date.now()
+  position.pendingSystemAction = action
+
+  if (position.pendingReduction || position.pendingAccumulation || position.pendingQuantityMutation) {
+    return {
+      decision: "wait",
+      detail: `partial coordination still active (${position.pendingReduction
+        ? "reduction"
+        : position.pendingAccumulation
+          ? "accumulation"
+          : `quantity:${position.pendingQuantityMutation?.phase}`})`,
+    }
+  }
+
+  const direction: "long" | "short" = position.direction === "short" ? "short" : "long"
+  const initialQuantity = Math.max(0, Number(position.executedQuantity || position.quantity || 0))
+  const observations: Array<{ id: string; source: PartialOrderExecutionSource; order: any }> = []
+  const unresolvedClientIds = new Set<string>()
+
+  // First recover response-lost control submissions by their durable client id.
+  for (const leg of ["stopLoss", "takeProfit"] as const) {
+    const pending = position.pendingProtectionOrders?.[leg]
+    if (!pending?.clientOrderId) continue
+    const recovered = await recoverEntryOrderByClientId(connector, position.symbol, pending.clientOrderId)
+    if (recovered) {
+      const orderId = String(recovered.orderId ?? recovered.id)
+      if (leg === "stopLoss") position.stopLossOrderId = orderId
+      else position.takeProfitOrderId = orderId
+      observations.push({ id: orderId, source: "control_order", order: recovered })
+      delete position.pendingProtectionOrders?.[leg]
+    } else {
+      unresolvedClientIds.add(pending.clientOrderId)
+    }
+  }
+
+  // A prior system-close submission is part of the same barrier. Reconcile it
+  // before any new close can be emitted after a restart or partial fill.
+  if (action.orderId && typeof connector?.getOrder === "function") {
+    const order = await withTimeout(
+      connector.getOrder(position.symbol, action.orderId) as Promise<any>,
+      EXCHANGE_TIMEOUT_GET_ORDER_MS,
+      `getOrder(system-close ${action.orderId})`,
+    ).catch(() => null)
+    if (order) observations.push({ id: action.orderId, source: "system_close", order })
+  } else if (action.clientOrderId && action.phase !== "control_wait") {
+    const recovered = await recoverEntryOrderByClientId(connector, position.symbol, action.clientOrderId)
+    if (recovered) {
+      action.orderId = String(recovered.orderId ?? recovered.id)
+      observations.push({ id: action.orderId, source: "system_close", order: recovered })
+    } else {
+      unresolvedClientIds.add(action.clientOrderId)
+    }
+  }
+
+  const trackedControlIds = Array.from(new Set(
+    [position.stopLossOrderId, position.takeProfitOrderId].map(String).filter((id) => id && id !== "undefined"),
+  ))
+  for (const orderId of trackedControlIds) {
+    if (observations.some((item) => item.id === orderId)) continue
+    if (typeof connector?.getOrder !== "function") continue
+    const order = await withTimeout(
+      connector.getOrder(position.symbol, orderId) as Promise<any>,
+      EXCHANGE_TIMEOUT_GET_ORDER_MS,
+      `getOrder(control ${orderId})`,
+    ).catch(() => null)
+    if (order) observations.push({ id: orderId, source: "control_order", order })
+  }
+
+  let authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+  const quantityChanged = authoritative.ok && authoritative.quantity < initialQuantity - Math.max(1e-12, initialQuantity * 1e-8)
+  const filledObservation = observations
+    .filter((item) => controlOrderFilledQuantity(item.order) > 0 || isFilledControlOrderStatus(controlOrderStatus(item.order)))
+    .sort((a, b) => controlOrderFilledQuantity(b.order) - controlOrderFilledQuantity(a.order))[0]
+
+  if (filledObservation || quantityChanged) {
+    const executionId = filledObservation
+      ? `${position.id}:${filledObservation.source}:${filledObservation.id}`
+      : `${position.id}:control-authority:${action.token}`
+    const existing = position.partialOrderExecutions?.find((entry) => entry.id === executionId)
+    const observedOrder = filledObservation?.order
+    const applied = applyReductionObservation(position, {
+      executionId,
+      source: filledObservation?.source || "control_order",
+      status: controlOrderStatus(observedOrder || { status: authoritative.quantity <= 0 ? "filled" : "partially_filled" }),
+      requestedQuantity: filledObservation?.source === "system_close"
+        ? Number(action.requestedQuantity || initialQuantity)
+        : initialQuantity,
+      reportedFilledQuantity: controlOrderFilledQuantity(observedOrder),
+      previouslyAppliedQuantity: Number(existing?.cumulativeFilledQuantity || action.appliedFilledQuantity || 0),
+      authoritativeQuantity: authoritative.ok ? authoritative.quantity : null,
+      price: controlOrderFillPrice(observedOrder, fallbackPrice),
+      orderId: filledObservation?.id,
+      clientOrderId: filledObservation?.source === "system_close" ? action.clientOrderId : undefined,
+    })
+    if (filledObservation?.source === "system_close") action.appliedFilledQuantity = applied.cumulativeApplied
+  }
+
+  if (authoritative.ok && authoritative.quantity <= Math.max(1e-12, initialQuantity * 1e-8)) {
+    return { decision: "exchange_closed", authoritativeQuantity: 0, detail: "authoritative exchange quantity is zero" }
+  }
+
+  const activeControlIds = observations
+    .filter((item) => item.source === "control_order" && isActiveControlOrderStatus(controlOrderStatus(item.order)))
+    .map((item) => item.id)
+  const systemObservation = observations.find((item) => item.source === "system_close")
+  if (systemObservation && isActiveControlOrderStatus(controlOrderStatus(systemObservation.order))) {
+    return {
+      decision: "wait",
+      authoritativeQuantity: authoritative.ok ? authoritative.quantity : undefined,
+      detail: `system close order ${systemObservation.id} is still ${controlOrderStatus(systemObservation.order)}`,
+    }
+  }
+  if (systemObservation && !isActiveControlOrderStatus(controlOrderStatus(systemObservation.order))) {
+    action.orderId = undefined
+    action.clientOrderId = undefined
+    action.requestedQuantity = undefined
+    action.appliedFilledQuantity = undefined
+  }
+  const unknownTrackedIds = trackedControlIds.filter((id) => !observations.some((item) => item.id === id))
+  action.controlOrderIds = Array.from(new Set([...trackedControlIds, ...unresolvedClientIds]))
+
+  const triggerDriven = /(^|_)(sl|tp|stop|take|trailing)|price_cross/i.test(closeReason)
+  const CONTROL_EFFECT_GRACE_MS = 10_000
+  if (triggerDriven && activeControlIds.length > 0 && Date.now() - action.startedAt < CONTROL_EFFECT_GRACE_MS) {
+    return { decision: "wait", authoritativeQuantity: authoritative.ok ? authoritative.quantity : undefined, detail: "trigger control order still active within effect grace" }
+  }
+
+  // Cancel only system-owned, known control IDs. Cancellation is sequential
+  // with the system submission and must be confirmed before proceeding.
+  const idsToCancel = Array.from(new Set([...activeControlIds, ...unknownTrackedIds]))
+  for (const orderId of idsToCancel) {
+    const cancelled = await cancelProtectionOrder(
+      connector,
+      position.symbol,
+      orderId,
+      "SystemCloseBarrier",
+      position.connectionId,
+    )
+    if (!cancelled) {
+      return { decision: "wait", authoritativeQuantity: authoritative.ok ? authoritative.quantity : undefined, detail: `control order ${orderId} not confirmed cancelled` }
+    }
+  }
+
+  const liveOrderIds = await fetchLiveOrderIdSet(connector)
+  if (typeof connector?.getOpenOrders === "function" && liveOrderIds === null && (trackedControlIds.length > 0 || unresolvedClientIds.size > 0)) {
+    return { decision: "wait", authoritativeQuantity: authoritative.ok ? authoritative.quantity : undefined, detail: "authoritative open-order snapshot unavailable" }
+  }
+  const stillVisible = action.controlOrderIds.filter((id) => liveOrderIds?.has(id))
+  if (stillVisible.length > 0) {
+    return { decision: "wait", authoritativeQuantity: authoritative.ok ? authoritative.quantity : undefined, detail: `control orders still visible: ${stillVisible.join(",")}` }
+  }
+
+  if (unresolvedClientIds.size > 0) {
+    action.absenceConfirmations = Number(action.absenceConfirmations || 0) + 1
+    if (action.absenceConfirmations < 2) {
+      return { decision: "wait", authoritativeQuantity: authoritative.ok ? authoritative.quantity : undefined, detail: "response-lost control submission requires second absence confirmation" }
+    }
+    for (const leg of ["stopLoss", "takeProfit"] as const) {
+      const pending = position.pendingProtectionOrders?.[leg]
+      if (pending && unresolvedClientIds.has(pending.clientOrderId)) delete position.pendingProtectionOrders?.[leg]
+    }
+    if (action.clientOrderId && unresolvedClientIds.has(action.clientOrderId)) {
+      // Two authoritative order-absence observations plus a still-open
+      // position prove that the previous prepared submission never became an
+      // exchange order. A new durable id may now be prepared safely.
+      action.clientOrderId = undefined
+      action.orderId = undefined
+      action.requestedQuantity = undefined
+      action.appliedFilledQuantity = undefined
+    }
+  }
+
+  if (!liveOrderIds || !position.stopLossOrderId || !liveOrderIds.has(position.stopLossOrderId)) {
+    position.stopLossOrderId = undefined
+    position.stopLossPrice = 0
+  }
+  if (!liveOrderIds || !position.takeProfitOrderId || !liveOrderIds.has(position.takeProfitOrderId)) {
+    position.takeProfitOrderId = undefined
+    position.takeProfitPrice = 0
+  }
+
+  authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+  const decision = decideControlOrderBarrier({
+    localQuantity: Number(position.executedQuantity || 0),
+    authoritativeQuantity: authoritative.ok ? authoritative.quantity : null,
+    authoritativeSnapshot: authoritative.ok,
+    activeControlOrders: 0,
+    unresolvedControlOrders: 0,
+    pendingSubmissions: 0,
+  })
+  if (!authoritative.ok && typeof connector?.getPosition === "function") {
+    return { decision: "wait", detail: "authoritative position snapshot unavailable after control settlement" }
+  }
+  return {
+    decision,
+    authoritativeQuantity: authoritative.ok ? authoritative.quantity : undefined,
+    detail: decision === "exchange_closed" ? "control order closed the position" : "all control activity settled",
+  }
+}
+
+/** Confirm protection settlement before an independent position-size delta. */
+async function settleControlOrdersBeforeQuantityMutation(
+  connector: any,
+  position: LivePosition,
+  reason: string,
+): Promise<boolean> {
+  if (!connector) return true
+  if (position.pendingSystemAction) {
+    pushStep(position, "quantity_change_wait", true, `${reason}: system action is still coordinated`)
+    return false
+  }
+
+  const quantityBefore = Math.max(0, Number(
+    position.pendingQuantityMutation?.quantityBefore ?? position.executedQuantity ?? 0,
+  ))
+  const action = position.pendingQuantityMutation || {
+    token: `quantity:${position.id}:${nanoid(8)}`,
+    reason,
+    phase: "control_cancel" as const,
+    controlOrderIds: [],
+    quantityBefore,
+    startedAt: Date.now(),
+    updatedAt: Date.now(),
+  }
+  action.reason = reason
+  action.updatedAt = Date.now()
+
+  const ids = new Set<string>(action.controlOrderIds || [])
+  if (position.stopLossOrderId) ids.add(String(position.stopLossOrderId))
+  if (position.takeProfitOrderId) ids.add(String(position.takeProfitOrderId))
+  const unresolved: Array<"stopLoss" | "takeProfit"> = []
+  for (const leg of ["stopLoss", "takeProfit"] as const) {
+    const pending = position.pendingProtectionOrders?.[leg]
+    if (!pending?.clientOrderId) continue
+    const recovered = await recoverEntryOrderByClientId(connector, position.symbol, pending.clientOrderId)
+    if (recovered) {
+      const orderId = String(recovered.orderId ?? recovered.id)
+      ids.add(orderId)
+      if (leg === "stopLoss") position.stopLossOrderId = orderId
+      else position.takeProfitOrderId = orderId
+      delete position.pendingProtectionOrders?.[leg]
+    } else {
+      unresolved.push(leg)
+    }
+  }
+  action.controlOrderIds = [...ids]
+  position.pendingQuantityMutation = action
+
+  if (action.phase === "control_cancel") {
+    for (const orderId of ids) {
+      const cancelled = await cancelProtectionOrder(
+        connector,
+        position.symbol,
+        orderId,
+        `QuantityMutation-${reason}`,
+        position.connectionId,
+      )
+      if (!cancelled) {
+        pushStep(position, "quantity_change_wait", true, `${reason}: control ${orderId} cancellation unconfirmed`)
+        return false
+      }
+    }
+  }
+
+  let liveOrderIds: Set<string> | null = new Set()
+  if (ids.size > 0 || unresolved.length > 0) {
+    liveOrderIds = await fetchLiveOrderIdSet(connector)
+    if (typeof connector.getOpenOrders === "function" && liveOrderIds === null) {
+      pushStep(position, "quantity_change_wait", true, `${reason}: open-order snapshot unavailable`)
+      return false
+    }
+    const stillVisible = [...ids].filter((id) => liveOrderIds?.has(id))
+    if (stillVisible.length > 0) {
+      pushStep(position, "quantity_change_wait", true, `${reason}: controls still visible ${stillVisible.join(",")}`)
+      return false
+    }
+  }
+
+  for (const leg of unresolved) {
+    const pending = position.pendingProtectionOrders?.[leg]
+    if (!pending) continue
+    if (liveOrderIds?.has(pending.clientOrderId)) {
+      pushStep(position, "quantity_change_wait", true, `${reason}: pending ${leg} is visible by client id`)
+      return false
+    }
+    pending.absenceConfirmations = Number(pending.absenceConfirmations || 0) + 1
+    if (pending.absenceConfirmations < 2) {
+      pushStep(position, "quantity_change_wait", true, `${reason}: pending ${leg} needs second absence confirmation`)
+      return false
+    }
+    delete position.pendingProtectionOrders?.[leg]
+  }
+
+  action.phase = "position_verify"
+  action.updatedAt = Date.now()
+  position.pendingQuantityMutation = action
+
+  const direction: "long" | "short" = position.direction === "short" ? "short" : "long"
+  const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+  if (!authoritative.ok) {
+    pushStep(position, "quantity_change_wait", true, `${reason}: authoritative position snapshot unavailable`)
+    return false
+  }
+
+  // Only now is it safe to forget the prior protection identifiers. A failed
+  // position snapshot retains them in pendingQuantityMutation for the next
+  // cycle, preventing a stale-size delta from slipping through.
+  position.stopLossOrderId = undefined
+  position.takeProfitOrderId = undefined
+  position.stopLossPrice = 0
+  position.takeProfitPrice = 0
+  position.protectionArmedQuantity = 0
+
+  const localQuantity = Math.max(0, Number(position.executedQuantity || 0))
+  const tolerance = Math.max(1e-12, localQuantity * 1e-8)
+  if (authoritative.quantity < localQuantity - tolerance) {
+    const executionId = `${position.id}:${ids.size > 0 ? "quantity-control" : "quantity-sync"}:${[...ids].sort().join("+") || action.token}`
+    const existing = position.partialOrderExecutions?.find((entry) => entry.id === executionId)
+    applyReductionObservation(position, {
+      executionId,
+      source: ids.size > 0 ? "control_order" : "exchange_reconcile",
+      status: authoritative.quantity <= 0 ? "filled" : "partially_filled",
+      requestedQuantity: localQuantity,
+      reportedFilledQuantity: 0,
+      previouslyAppliedQuantity: Number(existing?.cumulativeFilledQuantity || 0),
+      authoritativeQuantity: authoritative.quantity,
+      price: Number(position.markPrice || position.averageExecutionPrice || position.entryPrice || 0),
+    })
+  } else if (authoritative.quantity > localQuantity + tolerance) {
+    const added = authoritative.quantity - localQuantity
+    position.executedQuantity = authoritative.quantity
+    position.quantity = authoritative.quantity
+    position.remainingQuantity = 0
+    position.totalExecutedQuantity = Math.max(
+      Number(position.totalExecutedQuantity || 0) + added,
+      authoritative.quantity + Number(position.closedQuantity || 0),
+    )
+    position.volumeUsd = authoritative.quantity * Number(position.averageExecutionPrice || position.entryPrice || 0)
+    if (position.combinedPosCounts) {
+      position.posCountsSetQuantities = allocatePositionSetQuantities(
+        position,
+        authoritative.quantity,
+        position.accumulatedSetKeys || [],
+      )
+    }
+    pushStep(position, "quantity_exchange_sync", true, `${localQuantity} → ${authoritative.quantity} before ${reason}`)
+  }
+
+  position.pendingQuantityMutation = undefined
+  if (authoritative.quantity <= 1e-12) {
+    position.statusReason = `${reason}: control order closed position before quantity mutation`
+    pushStep(position, "quantity_change_wait", true, position.statusReason)
+    return false
+  }
+  pushStep(position, "quantity_control_barrier", true, `${reason}: controls settled; independent quantity delta may execute`)
+  return true
+}
+
 /**
  * Close a live position (market exit) and release its dedup lock.
  *
  * Order of operations is critical to avoid orphan orders & leaked indices:
- *   1. Cancel any open SL/TP orders FIRST so the exchange-side close
- *      doesn't race against a still-active reduce-only sitting in the
- *      book (which would either double-fire or leave a stale order
- *      glued to the user's account).
- *   2. Issue the actual close on the exchange. A failed/unconfirmed venue
+ *   1. Reconcile any active/partial SL/TP or durable partial action and wait
+ *      until its effect or confirmed cancellation is authoritative.
+ *   2. Persist one idempotent system-close intent, issue it only after that
+ *      barrier, then verify the remaining exchange quantity. A failed,
+ *      partial, or unconfirmed venue
  *      close rolls the local record back to its prior open state and re-arms
  *      protection; only authoritative success/already-gone confirmation may
  *      enter the terminal archive.
@@ -5625,33 +6894,58 @@ export async function closeLivePosition(
     // position ID. Without EITHER, skip all exchange operations.
     const hasSystemOrderId = !!(position.orderId || position.exchangeData?.exchangePositionId)
 
-    // ── 1+2. RACE: cancel owned SL/TP IN PARALLEL with close ───────────
-    // The old sequential pattern (cancel → await → close) added 200-400 ms
-    // of avoidable latency on every close. The cancellations are best-effort
-    // cleanup and the close is reduce-only so a race can only ever attempt to
-    // reduce the position twice (the second attempt no-ops when the position
-    // is gone). We fire all three calls together and await them as a group.
-    //
-    // Gated on `hasSystemOrderId`: only cancel SL/TP that belong to a
-    // position we placed. For operator-adopted positions the existing manual
-    // protection stays intact on the exchange.
-    const cancellationPromises: Promise<boolean>[] = []
+    const hadSlId = !!position.stopLossOrderId
+    const hadTpId = !!position.takeProfitOrderId
+
+    // Settle control orders before a system action. This is intentionally
+    // sequential: an exchange SL/TP or partial coordination always gets an
+    // authoritative cycle to take effect before any program close is sent.
     if (exchangeConnector && hasSystemOrderId) {
-      if (position.stopLossOrderId) {
-        cancellationPromises.push(
-          cancelProtectionOrder(exchangeConnector, position.symbol, position.stopLossOrderId, "StopLoss", position.connectionId),
-        )
+      const barrier = await settleControlOrdersBeforeSystemClose(
+        exchangeConnector,
+        position,
+        closeReason,
+        closePrice,
+      )
+      pushStep(position, "control_order_barrier", barrier.decision !== "wait", barrier.detail)
+      await savePosition(position)
+      await persistCriticalLiveState(`control-barrier:${position.id}`)
+
+      if (barrier.decision === "wait") {
+        const rollbackStatus: LivePosition["status"] = originalStatus && originalStatus !== "closing"
+          ? originalStatus
+          : "open"
+        position.status = rollbackStatus
+        position.statusReason = `close_deferred_control_coordination: ${barrier.detail}`
+        position.lockedAt = 0
+        position.lockedBy = undefined
+        const rollback = await mutatePositionWithVersionCheck(position, ["closing"], draft => {
+          Object.assign(draft, position)
+          draft.status = rollbackStatus
+          draft.lockedAt = 0
+          draft.lockedBy = undefined
+        })
+        if (rollback) Object.assign(position, rollback)
+        await savePosition(position)
+        await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
+        mutationLockHeld = false
+        return position
       }
-      if (position.takeProfitOrderId) {
-        cancellationPromises.push(
-          cancelProtectionOrder(exchangeConnector, position.symbol, position.takeProfitOrderId, "TakeProfit", position.connectionId),
-        )
+
+      if (barrier.decision === "exchange_closed") {
+        position.executedQuantity = 0
+        position.quantity = 0
       }
     }
 
     // Close-result state — set by the branches below.
     let exchangeCloseSuccess = false
     let exchangeCloseReason: "ok" | "already_closed" | "failed" | "skipped" = "skipped"
+
+    if (exchangeConnector && hasSystemOrderId && Number(position.executedQuantity || 0) <= 0) {
+      exchangeCloseSuccess = true
+      exchangeCloseReason = "already_closed"
+    }
 
     if (!hasSystemOrderId && exchangeConnector) {
       exchangeCloseReason = "skipped"
@@ -5664,13 +6958,21 @@ export async function closeLivePosition(
       ).catch(() => {})
     }
 
-    if (hasSystemOrderId && exchangeConnector && typeof exchangeConnector.closePosition === "function") {
+    if (
+      !exchangeCloseSuccess &&
+      hasSystemOrderId &&
+      exchangeConnector &&
+      (typeof exchangeConnector.placeOrder === "function" || typeof exchangeConnector.closePosition === "function")
+    ) {
       // maxRetries=2, per-attempt timeout=35s, one 500ms backoff.
       // The outer per-position sync deadline bounds the caller; if the venue
       // remains unresponsive the local position stays open for the next
       // authoritative recovery pass.
-      const maxRetries = 2
-      const backoffMs = [500, 1000]
+      // A timed-out reduce-only submission may still have reached the venue.
+      // Never retry it blindly in the same cycle. The durable client id and
+      // pendingSystemAction are recovered on the next cycle instead.
+      const maxRetries = 1
+      const backoffMs = [500]
       const CLOSE_ATTEMPT_TIMEOUT_MS = 35_000
 
       const isAlreadyClosedError = (msg: string): boolean => {
@@ -5726,13 +7028,49 @@ export async function closeLivePosition(
           // withTimeout wraps closePosition. The rate-limiter enforces the
           // HTTP timeout from dispatch time (not enqueue time) via executeTimeoutMs,
           // so this covers only actual BingX round-trip time.
+          const action = position.pendingSystemAction || {
+            token: `system-close:${position.id}:${nanoid(8)}`,
+            reason: closeReason,
+            phase: "system_submit" as const,
+            startedAt: Date.now(),
+            updatedAt: Date.now(),
+          }
+          action.phase = "system_submit"
+          action.updatedAt = Date.now()
+          action.requestedQuantity = Number(position.executedQuantity || position.quantity || 0)
+          if (!action.clientOrderId) action.clientOrderId = makeDurableClientOrderId("sys-close", position)
+          position.pendingSystemAction = action
+          await savePosition(position)
+          await persistCriticalLiveState(`system-close-prepared:${position.id}`)
+
+          const closeSide: "buy" | "sell" = position.direction === "long" ? "sell" : "buy"
+          const request = typeof exchangeConnector.placeOrder === "function"
+            ? exchangeConnector.placeOrder(
+                position.symbol,
+                closeSide,
+                action.requestedQuantity,
+                undefined,
+                "market",
+                {
+                  reduceOnly: true,
+                  positionSide: position.direction === "long" ? "LONG" : "SHORT",
+                  clientOrderId: action.clientOrderId,
+                },
+              )
+            : exchangeConnector.closePosition(position.symbol, position.direction)
           const r = (await withTimeout(
-            exchangeConnector.closePosition(position.symbol, position.direction),
+            request,
             CLOSE_ATTEMPT_TIMEOUT_MS,
-            `closePosition(${position.symbol} ${position.direction})`,
-          )) as { success?: boolean; error?: string } | undefined
+            `systemClose(${position.symbol} ${position.direction})`,
+          )) as { success?: boolean; error?: string; orderId?: string; id?: string } | undefined
 
           if (r && typeof r === "object" && r.success === true) {
+            action.orderId = r.orderId != null || r.id != null ? String(r.orderId ?? r.id) : action.orderId
+            action.phase = "system_verify"
+            action.updatedAt = Date.now()
+            position.pendingSystemAction = action
+            await savePosition(position)
+            await persistCriticalLiveState(`system-close-submitted:${position.id}`)
             exchangeCloseSuccess = true
             exchangeCloseReason = "ok"
             console.log(`${LOG_PREFIX} [v0] Exchange close succeeded: ${position.symbol} ${position.direction}`)
@@ -5785,43 +7123,74 @@ export async function closeLivePosition(
       }
     }
 
-    // Drain the cancellation promises we fired in parallel with the close.
-    // By the time we reach here the close has already completed, so these
-    // requests have been in-flight the whole duration — typically zero
-    // additional wait. We clear the local IDs regardless so the next
-    // reconcile pass treats them as gone.
-    // Track which leg cancel actually succeeded so we DON'T blindly wipe
-    // a still-armed orderId. The original implementation cleared both
-    // ids unconditionally, which meant a transient cancel failure left
-    // an orphan reduce-only order on the venue with no local record to
-    // look it up by — exactly the "control orders chaos" the operator
-    // reported. We now only clear an id when the venue confirmed the
-    // order is gone (success path inside cancelProtectionOrder also
-    // returns `true` for "not found" / "already filled" / "already
-    // cancelled" — so the wipe is safe in those cases).
-    let slCancelled = false
-    let tpCancelled = false
-    const hadSlId = !!position.stopLossOrderId
-    const hadTpId = !!position.takeProfitOrderId
-    if (cancellationPromises.length > 0) {
-      const cancelResults = await Promise.all(
-        cancellationPromises.map(p => p.catch(() => false)),
-      )
-      let idx = 0
-      if (hadSlId) {
-        slCancelled = !!cancelResults[idx++]
-        if (slCancelled) position.stopLossOrderId = undefined
+    const slCancelled = hadSlId && !position.stopLossOrderId
+    const tpCancelled = hadTpId && !position.takeProfitOrderId
+
+    // Acceptance is not a fill. For connectors with an authoritative
+    // position endpoint, terminal state is gated on a zero exchange quantity.
+    // A partial or lagging snapshot remains `closing_partial` and is recovered
+    // by the durable pendingSystemAction on the next cycle.
+    if (exchangeCloseSuccess && exchangeCloseReason === "ok" && exchangeConnector) {
+      const direction: "long" | "short" = position.direction === "short" ? "short" : "long"
+      const authoritative = await fetchAuthoritativeOpenQuantity(exchangeConnector, position.symbol, direction)
+      if (authoritative.ok) {
+        const action = position.pendingSystemAction
+        const executionId = `${position.id}:system-close:${action?.clientOrderId || action?.orderId || action?.token || "unknown"}`
+        const existing = position.partialOrderExecutions?.find((entry) => entry.id === executionId)
+        const observed = applyReductionObservation(position, {
+          executionId,
+          source: "system_close",
+          status: authoritative.quantity <= 0 ? "filled" : "partially_filled",
+          requestedQuantity: Number(action?.requestedQuantity || position.executedQuantity || 0),
+          reportedFilledQuantity: 0,
+          previouslyAppliedQuantity: Number(existing?.cumulativeFilledQuantity || action?.appliedFilledQuantity || 0),
+          authoritativeQuantity: authoritative.quantity,
+          price: closePrice,
+          orderId: action?.orderId,
+          clientOrderId: action?.clientOrderId,
+        })
+        if (action) action.appliedFilledQuantity = observed.cumulativeApplied
+        if (authoritative.quantity > 1e-12) {
+          position.status = "closing_partial"
+          position.statusReason = `system_close_pending_exchange_effect: open=${authoritative.quantity}`
+          if (action) {
+            action.phase = "partial_wait"
+            action.updatedAt = Date.now()
+          }
+          const partialMutation = await mutatePositionWithVersionCheck(position, ["closing"], draft => {
+            Object.assign(draft, position)
+            draft.status = "closing_partial"
+            draft.lockedAt = 0
+            draft.lockedBy = undefined
+          })
+          if (partialMutation) Object.assign(position, partialMutation)
+          await savePosition(position)
+          await persistCriticalLiveState(`system-close-partial:${position.id}`)
+          await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
+          mutationLockHeld = false
+          return position
+        }
+        position.pendingSystemAction = undefined
+      } else if (typeof exchangeConnector.getPosition === "function") {
+        position.status = "closing_partial"
+        position.statusReason = "system_close_accepted_but_exchange_effect_unconfirmed"
+        if (position.pendingSystemAction) {
+          position.pendingSystemAction.phase = "system_verify"
+          position.pendingSystemAction.updatedAt = Date.now()
+        }
+        const verifyMutation = await mutatePositionWithVersionCheck(position, ["closing"], draft => {
+          Object.assign(draft, position)
+          draft.status = "closing_partial"
+          draft.lockedAt = 0
+          draft.lockedBy = undefined
+        })
+        if (verifyMutation) Object.assign(position, verifyMutation)
+        await savePosition(position)
+        await persistCriticalLiveState(`system-close-unconfirmed:${position.id}`)
+        await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
+        mutationLockHeld = false
+        return position
       }
-      if (hadTpId) {
-        tpCancelled = !!cancelResults[idx++]
-        if (tpCancelled) position.takeProfitOrderId = undefined
-      }
-      pushStep(
-        position,
-        "cancel_protection",
-        cancelResults.every(Boolean),
-        `cancelled SL=${hadSlId ? slCancelled : "n/a"} TP=${hadTpId ? tpCancelled : "n/a"} (raced with close)`,
-      )
     }
 
     const localOnlyCloseAllowed =
@@ -5900,15 +7269,22 @@ export async function closeLivePosition(
     }
 
     // ── 3. Compute realized PnL & ROI (margin-based to match exchange ROE) ──
-    const qty = position.executedQuantity || 0
+    const remainingQty = Math.max(0, Number(position.executedQuantity || 0))
+    const qty = Math.max(
+      Number(position.totalExecutedQuantity || 0),
+      Number(position.closedQuantity || 0) + remainingQty,
+      Number(position.initialExecutedQuantity || 0),
+      remainingQty,
+    )
     const avgEntry = position.averageExecutionPrice || position.entryPrice || 0
-    const pnl =
-      qty > 0 && avgEntry > 0 && closePrice > 0
-        ? qty *
+    const finalLegPnl =
+      remainingQty > 0 && avgEntry > 0 && closePrice > 0
+        ? remainingQty *
           (position.direction === "long"
             ? closePrice - avgEntry
             : avgEntry - closePrice)
         : 0
+    const pnl = Number(position.realizedPnL || 0) + finalLegPnl
     const lev = Math.max(1, position.leverage || 1)
     const notional = avgEntry * qty
     const margin = notional > 0 ? notional / lev : 0
@@ -5919,6 +7295,20 @@ export async function closeLivePosition(
     position.closedAt = Date.now()
     position.updatedAt = Date.now()
     position.realizedPnL = Math.round(pnl * 100) / 100
+    position.totalExecutedQuantity = qty
+    position.closedQuantity = qty
+    // Closed-history rows retain the complete traded quantity while open
+    // allocation remains explicitly zero in each member Set.
+    position.executedQuantity = qty
+    position.quantity = qty
+    position.remainingQuantity = 0
+    if (position.combinedPosCounts) {
+      position.posCountsSetQuantities = allocatePositionSetQuantities(position, 0, position.accumulatedSetKeys || [])
+    }
+    position.pendingReduction = undefined
+    position.pendingSystemAction = undefined
+    position.pendingQuantityMutation = undefined
+    position.pendingAccumulation = undefined
     position.closeReason = closeReason
     // Persist the actual exit price so the stats route and trade-history
     // table can show the real close price without needing to back-derive
@@ -8834,6 +10224,8 @@ export const __liveStageTest = {
     return (await evalLockLua(client, RELEASE_LOCK_LUA, key, [token])) === 1
   },
   computeDesiredProtectionPrices,
+  settleControlOrdersBeforeSystemClose,
+  settleControlOrdersBeforeQuantityMutation,
   readAbsoluteProtectionPrices(pos: LivePosition) {
     return computeDesiredProtectionPrices(pos)
   },

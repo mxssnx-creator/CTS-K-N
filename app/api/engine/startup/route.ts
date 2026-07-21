@@ -5,7 +5,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { TradeEngineManager } from "@/lib/trade-engine/engine-manager"
-import { getSettings, setSettings, initRedis } from "@/lib/redis-db"
+import { getSettings, setSettings, initRedis, getAssignedAndEnabledConnections } from "@/lib/redis-db"
 import { loadMarketDataForEngine } from "@/lib/market-data-loader"
 import { validateProductionStartup } from "@/lib/startup-validation"
 
@@ -28,11 +28,21 @@ export async function POST(request: NextRequest) {
 
     await initRedis()
 
-    const { symbols = [] } = await request.json()
+    const { symbols = [], connectionId: requestedConnectionId } = await request.json()
+    const assignedConnections = await getAssignedAndEnabledConnections()
+    const selectedConnection = requestedConnectionId
+      ? assignedConnections.find((connection: any) => connection.id === requestedConnectionId)
+      : assignedConnections.find((connection: any) =>
+          String(connection.exchange || connection.id || "").toLowerCase().includes("bingx"),
+        ) || assignedConnections[0]
+    const connectionId = String(selectedConnection?.id || "")
+    if (!connectionId) {
+      return NextResponse.json({ error: "No enabled persisted connection available" }, { status: 400 })
+    }
 
     // Load market data for all symbols
     console.log("[v0] [API] Loading market data for engine startup...")
-    const loadedCount = await loadMarketDataForEngine(symbols, { requireHistory: true })
+    const loadedCount = await loadMarketDataForEngine(symbols, { requireHistory: true, connectionId })
 
     if (loadedCount === 0) {
       return NextResponse.json(
@@ -44,7 +54,7 @@ export async function POST(request: NextRequest) {
     // Start the engine
     console.log("[v0] [API] Starting trade engine with market data loaded...")
     const config = {
-      connectionId: "global",
+      connectionId,
       indicationInterval: 5, // 5 seconds
       strategyInterval: 10, // 10 seconds
       realtimeInterval: 0.3,

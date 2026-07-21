@@ -213,7 +213,7 @@ export function ExchangeConnectionSettingsDialog({
                   <div className="flex items-center gap-4">
                     <Slider
                       id="live-trade-volume-factor"
-                      min={0.1}
+                      min={1}
                       max={10}
                       step={0.1}
                       value={[settings.baseVolumeFactorLive ?? settings.baseVolumeFactor ?? MIN_VOLUME_FACTOR]}
@@ -234,7 +234,7 @@ export function ExchangeConnectionSettingsDialog({
                   <div className="flex items-center gap-4">
                     <Slider
                       id="preset-trade-volume-factor"
-                      min={0.1}
+                      min={1}
                       max={10}
                       step={0.1}
                       value={[settings.baseVolumeFactorPreset ?? settings.baseVolumeFactor ?? MIN_VOLUME_FACTOR]}

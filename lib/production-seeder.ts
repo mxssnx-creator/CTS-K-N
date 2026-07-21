@@ -181,7 +181,7 @@ async function seedPredefinedConnections(): Promise<void> {
       // Mark as NOT predefined so quick-start can find it (string "false" for Redis consistency)
       is_predefined: "false",
       active_symbols: "[]",
-      live_volume_factor: "0.1",
+      live_volume_factor: "1.0",
       preset_volume_factor: "1.0",
       volume_step_ratio: "0.6",
     }))
@@ -215,7 +215,7 @@ async function seedMarketData(symbols: string[] = []): Promise<void> {
     ]
     
     // Load market data for engine
-    const loaded = await loadMarketDataForEngine(targetSymbols)
+    const loaded = await loadMarketDataForEngine(targetSymbols, { connectionId: "bingx-x01" })
     
     if (loaded > 0) {
       console.log(`[v0] [ProductionSeeder] ✅ Market data seeded for ${loaded} symbols`)

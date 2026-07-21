@@ -119,8 +119,8 @@ function clampPfMin(raw: unknown): number {
   return Math.max(PF_MIN, Math.min(PF_MAX, Math.round(n * 10) / 10))
 }
 
-// Volume factor — uses the same band as the volume route (0.1–10).
-const VF_MIN = 0.1
+// Volume factor — ratio 1 is the legal exchange-minimum baseline.
+const VF_MIN = 1
 const VF_MAX = 10
 const VF_STEP = 0.1
 function clampVf(raw: unknown): number {
@@ -394,7 +394,7 @@ export function QuickstartOptionsBar() {
       if (volumeRes.ok) {
         const data = await volumeRes.json()
         if (sequence !== hydrateSequenceRef.current) return
-        const hydratedVolume = clampVf(data?.live_volume_factor ?? 0.1)
+        const hydratedVolume = clampVf(data?.live_volume_factor ?? 1)
         volumeFactorRef.current = hydratedVolume
         persistedVolumeFactorRef.current = hydratedVolume
         setVolumeFactor(hydratedVolume)

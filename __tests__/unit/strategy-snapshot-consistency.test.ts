@@ -25,6 +25,16 @@ describe("coherent strategy snapshots and schema v78", () => {
     expect(stats).toContain("if (stratCounts.live > stratCounts.real)")
   })
 
+  test("mirrors every strategy-stage progression mutation into the active engine scope", () => {
+    const source = read("lib/strategy-coordinator.ts")
+    expect(source).toContain('buildProgressionScope(connectionId, "main")')
+    expect(source).toContain("hsetStrategyProgression")
+    expect(source).toContain("hincrbyStrategyProgression")
+    expect(source).toContain("expireStrategyProgression")
+    expect(source).toContain('hincrbyStrategyProgression(client, this.connectionId, "strategies_main_cycles",          1)')
+    expect(source).not.toContain('const redisKey = `progression:${this.connectionId}`')
+  })
+
   test("persists bounded v2 derived scalars and fails closed on unsafe v1", () => {
     const source = read("lib/strategy-coordinator.ts")
     expect(source).toContain("formatVersion: 2")
@@ -36,12 +46,13 @@ describe("coherent strategy snapshots and schema v78", () => {
   test("migrations are sequential through the coherent schema", () => {
     const source = read("lib/redis-migrations.ts")
     const versions = Array.from(source.matchAll(/version:\s*(\d+)/g), (match) => Number(match[1]))
-    expect(versions.at(-1)).toBe(81)
+    expect(versions.at(-1)).toBe(82)
     expect(versions.every((version, index) => version === index + 1)).toBe(true)
     expect(source).toContain('name: "075-bound-high-frequency-statistics-storage"')
     expect(source).toContain('name: "079-repair-hourly-statistics-rollups"')
     expect(source).toContain('name: "080-index-exact-strategy-set-ledgers-and-minute-snapshots"')
     expect(source).toContain('name: "081-seed-independent-block-profit-factor-ratio"')
+    expect(source).toContain('name: "082-normalize-live-minimum-ratio-and-position-cost"')
     expect(source).toContain('strategy_set_listing_indexes: "lifetime-active-closed"')
     expect(source).toContain('inline_snapshot_interval_ms: "60000"')
     expect(source).toContain('independent_block_profit_factor: "default-pf-x-ratio-x-volume-increment-v1"')

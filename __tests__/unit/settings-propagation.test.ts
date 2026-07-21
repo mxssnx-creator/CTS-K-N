@@ -245,6 +245,23 @@ describe("settings propagation", () => {
     expect(quickstart).toContain('...(quickstartEngineAlreadyRunning ? {} : { settings_recoordination_pending: "0" })')
   })
 
+  test("portable Kilo owner CAS-acks the exact settings and stats event identities", () => {
+    const fs = require("fs")
+    const path = require("path")
+    const cron = fs.readFileSync(
+      path.join(process.cwd(), "app/api/cron/generate-indications/route.ts"),
+      "utf8",
+    )
+
+    expect(cron).toContain("settings_recoordination_requested_event_id")
+    expect(cron).toContain("settings_recoordination_applied_event_id")
+    expect(cron).toContain("settings_recoordination_applied_fields")
+    expect(cron).toContain("stats_recalculation_requested_event_id")
+    expect(cron).toContain("stats_recalculation_applied_event_id")
+    expect(cron).toContain("requestedSettingsEventId")
+    expect(cron).toContain("requestedStatsEventId")
+  })
+
   test("continuous, Block, trailing, and DCA settings are reload/progress affecting", async () => {
     const { classifyChange } = await import("@/lib/settings-coordinator")
 
@@ -353,7 +370,8 @@ describe("engine refresh queue status", () => {
     expect(queueSource).toContain("refresh_last_error")
     expect(queueSource).toContain("refresh_processed_at")
     expect(queueSource).toContain("await recordEngineRefreshRequestFailure(queuedRequest, drain.error)")
-    expect(recoordinatorSource).toContain("queuedForOwner: !!refreshStatus?.refreshQueued && !appliedLocally")
+    expect(recoordinatorSource).toContain("refreshStatus.refreshQueued === true || refreshStatus.refreshSuperseded === true")
+    expect(recoordinatorSource).toContain("queuedForOwner: refreshIsDurablyPending() && !appliedLocally")
     expect(recoordinatorSource).toContain("appliedLocally")
     expect(quickStartSource).toContain("quickstartRecoordinationApplied ? \"0\" : \"1\"")
     expect(quickStartSource).toContain("queued_for_owner")

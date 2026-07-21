@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "NODE_OPTIONS='--max-old-space-size=5632 --max-semi-space-size=256 --expose-gc' node node_modules/next/dist/bin/next build",
-    "dev": "NODE_OPTIONS='--max-old-space-size=5632 --max-semi-space-size=256 --expose-gc' node node_modules/next/dist/bin/next dev -p 3002",
+    "dev": "NODE_OPTIONS='--max-old-space-size=4096 --max-semi-space-size=192 --expose-gc' node node_modules/next/dist/bin/next dev -p 3002",
     "dev:debug": "node scripts/dev-debug.js",
     "dev:debug:verbose": "node scripts/dev-debug.js verbose",
     "quickstart": "node scripts/quickstart-live-trading.js",
@@ -25,7 +25,7 @@
     "install:preflight": "bash scripts/install.sh --preflight-only --skip-system-packages",
     "kilo:preflight": "node scripts/kilo-deploy-preflight.mjs",
     "kilo:preflight:runtime": "KILO_REQUIRE_RUNTIME_ENV=1 node scripts/kilo-deploy-preflight.mjs",
-    "kilo:build": "pnpm run kilo:preflight && opennextjs-cloudflare build",
+    "kilo:build": "pnpm run kilo:preflight && node scripts/clean-opennext-output.mjs && opennextjs-cloudflare build",
     "kilo:preview": "pnpm run kilo:build && opennextjs-cloudflare preview",
     "kilo:preview:verify": "pnpm run kilo:build && node scripts/test-kilo-runtime.mjs",
     "kilo:dry-run": "pnpm run kilo:build && wrangler deploy --dry-run",
@@ -47,6 +47,7 @@
     "test:dev-preview": "node scripts/run-dev-preview-check.mjs",
     "test:dev-soak-12": "node scripts/run-dev-preview-check.mjs",
     "test:stress-32": "NODE_OPTIONS='--expose-gc --max-old-space-size=1024' node scripts/stress-bingx-public-32.mjs",
+    "test:stress-bingx-5": "BINGX_STRESS_SYMBOL_COUNT=5 BINGX_STRESS_TICKER_ROUNDS=3 NODE_OPTIONS='--expose-gc --max-old-space-size=1024' node scripts/stress-bingx-public-32.mjs",
     "test:prod-preview": "node scripts/run-prod-preview-check.mjs",
     "test:prod-preview:max": "node scripts/run-prod-preview-check.mjs --max-symbols",
     "test:prod-preview:verify": "node scripts/verify-prod-preview.mjs",
@@ -127,7 +128,6 @@
   "devDependencies": {
     "@jest/globals": "^30.4.1",
     "@next/eslint-plugin-next": "15.5.7",
-    "@tailwindcss/postcss": "^4.2.2",
     "@types/jest": "^30.0.0",
     "@types/node": "^22",
     "@types/react": "^19",

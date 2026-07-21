@@ -80,3 +80,4 @@ version	name	source
 79	079-repair-hourly-statistics-rollups	lib/redis-migrations.ts
 80	080-index-exact-strategy-set-ledgers-and-minute-snapshots	lib/redis-migrations.ts
 81	081-seed-independent-block-profit-factor-ratio	lib/redis-migrations.ts
+82	082-normalize-live-minimum-ratio-and-position-cost	lib/redis-migrations.ts

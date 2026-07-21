@@ -182,7 +182,7 @@ async function getSettingsCachedModule(): Promise<any> {
       trendLastSituationRatios: settings.trendLastSituationRatios || [...DEFAULT_TREND_LAST_SITUATION_RATIOS],
       trendActiveSituationRatios: settings.trendActiveSituationRatios || [...DEFAULT_TREND_ACTIVE_SITUATION_RATIOS],
       trendMinAgreement: Number(settings.trendMinAgreement) || DEFAULT_TREND_MIN_AGREEMENT,
-      positionCost: Number(settings.positionCost) || 0.02,
+      positionCost: Number(settings.positionCost) || 0.1,
       trendTpMinMultiplier: Number(settings.trendTpMinMultiplier) || DEFAULT_TREND_TP_MIN_MULTIPLIER,
       trendTpMaxFactor: Number(settings.trendTpMaxFactor) || DEFAULT_TREND_TP_MAX_FACTOR,
       trendTpStep: Number(settings.trendTpStep) || DEFAULT_TREND_TP_STEP,
@@ -201,7 +201,7 @@ async function getSettingsCachedModule(): Promise<any> {
       trendLastSituationRatios: [...DEFAULT_TREND_LAST_SITUATION_RATIOS],
       trendActiveSituationRatios: [...DEFAULT_TREND_ACTIVE_SITUATION_RATIOS],
       trendMinAgreement: DEFAULT_TREND_MIN_AGREEMENT,
-      positionCost: 0.02,
+      positionCost: 0.1,
       trendTpMinMultiplier: DEFAULT_TREND_TP_MIN_MULTIPLIER,
       trendTpMaxFactor: DEFAULT_TREND_TP_MAX_FACTOR,
       trendTpStep: DEFAULT_TREND_TP_STEP,
@@ -560,7 +560,7 @@ export class IndicationProcessor {
         const { loadMarketDataForEngine } = await import("@/lib/market-data-loader")
         // Indicators need a rolling window, not merely a one-candle realtime
         // tail that may have been written by the minute scheduler first.
-        await loadMarketDataForEngine([symbol], { requireHistory: true })
+        await loadMarketDataForEngine([symbol], { requireHistory: true, connectionId: this.connectionId })
         SHARED_MARKET_DATA_CACHE.delete(symbol)
         
         // Spec §7: prefer the new :1s envelope, fall back to legacy :1m.
@@ -793,7 +793,7 @@ export class IndicationProcessor {
                   drawdownFactor,
                   lastSituationRatio,
                   activeSituationRatio,
-                  positionCostPct: Number(indicationSettings.positionCost) || 0.02,
+                  positionCostPct: Number(indicationSettings.positionCost) || 0.1,
                   minAgreement: Number(indicationSettings.trendMinAgreement) || DEFAULT_TREND_MIN_AGREEMENT,
                 })
                 if (signal && (!best || signal.signalScore > best.signalScore)) best = signal
@@ -806,7 +806,7 @@ export class IndicationProcessor {
 
         const adaptiveTpRange = buildAdaptiveTrendTpRange({
           pricesOldestFirst: prices,
-          positionCostPct: Number(indicationSettings.positionCost) || 0.02,
+          positionCostPct: Number(indicationSettings.positionCost) || 0.1,
           minMultiplier: Number(indicationSettings.trendTpMinMultiplier) || DEFAULT_TREND_TP_MIN_MULTIPLIER,
           maxFactor: Number(indicationSettings.trendTpMaxFactor) || DEFAULT_TREND_TP_MAX_FACTOR,
           step: Number(indicationSettings.trendTpStep) || DEFAULT_TREND_TP_STEP,

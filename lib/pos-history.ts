@@ -711,6 +711,9 @@ export interface StrategyPositionEntryInput {
   axisKey?: string
   /** Explicit Real-stage category; inferred from setKey when omitted. */
   strategyVariant?: RealStrategyVariant
+  /** A combined physical fill can belong to several exact Sets but must only
+   *  increment overall/symbol/direction/variant position totals once. */
+  countGlobalPosition?: boolean
 }
 
 const RECORD_STRATEGY_ENTRY_LUA = `
@@ -725,12 +728,14 @@ const RECORD_STRATEGY_ENTRY_LUA = `
     redis.call('SADD', KEYS[12], ARGV[3])
     redis.call('HINCRBY', KEYS[13], 'active_memberships', 1)
   end
-  redis.call('EXPIRE', KEYS[2], ARGV[9])
-  redis.call('EXPIRE', KEYS[9], ARGV[9])
-  redis.call('EXPIRE', KEYS[10], ARGV[9])
+  -- Active position state is durable until the terminal close transaction.
+  -- PERSIST also removes TTLs left behind by earlier releases.
+  redis.call('PERSIST', KEYS[2])
+  redis.call('PERSIST', KEYS[9])
+  redis.call('PERSIST', KEYS[10])
   redis.call('EXPIRE', KEYS[11], ARGV[9])
-  redis.call('EXPIRE', KEYS[12], ARGV[9])
-  redis.call('EXPIRE', KEYS[13], ARGV[9])
+  redis.call('PERSIST', KEYS[12])
+  redis.call('PERSIST', KEYS[13])
   redis.call('HINCRBY', KEYS[13], 'exact_entries', 1)
   if ARGV[8] ~= '' then
     redis.call('HINCRBY', KEYS[13], 'axis_entries', 1)
@@ -744,11 +749,13 @@ const RECORD_STRATEGY_ENTRY_LUA = `
   redis.call('HINCRBY', KEYS[7], ARGV[4] .. ':' .. ARGV[7], 1)
   redis.call('HINCRBY', KEYS[7], ARGV[4] .. ':sets_' .. ARGV[7], 1)
   redis.call('HSET', KEYS[7], ARGV[4] .. ':ts', ARGV[10])
-  redis.call('HINCRBY', KEYS[8], 'overall', 1)
-  redis.call('HINCRBY', KEYS[8], 'by_symbol:' .. ARGV[5], 1)
-  redis.call('HINCRBY', KEYS[8], 'by_dir:' .. ARGV[7], 1)
-  redis.call('HINCRBY', KEYS[8], 'by_type:' .. ARGV[6], 1)
-  redis.call('HINCRBY', KEYS[8], 'by_variant:' .. ARGV[11], 1)
+  if ARGV[12] == '1' then
+    redis.call('HINCRBY', KEYS[8], 'overall', 1)
+    redis.call('HINCRBY', KEYS[8], 'by_symbol:' .. ARGV[5], 1)
+    redis.call('HINCRBY', KEYS[8], 'by_dir:' .. ARGV[7], 1)
+    redis.call('HINCRBY', KEYS[8], 'by_type:' .. ARGV[6], 1)
+    redis.call('HINCRBY', KEYS[8], 'by_variant:' .. ARGV[11], 1)
+  end
   for i = 3, 8 do redis.call('EXPIRE', KEYS[i], ARGV[9]) end
   return 1
 `
@@ -797,6 +804,7 @@ export async function recordStrategyPositionEntry(
     String(TTL_SECONDS),
     String(Date.now()),
     strategyVariant,
+    input.countGlobalPosition === false ? "0" : "1",
   ]
 
   if (typeof client.eval === "function") {
@@ -821,20 +829,20 @@ export async function recordStrategyPositionEntry(
   }
   const membershipInserted = Number(await client.sadd(keys[8], setKey)) === 1
   const pipeline = client.multi()
+  const durableKeys = [keys[1], keys[8], keys[9], keys[11], keys[12]]
+  const pipelineCanPersist = typeof (pipeline as any).persist === "function"
   pipeline.sadd(keys[1], positionId)
   pipeline.expire(keys[0], TTL_SECONDS)
-  pipeline.expire(keys[1], TTL_SECONDS)
-  pipeline.expire(keys[8], TTL_SECONDS)
+  if (pipelineCanPersist) {
+    for (const key of durableKeys) (pipeline as any).persist(key)
+  }
   pipeline.sadd(keys[10], setKey)
   if (membershipInserted) {
     pipeline.hincrby(keys[9], setKey, 1)
     pipeline.sadd(keys[11], setKey)
     pipeline.hincrby(keys[12], "active_memberships", 1)
   }
-  pipeline.expire(keys[9], TTL_SECONDS)
   pipeline.expire(keys[10], TTL_SECONDS)
-  pipeline.expire(keys[11], TTL_SECONDS)
-  pipeline.expire(keys[12], TTL_SECONDS)
   pipeline.hincrby(keys[12], "exact_entries", 1)
   if (axisKey) pipeline.hincrby(keys[12], "axis_entries", 1)
   pipeline.hincrby(keys[2], setKey, 1)
@@ -844,13 +852,22 @@ export async function recordStrategyPositionEntry(
   pipeline.hincrby(keys[6], `${parentSetKey}:${direction}`, 1)
   pipeline.hincrby(keys[6], `${parentSetKey}:sets_${direction}`, 1)
   pipeline.hset(keys[6], `${parentSetKey}:ts`, String(Date.now()))
-  pipeline.hincrby(keys[7], "overall", 1)
-  pipeline.hincrby(keys[7], `by_symbol:${symbol}`, 1)
-  pipeline.hincrby(keys[7], `by_dir:${direction}`, 1)
-  pipeline.hincrby(keys[7], `by_type:${indicationType}`, 1)
-  pipeline.hincrby(keys[7], `by_variant:${strategyVariant}`, 1)
+  if (input.countGlobalPosition !== false) {
+    pipeline.hincrby(keys[7], "overall", 1)
+    pipeline.hincrby(keys[7], `by_symbol:${symbol}`, 1)
+    pipeline.hincrby(keys[7], `by_dir:${direction}`, 1)
+    pipeline.hincrby(keys[7], `by_type:${indicationType}`, 1)
+    pipeline.hincrby(keys[7], `by_variant:${strategyVariant}`, 1)
+  }
   for (let i = 2; i <= 7; i++) pipeline.expire(keys[i], TTL_SECONDS)
   await pipeline.exec()
+  if (!pipelineCanPersist) {
+    await Promise.all(durableKeys.map((key) =>
+      typeof (client as any).persist === "function"
+        ? (client as any).persist(key).catch(() => 0)
+        : client.expire(key, TTL_SECONDS).catch(() => 0),
+    ))
+  }
   return inserted
 }
 
@@ -880,10 +897,12 @@ const DEACTIVATE_STRATEGY_POSITION_LUA = `
     redis.call('HSET', KEYS[5], 'active_memberships', 0)
   end
   redis.call('DEL', KEYS[2])
-  redis.call('EXPIRE', KEYS[1], ARGV[2])
-  redis.call('EXPIRE', KEYS[3], ARGV[2])
-  redis.call('EXPIRE', KEYS[4], ARGV[2])
-  redis.call('EXPIRE', KEYS[5], ARGV[2])
+  -- These aggregates may still contain other active positions. Never attach
+  -- a clock to them while any position lifecycle can reference them.
+  redis.call('PERSIST', KEYS[1])
+  redis.call('PERSIST', KEYS[3])
+  redis.call('PERSIST', KEYS[4])
+  redis.call('PERSIST', KEYS[5])
   return removed + #memberships
 `
 
@@ -1058,11 +1077,24 @@ export async function markStrategyPositionInactive(
         )
       }
       pipeline.del(membershipKey)
-      pipeline.expire(VALID_POS_ACTIVE_V2_KEY(connectionId), TTL_SECONDS)
-      pipeline.expire(STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId), TTL_SECONDS)
-      pipeline.expire(STRATEGY_ACTIVE_SET_KEYS_KEY(connectionId), TTL_SECONDS)
-      pipeline.expire(STRATEGY_LEDGER_TOTALS_KEY(connectionId), TTL_SECONDS)
+      const durableKeys = [
+        VALID_POS_ACTIVE_V2_KEY(connectionId),
+        STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId),
+        STRATEGY_ACTIVE_SET_KEYS_KEY(connectionId),
+        STRATEGY_LEDGER_TOTALS_KEY(connectionId),
+      ]
+      const pipelineCanPersist = typeof (pipeline as any).persist === "function"
+      if (pipelineCanPersist) {
+        for (const key of durableKeys) (pipeline as any).persist(key)
+      }
       await pipeline.exec()
+      if (!pipelineCanPersist) {
+        await Promise.all(durableKeys.map((key) =>
+          typeof (client as any).persist === "function"
+            ? (client as any).persist(key).catch(() => 0)
+            : client.expire(key, TTL_SECONDS).catch(() => 0),
+        ))
+      }
       deactivated = removed + remainingMemberships.length
     }
 

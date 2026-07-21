@@ -4301,6 +4301,77 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "80")
     },
   },
+  {
+    version: 82,
+    name: "082-normalize-live-minimum-ratio-and-position-cost",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      let positionCostUpdates = 0
+      let volumeRatioUpdates = 0
+      let posCountRatioSeeds = 0
+
+      const normalizeHash = async (key: string, includePosCountRatio: boolean): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+        for (const field of ["positionCost", "exchangePositionCost", "exchange_position_cost"]) {
+          const raw = values[field]
+          if (raw == null || raw === "" || Number(raw) === 0.02) {
+            patch[field] = "0.1"
+            positionCostUpdates++
+          }
+        }
+        for (const field of ["live_volume_factor", "volume_factor_live", "preset_volume_factor", "volume_factor_preset"]) {
+          const raw = values[field]
+          if (raw == null || raw === "" || Number(raw) === 0.1) {
+            patch[field] = "1"
+            volumeRatioUpdates++
+          }
+        }
+        if (includePosCountRatio && (values.posCountsVolumeRatio == null || values.posCountsVolumeRatio === "")) {
+          patch.posCountsVolumeRatio = "0.05"
+          posCountRatioSeeds++
+        }
+        if (Object.keys(patch).length > 0) await client.hset(key, patch)
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeHash(key, true)
+      }
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await normalizeHash(key, true)
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        position_cost_default_percent: "0.1",
+        live_volume_ratio_baseline: "1",
+        live_volume_ratio_semantics: "exchange-minimum-times-ratio",
+        pos_counts_volume_ratio_default: "0.05",
+        position_cost_fields_updated: String(positionCostUpdates),
+        volume_ratio_fields_updated: String(volumeRatioUpdates),
+        pos_count_ratio_fields_seeded: String(posCountRatioSeeds),
+        schema_version: "82",
+        updated_at: new Date().toISOString(),
+      }).catch(() => 0)
+      console.log(
+        `[v0] Migration 082: positionCost=${positionCostUpdates}, volumeRatio=${volumeRatioUpdates}, posCounts=${posCountRatioSeeds}`,
+      )
+    },
+    down: async (client: any) => {
+      // Operator-visible sizing values are intentionally preserved on rollback.
+      await client.set("_schema_version", "81")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {

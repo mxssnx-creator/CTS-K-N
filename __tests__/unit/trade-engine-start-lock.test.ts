@@ -46,7 +46,9 @@ describe("GlobalTradeEngineCoordinator.startEngine lock contention", () => {
     )
 
     expect(startEngine).toContain("const forceLocalTakeover = options.forceLocalTakeover === true || config.allowInProcessStart === true")
-    expect(startEngine).toContain('process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1" || process.env.NEXT_RUNTIME === "edge"')
+    expect(startEngine).toContain('if (process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1")')
+    expect(startEngine).toContain('if (process.env.NEXT_RUNTIME === "edge")')
+    expect(startEngine).toContain("the durable owner queue remains authoritative")
     expect(startEngine).toContain("const isServerlessWorker = isServerlessDeploymentRuntime()")
     expect(startEngine).toContain("serverless request workers are queued-only without explicit foreground worker flags")
     expect(startEngine).toContain("if (!forceLocalTakeover && !this.canOwnEngineRuntime())")

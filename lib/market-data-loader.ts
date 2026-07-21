@@ -26,8 +26,8 @@
  *   public-trade endpoints (see lib/exchange-connectors/aggregate-1s.ts).
  */
 
-import { getClient, initRedis, getAllConnections } from "@/lib/redis-db"
-import { createExchangeConnector } from "@/lib/exchange-connectors"
+import { getClient, initRedis, getAllConnections, getConnection } from "@/lib/redis-db"
+import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 
 export interface MarketDataCandle {
   timestamp: number
@@ -49,6 +49,8 @@ export interface MarketData {
 export interface LoadMarketDataOptions {
   /** Require the chunked prehistoric index in addition to the realtime tail. */
   requireHistory?: boolean
+  /** Use this exact persisted connection (and its current credentials/mode). */
+  connectionId?: string
 }
 
 const REALTIME_CANDLE_TAIL = 300
@@ -147,45 +149,49 @@ export function generateSyntheticCandles(
 async function fetchRealMarketData(
   symbol: string,
   timeframe = "1m",
-  limit = 250
+  limit = 250,
+  connectionId?: string,
 ): Promise<{ candles: MarketDataCandle[]; source: string } | null> {
   try {
-    // Get all connections with credentials
-    const connections = await getAllConnections()
-    const validConnections = connections.filter((c: any) => {
-      const hasCredentials = (c.api_key || c.apiKey) && (c.api_secret || c.apiSecret)
-      const hasValidCredentials = hasCredentials && 
-        (c.api_key || c.apiKey || "").length > 5 && 
-        (c.api_secret || c.apiSecret || "").length > 5
-      return hasValidCredentials
-    })
+    // Engine-owned calls always supply connectionId. Resolve it from Redis on
+    // every connector-factory lookup so a settings/credential/testnet update
+    // invalidates the cached fingerprint and the next cycle uses the CURRENT
+    // stored connection. For legacy/global callers, prefer persisted BingX
+    // connections before other exchanges; public OHLCV does not require keys.
+    const selected = connectionId ? await getConnection(connectionId) : null
+    if (connectionId && !selected) {
+      console.warn(`[v0] [MarketData] Stored connection not found: ${connectionId}`)
+      return null
+    }
+    const inventory = selected ? [selected] : await getAllConnections()
+    const candidates = inventory
+      .filter((connection: any) => connection?.id && connection?.exchange)
+      .sort((left: any, right: any) => {
+        const leftBingX = String(left.exchange || left.id || "").toLowerCase().includes("bingx") ? 1 : 0
+        const rightBingX = String(right.exchange || right.id || "").toLowerCase().includes("bingx") ? 1 : 0
+        return rightBingX - leftBingX
+      })
 
-    if (validConnections.length === 0) {
-      console.log(`[v0] [MarketData] No valid connections for fetching real data`)
+    if (candidates.length === 0) {
+      console.log(`[v0] [MarketData] No persisted connection available for real market data`)
       return null
     }
 
-    // Try each connection until we get data
-    for (const conn of validConnections) {
+    // Factory resolution is mandatory here. It selects BingXConnector (whose
+    // mainnet default transport is the installed bingx-api SDK), reuses the
+    // saved connection ID, and rebuilds when its persisted fingerprint changes.
+    for (const conn of candidates) {
       try {
-        // Pass the original api_type - connector factory handles normalization per-exchange
-        const connector = await createExchangeConnector(
-          conn.exchange,
-          {
-            apiKey: conn.api_key || conn.apiKey || "",
-            apiSecret: conn.api_secret || conn.apiSecret || "",
-            apiType: (conn.api_type || "perpetual") as string,
-            isTestnet: conn.is_testnet === "1" || conn.is_testnet === true,
-          }
-        )
+        const connector = await exchangeConnectorFactory.getOrCreateConnector(String(conn.id))
+        if (!connector) continue
 
-        console.log(`[v0] [MarketData] Fetching ${symbol} from ${conn.exchange} (${conn.name})...`)
+        console.log(`[v0] [MarketData] Fetching ${symbol} via stored ${conn.exchange} connection ${conn.id}...`)
         
         const candles = await connector.getOHLCV(symbol, timeframe, limit)
         
         if (candles && candles.length > 0) {
           console.log(`[v0] [MarketData] ✓ Fetched ${candles.length} real candles from ${conn.exchange}`)
-          return { candles, source: conn.exchange }
+          return { candles, source: String(conn.exchange || "exchange").toLowerCase() }
         }
       } catch (err) {
         console.warn(`[v0] [MarketData] Failed to fetch from ${conn.exchange}:`, err)
@@ -225,7 +231,7 @@ export async function loadMarketDataForEngine(
 ): Promise<number> {
   const requestedSymbols = symbols.length > 0 ? symbols : DEFAULT_ENGINE_MARKET_SYMBOLS
   const uniqueSymbols = Array.from(new Set(requestedSymbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean)))
-  const flightKey = `${options.requireHistory ? "history" : "tail"}:${uniqueSymbols.join("|")}`
+  const flightKey = `${options.connectionId || "auto"}:${options.requireHistory ? "history" : "tail"}:${uniqueSymbols.join("|")}`
 
   // Coalesce concurrent calls — the second caller joins the first
   // promise for the exact same symbol set and receives the same result,
@@ -312,7 +318,7 @@ export async function loadMarketDataForEngine(
     const loadOne = async (symbol: string): Promise<void> => {
       try {
         // Try to fetch real 1s data first.
-        const realData = await fetchRealMarketData(symbol, "1s", ONE_DAY_SECONDS)
+        const realData = await fetchRealMarketData(symbol, "1s", ONE_DAY_SECONDS, options.connectionId)
 
         let candles: MarketDataCandle[]
         let source: string
@@ -445,7 +451,7 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
       const connections = await getAllConnections()
       const conn = connections.find((c: any) => c.id === connectionId)
       if (conn) {
-        const result = await fetchRealMarketData(symbol, "1s", ONE_DAY_SECONDS)
+        const result = await fetchRealMarketData(symbol, "1s", ONE_DAY_SECONDS, connectionId)
         if (result) {
           candles = result.candles
           source = result.source
@@ -539,11 +545,12 @@ export async function loadHistoricalMarketData(
   symbol: string,
   startDate: Date,
   endDate: Date,
-  timeframe: string = "1h"
+  timeframe: string = "1h",
+  connectionId?: string,
 ): Promise<MarketDataCandle[]> {
   try {
     // Try to fetch real historical data - NO LIMIT
-    const realData = await fetchRealMarketData(symbol, timeframe, 1000000)
+    const realData = await fetchRealMarketData(symbol, timeframe, 1000000, connectionId)
     
     if (realData && realData.candles.length > 0) {
       console.log(`[v0] [MarketData] Using real historical data for ${symbol}: ${realData.candles.length} candles`)

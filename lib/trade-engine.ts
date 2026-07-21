@@ -286,10 +286,21 @@ export class GlobalTradeEngineCoordinator {
     const explicitForegroundAllowed = hasExplicitServerlessForegroundOptIn()
 
     const engineOwnerWorker = process.env.CTS_ENGINE_OWNER_WORKER === "1"
-    if (process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1" || process.env.NEXT_RUNTIME === "edge") {
+    // This switch is absolute: Kilo/Cloudflare request workers use the bounded
+    // scheduled owner in generate-indications. Letting CTS_ENGINE_OWNER_WORKER
+    // override it starts a timer-backed manager during an ordinary HTTP save,
+    // which then reports settings as locally applied even though that worker
+    // disappears after the response.
+    if (process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1") {
+      console.warn(
+        `[v0] [Coordinator] startEngine(${connectionId}) skipped — in-process trade engine runtime is disabled; the durable owner queue remains authoritative.`,
+      )
+      return false
+    }
+    if (process.env.NEXT_RUNTIME === "edge") {
       if (!engineOwnerWorker && !forceLocalTakeover) {
         console.warn(
-          `[v0] [Coordinator] startEngine(${connectionId}) skipped — in-process trade engine runtime is disabled or running on edge.`,
+          `[v0] [Coordinator] startEngine(${connectionId}) skipped — edge request workers are queued-only.`,
         )
         return false
       }

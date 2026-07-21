@@ -407,7 +407,7 @@ export class PseudoPositionManager {
       const volumeCalc = await (async () => {
         const settings = (await getAppSettings()) || {}
         const positionCostPercent = parseFloat(
-          String(settings.exchangePositionCost ?? settings.positionCost ?? "0.02")
+          String(settings.exchangePositionCost ?? settings.positionCost ?? "0.1")
         )
         const positionCost =
           (Number.isFinite(positionCostPercent) && positionCostPercent > 0

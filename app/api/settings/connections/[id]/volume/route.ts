@@ -27,7 +27,7 @@ import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinato
  *     consolidated save would land here in one shot).
  *   - Exposes GET so the dashboard can hydrate the sliders on mount
  *     without reaching into the connections list payload.
- *   - Bounds each factor to [0.1, 10] — matches the slider UI range
+ *   - Bounds each factor to [1, 10] — ratio 1 is the venue-minimum baseline
  *     AND the server-side clamp in `calculatePositionVolume`, so a
  *     malformed client POST cannot bypass either layer.
  */
@@ -99,7 +99,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         {
           error: "At least one factor required",
           details:
-            "POST must include `live_volume_factor` / `preset_volume_factor` in [0.1, 10] and/or `volume_step_ratio` in [0.2, 1.8].",
+            "POST must include `live_volume_factor` / `preset_volume_factor` in [1, 10] and/or `volume_step_ratio` in [0.2, 1.8].",
         },
         { status: 400 },
       )

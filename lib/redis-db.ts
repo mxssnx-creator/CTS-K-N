@@ -114,6 +114,7 @@ export interface RedisClientLike {
   sismember(key: string, member: string): Promise<number>
   srem(key: string, ...members: string[]): Promise<number>
   expire(key: string, seconds: number): Promise<number>
+  persist(key: string): Promise<number>
   lpush(key: string, ...values: string[]): Promise<number>
   rpush(key: string, ...values: string[]): Promise<number>
   lrange(key: string, start: number, stop: number): Promise<string[]>
@@ -326,6 +327,40 @@ export class InlineLocalRedis implements RedisClientLike {
     }
   }
 
+  /**
+   * A disk snapshot is restored by a brand-new process. InlineLocalRedis is
+   * deliberately single-process, so runtime ownership from the previous PID
+   * can never still be valid even when its saved heartbeat is only a few
+   * milliseconds old. Preserve durable settings/progression/history, but drop
+   * process leases and liveness proofs before startup reconciliation runs.
+   */
+  private clearRestoredInlineProcessOwnership(): void {
+    const processOwnedPrefixes = ["engine_lock:", "engine_is_running:", "cron_lock:"]
+    for (const key of Array.from(this.data.strings.keys())) {
+      if (!processOwnedPrefixes.some((prefix) => key.startsWith(prefix))) continue
+      this.data.strings.delete(key)
+      this.data.ttl.delete(key)
+    }
+
+    for (const [key, hash] of this.data.hashes.entries()) {
+      if (key === "trade_engine:global") {
+        hash.actual_status = "stopped"
+        hash.active_worker_id = ""
+        hash.last_heartbeat_at = "0"
+        hash.last_heartbeat_iso = ""
+        hash.runtime_owner_mode = ""
+        continue
+      }
+      if (!key.startsWith("trade_engine_state:") && !key.startsWith("settings:trade_engine_state:")) continue
+      delete hash.last_processor_heartbeat
+      delete hash.last_indication_run
+      delete hash.active_worker_id
+      delete hash.worker_id
+      if (hash.status === "running" || hash.status === "starting") hash.status = "stopped"
+    }
+    this.markDirty()
+  }
+
   /** Single rate-limited warning per minute so a broken disk doesn't spam logs. */
   private warnRateLimited(msg: string, err: unknown): void {
     const now = Date.now()
@@ -375,6 +410,7 @@ export class InlineLocalRedis implements RedisClientLike {
         const parsed = JSON.parse(raw)
         if (this.applySnapshot(parsed)) {
           this.markPersisted(this.mutationVersion())
+          this.clearRestoredInlineProcessOwnership()
           const keys =
             this.data.strings.size + this.data.hashes.size + this.data.sets.size +
             this.data.lists.size + this.data.sorted_sets.size
@@ -1650,6 +1686,18 @@ export class InlineLocalRedis implements RedisClientLike {
     return 0
   }
 
+  async persist(key: string): Promise<number> {
+    if (this.isExpired(key)) return 0
+    const exists = this.data.strings.has(key) ||
+      this.data.hashes.has(key) ||
+      this.data.sets.has(key) ||
+      this.data.lists.has(key) ||
+      this.data.sorted_sets.has(key)
+    if (!exists || !this.data.ttl.delete(key)) return 0
+    this.markDirty()
+    return 1
+  }
+
   async lpush(key: string, ...values: string[]): Promise<number> {
     const list = this.data.lists.get(key) || []
     for (const value of values) {
@@ -2135,6 +2183,7 @@ class NodeRedisClientAdapter implements RedisClientLike {
   async sismember(key: string, member: string) { return await (await this.c()).sIsMember(key, member) ? 1 : 0 }
   async srem(key: string, ...members: string[]) { return await (await this.c()).sRem(key, members) }
   async expire(key: string, seconds: number) { return await (await this.c()).expire(key, seconds) }
+  async persist(key: string) { return await (await this.c()).persist(key) }
   async lpush(key: string, ...values: string[]) { return await (await this.c()).lPush(key, values) }
   async rpush(key: string, ...values: string[]) { return await (await this.c()).rPush(key, values) }
   async lrange(key: string, start: number, stop: number) { return await (await this.c()).lRange(key, start, stop) }
@@ -2253,6 +2302,7 @@ class UpstashRestRedisClient implements RedisClientLike {
   async sismember(key: string, member: string) { return await this.command<number>(["SISMEMBER", key, member]) }
   async srem(key: string, ...members: string[]) { return await this.command<number>(["SREM", key, ...members]) }
   async expire(key: string, seconds: number) { return await this.command<number>(["EXPIRE", key, seconds]) }
+  async persist(key: string) { return await this.command<number>(["PERSIST", key]) }
   async lpush(key: string, ...values: string[]) { return await this.command<number>(["LPUSH", key, ...values]) }
   async rpush(key: string, ...values: string[]) { return await this.command<number>(["RPUSH", key, ...values]) }
   async lrange(key: string, start: number, stop: number) { return await this.command<string[]>(["LRANGE", key, start, stop]) }

@@ -102,7 +102,7 @@ export async function GET(request: Request) {
         runCronTask("generate-indications", async () => {
           const mod = await import("@/app/api/cron/generate-indications/route")
           return mod.GET(createInternalCronRequest("/api/cron/generate-indications"))
-        }),
+        }, 50_000),
       ])
       const failedTasks = tasks.filter((task) => !task.ok)
       const finishedAt = Date.now()

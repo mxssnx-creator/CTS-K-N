@@ -59,7 +59,7 @@ Order Execution: Ready ✓
 
 ### In Development Environment (.env.development.local)
 ```
-CRON_SECRET='production-cron-secret-key-over-16-characters-1234567890'
+CRON_SECRET='<generate-a-unique-secret-of-at-least-32-characters>'
 ALLOW_INLINE_REDIS_LIVE_TRADING='1'
 ```
 

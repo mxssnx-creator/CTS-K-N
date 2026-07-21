@@ -20,6 +20,10 @@ import {
 } from "@/lib/quickstart-timeouts"
 import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
+import {
+  collectQuickStartChangedFields,
+  sameOrderedSymbols,
+} from "@/lib/quickstart-change-detection"
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -148,7 +152,7 @@ const DEFAULT_SYMBOLS = ["DRIFTUSDT"]
 // Start safely with one dynamically selected symbol. Explicit UI/API choices
 // can still scale up to the exchange/runtime limit.
 const QUICKSTART_DEFAULT_SYMBOL_COUNT = DEFAULT_SYMBOL_COUNT
-const QUICKSTART_LIVE_VOLUME_FACTOR = "0.1"
+const QUICKSTART_LIVE_VOLUME_FACTOR = "1"
 const QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS = resolveQuickStartEngineBootWaitMs(
   process.env.QUICKSTART_ENGINE_BOOT_WAIT_MS,
 )
@@ -334,10 +338,11 @@ export async function POST(request: Request) {
     const exchangeName = normalizeQuickstartExchange(connection)
     const connectionId = connection.id
 
-    const [latestConnectionHash, rawConnectionSettings, prefixedConnectionSettings] = await Promise.all([
+    const [latestConnectionHash, rawConnectionSettings, prefixedConnectionSettings, currentEngineState] = await Promise.all([
       client.hgetall(`connection:${connectionId}`).catch(() => null),
       client.hgetall(`connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
       client.hgetall(`settings:connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
+      getSettings(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
     ])
     const existingQuickStartSettings: Record<string, unknown> = {
       ...(latestConnectionHash || connection || {}),
@@ -666,7 +671,25 @@ export async function POST(request: Request) {
       ? String(symbols.length)
       : firstExistingSetting(existingConnectionSettings, ["symbol_count"], String(symbols.length))
 
-    const symbolSelectionEpoch = `${Date.now()}:${Math.random().toString(36).slice(2)}`
+    const previouslySelectedSymbols = parseStoredSymbols(
+      (currentEngineState as Record<string, unknown>)?.force_symbols ??
+      (currentEngineState as Record<string, unknown>)?.active_symbols ??
+      existingQuickStartSettings.force_symbols ??
+      existingQuickStartSettings.active_symbols ??
+      existingQuickStartSettings.symbols,
+    )
+    const symbolBasketChanged = !sameOrderedSymbols(previouslySelectedSymbols, symbols)
+    const previousSymbolSelectionEpoch = String(
+      (currentEngineState as Record<string, unknown>)?.symbol_selection_epoch ||
+      (currentEngineState as Record<string, unknown>)?.quickstart_symbol_generation ||
+      "",
+    )
+    // Repeated QuickStart with the exact same ordered basket is a hot re-entry,
+    // not a new selection generation. Rotating this token on every click made
+    // the owner discard valid Historic/Main work and return to 0/N.
+    const symbolSelectionEpoch = symbolBasketChanged || !previousSymbolSelectionEpoch
+      ? `${Date.now()}:${Math.random().toString(36).slice(2)}`
+      : previousSymbolSelectionEpoch
 
     // Production QuickStart should not silently fall back to paper/sim just
     // because the lightweight connection test endpoint is flaky or rate-limited.
@@ -797,14 +820,11 @@ export async function POST(request: Request) {
      // ── Quickstart minimal-volume default ──────────────────────────
      // QuickStart is intended to be a safe, low-risk way for an operator
      // to dip a toe in: real exchange orders, but the SMALLEST possible
-     // notional per order. We pin `live_volume_factor` to the minimum
-     // allowed by `VolumeCalculator.calculatePositionVolume` (it clamps
-     // the factor to `[0.1, 10]` — anything ≤ 0.1 becomes 0.1).
+     // notional per order. Ratio 1 is the canonical exchange-minimum
+     // baseline; higher ratios scale that legal minimum.
      //
-     // With factor=0.1, the Main-engine path scales the computed volume
-     // down 10× and then the per-pair `exchangeMinVolume` floor (or the
-     // universal $5 notional fallback) clamps it back UP — so the final
-     // order size is GUARANTEED to be the exchange's hard minimum.
+     // With factor=1, the Main-engine path emits exactly the per-pair
+     // `exchangeMinVolume` floor (or universal $5 notional fallback).
      // That's the smallest legal order the venue will accept; you
      // cannot go below it without an immediate rejection.
      //
@@ -817,7 +837,7 @@ export async function POST(request: Request) {
      //     `VolumeCalculator.resolveLiveEngine` (preferred over global).
      //
      // Operator can adjust this later via per-connection Live Volume
-     // Factor slider in Settings (range 0.1×–10×) once they're happy
+     // Factor slider in Settings (range 1×–10×) once they're happy
      // with how the engine is behaving.
 
      const stateSwitchVersion = await allocateStateSwitchVersion(connectionId, connection)
@@ -926,30 +946,12 @@ export async function POST(request: Request) {
     if (resolvedRealEvalPosCount !== undefined) {
       quickstartConnectionSettingsPatch.realEvalPosCount = stringifySettingValue(resolvedRealEvalPosCount)
     }
-     const quickstartTouchedFields = [
-       "is_enabled",
-       "is_inserted",
-       "is_active_inserted",
-       "is_dashboard_inserted",
-       "is_enabled_dashboard",
-       "is_assigned",
-       "is_active",
-       "is_live_trade",
-       "live_trade_enabled",
-       "live_trade_requested",
-       "live_trade_blocked_reason",
-       "active_symbols",
-       "force_symbols",
-       "symbol_order",
-       "symbol_count",
-       "last_test_status",
-       "live_volume_factor",
-       "volume_factor_live",
-       "preset_volume_factor",
-       "volume_factor_preset",
-       "volume_step_ratio",
-       ...Object.keys(quickstartConnectionSettingsPatch).map((field) => `connection_settings.${field}`),
-     ]
+     const quickstartTouchedFields = collectQuickStartChangedFields({
+       beforeConnection: connection,
+       beforeSettings: existingConnectionSettings,
+       nextConnection: updated,
+       nextSettings: quickstartConnectionSettingsPatch,
+     })
 
      const coordinator = getGlobalTradeEngineCoordinator()
      const quickstartEngineAlreadyRunning = coordinator.isEngineRunning(connectionId)

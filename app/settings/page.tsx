@@ -464,7 +464,7 @@ const initialSettings: Settings = {
   validationTimeoutSeconds: 15,
   mainTradeInterval: 1,
   presetTradeInterval: 2,
-  positionCost: 0.02, // Fixed default to 0.02 (representing 0.02%)
+  positionCost: 0.1, // Canonical default: 0.1%
   useMaximalLeverage: true,
   min_volume_enforcement: true, // Added missing min_volume_enforcement property
 
@@ -883,7 +883,7 @@ export default function SettingsPage() {
   const [newMainSymbol, setNewMainSymbol] = useState("")
   const [newForcedSymbol, setNewForcedSymbol] = useState("")
 
-  // FIX: positionCost default to 0.02 meaning 0.02% (displayed as 0.02%, not 2%)
+  // Position cost is stored/displayed as a percent value; canonical default is 0.1%.
   const [settings, setSettings] = useState<Settings>({
     ...initialSettings,
     // Ensure defaults are applied if not present in initialSettings
@@ -1169,7 +1169,7 @@ export default function SettingsPage() {
           }
           // FIX: Ensure positionCost default is applied if not present in loaded data
           if (data.settings.positionCost === undefined) {
-            updatedSettings.positionCost = 0.02
+            updatedSettings.positionCost = 0.1
           }
           if (data.settings.negativeChangePercent === undefined) {
             updatedSettings.negativeChangePercent = 20
@@ -1893,7 +1893,7 @@ export default function SettingsPage() {
                 updatedSettings.maxActiveBasePseudoPositionsPerDirection = 1
               if (data.settings.maxConcurrentOperations === undefined) updatedSettings.maxConcurrentOperations = 100
               // Position cost default
-              if (data.settings.positionCost === undefined) updatedSettings.positionCost = 0.02
+              if (data.settings.positionCost === undefined) updatedSettings.positionCost = 0.1
               if (data.settings.negativeChangePercent === undefined) updatedSettings.negativeChangePercent = 20
               if (data.settings.leveragePercentage === undefined) updatedSettings.leveragePercentage = 100
               // Merge exchange-specific settings

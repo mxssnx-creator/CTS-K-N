@@ -13,6 +13,10 @@ import { changedSettingKeys } from "@/lib/settings-diff"
 import { DEFAULT_DCA_PROFILE } from "@/lib/dca-strategy"
 import { DEFAULT_TRAILING_VARIANTS } from "@/lib/trailing-settings"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import {
+  normalizePositionCostPercent,
+  POSITION_COST_PERCENT_DEFAULT,
+} from "@/lib/position-cost"
 
 /**
  * Fan out a "settings_changed" progression log event AND a settings-
@@ -27,7 +31,15 @@ async function emitSettingsChanged(keyCount: number, changedKeys: string[]): Pro
   if (keyCount <= 0 || changedKeys.length === 0) return
   try {
     const connections = await getAllConnections().catch(() => [])
-    const activeConnections = (connections || []).filter((c: any) => isTruthyFlag(c.is_enabled))
+    const activeConnections = (connections || []).filter((c: any) =>
+      isTruthyFlag(
+        c.is_enabled_dashboard
+        ?? c.is_enabled
+        ?? c.active_inserted
+        ?? c.inserted
+        ?? c.enabled,
+      ),
+    )
 
     await Promise.all([
       // Progression log fan-out (operator visibility)
@@ -62,8 +74,6 @@ async function emitSettingsChanged(keyCount: number, changedKeys: string[]): Pro
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-const POSITION_COST_MIN_PERCENT = 0.02
-const POSITION_COST_MAX_PERCENT = 1.0
 const POSITION_COST_KEYS = ["positionCost", "exchangePositionCost", "exchange_position_cost"] as const
 
 function normalizePositionCostSettings<T extends Record<string, any>>(settings: T): T {
@@ -74,7 +84,7 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
 
     const value = Number(normalized[key])
     if (Number.isFinite(value)) {
-      normalized[key] = Math.max(POSITION_COST_MIN_PERCENT, Math.min(POSITION_COST_MAX_PERCENT, value))
+      normalized[key] = normalizePositionCostPercent(value)
     }
   }
 
@@ -173,8 +183,8 @@ function getDefaultSettings(): Record<string, any> {
     dcaTakeProfitMode: DEFAULT_DCA_PROFILE.takeProfitMode,
     dcaBreakevenProfitPct: DEFAULT_DCA_PROFILE.breakevenProfitPct,
     dcaCooldownSeconds: DEFAULT_DCA_PROFILE.cooldownSeconds,
-    positionCost: POSITION_COST_MIN_PERCENT,
-    exchangePositionCost: POSITION_COST_MIN_PERCENT,
+    positionCost: POSITION_COST_PERCENT_DEFAULT,
+    exchangePositionCost: POSITION_COST_PERCENT_DEFAULT,
     trendEnabled: true,
     trendTimeframesMinutes: [1, 3, 5, 10, 15, 30],
     trendDrawdownValues: [-1, -2, -3],
@@ -186,7 +196,7 @@ function getDefaultSettings(): Record<string, any> {
     trendTpStep: 1,
     databaseSizeTrend: 250,
   }
-  }
+}
 
 export async function GET() {
   try {

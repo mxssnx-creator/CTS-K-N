@@ -1,4 +1,6 @@
-export const POSITION_COST_PCT_DEFAULT = 0.1
+import { POSITION_COST_PERCENT_DEFAULT } from "./position-cost"
+
+export const POSITION_COST_PCT_DEFAULT = POSITION_COST_PERCENT_DEFAULT
 
 export type TradeDirection = "long" | "short" | string
 

@@ -81,7 +81,7 @@ describe("production installation and Kilo deployment contract", () => {
       encoding: "utf8",
     })
     expect(output).toContain('"success":true')
-    expect(output).toContain('"schemaVersion":81')
+    expect(output).toContain('"schemaVersion":82')
   })
 
   it("passes the complete Kilo runtime, owner, and deploy-credential preflight", () => {
@@ -118,10 +118,12 @@ describe("production installation and Kilo deployment contract", () => {
       readFile(path.join(process.cwd(), "scripts/normalize-next-env.mjs"), "utf8"),
     ])
     expect(pkg).toContain('"kilo:deploy": "node scripts/kilo-deploy.mjs"')
+    expect(pkg).toContain("node scripts/clean-opennext-output.mjs && opennextjs-cloudflare build")
     expect(wrangler).toContain('"required": ["ADMIN_SECRET", "CRON_SECRET", "ENCRYPTION_KEY", "JWT_SECRET"]')
     expect(deployScript).toContain('"--secrets-file", secretsFile')
     expect(deployScript).toContain("KILO_REQUIRE_REMOTE_INSTALL_OWNER: \"1\"")
     expect(deployScript).toContain('REQUIRE_SHARED_PERSISTENCE: "1"')
+    expect(deployScript).toContain('["scripts/clean-opennext-output.mjs"]')
     expect(deployScript).not.toContain('"CLOUDFLARE_API_TOKEN",')
     expect(await readFile(path.join(process.cwd(), "scripts/verify-deployment-contract.mjs"), "utf8"))
       .toContain('["cloudflare-workers", "kilo-deploy"]')
@@ -147,7 +149,8 @@ describe("production installation and Kilo deployment contract", () => {
       await Promise.all([
         writeFile(path.join(root, "next-env.d.ts"), ""),
         writeFile(path.join(dist, "routes-manifest.json"), "{}\n"),
-        writeFile(path.join(dist, "required-server-files.json"), '{"config":{"trailingSlash":false}}\n'),
+        writeFile(path.join(dist, "required-server-files.json"), '{"config":{"trailingSlash":false,"images":{"unoptimized":true,"deviceSizes":[640,1080]}}}\n'),
+        writeFile(path.join(dist, "images-manifest.json"), ""),
         writeFile(path.join(dist, "export-marker.json"), ""),
         writeFile(path.join(dist, "export-detail.json"), '{"version":1,"success":true,"outDirectory":"out"}\n'),
       ])
@@ -158,11 +161,53 @@ describe("production installation and Kilo deployment contract", () => {
         hasExportPathMap: false,
         exportTrailingSlash: false,
       })
+      expect(JSON.parse(await readFile(path.join(dist, "images-manifest.json"), "utf8"))).toMatchObject({
+        version: 1,
+        images: { unoptimized: true, deviceSizes: [640, 1080] },
+      })
       await expect(readFile(path.join(dist, "export-detail.json"), "utf8"))
         .rejects.toMatchObject({ code: "ENOENT" })
     } finally {
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  it("keeps custom-dist generated route types out of the canonical tsc universe", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "cts-next-custom-types-"))
+    const dist = path.join(root, ".next-prod")
+    const normalizer = path.join(process.cwd(), "scripts/normalize-next-env.mjs")
+    try {
+      await mkdir(dist, { recursive: true })
+      await Promise.all([
+        writeFile(path.join(root, "next-env.d.ts"), ""),
+        writeFile(path.join(root, "tsconfig.json"), JSON.stringify({
+          include: ["**/*.ts", ".next/types/**/*.ts", ".next-prod/types/**/*.ts"],
+        })),
+        writeFile(path.join(dist, "routes-manifest.json"), "{}\n"),
+        writeFile(path.join(dist, "required-server-files.json"), '{"config":{"images":{}}}\n'),
+        writeFile(path.join(dist, "images-manifest.json"), "{}\n"),
+        writeFile(path.join(dist, "export-marker.json"), "{}\n"),
+      ])
+
+      execFileSync(process.execPath, [normalizer], {
+        cwd: root,
+        env: { ...process.env, NEXT_DIST_DIR: ".next-prod" },
+      })
+      const tsconfig = JSON.parse(await readFile(path.join(root, "tsconfig.json"), "utf8"))
+      expect(tsconfig.include).toEqual(["**/*.ts", ".next/types/**/*.ts"])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it("generates a byte-verifiable recreation inventory without hashing gitlink directories", async () => {
+    const generator = await readFile(
+      path.join(process.cwd(), "scripts/generate-recreation-manifests.mjs"),
+      "utf8",
+    )
+    expect(generator).toContain("const projectSourceFiles = trackedFiles.filter")
+    expect(generator).toContain("statSync(path.join(root, source)).isFile()")
+    expect(generator).toContain("const fileRows = projectSourceFiles")
   })
 
   it("deduplicates Kilo and independent-server schedulers by durable minute bucket", async () => {

@@ -1,7 +1,7 @@
 variable	scope	sensitive	in_env_example	source_count	sources
 ADMIN_SECRET	application-runtime	yes	yes	6	.env.example,__tests__/unit/install-deployment-contract.test.ts,__tests__/unit/requested-regressions.test.ts,app/api/install/database/flush/route.ts,lib/admin-auth.ts,scripts/kilo-deploy-preflight.mjs
 ALLOW_API_TRADE_ENGINE_FOREGROUND	application-runtime	no	no	8	FIXES-APPLIED-SESSION-33.md,__tests__/unit/requested-regressions.test.ts,__tests__/unit/trade-engine-start-lock.test.ts,app/api/settings/connections/[id]/enable/route.ts,app/api/settings/connections/[id]/live-trade/route.ts,app/api/settings/connections/[id]/preset-toggle/route.ts,app/api/settings/connections/[id]/toggle-dashboard/route.ts,lib/deployment-runtime.ts
-ALLOW_INLINE_REDIS_LIVE_TRADING	application-runtime	no	yes	9	.env.example,__tests__/integration/main-engine-live-dispatch.test.ts,__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/requested-regressions.test.ts,app/api/settings/database-status/route.ts,lib/live-order-smoke.ts,lib/production-readiness.ts,lib/real-trade-gates.ts
+ALLOW_INLINE_REDIS_LIVE_TRADING	application-runtime	no	yes	11	.env.example,LIVE_TRADING_SETUP.md,__tests__/integration/main-engine-live-dispatch.test.ts,__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/requested-regressions.test.ts,app/api/settings/database-status/route.ts,lib/live-order-smoke.ts,lib/production-readiness.ts,lib/real-trade-gates.ts,lib/startup-validation.ts
 ALLOW_LIVE_ORDER_PLACEMENT	application-runtime	no	no	3	__tests__/unit/requested-regressions.test.ts,lib/live-order-safety.ts,scripts/direct-place-order.ts
 ALLOW_PROCESS_LOCAL_DEPLOY_VERIFY	test-or-operator-tool	no	no	1	scripts/verify-deployment-contract.mjs
 ALLOW_PROD_INLINE_REDIS	application-runtime	no	yes	4	.env.example,__tests__/unit/requested-regressions.test.ts,lib/production-readiness.ts,lib/redis-db.ts
@@ -20,6 +20,7 @@ BINGX_PUBLIC_ORIGIN	application-runtime	no	yes	4	.env.example,__tests__/unit/bin
 BINGX_SECRET	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
 BINGX_STRESS_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
 BINGX_STRESS_RETRIES	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
+BINGX_STRESS_SYMBOL_COUNT	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
 BINGX_STRESS_TICKER_ROUNDS	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
 BINGX_STRESS_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
 BYBIT_API_KEY	test-or-operator-tool	yes	yes	1	.env.example
@@ -31,10 +32,12 @@ CLOUDFLARE_API_TOKEN	test-or-operator-tool	yes	yes	2	.env.example,scripts/kilo-d
 CLOUDFLARE_WORKERS	application-runtime	no	no	1	lib/deployment-runtime.ts
 CONN_ID	test-or-operator-tool	no	no	3	scripts/bingx-comprehensive-test.mjs,scripts/diagnose-stats.mjs,scripts/init-engine-and-verify.mjs
 CRON_LIVE_DISPATCH	application-runtime	no	no	3	__tests__/unit/requested-regressions.test.ts,app/api/cron/generate-indications/route.ts,lib/trade-engine/shared-ind-strat-pipeline.ts
+CRON_PREHISTORIC_SYMBOL_LIMIT	application-runtime	no	no	1	app/api/cron/generate-indications/route.ts
 CRON_SECRET	application-runtime	yes	yes	4	.env.example,__tests__/unit/production-continuity.test.ts,lib/cron-auth.ts,scripts/kilo-deploy-preflight.mjs
 CRON_SYMBOL_CONCURRENCY	application-runtime	no	no	2	__tests__/unit/requested-regressions.test.ts,app/api/cron/generate-indications/route.ts
 CRON_SYMBOL_LIMIT	application-runtime	no	no	2	__tests__/unit/requested-regressions.test.ts,app/api/cron/generate-indications/route.ts
 CTS_DEPLOYMENT_RUNTIME	application-runtime	no	yes	4	.env.example,__tests__/unit/install-deployment-contract.test.ts,lib/deployment-runtime.ts,scripts/verify-deployment-contract.mjs
+CTS_ENGINE_OWNER_WORKER	application-runtime	no	no	1	lib/trade-engine.ts
 CTS_INLINE_REDIS_PERSISTENT_VOLUME	application-runtime	no	no	2	lib/production-readiness.ts,lib/real-trade-gates.ts
 CTS_TEST_CAPTURE	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
 CTS_TEST_EXPECT_MODE	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
@@ -44,6 +47,7 @@ DATABASE_TYPE	application-runtime	no	yes	2	.env.example,app/api/install/configur
 DATABASE_URL	application-runtime	yes	yes	2	.env.example,lib/logger.ts
 DB_PATH	application-runtime	no	yes	2	.env.example,lib/db-audit.ts
 DEPLOY_VERIFY_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-deployment-contract.mjs
+DEPLOYMENT_CRON_MODE	application-runtime	no	no	2	__tests__/unit/progression-scope.test.ts,lib/progression-scope.ts
 DEPLOYMENT_URL	application-runtime	no	yes	7	.env.example,lib/deployment-runtime.ts,lib/production-readiness.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/production-deploy-init.mjs,scripts/verify-deployment-contract.mjs
 DEV_ENGINE_SYMBOL_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
 DEV_PREHISTORIC_SYMBOL_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
@@ -56,7 +60,7 @@ DISABLE_BINGX_SDK_ORDERS	application-runtime	no	no	1	lib/exchange-connectors/bin
 DISABLE_IN_PROCESS_CONTINUITY	application-runtime	no	yes	6	.env.example,__tests__/unit/trade-history-stability.test.ts,app/api/system/initialize/route.ts,instrumentation.ts,lib/runtime-startup-state.ts,lib/server-continuity-runner.ts
 DISABLE_PROD_CRON_STRATEGIES	test-or-operator-tool	no	yes	1	.env.example
 DISABLE_TRADE_ENGINE_AUTOSTART	application-runtime	no	yes	6	.env.example,__tests__/unit/trade-history-stability.test.ts,app/api/system/initialize/route.ts,instrumentation.ts,lib/server-continuity-runner.ts,lib/trade-engine-auto-start.ts
-DISABLE_TRADE_ENGINE_IN_PROCESS	application-runtime	no	yes	9	.env.example,__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/trade-engine-start-lock.test.ts,app/api/settings/connections/[id]/enable/route.ts,app/api/settings/connections/[id]/live-trade/route.ts,app/api/settings/connections/[id]/preset-toggle/route.ts,app/api/settings/connections/[id]/toggle-dashboard/route.ts,app/api/trade-engine/start/route.ts,lib/trade-engine.ts
+DISABLE_TRADE_ENGINE_IN_PROCESS	application-runtime	no	yes	11	.env.example,__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/progression-scope.test.ts,__tests__/unit/trade-engine-start-lock.test.ts,app/api/settings/connections/[id]/enable/route.ts,app/api/settings/connections/[id]/live-trade/route.ts,app/api/settings/connections/[id]/preset-toggle/route.ts,app/api/settings/connections/[id]/toggle-dashboard/route.ts,app/api/trade-engine/start/route.ts,lib/progression-scope.ts,lib/trade-engine.ts
 DRIFT_INTERVAL_MS	test-or-operator-tool	no	no	1	scripts/autotest-drift.mjs
 DRIFT_MAX_RUNS	test-or-operator-tool	no	no	1	scripts/autotest-drift.mjs
 ENABLE_API_INDICATION_SET_FILL	application-runtime	no	no	1	lib/indication-sets-processor.ts
@@ -169,6 +173,7 @@ SERVER_ACTION_ALLOWED_ORIGINS	application-runtime	no	no	1	next.config.mjs
 SOAK_ADMIN_SECRET	test-or-operator-tool	yes	no	1	scripts/verify-prod-soak.mjs
 SOAK_DURATION_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SOAK_MIN_DURATION_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
+SOAK_MIN_PRODUCTIVE_CYCLES	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SOAK_POLL_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SOAK_RSS_GROWTH_LIMIT_KB	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 START_SIMULATED_ENGINE	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs

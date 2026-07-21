@@ -10,7 +10,7 @@
 const PRIMARY_ORIGIN = process.env.BINGX_PUBLIC_ORIGIN || "https://open-api.bingx.com"
 const FALLBACK_ORIGIN = process.env.BINGX_PUBLIC_FALLBACK_ORIGIN || "https://open-api.bingx.pro"
 const ORIGINS = [...new Set([PRIMARY_ORIGIN, FALLBACK_ORIGIN])]
-const SYMBOL_COUNT = 32
+const SYMBOL_COUNT = Math.max(1, Math.min(32, Number(process.env.BINGX_STRESS_SYMBOL_COUNT) || 32))
 const CONCURRENCY = Math.max(1, Math.min(8, Number(process.env.BINGX_STRESS_CONCURRENCY) || 6))
 const TICKER_ROUNDS = Math.max(2, Math.min(20, Number(process.env.BINGX_STRESS_TICKER_ROUNDS) || 6))
 const REQUEST_TIMEOUT_MS = Math.max(5_000, Math.min(60_000, Number(process.env.BINGX_STRESS_TIMEOUT_MS) || 20_000))
@@ -153,6 +153,6 @@ main().then(() => {
   const exitGuard = setTimeout(() => process.exit(0), 100)
   exitGuard.unref()
 }).catch((error) => {
-  console.error("[stress-bingx-public-32] failed:", error instanceof Error ? error.message : String(error))
+  console.error("[stress-bingx-public] failed:", error instanceof Error ? error.message : String(error))
   process.exit(1)
 })

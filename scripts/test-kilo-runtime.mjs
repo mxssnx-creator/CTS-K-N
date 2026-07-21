@@ -100,10 +100,28 @@ async function loadPageAssets(pathname, markers) {
     return assetCache.get(scriptPath)
   }))
   const clientSource = scripts.map((script) => String(script.data)).join("\n")
+  const renderedSource = `${String(page.data)}\n${clientSource}`
   for (const marker of markers) {
-    assert(clientSource.includes(marker), `${pathname} client bundle is missing UI marker: ${marker}`)
+    assert(renderedSource.includes(marker), `${pathname} production output is missing UI marker: ${marker}`)
   }
-  return { scripts: scriptPaths.length }
+  return { scripts: scriptPaths.length, html: String(page.data) }
+}
+
+async function verifyProductionLayoutCss(html) {
+  const cssPaths = Array.from(
+    String(html).matchAll(/<link[^>]+href="([^"]+\.css[^"]*)"/g),
+    (match) => match[1],
+  )
+  assert(cssPaths.length > 0, "Dashboard did not expose a production stylesheet")
+  const styles = await Promise.all(
+    cssPaths.map((cssPath) => request(cssPath, { parse: "text", timeoutMs: 60_000 })),
+  )
+  const css = styles.map((style) => String(style.data)).join("\n")
+  assert(css.includes(".page-header-shell"), "Production CSS is missing PageHeader styles")
+  assert(/\.page-header-shell\{[^}]*position:sticky/.test(css), "Production PageHeader is not sticky/visible")
+  assert(css.includes("--sidebar-width"), "Production CSS is missing Sidebar dimensions")
+  assert(css.includes("@media (min-width:768px)"), "Production CSS is missing responsive desktop utilities")
+  return { stylesheets: cssPaths.length }
 }
 
 async function waitForHealth(child) {
@@ -151,6 +169,8 @@ async function main() {
     "--var", `ENCRYPTION_KEY:${encryptionKey}`,
     "--var", `JWT_SECRET:${jwtSecret}`,
     "--var", `NEXT_PUBLIC_APP_URL:${baseUrl}`,
+    "--var", "CRON_SYMBOL_LIMIT:5",
+    "--var", "CRON_PREHISTORIC_SYMBOL_LIMIT:5",
   ], {
     cwd: process.cwd(),
     env: {
@@ -170,9 +190,9 @@ async function main() {
     const health = await waitForHealth(child)
     const init = await json("/api/system/init-status", 60_000)
     assert(init?.ready === true, "Kilo preview startup is not ready")
-    assert(init?.migrations?.current_version === 81 && init?.migrations?.latest_version === 81, "Kilo preview schema is not v81")
+    assert(init?.migrations?.current_version === 82 && init?.migrations?.latest_version === 82, "Kilo preview schema is not v82")
     assert(init?.system?.deployment_runtime === "kilo-deploy", "Kilo deployment runtime was not detected")
-    assert(init?.system?.engine_owner === "external-long-lived-required", "Kilo request worker incorrectly claims engine ownership")
+    assert(init?.system?.engine_owner === "scheduled-bounded-owner", "Kilo bounded scheduled owner was not detected")
 
     // Verify the actual OpenNext UI bundles served by Workerd. These markers
     // cover the Main Connection dialog and both requested Strategy / Block
@@ -181,15 +201,34 @@ async function main() {
     const dashboardUi = await loadPageAssets("/", [
       "Connection information sections",
       "0.2–5.0",
+      "Toggle Sidebar",
+      "Statistics",
     ])
+    const layoutCss = await verifyProductionLayoutCss(dashboardUi.html)
     const settingsUi = await loadPageAssets("/settings", [
       "ProfitFactor factor",
       "Independent Block counts",
+      "Position-Count (Pis) Sets Volume Ratio",
     ])
     const presetsUi = await loadPageAssets("/presets", [
       "ProfitFactor factor",
       "Independent Block counts",
     ])
+    const additionalUiRoutes = [
+      ["/statistics", ["Advanced Statistics", "Trade History"]],
+      ["/live-trading", ["Live Trading"]],
+      ["/indications", ["Indications"]],
+      ["/strategies", ["Strategies"]],
+      ["/analysis", ["Position Analysis"]],
+      ["/structure", ["Structure"]],
+      ["/logistics", ["Logistics"]],
+      ["/monitoring", ["Monitoring"]],
+      ["/autotest", ["Autotest"]],
+    ]
+    const additionalUi = []
+    for (const [pathname, markers] of additionalUiRoutes) {
+      additionalUi.push(await loadPageAssets(pathname, markers))
+    }
 
     const inventory = await json(`/api/settings/connections?t=${Date.now()}`, 60_000)
     const connection = connectionList(inventory).find((entry) => {
@@ -199,6 +238,66 @@ async function main() {
     const connectionId = String(connection?.id || "")
     assert(connectionId, "Kilo UI has no selectable BingX connection")
     const originalEnabled = connection?.is_enabled_dashboard === true || connection?.is_enabled_dashboard === "1"
+
+    // Exercise the same Mainpage QuickStart request as the UI and force a
+    // deterministic five-symbol paper basket. This is the production contract
+    // that used to report success while Historic/Main remained stuck at 0/N.
+    const quickstartSymbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
+    const quickstart = (await request("/api/trade-engine/quick-start", {
+      method: "POST",
+      body: {
+        action: "enable",
+        connectionId,
+        symbols: quickstartSymbols,
+        symbolCount: quickstartSymbols.length,
+        liveTrade: false,
+        is_live_trade: false,
+        liveVolumeFactor: 1,
+      },
+      timeoutMs: 60_000,
+    })).data
+    assert(quickstart?.success === true, `Kilo QuickStart failed: ${JSON.stringify(quickstart).slice(0, 500)}`)
+    const quickstartReadback = Array.isArray(quickstart?.connection?.symbols)
+      ? quickstart.connection.symbols.map(String)
+      : []
+    assert(
+      quickstartReadback.length === quickstartSymbols.length &&
+        quickstartReadback.every((symbol, index) => symbol === quickstartSymbols[index]),
+      `Kilo QuickStart symbol readback mismatch: ${JSON.stringify(quickstartReadback)}`,
+    )
+    assert(
+      quickstart?.connection?.liveTradeRequested === false && quickstart?.connection?.liveTradeEnabled === false,
+      "Kilo QuickStart did not remain in paper mode",
+    )
+
+    // Exercise the system-wide Settings UI contract as a true hot update and
+    // restore the canonical production default. Both aliases must remain in
+    // sync because older engine consumers still read exchangePositionCost.
+    const globalSettings = await json(`/api/settings?t=${Date.now()}`, 60_000)
+    assert(Number(globalSettings?.settings?.positionCost) === 0.1, "Kilo position-cost default is not 0.1%")
+    const changedPositionCost = (await request("/api/settings", {
+      method: "POST",
+      body: { positionCost: 0.11, exchangePositionCost: 0.11 },
+      timeoutMs: 60_000,
+    })).data
+    assert(changedPositionCost?.success === true, "Kilo global position-cost update failed")
+    const changedGlobalSettings = await json(`/api/settings?t=${Date.now()}`, 60_000)
+    assert(
+      Number(changedGlobalSettings?.settings?.positionCost) === 0.11 &&
+        Number(changedGlobalSettings?.settings?.exchangePositionCost) === 0.11,
+      "Kilo global position-cost read-after-write mismatch",
+    )
+    await request("/api/settings", {
+      method: "POST",
+      body: { positionCost: 0.1, exchangePositionCost: 0.1 },
+      timeoutMs: 60_000,
+    })
+    const restoredGlobalSettings = await json(`/api/settings?t=${Date.now()}`, 60_000)
+    assert(
+      Number(restoredGlobalSettings?.settings?.positionCost) === 0.1 &&
+        Number(restoredGlobalSettings?.settings?.exchangePositionCost) === 0.1,
+      "Kilo global position-cost default restore failed",
+    )
 
     // Settings changes must be durable and explicitly queued for the external
     // owner. A serverless request worker must never report a local apply when
@@ -210,6 +309,8 @@ async function main() {
     const originalSettings = originalSettingsPayload?.settings || {}
     const originalCoordination = originalSettings.coordination_settings || originalSettings.coordinationSettings || {}
     const originalBlockProfitFactor = blockProfitFactorOf(originalSettingsPayload)
+    const originalPosCountsVolumeRatio = Number(originalSettings.posCountsVolumeRatio ?? originalCoordination.posCountsVolumeRatio ?? 0.05)
+    const nextPosCountsVolumeRatio = originalPosCountsVolumeRatio === 0.06 ? 0.07 : 0.06
     assert(
       Number.isFinite(originalBlockProfitFactor) && originalBlockProfitFactor >= 0.2 && originalBlockProfitFactor <= 5,
       `Invalid initial Block ProfitFactor factor: ${String(originalBlockProfitFactor)}`,
@@ -224,7 +325,9 @@ async function main() {
           coordination_settings: {
             ...originalCoordination,
             blockProfitFactorRatio: nextBlockProfitFactor,
+            posCountsVolumeRatio: nextPosCountsVolumeRatio,
           },
+          posCountsVolumeRatio: nextPosCountsVolumeRatio,
         },
         timeoutMs: 60_000,
       },
@@ -239,6 +342,14 @@ async function main() {
       60_000,
     ))
     assert(changedBlockProfitFactor === nextBlockProfitFactor, "Kilo Block ProfitFactor read-after-write mismatch")
+    const changedSettingsPayload = await json(
+      `/api/settings/connections/${encodeURIComponent(connectionId)}/settings?t=${Date.now()}`,
+      60_000,
+    )
+    assert(
+      Number(changedSettingsPayload?.settings?.posCountsVolumeRatio) === nextPosCountsVolumeRatio,
+      "Kilo pos-count volume ratio read-after-write mismatch",
+    )
     const settingsStats = await json(
       `/api/connections/progression/${encodeURIComponent(connectionId)}/stats?t=${Date.now()}`,
       60_000,
@@ -253,8 +364,8 @@ async function main() {
       `/api/settings/connections/${encodeURIComponent(connectionId)}/volume?t=${Date.now()}`,
       60_000,
     )
-    const originalLiveVolume = Number(originalVolume?.live_volume_factor ?? 0.1)
-    const nextLiveVolume = originalLiveVolume === 0.2 ? 0.3 : 0.2
+    const originalLiveVolume = Number(originalVolume?.live_volume_factor ?? 1)
+    const nextLiveVolume = originalLiveVolume === 1.2 ? 1.3 : 1.2
     const volumeUpdate = (await request(
       `/api/settings/connections/${encodeURIComponent(connectionId)}/volume`,
       {
@@ -274,8 +385,8 @@ async function main() {
     assert(Number(volumeReadback?.live_volume_factor) === nextLiveVolume, "Kilo volume read-after-write mismatch")
 
     // Reproduce the exact dashboard state switches. The disposable Kilo
-    // preview has no external owner, so Enable/Resume must converge to durable
-    // running intent + queued/starting diagnostics, never a phantom engine.
+    // preview uses the scheduled bounded owner, so Enable/Resume first converge
+    // to durable queued intent and only become running after a real cron cycle.
     const disabled = (await request(
       `/api/settings/connections/${encodeURIComponent(connectionId)}/toggle-dashboard`,
       { method: "POST", body: { is_enabled_dashboard: false }, timeoutMs: 60_000 },
@@ -297,7 +408,7 @@ async function main() {
     assert(queuedStatus?.operatorIntent === "running", "Kilo enable did not persist global running intent")
     assert(queuedStatus?.actualRuntimeStatus === "starting" && queuedStatus?.workerAttached === false, "Kilo queued runtime status is inaccurate")
     assert(queuedStatus?.diagnostics?.serverless === true, "Kilo status did not identify the serverless request runtime")
-    assert(String(queuedStatus?.diagnostics?.hint || "").includes("external engine-owner"), "Kilo status lacks the external-owner handoff diagnostic")
+    assert(String(queuedStatus?.diagnostics?.hint || "").includes("scheduled processing cycle"), "Kilo status lacks the scheduled-owner handoff diagnostic")
 
     // A real-trade request in this isolated Workerd preview may persist the UI
     // request, but it must remain ineffective because shared cross-process
@@ -377,6 +488,84 @@ async function main() {
     assert(Array.isArray(started?.queuedConnections) && started.queuedConnections.includes(connectionId), "Kilo global start did not queue the enabled connection")
     const startedStatus = await json(`/api/trade-engine/status?t=${Date.now()}`, 60_000)
     assert(startedStatus?.actualRuntimeStatus === "starting" && startedStatus?.workerAttached === false, "Kilo global start exposed a phantom local runtime")
+
+    const scheduled = await fetch(new URL("/__scheduled", baseUrl), {
+      signal: AbortSignal.timeout(180_000),
+    })
+    assert(scheduled.ok, `Scheduled handler returned HTTP ${scheduled.status}: ${(await scheduled.text()).slice(0, 300)}`)
+
+    let processedProgress = null
+    let processedStats = null
+    let processedStatus = null
+    for (let attempt = 1; attempt <= 40; attempt++) {
+      await sleep(attempt === 1 ? 1_700 : 500)
+      ;[processedProgress, processedStats, processedStatus] = await Promise.all([
+        json(`/api/connections/progression/${encodeURIComponent(connectionId)}?t=${Date.now()}`, 60_000),
+        json(`/api/connections/progression/${encodeURIComponent(connectionId)}/stats?t=${Date.now()}`, 60_000),
+        json(`/api/trade-engine/status?t=${Date.now()}`, 60_000),
+      ])
+      const historic = processedStats?.historic || {}
+      if (
+        Number(historic.symbolsProcessed) === quickstartSymbols.length &&
+        Number(historic.symbolsTotal) === quickstartSymbols.length &&
+        Number(processedProgress?.metrics?.indicationCycleCount || 0) > 0 &&
+        processedStats?.settingsRecoordination?.appliedVersion === volumeUpdate.settingsVersion &&
+        processedStatus?.actualRuntimeStatus === "running"
+      ) break
+    }
+    assert(processedStats?.success === true, "Kilo processed stats endpoint failed")
+    assert(
+      Number(processedStats?.historic?.symbolsProcessed) === quickstartSymbols.length &&
+        Number(processedStats?.historic?.symbolsTotal) === quickstartSymbols.length,
+      `Kilo Historic/Main progress is not complete: ${JSON.stringify(processedStats?.historic)}`,
+    )
+    assert(
+      Number(processedProgress?.metrics?.prehistoricSymbolsProcessed || 0) === quickstartSymbols.length,
+      `Kilo connection progress did not expose ${quickstartSymbols.length}/${quickstartSymbols.length}: ${JSON.stringify(processedProgress?.metrics)}`,
+    )
+    assert(Number(processedProgress?.metrics?.indicationCycleCount || 0) > 0, `Kilo indication pipeline did not complete a cycle: ${JSON.stringify(processedProgress?.metrics)}`)
+    assert(Number(processedProgress?.metrics?.strategyCycleCount || 0) > 0, `Kilo strategy pipeline did not complete a cycle: ${JSON.stringify(processedProgress?.metrics)}`)
+    assert(
+      processedStats?.settingsRecoordination?.appliedVersion === volumeUpdate.settingsVersion &&
+        processedStats?.settingsRecoordination?.requestedVersion === volumeUpdate.settingsVersion &&
+        processedStats?.settingsRecoordination?.pending === false &&
+        String(processedStats?.settingsRecoordination?.requestedEventId || "").length > 0 &&
+        processedStats?.settingsRecoordination?.appliedEventId ===
+          processedStats?.settingsRecoordination?.requestedEventId &&
+        processedStats?.settingsRecoordination?.fields?.includes("live_volume_factor"),
+      `Kilo scheduled owner did not atomically acknowledge the latest settings generation: ${JSON.stringify(processedStats?.settingsRecoordination)}`,
+    )
+    assert(
+      processedStatus?.actualRuntimeStatus === "running" &&
+        processedStatus?.runtimeOwnerMode === "scheduled-bounded-owner" &&
+        processedStatus?.workerAttached === false,
+      `Kilo scheduled runtime status is inconsistent: ${JSON.stringify(processedStatus)}`,
+    )
+    for (const stage of ["base", "main", "real", "live"]) {
+      assert(
+        Number.isFinite(Number(processedStats?.breakdown?.strategies?.[stage] ?? 0)),
+        `Kilo ${stage} strategy statistics are not numeric`,
+      )
+      assert(
+        processedStats?.activeProgressing?.strategies?.[stage] &&
+          Number.isFinite(Number(processedStats.activeProgressing.strategies[stage].sets ?? 0)) &&
+          Number.isFinite(Number(processedStats.activeProgressing.strategies[stage].positions ?? 0)),
+        `Kilo ${stage} active progression statistics are malformed`,
+      )
+    }
+    assert(Array.isArray(processedStats?.tradeHistory), "Kilo local trade-history statistics are malformed")
+    const canonicalTradeHistory = await json(
+      `/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}&limit=500&t=${Date.now()}`,
+      60_000,
+    )
+    assert(
+      canonicalTradeHistory?.success === true &&
+        Array.isArray(canonicalTradeHistory?.rows) &&
+        canonicalTradeHistory?.summary &&
+        Number.isFinite(Number(canonicalTradeHistory.summary.netPnl ?? 0)),
+      "Kilo canonical exchange/local trade history contract failed",
+    )
+
     await request("/api/trade-engine/stop", { method: "POST", timeoutMs: 60_000 })
     const finalStoppedStatus = await json(`/api/trade-engine/status?t=${Date.now()}`, 60_000)
     assert(finalStoppedStatus?.actualRuntimeStatus === "stopped", "Kilo final safety stop did not converge")
@@ -400,7 +589,9 @@ async function main() {
         coordination_settings: {
           ...originalCoordination,
           blockProfitFactorRatio: originalBlockProfitFactor,
+          posCountsVolumeRatio: originalPosCountsVolumeRatio,
         },
+        posCountsVolumeRatio: originalPosCountsVolumeRatio,
       },
       timeoutMs: 60_000,
     })
@@ -448,11 +639,6 @@ async function main() {
     assert(noOwnerRemote.status === 503, `Kilo remote install without owner returned ${noOwnerRemote.status}`)
     assert(String(noOwnerPayload?.error || "").includes("REMOTE_INSTALL_OWNER_URL"), "Kilo owner blocker is not explicit")
 
-    const scheduled = await fetch(new URL("/__scheduled", baseUrl), {
-      signal: AbortSignal.timeout(120_000),
-    })
-    assert(scheduled.ok, `Scheduled handler returned HTTP ${scheduled.status}: ${(await scheduled.text()).slice(0, 300)}`)
-
     let continuity = null
     for (let attempt = 1; attempt <= 20; attempt++) {
       continuity = (await json("/api/system/init-status", 30_000))?.system?.continuity
@@ -468,11 +654,19 @@ async function main() {
       health: health.status,
       schemaVersion: init.migrations.current_version,
       deploymentRuntime: init.system.deployment_runtime,
-      uiRoutesVerified: ["/", "/settings", "/presets"],
-      uiScriptsVerified: dashboardUi.scripts + settingsUi.scripts + presetsUi.scripts,
+      uiRoutesVerified: ["/", "/settings", "/presets", ...additionalUiRoutes.map(([pathname]) => pathname)],
+      uiScriptsVerified: dashboardUi.scripts + settingsUi.scripts + presetsUi.scripts + additionalUi.reduce((sum, page) => sum + page.scripts, 0),
+      layoutStylesheetsVerified: layoutCss.stylesheets,
       connectionId,
       blockProfitFactorSettingsVerified: true,
+      posCountsVolumeRatioVerified: true,
       volumeSettingsVerified: true,
+      positionCostDefaultVerified: "0.1%",
+      quickStartFiveSymbolsVerified: true,
+      historicMainProgressVerified: `${quickstartSymbols.length}/${quickstartSymbols.length}`,
+      settingsGenerationAckVerified: true,
+      scheduledProcessingOwnerVerified: true,
+      statisticsAndTradeHistoryVerified: true,
       stateSwitchesVerified: ["disable", "enable", "live-request-blocked", "live-off", "pause", "resume", "stop", "start", "final-stop"],
       externalOwnerQueueVerified: true,
       liveTradeFailClosedVerified: true,

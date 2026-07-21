@@ -4,7 +4,12 @@ import { VolumeCalculator } from "@/lib/volume-calculator"
 import { aggregateLastXClosedPositions } from "@/lib/trade-engine/closed-position-aggregation"
 import { getGlobalCoordinator } from "@/lib/trade-engine"
 import { normalizeSymbolList } from "@/lib/trade-engine/symbol-selection-ownership"
-import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
+import {
+  buildProgressionScope,
+  calculateHistoricProgress,
+  ensureScopedProgressionFromLegacy,
+  progressionReadKeys,
+} from "@/lib/progression-scope"
 import { loadClosedPositionSnapshots } from "@/lib/trade-history"
 import {
   buildRealStagePositionStats,
@@ -507,11 +512,10 @@ export async function GET(
     // Read the scoped/active progression snapshot before any fallback hashes.
     // Scoped forms are preferred when present; the historic unscoped
     // `progression:{id}` key is accepted only when its engine_type matches.
-    const scopedProgressionCandidates = [
-      `progression:${connectionId}:${engineType}`,
+    const scopedProgressionCandidates = Array.from(new Set([
+      ...progressionReadKeys(scope),
       `progression:${engineType}:${connectionId}`,
-      `progression:${connectionId}`,
-    ]
+    ]))
     let activeProgressionKey = `progression:${connectionId}`
     let activeProgressionRaw: Record<string, string> = {}
     for (const key of scopedProgressionCandidates) {
@@ -535,7 +539,6 @@ export async function GET(
       engineState,
       engineProgression,
       prehistoricSymbolCount,
-      prehistoricDoneMarker,
       axisWindowsHashRaw,
       ordersBySymbolRaw,
       hedgePosAccHashRaw,
@@ -566,10 +569,6 @@ export async function GET(
         )
         .catch(() => getSettings(`engine_progression:${connectionId}`).catch(() => ({}))),
       client.scard(`${scope.prehistoricKey}:symbols`).catch(() => 0),
-      // `:done` marker written by completePrehistoricPhase — a plain SET
-      // key separate from the hash so a hot-reload that loses the in-memory
-      // completion callback can still flip the progress bar to 100 %.
-      client.get(`${scope.prehistoricKey}:done`).catch(() => null),
       // Per-axis-window cumulative counters written by createMainSets in
       // strategy-coordinator.ts. Hash fields are `${axis}_${N}_sets` /
       // `${axis}_${N}_pos` for axis ∈ {prev, last, cont, pause} and the
@@ -662,6 +661,7 @@ export async function GET(
       n(prehistoricHash.symbols_processed),
       prehistoricSymbolCount,
       n(progHash.prehistoric_symbols_processed_count),
+      n(progHash.portable_symbols_processed),
       n(es.config_set_symbols_processed),
       // Last-resort live progress fallback. During prehistoric processing the
       // per-symbol worker updates engine_progression:{id}.sub_current before
@@ -706,14 +706,22 @@ export async function GET(
         ? canonicalSelectedSymbols
         : quickstartSymbols
     const activeStatsSymbolFilter = new Set(activeStatsSymbolList.map((symbol) => symbol.toUpperCase()))
-    const canonicalCurrentTotal = activeSnapshotSymbolTotal > 0
-      ? activeSnapshotSymbolTotal
+    // The saved connection/QuickStart selection is the current generation.
+    // A scheduled Kilo owner writes counters to the legacy progression hash,
+    // whose symbol_count can still describe an older 20-symbol run. Never let
+    // that stale denominator override the five symbols the current connection
+    // explicitly selected and the prehistoric owner actually completed.
+    const explicitCurrentSelectionTotal = currentSelectedSymbols.length > 0
+      ? currentSelectedSymbols.length
       : activeQuickstartTotal > 0
         ? activeQuickstartTotal
+        : canonicalSelectedSymbols.length
+    const canonicalCurrentTotal = explicitCurrentSelectionTotal > 0
+      ? explicitCurrentSelectionTotal
+      : activeSnapshotSymbolTotal > 0
+        ? activeSnapshotSymbolTotal
         : Math.max(
         n(es.config_set_symbols_total),
-        canonicalSelectedSymbols.length,
-        currentSelectedSymbols.length,
         symbolsFromArray,
         // Same fallback as sub_current above: this is the active worker-owned
         // denominator for the current prehistoric run.
@@ -755,35 +763,15 @@ export async function GET(
       // have clearly been processed (Frames and Indicators are non-zero).
       historicSymbolsProcessed
     )
-    // DATA INTEGRITY: every completion signal is gated on REAL recorded work
-    // (symbolsProcessed > 0). The genuine completion path
-    // (completePrehistoricPhase) always stamps symbols_processed=max(scard,total)
-    // alongside is_complete and the `:done` marker — so a flag without work is
-    // by definition a stale/fake stamp (legacy fake-data writers stamped
-    // prehistoric_done=1, the 7-day-TTL `:done` key, and data_loaded
-    // unconditionally). Without this gate a never-run system shows a false
-    // "100 % complete" with symbolsProcessed=0.
-    const historicIsComplete =
-      historicSymbolsProcessed > 0 &&
-      (prehistoricHash.is_complete === "1" ||
-        // `:done` plain-key marker written by completePrehistoricPhase —
-        // survives hot-reloads where the in-memory callback may not fire.
-        String(prehistoricDoneMarker) === "1" ||
-        progHash.prehistoric_phase_active === "false" ||
-        es.prehistoric_data_loaded === true ||
-        es.prehistoric_data_loaded === "1" ||
-        // All symbols processed — even if is_complete was never written
-        // (e.g. the processor crashed after the last symbol but before the
-        // completion pin), treat the run as done so the bar reaches 100 %.
-        (historicSymbolsTotal > 0 && historicSymbolsProcessed >= historicSymbolsTotal))
-    const historicProgressPercent = historicIsComplete
-      ? 100
-      // No Math.min(99) cap — progress tracks real completion. The bar
-      // should reach 100 % when all symbols are processed, not be stuck
-      // one step below waiting for an is_complete flag that may never arrive.
-      : historicSymbolsTotal > 0
-        ? Math.round((historicSymbolsProcessed / historicSymbolsTotal) * 100)
-        : 0
+    // Completion is a value invariant of the current basket, not a phase/flag
+    // shortcut. Old `:done`, is_complete, or live-phase markers can coexist
+    // briefly with a newly selected generation and must not turn 1/5 into 100%.
+    const historicProgressState = calculateHistoricProgress(
+      historicSymbolsProcessed,
+      historicSymbolsTotal,
+    )
+    const historicIsComplete = historicProgressState.isComplete
+    const historicProgressPercent = historicProgressState.progressPercent
 
     // ── REALTIME section ─────────────────────────────────────────────────────
     // Primary:   live_*_cycle_count    — only ticks that produced real work
@@ -2837,7 +2825,7 @@ export async function GET(
       liveVolumeFactor:   1,
       presetVolumeFactor: 1,
       tradeMode:          "main",
-      positionCostPct:    0.02,
+      positionCostPct:    0.1,
       positionsAverage:   2,
       source:             "default",
     }
@@ -2870,14 +2858,14 @@ export async function GET(
       }
       const resolved = VolumeCalculator.resolveLiveEngine(vcConn, vcSettings)
       const posCostRaw = Number(
-        vcSettings.exchangePositionCost ?? vcSettings.positionCost ?? vcSettings.exchange_position_cost ?? "0.02"
+        vcSettings.exchangePositionCost ?? vcSettings.positionCost ?? vcSettings.exchange_position_cost ?? "0.1"
       )
       const posAvgRaw = Number(vcSettings.positions_average ?? vcSettings.positionsAverage ?? "2")
       volumeConfig = {
         liveVolumeFactor:   resolved.mainVolumeFactor,
         presetVolumeFactor: resolved.presetVolumeFactor,
         tradeMode:          resolved.tradeMode,
-        positionCostPct:    Number.isFinite(posCostRaw) && posCostRaw > 0 ? posCostRaw : 0.02,
+        positionCostPct:    Number.isFinite(posCostRaw) && posCostRaw > 0 ? posCostRaw : 0.1,
         positionsAverage:   Number.isFinite(posAvgRaw) && posAvgRaw > 0 ? posAvgRaw : 2,
         source:             vcConn?.live_volume_factor ? "connection"
                             : (vcSettings.volume_factor_live ? "app_settings" : "default"),
@@ -3843,7 +3831,7 @@ export async function GET(
       //   liveVolumeFactor   = mainVolumeFactor applied to all main-engine live orders
       //   presetVolumeFactor = multiplier for preset-engine live orders
       //   tradeMode          = which engine is active ("main" | "preset")
-      //   positionCostPct    = % of balance budgeted per position (e.g. 0.02 = 0.02%)
+      //   positionCostPct    = % of balance budgeted per position (e.g. 0.1 = 0.1%)
       //   positionsAverage   = divisor for budget allocation (concurrent positions)
       //   source             = where the factor came from: "connection" | "app_settings" | "default"
       volumeConfig,

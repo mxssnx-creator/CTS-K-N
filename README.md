@@ -50,7 +50,7 @@ sudo bash scripts/install.sh --runtime auto --service-user cts-kn \
 The installer supports Debian/Ubuntu and RHEL/Fedora/Amazon Linux families,
 uses systemd when available or PM2 when selected, provisions one application
 owner plus one minute-scheduler owner, verifies Redis persistence and schema
-v81, tests/builds before cutover, checks restart recovery, and restores the
+v82, tests/builds before cutover, checks restart recovery, and restores the
 previous `.next` build on failure.
 
 ### Kilo / Cloudflare Workers
@@ -103,7 +103,7 @@ The complete recreation kit begins at
 
 - system architecture, ownership, and complete directory map;
 - stage, Block, DCA, exchange, and settings propagation contracts;
-- Redis data model, schema v81 migrations, recovery, and backup rules;
+- Redis data model, schema v82 migrations, recovery, and backup rules;
 - complete environment/deployment/install procedures;
 - acceptance tests and a clean-room rebuild runbook;
 - generated API, page, environment, migration, test, source-tree, and SHA-256

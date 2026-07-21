@@ -8,6 +8,7 @@ const DURATION_MS = Math.max(MIN_DURATION_MS, Number(process.env.SOAK_DURATION_M
 const POLL_MS = Math.max(750, Number(process.env.SOAK_POLL_MS || 2_000))
 const SYMBOL_COUNT = Math.max(1, Math.min(32, Number(process.env.SYMBOL_COUNT || 12)))
 const START_SIMULATED_ENGINE = process.env.START_SIMULATED_ENGINE === "1"
+const MIN_PRODUCTIVE_CYCLES = Math.max(3, Number(process.env.SOAK_MIN_PRODUCTIVE_CYCLES || 3))
 const RUNTIME_MODE = process.env.RUNTIME_MODE || "production"
 const DEBUG_ADMIN_SECRET = String(process.env.SOAK_ADMIN_SECRET || "")
 const RSS_GROWTH_LIMIT_KB = Math.max(
@@ -42,7 +43,7 @@ async function request(pathname, { method = "GET", body, timeoutMs = 30_000, hea
     signal: AbortSignal.timeout(timeoutMs),
   })
   const text = await response.text()
-  if (!response.ok) throw new Error(`${method} ${pathname} HTTP ${response.status}: ${text.slice(0, 300)}`)
+  if (!response.ok) throw new Error(`${method} ${pathname} HTTP ${response.status}: ${text.slice(0, 4_000)}`)
   let json
   try { json = text ? JSON.parse(text) : {} } catch { throw new Error(`${pathname} returned invalid JSON`) }
   return { json, latencyMs: Date.now() - started }
@@ -60,6 +61,7 @@ function progressionSample(stats) {
   const sample = {
     historicPercent: finiteNonNegative(stats?.historic?.progressPercent, "historic.progressPercent"),
     historicSymbols: finiteNonNegative(stats?.historic?.symbolsProcessed, "historic.symbolsProcessed"),
+    historicTotal: finiteNonNegative(stats?.historic?.symbolsTotal, "historic.symbolsTotal"),
     historicCandles: finiteNonNegative(stats?.historic?.candlesLoaded, "historic.candlesLoaded"),
     historicCycles: finiteNonNegative(stats?.historic?.cyclesCompleted, "historic.cyclesCompleted"),
     realtimeCycles: finiteNonNegative(stats?.realtime?.realtimeCycles, "realtime.realtimeCycles"),
@@ -75,6 +77,122 @@ function progressionSample(stats) {
   return {
     ...sample,
     score: Object.values(sample).reduce((sum, value) => sum + value, 0),
+  }
+}
+
+const VARIANT_NAMES = ["default", "trailing", "block", "dca"]
+
+function strategyRuntimeSample(stats) {
+  const variants = stats?.strategyVariants || {}
+  const normalizedVariants = {}
+  for (const variant of [...VARIANT_NAMES, "overall"]) {
+    const row = variants?.[variant] || {}
+    normalizedVariants[variant] = {
+      createdSets: finiteNonNegative(row.createdSets, `strategyVariants.${variant}.createdSets`),
+      passedSets: finiteNonNegative(row.passedSets, `strategyVariants.${variant}.passedSets`),
+      entriesCount: finiteNonNegative(row.entriesCount, `strategyVariants.${variant}.entriesCount`),
+      positionsCount: finiteNonNegative(row.positionsCount, `strategyVariants.${variant}.positionsCount`),
+      avgProfitFactor: finiteNonNegative(row.avgProfitFactor, `strategyVariants.${variant}.avgProfitFactor`),
+      avgDrawdownTime: finiteNonNegative(row.avgDrawdownTime, `strategyVariants.${variant}.avgDrawdownTime`),
+      passRate: finiteNonNegative(row.passRate, `strategyVariants.${variant}.passRate`),
+    }
+    if (normalizedVariants[variant].passRate > 100) {
+      throw new Error(`strategyVariants.${variant}.passRate exceeds 100`)
+    }
+  }
+  const variantPositionSum = VARIANT_NAMES.reduce(
+    (sum, variant) => sum + normalizedVariants[variant].positionsCount,
+    0,
+  )
+  if (normalizedVariants.overall.positionsCount !== variantPositionSum) {
+    throw new Error(`Variant position total mismatch: ${normalizedVariants.overall.positionsCount} != ${variantPositionSum}`)
+  }
+
+  const coordination = stats?.mainCoordination || {}
+  const allowedVariants = new Set(VARIANT_NAMES)
+  for (const variant of coordination.activeVariants || []) {
+    if (!allowedVariants.has(String(variant))) throw new Error(`Unknown active strategy variant: ${variant}`)
+  }
+  const axisWindows = coordination.axisWindows || {}
+  for (const [axis, expectedMax] of Object.entries({ prev: 12, last: 4, cont: 8, pause: 8 })) {
+    const rows = axisWindows?.[axis]
+    if (!Array.isArray(rows) || rows.length !== expectedMax + 1) {
+      throw new Error(`mainCoordination.axisWindows.${axis} does not expose 0..${expectedMax}`)
+    }
+    rows.forEach((row, index) => {
+      if (Number(row?.window) !== index) throw new Error(`${axis}[${index}].window is ${row?.window}`)
+      finiteNonNegative(row?.sets, `${axis}[${index}].sets`)
+      finiteNonNegative(row?.pos, `${axis}[${index}].pos`)
+    })
+  }
+  return {
+    variants: normalizedVariants,
+    // Overall can become ledger-backed as soon as `valid_positions_v2.overall`
+    // exists, while the four per-variant counters deliberately remain on the
+    // evaluation fallback until their subtotal covers that overall ledger.
+    // Track the source of the values compared above, not the independent
+    // overall source, so the one legitimate fallback -> confirmed transition
+    // is recognized without masking any later counter regression.
+    positionCountSource: String(
+      stats?.positionStats?.strategyTypes?.default?.positionCountSource ||
+      stats?.positionStats?.adjustTypes?.block?.positionCountSource ||
+      "evaluation-fallback"
+    ),
+    mainCycles: finiteNonNegative(coordination.totalCycles, "mainCoordination.totalCycles"),
+    mainCreated: finiteNonNegative(coordination.totalCreated, "mainCoordination.totalCreated"),
+    mainReused: finiteNonNegative(coordination.totalReused, "mainCoordination.totalReused"),
+    realActive: finiteNonNegative(stats?.openPositions?.real?.open, "openPositions.real.open"),
+    realActiveAverage: finiteNonNegative(stats?.openPositions?.real?.activeAvg, "openPositions.real.activeAvg"),
+    realActiveSamples: finiteNonNegative(stats?.openPositions?.real?.activeSamples, "openPositions.real.activeSamples"),
+  }
+}
+
+function assertPositionQuantityIntegrity(position, executionProgress) {
+  const label = `position ${position?.id || "unknown"}`
+  const executed = finiteNonNegative(position?.executedQuantity, `${label}.executedQuantity`)
+  const total = finiteNonNegative(position?.totalExecutedQuantity ?? executed, `${label}.totalExecutedQuantity`)
+  const closed = finiteNonNegative(position?.closedQuantity, `${label}.closedQuantity`)
+  const openQuantity = position?.status === "closed" ? 0 : executed
+  if (total + 1e-10 < openQuantity + closed) {
+    throw new Error(`${label} total quantity ${total} is smaller than open+closed ${openQuantity + closed}`)
+  }
+
+  if (position?.combinedPosCounts) {
+    const allocations = position?.posCountsSetQuantities || {}
+    const allocationTotal = Object.values(allocations).reduce((sum, value) => (
+      sum + finiteNonNegative(value, `${label}.posCountsSetQuantities`)
+    ), 0)
+    const expectedOpen = openQuantity
+    if (Math.abs(allocationTotal - expectedOpen) > Math.max(1e-10, expectedOpen * 1e-8)) {
+      throw new Error(`${label} Set allocation ${allocationTotal} != open quantity ${expectedOpen}`)
+    }
+    const ratioKeys = Object.keys(position?.posCountsSetRatios || {})
+    const memberKeys = Array.from(new Set((position?.accumulatedSetKeys || []).map(String)))
+    if (ratioKeys.some((key) => !memberKeys.includes(key))) {
+      throw new Error(`${label} has a ratio for a Set outside accumulatedSetKeys`)
+    }
+  }
+
+  for (const execution of position?.partialOrderExecutions || []) {
+    const id = String(execution?.id || "")
+    if (!id) throw new Error(`${label} has a partial execution without stable id`)
+    const cumulative = finiteNonNegative(execution.cumulativeFilledQuantity, `${label}.${id}.cumulative`)
+    const prior = executionProgress.get(id) || 0
+    if (cumulative + 1e-12 < prior) throw new Error(`${label}.${id} cumulative fill regressed ${prior} -> ${cumulative}`)
+    executionProgress.set(id, cumulative)
+    const before = finiteNonNegative(execution.positionQuantityBefore, `${label}.${id}.before`)
+    const after = finiteNonNegative(execution.positionQuantityAfter, `${label}.${id}.after`)
+    if (after > before + 1e-10) throw new Error(`${label}.${id} reduction increased quantity`)
+    const afterParts = Object.values(execution.setQuantities || {}).reduce((sum, value) => sum + Number(value || 0), 0)
+    if (Math.abs(afterParts - after) > Math.max(1e-10, after * 1e-8)) {
+      throw new Error(`${label}.${id} part quantities ${afterParts} != ${after}`)
+    }
+    if (execution.setQuantityDeltas) {
+      const deltaParts = Object.values(execution.setQuantityDeltas).reduce((sum, value) => sum + Number(value || 0), 0)
+      if (Math.abs(deltaParts - (after - before)) > Math.max(1e-10, before * 1e-8)) {
+        throw new Error(`${label}.${id} part deltas ${deltaParts} != physical delta ${after - before}`)
+      }
+    }
   }
 }
 
@@ -125,6 +243,21 @@ async function main() {
       method: "POST",
       timeoutMs: 120_000,
     })))
+
+    const [connectionSettings, globalSettings] = await Promise.all([
+      request(`/api/settings/connections/${encodeURIComponent(connectionId)}/settings`),
+      request("/api/settings"),
+    ])
+    const stored = connectionSettings.json?.settings || {}
+    const coordination = stored.coordination_settings || stored.coordinationSettings || {}
+    const posCountsRatio = Number(stored.posCountsVolumeRatio ?? coordination.posCountsVolumeRatio)
+    const positionCost = Number(globalSettings.json?.settings?.positionCost)
+    if (posCountsRatio !== 0.05) {
+      throw new Error(`Position-count volume ratio default is ${posCountsRatio}, expected 0.05`)
+    }
+    if (positionCost !== 0.1) {
+      throw new Error(`System positionCost default is ${positionCost}, expected 0.1%`)
+    }
   }
 
   const endpointBuilders = [
@@ -149,6 +282,9 @@ async function main() {
   const latencies = []
   const steadyLatencies = []
   const liveExecution = []
+  const strategyRuntime = []
+  const positionLifecycle = new Map()
+  const executionProgress = new Map()
   let simulatedPositionsPeak = 0
   let realPositionsPeak = 0
   let paperPositionsPeak = 0
@@ -181,6 +317,27 @@ async function main() {
 
     const stats = byPath.get(`/api/connections/progression/${encodeURIComponent(connectionId)}/stats`)
     const sample = progressionSample(stats)
+    if (sample.historicTotal > 0 && sample.historicTotal !== SYMBOLS.length) {
+      throw new Error(`Historic denominator drifted from the selected basket: ${sample.historicTotal}/${SYMBOLS.length}`)
+    }
+    if (sample.historicTotal > 0 && sample.historicSymbols > sample.historicTotal) {
+      throw new Error(`Historic processed count exceeds total: ${sample.historicSymbols}/${sample.historicTotal}`)
+    }
+    const expectedHistoricPercent = sample.historicTotal > 0
+      ? Math.min(100, Math.round((sample.historicSymbols / sample.historicTotal) * 100))
+      : 0
+    if (sample.historicPercent !== expectedHistoricPercent) {
+      throw new Error(
+        `Historic percent disagrees with current coverage: ` +
+        `${sample.historicPercent}% != ${sample.historicSymbols}/${sample.historicTotal} (${expectedHistoricPercent}%)`,
+      )
+    }
+    if (sample.baseEvaluated > 0 && sample.base > sample.baseEvaluated) {
+      throw new Error(`Base output exceeds its evaluated pool: ${sample.base} > ${sample.baseEvaluated}`)
+    }
+    if (sample.mainEvaluated > 0 && sample.main > sample.mainEvaluated) {
+      throw new Error(`Main output exceeds its evaluated pool: ${sample.main} > ${sample.mainEvaluated}`)
+    }
     if (sample.live > sample.real) throw new Error(`Live output exceeds Real output: ${sample.live} > ${sample.real}`)
     if (sample.real > sample.realEvaluated && sample.realEvaluated > 0) {
       throw new Error(`Real output exceeds its evaluated pool: ${sample.real} > ${sample.realEvaluated}`)
@@ -191,7 +348,35 @@ async function main() {
         throw new Error(`stageEvalPercent.${stage} is invalid: ${value}`)
       }
     }
+    const previousSample = progression.at(-1)
+    if (previousSample && sample.historicCycles < previousSample.historicCycles) {
+      throw new Error(`Historic cycles regressed: ${previousSample.historicCycles} → ${sample.historicCycles}`)
+    }
+    if (previousSample && sample.realtimeCycles < previousSample.realtimeCycles) {
+      throw new Error(`Realtime cycles regressed: ${previousSample.realtimeCycles} → ${sample.realtimeCycles}`)
+    }
     progression.push(sample)
+    const runtimeSample = strategyRuntimeSample(stats)
+    const previousRuntime = strategyRuntime.at(-1)
+    if (previousRuntime && runtimeSample.mainCycles < previousRuntime.mainCycles) {
+      throw new Error(`Main strategy cycles regressed: ${previousRuntime.mainCycles} -> ${runtimeSample.mainCycles}`)
+    }
+    for (const variant of [...VARIANT_NAMES, "overall"]) {
+      for (const field of ["createdSets", "passedSets", "entriesCount", "positionsCount"]) {
+        const confirmedLedgerJustBecameAuthoritative =
+          field === "positionsCount" &&
+          previousRuntime?.positionCountSource !== "confirmed-ledger" &&
+          runtimeSample.positionCountSource === "confirmed-ledger"
+        if (
+          previousRuntime &&
+          runtimeSample.variants[variant][field] < previousRuntime.variants[variant][field] &&
+          !confirmedLedgerJustBecameAuthoritative
+        ) {
+          throw new Error(`strategyVariants.${variant}.${field} regressed`)
+        }
+      }
+    }
+    strategyRuntime.push(runtimeSample)
 
     const engineInventory = byPath.get("/api/trade-engine/status-all")
     const engine = Array.isArray(engineInventory?.engines)
@@ -209,6 +394,23 @@ async function main() {
     }
     if (positions?.dataIntegrity?.liveExecutionMode !== "simulation" || positions?.dataIntegrity?.liveTradeRequested !== false) {
       throw new Error("Live-position API left explicit simulation mode during soak")
+    }
+    const currentPositionIds = new Set()
+    for (const position of positions.positions || []) {
+      const id = String(position?.id || "")
+      if (!id) throw new Error("Live-position API returned a position without id")
+      currentPositionIds.add(id)
+      assertPositionQuantityIntegrity(position, executionProgress)
+      const previous = positionLifecycle.get(id)
+      if (previous?.status === "closed" && position.status !== "closed") {
+        throw new Error(`Terminal position ${id} reopened (${previous.status} -> ${position.status})`)
+      }
+      positionLifecycle.set(id, { status: position.status, lastSeenRound: rounds })
+    }
+    for (const [id, previous] of positionLifecycle) {
+      if (previous.status !== "closed" && previous.lastSeenRound < rounds && !currentPositionIds.has(id)) {
+        throw new Error(`Active position ${id} disappeared without a terminal record`)
+      }
     }
     realPositionsPeak = Math.max(realPositionsPeak, positions.realPositions.length)
     simulatedPositionsPeak = Math.max(simulatedPositionsPeak, positions.simulatedPositions.length)
@@ -302,6 +504,21 @@ async function main() {
     }
     if (maxCycles <= firstCycles) {
       throw new Error(`System monitoring cycle counters did not advance (${firstCycles} → ${maxCycles})`)
+    }
+    const firstMainCycles = strategyRuntime[0]?.mainCycles || 0
+    const finalMainCycles = strategyRuntime.at(-1)?.mainCycles || 0
+    if (finalMainCycles - firstMainCycles < MIN_PRODUCTIVE_CYCLES) {
+      throw new Error(`Main strategy progression advanced only ${finalMainCycles - firstMainCycles} cycles; expected >= ${MIN_PRODUCTIVE_CYCLES}`)
+    }
+    const finalProgression = progression.at(-1)
+    if (
+      finalProgression?.historicSymbols !== SYMBOLS.length ||
+      finalProgression?.historicTotal !== SYMBOLS.length
+    ) {
+      throw new Error(
+        `Historic/Main processing remained incomplete: ` +
+        `${finalProgression?.historicSymbols || 0}/${finalProgression?.historicTotal || SYMBOLS.length}`,
+      )
     }
     const peakLiveSets = Math.max(...progression.map((sample) => sample.live))
     const simulatedOrdersPeak = Math.max(...liveExecution.map((sample) => sample.ordersSimulated))
@@ -422,6 +639,13 @@ async function main() {
     databaseAbsoluteLimit,
     engineCyclesStart: memory[0]?.engineCycles || 0,
     engineCyclesEnd: memory.at(-1)?.engineCycles || 0,
+    mainStrategyCyclesStart: strategyRuntime[0]?.mainCycles || 0,
+    mainStrategyCyclesEnd: strategyRuntime.at(-1)?.mainCycles || 0,
+    strategyVariantEnd: strategyRuntime.at(-1)?.variants,
+    realActiveEnd: strategyRuntime.at(-1)?.realActive || 0,
+    realActiveAverageEnd: strategyRuntime.at(-1)?.realActiveAverage || 0,
+    observedPositionLifecycles: positionLifecycle.size,
+    observedPartialExecutions: executionProgress.size,
     simulatedOrdersPeak: liveExecution.length ? Math.max(...liveExecution.map((sample) => sample.ordersSimulated)) : 0,
     simulatedPositionsCreatedPeak: liveExecution.length ? Math.max(...liveExecution.map((sample) => sample.positionsCreated)) : 0,
     simulatedPositionsPeak,

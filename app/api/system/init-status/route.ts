@@ -187,7 +187,7 @@ export async function GET(request: NextRequest) {
           environment: process.env.NODE_ENV || "development",
           deployment_runtime: getDeploymentRuntimeLabel(),
           serverless: isServerlessDeploymentRuntime(),
-          engine_owner: isServerlessDeploymentRuntime() ? "external-long-lived-required" : "in-process-capable",
+          engine_owner: isServerlessDeploymentRuntime() ? "scheduled-bounded-owner" : "in-process-capable",
           site_instance_id: siteInstanceId,
           site_instance_scope: sharedRedis ? "shared-cross-instance" : "process-local",
           timestamp: new Date().toISOString(),
@@ -219,7 +219,7 @@ export async function GET(request: NextRequest) {
         },
         warnings: sharedRedis
           ? (isServerlessDeploymentRuntime()
-              ? ["Serverless API is passive; one long-lived engine owner and the external one-minute scheduler must use this same shared Redis."]
+              ? ["Serverless processing is owned by the awaited one-minute bounded cycle; every worker must use this same shared Redis."]
               : [])
           : [
               "Database backend is process-local; site identity and settings can reset when the worker restarts.",

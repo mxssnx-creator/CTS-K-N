@@ -59,7 +59,7 @@ A recreation is complete only when all of the following are true:
 - the pinned dependency lock installs without modification;
 - TypeScript, ESLint, all Jest suites, Next production build, OpenNext build,
   Wrangler dry-run, and local Workerd scheduled-runtime tests pass;
-- Redis reaches the repository's latest sequential schema (v81 at this handoff);
+- Redis reaches the repository's latest sequential schema (v82 at this handoff);
 - the site instance ID survives process restart on shared persistence;
 - the minute continuity and live-recovery heartbeats are fresh;
 - Standard, independent Block Count, and sequential DCA lineage tests pass;

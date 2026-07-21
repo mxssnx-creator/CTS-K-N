@@ -55,9 +55,10 @@ start_server() {
   sleep 2
   
   # Start server
+  : "${CRON_SECRET:?CRON_SECRET must be supplied by the production environment}"
   NEXT_DIST_DIR=".next" \
   NODE_ENV="production" \
-  CRON_SECRET="production-cron-secret-1234567890abcdef" \
+  CRON_SECRET="${CRON_SECRET}" \
   ALLOW_INLINE_REDIS_LIVE_TRADING="1" \
   pnpm run start > /tmp/prod-20sym-8h.log 2>&1 &
   

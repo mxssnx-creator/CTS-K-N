@@ -4,7 +4,13 @@ import { getProgressionLogs, forceFlushLogs } from "@/lib/engine-progression-log
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { normalizeSymbolList } from "@/lib/trade-engine/symbol-selection-ownership"
-import { buildPrehistoricGateKeys, buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
+import {
+  buildPrehistoricGateKeys,
+  buildProgressionScope,
+  calculateHistoricProgress,
+  ensureScopedProgressionFromLegacy,
+  progressionReadKeys,
+} from "@/lib/progression-scope"
 import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
 
 export const dynamic = "force-dynamic"
@@ -71,12 +77,17 @@ async function withProgressionTimeout<T>(
 }
 
 function getConfiguredSymbolCount(connection: any, engineState: any): number {
+  // The saved connection is the current operator-selected generation. Engine
+  // state can legitimately retain the previous generation's denominator until
+  // the new Historic pass finishes, so it must not override this list.
+  for (const candidate of [connection?.force_symbols, connection?.active_symbols, connection?.selected_symbols]) {
+    const symbols = parseSymbolList(candidate)
+    if (symbols.length > 0) return symbols.length
+  }
   const canonicalSelectedSymbols = normalizeSymbolList(engineState?.selected_symbols)
   const canonicalTotal = Math.max(toNumber(engineState?.config_set_symbols_total), canonicalSelectedSymbols.length)
   if (canonicalTotal > 0) return canonicalTotal
   const candidates = [
-    connection?.force_symbols,
-    connection?.active_symbols,
     engineState?.force_symbols,
     engineState?.active_symbols,
   ]
@@ -199,13 +210,23 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     let progHash: Record<string, string> = {}
     try {
       await ensureScopedProgressionFromLegacy(client, connectionId, engineType)
-      progHash = (await client.hgetall(scope.progressionKey)) || {}
+      const orderedProgressionKeys = progressionReadKeys(scope)
+      for (const progressionKey of orderedProgressionKeys) {
+        const candidate = (await client.hgetall(progressionKey).catch(() => null)) || {}
+        if (Object.keys(candidate).length > 0) {
+          progHash = candidate
+          break
+        }
+      }
       // The active progression hash is the most reliable per-session symbol
       // owner. Prefer it over stale connection-level symbol_count values left
       // by old migrations/default profiles so progress does not show 0/20 while
       // stats correctly show the active 1/1 production run.
       const activeProgressionSymbolCount = toNumber(progHash.symbol_count) || toNumber(progHash.quickstart_symbol_count)
-      if (activeProgressionSymbolCount > 0) configuredSymbolCount = activeProgressionSymbolCount
+      const primaryIsScheduledLegacy = orderedProgressionKeys[0] === scope.legacyProgressionKey
+      if (activeProgressionSymbolCount > 0 && (!primaryIsScheduledLegacy || configuredSymbolCount <= 0)) {
+        configuredSymbolCount = activeProgressionSymbolCount
+      }
     } catch { /* non-critical */ }
 
     // Cycle counts: prefer live progression hash over engineState (more current)
@@ -418,9 +439,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
           const hashProcessed = Number(prehistoricData.symbols_processed || 0)
           const legacyHashProcessed = Number(legacyPrehistoric.symbols_processed || 0)
           const progHashCount = toNumber(progHash.prehistoric_symbols_processed_count)
+          const portableProcessed = toNumber(progHash.portable_symbols_processed)
           const engineStateProcessed = toNumber(engineState?.config_set_symbols_processed)
           const setProcessed = processedSet.length
-          let processed = Math.max(hashProcessed, legacyHashProcessed, progHashCount, engineStateProcessed, setProcessed)
+          let processed = Math.max(hashProcessed, legacyHashProcessed, progHashCount, portableProcessed, engineStateProcessed, setProcessed)
           // Do not fall back to a Redis KEYS scan here. In production that scan
           // can block large keyspaces and make the progress endpoint itself
           // look like the stall. Modern processors write both the hash and the
@@ -432,35 +454,34 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             prehistoricProgress.symbolsTotal,
           )
 
-          // isComplete → either explicit flag, `:done` marker, or all symbols processed.
-          const isComplete =
-            prehistoricData.is_complete === "1" ||
-            prehistoricData.is_complete === "true" ||
-            String(doneMarker) === "1" ||
-            (prehistoricProgress.symbolsTotal > 0 &&
-              prehistoricProgress.symbolsProcessed >= prehistoricProgress.symbolsTotal)
-
-          prehistoricProgress.percentComplete = isComplete
-            ? 100
-            : prehistoricProgress.symbolsTotal > 0
-              ? Math.round(
-                  (prehistoricProgress.symbolsProcessed / prehistoricProgress.symbolsTotal) * 100,
-                )
-              : 0
+          const historicProgressState = calculateHistoricProgress(
+            prehistoricProgress.symbolsProcessed,
+            prehistoricProgress.symbolsTotal,
+          )
+          prehistoricProgress.symbolsProcessed = historicProgressState.symbolsProcessed
+          prehistoricProgress.percentComplete = historicProgressState.progressPercent
         }
       }
     } catch (e) {
       console.warn(`[v0] [ProgressionAPI] Failed to get prehistoric progress for ${connectionId}:`, e)
     }
 
-    // If the authoritative phase has advanced past prehistoric, the detailed
-    // prehistoric widget must not keep showing 0/N from stale or absent legacy
-    // prehistoric hashes. Stats already report the active session as complete;
-    // mirror that completion here for connection progress cards.
-    if (!["idle", "initializing", "prehistoric_data", "ready"].includes(phase) || phase === "live_trading" || progress >= 100) {
-      prehistoricProgress.symbolsTotal = Math.max(prehistoricProgress.symbolsTotal, configuredSymbolCount, 1)
-      prehistoricProgress.symbolsProcessed = Math.max(prehistoricProgress.symbolsProcessed, prehistoricProgress.symbolsTotal)
-      prehistoricProgress.percentComplete = 100
+    // Do not synthesize X/X merely because a stale earlier generation already
+    // reached realtime/live. The detailed historic widget remains tied to the
+    // measured coverage of the currently selected symbol basket.
+    const finalHistoricProgress = calculateHistoricProgress(
+      prehistoricProgress.symbolsProcessed,
+      prehistoricProgress.symbolsTotal,
+    )
+    prehistoricProgress.symbolsProcessed = finalHistoricProgress.symbolsProcessed
+    prehistoricProgress.percentComplete = finalHistoricProgress.progressPercent
+    if (engineRunning && !finalHistoricProgress.isComplete) {
+      phase = "prehistoric_data"
+      progress = Math.max(
+        15,
+        Math.min(95, 15 + Math.round(finalHistoricProgress.progressPercent * 0.8)),
+      )
+      detail = `Prehistoric calc filling sets — ${finalHistoricProgress.symbolsProcessed}/${finalHistoricProgress.symbolsTotal}`
     }
     
     const subItem = progression?.sub_item || (phase === "prehistoric_data" ? "symbols" : "")
@@ -469,6 +490,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const prehistoricProcessedFallback = Math.max(
       toNumber(engineState?.config_set_symbols_processed),
       toNumber(progHash.prehistoric_symbols_processed_count),
+      toNumber(progHash.portable_symbols_processed),
     )
     const subCurrent = phase === "prehistoric_data"
       ? Math.max(storedSubCurrent, prehistoricProgress.symbolsProcessed, prehistoricProcessedFallback)
@@ -575,8 +597,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         cycleTimeMs: toNumber(engineState?.last_cycle_duration),
         totalStrategiesEvaluated: toNumber(engineState?.total_strategies_evaluated),
         totalIndicationsEvaluated: toNumber(engineState?.total_indications_evaluated),
-        prehistoricSymbolsTotal: configuredSymbolCount,
-        prehistoricSymbolsProcessed: toNumber(engineState?.config_set_symbols_processed),
+        prehistoricSymbolsTotal: Math.max(configuredSymbolCount, prehistoricProgress.symbolsTotal),
+        // `prehistoricProgress` already reconciles every writer and clamps the
+        // numerator to the current generation's denominator. Re-expanding it
+        // with stale legacy 20-symbol counters reintroduced 20/5 in Kilo.
+        prehistoricSymbolsProcessed: prehistoricProgress.symbolsProcessed,
         prehistoricCandlesProcessed: toNumber(engineState?.config_set_candles_processed),
         prehistoricIndicationResults: toNumber(engineState?.config_set_indication_results),
         prehistoricStrategyPositions: toNumber(engineState?.config_set_strategy_positions),

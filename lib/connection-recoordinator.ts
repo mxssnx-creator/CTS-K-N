@@ -649,6 +649,8 @@ export async function recoordinateAfterSettingsChange(
 
   let refreshStatus: RecoordinationCompletion["refreshStatus"] | undefined
   let appliedLocally = false
+  const refreshIsDurablyPending = () =>
+    !!refreshStatus && (refreshStatus.refreshQueued === true || refreshStatus.refreshSuperseded === true)
 
   // Queue a durable refresh request. notifySettingsChanged also queues a generic
   // settings refresh; keeping this explicit request here makes this helper the
@@ -731,7 +733,11 @@ export async function recoordinateAfterSettingsChange(
         // trade_engine_state:{id}. Live-order-only saves stay hot-reload-only,
         // but their event/marker writes cannot interleave with destructive
         // symbol epoch resets for the same connection.
-        if (requiresProgressRecoordination) {
+        // Every owner-consumed setting needs its own observable generation.
+        // Live sizing/order fields do not reset Historic/Main or dirty strategy
+        // statistics, but the UI must still remain pending until the durable
+        // owner has read the new value and completed a processing cycle.
+        if (requiresProgressRecoordination || liveOrderSettingsChanged) {
           await hsetProgressionMarkers({
             settings_changed_at: now,
             settings_recoordination_pending: "1",
@@ -777,10 +783,14 @@ export async function recoordinateAfterSettingsChange(
           progressionChanged = result?.changed
           progressionReason = result?.reason || "symbol-basket-or-mode-change"
           await hsetProgressionMarkers({
-            settings_recoordination_pending: "0",
-            settings_recoordination_completed: "1",
-            settings_recoordination_completed_at: new Date().toISOString(),
-            settings_recoordination_reason: progressionReason,
+            // Resetting the generation is preparation, not processing. Keep
+            // the UI request pending until the owning engine/portable cycle
+            // has actually consumed the new symbol basket and CAS-acks this
+            // exact requested version.
+            settings_recoordination_pending: "1",
+            settings_recoordination_completed: "0",
+            settings_recoordination_completed_at: "",
+            settings_recoordination_reason: `${progressionReason}:queued-for-processing`,
             settings_recoordination_requested_version: requestedSettingsVersion,
             settings_recoordination_requested_event_id: requestedSettingsEventId,
             settings_recoordination_last_error: "",
@@ -800,11 +810,14 @@ export async function recoordinateAfterSettingsChange(
       } else if (strategyOrCoordinationChanged) {
         await hsetProgressionMarkers({
           settings_changed_at: now,
-          settings_recoordination_pending: "0",
-          settings_recoordination_completed: "1",
-          settings_recoordination_completed_at: new Date().toISOString(),
+          // Cache invalidation alone is not proof that the new strategy
+          // settings affected a Main-stage calculation. The owner cycle below
+          // clears this only after the real pipeline completes.
+          settings_recoordination_pending: "1",
+          settings_recoordination_completed: "0",
+          settings_recoordination_completed_at: "",
           settings_recoordination_fields: JSON.stringify(normalizedChangedFields),
-          settings_recoordination_reason: "strategy-config-cache-invalidated",
+          settings_recoordination_reason: "strategy-config-cache-invalidated:queued-for-processing",
           settings_recoordination_requested_version: requestedSettingsVersion,
           settings_recoordination_requested_event_id: requestedSettingsEventId,
           settings_recoordination_last_error: "",
@@ -814,6 +827,12 @@ export async function recoordinateAfterSettingsChange(
         console.log(
           `[v0] [${opts.logTag}] Strategy/coordination settings changed for ${id} → cache invalidation/recompute requested without prehistoric reset`,
         )
+      } else if (liveOrderSettingsChanged) {
+        await hsetProgressionMarkers({
+          settings_recoordination_reason: "live-order-settings-reload:queued-for-processing",
+          settings_recoordination_last_error: "",
+        }).catch(() => 0)
+        progressionReason = "live-order-settings-reload"
       }
 
 
@@ -900,10 +919,10 @@ export async function recoordinateAfterSettingsChange(
         progressRecoordinationRequired: requiresProgressRecoordination,
         progressionChanged,
         progressionReason,
-        refreshQueued: !!refreshStatus?.refreshQueued,
+        refreshQueued: refreshIsDurablyPending(),
         refreshStatus,
         appliedLocally,
-        queuedForOwner: !!refreshStatus?.refreshQueued && !appliedLocally,
+        queuedForOwner: refreshIsDurablyPending() && !appliedLocally,
       })
     }
 
@@ -1071,9 +1090,9 @@ export async function recoordinateAfterSettingsChange(
     progressRecoordinationRequired: requiresProgressRecoordination,
     progressionChanged,
     progressionReason,
-    refreshQueued: !!refreshStatus?.refreshQueued,
+    refreshQueued: refreshIsDurablyPending(),
     refreshStatus,
     appliedLocally,
-    queuedForOwner: !!refreshStatus?.refreshQueued && !appliedLocally,
+    queuedForOwner: refreshIsDurablyPending() && !appliedLocally,
   })
 }

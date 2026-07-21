@@ -43,6 +43,46 @@ import {
   type StrategySetLedgerSnapshot,
 } from "@/lib/pos-history"
 import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
+import { hedgeStrategyVolumeParts } from "@/lib/strategy-volume-coordination"
+import { buildProgressionScope } from "@/lib/progression-scope"
+
+function strategyProgressionKeys(connectionId: string): string[] {
+  const scope = buildProgressionScope(connectionId, "main")
+  return Array.from(new Set([scope.progressionKey, scope.legacyProgressionKey]))
+}
+
+/**
+ * Strategy stages run in both the long-lived Node owner and the bounded Kilo
+ * owner. Keep their canonical engine-scoped hash and rolling-deploy legacy
+ * mirror in lock-step; otherwise a valid Main cycle can be visible to the
+ * engine while the UI keeps reading an older zero-valued scope.
+ */
+async function hsetStrategyProgression(
+  client: any,
+  connectionId: string,
+  fields: string | Record<string, string>,
+  value?: string,
+): Promise<void> {
+  const patch = typeof fields === "string" ? { [fields]: String(value ?? "") } : fields
+  await Promise.all(strategyProgressionKeys(connectionId).map((key) => client.hset(key, {
+    connection_id: connectionId,
+    engine_type: "main",
+    ...patch,
+  })))
+}
+
+async function hincrbyStrategyProgression(
+  client: any,
+  connectionId: string,
+  field: string,
+  increment: number,
+): Promise<void> {
+  await Promise.all(strategyProgressionKeys(connectionId).map((key) => client.hincrby(key, field, increment)))
+}
+
+async function expireStrategyProgression(client: any, connectionId: string, seconds: number): Promise<void> {
+  await Promise.all(strategyProgressionKeys(connectionId).map((key) => client.expire(key, seconds)))
+}
 
 export interface EvaluationMetrics {
   maxDrawdownTime: number
@@ -174,6 +214,14 @@ export interface StrategySet {
   combinedPosCounts?: boolean
   /** Combined pos-count Sets: all member Set keys preserved for lineage / global stats. */
   accumulatedSetKeys?: string[]
+  /** Exact surviving volume ratio per member after long/short hedge. */
+  posCountsSetRatios?: Record<string, number>
+  /** Qualified pos-count Set cardinality before and after the final hedge. */
+  posCountsLongSetCount?: number
+  posCountsShortSetCount?: number
+  posCountsNetSetCount?: number
+  /** Explicit zero-exposure target used to close an older combined order. */
+  posCountsTargetFlat?: boolean
   /** Combined pos-count Sets: total summed volume ratio (used as sizeMultiplier at live dispatch). */
   sizeMultiplier?: number
   /**
@@ -2551,7 +2599,6 @@ export class StrategyCoordinator {
     // available in `strategy_detail:{connId}:base` (`created_sets` field).
     try {
       const client = getRedisClient()
-      const redisKey = `progression:${this.connectionId}`
       const detailKey  = `strategy_detail:${this.connectionId}:base`
       const baseAvgPF  = baseSets.length > 0 ? baseSets.reduce((s, st) => s + st.avgProfitFactor, 0) / baseSets.length : 0
       const baseAvgDDT = baseSets.length > 0 ? baseSets.reduce((s, st) => s + (st.avgDrawdownTime || 0), 0) / baseSets.length : 0
@@ -2593,7 +2640,7 @@ export class StrategyCoordinator {
       // round-trips to every BASE cycle even when nothing had changed; issuing
       // them concurrently cuts that to a single bounded round-trip window.
       const writes: Promise<any>[] = [
-        client.hset(redisKey, "strategies_base_current", String(baseSets.length)),
+        hsetStrategyProgression(client, this.connectionId, "strategies_base_current", String(baseSets.length)),
         client.hset(detailKey, {
           // ── Legacy per-cycle aggregate fields ─��───────────────────────
           // These hold THIS-symbol's values and are overwritten on every
@@ -2672,8 +2719,8 @@ export class StrategyCoordinator {
       // so Base always evaluates at 100%.
       if (baseSets.length > 0) {
         writes.push(
-          client.hincrby(redisKey, "strategies_base_total",     baseSets.length),
-          client.hincrby(redisKey, "strategies_base_evaluated", baseSets.length),
+          hincrbyStrategyProgression(client, this.connectionId, "strategies_base_total",     baseSets.length),
+          hincrbyStrategyProgression(client, this.connectionId, "strategies_base_evaluated", baseSets.length),
         )
       }
 
@@ -2695,7 +2742,7 @@ export class StrategyCoordinator {
       )
       // Gate progression hash TTL reset — 7-day key, refresh every 500 cycles
       if (this._stratCycleCount % 500 === 1) {
-        writes.push(client.expire(redisKey, 7 * 24 * 60 * 60))
+        writes.push(expireStrategyProgression(client, this.connectionId, 7 * 24 * 60 * 60))
       }
       await Promise.all(writes)
     } catch { /* non-critical */ }
@@ -3416,7 +3463,6 @@ export class StrategyCoordinator {
     // per-cycle snapshots (see matching fix in createBaseSets).
     try {
       const client = getRedisClient()
-      const redisKey = `progression:${this.connectionId}`
 
       // ── Running-now resolution for Main (cloned/filtered Sets) ──
       const cache = this._activeKeysCache.get(symbol)
@@ -3442,7 +3488,7 @@ export class StrategyCoordinator {
       }
 
       const writes: Promise<any>[] = [
-        client.hset(redisKey, "strategies_main_current", String(mainSets.length)),
+        hsetStrategyProgression(client, this.connectionId, "strategies_main_current", String(mainSets.length)),
         client.hset(mainDetailKey, {
           created_sets:      String(mainSets.length),
           avg_profit_factor: String(mainAvgPF.toFixed(4)),
@@ -3492,13 +3538,13 @@ export class StrategyCoordinator {
         client.expire(`strategies:${this.connectionId}:main:evaluated`, 86400),
         client.expire(`strategies:${this.connectionId}:base:passed`, 86400),
       ]
-      if (mainSets.length > 0) writes.push(client.hincrby(redisKey, "strategies_main_total", mainSets.length))
-      if (baseSets.length > 0) writes.push(client.hincrby(redisKey, "strategies_main_evaluated", baseSets.length))
+      if (mainSets.length > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_main_total", mainSets.length))
+      if (baseSets.length > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_main_evaluated", baseSets.length))
       if (mainPassedParentCount > 0) {
-        writes.push(client.hincrby(redisKey, "strategies_main_parent_passed", mainPassedParentCount))
+        writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_main_parent_passed", mainPassedParentCount))
       }
       if (mainRelatedSetCount > 0) {
-        writes.push(client.hincrby(redisKey, "strategies_main_related_sets", mainRelatedSetCount))
+        writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_main_related_sets", mainRelatedSetCount))
       }
 
       // ── ACTIVE-NOW snapshot for Main stage (per symbol, like Base/Real) ───
@@ -3518,13 +3564,13 @@ export class StrategyCoordinator {
         client.expire(`strategies_active:${this.connectionId}`, 600),
       )
 
-      const relatedCreated = mainSets.length - reused
+      const relatedCreated = Math.max(0, mainSets.length - reused)
       const activeVariantNames = activeVariants.map((p) => p.name)
       writes.push(
-        client.hincrby(redisKey, "strategies_main_related_created", relatedCreated),
-        client.hincrby(redisKey, "strategies_main_related_reused",  reused),
-        client.hincrby(redisKey, "strategies_main_cycles",          1),
-        client.hset(redisKey, {
+        hincrbyStrategyProgression(client, this.connectionId, "strategies_main_related_created", relatedCreated),
+        hincrbyStrategyProgression(client, this.connectionId, "strategies_main_related_reused",  reused),
+        hincrbyStrategyProgression(client, this.connectionId, "strategies_main_cycles",          1),
+        hsetStrategyProgression(client, this.connectionId, {
           strategies_main_active_variants:      activeVariantNames.join(","),
           strategies_main_active_variant_count: String(activeVariantNames.length),
           strategies_main_last_reused:          String(reused),
@@ -3541,11 +3587,11 @@ export class StrategyCoordinator {
       // ── Position count metrics for main stage ──
       // Only count profile-variant Sets (no axis fan-out) for this counter.
       if (mainProfileEntriesTotal > 0) {
-        writes.push(client.hincrby(redisKey, "main_positions_created_count", mainProfileEntriesTotal))
+        writes.push(hincrbyStrategyProgression(client, this.connectionId, "main_positions_created_count", mainProfileEntriesTotal))
       }
       // Gate progression hash TTL reset — same rationale as createBaseSets.
       if (this._stratCycleCount % 500 === 2) {
-        writes.push(client.expire(redisKey, 7 * 24 * 60 * 60))
+        writes.push(expireStrategyProgression(client, this.connectionId, 7 * 24 * 60 * 60))
       }
 
       await Promise.all(writes)
@@ -4956,7 +5002,6 @@ export class StrategyCoordinator {
     // Per-cycle snapshot is kept in `strategies_real_current` for components that want it.
     try {
       const client = getRedisClient()
-      const redisKey = `progression:${this.connectionId}`
       const realDetailKey = `strategy_detail:${this.connectionId}:real`
       // Single pass over realSets — replaces 4 separate .reduce() calls that each
       // allocated an intermediate result and iterated the full array independently.
@@ -5037,7 +5082,7 @@ export class StrategyCoordinator {
       } catch { /* fallback: 0 */ }
 
       const writes: Promise<any>[] = [
-        client.hset(redisKey, "strategies_real_current", String(realSets.length)),
+        hsetStrategyProgression(client, this.connectionId, "strategies_real_current", String(realSets.length)),
         client.hset(realDetailKey, {
           // Legacy per-cycle aggregate fields (last-symbol-wins). Kept
           // for backwards compat; /stats prefers per-symbol sums below.
@@ -5121,16 +5166,16 @@ export class StrategyCoordinator {
       // strategies_real_total = cumulative Sets PROMOTED by REAL (passed output count).
       // strategies_real_evaluated = every Real Set considered after current-cycle
       // fan-out (upstream PF-eligible Main input + Real related-created fan-out).
-      if (realSets.length > 0) writes.push(client.hincrby(redisKey, "strategies_real_total", realSets.length))
-      if (realTotalEvaluated > 0) writes.push(client.hincrby(redisKey, "strategies_real_evaluated", realTotalEvaluated))
+      if (realSets.length > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_real_total", realSets.length))
+      if (realTotalEvaluated > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_real_evaluated", realTotalEvaluated))
 
       // strategies_real_related_created = Real Sets created via axis/variant
       // fan-out BEYOND the upstream Main PF-eligible input. max(0, …) because
       // Real can also net-filter below the input.
       if (realRelatedCreated > 0) {
-        writes.push(client.hincrby(redisKey, "strategies_real_related_created", realRelatedCreated))
+        writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_real_related_created", realRelatedCreated))
       }
-      writes.push(client.hset(redisKey, { strategies_real_last_created: String(realRelatedCreated) }))
+      writes.push(hsetStrategyProgression(client, this.connectionId, { strategies_real_last_created: String(realRelatedCreated) }))
 
       // ── ACTIVE-NOW snapshot for Real stage ──────────────────────────
       // Mirrors the Base/Main pattern. The dashboard reads this hash and
@@ -5295,7 +5340,7 @@ export class StrategyCoordinator {
       }
       // Gate progression hash TTL reset — same rationale as createBaseSets.
       if (this._stratCycleCount % 500 === 3) {
-        writes.push(client.expire(redisKey, 7 * 24 * 60 * 60))
+        writes.push(expireStrategyProgression(client, this.connectionId, 7 * 24 * 60 * 60))
       }
 
       await Promise.all(writes)
@@ -5336,9 +5381,8 @@ export class StrategyCoordinator {
     const realEntriesTotal = realSets.reduce((sum, s) => sum + (s.entryCount ?? 0), 0)
     try {
       const client = getRedisClient()
-      const progKey = `progression:${this.connectionId}`
       if (realEntriesTotal > 0) {
-        await client.hincrby(progKey, "real_positions_created_count", realEntriesTotal)
+        await hincrbyStrategyProgression(client, this.connectionId, "real_positions_created_count", realEntriesTotal)
       }
     } catch { /* non-critical */ }
 
@@ -5366,44 +5410,85 @@ export class StrategyCoordinator {
    * mode-specific and happens only after this selection step.
    */
 
-  /** Combine hedge-netted pos-count (axis) Sets per symbol+direction into
-   *  ONE live dispatch Set with summed volume. Member identities are preserved
-   *  in `accumulatedSetKeys`; per-Set calcs and global stats stay correct. */
+  /** Hedge all qualified pos-count Sets across both directions and emit at
+   *  most one dominant-direction exchange target. */
   private combinePosCountAxisSets(sets: StrategySet[], symbol: string): StrategySet[] {
     const axisSets = sets.filter((s) => !!(s.axisWindows?.direction) && (s.posCountsVolumeRatio ?? 0) > 0)
     if (axisSets.length === 0) return sets
     const nonAxis = sets.filter((s) => !(s.axisWindows?.direction) || (s.posCountsVolumeRatio ?? 0) <= 0)
     const byDir: Record<"long" | "short", StrategySet[]> = { long: [], short: [] }
     for (const s of axisSets) byDir[(s.direction === "short" ? "short" : "long")].push(s)
-    const combined: StrategySet[] = []
-    for (const dir of ["long", "short"] as const) {
-      const members = byDir[dir]
-      if (members.length === 0) continue
-      const totalRatio = members.reduce((sum, s) => sum + (s.posCountsVolumeRatio ?? 0.05), 0)
-      const combinedEntryCount = members.reduce((sum, s) => sum + (s.entryCount ?? 0), 0)
-      const wSum = members.reduce((sum, s) => sum + (s.avgProfitFactor ?? 1) * ((s.entryCount ?? 1) || 1), 0)
-      const wDen = members.reduce((sum, s) => sum + ((s.entryCount ?? 1) || 1), 0)
-      const combinedSet: StrategySet = {
-        ...members[0],
-        setKey: `${symbol}:poscounts:combined:${dir}`,
-        parentSetKey: members[0].parentSetKey,
-        direction: dir,
-        variant: "default",
-        avgProfitFactor: wDen > 0 ? wSum / wDen : (members[0].avgProfitFactor ?? 1),
-        avgConfidence: members.reduce((sum, s) => sum + (s.avgConfidence ?? 0), 0) / members.length,
-        avgDrawdownTime: members.reduce((sum, s) => sum + (s.avgDrawdownTime ?? 0), 0) / members.length,
-        entryCount: combinedEntryCount,
-        entries: members[0].entries,
-        axisWindows: { ...members[0].axisWindows!, direction: dir, axisKey: `combined:${dir}` },
-        posCountsVolumeRatio: Number(totalRatio.toFixed(4)),
-        sizeMultiplier: Number(totalRatio.toFixed(4)),
+    const hedge = hedgeStrategyVolumeParts(axisSets.map((set) => ({
+      setKey: set.setKey,
+      direction: set.direction,
+      ratio: set.posCountsVolumeRatio ?? 0.05,
+      quality: set.avgProfitFactor,
+    })))
+    const longCount = hedge.longSetCount
+    const shortCount = hedge.shortSetCount
+    if (hedge.direction === "flat") {
+      const representative = (byDir.long[0] || byDir.short[0])!
+      return [...nonAxis, {
+        ...representative,
+        setKey: `${symbol}:poscounts:combined`,
+        direction: representative.direction,
+        axisWindows: { ...representative.axisWindows!, axisKey: "combined:flat" },
+        posCountsVolumeRatio: 0,
+        sizeMultiplier: 0,
         combinedPosCounts: true,
-        accumulatedSetKeys: members.map((m) => m.setKey),
-        indicationType: members[0].indicationType,
-      }
-      combined.push(combinedSet)
+        accumulatedSetKeys: [],
+        posCountsSetRatios: {},
+        posCountsLongSetCount: longCount,
+        posCountsShortSetCount: shortCount,
+        posCountsNetSetCount: 0,
+        posCountsTargetFlat: true,
+      }]
     }
-    return [...nonAxis, ...combined]
+
+    const direction: "long" | "short" = hedge.direction
+    const dominant = [...byDir[direction]].sort(
+      (a, b) => (b.avgProfitFactor ?? 0) - (a.avgProfitFactor ?? 0),
+    )
+    // Only unmatched dominant ratio parts own physical fill. A Set may survive
+    // partially when its ratio straddles the final hedge boundary.
+    const members = dominant.filter((member) => (hedge.memberRatios[member.setKey] || 0) > 0)
+    const netRatio = hedge.netRatio
+    if (!(netRatio > 0)) return nonAxis
+
+    const weightedSum = members.reduce(
+      (sum, set) => sum + (set.avgProfitFactor ?? 1) * hedge.memberRatios[set.setKey],
+      0,
+    )
+    const weightedDenominator = members.reduce(
+      (sum, set) => sum + hedge.memberRatios[set.setKey],
+      0,
+    )
+    const representative = members[0]!
+    const combinedSet: StrategySet = {
+      ...representative,
+      setKey: `${symbol}:poscounts:combined`,
+      parentSetKey: representative.parentSetKey,
+      direction,
+      variant: "default",
+      avgProfitFactor: weightedDenominator > 0
+        ? weightedSum / weightedDenominator
+        : (representative.avgProfitFactor ?? 1),
+      avgConfidence: members.reduce((sum, set) => sum + (set.avgConfidence ?? 0) * hedge.memberRatios[set.setKey], 0) / netRatio,
+      avgDrawdownTime: members.reduce((sum, set) => sum + (set.avgDrawdownTime ?? 0) * hedge.memberRatios[set.setKey], 0) / netRatio,
+      entryCount: members.reduce((sum, set) => sum + (set.entryCount ?? 0), 0),
+      entries: representative.entries,
+      axisWindows: { ...representative.axisWindows!, direction, axisKey: "combined:net" },
+      posCountsVolumeRatio: netRatio,
+      sizeMultiplier: netRatio,
+      combinedPosCounts: true,
+      accumulatedSetKeys: members.map((member) => member.setKey),
+      posCountsSetRatios: hedge.memberRatios,
+      posCountsLongSetCount: longCount,
+      posCountsShortSetCount: shortCount,
+      posCountsNetSetCount: hedge.netSetCount,
+      indicationType: representative.indicationType,
+    }
+    return [...nonAxis, combinedSet]
   }
 
 
@@ -5605,7 +5690,6 @@ export class StrategyCoordinator {
     // worth of latency, matching the base/main/real coordinators.
     try {
       const client = getRedisClient()
-      const redisKey = `progression:${this.connectionId}`
       const liveDetailKey = `strategy_detail:${this.connectionId}:live`
       const liveCountKey = `strategies:${this.connectionId}:live:count`
 
@@ -5673,7 +5757,7 @@ export class StrategyCoordinator {
       // true accumulated lifetime count.
       await Promise.all([
         qualifying.length > 0
-          ? client.hincrby(redisKey, "strategies_live_total", qualifying.length)
+          ? hincrbyStrategyProgression(client, this.connectionId, "strategies_live_total", qualifying.length)
           : Promise.resolve(),
         // ── ACTIVE-NOW snapshot for Live stage ────────────────────────────
         // Without {symbol}:live fields the `stratCounts.live` bucket in the
@@ -5689,7 +5773,7 @@ export class StrategyCoordinator {
           [`${symbol}:snapshot:ts`]:    String(Date.now()),
         }),
         client.expire(`strategies_active:${this.connectionId}`, 600),
-        client.expire(redisKey, 7 * 24 * 60 * 60),
+        expireStrategyProgression(client, this.connectionId, 7 * 24 * 60 * 60),
         client.hset(liveDetailKey, {
           // Legacy per-cycle aggregate fields (last-symbol-wins). Kept
           // for backwards compat; /stats prefers per-symbol sums below.
@@ -5842,7 +5926,15 @@ export class StrategyCoordinator {
               for (const s of dispatchCandidates) {
                 const isBlock = s.variant === "block"
                 const isDca   = s.variant === "dca"
+                const isAxis  = !!s.axisWindows?.direction && (s.posCountsVolumeRatio ?? 0) > 0
                 const isNew   = !isBlock && !isDca // default / trailing / pause
+                // Axis candidates must all reach the final hedge. Applying the
+                // ordinary one-per-direction cap first reduced any N-vs-M book
+                // to at most 1-vs-1 and was the source of wrong/stuck counts.
+                if (isAxis) {
+                  dispatchSets.push(s)
+                  continue
+                }
                 if (s.direction === "long") {
                   if (isNew   && !sawNewLong)   { dispatchSets.push(s); sawNewLong   = true }
                   if (isBlock && !sawBlockLong)  { dispatchSets.push(s); sawBlockLong  = true }
@@ -5851,9 +5943,6 @@ export class StrategyCoordinator {
                   if (isNew   && !sawNewShort)  { dispatchSets.push(s); sawNewShort  = true }
                   if (isBlock && !sawBlockShort) { dispatchSets.push(s); sawBlockShort = true }
                   if (isDca   && !sawDcaShort)   { dispatchSets.push(s); sawDcaShort   = true }
-                }
-                if (sawNewLong && sawNewShort && sawDcaLong && sawDcaShort && sawBlockLong && sawBlockShort) {
-                  break
                 }
               }
             }
@@ -6047,9 +6136,14 @@ export class StrategyCoordinator {
                     ...(set.combinedPosCounts
                       ? {
                           combinedPosCounts: true,
+                          posCountsTargetFlat: set.posCountsTargetFlat === true,
+                          posCountsLongSetCount: set.posCountsLongSetCount,
+                          posCountsShortSetCount: set.posCountsShortSetCount,
+                          posCountsNetSetCount: set.posCountsNetSetCount,
+                          posCountsSetRatios: set.posCountsSetRatios,
                           accumulatedSetKeys: set.accumulatedSetKeys && set.accumulatedSetKeys.length > 0
                             ? set.accumulatedSetKeys
-                            : [set.setKey],
+                            : (set.posCountsTargetFlat ? [] : [set.setKey]),
                         }
                       : {}),
                     // ── Set-config propagation to Live ───������─────────────────

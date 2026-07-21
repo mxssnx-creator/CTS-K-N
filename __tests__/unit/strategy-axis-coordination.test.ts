@@ -337,7 +337,7 @@ describe("strategy position-count axis coordination", () => {
     expect(counts).toEqual({ real: 1, live: 1, liveEvaluated: 2 })
   })
 
-  test("combines hedge-netted pos-count axis Sets into one live order per direction with summed volume", () => {
+  test("hedges all pos-count axis Sets into one dominant-direction live order", () => {
     const coordinator = new StrategyCoordinator("combine-pos") as any
     const longA = {
       setKey: "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong",
@@ -356,7 +356,7 @@ describe("strategy position-count axis coordination", () => {
     const longB = {
       ...longA,
       setKey: "BTCUSDT:direction:long#axis:p4_l2_c2_opos_dlong",
-      posCountsVolumeRatio: 0.06,
+      posCountsVolumeRatio: 0.05,
       entryCount: 2,
       avgProfitFactor: 1.5,
       entries: [{ id: "e2", sizeMultiplier: 0.06, leverage: 1, positionState: "new", profitFactor: 1.5, drawdownTime: 12, confidence: 0.85 }],
@@ -365,7 +365,7 @@ describe("strategy position-count axis coordination", () => {
       ...longA,
       setKey: "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dshort",
       direction: "short" as const,
-      posCountsVolumeRatio: 0.04,
+      posCountsVolumeRatio: 0.05,
       avgProfitFactor: 1.8,
       entries: [{ id: "e3", sizeMultiplier: 0.04, leverage: 1, positionState: "new", profitFactor: 1.8, drawdownTime: 11, confidence: 0.88 }],
     }
@@ -377,23 +377,47 @@ describe("strategy position-count axis coordination", () => {
     // Non-axis set passes through unchanged
     expect(result).toContainEqual(nonAxis)
 
-    // Axis sets collapsed: 2 long -> 1 combined, 1 short -> 1 combined
+    // Axis sets collapse after the final hedge: 2 long - 1 short = 1 long.
     const axisResults = result.filter((s: any) => !!(s.axisWindows?.direction))
-    expect(axisResults).toHaveLength(2)
+    expect(axisResults).toHaveLength(1)
 
     const combinedLong = axisResults.find((s: any) => s.direction === "long")
     expect(combinedLong).toBeDefined()
-    expect(combinedLong.setKey).toBe("BTCUSDT:poscounts:combined:long")
+    expect(combinedLong.setKey).toBe("BTCUSDT:poscounts:combined")
     expect(combinedLong.combinedPosCounts).toBe(true)
-    expect(combinedLong.accumulatedSetKeys).toEqual([longA.setKey, longB.setKey])
-    expect(combinedLong.posCountsVolumeRatio).toBeCloseTo(0.11, 4)
-    expect(combinedLong.sizeMultiplier).toBeCloseTo(0.11, 4)
-    expect(combinedLong.entryCount).toBe(5)
+    expect(combinedLong.accumulatedSetKeys).toEqual([longA.setKey])
+    expect(combinedLong.posCountsVolumeRatio).toBeCloseTo(0.05, 4)
+    expect(combinedLong.sizeMultiplier).toBeCloseTo(0.05, 4)
+    expect(combinedLong.posCountsLongSetCount).toBe(2)
+    expect(combinedLong.posCountsShortSetCount).toBe(1)
+    expect(combinedLong.posCountsNetSetCount).toBe(1)
+  })
 
-    const combinedShort = axisResults.find((s: any) => s.direction === "short")
-    expect(combinedShort).toBeDefined()
-    expect(combinedShort.setKey).toBe("BTCUSDT:poscounts:combined:short")
-    expect(combinedShort.accumulatedSetKeys).toEqual([shortA.setKey])
-    expect(combinedShort.posCountsVolumeRatio).toBeCloseTo(0.04, 4)
+  test("does not dispatch a pos-count exchange order when long and short Sets hedge flat", () => {
+    const coordinator = new StrategyCoordinator("combine-flat") as any
+    const axis = (direction: "long" | "short") => ({
+      setKey: `BTCUSDT:direction:${direction}#axis:p4_l1_c1_opos_d${direction}`,
+      parentSetKey: `BTCUSDT:direction:${direction}`,
+      direction,
+      variant: "default" as const,
+      axisWindows: { prev: 4, last: 1, cont: 1, pause: 0, direction, outcome: "pos", axisKey: `p4_l1_c1_opos_d${direction}` },
+      posCountsVolumeRatio: 0.05,
+      avgProfitFactor: 2,
+      avgConfidence: 0.9,
+      avgDrawdownTime: 10,
+      entryCount: 1,
+      entries: [],
+      indicationType: "direction",
+    })
+    const result = coordinator.combinePosCountAxisSets([axis("long"), axis("short")], "BTCUSDT")
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({
+      setKey: "BTCUSDT:poscounts:combined",
+      combinedPosCounts: true,
+      posCountsTargetFlat: true,
+      posCountsNetSetCount: 0,
+      posCountsVolumeRatio: 0,
+      accumulatedSetKeys: [],
+    })
   })
 })

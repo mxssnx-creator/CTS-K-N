@@ -16,7 +16,7 @@ function resetRedisGlobals(): void {
   ]) delete (globalThis as any)[key]
 }
 
-describe("migrations 080/081 exact Set indexes and Block PF defaults", () => {
+describe("migrations 080/081/082 exact Set indexes and sizing defaults", () => {
   const originalEnv = { ...process.env }
 
   afterEach(() => {
@@ -61,9 +61,9 @@ describe("migrations 080/081 exact Set indexes and Block PF defaults", () => {
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 81 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 82 })
 
-      expect(await client.get("_schema_version")).toBe("81")
+      expect(await client.get("_schema_version")).toBe("82")
       expect(new Set(await client.smembers("strategy_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
       expect(await client.smembers("strategy_active_set_keys:conn-ledger")).toEqual(["set:a"])
       expect(new Set(await client.smembers("strategy_closed_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
@@ -77,6 +77,10 @@ describe("migrations 080/081 exact Set indexes and Block PF defaults", () => {
       expect(await client.hget("settings:connection_settings:conn-ledger", "axisPrevMaxWindow")).toBe("10")
       expect(await client.hget("connection_settings:conn-ledger", "blockProfitFactorRatio")).toBe("1.7")
       expect(await client.hget("settings:connection_settings:conn-ledger", "blockProfitFactorRatio")).toBe("0.8")
+      expect(await client.hget("connection_settings:conn-ledger", "positionCost")).toBe("0.1")
+      expect(await client.hget("connection_settings:conn-ledger", "exchangePositionCost")).toBe("0.1")
+      expect(await client.hget("connection_settings:conn-ledger", "live_volume_factor")).toBe("1")
+      expect(await client.hget("connection_settings:conn-ledger", "posCountsVolumeRatio")).toBe("0.05")
       expect(await client.hget("system:database:coordination:performance", "inline_snapshot_interval_ms")).toBe("60000")
       expect(await client.hget("system:database:coordination:performance", "independent_block_profit_factor"))
         .toBe("default-pf-x-ratio-x-volume-increment-v1")

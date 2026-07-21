@@ -71,7 +71,7 @@ async function main() {
           action: "enable",
           symbolCount: symbols.length,
           symbols,
-          // The backend quickstart handler forces is_live_trade=1 and live_volume_factor=0.1
+          // The backend quickstart handler uses live_volume_factor ratio=1 (venue minimum).
         }),
         signal: AbortSignal.timeout(120000),
       });

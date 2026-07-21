@@ -280,7 +280,7 @@ export function ExchangeTab({
                     min={0.02}
                     max={1.0}
                     step={0.01}
-                    value={[settings.exchangePositionCost ?? settings.positionCost ?? 0.02]}
+                    value={[settings.exchangePositionCost ?? settings.positionCost ?? 0.1]}
                     onValueChange={([value]) => {
                       handleSettingChange("exchangePositionCost", value)
                       handleSettingChange("positionCost", value)
@@ -288,7 +288,7 @@ export function ExchangeTab({
                     className="flex-1"
                   />
                   <span className="text-sm font-medium w-16 text-right">
-                    {(settings.exchangePositionCost ?? settings.positionCost ?? 0.02).toFixed(2)}%
+                    {(settings.exchangePositionCost ?? settings.positionCost ?? 0.1).toFixed(2)}%
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground">

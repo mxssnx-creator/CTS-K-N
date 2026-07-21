@@ -205,14 +205,19 @@ export async function GET() {
           
           const positionsCount = await client.scard(positionsKey)
           const tradesCount = await client.scard(tradesKey)
-          const [rawEngineState, settingsEngineState] = await Promise.all([
+          const [rawEngineState, settingsEngineState, rawProgression] = await Promise.all([
             client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
             client.hgetall(`settings:trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
+            client.hgetall(`progression:${conn.id}`).catch(() => ({} as Record<string, string>)),
           ])
           const engineState = { ...(rawEngineState || {}), ...(settingsEngineState || {}) }
           const processorHeartbeat = Number((engineState as any)?.last_processor_heartbeat || 0)
           const hasFreshDistributedHeartbeat =
             Number.isFinite(processorHeartbeat) && processorHeartbeat > 0 && Date.now() - processorHeartbeat < 90_000
+          const portableCycleRaw = String((rawProgression as any)?.portable_cycle_completed_at || "")
+          const portableCycleAt = portableCycleRaw ? Date.parse(portableCycleRaw) : 0
+          const hasFreshScheduledCycle =
+            Number.isFinite(portableCycleAt) && portableCycleAt > 0 && Date.now() - portableCycleAt < 90_000
 
           // Determine if this connection's engine is actively running either in
           // THIS worker or in another production worker with a fresh Redis
@@ -221,7 +226,8 @@ export async function GET() {
           // engine progress and avoids both false "running" and false "stopped"
           // in multi-worker/OpenNext deployments.
           const connectionRunning =
-            isGloballyRunning && !isGloballyPaused && (hasLocalEngineRuntime || hasFreshDistributedHeartbeat)
+            isGloballyRunning && !isGloballyPaused &&
+            (hasLocalEngineRuntime || hasFreshDistributedHeartbeat || hasFreshScheduledCycle)
 
           return {
             id: conn.id,
@@ -230,9 +236,14 @@ export async function GET() {
             status: connectionRunning ? "running" : "stopped",
             workerAttached: hasLocalEngineRuntime,
             distributedHeartbeatFresh: hasFreshDistributedHeartbeat,
-            connectionHeartbeatFresh: hasFreshDistributedHeartbeat,
+            scheduledCycleFresh: hasFreshScheduledCycle,
+            connectionHeartbeatFresh: hasFreshDistributedHeartbeat || hasFreshScheduledCycle,
             actualRuntimeStatus: connectionRunning ? "running" : (isGloballyPaused ? "paused" : (isGloballyRunning ? "starting" : "stopped")),
             lastProcessorHeartbeat: processorHeartbeat || null,
+            lastScheduledCycleAt: portableCycleAt || null,
+            runtimeOwnerMode: hasFreshScheduledCycle
+              ? "scheduled-bounded-owner"
+              : (engineHash.runtime_owner_mode || null),
             assigned: conn.is_active_inserted === true || conn.is_active_inserted === "1" || conn.is_assigned === true || conn.is_assigned === "1" || conn.is_dashboard_inserted === true || conn.is_dashboard_inserted === "1",
             processingEnabled: conn.is_enabled_dashboard === true || conn.is_enabled_dashboard === "1",
             enabled: conn.is_enabled_dashboard === true || conn.is_enabled_dashboard === "1",
@@ -278,8 +289,10 @@ export async function GET() {
     }
 
     const distributedEngineCount = connectionStatuses.filter((c: any) => c.distributedHeartbeatFresh).length
-    const activeEngineCount = Math.max(effectiveCoordinatorEngineCount, distributedEngineCount)
-    const effectivelyRunning = isGloballyRunning && !isGloballyPaused && (hasLocalEngineRuntime || hasRuntimeProof || distributedEngineCount > 0)
+    const scheduledEngineCount = connectionStatuses.filter((c: any) => c.scheduledCycleFresh).length
+    const activeEngineCount = Math.max(effectiveCoordinatorEngineCount, distributedEngineCount, scheduledEngineCount)
+    const effectivelyRunning = isGloballyRunning && !isGloballyPaused &&
+      (hasLocalEngineRuntime || hasRuntimeProof || distributedEngineCount > 0 || scheduledEngineCount > 0)
 
     const responseBody = {
       success: true,
@@ -289,13 +302,18 @@ export async function GET() {
       activeEngineCount,
       workerAttached: hasLocalEngineRuntime,
       distributedEngineCount,
+      scheduledEngineCount,
       operatorIntent,
       globalCoordinatorIntent,
       operatorStatus: operatorIntent,
       actualRuntimeStatus: effectivelyRunning ? "running" : (isGloballyPaused ? "paused" : (isGloballyRunning ? "starting" : "stopped")),
       actualStatus: effectivelyRunning ? "running" : (isGloballyPaused ? "paused" : "degraded"),
       globalHeartbeatFresh: hasFreshGlobalHeartbeat,
-      connectionHeartbeatFresh: distributedEngineCount > 0,
+      connectionHeartbeatFresh: distributedEngineCount > 0 || scheduledEngineCount > 0,
+      scheduledCycleFresh: scheduledEngineCount > 0,
+      runtimeOwnerMode: scheduledEngineCount > 0
+        ? "scheduled-bounded-owner"
+        : (engineHash.runtime_owner_mode || null),
       activeWorkerId: engineHash.active_worker_id || null,
       lastHeartbeatAt: globalHeartbeatAt || null,
       diagnostics: {
@@ -304,16 +322,16 @@ export async function GET() {
         rootCause:
           workerDiagnostic.error ||
           (isGloballyRunning && activeEngineCount === 0
-            ? "Global Redis operator intent is running, but no local manager or fresh distributed processor heartbeat is attached. The server boot auto-start/continuity sweep should attach processing; if it does not, check production boot logs and cron execution."
+            ? "Global Redis operator intent is running, but neither a local manager, a fresh distributed processor heartbeat, nor a completed scheduled processing cycle is visible. Check the one-minute continuity scheduler and its generate-indications task."
             : null),
         hint:
           activeEngineCount === 0
             ? isServerlessDeploymentRuntime()
-              ? "No fresh external engine-owner heartbeat is attached. UI actions are persisted and queued in shared Redis; a distinct long-lived owner must consume them."
+              ? "No fresh scheduled processing cycle is visible yet. UI actions are persisted in shared Redis and the next one-minute bounded owner tick must consume them."
               : "No local engine runtime is attached yet; explicit UI actions and continuity sweeps will attach engine work in this process."
             : null,
         requiredWorkerEnv: isServerlessDeploymentRuntime()
-          ? "Required: run exactly one long-lived engine owner against the same shared Redis; the API deployment remains passive and uses an external one-minute scheduler."
+          ? "Required: keep the deployment-level one-minute scheduler enabled against the same shared Redis. Each tick owns one bounded processing cycle; a long-lived engine owner is optional."
           : "Optional for dedicated-worker deployments: set ENABLE_TRADE_ENGINE_AUTOSTART=1 on exactly one long-lived worker/process; normal production Node processes auto-start foreground work from boot and continuity sweeps unless disabled.",
         worker: workerDiagnostic,
       },

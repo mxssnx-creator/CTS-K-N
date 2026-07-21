@@ -7,7 +7,7 @@
  * the coordinator is stopped/paused, healing is skipped.
  */
 
-import { isServerlessDeploymentRuntime, getDeploymentRuntimeLabel, hasExplicitServerlessForegroundOptIn } from "./deployment-runtime"
+import { isServerlessDeploymentRuntime, hasExplicitServerlessForegroundOptIn } from "./deployment-runtime"
 
 async function loadRedisDb() {
   return import("./redis-db")
@@ -243,49 +243,45 @@ async function runTradeEngineHealingSweepInternal({ isStartup }: HealingSweepOpt
     }
     // SERVERLESS / KILO PRODUCTION OWNER PATH
     // ---------------------------------------------------------------
-    // Historically this sweep bailed out entirely in serverless runtimes with
-    // "requires external engine owner". That assumption is correct ONLY when a
-    // separate long-lived engine-owner process is actually deployed. This repo's
-    // production manifests (wrangler.jsonc / kilo-deploy) deploy a *single*
-    // serverless worker with DISABLE_TRADE_ENGINE_IN_PROCESS=1 and no separate
-    // owner — so the sweep must itself start and attach the engine whenever:
-    //   • the operator intent is running (or empty → default running), and
-    //   • no other worker currently owns a fresh engine heartbeat, and
-    //   • the worker is opted into foreground ownership (the same
-    //     ALLOW_API_TRADE_ENGINE_FOREGROUND + ENABLE_TRADE_ENGINE_IN_PROCESS
-    //     gate the coordinator already honours, or the owner-heartbeat-absent
-    //     condition which proves there is no external owner to defer to).
-    // When those hold, the worker owns the engine for the lifetime of the
-    // invocation; the once-per-minute continuity cron keeps re-attaching it so
-    // processing never stalls. When an explicit external owner IS present with a
-    // fresh heartbeat, we still defer to it as before.
+    // Never create a timer-backed TradeEngineManager inside a short-lived
+    // request worker. Its eager heartbeat used to suppress the bounded cron
+    // pipeline in the same invocation; the worker then ended and progress
+    // remained at 0/N. Kilo's durable owner is the awaited
+    // generate-indications bounded cycle executed by the scheduled handler.
+    // Explicit foreground opt-in remains available for unusual runtimes that
+    // genuinely keep one worker alive after the response.
     if (isServerlessDeploymentRuntime() && !hasExplicitServerlessForegroundOptIn()) {
       try {
-        await (await loadRedisDb()).initRedis?.().catch(() => {})
-        const coordinator = await loadTradeEngineCoordinator()
-        const noExternalOwner = await coordinator.hasNoExternalEngineOwner().catch(() => false)
-        const { getRedisClient } = await loadRedisDb()
-        await (await loadRedisDb()).initRedis?.().catch(() => {})
+        const { initRedis, getRedisClient, getAssignedAndEnabledConnections } = await loadRedisDb()
+        await initRedis()
         const client = getRedisClient()
         const globalState = (await client.hgetall("trade_engine:global")) as Record<string, string> | null
         const ownerIntent = getGlobalOperatorIntent(globalState)
-        if (noExternalOwner && ownerIntent !== "stopped" && ownerIntent !== "paused") {
-          console.log(
-            `[v0] [AutoStart] No external engine owner heartbeat detected in ${getDeploymentRuntimeLabel()} runtime; ` +
-              `this serverless worker will own engine runtime for the operator intent "${ownerIntent || "running"}".`,
-          )
-        } else {
+        if (ownerIntent === "stopped" || ownerIntent === "paused") {
           return {
             startedCount: 0,
             eligibleCount: 0,
-            skipped: "serverless_runtime_defers_to_external_owner",
-            error: !noExternalOwner
-              ? "An external engine owner with a fresh heartbeat exists; this serverless worker stays queued-only."
-              : `Operator intent "${ownerIntent}" blocks engine ownership.`,
+            skipped: ownerIntent,
+            error: `Operator intent "${ownerIntent}" blocks the scheduled bounded owner.`,
           }
         }
+        if (!ownerIntent) {
+          await client.hset("trade_engine:global", {
+            operator_intent: "running",
+            desired_status: "running",
+            status: "starting",
+            runtime_owner_mode: "scheduled-bounded-cycle",
+            updated_at: new Date().toISOString(),
+          }).catch(() => 0)
+        }
+        const eligible = await getAssignedAndEnabledConnections().catch(() => [])
+        return {
+          startedCount: 0,
+          eligibleCount: Array.isArray(eligible) ? eligible.length : 0,
+          skipped: "serverless_scheduled_bounded_owner",
+        }
       } catch (probeErr) {
-        console.warn(`[v0] [AutoStart] Serverless owner probe failed; deferring to queued-only:`, probeErr)
+        console.warn(`[v0] [AutoStart] Serverless bounded-owner probe failed:`, probeErr)
         return {
           startedCount: 0,
           eligibleCount: 0,

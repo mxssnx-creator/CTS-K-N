@@ -29,6 +29,9 @@ import { StrategyProcessor } from "@/lib/trade-engine/strategy-processor"
 import { IndicationSetsProcessor } from "@/lib/indication-sets-processor"
 import { runIndStratCycle, type PipelineCycleResult } from "@/lib/trade-engine/shared-ind-strat-pipeline"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
+import { ConfigSetProcessor, type ProcessingResult } from "@/lib/trade-engine/config-set-processor"
+import { ProgressionStateManager } from "@/lib/progression-state-manager"
+import { buildPrehistoricGateKeys, buildProgressionScope } from "@/lib/progression-scope"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
@@ -337,6 +340,84 @@ async function releaseCronLock(client: any, token: string): Promise<void> {
   }
 }
 
+const ACK_PROCESSED_SETTINGS_LUA = `
+local currentSettings = redis.call('HGET', KEYS[1], 'settings_recoordination_requested_version') or ''
+local currentStats = redis.call('HGET', KEYS[1], 'stats_recalculation_requested_version') or ''
+if ARGV[1] ~= '' and currentSettings == ARGV[1] then
+  redis.call('HSET', KEYS[1],
+    'settings_recoordination_applied_version', ARGV[1],
+    'settings_recoordination_applied_event_id', ARGV[2],
+    'settings_recoordination_applied_fields', ARGV[3],
+    'settings_recoordination_pending', '0',
+    'settings_recoordination_completed', '1',
+    'settings_recoordination_completed_at', ARGV[6],
+    'settings_recoordination_applied_at', ARGV[6],
+    'strategy_recompute_requested', '0')
+end
+if ARGV[4] ~= '' and currentStats == ARGV[4] then
+  redis.call('HSET', KEYS[1],
+    'stats_recalculation_applied_version', ARGV[4],
+    'stats_recalculation_applied_event_id', ARGV[5],
+    'stats_recalculation_requested', '0',
+    'stats_recalculation_completed', '1',
+    'stats_recalculation_completed_at', ARGV[6])
+end
+return 1
+`
+
+async function acknowledgeProcessedSettingsGeneration(
+  client: any,
+  progressionKey: string,
+  requestedSettingsVersion: string,
+  requestedSettingsEventId: string,
+  requestedSettingsFields: string,
+  requestedStatsVersion: string,
+  requestedStatsEventId: string,
+): Promise<void> {
+  const completedAt = new Date().toISOString()
+  if (typeof client.eval === "function") {
+    await client.eval(ACK_PROCESSED_SETTINGS_LUA, {
+      keys: [progressionKey],
+      arguments: [
+        requestedSettingsVersion,
+        requestedSettingsEventId,
+        requestedSettingsFields,
+        requestedStatsVersion,
+        requestedStatsEventId,
+        completedAt,
+      ],
+    })
+    return
+  }
+  // Inline preview fallback: compare immediately before each write. A newer UI
+  // save changes the requested version and therefore cannot be acknowledged by
+  // this older cycle.
+  const current = (await client.hgetall(progressionKey).catch(() => ({}))) || {}
+  const patch: Record<string, string> = {}
+  if (requestedSettingsVersion && current.settings_recoordination_requested_version === requestedSettingsVersion) {
+    Object.assign(patch, {
+      settings_recoordination_applied_version: requestedSettingsVersion,
+      settings_recoordination_applied_event_id: requestedSettingsEventId,
+      settings_recoordination_applied_fields: requestedSettingsFields,
+      settings_recoordination_pending: "0",
+      settings_recoordination_completed: "1",
+      settings_recoordination_completed_at: completedAt,
+      settings_recoordination_applied_at: completedAt,
+      strategy_recompute_requested: "0",
+    })
+  }
+  if (requestedStatsVersion && current.stats_recalculation_requested_version === requestedStatsVersion) {
+    Object.assign(patch, {
+      stats_recalculation_applied_version: requestedStatsVersion,
+      stats_recalculation_applied_event_id: requestedStatsEventId,
+      stats_recalculation_requested: "0",
+      stats_recalculation_completed: "1",
+      stats_recalculation_completed_at: completedAt,
+    })
+  }
+  if (Object.keys(patch).length > 0) await client.hset(progressionKey, patch)
+}
+
 export async function GET(request: Request) {
   const auth = authorizeCronRequest(request)
   if (!auth.ok) return cronAuthorizationResponse(auth)
@@ -350,10 +431,24 @@ export async function GET(request: Request) {
   let acquiredCronLock = false
 
   try {
-    const { initRedis, getRedisClient, getAssignedAndEnabledConnections, getConnection } = await import("@/lib/redis-db")
+    const { initRedis, getRedisClient, getAssignedAndEnabledConnections, getConnection, getAppSettings } = await import("@/lib/redis-db")
     const { getQueuedEngineRefreshRequests } = await import("@/lib/engine-refresh-queue")
     await initRedis()
     const client = getRedisClient()
+    const appSettings = (await getAppSettings().catch(() => ({}))) as Record<string, unknown>
+
+    const globalState = ((await client.hgetall("trade_engine:global").catch(() => ({}))) || {}) as Record<string, unknown>
+    const operatorIntent = String(globalState.operator_intent || globalState.desired_status || globalState.status || "running")
+    if (operatorIntent === "stopped" || operatorIntent === "paused") {
+      return NextResponse.json({
+        success: true,
+        generated: 0,
+        connections: 0,
+        skipped: true,
+        reason: `operator_intent_${operatorIntent}`,
+        timestamp: Date.now(),
+      })
+    }
 
     // ── Redis in-flight dedup lock (cross-process / cross-tab) ─────────────
     // If any caller (another tab, another serverless invocation) already
@@ -374,9 +469,10 @@ export async function GET(request: Request) {
 
     _cronInFlight = true
 
+    const queuedRefreshEntries = await getQueuedEngineRefreshRequests().catch(() => [])
     const candidateConnections = await getCronEngineEligibleConnections(
       getAssignedAndEnabledConnections,
-      getQueuedEngineRefreshRequests,
+      async () => queuedRefreshEntries,
       getConnection,
     )
     const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
@@ -415,14 +511,33 @@ export async function GET(request: Request) {
     for (const connection of activeConnections) {
       const exchangeName = (connection.exchange || "bingx").toLowerCase()
       const progKey = `progression:${connection.id}`
-      const [baseBeforeRaw, mainBeforeRaw, realBeforeRaw] = await Promise.all([
+      const [
+        baseBeforeRaw,
+        mainBeforeRaw,
+        realBeforeRaw,
+        requestedSettingsRaw,
+        requestedSettingsEventRaw,
+        requestedSettingsFieldsRaw,
+        requestedStatsRaw,
+        requestedStatsEventRaw,
+      ] = await Promise.all([
         client.hget(progKey, "strategies_base_total").catch(() => "0"),
         client.hget(progKey, "strategies_main_total").catch(() => "0"),
         client.hget(progKey, "strategies_real_total").catch(() => "0"),
+        client.hget(progKey, "settings_recoordination_requested_version").catch(() => ""),
+        client.hget(progKey, "settings_recoordination_requested_event_id").catch(() => ""),
+        client.hget(progKey, "settings_recoordination_fields").catch(() => "[]"),
+        client.hget(progKey, "stats_recalculation_requested_version").catch(() => ""),
+        client.hget(progKey, "stats_recalculation_requested_event_id").catch(() => ""),
       ])
       const baseBefore = Number.parseInt(String(baseBeforeRaw || "0"), 10) || 0
       const mainBefore = Number.parseInt(String(mainBeforeRaw || "0"), 10) || 0
       const realBefore = Number.parseInt(String(realBeforeRaw || "0"), 10) || 0
+      const requestedSettingsVersion = String(requestedSettingsRaw || "")
+      const requestedSettingsEventId = String(requestedSettingsEventRaw || requestedSettingsVersion)
+      const requestedSettingsFields = String(requestedSettingsFieldsRaw || "[]")
+      const requestedStatsVersion = String(requestedStatsRaw || "")
+      const requestedStatsEventId = String(requestedStatsEventRaw || requestedStatsVersion)
 
       let symbolsRaw: string[] = []
       try {
@@ -454,11 +569,124 @@ export async function GET(request: Request) {
 
       // Default 4 major symbols used when active_symbols is empty.
       const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
-      let symbolsToProcess = symbolsRaw.length > 0
+      const allSymbols = symbolsRaw.length > 0
         ? symbolsRaw
         : Array.from(new Set([...DEFAULT_SYMBOLS, primarySymbol].filter(Boolean)))
       const symbolLimit = parsePositiveInteger(process.env.CRON_SYMBOL_LIMIT, 20)
-      symbolsToProcess = symbolsToProcess.slice(0, symbolLimit)
+      const symbolsToProcess = allSymbols.slice(0, symbolLimit)
+
+      // Kilo/serverless does not retain timer-backed managers after a request.
+      // Therefore the durable minute owner must also advance a fresh QuickStart
+      // through Historic/Main before realtime processing can be meaningful.
+      // Large selections are consumed in monotonic chunks; ConfigSetProcessor's
+      // canonical SET keeps X/N exact between invocations.
+      const engineType = String(connection.engine_type || connection.engineType || "main")
+      const scope = buildProgressionScope(connection.id, engineType)
+      const gateKeys = buildPrehistoricGateKeys(connection.id, engineType, "done")
+      const [scopedDone, legacyDone] = await Promise.all([
+        client.get(gateKeys.scoped).catch(() => null),
+        client.get(gateKeys.legacy).catch(() => null),
+      ])
+      let historicReady = scopedDone === "1" || legacyDone === "1"
+      let historicResult: ProcessingResult | null = null
+
+      if (!historicReady) {
+        const processedSymbols = new Set(
+          (await client.smembers(`${scope.prehistoricKey}:symbols`).catch(() => [] as string[]))
+            .map((symbol: unknown) => String(symbol).toUpperCase()),
+        )
+        const remainingSymbols = allSymbols.filter((symbol) => !processedSymbols.has(symbol))
+        const historicLimit = parsePositiveInteger(
+          process.env.CRON_PREHISTORIC_SYMBOL_LIMIT,
+          Math.min(symbolLimit, 5),
+        )
+        const historicChunk = remainingSymbols.slice(0, historicLimit)
+
+        if (historicChunk.length > 0) {
+          await runBounded(historicChunk, Math.min(2, historicChunk.length), (symbol) =>
+            ensureCurrentMarketDataCandle(symbol, client),
+          )
+          const engineState = (await client.hgetall(`trade_engine_state:${connection.id}`).catch(() => ({}))) || {}
+          const rangeHoursRaw = Number(
+            appSettings.prehistoric_range_hours ||
+            (engineState as any).prehistoric_range_hours ||
+            Number((engineState as any).prehistoric_range_days || 0) * 24 ||
+            8,
+          )
+          const rangeHours = Number.isFinite(rangeHoursRaw) && rangeHoursRaw > 0
+            ? Math.min(168, Math.max(1, Math.round(rangeHoursRaw)))
+            : 8
+          const timeframeRaw = Number((engineState as any).prehistoric_timeframe_seconds || 1)
+          const timeframeSeconds = Number.isFinite(timeframeRaw) && timeframeRaw > 0
+            ? Math.max(1, Math.floor(timeframeRaw))
+            : 1
+          const historicEnd = new Date()
+          const historicStart = new Date(historicEnd.getTime() - rangeHours * 60 * 60 * 1000)
+          const processor = new ConfigSetProcessor(connection.id, Date.now())
+          await processor.initializeConfigSets()
+          historicResult = await processor.processPrehistoricData(
+            historicChunk,
+            historicStart,
+            historicEnd,
+            timeframeSeconds,
+            { finalizePhase: false },
+          )
+
+          // A failed symbol remains retryable on the next minute rather than
+          // being counted as a permanently successful generation.
+          if (historicResult.errors > 0 && typeof client.srem === "function") {
+            await client.srem(`${scope.prehistoricKey}:symbols`, ...historicChunk).catch(() => 0)
+          }
+        }
+
+        const processedCount = Number(await client.scard(`${scope.prehistoricKey}:symbols`).catch(() => 0)) || 0
+        historicReady = allSymbols.length > 0 && processedCount >= allSymbols.length && (historicResult?.errors || 0) === 0
+        if (historicReady) {
+          const completedAt = new Date().toISOString()
+          await Promise.all([
+            client.set(gateKeys.scoped, "1", { EX: 86400 }),
+            client.set(gateKeys.legacy, "1", { EX: 86400 }),
+            client.hset(scope.prehistoricKey, {
+              symbols_processed: String(allSymbols.length),
+              symbols_total: String(allSymbols.length),
+              is_complete: "1",
+              completed_at: completedAt,
+              updated_at: completedAt,
+            }),
+            client.hset(`trade_engine_state:${connection.id}`, {
+              prehistoric_data_loaded: "true",
+              config_set_symbols_processed: String(allSymbols.length),
+              config_set_symbols_total: String(allSymbols.length),
+              prehistoric_last_processed_at: completedAt,
+              updated_at: completedAt,
+            }),
+            client.hset(scope.engineProgressionKey, {
+              phase: "live_trading",
+              progress: "100",
+              detail: `Historic/Main processing complete — ${allSymbols.length}/${allSymbols.length} symbols`,
+              sub_current: String(allSymbols.length),
+              sub_total: String(allSymbols.length),
+              updated_at: completedAt,
+            }),
+            ProgressionStateManager.completePrehistoricPhase(connection.id, allSymbols.length),
+          ])
+        }
+      }
+
+      // Do not let an unfinished Historic/Main generation masquerade as a
+      // realtime settings application. The next bounded tick continues from
+      // the canonical processed-symbol SET.
+      if (!historicReady) {
+        await client.hset(progKey, {
+          portable_symbols_processed: String(
+            Number(await client.scard(`${scope.prehistoricKey}:symbols`).catch(() => 0)) || 0,
+          ),
+          portable_symbols_total: String(allSymbols.length),
+          portable_cycle_source: "scheduled-bounded-owner:historic",
+          last_update: new Date().toISOString(),
+        }).catch(() => 0)
+        continue
+      }
 
       for (let c = 0; c < cyclesPerCron; c++) {
         // Process symbols for this cycle with bounded concurrency.
@@ -480,9 +708,33 @@ export async function GET(request: Request) {
           symbolConcurrency,
           (symbol) => runCronPipelineForSymbol(connection.id, symbol, client, pipelineDeps),
         )
+        let cycleIndications = 0
+        let cycleStrategiesEvaluated = 0
         for (const r of cycleResults) {
           totalIndications += r.indicationCount
+          cycleIndications += r.indicationCount
+          cycleStrategiesEvaluated += r.strategiesEvaluated
         }
+        // One cycle is one completed full-symbol basket, not one symbol and
+        // not one generated indication. The portable owner previously did the
+        // work but never advanced these counters, leaving Main stuck at zero.
+        const cycleCompletedAt = new Date().toISOString()
+        await Promise.all([
+          client.hincrby(progKey, "indication_cycle_count", 1),
+          client.hincrby(progKey, "indication_live_cycle_count", 1),
+          client.hincrby(progKey, "strategy_cycle_count", 1),
+          client.hincrby(progKey, "strategy_live_cycle_count", 1),
+          client.hincrby(progKey, "realtime_cycle_count", 1),
+          client.hincrby(progKey, "realtime_live_cycle_count", 1),
+          client.hset(progKey, {
+            indications_count: String(cycleIndications),
+            strategies_count: String(cycleStrategiesEvaluated),
+            symbols_processed: String(symbolsToProcess.length),
+            last_indication_run: cycleCompletedAt,
+            last_strategy_run: cycleCompletedAt,
+            last_update: cycleCompletedAt,
+          }),
+        ])
       }
 
       const [baseAfterRaw, mainAfterRaw, realAfterRaw] = await Promise.all([
@@ -493,6 +745,35 @@ export async function GET(request: Request) {
       totalBase += Math.max(0, (Number.parseInt(String(baseAfterRaw || "0"), 10) || 0) - baseBefore)
       totalMain += Math.max(0, (Number.parseInt(String(mainAfterRaw || "0"), 10) || 0) - mainBefore)
       totalReal += Math.max(0, (Number.parseInt(String(realAfterRaw || "0"), 10) || 0) - realBefore)
+
+      const completedAt = new Date().toISOString()
+      await client.hset(progKey, {
+        portable_symbols_processed: String(symbolsToProcess.length),
+        portable_symbols_total: String(allSymbols.length),
+        portable_cycle_completed_at: completedAt,
+        portable_cycle_source: "scheduled-bounded-owner",
+        last_update: completedAt,
+      }).catch(() => 0)
+      await acknowledgeProcessedSettingsGeneration(
+        client,
+        progKey,
+        requestedSettingsVersion,
+        requestedSettingsEventId,
+        requestedSettingsFields,
+        requestedStatsVersion,
+        requestedStatsEventId,
+      )
+
+      // Clear only the exact generation observed before processing. If a UI
+      // save races this cycle, compare-and-delete leaves the newer request in
+      // place for the next scheduled owner tick.
+      const refreshEntry = queuedRefreshEntries.find(({ request }) =>
+        request.connectionId === connection.id && request.action !== "stop",
+      )
+      if (refreshEntry) {
+        const { clearEngineRefreshRequest } = await import("@/lib/engine-refresh-queue")
+        await clearEngineRefreshRequest(connection.id, refreshEntry.request).catch(() => {})
+      }
     }
 
     await client.hset("system:logistics", {

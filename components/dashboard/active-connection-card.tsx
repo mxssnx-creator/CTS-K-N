@@ -220,8 +220,8 @@ export function ActiveConnectionCard({
   // read the current value without stale-closure issues.
   const liveTradeLoadingRef  = useRef(false)
   const presetModeLoadingRef = useRef(false)
-  const [liveVolumeFactor, setLiveVolumeFactor] = useState(0.1)
-  const [presetVolumeFactor, setPresetVolumeFactor] = useState(0.1)
+  const [liveVolumeFactor, setLiveVolumeFactor] = useState(1)
+  const [presetVolumeFactor, setPresetVolumeFactor] = useState(1)
   const [volumeStepRatio, setVolumeStepRatio] = useState(DEFAULT_VOLUME_STEP_RATIO)
   const liveVolumeFactorRef = useRef(MIN_VOLUME_FACTOR)
   const presetVolumeFactorRef = useRef(MIN_VOLUME_FACTOR)

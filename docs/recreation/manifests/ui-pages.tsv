@@ -32,7 +32,7 @@ route	dynamic_segments	imported_components	source
 /settings/indications/main		ui/badge,ui/button,ui/card,ui/checkbox,ui/input,ui/label,ui/slider,ui/switch	app/settings/indications/main/page.tsx
 /settings/indications/optimal		ui/alert,ui/button,ui/card,ui/checkbox,ui/input,ui/label	app/settings/indications/optimal/page.tsx
 /simple		auth-guard,ui/card	app/simple/page.tsx
-/statistics		page-header,settings/statistics-overview,statistics/adjust-strategy-stats,statistics/analytics-filters,statistics/block-strategy-stats,statistics/preset-trade-stats,statistics/strategy-performance-table,ui/badge,ui/button,ui/card,ui/progress,ui/tabs	app/statistics/page.tsx
+/statistics		dashboard/trade-history-table,page-header,settings/statistics-overview,statistics/adjust-strategy-stats,statistics/analytics-filters,statistics/block-strategy-stats,statistics/preset-trade-stats,statistics/strategy-performance-table,ui/badge,ui/button,ui/card,ui/progress,ui/tabs	app/statistics/page.tsx
 /strategies		page-header,strategies/strategy-filters-advanced,strategies/strategy-row-compact,ui/badge,ui/button,ui/card	app/strategies/page.tsx
 /structure		page-header,ui/badge,ui/button,ui/card,ui/progress,ui/tabs	app/structure/page.tsx
 /test			app/test/page.tsx

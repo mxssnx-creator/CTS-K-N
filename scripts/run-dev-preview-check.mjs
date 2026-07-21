@@ -3,12 +3,19 @@
 /** Safe bounded development-mode engine soak with paper positions only. */
 
 import { spawn } from "node:child_process"
-import { rmSync } from "node:fs"
+import { readFileSync, rmSync } from "node:fs"
+import { resolve } from "node:path"
 import process from "node:process"
 
 const port = Number(process.env.PORT || 3103)
 const baseUrl = `http://127.0.0.1:${port}`
 const nextBin = "node_modules/next/dist/bin/next"
+// Next 15 development webpack and instrumentation require the canonical
+// `.next` tree; a custom dev dist can emit incompatible runtime chunks across
+// its app/pages compilers. The harness owns and cleans this tree exclusively;
+// production preview uses `.next-prod` and Kilo runs only after Dev completes.
+const devDistDir = ".next"
+const devDistPath = resolve(process.cwd(), devDistDir)
 const snapshotPath = `/tmp/cts-dev-preview-${process.pid}.json`
 const debugAdminSecret = `cts-dev-soak-${process.pid}-admin-secret`
 const maxSymbolsRequested = process.argv.includes("--max-symbols")
@@ -18,9 +25,13 @@ const devSoakSymbolCount = maxSymbolsRequested
 let outputTail = ""
 
 rmSync(snapshotPath, { force: true })
+rmSync(devDistPath, { recursive: true, force: true })
 
 function keepTail(chunk) {
-  outputTail = `${outputTail}${String(chunk)}`.slice(-16_000)
+  // Strategy processing is intentionally chatty in development. Keep enough
+  // context that a compiler/runtime stack cannot be displaced by the next
+  // symbol cycle before the harness reports it.
+  outputTail = `${outputTail}${String(chunk)}`.slice(-512_000)
 }
 
 async function waitForReady(child, timeoutMs = 120_000) {
@@ -34,6 +45,69 @@ async function waitForReady(child, timeoutMs = 120_000) {
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
   throw new Error(`Dev server did not become ready\n${outputTail}`)
+}
+
+async function requestJson(pathname) {
+  let lastFailure = ""
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const response = await fetch(new URL(pathname, baseUrl), {
+      cache: "no-store",
+      signal: AbortSignal.timeout(30_000),
+      headers: { Accept: "application/json" },
+    })
+    const text = await response.text()
+    if (response.ok) {
+      try {
+        return text ? JSON.parse(text) : {}
+      } catch {
+        lastFailure = `non-JSON content: ${text.slice(0, 1_000)}`
+      }
+    } else {
+      lastFailure = `HTTP ${response.status}: ${text.slice(0, 1_000)}`
+    }
+    // Next dev can finish the request that triggered an App-route compile a
+    // few milliseconds before its route manifest has been atomically swapped.
+    // A bounded warmup retry is allowed here only; the subsequent soak makes
+    // every application request exactly once and remains fail-fast.
+    if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 250 * attempt))
+  }
+  throw new Error(`Dev route warmup ${pathname} failed after compilation retries: ${lastFailure}`)
+}
+
+async function prewarmDevRoutes() {
+  // Next dev compiles App routes on first request. Compiling eleven large API
+  // graphs concurrently while the engine is allocating Strategy Sets can make
+  // Next expose a half-installed route module ("handler is not a function").
+  // Compile them serially before QuickStart so the soak measures application
+  // processing and route execution, not a compiler stampede.
+  const inventory = await requestJson("/api/connections")
+  const connectionId = String(inventory?.connections?.[0]?.id || "")
+  if (!connectionId) throw new Error("Dev route warmup found no connection")
+  const encoded = encodeURIComponent(connectionId)
+  for (const pathname of [
+    "/api/health",
+    "/api/system/init-status",
+    "/api/system/status",
+    "/api/system/monitoring",
+    "/api/trade-engine/status-all",
+    `/api/connections/progression/${encoded}/stats`,
+    `/api/trading/trade-history?connection_id=${encoded}&limit=500`,
+    `/api/logistics/queue?connectionId=${encoded}`,
+    `/api/trading/live-positions?connection_id=${encoded}`,
+    `/api/preset-optimizer?connectionId=${encoded}`,
+    `/api/connections/${encoded}/engine-states`,
+  ]) {
+    await requestJson(pathname)
+  }
+}
+
+function assertDevOutputIntegrity() {
+  for (const relativePath of ["routes-manifest.json", "server/app-paths-manifest.json"]) {
+    const manifestPath = resolve(devDistPath, relativePath)
+    const raw = readFileSync(manifestPath, "utf8")
+    if (!raw.trim()) throw new Error(`Development manifest is empty: ${manifestPath}`)
+    JSON.parse(raw)
+  }
 }
 
 function runSoakVerifier() {
@@ -61,20 +135,37 @@ function runSoakVerifier() {
 }
 
 async function stopServer(child) {
-  if (!child || child.exitCode != null) return
-  child.kill("SIGTERM")
+  if (!child?.pid) return
+  const signalProcessGroup = (signal) => {
+    try {
+      if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal)
+      else child.kill(signal)
+      return true
+    } catch (error) {
+      if (error?.code === "ESRCH") return false
+      throw error
+    }
+  }
+
+  signalProcessGroup("SIGTERM")
   await Promise.race([
     new Promise((resolve) => child.once("exit", resolve)),
     new Promise((resolve) => setTimeout(resolve, 5_000)),
   ])
-  if (child.exitCode == null) child.kill("SIGKILL")
+  // Next dev owns compiler workers and child processes. Killing only the
+  // launcher can leave those descendants writing a cache after this harness
+  // has removed it, corrupting the next run. Signal the complete process
+  // group even when the launcher already exited after SIGTERM.
+  signalProcessGroup("SIGKILL")
 }
 
 async function main() {
   const server = spawn(process.execPath, [nextBin, "dev", "-H", "127.0.0.1", "-p", String(port)], {
     cwd: process.cwd(),
+    detached: process.platform !== "win32",
     env: {
       ...process.env,
+      NEXT_DIST_DIR: devDistDir,
       DISABLE_TRADE_ENGINE_AUTOSTART: "1",
       DISABLE_TRADE_ENGINE_IN_PROCESS: "0",
       DISABLE_IN_PROCESS_CONTINUITY: "0",
@@ -98,7 +189,7 @@ async function main() {
       ORANGEX_API_KEY: "",
       ORANGEX_API_SECRET: "",
       V0_REDIS_SNAPSHOT_PATH: snapshotPath,
-      NODE_OPTIONS: "--max-old-space-size=5632 --max-semi-space-size=256 --expose-gc",
+      NODE_OPTIONS: "--max-old-space-size=4096 --max-semi-space-size=192 --expose-gc",
       PORT: String(port),
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -108,7 +199,24 @@ async function main() {
 
   try {
     await waitForReady(server)
-    await runSoakVerifier()
+    assertDevOutputIntegrity()
+    await prewarmDevRoutes()
+    assertDevOutputIntegrity()
+    try {
+      await runSoakVerifier()
+    } catch (error) {
+      try {
+        assertDevOutputIntegrity()
+        console.error(`[run-dev-preview-check] ${devDistDir} manifests remained valid at failure`)
+      } catch (manifestError) {
+        console.error(
+          `[run-dev-preview-check] ${devDistDir} integrity failed:`,
+          manifestError instanceof Error ? manifestError.message : String(manifestError),
+        )
+      }
+      throw error
+    }
+    assertDevOutputIntegrity()
     console.log(JSON.stringify({
       success: true,
       mode: "development-paper-engine",
@@ -118,6 +226,7 @@ async function main() {
   } finally {
     await stopServer(server)
     rmSync(snapshotPath, { force: true })
+    rmSync(devDistPath, { recursive: true, force: true })
   }
 }
 

@@ -1,10 +1,54 @@
 // Migration 028 — high-perf: axis 800×, real 5000×, rssHard 82%, BingX 5 concurrent, stopSem 6
 
-const localServerActionAllowedOrigins = ["localhost:3002", "127.0.0.1:3002"]
-const usesIsolatedBuildDirectory = Boolean(
-  process.env.NEXT_DIST_DIR && process.env.NEXT_DIST_DIR !== ".next",
-)
+import { access, mkdir, readFile, writeFile } from "node:fs/promises"
+import { resolve } from "node:path"
 
+class EnsurePagesManifestPlugin {
+  constructor(distDir) {
+    this.distDir = distDir
+  }
+
+  apply(compiler) {
+    compiler.hooks.afterEmit.tapPromise("CTS-K-N Ensure Pages Manifest", async () => {
+      const manifestPath = resolve(this.distDir, "server", "pages-manifest.json")
+      const builtInPages = {
+        "/_app": "pages/_app.js",
+        "/_error": "pages/_error.js",
+        "/_document": "pages/_document.js",
+      }
+      try {
+        const parsed = JSON.parse(await readFile(manifestPath, "utf8"))
+        if (parsed && typeof parsed === "object") {
+          await Promise.all(Object.keys(builtInPages).map((route) =>
+            access(resolve(this.distDir, "server", parsed[route] || builtInPages[route])),
+          ))
+          return
+        }
+      } catch {
+        // The Next 15 multi-compiler can briefly omit this file on overlay
+        // filesystems. Reconstruct the built-in Pages Router entries below.
+      }
+
+      const existingEntries = []
+      for (const [route, relativeFile] of Object.entries(builtInPages)) {
+        try {
+          await access(resolve(this.distDir, "server", relativeFile))
+          existingEntries.push([route, relativeFile])
+        } catch {
+          // A non-Node compiler does not emit these files. The plugin is only
+          // registered for the normal Node server compiler below.
+        }
+      }
+      if (existingEntries.length !== Object.keys(builtInPages).length) return
+
+      await mkdir(resolve(this.distDir, "server"), { recursive: true })
+      await writeFile(manifestPath, `${JSON.stringify(Object.fromEntries(existingEntries), null, 2)}\n`)
+      console.warn(`[next-build] restored missing ${manifestPath} after server emit`)
+    })
+  }
+}
+
+const localServerActionAllowedOrigins = ["localhost:3002", "127.0.0.1:3002"]
 function normalizeAllowedOrigin(value) {
   const trimmed = value?.trim()
   if (!trimmed) return []
@@ -40,6 +84,11 @@ const nextConfig = {
   // ".next". Set NEXT_DIST_DIR only when building/starting production so the
   // dev server keeps using the default ".next".
   distDir: process.env.NEXT_DIST_DIR || ".next",
+  // Production prebuild removes the exact selected dist directory itself; a
+  // second multi-compiler cleanup can race provider manifests on overlay
+  // filesystems. Development is different: its on-demand compiler must own
+  // initialization/cleanup of webpack-runtime and font manifests.
+  cleanDistDir: process.env.NODE_ENV !== "production",
   reactStrictMode: false,
   typescript: {
     // Production deployments must fail on type or syntax drift instead of
@@ -91,13 +140,13 @@ const nextConfig = {
     serverActions: {
       allowedOrigins: getServerActionAllowedOrigins(),
     },
-    // Next 15 can race its export workers while removing the temporary
-    // `<distDir>/export` tree on overlay/network filesystems. It surfaces as
-    // ENOTEMPTY only for our side-by-side `.next-prod` build, after every page
-    // already rendered successfully. Keep normal/Kilo builds fully parallel,
-    // but serialize static generation for an explicitly isolated distDir so
-    // the documented independent production-preview build is deterministic.
-    ...(usesIsolatedBuildDirectory
+    // Next 15 races final manifest/export writes on this overlay filesystem.
+    // It was first visible in the side-by-side `.next-prod` build and is also
+    // reproducible in OpenNext's normal `.next` build as a zero-byte
+    // routes-manifest.json after all 40 pages rendered. Serial generation is a
+    // build-time setting only; it makes every provider artifact deterministic
+    // without reducing request/runtime processing concurrency.
+    ...(process.env.NODE_ENV === "production"
       ? {
           cpus: 1,
           staticGenerationMaxConcurrency: 1,
@@ -136,7 +185,7 @@ const nextConfig = {
       },
     ] : []
   },
-  webpack: (config, { isServer, nextRuntime, webpack }) => {
+  webpack: (config, { isServer, nextRuntime, webpack, dev }) => {
     config.resolve = config.resolve || {}
     config.plugins = config.plugins || []
 
@@ -147,6 +196,18 @@ const nextConfig = {
         resource.request = resource.request.replace(/^node:/, "")
       }),
     )
+
+    // Next 15 occasionally reaches page-data collection without the small
+    // built-in Pages Router manifest in either the normal or isolated dist
+    // directory on overlay filesystems. Validate the three built-in chunks and
+    // repair only the missing manifest after the Node server emit.
+    if (
+      !dev &&
+      isServer &&
+      nextRuntime !== "edge"
+    ) {
+      config.plugins.push(new EnsurePagesManifestPlugin(process.env.NEXT_DIST_DIR || ".next"))
+    }
 
     // Redis v6 optionally imports native @node-rs/xxhash for faster client-side
     // hashing. The package marks it optional, but Next dev still warns loudly

@@ -140,7 +140,7 @@ export function calculateTrendSignal(
   const prices = finitePositivePrices(pricesOldestFirst).slice(-(timeframeMinutes + 1))
   if (prices.length < timeframeMinutes + 1) return null
 
-  const positionCostPct = Math.max(0.000001, Number(config.positionCostPct) || 0.02)
+  const positionCostPct = Math.max(0.000001, Number(config.positionCostPct) || 0.1)
   const totalChangePct = percentChange(prices[0], prices[prices.length - 1])
   const direction: TrendDirection = totalChangePct >= 0 ? "long" : "short"
   const directionSign = direction === "long" ? 1 : -1
@@ -242,7 +242,7 @@ export function buildAdaptiveTrendTpRange(input: {
   step?: number
   averageWindowMinutes?: number
 }): AdaptiveTrendTpRange {
-  const positionCostPct = Math.max(0.000001, Number(input.positionCostPct) || 0.02)
+  const positionCostPct = Math.max(0.000001, Number(input.positionCostPct) || 0.1)
   const minMultiplier = Math.max(0.1, Number(input.minMultiplier) || DEFAULT_TREND_TP_MIN_MULTIPLIER)
   const maxFactor = Math.max(0.1, Number(input.maxFactor) || DEFAULT_TREND_TP_MAX_FACTOR)
   const step = Math.max(0.01, Number(input.step) || DEFAULT_TREND_TP_STEP)

@@ -136,8 +136,10 @@ main {
 
 /* Shared responsive top information layer used by every PageHeader. */
 .page-header-shell {
-  position: relative;
-  background: hsl(var(--background) / 0.9);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: hsl(var(--background) / 0.96);
 }
 
 .page-header-shell::before {

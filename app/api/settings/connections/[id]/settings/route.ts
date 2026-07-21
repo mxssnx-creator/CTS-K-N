@@ -863,13 +863,13 @@ export async function PATCH(
 
     const vfl = Number(merged.volume_factor_live ?? merged.live_volume_factor)
     if (Number.isFinite(vfl) && vfl > 0) {
-      flatKnobs.volume_factor_live = String(Math.max(0.1, Math.min(10, vfl)))
+      flatKnobs.volume_factor_live = String(Math.max(1, Math.min(10, vfl)))
       flatKnobs.live_volume_factor = flatKnobs.volume_factor_live
       connectionPatch.live_volume_factor = flatKnobs.volume_factor_live
     }
     const vfp = Number(merged.volume_factor_preset ?? merged.preset_volume_factor)
     if (Number.isFinite(vfp) && vfp > 0) {
-      flatKnobs.volume_factor_preset = String(Math.max(0.1, Math.min(10, vfp)))
+      flatKnobs.volume_factor_preset = String(Math.max(1, Math.min(10, vfp)))
       flatKnobs.preset_volume_factor = flatKnobs.volume_factor_preset
       connectionPatch.preset_volume_factor = flatKnobs.volume_factor_preset
     }

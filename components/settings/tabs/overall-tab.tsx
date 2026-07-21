@@ -177,7 +177,7 @@ export function OverallTab({
                       </span>
                     </div>
                     <Slider
-                      min={0.1}
+                      min={1}
                       max={10}
                       step={0.1}
                       value={[settings.mainTradeVolumeFactor ?? 1]}
@@ -188,7 +188,7 @@ export function OverallTab({
                     <p className="text-xs text-muted-foreground">
                       Live notional multiplier for the Main Trade Engine
                       (default 1.0x). Overridable per-connection from the
-                      dashboard. Range 0.1–10x.
+                      dashboard. Ratio 1 is one exchange-minimum order; range 1–10x.
                     </p>
                   </div>
 
@@ -200,7 +200,7 @@ export function OverallTab({
                       </span>
                     </div>
                     <Slider
-                      min={0.1}
+                      min={1}
                       max={10}
                       step={0.1}
                       value={[settings.presetTradeVolumeFactor ?? 1]}
@@ -211,7 +211,7 @@ export function OverallTab({
                     <p className="text-xs text-muted-foreground">
                       Live notional multiplier for the Preset Trade Engine
                       (default 1.0x). Overridable per-connection from the
-                      dashboard. Range 0.1–10x.
+                      dashboard. Ratio 1 is one exchange-minimum order; range 1–10x.
                     </p>
                   </div>
 
@@ -322,7 +322,7 @@ export function OverallTab({
                       min={0.02}
                       max={1.0}
                       step={0.01}
-                      value={[settings.exchangePositionCost ?? settings.positionCost ?? 0.02]}
+                      value={[settings.exchangePositionCost ?? settings.positionCost ?? 0.1]}
                       onValueChange={([value]) => {
                         handleSettingChange("exchangePositionCost", value)
                         handleSettingChange("positionCost", value)
@@ -330,13 +330,13 @@ export function OverallTab({
                       className="flex-1"
                     />
                     <span className="text-sm font-medium w-16 text-right">
-                      {(settings.exchangePositionCost ?? settings.positionCost ?? 0.02).toFixed(2)}%
+                      {(settings.exchangePositionCost ?? settings.positionCost ?? 0.1).toFixed(2)}%
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground">
                     Position cost ratio used for Base/Main/Real pseudo position calculations (count-based, no
                     volume). Volume is calculated at Exchange level: volume = (accountBalance × positionCost) /
-                    (entryPrice × leverage). Range: 0.02% - 1.0%, Default: 0.02%
+                    (entryPrice × leverage). Range: 0.02% - 1.0%, Default: 0.10%
                   </p>
                 </div>
               </div>
