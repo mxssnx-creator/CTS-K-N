@@ -1,4 +1,4 @@
-# Release verification record — 2026-07-21
+# Release verification record — 2026-07-22
 
 This record captures the final acceptance evidence for the Block PF/position
 count/DCA, deployment, installation, durability, and recreation handoff. All
@@ -58,7 +58,7 @@ executed.
 | Clean reconstruction/Vercel builder | pass from an empty Git archive with no `node_modules`; exact pnpm 10.28.1 restored 1,272 locked packages and provider packaging produced 149 routes, 67 function entries, 116 valid JSON manifests, and no invalid JSON |
 | Full Vercel builder | pass locally; provider simulation reproduced and eliminated read-only `corepack enable` EROFS, Next 15's zero-byte `export-marker.json`, and stale `export-detail.json` false-static classification; dynamic/API functions are retained |
 | OpenNext 1.20.1 build | pass; generated `.open-next/worker.js` |
-| Wrangler 4.86.0 dry-run | pass; 809 assets, 29,046.74 KiB upload / 4,293.46 KiB gzip |
+| Wrangler 4.86.0 dry-run | pass; 831 assets accepted for upload |
 | Local Workerd Kilo runtime | pass; health, schema v82, 12 UI routes and 268 served UI scripts, exact 5/5 Historic/Main progress, version/event Settings ACK, Block-PF/position-count/volume changes, external-owner queue, all global/connection state switches, statistics/history, live fail-closed, admin auth, remote-owner fail-closed route, scheduled continuity and live recovery |
 | Credential-less `kilo:deploy` | expected fail-closed before upload; required runtime/owner/controller inputs absent |
 
@@ -91,11 +91,12 @@ No Cloudflare account/token, shared production Redis, public deployment URL,
 or distinct long-lived owner secret was supplied. The real Kilo upload was not
 attempted after preflight rejected those missing inputs.
 
-The final local server acceptance used an isolated `.next-prod` artifact. Its
-three-boot five-symbol run processed 660 API requests and 786 aggregate engine
-cycles in 120.1 seconds, completed Historic/Main at 5/5, advanced 1,962 Main
-strategy cycles, held the post-warm-up database inventory to a one-key range,
-ended at 991,564 KiB RSS, and measured 36 ms API P95. The separate 32-symbol
+The final local server acceptance used a freshly rebuilt isolated `.next-prod`
+artifact. Its three-boot five-symbol run processed 330 API reads, advanced 386
+aggregate engine cycles and 966 Main strategy cycles, completed Historic/Main
+from an observed 1/5 = 20% snapshot through 5/5 = 100%, kept that X/Y/percent
+invariant valid throughout all 30 rounds, held the post-warm-up database
+inventory stable, and measured 33 ms API P95. The separate 32-symbol
 production UI flow completed QuickStart in 134 ms,
 advanced nine cycles, exercised Settings/Volume hot reload plus connection and
 global state switches, and left zero real positions/orders. After enabling the
@@ -107,44 +108,6 @@ development compiler/HMR graphs; the production process stayed below 1 GiB and
 its engine/Redis inventories remained bounded.
 
 ## Production/live behavior evidence
-
-The final post-fix rerun also proves the current-generation progress and
-Control/System quantity contracts directly:
-
-- The focused volume/control suites passed 36 tests, including a control-order
-  partial fill that changed the authoritative quantity from `1.0` to `0.7`.
-  The next independent Pos-Count system action recalculated from that new basis
-  and reduced only `0.2` toward target `0.5`; no order was submitted inside the
-  barrier, and weighted member-Set quantities plus the cumulative partial
-  execution ledger remained exact.
-- The 120-cycle progression test kept default, trailing, Block, DCA and
-  position-count component values finite and independent, hedged ratio parts
-  exactly to one physical target, applied duplicate cumulative fill snapshots
-  only once, retained PI/Set memberships until terminal close, and closed the
-  complete ledger without active remnants.
-- The final five-symbol Dev run completed 30 rounds/330 API requests in
-  60.575 seconds, advanced aggregate cycles `20→360` and Main strategy cycles
-  `51→863`, kept its steady database window flat, measured 1,089 ms steady P95,
-  observed ten complete simulated position lifecycles, and submitted no real
-  orders.
-- The final three-boot Production run completed 30 rounds/330 API requests in
-  60.029 seconds. Historic progress was value-consistent in every snapshot,
-  starting at `1/5 = 20%` and ending at `5/5 = 100%`; aggregate cycles advanced
-  `0→386`, Main strategy cycles `0→966`, steady P95 was 33 ms, final RSS was
-  823,364 KiB, and the post-warm-up Redis inventory was flat. All 11 production
-  pages, startup/migration identity, persisted settings, SSE and connection
-  switches, Statistics/Trade History schemas, and zero-real-order safeguards
-  passed.
-- The final OpenNext 1.20.1 artifact passed Kilo preflight 35/35 and the real
-  Workerd runtime: schema v82, 12 UI routes/268 scripts, header/sidebar CSS,
-  `positionCost = 0.1%`, Pos-Count ratio settings, QuickStart 5/5,
-  Historic/Main progression, exact Settings generation ACK, bounded scheduled
-  owner, external-owner queue, Statistics/Trade History, all state switches,
-  live fail-closed, and zero real positions/orders.
-- The final public BingX SDK probe fetched 1,000 candles for five symbols and
-  completed three ticker rounds in nine attempts with no retries or timeouts,
-  1,876.5 ms average / 3,149.8 ms maximum latency, +1.68 MiB heap, and zero
-  authenticated or order requests.
 
 The final maximum production preview completed a 240,123 ms soak with 32 symbols,
 120 rounds, 1,320 API requests, and 400 engine cycles. Progress advanced from
