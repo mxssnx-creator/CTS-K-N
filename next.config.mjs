@@ -54,6 +54,7 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  turbopack: {},
   // Keep Node-only / native / optionally-peered modules external so webpack
   // does not try to bundle them (which breaks the build) and Node resolves
   // them at runtime instead. In particular bingx-api ships a NestJS module
