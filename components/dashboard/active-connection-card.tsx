@@ -1258,11 +1258,11 @@ export function ActiveConnectionCard({
     <>
       <Collapsible open={expanded} onOpenChange={onExpand}>
         <Card className={`transition-colors ${cardBorderClass}`}>
-          <CardHeader className="pb-2 px-4 pt-4">
+          <CardHeader className="pb-3 px-4 pt-4 space-y-3">
             {/* Row 1: Name, exchange badge, status badge, expand button */}
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
+                <div className="flex items-center gap-1.5 shrink-0">
                   {connection.isActive ? (
                     <Wifi className="h-3.5 w-3.5 text-green-500 shrink-0" />
                   ) : (
@@ -1270,26 +1270,28 @@ export function ActiveConnectionCard({
                   )}
                   <CardTitle className="text-sm font-semibold truncate">{connName}</CardTitle>
                 </div>
-                <Badge variant="outline" className="text-[10px] shrink-0">
-                  {details?.exchange || connection.exchangeName}
-                </Badge>
-                <Badge variant="secondary" className={`text-[10px] shrink-0 ${statusBadge.className}`}>
-                  {statusBadge.label}
-                </Badge>
-                {testStatus && (
-                  <Badge
-                    variant="outline"
-                    className={`text-[10px] shrink-0 ${
-                      testStatus === "success"
-                        ? "border-green-300 text-green-700 dark:text-green-400"
-                        : testStatus === "error" || testStatus === "failed"
-                          ? "border-red-300 text-red-700 dark:text-red-400"
-                          : ""
-                    }`}
-                  >
-                    {testStatus === "success" ? "Tested" : testStatus === "error" || testStatus === "failed" ? "Test Failed" : testStatus}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <Badge variant="outline" className="text-[10px] h-5 shrink-0">
+                    {details?.exchange || connection.exchangeName}
                   </Badge>
-                )}
+                  <Badge variant="secondary" className={`text-[10px] h-5 shrink-0 ${statusBadge.className}`}>
+                    {statusBadge.label}
+                  </Badge>
+                  {testStatus && (
+                    <Badge
+                      variant="outline"
+                      className={`text-[10px] h-5 shrink-0 ${
+                        testStatus === "success"
+                          ? "border-green-300 text-green-700 dark:text-green-400"
+                          : testStatus === "error" || testStatus === "failed"
+                            ? "border-red-300 text-red-700 dark:text-red-400"
+                            : ""
+                      }`}
+                    >
+                      {testStatus === "success" ? "Tested" : testStatus === "error" || testStatus === "failed" ? "Test Failed" : testStatus}
+                    </Badge>
+                  )}
+                </div>
               </div>
 
               <div className="flex items-center gap-1 shrink-0">
@@ -1333,7 +1335,7 @@ export function ActiveConnectionCard({
             </div>
 
             {/* Row 2: Connection info line */}
-            <CardDescription className="text-[11px] mt-1 flex items-center gap-2 flex-wrap">
+            <CardDescription className="text-[11px] flex items-center gap-2 flex-wrap">
               {details?.api_type && (
                 <span className="capitalize">{details.api_type.replace(/_/g, " ")}</span>
               )}
@@ -1367,7 +1369,7 @@ export function ActiveConnectionCard({
             </CardDescription>
 
             {/* Row 3: Three toggle switches */}
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-2.5 pt-2 border-t border-border/50">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-2 border-t border-border/50">
               {/* Enable toggle — no pre-condition on global engine; toggle-dashboard API starts the engine */}
               <div className="flex items-center gap-2">
                 <Switch
