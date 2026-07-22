@@ -7,7 +7,7 @@ import {
   removeConnectionSecondaryIndexes,
   syncConnectionSecondaryIndexes,
 } from "./database-indexes"
-import { createKiloDatabaseQuery, hasKiloDatabaseBackend, resolveKiloDatabaseConfig, type KiloDatabaseMethod } from "./kilo-database-client"
+import { createKiloDatabaseQuery, resolveKiloDatabaseConfig, type KiloDatabaseMethod } from "./kilo-database-client"
 import { scanRedisKeys } from "./redis-scan"
 
 /**
@@ -102,7 +102,8 @@ export type RedisBackend = "inline-local" | "redis-network" | "kilo-sqlite-snaps
 const KILO_SNAPSHOT_TABLE = "cts_runtime_snapshot"
 
 function hasKiloManagedDatabaseConfig(): boolean {
-  return hasKiloDatabaseBackend()
+  const { url, token } = resolveKiloDatabaseConfig()
+  return Boolean(url && token)
 }
 
 async function executeKiloDatabaseQuery(
@@ -111,7 +112,7 @@ async function executeKiloDatabaseQuery(
   method: KiloDatabaseMethod = "all",
 ): Promise<any[]> {
   const { url, token } = resolveKiloDatabaseConfig()
-  if ((!url || !token) && !hasKiloDatabaseBackend()) throw new Error("Kilo managed database credentials are not configured")
+  if (!url || !token) throw new Error("Kilo managed database credentials are not configured")
 
   if (!globalForRedis.__kilo_database_query) {
     globalForRedis.__kilo_database_query = createKiloDatabaseQuery({ url, token })

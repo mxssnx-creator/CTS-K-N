@@ -20,46 +20,15 @@ export interface KiloDatabaseConfig {
   token?: string
 }
 
-/** D1/SQLite-compatible Worker binding supplied by Cloudflare-like hosts. */
-export interface KiloSqliteBinding {
-  prepare(sql: string): {
-    bind(...params: unknown[]): {
-      all?: () => Promise<unknown>
-      run?: () => Promise<unknown>
-    }
-  }
-}
-
-const workerGlobals = globalThis as typeof globalThis & {
-  __cts_kilo_sqlite_binding?: KiloSqliteBinding
-}
-
-export function registerKiloSqliteBinding(binding: unknown): void {
-  if (binding && typeof (binding as KiloSqliteBinding).prepare === "function") {
-    workerGlobals.__cts_kilo_sqlite_binding = binding as KiloSqliteBinding
-  }
-}
-
-export function getKiloSqliteBinding(): KiloSqliteBinding | undefined {
-  return workerGlobals.__cts_kilo_sqlite_binding
-}
-
-export function hasKiloDatabaseBackend(): boolean {
-  const { url, token } = resolveKiloDatabaseConfig()
-  return Boolean(url && token) || Boolean(getKiloSqliteBinding())
-}
-
 /** Resolve the provider-neutral managed SQLite names used by Kilo and hosts
  * that proxy the same service under KILO_* names. PostgreSQL/DATABASE_URL is
  * intentionally not accepted; CTS uses Redis-compatible persistence only. */
 export function resolveKiloDatabaseConfig(config: KiloDatabaseConfig = {}): { url: string; token: string } {
   const url = String(
-    config.url ?? process.env.KILO_DB_URL ?? process.env.KILO_DATABASE_URL ?? process.env.CTS_DB_URL ??
-      process.env.MANAGED_DB_URL ?? process.env.DB_URL ?? "",
+    config.url ?? process.env.KILO_DB_URL ?? process.env.KILO_DATABASE_URL ?? process.env.DB_URL ?? "",
   ).trim()
   const token = String(
-    config.token ?? process.env.KILO_DB_TOKEN ?? process.env.KILO_DATABASE_TOKEN ?? process.env.CTS_DB_TOKEN ??
-      process.env.MANAGED_DB_TOKEN ?? process.env.DB_TOKEN ?? "",
+    config.token ?? process.env.KILO_DB_TOKEN ?? process.env.KILO_DATABASE_TOKEN ?? process.env.DB_TOKEN ?? "",
   ).trim()
   return { url, token }
 }
@@ -116,8 +85,7 @@ function isRetryableStatus(status: number): boolean {
  */
 export function createKiloDatabaseQuery(config: KiloDatabaseConfig = {}) {
   const { url, token } = resolveKiloDatabaseConfig(config)
-  const binding = getKiloSqliteBinding()
-  if ((!url || !token) && !binding) {
+  if (!url || !token) {
     throw new Error("Kilo managed database credentials are not configured")
   }
 
@@ -133,22 +101,6 @@ export function createKiloDatabaseQuery(config: KiloDatabaseConfig = {}) {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       let response: Response | undefined
       try {
-        if (binding) {
-          const statement = binding.prepare(sql).bind(...params)
-          const result = method === "run" ? await statement.run?.() : await statement.all?.()
-          const payload = (result && typeof result === "object" ? result : {}) as Record<string, unknown>
-          const rows = Array.isArray(payload.results)
-            ? payload.results
-            : Array.isArray(payload.rows)
-              ? payload.rows
-              : []
-          const meta = payload.meta && typeof payload.meta === "object" ? payload.meta as Record<string, unknown> : payload
-          return {
-            rows,
-            changes: numberFromPayload(meta, ["changes", "rows_written", "rowsAffected"]),
-            lastInsertRowid: numberFromPayload(meta, ["last_row_id", "lastInsertRowid", "last_insert_rowid"]),
-          }
-        }
         response = await fetch(url, {
           method: "POST",
           headers: {
