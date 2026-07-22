@@ -19,7 +19,12 @@ let openNextHandlerPromise: Promise<OpenNextHandler> | undefined
 
 async function getOpenNextHandler(): Promise<OpenNextHandler> {
   if (!openNextHandlerPromise) {
-    openNextHandlerPromise = import("./.open-next/worker.js").then((module) => {
+    // The provider generates `.open-next/worker.js` after the repository
+    // typecheck. Keep the specifier in a string variable so TypeScript does
+    // not require the generated artifact during the pre-build typecheck.
+    // The runtime path remains the exact OpenNext output path.
+    const generatedWorkerPath: string = "./.open-next/worker.js"
+    openNextHandlerPromise = import(generatedWorkerPath).then((module) => {
       const handler = (module as { default?: OpenNextHandler }).default
       if (!handler || typeof handler.fetch !== "function") {
         throw new Error("Generated OpenNext worker does not export a fetch handler")
