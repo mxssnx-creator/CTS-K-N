@@ -110,6 +110,11 @@ function ensureKiloPaperFallback(request: Request | undefined, env: WorkerEnviro
   )
   if (hasDurableBackend) return
   if (process.env.ALLOW_PROD_INLINE_REDIS === "0") return
+  // Some Worker runtimes expose a compatibility `process.env` object whose
+  // writes are not visible to modules bundled by OpenNext. Keep the decision
+  // on globalThis as well so the Redis backend selector sees the same
+  // fail-safe paper-mode contract after the lazy application import.
+  ;(globalThis as any).__cts_kilo_paper_fallback_active = true
   process.env.CTS_DEPLOYMENT_RUNTIME ||= "kilo-deploy"
   process.env.KILO_DEPLOYMENT ||= "1"
   process.env.ALLOW_PROD_INLINE_REDIS ||= "1"

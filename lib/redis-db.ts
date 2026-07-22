@@ -2343,7 +2343,10 @@ function isProdInlineRedisAllowed(): boolean {
   // boot. Operators can still set ALLOW_PROD_INLINE_REDIS=0 to require a
   // shared Redis backend. This does NOT opt into live exchange order placement;
   // that remains gated separately by ALLOW_INLINE_REDIS_LIVE_TRADING.
-  return process.env.ALLOW_PROD_INLINE_REDIS !== "0"
+  const workerPaperFallback = (globalThis as typeof globalThis & {
+    __cts_kilo_paper_fallback_active?: boolean
+  }).__cts_kilo_paper_fallback_active
+  return workerPaperFallback === true || process.env.ALLOW_PROD_INLINE_REDIS !== "0"
 }
 
 function normalizeScanOptions(args: any[]): { MATCH?: string; COUNT?: number } {
