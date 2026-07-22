@@ -1,4 +1,4 @@
-import { isKiloDeploymentRuntime } from "@/lib/deployment-runtime"
+import { isKiloDeploymentRuntime, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 /**
  * Production Startup Validation
@@ -94,14 +94,18 @@ export async function validateProductionStartup(): Promise<ValidationResult> {
 }
 
 function validateEnvironmentVariables(): { status: "ok" | "warning" | "error"; message: string } {
-  const required = ["NEXT_PUBLIC_APP_URL"]
   const recommended = ["ALLOW_INLINE_REDIS_LIVE_TRADING", "CRON_SECRET"]
-  
-  const missing = required.filter((v) => !process.env[v])
-  if (missing.length > 0) {
+  const deploymentUrl =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.DEPLOYMENT_URL ||
+    process.env.URL ||
+    process.env.VERCEL_URL ||
+    process.env.VERCEL_PROJECT_PRODUCTION_URL
+  const serverless = isServerlessDeploymentRuntime()
+  if (!deploymentUrl && !serverless) {
     return {
       status: "error",
-      message: `Missing required environment variables: ${missing.join(", ")}`,
+      message: "Missing required environment variable: NEXT_PUBLIC_APP_URL (or DEPLOYMENT_URL)",
     }
   }
 
@@ -122,6 +126,13 @@ function validateEnvironmentVariables(): { status: "ok" | "warning" | "error"; m
     return {
       status: "error",
       message: "Missing durable persistence configuration: configure Redis/KV or Kilo DB_URL + DB_TOKEN",
+    }
+  }
+
+  if (!deploymentUrl && serverless) {
+    return {
+      status: "warning",
+      message: "Public deployment URL is not exposed by the worker environment; scheduled URL binding must be configured by the deployment manifest",
     }
   }
 
