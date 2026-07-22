@@ -26,6 +26,19 @@ type WorkerEnvironment = {
   [key: string]: unknown
 }
 
+function registerWorkerDatabaseBinding(env: WorkerEnvironment): void {
+  // Some Cloudflare-compatible providers expose SQLite as a Worker binding
+  // instead of DB_URL/DB_TOKEN. Keep the binding out of process.env and pass
+  // it through the shared global bridge consumed by the SQL adapter.
+  const candidate = Object.entries(env ?? {}).find(([key, value]) =>
+    /^(?:DB|KILO_DB|CTS_DB|DATABASE)$/i.test(key) && value && typeof value === "object" &&
+    typeof (value as { prepare?: unknown }).prepare === "function",
+  )?.[1]
+  if (candidate && typeof (globalThis as any).__cts_kilo_sqlite_binding === "undefined") {
+    ;(globalThis as any).__cts_kilo_sqlite_binding = candidate
+  }
+}
+
 const CRON_PATHS = [
   "/api/cron/server-continuity",
   "/api/cron/sync-live-positions",
@@ -91,6 +104,7 @@ export default {
   async fetch(request: Request, env?: WorkerEnvironment, ctx?: WorkerExecutionContext) {
     const runtimeEnv = env ?? {}
     exposeWorkerEnvironment(runtimeEnv)
+    registerWorkerDatabaseBinding(runtimeEnv)
     return handler.fetch(request, runtimeEnv, ctx ?? {})
   },
 
@@ -98,6 +112,7 @@ export default {
     console.log("[CTS-K-N scheduled continuity] event received")
     const runtimeEnv = env ?? {}
     exposeWorkerEnvironment(runtimeEnv)
+    registerWorkerDatabaseBinding(runtimeEnv)
     const work = Promise.allSettled(CRON_PATHS.map((path) => invokeCronPath(path, runtimeEnv, ctx ?? {}))).then((results) => {
       const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")
       if (failures.length > 0) {
