@@ -112,7 +112,12 @@ function validateEnvironmentVariables(): { status: "ok" | "warning" | "error"; m
     }
   }
 
-  if (!hasSharedRedis && !hasKiloManagedSnapshot) {
+  const inlineFallback =
+    !hasSharedRedis &&
+    !hasKiloManagedSnapshot &&
+    process.env.ALLOW_PROD_INLINE_REDIS !== "0" &&
+    process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1"
+  if (!hasSharedRedis && !hasKiloManagedSnapshot && !inlineFallback) {
     return {
       status: "error",
       message: "Missing shared persistence configuration: configure Redis/KV or Kilo DB_URL + DB_TOKEN",
@@ -120,6 +125,12 @@ function validateEnvironmentVariables(): { status: "ok" | "warning" | "error"; m
   }
 
   const missingRecommended = recommended.filter((v) => !process.env[v])
+  if (inlineFallback) {
+    return {
+      status: "warning",
+      message: `${isKiloDeploymentRuntime() ? "Kilo" : "This deployment"} is using process-local InlineLocalRedis because no shared Redis/KV or managed DB binding is configured; real orders remain blocked`,
+    }
+  }
   if (missingRecommended.length > 0) {
     return {
       status: "warning",
