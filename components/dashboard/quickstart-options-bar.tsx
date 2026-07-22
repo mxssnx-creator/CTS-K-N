@@ -262,6 +262,8 @@ export function QuickstartOptionsBar() {
   const [controlOrders, setControlOrders] = useState(false)
   const controlOrdersRef = useRef(false)
   const [pfMin, setPfMin] = useState<ProfitFactorMin>(DEFAULT_PF_MIN)
+  const pfMinRef = useRef<ProfitFactorMin>(DEFAULT_PF_MIN)
+  const persistedPfMinRef = useRef<ProfitFactorMin>(DEFAULT_PF_MIN)
   const [volumeFactor, setVolumeFactor] = useState<number>(0.1)
   const volumeFactorRef = useRef(0.1)
   const persistedVolumeFactorRef = useRef(0.1)
@@ -275,6 +277,9 @@ export function QuickstartOptionsBar() {
   const [trailingEnabled, setTrailingEnabled] = useState(true)
   const hydrateSequenceRef = useRef(0)
   const settingsSaveSequenceRef = useRef(0)
+  // Tracks operator edits before their debounce has sent a PATCH. A late ACK
+  // from a previous drag must not overwrite the thumb of a newer drag.
+  const settingsDraftGenerationRef = useRef(0)
   const volumeSaveSequenceRef = useRef(0)
   const liveSaveSequenceRef = useRef(0)
 
@@ -361,12 +366,15 @@ export function QuickstartOptionsBar() {
           settings.profitFactorMin ||
           settings.profit_factor_min ||
           {}
-        setPfMin({
+        const hydratedPfMin = {
           base: clampPfMin(raw.base ?? settings.profitFactorMinBase ?? DEFAULT_PF_MIN.base),
           main: clampPfMin(raw.main ?? settings.profitFactorMinMain ?? DEFAULT_PF_MIN.main),
           real: clampPfMin(raw.real ?? settings.profitFactorMinReal ?? DEFAULT_PF_MIN.real),
           live: clampPfMin(raw.live ?? settings.profitFactorMinLive ?? DEFAULT_PF_MIN.live),
-        })
+        }
+        pfMinRef.current = hydratedPfMin
+        persistedPfMinRef.current = hydratedPfMin
+        setPfMin(hydratedPfMin)
 
         // Minimal step count — for pseudo position placement
         setMinimalStepCount(clampMsc(settings.minimal_step_count ?? settings.minimalStepCount ?? 3))
@@ -426,10 +434,82 @@ export function QuickstartOptionsBar() {
   useEffect(() => {
     // Invalidate responses that belong to the previously selected connection.
     settingsSaveSequenceRef.current++
+    settingsDraftGenerationRef.current++
     volumeSaveSequenceRef.current++
     liveSaveSequenceRef.current++
     setSaveStatus("idle")
   }, [cid])
+
+  // Apply only fields owned by this compact bar. Settings mutation events
+  // already carry the server-confirmed snapshot, so consuming that snapshot
+  // directly avoids an immediate GET landing on a stale serverless isolate and
+  // snapping a successfully saved slider back to its previous value.
+  const applySettingsToOptions = useCallback((settings: Record<string, unknown>): boolean => {
+    let applied = false
+    const rawPf = settings.profitFactorMin ?? settings.profit_factor_min
+    const legacyPfPresent = [
+      "profitFactorMinBase",
+      "profitFactorMinMain",
+      "profitFactorMinReal",
+      "profitFactorMinLive",
+    ].some((key) => Object.prototype.hasOwnProperty.call(settings, key))
+    if ((rawPf && typeof rawPf === "object") || legacyPfPresent) {
+      const source = rawPf && typeof rawPf === "object"
+        ? rawPf as Record<string, unknown>
+        : {}
+      const next: ProfitFactorMin = {
+        base: clampPfMin(source.base ?? settings.profitFactorMinBase ?? pfMinRef.current.base),
+        main: clampPfMin(source.main ?? settings.profitFactorMinMain ?? pfMinRef.current.main),
+        real: clampPfMin(source.real ?? settings.profitFactorMinReal ?? pfMinRef.current.real),
+        live: clampPfMin(source.live ?? settings.profitFactorMinLive ?? pfMinRef.current.live),
+      }
+      pfMinRef.current = next
+      persistedPfMinRef.current = next
+      setPfMin(next)
+      applied = true
+    }
+
+    if (Object.prototype.hasOwnProperty.call(settings, "minimal_step_count") ||
+        Object.prototype.hasOwnProperty.call(settings, "minimalStepCount")) {
+      setMinimalStepCount(clampMsc(settings.minimal_step_count ?? settings.minimalStepCount))
+      applied = true
+    }
+    if (Object.prototype.hasOwnProperty.call(settings, "max_concurrent_trades") ||
+        Object.prototype.hasOwnProperty.call(settings, "maxConcurrentTrades")) {
+      setMaxConcurrentTrades(clampMct(settings.max_concurrent_trades ?? settings.maxConcurrentTrades))
+      applied = true
+    }
+
+    const rawCoord = settings.coordination_settings ?? settings.coordinationSettings
+    if (rawCoord && typeof rawCoord === "object") {
+      const variants = (rawCoord as Record<string, unknown>).variants
+      if (variants && typeof variants === "object") {
+        const variantSettings = variants as Record<string, unknown>
+        if (typeof variantSettings.trailing === "boolean") {
+          setTrailingEnabled(variantSettings.trailing)
+          applied = true
+        }
+        if (typeof variantSettings.block === "boolean") {
+          setBlockEnabled(variantSettings.block)
+          applied = true
+        }
+        if (typeof variantSettings.dca === "boolean") {
+          setDcaEnabled(variantSettings.dca)
+          applied = true
+        }
+      }
+    }
+
+    const factor = Number(settings.live_volume_factor ?? settings.volume_factor_live)
+    if (Number.isFinite(factor) && factor > 0) {
+      const normalized = clampVf(factor)
+      volumeFactorRef.current = normalized
+      persistedVolumeFactorRef.current = normalized
+      setVolumeFactor(normalized)
+      applied = true
+    }
+    return applied
+  }, [])
 
   // ── persistence primitives ───────────────────────────────────────────
   //
@@ -440,6 +520,7 @@ export function QuickstartOptionsBar() {
     async (patch: Record<string, unknown>) => {
       if (!cid) return
       const sequence = ++settingsSaveSequenceRef.current
+      const draftGeneration = settingsDraftGenerationRef.current
       setSaveStatus("saving")
       try {
         const res = await fetch(
@@ -453,6 +534,12 @@ export function QuickstartOptionsBar() {
         const data = await res.json().catch(() => ({} as any))
         if (!res.ok || data?.success === false) throw new Error(data?.error || `HTTP ${res.status}`)
         if (sequence !== settingsSaveSequenceRef.current) return
+        const appliedSettings = data?.settings && typeof data.settings === "object"
+          ? data.settings as Record<string, unknown>
+          : patch
+        if (draftGeneration === settingsDraftGenerationRef.current) {
+          applySettingsToOptions(appliedSettings)
+        }
         showSaved()
         // Notify ExchangeContext and ActiveConnectionCard that settings changed
         // so they reload without waiting for their natural poll cadence.
@@ -460,10 +547,11 @@ export function QuickstartOptionsBar() {
           const settingsVersion = typeof data?.settingsVersion === "string" ? data.settingsVersion : undefined
           const detail = {
             connectionId: cid,
-            settings: patch,
+            settings: appliedSettings,
             settingsVersion,
             recoordinationId: data?.recoordinationId ?? settingsVersion,
             progressionEpoch: data?.progressionEpoch,
+            source: "quickstart-options-bar.settings",
           }
           window.dispatchEvent(
             new CustomEvent("connection-settings-updated", {
@@ -478,11 +566,18 @@ export function QuickstartOptionsBar() {
         }
       } catch (err) {
         if (sequence !== settingsSaveSequenceRef.current) return
+        if (
+          (patch.profitFactorMin || patch.profit_factor_min) &&
+          draftGeneration === settingsDraftGenerationRef.current
+        ) {
+          pfMinRef.current = persistedPfMinRef.current
+          setPfMin(persistedPfMinRef.current)
+        }
         console.error("[v0] [QSOptions] PATCH settings failed:", err)
         showError()
       }
     },
-    [cid, showSaved, showError],
+    [applySettingsToOptions, cid, showSaved, showError],
   )
 
   const saveVolume = useCallback(
@@ -621,17 +716,15 @@ export function QuickstartOptionsBar() {
     const settingsHandler = (e: Event) => {
       const ev = e as CustomEvent
       if (ev.detail?.connectionId !== cid) return
-      const settings = ev.detail?.settings || {}
-      const factor = Number(settings.live_volume_factor ?? settings.volume_factor_live)
-      if (Number.isFinite(factor) && factor > 0) {
-        const normalized = clampVf(factor)
-        volumeFactorRef.current = normalized
-        persistedVolumeFactorRef.current = normalized
-        setVolumeFactor(normalized)
+      if (ev.detail?.source === "quickstart-options-bar.settings") return
+      const settings = ev.detail?.settings
+      // Modern mutation surfaces include the confirmed settings snapshot. Use
+      // it directly; an unconditional re-fetch here was the source of the PF
+      // slider reverting after the UI had already shown "Saved". Legacy
+      // events without settings still fall back to a canonical hydration.
+      if (!settings || typeof settings !== "object" || !applySettingsToOptions(settings)) {
+        void hydrate()
       }
-      // Other surfaces can change PF/coordination fields too. Re-hydrate the
-      // complete selected snapshot immediately so every settings surface agrees.
-      void hydrate()
     }
     window.addEventListener("live-trade-toggled", liveTradeHandler)
     window.addEventListener("connection-settings-updated", settingsHandler)
@@ -639,7 +732,7 @@ export function QuickstartOptionsBar() {
       window.removeEventListener("live-trade-toggled", liveTradeHandler)
       window.removeEventListener("connection-settings-updated", settingsHandler)
     }
-  }, [cid, hydrate])
+  }, [applySettingsToOptions, cid, hydrate])
 
   // All connection-settings knobs share one accumulating saver, so adjacent
   // edits become one deep-merged hot reload instead of cancelling each other.
@@ -654,15 +747,15 @@ export function QuickstartOptionsBar() {
   const handlePfChange = useCallback(
     (stage: Stage, raw: number) => {
       const v = clampPfMin(raw)
-      // Update the staged value FIRST so the slider thumb tracks the
-      // drag smoothly, then schedule the debounced save with the merged
-      // PF-min object. We compute it inline rather than off `pfMin`
-      // state to avoid stale-closure races between adjacent slider drags.
-      setPfMin((prev) => {
-        const next = { ...prev, [stage]: v }
-        debouncedSaveSettings({ profitFactorMin: next })
-        return next
-      })
+      settingsDraftGenerationRef.current++
+      // Keep the latest draft in a ref so rapid changes to different stages
+      // merge deterministically before React commits the next render. Never
+      // schedule persistence from inside a state updater: Strict Mode may run
+      // updater functions more than once.
+      const next = { ...pfMinRef.current, [stage]: v }
+      pfMinRef.current = next
+      setPfMin(next)
+      debouncedSaveSettings({ profitFactorMin: next })
     },
     [debouncedSaveSettings],
   )
@@ -680,6 +773,7 @@ export function QuickstartOptionsBar() {
   const handleMinimalStepCountChange = useCallback(
     (raw: number) => {
       const v = clampMsc(raw)
+      settingsDraftGenerationRef.current++
       setMinimalStepCount(v)
       debouncedSaveSettings({
         minimal_step_count: v,
@@ -691,6 +785,7 @@ export function QuickstartOptionsBar() {
   const handleMaxConcurrentTradesChange = useCallback(
     (raw: number) => {
       const v = clampMct(raw)
+      settingsDraftGenerationRef.current++
       setMaxConcurrentTrades(v)
       debouncedSaveSettings({
         max_concurrent_trades: v,
@@ -711,6 +806,7 @@ export function QuickstartOptionsBar() {
 
   const handleTrailingChange = useCallback(
     (next: boolean) => {
+      settingsDraftGenerationRef.current++
       setTrailingEnabled(next)
       debouncedSaveSettings({
         coordination_settings: {
@@ -723,6 +819,7 @@ export function QuickstartOptionsBar() {
 
   const handleBlockChange = useCallback(
     (next: boolean) => {
+      settingsDraftGenerationRef.current++
       setBlockEnabled(next)
       debouncedSaveSettings({
         coordination_settings: {
@@ -735,6 +832,7 @@ export function QuickstartOptionsBar() {
 
   const handleDcaChange = useCallback(
     (next: boolean) => {
+      settingsDraftGenerationRef.current++
       setDcaEnabled(next)
       debouncedSaveSettings({
         coordination_settings: {

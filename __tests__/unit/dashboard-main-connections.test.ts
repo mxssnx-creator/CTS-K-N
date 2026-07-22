@@ -56,6 +56,15 @@ describe("Main Connections dashboard contracts", () => {
     expect(source).toContain("controlOrdersRef.current = next")
     expect(source).not.toContain("setControlOrders((previous) =>")
     expect(source).toContain("connection-settings-recoordination-complete")
+    expect(source).toContain("const pfMinRef = useRef<ProfitFactorMin>(DEFAULT_PF_MIN)")
+    expect(source).toContain("const appliedSettings = data?.settings")
+    expect(source).toContain("applySettingsToOptions(appliedSettings)")
+    expect(source).toContain("if (!settings || typeof settings !== \"object\" || !applySettingsToOptions(settings))")
+    expect(source).toContain("const next = { ...pfMinRef.current, [stage]: v }")
+    expect(source).toContain("const settingsDraftGenerationRef = useRef(0)")
+    expect(source).toContain("draftGeneration === settingsDraftGenerationRef.current")
+    expect(source).toContain('source: "quickstart-options-bar.settings"')
+    expect(source).not.toContain("setPfMin((prev) =>")
   })
 
   test("connection picker follows the same stable Main-panel assignment rule", () => {

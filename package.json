@@ -65,7 +65,6 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
-    "@kilocode/app-builder-db": "github:Kilo-Org/app-builder-db#186d1c13b2777b74fef94f52c9341f8e81ce6baf",
     "@opennextjs/cloudflare": "1.20.1",
     "@radix-ui/react-accordion": "1.2.2",
     "@radix-ui/react-alert-dialog": "1.1.4",

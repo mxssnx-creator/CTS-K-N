@@ -1,4 +1,4 @@
-import { runMigrations } from "@kilocode/app-builder-db"
+import { migrate as drizzleMigrate } from "drizzle-orm/sqlite-proxy/migrator"
 
 function hasManagedDatabaseConfiguration(): boolean {
   return Boolean(process.env.DB_URL?.trim() && process.env.DB_TOKEN?.trim())
@@ -18,8 +18,16 @@ async function migrate(): Promise<void> {
   console.info("[db:migrate] Applying managed SQLite migrations.")
   // `createDatabase` validates DB_URL/DB_TOKEN eagerly, so defer importing it
   // until after the no-database deployment profile has been handled.
-  const { db } = await import("./index")
-  await runMigrations(db, {}, { migrationsFolder: "./src/db/migrations" })
+  const { db, executeKiloDatabaseQuery } = await import("./index")
+  await drizzleMigrate(
+    db,
+    async (queries) => {
+      for (const query of queries) {
+        await executeKiloDatabaseQuery(query, [], "run")
+      }
+    },
+    { migrationsFolder: "./src/db/migrations" },
+  )
   console.info("[db:migrate] Managed SQLite migrations completed.")
 }
 
