@@ -77,8 +77,8 @@ persistence, scheduler and restart verification remain mandatory.
 ## Remote SSH installation
 
 Settings → Install Manager → Remote SSH Install uses the legacy-named
-`/api/install/remote-postgres` endpoint. It is a generic CTS-K-N server
-installer; it does not install PostgreSQL.
+`/api/install/remote` endpoint. It is the generic CTS-K-N server installer
+for Redis-backed production deployments.
 
 Required flow:
 

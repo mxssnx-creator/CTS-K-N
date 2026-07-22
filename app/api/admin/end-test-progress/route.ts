@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
-import { execute, query, getDatabaseType } from "@/lib/db"
+import { execute, query } from "@/lib/db"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -83,15 +83,9 @@ export async function POST() {
 
   // ── 2. Stuck preset engine state rows ─────────────────────────────────
   try {
-    const dbType = getDatabaseType()
-    const selectSql =
-      dbType === "postgresql"
-        ? `SELECT connection_id, preset_id, started_at
-           FROM preset_trade_engine_state
-           WHERE status = 'running' AND stopped_at IS NULL`
-        : `SELECT connection_id, preset_id, started_at
-           FROM preset_trade_engine_state
-           WHERE status = 'running' AND stopped_at IS NULL`
+    const selectSql = `SELECT connection_id, preset_id, started_at
+      FROM preset_trade_engine_state
+      WHERE status = 'running' AND stopped_at IS NULL`
 
     const stuckRows = await query<{
       connection_id: string
@@ -100,22 +94,13 @@ export async function POST() {
     }>(selectSql).catch(() => [])
 
     if (stuckRows.length > 0) {
-      const updateSql =
-        dbType === "postgresql"
-          ? `UPDATE preset_trade_engine_state
-             SET status = 'stopped',
-                 stopped_at = NOW(),
-                 updated_at = NOW(),
-                 testing_progress = 0,
-                 testing_message = 'Ended by admin end-test-progress'
-             WHERE status = 'running' AND stopped_at IS NULL`
-          : `UPDATE preset_trade_engine_state
-             SET status = 'stopped',
-                 stopped_at = CURRENT_TIMESTAMP,
-                 updated_at = CURRENT_TIMESTAMP,
-                 testing_progress = 0,
-                 testing_message = 'Ended by admin end-test-progress'
-             WHERE status = 'running' AND stopped_at IS NULL`
+      const updateSql = `UPDATE preset_trade_engine_state
+        SET status = 'stopped',
+            stopped_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP,
+            testing_progress = 0,
+            testing_message = 'Ended by admin end-test-progress'
+        WHERE status = 'running' AND stopped_at IS NULL`
 
       const result = await execute(updateSql).catch((e) => ({
         rowCount: 0,

@@ -5,7 +5,7 @@ import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinato
 /**
  * Per-connection strategy settings (Base / Main / Real channels).
  *
- * This route was originally written against a Postgres
+ * This route uses the Redis SQL compatibility layer.
  * `connection_strategy_settings` table that does not exist in this
  * Redis-only deployment — every call threw. It now reads/writes the same
  * canonical store the rest of the system uses:

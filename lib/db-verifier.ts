@@ -97,24 +97,11 @@ async function tableExists(tableName: string): Promise<boolean> {
   const dbType = getDatabaseType()
   
   try {
-    if (dbType === "postgresql") {
-      const result = await query<{ exists: boolean }>(
-        `SELECT EXISTS (
-          SELECT FROM information_schema.tables 
-          WHERE table_schema = 'public' 
-          AND table_name = $1
-        ) as exists`,
-        [tableName]
-      )
-      return result[0]?.exists || false
-    } else {
-      // SQLite
-      const result = await query<{ name: string }>(
-        `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
-        [tableName]
-      )
-      return result.length > 0
-    }
+    const result = await query<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+      [tableName]
+    )
+    return result.length > 0
   } catch (error) {
     console.error(`[v0] Error checking if table ${tableName} exists:`, error)
     return false

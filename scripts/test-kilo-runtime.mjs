@@ -631,14 +631,14 @@ async function main() {
     // able to load it safely, enforce admin auth, and select only the secured
     // owner-proxy branch. No owner is configured in this isolated preview, so
     // an authenticated request must fail closed before any outbound request.
-    const unauthenticatedRemote = await fetch(new URL("/api/install/remote-postgres", baseUrl), {
+    const unauthenticatedRemote = await fetch(new URL("/api/install/remote", baseUrl), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "preflight", host: "example.test", username: "deploy" }),
       signal: AbortSignal.timeout(30_000),
     })
     assert(unauthenticatedRemote.status === 401, `Kilo remote install without admin auth returned ${unauthenticatedRemote.status}`)
-    const noOwnerRemote = await fetch(new URL("/api/install/remote-postgres", baseUrl), {
+    const noOwnerRemote = await fetch(new URL("/api/install/remote", baseUrl), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

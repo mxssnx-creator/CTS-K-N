@@ -129,7 +129,7 @@ sequenceDiagram
   autonumber
   actor Operator
   participant UI as Settings / Overall / Install UI
-  participant API as POST /api/install/remote-postgres
+  participant API as POST /api/install/remote
   participant SSH as SSH session
   participant Server as Remote Linux server
   participant Redis as Redis service

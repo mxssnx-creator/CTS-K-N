@@ -386,5 +386,4 @@ export interface Settings {
   activeLastPartStep: number
 
   database_type: string
-  database_url: string
 }

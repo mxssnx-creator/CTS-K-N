@@ -2,12 +2,12 @@ import { execFileSync } from "node:child_process"
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { POST } from "@/app/api/install/remote-postgres/route"
+import { POST } from "@/app/api/install/remote/route"
 
 const ADMIN_SECRET = "install-test-admin-secret-000000000000"
 
 function remoteRequest(body: Record<string, unknown>, secret = ADMIN_SECRET) {
-  return new Request("http://localhost/api/install/remote-postgres", {
+  return new Request("http://localhost/api/install/remote", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -43,7 +43,7 @@ describe("production installation and Kilo deployment contract", () => {
     const [installer, envExample, remoteRoute, vercelConfig] = await Promise.all([
       readFile(path.join(process.cwd(), "scripts/install.sh"), "utf8"),
       readFile(path.join(process.cwd(), ".env.example"), "utf8"),
-      readFile(path.join(process.cwd(), "app/api/install/remote-postgres/route.ts"), "utf8"),
+      readFile(path.join(process.cwd(), "app/api/install/remote/route.ts"), "utf8"),
       readFile(path.join(process.cwd(), "vercel.json"), "utf8"),
     ])
     expect(installer).toContain('PNPM_VERSION="10.28.1"')
@@ -143,7 +143,7 @@ describe("production installation and Kilo deployment contract", () => {
     expect(await readFile(path.join(process.cwd(), "scripts/verify-deployment-contract.mjs"), "utf8"))
       .toContain('["cloudflare-workers", "kilo-deploy"]')
     const runtimeTest = await readFile(path.join(process.cwd(), "scripts/test-kilo-runtime.mjs"), "utf8")
-    expect(runtimeTest).toContain('/api/install/remote-postgres')
+    expect(runtimeTest).toContain('/api/install/remote')
     expect(runtimeTest).toContain('remoteInstallRouteFailClosed: true')
     expect(buildNormalizer).toContain("resolve(src) !== resolve(dest)")
     expect(buildNormalizer).toContain("isValidJson(src)")
@@ -331,7 +331,7 @@ describe("production installation and Kilo deployment contract", () => {
       await expect(response.json()).resolves.toMatchObject({ success: true, mode: "preflight" })
       expect(fetchMock).toHaveBeenCalledTimes(1)
       const [target, init] = fetchMock.mock.calls[0]
-      expect(String(target)).toBe("https://owner.example.test/api/install/remote-postgres")
+      expect(String(target)).toBe("https://owner.example.test/api/install/remote")
       expect(init).toMatchObject({ method: "POST", redirect: "error", body: JSON.stringify(body) })
       expect(new Headers(init?.headers).get("authorization"))
         .toBe("Bearer owner-proxy-secret-000000000000")

@@ -188,7 +188,7 @@ export class DataCleanupManager {
       let cleanedMarketData = 0
 
       // CRITICAL FIX: Sync closed live positions from Redis to database so stats queries can find them
-      // Previously, positions were only archived to Redis summaries, never making it to PostgreSQL.
+      // Positions are retained in bounded Redis summaries for historical reporting.
       // This caused negative PnL to never be reported in stats because the PnL stats endpoint queries the database.
       await this.syncLivePositionsToDatabase()
 

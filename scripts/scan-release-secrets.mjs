@@ -27,7 +27,7 @@ const sensitiveName = /(?:api_?(?:key|secret)|(?:admin|cron|jwt|encryption|auth|
 const literalAssignment = /\b([A-Za-z_][A-Za-z0-9_]*)\b\s*[:=]\s*(["'`])([^"'`\r\n]{8,})\2/g
 const providerToken = /\b(?:AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|sk-[A-Za-z0-9_-]{24,})\b/g
 const privateKey = /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]{32,}-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g
-const credentialUrl = /\b(?:redis|rediss|postgres|postgresql|mysql):\/\/[^\s/:]+:[^\s/@]+@/gi
+const credentialUrl = /\b(?:redis|rediss):\/\/[^\s/:]+:[^\s/@]+@/gi
 
 function lineAt(body, index) {
   return body.slice(0, index).split("\n").length

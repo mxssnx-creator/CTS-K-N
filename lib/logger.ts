@@ -84,36 +84,18 @@ class Logger {
     console.log(`[${timestamp}] [SITE] [${entry.level.toUpperCase()}] [${entry.category}] ${entry.message}`)
 
     try {
-      const databaseUrl = process.env.DATABASE_URL || process.env.REMOTE_POSTGRES_URL || ""
-      const isPostgreSQL = databaseUrl.startsWith("postgresql://")
-
-      if (isPostgreSQL) {
-        await this.db.executeQuery(
-          `INSERT INTO site_logs (level, category, message, details, stack, metadata, timestamp) 
-           VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-          [
-            entry.level,
-            entry.category,
-            entry.message,
-            entry.details || null,
-            entry.stack || null,
-            entry.metadata ? JSON.stringify(entry.metadata) : null,
-          ],
-        )
-      } else {
-        await this.db.executeQuery(
-          `INSERT INTO site_logs (level, category, message, details, stack, metadata, timestamp) 
-           VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
-          [
-            entry.level,
-            entry.category,
-            entry.message,
-            entry.details || null,
-            entry.stack || null,
-            entry.metadata ? JSON.stringify(entry.metadata) : null,
-          ],
-        )
-      }
+      await this.db.executeQuery(
+        `INSERT INTO site_logs (level, category, message, details, stack, metadata, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+        [
+          entry.level,
+          entry.category,
+          entry.message,
+          entry.details || null,
+          entry.stack || null,
+          entry.metadata ? JSON.stringify(entry.metadata) : null,
+        ],
+      )
     } catch (error) {
       console.error("[v0] Failed to write site log to database:", error)
     }

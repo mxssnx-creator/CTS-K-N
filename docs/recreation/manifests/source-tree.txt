@@ -246,10 +246,11 @@ app/api/install/download-deployment/route.ts
 app/api/install/export/route.ts
 app/api/install/import/route.ts
 app/api/install/initialize/route.ts
-app/api/install/remote-postgres/route.ts
+app/api/install/remote/route.ts
 app/api/install/status/route.ts
 app/api/install/system-info/route.ts
 app/api/install/test-connection/route.ts
+app/api/internal/kilo-db-bootstrap/route.ts
 app/api/logistics/queue/route.ts
 app/api/logs/route.ts
 app/api/main/indications-stats/route.ts
@@ -904,6 +905,7 @@ lib/indicators/calculator.ts
 lib/init-app.ts
 lib/integration-test-suite.ts
 lib/interval-progression-manager.ts
+lib/kilo-database-client.ts
 lib/leverage-policy.ts
 lib/live-order-coordination.ts
 lib/live-order-logger.ts
@@ -1117,6 +1119,7 @@ scripts/regression/live-stage-simulated-protection.test.ts
 scripts/remove-stray-bun-lock.mjs
 scripts/run-dev-preview-check.mjs
 scripts/run-engine-probe.mjs
+scripts/run-managed-db-migrate.mjs
 scripts/run-minute-scheduler.mjs
 scripts/run-prod-20symbols-8h.sh
 scripts/run-prod-preview-check.mjs
@@ -1156,5 +1159,8 @@ test-long-term.sh
 test-longterm-3hours.sh
 tsconfig.json
 types/bingx-api.d.ts
+vendor/app-builder-db-marker/README.md
+vendor/app-builder-db-marker/index.js
+vendor/app-builder-db-marker/package.json
 vercel.json
 wrangler.jsonc

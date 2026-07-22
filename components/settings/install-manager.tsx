@@ -219,7 +219,7 @@ export default function InstallManager() {
 
     try {
       const { adminSecret, ...payload } = remoteForm
-      const response = await fetch("/api/install/remote-postgres", {
+      const response = await fetch("/api/install/remote", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminSecret}` },
         body: JSON.stringify({

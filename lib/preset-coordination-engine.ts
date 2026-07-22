@@ -5,7 +5,7 @@
  * Coordinates real position opening based on evaluation results
  */
 
-import { sql, execute, getDatabaseType } from "@/lib/db"
+import { sql, execute } from "@/lib/db"
 import type { PresetType, PresetConfigurationSet, PresetCoordinationResult } from "@/lib/types-preset-coordination"
 import { calculateIndicators, type IndicatorConfig } from "./indicators"
 // Plain `crypto` — Edge build aliases this to `false` via `next.config.mjs`.
@@ -1025,27 +1025,9 @@ export class PresetCoordinationEngine {
 
     // Batch insert historical data using SQLite
     const batches = this.createBatches(data, 100)
-    const dbType = getDatabaseType()
-
     for (const batch of batches) {
       // Build INSERT statement with multiple VALUES
-      let placeholders = ""
-
-      if (dbType === "sqlite") {
-        placeholders = batch.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ")
-      } else {
-        // For PostgreSQL, use $1, $2, etc.
-        let paramIdx = 1
-        placeholders = batch
-          .map(() => {
-            const rowPlaceholders = []
-            for (let i = 0; i < 9; i++) {
-              rowPlaceholders.push(`$${paramIdx++}`)
-            }
-            return `(${rowPlaceholders.join(", ")})`
-          })
-          .join(", ")
-      }
+      const placeholders = batch.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ")
 
       const values: any[] = []
       for (const d of batch) {

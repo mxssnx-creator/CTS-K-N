@@ -1396,10 +1396,6 @@ export default function SettingsPage() {
             data.settings.parabolicSARMaximumTo ?? initialSettings.parabolicSARMaximumTo
           updatedSettings.parabolicSARMaximumStep =
             data.settings.parabolicSARMaximumStep ?? initialSettings.parabolicSARMaximumStep
-          if (data.settings.database_url !== undefined) {
-            updatedSettings.database_url = data.settings.database_url
-          }
-
           return updatedSettings
         })
       }
@@ -1792,7 +1788,7 @@ export default function SettingsPage() {
     )
   }
 
-  const handleDatabaseTypeChange = async (newType: "sqlite" | "postgresql" | "remote") => {
+  const handleDatabaseTypeChange = async (newType: "redis") => {
     if (!confirm("Changing database type requires system restart. Continue?")) return
 
     try {
@@ -2150,8 +2146,7 @@ export default function SettingsPage() {
           const dbData = await dbTypeResponse.json()
           setSettings((prev) => ({
             ...prev,
-            database_type: dbData.database_type || "sqlite",
-            database_url: dbData.database_url || "",
+            database_type: "redis",
           }))
         }
 

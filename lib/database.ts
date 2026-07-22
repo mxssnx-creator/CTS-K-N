@@ -1,6 +1,6 @@
 /**
  * Database Module - Redis Primary Database
- * Redis is the ONLY database. SQLite and PostgreSQL are completely removed.
+ * Redis is the only runtime database.
  */
 
 export { 

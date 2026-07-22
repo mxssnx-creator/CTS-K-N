@@ -94,10 +94,11 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/install/export	POST	install	force-dynamic		none-detected	app/api/install/export/route.ts
 /api/install/import	POST	install	force-dynamic		none-detected	app/api/install/import/route.ts
 /api/install/initialize	POST	install	force-dynamic		none-detected	app/api/install/initialize/route.ts
-/api/install/remote-postgres	POST	install	force-dynamic	3	admin	app/api/install/remote-postgres/route.ts
+/api/install/remote	POST	install	force-dynamic	300	admin	app/api/install/remote/route.ts
 /api/install/status	GET	install	force-dynamic		none-detected	app/api/install/status/route.ts
 /api/install/system-info	GET	install	force-dynamic		none-detected	app/api/install/system-info/route.ts
 /api/install/test-connection	POST	install	force-dynamic		none-detected	app/api/install/test-connection/route.ts
+/api/internal/kilo-db-bootstrap	GET	internal	force-dynamic		none-detected	app/api/internal/kilo-db-bootstrap/route.ts
 /api/logistics/queue	GET	logistics	force-dynamic		none-detected	app/api/logistics/queue/route.ts
 /api/logs	GET,POST	logs	force-dynamic		none-detected	app/api/logs/route.ts
 /api/main/indications-stats	GET	main	force-dynamic		none-detected	app/api/main/indications-stats/route.ts

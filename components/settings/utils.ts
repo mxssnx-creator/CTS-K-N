@@ -390,8 +390,7 @@ export const initialSettings: Settings = {
   activeLastPartTo: 5,
   activeLastPartStep: 0.1,
 
-  database_type: "sqlite",
-  database_url: "",
+  database_type: "redis",
 }
 
 export async function saveSettings(settings: Settings) {

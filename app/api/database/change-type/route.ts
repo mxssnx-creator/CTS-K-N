@@ -8,7 +8,7 @@ export async function POST(request: Request) {
     // Only Redis is supported
     if (type !== "redis") {
       return NextResponse.json({ 
-        error: "Only Redis is supported. SQLite and PostgreSQL have been removed from this system.",
+        error: "Only Redis is supported.",
         supportedTypes: ["redis"]
       }, { status: 400 })
     }

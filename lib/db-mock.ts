@@ -15,20 +15,8 @@ export const mockDb = {
   close: () => {},
 }
 
-export function getMockPool() {
-  return {
-    query: async (sql: string, params: any[]) => ({ rows: [] }),
-    connect: async () => ({
-      query: async (sql: string, params: any[]) => ({ rows: [] }),
-      release: () => {},
-    }),
-    end: async () => {},
-  }
-}
-
 export const mockClient = {
   sqlite: mockDb,
-  postgresql: getMockPool(),
 }
 
 export default mockClient

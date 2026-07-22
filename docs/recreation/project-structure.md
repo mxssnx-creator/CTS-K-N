@@ -63,7 +63,7 @@ CTS-K-N/
   contract, including Count1..10 Block PF statistics.
 - `app/api/cron/server-continuity/route.ts` and
   `app/api/cron/sync-live-positions/route.ts`: portable scheduled ownership.
-- `app/api/install/remote-postgres/route.ts`: legacy-named, current generic
+- `app/api/install/remote/route.ts`: authenticated SSH production installer
   remote Linux install owner/proxy route.
 
 ## Generated and runtime-only paths

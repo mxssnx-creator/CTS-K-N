@@ -11,7 +11,7 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           success: false,
-          error: "Only Redis is supported. SQLite and PostgreSQL have been deprecated.",
+          error: "Only Redis is supported.",
         },
         { status: 400 }
       )

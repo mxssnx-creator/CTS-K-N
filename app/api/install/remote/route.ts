@@ -8,7 +8,8 @@ import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
-export const maxDuration = 3_600
+// Vercel Hobby permits a maximum of 300 seconds per Serverless Function.
+export const maxDuration = 300
 
 const DEFAULT_REPOSITORY = "https://github.com/mxssnx-creator/CTS-K-N.git"
 const DEFAULT_INSTALL_DIR = "/opt/cts-k-n"
@@ -426,7 +427,7 @@ export async function POST(request: Request) {
     if (Buffer.byteLength(rawBody, "utf8") > MAX_REQUEST_BYTES) {
       return NextResponse.json({ success: false, error: "Remote install request is too large" }, { status: 413 })
     }
-    const target = new URL("/api/install/remote-postgres", ownerUrl)
+    const target = new URL("/api/install/remote", ownerUrl)
     try {
       const response = await fetch(target, {
         method: "POST",

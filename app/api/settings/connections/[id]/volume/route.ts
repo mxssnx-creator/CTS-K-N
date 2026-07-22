@@ -9,7 +9,7 @@ import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinato
  *
  * ── Why this endpoint was rewritten ────────────────────────────────
  *
- * The previous Postgres-backed PATCH accepted a single `volume_factor`
+ * The PATCH accepts a single `volume_factor`
  * field and wrote it into a `volume_configuration` table that no other
  * code path in the system reads. Result: every slider move from the
  * dashboard's `VolumeConfigurationPanel` (which already POSTs
