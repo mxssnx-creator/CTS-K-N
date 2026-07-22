@@ -1767,11 +1767,11 @@ export class InlineLocalRedis implements RedisClientLike {
     const existing = this.data.hashes.get(key) || {}
     // Support both hset(key, { field: value }) and hset(key, "field", "value")
     if (typeof dataOrField === "string" && value !== undefined) {
-      this.data.hashes.set(key, { ...existing, [dataOrField]: value })
+      this.data.hashes.set(key, { ...existing, [dataOrField]: redisHashScalar(value) })
       this.markDirty()
       return 1
     }
-    const data = dataOrField as Record<string, string>
+    const data = normalizeRedisHash(dataOrField as Record<string, unknown>)
     const updates = Object.keys(data).length
     this.data.hashes.set(key, { ...existing, ...data })
     if (updates > 0) this.markDirty()
@@ -1784,7 +1784,7 @@ export class InlineLocalRedis implements RedisClientLike {
     const key = args[0]
     const obj: Record<string, string> = {}
     for (let i = 1; i < args.length; i += 2) {
-      obj[args[i]] = args[i + 1]
+      obj[String(args[i])] = redisHashScalar(args[i + 1])
     }
     this.data.hashes.set(key, { ...this.data.hashes.get(key), ...obj })
     if (Object.keys(obj).length > 0) this.markDirty()
@@ -2396,8 +2396,8 @@ class NodeRedisClientAdapter implements RedisClientLike {
   async incrby(key: string, increment: number) { return await (await this.c()).incrBy(key, increment) }
   async del(...keys: string[]) { return await (await this.c()).del(keys) }
   async flushDb() { await (await this.c()).flushDb() }
-  async hset(key: string, dataOrField: Record<string, string> | string, value?: string) { return typeof dataOrField === "string" ? await (await this.c()).hSet(key, dataOrField, value ?? "") : await (await this.c()).hSet(key, dataOrField) }
-  async hmset(...args: string[]) { const [key, ...rest] = args; const obj: Record<string, string> = {}; for (let i = 0; i < rest.length; i += 2) obj[rest[i]] = rest[i + 1]; await this.hset(key, obj) }
+  async hset(key: string, dataOrField: Record<string, string> | string, value?: string) { return typeof dataOrField === "string" ? await (await this.c()).hSet(key, dataOrField, redisHashScalar(value)) : await (await this.c()).hSet(key, normalizeRedisHash(dataOrField as Record<string, unknown>)) }
+  async hmset(...args: string[]) { const [key, ...rest] = args; const obj: Record<string, string> = {}; for (let i = 0; i < rest.length; i += 2) obj[String(rest[i])] = redisHashScalar(rest[i + 1]); await this.hset(key, obj) }
   async hgetall(key: string) { return await (await this.c()).hGetAll(key) }
   async hlen(key: string) { return await (await this.c()).hLen(key) }
   async hget(key: string, field: string) { return await (await this.c()).hGet(key, field) }
@@ -2515,8 +2515,8 @@ class UpstashRestRedisClient implements RedisClientLike {
   async incrby(key: string, increment: number) { return await this.command<number>(["INCRBY", key, increment]) }
   async del(...keys: string[]) { return await this.command<number>(["DEL", ...keys]) }
   async flushDb() { await this.command(["FLUSHDB"]) }
-  async hset(key: string, dataOrField: Record<string, string> | string, value?: string) { const cmd: Array<string | number> = ["HSET", key]; if (typeof dataOrField === "string") cmd.push(dataOrField, value ?? ""); else for (const [f, v] of Object.entries(dataOrField)) cmd.push(f, v); return await this.command<number>(cmd) }
-  async hmset(...args: string[]) { await this.command(["HSET", ...args]) }
+  async hset(key: string, dataOrField: Record<string, string> | string, value?: string) { const cmd: Array<string | number> = ["HSET", key]; if (typeof dataOrField === "string") cmd.push(dataOrField, redisHashScalar(value)); else for (const [f, v] of Object.entries(normalizeRedisHash(dataOrField as Record<string, unknown>))) cmd.push(f, v); return await this.command<number>(cmd) }
+  async hmset(...args: string[]) { await this.command(["HSET", ...args.map((value) => redisHashScalar(value))]) }
   async hgetall(key: string) { const result = await this.command<any>(["HGETALL", key]); if (!Array.isArray(result)) return result || {}; const obj: Record<string, string> = {}; for (let i = 0; i < result.length; i += 2) obj[String(result[i])] = String(result[i + 1]); return obj }
   async hlen(key: string) { return await this.command<number>(["HLEN", key]) }
   async hget(key: string, field: string) { return await this.command<string | null>(["HGET", key, field]) }
@@ -3005,6 +3005,25 @@ function convertToString(value: any): string {
   if (value === false) return "0"
   if (value === null || value === undefined) return ""
   return String(value)
+}
+
+// Redis hashes only accept scalar command arguments. Settings and connection
+// routes legitimately pass arrays/objects, so every adapter must serialize
+// those values at the final persistence boundary. Without this, node-redis
+// rejects a whole HSET with an opaque `arguments[n] must be string | Buffer`
+// error and the UI reports a generic settings-save failure.
+function redisHashScalar(value: unknown): string {
+  if (value === undefined || value === null) return ""
+  if (typeof value === "string") return value
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value)
+  const serialized = JSON.stringify(value)
+  return serialized === undefined ? "" : serialized
+}
+
+function normalizeRedisHash(value: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(value || {}).map(([field, entry]) => [String(field), redisHashScalar(entry)]),
+  )
 }
 
 function isEnabledFlag(value: unknown): boolean {
