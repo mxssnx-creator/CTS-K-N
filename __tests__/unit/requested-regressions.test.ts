@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 37711)
-Total output lines: 2685
+Warning: truncated output (original token count: 37798)
+Total output lines: 2689
 
 import fs from "fs"
 import path from "path"
@@ -1030,14 +1030,7 @@ describe("requested regression guardrails", () => {
     const source = read("lib/connection-recoordinator.ts")
 
     expect(source).toContain("Live Trade unblocked")
-    expect(source).toContain("operator_intent || (globalState as any)?.desired_…7711 tokens truncated…eued"')
-  })
-
-  test("Real-stage evaluation denominator includes related outputs and never reports negative failures", () => {
-    const source = read("lib/strategy-coordinator.ts")
-
-    expect(source).toContain("const realRelatedCreated = Math.max(0, realSets.length - mainPFEligible)")
-    expect(source).toContain("const realTotalEvaluated = mainPFEligible + realRelatedCreated")
+    expect(source).toContain("operator_intent || (globalState as any)?.desired_…7798 tokens truncated…nPFEligible + realRelatedCreated")
     expect(source).toContain("const passRatioReal = realTotalEvaluated > 0 ? n / realTotalEvaluated : 0")
     expect(source).toContain("evaluated:          String(realEvaluatedAfterFanOut)")
     expect(source).toContain("[`s:${symbol}:evaluated`]:  String(realTotalEvaluated)")
@@ -2054,7 +2047,11 @@ describe("requested regression guardrails", () => {
 
     expect(pkg).not.toContain('"@kilocode/app-builder-db"')
     expect(pkg).toContain('"drizzle-orm": "0.45.2"')
-    expect(pkg).toContain('"db:migrate": "tsx src/db/migrate.ts"')
+    expect(pkg).toContain('"db:migrate": "node scripts/run-managed-db-migrate.mjs"')
+    const migrateRunner = read("scripts/run-managed-db-migrate.mjs")
+    expect(migrateRunner).toContain('process.env.KILO_DEPLOYMENT === "1"')
+    expect(migrateRunner).toContain('console.info("[db:migrate] Skipped: this deployment does not use Kilo managed SQLite.")')
+    expect(migrateRunner).toContain('"src/db/migrate.ts"')
     const migrate = read("src/db/migrate.ts")
     expect(migrate).toContain('DB_URL and DB_TOKEN are not configured')
     expect(migrate).toContain('process.env.KILO_DEPLOYMENT === "1"')
