@@ -79,6 +79,11 @@ function getServerActionAllowedOrigins() {
 }
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // OpenNext's Cloudflare adapter consumes the Next standalone server bundle
+  // when assembling the Worker. Keep this enabled for both Vercel and Kilo;
+  // Vercel can deploy the same deterministic output without changing route
+  // behavior, while Kilo otherwise fails after a successful Next compile.
+  output: "standalone",
   // Allow a separate build output directory (e.g. for running a production
   // `next start` alongside a `next dev` on the same project). Defaults to
   // ".next". Set NEXT_DIST_DIR only when building/starting production so the
