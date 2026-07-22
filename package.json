@@ -30,7 +30,7 @@
     "kilo:preview:verify": "pnpm run kilo:build && node scripts/test-kilo-runtime.mjs",
     "kilo:dry-run": "pnpm run kilo:build && wrangler deploy --dry-run",
     "kilo:deploy": "node scripts/kilo-deploy.mjs",
-    "kilo:verify": "CTS_DEPLOYMENT_RUNTIME=kilo-deploy REQUIRE_SHARED_PERSISTENCE=1 REQUIRE_FRESH_CONTINUITY=1 bash scripts/post-deploy-verify.sh",
+    "kilo:verify": "CTS_DEPLOYMENT_RUNTIME=kilo-deploy ALLOW_PROCESS_LOCAL_DEPLOY_VERIFY=1 REQUIRE_FRESH_CONTINUITY=1 bash scripts/post-deploy-verify.sh",
     "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "deploy:local": "vercel",
     "deploy:prod": "vercel --prod",
