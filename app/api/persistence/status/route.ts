@@ -4,7 +4,8 @@
  */
 
 import { NextRequest, NextResponse } from "next/server"
-import { getRedisBackend, getRedisClient, initRedis } from "@/lib/redis-db"
+import { getRedisBackend, getRedisClient, initRedis, isSharedPersistenceBackend } from "@/lib/redis-db"
+import { getRealTradeInfrastructureBlockReason } from "@/lib/real-trade-gates"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -14,7 +15,8 @@ export async function GET(request: NextRequest) {
     await initRedis()
     const client = getRedisClient()
     const backend = getRedisBackend()
-    const shared = backend === "redis-network"
+    const shared = isSharedPersistenceBackend(backend)
+    const liveOrderCoordinationReady = getRealTradeInfrastructureBlockReason().length === 0
 
     // Get Redis statistics
     const dbSize = await client.dbSize().catch(() => 0)
@@ -58,7 +60,7 @@ export async function GET(request: NextRequest) {
         page_refresh_recovery: true,
         rebuild_recovery: shared,
         cross_worker_recovery: shared,
-        live_order_coordination: shared,
+        live_order_coordination: liveOrderCoordinationReady,
       },
       recovery: {
         last_snapshot: shared ? "Provider managed" : "Not guaranteed",
@@ -66,12 +68,16 @@ export async function GET(request: NextRequest) {
         session_restore_on_refresh: "Available while the same store remains active",
         ui_state_preservation: shared ? "Cross-instance" : "Current worker only",
       },
-      warnings: shared
-        ? []
-        : [
-            "InlineLocalRedis is process-local and can reset on worker restart or scale-out.",
-            "Configure shared Redis before enabling real exchange order placement.",
-          ],
+      warnings: [
+        ...(shared
+          ? []
+          : [
+              "InlineLocalRedis is process-local and can reset on worker restart or scale-out.",
+            ]),
+        ...(!liveOrderCoordinationReady
+          ? [getRealTradeInfrastructureBlockReason()]
+          : []),
+      ],
     })
   } catch (error) {
     console.error("[v0] Error getting persistence status:", error)

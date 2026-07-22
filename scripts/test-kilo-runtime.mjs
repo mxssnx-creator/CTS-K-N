@@ -119,6 +119,8 @@ async function verifyProductionLayoutCss(html) {
   const css = styles.map((style) => String(style.data)).join("\n")
   assert(css.includes(".page-header-shell"), "Production CSS is missing PageHeader styles")
   assert(/\.page-header-shell\{[^}]*position:sticky/.test(css), "Production PageHeader is not sticky/visible")
+  assert(/\.page-header-shell\{[^}]*flex:0 0 auto/.test(css), "Production PageHeader can still collapse in the shell")
+  assert(/\.page-header-shell\{[^}]*min-height:4rem/.test(css), "Production PageHeader has no visible height floor")
   assert(css.includes("--sidebar-width"), "Production CSS is missing Sidebar dimensions")
   assert(css.includes("@media (min-width:768px)"), "Production CSS is missing responsive desktop utilities")
   return { stylesheets: cssPaths.length }
@@ -140,10 +142,19 @@ async function waitForHealth(child) {
 
 async function stop(child) {
   if (child.exitCode !== null) return
-  child.kill("SIGTERM")
+  const signalTree = (signal) => {
+    if (process.platform === "win32") return child.kill(signal)
+    try {
+      process.kill(-child.pid, signal)
+      return true
+    } catch {
+      return child.kill(signal)
+    }
+  }
+  signalTree("SIGTERM")
   await Promise.race([
     new Promise((resolve) => child.once("exit", resolve)),
-    sleep(5_000).then(() => child.kill("SIGKILL")),
+    sleep(5_000).then(() => signalTree("SIGKILL")),
   ])
 }
 
@@ -173,6 +184,7 @@ async function main() {
     "--var", "CRON_PREHISTORIC_SYMBOL_LIMIT:5",
   ], {
     cwd: process.cwd(),
+    detached: process.platform !== "win32",
     env: {
       ...process.env,
       HOME: workDir,
@@ -649,6 +661,25 @@ async function main() {
     assert(continuity?.live_recovery?.last_tick_fresh === true, "Cloudflare live-recovery tick is not fresh")
     assert(continuity?.last_tick_source === "cloudflare-scheduled", "Unexpected continuity tick source")
 
+    const dashboardPulse = await request("/api/runtime/dashboard-pulse", {
+      method: "POST",
+      headers: {
+        Origin: baseUrl,
+        "Sec-Fetch-Site": "same-origin",
+        "x-cts-dashboard-pulse": "1",
+      },
+      timeoutMs: 180_000,
+    })
+    assert(dashboardPulse.data?.success === true, "Kilo same-origin dashboard pulse failed")
+    assert(
+      dashboardPulse.data?.source === "same-origin-paper-dashboard-fallback",
+      "Kilo dashboard pulse did not stay in the fail-closed paper-only mode",
+    )
+    assert(
+      dashboardPulse.data?.continuity?.skipped === true && dashboardPulse.data?.recovery?.skipped === true,
+      "Kilo same-minute dashboard pulse did not respect dedup/live-recovery safety",
+    )
+
     console.log(JSON.stringify({
       success: true,
       health: health.status,
@@ -665,6 +696,7 @@ async function main() {
       quickStartFiveSymbolsVerified: true,
       historicMainProgressVerified: `${quickstartSymbols.length}/${quickstartSymbols.length}`,
       settingsGenerationAckVerified: true,
+      dashboardPaperPulseVerified: true,
       scheduledProcessingOwnerVerified: true,
       statisticsAndTradeHistoryVerified: true,
       stateSwitchesVerified: ["disable", "enable", "live-request-blocked", "live-off", "pause", "resume", "stop", "start", "final-stop"],

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
-import { initRedis, getRedisBackend, getRedisClient, isRedisConnected, getConnectionCountDiagnostics } from "@/lib/redis-db"
+import { initRedis, getRedisBackend, getRedisClient, isRedisConnected, getConnectionCountDiagnostics, isSharedPersistenceBackend, isKiloSnapshotBackend } from "@/lib/redis-db"
+import { getRealTradeInfrastructureBlockReason } from "@/lib/real-trade-gates"
 
 export const dynamic = "force-dynamic"
 
@@ -19,7 +20,8 @@ export async function GET() {
     const client = getRedisClient()
     const connected = isRedisConnected()
     const backend = getRedisBackend()
-    const shared = backend === "redis-network"
+    const shared = isSharedPersistenceBackend(backend)
+    const liveOrderCoordinationReady = getRealTradeInfrastructureBlockReason().length === 0
     
     let connectionCount = 0
     let connectionCounts = { connection_hash_count: 0, legacy_connection_set_count: 0 }
@@ -41,8 +43,8 @@ export async function GET() {
       isConnected: connected,
       isSharedConfigured: shared,
       isCrossInstanceDurable: shared,
-      liveOrderCoordinationReady: shared || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1",
-      url: maskedUrl,
+      liveOrderCoordinationReady,
+      url: isKiloSnapshotBackend(backend) ? "kilo-sqlite://managed-snapshot" : maskedUrl,
       tableCount: connectionCount,
       connection_hash_count: connectionCounts.connection_hash_count,
       legacy_connection_set_count: connectionCounts.legacy_connection_set_count,
@@ -54,10 +56,14 @@ export async function GET() {
         UPSTASH_REDIS_REST_TOKEN: !!process.env.UPSTASH_REDIS_REST_TOKEN,
         KV_REST_API_URL: !!process.env.KV_REST_API_URL,
         KV_REST_API_TOKEN: !!process.env.KV_REST_API_TOKEN,
+        DB_URL: !!process.env.DB_URL,
+        DB_TOKEN: !!process.env.DB_TOKEN,
       },
-      warning: shared
-        ? null
-        : "InlineLocalRedis is connected but process-local; configure shared Redis for restart-safe production and live orders.",
+      warning: !shared
+        ? "InlineLocalRedis is connected but process-local; configure shared persistence for restart-safe production."
+        : liveOrderCoordinationReady
+          ? null
+          : getRealTradeInfrastructureBlockReason(),
     })
   } catch (error) {
     console.error("[v0] Failed to get database status:", error)

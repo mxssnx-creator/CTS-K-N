@@ -89,6 +89,42 @@ export function EngineAutoInitializer() {
     return () => clearTimeout(timer)
   }, [])
 
+  useEffect(() => {
+    const kiloHost = window.location.hostname.toLowerCase().endsWith(".kiloapps.io")
+    if (process.env.NEXT_PUBLIC_KILO_DASHBOARD_PULSE !== "1" && !kiloHost) return
+    let cancelled = false
+    let inFlight = false
+    const pulse = async () => {
+      if (cancelled || inFlight || document.visibilityState === "hidden") return
+      inFlight = true
+      try {
+        await fetch("/api/runtime/dashboard-pulse", {
+          method: "POST",
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: { "x-cts-dashboard-pulse": "1" },
+        })
+      } catch {
+        // The normal status widgets surface continuity failures. Avoid a noisy
+        // console loop when the operator session expires or connectivity drops.
+      } finally {
+        inFlight = false
+      }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void pulse()
+    }
+    const initial = window.setTimeout(() => void pulse(), 1_500)
+    const interval = window.setInterval(() => void pulse(), 60_000)
+    document.addEventListener("visibilitychange", onVisibility)
+    return () => {
+      cancelled = true
+      window.clearTimeout(initial)
+      window.clearInterval(interval)
+      document.removeEventListener("visibilitychange", onVisibility)
+    }
+  }, [])
+
   // This component renders nothing, it only performs initialization
   return null
 }

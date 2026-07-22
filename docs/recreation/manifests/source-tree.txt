@@ -311,6 +311,7 @@ app/api/presets/route.ts
 app/api/progression/route.ts
 app/api/quickstart/prehistoric-log/route.ts
 app/api/risk/metrics/route.ts
+app/api/runtime/dashboard-pulse/route.ts
 app/api/settings/connection-settings/route.ts
 app/api/settings/connections/[id]/active-indications/route.ts
 app/api/settings/connections/[id]/active/route.ts

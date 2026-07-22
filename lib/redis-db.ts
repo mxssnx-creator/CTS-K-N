@@ -85,9 +85,100 @@ const globalForRedis = globalThis as unknown as {
   __redis_backend?: RedisBackend
   __redis_volatile_startup_cleanup_ran?: boolean
   __connection_state_queues?: Map<string, Promise<void>>
+  __kilo_snapshot_revision?: number
+  __kilo_snapshot_last_synced_at?: number
+  __kilo_snapshot_schema_promise?: Promise<void>
+  __kilo_snapshot_refresh_promise?: Promise<boolean>
+  __kilo_database_query?: (
+    sql: string,
+    params: unknown[],
+    method: KiloDatabaseMethod,
+  ) => Promise<{ rows: unknown[] | unknown[][] }>
 }
 
-export type RedisBackend = "inline-local" | "redis-network"
+export type RedisBackend = "inline-local" | "redis-network" | "kilo-sqlite-snapshot"
+
+const KILO_SNAPSHOT_TABLE = "cts_runtime_snapshot"
+
+function hasKiloManagedDatabaseConfig(): boolean {
+  return Boolean(process.env.DB_URL && process.env.DB_TOKEN)
+}
+
+type KiloDatabaseMethod = "get" | "all" | "run" | "values"
+
+async function executeKiloDatabaseQuery(
+  sql: string,
+  params: unknown[] = [],
+  method: KiloDatabaseMethod = "all",
+): Promise<any[]> {
+  const url = String(process.env.DB_URL || "").trim()
+  const token = String(process.env.DB_TOKEN || "").trim()
+  if (!url || !token) throw new Error("Kilo managed database credentials are not configured")
+
+  if (!globalForRedis.__kilo_database_query) {
+    globalForRedis.__kilo_database_query = async (querySql, queryParams, queryMethod) => {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ sql: querySql, params: queryParams, method: queryMethod }),
+        cache: "no-store",
+      })
+      const responseText = await response.text()
+      if (!response.ok) {
+        throw new Error(`Kilo snapshot database query failed (${response.status}): ${responseText.slice(0, 300)}`)
+      }
+      const decoded = responseText ? JSON.parse(responseText) : { rows: [] }
+      return { rows: Array.isArray(decoded?.rows) ? decoded.rows : [] }
+    }
+  }
+  const payload = await globalForRedis.__kilo_database_query(sql, params, method)
+  if (Array.isArray(payload?.rows)) return payload.rows as any[]
+  return []
+}
+
+function databaseRowValue(row: any, name: string, index: number): unknown {
+  if (row && !Array.isArray(row) && typeof row === "object") return row[name]
+  if (Array.isArray(row)) return row[index]
+  return undefined
+}
+
+async function ensureKiloSnapshotSchema(): Promise<void> {
+  if (!hasKiloManagedDatabaseConfig()) return
+  if (!globalForRedis.__kilo_snapshot_schema_promise) {
+    globalForRedis.__kilo_snapshot_schema_promise = executeKiloDatabaseQuery(
+      `CREATE TABLE IF NOT EXISTS ${KILO_SNAPSHOT_TABLE} (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        revision INTEGER NOT NULL DEFAULT 0,
+        payload TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        lease_owner TEXT,
+        lease_scope TEXT,
+        lease_until INTEGER
+      )`,
+      [],
+      "run",
+    ).then(() => undefined).catch((error) => {
+      globalForRedis.__kilo_snapshot_schema_promise = undefined
+      throw error
+    })
+  }
+  return globalForRedis.__kilo_snapshot_schema_promise
+}
+
+export function isSharedPersistenceBackend(
+  backend: RedisBackend | string = getRedisBackend(),
+): boolean {
+  return backend === "redis-network" || backend === "kilo-sqlite-snapshot"
+}
+
+export function isKiloSnapshotBackend(
+  backend: RedisBackend | string = getRedisBackend(),
+): boolean {
+  return backend === "kilo-sqlite-snapshot"
+}
 
 export interface RedisClientLike {
   ping(): Promise<string>
@@ -327,6 +418,128 @@ export class InlineLocalRedis implements RedisClientLike {
     }
   }
 
+  private isCleanForSharedRefresh(): boolean {
+    return this.persistedVersion() >= this.mutationVersion()
+  }
+
+  /**
+   * Load the latest cross-worker checkpoint from Kilo's managed SQLite
+   * database. A warm isolate refreshes only while its local snapshot is clean;
+   * silently replacing unpersisted writes would be worse than surfacing the
+   * optimistic-concurrency conflict at the next persistence barrier.
+   */
+  async refreshFromSharedSnapshot(force = false): Promise<boolean> {
+    if (!hasKiloManagedDatabaseConfig()) return false
+    if (!force && !this.isCleanForSharedRefresh()) return false
+    if (globalForRedis.__kilo_snapshot_refresh_promise) {
+      return globalForRedis.__kilo_snapshot_refresh_promise
+    }
+
+    const refresh = (async () => {
+      await ensureKiloSnapshotSchema()
+      const rows = await executeKiloDatabaseQuery(
+        `SELECT revision, payload, updated_at FROM ${KILO_SNAPSHOT_TABLE} WHERE id = 1`,
+        [],
+        "all",
+      )
+      const row = rows[0]
+      if (!row) {
+        globalForRedis.__kilo_snapshot_revision = 0
+        globalForRedis.__kilo_snapshot_last_synced_at = Date.now()
+        return false
+      }
+
+      const revision = Number(databaseRowValue(row, "revision", 0) || 0)
+      const currentRevision = Number(globalForRedis.__kilo_snapshot_revision || 0)
+      if (!force && revision <= currentRevision) {
+        globalForRedis.__kilo_snapshot_last_synced_at = Date.now()
+        return true
+      }
+      const raw = String(databaseRowValue(row, "payload", 1) || "")
+      const parsed = JSON.parse(raw)
+      if (!this.applySnapshot(parsed)) {
+        throw new Error(`Kilo shared snapshot revision ${revision} has an invalid payload`)
+      }
+      if (currentRevision === 0) this.clearRestoredInlineProcessOwnership()
+      globalForRedis.__kilo_snapshot_revision = revision
+      globalForRedis.__kilo_snapshot_last_synced_at = Date.now()
+      globalForRedis.__redis_snapshot_mutation_version = Number(parsed?.mutationVersion || 0)
+      this.markPersisted(this.mutationVersion())
+      return true
+    })()
+    globalForRedis.__kilo_snapshot_refresh_promise = refresh
+    try {
+      return await refresh
+    } finally {
+      if (globalForRedis.__kilo_snapshot_refresh_promise === refresh) {
+        globalForRedis.__kilo_snapshot_refresh_promise = undefined
+      }
+    }
+  }
+
+  private async saveToSharedSnapshotUnlocked(): Promise<boolean> {
+    if (!hasKiloManagedDatabaseConfig()) return false
+    await ensureKiloSnapshotSchema()
+    const expectedRevision = Number(globalForRedis.__kilo_snapshot_revision || 0)
+    const snapshotVersion = this.mutationVersion()
+    const payload = this.buildSnapshot()
+    const rows = await executeKiloDatabaseQuery(
+      `INSERT INTO ${KILO_SNAPSHOT_TABLE} (id, revision, payload, updated_at, lease_owner, lease_scope, lease_until)
+       VALUES (1, 1, ?, ?, NULL, NULL, NULL)
+       ON CONFLICT(id) DO UPDATE SET
+         revision = ${KILO_SNAPSHOT_TABLE}.revision + 1,
+         payload = excluded.payload,
+         updated_at = excluded.updated_at
+       WHERE ${KILO_SNAPSHOT_TABLE}.revision = ?
+       RETURNING revision`,
+      [payload, Date.now(), expectedRevision],
+      "all",
+    )
+    const nextRevision = Number(databaseRowValue(rows[0], "revision", 0) || 0)
+    if (!Number.isFinite(nextRevision) || nextRevision <= expectedRevision) {
+      console.warn(
+        `[v0] [Redis Persistence] Kilo snapshot CAS conflict at revision ${expectedRevision}; refusing stale overwrite`,
+      )
+      return false
+    }
+    globalForRedis.__kilo_snapshot_revision = nextRevision
+    globalForRedis.__kilo_snapshot_last_synced_at = Date.now()
+    this.markPersisted(snapshotVersion)
+    return true
+  }
+
+  async acquireSharedSnapshotLease(scope: string, ttlMs = 70_000, waitMs = 8_000): Promise<string | null> {
+    if (!hasKiloManagedDatabaseConfig()) return null
+    await ensureKiloSnapshotSchema()
+    const owner = `${scope}:${Date.now()}:${Math.random().toString(36).slice(2, 12)}`
+    const deadline = Date.now() + Math.max(0, waitMs)
+    do {
+      const now = Date.now()
+      const rows = await executeKiloDatabaseQuery(
+        `UPDATE ${KILO_SNAPSHOT_TABLE}
+         SET lease_owner = ?, lease_scope = ?, lease_until = ?
+         WHERE id = 1 AND (lease_until IS NULL OR lease_until < ? OR lease_owner = ?)
+         RETURNING lease_owner`,
+        [owner, scope, now + ttlMs, now, owner],
+        "all",
+      )
+      if (String(databaseRowValue(rows[0], "lease_owner", 0) || "") === owner) return owner
+      if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 40 + Math.floor(Math.random() * 40)))
+    } while (Date.now() < deadline)
+    return null
+  }
+
+  async releaseSharedSnapshotLease(owner: string): Promise<void> {
+    if (!hasKiloManagedDatabaseConfig() || !owner) return
+    await executeKiloDatabaseQuery(
+      `UPDATE ${KILO_SNAPSHOT_TABLE}
+       SET lease_owner = NULL, lease_scope = NULL, lease_until = NULL
+       WHERE id = 1 AND lease_owner = ?`,
+      [owner],
+      "run",
+    )
+  }
+
   /**
    * A disk snapshot is restored by a brand-new process. InlineLocalRedis is
    * deliberately single-process, so runtime ownership from the previous PID
@@ -386,6 +599,10 @@ export class InlineLocalRedis implements RedisClientLike {
     if (globalCtx.__engine_manager_instance?.isEngineRunning || coordinatorHasEngines) {
       console.log(`[v0] [Redis] Snapshot reload skipped: engine/coordinator running in this process`)
       return false
+    }
+
+    if (hasKiloManagedDatabaseConfig()) {
+      return this.refreshFromSharedSnapshot(true)
     }
 
     const target = await this.resolveSnapshotPath()
@@ -453,6 +670,9 @@ export class InlineLocalRedis implements RedisClientLike {
 
   private async saveToDiskUnlocked(): Promise<boolean> {
     try {
+      if (hasKiloManagedDatabaseConfig()) {
+        return await this.saveToSharedSnapshotUnlocked()
+      }
       const primary = await this.resolveSnapshotPath()
       if (!primary) return false
       // Bare specifier — see comment in `resolveSnapshotPath`.
@@ -2101,7 +2321,8 @@ function hasSharedRedisConfig(): boolean {
     process.env.REDIS_URL ||
       process.env.KV_URL ||
       (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
-      (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN),
+      (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) ||
+      hasKiloManagedDatabaseConfig(),
   )
 }
 
@@ -2109,7 +2330,8 @@ function getMissingProductionRedisError(): string {
   return (
     "Production/preview Redis configuration missing: configure one shared Redis option " +
     "(REDIS_URL, KV_URL, UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN, or " +
-    "KV_REST_API_URL + KV_REST_API_TOKEN). InlineLocalRedis is now allowed by default " +
+    "KV_REST_API_URL + KV_REST_API_TOKEN), or Kilo managed DB_URL + DB_TOKEN. " +
+    "InlineLocalRedis is now allowed by default " +
     "for this deployment profile; set ALLOW_PROD_INLINE_REDIS=0 to force a hard failure instead."
   )
 }
@@ -2356,6 +2578,10 @@ function createRedisInstance(): RedisClientLike {
   if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
     globalForRedis.__redis_backend = "redis-network"
     return new UpstashRestRedisClient(process.env.KV_REST_API_URL, process.env.KV_REST_API_TOKEN)
+  }
+  if (hasKiloManagedDatabaseConfig()) {
+    globalForRedis.__redis_backend = "kilo-sqlite-snapshot"
+    return new InlineLocalRedis()
   }
   if (isProductionEnvironment() && !hasSharedRedisConfig()) {
     if (!isProdInlineRedisAllowed()) {
@@ -2620,6 +2846,9 @@ export async function initRedis(): Promise<void> {
         await runMigrations()
         globalForRedis.__redis_fully_connected = true
       }
+      if (isKiloSnapshotBackend() && redisInstance instanceof InlineLocalRedis) {
+        await redisInstance.refreshFromSharedSnapshot()
+      }
     } catch (error) {
       isConnected = false
       migrationsRan = false
@@ -2628,7 +2857,12 @@ export async function initRedis(): Promise<void> {
     }
     return
   }
-  if (isConnected) return
+  if (isConnected) {
+    if (isKiloSnapshotBackend() && redisInstance instanceof InlineLocalRedis) {
+      await redisInstance.refreshFromSharedSnapshot()
+    }
+    return
+  }
 
   if (globalForRedis.__redis_init_promise) return globalForRedis.__redis_init_promise
 
@@ -2696,6 +2930,12 @@ export async function initRedis(): Promise<void> {
       if (isProductionEnvironment()) globalForRedis.__redis_volatile_startup_cleanup_ran = true
     }
 
+    if (isKiloSnapshotBackend() && redisInstance instanceof InlineLocalRedis) {
+      const persisted = await redisInstance.persistNow()
+      if (!persisted) {
+        throw new Error("Kilo managed runtime snapshot could not be initialized without overwriting a newer revision")
+      }
+    }
     isConnected = true
     globalForRedis.__redis_fully_connected = true
   })()
@@ -3359,6 +3599,40 @@ export async function persistNow(): Promise<boolean> {
     return (client as any).saveToDisk()
   }
   return false
+}
+
+/**
+ * Serialize a state-changing request or bounded engine cycle across Kilo
+ * request workers. Network Redis already supplies command-level atomicity and
+ * InlineLocalRedis is deliberately single-process, so only the managed
+ * snapshot backend needs this coarse global lease.
+ */
+export async function withSharedPersistenceLease<T>(
+  scope: string,
+  work: () => Promise<T>,
+  options: { ttlMs?: number; waitMs?: number } = {},
+): Promise<T> {
+  await initRedis()
+  const client = getClient()
+  if (!isKiloSnapshotBackend() || !(client instanceof InlineLocalRedis)) return work()
+
+  const owner = await client.acquireSharedSnapshotLease(
+    scope,
+    options.ttlMs ?? 70_000,
+    options.waitMs ?? 8_000,
+  )
+  if (!owner) throw new Error(`Timed out waiting for Kilo shared-state lease (${scope})`)
+  try {
+    await client.refreshFromSharedSnapshot(true)
+    const result = await work()
+    const persisted = await client.persistNow()
+    if (!persisted) {
+      throw new Error(`Kilo shared-state revision conflict while committing ${scope}`)
+    }
+    return result
+  } finally {
+    await client.releaseSharedSnapshotLease(owner).catch(() => undefined)
+  }
 }
 
 export async function getAllSettings(): Promise<Record<string, any>> {

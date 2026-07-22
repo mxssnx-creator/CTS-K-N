@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { getRedisClient, initRedis } from "@/lib/redis-db"
+import { getRedisClient, initRedis, withSharedPersistenceLease } from "@/lib/redis-db"
 import { runTradeEngineHealingSweep } from "@/lib/trade-engine-auto-start"
 import { startServerContinuityRunner } from "@/lib/server-continuity-runner"
 import { authorizeCronRequest, createInternalCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
@@ -15,8 +15,8 @@ const MINUTE_DEDUP_PREFIX = "cron:server-continuity:minute"
 const DIAGNOSTIC_KEY = "system:coordination:continuity"
 
 function requestSource(request: Request): string {
-  if (request.headers.get("x-cloudflare-cron") === "1") return "cloudflare-scheduled"
   if (request.headers.get("x-cron-source")) return String(request.headers.get("x-cron-source"))
+  if (request.headers.get("x-cloudflare-cron") === "1") return "cloudflare-scheduled"
   if ((request.headers.get("user-agent") || "").includes("cts-portable-minute-scheduler")) {
     return "portable-minute-scheduler"
   }
@@ -60,6 +60,7 @@ export async function GET(request: Request) {
   const auth = authorizeCronRequest(request)
   if (!auth.ok) return cronAuthorizationResponse(auth)
 
+  return withSharedPersistenceLease("cron:server-continuity", async () => {
   const startedAt = Date.now()
   const token = `continuity_${startedAt}_${Math.random().toString(36).slice(2, 10)}`
 
@@ -138,6 +139,7 @@ export async function GET(request: Request) {
       { status: 500 },
     )
   }
+  }, { ttlMs: 75_000, waitMs: 2_000 })
 }
 
 export async function POST(request: Request) {

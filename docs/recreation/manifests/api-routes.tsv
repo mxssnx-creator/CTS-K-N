@@ -159,6 +159,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/progression	GET,POST	progression	force-dynamic		none-detected	app/api/progression/route.ts
 /api/quickstart/prehistoric-log	GET	quickstart	force-dynamic		none-detected	app/api/quickstart/prehistoric-log/route.ts
 /api/risk/metrics	POST	risk	force-dynamic		none-detected	app/api/risk/metrics/route.ts
+/api/runtime/dashboard-pulse	GET,POST	runtime	force-dynamic	60	none-detected	app/api/runtime/dashboard-pulse/route.ts
 /api/settings	GET,POST,PUT	settings	force-dynamic		none-detected	app/api/settings/route.ts
 /api/settings/connection-settings	DELETE,GET,POST	settings	force-dynamic		none-detected	app/api/settings/connection-settings/route.ts
 /api/settings/connections	GET,POST	settings	force-dynamic	30	none-detected	app/api/settings/connections/route.ts

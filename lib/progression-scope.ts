@@ -1,3 +1,5 @@
+import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+
 const DEFAULT_ENGINE_TYPE = "main"
 
 function safeRedisPart(value: string | undefined | null, fallback: string): string {
@@ -84,8 +86,11 @@ export function buildProgressionScope(connectionId: string, engineType = DEFAULT
  */
 export function progressionReadKeys(scope: ProgressionScope): string[] {
   const scheduledBoundedOwner =
-    process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1" &&
-    String(process.env.DEPLOYMENT_CRON_MODE || "").toLowerCase() === "cloudflare-scheduled"
+    isServerlessDeploymentRuntime() ||
+    (process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1" &&
+      ["cloudflare-scheduled", "authenticated-dashboard-fallback"].includes(
+        String(process.env.DEPLOYMENT_CRON_MODE || "").toLowerCase(),
+      ))
   return scheduledBoundedOwner
     ? [scope.legacyProgressionKey, scope.progressionKey]
     : [scope.progressionKey, scope.legacyProgressionKey]

@@ -133,6 +133,8 @@ describe("production installation and Kilo deployment contract", () => {
     expect(buildNormalizer).toContain("resolve(src) !== resolve(dest)")
     expect(buildNormalizer).toContain("isValidJson(src)")
     expect(buildNormalizer).toContain("standaloneManifest")
+    expect(buildNormalizer).toContain("reconstructPrerenderManifest")
+    expect(buildNormalizer).toContain("writeJsonAtomically")
     expect(buildNormalizer).toContain("export-marker.json")
     expect(buildNormalizer).toContain("hasExportPathMap: false")
     expect(buildNormalizer).toContain("serializedNextConfig.output === 'export'")
@@ -149,6 +151,7 @@ describe("production installation and Kilo deployment contract", () => {
       await Promise.all([
         writeFile(path.join(root, "next-env.d.ts"), ""),
         writeFile(path.join(dist, "routes-manifest.json"), "{}\n"),
+        writeFile(path.join(dist, "prerender-manifest.json"), '{"version":4,"routes":{},"dynamicRoutes":{},"notFoundRoutes":[],"preview":{}}\n'),
         writeFile(path.join(dist, "required-server-files.json"), '{"config":{"trailingSlash":false,"images":{"unoptimized":true,"deviceSizes":[640,1080]}}}\n'),
         writeFile(path.join(dist, "images-manifest.json"), ""),
         writeFile(path.join(dist, "export-marker.json"), ""),
@@ -172,6 +175,53 @@ describe("production installation and Kilo deployment contract", () => {
     }
   })
 
+  it("reconstructs an invalid prerender manifest from completed app output", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "cts-next-prerender-"))
+    const dist = path.join(root, ".next")
+    const app = path.join(dist, "server", "app")
+    const standalone = path.join(dist, "standalone", ".next")
+    const normalizer = path.join(process.cwd(), "scripts/normalize-next-env.mjs")
+    try {
+      await Promise.all([
+        mkdir(path.join(app, "settings"), { recursive: true }),
+        mkdir(standalone, { recursive: true }),
+      ])
+      await Promise.all([
+        writeFile(path.join(root, "next-env.d.ts"), ""),
+        writeFile(path.join(dist, "routes-manifest.json"), "{}\n"),
+        writeFile(path.join(dist, "required-server-files.json"), '{"config":{"images":{}}}\n'),
+        writeFile(path.join(dist, "images-manifest.json"), "{}\n"),
+        writeFile(path.join(dist, "export-marker.json"), "{}\n"),
+        writeFile(path.join(dist, "prerender-manifest.json"), ""),
+        writeFile(path.join(standalone, "prerender-manifest.json"), ""),
+        writeFile(path.join(app, "index.html"), "<main />"),
+        writeFile(path.join(app, "index.rsc"), "root"),
+        writeFile(path.join(app, "settings", "connections.html"), "<main />"),
+        writeFile(path.join(app, "settings", "connections.rsc"), "settings"),
+      ])
+
+      execFileSync(process.execPath, [normalizer], { cwd: root })
+      const manifest = JSON.parse(await readFile(path.join(dist, "prerender-manifest.json"), "utf8"))
+      expect(manifest).toMatchObject({
+        version: 4,
+        routes: {
+          "/": { srcRoute: "/", dataRoute: "/index.rsc" },
+          "/settings/connections": {
+            srcRoute: "/settings/connections",
+            dataRoute: "/settings/connections.rsc",
+          },
+        },
+        dynamicRoutes: {},
+        notFoundRoutes: [],
+      })
+      expect(manifest.preview.previewModeId).toHaveLength(32)
+      expect(JSON.parse(await readFile(path.join(standalone, "prerender-manifest.json"), "utf8")))
+        .toEqual(manifest)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it("keeps custom-dist generated route types out of the canonical tsc universe", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "cts-next-custom-types-"))
     const dist = path.join(root, ".next-prod")
@@ -184,6 +234,7 @@ describe("production installation and Kilo deployment contract", () => {
           include: ["**/*.ts", ".next/types/**/*.ts", ".next-prod/types/**/*.ts"],
         })),
         writeFile(path.join(dist, "routes-manifest.json"), "{}\n"),
+        writeFile(path.join(dist, "prerender-manifest.json"), '{"version":4,"routes":{},"dynamicRoutes":{},"notFoundRoutes":[],"preview":{}}\n'),
         writeFile(path.join(dist, "required-server-files.json"), '{"config":{"images":{}}}\n'),
         writeFile(path.join(dist, "images-manifest.json"), "{}\n"),
         writeFile(path.join(dist, "export-marker.json"), "{}\n"),

@@ -139,6 +139,8 @@ main {
   position: sticky;
   top: 0;
   z-index: 30;
+  flex: 0 0 auto;
+  min-height: 4rem;
   background: hsl(var(--background) / 0.96);
 }
 

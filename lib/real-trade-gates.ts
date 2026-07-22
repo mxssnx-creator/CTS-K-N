@@ -39,6 +39,18 @@ function hasSharedRedisConfig(): boolean {
   )
 }
 
+function hasKiloSnapshotCoordinationConfig(): boolean {
+  return Boolean(process.env.DB_URL && process.env.DB_TOKEN)
+}
+
+function hasDurableLiveCoordination(): boolean {
+  if (hasSharedRedisConfig()) return true
+  return (
+    hasKiloSnapshotCoordinationConfig() &&
+    process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1"
+  )
+}
+
 function isInlineRedisLiveTradingAllowed(): boolean {
   // A local opt-in can be acceptable for one explicitly single-process Node
   // owner. It must never bypass shared coordination on Kilo/Vercel/Lambda/
@@ -72,7 +84,14 @@ export function hasUsableLiveCredentials(settings: Record<string, any>): boolean
 }
 
 export function getRealTradeInfrastructureBlockReason(): string {
-  if (!hasSharedRedisConfig() && !isInlineRedisLiveTradingAllowed()) {
+  if (
+    !hasSharedRedisConfig() &&
+    hasKiloSnapshotCoordinationConfig() &&
+    process.env.ALLOW_KILO_SQLITE_LIVE_TRADING !== "1"
+  ) {
+    return "Live trading blocked: Kilo managed snapshot persistence is active, but exchange-order coordination has not passed the explicit ALLOW_KILO_SQLITE_LIVE_TRADING safety gate."
+  }
+  if (!hasDurableLiveCoordination() && !isInlineRedisLiveTradingAllowed()) {
     return "Live trading blocked: shared Redis is not configured; using InlineLocalRedis fallback. Configure shared Redis or set ALLOW_INLINE_REDIS_LIVE_TRADING=1 explicitly for a single-process deployment."
   }
   return ""

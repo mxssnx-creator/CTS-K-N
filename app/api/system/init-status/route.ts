@@ -13,7 +13,7 @@ export const runtime = "nodejs"
  */
 export async function GET(request: NextRequest) {
   try {
-    const { initRedis, isRedisConnected, getRedisBackend, getRedisStats, getAllConnections } = await import("@/lib/redis-db")
+    const { initRedis, isRedisConnected, getRedisBackend, getRedisStats, getAllConnections, isSharedPersistenceBackend } = await import("@/lib/redis-db")
     const { getMigrationStatus } = await import("@/lib/redis-migrations")
 
     // Try to connect to Redis.
@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
     // on the module-scoped boolean or the (now-dead) resolved promise.
     await initRedis()
     const redisBackend = getRedisBackend()
-    const sharedRedis = redisBackend === "redis-network"
+    const sharedRedis = isSharedPersistenceBackend(redisBackend)
     const { getRedisClient: _probeClient } = await import("@/lib/redis-db")
     let connected = isRedisConnected()
     if (!connected) {

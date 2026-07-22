@@ -17,10 +17,10 @@ executed.
 | Shell/JS/JSON/source syntax | pass |
 | TypeScript | pass |
 | ESLint | pass |
-| Jest | 92 suites, 570 tests, 0 failures |
+| Jest | 92 suites, 573 tests, 0 failures |
 | Next 15.5.18 optimized build | pass; 40 static pages generated |
 | Isolated `.next-prod` build | pass; custom-dist static generation serialized and the Next 15 missing `pages-manifest.json` post-emit race repaired before page-data collection |
-| Release-tree secret scan | pass; 1,159 files inspected, 0 findings |
+| Release-tree secret scan | pass; 1,160 files inspected, 0 findings |
 | Redis schema | v82, sequential migration inventory |
 
 ## Strategy correctness evidence
@@ -59,7 +59,7 @@ executed.
 | Full Vercel builder | pass locally; provider simulation reproduced and eliminated read-only `corepack enable` EROFS, Next 15's zero-byte `export-marker.json`, and stale `export-detail.json` false-static classification; dynamic/API functions are retained |
 | OpenNext 1.20.1 build | pass; generated `.open-next/worker.js` |
 | Wrangler 4.86.0 dry-run | pass; 831 assets accepted for upload |
-| Local Workerd Kilo runtime | pass; health, schema v82, 12 UI routes and 268 served UI scripts, exact 5/5 Historic/Main progress, version/event Settings ACK, Block-PF/position-count/volume changes, external-owner queue, all global/connection state switches, statistics/history, live fail-closed, admin auth, remote-owner fail-closed route, scheduled continuity and live recovery |
+| Local Workerd Kilo runtime | pass; health, schema v82, 12 UI routes and 268 served UI scripts, non-collapsing header/sidebar CSS, exact 5/5 Historic/Main progress, version/event Settings ACK, Block-PF/position-count/volume changes, minute-deduplicated dashboard paper pulse, external-owner queue, all global/connection state switches, statistics/history, live fail-closed, admin auth, remote-owner fail-closed route, scheduled continuity and live recovery |
 | Credential-less `kilo:deploy` | expected fail-closed before upload; required runtime/owner/controller inputs absent |
 
 OpenNext/Wrangler emitted their documented experimental `secrets`-field and
@@ -87,9 +87,11 @@ Vercel builders, but the protected deployment logs require Vercel project
 access or a `VERCEL_TOKEN`; no remote Vercel success is claimed without that
 evidence.
 
-No Cloudflare account/token, shared production Redis, public deployment URL,
-or distinct long-lived owner secret was supplied. The real Kilo upload was not
-attempted after preflight rejected those missing inputs.
+The linked Kilo deployment and its public URL are supplied and are rebuilt by a
+GitHub `main` update. No shared production Redis/external database or distinct
+long-lived owner secret was supplied, so live exchange ordering remains
+fail-closed. Public URL acceptance is performed only after this verified tree
+is pushed and Kilo reports the new build deployed.
 
 The final local server acceptance used a freshly rebuilt isolated `.next-prod`
 artifact. Its three-boot five-symbol run processed 330 API reads, advanced 386

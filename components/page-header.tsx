@@ -25,7 +25,7 @@ export function PageHeader({
   const { selectedConnection } = useExchange()
 
   return (
-    <header className="page-header-shell isolate overflow-hidden border-b shadow-sm backdrop-blur-xl">
+    <header className="page-header-shell isolate shrink-0 overflow-hidden border-b shadow-sm backdrop-blur-xl">
       <div className="page-header-inner relative z-[1] flex h-auto min-h-[4rem] flex-wrap items-start gap-x-3 gap-y-2 px-3 py-3 sm:px-4">
         <SidebarTrigger className="h-8 w-8 shrink-0 mt-1" />
         <Separator orientation="vertical" className="h-8 shrink-0 mt-1" />

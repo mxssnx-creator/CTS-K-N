@@ -250,8 +250,12 @@ export async function applyMainConnectionSettingsChange(
   stateTransitionApplied: boolean
 }> {
   return runSerializedSettingsCommit(id, async () => {
-    const { initRedis, updateConnection, updateConnectionState, getRedisBackend, getRedisClient, getConnection, setSettings, persistNow } = await import("@/lib/redis-db")
+    const { initRedis, updateConnection, updateConnectionState, getRedisBackend, getRedisClient, getConnection, setSettings, persistNow, withSharedPersistenceLease } = await import("@/lib/redis-db")
     await initRedis()
+    const runWithSharedLease = typeof withSharedPersistenceLease === "function"
+      ? withSharedPersistenceLease
+      : async <T>(_scope: string, work: () => Promise<T>): Promise<T> => work()
+    return runWithSharedLease(`settings:${id}`, async () => {
     const settingsPatch = opts.settingsPatch || {}
     const redis = getRedisClient()
     const sharedLockToken = typeof getRedisBackend === "function" && getRedisBackend() === "redis-network"
@@ -416,6 +420,7 @@ export async function applyMainConnectionSettingsChange(
       throw new Error(`Settings for ${id} were applied in memory but could not be persisted before response`)
     }
     return { connection: after, completion, stateTransitionApplied: true }
+    })
   })
 }
 

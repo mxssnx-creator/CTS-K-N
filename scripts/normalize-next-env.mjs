@@ -1,6 +1,16 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, unlinkSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 
 const file = 'next-env.d.ts'
 if (!existsSync(file)) process.exit(0)
@@ -74,6 +84,96 @@ function isValidJson(filePath) {
   } catch {
     return false
   }
+}
+
+function writeJsonAtomically(filePath, value) {
+  mkdirSync(dirname(filePath), { recursive: true })
+  const temporaryPath = `${filePath}.${process.pid}.tmp`
+  writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`)
+  renameSync(temporaryPath, filePath)
+}
+
+function collectFiles(rootPath, suffix) {
+  if (!existsSync(rootPath)) return []
+  const files = []
+  for (const entry of readdirSync(rootPath, { withFileTypes: true })) {
+    const entryPath = join(rootPath, entry.name)
+    if (entry.isDirectory()) files.push(...collectFiles(entryPath, suffix))
+    else if (entry.isFile() && entry.name.endsWith(suffix)) files.push(entryPath)
+  }
+  return files
+}
+
+// A successful Next 15 build can occasionally leave both prerender-manifest
+// copies at zero bytes on overlay filesystems. The rendered HTML/RSC output is
+// already complete at this point, so reconstruct the small routing index from
+// those build-owned files. This is safer than retrying or copying a manifest
+// from a different build ID.
+function reconstructPrerenderManifest(serverAppRoot) {
+  const bypass = [
+    { type: 'header', key: 'next-action' },
+    { type: 'header', key: 'content-type', value: 'multipart/form-data;.*' },
+  ]
+  const allowHeader = [
+    'host',
+    'x-matched-path',
+    'x-prerender-revalidate',
+    'x-prerender-revalidate-if-generated',
+    'x-next-revalidated-tags',
+    'x-next-revalidate-tag-token',
+  ]
+  const routes = {}
+  for (const htmlPath of collectFiles(serverAppRoot, '.html').sort()) {
+    const relativeHtml = relative(serverAppRoot, htmlPath).split(sep).join('/')
+    const withoutExtension = relativeHtml.slice(0, -'.html'.length)
+    if (withoutExtension.includes('[')) continue
+    const route = withoutExtension === 'index' ? '/' : `/${withoutExtension}`
+    const relativeRsc = `${withoutExtension}.rsc`
+    if (!existsSync(join(serverAppRoot, relativeRsc))) continue
+    routes[route] = {
+      ...(route === '/_not-found' ? { initialStatus: 404 } : {}),
+      experimentalBypassFor: bypass,
+      initialRevalidateSeconds: false,
+      srcRoute: route,
+      dataRoute: `/${relativeRsc}`,
+      allowHeader,
+    }
+  }
+  if (Object.keys(routes).length === 0) {
+    throw new Error(`[next-env] cannot reconstruct prerender-manifest.json: no rendered app routes in ${serverAppRoot}`)
+  }
+  return {
+    version: 4,
+    routes,
+    dynamicRoutes: {},
+    notFoundRoutes: [],
+    preview: {
+      previewModeId: randomBytes(16).toString('hex'),
+      previewModeSigningKey: randomBytes(32).toString('hex'),
+      previewModeEncryptionKey: randomBytes(32).toString('hex'),
+    },
+  }
+}
+
+const prerenderManifest = join(distDir, 'prerender-manifest.json')
+const standalonePrerenderManifest = join(distDir, 'standalone', '.next', 'prerender-manifest.json')
+if (!isValidJson(prerenderManifest)) {
+  if (isValidJson(standalonePrerenderManifest)) {
+    copyFileSync(standalonePrerenderManifest, prerenderManifest)
+    console.warn(`[next-env] restored invalid ${prerenderManifest} from standalone build output`)
+  } else {
+    const reconstructed = reconstructPrerenderManifest(join(distDir, 'server', 'app'))
+    writeJsonAtomically(prerenderManifest, reconstructed)
+    console.warn(`[next-env] reconstructed invalid ${prerenderManifest} from rendered app routes`)
+  }
+}
+if (!isValidJson(prerenderManifest)) {
+  throw new Error(`[next-env] ${prerenderManifest} is missing or is not valid JSON`)
+}
+if (existsSync(join(distDir, 'standalone')) && !isValidJson(standalonePrerenderManifest)) {
+  mkdirSync(dirname(standalonePrerenderManifest), { recursive: true })
+  copyFileSync(prerenderManifest, standalonePrerenderManifest)
+  console.warn(`[next-env] synchronized invalid ${standalonePrerenderManifest}`)
 }
 
 // Next 15 can leave export-marker.json as a zero-byte file after an otherwise

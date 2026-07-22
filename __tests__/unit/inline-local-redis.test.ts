@@ -17,6 +17,10 @@ function resetInlineGlobals() {
   delete (globalThis as any).__redis_snapshot_last_error_warn
   delete (globalThis as any).__redis_cleanup_started
   delete (globalThis as any).__db_ops_tracker
+  delete (globalThis as any).__kilo_snapshot_revision
+  delete (globalThis as any).__kilo_snapshot_last_synced_at
+  delete (globalThis as any).__kilo_snapshot_schema_promise
+  delete (globalThis as any).__kilo_snapshot_refresh_promise
 }
 
 describe("InlineLocalRedis compatibility and persistence", () => {
@@ -317,6 +321,63 @@ describe("InlineLocalRedis compatibility and persistence", () => {
       await expect(reader.zrange("z:snapshot", 0, -1)).resolves.toEqual(["hundred"])
     } finally {
       await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("persists and restores a versioned Kilo managed snapshot with an owned lease", async () => {
+    process.env.DB_URL = "https://db.example.test/query"
+    process.env.DB_TOKEN = "test-db-token"
+    let stored: { revision: number; payload: string; updated_at: number; lease_owner?: string | null } | null = null
+    const originalFetch = global.fetch
+    global.fetch = jest.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}")) as { sql: string; params: any[] }
+      const sql = body.sql.replace(/\s+/g, " ").trim()
+      let rows: any[] = []
+      if (sql.startsWith("SELECT revision, payload")) {
+        if (stored) rows = [{ ...stored }]
+      } else if (sql.startsWith("INSERT INTO cts_runtime_snapshot")) {
+        const [payload, updatedAt, expectedRevision] = body.params
+        if (!stored) stored = { revision: 1, payload, updated_at: updatedAt }
+        else if (stored.revision === expectedRevision) stored = { ...stored, revision: stored.revision + 1, payload, updated_at: updatedAt }
+        if (stored && (stored.revision === 1 || stored.revision === Number(expectedRevision) + 1)) {
+          rows = [{ revision: stored.revision }]
+        }
+      } else if (sql.includes("SET lease_owner = ?")) {
+        if (stored && (!stored.lease_owner || stored.lease_owner === body.params[0])) {
+          stored.lease_owner = body.params[0]
+          rows = [{ lease_owner: stored.lease_owner }]
+        }
+      } else if (sql.includes("SET lease_owner = NULL")) {
+        if (stored?.lease_owner === body.params[0]) stored.lease_owner = null
+      }
+      return new Response(JSON.stringify({ rows }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    }) as typeof fetch
+
+    try {
+      const writer = new InlineLocalRedis()
+      await writer.hset("connection_settings:kilo", { symbols: "BTCUSDT", generation: "7" })
+      await expect(writer.persistNow()).resolves.toBe(true)
+      expect(stored?.revision).toBe(1)
+
+      const lease = await writer.acquireSharedSnapshotLease("unit-test", 10_000, 0)
+      expect(lease).toContain("unit-test:")
+      await writer.releaseSharedSnapshotLease(String(lease))
+      expect(stored?.lease_owner).toBeNull()
+
+      resetInlineGlobals()
+      const reader = new InlineLocalRedis()
+      await expect(reader.loadFromDisk()).resolves.toBe(true)
+      await expect(reader.hgetall("connection_settings:kilo")).resolves.toEqual({
+        symbols: "BTCUSDT",
+        generation: "7",
+      })
+    } finally {
+      global.fetch = originalFetch
+      delete process.env.DB_URL
+      delete process.env.DB_TOKEN
     }
   })
 })

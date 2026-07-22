@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { initRedis, getRedisClient, getAllConnections } from "@/lib/redis-db"
+import { initRedis, getRedisClient, getAllConnections, withSharedPersistenceLease } from "@/lib/redis-db"
 import { reconcileLivePositions, syncWithExchange } from "@/lib/trade-engine/stages/live-stage"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
@@ -48,8 +48,8 @@ const MINUTE_DEDUP_PREFIX = "cron:sync-live-positions:minute"
 const DIAGNOSTIC_KEY = "system:coordination:live-recovery"
 
 function requestSource(request: Request): string {
-  if (request.headers.get("x-cloudflare-cron") === "1") return "cloudflare-scheduled"
   if (request.headers.get("x-cron-source")) return String(request.headers.get("x-cron-source"))
+  if (request.headers.get("x-cloudflare-cron") === "1") return "cloudflare-scheduled"
   if ((request.headers.get("user-agent") || "").includes("cts-portable-minute-scheduler")) {
     return "portable-minute-scheduler"
   }
@@ -196,6 +196,7 @@ export async function GET(request: Request) {
   const auth = authorizeCronRequest(request)
   if (!auth.ok) return cronAuthorizationResponse(auth)
 
+  return withSharedPersistenceLease("cron:sync-live-positions", async () => {
   const started = Date.now()
   await initRedis()
   const client = getRedisClient()
@@ -278,4 +279,5 @@ export async function GET(request: Request) {
     const current = await client.get(LOCK_KEY).catch(() => null)
     if (current === token) await client.del(LOCK_KEY).catch(() => {})
   }
+  }, { ttlMs: 75_000, waitMs: 2_000 })
 }
