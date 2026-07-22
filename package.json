@@ -61,7 +61,7 @@
     "docs:recreation": "node scripts/generate-recreation-manifests.mjs",
     "docs:recreation:verify": "node scripts/verify-recreation-manifests.mjs",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "bun run src/db/migrate.ts"
+    "db:migrate": "tsx src/db/migrate.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

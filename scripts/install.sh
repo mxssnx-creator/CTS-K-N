@@ -347,10 +347,19 @@ configure_environment_and_redis() {
     || fatal "Redis is not reachable; refusing process-local production fallback"
   if [[ "$redis_url" =~ ^redis://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?(/[0-9]+)?/?$ ]]; then
     redis-cli -u "$redis_url" --no-auth-warning CONFIG SET appendonly yes >/dev/null
+    redis-cli -u "$redis_url" --no-auth-warning CONFIG SET appendfsync everysec >/dev/null
+    redis-cli -u "$redis_url" --no-auth-warning CONFIG SET protected-mode yes >/dev/null
+    redis-cli -u "$redis_url" --no-auth-warning CONFIG SET maxmemory-policy noeviction >/dev/null
     redis-cli -u "$redis_url" --no-auth-warning CONFIG SET save "900 1 300 10 60 10000" >/dev/null
     redis-cli -u "$redis_url" --no-auth-warning CONFIG REWRITE >/dev/null 2>&1 || true
     [[ "$(redis-cli -u "$redis_url" --no-auth-warning CONFIG GET appendonly | tail -n 1)" == "yes" ]] \
       || fatal "Local Redis AOF persistence could not be enabled"
+    [[ "$(redis-cli -u "$redis_url" --no-auth-warning CONFIG GET appendfsync | tail -n 1)" == "everysec" ]] \
+      || fatal "Local Redis AOF fsync policy could not be enabled"
+    [[ "$(redis-cli -u "$redis_url" --no-auth-warning CONFIG GET protected-mode | tail -n 1)" == "yes" ]] \
+      || fatal "Local Redis protected mode could not be enabled"
+    [[ "$(redis-cli -u "$redis_url" --no-auth-warning CONFIG GET maxmemory-policy | tail -n 1)" == "noeviction" ]] \
+      || fatal "Local Redis no-eviction policy could not be enabled"
   fi
 
   upsert_env NODE_ENV production
@@ -374,7 +383,7 @@ configure_environment_and_redis() {
   if placeholder_secret "$cron_secret"; then upsert_env CRON_SECRET "$(openssl rand -hex 32)"; fi
   if placeholder_secret "$encryption_key"; then upsert_env ENCRYPTION_KEY "$(openssl rand -hex 32)"; fi
   if placeholder_secret "$jwt_secret"; then upsert_env JWT_SECRET "$(openssl rand -hex 32)"; fi
-  ok "Network Redis is reachable, persistence is enabled, and secrets/gates are configured"
+  ok "Network Redis is reachable, AOF/fsync/protected-mode/no-eviction are configured, and secrets/gates are configured"
 }
 
 resolve_runtime() {

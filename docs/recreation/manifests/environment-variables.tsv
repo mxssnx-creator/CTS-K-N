@@ -48,8 +48,8 @@ CYCLE_DEADLINE_MS	application-runtime	no	no	1	lib/trade-engine/engine-manager.ts
 DATABASE_TYPE	application-runtime	no	yes	2	.env.example,app/api/install/configure/route.ts
 DATABASE_URL	application-runtime	yes	yes	2	.env.example,lib/logger.ts
 DB_PATH	application-runtime	no	yes	2	.env.example,lib/db-audit.ts
-DB_TOKEN	application-runtime	yes	yes	5	.env.example,__tests__/unit/inline-local-redis.test.ts,app/api/settings/database-status/route.ts,lib/real-trade-gates.ts,lib/redis-db.ts
-DB_URL	application-runtime	no	yes	5	.env.example,__tests__/unit/inline-local-redis.test.ts,app/api/settings/database-status/route.ts,lib/real-trade-gates.ts,lib/redis-db.ts
+DB_TOKEN	application-runtime	yes	yes	6	.env.example,__tests__/unit/inline-local-redis.test.ts,app/api/settings/database-status/route.ts,lib/real-trade-gates.ts,lib/redis-db.ts,src/db/migrate.ts
+DB_URL	application-runtime	no	yes	6	.env.example,__tests__/unit/inline-local-redis.test.ts,app/api/settings/database-status/route.ts,lib/real-trade-gates.ts,lib/redis-db.ts,src/db/migrate.ts
 DEPLOY_VERIFY_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-deployment-contract.mjs
 DEPLOYMENT_CRON_MODE	application-runtime	no	no	2	__tests__/unit/progression-scope.test.ts,lib/progression-scope.ts
 DEPLOYMENT_URL	application-runtime	no	yes	7	.env.example,lib/deployment-runtime.ts,lib/production-readiness.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/production-deploy-init.mjs,scripts/verify-deployment-contract.mjs
