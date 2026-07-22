@@ -58,6 +58,45 @@ function exposeWorkerEnvironment(env: WorkerEnvironment): void {
   }
 }
 
+function ensureKiloPaperFallback(request: Request | undefined, env: WorkerEnvironment): void {
+  // Kilo's deploy wrapper has historically omitted `vars` from the runtime
+  // object even though they are present in wrangler.jsonc.  That made the
+  // application enter the old production Redis hard-failure path before the
+  // first migration.  Establish the safe, process-local paper mode at the
+  // Worker boundary when no durable backend is supplied.  This never enables
+  // live orders: the separate live-trade gate remains explicitly disabled.
+  const host = (() => {
+    try {
+      return new URL(request?.url || String(env?.NEXT_PUBLIC_APP_URL || env?.DEPLOYMENT_URL || "")).hostname
+    } catch {
+      return ""
+    }
+  })()
+  const kilo =
+    /(^|\.)kiloapps\.io$/i.test(host) ||
+    String(env?.CTS_DEPLOYMENT_RUNTIME || "").toLowerCase().startsWith("kilo") ||
+    String(env?.KILO_DEPLOYMENT || "") === "1" ||
+    (typeof process !== "undefined" ? String(process.env?.CTS_DEPLOYMENT_RUNTIME || "") : "").toLowerCase().startsWith("kilo")
+  if (!kilo || typeof process === "undefined" || !process.env) return
+
+  const hasDurableBackend = Boolean(
+    process.env.REDIS_URL || process.env.KV_URL ||
+    (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
+    (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) ||
+    (process.env.DB_URL && process.env.DB_TOKEN) ||
+    (process.env.KILO_DB_URL && process.env.KILO_DB_TOKEN) ||
+    (process.env.KILO_DATABASE_URL && (process.env.KILO_DB_TOKEN || process.env.KILO_DATABASE_TOKEN)),
+  )
+  if (hasDurableBackend) return
+  if (process.env.ALLOW_PROD_INLINE_REDIS === "0") return
+  process.env.CTS_DEPLOYMENT_RUNTIME ||= "kilo-deploy"
+  process.env.KILO_DEPLOYMENT ||= "1"
+  process.env.ALLOW_PROD_INLINE_REDIS ||= "1"
+  process.env.ALLOW_INLINE_REDIS_LIVE_TRADING = "0"
+  process.env.DISABLE_IN_PROCESS_CONTINUITY ||= "1"
+  process.env.DISABLE_TRADE_ENGINE_IN_PROCESS ||= "1"
+}
+
 async function invokeCronPath(path: (typeof CRON_PATHS)[number], env: WorkerEnvironment, _ctx: WorkerExecutionContext): Promise<void> {
   const cronSecret = String(env?.CRON_SECRET || "").trim()
   if (cronSecret.length < 16) {
@@ -105,6 +144,7 @@ export default {
     const runtimeEnv = env ?? {}
     exposeWorkerEnvironment(runtimeEnv)
     registerWorkerDatabaseBinding(runtimeEnv)
+    ensureKiloPaperFallback(request, runtimeEnv)
     return handler.fetch(request, runtimeEnv, ctx ?? {})
   },
 
@@ -113,6 +153,7 @@ export default {
     const runtimeEnv = env ?? {}
     exposeWorkerEnvironment(runtimeEnv)
     registerWorkerDatabaseBinding(runtimeEnv)
+    ensureKiloPaperFallback(undefined, runtimeEnv)
     const work = Promise.allSettled(CRON_PATHS.map((path) => invokeCronPath(path, runtimeEnv, ctx ?? {}))).then((results) => {
       const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")
       if (failures.length > 0) {
