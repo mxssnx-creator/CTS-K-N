@@ -69,11 +69,18 @@ async function invokeCronPath(path: (typeof CRON_PATHS)[number], env: WorkerEnvi
 }
 
 export default {
-  fetch: handler.fetch,
+  // Kilo preview/runtime invocations can call a Worker fetch handler without
+  // an explicit env or execution-context object. OpenNext enumerates env while
+  // creating its request context; passing undefined makes every route fail
+  // before middleware or the application can respond. Missing bindings remain
+  // visible to startup/readiness and never enable live orders.
+  async fetch(request: Request, env?: WorkerEnvironment, ctx?: WorkerExecutionContext) {
+    return handler.fetch(request, env ?? {}, ctx ?? {})
+  },
 
   async scheduled(_controller: WorkerScheduledController, env: WorkerEnvironment, ctx: WorkerExecutionContext) {
     console.log("[CTS-K-N scheduled continuity] event received")
-    const work = Promise.allSettled(CRON_PATHS.map((path) => invokeCronPath(path, env, ctx))).then((results) => {
+    const work = Promise.allSettled(CRON_PATHS.map((path) => invokeCronPath(path, env ?? {}, ctx ?? {}))).then((results) => {
       const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")
       if (failures.length > 0) {
         const message = failures
