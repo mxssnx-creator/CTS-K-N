@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 37656)
-Total output lines: 2682
+Warning: truncated output (original token count: 37711)
+Total output lines: 2685
 
 import fs from "fs"
 import path from "path"
@@ -1030,10 +1030,7 @@ describe("requested regression guardrails", () => {
     const source = read("lib/connection-recoordinator.ts")
 
     expect(source).toContain("Live Trade unblocked")
-    expect(source).toContain("operator_intent || (globalState as any)?.desired_…7656 tokens truncated….toContain("if (!engineStarted)")
-    expect(targetedStartBlock).toContain('"engine_start_skipped"')
-    expect(targetedStartBlock).toContain('phase: "queued"')
-    expect(targetedStartBlock).toContain('status: "skipped_queued"')
+    expect(source).toContain("operator_intent || (globalState as any)?.desired_…7711 tokens truncated…eued"')
   })
 
   test("Real-stage evaluation denominator includes related outputs and never reports negative failures", () => {
@@ -2060,6 +2057,9 @@ describe("requested regression guardrails", () => {
     expect(pkg).toContain('"db:migrate": "tsx src/db/migrate.ts"')
     const migrate = read("src/db/migrate.ts")
     expect(migrate).toContain('DB_URL and DB_TOKEN are not configured')
+    expect(migrate).toContain('process.env.KILO_DEPLOYMENT === "1"')
+    expect(migrate).toContain('process.env.CTS_DEPLOYMENT_RUNTIME === "kilo-deploy"')
+    expect(migrate).toContain('RUN_MANAGED_DB_MIGRATIONS === "1"')
     expect(migrate).toContain('await import("./index")')
     expect(migrate).toContain('drizzleMigrate(')
     expect(migrate).toContain('executeKiloDatabaseQuery(query, [], "run")')
