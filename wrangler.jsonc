@@ -13,7 +13,9 @@
     "ALLOW_INLINE_REDIS_LIVE_TRADING": "0",
     "ENABLE_PRODUCTION_MIGRATIONS": "1",
     "AUTO_MIGRATE_ON_STARTUP": "1",
-    "DEPLOYMENT_CRON_MODE": "cloudflare-scheduled"
+    "DEPLOYMENT_CRON_MODE": "cloudflare-scheduled",
+    "NEXT_PUBLIC_APP_URL": "https://cts-k-n-9179.d.kiloapps.io",
+    "DEPLOYMENT_URL": "https://cts-k-n-9179.d.kiloapps.io"
   },
   "assets": {
     "directory": ".open-next/assets",
