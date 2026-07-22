@@ -18,7 +18,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "start": "NODE_OPTIONS='--max-old-space-size=5632 --max-semi-space-size=256 --expose-gc' node node_modules/next/dist/bin/next start -H ${HOST:-0.0.0.0} -p ${PORT:-3002}",
-    "vercel-build": "NODE_OPTIONS='--max-old-space-size=5632 --max-semi-space-size=256 --expose-gc' next build",
+    "vercel-build": "node scripts/build-next-with-trace-retry.mjs",
     "vercel-build-setup": "bash scripts/vercel-build-setup.sh",
     "post-deploy-verify": "bash scripts/post-deploy-verify.sh",
     "test:deployment-contract": "node scripts/verify-deployment-contract.mjs",
