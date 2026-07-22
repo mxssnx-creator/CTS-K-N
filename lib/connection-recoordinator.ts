@@ -42,6 +42,7 @@
 import { notifySettingsChanged, detectChangedFields } from "@/lib/settings-coordinator"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
+import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 const inFlightRecoordinations = new Map<string, Promise<void>>()
 const inFlightSettingsCommits = new Map<string, Promise<unknown>>()
@@ -223,6 +224,48 @@ export interface MainConnectionSettingsChangeOptions extends RecoordinateOptions
   stateSwitchVersion?: string | number
 }
 
+export interface SettingsCommitDurability {
+  backend: string
+  scope: "process-local" | "shared-cross-instance"
+  snapshotPersisted: boolean
+  restartDurable: boolean
+  responseAccepted: boolean
+  warning?: string
+}
+
+/**
+ * Classify the persistence acknowledgement separately from whether a settings
+ * mutation can be used by the current runtime. Cloudflare/Kilo workers have no
+ * writable durable filesystem, so InlineLocalRedis.persistNow() correctly
+ * returns false there. Paper-mode Kilo explicitly supports that process-local
+ * fallback (real placement is independently fail-closed); returning HTTP 500
+ * after the mutation was already applied only makes the UI lie about the
+ * outcome. Long-lived Node runtimes still require their configured snapshot
+ * barrier before acknowledging success.
+ */
+export function evaluateSettingsCommitDurability(
+  backend: string,
+  snapshotPersisted: boolean,
+  serverlessRuntime: boolean,
+): SettingsCommitDurability {
+  const processLocal = backend === "inline-local"
+  const restartDurable = !processLocal || snapshotPersisted
+  const responseAccepted = restartDurable || serverlessRuntime
+  return {
+    backend,
+    scope: processLocal ? "process-local" : "shared-cross-instance",
+    snapshotPersisted,
+    restartDurable,
+    responseAccepted,
+    ...(processLocal && !snapshotPersisted
+      ? {
+          warning:
+            "Settings are active in this serverless worker but remain process-local until shared persistence is configured.",
+        }
+      : {}),
+  }
+}
+
 function stringifyHashPatch(patch: Record<string, any>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(patch)) {
@@ -248,6 +291,7 @@ export async function applyMainConnectionSettingsChange(
   connection: Record<string, any>
   completion: RecoordinationCompletion
   stateTransitionApplied: boolean
+  durability?: SettingsCommitDurability
 }> {
   return runSerializedSettingsCommit(id, async () => {
     const { initRedis, updateConnection, updateConnectionState, getRedisBackend, getRedisClient, getConnection, setSettings, persistNow, withSharedPersistenceLease } = await import("@/lib/redis-db")
@@ -415,11 +459,17 @@ export async function applyMainConnectionSettingsChange(
     // live flags, and strategy thresholds even though the PATCH/QuickStart
     // response already reported success. Network Redis persistNow() is a cheap
     // no-op, so this remains one shared route contract for both backends.
+    const backend = getRedisBackend()
     const persisted = await persistNow().catch(() => false)
-    if (getRedisBackend() === "inline-local" && !persisted) {
+    const durability = evaluateSettingsCommitDurability(
+      backend,
+      persisted,
+      isServerlessDeploymentRuntime(),
+    )
+    if (!durability.responseAccepted) {
       throw new Error(`Settings for ${id} were applied in memory but could not be persisted before response`)
     }
-    return { connection: after, completion, stateTransitionApplied: true }
+    return { connection: after, completion, stateTransitionApplied: true, durability }
     })
   })
 }

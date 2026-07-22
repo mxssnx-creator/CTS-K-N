@@ -987,6 +987,7 @@ export async function POST(request: Request) {
       connection: appliedConnection,
       completion: quickstartRecoordination,
       stateTransitionApplied,
+      durability: quickstartDurability,
     } = await applyMainConnectionSettingsChange(connectionId, connection, {
       connectionPatch: updated,
       settingsPatch: quickstartConnectionSettingsPatch,
@@ -1638,6 +1639,7 @@ export async function POST(request: Request) {
       },
       refreshQueued: quickstartRecoordination.refreshQueued === true,
       refreshStatus: quickstartRecoordination.refreshStatus,
+      persistence: quickstartDurability,
       status: liveTradeEnabled ? "ready_with_live_trading" : (liveTradeRequested ? "ready_live_trading_blocked" : "ready_without_live_trading"),
       nextSteps: liveTradeEnabled
         ? "Connection assigned, enabled, and live exchange order placement is enabled."

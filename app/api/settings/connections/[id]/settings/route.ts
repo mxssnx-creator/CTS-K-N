@@ -980,7 +980,7 @@ export async function PATCH(
       changedFieldsOverride.push("active_indications", "indications")
     }
 
-    const { connection: appliedConnection, completion: recoordination } = await applyMainConnectionSettingsChange(
+    const { connection: appliedConnection, completion: recoordination, durability } = await applyMainConnectionSettingsChange(
       id,
       { ...connection, connection_settings: current },
       {
@@ -1018,6 +1018,7 @@ export async function PATCH(
       recoordination,
       refreshQueued: recoordination.refreshQueued === true,
       refreshStatus: recoordination.refreshStatus,
+      persistence: durability,
       warning: symbolResolutionWarning,
     })
   } catch (error) {

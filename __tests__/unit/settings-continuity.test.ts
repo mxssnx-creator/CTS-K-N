@@ -10,6 +10,28 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
 describe("settings continuity", () => {
+  test("serverless paper settings acknowledge process-local state without claiming durability", async () => {
+    const { evaluateSettingsCommitDurability } = await import("@/lib/connection-recoordinator")
+
+    expect(evaluateSettingsCommitDurability("inline-local", false, true)).toEqual({
+      backend: "inline-local",
+      scope: "process-local",
+      snapshotPersisted: false,
+      restartDurable: false,
+      responseAccepted: true,
+      warning: "Settings are active in this serverless worker but remain process-local until shared persistence is configured.",
+    })
+    expect(evaluateSettingsCommitDurability("inline-local", false, false).responseAccepted).toBe(false)
+    expect(evaluateSettingsCommitDurability("inline-local", true, false).responseAccepted).toBe(true)
+    expect(evaluateSettingsCommitDurability("redis-network", false, true)).toEqual({
+      backend: "redis-network",
+      scope: "shared-cross-instance",
+      snapshotPersisted: false,
+      restartDurable: true,
+      responseAccepted: true,
+    })
+  })
+
   test("canonical comparison ignores object order and Redis scalar encoding", () => {
     expect(settingsValuesEqual(
       { variants: { block: true, dca: false }, count: 12 },
