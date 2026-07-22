@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { getRedisClient } from "@/lib/redis-db"
+import { getRedisClient, getConnection, initRedis } from "@/lib/redis-db"
 
 export const dynamic = "force-dynamic"
 export async function GET(req: Request) {
@@ -11,6 +11,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "connection_id required" }, { status: 400 })
     }
 
+    await initRedis()
     const redis = getRedisClient()
 
     // ── 1. Read live cycle counts from progression:{connId} hash ──────────────
@@ -136,17 +137,20 @@ export async function GET(req: Request) {
     // symbol list if present.
     let symbolCount = 0
     try {
-      const conn = (await redis.hgetall(`connection:${connectionId}`).catch(() => ({}))) as Record<string, any> || {}
-      const rawSymbols = conn.active_symbols
-      if (typeof rawSymbols === "string" && rawSymbols.length > 0) {
+      const conn = (await getConnection(connectionId).catch(() => null)) as Record<string, any> | null
+      const rawSymbols = conn?.force_symbols ?? conn?.active_symbols ?? conn?.symbols
+      const parseSymbols = (raw: unknown): string[] => {
+        if (Array.isArray(raw)) return raw.map(String).map((s) => s.trim()).filter(Boolean)
+        if (typeof raw !== "string" || raw.trim().length === 0) return []
         try {
-          const parsed = JSON.parse(rawSymbols)
-          if (Array.isArray(parsed)) symbolCount = parsed.filter((s) => typeof s === "string" && s.length > 0).length
+          const parsed = JSON.parse(raw)
+          if (Array.isArray(parsed)) return parsed.map(String).map((s) => s.trim()).filter(Boolean)
         } catch {
-          // active_symbols may be a bare comma-separated string in older data
-          symbolCount = rawSymbols.split(",").map((s) => s.trim()).filter(Boolean).length
+          // Legacy connection hashes may use a comma-separated string.
         }
+        return raw.split(/[\n,|]/).map((s) => s.trim()).filter(Boolean)
       }
+      symbolCount = parseSymbols(rawSymbols).length
       // Fallback: progression hash may track the processed-symbol count.
       if (symbolCount === 0) {
         const ps = parseInt(progHash.symbols_total || progHash.symbol_count || "0", 10)

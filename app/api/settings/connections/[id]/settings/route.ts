@@ -74,6 +74,24 @@ function normalizeCoordinationAxesInSettings(settings: Record<string, any>): voi
   settings.coordinationSettings = normalized
 }
 
+function parseStoredConnectionSettings(value: unknown): Record<string, any> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, any>
+  }
+  if (typeof value !== "string" || value.trim() === "") return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, any>
+      : {}
+  } catch {
+    // A malformed legacy blob must not make an otherwise valid settings save
+    // fail with a 500. The flat Redis mirrors remain available and the next
+    // successful save repairs the canonical JSON envelope.
+    return {}
+  }
+}
+
 const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "symbols",
   "active_symbols",
@@ -402,9 +420,7 @@ export async function PUT(
     }
 
     // Merge settings with existing (like PATCH does)
-    const currentSettings: Record<string, any> = typeof connection.connection_settings === "string"
-      ? JSON.parse(connection.connection_settings)
-      : connection.connection_settings || {}
+    const currentSettings = parseStoredConnectionSettings(connection.connection_settings)
     const incomingSettings = body.settings && typeof body.settings === "object" ? body.settings : {}
     const mergedSettings = mergeConnectionSettings(currentSettings, incomingSettings)
     normalizeCoordinationAxesInSettings(mergedSettings)
@@ -524,9 +540,7 @@ export async function PATCH(
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
 
-    const current = typeof connection.connection_settings === "string"
-      ? JSON.parse(connection.connection_settings)
-      : connection.connection_settings || {}
+    const current = parseStoredConnectionSettings(connection.connection_settings)
 
     const merged = mergeConnectionSettings(current, settings)
     normalizeCoordinationAxesInSettings(merged)

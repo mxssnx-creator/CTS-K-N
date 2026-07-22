@@ -230,7 +230,11 @@ export class AnalyticsEngine {
         best_strategy: strategyPerformance.best,
         worst_strategy: strategyPerformance.worst,
         volatility: this.calculateVolatility(positions),
-        correlation_with_btc: symbol === "BTCUSDT" ? 1 : Math.random() * 0.8 + 0.1, // Mock correlation
+        // Correlation requires a synchronized BTC return series. This page
+        // currently receives positions only, so never fabricate a value with
+        // Math.random(); report the exact identity case and 0 (unavailable)
+        // for other symbols until the price-series source is present.
+        correlation_with_btc: symbol === "BTCUSDT" ? 1 : 0,
       })
     })
 

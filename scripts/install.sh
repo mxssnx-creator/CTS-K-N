@@ -397,6 +397,39 @@ upsert_env() {
   chmod 600 "$ENV_FILE"
 }
 
+configure_cpu_parallelism() {
+  # CTS uses bounded symbol/config worker pools. Keep one process as the
+  # authoritative engine owner (multiple independent engine processes would
+  # duplicate exchange orders), but size the safe pools and Node's libuv pool
+  # from the host's actual CPU capacity so production does not remain pinned
+  # to the old single-worker defaults.
+  local cpu_count=1 io_pool symbol_pool historic_pool
+  if command -v nproc >/dev/null 2>&1; then
+    cpu_count="$(nproc 2>/dev/null || printf '1')"
+  elif [[ -r /proc/cpuinfo ]]; then
+    cpu_count="$(grep -c '^processor' /proc/cpuinfo 2>/dev/null || printf '1')"
+  fi
+  [[ "$cpu_count" =~ ^[0-9]+$ ]] || cpu_count=1
+  (( cpu_count > 0 )) || cpu_count=1
+
+  io_pool=$(( cpu_count * 2 ))
+  (( io_pool < 4 )) && io_pool=4
+  (( io_pool > 32 )) && io_pool=32
+  symbol_pool=$(( cpu_count > 1 ? cpu_count - 1 : 1 ))
+  (( symbol_pool > 4 )) && symbol_pool=4
+  (( symbol_pool < 1 )) && symbol_pool=1
+  historic_pool=$symbol_pool
+
+  [[ -n "$(env_value CTS_CPU_COUNT)" ]] || upsert_env CTS_CPU_COUNT "$cpu_count"
+  [[ -n "$(env_value UV_THREADPOOL_SIZE)" ]] || upsert_env UV_THREADPOOL_SIZE "$io_pool"
+  [[ -n "$(env_value ENGINE_SYMBOL_CONCURRENCY)" ]] || upsert_env ENGINE_SYMBOL_CONCURRENCY "$symbol_pool"
+  [[ -n "$(env_value REALTIME_SYMBOL_CONCURRENCY)" ]] || upsert_env REALTIME_SYMBOL_CONCURRENCY "$symbol_pool"
+  [[ -n "$(env_value PREHISTORIC_SYMBOL_CONCURRENCY)" ]] || upsert_env PREHISTORIC_SYMBOL_CONCURRENCY "$historic_pool"
+  [[ -n "$(env_value STRATEGY_FLOW_SYMBOL_CONCURRENCY)" ]] || upsert_env STRATEGY_FLOW_SYMBOL_CONCURRENCY "$symbol_pool"
+  [[ -n "$(env_value PRESET_SYMBOL_CONCURRENCY)" ]] || upsert_env PRESET_SYMBOL_CONCURRENCY "$symbol_pool"
+  ok "CPU parallelism: ${cpu_count} cores, ${symbol_pool} symbol workers, libuv pool ${io_pool}"
+}
+
 merge_seed_env() {
   [[ -n "$SEED_ENV_FILE" ]] || return 0
   local line key value
@@ -508,6 +541,7 @@ configure_environment_and_redis() {
     upsert_env DISABLE_IN_PROCESS_CONTINUITY 1
   fi
   upsert_env ALLOW_INLINE_REDIS_LIVE_TRADING 0
+  configure_cpu_parallelism
   upsert_env ENABLE_PRODUCTION_MIGRATIONS 1
   upsert_env AUTO_MIGRATE_ON_STARTUP 1
   [[ "$inline_snapshot" == "1" ]] || upsert_env DISABLE_IN_PROCESS_CONTINUITY 1

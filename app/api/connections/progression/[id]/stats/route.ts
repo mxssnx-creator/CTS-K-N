@@ -657,7 +657,12 @@ export async function GET(
     // Secondary: progression hash mirror fields
     // Tertiary: trade_engine_state fields (config_set_*)
     const engineProgressSubCurrent = ep?.phase === "prehistoric_data" ? n(ep?.sub_current) : 0
-    const historicSymbolsProcessed = pick(
+    // Keep the raw value until the current symbol generation has been resolved.
+    // A previous QuickStart can leave a larger processed count in the legacy
+    // progression hash while the operator has already reduced the connection
+    // to a smaller basket. Using that raw count directly produced impossible
+    // UI values such as "10/1".
+    const rawHistoricSymbolsProcessed = pick(
       n(prehistoricHash.symbols_processed),
       prehistoricSymbolCount,
       n(progHash.prehistoric_symbols_processed_count),
@@ -728,13 +733,16 @@ export async function GET(
         engineProgressSubTotal,
       )
     const historicSymbolsTotal = canonicalCurrentTotal > 0
-      ? Math.max(Math.min(historicSymbolsProcessed, canonicalCurrentTotal), canonicalCurrentTotal)
+      ? canonicalCurrentTotal
       : Math.max(
-          historicSymbolsProcessed,
+          rawHistoricSymbolsProcessed,
           prehistoricTotalIsActive ? n(prehistoricHash.symbols_total) : 0,
           symbolsFromArray,
           1,
         )
+    // The numerator belongs to the same current generation as the denominator.
+    // Never expose stale work from an older symbol basket as current progress.
+    const historicSymbolsProcessed = Math.min(rawHistoricSymbolsProcessed, historicSymbolsTotal)
     const historicCandlesLoaded = pick(
       n(prehistoricHash.candles_loaded),
       n(progHash.prehistoric_candles_processed),

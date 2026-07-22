@@ -247,7 +247,10 @@ async function handleGet() {
 
 async function handlePost(request: Request) {
   try {
-    const body = await request.json()
+    const parsedBody = await request.json()
+    const body = parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody)
+      ? parsedBody as Record<string, any>
+      : {}
 
     console.log("[v0] Saving settings to Redis (POST):", Object.keys(body).length, "keys")
 
@@ -292,8 +295,13 @@ async function handlePost(request: Request) {
 
 async function handlePut(request: Request) {
   try {
-    const body = await request.json()
-    const incoming = body.settings || body
+    const parsedBody = await request.json()
+    const body = parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody)
+      ? parsedBody as Record<string, any>
+      : {}
+    const incoming = body.settings && typeof body.settings === "object" && !Array.isArray(body.settings)
+      ? body.settings as Record<string, any>
+      : body
 
     console.log("[v0] Saving settings to Redis (PUT):", Object.keys(incoming).length, "keys")
 
