@@ -5,7 +5,7 @@
 - Next.js 15.5.18, React 19.2.0, TypeScript 5.9, Tailwind CSS 3.4.
 - pnpm 10.28.1 is the only release package manager; Node 22 is the canonical runtime.
 - Kilo production is bundled with `@opennextjs/cloudflare` 1.20.1 and Wrangler 4.86.0.
-- Runtime state uses shared Redis when configured, otherwise a fail-closed InlineLocalRedis paper fallback. Kilo's managed `DB_URL`/`DB_TOKEN` HTTP SQLite store is accessed through the pinned `@kilocode/app-builder-db` client and provides revision-CAS persistence plus cross-worker request leases.
+- Runtime state uses shared Redis when configured, otherwise a fail-closed InlineLocalRedis paper fallback. Kilo's managed `DB_URL`/`DB_TOKEN` HTTP SQLite store is accessed through the local, registry-only `lib/kilo-database-client.ts` adapter and provides revision-CAS persistence plus cross-worker request leases.
 - Kilo Deploy autobuilds the linked GitHub `main` branch and supports deployment environment variables/secrets, but does not provide a built-in database. Configure a reachable external shared Redis (`REDIS_URL`/Upstash REST/KV) for Kilo Workers; localhost Redis is only for the installed long-lived server. Repository cron metadata is not assumed to survive the Kilo upload; the Worker scheduled handler remains canonical and an open-dashboard paper-only pulse is the bounded fallback.
 - Real exchange orders require the canonical infrastructure and credential safety gates; validation must never place a real order unless the operator explicitly authorizes the live smoke prerequisites.
 
