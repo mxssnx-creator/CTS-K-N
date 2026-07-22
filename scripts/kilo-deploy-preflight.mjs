@@ -38,7 +38,12 @@ function validateRuntimeEnvironment() {
       (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
       (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN),
   )
-  assert(sharedRedis, "one shared Redis configuration is present")
+  const managedSnapshot = Boolean(process.env.DB_URL && process.env.DB_TOKEN)
+  const paperFallback = process.env.ALLOW_PROD_INLINE_REDIS !== "0" && process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1"
+  assert(
+    sharedRedis || managedSnapshot || paperFallback,
+    "shared Redis, Kilo managed persistence, or an explicitly non-live paper fallback is configured",
+  )
   assert(configuredSecret(process.env.ADMIN_SECRET), "ADMIN_SECRET is configured")
   assert(configuredSecret(process.env.CRON_SECRET), "CRON_SECRET is configured")
   assert(configuredSecret(process.env.ENCRYPTION_KEY), "ENCRYPTION_KEY is configured")
@@ -96,7 +101,10 @@ function main() {
   assert(wrangler.triggers?.crons?.includes("* * * * *"), "one-minute Cron Trigger is configured")
   assert(wrangler.vars?.DISABLE_IN_PROCESS_CONTINUITY === "1", "request-worker continuity ownership is disabled")
   assert(wrangler.vars?.DISABLE_TRADE_ENGINE_IN_PROCESS === "1", "request-worker engine ownership is disabled")
-  assert(wrangler.vars?.ALLOW_PROD_INLINE_REDIS === "0", "process-local production Redis fallback is blocked")
+  assert(
+    wrangler.vars?.ALLOW_PROD_INLINE_REDIS === "1",
+    "Kilo paper/UI fallback is enabled while real-order fallback remains blocked",
+  )
   assert(
     wrangler.vars?.KILO_LOCAL_PREVIEW_INLINE_REDIS === undefined,
     "local Inline Redis preview override is not shipped to production",
