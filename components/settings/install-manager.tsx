@@ -39,7 +39,7 @@ export default function InstallManager() {
   const [installing, setInstalling] = useState(false)
   const [installLog, setInstallLog] = useState<string[]>([])
   const [activeTab, setActiveTab] = useState("status")
-  const [remoteForm, setRemoteForm] = useState({ adminSecret: "", host: "", port: "22", username: "root", password: "", sshKey: "", repoUrl: "https://github.com/mxssnx-creator/CTS-K-N.git", branch: "main", runtime: "auto", installDir: "/opt/cts-k-n", appPort: "3002", serviceUser: "cts-kn", redisUrl: "" })
+  const [remoteForm, setRemoteForm] = useState({ adminSecret: "", host: "", port: "22", username: "root", password: "", sshKey: "", repoUrl: "https://github.com/mxssnx-creator/CTS-K-N.git", branch: "main", runtime: "auto", projectName: "ctsv0.1.1", installDir: "/opt/ctsv0.1.1", appPort: "3002", serviceUser: "ctsv0.1.1", redisUrl: "", reinstall: false })
   const [remoteInstalling, setRemoteInstalling] = useState(false)
   const [remoteMode, setRemoteMode] = useState<"preflight" | "install" | null>(null)
   const [remotePreflightPassed, setRemotePreflightPassed] = useState(false)
@@ -193,7 +193,7 @@ export default function InstallManager() {
     }
   }
 
-  const updateRemoteForm = (key: keyof typeof remoteForm, value: string) => {
+  const updateRemoteForm = <K extends keyof typeof remoteForm>(key: K, value: (typeof remoteForm)[K]) => {
     setRemoteForm(prev => ({ ...prev, [key]: value }))
     setRemotePreflightPassed(false)
   }
@@ -211,7 +211,7 @@ export default function InstallManager() {
       toast.error("Run and pass the remote preflight first")
       return
     }
-    if (mode === "install" && !confirm(`Install or upgrade CTS-K-N on ${remoteForm.host}:${remoteForm.appPort}?`)) return
+    if (mode === "install" && !confirm(`Install or upgrade ${remoteForm.projectName} on ${remoteForm.host}:${remoteForm.appPort}?`)) return
 
     setRemoteInstalling(true)
     setRemoteMode(mode)
@@ -717,6 +717,10 @@ export default function InstallManager() {
                   <Input id="remote-dir" value={remoteForm.installDir} onChange={(e) => updateRemoteForm("installDir", e.target.value)} />
                 </div>
                 <div className="space-y-2">
+                  <Label htmlFor="remote-project">Project / Service Name</Label>
+                  <Input id="remote-project" value={remoteForm.projectName} onChange={(e) => updateRemoteForm("projectName", e.target.value)} />
+                </div>
+                <div className="space-y-2">
                   <Label htmlFor="remote-app-port">App Port</Label>
                   <Input id="remote-app-port" value={remoteForm.appPort} onChange={(e) => updateRemoteForm("appPort", e.target.value)} />
                 </div>
@@ -730,6 +734,10 @@ export default function InstallManager() {
                 <Label htmlFor="remote-redis">Redis URL</Label>
                 <Input id="remote-redis" value={remoteForm.redisUrl} onChange={(e) => updateRemoteForm("redisUrl", e.target.value)} placeholder="redis://127.0.0.1:6379" />
               </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={remoteForm.reinstall} onChange={(e) => updateRemoteForm("reinstall", e.target.checked)} />
+                Reinstall operating-system apps, runtimes, global tools, and dependencies
+              </label>
 
               <div className="grid gap-2 md:grid-cols-2">
                 <Button onClick={() => runRemoteInstall("preflight")} disabled={remoteInstalling} variant="outline">

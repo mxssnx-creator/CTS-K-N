@@ -12,8 +12,9 @@ export const runtime = "nodejs"
 export const maxDuration = 300
 
 const DEFAULT_REPOSITORY = "https://github.com/mxssnx-creator/CTS-K-N.git"
-const DEFAULT_INSTALL_DIR = "/opt/cts-k-n"
-const DEFAULT_SERVICE_USER = "cts-kn"
+const DEFAULT_PROJECT_NAME = "ctsv0.1.1"
+const DEFAULT_INSTALL_DIR = `/opt/${DEFAULT_PROJECT_NAME}`
+const DEFAULT_SERVICE_USER = DEFAULT_PROJECT_NAME
 const MAX_REQUEST_BYTES = 512 * 1024
 const MAX_REMOTE_LOG_BYTES = 256 * 1024
 const BLOCKED_ENV_KEYS = new Set([
@@ -70,6 +71,8 @@ interface RemoteInstallRequest {
   repoUrl?: string
   branch?: string
   runtime?: RemoteInstallRuntime
+  projectName?: string
+  reinstall?: boolean
   appPort?: number | string
   serviceUser?: string
   redisUrl?: string
@@ -87,6 +90,8 @@ interface ValidatedRemoteInstall {
   repoUrl: string
   branch: string
   runtime: RemoteInstallRuntime
+  projectName: string
+  reinstall: boolean
   appPort: number
   serviceUser: string
   seedEnv: string
@@ -226,6 +231,8 @@ function validateRequest(input: RemoteInstallRequest): ValidatedRemoteInstall {
     repoUrl: validateRepository(input.repoUrl),
     branch: validateBranch(input.branch),
     runtime: validateRuntime(input.runtime),
+    projectName: validateUnixName(input.projectName || DEFAULT_PROJECT_NAME, "Project name"),
+    reinstall: input.reinstall === true,
     appPort: parsePort(input.appPort, 3002, "Application port"),
     serviceUser: validateUnixName(input.serviceUser || DEFAULT_SERVICE_USER, "Service user"),
     seedEnv: buildSeedEnvironment(input),
@@ -292,6 +299,10 @@ BRANCH=${shellQuote(input.branch)}
 RUNTIME=${shellQuote(input.runtime)}
 APP_PORT=${shellQuote(String(input.appPort))}
 SERVICE_USER=${shellQuote(input.serviceUser)}
+PROJECT_NAME=${shellQuote(input.projectName)}
+REINSTALL=${input.reinstall ? "1" : "0"}
+REINSTALL_ARG=()
+if [[ "$REINSTALL" == "1" ]]; then REINSTALL_ARG+=(--reinstall); fi
 SEED_ENV_BASE64=${shellQuote(seedEnvBase64)}
 TMP_DIR=""
 
@@ -341,7 +352,7 @@ if [[ "$MODE" == "preflight" ]]; then
   TMP_DIR="$(mktemp -d /tmp/cts-k-n-preflight.XXXXXX)"
   log "Fetching the requested revision into a disposable preflight checkout"
   git clone --quiet --depth 1 --single-branch --branch "$BRANCH" "$REPO_URL" "$TMP_DIR/source"
-  bash "$TMP_DIR/source/scripts/install.sh" --name cts-k-n --port "$APP_PORT" \
+  bash "$TMP_DIR/source/scripts/install.sh" --name "$PROJECT_NAME" --port "$APP_PORT" \
     --runtime "$RUNTIME" --service-user "$SERVICE_USER" ${installerMode}
   log "Remote preflight passed without persistent host changes"
   exit 0
@@ -377,9 +388,9 @@ printf '%s' "$SEED_ENV_BASE64" | base64 --decode > "$seed_file"
 chmod 600 "$seed_file"
 
 log "Running the canonical production installer and complete deployment contract"
-bash "$APP_DIR/scripts/install.sh" --name cts-k-n --port "$APP_PORT" \
+bash "$APP_DIR/scripts/install.sh" --name "$PROJECT_NAME" --port "$APP_PORT" \
   --runtime "$RUNTIME" --service-user "$SERVICE_USER" --create-service-user \
-  --seed-env-file "$seed_file" --non-interactive
+  --seed-env-file "$seed_file" --non-interactive "\${REINSTALL_ARG[@]}"
 log "Remote installation, scheduler ownership, restart recovery, and schema verification passed"
 `
 }
@@ -511,8 +522,9 @@ export async function POST(request: Request) {
         ? "Remote production preflight passed"
         : "Remote production installation and continuity verification passed",
       logs: toLogLines(result.stdout, result.stderr),
-      service: "cts-k-n",
-      schedulerService: "cts-k-n-scheduler",
+      projectName: input.projectName,
+      service: input.projectName,
+      schedulerService: `${input.projectName}-scheduler`,
       runtime: input.runtime,
       url: `http://${sshHost}:${input.appPort}`,
     })

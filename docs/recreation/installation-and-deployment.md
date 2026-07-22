@@ -49,18 +49,29 @@ DEPLOYMENT_URL=https://owner.example.com
 Then install:
 
 ```bash
-sudo bash scripts/install.sh \
-  --runtime auto \
-  --service-user cts-kn \
-  --create-service-user \
-  --seed-env-file /root/cts-k-n.seed.env \
-  --non-interactive
+# Interactive: prompts for project/service name and port when omitted.
+sudo bash scripts/install.sh
+
+# Positional arguments are supported too.
+sudo bash scripts/install.sh ctsv0.1.1 3002 \
+  --runtime auto --create-service-user \
+  --seed-env-file /root/ctsv0.1.1.seed.env --non-interactive
+
+# Force reinstall of OS apps/runtimes/global tools and locked dependencies.
+sudo bash scripts/install.sh ctsv0.1.1 3002 --reinstall
 ```
+
+The default project/service name is derived from `package.json` as
+`ctsv<major>.<minor>.<patch>` (currently `ctsv0.1.1`). Existing operating-system
+packages and runtimes are detected and kept; `--reinstall` explicitly forces
+their reinstall. The installer verifies Node/npm/npx/pnpm, Next.js/React,
+Python/pip, Bun, Redis, migrations, the production build, the one-minute
+scheduler, restart recovery, and prints both local and detected public URLs.
 
 The installer:
 
 1. validates OS, capacity, port, privileges, user and artifacts;
-2. installs OS dependencies, Node and pinned pnpm where necessary;
+2. installs only missing OS dependencies, Node/npm, Python/pip, Bun and pinned pnpm;
 3. provisions/verifies durable Redis and safe environment gates;
 4. generates missing admin, cron, encryption and JWT secrets;
 5. installs the frozen lockfile, typechecks, lints and runs all Jest tests;

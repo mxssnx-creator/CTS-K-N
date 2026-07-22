@@ -47,6 +47,12 @@ describe("production installation and Kilo deployment contract", () => {
       readFile(path.join(process.cwd(), "vercel.json"), "utf8"),
     ])
     expect(installer).toContain('PNPM_VERSION="10.28.1"')
+    expect(installer).toContain('DEFAULT_PROJECT_NAME="ctsv$PACKAGE_VERSION"')
+    expect(installer).toContain("--reinstall")
+    expect(installer).toContain("ensure_python_pip_and_bun")
+    expect(installer).toContain("node_modules/next/package.json")
+    expect(installer).toContain("node_modules/react/package.json")
+    expect(installer).toContain("public_access_url")
     expect(installer).toContain("--preflight-only")
     expect(installer).toContain("ALLOW_PROD_INLINE_REDIS 0")
     expect(installer).toContain("ALLOW_INLINE_REDIS_LIVE_TRADING 0")
@@ -431,8 +437,9 @@ printf '[fixture-installer] canonical contract passed\\n'
       await expect(installResponse.json()).resolves.toMatchObject({
         success: true,
         mode: "install",
-        service: "cts-k-n",
-        schedulerService: "cts-k-n-scheduler",
+        projectName: "ctsv0.1.1",
+        service: "ctsv0.1.1",
+        schedulerService: "ctsv0.1.1-scheduler",
       })
       const installArgs = await readFile(capture, "utf8")
       expect(installArgs).toContain("--runtime auto")

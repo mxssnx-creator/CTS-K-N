@@ -21,8 +21,8 @@ warn()    { printf "%b[WARN]%b  %s\n" "$YELLOW" "$RESET" "$*"; }
 fatal()   { printf "%b[ERROR]%b %s\n" "$RED" "$RESET" "$*" >&2; exit 1; }
 section() { printf "\n%b%s%b\n" "$BOLD$CYAN" "════════ $* ════════" "$RESET"; }
 
-APP_NAME="cts-k-n"
-APP_PORT="3002"
+APP_NAME=""
+APP_PORT=""
 RUNTIME="auto"
 SERVICE_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 CREATE_SERVICE_USER=0
@@ -33,9 +33,16 @@ NON_INTERACTIVE=0
 SEED_ENV_FILE=""
 PNPM_VERSION="10.28.1"
 REDIS_MODE="auto"
+REINSTALL=0
+DEFAULT_PASSWORD="${CTS_INSTALL_DEFAULT_PASSWORD:-00998877}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PACKAGE_VERSION="$(node -p "require('$PROJECT_ROOT/package.json').version" 2>/dev/null || true)"
+[[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || PACKAGE_VERSION="0.1.1"
+DEFAULT_PROJECT_NAME="ctsv$PACKAGE_VERSION"
+[[ -n "$APP_NAME" ]] || APP_NAME="$DEFAULT_PROJECT_NAME"
+[[ -n "$APP_PORT" ]] || APP_PORT="3002"
 ENV_FILE="$PROJECT_ROOT/.env.production.local"
 RUNTIME_DIR="$PROJECT_ROOT/.cts-runtime"
 BUILD_BACKUP=""
@@ -44,10 +51,11 @@ ROLLBACK_RUNNING=0
 
 usage() {
   cat <<'EOF'
-Usage: bash scripts/install.sh [options]
+Usage: bash scripts/install.sh [PROJECT_NAME] [PORT] [options]
 
 Options:
-  --name NAME             Service/process name (default: cts-k-n)
+  --name NAME             Service/process name (default: ctsv<package-version>)
+  --project-name NAME     Alias for --name; also accepted as first positional argument
   --port PORT             HTTP port (default: 3002)
   --runtime MODE          auto, systemd, or pm2 (default: auto)
   --service-user USER     Unprivileged runtime user (default: current user)
@@ -59,6 +67,7 @@ Options:
   --skip-tests            Skip Jest only (typecheck, lint, and build still run)
   --non-interactive       Never rely on interactive package prompts
   --redis-mode MODE       auto, native, npm, or snapshot (default: auto)
+  --reinstall             Reinstall OS apps, runtimes, global tools, and dependencies
   --help                  Show this help
 
 Sensitive values should be supplied in --seed-env-file or the existing env
@@ -71,6 +80,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name) APP_NAME="${2:?--name requires a value}"; shift 2 ;;
+    --project-name|--project) APP_NAME="${2:?$1 requires a value}"; shift 2 ;;
     --port) APP_PORT="${2:?--port requires a value}"; shift 2 ;;
     --runtime) RUNTIME="${2:?--runtime requires a value}"; shift 2 ;;
     --service-user) SERVICE_USER="${2:?--service-user requires a value}"; shift 2 ;;
@@ -82,10 +92,28 @@ while [[ $# -gt 0 ]]; do
     --skip-tests) SKIP_TESTS=1; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     --redis-mode) REDIS_MODE="${2:?--redis-mode requires a value}"; shift 2 ;;
+    --reinstall) REINSTALL=1; shift ;;
     --help|-h) usage; exit 0 ;;
-    *) fatal "Unknown option: $1" ;;
+    -*) fatal "Unknown option: $1" ;;
+    *)
+      if [[ "$1" =~ ^[0-9]+$ && "$APP_PORT" == "3002" ]]; then APP_PORT="$1";
+      elif [[ "$APP_NAME" == "$DEFAULT_PROJECT_NAME" ]]; then APP_NAME="$1";
+      elif [[ "$APP_PORT" == "3002" ]]; then APP_PORT="$1";
+      else fatal "Unexpected positional argument: $1"; fi
+      shift ;;
   esac
 done
+
+if (( NON_INTERACTIVE == 0 )) && [[ -t 0 ]]; then
+  if [[ "$APP_NAME" == "$DEFAULT_PROJECT_NAME" ]]; then
+    read -r -p "Project/service name [$DEFAULT_PROJECT_NAME]: " answer || true
+    [[ -z "$answer" ]] || APP_NAME="$answer"
+  fi
+  if [[ "$APP_PORT" == "3002" ]]; then
+    read -r -p "HTTP port [3002]: " answer || true
+    [[ -z "$answer" ]] || APP_PORT="$answer"
+  fi
+fi
 
 [[ "$APP_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]] || fatal "Invalid service name: $APP_NAME"
 [[ "$SERVICE_USER" =~ ^[a-zA-Z_][a-zA-Z0-9._-]*$ ]] || fatal "Invalid service user: $SERVICE_USER"
@@ -230,21 +258,44 @@ fi
 install_system_packages() {
   (( SKIP_SYSTEM_PACKAGES == 0 )) || { warn "Skipping OS package installation"; return; }
   section "Operating-system dependencies"
+  local -a packages=()
+  package_present() {
+    local package="$1"
+    case "$PACKAGE_MANAGER" in
+      apt) dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' ;;
+      dnf|yum) rpm -q "$package" >/dev/null 2>&1 ;;
+      *) return 1 ;;
+    esac
+  }
+  add_package_if_needed() {
+    local package="$1"
+    if (( REINSTALL == 1 )) || ! package_present "$package"; then packages+=("$package"); else info "$package already installed; keeping it"; fi
+  }
   case "$PACKAGE_MANAGER" in
     apt)
       (( NON_INTERACTIVE == 1 )) && export DEBIAN_FRONTEND=noninteractive
       run_root apt-get update -y
-      run_root apt-get install -y ca-certificates curl git build-essential openssl redis-server redis-tools
+      for package in ca-certificates curl git build-essential openssl python3 python3-pip python3-venv; do add_package_if_needed "$package"; done
+      if ! command -v redis-server >/dev/null 2>&1 && ! command -v redis-cli >/dev/null 2>&1; then
+        add_package_if_needed redis-server; add_package_if_needed redis-tools
+      elif (( REINSTALL == 1 )); then
+        add_package_if_needed redis-server; add_package_if_needed redis-tools
+      else info "Native Redis already available; keeping the installed server"; fi
+      ((${#packages[@]} == 0)) || run_root apt-get install -y "${packages[@]}"
       ;;
     dnf)
-      run_root dnf install -y ca-certificates curl git gcc-c++ make openssl redis
+      for package in ca-certificates curl git gcc-c++ make openssl python3 python3-pip; do add_package_if_needed "$package"; done
+      if ! command -v redis-server >/dev/null 2>&1 && ! command -v redis-cli >/dev/null 2>&1; then add_package_if_needed redis; elif (( REINSTALL == 1 )); then add_package_if_needed redis; fi
+      ((${#packages[@]} == 0)) || run_root dnf install -y "${packages[@]}"
       ;;
     yum)
-      run_root yum install -y ca-certificates curl git gcc-c++ make openssl redis
+      for package in ca-certificates curl git gcc-c++ make openssl python3 python3-pip; do add_package_if_needed "$package"; done
+      if ! command -v redis-server >/dev/null 2>&1 && ! command -v redis-cli >/dev/null 2>&1; then add_package_if_needed redis; elif (( REINSTALL == 1 )); then add_package_if_needed redis; fi
+      ((${#packages[@]} == 0)) || run_root yum install -y "${packages[@]}"
       ;;
     none) fatal "Cannot install required system packages" ;;
   esac
-  ok "System dependencies installed"
+  ok "Required operating-system dependencies are installed"
 }
 
 ensure_service_user() {
@@ -255,6 +306,9 @@ ensure_service_user() {
     [[ -x "$nologin_shell" ]] || nologin_shell="/sbin/nologin"
     [[ -x "$nologin_shell" ]] || nologin_shell="/bin/false"
     run_root useradd --system --create-home --home-dir "/var/lib/$APP_NAME" --shell "$nologin_shell" "$SERVICE_USER"
+    if command -v chpasswd >/dev/null 2>&1; then
+      printf '%s:%s\n' "$SERVICE_USER" "$DEFAULT_PASSWORD" | run_root chpasswd
+    fi
     ok "Created system service user: $SERVICE_USER"
   else
     ok "Service user exists: $SERVICE_USER"
@@ -265,7 +319,7 @@ ensure_node_and_pnpm() {
   section "Node.js and pinned pnpm"
   local major=0
   command -v node >/dev/null 2>&1 && major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || printf '0')"
-  if (( major < 20 )); then
+  if (( REINSTALL == 1 || major < 20 )); then
     info "Installing Node.js 22 LTS"
     case "$PACKAGE_MANAGER" in
       apt)
@@ -282,15 +336,37 @@ ensure_node_and_pnpm() {
   major="$(node -p 'Number(process.versions.node.split(".")[0])')"
   (( major >= 20 )) || fatal "Node.js >=20 is required"
 
+  command -v npm >/dev/null 2>&1 || fatal "npm was not provided by the Node.js installation"
+  command -v npx >/dev/null 2>&1 || fatal "npx was not provided by the Node.js installation"
   if command -v corepack >/dev/null 2>&1; then
     run_root corepack enable >/dev/null 2>&1 || true
-    corepack prepare "pnpm@$PNPM_VERSION" --activate >/dev/null 2>&1 || true
+    (( REINSTALL == 1 )) || corepack prepare "pnpm@$PNPM_VERSION" --activate >/dev/null 2>&1 || true
   fi
-  if ! command -v pnpm >/dev/null 2>&1 || [[ "$(pnpm --version 2>/dev/null || true)" != "$PNPM_VERSION" ]]; then
+  if (( REINSTALL == 1 )) || ! command -v pnpm >/dev/null 2>&1 || [[ "$(pnpm --version 2>/dev/null || true)" != "$PNPM_VERSION" ]]; then
     run_root npm install -g "pnpm@$PNPM_VERSION" --no-audit --no-fund --loglevel=error
   fi
   [[ "$(pnpm --version)" == "$PNPM_VERSION" ]] || fatal "Could not activate pnpm $PNPM_VERSION"
-  ok "Node $(node --version), pnpm $(pnpm --version)"
+  ok "Node $(node --version), npm $(npm --version), npx $(npx --version), pnpm $(pnpm --version)"
+}
+
+ensure_python_pip_and_bun() {
+  section "Python, pip, and Bun toolchain"
+  command -v python3 >/dev/null 2>&1 || fatal "python3 is missing after OS dependency installation"
+  command -v pip3 >/dev/null 2>&1 || fatal "pip3 is missing after OS dependency installation"
+  python3 -m pip --version >/dev/null 2>&1 || fatal "python3 -m pip is not usable"
+  ok "Python $(python3 --version 2>&1), pip $(python3 -m pip --version | awk '{print $2}')"
+
+  if (( REINSTALL == 1 )) || ! command -v bun >/dev/null 2>&1; then
+    command -v curl >/dev/null 2>&1 || fatal "curl is required to install Bun"
+    local bun_install_dir="/opt/bun"
+    run_root mkdir -p "$bun_install_dir"
+    run_root env BUN_INSTALL="$bun_install_dir" bash -c 'curl -fsSL https://bun.sh/install | bash' \
+      || fatal "Bun installation failed"
+    [[ -x "$bun_install_dir/bin/bun" ]] || fatal "Bun installer did not create its executable"
+    run_root ln -sfn "$bun_install_dir/bin/bun" /usr/local/bin/bun
+  fi
+  command -v bun >/dev/null 2>&1 || fatal "bun is missing after installation"
+  ok "Bun $(bun --version)"
 }
 
 env_value() {
@@ -366,6 +442,7 @@ configure_environment_and_redis() {
     section "npm Redis fallback"
     command -v npm >/dev/null 2>&1 || fatal "npm is required for the local Redis fallback"
     local npm_redis_root="$RUNTIME_DIR/npm-redis"
+    if (( REINSTALL == 1 )); then rm -rf -- "$npm_redis_root"; fi
     mkdir -p "$npm_redis_root" "$RUNTIME_DIR/redis-data"
     if [[ ! -f "$npm_redis_root/node_modules/redis-memory-server/package.json" ]]; then
       REDISMS_DISABLE_POSTINSTALL=true npm --cache "$RUNTIME_DIR/npm-cache" --prefix "$npm_redis_root" install --no-save --no-audit --no-fund redis-memory-server@0.17.0 \
@@ -475,7 +552,22 @@ start_runtime() {
 install_dependencies_and_validate() {
   section "Locked dependencies and full release validation"
   cd "$PROJECT_ROOT"
-  pnpm install --frozen-lockfile
+  if (( REINSTALL == 1 )); then
+    info "--reinstall requested: removing only this checkout's node_modules and reinstalling the lockfile"
+    rm -rf -- "$PROJECT_ROOT/node_modules"
+    pnpm store prune >/dev/null 2>&1 || true
+    pnpm install --frozen-lockfile --force
+  else
+    pnpm install --frozen-lockfile
+  fi
+  local next_version react_version
+  next_version="$(node -p "require('$PROJECT_ROOT/node_modules/next/package.json').version" 2>/dev/null || true)"
+  react_version="$(node -p "require('$PROJECT_ROOT/node_modules/react/package.json').version" 2>/dev/null || true)"
+  [[ -n "$next_version" && -n "$react_version" ]] || fatal "Next.js and React are not installed in the locked dependency tree"
+  pnpm exec next --version >/dev/null 2>&1 || fatal "Next.js CLI is not usable"
+  node -e "const r=require('react'); if(!r||typeof r.createElement!=='function') process.exit(1)" \
+    || fatal "React runtime is not usable"
+  ok "Application dependencies: Next.js $next_version and React $react_version"
   pnpm exec tsc --noEmit
   pnpm exec eslint .
   if (( SKIP_TESTS == 0 )); then
@@ -660,7 +752,9 @@ EOF
 
 install_pm2_runtime() {
   section "PM2 app and minute-scheduler processes"
-  command -v pm2 >/dev/null 2>&1 || run_root npm install -g pm2 --no-audit --no-fund --loglevel=error
+  if (( REINSTALL == 1 )) || ! command -v pm2 >/dev/null 2>&1; then
+    run_root npm install -g pm2 --no-audit --no-fund --loglevel=error
+  fi
   local home
   home="$(service_home)"
   if [[ -f "$RUNTIME_DIR/redis.pid" ]]; then
@@ -696,6 +790,18 @@ wait_for_health() {
 site_instance_id() {
   node -e 'fetch(process.argv[1]).then(r=>r.json()).then(x=>process.stdout.write(String(x?.system?.site_instance_id||""))).catch(()=>process.exit(1))' \
     "http://127.0.0.1:$APP_PORT/api/system/init-status"
+}
+
+public_access_url() {
+  local configured host
+  configured="$(env_value PUBLIC_ACCESS_URL)"
+  [[ -n "$configured" ]] && { printf '%s' "${configured%/}"; return; }
+  configured="$(env_value NEXT_PUBLIC_APP_URL)"
+  if [[ -n "$configured" && ! "$configured" =~ ^https?://(127\.0\.0\.1|localhost|0\.0\.0\.0)(:|/|$) ]]; then
+    printf '%s' "${configured%/}"; return
+  fi
+  host="$(hostname -I 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i !~ /^127\./ && $i !~ /:/) {print $i; exit}}')"
+  [[ -n "$host" ]] && printf 'http://%s:%s' "$host" "$APP_PORT" || printf 'http://127.0.0.1:%s' "$APP_PORT"
 }
 
 verify_and_restart() {
@@ -776,6 +882,7 @@ trap installer_exit_handler EXIT
 install_system_packages
 ensure_service_user
 ensure_node_and_pnpm
+ensure_python_pip_and_bun
 mkdir -p "$RUNTIME_DIR"
 configure_environment_and_redis
 resolve_runtime
@@ -792,7 +899,8 @@ if [[ -n "$BUILD_BACKUP" && -d "$BUILD_BACKUP" ]]; then
 fi
 
 section "Installation complete"
-ok "CTS-K-N is ready at http://127.0.0.1:$APP_PORT"
+ok "Project $APP_NAME is ready locally at http://127.0.0.1:$APP_PORT"
+ok "Public access URL: $(public_access_url)"
 ok "Schema, shared Redis, one-minute continuity, engine ownership, and restart persistence are verified"
 info "App service: $APP_NAME"
 info "Scheduler service: $APP_NAME-scheduler"
