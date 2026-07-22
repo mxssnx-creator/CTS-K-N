@@ -1812,7 +1812,7 @@ describe("requested regression guardrails", () => {
     expect(redisDb).toContain("ALLOW_INLINE_REDIS_LIVE_TRADING")
     expect(readiness).toContain('process.env.ALLOW_PROD_INLINE_REDIS !== "0"')
     expect(readiness).toContain("ALLOW_PROD_INLINE_REDIS=0")
-    expect(readiness).toContain('"Global coordinator requires shared Redis"')
+    expect(readiness).toContain('"Global coordinator requires shared persistence"')
     expect(readiness).toContain('"shared_persistence_required"')
     expect(envExample).toContain("ALLOW_PROD_INLINE_REDIS=1")
   })
