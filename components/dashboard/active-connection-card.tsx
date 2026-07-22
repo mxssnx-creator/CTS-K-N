@@ -106,6 +106,15 @@ const PHASE_LABELS: Record<string, string> = {
   unknown: "Starting Up",
 }
 
+function getProgressionCacheKey(connectionId: string): string | null {
+  if (typeof document === "undefined") return null
+  const siteInstanceId = String(document.documentElement.dataset.ctsSiteInstance || "").trim()
+  // Do not hydrate/write a connection cache until the root synchronizer has
+  // bound this browser to the authoritative Redis site identity.
+  if (!siteInstanceId) return null
+  return `acc:progression:${encodeURIComponent(siteInstanceId)}:${connectionId}`
+}
+
 const toBoolean = (value: unknown): boolean => value === true || value === 1 || value === "1" || value === "true" || value === "yes" || value === "on"
 const liveTradeUiFlag = (details: any): boolean =>
   toBoolean(details?.live_trade_requested) || toBoolean(details?.is_live_trade)
@@ -634,10 +643,10 @@ export function ActiveConnectionCard({
           // `data.progression`, a key that does not exist in the /stats
           // payload, so reloads restored an empty {} and blanked the card.
           try {
-            localStorage.setItem(
-              `acc:progression:${connection.connectionId}`,
-              JSON.stringify({ ...nextProgression, _cachedAt: Date.now() })
-            )
+            const cacheKey = getProgressionCacheKey(connection.connectionId)
+            if (cacheKey) {
+              localStorage.setItem(cacheKey, JSON.stringify({ ...nextProgression, _cachedAt: Date.now() }))
+            }
           } catch { /* localStorage unavailable */ }
         }
       }
@@ -701,7 +710,8 @@ export function ActiveConnectionCard({
   // reloads and reopened tabs show continuity while the fresh poll completes.
   useEffect(() => {
     try {
-      const key = `acc:progression:${connection.connectionId}`
+      const key = getProgressionCacheKey(connection.connectionId)
+      if (!key) return
       const cached = localStorage.getItem(key) || sessionStorage.getItem(key)
       if (cached) {
         const parsed = JSON.parse(cached)
@@ -716,6 +726,18 @@ export function ActiveConnectionCard({
     } catch { /* ignore corrupted data */ }
 
   }, [connection.connectionId])
+
+  // The root provider emits this after it obtains the durable Redis site ID on
+  // every load/reopen. A changed site must never show another site's cached
+  // card while an API response is in flight; fetch the canonical progression.
+  useEffect(() => {
+    const refreshForSiteIdentity = () => {
+      setProgression(null)
+      void fetchProgression()
+    }
+    window.addEventListener("cts:site-instance", refreshForSiteIdentity)
+    return () => window.removeEventListener("cts:site-instance", refreshForSiteIdentity)
+  }, [fetchProgression])
 
   useEffect(() => {
     fetchProgression()

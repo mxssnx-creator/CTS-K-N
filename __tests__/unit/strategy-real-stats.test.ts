@@ -167,6 +167,38 @@ describe("Strategy Stage Real detailed position stats", () => {
     })
   })
 
+  test("keeps evaluation counts during the zero-entry variant-ledger warm-up", () => {
+    const result = buildRealStagePositionStats({
+      validPositionsHash: {
+        overall: "0",
+        "by_variant:default": "0",
+        "by_variant:trailing": "0",
+        "by_variant:block": "0",
+        "by_variant:dca": "0",
+      },
+      strategyVariants: {
+        default: { entriesCount: 4 },
+        trailing: { entriesCount: 3 },
+        block: { entriesCount: 2 },
+        dca: { entriesCount: 1 },
+        overall: { entriesCount: 10 },
+      },
+    })
+
+    expect(result.overall).toMatchObject({
+      positions: 10,
+      positionCountSource: "evaluation-fallback",
+    })
+    expect(result.strategyTypes.trailing).toMatchObject({
+      positions: 3,
+      positionCountSource: "evaluation-fallback",
+    })
+    expect(result.adjustTypes.block).toMatchObject({
+      positions: 2,
+      positionCountSource: "evaluation-fallback",
+    })
+  })
+
   test("aggregates only the supplied current snapshot by unique symbol and direction", () => {
     const result = buildRealStagePositionStats({
       validPositionsHash: { overall: "99" },

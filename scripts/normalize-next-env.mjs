@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { randomBytes } from 'node:crypto'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 
 const file = 'next-env.d.ts'
 if (!existsSync(file)) process.exit(0)
@@ -36,6 +36,7 @@ if (current !== desired) {
 // build has already validated its generated types, so restore the repository's
 // canonical single `.next` type universe after that build completes.
 const distDir = process.env.NEXT_DIST_DIR || '.next'
+const standaloneDistDir = join(distDir, 'standalone', basename(distDir))
 if (resolve(distDir) !== resolve('.next') && existsSync('tsconfig.json')) {
   try {
     const tsconfig = JSON.parse(readFileSync('tsconfig.json', 'utf8'))
@@ -156,7 +157,7 @@ function reconstructPrerenderManifest(serverAppRoot) {
 }
 
 const prerenderManifest = join(distDir, 'prerender-manifest.json')
-const standalonePrerenderManifest = join(distDir, 'standalone', '.next', 'prerender-manifest.json')
+const standalonePrerenderManifest = join(standaloneDistDir, 'prerender-manifest.json')
 if (!isValidJson(prerenderManifest)) {
   if (isValidJson(standalonePrerenderManifest)) {
     copyFileSync(standalonePrerenderManifest, prerenderManifest)
@@ -191,14 +192,19 @@ const serializedNextConfig = requiredServerFilesPayload?.config ?? {}
 // `output: standalone` is assembled by a separate Next tracing worker. On
 // overlay filesystems that worker can finish after the main server manifests,
 // leaving OpenNext with a complete `.next/server` tree but missing files under
-// `.next/standalone/.next/server`. Use Next's own required-server-files list as
+// `.next/standalone/<dist-dir>/server`. Use Next's own required-server-files list as
 // the authoritative copy contract; never invent route data here.
 if (existsSync(join(distDir, 'standalone')) && Array.isArray(requiredServerFilesPayload?.files)) {
   for (const requiredFile of requiredServerFilesPayload.files) {
-    if (typeof requiredFile !== 'string' || !requiredFile.startsWith('.next/')) continue
-    const relativeRequiredFile = requiredFile.slice('.next/'.length)
+    if (typeof requiredFile !== 'string') continue
+    const configuredPrefix = `${basename(distDir)}/`
+    const prefix = requiredFile.startsWith(configuredPrefix)
+      ? configuredPrefix
+      : (requiredFile.startsWith('.next/') ? '.next/' : '')
+    if (!prefix) continue
+    const relativeRequiredFile = requiredFile.slice(prefix.length)
     const sourceFile = join(distDir, relativeRequiredFile)
-    const standaloneFile = join(distDir, 'standalone', '.next', relativeRequiredFile)
+    const standaloneFile = join(standaloneDistDir, relativeRequiredFile)
     if (!existsSync(sourceFile)) continue
     const destinationIsValid = requiredFile.endsWith('.json')
       ? isValidJson(standaloneFile)
@@ -258,7 +264,7 @@ if (!isStaticExport && existsSync(exportDetail)) {
 // build-owned copy and then validate again; never let a successful Next build
 // hand an empty/partial routing contract to OpenNext or a production preview.
 if (!isValidJson(src)) {
-  const standaloneManifest = join(distDir, 'standalone', '.next', 'routes-manifest.json')
+  const standaloneManifest = join(standaloneDistDir, 'routes-manifest.json')
   if (resolve(standaloneManifest) !== resolve(src) && isValidJson(standaloneManifest)) {
     copyFileSync(standaloneManifest, src)
     console.warn(`[next-env] restored invalid routes-manifest.json from ${standaloneManifest}`)

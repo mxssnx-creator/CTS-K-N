@@ -475,12 +475,16 @@ export async function GET(request: Request) {
       async () => queuedRefreshEntries,
       getConnection,
     )
-    const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
-    const localCoordinator = getGlobalTradeEngineCoordinator()
+    // Redis heartbeat is the authoritative ownership signal across Kilo,
+    // PM2 and serverless workers. Do not exempt an in-process coordinator
+    // merely because its local map says "running": after a crash/redeploy
+    // that map can be stale while no processor is writing progress. The
+    // fallback filter below will skip only a worker with a fresh durable
+    // heartbeat, allowing this bounded tick to recover an idle pipeline.
     const ownership = await filterCronFallbackConnections(
       candidateConnections,
       client,
-      (connectionId) => localCoordinator?.isEngineRunning?.(connectionId) === true,
+      () => false,
     )
     const activeConnections = ownership.eligible
 
@@ -567,11 +571,12 @@ export async function GET(request: Request) {
         primarySymbol = await getMostVolatileSymbol(exchangeName)
       }
 
-      // Default 4 major symbols used when active_symbols is empty.
-      const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+      // A missing active-symbol basket must remain one-symbol by default.
+      // Expanding silently to four symbols was the source of incorrect N/N
+      // progress and excessive work after QuickStart selected one symbol.
       const allSymbols = symbolsRaw.length > 0
         ? symbolsRaw
-        : Array.from(new Set([...DEFAULT_SYMBOLS, primarySymbol].filter(Boolean)))
+        : [primarySymbol].filter(Boolean)
       const symbolLimit = parsePositiveInteger(process.env.CRON_SYMBOL_LIMIT, 20)
       const symbolsToProcess = allSymbols.slice(0, symbolLimit)
 

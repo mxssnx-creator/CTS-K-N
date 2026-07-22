@@ -22,6 +22,16 @@ export interface TradeHistoryRow {
   setKey?: string
   parentSetKey?: string
   setVariant?: string
+  indicationType?: string
+  leverage?: number
+  marginType?: string
+  stopLossPrice?: number
+  takeProfitPrice?: number
+  trailingActive?: boolean
+  trailingStopPrice?: number
+  blockCount?: number
+  dcaStep?: number
+  executionMode?: string
   closeReason?: string
 }
 
@@ -137,7 +147,7 @@ export function normalizeBingXClosedOrder(order: Record<string, any>): TradeHist
 function parseStoredValue(key: string, value: unknown): unknown {
   if (typeof value !== "string") return value
   const trimmed = value.trim()
-  if (["fills", "exchangeData", "blockLegs", "dcaLegs", "progression", "accumulatedSetKeys"].includes(key)) {
+  if (["fills", "exchangeData", "blockLegs", "dcaLegs", "progression", "accumulatedSetKeys", "manualProtectionOverride"].includes(key)) {
     try { return JSON.parse(trimmed) } catch { return key.endsWith("Legs") || key === "fills" ? [] : value }
   }
   return value
@@ -185,6 +195,11 @@ export function normalizeLocalTradeHistoryRow(raw: Record<string, any>): TradeHi
   const openedAt = normalizeTimestamp(position.createdAt ?? position.openedAt ?? position.timestamp)
   const closedAt = normalizeTimestamp(position.closedAt ?? position.closeTimestamp ?? position.updatedAt)
   const exchangeData = position.exchangeData && typeof position.exchangeData === "object" ? position.exchangeData : {}
+  const manualProtection = position.manualProtectionOverride && typeof position.manualProtectionOverride === "object"
+    ? position.manualProtectionOverride
+    : null
+  const manualHasStop = manualProtection && Object.prototype.hasOwnProperty.call(manualProtection, "stopLossPrice")
+  const manualHasTarget = manualProtection && Object.prototype.hasOwnProperty.call(manualProtection, "takeProfitPrice")
   const positionId = String(
     exchangeData.exchangePositionId ?? exchangeData.positionId ?? position.exchangePositionId ?? "",
   ).trim()
@@ -211,6 +226,20 @@ export function normalizeLocalTradeHistoryRow(raw: Record<string, any>): TradeHi
     setKey: position.setKey,
     parentSetKey: position.parentSetKey,
     setVariant: position.setVariant,
+    indicationType: position.indicationType,
+    leverage: firstPositive(position.leverage) || undefined,
+    marginType: String(position.marginType || "") || undefined,
+    stopLossPrice: (manualHasStop
+      ? firstPositive(manualProtection.stopLossPrice)
+      : firstPositive(position.stopLossPrice)) || undefined,
+    takeProfitPrice: (manualHasTarget
+      ? firstPositive(manualProtection.takeProfitPrice)
+      : firstPositive(position.takeProfitPrice)) || undefined,
+    trailingActive: manualProtection?.trailingEnabled === true || position.trailingActive === true || position.trailingActive === "true" || position.trailingActive === "1",
+    trailingStopPrice: firstPositive(position.trailingStopPrice) || undefined,
+    blockCount: firstPositive(position.blockCount) || undefined,
+    dcaStep: firstPositive(position.dcaStep) || undefined,
+    executionMode: String(position.executionMode || "") || undefined,
     closeReason: closeReason || undefined,
   }
 }

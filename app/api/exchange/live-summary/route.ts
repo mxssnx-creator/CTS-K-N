@@ -30,7 +30,7 @@ export const dynamic = "force-dynamic"
  * This endpoint NEVER 500s — on any error it returns zero totals so the
  * dashboard footer just shows "0 conns" rather than an error badge.
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
     await initRedis()
     const client = getRedisClient()
@@ -45,6 +45,10 @@ export async function GET() {
     // Matches the engine's own filter (redis-db.ts getAssignedAndEnabled-
     // Connections) so the footer reflects the exact set of connections
     // that could legitimately hold live positions.
+    const searchParams = new URL(request.url).searchParams
+    const requestedConnectionId = String(
+      searchParams?.get("connectionId") || searchParams?.get("connection_id") || "",
+    ).trim()
     const activeConns = connections.filter((c) => {
       const assignedOrActive = isTruthy(c.is_active_inserted) || isTruthy(c.is_assigned)
       const engineEnabled    = isTruthy(c.is_enabled) || isTruthy(c.enabled)
@@ -52,7 +56,8 @@ export async function GET() {
       // is insufficient: `is_enabled` alone covers connections that can
       // be tested but aren't trading; `is_active_inserted` alone could
       // include connections that have been disabled globally.
-      return assignedOrActive && engineEnabled
+      const selected = !requestedConnectionId || String(c.id) === requestedConnectionId
+      return selected && assignedOrActive && engineEnabled
     })
 
     if (activeConns.length === 0) {
@@ -180,12 +185,14 @@ export async function GET() {
         }
 
         // Balance cache shape is { balance: number, timestamp: number }.
-        // The exchange connectors only expose a single USDT total — we do
-        // not have a separate available/equity split at this layer, so
-        // we mirror `total` across all three fields for display.
+        // The exchange connectors expose wallet balance at this layer. Equity
+        // and free margin are therefore conservative derived values based on
+        // the same canonical open-position snapshot, never a mirrored total.
         const totalBal  = toNum(balanceCache?.balance)
         const currency  = (balanceCache?.currency as string) || "USDT"
         const balanceTs = toNum(balanceCache?.timestamp)
+        const equity = totalBal + unrealizedPnl
+        const estimatedAvailable = Math.max(0, equity - marginUsdSum)
 
         return {
           connectionId: connId,
@@ -203,8 +210,8 @@ export async function GET() {
           volumeUsd: Math.round(volumeUsdSum * 100) / 100,
           balance: {
             total:     totalBal,
-            available: totalBal,        // connectors don't split available/locked
-            equity:    totalBal + unrealizedPnl, // total + unrealised = equity estimate
+            available: estimatedAvailable,
+            equity,
             currency,
             updatedAt: balanceTs || null,
           },

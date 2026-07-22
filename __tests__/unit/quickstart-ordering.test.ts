@@ -4,9 +4,13 @@ describe("QuickStart route ordering", () => {
     jest.clearAllMocks()
   })
 
-  test("commits running intent before startEngine can check global coordinator state", async () => {
+  test("commits running intent before the stop-safe targeted engine start", async () => {
     const callOrder: string[] = []
     const globalIntent: Record<string, string> = {}
+    const connectionIntent: Record<string, string> = {
+      is_assigned: "1",
+      is_enabled_dashboard: "1",
+    }
 
     const redisClient = {
       _stateVersion: 0,
@@ -19,7 +23,11 @@ describe("QuickStart route ordering", () => {
         }
         return 1
       }),
-      hgetall: jest.fn(async (key: string) => key === "trade_engine:global" ? globalIntent : {}),
+      hgetall: jest.fn(async (key: string) => {
+        if (key === "trade_engine:global") return globalIntent
+        if (key === "connection:conn-1") return connectionIntent
+        return {}
+      }),
       hdel: jest.fn(async () => 0),
       del: jest.fn(async () => 0),
       expire: jest.fn(async () => 1),
@@ -140,7 +148,7 @@ describe("QuickStart route ordering", () => {
       changedFieldsOverride: expect.arrayContaining(["live_volume_factor", "connection_settings.live_volume_factor"]),
     }))
     expect(callOrder.indexOf("applyMainConnectionSettingsChange")).toBeGreaterThanOrEqual(0)
-    expect(callOrder.indexOf("applyMainConnectionSettingsChange")).toBeLessThan(callOrder.findIndex((entry) => entry.startsWith("startAll:")))
+    expect(callOrder.indexOf("applyMainConnectionSettingsChange")).toBeLessThan(callOrder.findIndex((entry) => entry.startsWith("startEngine:")))
 
     expect(redisClient.hset).toHaveBeenCalledWith("trade_engine:global", expect.objectContaining({
       status: "running",
@@ -149,9 +157,11 @@ describe("QuickStart route ordering", () => {
       operator_stopped: "0",
       updated_at: expect.any(String),
     }))
-    expect(startAll).toHaveBeenCalled()
+    // A detached startAll() could outlive a newer Stop request and restart
+    // the connection. QuickStart must use only the state-rechecked targeted
+    // start path.
+    expect(startAll).not.toHaveBeenCalled()
     expect(startEngine).toHaveBeenCalled()
-    expect(callOrder.indexOf("hset:trade_engine:global")).toBeLessThan(callOrder.findIndex((entry) => entry.startsWith("startAll:")))
     expect(callOrder.indexOf("hset:trade_engine:global")).toBeLessThan(callOrder.findIndex((entry) => entry.startsWith("startEngine:")))
     expect(callOrder).toContain("startEngine:running:0")
   })

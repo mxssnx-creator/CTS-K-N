@@ -108,6 +108,7 @@ export async function GET() {
 
 | Date | Changes |
 |------|---------|
+| 2026-07-23 | Completed the compact modern Live Trading operations release. `/live-trading` now uses only canonical persisted data and provides a dense balance/equity/margin/open-PnL overview, standard Profit Factor for 4/12/48 hours and the latest 25/75/150 closed positions, 4/24/48-hour order counts, five-day drawdown duration/depth, connection-scoped active-position search/sort/filtering, and a detailed expandable history with time/side/result/source/variant filters and execution, lineage, risk and DCA settings. Every open position exposes coordinated Close, absolute TP/SL, trailing-stop and Restore Strategy actions through per-position mutation locks, durable manual-protection overrides, exchange reconciliation, reduce-only partial-fill handling and fail-closed connector checks; the trailing ratchet remains monotonic across process restarts. Acceptance passed TypeScript, project-wide ESLint, 95 Jest suites/595 tests, installer preflight, exact minute scheduler, secret scan and recreation/diff checks. Passive isolated Dev and standalone Production smokes both completed schema 82/82, served the page and all analytics/action read contracts, and placed zero exchange orders; the production position/control-order crash-recovery protections remain covered by the prior 24-position SIGKILL recovery soak. |
 | 2026-07-22 | Kilo deploy migration and Redis hardening: `db:migrate` no longer requires Bun and cleanly skips the optional HTTP-SQLite migration when Kilo has not supplied both `DB_URL` and `DB_TOKEN`; a provisioned database still migrates and fails the deployment on a real migration error. The Ubuntu installer now installs, starts and verifies Redis, sets `REDIS_URL=redis://127.0.0.1:6379` for a long-lived local server, and enables AOF/everysec, protected mode and noeviction. Kilo Worker production cannot use localhost Redis: configure a TLS external shared Redis via Kilo deployment secrets before enabling durable cross-worker processing or live exchange coordination. |
 | 2026-07-22 | Kilo production layout/continuity repair. Live browser inspection found the header DOM present but flex-shrunk to 1 px; `PageHeader` and `.page-header-shell` now have a non-shrinking 4rem minimum, restoring the header and mobile sidebar trigger. Kilo host detection now supplies a visible-dashboard, minute-deduplicated paper-processing pulse when the platform omits repository cron metadata; unauthenticated pulses require a same-origin custom header, remain available only while real order infrastructure is blocked, and never invoke live-position recovery. Kilo's pinned managed-database client persists a bounded Redis-compatible snapshot with revision CAS and cross-worker leases; real exchange orders remain fail-closed unless durable coordination is explicitly approved. Next/OpenNext now repairs zero-byte prerender manifests from the current build's rendered HTML/RSC output and the runtime harness cleans complete Workerd process groups. Acceptance passed 92 Jest suites/575 tests, full TypeScript/ESLint, a fresh 40-page OpenNext build, and exact Workerd verification of 12 UI routes/268 scripts, 5/5 Historic/Main progress, settings/volume/Pos-Count/ACK/stats/history/status flows, dashboard pulse, scheduler/queue safety, and zero real positions/orders. |
 | 2026-07-21 | Final end-to-end rerun on the release tree: fixed repeated identical QuickStart requests resetting selection epochs/progress, made Dev route compilation deterministic through exclusive canonical output ownership, serial route warmup and complete process-group cleanup, throttled high-frequency per-symbol strategy summaries, added a concrete Next `/_document` fallback for reproducible OpenNext provider builds, and handled nullable portfolio params across App/Pages compatibility. Acceptance passed 92 Jest suites/565 tests, full ESLint and TypeScript, a fresh Next `.next-prod` build, OpenNext, Wrangler dry-run, Workerd Kilo UI/settings/progress/queue/ACK/stats/state verification, a 60-second 5-symbol Dev soak (330 requests, 354 aggregate and 868 Main cycles, 912 ms steady P95), a 120-second 5-symbol Production soak (660 requests, 786 aggregate and 1,962 Main cycles, 36 ms P95, 991,564 KiB final RSS), a 32-symbol Production UI workflow, and BingX SDK public 5-symbol/1,000-candle stress with +1.72 MiB heap and zero authenticated/order requests. |
@@ -445,3 +446,62 @@ The architecture assumed a separate long-lived engine-owner worker, but the repo
   Each attempt runs in an isolated process group; late trace/export children get
   a bounded settlement window and are then terminated before provider packaging.
   This prevents overlay filesystem races from failing a complete 40-page deploy.
+
+## Session 2026-07-22 — self-hosted continuity, installer and production metrics repair
+
+- [x] QuickStart start/stop generation handling now prevents an in-flight start
+  from overwriting a later Stop, uses the selected symbol count without the old
+  hidden four-symbol fallback, and only reports Running after a successful owner
+  start. Stale local heartbeats no longer suppress the durable cron fallback.
+- [x] Production Redis request-rate reporting now samples network Redis `INFO`
+  (`instantaneous_ops_per_sec`) with a short cache and supplies that value in all
+  monitoring endpoints, including the formerly missing comprehensive database
+  object. The production soak verifier requires non-zero database activity.
+- [x] Linux installs use global Bun when absent, with Node retaining Next
+  standalone compatibility. They record service name/port/runtime/user and ship
+  saved-default `start.sh`, `stop.sh`, and `restart.sh` controls. The long-lived
+  minute scheduler calls authenticated continuity and live-position routes in
+  parallel every 60 seconds and is removed with the app on uninstall.
+- [x] Bootstrap upgrades now resolve an explicit directory/name/port or saved
+  installation record, stop the exact recorded CTS services, preserve only the
+  protected production environment and CTS-managed local Redis state, delete
+  the old verified CTS checkout, then clone a clean revision. Uninstall uses
+  the saved identity and rejects a mismatched name/port, preserving shared
+  Bun/Node/Redis and external Redis data.
+- [x] `SessionSynchronizer` and `ProgressTracker` are now mounted in the root
+  provider, so every route/subpage shares root-level browser recovery. The
+  browser binds its cache to the durable Redis `site_instance_id` on load,
+  visibility return, and a 60-second poll; a changed site clears
+  server-derived selections, while connection progression caches are scoped by
+  site ID and immediately re-fetch canonical Redis state.
+- [x] Current focused regression suite: 10 suites/196 tests; full suite: 92
+  suites/578 tests; portable scheduler test, installer preflight, shell syntax
+  and diff whitespace checks pass. A full current production build/soak still
+  needs an execution environment that permits Next build to run longer than the
+  short command-session cap; no live exchange orders were submitted without an
+  explicit live/testnet endpoint and credentials.
+- [x] Final dev smoke on 2026-07-22 served health, initialization and monitoring
+  under Next development mode with a durable site ID, `ready: true`, and Redis
+  observed activity (46 req/s). The fresh bounded dev engine harness also
+  reached its first advancing simulated-engine round before the workspace's
+  command cap ended the harness. Production compilation reached Next's
+  successful compile stage, but the same cap prevents final page-data/standalone
+  assembly and the production soak in this workspace.
+
+## Session 2026-07-23 — production completion and stranded-position recovery
+
+- [x] A clean standalone production build now completes in this workspace: all
+  40 pages are generated, source/trace normalization succeeds, and standalone
+  assets are prepared from the same artifact used by the installed service.
+- [x] Development and production simulated-engine soaks both completed with 12
+  symbols, persistent migrations/settings/site identity, advancing historical,
+  realtime and strategy counters, bounded latency, and non-zero Redis request
+  rates. No real exchange order was enabled or submitted.
+- [x] Production recovery is now explicitly regression-tested by hard-stopping
+  the standalone server with active simulated positions, restarting it, then
+  calling the authenticated live-position reconciliation cron. The stable site
+  identity, all active position IDs and quantities survive; no position remains
+  in `pending` or `placed` state and the recovery tick completes successfully.
+- [x] The soak verifier reads canonical nested real-position statistics before
+  applying fallback values, preventing a false position-count regression when
+  durable variant-ledger data becomes available.

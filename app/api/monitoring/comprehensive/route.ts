@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server"
 import DatabaseManager from "@/lib/database"
 import { SystemLogger } from "@/lib/system-logger"
+import { getObservedRedisRequestsPerSecond, getRedisClient, initRedis } from "@/lib/redis-db"
+import { getSystemResourceMetrics } from "@/lib/system-resource-metrics"
 
 /**
  * Comprehensive Monitoring Endpoint
@@ -12,12 +14,44 @@ export async function GET() {
 
   try {
     const db = DatabaseManager.getInstance()
+    const resourceMetrics = getSystemResourceMetrics()
+
+    // The dashboard's database card reads this endpoint. Do not use the
+    // InlineLocalRedis-only synchronous counter here: on a real production
+    // Redis connection that counter has no visibility into network commands.
+    let database = {
+      connected: false,
+      requestsPerSecond: 0,
+      totalKeys: 0,
+      sizeMb: 0,
+      activeConnections: 0,
+    }
+    try {
+      await initRedis()
+      const client = getRedisClient()
+      const [requestsPerSecond, totalKeys, info] = await Promise.all([
+        getObservedRedisRequestsPerSecond(),
+        client.dbSize(),
+        client.info().catch(() => ""),
+      ])
+      const usedMemory = Number(info.match(/(?:^|\r?\n)used_memory:(\d+)/)?.[1] || 0)
+      database = {
+        connected: true,
+        requestsPerSecond,
+        totalKeys,
+        sizeMb: Math.round((usedMemory / 1024 / 1024) * 100) / 100,
+        activeConnections: 0,
+      }
+    } catch (databaseError) {
+      console.warn("[v0] [Monitoring] Could not collect Redis metrics:", databaseError)
+    }
 
     // 1. Get all connections
     const connections = await db.getConnections()
     const connectionList = Array.isArray(connections) ? connections : []
     const activeConnections = connectionList.filter((c: any) => c.is_enabled)
     const liveTradeConnections = connectionList.filter((c: any) => c.is_live_trade)
+    database.activeConnections = activeConnections.length
 
     // 2. Get position data
     let pseudoPositions: any[] = []
@@ -58,7 +92,12 @@ export async function GET() {
         uptime: process.uptime(),
         version: "3.2.0",
         environment: process.env.NODE_ENV || "production",
+        cpuUsage: resourceMetrics.cpuPercent,
+        memoryUsed: resourceMetrics.memoryUsedBytes,
+        memoryTotal: resourceMetrics.memoryTotalBytes,
+        processCount: 1,
       },
+      database,
       connections: {
         total: connectionList.length,
         active: activeConnections.length,

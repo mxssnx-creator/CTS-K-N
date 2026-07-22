@@ -11,7 +11,7 @@ route	dynamic_segments	imported_components	source
 /autotest		page-header,test-dashboard	app/autotest/page.tsx
 /health			app/health/page.tsx
 /indications		indications/indication-filters-advanced,indications/indication-row-compact,page-header,ui/button,ui/card	app/indications/page.tsx
-/live-trading		live-trading/position-row-compact,page-header,ui/button,ui/card	app/live-trading/page.tsx
+/live-trading		live-trading/live-overview-compact,live-trading/live-position-table,live-trading/live-trading-types,live-trading/trade-history-panel,page-header,ui/badge,ui/button,ui/card	app/live-trading/page.tsx
 /login		ui/button,ui/card,ui/input,ui/label	app/login/page.tsx
 /logistics		auth-guard,page-header,ui/badge,ui/button,ui/collapsible,ui/progress	app/logistics/page.tsx
 /main		dashboard/dashboard	app/main/page.tsx

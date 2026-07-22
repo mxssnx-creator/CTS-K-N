@@ -47,5 +47,6 @@ describe("system monitoring route", () => {
     expect(body.services.tradeEngine).toBe(true)
     expect(body.engines.indications.cycleCount).toBeGreaterThanOrEqual(13)
     expect(body.engines.strategies.cycleCount).toBeGreaterThanOrEqual(13)
+    expect(body.database.requestsPerSecond).toBeGreaterThan(0)
   })
 })

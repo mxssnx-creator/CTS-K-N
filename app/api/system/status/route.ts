@@ -49,7 +49,9 @@ export async function GET(request: NextRequest) {
     let siteInstanceId: string | null = null;
     const engineStatesByConnection: Record<string, Record<string, string>> = {};
     try {
-      const { getRedisClient } = await import("@/lib/redis-db");
+      const { getRedisClient, initRedis, ensureUniqueSiteInstance } = await import("@/lib/redis-db");
+      await initRedis();
+      const ensuredSiteInstance = await ensureUniqueSiteInstance().catch(() => null);
       const client = getRedisClient();
       const [dbSize, globalState, startupHash, completedAtKey, durableSiteId, siteHash, ...connectionStates] = await Promise.all([
         client.dbSize(),
@@ -79,6 +81,7 @@ export async function GET(request: NextRequest) {
       siteInstanceId =
         (typeof durableSiteId === "string" ? durableSiteId : null) ||
         (siteHash as Record<string, string>)?.site_session_id ||
+        ensuredSiteInstance?.siteSessionId ||
         null;
       allConnections.forEach((conn, index) => {
         engineStatesByConnection[conn.id] = connectionStates[index] || {};

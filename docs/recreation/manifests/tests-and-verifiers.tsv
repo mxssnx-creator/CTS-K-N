@@ -57,6 +57,7 @@ unit	__tests__/unit/inline-local-redis.test.ts
 unit	__tests__/unit/install-deployment-contract.test.ts
 unit	__tests__/unit/live-order-coordination.test.ts
 unit	__tests__/unit/live-pos-count-target.test.ts
+unit	__tests__/unit/live-position-actions.test.ts
 unit	__tests__/unit/live-position-lineage-index.test.ts
 unit	__tests__/unit/live-position-stats-sources.test.ts
 unit	__tests__/unit/live-position-status.test.ts
@@ -64,6 +65,8 @@ unit	__tests__/unit/live-positions-pnl.test.ts
 unit	__tests__/unit/live-stage-control-barrier.test.ts
 unit	__tests__/unit/live-stage-redis-position-lock.test.ts
 unit	__tests__/unit/live-trade-block-clearance.test.ts
+unit	__tests__/unit/live-trading-analytics.test.ts
+unit	__tests__/unit/live-trading-dashboard-contract.test.ts
 unit	__tests__/unit/logistics-workflow.test.ts
 unit	__tests__/unit/main-live-trade-readiness.test.ts
 unit	__tests__/unit/no-fixed-sleeps-regression.test.ts

@@ -941,7 +941,8 @@ describe("requested regression guardrails", () => {
     expect(pkg.scripts.prebuild).not.toContain("rm -rf .next")
     expect(pkg.scripts["prevercel-build"]).not.toContain("rm -rf .next")
     expect(read("eslint.config.mjs")).toContain('".next-*/**"')
-    expect(pkg.scripts.postbuild).toBe("node scripts/normalize-next-env.mjs")
+    expect(pkg.scripts.postbuild).toContain("node scripts/normalize-next-env.mjs")
+    expect(pkg.scripts.postbuild).toContain("node scripts/prepare-standalone-assets.mjs")
     expect(pkg.scripts["postvercel-build"]).toBe("node scripts/normalize-next-env.mjs")
     expect(read("scripts/normalize-next-env.mjs")).toContain('./.next/types/routes.d.ts')
     const previewRunner = read("scripts/run-prod-preview-check.mjs")
@@ -949,6 +950,11 @@ describe("requested regression guardrails", () => {
     expect(previewRunner).toContain("NEXT_DIST_DIR: distDir")
     expect(previewRunner).toContain('existsSync(`${distDir}/BUILD_ID`)')
     expect(previewRunner).toContain('ALLOW_PROD_SIMULATED: "1"')
+    expect(previewRunner).toContain("verifyOpenPositionCrashRecovery")
+    expect(previewRunner).toContain('child.kill("SIGKILL")')
+    expect(previewRunner).toContain("child.signalCode")
+    expect(previewRunner).toContain("Position ${id} disappeared after crash instead of being reconciled")
+    expect(previewRunner).toContain("recoveryTick?.ok !== true")
     expect(nextConfig).toContain("zero-byte")
     expect(nextConfig).toContain("cpus: 1")
     expect(nextConfig).toContain("staticGenerationMaxConcurrency: 1")
@@ -969,6 +975,7 @@ describe("requested regression guardrails", () => {
     expect(soak).toContain("realEvalPosCount: 1")
     expect(soak).toContain("Paper position lifecycle was not exercised")
     expect(soak).toContain("openPositions?.pseudo?.runningSets")
+    expect(soak).toContain("strategyDetail?.real?.positionStats")
     expect(soak).toContain('RUNTIME_MODE === "development" ? 1024 * 1024 : 512 * 1024')
     expect(soak).toContain('memory.findIndex((sample) => sample.engineCycles > 0)')
     expect(soak).toContain("A real exchange position appeared during safe paper soak")
@@ -1410,6 +1417,7 @@ describe("requested regression guardrails", () => {
 
   test("production system monitoring returns process resource metrics even when Redis is unavailable", () => {
     const route = read("app/api/system/monitoring/route.ts")
+    const comprehensiveRoute = read("app/api/monitoring/comprehensive/route.ts")
     const helper = read("lib/system-resource-metrics.ts")
 
     expect(route).toContain('const resourceMetrics = getSystemResourceMetrics()')
@@ -1434,6 +1442,8 @@ describe("requested regression guardrails", () => {
     expect(helper).toContain('/sys/fs/cgroup/cpu.max')
     expect(helper).toContain('Math.max(0.1')
     expect(helper).toContain('memory.rss')
+    expect(comprehensiveRoute).toContain("getObservedRedisRequestsPerSecond")
+    expect(comprehensiveRoute).toContain("requestsPerSecond")
   })
 
 
@@ -1579,12 +1589,16 @@ describe("requested regression guardrails", () => {
       quickStart.indexOf("// Store in global quickstart state"),
     )
     const intentWriteIndex = step4.indexOf('await client.hset("trade_engine:global", {')
-    const startAllIndex = step4.indexOf("coordinator.startAll()")
+    const targetedDispatchIndex = step4.indexOf("await coordinator.startEngine(connectionId, {")
     const targetedStartIndex = step4.indexOf("const engineStarted = await coord.startEngine")
 
     expect(intentWriteIndex).toBeGreaterThanOrEqual(0)
-    expect(intentWriteIndex).toBeLessThan(startAllIndex)
+    expect(targetedDispatchIndex).toBeGreaterThanOrEqual(0)
+    expect(intentWriteIndex).toBeLessThan(targetedDispatchIndex)
     expect(intentWriteIndex).toBeLessThan(targetedStartIndex)
+    // QuickStart must not launch a detached global sweep: that old route
+    // could restart a just-stopped connection after the Stop request won.
+    expect(step4).not.toMatch(/\bcoordinator\.startAll\(\)/)
     expect(step4).toContain('operator_stopped: "0"')
     expect(step4).toContain("updated_at: quickstartGlobalStartedAt")
     expect(step4).toContain("const quickstartGlobalStartedAt = new Date().toISOString()")

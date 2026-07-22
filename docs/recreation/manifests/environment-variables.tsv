@@ -38,11 +38,13 @@ CRON_PREHISTORIC_SYMBOL_LIMIT	application-runtime	no	no	1	app/api/cron/generate-
 CRON_SECRET	application-runtime	yes	yes	4	.env.example,__tests__/unit/production-continuity.test.ts,lib/cron-auth.ts,scripts/kilo-deploy-preflight.mjs
 CRON_SYMBOL_CONCURRENCY	application-runtime	no	no	2	__tests__/unit/requested-regressions.test.ts,app/api/cron/generate-indications/route.ts
 CRON_SYMBOL_LIMIT	application-runtime	no	no	2	__tests__/unit/requested-regressions.test.ts,app/api/cron/generate-indications/route.ts
+CTS_CPU_COUNT	test-or-operator-tool	no	yes	1	.env.example
 CTS_DB_TOKEN	application-runtime	yes	no	2	app/api/settings/database-status/route.ts,lib/kilo-database-client.ts
 CTS_DB_URL	application-runtime	no	no	2	app/api/settings/database-status/route.ts,lib/kilo-database-client.ts
 CTS_DEPLOYMENT_RUNTIME	application-runtime	no	yes	8	.env.example,__tests__/unit/install-deployment-contract.test.ts,__tests__/unit/requested-regressions.test.ts,custom-worker.ts,lib/deployment-runtime.ts,scripts/run-managed-db-migrate.mjs,scripts/verify-deployment-contract.mjs,src/db/migrate.ts
 CTS_ENGINE_OWNER_WORKER	application-runtime	no	no	1	lib/trade-engine.ts
 CTS_INLINE_REDIS_PERSISTENT_VOLUME	application-runtime	no	no	2	lib/production-readiness.ts,lib/real-trade-gates.ts
+CTS_NODE_BIN	test-or-operator-tool	no	no	1	scripts/start-production.mjs
 CTS_NPM_REDIS_ROOT	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 CTS_REDIS_DATA_DIR	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 CTS_REDIS_PORT	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
@@ -88,7 +90,8 @@ FORCE_SIMULATED	application-runtime	no	yes	3	.env.example,lib/exchange-connector
 HISTORIC_CANDLE_CHUNK_SIZE	test-or-operator-tool	no	yes	1	.env.example
 HISTORIC_CHUNK_READ_BATCH	test-or-operator-tool	no	yes	1	.env.example
 HISTORIC_CHUNK_WRITE_BATCH	test-or-operator-tool	no	yes	1	.env.example
-HOST	test-or-operator-tool	no	no	1	scripts/smoke-routes-test.mjs
+HOST	test-or-operator-tool	no	no	2	scripts/smoke-routes-test.mjs,scripts/start-production.mjs
+HOSTNAME	test-or-operator-tool	no	no	1	scripts/start-production.mjs
 INDICATION_FULL_CONFIG_GRID	application-runtime	no	no	1	lib/indication-sets-processor.ts
 INDICATION_OUTCOME_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 INDICATION_SET_READ_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
@@ -124,7 +127,7 @@ MAX_POSITION_HOLD_MS	application-runtime	no	yes	2	.env.example,lib/trade-engine/
 MIGRATION_BATCH_DEADLINE_MS	application-runtime	no	no	1	lib/redis-migrations.ts
 NEXT_BINGX_API_KEY	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
 NEXT_BINGX_API_SECRET	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
-NEXT_DIST_DIR	application-runtime	no	no	6	__tests__/unit/requested-regressions.test.ts,next.config.mjs,scripts/build-next-with-trace-retry.mjs,scripts/clean-next-dist.mjs,scripts/normalize-next-env.mjs,scripts/run-prod-preview-check.mjs
+NEXT_DIST_DIR	application-runtime	no	no	8	__tests__/unit/requested-regressions.test.ts,next.config.mjs,scripts/build-next-with-trace-retry.mjs,scripts/clean-next-dist.mjs,scripts/normalize-next-env.mjs,scripts/prepare-standalone-assets.mjs,scripts/run-prod-preview-check.mjs,scripts/start-production.mjs
 NEXT_PHASE	platform-provided	no	no	1	lib/redis-db.ts
 NEXT_PUBLIC_ALLOW_BROWSER_BOOTSTRAP	application-runtime	no	no	1	components/engine-auto-initializer.tsx
 NEXT_PUBLIC_API_URL	test-or-operator-tool	no	no	2	scripts/autotest-drift.mjs,scripts/production-deploy-init.mjs
@@ -147,7 +150,7 @@ PATH	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.te
 PIONEX_API_KEY	test-or-operator-tool	yes	yes	1	.env.example
 PIONEX_API_SECRET	test-or-operator-tool	yes	yes	1	.env.example
 POLL_MS	test-or-operator-tool	no	no	1	scripts/run-engine-probe.mjs
-PORT	application-runtime	no	no	14	app/api/settings/connections/route.ts,scripts/kill-test-dev-port.mjs,scripts/logistics-test-suite.mjs,scripts/quickstart-live-trading.js,scripts/run-dev-preview-check.mjs,scripts/run-engine-probe.mjs,scripts/run-prod-preview-check.mjs,scripts/smoke-routes-test.mjs,scripts/test-progression-live.mjs,scripts/test-quickstart-3symbols.js,scripts/validate-comprehensive.mjs,scripts/verify-prod-preview.mjs,scripts/verify-prod-soak.mjs,scripts/verify-prod-ui-max.mjs
+PORT	application-runtime	no	no	15	app/api/settings/connections/route.ts,scripts/kill-test-dev-port.mjs,scripts/logistics-test-suite.mjs,scripts/quickstart-live-trading.js,scripts/run-dev-preview-check.mjs,scripts/run-engine-probe.mjs,scripts/run-prod-preview-check.mjs,scripts/smoke-routes-test.mjs,scripts/start-production.mjs,scripts/test-progression-live.mjs,scripts/test-quickstart-3symbols.js,scripts/validate-comprehensive.mjs,scripts/verify-prod-preview.mjs,scripts/verify-prod-soak.mjs,scripts/verify-prod-ui-max.mjs
 POSITION_FLOW_READ_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 PREHISTORIC_BOOTSTRAP_DEADLINE_MS	application-runtime	no	no	1	lib/trade-engine/engine-manager.ts
 PREHISTORIC_CONFIG_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
@@ -185,7 +188,7 @@ REDISMS_DOWNLOAD_DIR	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 REMOTE_INSTALL_OWNER_SECRET	application-runtime	yes	yes	4	.env.example,__tests__/unit/install-deployment-contract.test.ts,app/api/install/remote/route.ts,scripts/kilo-deploy-preflight.mjs
 REMOTE_INSTALL_OWNER_URL	application-runtime	no	yes	4	.env.example,__tests__/unit/install-deployment-contract.test.ts,app/api/install/remote/route.ts,scripts/kilo-deploy-preflight.mjs
 REQUIRE_FRESH_CONTINUITY	test-or-operator-tool	no	no	2	scripts/verify-deployment-contract.mjs,scripts/verify-prod-preview.mjs
-REQUIRE_SHARED_PERSISTENCE	test-or-operator-tool	no	no	1	scripts/verify-deployment-contract.mjs
+REQUIRE_SHARED_PERSISTENCE	test-or-operator-tool	no	no	2	scripts/production-deploy-init.mjs,scripts/verify-deployment-contract.mjs
 RUN_MANAGED_DB_MIGRATIONS	application-runtime	no	no	2	scripts/run-managed-db-migrate.mjs,src/db/migrate.ts
 RUN_MS	test-or-operator-tool	no	no	1	scripts/run-engine-probe.mjs
 RUNTIME_MODE	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
@@ -210,6 +213,7 @@ TRADE_ENGINE_STATUS_CACHE_MS	application-runtime	no	no	1	app/api/trade-engine/st
 UPSTASH_REDIS_REST_TOKEN	application-runtime	yes	yes	9	.env.example,__tests__/unit/main-live-trade-readiness.test.ts,app/api/settings/database-status/route.ts,custom-worker.ts,lib/real-trade-gates.ts,lib/redis-db.ts,lib/startup-validation.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs
 UPSTASH_REDIS_REST_URL	application-runtime	no	yes	11	.env.example,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/redis-secondary-indexes.test.ts,app/api/settings/database-status/route.ts,components/settings/install-manager.tsx,custom-worker.ts,lib/real-trade-gates.ts,lib/redis-db.ts,lib/startup-validation.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs
 URL	application-runtime	no	no	2	lib/deployment-runtime.ts,lib/startup-validation.ts
+UV_THREADPOOL_SIZE	test-or-operator-tool	no	yes	1	.env.example
 V0_DEV_SYMBOL_COUNT	application-runtime	no	yes	3	.env.example,lib/redis-db.ts,lib/redis-migrations.ts
 V0_REDIS_SNAPSHOT_PATH	application-runtime	no	yes	5	.env.example,__tests__/unit/inline-local-redis.test.ts,lib/production-readiness.ts,lib/real-trade-gates.ts,lib/redis-db.ts
 VAR_NAME	test-or-operator-tool	no	no	1	DEVELOPMENT_GUIDE.md

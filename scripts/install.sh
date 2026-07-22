@@ -11,6 +11,7 @@
 
 set -Eeuo pipefail
 umask 027
+(( BASH_VERSINFO[0] >= 4 )) || { echo "CTS-K-N requires Bash 4 or newer" >&2; exit 1; }
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
@@ -25,6 +26,10 @@ APP_NAME=""
 APP_PORT=""
 RUNTIME="auto"
 SERVICE_USER="${SUDO_USER:-${USER:-$(id -un)}}"
+APP_NAME_SET=0
+APP_PORT_SET=0
+RUNTIME_SET=0
+SERVICE_USER_SET=0
 CREATE_SERVICE_USER=0
 PREFLIGHT_ONLY=0
 SKIP_SYSTEM_PACKAGES=0
@@ -34,7 +39,13 @@ SEED_ENV_FILE=""
 PNPM_VERSION="10.28.1"
 REDIS_MODE="auto"
 REINSTALL=0
+UNINSTALL=0
+SERVICE_USER_CREATED=0
 DEFAULT_PASSWORD="${CTS_INSTALL_DEFAULT_PASSWORD:-00998877}"
+SAVED_APP_NAME=""
+SAVED_APP_PORT=""
+SAVED_RUNTIME=""
+SAVED_SERVICE_USER=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -68,6 +79,7 @@ Options:
   --non-interactive       Never rely on interactive package prompts
   --redis-mode MODE       auto, native, npm, or snapshot (default: auto)
   --reinstall             Reinstall OS apps, runtimes, global tools, and dependencies
+  --uninstall             Stop/remove CTS services, CTS-owned runtime data, and this checkout
   --help                  Show this help
 
 Sensitive values should be supplied in --seed-env-file or the existing env
@@ -79,11 +91,11 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --name) APP_NAME="${2:?--name requires a value}"; shift 2 ;;
-    --project-name|--project) APP_NAME="${2:?$1 requires a value}"; shift 2 ;;
-    --port) APP_PORT="${2:?--port requires a value}"; shift 2 ;;
-    --runtime) RUNTIME="${2:?--runtime requires a value}"; shift 2 ;;
-    --service-user) SERVICE_USER="${2:?--service-user requires a value}"; shift 2 ;;
+    --name) APP_NAME="${2:?--name requires a value}"; APP_NAME_SET=1; shift 2 ;;
+    --project-name|--project) APP_NAME="${2:?$1 requires a value}"; APP_NAME_SET=1; shift 2 ;;
+    --port) APP_PORT="${2:?--port requires a value}"; APP_PORT_SET=1; shift 2 ;;
+    --runtime) RUNTIME="${2:?--runtime requires a value}"; RUNTIME_SET=1; shift 2 ;;
+    --service-user) SERVICE_USER="${2:?--service-user requires a value}"; SERVICE_USER_SET=1; shift 2 ;;
     --create-service-user) CREATE_SERVICE_USER=1; shift ;;
     --env-file) ENV_FILE="${2:?--env-file requires a value}"; shift 2 ;;
     --seed-env-file) SEED_ENV_FILE="${2:?--seed-env-file requires a value}"; shift 2 ;;
@@ -93,18 +105,75 @@ while [[ $# -gt 0 ]]; do
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     --redis-mode) REDIS_MODE="${2:?--redis-mode requires a value}"; shift 2 ;;
     --reinstall) REINSTALL=1; shift ;;
+    --uninstall) UNINSTALL=1; shift ;;
     --help|-h) usage; exit 0 ;;
     -*) fatal "Unknown option: $1" ;;
     *)
-      if [[ "$1" =~ ^[0-9]+$ && "$APP_PORT" == "3002" ]]; then APP_PORT="$1";
-      elif [[ "$APP_NAME" == "$DEFAULT_PROJECT_NAME" ]]; then APP_NAME="$1";
-      elif [[ "$APP_PORT" == "3002" ]]; then APP_PORT="$1";
+      if [[ "$1" =~ ^[0-9]+$ && "$APP_PORT" == "3002" ]]; then APP_PORT="$1"; APP_PORT_SET=1;
+      elif [[ "$APP_NAME" == "$DEFAULT_PROJECT_NAME" ]]; then APP_NAME="$1"; APP_NAME_SET=1;
+      elif [[ "$APP_PORT" == "3002" ]]; then APP_PORT="$1"; APP_PORT_SET=1;
       else fatal "Unexpected positional argument: $1"; fi
       shift ;;
   esac
 done
 
-if (( NON_INTERACTIVE == 0 )) && [[ -t 0 ]]; then
+load_installed_defaults() {
+  local values_file="$RUNTIME_DIR/install-values.env" key value
+  [[ -r "$values_file" ]] || return 0
+  while IFS='=' read -r key value || [[ -n "$key" ]]; do
+    [[ -z "$key" || "$key" == \#* ]] && continue
+    case "$key" in
+      CTS_INSTALLED_APP_NAME)
+        SAVED_APP_NAME="$value"
+        if (( APP_NAME_SET == 0 )) && [[ "$value" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]; then
+          APP_NAME="$value"
+        fi
+        ;;
+      CTS_INSTALLED_APP_PORT)
+        SAVED_APP_PORT="$value"
+        if (( APP_PORT_SET == 0 )) && [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 65535 )); then
+          APP_PORT="$value"
+        fi
+        ;;
+      CTS_INSTALLED_RUNTIME)
+        SAVED_RUNTIME="$value"
+        if (( RUNTIME_SET == 0 )) && [[ "$value" =~ ^(systemd|pm2)$ ]]; then
+          RUNTIME="$value"
+        fi
+        ;;
+      CTS_INSTALLED_SERVICE_USER)
+        SAVED_SERVICE_USER="$value"
+        if (( SERVICE_USER_SET == 0 )) && [[ "$value" =~ ^[a-zA-Z_][a-zA-Z0-9._-]*$ ]]; then
+          SERVICE_USER="$value"
+        fi
+        ;;
+    esac
+  done < "$values_file"
+}
+
+# A repeat install must target the already installed service even when the
+# operator omits --name/--port. Explicit command-line values always win.
+load_installed_defaults
+
+# A directory is authoritative on removal. Never let a typo in --name stop an
+# unrelated service and then remove this checkout; use its recorded runtime
+# identity instead. Explicit matching values remain accepted for automation.
+if (( UNINSTALL == 1 )) && [[ -n "$SAVED_APP_NAME" && "$SAVED_APP_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]; then
+  if (( APP_NAME_SET == 1 )) && [[ "$APP_NAME" != "$SAVED_APP_NAME" ]]; then
+    fatal "--name '$APP_NAME' does not match the installed CTS service '$SAVED_APP_NAME' in $PROJECT_ROOT"
+  fi
+  if (( APP_PORT_SET == 1 )) && [[ "$SAVED_APP_PORT" =~ ^[0-9]+$ ]] && [[ "$APP_PORT" != "$SAVED_APP_PORT" ]]; then
+    fatal "--port '$APP_PORT' does not match the installed CTS port '$SAVED_APP_PORT' in $PROJECT_ROOT"
+  fi
+  APP_NAME="$SAVED_APP_NAME"
+  [[ "$SAVED_APP_PORT" =~ ^[0-9]+$ ]] && APP_PORT="$SAVED_APP_PORT"
+  [[ "$SAVED_RUNTIME" =~ ^(systemd|pm2)$ ]] && RUNTIME="$SAVED_RUNTIME"
+  [[ "$SAVED_SERVICE_USER" =~ ^[a-zA-Z_][a-zA-Z0-9._-]*$ ]] && SERVICE_USER="$SAVED_SERVICE_USER"
+elif (( APP_NAME_SET == 1 )) && [[ -n "$SAVED_APP_NAME" && "$SAVED_APP_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ && "$APP_NAME" != "$SAVED_APP_NAME" ]]; then
+  fatal "This checkout is installed as '$SAVED_APP_NAME'; use bootstrap-install.sh to replace it under a new --name safely"
+fi
+
+if (( UNINSTALL == 0 && NON_INTERACTIVE == 0 )) && [[ -t 0 ]]; then
   if [[ "$APP_NAME" == "$DEFAULT_PROJECT_NAME" ]]; then
     read -r -p "Project/service name [$DEFAULT_PROJECT_NAME]: " answer || true
     [[ -z "$answer" ]] || APP_NAME="$answer"
@@ -120,10 +189,12 @@ fi
 [[ "$APP_PORT" =~ ^[0-9]+$ ]] && (( APP_PORT >= 1 && APP_PORT <= 65535 )) || fatal "Port must be 1..65535"
 case "$RUNTIME" in auto|systemd|pm2) ;; *) fatal "Runtime must be auto, systemd, or pm2" ;; esac
 case "$REDIS_MODE" in auto|native|npm|snapshot) ;; *) fatal "Redis mode must be auto, native, npm, or snapshot" ;; esac
-[[ "$PROJECT_ROOT" != "/" && -f "$PROJECT_ROOT/package.json" && -f "$PROJECT_ROOT/pnpm-lock.yaml" ]] \
-  || fatal "Installer must run from a complete CTS-K-N checkout"
-[[ -f "$PROJECT_ROOT/lib/redis-migrations.ts" ]] || fatal "Migration bundle is missing"
-[[ -z "$SEED_ENV_FILE" || -r "$SEED_ENV_FILE" ]] || fatal "Seed env file is not readable: $SEED_ENV_FILE"
+if (( UNINSTALL == 0 )); then
+  [[ "$PROJECT_ROOT" != "/" && -f "$PROJECT_ROOT/package.json" && -f "$PROJECT_ROOT/pnpm-lock.yaml" ]] \
+    || fatal "Installer must run from a complete CTS-K-N checkout"
+  [[ -f "$PROJECT_ROOT/lib/redis-migrations.ts" ]] || fatal "Migration bundle is missing"
+  [[ -z "$SEED_ENV_FILE" || -r "$SEED_ENV_FILE" ]] || fatal "Seed env file is not readable: $SEED_ENV_FILE"
+fi
 
 if (( EUID == 0 )); then
   SUDO=()
@@ -159,6 +230,39 @@ run_as_service() {
   fi
 }
 
+uninstall_project() {
+  section "Removing CTS-K-N"
+  [[ "$PROJECT_ROOT" != "/" && "$PROJECT_ROOT" == /* && -d "$PROJECT_ROOT" && -f "$SCRIPT_DIR/install.sh" ]] \
+    || fatal "Refusing to remove an unsafe or incomplete project directory: $PROJECT_ROOT"
+
+  local remove_service_user=0 managed_user_file="$RUNTIME_DIR/managed-service-user"
+  if [[ -f "$managed_user_file" && "$(<"$managed_user_file")" == "$SERVICE_USER" ]]; then
+    remove_service_user=1
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    run_root systemctl disable --now "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-redis" 2>/dev/null || true
+    run_root rm -f -- "/etc/systemd/system/$APP_NAME.service" "/etc/systemd/system/$APP_NAME-scheduler.service" "/etc/systemd/system/$APP_NAME-redis.service"
+    run_root systemctl daemon-reload 2>/dev/null || true
+    run_root systemctl reset-failed "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-redis" 2>/dev/null || true
+  fi
+  if command -v pm2 >/dev/null 2>&1 && id "$SERVICE_USER" >/dev/null 2>&1; then
+    run_as_service pm2 delete "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-redis" >/dev/null 2>&1 || true
+    run_as_service pm2 save --force >/dev/null 2>&1 || true
+  fi
+
+  # Redis, Node, pnpm, and Bun can be shared by unrelated applications. Remove
+  # only CTS units/data and leave the shared runtime and external Redis keys intact.
+  cd /
+  run_root rm -rf -- "$PROJECT_ROOT"
+  if (( remove_service_user == 1 )) && id "$SERVICE_USER" >/dev/null 2>&1; then
+    run_root userdel --remove "$SERVICE_USER" 2>/dev/null || run_root userdel "$SERVICE_USER" || true
+    ok "Removed CTS-managed service user: $SERVICE_USER"
+  fi
+  ok "Removed CTS services and checkout: $PROJECT_ROOT"
+  info "Shared Bun/Node/Redis installations and externally managed Redis data were preserved."
+}
+
 detect_package_manager() {
   if command -v apt-get >/dev/null 2>&1; then printf 'apt'; return; fi
   if command -v dnf >/dev/null 2>&1; then printf 'dnf'; return; fi
@@ -167,6 +271,11 @@ detect_package_manager() {
 }
 
 PACKAGE_MANAGER="$(detect_package_manager)"
+
+if (( UNINSTALL == 1 )); then
+  uninstall_project
+  exit 0
+fi
 
 free_port() {
   if command -v ss >/dev/null 2>&1; then
@@ -233,7 +342,7 @@ run_preflight() {
     fi
   fi
 
-  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/run-with-env.mjs scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
+  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/run-with-env.mjs scripts/start-production.mjs scripts/prepare-standalone-assets.mjs scripts/start.sh scripts/stop.sh scripts/restart.sh scripts/service-control.sh scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
     [[ -f "$PROJECT_ROOT/$file" ]] || fatal "Required install artifact is missing: $file"
   done
   bash -n "$PROJECT_ROOT/scripts/install.sh"
@@ -274,22 +383,24 @@ install_system_packages() {
   case "$PACKAGE_MANAGER" in
     apt)
       (( NON_INTERACTIVE == 1 )) && export DEBIAN_FRONTEND=noninteractive
-      run_root apt-get update -y
       for package in ca-certificates curl git build-essential openssl python3 python3-pip python3-venv; do add_package_if_needed "$package"; done
       if ! command -v redis-server >/dev/null 2>&1 && ! command -v redis-cli >/dev/null 2>&1; then
         add_package_if_needed redis-server; add_package_if_needed redis-tools
       elif (( REINSTALL == 1 )); then
         add_package_if_needed redis-server; add_package_if_needed redis-tools
       else info "Native Redis already available; keeping the installed server"; fi
-      ((${#packages[@]} == 0)) || run_root apt-get install -y "${packages[@]}"
+      if ((${#packages[@]} > 0)); then
+        run_root apt-get update -y
+        run_root apt-get install -y "${packages[@]}"
+      fi
       ;;
     dnf)
-      for package in ca-certificates curl git gcc-c++ make openssl python3 python3-pip; do add_package_if_needed "$package"; done
+      for package in ca-certificates curl git gcc-c++ make openssl python3 python3-pip procps-ng; do add_package_if_needed "$package"; done
       if ! command -v redis-server >/dev/null 2>&1 && ! command -v redis-cli >/dev/null 2>&1; then add_package_if_needed redis; elif (( REINSTALL == 1 )); then add_package_if_needed redis; fi
       ((${#packages[@]} == 0)) || run_root dnf install -y "${packages[@]}"
       ;;
     yum)
-      for package in ca-certificates curl git gcc-c++ make openssl python3 python3-pip; do add_package_if_needed "$package"; done
+      for package in ca-certificates curl git gcc-c++ make openssl python3 python3-pip procps-ng; do add_package_if_needed "$package"; done
       if ! command -v redis-server >/dev/null 2>&1 && ! command -v redis-cli >/dev/null 2>&1; then add_package_if_needed redis; elif (( REINSTALL == 1 )); then add_package_if_needed redis; fi
       ((${#packages[@]} == 0)) || run_root yum install -y "${packages[@]}"
       ;;
@@ -306,6 +417,7 @@ ensure_service_user() {
     [[ -x "$nologin_shell" ]] || nologin_shell="/sbin/nologin"
     [[ -x "$nologin_shell" ]] || nologin_shell="/bin/false"
     run_root useradd --system --create-home --home-dir "/var/lib/$APP_NAME" --shell "$nologin_shell" "$SERVICE_USER"
+    SERVICE_USER_CREATED=1
     if command -v chpasswd >/dev/null 2>&1; then
       printf '%s:%s\n' "$SERVICE_USER" "$DEFAULT_PASSWORD" | run_root chpasswd
     fi
@@ -359,23 +471,44 @@ ensure_node_and_pnpm() {
 }
 
 ensure_python_pip_and_bun() {
-  section "Python, pip, and Bun toolchain"
+  section "Python, pip, and global Bun toolchain"
   command -v python3 >/dev/null 2>&1 || fatal "python3 is missing after OS dependency installation"
   command -v pip3 >/dev/null 2>&1 || fatal "pip3 is missing after OS dependency installation"
   python3 -m pip --version >/dev/null 2>&1 || fatal "python3 -m pip is not usable"
   ok "Python $(python3 --version 2>&1), pip $(python3 -m pip --version | awk '{print $2}')"
 
-  if (( REINSTALL == 1 )) || ! command -v bun >/dev/null 2>&1; then
+  local bun_install_dir="/opt/bun" existing_bun="" global_bun="/usr/local/bin/bun"
+  if [[ -x "$global_bun" ]] && "$global_bun" --version >/dev/null 2>&1 && (( REINSTALL == 0 )); then
+    existing_bun="$global_bun"
+    info "Global Bun already installed; keeping it"
+  elif (( REINSTALL == 0 )) && command -v bun >/dev/null 2>&1; then
+    existing_bun="$(command -v bun)"
+    if run_as_service "$existing_bun" --version >/dev/null 2>&1; then
+      run_root ln -sfn "$existing_bun" "$global_bun"
+      existing_bun="$global_bun"
+      info "Promoted the existing Bun executable to the global path"
+    else
+      existing_bun=""
+    fi
+  fi
+  if [[ -z "$existing_bun" ]]; then
     command -v curl >/dev/null 2>&1 || fatal "curl is required to install Bun"
-    local bun_install_dir="/opt/bun"
+    if ! command -v unzip >/dev/null 2>&1; then
+      case "$PACKAGE_MANAGER" in
+        apt) run_root apt-get update -y; run_root apt-get install -y unzip ;;
+        dnf|yum) run_root "$PACKAGE_MANAGER" install -y unzip ;;
+        *) fatal "unzip is required to install Bun" ;;
+      esac
+    fi
     run_root mkdir -p "$bun_install_dir"
     run_root env BUN_INSTALL="$bun_install_dir" bash -c 'curl -fsSL https://bun.sh/install | bash' \
       || fatal "Bun installation failed"
     [[ -x "$bun_install_dir/bin/bun" ]] || fatal "Bun installer did not create its executable"
-    run_root ln -sfn "$bun_install_dir/bin/bun" /usr/local/bin/bun
+    run_root ln -sfn "$bun_install_dir/bin/bun" "$global_bun"
   fi
-  command -v bun >/dev/null 2>&1 || fatal "bun is missing after installation"
-  ok "Bun $(bun --version)"
+  [[ -x "$global_bun" ]] || fatal "Global Bun is missing after installation"
+  run_as_service "$global_bun" --version >/dev/null 2>&1 || fatal "The service user cannot execute global Bun"
+  ok "Global Bun $($global_bun --version)"
 }
 
 env_value() {
@@ -416,7 +549,10 @@ configure_cpu_parallelism() {
   (( io_pool < 4 )) && io_pool=4
   (( io_pool > 32 )) && io_pool=32
   symbol_pool=$(( cpu_count > 1 ? cpu_count - 1 : 1 ))
-  (( symbol_pool > 4 )) && symbol_pool=4
+  # Keep one process as the engine owner, but allow bounded async pools to use
+  # more host CPUs. Eight is the service safety ceiling; explicit env values
+  # remain authoritative when operators need tighter limits.
+  (( symbol_pool > 8 )) && symbol_pool=8
   (( symbol_pool < 1 )) && symbol_pool=1
   historic_pool=$symbol_pool
 
@@ -478,7 +614,7 @@ configure_environment_and_redis() {
     redis_url="redis://127.0.0.1:6379"
   fi
 
-  if [[ "$inline_snapshot" == "0" ]] && ! node "$PROJECT_ROOT/scripts/verify-redis-endpoint.mjs" >/dev/null 2>&1; then
+  if [[ "$inline_snapshot" == "0" ]] && ! REDIS_URL="$redis_url" node "$PROJECT_ROOT/scripts/verify-redis-endpoint.mjs" >/dev/null 2>&1; then
     [[ "$REDIS_MODE" != "native" ]] || fatal "Native Redis is not reachable"
     [[ -z "${INSTALL_REDIS_URL:-}" && -z "$(env_value REDIS_URL)" ]] || fatal "Configured Redis is not reachable"
     section "npm Redis fallback"
@@ -503,8 +639,8 @@ configure_environment_and_redis() {
       env CTS_NPM_REDIS_ROOT="$npm_redis_root/node_modules" CTS_REDIS_DATA_DIR="$RUNTIME_DIR/redis-data" CTS_REDIS_PORT=6379 REDISMS_DOWNLOAD_DIR="$RUNTIME_DIR/redis-binaries" \
       node "$PROJECT_ROOT/scripts/npm-redis-service.mjs" >"$RUNTIME_DIR/redis.log" 2>&1 &
     echo $! > "$RUNTIME_DIR/redis.pid"
-    for _ in {1..30}; do node "$PROJECT_ROOT/scripts/verify-redis-endpoint.mjs" >/dev/null 2>&1 && break; sleep 1; done
-    node "$PROJECT_ROOT/scripts/verify-redis-endpoint.mjs" >/dev/null 2>&1 || fatal "npm Redis service did not become ready"
+    for _ in {1..30}; do REDIS_URL="$redis_url" node "$PROJECT_ROOT/scripts/verify-redis-endpoint.mjs" >/dev/null 2>&1 && break; sleep 1; done
+    REDIS_URL="$redis_url" node "$PROJECT_ROOT/scripts/verify-redis-endpoint.mjs" >/dev/null 2>&1 || fatal "npm Redis service did not become ready"
   fi
   if [[ "$inline_snapshot" == "0" ]] && command -v redis-cli >/dev/null 2>&1; then
     redis-cli -u "$redis_url" --no-auth-warning ping >/dev/null 2>&1 || fatal "Redis verification failed"
@@ -592,6 +728,26 @@ start_runtime() {
   fi
 }
 
+stage_existing_runtime() {
+  section "Existing installation handoff"
+  if existing_runtime_active; then
+    info "Stopping the existing $APP_NAME service and scheduler before replacement"
+    stop_runtime
+  else
+    info "No active $APP_NAME service was found"
+  fi
+
+  # Do not let stale route chunks or a half-written previous output mix with
+  # the next build. Keep one recoverable backup until every install, migration,
+  # scheduler and restart check has completed successfully.
+  if [[ -d "$PROJECT_ROOT/.next" ]]; then
+    BUILD_BACKUP="$RUNTIME_DIR/previous-next-$(date -u +%Y%m%dT%H%M%SZ)"
+    mv "$PROJECT_ROOT/.next" "$BUILD_BACKUP"
+    ROLLBACK_ARMED=1
+    ok "Stopped existing runtime and staged its production artifact"
+  fi
+}
+
 install_dependencies_and_validate() {
   section "Locked dependencies and full release validation"
   cd "$PROJECT_ROOT"
@@ -619,13 +775,7 @@ install_dependencies_and_validate() {
     warn "Jest was explicitly skipped"
   fi
 
-  stop_runtime
   mkdir -p "$RUNTIME_DIR"
-  if [[ -d "$PROJECT_ROOT/.next" ]]; then
-    BUILD_BACKUP="$RUNTIME_DIR/previous-next-$(date -u +%Y%m%dT%H%M%SZ)"
-    mv "$PROJECT_ROOT/.next" "$BUILD_BACKUP"
-    ROLLBACK_ARMED=1
-  fi
   if ! node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- pnpm run build; then
     [[ -z "$BUILD_BACKUP" || ! -d "$BUILD_BACKUP" ]] || mv "$BUILD_BACKUP" "$PROJECT_ROOT/.next"
     ROLLBACK_ARMED=0
@@ -636,13 +786,33 @@ install_dependencies_and_validate() {
   ok "All static checks/tests and the optimized production build passed"
 }
 
+write_install_values() {
+  local values_file="$RUNTIME_DIR/install-values.env"
+  cat > "$values_file" <<EOF
+# Generated by scripts/install.sh. Used by scripts/start.sh and scripts/stop.sh.
+CTS_INSTALLED_APP_NAME=$APP_NAME
+CTS_INSTALLED_APP_PORT=$APP_PORT
+CTS_INSTALLED_RUNTIME=$RUNTIME
+CTS_INSTALLED_SERVICE_USER=$SERVICE_USER
+CTS_INSTALLED_PROJECT_ROOT=$PROJECT_ROOT
+EOF
+  if (( SERVICE_USER_CREATED == 1 )); then
+    printf '%s\n' "$SERVICE_USER" > "$RUNTIME_DIR/managed-service-user"
+    chmod 600 "$RUNTIME_DIR/managed-service-user"
+  fi
+  chmod 640 "$values_file"
+  ok "Recorded installed service defaults in $values_file"
+}
+
 write_runtime_wrappers() {
-  local pnpm_bin node_bin
-  pnpm_bin="$(command -v pnpm)"; node_bin="$(command -v node)"
+  local bun_bin node_bin
+  bun_bin="/usr/local/bin/bun"
+  [[ -x "$bun_bin" ]] || bun_bin="$(command -v bun)"
+  node_bin="$(command -v node)"
   cat > "$RUNTIME_DIR/start-app.sh" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
-exec ${node_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${pnpm_bin@Q} start
+exec ${bun_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/start-production.mjs
 EOF
   cat > "$RUNTIME_DIR/start-scheduler.sh" <<EOF
 #!/usr/bin/env bash
@@ -674,6 +844,7 @@ prepare_runtime_permissions() {
     run_root chown -R "$install_owner:$service_group" "$PROJECT_ROOT/$runtime_path"
     run_root chmod -R g+rX "$PROJECT_ROOT/$runtime_path"
   done
+  run_root chmod 750 "$PROJECT_ROOT/scripts/service-control.sh" "$PROJECT_ROOT/scripts/start.sh" "$PROJECT_ROOT/scripts/stop.sh" "$PROJECT_ROOT/scripts/restart.sh"
   run_root chown "$install_owner:$service_group" "$ENV_FILE"
   run_root chmod 640 "$ENV_FILE"
   run_root chown -R "$install_owner:$service_group" "$RUNTIME_DIR" "$PROJECT_ROOT/.next"
@@ -853,7 +1024,7 @@ verify_and_restart() {
   wait_for_health 90 || return 1
 
   node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
-    env DEPLOYMENT_URL="$base_url" node "$PROJECT_ROOT/scripts/production-deploy-init.mjs"
+    env REQUIRE_SHARED_PERSISTENCE="$([[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "inline-snapshot" ]] && echo 0 || echo 1)" DEPLOYMENT_URL="$base_url" node "$PROJECT_ROOT/scripts/production-deploy-init.mjs"
   node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
     env NODE_ENV=production SCHEDULER_BASE_URL="$base_url" \
     node "$PROJECT_ROOT/scripts/run-minute-scheduler.mjs" --once
@@ -929,7 +1100,9 @@ ensure_python_pip_and_bun
 mkdir -p "$RUNTIME_DIR"
 configure_environment_and_redis
 resolve_runtime
+stage_existing_runtime
 install_dependencies_and_validate
+write_install_values
 write_runtime_wrappers
 prepare_runtime_permissions
 

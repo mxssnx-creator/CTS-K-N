@@ -860,7 +860,7 @@ export function QuickstartSection() {
             : (Array.isArray(sym.symbols) && sym.symbols.length > 0 && typeof sym.symbols[0] === "object")
               ? sym.symbols.map((s: any) => s.symbol).filter(Boolean)
               : (sym.symbol ? [sym.symbol] : [])
-        if (list.length > 0) chosen = list
+        if (list.length > 0) chosen = list.slice(0, clampedCount)
         const top = chosen[0]
         addLog(`Selected: ${chosen.join(", ")} (top: ${sym.priceChangePercent?.toFixed(2) ?? "—"}% 24h volatile)`, "success")
         setVolatileSymbol({ symbol: top, exchange: ex, pct: sym.priceChangePercent ?? null, loading: false })
@@ -886,8 +886,13 @@ export function QuickstartSection() {
         addLog(`Processing live data for: ${chosen.join(", ")}`, "info")
       } else {
         const body = await startRes.json().catch(() => ({}))
-        addLog(body?.message || "Engine already running — monitoring active", "warning")
-        setIsRunning(true)
+        // An HTTP failure is not a running engine. Previously this branch
+        // forced the button into Running and armed the boot grace timer,
+        // masking failed/stuck production pipelines and making Stop appear
+        // ineffective on the next interaction.
+        addLog(body?.message || body?.error || "QuickStart failed", "error")
+        setIsRunning(false)
+        throw new Error(body?.message || body?.error || `QuickStart failed (${startRes.status})`)
       }
       // Activate a 45 s grace period so the polling fetchStats does NOT flip
       // isRunning back to false while the engine boots through prehistoric.

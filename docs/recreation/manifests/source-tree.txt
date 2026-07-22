@@ -80,6 +80,7 @@ __tests__/unit/inline-local-redis.test.ts
 __tests__/unit/install-deployment-contract.test.ts
 __tests__/unit/live-order-coordination.test.ts
 __tests__/unit/live-pos-count-target.test.ts
+__tests__/unit/live-position-actions.test.ts
 __tests__/unit/live-position-lineage-index.test.ts
 __tests__/unit/live-position-stats-sources.test.ts
 __tests__/unit/live-position-status.test.ts
@@ -87,6 +88,8 @@ __tests__/unit/live-positions-pnl.test.ts
 __tests__/unit/live-stage-control-barrier.test.ts
 __tests__/unit/live-stage-redis-position-lock.test.ts
 __tests__/unit/live-trade-block-clearance.test.ts
+__tests__/unit/live-trading-analytics.test.ts
+__tests__/unit/live-trading-dashboard-contract.test.ts
 __tests__/unit/logistics-workflow.test.ts
 __tests__/unit/main-live-trade-readiness.test.ts
 __tests__/unit/no-fixed-sleeps-regression.test.ts
@@ -424,6 +427,7 @@ app/api/trade-engine/structured-logs/route.ts
 app/api/trade-engine/toggle-symbol/route.ts
 app/api/trades/[id]/route.ts
 app/api/trading/engine-stats/route.ts
+app/api/trading/live-positions/[id]/route.ts
 app/api/trading/live-positions/route.ts
 app/api/trading/progression-debug/route.ts
 app/api/trading/stats/route.ts
@@ -578,9 +582,14 @@ components/indications/indication-bar.tsx
 components/indications/indication-filters-advanced.tsx
 components/indications/indication-filters.tsx
 components/indications/indication-row-compact.tsx
+components/live-trading/live-overview-compact.tsx
+components/live-trading/live-position-table.tsx
+components/live-trading/live-trading-format.ts
+components/live-trading/live-trading-types.ts
 components/live-trading/position-card.tsx
 components/live-trading/position-row-compact.tsx
 components/live-trading/trade-engine-progression.tsx
+components/live-trading/trade-history-panel.tsx
 components/live-trading/trading-overview.tsx
 components/log-dialog.tsx
 components/monitoring/backup-manager.tsx
@@ -915,6 +924,7 @@ lib/live-order-smoke.ts
 lib/live-position-alt-index.ts
 lib/live-position-lineage.ts
 lib/live-position-status.ts
+lib/live-trading-analytics.ts
 lib/load-test-framework.ts
 lib/load-testing.ts
 lib/local-redis.ts
@@ -1092,6 +1102,7 @@ public/top-info-layers/signal-grid.png
 scripts/apply-production-settings.sh
 scripts/autotest-drift.mjs
 scripts/bingx-comprehensive-test.mjs
+scripts/bootstrap-install.sh
 scripts/build-next-with-trace-retry.mjs
 scripts/clean-next-dist.mjs
 scripts/clean-opennext-output.mjs
@@ -1114,11 +1125,13 @@ scripts/normalize-next-env.mjs
 scripts/npm-redis-service.mjs
 scripts/post-deploy-verify.sh
 scripts/prepare-npm-redis.mjs
+scripts/prepare-standalone-assets.mjs
 scripts/prod-restart-manager.sh
 scripts/production-deploy-init.mjs
 scripts/quickstart-live-trading.js
 scripts/regression/live-stage-simulated-protection.test.ts
 scripts/remove-stray-bun-lock.mjs
+scripts/restart.sh
 scripts/run-dev-preview-check.mjs
 scripts/run-engine-probe.mjs
 scripts/run-managed-db-migrate.mjs
@@ -1127,9 +1140,13 @@ scripts/run-prod-20symbols-8h.sh
 scripts/run-prod-preview-check.mjs
 scripts/run-with-env.mjs
 scripts/scan-release-secrets.mjs
+scripts/service-control.sh
 scripts/setup-github-cli.sh
 scripts/smoke-routes-test.mjs
 scripts/standalone-bingx-live-diagnostic.mjs
+scripts/start-production.mjs
+scripts/start.sh
+scripts/stop.sh
 scripts/stress-bingx-public-32.mjs
 scripts/test-4-part.mjs
 scripts/test-kilo-runtime.mjs

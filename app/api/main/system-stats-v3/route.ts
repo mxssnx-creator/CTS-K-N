@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { initRedis, getAllConnections, getRedisClient, getRedisRequestsPerSecond } from "@/lib/redis-db"
+import { initRedis, getAllConnections, getRedisClient, getObservedRedisRequestsPerSecond } from "@/lib/redis-db"
 import { getDashboardWorkflowSnapshot } from "@/lib/dashboard-workflow"
 import {
   hasConnectionCredentials,
@@ -208,7 +208,7 @@ export async function GET() {
       },
       database: {
         status: "healthy",
-        requestsPerSecond: getRedisRequestsPerSecond(),
+        requestsPerSecond: await getObservedRedisRequestsPerSecond(),
         totalKeys,
         heapMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
         rssMB:  Math.round(process.memoryUsage().rss       / 1024 / 1024),

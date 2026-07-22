@@ -11,6 +11,7 @@ import {
   summarizeTradeHistory,
   type TradeHistoryRow,
 } from "@/lib/trade-history"
+import { buildLiveTradingAnalytics } from "@/lib/live-trading-analytics"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -265,12 +266,14 @@ export async function GET(request: NextRequest) {
     const exchangeRows = exchangeSnapshot?.rows || []
     const rows = mergeTradeHistory(exchangeRows, localRows, limit)
     const summary = summarizeTradeHistory(rows)
+    const analytics = buildLiveTradingAnalytics(rows)
 
     return NextResponse.json({
       success: true,
       connectionId,
       rows,
       summary,
+      analytics,
       paging: { returned: rows.length, maximum: MAX_TRADE_HISTORY_RECORDS, visibleWindow: 50 },
       source: {
         exchange: exchangeRows.length,

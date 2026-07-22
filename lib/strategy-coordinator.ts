@@ -2170,7 +2170,7 @@ export class StrategyCoordinator {
 
   private async getStrategyFlowSymbolConcurrency(): Promise<number> {
     const envOverride = Number.parseInt(process.env.STRATEGY_FLOW_SYMBOL_CONCURRENCY ?? "", 10)
-    if (Number.isFinite(envOverride) && envOverride > 0) return Math.max(1, Math.min(envOverride, 4))
+    if (Number.isFinite(envOverride) && envOverride > 0) return Math.max(1, Math.min(envOverride, 8))
 
     const cached = this._strategyFlowSymbolConcurrencyCache
     if (cached && Date.now() - cached.at < 10_000) return cached.value
@@ -2188,7 +2188,7 @@ export class StrategyCoordinator {
       configured = fallback
     }
 
-    const value = Math.max(1, Math.min(configured, 4))
+    const value = Math.max(1, Math.min(configured, 8))
     this._strategyFlowSymbolConcurrencyCache = { value, at: Date.now() }
     return value
   }

@@ -88,6 +88,12 @@ async function verifyCoreApis() {
   if (!settings || typeof settings !== "object") throw new Error("Settings API schema is invalid")
   if (!engine || typeof engine !== "object") throw new Error("Trade-engine status schema is invalid")
   if (!database?.isConnected) throw new Error("Database status is not connected")
+  if (process.env.REQUIRE_SHARED_PERSISTENCE === "1" && database?.isSharedConfigured !== true) {
+    throw new Error("Database is not backed by the required shared Redis persistence")
+  }
+  if (process.env.REQUIRE_SHARED_PERSISTENCE === "1" && database?.liveOrderCoordinationReady !== true) {
+    throw new Error("Live-order coordination is not ready on the shared Redis database")
+  }
   return { connectionCount: connections.length, database }
 }
 
@@ -98,6 +104,9 @@ async function main() {
   await initialize()
   const readiness = await waitForReadiness()
   const core = await verifyCoreApis()
+  if (Number(core.database?.schemaVersion) !== Number(readiness.migrations.current_version)) {
+    throw new Error(`Database schema version mismatch: ${core.database?.schemaVersion} != ${readiness.migrations.current_version}`)
+  }
 
   console.log(JSON.stringify({
     success: true,
@@ -106,6 +115,7 @@ async function main() {
     siteInstanceId: readiness.system.site_instance_id,
     databaseBackend: core.database.backend,
     sharedRedis: core.database.isSharedConfigured,
+    liveOrderCoordinationReady: core.database.liveOrderCoordinationReady === true,
     connectionCount: core.connectionCount,
     durationMs: Date.now() - startedAt,
   }, null, 2))

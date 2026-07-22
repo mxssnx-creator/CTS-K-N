@@ -38,6 +38,15 @@ pnpm kilo:preflight
 
 ### Independent long-lived Linux server
 
+For a clean or repeatable Git-based server install (Ubuntu/Debian/RHEL/Fedora),
+run this one command. A repeat run stops the exact saved CTS services, replaces
+only `/opt/cts-k-n`, and preserves its protected environment/local CTS Redis
+state:
+
+```bash
+tmp="$(mktemp -d)" && git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git "$tmp/cts-k-n" && cd "$tmp/cts-k-n" && sudo bash scripts/bootstrap-install.sh --dir /opt/cts-k-n --name cts-kn --port 3002
+```
+
 ```bash
 git clone https://github.com/mxssnx-creator/CTS-K-N.git /opt/cts-k-n
 cd /opt/cts-k-n
@@ -52,6 +61,32 @@ uses systemd when available or PM2 when selected, provisions one application
 owner plus one minute-scheduler owner, verifies Redis persistence and schema
 v82, tests/builds before cutover, checks restart recovery, and restores the
 previous `.next` build on failure.
+
+It reuses already-installed packages and runtimes. When absent, Bun is installed
+globally at `/usr/local/bin/bun` and launches the compact service wrapper; the
+Next standalone server remains on Node for exact Next.js compatibility. Each
+successful install records its values in `.cts-runtime/install-values.env`:
+
+When the Git bootstrap is run again for the same `--dir`, it reads those saved
+values (or an explicit `--name`/`--port`), stops the matching app and
+minute-scheduler, removes the old checkout, then clones a clean revision. It
+preserves only `.env.production.local` and CTS-managed local Redis data so
+secrets and durable local state survive; shared and external Redis are never
+deleted during an upgrade.
+
+```bash
+sudo /opt/cts-k-n/scripts/start.sh
+sudo /opt/cts-k-n/scripts/stop.sh
+sudo /opt/cts-k-n/scripts/restart.sh --port 3003
+```
+
+To remove the CTS services, CTS-owned runtime data, installer-created service
+account and checkout, while preserving shared Bun/Node/Redis and external Redis
+data, run:
+
+```bash
+sudo bash /opt/cts-k-n/scripts/bootstrap-install.sh --dir /opt/cts-k-n --uninstall
+```
 
 ### Kilo / Cloudflare Workers
 

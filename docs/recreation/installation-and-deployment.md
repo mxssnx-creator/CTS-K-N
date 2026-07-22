@@ -16,6 +16,34 @@ Do not reuse a production exchange account/Redis for ordinary tests.
 
 ## Independent Linux server
 
+### One-command clean-host installation
+
+On Ubuntu, Debian, Fedora, RHEL, or Amazon Linux, run this as a user with
+passwordless `sudo` or as root. It checks out `main`, changes directory,
+installs the executable scripts and dependencies, then waits for the complete
+build, migration, scheduler, health, persistence, and restart verification:
+
+```bash
+tmp="$(mktemp -d)" && git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git "$tmp/cts-k-n" \
+  && cd "$tmp/cts-k-n" \
+  && chmod 750 scripts/bootstrap-install.sh \
+  && sudo bash scripts/bootstrap-install.sh --dir /opt/cts-k-n --name cts-kn --port 3002
+```
+
+When the server is behind a domain or reverse proxy, pass its complete public
+origin so generated links and deployment verification do not point at a local
+address (which commonly appears as a provider 404):
+
+```bash
+tmp="$(mktemp -d)" && git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git "$tmp/cts-k-n" \
+  && cd "$tmp/cts-k-n" \
+  && chmod 750 scripts/bootstrap-install.sh \
+  && sudo bash scripts/bootstrap-install.sh --dir /opt/cts-k-n --name cts-kn --port 3002 --public-url https://example.com
+```
+
+Pass installer options after `--`, for example:
+`-- --skip-tests --seed-env-file /root/cts-kn.seed.env`.
+
 ### Host requirements
 
 - long-lived Linux; apt, dnf or yum family;
@@ -82,8 +110,43 @@ The installer:
 10. restarts services, verifies durable site identity and repeats the contract;
 11. removes the staged backup only after success, or restores it on any failure.
 
+The Git bootstrap treats its `--dir` as one installation boundary. On a repeat
+run it reads `.cts-runtime/install-values.env` (or explicit `--name`/`--port`),
+stops that saved app plus its scheduler, preserves `.env.production.local` and
+CTS-managed local Redis data, deletes the old checkout, and clones a clean
+revision. A name-only systemd command can recover the saved working directory;
+an explicit `--dir` always wins. It refuses to delete a directory unless it
+contains the CTS package and installer markers.
+
 `--skip-tests` skips Jest only; typecheck, lint, build, migrations, health,
 persistence, scheduler and restart verification remain mandatory.
+
+### Saved controls and complete removal
+
+Every successful installation writes the actual service values to
+`.cts-runtime/install-values.env`. The control scripts use these saved defaults
+when no arguments are provided:
+
+```bash
+sudo /opt/cts-k-n/scripts/start.sh
+sudo /opt/cts-k-n/scripts/stop.sh
+sudo /opt/cts-k-n/scripts/restart.sh --port 3003
+```
+
+`--port` persists the port before `start` or `restart`; `--name` selects an
+installed service. Bun is installed globally only when absent and is reused on
+later installs. It launches the service wrapper, while the Next standalone
+server runs under Node for compatibility.
+
+To remove the CTS project directory, CTS-owned services/runtime data, and an
+installer-created service user, use its recorded defaults automatically:
+
+```bash
+sudo bash /opt/cts-k-n/scripts/bootstrap-install.sh --dir /opt/cts-k-n --uninstall
+```
+
+Shared Bun/Node/Redis and external Redis data are not removed because they can
+belong to other applications.
 
 ## Remote SSH installation
 

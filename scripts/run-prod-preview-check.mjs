@@ -6,7 +6,6 @@ import process from "node:process"
 
 const port = Number(process.env.PORT || 3102)
 const baseUrl = `http://127.0.0.1:${port}`
-const nextBin = "node_modules/next/dist/bin/next"
 const distDir = process.env.NEXT_DIST_DIR || ".next-prod"
 let outputTail = ""
 const snapshotPath = `/tmp/cts-prod-preview-${process.pid}.json`
@@ -145,12 +144,13 @@ async function requestJson(pathname, options = {}) {
 }
 
 function startServer({ engines = false } = {}) {
-  const child = spawn(process.execPath, [nextBin, "start", "-H", "127.0.0.1", "-p", String(port)], {
+  const child = spawn(process.execPath, ["scripts/start-production.mjs"], {
     cwd: process.cwd(),
     env: {
       ...process.env,
       NODE_ENV: "production",
       NEXT_DIST_DIR: distDir,
+      HOST: "127.0.0.1",
       // The engine soak starts its exact basket through the awaited QuickStart
       // request below. Keep boot auto-start off in this harness so a default
       // migration basket cannot begin a stale prehistoric generation before
@@ -207,14 +207,121 @@ async function readRestartState() {
   }
 }
 
+async function verifyDatabaseActivityMetrics() {
+  const [monitoring, comprehensive, systemStats] = await Promise.all([
+    requestJson("/api/system/monitoring"),
+    requestJson("/api/monitoring/comprehensive"),
+    requestJson("/api/main/system-stats-v3"),
+  ])
+  const observedRates = [
+    Number(monitoring?.database?.requestsPerSecond || 0),
+    Number(comprehensive?.database?.requestsPerSecond || 0),
+    Number(systemStats?.database?.requestsPerSecond || 0),
+  ]
+  if (observedRates.some((rate) => !Number.isFinite(rate) || rate <= 0)) {
+    throw new Error(`Production database request-rate metric is inactive: ${JSON.stringify(observedRates)}`)
+  }
+  if (comprehensive?.database?.connected !== true) {
+    throw new Error("Comprehensive production monitoring does not report a connected database")
+  }
+  return observedRates
+}
+
 async function stopServer(child) {
-  if (child.exitCode != null) return
+  if (child.exitCode != null || child.signalCode != null) return
   child.kill("SIGTERM")
   await Promise.race([
     new Promise((resolve) => child.once("exit", resolve)),
     new Promise((resolve) => setTimeout(resolve, 5_000)),
   ])
-  if (child.exitCode == null) child.kill("SIGKILL")
+  if (child.exitCode == null && child.signalCode == null) child.kill("SIGKILL")
+}
+
+async function crashServer(child) {
+  if (child.exitCode != null || child.signalCode != null) return
+  // A graceful stop proves service lifecycle, but not recovery from a process
+  // crash between position writes and the next reconcile loop. Use SIGKILL in
+  // this isolated snapshot harness so the next boot must recover only from
+  // durable state.
+  child.kill("SIGKILL")
+  await Promise.race([
+    new Promise((resolve) => child.once("exit", resolve)),
+    new Promise((resolve) => setTimeout(resolve, 5_000)),
+  ])
+  if (child.exitCode == null && child.signalCode == null) {
+    throw new Error("Production engine did not terminate during crash-recovery verification")
+  }
+}
+
+function activePositionSnapshot(payload) {
+  const rows = Array.isArray(payload?.positions) ? payload.positions : []
+  const byId = new Map()
+  const active = new Map()
+  for (const position of rows) {
+    const id = String(position?.id || "").trim()
+    if (!id) throw new Error("Live-position recovery response contains a position without a stable id")
+    if (byId.has(id)) throw new Error(`Live-position recovery response contains duplicate id ${id}`)
+    byId.set(id, position)
+    if (!["closed", "rejected", "error"].includes(String(position?.status || "").toLowerCase())) {
+      active.set(id, position)
+    }
+  }
+  return { byId, active }
+}
+
+async function verifyOpenPositionCrashRecovery(currentEngineServer, connectionId, beforeSiteInstanceId) {
+  const beforePayload = await requestJson(`/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}&closedLimit=500`)
+  const before = activePositionSnapshot(beforePayload)
+  if (before.active.size === 0) {
+    throw new Error("Crash-recovery verification needs at least one active simulated position")
+  }
+  if (beforePayload?.dataIntegrity?.liveExecutionMode !== "simulation" || beforePayload?.dataIntegrity?.liveTradeRequested !== false) {
+    throw new Error("Crash-recovery verification left safe simulation mode")
+  }
+
+  await crashServer(currentEngineServer)
+  const recoveredEngineServer = startServer({ engines: true })
+  await waitForReady(recoveredEngineServer)
+
+  const restarted = await readRestartState()
+  if (restarted.siteInstanceId !== beforeSiteInstanceId) {
+    throw new Error("Site identity rotated after an engine crash")
+  }
+
+  // Invoke the independent engine-down safety net once. With a live connector
+  // this adopts/reconciles venue positions; in this forced-paper run it still
+  // proves the authenticated recovery path is callable without issuing orders.
+  const recoveryTick = await requestJson("/api/cron/sync-live-positions", {
+    headers: { Authorization: `Bearer ${PREVIEW_CRON_SECRET}` },
+  })
+  if (recoveryTick?.ok !== true) throw new Error(`Authorized live-position recovery tick did not succeed after crash: ${JSON.stringify(recoveryTick)}`)
+
+  await new Promise((resolve) => setTimeout(resolve, 750))
+  const afterPayload = await requestJson(`/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}&closedLimit=500`)
+  const after = activePositionSnapshot(afterPayload)
+  for (const [id, position] of before.active) {
+    const recovered = after.byId.get(id)
+    if (!recovered) throw new Error(`Position ${id} disappeared after crash instead of being reconciled`)
+    if (["rejected", "error"].includes(String(recovered?.status || "").toLowerCase())) {
+      throw new Error(`Position ${id} became ${recovered.status} after crash recovery`)
+    }
+    const beforeQuantity = Number(position?.totalExecutedQuantity ?? position?.executedQuantity ?? 0)
+    const afterQuantity = Number(recovered?.totalExecutedQuantity ?? recovered?.executedQuantity ?? 0)
+    if (Number.isFinite(beforeQuantity) && Number.isFinite(afterQuantity) && afterQuantity + 1e-10 < beforeQuantity) {
+      throw new Error(`Position ${id} quantity regressed after crash recovery`)
+    }
+  }
+  if (Number(afterPayload?.counts?.pending || 0) > 0 || Number(afterPayload?.counts?.placed || 0) > 0) {
+    throw new Error("Crash recovery left pending or unconfirmed live positions stranded")
+  }
+  return {
+    server: recoveredEngineServer,
+    details: {
+      crashRecoveredPositions: before.active.size,
+      recoveredActivePositions: after.active.size,
+      recoveryTickSkipped: recoveryTick?.skipped === true,
+    },
+  }
 }
 
 async function main() {
@@ -327,6 +434,9 @@ async function main() {
       throw new Error("Site identity rotated before simulated engine soak")
     }
     await runSoakVerifier()
+    const crashRecovery = await verifyOpenPositionCrashRecovery(engineServer, after.connectionId, before.siteInstanceId)
+    engineServer = crashRecovery.server
+    const databaseRequestRates = await verifyDatabaseActivityMetrics()
     if (maxSymbolsRequested) await runUiMaxVerifier()
 
     console.log(JSON.stringify({
@@ -338,6 +448,9 @@ async function main() {
       schemaVersion: after.schemaVersion,
       settingsPersisted: true,
       simulatedEngineSoakVerified: true,
+      crashRecoveryVerified: true,
+      ...crashRecovery.details,
+      databaseRequestRates,
       simulatedEngineSymbols: productionSoakSymbolCount,
       productionUiMaxSymbolsVerified: maxSymbolsRequested,
       realExchangeOrdersSubmitted: 0,

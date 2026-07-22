@@ -84,6 +84,7 @@ const globalForRedis = globalThis as unknown as {
   // see the real connected state without re-running initRedis/migrations.
   __redis_fully_connected?: boolean
   __redis_backend?: RedisBackend
+  __redis_observed_rps?: { value: number; measuredAt: number }
   __redis_volatile_startup_cleanup_ran?: boolean
   __connection_state_queues?: Map<string, Promise<void>>
   __kilo_snapshot_revision?: number
@@ -4325,6 +4326,37 @@ export function getRedisRequestsPerSecond(): number {
     return stats.requestCount
   }
   return stats.operationsPerSecond
+}
+
+/**
+ * Read the authoritative Redis command rate when a network Redis backend is
+ * active. InlineLocalRedis keeps its own zero-allocation counter, but a
+ * production Node/Upstash client lives outside that Map and previously made
+ * dashboard metrics falsely report 0 req/s despite active database traffic.
+ *
+ * Native Redis exposes `instantaneous_ops_per_sec` in INFO stats. Cache the
+ * observation for one short sampling window so monitoring polls do not add
+ * meaningful load to the database they are measuring.
+ */
+export async function getObservedRedisRequestsPerSecond(): Promise<number> {
+  const localRate = getRedisRequestsPerSecond()
+  if (getRedisBackend() !== "redis-network") return localRate
+
+  const now = Date.now()
+  const cached = globalForRedis.__redis_observed_rps
+  if (cached && now - cached.measuredAt < 900) return Math.max(localRate, cached.value)
+
+  let observed = 0
+  try {
+    const info = await getRedisClient().info()
+    const match = info.match(/(?:^|\r?\n)instantaneous_ops_per_sec:(\d+)/)
+    if (match) observed = Number(match[1]) || 0
+  } catch {
+    // Monitoring remains available with the local process counter when INFO
+    // is disabled by a managed provider or temporarily unavailable.
+  }
+  globalForRedis.__redis_observed_rps = { value: observed, measuredAt: now }
+  return Math.max(localRate, observed)
 }
 
 export function getConnectionState(id: string): { isRunning: boolean } {

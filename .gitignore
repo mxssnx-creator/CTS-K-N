@@ -24,6 +24,7 @@ node_modules
 # Build outputs and local runtime snapshots (never commit)
 .next/
 .next-prod/
+.next-prod-final/
 .next-audit/
 .v0-dev/
 .v0-prod/

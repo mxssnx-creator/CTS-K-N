@@ -273,6 +273,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/trades/[id]	GET	trades	force-dynamic		none-detected	app/api/trades/[id]/route.ts
 /api/trading/engine-stats	GET	trading	force-dynamic		none-detected	app/api/trading/engine-stats/route.ts
 /api/trading/live-positions	GET	trading	force-dynamic		none-detected	app/api/trading/live-positions/route.ts
+/api/trading/live-positions/[id]	DELETE,PATCH	trading	force-dynamic		none-detected	app/api/trading/live-positions/[id]/route.ts
 /api/trading/progression-debug	GET	trading	force-dynamic		none-detected	app/api/trading/progression-debug/route.ts
 /api/trading/stats	GET	trading	force-dynamic		none-detected	app/api/trading/stats/route.ts
 /api/trading/trade-history	GET	trading	force-dynamic	30	none-detected	app/api/trading/trade-history/route.ts

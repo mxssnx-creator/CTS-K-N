@@ -284,8 +284,8 @@ export async function GET() {
 
     let requestsPerSecond = 0
     try {
-      const { getRedisRequestsPerSecond } = await import("@/lib/redis-db")
-      requestsPerSecond = getRedisRequestsPerSecond()
+      const { getObservedRedisRequestsPerSecond } = await import("@/lib/redis-db")
+      requestsPerSecond = await getObservedRedisRequestsPerSecond()
     } catch {
       requestsPerSecond = 0
     }

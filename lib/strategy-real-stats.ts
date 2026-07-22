@@ -156,8 +156,11 @@ function count(value: unknown): number {
 /**
  * A rollout can encounter a pre-existing v2 ledger whose historic entries do
  * not yet have `by_variant:*` fields. Treat it as confirmed only once the
- * variant subtotal covers the ledger overall; until then callers must keep the
- * explicit evaluation fallback instead of presenting a partial count as exact.
+ * variant subtotal covers a non-zero ledger overall; until then callers must
+ * keep the explicit evaluation fallback instead of presenting a partial count
+ * as exact. A freshly initialized hash can already contain zero-valued
+ * `by_variant:*` fields before the first confirmed position is written. That
+ * is initialization metadata, not an authoritative zero-count ledger.
  */
 export function hasCompleteRealVariantPositionLedger(
   validPositionsHash: Record<string, string> | null | undefined,
@@ -172,7 +175,7 @@ export function hasCompleteRealVariantPositionLedger(
     0,
   )
   const overall = count(hash.overall)
-  return overall <= 0 || variantTotal >= overall
+  return overall > 0 && variantTotal >= overall
 }
 
 function rounded(value: number, digits = 3): number {

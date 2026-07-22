@@ -1312,12 +1312,58 @@ async function handlePost(request: Request) {
           console.warn(`${LOG_PREFIX}: Pre-start cleanup warning:`, restartErr)
         }
 
-        // Fire-and-forget: startAll picks up the newly-updated connection in
-        // the background. We do NOT await it — it can take seconds to spin up
-        // engines for every eligible connection and we don't want that time
-        // inside the HTTP handler.
-        coordinator.startAll().catch((e: unknown) => {
-          console.warn(`${LOG_PREFIX} startAll background warning:`, e)
+        // Do not dispatch a detached start without rechecking durable state.
+        // A user can press Stop while this request is finishing; an older
+        // detached startAll then resurrected the just-stopped engine. The
+        // connection and global intent are authoritative at dispatch time.
+        const dispatchState = await client.hgetall(`connection:${connectionId}`).catch(() => ({} as Record<string, string>))
+        const dispatchGlobal = await client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>))
+        const dispatchEnabled = [dispatchState.is_assigned, dispatchState.is_enabled_dashboard]
+          .every((value) => value === "1" || value === "true")
+        const dispatchStopped = dispatchGlobal.operator_stopped === "1" ||
+          dispatchGlobal.operator_stopped === "true" ||
+          dispatchGlobal.operator_intent === "stopped" ||
+          dispatchGlobal.desired_status === "stopped"
+        if (!dispatchEnabled || dispatchStopped) {
+          await logProgressionEvent(connectionId, "quickstart_start_cancelled", "info",
+            "QuickStart start dispatch cancelled because a newer stop state is durable", {
+              dispatchEnabled,
+              dispatchStopped,
+            })
+          return NextResponse.json({
+            success: false,
+            action: "enable",
+            error: "QuickStart was stopped before engine startup completed",
+            connection: { id: connectionId, name: connection.name, exchange: exchangeName },
+            version: API_VERSION,
+          }, { status: 409 })
+        }
+
+        // Await the targeted start path. This keeps the request's lifecycle
+        // ordered with Stop/disable and avoids a detached startAll race.  The
+        // coordinator requires the same runtime configuration used by the
+        // regular QuickStart boot below; calling it with only a connection id
+        // was both a type error and meant production could never execute this
+        // intended stop-safe path.
+        const dispatchSettings = await loadSettingsAsync()
+        await coordinator.startEngine(connectionId, {
+          connectionId,
+          connection_name: connection.name,
+          exchange: exchangeName,
+          engine_type: "main",
+          allowInProcessStart: true,
+          indicationInterval: dispatchSettings.mainEngineIntervalMs
+            ? dispatchSettings.mainEngineIntervalMs / 1000
+            : 5,
+          strategyInterval: dispatchSettings.strategyUpdateIntervalMs
+            ? dispatchSettings.strategyUpdateIntervalMs / 1000
+            : 10,
+          realtimeInterval: dispatchSettings.realtimeIntervalMs
+            ? dispatchSettings.realtimeIntervalMs / 1000
+            : 0.3,
+        }, { markAssigned: true, forceLocalTakeover: true }).catch((e: unknown) => {
+          console.warn(`${LOG_PREFIX} targeted engine start warning:`, e)
+          throw e
         })
 
         // CRITICAL: Apply cache fix to all indication processors after engines are started.

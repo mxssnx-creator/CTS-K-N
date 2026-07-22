@@ -1,4 +1,4 @@
-import { RedisClientLike, getClient, getRedisRequestsPerSecond } from './redis-db'
+import { RedisClientLike, getClient, getObservedRedisRequestsPerSecond } from './redis-db'
 
 export interface RedisHealthStatus {
   status: 'healthy' | 'degraded' | 'unhealthy'
@@ -33,7 +33,7 @@ export class RedisProcedures {
       }
 
       const dbSize = await this.client.dbSize()
-      const ops = getRedisRequestsPerSecond()
+      const ops = await getObservedRedisRequestsPerSecond()
       
       let status: 'healthy' | 'degraded' = 'healthy'
       if (dbSize > 100000 || ops > 10000) {
@@ -85,7 +85,7 @@ export class RedisProcedures {
   }> {
     return {
       totalKeys: await this.client.dbSize(),
-      operationsPerSecond: getRedisRequestsPerSecond(),
+      operationsPerSecond: await getObservedRedisRequestsPerSecond(),
       uptime: Math.floor(process.uptime()),
     }
   }

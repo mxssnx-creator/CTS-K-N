@@ -13,7 +13,7 @@ export const runtime = "nodejs"
  */
 export async function GET(request: NextRequest) {
   try {
-    const { initRedis, isRedisConnected, getRedisBackend, getRedisStats, getAllConnections, isSharedPersistenceBackend } = await import("@/lib/redis-db")
+    const { initRedis, isRedisConnected, getRedisBackend, getRedisStats, getAllConnections, isSharedPersistenceBackend, ensureUniqueSiteInstance } = await import("@/lib/redis-db")
     const { getMigrationStatus } = await import("@/lib/redis-migrations")
 
     // Try to connect to Redis.
@@ -24,6 +24,7 @@ export async function GET(request: NextRequest) {
     // therefore probe the client directly via a fast hget rather than relying
     // on the module-scoped boolean or the (now-dead) resolved promise.
     await initRedis()
+    const ensuredSiteInstance = await ensureUniqueSiteInstance().catch(() => null)
     const redisBackend = getRedisBackend()
     const sharedRedis = isSharedPersistenceBackend(redisBackend)
     const { getRedisClient: _probeClient } = await import("@/lib/redis-db")
@@ -107,6 +108,7 @@ export async function GET(request: NextRequest) {
     const siteInstanceId =
       (typeof durableSiteId === "string" ? durableSiteId : null) ||
       (siteHash as Record<string, string>)?.site_session_id ||
+      ensuredSiteInstance?.siteSessionId ||
       null
     const continuityLastTickMs = Number((continuityHash as Record<string, string>)?.last_tick_ms || 0)
     const liveRecoveryLastTickMs = Number((liveRecoveryHash as Record<string, string>)?.last_tick_ms || 0)

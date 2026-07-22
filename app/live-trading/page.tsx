@@ -1,377 +1,362 @@
 "use client"
 
-
 export const dynamic = "force-dynamic"
-// Page with sidebar and exchange selector
-import { useState, useEffect, useMemo, useCallback, useRef } from "react"
-import { Card, CardContent } from "@/components/ui/card"
+
+import { useCallback, useEffect, useRef, useState } from "react"
+import {
+  Activity,
+  AlertTriangle,
+  DatabaseZap,
+  Loader2,
+  RefreshCw,
+  ServerCog,
+  ShieldAlert,
+  ShieldCheck,
+} from "lucide-react"
+import { PageHeader } from "@/components/page-header"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { PositionRowCompact } from "@/components/live-trading/position-row-compact"
-import { Activity, TrendingUp, TrendingDown, RefreshCw, Play, Pause, AlertCircle, BarChart3 } from "lucide-react"
-import { toast } from "@/lib/simple-toast"
+import { Card, CardContent } from "@/components/ui/card"
+import { LiveOverviewCompact } from "@/components/live-trading/live-overview-compact"
+import { LivePositionTable } from "@/components/live-trading/live-position-table"
+import { TradeHistoryPanel } from "@/components/live-trading/trade-history-panel"
+import type {
+  LiveAccountSummary,
+  LivePositionResponse,
+  LivePositionView,
+  LiveSummaryResponse,
+  ProtectionUpdate,
+  TradeHistoryResponse,
+} from "@/components/live-trading/live-trading-types"
+import type { TradeHistoryRow } from "@/lib/trade-history"
 import { useExchange } from "@/lib/exchange-context"
 import { usePositionUpdates } from "@/lib/use-websocket"
-import { PageHeader } from "@/components/page-header"
+import { toast } from "@/lib/simple-toast"
 
-interface Position {
-  id: string
-  symbol: string
-  side: "LONG" | "SHORT"
-  entryPrice: number
-  currentPrice: number
-  quantity: number
-  leverage: number
-  unrealizedPnl: number
-  unrealizedPnlPercent: number
-  takeProfitPrice?: number
-  stopLossPrice?: number
-  createdAt: string
-  status: "open" | "closing" | "closed"
+const OPEN_STATUSES = new Set([
+  "open",
+  "filled",
+  "partially_filled",
+  "placed",
+  "pending",
+  "pending_fill",
+  "placed_unconfirmed",
+  "closing",
+  "closing_partial",
+  "simulated",
+])
+
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const isMutation = Boolean(init?.method && init.method.toUpperCase() !== "GET")
+  const response = await fetch(url, {
+    cache: "no-store",
+    ...init,
+    headers: { "Cache-Control": "no-cache", ...(init?.headers || {}) },
+    signal: init?.signal ?? AbortSignal.timeout(isMutation ? 30_000 : 15_000),
+  })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) {
+    throw new Error(body?.error || body?.message || `${response.status} ${response.statusText}`)
+  }
+  return body as T
+}
+
+function filterOpenPositions(positions: LivePositionView[]): LivePositionView[] {
+  return positions.filter((position) => OPEN_STATUSES.has(String(position.status || "open").toLowerCase()))
 }
 
 export default function LiveTradingPage() {
-  const { selectedConnectionId } = useExchange()
-  const [positions, setPositions] = useState<Position[]>([])
-  const [isDemo, setIsDemo] = useState(false)
-  const [isEngineRunning, setIsEngineRunning] = useState(false)
+  const { selectedConnectionId, selectedConnection, isLoading: connectionsLoading } = useExchange()
+  const [positions, setPositions] = useState<LivePositionView[]>([])
+  const [historyRows, setHistoryRows] = useState<TradeHistoryRow[]>([])
+  const [historyResponse, setHistoryResponse] = useState<TradeHistoryResponse | null>(null)
+  const [positionResponse, setPositionResponse] = useState<LivePositionResponse | null>(null)
+  const [account, setAccount] = useState<LiveAccountSummary | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [closingIds, setClosingIds] = useState<Set<string>>(new Set())
-  const [sortBy, setSortBy] = useState<"pnl" | "entry" | "time">("pnl")
-  const [filterSide, setFilterSide] = useState<"all" | "long" | "short">("all")
-  // Keep a stable ref to the fetch function so the polling interval can call
-  // it without adding it as a dependency (avoids interval recreation churn).
-  const loadPositionsRef = useRef<(() => Promise<void>) | undefined>(undefined)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const generationRef = useRef(0)
+  const busyRef = useRef<string | null>(null)
+  const positionRefreshTimerRef = useRef<number | null>(null)
+  const loadRef = useRef<(options?: { silent?: boolean; forceHistory?: boolean; positionsOnly?: boolean }) => Promise<void>>(async () => undefined)
 
-  const loadPositions = useCallback(async () => {
-    try {
-      const connectionToUse = selectedConnectionId || "demo-mode"
-      const response = await fetch(`/api/data/positions?connectionId=${encodeURIComponent(connectionToUse)}`)
-      if (!response.ok) throw new Error(`Failed to fetch positions: ${response.statusText}`)
-      const data = await response.json()
-      if (data.success) {
-        setPositions(data.data || [])
-        setIsDemo(data.isDemo)
-      } else {
-        throw new Error(data.error || "Unknown error")
+  const loadDashboard = useCallback(async (options?: {
+    silent?: boolean
+    forceHistory?: boolean
+    positionsOnly?: boolean
+  }) => {
+    const connectionId = selectedConnectionId
+    const generation = ++generationRef.current
+    if (!connectionId) {
+      setPositions([])
+      setHistoryRows([])
+      setHistoryResponse(null)
+      setPositionResponse(null)
+      setAccount(null)
+      setLoadError(null)
+      setIsLoading(false)
+      setIsRefreshing(false)
+      return
+    }
+
+    if (!options?.silent) {
+      if (lastUpdated === null) setIsLoading(true)
+      else setIsRefreshing(true)
+    }
+
+    const encoded = encodeURIComponent(connectionId)
+    const tasks: Array<Promise<{ kind: "positions" | "history" | "summary"; value: unknown }>> = [
+      fetchJson<LivePositionResponse>(`/api/trading/live-positions?connection_id=${encoded}&closedLimit=1`)
+        .then((value) => ({ kind: "positions" as const, value })),
+    ]
+    if (!options?.positionsOnly) {
+      tasks.push(
+        fetchJson<TradeHistoryResponse>(`/api/trading/trade-history?connection_id=${encoded}&limit=500${options?.forceHistory ? "&force=1" : ""}`)
+          .then((value) => ({ kind: "history" as const, value })),
+        fetchJson<LiveSummaryResponse>(`/api/exchange/live-summary?connection_id=${encoded}`)
+          .then((value) => ({ kind: "summary" as const, value })),
+      )
+    }
+
+    const results = await Promise.allSettled(tasks)
+    if (generation !== generationRef.current) return
+
+    const errors: string[] = []
+    for (const result of results) {
+      if (result.status === "rejected") {
+        errors.push(result.reason instanceof Error ? result.reason.message : String(result.reason))
+        continue
       }
-    } catch (error) {
-      console.error("[Live Trading] Failed to load:", error)
+      if (result.value.kind === "positions") {
+        const value = result.value.value as LivePositionResponse
+        setPositionResponse(value)
+        setPositions(filterOpenPositions(Array.isArray(value.positions) ? value.positions : []))
+      } else if (result.value.kind === "history") {
+        const value = result.value.value as TradeHistoryResponse
+        if (value.success === false) errors.push("Trade history returned an error")
+        else {
+          setHistoryResponse(value)
+          setHistoryRows(Array.isArray(value.rows) ? value.rows : [])
+        }
+      } else {
+        const value = result.value.value as LiveSummaryResponse
+        const selected = Array.isArray(value.connections)
+          ? value.connections.find((entry) => String(entry.connectionId) === connectionId) || null
+          : null
+        setAccount(selected)
+      }
+    }
+
+    setLoadError(errors.length > 0 ? [...new Set(errors)].join(" · ") : null)
+    if (results.some((result) => result.status === "fulfilled")) setLastUpdated(Date.now())
+    setIsLoading(false)
+    setIsRefreshing(false)
+  }, [lastUpdated, selectedConnectionId])
+
+  useEffect(() => {
+    loadRef.current = loadDashboard
+  }, [loadDashboard])
+
+  useEffect(() => {
+    generationRef.current++
+    setPositions([])
+    setHistoryRows([])
+    setHistoryResponse(null)
+    setPositionResponse(null)
+    setAccount(null)
+    setLastUpdated(null)
+    setLoadError(null)
+    setIsRefreshing(false)
+    setIsLoading(Boolean(selectedConnectionId))
+    void loadRef.current()
+  }, [selectedConnectionId])
+
+  useEffect(() => {
+    if (!selectedConnectionId) return
+    const interval = window.setInterval(() => {
+      void loadRef.current({ silent: true })
+    }, 10_000)
+    const refreshVisible = () => {
+      if (document.visibilityState === "visible") void loadRef.current({ silent: true })
+    }
+    window.addEventListener("focus", refreshVisible)
+    document.addEventListener("visibilitychange", refreshVisible)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener("focus", refreshVisible)
+      document.removeEventListener("visibilitychange", refreshVisible)
     }
   }, [selectedConnectionId])
 
-  // Keep ref in sync
-  useEffect(() => { loadPositionsRef.current = loadPositions }, [loadPositions])
+  const handlePositionUpdate = useCallback(() => {
+    if (positionRefreshTimerRef.current !== null) return
+    positionRefreshTimerRef.current = window.setTimeout(() => {
+      positionRefreshTimerRef.current = null
+      void loadRef.current({ silent: true, positionsOnly: true })
+    }, 250)
+  }, [])
+  usePositionUpdates(selectedConnectionId || "", handlePositionUpdate)
 
-  // Initial load + 5-second polling so closed positions disappear from the UI
-  useEffect(() => {
-    let cancelled = false
-    const doLoad = async () => {
-      setIsLoading(true)
-      try { await loadPositions() } catch { /* ignore */ }
-      if (!cancelled) setIsLoading(false)
+  useEffect(() => () => {
+    if (positionRefreshTimerRef.current !== null) {
+      window.clearTimeout(positionRefreshTimerRef.current)
+      positionRefreshTimerRef.current = null
     }
-    doLoad()
+  }, [selectedConnectionId])
 
-    const interval = setInterval(() => {
-      loadPositionsRef.current?.()
-    }, 5000)
-
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [loadPositions])
-
-  // Close a position: call the server so PseudoPositionManager records the close,
-  // then immediately remove it from local state for instant UI feedback.
-  const handleClosePosition = useCallback(async (id: string) => {
-    if (closingIds.has(id)) return // prevent double-close
-    const connectionToUse = selectedConnectionId || "demo-mode"
-    setClosingIds((prev) => new Set([...prev, id]))
-    // Optimistic removal from local state
-    setPositions((prev) => prev.filter((p) => p.id !== id))
+  const closePosition = useCallback(async (position: LivePositionView) => {
+    if (!selectedConnectionId || busyRef.current) return
+    busyRef.current = position.id
+    setBusyId(position.id)
     try {
-      const res = await fetch(
-        `/api/data/positions/${encodeURIComponent(id)}?connectionId=${encodeURIComponent(connectionToUse)}`,
+      const body = await fetchJson<{ success: boolean; state?: string; message?: string }>(
+        `/api/trading/live-positions/${encodeURIComponent(position.id)}?connectionId=${encodeURIComponent(selectedConnectionId)}`,
         { method: "DELETE" },
       )
-      const body = await res.json().catch(() => null)
-      if (!res.ok || !body?.success) {
-        // Revert optimistic removal on failure and re-fetch to get accurate state
-        toast.error(`Failed to close position: ${body?.error ?? res.statusText}`)
-        await loadPositions()
+      if (!body.success) throw new Error(body.message || "Position close was not accepted")
+      if (body.state === "closing" || body.state === "closing_partial") {
+        toast.info(body.message || "Close accepted; exchange reconciliation continues")
       } else {
-        toast.success("Position closed")
+        toast.success(body.message || "Position closed")
       }
-    } catch (err) {
-      console.error("[Live Trading] Close position error:", err)
-      toast.error("Failed to close position")
-      await loadPositions()
+      await loadDashboard({ silent: true })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to close position"
+      toast.error(message)
+      throw error
     } finally {
-      setClosingIds((prev) => { const next = new Set(prev); next.delete(id); return next })
+      busyRef.current = null
+      setBusyId(null)
     }
-  }, [selectedConnectionId, closingIds, loadPositions])
+  }, [loadDashboard, selectedConnectionId])
 
-  // Handle real-time position updates via SSE
-  const handlePositionUpdate = useCallback((update: any) => {
-    setPositions((prev) => {
-      // Find existing position and update it, or add new one
-      const existingIndex = prev.findIndex((p) => p.id === update.id)
-      if (existingIndex >= 0) {
-        // Update existing position
-        const updated = [...prev]
-        updated[existingIndex] = {
-          ...updated[existingIndex],
-          currentPrice: update.currentPrice,
-          unrealizedPnl: update.unrealizedPnl,
-          unrealizedPnlPercent: update.unrealizedPnlPercent,
-          status: update.status || updated[existingIndex].status,
-        }
-        return updated
-      } else {
-        // Add new position if not in demo mode
-        if (!isDemo) {
-          return [
-            ...prev,
-            {
-              id: update.id,
-              symbol: update.symbol,
-              side: 'LONG',
-              entryPrice: update.currentPrice,
-              currentPrice: update.currentPrice,
-              quantity: 1,
-              leverage: 1,
-              unrealizedPnl: 0,
-              unrealizedPnlPercent: 0,
-              createdAt: new Date().toISOString(),
-              status: update.status || 'open',
-            },
-          ]
-        }
-        return prev
-      }
-    })
-  }, [isDemo])
-
-  // Subscribe to position updates via SSE
-  usePositionUpdates(
-    selectedConnectionId && selectedConnectionId !== "demo-mode" ? selectedConnectionId : "",
-    handlePositionUpdate
-  )
-
-  // Simulate real-time price updates (fallback for demo mode)
-  useEffect(() => {
-    if (!isEngineRunning) return
-
-    const interval = setInterval(() => {
-      setPositions((prev) =>
-        prev.map((pos) => {
-          const priceChange = (Math.random() - 0.5) * 50
-          const newPrice = Math.max(1, pos.currentPrice + priceChange)
-          const newPnl = (newPrice - pos.entryPrice) * pos.quantity * pos.leverage
-          const newPnlPercent = ((newPrice - pos.entryPrice) / pos.entryPrice) * 100
-
-          return {
-            ...pos,
-            currentPrice: newPrice,
-            unrealizedPnl: newPnl,
-            unrealizedPnlPercent: newPnlPercent,
-          }
-        })
+  const updateProtection = useCallback(async (position: LivePositionView, update: ProtectionUpdate) => {
+    if (!selectedConnectionId || busyRef.current) return
+    busyRef.current = position.id
+    setBusyId(position.id)
+    try {
+      const body = await fetchJson<{ success: boolean; state?: string; message?: string }>(
+        `/api/trading/live-positions/${encodeURIComponent(position.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ connectionId: selectedConnectionId, ...update }),
+        },
       )
-    }, 2000)
-
-    return () => clearInterval(interval)
-  }, [isEngineRunning])
-
-  // Apply filters and sorting
-  const filteredAndSortedPositions = useMemo(() => {
-    let result = [...positions]
-
-    // Filter by side
-    if (filterSide !== "all") {
-      result = result.filter((p) => p.side.toLowerCase() === filterSide)
+      if (!body.success) throw new Error(body.message || "Protection update was not accepted")
+      if (body.state === "queued") toast.info(body.message || "Protection queued for reconciliation")
+      else toast.success(body.message || "Protection updated")
+      await loadDashboard({ silent: true, positionsOnly: true })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update protection"
+      toast.error(message)
+      throw error
+    } finally {
+      busyRef.current = null
+      setBusyId(null)
     }
+  }, [loadDashboard, selectedConnectionId])
 
-    // Sort
-    switch (sortBy) {
-      case "pnl":
-        result.sort((a, b) => b.unrealizedPnl - a.unrealizedPnl)
-        break
-      case "entry":
-        result.sort((a, b) => b.entryPrice - a.entryPrice)
-        break
-      case "time":
-        result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-        break
+  const restoreProtection = useCallback(async (position: LivePositionView) => {
+    if (!selectedConnectionId || busyRef.current) return
+    busyRef.current = position.id
+    setBusyId(position.id)
+    try {
+      const body = await fetchJson<{ success: boolean; state?: string; message?: string }>(
+        `/api/trading/live-positions/${encodeURIComponent(position.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ connectionId: selectedConnectionId, action: "restore_strategy" }),
+        },
+      )
+      if (!body.success) throw new Error(body.message || "Strategy protection was not restored")
+      toast.success(body.message || "Strategy protection restored")
+      await loadDashboard({ silent: true, positionsOnly: true })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to restore strategy protection"
+      toast.error(message)
+      throw error
+    } finally {
+      busyRef.current = null
+      setBusyId(null)
     }
+  }, [loadDashboard, selectedConnectionId])
 
-    return result
-  }, [positions, sortBy, filterSide])
+  const integrity = positionResponse?.dataIntegrity
+  const liveReady = integrity?.liveTradeEnabled === true
+  const liveRequestedButBlocked = integrity?.liveTradeRequested === true && !liveReady
 
-  // Calculate stats
-  const stats = useMemo(() => {
-    const total = positions.length
-    const longs = positions.filter((p) => p.side === "LONG").length
-    const shorts = positions.filter((p) => p.side === "SHORT").length
-    const totalPnl = positions.reduce((sum, p) => sum + p.unrealizedPnl, 0)
-    const profitablePositions = positions.filter((p) => p.unrealizedPnl > 0).length
-    const totalCapital = positions.reduce((sum, p) => sum + p.entryPrice * p.quantity, 0)
-
-    return { total, longs, shorts, totalPnl, profitablePositions, totalCapital }
-  }, [positions])
-
-   if (isLoading) {
-     return (
-       <div className="flex flex-1 items-center justify-center">
-         <div className="text-center">
-           <div className="animate-spin rounded-full h-8 w-8 border border-slate-400 border-t-cyan-600 mx-auto mb-4"></div>
-           <p className="text-muted-foreground">Loading positions...</p>
-         </div>
-       </div>
-     )
-   }
-
-  /*
-   * Rewrote the page shell to fix several latent bugs that were making the
-   * page subtly broken:
-   *
-   *   1. The previous JSX closed the outer `<div className="p-4 space-y-4">`
-   *      immediately after the action buttons, leaving the engine-status
-   *      banner, stats cards, filters, and list *outside* that wrapper and
-   *      thus without padding. This caused the content to hug the viewport
-   *      edges on wider screens and broke the `space-y-4` rhythm between
-   *      sections.
-   *
-   *   2. Hard-coded colors (`bg-slate-50`, `text-blue-600`, `text-cyan-600`,
-   *      `text-green-200`, …) bypassed the design-token system and were
-   *      unreadable in dark mode. Switched to semantic tokens (`bg-card`,
-   *      `text-foreground`, `text-muted-foreground`) plus sparing Tailwind
-   *      "status" colors (green/red/amber) only where P&L sign carries
-   *      semantic meaning.
-   *
-   *   3. Stat card now has a distinct colored icon pill so the compact card
-   *      reads as scannable data rather than a flat row of numbers.
-   */
   return (
-    <div className="p-4 space-y-4">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <PageHeader title="Live Trading" description="Real-time position monitoring and management" />
-        <div className="flex gap-2">
-          <Button
-            variant={isEngineRunning ? "default" : "outline"}
-            size="sm"
-            onClick={() => setIsEngineRunning(!isEngineRunning)}
-            className="h-8 text-xs"
-          >
-            {isEngineRunning ? (
-              <>
-                <Pause className="h-3 w-3 mr-1" />
-                Stop Simulation
-              </>
-            ) : (
-              <>
-                <Play className="h-3 w-3 mr-1" />
-                Start Simulation
-              </>
-            )}
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => window.location.reload()} className="h-8 text-xs">
-            <RefreshCw className="h-3 w-3 mr-1" />
-            Refresh
-          </Button>
-        </div>
-      </div>
+    <div className="flex min-h-full flex-col">
+      <PageHeader
+        title="Live Trading"
+        description="Exchange positions, protection controls and execution history"
+        showExchangeSelector
+      >
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 text-xs"
+          disabled={!selectedConnectionId || isRefreshing}
+          onClick={() => void loadDashboard({ forceHistory: true })}
+        >
+          {isRefreshing ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 size-3.5" />}
+          Refresh
+        </Button>
+      </PageHeader>
 
-      {/* Engine status banner */}
-      {isEngineRunning && (
-        <div className="rounded-md border border-green-500/30 bg-green-500/10 p-3">
-          <div className="flex items-center gap-2 text-sm">
-            <Activity className="h-4 w-4 text-green-500 animate-pulse flex-shrink-0" />
-            <span className="text-foreground">Live trading engine running &mdash; prices updating in real-time</span>
-          </div>
-        </div>
-      )}
-
-      {/* Compact stats cards — semantic tokens + status accents where meaningful */}
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
-        {[
-          { icon: BarChart3,    label: "Open",       value: stats.total, tint: "text-primary" },
-          { icon: TrendingUp,   label: "Long",       value: stats.longs, tint: "text-green-500" },
-          { icon: TrendingDown, label: "Short",      value: stats.shorts, tint: "text-red-500" },
-          { icon: Activity,     label: "Profitable", value: stats.profitablePositions, tint: "text-amber-500" },
-          { icon: AlertCircle,  label: "Total PnL",  value: stats.totalPnl.toFixed(2) + " USDT", tint: stats.totalPnl >= 0 ? "text-green-500" : "text-red-500" },
-          { icon: BarChart3,    label: "Capital",    value: "$" + (stats.totalCapital / 1000).toFixed(0) + "k", tint: "text-primary" },
-        ].map((stat) => (
-          <Card key={stat.label} className="border-border bg-card">
-            <CardContent className="p-2 flex items-center gap-2">
-              <div className={`rounded bg-muted/60 p-1.5 ${stat.tint}`}>
-                <stat.icon className="h-3.5 w-3.5" />
-              </div>
-              <div className="min-w-0">
-                <div className={`text-base font-bold tabular-nums ${stat.tint}`}>{stat.value}</div>
-                <div className="text-[10px] text-muted-foreground uppercase tracking-wide">{stat.label}</div>
-              </div>
+      <main className="space-y-2.5 p-3 sm:p-4">
+        {!selectedConnectionId ? (
+          <Card className="border-dashed">
+            <CardContent className="flex min-h-48 flex-col items-center justify-center gap-2 text-center">
+              {connectionsLoading ? <Loader2 className="size-5 animate-spin text-muted-foreground" /> : <ServerCog className="size-6 text-muted-foreground" />}
+              <div className="text-sm font-medium">Select an active connection</div>
+              <p className="max-w-md text-xs text-muted-foreground">The Live Trading page never substitutes mock positions for an unselected production connection.</p>
             </CardContent>
           </Card>
-        ))}
-      </div>
-
-      {/* Filter / sort toolbar */}
-      <div className="flex items-center justify-between gap-2 flex-wrap text-xs px-3 py-2 bg-muted/40 rounded-md border border-border">
-        <div className="text-muted-foreground">
-          Showing <span className="font-semibold text-foreground tabular-nums">{filteredAndSortedPositions.length}</span> positions
-        </div>
-        <div className="flex gap-2 items-center">
-          <div className="flex gap-1">
-            {(["all","long","short"] as const).map((v) => (
-              <Button
-                key={v}
-                variant={filterSide === v ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilterSide(v)}
-                className="h-7 text-xs capitalize"
-              >
-                {v}
-              </Button>
-            ))}
-          </div>
-          <div className="border-l border-border pl-2 flex gap-1">
-            {(["pnl","entry","time"] as const).map((v) => (
-              <Button
-                key={v}
-                variant={sortBy === v ? "default" : "outline"}
-                size="sm"
-                onClick={() => setSortBy(v)}
-                className="h-7 text-xs uppercase"
-              >
-                {v}
-              </Button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Positions list */}
-      <div className="space-y-1.5 max-h-[calc(100vh-350px)] overflow-y-auto">
-        {filteredAndSortedPositions.length > 0 ? (
-          filteredAndSortedPositions.map((position, index) => (
-            <PositionRowCompact
-              key={position.id}
-              position={position}
-              onClose={handleClosePosition}
-              onModify={() => {
-                toast.info("Position modification UI would open here")
-              }}
-              index={index}
-            />
-          ))
         ) : (
-          <div className="text-center py-12 text-muted-foreground text-sm">
-            No positions found
-          </div>
+          <>
+            <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border px-2.5 py-1.5 text-[10px] ${liveReady ? "border-emerald-500/30 bg-emerald-500/5" : liveRequestedButBlocked ? "border-rose-500/30 bg-rose-500/5" : "bg-muted/20"}`}>
+              {liveReady ? <ShieldCheck className="size-3.5 text-emerald-500" /> : liveRequestedButBlocked ? <ShieldAlert className="size-3.5 text-rose-500" /> : <Activity className="size-3.5 text-muted-foreground" />}
+              <span className="font-semibold">{selectedConnection?.name || selectedConnectionId}</span>
+              <Badge variant="outline" className="h-4 px-1 text-[8px] uppercase">{integrity?.liveExecutionMode || (liveReady ? "live" : "inactive")}</Badge>
+              <span className="text-muted-foreground">{integrity?.message || "Canonical Redis position state is active."}</span>
+              <span className="ml-auto flex items-center gap-1 text-muted-foreground">
+                <DatabaseZap className="size-3" />
+                {lastUpdated ? `Updated ${new Date(lastUpdated).toLocaleTimeString()}` : "Loading canonical state"}
+              </span>
+            </div>
+
+            {loadError ? (
+              <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[10px] text-amber-800 dark:text-amber-300">
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                <span><strong>Partial refresh:</strong> {loadError}. Existing data remains visible and the next event/poll retries automatically.</span>
+              </div>
+            ) : null}
+
+            {isLoading ? (
+              <div className="grid min-h-64 place-items-center rounded-md border bg-card">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading live exchange state…</div>
+              </div>
+            ) : (
+              <>
+                <LiveOverviewCompact account={account} positions={positions} analytics={historyResponse?.analytics || null} />
+                <LivePositionTable
+                  positions={positions}
+                  busyId={busyId}
+                  onClose={closePosition}
+                  onUpdateProtection={updateProtection}
+                  onRestoreProtection={restoreProtection}
+                />
+                <TradeHistoryPanel rows={historyRows} response={historyResponse} />
+              </>
+            )}
+          </>
         )}
-      </div>
+      </main>
     </div>
   )
 }

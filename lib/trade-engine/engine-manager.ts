@@ -378,13 +378,13 @@ import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
  * CPU-heavy in single-threaded Node, so wider fan-out increases RSS and tail
  * latency instead of throughput. Default two gives useful I/O overlap; memory
  * pressure automatically contracts it to one. Operators with larger workers
- * can tune ENGINE_SYMBOL_CONCURRENCY/REALTIME_SYMBOL_CONCURRENCY up to four.
+ * can tune ENGINE_SYMBOL_CONCURRENCY/REALTIME_SYMBOL_CONCURRENCY up to eight.
  */
 function getSymbolConcurrency(symbolCount: number): number {
   const configured = concurrencyFromEnv(
     ["ENGINE_SYMBOL_CONCURRENCY", "REALTIME_SYMBOL_CONCURRENCY"],
     2,
-    4,
+    8,
     symbolCount,
   )
   try {

@@ -29,19 +29,32 @@ const SYMBOLS = [
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-async function request(pathname, { method = "GET", body, timeoutMs = 30_000, headers = {} } = {}) {
+async function request(pathname, {
+  method = "GET",
+  body,
+  timeoutMs = RUNTIME_MODE === "development" ? 60_000 : 30_000,
+  headers = {},
+} = {}) {
   const started = Date.now()
-  const response = await fetch(new URL(pathname, BASE_URL), {
-    method,
-    headers: {
-      Accept: "application/json",
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      ...headers,
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    cache: "no-store",
-    signal: AbortSignal.timeout(timeoutMs),
-  })
+  let response
+  try {
+    response = await fetch(new URL(pathname, BASE_URL), {
+      method,
+      headers: {
+        Accept: "application/json",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...headers,
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch (error) {
+    throw new Error(
+      `${method} ${pathname} failed after ${Date.now() - started}ms: ` +
+      (error instanceof Error ? `${error.name}: ${error.message}` : String(error)),
+    )
+  }
   const text = await response.text()
   if (!response.ok) throw new Error(`${method} ${pathname} HTTP ${response.status}: ${text.slice(0, 4_000)}`)
   let json
@@ -84,6 +97,13 @@ const VARIANT_NAMES = ["default", "trailing", "block", "dca"]
 
 function strategyRuntimeSample(stats) {
   const variants = stats?.strategyVariants || {}
+  // The detailed Real-stage ledger is intentionally nested below
+  // `strategyDetail.real`: the top-level response contains the compact
+  // per-variant tiles only. Reading a non-existent top-level `positionStats`
+  // made this soak permanently report the evaluation fallback, then classify
+  // the legitimate fallback -> confirmed-ledger hand-off as a regression.
+  // Keep the legacy fallback solely for an older deployed response shape.
+  const realPositionStats = stats?.strategyDetail?.real?.positionStats || stats?.positionStats || {}
   const normalizedVariants = {}
   for (const variant of [...VARIANT_NAMES, "overall"]) {
     const row = variants?.[variant] || {}
@@ -134,8 +154,8 @@ function strategyRuntimeSample(stats) {
     // overall source, so the one legitimate fallback -> confirmed transition
     // is recognized without masking any later counter regression.
     positionCountSource: String(
-      stats?.positionStats?.strategyTypes?.default?.positionCountSource ||
-      stats?.positionStats?.adjustTypes?.block?.positionCountSource ||
+      realPositionStats?.strategyTypes?.default?.positionCountSource ||
+      realPositionStats?.adjustTypes?.block?.positionCountSource ||
       "evaluation-fallback"
     ),
     mainCycles: finiteNonNegative(coordination.totalCycles, "mainCoordination.totalCycles"),

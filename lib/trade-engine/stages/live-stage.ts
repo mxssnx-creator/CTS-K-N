@@ -353,6 +353,18 @@ interface LivePosition {
   //   when trailing becomes inactive so the static stopLoss % takes over again.
   trailingActive?: boolean
   trailingStopPrice?: number
+  /** Durable operator override used by the Live Trading page. Absolute prices
+   * are intentional: they allow a stop above entry after a profitable move,
+   * which cannot be represented by the legacy positive distance percentage.
+   * The canonical reconciliation loop owns cancel/replace and ratcheting. */
+  manualProtectionOverride?: {
+    stopLossPrice?: number | null
+    takeProfitPrice?: number | null
+    trailingEnabled?: boolean
+    trailingDistancePct?: number
+    updatedAt: number
+    source: "operator"
+  }
   status?: "open" | "closed" | "filled" | "partially_filled" | "placed" | "pending_fill" | "placed_unconfirmed" | "rejected" | "cancelled" | "error" | "simulated" | "pending" | "closing" | "closing_partial"
   statusReason?: string
   executionMode?: "live" | "blocked" | "simulation"
@@ -883,6 +895,9 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     pendingProtectionOrders: typeof hash.pendingProtectionOrders === "string"
       ? safeJsonParse<LivePosition["pendingProtectionOrders"]>(hash.pendingProtectionOrders, undefined)
       : hash.pendingProtectionOrders,
+    manualProtectionOverride: typeof hash.manualProtectionOverride === "string"
+      ? safeJsonParse<LivePosition["manualProtectionOverride"]>(hash.manualProtectionOverride, undefined)
+      : hash.manualProtectionOverride,
     posCountsSetQuantities: typeof hash.posCountsSetQuantities === "string"
       ? safeJsonParse<Record<string, number>>(hash.posCountsSetQuantities, {})
       : hash.posCountsSetQuantities,
@@ -3536,10 +3551,16 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
   // with the latest ratcheted absolute stop level. Using that absolute price
   // directly avoids the percentage-anchored re-derivation below which would
   // always revert to the static origin level, fighting the ratchet every tick.
+  const manual = pos.manualProtectionOverride
+  const hasManualSl = !!manual && Object.prototype.hasOwnProperty.call(manual, "stopLossPrice")
+  const hasManualTp = !!manual && Object.prototype.hasOwnProperty.call(manual, "takeProfitPrice")
   let desiredSl: number
   const trailingPrice = typeof pos.trailingStopPrice === "number" ? pos.trailingStopPrice : 0
   if (pos.trailingActive && Number.isFinite(trailingPrice) && trailingPrice > 0) {
     desiredSl = trailingPrice
+  } else if (hasManualSl) {
+    const manualSl = Number(manual?.stopLossPrice)
+    desiredSl = Number.isFinite(manualSl) && manualSl > 0 ? manualSl : 0
   } else {
     // Do not apply the hard live-entry minimum here. This helper is shared by
     // exchange control-order reconciliation, system-close checks, and operator
@@ -3564,13 +3585,16 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
   // Guard: ensure takeProfit is numeric and non-negative before percentage calc
   const tpPct = Number.isFinite(rawTpPct) && rawTpPct > 0 ? (rawTpPct / 100) : 0
   const dcaTp = Number(pos.dcaTakeProfitPrice || 0)
-  let desiredTp = Number.isFinite(dcaTp) && dcaTp > 0
-    ? dcaTp
-    : tpPct > 0
-      ? pos.direction === "long"
-        ? fillPrice * (1 + tpPct)
-        : fillPrice * (1 - tpPct)
-      : 0
+  const manualTp = Number(manual?.takeProfitPrice)
+  let desiredTp = hasManualTp
+    ? Number.isFinite(manualTp) && manualTp > 0 ? manualTp : 0
+    : Number.isFinite(dcaTp) && dcaTp > 0
+      ? dcaTp
+      : tpPct > 0
+        ? pos.direction === "long"
+          ? fillPrice * (1 + tpPct)
+          : fillPrice * (1 - tpPct)
+        : 0
   // Final NaN guard: ensure result is safe before returning
   if (!Number.isFinite(desiredTp)) desiredTp = 0
 
@@ -3591,6 +3615,41 @@ function getProtectionReferencePrice(pos: LivePosition): number {
   if (Number.isFinite(markPrice) && markPrice > 0) return markPrice
   if (Number.isFinite(pos.averageExecutionPrice) && pos.averageExecutionPrice > 0) return pos.averageExecutionPrice
   return Number.isFinite(pos.entryPrice) && pos.entryPrice > 0 ? pos.entryPrice : 0
+}
+
+/**
+ * Ratchet a manually enabled trailing stop from the latest authoritative mark.
+ * The level can only move in the profitable direction. Reconciliation calls
+ * this before every control-order comparison, so the override survives UI
+ * reloads, process restarts, and periods without a pseudo-position tick.
+ */
+function ratchetManualTrailingStop(pos: LivePosition): boolean {
+  const manual = pos.manualProtectionOverride
+  if (!manual?.trailingEnabled) return false
+
+  const distancePct = Number(manual.trailingDistancePct)
+  const markPrice = getProtectionReferencePrice(pos)
+  if (!Number.isFinite(distancePct) || distancePct <= 0 || !Number.isFinite(markPrice) || markPrice <= 0) {
+    return false
+  }
+
+  const direction: "long" | "short" = pos.direction === "short" ? "short" : "long"
+  const candidate = direction === "long"
+    ? markPrice * (1 - distancePct / 100)
+    : markPrice * (1 + distancePct / 100)
+  const existing = Number(pos.trailingStopPrice)
+  const manualFloor = Number(manual.stopLossPrice)
+  const eligible: number[] = [candidate]
+  if (Number.isFinite(existing) && existing > 0) eligible.push(existing)
+  if (Number.isFinite(manualFloor) && manualFloor > 0) eligible.push(manualFloor)
+
+  const next = direction === "long" ? Math.max(...eligible) : Math.min(...eligible)
+  if (!Number.isFinite(next) || next <= 0) return false
+
+  const changed = pos.trailingActive !== true || !Number.isFinite(existing) || Math.abs(next - existing) > 1e-12
+  pos.trailingActive = true
+  pos.trailingStopPrice = next
+  return changed
 }
 
 function findCrossedProtectionTrigger(
@@ -3849,6 +3908,19 @@ async function updateProtectionOrders(
             : pos.pendingQuantityMutation?.phase || pos.status)}`,
     )
     return result
+  }
+
+  // Keep the durable operator trailing level moving even when the venue is
+  // temporarily quota/frequency blocked or configured for system-close-only.
+  // Those modes still use the local trigger for fail-closed protection.
+  if (ratchetManualTrailingStop(pos)) {
+    result.changed = true
+    pushStep(
+      pos,
+      "manual_trailing_ratchet",
+      true,
+      `operator trailing stop advanced to ${Number(pos.trailingStopPrice || 0).toFixed(8)}`,
+    )
   }
 
   // ── code=110206 quota backoff gate ────────────────────────────────
@@ -9794,6 +9866,13 @@ export async function recalculateAndApplySLTP(
     takeProfitPct?: number
     trailingActive?: boolean
     trailingStopPrice?: number
+    manualProtection?: {
+      stopLossPrice?: number | null
+      takeProfitPrice?: number | null
+      trailingEnabled?: boolean
+      trailingDistancePct?: number
+    }
+    clearManualProtection?: boolean
   },
 ): Promise<LivePosition | null> {
   await initRedis()
@@ -9862,6 +9941,40 @@ export async function recalculateAndApplySLTP(
     // values while `stopLoss` / `takeProfit` carry the operator override.
     const prevStopLossPct = position.stopLoss
     const prevTakeProfitPct = position.takeProfit
+    const previousManualProtection = position.manualProtectionOverride
+      ? { ...position.manualProtectionOverride }
+      : undefined
+    if (overrides?.clearManualProtection) {
+      position.manualProtectionOverride = undefined
+      position.trailingActive = false
+      position.trailingStopPrice = undefined
+    }
+    if (overrides?.manualProtection) {
+      const incoming = overrides.manualProtection
+      const previous = position.manualProtectionOverride
+      const next: NonNullable<LivePosition["manualProtectionOverride"]> = {
+        ...(previous || { updatedAt: Date.now(), source: "operator" as const }),
+        updatedAt: Date.now(),
+        source: "operator",
+      }
+      if (Object.prototype.hasOwnProperty.call(incoming, "stopLossPrice")) {
+        const value = incoming.stopLossPrice
+        next.stopLossPrice = value === null ? null : Number(value)
+      }
+      if (Object.prototype.hasOwnProperty.call(incoming, "takeProfitPrice")) {
+        const value = incoming.takeProfitPrice
+        next.takeProfitPrice = value === null ? null : Number(value)
+      }
+      if (Object.prototype.hasOwnProperty.call(incoming, "trailingEnabled")) {
+        next.trailingEnabled = incoming.trailingEnabled === true
+      }
+      if (Object.prototype.hasOwnProperty.call(incoming, "trailingDistancePct")) {
+        next.trailingDistancePct = Number(incoming.trailingDistancePct)
+      }
+      position.manualProtectionOverride = next
+      position.trailingActive = next.trailingEnabled === true
+      if (!position.trailingActive) position.trailingStopPrice = undefined
+    }
     const normalizedOverrideSl = overrides?.stopLossPct !== undefined
       ? normalizeStopLossPercent(overrides.stopLossPct)
       : null
@@ -9879,7 +9992,8 @@ export async function recalculateAndApplySLTP(
 
     const slChanged = position.stopLoss !== prevStopLossPct
     const tpChanged = position.takeProfit !== prevTakeProfitPct
-    if (slChanged || tpChanged) {
+    const manualProtectionChanged = JSON.stringify(previousManualProtection) !== JSON.stringify(position.manualProtectionOverride)
+    if (slChanged || tpChanged || manualProtectionChanged) {
       // Single audit-trail event per override. The progression panel
       // shows it as a `live_trading info` row alongside the subsequent
       // `update_sl_tp` step pushed by `updateProtectionOrders`. Together
@@ -9901,6 +10015,8 @@ export async function recalculateAndApplySLTP(
           stopLossNormalizationReason: normalizedOverrideSl?.reason,
           slChanged,
           tpChanged,
+          manualProtectionChanged,
+          manualProtectionOverride: position.manualProtectionOverride,
         },
       )
     }
@@ -9909,6 +10025,7 @@ export async function recalculateAndApplySLTP(
     // intentionally avoid an extra open-orders snapshot RTT on the critical
     // path. cancelProtectionOrder treats already-gone IDs as success; the
     // 200 ms canonical sync independently performs full liveness healing.
+    ratchetManualTrailingStop(position)
     await updateProtectionOrders(exchangeConnector, position, "manual_recalc", null)
     position.updatedAt = Date.now()
     await savePosition(position)
@@ -10099,6 +10216,11 @@ export async function syncLiveFromPseudo(
         if (i >= matches.length) return
         const livePos = matches[i]
         try {
+          // An operator override is a durable control contract. The normal
+          // pseudo-position sync must not overwrite it on the next 200 ms tick;
+          // updateProtectionOrders owns its absolute SL/TP and trailing ratchet
+          // until the operator explicitly restores strategy defaults.
+          if (livePos.manualProtectionOverride) continue
           let effectiveSlPct = slPct
           // CRITICAL: Guard trailing stop calculation against NaN and division errors
           if (trailingActive && Number.isFinite(trailingStopPrice) && trailingStopPrice > 0) {

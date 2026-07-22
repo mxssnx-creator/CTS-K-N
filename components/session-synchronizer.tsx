@@ -1,7 +1,11 @@
 "use client"
 
 import { useEffect } from "react"
-import { initializeSessionRestoration, saveSessionState } from "@/lib/client-session-persistence"
+import {
+  initializeSessionRestoration,
+  saveSessionState,
+  synchronizeSessionSiteInstance,
+} from "@/lib/client-session-persistence"
 
 /**
  * SessionSynchronizer - Client component that ensures continuous session state
@@ -32,6 +36,7 @@ export function SessionSynchronizer() {
         saveSessionState({
           timestamp: Date.now(),
         })
+        void synchronizeSiteIdentity()
       }
     }
 
@@ -45,6 +50,30 @@ export function SessionSynchronizer() {
         // Ignore errors during unload
       }
     }
+
+    let identityRequestInFlight = false
+    const synchronizeSiteIdentity = async () => {
+      if (identityRequestInFlight) return
+      identityRequestInFlight = true
+      try {
+        const response = await fetch("/api/system/init-status", { cache: "no-store" })
+        const payload = await response.json().catch(() => null)
+        const siteInstanceId = String(payload?.system?.site_instance_id || "").trim()
+        if (!siteInstanceId) return
+        const result = synchronizeSessionSiteInstance(siteInstanceId)
+        document.documentElement.dataset.ctsSiteInstance = siteInstanceId
+        window.dispatchEvent(new CustomEvent("cts:site-instance", {
+          detail: { siteInstanceId, changed: result.changed, previousSiteInstanceId: result.previousSiteInstanceId },
+        }))
+      } catch {
+        // A transient status failure must never create an apparent new site.
+      } finally {
+        identityRequestInFlight = false
+      }
+    }
+    const identityInterval = window.setInterval(() => {
+      void synchronizeSiteIdentity()
+    }, 60_000)
 
     let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined
     // localStorage writes are synchronous. Debounce scroll persistence so a
@@ -73,10 +102,12 @@ export function SessionSynchronizer() {
     window.addEventListener("beforeunload", handleBeforeUnload)
     window.addEventListener("pagehide", handleBeforeUnload)
     window.addEventListener("scroll", handleScroll, { passive: true })
+    void synchronizeSiteIdentity()
 
     // Cleanup
     return () => {
       clearInterval(syncInterval)
+      window.clearInterval(identityInterval)
       if (scrollSaveTimer) clearTimeout(scrollSaveTimer)
       document.removeEventListener("visibilitychange", handleVisibilityChange)
       window.removeEventListener("beforeunload", handleBeforeUnload)

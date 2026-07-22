@@ -8,12 +8,15 @@
  */
 
 const SESSION_STORAGE_KEY = "cts-v-session-state"
-const SESSION_VERSION = "2.0"
+const SESSION_VERSION = "2.1"
 
 export interface SessionState {
   version: string
   timestamp: number
   clientSessionId: string
+  // Durable server identity. This binds browser caches to one Redis-backed site
+  // so a reset/repoint cannot display another site's old progression values.
+  siteInstanceId?: string
   // Navigation state
   currentPage: string
   navigationHistory: string[]
@@ -79,6 +82,37 @@ export function saveSessionState(state: Partial<SessionState>): void {
   } catch (error) {
     console.error("[v0] Error saving session state:", error)
   }
+}
+
+/**
+ * Bind this browser's durable UI cache to the canonical Redis site identity.
+ * A different identity means the server was deliberately reset/repointed, so
+ * server-derived selections/progress must be fetched again rather than shown
+ * from another site's browser cache. Personal presentation preferences stay.
+ */
+export function synchronizeSessionSiteInstance(siteInstanceId: string): { changed: boolean; previousSiteInstanceId?: string } {
+  const normalized = String(siteInstanceId || "").trim()
+  if (!normalized || typeof window === "undefined") return { changed: false }
+  const current = getSessionState() || getDefaultSessionState()
+  const previousSiteInstanceId = String(current.siteInstanceId || "").trim()
+  const changed = Boolean(previousSiteInstanceId && previousSiteInstanceId !== normalized)
+  saveSessionState({
+    ...current,
+    siteInstanceId: normalized,
+    ...(changed
+      ? {
+          selectedConnection: undefined,
+          selectedSymbols: undefined,
+          activeStrategies: undefined,
+        }
+      : {}),
+  })
+  return { changed, previousSiteInstanceId: previousSiteInstanceId || undefined }
+}
+
+export function getSessionSiteInstanceId(): string | null {
+  const siteInstanceId = String(getSessionState()?.siteInstanceId || "").trim()
+  return siteInstanceId || null
 }
 
 /**

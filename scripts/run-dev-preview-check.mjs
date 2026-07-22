@@ -47,13 +47,14 @@ async function waitForReady(child, timeoutMs = 120_000) {
   throw new Error(`Dev server did not become ready\n${outputTail}`)
 }
 
-async function requestJson(pathname) {
+async function requestJson(pathname, options = {}) {
   let lastFailure = ""
   for (let attempt = 1; attempt <= 4; attempt++) {
     const response = await fetch(new URL(pathname, baseUrl), {
       cache: "no-store",
       signal: AbortSignal.timeout(30_000),
-      headers: { Accept: "application/json" },
+      ...options,
+      headers: { Accept: "application/json", ...(options.headers || {}) },
     })
     const text = await response.text()
     if (response.ok) {
@@ -94,10 +95,31 @@ async function prewarmDevRoutes() {
     `/api/trading/trade-history?connection_id=${encoded}&limit=500`,
     `/api/logistics/queue?connectionId=${encoded}`,
     `/api/trading/live-positions?connection_id=${encoded}`,
+    `/api/exchange/live-summary?connection_id=${encoded}`,
     `/api/preset-optimizer?connectionId=${encoded}`,
     `/api/connections/${encoded}/engine-states`,
   ]) {
     await requestJson(pathname)
+  }
+
+  // The soak reads this authenticated diagnostic every tenth round. Compile
+  // it before the engine starts allocating so a parallel production run cannot
+  // turn its first 600-module cold build into a false request timeout.
+  await requestJson(`/api/debug/progression-dump?id=${encoded}`, {
+    headers: { Authorization: `Bearer ${debugAdminSecret}` },
+  })
+
+  // Compile the exact page changed by this release in development too. The
+  // production verifier already checks its rendered output; this catches a
+  // development-only module/style failure before the engine soak begins.
+  const livePage = await fetch(`${baseUrl}/live-trading`, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(60_000),
+  })
+  if (!livePage.ok) throw new Error(`Dev Live Trading page warmup returned HTTP ${livePage.status}`)
+  const livePageHtml = await livePage.text()
+  if (!livePageHtml.includes("Live Trading")) {
+    throw new Error("Dev Live Trading page warmup did not render its release marker")
   }
 }
 

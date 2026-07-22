@@ -5,6 +5,7 @@ import { ThemeProvider } from "@/components/theme-provider"
 import { AuthProvider } from "@/lib/auth-context"
 import { ExchangeProvider } from "@/lib/exchange-context"
 import { StyleInitializer } from "@/components/style-initializer"
+import { ProgressTracker, SessionSynchronizer } from "@/components/session-synchronizer"
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
@@ -15,6 +16,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
       disableTransitionOnChange
     >
       <StyleInitializer />
+      <SessionSynchronizer />
+      <ProgressTracker />
       <AuthProvider>
         <ExchangeProvider>
           {children}

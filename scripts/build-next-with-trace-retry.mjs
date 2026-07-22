@@ -2,7 +2,7 @@
 
 import { existsSync, lstatSync, readFileSync, readlinkSync, readdirSync } from "node:fs"
 import { createHash } from "node:crypto"
-import { join, relative } from "node:path"
+import { basename, join, relative } from "node:path"
 import { spawn, spawnSync } from "node:child_process"
 import { tmpdir } from "node:os"
 
@@ -12,6 +12,7 @@ const minimumTraceCount = 300
 const settleAfterFailureMs = Math.max(0, Number(process.env.NEXT_TRACE_SETTLE_MS || 8000))
 const isVercelBuild = process.env.VERCEL === "1" || process.env.VERCEL === "true"
 const requiresStandalone = !isVercelBuild
+const standaloneDistName = basename(distDir)
 const settleAfterSuccessMs = Math.max(
   0,
   Number(process.env.NEXT_TRACE_SUCCESS_SETTLE_MS || (requiresStandalone ? 8000 : 1500)),
@@ -123,11 +124,11 @@ function validateBuild() {
   ]
   if (requiresStandalone) {
     providerManifests.push(
-      "standalone/.next/routes-manifest.json",
-      "standalone/.next/prerender-manifest.json",
-      "standalone/.next/required-server-files.json",
-      "standalone/.next/server/pages-manifest.json",
-      "standalone/.next/server/app-paths-manifest.json",
+      `standalone/${standaloneDistName}/routes-manifest.json`,
+      `standalone/${standaloneDistName}/prerender-manifest.json`,
+      `standalone/${standaloneDistName}/required-server-files.json`,
+      `standalone/${standaloneDistName}/server/pages-manifest.json`,
+      `standalone/${standaloneDistName}/server/app-paths-manifest.json`,
     )
   }
   for (const manifest of providerManifests) {
