@@ -1,4 +1,5 @@
 import { isKiloDeploymentRuntime, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import { resolveKiloDatabaseConfig } from "@/lib/kilo-database-client"
 
 /**
  * Production Startup Validation
@@ -115,7 +116,8 @@ function validateEnvironmentVariables(): { status: "ok" | "warning" | "error"; m
       (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
       (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN),
   )
-  const hasManagedSnapshot = isKiloDeploymentRuntime() && Boolean(process.env.DB_URL && process.env.DB_TOKEN)
+  const managedDatabase = resolveKiloDatabaseConfig()
+  const hasManagedSnapshot = isKiloDeploymentRuntime() && Boolean(managedDatabase.url && managedDatabase.token)
   const paperFallback =
     !hasSharedRedis &&
     !hasManagedSnapshot &&

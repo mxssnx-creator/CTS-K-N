@@ -38,7 +38,11 @@ function validateRuntimeEnvironment() {
       (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
       (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN),
   )
-  const managedSnapshot = Boolean(process.env.DB_URL && process.env.DB_TOKEN)
+  const managedSnapshot = Boolean(
+    (process.env.DB_URL && process.env.DB_TOKEN) ||
+    (process.env.KILO_DB_URL && process.env.KILO_DB_TOKEN) ||
+    (process.env.KILO_DATABASE_URL && process.env.KILO_DATABASE_TOKEN),
+  )
   const paperFallback = process.env.ALLOW_PROD_INLINE_REDIS !== "0" && process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1"
   assert(
     sharedRedis || managedSnapshot || paperFallback,

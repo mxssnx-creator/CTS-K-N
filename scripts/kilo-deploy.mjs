@@ -35,6 +35,10 @@ const WORKER_BINDING_ALLOWLIST = [
   "KV_REST_API_TOKEN",
   "DB_URL",
   "DB_TOKEN",
+  "KILO_DB_URL",
+  "KILO_DB_TOKEN",
+  "KILO_DATABASE_URL",
+  "KILO_DATABASE_TOKEN",
   "ALLOW_KILO_SQLITE_LIVE_TRADING",
   "NEXT_PUBLIC_APP_URL",
   "DEPLOYMENT_URL",
@@ -105,7 +109,9 @@ async function main() {
       process.env.KV_URL ||
       (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
       (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) ||
-      (process.env.DB_URL && process.env.DB_TOKEN),
+      (process.env.DB_URL && process.env.DB_TOKEN) ||
+      (process.env.KILO_DB_URL && process.env.KILO_DB_TOKEN) ||
+      (process.env.KILO_DATABASE_URL && process.env.KILO_DATABASE_TOKEN),
     )
     await run("bash", ["scripts/post-deploy-verify.sh"], {
       DEPLOYMENT_URL: deploymentUrl,

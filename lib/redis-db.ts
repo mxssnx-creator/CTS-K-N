@@ -7,7 +7,7 @@ import {
   removeConnectionSecondaryIndexes,
   syncConnectionSecondaryIndexes,
 } from "./database-indexes"
-import { createKiloDatabaseQuery, type KiloDatabaseMethod } from "./kilo-database-client"
+import { createKiloDatabaseQuery, resolveKiloDatabaseConfig, type KiloDatabaseMethod } from "./kilo-database-client"
 import { scanRedisKeys } from "./redis-scan"
 
 /**
@@ -102,7 +102,8 @@ export type RedisBackend = "inline-local" | "redis-network" | "kilo-sqlite-snaps
 const KILO_SNAPSHOT_TABLE = "cts_runtime_snapshot"
 
 function hasKiloManagedDatabaseConfig(): boolean {
-  return Boolean(process.env.DB_URL && process.env.DB_TOKEN)
+  const { url, token } = resolveKiloDatabaseConfig()
+  return Boolean(url && token)
 }
 
 async function executeKiloDatabaseQuery(
@@ -110,8 +111,7 @@ async function executeKiloDatabaseQuery(
   params: unknown[] = [],
   method: KiloDatabaseMethod = "all",
 ): Promise<any[]> {
-  const url = String(process.env.DB_URL || "").trim()
-  const token = String(process.env.DB_TOKEN || "").trim()
+  const { url, token } = resolveKiloDatabaseConfig()
   if (!url || !token) throw new Error("Kilo managed database credentials are not configured")
 
   if (!globalForRedis.__kilo_database_query) {
@@ -466,7 +466,7 @@ export class InlineLocalRedis implements RedisClientLike {
     const expectedRevision = Number(globalForRedis.__kilo_snapshot_revision || 0)
     const snapshotVersion = this.mutationVersion()
     const payload = this.buildSnapshot()
-    const rows = await executeKiloDatabaseQuery(
+    let rows = await executeKiloDatabaseQuery(
       `INSERT INTO ${KILO_SNAPSHOT_TABLE} (id, revision, payload, updated_at, lease_owner, lease_scope, lease_until)
        VALUES (1, 1, ?, ?, NULL, NULL, NULL)
        ON CONFLICT(id) DO UPDATE SET
@@ -478,6 +478,18 @@ export class InlineLocalRedis implements RedisClientLike {
       [payload, Date.now(), expectedRevision],
       "all",
     )
+    // Some managed SQLite gateways execute RETURNING correctly but expose its
+    // result through a `run`/changes envelope, or omit rows for statements
+    // that changed data. A follow-up read is safe here: the revision check
+    // below still rejects a lost CAS race and never treats an empty result as
+    // a successful overwrite.
+    if (rows.length === 0) {
+      rows = await executeKiloDatabaseQuery(
+        `SELECT revision FROM ${KILO_SNAPSHOT_TABLE} WHERE id = 1`,
+        [],
+        "all",
+      )
+    }
     const nextRevision = Number(databaseRowValue(rows[0], "revision", 0) || 0)
     if (!Number.isFinite(nextRevision) || nextRevision <= expectedRevision) {
       console.warn(
@@ -498,7 +510,7 @@ export class InlineLocalRedis implements RedisClientLike {
     const deadline = Date.now() + Math.max(0, waitMs)
     do {
       const now = Date.now()
-      const rows = await executeKiloDatabaseQuery(
+      let rows = await executeKiloDatabaseQuery(
         `UPDATE ${KILO_SNAPSHOT_TABLE}
          SET lease_owner = ?, lease_scope = ?, lease_until = ?
          WHERE id = 1 AND (lease_until IS NULL OR lease_until < ? OR lease_owner = ?)
@@ -506,6 +518,13 @@ export class InlineLocalRedis implements RedisClientLike {
         [owner, scope, now + ttlMs, now, owner],
         "all",
       )
+      if (rows.length === 0) {
+        rows = await executeKiloDatabaseQuery(
+          `SELECT lease_owner FROM ${KILO_SNAPSHOT_TABLE} WHERE id = 1`,
+          [],
+          "all",
+        )
+      }
       if (String(databaseRowValue(rows[0], "lease_owner", 0) || "") === owner) return owner
       if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 40 + Math.floor(Math.random() * 40)))
     } while (Date.now() < deadline)

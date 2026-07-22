@@ -1,7 +1,9 @@
 import { migrate as drizzleMigrate } from "drizzle-orm/sqlite-proxy/migrator"
+import { resolveKiloDatabaseConfig } from "../../lib/kilo-database-client"
 
 function hasManagedDatabaseConfiguration(): boolean {
-  return Boolean(process.env.DB_URL?.trim() && process.env.DB_TOKEN?.trim())
+  const { url, token } = resolveKiloDatabaseConfig()
+  return Boolean(url && token)
 }
 
 function shouldRunManagedDatabaseMigrations(): boolean {
