@@ -9,7 +9,10 @@
     "KILO_DEPLOYMENT": "1",
     "DISABLE_IN_PROCESS_CONTINUITY": "1",
     "DISABLE_TRADE_ENGINE_IN_PROCESS": "1",
-    "ALLOW_PROD_INLINE_REDIS": "0",
+    // Kilo currently provides no Redis/KV or DB_URL binding for this Worker.
+    // Keep the UI, migrations, paper engine and diagnostics operational in the
+    // single worker while real orders remain blocked by real-trade-gates.ts.
+    "ALLOW_PROD_INLINE_REDIS": "1",
     "ALLOW_INLINE_REDIS_LIVE_TRADING": "0",
     "ENABLE_PRODUCTION_MIGRATIONS": "1",
     "AUTO_MIGRATE_ON_STARTUP": "1",
