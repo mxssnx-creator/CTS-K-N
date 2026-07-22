@@ -62,7 +62,10 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain("scripts/run-minute-scheduler.mjs")
     expect(installer).toContain('for runtime_path in node_modules .next scripts package.json')
     expect(installer).toContain('scripts/run-with-env.mjs" "$ENV_FILE" --')
-    expect(installer).toContain("REQUIRE_SHARED_PERSISTENCE=1 REQUIRE_FRESH_CONTINUITY=1")
+    expect(installer).toContain(
+      'REQUIRE_SHARED_PERSISTENCE="$([[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "inline-snapshot" ]] && echo 0 || echo 1)"',
+    )
+    expect(installer).toContain("REQUIRE_FRESH_CONTINUITY=1")
     expect(installer).toContain("site identity did not survive restart")
     expect(installer).not.toContain("FORCE_LIVE=1")
     expect(installer).toContain("ADMIN_SECRET,\nCRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET")
