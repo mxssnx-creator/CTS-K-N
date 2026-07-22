@@ -826,6 +826,8 @@ describe("requested regression guardrails", () => {
     expect(wrangler).toContain('"crons": ["* * * * *"]')
     expect(customWorker).toContain("env ?? {}")
     expect(customWorker).toContain("ctx ?? {}")
+    expect(customWorker).toContain("ensureKiloPaperFallback")
+    expect(customWorker).toContain('process.env.ALLOW_INLINE_REDIS_LIVE_TRADING = "0"')
     expect(customWorker).toContain("async scheduled")
     expect(customWorker).toContain("/api/cron/server-continuity")
     expect(customWorker).toContain("/api/cron/sync-live-positions")
