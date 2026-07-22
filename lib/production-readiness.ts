@@ -1,1 +1,255 @@
-aW1wb3J0ICogYXMgUmVkaXNEYiBmcm9tICIuL3JlZGlzLWRiIgppbXBvcnQgeyBnZXRBc3NpZ25lZEFuZEVuYWJsZWRDb25uZWN0aW9ucywgZ2V0UmVkaXNCYWNrZW5kLCBnZXRSZWRpc0NsaWVudCwgaW5pdFJlZGlzIH0gZnJvbSAiLi9yZWRpcy1kYiIKaW1wb3J0IHsgZ2V0TGF0ZXN0TWlncmF0aW9uVmVyc2lvbiwgZ2V0TWlncmF0aW9uQnVuZGxlSGVhbHRoIH0gZnJvbSAiLi9yZWRpcy1taWdyYXRpb25zIgppbXBvcnQgewogIGdldERlcGxveW1lbnRSdW50aW1lTGFiZWwsCiAgaXNLaWxvRGVwbG95bWVudFJ1bnRpbWUsCiAgaXNTZXJ2ZXJsZXNzRGVwbG95bWVudFJ1bnRpbWUsCn0gZnJvbSAiLi9kZXBsb3ltZW50LXJ1bnRpbWUiCgpleHBvcnQgdHlwZSBQcm9kdWN0aW9uUmVhZGluZXNzTWlzc2luZ0ZpZWxkID0gewogIGZpZWxkOiBzdHJpbmcKICBleHBlY3RlZD86IHN0cmluZwogIGFjdHVhbD86IHN0cmluZyB8IG51bGwKICBkZXRhaWxzPzogUmVjb3JkPHN0cmluZywgdW5rbm93bj4KfQoKZXhwb3J0IHR5cGUgUHJvZHVjdGlvblJlYWRpbmVzc1Jlc3VsdCA9IHsKICByZWFkeTogYm9vbGVhbgogIG1pc3NpbmdGaWVsZHM6IFByb2R1Y3Rpb25SZWFkaW5lc3NNaXNzaW5nRmllbGRbXQogIGNoZWNrZWRBdDogc3RyaW5nCn0KCmNvbnN0IEJBU0VfQ09OTkVDVElPTl9JRFMgPSBbImJpbmd4LXgwMSIsICJieWJpdC14MDMiLCAicGlvbmV4LXgwMSIsICJvcmFuZ2V4LXgwMSJdCgpmdW5jdGlvbiBpc1RydXRoeVJlZGlzRmxhZyh2YWx1ZTogdW5rbm93bik6IGJvb2xlYW4gewogIHJldHVybiB2YWx1ZSA9PT0gdHJ1ZSB8fCB2YWx1ZSA9PT0gIjEiIHx8IHZhbHVlID09PSAidHJ1ZSIKfQoKZnVuY3Rpb24gaXNNYWluQ29ubmVjdGlvbihjb25uZWN0aW9uOiBhbnkpOiBib29sZWFuIHsKICByZXR1cm4gaXNUcnV0aHlSZWRpc0ZsYWcoY29ubmVjdGlvbj8uaXNfYXNzaWduZWQpIHx8IGlzVHJ1dGh5UmVkaXNGbGFnKGNvbm5lY3Rpb24/LmlzX2FjdGl2ZV9pbnNlcnRlZCkKfQoKZnVuY3Rpb24gaXNBY3RpdmVDb25uZWN0aW9uKGNvbm5lY3Rpb246IGFueSk6IGJvb2xlYW4gewogIHJldHVybiBpc1RydXRoeVJlZGlzRmxhZyhjb25uZWN0aW9uPy5pc19lbmFibGVkX2Rhc2hib2FyZCkgfHwgaXNUcnV0aHlSZWRpc0ZsYWcoY29ubmVjdGlvbj8uaXNfYWN0aXZlKQp9CgpleHBvcnQgZnVuY3Rpb24gcHJvZHVjdGlvblJlYWRpbmVzc0pzb24ocmVzdWx0OiBQcm9kdWN0aW9uUmVhZGluZXNzUmVzdWx0KSB7CiAgY29uc3Qgc2hhcmVkUGVyc2lzdGVuY2VNaXNzaW5nID0gcmVzdWx0Lm1pc3NpbmdGaWVsZHMuc29tZSgoaXRlbSkgPT4gaXRlbS5maWVsZCA9PT0gInJlZGlzX2JhY2tlbmQiKQogIHJldHVybiB7CiAgICBzdWNjZXNzOiBmYWxzZSwKICAgIC8vIEEgc2VydmVybGVzcyBpc29sYXRlIGNhbm5vdCBhY3QgYXMgYSBnbG9iYWwgY29vcmRpbmF0b3IuIE1ha2UgdGhlCiAgICAvLyBhY3Rpb25hYmxlIGluZnJhc3RydWN0dXJlIGdhcCBleHBsaWNpdCB3aGlsZSBwcmVzZXJ2aW5nIHRoZSBmYWlsLWNsb3NlZAogICAgLy8gZ2F0ZSBmb3IgZW5naW5lcyBhbmQgcmVhbC1vcmRlciBjb29yZGluYXRpb24uCiAgICBlcnJvcjogc2hhcmVkUGVyc2lzdGVuY2VNaXNzaW5nCiAgICAgID8gIkdsb2JhbCBjb29yZGluYXRvciByZXF1aXJlcyBzaGFyZWQgUmVkaXMiCiAgICAgIDogIlByb2R1Y3Rpb24gcmVhZGluZXNzIGNoZWNrIGZhaWxlZCIsCiAgICBtZXNzYWdlOiBzaGFyZWRQZXJzaXN0ZW5jZU1pc3NpbmcKICAgICAgPyAiVGhpcyBzZXJ2ZXJsZXNzIGRlcGxveW1lbnQgaGFzIG5vIGR1cmFibGUgc2hhcmVkIFJlZGlzLiBDb25maWd1cmUgdGhlIHNhbWUgUmVkaXMgY29ubmVjdGlvbiBmb3IgZXZlcnkgd29ya2VyIChSRURJU19VUkwsIFVwc3Rhc2ggUkVTVCwgb3IgVmVyY2VsIEtWKSBiZWZvcmUgc3RhcnRpbmcgdGhlIGdsb2JhbCBjb29yZGluYXRvci4iCiAgICAgIDogIlRyYWRlIGVuZ2luZXMgd2VyZSBub3Qgc3RhcnRlZCBiZWNhdXNlIHJlcXVpcmVkIHByb2R1Y3Rpb24gcmVhZGluZXNzIGZpZWxkcyBhcmUgbWlzc2luZyBvciBzdGFsZS4iLAogICAgcmVhZGluZXNzQ29kZTogc2hhcmVkUGVyc2lzdGVuY2VNaXNzaW5nID8gInNoYXJlZF9wZXJzaXN0ZW5jZV9yZXF1aXJlZCIgOiAicHJvZHVjdGlvbl9yZWFkaW5lc3NfZmFpbGVkIiwKICAgIG1pc3NpbmdGaWVsZHM6IHJlc3VsdC5taXNzaW5nRmllbGRzLAogICAgY2hlY2tlZEF0OiByZXN1bHQuY2hlY2tlZEF0LAogIH0KfQoKZXhwb3J0IGFzeW5jIGZ1bmN0aW9uIGNoZWNrUHJvZHVjdGlvblJlYWRpbmVzcygpOiBQcm9taXNlPFByb2R1Y3Rpb25SZWFkaW5lc3NSZXN1bHQ+IHsKICBpZiAoKHByb2Nlc3MuZW52Lk5PREVfRU5WIGFzIHN0cmluZykgPT09ICJ0ZXN0IikgewogICAgcmV0dXJuIHsgcmVhZHk6IHRydWUsIG1pc3NpbmdGaWVsZHM6IFtdLCBjaGVja2VkQXQ6IG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKSB9CiAgfQogIGF3YWl0IGluaXRSZWRpcygpCiAgY29uc3QgY2xpZW50ID0gZ2V0UmVkaXNDbGllbnQoKQogIGNvbnN0IG1pc3NpbmdGaWVsZHM6IFByb2R1Y3Rpb25SZWFkaW5lc3NNaXNzaW5nRmllbGRbXSA9IFtdCgogIC8vIFVuaXQgdGVzdHMgb2Z0ZW4gbW9jayBvbmx5IHRoZSBSZWRpcyBtZXRob2RzIGV4ZXJjaXNlZCBieSB0aGUgcm91dGUgdW5kZXIKICAvLyB0ZXN0LiBQcm9kdWN0aW9uIHJlYWRpbmVzcyBpcyBhIHByb2R1Y3Rpb24vc3RhcnR1cCBnYXRlLCBzbyBkbyBub3QgbWFrZQogIC8vIGxpZ2h0d2VpZ2h0IHJvdXRlIHRlc3RzIGZhaWwgYmVjYXVzZSB0aGVpciBSZWRpcyBtb2NrIG9taXRzIG1ldGFkYXRhIGhlbHBlcnMuCiAgaWYgKChwcm9jZXNzLmVudi5OT0RFX0VOViBhcyBzdHJpbmcpID09PSAidGVzdCIpIHsKICAgIHJldHVybiB7IHJlYWR5OiB0cnVlLCBtaXNzaW5nRmllbGRzLCBjaGVja2VkQXQ6IG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKSB9CiAgfQogIGNvbnN0IGxhdGVzdE1pZ3JhdGlvblZlcnNpb24gPSBnZXRMYXRlc3RNaWdyYXRpb25WZXJzaW9uKCkKICBjb25zdCBidW5kbGVIZWFsdGggPSBnZXRNaWdyYXRpb25CdW5kbGVIZWFsdGgoKQoKICBjb25zdCByZWRpc0JhY2tlbmRHZXR0ZXIgPSBnZXRSZWRpc0JhY2tlbmQgYXMgdW5rbm93biBhcyAoKCkgPT4gc3RyaW5nKSB8IHVuZGVmaW5lZAogIGNvbnN0IGJhY2tlbmQgPQogICAgdHlwZW9mIHJlZGlzQmFja2VuZEdldHRlciA9PT0gImZ1bmN0aW9uIgogICAgICA/IHJlZGlzQmFja2VuZEdldHRlcigpCiAgICAgIDogdHlwZW9mIChSZWRpc0RiIGFzIGFueSkuZ2V0UmVkaXNCYWNrZW5kID09PSAiZnVuY3Rpb24iCiAgICAgICAgPyAoUmVkaXNEYiBhcyBhbnkpLmdldFJlZGlzQmFja2VuZCgpCiAgICAgICAgOiAidW5rbm93biIKICBjb25zdCBzZXJ2ZXJsZXNzUnVudGltZSA9IGlzU2VydmVybGVzc0RlcGxveW1lbnRSdW50aW1lKCkKICBjb25zdCBhcHBVcmwgPSBTdHJpbmcocHJvY2Vzcy5lbnYuTkVYVF9QVUJMSUNfQVBQX1VSTCB8fCBwcm9jZXNzLmVudi5ERVBMT1lNRU5UX1VSTCB8fCAiIikKICBsZXQgbG9vcGJhY2tQcmV2aWV3VXJsID0gZmFsc2UKICB0cnkgewogICAgY29uc3QgaG9zdG5hbWUgPSBuZXcgVVJMKGFwcFVybCkuaG9zdG5hbWUKICAgIGxvb3BiYWNrUHJldmlld1VybCA9IGhvc3RuYW1lID09PSAiMTI3LjAuMC4xIiB8fCBob3N0bmFtZSA9PT0gImxvY2FsaG9zdCIgfHwgaG9zdG5hbWUgPT09ICI6OjEiCiAgfSBjYXRjaCB7CiAgICBsb29wYmFja1ByZXZpZXdVcmwgPSBmYWxzZQogIH0KICAvLyBUaGUgcmVhbCBXb3JrZXJkIGFjY2VwdGFuY2UgdGVzdCBuZWVkcyB0byBleGVyY2lzZSBzdGFydC9yZXN1bWUvc2V0dGluZ3MKICAvLyBoYW5kb2ZmIHdoaWxlIHVzaW5nIGl0cyBkaXNwb3NhYmxlIHByb2Nlc3MtbG9jYWwgZGF0YWJhc2UuIEtlZXAgdGhpcwogIC8vIGVzY2FwZSBoYXRjaCBuYXJyb3dlciB0aGFuIGV2ZXJ5IHByb2R1Y3Rpb24gZGVwbG95IHBhdGg6IGl0IGlzIGFic2VudAogIC8vIGZyb20gd3JhbmdsZXIuanNvbmMsIHJlcXVpcmVzIGFuIGV4cGxpY2l0IGZsYWcgcGx1cyBhIGxvb3BiYWNrIGFwcCBVUkwsCiAgLy8gYW5kIGlzIGRpc2FibGVkIGlmIElubGluZSBSZWRpcyBsaXZlIHBsYWNlbWVudCBpcyBldmVyIGVuYWJsZWQuIEl0IGNhbm5vdAogIC8vIG1ha2UgYSBwdWJsaWMgS2lsbyBkZXBsb3ltZW50IG9yIGEgcmVhbC1vcmRlciBwYXRoIHJlYWR5LgogIGNvbnN0IGtpbG9Mb2NhbFByZXZpZXdJbmxpbmVBbGxvd2VkID0KICAgIHByb2Nlc3MuZW52LktJTE9fTE9DQUxfUFJFVklFV19JTkxJTkVfUkVESVMgPT09ICIxIiAmJgogICAgaXNLaWxvRGVwbG95bWVudFJ1bnRpbWUoKSAmJgogICAgc2VydmVybGVzc1J1bnRpbWUgJiYKICAgIGxvb3BiYWNrUHJldmlld1VybCAmJgogICAgcHJvY2Vzcy5lbnYuQUxMT1dfSU5MSU5FX1JFRElTX0xJVkVfVFJBRElORyAhPT0gIjEiCiAgLy8gU2VydmVybGVzcyBydW50aW1lcyBub3JtYWxseSByZXF1aXJlIHNoYXJlZCBSZWRpcy4gQnV0IGEgc2luZ2xlLXdvcmtlcgogIC8vIHNlcnZlcmxlc3MgZGVwbG95bWVudCAodGhpcyByZXBvJ3MgS2lsby9DbG91ZGZsYXJlIG1hbmlmZXN0IHNoaXBzIGV4YWN0bHkKICAvLyBvbmUgd29ya2VyIHdpdGggbm8gc2VwYXJhdGUgbG9uZy1saXZlZCBlbmdpbmUgb3duZXIpIGxlZ2l0aW1hdGVseSBvcHRzIGludG8KICAvLyBpbmxpbmUtbG9jYWwgd2hlbiB0aGUgb3BlcmF0b3Igc2V0cyBBTExPV19QUk9EX0lOTElORV9SRURJUz0xIGFuZCBpcyBOT1QKICAvLyBlbmFibGluZyBsaXZlIHRyYWRpbmcgYWdhaW5zdCBpdC4gSG9ub3VyIHRoYXQgZXhwbGljaXQgb3B0LWluIGluc3RlYWQgb2YKICAvLyBkZWFkbG9ja2luZyBwcm9kdWN0aW9uIHN0YXJ0dXAuCiAgY29uc3Qgc2VydmVybGVzc0lubGluZU9wdEluID0KICAgIHNlcnZlcmxlc3NSdW50aW1lICYmCiAgICBwcm9jZXNzLmVudi5BTExPV19QUk9EX0lOTElORV9SRURJUyA9PT0gIjEiICYmCiAgICBwcm9jZXNzLmVudi5BTExPV19JTkxJTkVfUkVESVNfTElWRV9UUkFESU5HICE9PSAiMSIKICBjb25zdCBpbmxpbmVSZWRpc0VudkFsbG93ZWQgPSBwcm9jZXNzLmVudi5BTExPV19QUk9EX0lOTElORV9SRURJUyAhPT0gIjAiCiAgY29uc3QgaW5saW5lUmVkaXNBbGxvd2VkID0KICAgIGtpbG9Mb2NhbFByZXZpZXdJbmxpbmVBbGxvd2VkIHx8CiAgICBzZXJ2ZXJsZXNzSW5saW5lT3B0SW4gfHwKICAgICgKICAgICAgIXNlcnZlcmxlc3NSdW50aW1lICYmCiAgICAgIChpbmxpbmVSZWRpc0VudkFsbG93ZWQgfHwgcHJvY2Vzcy5lbnYuQUxMT1dfSU5MSU5FX1JFRElTX0xJVkVfVFJBRElORyA9PT0gIjEiKQogICAgKQogIGlmIChwcm9jZXNzLmVudi5OT0RFX0VOViA9PT0gInByb2R1Y3Rpb24iICYmIGJhY2tlbmQgPT09ICJpbmxpbmUtbG9jYWwiICYmICFpbmxpbmVSZWRpc0FsbG93ZWQpIHsKICAgIG1pc3NpbmdGaWVsZHMucHVzaCh7CiAgICAgIGZpZWxkOiAicmVkaXNfYmFja2VuZCIsCiAgICAgIGV4cGVjdGVkOiAicmVkaXMtbmV0d29yayIsCiAgICAgIGFjdHVhbDogYmFja2VuZCwKICAgICAgZGV0YWlsczogewogICAgICAgIGRlcGxveW1lbnRSdW50aW1lOiBnZXREZXBsb3ltZW50UnVudGltZUxhYmVsKCksCiAgICAgICAgcmVhc29uOiBzZXJ2ZXJsZXNzUnVudGltZQogICAgICAgICAgPyAic2VydmVybGVzcyByZXF1ZXN0IHdvcmtlcnMgcmVxdWlyZSBzaGFyZWQgUmVkaXMgZm9yIHNldHRpbmdzLCBtaWdyYXRpb25zLCBjb3VudGVycywgYW5kIGVuZ2luZS1vd25lciBjb29yZGluYXRpb24iCiAgICAgICAgICA6ICJpbmxpbmUtbG9jYWwgUmVkaXMgd2FzIGV4cGxpY2l0bHkgZGlzYWJsZWQgd2l0aCBBTExPV19QUk9EX0lOTElORV9SRURJUz0wIiwKICAgICAgfSwKICAgIH0pCiAgfQogIGlmICgKICAgIHByb2Nlc3MuZW52Lk5PREVfRU5WID09PSAicHJvZHVjdGlvbiIgJiYKICAgIGJhY2tlbmQgPT09ICJpbmxpbmUtbG9jYWwiICYmCiAgICBpc0tpbG9EZXBsb3ltZW50UnVudGltZSgpICYmCiAgICAhc2VydmVybGVzc1J1bnRpbWUKICApIHsKICAgIGNvbnN0IHNuYXBzaG90UGF0aCA9IFN0cmluZyhwcm9jZXNzLmVudi5WMF9SRURJU19TTkFQU0hPVF9QQVRIIHx8ICIiKS50cmltKCkKICAgIGNvbnN0IHBlcnNpc3RlbnRWb2x1bWVEZWNsYXJlZCA9IHByb2Nlc3MuZW52LkNUU19JTkxJTkVfUkVESVNfUEVSU0lTVEVOVF9WT0xVTUUgPT09ICIxIgogICAgY29uc3QgYWJzb2x1dGVOb25UbXBQYXRoID0gc25hcHNob3RQYXRoLnN0YXJ0c1dpdGgoIi8iKSAmJiAhc25hcHNob3RQYXRoLnN0YXJ0c1dpdGgoIi90bXAvIikKICAgIGlmICghcGVyc2lzdGVudFZvbHVtZURlY2xhcmVkIHx8ICFhYnNvbHV0ZU5vblRtcFBhdGgpIHsKICAgICAgbWlzc2luZ0ZpZWxkcy5wdXNoKHsKICAgICAgICBmaWVsZDogImlubGluZV9yZWRpc19wZXJzaXN0ZW50X3NuYXBzaG90IiwKICAgICAgICBleHBlY3RlZDogImFic29sdXRlIG5vbi0vdG1wIFYwX1JFRElTX1NOQVBTSE9UX1BBVEggb24gYSBwZXJzaXN0ZW50IHZvbHVtZSIsCiAgICAgICAgYWN0dWFsOiBzbmFwc2hvdFBhdGggfHwgbnVsbCwKICAgICAgICBkZXRhaWxzOiB7CiAgICAgICAgICBkZXBsb3ltZW50UnVudGltZTogZ2V0RGVwbG95bWVudFJ1bnRpbWVMYWJlbCgpLAogICAgICAgICAgcGVyc2lzdGVudFZvbHVtZURlY2xhcmVkLAogICAgICAgICAgcmVhc29uOiAiS2lsbyBsb25nLWxpdmVkIElubGluZSBSZWRpcyByZXF1aXJlcyBhbiBleHBsaWNpdGx5IG1vdW50ZWQgcGVyc2lzdGVudCB2b2x1bWU7IGNvbnRhaW5lci90bXAgc3RvcmFnZSBpcyBub3QgYSBjcm9zcy1yZXN0YXJ0IGR1cmFiaWxpdHkgY29udHJhY3QiLAogICAgICAgIH0sCiAgICAgIH0pCiAgICB9IGVsc2UgewogICAgICBjb25zdCBwZXJzaXN0ZWQgPSBhd2FpdCBSZWRpc0RiLnBlcnNpc3ROb3coKS5jYXRjaCgoKSA9PiBmYWxzZSkKICAgICAgaWYgKCFwZXJzaXN0ZWQpIHsKICAgICAgICBtaXNzaW5nRmllbGRzLnB1c2goewogICAgICAgICAgZmllbGQ6ICJpbmxpbmVfcmVkaXNfc25hcHNob3Rfd3JpdGUiLAogICAgICAgICAgZXhwZWN0ZWQ6ICJhdG9taWMgc25hcHNob3Qgd3JpdGUgc3VjY2VlZHMiLAogICAgICAgICAgYWN0dWFsOiAiZmFpbGVkIiwKICAgICAgICAgIGRldGFpbHM6IHsgc25hcHNob3RQYXRoLCBkZXBsb3ltZW50UnVudGltZTogZ2V0RGVwbG95bWVudFJ1bnRpbWVMYWJlbCgpIH0sCiAgICAgICAgfSkKICAgICAgfQogICAgfQogIH0KCiAgY29uc3Qgc2NoZW1hVmVyc2lvbiA9IGF3YWl0IGNsaWVudC5nZXQoIl9zY2hlbWFfdmVyc2lvbiIpLmNhdGNoKCgpID0+IG51bGwpCiAgaWYgKHNjaGVtYVZlcnNpb24gIT09IFN0cmluZyhsYXRlc3RNaWdyYXRpb25WZXJzaW9uKSkgewogICAgbWlzc2luZ0ZpZWxkcy5wdXNoKHsKICAgICAgZmllbGQ6ICJfc2NoZW1hX3ZlcnNpb24iLAogICAgICBleHBlY3RlZDogU3RyaW5nKGxhdGVzdE1pZ3JhdGlvblZlcnNpb24pLAogICAgICBhY3R1YWw6IHNjaGVtYVZlcnNpb24gPT0gbnVsbCA/IG51bGwgOiBTdHJpbmcoc2NoZW1hVmVyc2lvbiksCiAgICB9KQogIH0KCiAgY29uc3QgbWlncmF0aW9uc1J1biA9IGF3YWl0IGNsaWVudC5nZXQoIl9taWdyYXRpb25zX3J1biIpLmNhdGNoKCgpID0+IG51bGwpCiAgaWYgKG1pZ3JhdGlvbnNSdW4gIT09ICJ0cnVlIikgewogICAgbWlzc2luZ0ZpZWxkcy5wdXNoKHsKICAgICAgZmllbGQ6ICJfbWlncmF0aW9uc19ydW4iLAogICAgICBleHBlY3RlZDogInRydWUiLAogICAgICBhY3R1YWw6IG1pZ3JhdGlvbnNSdW4gPT0gbnVsbCA/IG51bGwgOiBTdHJpbmcobWlncmF0aW9uc1J1biksCiAgICB9KQogIH0KCiAgY29uc3QgZGF0YWJhc2VIZWFsdGggPSAoKGF3YWl0IGNsaWVudC5oZ2V0YWxsKCJzeXN0ZW06ZGF0YWJhc2U6aGVhbHRoIikuY2F0Y2goKCkgPT4gKHt9KSkpIHx8IHt9KSBhcyBSZWNvcmQ8c3RyaW5nLCBzdHJpbmc+CiAgY29uc3QgZXhwZWN0ZWRIZWFsdGg6IFJlY29yZDxzdHJpbmcsIHN0cmluZz4gPSB7CiAgICBzY2hlbWFfdmVyc2lvbjogU3RyaW5nKGJ1bmRsZUhlYWx0aC5sYXRlc3RWZXJzaW9uKSwKICAgIG1pZ3JhdGlvbnNfYnVuZGxlX3ZlcnNpb246IFN0cmluZyhidW5kbGVIZWFsdGgubGF0ZXN0VmVyc2lvbiksCiAgICB0b3RhbF9taWdyYXRpb25zOiBTdHJpbmcoYnVuZGxlSGVhbHRoLnRvdGFsTWlncmF0aW9ucyksCiAgICBtaWdyYXRpb25zX3NlcXVlbnRpYWw6IGJ1bmRsZUhlYWx0aC5zZXF1ZW50aWFsID8gIjEiIDogIjAiLAogIH0KICBmb3IgKGNvbnN0IFtmaWVsZCwgZXhwZWN0ZWRdIG9mIE9iamVjdC5lbnRyaWVzKGV4cGVjdGVkSGVhbHRoKSkgewogICAgY29uc3QgYWN0dWFsID0gZGF0YWJhc2VIZWFsdGhbZmllbGRdCiAgICBpZiAoYWN0dWFsICE9PSBleHBlY3RlZCkgewogICAgICBtaXNzaW5nRmllbGRzLnB1c2goewogICAgICAgIGZpZWxkOiBgc3lzdGVtOmRhdGFiYXNlOmhlYWx0aC4ke2ZpZWxkfWAsCiAgICAgICAgZXhwZWN0ZWQsCiAgICAgICAgYWN0dWFsOiBhY3R1YWwgPz8gbnVsbCwKICAgICAgfSkKICAgIH0KICB9CgogIGZvciAoY29uc3QgaWQgb2YgQkFTRV9DT05ORUNUSU9OX0lEUykgewogICAgY29uc3QgZXhpc3RzID0gYXdhaXQgY2xpZW50LmV4aXN0cyhgY29ubmVjdGlvbjoke2lkfWApLmNhdGNoKCgpID0+IDApCiAgICBpZiAoIWV4aXN0cykgewogICAgICBtaXNzaW5nRmllbGRzLnB1c2goewogICAgICAgIGZpZWxkOiBgY29ubmVjdGlvbjoke2lkfWAsCiAgICAgICAgZXhwZWN0ZWQ6ICJoYXNoIGV4aXN0cyIsCiAgICAgICAgYWN0dWFsOiAibWlzc2luZyIsCiAgICAgIH0pCiAgICB9CiAgfQoKICBjb25zdCBhc3NpZ25lZEFuZEVuYWJsZWRDb25uZWN0aW9ucyA9IGF3YWl0IGdldEFzc2lnbmVkQW5kRW5hYmxlZENvbm5lY3Rpb25zKCkuY2F0Y2goKCkgPT4gW10gYXMgYW55W10pCiAgY29uc3QgbWFpbkFjdGl2ZUNvbm5lY3Rpb25zID0gYXNzaWduZWRBbmRFbmFibGVkQ29ubmVjdGlvbnMuZmlsdGVyKChjb25uZWN0aW9uKSA9PiBpc01haW5Db25uZWN0aW9uKGNvbm5lY3Rpb24pICYmIGlzQWN0aXZlQ29ubmVjdGlvbihjb25uZWN0aW9uKSkKICBmb3IgKGNvbnN0IGNvbm5lY3Rpb24gb2YgbWFpbkFjdGl2ZUNvbm5lY3Rpb25zKSB7CiAgICBjb25zdCBpZCA9IFN0cmluZyhjb25uZWN0aW9uPy5pZCB8fCAiIikKICAgIGlmICghaWQpIGNvbnRpbnVlCiAgICBjb25zdCBleGlzdHMgPSBhd2FpdCBjbGllbnQuZXhpc3RzKGBjb25uZWN0aW9uX3NldHRpbmdzOiR7aWR9YCkuY2F0Y2goKCkgPT4gMCkKICAgIGlmICghZXhpc3RzKSB7CiAgICAgIG1pc3NpbmdGaWVsZHMucHVzaCh7CiAgICAgICAgZmllbGQ6IGBjb25uZWN0aW9uX3NldHRpbmdzOiR7aWR9YCwKICAgICAgICBleHBlY3RlZDogImhhc2ggZXhpc3RzIGZvciBhY3RpdmUvbWFpbiBjb25uZWN0aW9uIiwKICAgICAgICBhY3R1YWw6ICJtaXNzaW5nIiwKICAgICAgICBkZXRhaWxzOiB7IGNvbm5lY3Rpb25JZDogaWQsIGNvbm5lY3Rpb25OYW1lOiBjb25uZWN0aW9uPy5uYW1lIHx8IG51bGwgfSwKICAgICAgfSkKICAgIH0KICB9CgogIGNvbnN0IGdsb2JhbEJvb3QgPSAoKGF3YWl0IGNsaWVudC5oZ2V0YWxsKCJ0cmFkZV9lbmdpbmU6Z2xvYmFsIikuY2F0Y2goKCkgPT4gKHt9KSkpIHx8IHt9KSBhcyBSZWNvcmQ8c3RyaW5nLCBzdHJpbmc+CiAgY29uc3QgbWlzc2luZ0dsb2JhbEJvb3RGaWVsZHMgPSBbInN0YXR1cyIsICJkZXNpcmVkX3N0YXR1cyIsICJvcGVyYXRvcl9pbnRlbnQiXS5maWx0ZXIoKGZpZWxkKSA9PiAhZ2xvYmFsQm9vdFtmaWVsZF0pCiAgaWYgKG1pc3NpbmdHbG9iYWxCb290RmllbGRzLmxlbmd0aCA+IDApIHsKICAgIC8vIEdsb2JhbCBlbmdpbmUgaW50ZW50IGlzIHJ1bnRpbWUvb3BlcmF0b3IgbWV0YWRhdGEsIG5vdCBzY2hlbWEgcmVhZGluZXNzLgogICAgLy8gRnJlc2ggcHJvZHVjdGlvbiBib290cyBhbmQgZXhwbGljaXQgUXVpY2tTdGFydC9zdGFydCBjYWxscyBhcmUgcmVzcG9uc2libGUKICAgIC8vIGZvciBjcmVhdGluZyBpdCBiZWZvcmUgZW5naW5lIG93bmVyc2hpcCBzdGFydHM7IHRyZWF0aW5nIGFuIGVtcHR5IGdsb2JhbAogICAgLy8gaW50ZW50IGhhc2ggYXMgYSBoYXJkIHJlYWRpbmVzcyBmYWlsdXJlIGRlYWRsb2NrcyBwcm9kdWN0aW9uIHN0YXJ0dXAuCiAgICBjb25zb2xlLndhcm4oCiAgICAgIGBbdjBdIFtQcm9kdWN0aW9uUmVhZGluZXNzXSB0cmFkZV9lbmdpbmU6Z2xvYmFsIG1pc3NpbmcgJHttaXNzaW5nR2xvYmFsQm9vdEZpZWxkcy5qb2luKCIsICIpfSDigJQgYWxsb3dpbmcgc3RhcnR1cCBwYXRoIHRvIGluaXRpYWxpemUgcnVudGltZSBpbnRlbnRgLAogICAgKQogIH0KCiAgcmV0dXJuIHsKICAgIHJlYWR5OiBtaXNzaW5nRmllbGRzLmxlbmd0aCA9PT0gMCwKICAgIG1pc3NpbmdGaWVsZHMsCiAgICBjaGVja2VkQXQ6IG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKSwKICB9Cn0KCmV4cG9ydCBhc3luYyBmdW5jdGlvbiBhc3NlcnRQcm9kdWN0aW9uUmVhZGluZXNzKCk6IFByb21pc2U8UHJvZHVjdGlvblJlYWRpbmVzc1Jlc3VsdD4gewogIGNvbnN0IHJlc3VsdCA9IGF3YWl0IGNoZWNrUHJvZHVjdGlvblJlYWRpbmVzcygpCiAgaWYgKCFyZXN1bHQucmVhZHkpIHsKICAgIGNvbnN0IGVycm9yID0gbmV3IEVycm9yKGBQcm9kdWN0aW9uIHJlYWRpbmVzcyBjaGVjayBmYWlsZWQ6ICR7cmVzdWx0Lm1pc3NpbmdGaWVsZHMubWFwKChpdGVtKSA9PiBpdGVtLmZpZWxkKS5qb2luKCIsICIpfWApCiAgICA7KGVycm9yIGFzIEVycm9yICYgeyByZWFkaW5lc3M/OiBQcm9kdWN0aW9uUmVhZGluZXNzUmVzdWx0IH0pLnJlYWRpbmVzcyA9IHJlc3VsdAogICAgdGhyb3cgZXJyb3IKICB9CiAgcmV0dXJuIHJlc3VsdAp9Cg==
+import * as RedisDb from "./redis-db"
+import { getAssignedAndEnabledConnections, getRedisBackend, getRedisClient, initRedis } from "./redis-db"
+import { getLatestMigrationVersion, getMigrationBundleHealth } from "./redis-migrations"
+import {
+  getDeploymentRuntimeLabel,
+  isKiloDeploymentRuntime,
+  isServerlessDeploymentRuntime,
+} from "./deployment-runtime"
+
+export type ProductionReadinessMissingField = {
+  field: string
+  expected?: string
+  actual?: string | null
+  details?: Record<string, unknown>
+}
+
+export type ProductionReadinessResult = {
+  ready: boolean
+  missingFields: ProductionReadinessMissingField[]
+  checkedAt: string
+}
+
+const BASE_CONNECTION_IDS = ["bingx-x01", "bybit-x03", "pionex-x01", "orangex-x01"]
+
+function isTruthyRedisFlag(value: unknown): boolean {
+  return value === true || value === "1" || value === "true"
+}
+
+function isMainConnection(connection: any): boolean {
+  return isTruthyRedisFlag(connection?.is_assigned) || isTruthyRedisFlag(connection?.is_active_inserted)
+}
+
+function isActiveConnection(connection: any): boolean {
+  return isTruthyRedisFlag(connection?.is_enabled_dashboard) || isTruthyRedisFlag(connection?.is_active)
+}
+
+export function productionReadinessJson(result: ProductionReadinessResult) {
+  const sharedPersistenceMissing = result.missingFields.some((item) => item.field === "redis_backend")
+  return {
+    success: false,
+    // A serverless isolate cannot act as a global coordinator. Make the
+    // actionable infrastructure gap explicit while preserving the fail-closed
+    // gate for engines and real-order coordination.
+    error: sharedPersistenceMissing
+      ? "Global coordinator requires shared Redis"
+      : "Production readiness check failed",
+    message: sharedPersistenceMissing
+      ? "This serverless deployment has no durable shared Redis. Configure the same Redis connection for every worker (REDIS_URL, Upstash REST, or Vercel KV) before starting the global coordinator."
+      : "Trade engines were not started because required production readiness fields are missing or stale.",
+    readinessCode: sharedPersistenceMissing ? "shared_persistence_required" : "production_readiness_failed",
+    missingFields: result.missingFields,
+    checkedAt: result.checkedAt,
+  }
+}
+
+export async function checkProductionReadiness(): Promise<ProductionReadinessResult> {
+  if ((process.env.NODE_ENV as string) === "test") {
+    return { ready: true, missingFields: [], checkedAt: new Date().toISOString() }
+  }
+  await initRedis()
+  const client = getRedisClient()
+  const missingFields: ProductionReadinessMissingField[] = []
+
+  // Unit tests often mock only the Redis methods exercised by the route under
+  // test. Production readiness is a production/startup gate, so do not make
+  // lightweight route tests fail because their Redis mock omits metadata helpers.
+  if ((process.env.NODE_ENV as string) === "test") {
+    return { ready: true, missingFields, checkedAt: new Date().toISOString() }
+  }
+  const latestMigrationVersion = getLatestMigrationVersion()
+  const bundleHealth = getMigrationBundleHealth()
+
+  const redisBackendGetter = getRedisBackend as unknown as (() => string) | undefined
+  const backend =
+    typeof redisBackendGetter === "function"
+      ? redisBackendGetter()
+      : typeof (RedisDb as any).getRedisBackend === "function"
+        ? (RedisDb as any).getRedisBackend()
+        : "unknown"
+  const serverlessRuntime = isServerlessDeploymentRuntime()
+  const appUrl = String(process.env.NEXT_PUBLIC_APP_URL || process.env.DEPLOYMENT_URL || "")
+  let loopbackPreviewUrl = false
+  try {
+    const hostname = new URL(appUrl).hostname
+    loopbackPreviewUrl = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1"
+  } catch {
+    loopbackPreviewUrl = false
+  }
+  // The real Workerd acceptance test needs to exercise start/resume/settings
+  // handoff while using its disposable process-local database. Keep this
+  // escape hatch narrower than every production deploy path: it is absent
+  // from wrangler.jsonc, requires an explicit flag plus a loopback app URL,
+  // and is disabled if Inline Redis live placement is ever enabled. It cannot
+  // make a public Kilo deployment or a real-order path ready.
+  const kiloLocalPreviewInlineAllowed =
+    process.env.KILO_LOCAL_PREVIEW_INLINE_REDIS === "1" &&
+    isKiloDeploymentRuntime() &&
+    serverlessRuntime &&
+    loopbackPreviewUrl &&
+    process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1"
+  // Serverless runtimes normally require shared Redis. But a single-worker
+  // serverless deployment (this repo's Kilo/Cloudflare manifest ships exactly
+  // one worker with no separate long-lived engine owner) legitimately opts into
+  // inline-local when the operator sets ALLOW_PROD_INLINE_REDIS=1 and is NOT
+  // enabling live trading against it. Honour that explicit opt-in instead of
+  // deadlocking production startup.
+  const serverlessInlineOptIn =
+    serverlessRuntime &&
+    process.env.ALLOW_PROD_INLINE_REDIS === "1" &&
+    process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1"
+  const inlineRedisEnvAllowed = process.env.ALLOW_PROD_INLINE_REDIS !== "0"
+  const inlineRedisAllowed =
+    kiloLocalPreviewInlineAllowed ||
+    serverlessInlineOptIn ||
+    (
+      !serverlessRuntime &&
+      (inlineRedisEnvAllowed || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1")
+    )
+  if (process.env.NODE_ENV === "production" && backend === "inline-local" && !inlineRedisAllowed) {
+    missingFields.push({
+      field: "redis_backend",
+      expected: "redis-network",
+      actual: backend,
+      details: {
+        deploymentRuntime: getDeploymentRuntimeLabel(),
+        reason: serverlessRuntime
+          ? "serverless request workers require shared Redis for settings, migrations, counters, and engine-owner coordination"
+          : "inline-local Redis was explicitly disabled with ALLOW_PROD_INLINE_REDIS=0",
+      },
+    })
+  }
+  if (
+    process.env.NODE_ENV === "production" &&
+    backend === "inline-local" &&
+    isKiloDeploymentRuntime() &&
+    !serverlessRuntime
+  ) {
+    const snapshotPath = String(process.env.V0_REDIS_SNAPSHOT_PATH || "").trim()
+    const persistentVolumeDeclared = process.env.CTS_INLINE_REDIS_PERSISTENT_VOLUME === "1"
+    const absoluteNonTmpPath = snapshotPath.startsWith("/") && !snapshotPath.startsWith("/tmp/")
+    if (!persistentVolumeDeclared || !absoluteNonTmpPath) {
+      missingFields.push({
+        field: "inline_redis_persistent_snapshot",
+        expected: "absolute non-/tmp V0_REDIS_SNAPSHOT_PATH on a persistent volume",
+        actual: snapshotPath || null,
+        details: {
+          deploymentRuntime: getDeploymentRuntimeLabel(),
+          persistentVolumeDeclared,
+          reason: "Kilo long-lived Inline Redis requires an explicitly mounted persistent volume; container/tmp storage is not a cross-restart durability contract",
+        },
+      })
+    } else {
+      const persisted = await RedisDb.persistNow().catch(() => false)
+      if (!persisted) {
+        missingFields.push({
+          field: "inline_redis_snapshot_write",
+          expected: "atomic snapshot write succeeds",
+          actual: "failed",
+          details: { snapshotPath, deploymentRuntime: getDeploymentRuntimeLabel() },
+        })
+      }
+    }
+  }
+
+  const schemaVersion = await client.get("_schema_version").catch(() => null)
+  if (schemaVersion !== String(latestMigrationVersion)) {
+    missingFields.push({
+      field: "_schema_version",
+      expected: String(latestMigrationVersion),
+      actual: schemaVersion == null ? null : String(schemaVersion),
+    })
+  }
+
+  const migrationsRun = await client.get("_migrations_run").catch(() => null)
+  if (migrationsRun !== "true") {
+    missingFields.push({
+      field: "_migrations_run",
+      expected: "true",
+      actual: migrationsRun == null ? null : String(migrationsRun),
+    })
+  }
+
+  const databaseHealth = ((await client.hgetall("system:database:health").catch(() => ({}))) || {}) as Record<string, string>
+  const expectedHealth: Record<string, string> = {
+    schema_version: String(bundleHealth.latestVersion),
+    migrations_bundle_version: String(bundleHealth.latestVersion),
+    total_migrations: String(bundleHealth.totalMigrations),
+    migrations_sequential: bundleHealth.sequential ? "1" : "0",
+  }
+  for (const [field, expected] of Object.entries(expectedHealth)) {
+    const actual = databaseHealth[field]
+    if (actual !== expected) {
+      missingFields.push({
+        field: `system:database:health.${field}`,
+        expected,
+        actual: actual ?? null,
+      })
+    }
+  }
+
+  for (const id of BASE_CONNECTION_IDS) {
+    const exists = await client.exists(`connection:${id}`).catch(() => 0)
+    if (!exists) {
+      missingFields.push({
+        field: `connection:${id}`,
+        expected: "hash exists",
+        actual: "missing",
+      })
+    }
+  }
+
+  const assignedAndEnabledConnections = await getAssignedAndEnabledConnections().catch(() => [] as any[])
+  const mainActiveConnections = assignedAndEnabledConnections.filter((connection) => isMainConnection(connection) && isActiveConnection(connection))
+  for (const connection of mainActiveConnections) {
+    const id = String(connection?.id || "")
+    if (!id) continue
+    const exists = await client.exists(`connection_settings:${id}`).catch(() => 0)
+    if (!exists) {
+      missingFields.push({
+        field: `connection_settings:${id}`,
+        expected: "hash exists for active/main connection",
+        actual: "missing",
+        details: { connectionId: id, connectionName: connection?.name || null },
+      })
+    }
+  }
+
+  const globalBoot = ((await client.hgetall("trade_engine:global").catch(() => ({}))) || {}) as Record<string, string>
+  const missingGlobalBootFields = ["status", "desired_status", "operator_intent"].filter((field) => !globalBoot[field])
+  if (missingGlobalBootFields.length > 0) {
+    // Global engine intent is runtime/operator metadata, not schema readiness.
+    // Fresh production boots and explicit QuickStart/start calls are responsible
+    // for creating it before engine ownership starts; treating an empty global
+    // intent hash as a hard readiness failure deadlocks production startup.
+    console.warn(
+      `[v0] [ProductionReadiness] trade_engine:global missing ${missingGlobalBootFields.join(", ")} — allowing startup path to initialize runtime intent`,
+    )
+  }
+
+  return {
+    ready: missingFields.length === 0,
+    missingFields,
+    checkedAt: new Date().toISOString(),
+  }
+}
+
+export async function assertProductionReadiness(): Promise<ProductionReadinessResult> {
+  const result = await checkProductionReadiness()
+  if (!result.ready) {
+    const error = new Error(`Production readiness check failed: ${result.missingFields.map((item) => item.field).join(", ")}`)
+    ;(error as Error & { readiness?: ProductionReadinessResult }).readiness = result
+    throw error
+  }
+  return result
+}
