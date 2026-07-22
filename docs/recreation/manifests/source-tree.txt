@@ -731,6 +731,7 @@ docs/recreation/testing-and-acceptance.md
 docs/recreation/verification-record.md
 docs/redis-client-keys-audit.md
 docs/system-modules-map.md
+drizzle.config.ts
 eslint.config.mjs
 hooks/index.ts
 hooks/use-mobile.ts
@@ -1089,6 +1090,8 @@ public/top-info-layers/signal-grid.png
 scripts/apply-production-settings.sh
 scripts/autotest-drift.mjs
 scripts/bingx-comprehensive-test.mjs
+scripts/build-next-with-trace-retry.mjs
+scripts/clean-next-dist.mjs
 scripts/clean-opennext-output.mjs
 scripts/configure-prod-trading.sh
 scripts/dev-debug.js
@@ -1141,6 +1144,12 @@ scripts/verify-recreation-manifests.mjs
 scripts/verify-source-syntax.mjs
 scripts/verify-stability.sh
 scripts/verify-volatile-cleanup.mjs
+src/db/index.ts
+src/db/migrate.ts
+src/db/migrations/0000_naive_captain_britain.sql
+src/db/migrations/meta/0000_snapshot.json
+src/db/migrations/meta/_journal.json
+src/db/schema.ts
 tailwind.config.ts
 test-final-comprehensive.sh
 test-long-term.sh

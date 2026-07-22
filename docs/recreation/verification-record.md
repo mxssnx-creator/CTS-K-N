@@ -17,7 +17,7 @@ executed.
 | Shell/JS/JSON/source syntax | pass |
 | TypeScript | pass |
 | ESLint | pass |
-| Jest | 92 suites, 573 tests, 0 failures |
+| Jest | 92 suites, 575 tests, 0 failures |
 | Next 15.5.18 optimized build | pass; 40 static pages generated |
 | Isolated `.next-prod` build | pass; custom-dist static generation serialized and the Next 15 missing `pages-manifest.json` post-emit race repaired before page-data collection |
 | Release-tree secret scan | pass; 1,160 files inspected, 0 findings |

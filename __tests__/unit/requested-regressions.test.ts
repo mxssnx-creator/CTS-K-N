@@ -928,8 +928,8 @@ describe("requested regression guardrails", () => {
     const pkg = JSON.parse(read("package.json"))
     const nextConfig = read("next.config.mjs")
 
-    expect(pkg.scripts.prebuild).toContain('rm -rf "${NEXT_DIST_DIR:-.next}"')
-    expect(pkg.scripts["prevercel-build"]).toContain('rm -rf "${NEXT_DIST_DIR:-.next}"')
+    expect(pkg.scripts.prebuild).toContain("node scripts/clean-next-dist.mjs")
+    expect(pkg.scripts["prevercel-build"]).toContain("node scripts/clean-next-dist.mjs")
     expect(pkg.scripts.prebuild).not.toContain("rm -rf .next")
     expect(pkg.scripts["prevercel-build"]).not.toContain("rm -rf .next")
     expect(read("eslint.config.mjs")).toContain('".next-*/**"')
@@ -2591,6 +2591,37 @@ describe("requested regression guardrails", () => {
     expect(initStatus).toContain("cross_instance_durable: sharedRedis")
     expect(initStatus).toContain("last_tick_fresh: continuityAgeMs !== null && continuityAgeMs <= 90_000")
     expect(initStatus).toContain("last_tick_fresh: liveRecoveryAgeMs !== null && liveRecoveryAgeMs <= 90_000")
+  })
+
+  test("Kilo managed persistence is installable and serializes every dashboard control path", () => {
+    const pkg = read("package.json")
+    const lock = read("pnpm-lock.yaml")
+    const redis = read("lib/redis-db.ts")
+    const quickStart = read("app/api/trade-engine/quick-start/route.ts")
+    const routes = [
+      "app/api/trade-engine/start/route.ts",
+      "app/api/trade-engine/stop/route.ts",
+      "app/api/trade-engine/pause/route.ts",
+      "app/api/trade-engine/resume/route.ts",
+      "app/api/settings/route.ts",
+      "app/api/settings/system/route.ts",
+      "app/api/settings/risk-and-engines/route.ts",
+      "app/api/settings/connections/[id]/live-trade/route.ts",
+      "app/api/settings/connections/[id]/toggle-dashboard/route.ts",
+    ].map(read)
+
+    expect(pkg).toContain('"@kilocode/app-builder-db"')
+    expect(pkg).toContain('"drizzle-orm": "0.45.2"')
+    expect(pkg).toContain('"db:migrate": "bun run src/db/migrate.ts"')
+    expect(lock).toContain("@kilocode/app-builder-db@https://codeload.github.com/Kilo-Org/app-builder-db")
+    expect(read("src/db/migrations/0000_naive_captain_britain.sql"))
+      .toContain("cts_runtime_snapshot_singleton")
+    expect(redis).toContain('await import("@kilocode/app-builder-db")')
+    expect(redis).toContain("Kilo snapshot CAS conflict")
+    expect(redis).toContain("acquireSharedSnapshotLease")
+    expect(quickStart).toContain('"api:trade-engine:quick-start"')
+    expect(quickStart).toContain("sharedPersistenceLeaseHeld: true")
+    for (const route of routes) expect(route).toContain("withSharedPersistenceLease")
   })
 
   test("live smoke and Cloudflare deployment fail closed around non-durable engine ownership", () => {

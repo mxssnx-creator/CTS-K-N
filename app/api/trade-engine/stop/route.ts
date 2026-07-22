@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getRedisClient, withSharedPersistenceLease } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
 import { allocateStateSwitchVersion, queueEngineRefreshRequest } from "@/lib/engine-refresh-queue"
@@ -22,7 +22,7 @@ function clearAllEngineTimers() {
 }
 
 export const dynamic = "force-dynamic"
-export async function POST(request: NextRequest) {
+async function handlePost(request: NextRequest) {
   try {
     invalidateTradeEngineStatusCache()
     let connectionId: string | undefined
@@ -223,4 +223,13 @@ export async function POST(request: NextRequest) {
       { status: 500 },
     )
   }
+}
+
+export async function POST(request: NextRequest) {
+  if (typeof withSharedPersistenceLease !== "function") return handlePost(request)
+  return withSharedPersistenceLease(
+    "api:trade-engine:stop",
+    () => handlePost(request),
+    { ttlMs: 180_000, waitMs: 15_000 },
+  )
 }

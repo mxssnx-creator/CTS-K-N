@@ -222,6 +222,8 @@ export interface MainConnectionSettingsChangeOptions extends RecoordinateOptions
   relatedHashPatches?: Array<{ key: string; patch: Record<string, any> }>
   /** Guard runtime switch writes against an already-newer generation. */
   stateSwitchVersion?: string | number
+  /** The caller already owns Kilo's cross-worker snapshot lease. */
+  sharedPersistenceLeaseHeld?: boolean
 }
 
 export interface SettingsCommitDurability {
@@ -299,7 +301,7 @@ export async function applyMainConnectionSettingsChange(
     const runWithSharedLease = typeof withSharedPersistenceLease === "function"
       ? withSharedPersistenceLease
       : async <T>(_scope: string, work: () => Promise<T>): Promise<T> => work()
-    return runWithSharedLease(`settings:${id}`, async () => {
+    const commit = async () => {
     const settingsPatch = opts.settingsPatch || {}
     const redis = getRedisClient()
     const sharedLockToken = typeof getRedisBackend === "function" && getRedisBackend() === "redis-network"
@@ -470,7 +472,10 @@ export async function applyMainConnectionSettingsChange(
       throw new Error(`Settings for ${id} were applied in memory but could not be persisted before response`)
     }
     return { connection: after, completion, stateTransitionApplied: true, durability }
-    })
+    }
+    return opts.sharedPersistenceLeaseHeld
+      ? commit()
+      : runWithSharedLease(`settings:${id}`, commit)
   })
 }
 

@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getSettings, setSettings, bumpSettingsVersion, getAllConnections } from "@/lib/redis-db"
+import { getSettings, setSettings, bumpSettingsVersion, getAllConnections, withSharedPersistenceLease } from "@/lib/redis-db"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
 import { refreshEngineTimings } from "@/lib/engine-timings"
 
@@ -49,7 +49,7 @@ export async function GET(_request: NextRequest) {
   }
 }
 
-export async function PATCH(request: NextRequest) {
+async function handlePatch(request: NextRequest) {
   try {
     const body = await request.json()
     const current = await readMergedSystem()
@@ -95,4 +95,9 @@ export async function PATCH(request: NextRequest) {
     console.error("[v0] Failed to save system settings:", error)
     return NextResponse.json({ success: false, error: String(error) }, { status: 500 })
   }
+}
+
+export async function PATCH(request: NextRequest) {
+  if (typeof withSharedPersistenceLease !== "function") return handlePatch(request)
+  return withSharedPersistenceLease("api:settings:system", () => handlePatch(request))
 }

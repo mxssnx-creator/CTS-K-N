@@ -5,6 +5,7 @@ import {
   setAppSettings,
   initRedis,
   getAllConnections,
+  withSharedPersistenceLease,
 } from "@/lib/redis-db"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { invalidateCompactionCache } from "@/lib/sets-compaction"
@@ -198,7 +199,7 @@ function getDefaultSettings(): Record<string, any> {
   }
 }
 
-export async function GET() {
+async function handleGet() {
   try {
     await initRedis()
 
@@ -244,7 +245,7 @@ export async function GET() {
   }
 }
 
-export async function POST(request: Request) {
+async function handlePost(request: Request) {
   try {
     const body = await request.json()
 
@@ -289,7 +290,7 @@ export async function POST(request: Request) {
   }
 }
 
-export async function PUT(request: Request) {
+async function handlePut(request: Request) {
   try {
     const body = await request.json()
     const incoming = body.settings || body
@@ -323,4 +324,19 @@ export async function PUT(request: Request) {
       { status: 500 },
     )
   }
+}
+
+export async function GET() {
+  if (typeof withSharedPersistenceLease !== "function") return handleGet()
+  return withSharedPersistenceLease("api:settings:read-seed", handleGet)
+}
+
+export async function POST(request: Request) {
+  if (typeof withSharedPersistenceLease !== "function") return handlePost(request)
+  return withSharedPersistenceLease("api:settings:post", () => handlePost(request))
+}
+
+export async function PUT(request: Request) {
+  if (typeof withSharedPersistenceLease !== "function") return handlePut(request)
+  return withSharedPersistenceLease("api:settings:put", () => handlePut(request))
 }

@@ -21,6 +21,7 @@ function resetInlineGlobals() {
   delete (globalThis as any).__kilo_snapshot_last_synced_at
   delete (globalThis as any).__kilo_snapshot_schema_promise
   delete (globalThis as any).__kilo_snapshot_refresh_promise
+  delete (globalThis as any).__kilo_database_query
 }
 
 describe("InlineLocalRedis compatibility and persistence", () => {

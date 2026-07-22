@@ -116,23 +116,8 @@ async function executeKiloDatabaseQuery(
   if (!url || !token) throw new Error("Kilo managed database credentials are not configured")
 
   if (!globalForRedis.__kilo_database_query) {
-    globalForRedis.__kilo_database_query = async (querySql, queryParams, queryMethod) => {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ sql: querySql, params: queryParams, method: queryMethod }),
-        cache: "no-store",
-      })
-      const responseText = await response.text()
-      if (!response.ok) {
-        throw new Error(`Kilo snapshot database query failed (${response.status}): ${responseText.slice(0, 300)}`)
-      }
-      const decoded = responseText ? JSON.parse(responseText) : { rows: [] }
-      return { rows: Array.isArray(decoded?.rows) ? decoded.rows : [] }
-    }
+    const { createExecuteQuery } = await import("@kilocode/app-builder-db")
+    globalForRedis.__kilo_database_query = createExecuteQuery({ url, token })
   }
   const payload = await globalForRedis.__kilo_database_query(sql, params, method)
   if (Array.isArray(payload?.rows)) return payload.rows as any[]

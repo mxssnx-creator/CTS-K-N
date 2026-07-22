@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getRedisClient, withSharedPersistenceLease } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
@@ -82,7 +82,7 @@ function patchIndicationProcessorCaches(coordinator: any) {
  * - /api/settings/connections/[id]/live-trade (Main Engine)
  * - /api/settings/connections/[id]/preset-toggle (Preset Engine)
  */
-export async function POST(request: NextRequest) {
+async function handlePost(request: NextRequest) {
   try {
     invalidateTradeEngineStatusCache()
     console.log("[v0] [Trade Engine] Starting Global Trade Engine Coordinator (independent of connections)")
@@ -540,4 +540,13 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     )
   }
+}
+
+export async function POST(request: NextRequest) {
+  if (typeof withSharedPersistenceLease !== "function") return handlePost(request)
+  return withSharedPersistenceLease(
+    "api:trade-engine:start",
+    () => handlePost(request),
+    { ttlMs: 180_000, waitMs: 15_000 },
+  )
 }

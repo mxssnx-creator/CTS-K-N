@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { getTradeEngine } from "@/lib/trade-engine"
-import { initRedis, getRedisClient, getActiveConnectionsForEngine } from "@/lib/redis-db"
+import { initRedis, getRedisClient, getActiveConnectionsForEngine, withSharedPersistenceLease } from "@/lib/redis-db"
 import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 
 export const runtime = "nodejs"
@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic"
  * Pause the Global Trade Engine Coordinator
  * Pauses all trading operations across all connections and marks Main Connections + Progressions as "Paused"
  */
-export async function POST() {
+async function handlePost() {
   try {
     invalidateTradeEngineStatusCache()
     await initRedis()
@@ -103,4 +103,12 @@ export async function POST() {
 
     return NextResponse.json({ success: false, error: errorMessage }, { status: 500 })
   }
+}
+
+export async function POST() {
+  if (typeof withSharedPersistenceLease !== "function") return handlePost()
+  return withSharedPersistenceLease("api:trade-engine:pause", handlePost, {
+    ttlMs: 180_000,
+    waitMs: 15_000,
+  })
 }

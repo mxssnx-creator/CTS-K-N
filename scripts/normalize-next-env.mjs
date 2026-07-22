@@ -183,9 +183,32 @@ if (existsSync(join(distDir, 'standalone')) && !isValidJson(standalonePrerenderM
 // marker from the serialized Next config and validate the result immediately.
 const exportMarker = join(distDir, 'export-marker.json')
 const requiredServerFiles = join(distDir, 'required-server-files.json')
-const serializedNextConfig = isValidJson(requiredServerFiles)
-  ? JSON.parse(readFileSync(requiredServerFiles, 'utf8'))?.config ?? {}
+const requiredServerFilesPayload = isValidJson(requiredServerFiles)
+  ? JSON.parse(readFileSync(requiredServerFiles, 'utf8'))
   : {}
+const serializedNextConfig = requiredServerFilesPayload?.config ?? {}
+
+// `output: standalone` is assembled by a separate Next tracing worker. On
+// overlay filesystems that worker can finish after the main server manifests,
+// leaving OpenNext with a complete `.next/server` tree but missing files under
+// `.next/standalone/.next/server`. Use Next's own required-server-files list as
+// the authoritative copy contract; never invent route data here.
+if (existsSync(join(distDir, 'standalone')) && Array.isArray(requiredServerFilesPayload?.files)) {
+  for (const requiredFile of requiredServerFilesPayload.files) {
+    if (typeof requiredFile !== 'string' || !requiredFile.startsWith('.next/')) continue
+    const relativeRequiredFile = requiredFile.slice('.next/'.length)
+    const sourceFile = join(distDir, relativeRequiredFile)
+    const standaloneFile = join(distDir, 'standalone', '.next', relativeRequiredFile)
+    if (!existsSync(sourceFile)) continue
+    const destinationIsValid = requiredFile.endsWith('.json')
+      ? isValidJson(standaloneFile)
+      : existsSync(standaloneFile)
+    if (destinationIsValid) continue
+    mkdirSync(dirname(standaloneFile), { recursive: true })
+    copyFileSync(sourceFile, standaloneFile)
+    console.warn(`[next-env] synchronized missing standalone required file ${requiredFile}`)
+  }
+}
 
 // OpenNext reads this file immediately after the Next lifecycle finishes.
 // Next 15 can leave it as a zero-byte file on overlay filesystems even though

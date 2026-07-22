@@ -112,7 +112,9 @@ function main() {
   assert(worker.includes("/api/cron/sync-live-positions"), "scheduled handler invokes live-position recovery")
   assert(worker.includes("CRON_SECRET"), "scheduled handler authenticates cron requests")
   const openNextConfig = readFileSync("open-next.config.ts", "utf8")
-  assert(openNextConfig.includes('buildCommand: "corepack pnpm run build"'), "OpenNext build command is explicitly pinned through Corepack")
+  assert(openNextConfig.includes('buildCommand: "node scripts/build-next-with-trace-retry.mjs"'), "OpenNext uses the trace-validating Next build wrapper")
+  const traceBuildWrapper = readFileSync("scripts/build-next-with-trace-retry.mjs", "utf8")
+  assert(traceBuildWrapper.includes('"pnpm@10.28.1"'), "trace-validating Next build is pinned through Corepack")
 
   const migrations = readFileSync("lib/redis-migrations.ts", "utf8")
   const versions = Array.from(migrations.matchAll(/\bversion:\s*(\d+)\s*,/g), (match) => Number(match[1]))

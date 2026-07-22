@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { initRedis, getRedisClient, getAllConnections } from "@/lib/redis-db"
+import { initRedis, getRedisClient, getAllConnections, withSharedPersistenceLease } from "@/lib/redis-db"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
 
 export const dynamic = "force-dynamic"
@@ -43,7 +43,7 @@ export async function GET() {
   }
 }
 
-export async function POST(request: NextRequest) {
+async function handlePost(request: NextRequest) {
   try {
     const body = await request.json()
     await initRedis()
@@ -123,4 +123,9 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     )
   }
+}
+
+export async function POST(request: NextRequest) {
+  if (typeof withSharedPersistenceLease !== "function") return handlePost(request)
+  return withSharedPersistenceLease("api:settings:risk-and-engines", () => handlePost(request))
 }

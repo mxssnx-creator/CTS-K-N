@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
-import { initRedis, getConnection, updateConnectionState, persistNow, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getConnection, updateConnectionState, persistNow, getRedisClient, withSharedPersistenceLease } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { parseBooleanInput, toRedisFlag } from "@/lib/boolean-utils"
@@ -40,7 +40,7 @@ import { evaluateRealTradeReadiness, hasUsableLiveCredentials } from "@/lib/real
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 export const maxDuration = 15
-export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handlePost(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: connectionId } = await params
   try {
     const body = await request.json().catch(() => ({}))
@@ -486,4 +486,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       { status: 500 },
     )
   }
+}
+
+export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  if (typeof withSharedPersistenceLease !== "function") return handlePost(request, context)
+  return withSharedPersistenceLease(
+    "api:settings:live-trade",
+    () => handlePost(request, context),
+    { ttlMs: 180_000, waitMs: 15_000 },
+  )
 }

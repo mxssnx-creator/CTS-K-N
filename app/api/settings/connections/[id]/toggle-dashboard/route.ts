@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { initRedis, getConnection, updateConnectionState, setSettings, getSettings, getAllConnections, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getConnection, updateConnectionState, setSettings, getSettings, getAllConnections, getRedisClient, withSharedPersistenceLease } from "@/lib/redis-db"
 import { getConnectionState, buildMainConnectionEnableUpdate, buildMainConnectionDisableUpdate, buildMainConnectionRemoveUpdate, isConnectionReadyForEngine } from "@/lib/connection-state-helpers"
 import { toggleConnectionLimiter } from "@/lib/connection-rate-limiter"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
@@ -29,7 +29,7 @@ async function queueCoordinatorRefresh(connectionId: string, action: "start" | "
     setSettings(`engine_coordinator:refresh_requested:${connectionId}`, payload),
   ])
 }
-export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handlePost(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
     const connectionId = id
@@ -487,6 +487,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       { status: 500 }
     )
   }
+}
+
+export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  if (typeof withSharedPersistenceLease !== "function") return handlePost(request, context)
+  return withSharedPersistenceLease(
+    "api:settings:toggle-dashboard",
+    () => handlePost(request, context),
+    { ttlMs: 180_000, waitMs: 15_000 },
+  )
 }
 
 

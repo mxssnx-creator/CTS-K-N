@@ -1,7 +1,7 @@
 import { DEFAULT_VOLUME_STEP_RATIO } from "@/lib/constants"
 import { NextResponse } from "next/server"
 import { getAllConnections, getConnection, initRedis, updateConnectionState, setSettings, getSettings, getRedisClient,
-  buildMainConnectionEnableUpdate } from "@/lib/redis-db"
+  buildMainConnectionEnableUpdate, withSharedPersistenceLease } from "@/lib/redis-db"
 import { API_VERSIONS } from "@/lib/system-version"
 import { logProgressionEvent, getProgressionLogs } from "@/lib/engine-progression-logs"
 import { createExchangeConnector } from "@/lib/exchange-connectors"
@@ -225,7 +225,7 @@ const QUICKSTART_ZERO_COUNTERS: Record<string, string> = {
  * 3. Sets up connection with these symbols
  * 4. Logs all progression events
  */
-export async function POST(request: Request) {
+async function handlePost(request: Request) {
   const startTime = Date.now()
   
   try {
@@ -1022,6 +1022,7 @@ export async function POST(request: Request) {
       logTag: "POST /api/trade-engine/quick-start",
       settingsVersion: updated.updated_at,
       stateSwitchVersion,
+      sharedPersistenceLeaseHeld: true,
     })
     if (!stateTransitionApplied) {
       return NextResponse.json(
@@ -1675,4 +1676,13 @@ export async function POST(request: Request) {
       { status: 500 }
     )
   }
+}
+
+export async function POST(request: Request) {
+  if (typeof withSharedPersistenceLease !== "function") return handlePost(request)
+  return withSharedPersistenceLease(
+    "api:trade-engine:quick-start",
+    () => handlePost(request),
+    { ttlMs: 300_000, waitMs: 15_000 },
+  )
 }

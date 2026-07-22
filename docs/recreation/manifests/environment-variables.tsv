@@ -32,6 +32,7 @@ CLOUDFLARE_ACCOUNT_ID	test-or-operator-tool	no	yes	2	.env.example,scripts/kilo-d
 CLOUDFLARE_API_TOKEN	test-or-operator-tool	yes	yes	2	.env.example,scripts/kilo-deploy-preflight.mjs
 CLOUDFLARE_WORKERS	application-runtime	no	no	1	lib/deployment-runtime.ts
 CONN_ID	test-or-operator-tool	no	no	3	scripts/bingx-comprehensive-test.mjs,scripts/diagnose-stats.mjs,scripts/init-engine-and-verify.mjs
+COREPACK_HOME	test-or-operator-tool	no	no	1	scripts/build-next-with-trace-retry.mjs
 CRON_LIVE_DISPATCH	application-runtime	no	no	3	__tests__/unit/requested-regressions.test.ts,app/api/cron/generate-indications/route.ts,lib/trade-engine/shared-ind-strat-pipeline.ts
 CRON_PREHISTORIC_SYMBOL_LIMIT	application-runtime	no	no	1	app/api/cron/generate-indications/route.ts
 CRON_SECRET	application-runtime	yes	yes	4	.env.example,__tests__/unit/production-continuity.test.ts,lib/cron-auth.ts,scripts/kilo-deploy-preflight.mjs
@@ -111,7 +112,7 @@ MAX_POSITION_HOLD_MS	application-runtime	no	yes	2	.env.example,lib/trade-engine/
 MIGRATION_BATCH_DEADLINE_MS	application-runtime	no	no	1	lib/redis-migrations.ts
 NEXT_BINGX_API_KEY	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
 NEXT_BINGX_API_SECRET	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
-NEXT_DIST_DIR	application-runtime	no	no	4	__tests__/unit/requested-regressions.test.ts,next.config.mjs,scripts/normalize-next-env.mjs,scripts/run-prod-preview-check.mjs
+NEXT_DIST_DIR	application-runtime	no	no	6	__tests__/unit/requested-regressions.test.ts,next.config.mjs,scripts/build-next-with-trace-retry.mjs,scripts/clean-next-dist.mjs,scripts/normalize-next-env.mjs,scripts/run-prod-preview-check.mjs
 NEXT_PHASE	platform-provided	no	no	1	lib/redis-db.ts
 NEXT_PUBLIC_ALLOW_BROWSER_BOOTSTRAP	application-runtime	no	no	1	components/engine-auto-initializer.tsx
 NEXT_PUBLIC_API_URL	test-or-operator-tool	no	no	2	scripts/autotest-drift.mjs,scripts/production-deploy-init.mjs
@@ -122,6 +123,8 @@ NEXT_PUBLIC_ENABLE_BROWSER_INDICATION_CRON	application-runtime	no	yes	2	.env.exa
 NEXT_PUBLIC_KILO_DASHBOARD_PULSE	application-runtime	no	no	1	components/engine-auto-initializer.tsx
 NEXT_PUBLIC_QUICKSTART_AWAIT_ENGINE_BOOT	application-runtime	no	no	1	app/api/trade-engine/quick-start/route.ts
 NEXT_RUNTIME	platform-provided	no	no	15	__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/requested-regressions.test.ts,__tests__/unit/trade-engine-start-lock.test.ts,app/api/settings/connections/[id]/enable/route.ts,app/api/settings/connections/[id]/live-trade/route.ts,app/api/settings/connections/[id]/preset-toggle/route.ts,app/api/settings/connections/[id]/toggle-dashboard/route.ts,app/api/trade-engine/start/route.ts,instrumentation.ts,lib/deployment-runtime.ts,lib/engine-refresh-queue.ts,lib/metrics-collector.ts,lib/pre-startup.ts,lib/runtime-startup-state.ts,lib/trade-engine.ts
+NEXT_TRACE_BUILD_ATTEMPTS	test-or-operator-tool	no	no	1	scripts/build-next-with-trace-retry.mjs
+NEXT_TRACE_SETTLE_MS	test-or-operator-tool	no	no	1	scripts/build-next-with-trace-retry.mjs
 NEXTAUTH_URL	test-or-operator-tool	no	yes	1	.env.example
 NODE_ENV	platform-provided	no	no	45	.kilocode/rules/memory-bank/context.md,FIXES-APPLIED-SESSION-33.md,__tests__/unit/env-credential-loading.test.ts,__tests__/unit/orders-route-concurrency.test.ts,__tests__/unit/production-continuity.test.ts,__tests__/unit/requested-regressions.test.ts,app/api/monitoring/comprehensive/route.ts,app/api/positions/[id]/route.ts,app/api/positions/route.ts,app/api/positions/stats/route.ts,app/api/settings/connections/[id]/live-trade/route.ts,app/api/settings/connections/[id]/preset-toggle/route.ts,app/api/symbol-data/load/route.ts,app/api/system/health/route.ts,app/api/system/init-status/route.ts,app/api/trade-engine/quick-start/route.ts,app/error.tsx,app/global-error.tsx,components/engine-auto-initializer.tsx,components/error-boundary.tsx,components/indication-generator-hook.tsx,lib/auth.ts,lib/cron-auth.ts,lib/env-credentials.ts,lib/error-logger.ts,lib/exchange-connectors/base-connector.ts,lib/exchange-connectors/factory.ts,lib/exchange-connectors/index.ts,lib/live-order-service.ts,lib/prehistoric-progress-tracker.ts,lib/production-readiness.ts,lib/redis-db.ts,lib/redis-migrations.ts,lib/runtime-startup-state.ts,lib/security-hardening.ts,lib/site-logger.ts,lib/startup-coordinator.ts,lib/statistics-tracker.ts,lib/strategy-coordinator.ts,lib/strategy-evaluator.ts,lib/symbol-data-processor.ts,lib/trade-engine.ts,lib/trade-engine/engine-manager.ts,next.config.mjs,scripts/inject-bingx-creds.js
 ORANGEX_API_KEY	test-or-operator-tool	yes	yes	1	.env.example
