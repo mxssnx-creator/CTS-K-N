@@ -10,6 +10,8 @@ const distDir = process.env.NEXT_DIST_DIR || ".next"
 const maxAttempts = Math.max(1, Number(process.env.NEXT_TRACE_BUILD_ATTEMPTS || 4))
 const minimumTraceCount = 300
 const settleAfterFailureMs = Math.max(0, Number(process.env.NEXT_TRACE_SETTLE_MS || 8000))
+const isVercelBuild = process.env.VERCEL === "1" || process.env.VERCEL === "true"
+const requiresStandalone = !isVercelBuild
 const sleepArray = new Int32Array(new SharedArrayBuffer(4))
 
 function sleep(milliseconds) {
@@ -67,18 +69,23 @@ function parseJson(file) {
 
 function validateBuild() {
   const failures = []
-  for (const manifest of [
+  const providerManifests = [
     "routes-manifest.json",
     "prerender-manifest.json",
     "required-server-files.json",
     "server/pages-manifest.json",
     "server/app-paths-manifest.json",
-    "standalone/.next/routes-manifest.json",
-    "standalone/.next/prerender-manifest.json",
-    "standalone/.next/required-server-files.json",
-    "standalone/.next/server/pages-manifest.json",
-    "standalone/.next/server/app-paths-manifest.json",
-  ]) {
+  ]
+  if (requiresStandalone) {
+    providerManifests.push(
+      "standalone/.next/routes-manifest.json",
+      "standalone/.next/prerender-manifest.json",
+      "standalone/.next/required-server-files.json",
+      "standalone/.next/server/pages-manifest.json",
+      "standalone/.next/server/app-paths-manifest.json",
+    )
+  }
+  for (const manifest of providerManifests) {
     const path = join(distDir, manifest)
     if (!parseJson(path)) failures.push(`${manifest}: missing or invalid JSON`)
   }

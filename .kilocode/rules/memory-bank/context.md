@@ -445,3 +445,9 @@ The architecture assumed a separate long-lived engine-owner worker, but the repo
   adapter at runtime. Its exact `file:` entry is pinned in `pnpm-lock.yaml`, so
   Vercel/Kilo frozen installs remain reproducible and never fetch the former
   Git-hosted runtime package.
+- [x] Vercel now uses the same source-fingerprint and trace-validating Next build
+  wrapper as OpenNext. It retries only known late `.next` ENOENT/ENOTEMPTY writer
+  races and still fails immediately on compilation, syntax, type or source-change
+  errors. Vercel validates its function traces without requiring the intentionally
+  absent OpenNext standalone tree; OpenNext still requires that additional output.
+  This prevents overlay filesystem races from failing a complete 40-page deploy.

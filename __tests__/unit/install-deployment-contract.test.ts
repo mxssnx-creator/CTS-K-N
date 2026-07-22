@@ -70,6 +70,10 @@ describe("production installation and Kilo deployment contract", () => {
     expect(vercel.buildCommand).toBe("corepack pnpm@10.28.1 run vercel-build")
     expect(vercel.installCommand).not.toContain("corepack enable")
     expect(vercel.buildCommand).not.toContain("vercel-build-setup")
+    const packageJson = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8"))
+    expect(packageJson.scripts["vercel-build"]).toBe("node scripts/build-next-with-trace-retry.mjs")
+    expect(execFileSync("git", ["ls-files", "--stage"], { cwd: process.cwd(), encoding: "utf8" }))
+      .not.toMatch(/^160000 /m)
     execFileSync("bash", ["-n", "scripts/install.sh"], { cwd: process.cwd() })
     expect(await readFile(path.join(process.cwd(), "pnpm-workspace.yaml"), "utf8"))
       .toContain("onlyBuiltDependencies:")
@@ -121,8 +125,12 @@ describe("production installation and Kilo deployment contract", () => {
     expect(pkg).toContain("node scripts/clean-opennext-output.mjs && opennextjs-cloudflare build")
     expect(await readFile(path.join(process.cwd(), "open-next.config.ts"), "utf8"))
       .toContain('buildCommand: "node scripts/build-next-with-trace-retry.mjs"')
-    expect(await readFile(path.join(process.cwd(), "scripts/build-next-with-trace-retry.mjs"), "utf8"))
-      .toContain('["pnpm@10.28.1", "run", "build"]')
+    const nextBuildWrapper = await readFile(
+      path.join(process.cwd(), "scripts/build-next-with-trace-retry.mjs"),
+      "utf8",
+    )
+    expect(nextBuildWrapper).toContain('["pnpm@10.28.1", "run", "build"]')
+    expect(nextBuildWrapper).toContain("const requiresStandalone = !isVercelBuild")
     expect(wrangler).toContain('"required": ["ADMIN_SECRET", "CRON_SECRET", "ENCRYPTION_KEY", "JWT_SECRET"]')
     expect(deployScript).toContain('"--secrets-file", secretsFile')
     expect(deployScript).toContain("KILO_REQUIRE_REMOTE_INSTALL_OWNER: \"1\"")
