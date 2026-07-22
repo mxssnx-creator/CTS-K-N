@@ -86,7 +86,10 @@ export async function GET(request: NextRequest) {
         status: "error",
         error: error instanceof Error ? error.message : "Unknown error",
       },
-      { status: 500 }
+      // Persistence can be temporarily unavailable while a provider binding
+      // or migration is being provisioned. Keep diagnostics reachable and
+      // distinguish degraded infrastructure from a crashed Worker.
+      { status: 503 }
     )
   }
 }
