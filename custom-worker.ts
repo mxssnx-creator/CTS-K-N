@@ -26,10 +26,37 @@ type WorkerEnvironment = {
   [key: string]: unknown
 }
 
+function registerWorkerDatabaseBinding(env: WorkerEnvironment): void {
+  // Some Cloudflare-compatible providers expose SQLite as a Worker binding
+  // instead of DB_URL/DB_TOKEN. Keep the binding out of process.env and pass
+  // it through the shared global bridge consumed by the SQL adapter.
+  const candidate = Object.entries(env ?? {}).find(([key, value]) =>
+    /^(?:DB|KILO_DB|CTS_DB|DATABASE)$/i.test(key) && value && typeof value === "object" &&
+    typeof (value as { prepare?: unknown }).prepare === "function",
+  )?.[1]
+  if (candidate && typeof (globalThis as any).__cts_kilo_sqlite_binding === "undefined") {
+    ;(globalThis as any).__cts_kilo_sqlite_binding = candidate
+  }
+}
+
 const CRON_PATHS = [
   "/api/cron/server-continuity",
   "/api/cron/sync-live-positions",
 ] as const
+
+function exposeWorkerEnvironment(env: WorkerEnvironment): void {
+  // CTS's persistence/runtime modules intentionally use process.env so the
+  // same code works on Node, Vercel, and self-hosted servers. Cloudflare
+  // exposes bindings only through the Worker env argument, however. Project
+  // primitive bindings into the Node-compat environment before OpenNext loads
+  // a request route; otherwise Kilo silently behaves as if its Redis/DB and
+  // paper-fallback flags were absent.
+  if (typeof process === "undefined" || !process.env) return
+  for (const [key, value] of Object.entries(env ?? {})) {
+    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue
+    process.env[key] = String(value)
+  }
+}
 
 async function invokeCronPath(path: (typeof CRON_PATHS)[number], env: WorkerEnvironment, _ctx: WorkerExecutionContext): Promise<void> {
   const cronSecret = String(env?.CRON_SECRET || "").trim()
@@ -75,12 +102,18 @@ export default {
   // before middleware or the application can respond. Missing bindings remain
   // visible to startup/readiness and never enable live orders.
   async fetch(request: Request, env?: WorkerEnvironment, ctx?: WorkerExecutionContext) {
-    return handler.fetch(request, env ?? {}, ctx ?? {})
+    const runtimeEnv = env ?? {}
+    exposeWorkerEnvironment(runtimeEnv)
+    registerWorkerDatabaseBinding(runtimeEnv)
+    return handler.fetch(request, runtimeEnv, ctx ?? {})
   },
 
   async scheduled(_controller: WorkerScheduledController, env: WorkerEnvironment, ctx: WorkerExecutionContext) {
     console.log("[CTS-K-N scheduled continuity] event received")
-    const work = Promise.allSettled(CRON_PATHS.map((path) => invokeCronPath(path, env ?? {}, ctx ?? {}))).then((results) => {
+    const runtimeEnv = env ?? {}
+    exposeWorkerEnvironment(runtimeEnv)
+    registerWorkerDatabaseBinding(runtimeEnv)
+    const work = Promise.allSettled(CRON_PATHS.map((path) => invokeCronPath(path, runtimeEnv, ctx ?? {}))).then((results) => {
       const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")
       if (failures.length > 0) {
         const message = failures

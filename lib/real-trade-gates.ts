@@ -6,7 +6,7 @@ import {
   isKiloDeploymentRuntime,
   isServerlessDeploymentRuntime,
 } from "@/lib/deployment-runtime"
-import { resolveKiloDatabaseConfig } from "@/lib/kilo-database-client"
+import { hasKiloDatabaseBackend } from "@/lib/kilo-database-client"
 
 export type RealTradeBlockCode =
   | "disabled"
@@ -41,8 +41,7 @@ function hasSharedRedisConfig(): boolean {
 }
 
 function hasKiloSnapshotCoordinationConfig(): boolean {
-  const { url, token } = resolveKiloDatabaseConfig()
-  return Boolean(url && token)
+  return hasKiloDatabaseBackend()
 }
 
 function hasDurableLiveCoordination(): boolean {
