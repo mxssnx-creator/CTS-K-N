@@ -21,6 +21,7 @@ operator-tool	scripts/test-tp-sl-ranges.mjs
 operator-tool	scripts/validate-comprehensive.mjs
 operator-tool	scripts/verify-migration-status.mjs
 operator-tool	scripts/verify-recreation-manifests.mjs
+operator-tool	scripts/verify-redis-endpoint.mjs
 operator-tool	scripts/verify-source-syntax.mjs
 operator-tool	scripts/verify-volatile-cleanup.mjs
 performance	scripts/stress-bingx-public-32.mjs

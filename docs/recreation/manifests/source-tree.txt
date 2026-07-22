@@ -1111,7 +1111,9 @@ scripts/logistics-test-suite.mjs
 scripts/maintain-github-origin.sh
 scripts/monitor-prod-8h.sh
 scripts/normalize-next-env.mjs
+scripts/npm-redis-service.mjs
 scripts/post-deploy-verify.sh
+scripts/prepare-npm-redis.mjs
 scripts/prod-restart-manager.sh
 scripts/production-deploy-init.mjs
 scripts/quickstart-live-trading.js
@@ -1144,6 +1146,7 @@ scripts/verify-prod-preview.mjs
 scripts/verify-prod-soak.mjs
 scripts/verify-prod-ui-max.mjs
 scripts/verify-recreation-manifests.mjs
+scripts/verify-redis-endpoint.mjs
 scripts/verify-source-syntax.mjs
 scripts/verify-stability.sh
 scripts/verify-volatile-cleanup.mjs
@@ -1159,6 +1162,7 @@ test-long-term.sh
 test-longterm-3hours.sh
 tsconfig.json
 types/bingx-api.d.ts
+types/open-next-worker.d.ts
 vendor/app-builder-db-marker/README.md
 vendor/app-builder-db-marker/index.js
 vendor/app-builder-db-marker/package.json
