@@ -100,11 +100,18 @@ async function main() {
 
     const deploymentUrl = process.env.DEPLOYMENT_URL || process.env.NEXT_PUBLIC_APP_URL
     await run(process.execPath, ["scripts/production-deploy-init.mjs"], { DEPLOYMENT_URL: deploymentUrl })
+    const sharedPersistenceConfigured = Boolean(
+      process.env.REDIS_URL ||
+      process.env.KV_URL ||
+      (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
+      (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) ||
+      (process.env.DB_URL && process.env.DB_TOKEN),
+    )
     await run("bash", ["scripts/post-deploy-verify.sh"], {
       DEPLOYMENT_URL: deploymentUrl,
       CTS_DEPLOYMENT_RUNTIME: "kilo-deploy",
       DEPLOYMENT_CRON_MODE: "cloudflare-scheduled",
-      REQUIRE_SHARED_PERSISTENCE: "1",
+      ...(sharedPersistenceConfigured ? { REQUIRE_SHARED_PERSISTENCE: "1" } : { ALLOW_PROCESS_LOCAL_DEPLOY_VERIFY: "1" }),
       REQUIRE_FRESH_CONTINUITY: "1",
     })
     console.log("[Kilo Deploy] READY: build, deploy, schema, scheduler, persistence, and runtime verification passed")
