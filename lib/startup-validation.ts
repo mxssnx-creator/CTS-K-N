@@ -3,6 +3,8 @@
  * Validates all critical dependencies and configuration before engine starts
  */
 
+import { isKiloDeploymentRuntime } from "@/lib/deployment-runtime"
+
 interface ValidationResult {
   passed: boolean
   checks: Record<string, { status: "ok" | "warning" | "error"; message: string }>
@@ -92,7 +94,14 @@ export async function validateProductionStartup(): Promise<ValidationResult> {
 }
 
 function validateEnvironmentVariables(): { status: "ok" | "warning" | "error"; message: string } {
-  const required = ["REDIS_URL", "NEXT_PUBLIC_APP_URL"]
+  const hasSharedRedis = Boolean(
+    process.env.REDIS_URL ||
+      process.env.KV_URL ||
+      (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
+      (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN),
+  )
+  const hasKiloManagedSnapshot = isKiloDeploymentRuntime() && Boolean(process.env.DB_URL && process.env.DB_TOKEN)
+  const required = ["NEXT_PUBLIC_APP_URL"]
   const recommended = ["ALLOW_INLINE_REDIS_LIVE_TRADING", "CRON_SECRET"]
   
   const missing = required.filter((v) => !process.env[v])
@@ -100,6 +109,13 @@ function validateEnvironmentVariables(): { status: "ok" | "warning" | "error"; m
     return {
       status: "error",
       message: `Missing required environment variables: ${missing.join(", ")}`,
+    }
+  }
+
+  if (!hasSharedRedis && !hasKiloManagedSnapshot) {
+    return {
+      status: "error",
+      message: "Missing shared persistence configuration: configure Redis/KV or Kilo DB_URL + DB_TOKEN",
     }
   }
 
