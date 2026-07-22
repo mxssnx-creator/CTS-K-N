@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { initRedis, getRedisBackend, getRedisClient, isRedisConnected, getConnectionCountDiagnostics, isSharedPersistenceBackend, isKiloSnapshotBackend } from "@/lib/redis-db"
 import { getRealTradeInfrastructureBlockReason } from "@/lib/real-trade-gates"
-import { resolveKiloDatabaseConfig } from "@/lib/kilo-database-client"
+import { getKiloSqliteBinding, resolveKiloDatabaseConfig } from "@/lib/kilo-database-client"
 
 export const dynamic = "force-dynamic"
 
@@ -35,6 +35,7 @@ export async function GET() {
     }
 
     const managedDb = resolveKiloDatabaseConfig()
+    const kiloBinding = Boolean(getKiloSqliteBinding())
     const configuredUrl = process.env.REDIS_URL || process.env.KV_URL || process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || ""
     const maskedUrl = maskRedisUrl(configuredUrl)
 
@@ -62,6 +63,9 @@ export async function GET() {
         DB_TOKEN: Boolean(managedDb.token),
         KILO_DB_URL: Boolean(process.env.KILO_DB_URL || process.env.KILO_DATABASE_URL),
         KILO_DB_TOKEN: Boolean(process.env.KILO_DB_TOKEN || process.env.KILO_DATABASE_TOKEN),
+        KILO_SQLITE_BINDING: kiloBinding,
+        CTS_DB_URL: Boolean(process.env.CTS_DB_URL || process.env.MANAGED_DB_URL),
+        CTS_DB_TOKEN: Boolean(process.env.CTS_DB_TOKEN || process.env.MANAGED_DB_TOKEN),
       },
       warning: !shared
         ? "InlineLocalRedis is connected but process-local; configure shared persistence for restart-safe production."
