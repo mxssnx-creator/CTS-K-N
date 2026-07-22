@@ -1,1 +1,31 @@
-sed: can't read wrangler.jsonc: No such file or directory
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cts-k-n",
+  "main": "./custom-worker.ts",
+  "compatibility_date": "2026-05-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "CTS_DEPLOYMENT_RUNTIME": "kilo-deploy",
+    "KILO_DEPLOYMENT": "1",
+    "DISABLE_IN_PROCESS_CONTINUITY": "1",
+    "DISABLE_TRADE_ENGINE_IN_PROCESS": "1",
+    "ALLOW_PROD_INLINE_REDIS": "0",
+    "ALLOW_INLINE_REDIS_LIVE_TRADING": "0",
+    "ENABLE_PRODUCTION_MIGRATIONS": "1",
+    "AUTO_MIGRATE_ON_STARTUP": "1",
+    "DEPLOYMENT_CRON_MODE": "cloudflare-scheduled"
+  },
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "secrets": {
+    "required": ["ADMIN_SECRET", "CRON_SECRET", "ENCRYPTION_KEY", "JWT_SECRET"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}

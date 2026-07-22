@@ -26,7 +26,7 @@
  *   initializeTradeEngineAutoStart() → startServerContinuityRunner()
  */
 
-import { isKiloDeploymentRuntime, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
 // Guard against double-execution across HMR / module re-evaluation. Failed
 // startup attempts are not cached: a long-lived Node process retries after one
@@ -97,16 +97,6 @@ async function runDeterministicBoot(): Promise<void> {
     console.error("[v0] [Instrumentation] critical startup failed; engines remain stopped:", err instanceof Error ? err.message : err)
     if (canRetryInProcess()) {
       scheduleStartupRetry()
-      return
-    }
-    // OpenNext/Kilo request workers must remain reachable when an optional
-    // managed binding is still being provisioned or temporarily unavailable.
-    // The startup coordinator already leaves engines stopped and all real
-    // orders fail closed until readiness is restored. Throwing here makes the
-    // entire Worker return OpenNext's opaque "Server failed to respond" 500,
-    // which prevents the UI and diagnostics from showing the actionable cause.
-    if (isKiloDeploymentRuntime()) {
-      console.error("[v0] [Instrumentation] Kilo request worker remains reachable; production engines stay stopped until startup is ready")
       return
     }
     // Serverless workers cannot retain the retry timer. Fail the cold start so

@@ -3,7 +3,7 @@
 import { existsSync, lstatSync, readFileSync, readlinkSync, readdirSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { join, relative } from "node:path"
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { tmpdir } from "node:os"
 
 const distDir = process.env.NEXT_DIST_DIR || ".next"
@@ -12,10 +12,55 @@ const minimumTraceCount = 300
 const settleAfterFailureMs = Math.max(0, Number(process.env.NEXT_TRACE_SETTLE_MS || 8000))
 const isVercelBuild = process.env.VERCEL === "1" || process.env.VERCEL === "true"
 const requiresStandalone = !isVercelBuild
+const settleAfterSuccessMs = Math.max(
+  0,
+  Number(process.env.NEXT_TRACE_SUCCESS_SETTLE_MS || (requiresStandalone ? 8000 : 1500)),
+)
 const sleepArray = new Int32Array(new SharedArrayBuffer(4))
 
 function sleep(milliseconds) {
   if (milliseconds > 0) Atomics.wait(sleepArray, 0, 0, milliseconds)
+}
+
+function runBuild(command, args, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: process.cwd(),
+      detached: process.platform !== "win32",
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    const stdout = []
+    const stderr = []
+    child.stdout.on("data", chunk => stdout.push(Buffer.from(chunk)))
+    child.stderr.on("data", chunk => stderr.push(Buffer.from(chunk)))
+    child.once("error", reject)
+    child.once("exit", (code, signal) => resolve({
+      pid: child.pid,
+      signal,
+      status: code ?? 1,
+      stderr,
+      stdout,
+    }))
+  })
+}
+
+function signalProcessGroup(pid, signal) {
+  if (!pid || process.platform === "win32") return false
+  try {
+    process.kill(-pid, signal)
+    return true
+  } catch (error) {
+    if (error?.code === "ESRCH") return false
+    throw error
+  }
+}
+
+function stopLateBuildWriters(pid) {
+  if (!signalProcessGroup(pid, "SIGTERM")) return
+  sleep(300)
+  signalProcessGroup(pid, "SIGKILL")
+  sleep(100)
 }
 
 function getTrackedSourceState() {
@@ -139,22 +184,29 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   const args = inheritedPnpm
     ? [inheritedPnpm, "run", "build"]
     : ["pnpm@10.28.1", "run", "build"]
-  const result = spawnSync(
+  const result = await runBuild(
     command,
     args,
     {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        COREPACK_HOME: process.env.COREPACK_HOME || join(tmpdir(), "cts-corepack-cache"),
-      },
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
+      ...process.env,
+      COREPACK_HOME: process.env.COREPACK_HOME || join(tmpdir(), "cts-corepack-cache"),
     },
   )
-  if (result.error) throw result.error
-  if (result.stdout) process.stdout.write(result.stdout)
-  if (result.stderr) process.stderr.write(result.stderr)
+
+  let buildOutput = `${Buffer.concat(result.stdout).toString("utf8")}\n${Buffer.concat(result.stderr).toString("utf8")}`
+  const recoverableFilesystemRace = result.status !== 0 && isRecoverableNextFilesystemRace(buildOutput)
+
+  // A successful Next parent can still leave output-tracing children writing
+  // into `.next` after the lifecycle exits. Give them a provider-bounded
+  // completion window, then terminate the isolated build process group before
+  // validating or handing the directory to Vercel/OpenNext packaging.
+  const writerSettleMs = result.status === 0 ? settleAfterSuccessMs : settleAfterFailureMs
+  if (writerSettleMs > 0) sleep(writerSettleMs)
+  stopLateBuildWriters(result.pid)
+
+  buildOutput = `${Buffer.concat(result.stdout).toString("utf8")}\n${Buffer.concat(result.stderr).toString("utf8")}`
+  if (result.stdout.length > 0) process.stdout.write(Buffer.concat(result.stdout))
+  if (result.stderr.length > 0) process.stderr.write(Buffer.concat(result.stderr))
 
   const sourceAfter = getTrackedSourceState()
   if (sourceBefore.fingerprint !== sourceAfter.fingerprint || sourceAfter.conflicts.length > 0) {
@@ -162,22 +214,16 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     process.exit(1)
   }
 
-  const buildOutput = `${result.stdout || ""}\n${result.stderr || ""}`
-  const recoverableFilesystemRace = result.status !== 0 && isRecoverableNextFilesystemRace(buildOutput)
-
   // Next 15 can report a late ENOENT/ENOTEMPTY while one of its tracing
-  // workers is still flushing the same build. Starting the next attempt at
-  // once lets that orphaned writer corrupt the newly-cleaned directory. Give
-  // the worker tree a bounded settlement window, normalize the provider
-  // manifests, and accept a non-zero lifecycle only when every build-owned
-  // artifact proves complete below.
+  // workers is still flushing the same build. Accept a non-zero lifecycle only
+  // when the error has that exact signature and all build-owned artifacts prove
+  // complete below.
   if (result.status !== 0) {
     if (!recoverableFilesystemRace) {
       console.error(`[next-trace-build] non-recoverable Next build failure (${result.status})`)
       process.exit(result.status || 1)
     }
-    console.warn(`[next-trace-build] Next build exited ${result.status}; waiting ${settleAfterFailureMs}ms for late trace writers`)
-    sleep(settleAfterFailureMs)
+    console.warn(`[next-trace-build] Next build exited ${result.status}; late writer group settled for ${writerSettleMs}ms`)
   }
 
   const normalized = normalizeProviderOutput()

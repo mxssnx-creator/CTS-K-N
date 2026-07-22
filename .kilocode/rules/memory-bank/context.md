@@ -450,4 +450,6 @@ The architecture assumed a separate long-lived engine-owner worker, but the repo
   races and still fails immediately on compilation, syntax, type or source-change
   errors. Vercel validates its function traces without requiring the intentionally
   absent OpenNext standalone tree; OpenNext still requires that additional output.
+  Each attempt runs in an isolated process group; late trace/export children get
+  a bounded settlement window and are then terminated before provider packaging.
   This prevents overlay filesystem races from failing a complete 40-page deploy.

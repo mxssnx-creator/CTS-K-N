@@ -69,15 +69,7 @@ async function invokeCronPath(path: (typeof CRON_PATHS)[number], env: WorkerEnvi
 }
 
 export default {
-  // Some Kilo preview invocations call a Worker fetch handler without an
-  // explicit env object. OpenNext's Cloudflare context initializer enumerates
-  // env immediately, so passing undefined makes every route fail before
-  // middleware or the application can respond. Normalize it at the boundary;
-  // missing production bindings are still reported by startup/readiness and
-  // never enable live orders.
-  async fetch(request: Request, env?: WorkerEnvironment, ctx?: WorkerExecutionContext) {
-    return handler.fetch(request, env ?? {}, ctx ?? {})
-  },
+  fetch: handler.fetch,
 
   async scheduled(_controller: WorkerScheduledController, env: WorkerEnvironment, ctx: WorkerExecutionContext) {
     console.log("[CTS-K-N scheduled continuity] event received")

@@ -81,13 +81,6 @@ async function main() {
   const tempRoot = await mkdtemp(path.join(tmpdir(), "cts-kilo-deploy-"))
   const secretsFile = path.join(tempRoot, "worker-bindings.json")
   try {
-    const hasSharedPersistence = Boolean(
-      process.env.REDIS_URL ||
-        process.env.KV_URL ||
-        (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
-        (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) ||
-        (process.env.DB_URL && process.env.DB_TOKEN),
-    )
     await run(process.execPath, ["scripts/kilo-deploy-preflight.mjs"], {
       KILO_REQUIRE_RUNTIME_ENV: "1",
       KILO_REQUIRE_DEPLOY_CREDENTIALS: "1",
@@ -111,8 +104,7 @@ async function main() {
       DEPLOYMENT_URL: deploymentUrl,
       CTS_DEPLOYMENT_RUNTIME: "kilo-deploy",
       DEPLOYMENT_CRON_MODE: "cloudflare-scheduled",
-      REQUIRE_SHARED_PERSISTENCE: hasSharedPersistence ? "1" : "0",
-      ALLOW_PROCESS_LOCAL_DEPLOY_VERIFY: hasSharedPersistence ? "0" : "1",
+      REQUIRE_SHARED_PERSISTENCE: "1",
       REQUIRE_FRESH_CONTINUITY: "1",
     })
     console.log("[Kilo Deploy] READY: build, deploy, schema, scheduler, persistence, and runtime verification passed")

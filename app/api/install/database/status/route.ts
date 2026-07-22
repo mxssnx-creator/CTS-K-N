@@ -41,7 +41,7 @@ export async function GET() {
         is_up_to_date: migrationStatus.message.includes("latest"),
         message: migrationStatus.message,
       }
-    }, { status: 503 })
+    })
   } catch (error) {
     console.error("[v0] Status check error:", error)
     return NextResponse.json({
