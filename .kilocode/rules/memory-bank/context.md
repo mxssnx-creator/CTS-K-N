@@ -411,3 +411,37 @@ The architecture assumed a separate long-lived engine-owner worker, but the repo
   zero authenticated or order requests. Release-tree scan: 1,159 files, zero
   secret findings. Real Kilo upload and live exchange mutation remain correctly
   blocked without the required external deployment credentials/target inputs.
+
+## Session 2026-07-22 — Kilo/Vercel deploy and QuickStart PF state repair
+
+- [x] QuickStart PF sliders now keep a ref-backed optimistic draft, merge rapid
+  cross-stage changes deterministically, consume the canonical settings object
+  returned by the successful PATCH, and roll back to the last confirmed value
+  on failure. `connection-settings-updated` applies its confirmed payload
+  directly; only legacy events without relevant settings rehydrate. This removes
+  the stale cross-isolate GET that made a slider jump back after “Saved”.
+- [x] Replaced the Git-hosted `@kilocode/app-builder-db` runtime dependency with
+  the same small typed HTTP query protocol in `lib/kilo-database-client.ts` so
+  Vercel/Kilo clean installs use only the frozen registry graph. Drizzle schema,
+  SQLite proxy and migration semantics remain unchanged. Deployments without
+  optional `DB_URL`/`DB_TOKEN` skip migration cleanly; configured Kilo databases
+  still migrate and fail the deploy on real migration errors.
+- [x] The deployment-aware `db:migrate` wrapper now launches
+  `node --import tsx src/db/migrate.ts` instead of the IPC-creating `tsx` CLI,
+  which works in restricted Kilo build sandboxes and retains Node 20+
+  compatibility while Vercel safely skips the Kilo-only migration. The retired
+  credential-bootstrap route is a permanent no-store 404 and has a regression
+  forbidding DB credential access.
+- [x] Production-readiness responses distinguish missing shared persistence with
+  `shared_persistence_required` and actionable Redis/Upstash/Vercel KV guidance;
+  engine/order coordination remains fail-closed until the shared backend is
+  actually present.
+- [x] Verification on the release tree: frozen pnpm 10.28.1 lockfile, 92 Jest
+  suites/576 tests, TypeScript, ESLint, 40-page Vercel Production build, and
+  36-check OpenNext/Kilo preflight plus successful Worker bundle generation.
+- [x] Kilo App Builder still provisions its managed SQLite binding by package
+  name. The local, dependency-free `vendor/app-builder-db-marker` package keeps
+  that provisioning signal while CTS continues to use its audited local HTTP
+  adapter at runtime. Its exact `file:` entry is pinned in `pnpm-lock.yaml`, so
+  Vercel/Kilo frozen installs remain reproducible and never fetch the former
+  Git-hosted runtime package.

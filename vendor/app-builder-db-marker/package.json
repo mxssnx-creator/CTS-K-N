@@ -1,0 +1,7 @@
+{
+  "name": "@kilocode/app-builder-db",
+  "version": "0.0.0-cts-provisioning-marker",
+  "private": true,
+  "description": "Local Kilo App Builder provisioning marker; CTS uses its own HTTP SQLite adapter at runtime.",
+  "main": "index.js"
+}

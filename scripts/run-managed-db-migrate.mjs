@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process"
-import { existsSync } from "node:fs"
-import path from "node:path"
 import process from "node:process"
 
 const kiloManagedMigration =
@@ -19,16 +17,15 @@ if (!kiloManagedMigration) {
   process.exit(0)
 }
 
-const executable = process.platform === "win32" ? "tsx.cmd" : "tsx"
-const tsx = path.join(process.cwd(), "node_modules", ".bin", executable)
-if (!existsSync(tsx)) {
-  console.error("[db:migrate] Kilo managed migration requested, but tsx is not installed.")
-  process.exit(1)
-}
-
-const child = spawn(tsx, ["src/db/migrate.ts"], { stdio: "inherit" })
+// The tsx CLI creates an IPC socket before loading the script. Restricted Kilo
+// build sandboxes can reject that socket with EPERM, causing db:migrate to fail
+// before application code runs. Node's import hook loads the same transformer
+// in-process without the CLI IPC server.
+const child = spawn(process.execPath, ["--import", "tsx", "src/db/migrate.ts"], {
+  stdio: "inherit",
+})
 child.once("error", (error) => {
-  console.error("[db:migrate] Failed to launch tsx", error)
+  console.error("[db:migrate] Failed to launch the managed migration", error)
   process.exitCode = 1
 })
 child.once("exit", (code, signal) => {
