@@ -55,7 +55,7 @@ import {
 import { clearEngineRefreshRequest, ENGINE_REFRESH_REQUEST_TTL_MS, getQueuedEngineRefreshRequests, recordEngineRefreshRequestFailure } from "./engine-refresh-queue"
 import { processQueuedEngineRefreshRequests } from "./engine-refresh-queue"
 import { onEngineEvent, publishEngineEvent } from "./engine-event-bus"
-import { hasExplicitServerlessForegroundOptIn, isServerlessDeploymentRuntime } from "./deployment-runtime"
+import { hasExplicitServerlessForegroundOptIn, isKiloDeploymentRuntime, isServerlessDeploymentRuntime } from "./deployment-runtime"
 
 // Re-export TradeEngine class and config from subdirectory for convenient imports
 export { TradeEngine, type TradeEngineConfig, TRADE_SERVICE_NAME } from "./trade-engine/trade-engine"
@@ -136,6 +136,12 @@ export class GlobalTradeEngineCoordinator {
   private canOwnEngineRuntime(): boolean {
     // Explicit disable override (highest priority).
     if (process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1") return false
+    // Kilo deploy with explicit live-trade safety gates may own the
+    // engine in-process so the paper-fallback path can coordinate and
+    // execute orders within a single process.
+    if (isKiloDeploymentRuntime() && process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1" && process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1") {
+      return true
+    }
     // Edge / serverless request workers cannot own durable long-running loops.
     if (isServerlessDeploymentRuntime() && !hasExplicitServerlessForegroundOptIn()) return false
     // Dev / test always own the runtime for local UX.

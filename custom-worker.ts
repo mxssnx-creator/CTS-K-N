@@ -111,7 +111,8 @@ function ensureKiloPaperFallback(request: Request | undefined, env: WorkerEnviro
     (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) ||
     (process.env.DB_URL && process.env.DB_TOKEN) ||
     (process.env.KILO_DB_URL && process.env.KILO_DB_TOKEN) ||
-    (process.env.KILO_DATABASE_URL && (process.env.KILO_DB_TOKEN || process.env.KILO_DATABASE_TOKEN)),
+    (process.env.KILO_DATABASE_URL && (process.env.KILO_DB_TOKEN || process.env.KILO_DATABASE_TOKEN)) ||
+    typeof (globalThis as any).__cts_kilo_sqlite_binding !== "undefined",
   )
   if (hasDurableBackend) return
   if (process.env.ALLOW_PROD_INLINE_REDIS === "0") return
@@ -126,11 +127,21 @@ function ensureKiloPaperFallback(request: Request | undefined, env: WorkerEnviro
   // Live trade is enabled on Kilo when ALLOW_KILO_SQLITE_LIVE_TRADING=1
   // and the operator has explicitly opted in via ALLOW_INLINE_REDIS_LIVE_TRADING=1.
   // Otherwise keep live trading blocked on the paper fallback path.
-  if (process.env.ALLOW_KILO_SQLITE_LIVE_TRADING !== "1" || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1") {
+  const kiloSqliteLiveTrading = process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1"
+  const inlineRedisLiveTrading = process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1"
+  if (!kiloSqliteLiveTrading || !inlineRedisLiveTrading) {
     process.env.ALLOW_INLINE_REDIS_LIVE_TRADING = "0"
   }
-  process.env.DISABLE_IN_PROCESS_CONTINUITY ||= "1"
-  process.env.DISABLE_TRADE_ENGINE_IN_PROCESS ||= "1"
+  // When live trading is explicitly enabled via both safety gates, allow the
+  // in-process engine and continuity runner so the paper-fallback path can
+  // still coordinate and execute orders within a single process.
+  if (kiloSqliteLiveTrading && inlineRedisLiveTrading) {
+    process.env.DISABLE_IN_PROCESS_CONTINUITY = "0"
+    process.env.DISABLE_TRADE_ENGINE_IN_PROCESS = "0"
+  } else {
+    process.env.DISABLE_IN_PROCESS_CONTINUITY ||= "1"
+    process.env.DISABLE_TRADE_ENGINE_IN_PROCESS ||= "1"
+  }
 }
 
 async function invokeCronPath(path: (typeof CRON_PATHS)[number], env: WorkerEnvironment, _ctx: WorkerExecutionContext): Promise<void> {

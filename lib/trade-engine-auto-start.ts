@@ -243,52 +243,60 @@ async function runTradeEngineHealingSweepInternal({ isStartup }: HealingSweepOpt
     }
     // SERVERLESS / KILO PRODUCTION OWNER PATH
     // ---------------------------------------------------------------
-    // Never create a timer-backed TradeEngineManager inside a short-lived
-    // request worker. Its eager heartbeat used to suppress the bounded cron
-    // pipeline in the same invocation; the worker then ended and progress
-    // remained at 0/N. Kilo's durable owner is the awaited
-    // generate-indications bounded cycle executed by the scheduled handler.
-    // Explicit foreground opt-in remains available for unusual runtimes that
-    // genuinely keep one worker alive after the response.
+    // On Kilo deployments with live trading explicitly enabled, the
+    // serverless request worker may own the engine in-process for the
+    // duration of the request.  The cron handler and the quick-start
+    // route both flow through startEngine(), which checks the same
+    // live-trade safety gates.  When live trade is NOT enabled, keep
+    // the serverless worker queued-only so it does not start a
+    // timer-backed manager that vanishes after the response.
     if (isServerlessDeploymentRuntime() && !hasExplicitServerlessForegroundOptIn()) {
-      try {
-        const { initRedis, getRedisClient, getAssignedAndEnabledConnections } = await loadRedisDb()
-        await initRedis()
-        const client = getRedisClient()
-        const globalState = (await client.hgetall("trade_engine:global")) as Record<string, string> | null
-        const ownerIntent = getGlobalOperatorIntent(globalState)
-        if (ownerIntent === "stopped" || ownerIntent === "paused") {
+      const kiloLiveTrading =
+        process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1" &&
+        process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1"
+      if (!kiloLiveTrading) {
+        try {
+          const { initRedis, getRedisClient, getAssignedAndEnabledConnections } = await loadRedisDb()
+          await initRedis()
+          const client = getRedisClient()
+          const globalState = (await client.hgetall("trade_engine:global")) as Record<string, string> | null
+          const ownerIntent = getGlobalOperatorIntent(globalState)
+          if (ownerIntent === "stopped" || ownerIntent === "paused") {
+            return {
+              startedCount: 0,
+              eligibleCount: 0,
+              skipped: ownerIntent,
+              error: `Operator intent "${ownerIntent}" blocks the scheduled bounded owner.`,
+            }
+          }
+          if (!ownerIntent) {
+            await client.hset("trade_engine:global", {
+              operator_intent: "running",
+              desired_status: "running",
+              status: "starting",
+              runtime_owner_mode: "scheduled-bounded-cycle",
+              updated_at: new Date().toISOString(),
+            }).catch(() => 0)
+          }
+          const eligible = await getAssignedAndEnabledConnections().catch(() => [])
+          return {
+            startedCount: 0,
+            eligibleCount: Array.isArray(eligible) ? eligible.length : 0,
+            skipped: "serverless_scheduled_bounded_owner",
+          }
+        } catch (probeErr) {
+          console.warn(`[v0] [AutoStart] Serverless bounded-owner probe failed:`, probeErr)
           return {
             startedCount: 0,
             eligibleCount: 0,
-            skipped: ownerIntent,
-            error: `Operator intent "${ownerIntent}" blocks the scheduled bounded owner.`,
+            skipped: "serverless_runtime_probe_failed",
+            error: probeErr instanceof Error ? probeErr.message : String(probeErr),
           }
         }
-        if (!ownerIntent) {
-          await client.hset("trade_engine:global", {
-            operator_intent: "running",
-            desired_status: "running",
-            status: "starting",
-            runtime_owner_mode: "scheduled-bounded-cycle",
-            updated_at: new Date().toISOString(),
-          }).catch(() => 0)
-        }
-        const eligible = await getAssignedAndEnabledConnections().catch(() => [])
-        return {
-          startedCount: 0,
-          eligibleCount: Array.isArray(eligible) ? eligible.length : 0,
-          skipped: "serverless_scheduled_bounded_owner",
-        }
-      } catch (probeErr) {
-        console.warn(`[v0] [AutoStart] Serverless bounded-owner probe failed:`, probeErr)
-        return {
-          startedCount: 0,
-          eligibleCount: 0,
-          skipped: "serverless_runtime_probe_failed",
-          error: probeErr instanceof Error ? probeErr.message : String(probeErr),
-        }
       }
+      // Live trading is enabled on Kilo — fall through to the
+      // in-process start path below so the request worker can own
+      // the engine for the duration of the request.
     }
     const { initRedis, getRedisClient, getAssignedAndEnabledConnections, getConnection } = await loadRedisDb()
     const { loadSettingsAsync } = await import("./settings-storage")
