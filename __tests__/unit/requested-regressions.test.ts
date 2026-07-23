@@ -1491,8 +1491,9 @@ describe("requested regression guardrails", () => {
       quickstart.indexOf("QuickStart's Live button controls effective exchange order placement"),
       quickstart.indexOf("// ─── types", quickstart.indexOf("QuickStart's Live button controls effective exchange order placement")),
     )
+    expect(quickstartHelper).toContain("toBooleanFlag(conn?.live_trade_requested)")
     expect(quickstartHelper).toContain("toBooleanFlag(conn?.is_live_trade)")
-    expect(quickstartHelper).not.toContain("live_trade_requested) ||")
+    expect(quickstartHelper).toContain("toBooleanFlag(conn?.live_trade_enabled)")
     expect(quickstart).toContain("setLiveTradeActive(effectiveState)")
 
     const liveEnableBlock = liveRoute.slice(

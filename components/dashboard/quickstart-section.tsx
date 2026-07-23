@@ -34,11 +34,12 @@ import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
 const toBooleanFlag = (value: unknown): boolean =>
   value === true || value === 1 || value === "1" || value === "true" || value === "yes" || value === "on"
 // QuickStart's Live button controls effective exchange order placement.
-// `live_trade_requested=1` can be true while credentials are missing and
-// `is_live_trade=0`; treating requested as active makes the next click send
-// `false`, which looks inverted when the operator is trying to enable live.
+// Uses live_trade_requested (operator intent) OR is_live_trade (effective state)
+// to show ON when live is requested but credentials are pending, matching the
+// options bar's Control Orders switch behavior. The toggle sends is_live_trade
+// which the server validates against credentials.
 const liveTradeUiFlag = (conn: any): boolean =>
-  toBooleanFlag(conn?.is_live_trade)
+  toBooleanFlag(conn?.live_trade_requested) || toBooleanFlag(conn?.is_live_trade) || toBooleanFlag(conn?.live_trade_enabled)
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
