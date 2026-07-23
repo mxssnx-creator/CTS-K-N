@@ -56,8 +56,13 @@ function isInlineRedisLiveTradingAllowed(): boolean {
   // A local opt-in can be acceptable for one explicitly single-process Node
   // owner. It must never bypass shared coordination on Kilo/Vercel/Lambda/
   // Cloudflare where requests can land on different ephemeral workers.
-  if (isServerlessDeploymentRuntime() || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1") {
+  if (process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1") {
     return false
+  }
+  if (isServerlessDeploymentRuntime()) {
+    // On Kilo/serverless, inline Redis live trading is allowed only when
+    // the Kilo managed SQLite snapshot backend provides durable coordination.
+    return isKiloDeploymentRuntime() && process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1"
   }
   if (isKiloDeploymentRuntime()) {
     const snapshotPath = String(process.env.V0_REDIS_SNAPSHOT_PATH || "").trim()

@@ -123,7 +123,12 @@ function ensureKiloPaperFallback(request: Request | undefined, env: WorkerEnviro
   process.env.CTS_DEPLOYMENT_RUNTIME ||= "kilo-deploy"
   process.env.KILO_DEPLOYMENT ||= "1"
   process.env.ALLOW_PROD_INLINE_REDIS ||= "1"
-  process.env.ALLOW_INLINE_REDIS_LIVE_TRADING = "0"
+  // Live trade is enabled on Kilo when ALLOW_KILO_SQLITE_LIVE_TRADING=1
+  // and the operator has explicitly opted in via ALLOW_INLINE_REDIS_LIVE_TRADING=1.
+  // Otherwise keep live trading blocked on the paper fallback path.
+  if (process.env.ALLOW_KILO_SQLITE_LIVE_TRADING !== "1" || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1") {
+    process.env.ALLOW_INLINE_REDIS_LIVE_TRADING = "0"
+  }
   process.env.DISABLE_IN_PROCESS_CONTINUITY ||= "1"
   process.env.DISABLE_TRADE_ENGINE_IN_PROCESS ||= "1"
 }

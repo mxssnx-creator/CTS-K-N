@@ -7,6 +7,8 @@ JWT_SECRET=replace_with_32_byte_random_jwt_secret
 REDIS_URL=redis://127.0.0.1:6379
 NEXT_PUBLIC_APP_URL=http://127.0.0.1:8787
 DEPLOYMENT_URL=http://127.0.0.1:8787
+ALLOW_PROD_INLINE_REDIS=1
+ALLOW_INLINE_REDIS_LIVE_TRADING=1
 
 # Required for the Kilo Remote SSH Install tab. The owner must be a distinct,
 # long-lived HTTPS CTS-K-N server. Its ADMIN_SECRET is used here as the proxy

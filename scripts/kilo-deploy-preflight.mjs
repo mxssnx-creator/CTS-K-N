@@ -44,8 +44,9 @@ function validateRuntimeEnvironment() {
     (process.env.KILO_DATABASE_URL && process.env.KILO_DATABASE_TOKEN),
   )
   const paperFallback = process.env.ALLOW_PROD_INLINE_REDIS !== "0" && process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1"
+  const kiloManagedLiveFallback = process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1" && managedSnapshot
   assert(
-    sharedRedis || managedSnapshot || paperFallback,
+    sharedRedis || managedSnapshot || paperFallback || kiloManagedLiveFallback,
     "shared Redis, Kilo managed persistence, or an explicitly non-live paper fallback is configured",
   )
   assert(configuredSecret(process.env.ADMIN_SECRET), "ADMIN_SECRET is configured")
@@ -107,7 +108,11 @@ function main() {
   assert(wrangler.vars?.DISABLE_TRADE_ENGINE_IN_PROCESS === "1", "request-worker engine ownership is disabled")
   assert(
     wrangler.vars?.ALLOW_PROD_INLINE_REDIS === "1",
-    "Kilo paper/UI fallback is enabled while real-order fallback remains blocked",
+    "Kilo paper/UI fallback is enabled and real-order fallback is allowed",
+  )
+  assert(
+    wrangler.vars?.ALLOW_INLINE_REDIS_LIVE_TRADING === "1",
+    "ALLOW_INLINE_REDIS_LIVE_TRADING=1 is required in wrangler.jsonc for live trade on Kilo",
   )
   assert(
     wrangler.vars?.KILO_LOCAL_PREVIEW_INLINE_REDIS === undefined,

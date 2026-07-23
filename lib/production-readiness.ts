@@ -107,7 +107,7 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
   const serverlessInlineOptIn =
     serverlessRuntime &&
     process.env.ALLOW_PROD_INLINE_REDIS === "1" &&
-    process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1"
+    (process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1" || process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1")
   const inlineRedisEnvAllowed = process.env.ALLOW_PROD_INLINE_REDIS !== "0"
   const inlineRedisAllowed =
     kiloLocalPreviewInlineAllowed ||

@@ -10,13 +10,15 @@
     "DISABLE_IN_PROCESS_CONTINUITY": "1",
     "DISABLE_TRADE_ENGINE_IN_PROCESS": "1",
     "ALLOW_PROD_INLINE_REDIS": "1",
-    "ALLOW_INLINE_REDIS_LIVE_TRADING": "0",
+    "ALLOW_INLINE_REDIS_LIVE_TRADING": "1",
     "ALLOW_KILO_SQLITE_LIVE_TRADING": "1",
     "ENABLE_PRODUCTION_MIGRATIONS": "1",
     "AUTO_MIGRATE_ON_STARTUP": "1",
     "DEPLOYMENT_CRON_MODE": "cloudflare-scheduled",
     "NEXT_PUBLIC_APP_URL": "https://cts-k-n-9179.d.kiloapps.io",
-    "DEPLOYMENT_URL": "https://cts-k-n-9179.d.kiloapps.io"
+    "DEPLOYMENT_URL": "https://cts-k-n-9179.d.kiloapps.io",
+    "DB_URL": "",
+    "DB_TOKEN": ""
   },
   "assets": {
     "directory": ".open-next/assets",
