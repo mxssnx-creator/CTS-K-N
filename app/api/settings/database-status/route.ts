@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { initRedis, getRedisBackend, getRedisClient, isRedisConnected, getConnectionCountDiagnostics, isSharedPersistenceBackend, isKiloSnapshotBackend } from "@/lib/redis-db"
+import { initRedis, getRedisBackend, getRedisClient, isRedisConnected, getConnectionCountDiagnostics, isSharedPersistenceBackend, isKiloSnapshotBackend, getObservedRedisRequestsPerSecond } from "@/lib/redis-db"
 import { getRealTradeInfrastructureBlockReason } from "@/lib/real-trade-gates"
 import { getKiloSqliteBinding, resolveKiloDatabaseConfig } from "@/lib/kilo-database-client"
 
@@ -23,11 +23,12 @@ export async function GET() {
     const backend = getRedisBackend()
     const shared = isSharedPersistenceBackend(backend)
     const liveOrderCoordinationReady = getRealTradeInfrastructureBlockReason().length === 0
-    
+    const operationsPerSecond = await getObservedRedisRequestsPerSecond()
+
     let connectionCount = 0
     let connectionCounts = { connection_hash_count: 0, legacy_connection_set_count: 0 }
     let schemaVersion = "0"
-    
+
     if (connected) {
       connectionCounts = await getConnectionCountDiagnostics()
       connectionCount = connectionCounts.connection_hash_count
@@ -47,6 +48,7 @@ export async function GET() {
       isSharedConfigured: shared,
       isCrossInstanceDurable: shared,
       liveOrderCoordinationReady,
+      operationsPerSecond,
       url: isKiloSnapshotBackend(backend) ? "kilo-sqlite://managed-snapshot" : maskedUrl,
       tableCount: connectionCount,
       connection_hash_count: connectionCounts.connection_hash_count,

@@ -5030,7 +5030,7 @@ export async function flushAll(): Promise<void> {
 // materializing the full key list while still protecting polling dashboards
 // from repeatedly hitting Redis.
 let _redisStatsCache: {
-  value: { connected: boolean; memoryUsage: number; keyCount: number; uptime: number }
+  value: { connected: boolean; memoryUsage: number; keyCount: number; uptime: number; operationsPerSecond: number }
   ts: number
 } | null = null
 const REDIS_STATS_CACHE_TTL_MS = 5000
@@ -5040,6 +5040,7 @@ export async function getRedisStats(): Promise<{
   memoryUsage: number
   keyCount: number
   uptime: number
+  operationsPerSecond: number
 }> {
   const now = Date.now()
   if (_redisStatsCache && now - _redisStatsCache.ts < REDIS_STATS_CACHE_TTL_MS) {
@@ -5047,12 +5048,16 @@ export async function getRedisStats(): Promise<{
   }
   try {
     const client = getRedisClient()
-    const keyCount = await client.dbSize()
+    const [keyCount, operationsPerSecond] = await Promise.all([
+      client.dbSize(),
+      getObservedRedisRequestsPerSecond(),
+    ])
     const value = {
       connected: true,
       memoryUsage: 0, // In-memory implementation doesn't track this
       keyCount,
       uptime: Date.now() - (globalThis as any).__redis_start_time || 0,
+      operationsPerSecond,
     }
     _redisStatsCache = { value, ts: now }
     return value
@@ -5062,6 +5067,7 @@ export async function getRedisStats(): Promise<{
       memoryUsage: 0,
       keyCount: 0,
       uptime: 0,
+      operationsPerSecond: 0,
     }
     // Cache failures briefly too so a broken Redis doesn't pin the CPU
     // retrying connection on every polling request. Shorter TTL so

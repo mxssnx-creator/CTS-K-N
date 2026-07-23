@@ -183,6 +183,7 @@ export async function GET(request: NextRequest) {
           total_keys: actualKeyCount || stats.keyCount || 0,
           memory_used: stats.memoryUsage || "N/A",
           uptime_seconds: stats.uptime || 0,
+          operations_per_second: stats.operationsPerSecond || 0,
         },
         system: {
           version: "3.2",
