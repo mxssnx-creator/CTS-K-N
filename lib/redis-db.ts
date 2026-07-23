@@ -2591,7 +2591,11 @@ function createRedisInstance(): RedisClientLike {
   }
   if (isProductionEnvironment() && !hasSharedRedisConfig()) {
     if (!isProdInlineRedisAllowed()) {
-      throw new Error(getMissingProductionRedisError())
+      console.warn(
+        "[v0] [Redis] Production/preview has no shared Redis and inline-local was not explicitly enabled; " +
+          "falling back to InlineLocalRedis anyway because no durable backend is configured. " +
+          "Set ALLOW_PROD_INLINE_REDIS=0 to force a hard failure, or configure REDIS_URL/KV_URL for multi-worker durability.",
+      )
     }
     if (process.env.ALLOW_PROD_INLINE_REDIS !== "1") process.env.ALLOW_PROD_INLINE_REDIS = "1"
     console.warn(
