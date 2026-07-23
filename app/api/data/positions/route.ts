@@ -1,5 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { PseudoPositionManager } from "@/lib/trade-engine/pseudo-position-manager"
+import { getRedisClient, initRedis } from "@/lib/redis-db"
+import { isLiveOpenStatus } from "@/lib/live-position-status"
 
 /**
  * Live Positions API
@@ -128,12 +130,89 @@ function normalise(raw: Record<string, any>): Position | null {
 
 async function getRealPositions(connectionId: string): Promise<Position[]> {
   try {
+    const pseudoPositions = await getPseudoPositions(connectionId)
+    const livePositions = await getLivePositions(connectionId)
+    return [...pseudoPositions, ...livePositions]
+  } catch (error) {
+    console.error(`Failed to get real positions for ${connectionId}:`, error)
+    return []
+  }
+}
+
+async function getPseudoPositions(connectionId: string): Promise<Position[]> {
+  try {
     const manager = new PseudoPositionManager(connectionId)
     const raws = await manager.getActivePositions()
     return raws.map(normalise).filter((p): p is Position => p !== null)
   } catch (error) {
-    console.error(`Failed to get real positions for ${connectionId}:`, error)
+    console.error(`Failed to get pseudo positions for ${connectionId}:`, error)
     return []
+  }
+}
+
+async function getLivePositions(connectionId: string): Promise<Position[]> {
+  try {
+    await initRedis()
+    const client = getRedisClient()
+    const ids = await client.lrange(`live:positions:${connectionId}`, 0, 500).catch(() => [])
+    if (!ids || ids.length === 0) return []
+
+    const jsonValues = await client.mget(...ids.map((id) => `live:position:${id}`)).catch(() => ids.map(() => null))
+    const positions: Position[] = []
+    for (let i = 0; i < ids.length; i++) {
+      const raw = jsonValues[i]
+      if (!raw) continue
+      let parsed: Record<string, any> | null = null
+      try {
+        parsed = JSON.parse(raw)
+      } catch {
+        continue
+      }
+      if (!parsed) continue
+      if (!isLiveOpenStatus(parsed.status)) continue
+      positions.push(normaliseLivePosition(parsed))
+    }
+    return positions
+  } catch (error) {
+    console.error(`Failed to get live positions for ${connectionId}:`, error)
+    return []
+  }
+}
+
+function normaliseLivePosition(raw: Record<string, any>): Position {
+  const entryPrice = parseFloat(raw.entryPrice || raw.entry_price || "0")
+  const currentPrice = parseFloat(raw.currentPrice || raw.current_price || raw.entryPrice || raw.entry_price || "0")
+  const quantity = parseFloat(raw.executedQuantity || raw.executed_quantity || raw.quantity || "0")
+  const notional = entryPrice * quantity
+  const sideRaw = String(raw.side || raw.direction || "long").toLowerCase()
+  const side: "LONG" | "SHORT" = sideRaw === "short" ? "SHORT" : "LONG"
+  const status = String(raw.status || "open")
+
+  let unrealizedPnl: number
+  if (status === "closed" && raw.realizedPnl != null) {
+    unrealizedPnl = parseFloat(raw.realizedPnl)
+  } else {
+    unrealizedPnl = side === "LONG" ? (currentPrice - entryPrice) * quantity : (entryPrice - currentPrice) * quantity
+  }
+  const unrealizedPnlPercent = notional > 0 ? (unrealizedPnl / notional) * 100 : 0
+
+  const tpPrice = parseFloat(raw.takeProfitPrice || raw.takeprofit_price || raw.take_profit || "0")
+  const slPrice = parseFloat(raw.stopLossPrice || raw.stoploss_price || raw.stop_loss || "0")
+
+  return {
+    id: String(raw.id),
+    symbol: String(raw.symbol || "UNKNOWN"),
+    side,
+    entryPrice,
+    currentPrice,
+    quantity,
+    leverage: parseInt(raw.leverage || "1", 10) || 1,
+    unrealizedPnl,
+    unrealizedPnlPercent,
+    takeProfitPrice: tpPrice > 0 ? tpPrice : undefined,
+    stopLossPrice: slPrice > 0 ? slPrice : undefined,
+    createdAt: String(raw.createdAt || raw.created_at || new Date().toISOString()),
+    status: isLiveOpenStatus(status) ? "open" : "closed",
   }
 }
 
