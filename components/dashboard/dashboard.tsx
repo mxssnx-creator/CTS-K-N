@@ -49,26 +49,70 @@ function formatDuration(ms: number): string {
   return `${seconds}s`
 }
 
-function createSessionInstanceId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID()
-  }
-  return `inst-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+const STARTED_AT_STORAGE_KEY = "cts-v-dashboard-started-at"
+
+function getPersistedStartedAt(): Date | null {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = localStorage.getItem(STARTED_AT_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = Date.parse(raw)
+    if (Number.isFinite(parsed)) return new Date(parsed)
+  } catch {}
+  return null
+}
+
+function persistStartedAt(date: Date): void {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(STARTED_AT_STORAGE_KEY, date.toISOString())
+  } catch {}
+}
+
+async function fetchStartedAtFromServer(): Promise<Date | null> {
+  try {
+    const res = await fetch("/api/system/status", { cache: "no-store" })
+    if (!res.ok) return null
+    const data = await res.json()
+    const startedAt = data?.tradeEngine?.worker?.started_at || data?.engineGlobalState?.started_at
+    if (typeof startedAt === "string") {
+      const parsed = Date.parse(startedAt)
+      if (Number.isFinite(parsed)) return new Date(parsed)
+    }
+  } catch {}
+  return null
+}
+
+function getDurableSiteInstanceId(): string | null {
+  if (typeof document === "undefined") return null
+  return document.documentElement.dataset.ctsSiteInstance || null
 }
 
 function DashboardRuntimeFooter() {
-  const [startedAt, setStartedAt] = useState<Date | null>(null)
-  const [now, setNow] = useState<Date | null>(null)
-  const [instanceId, setInstanceId] = useState<string | null>(null)
+  const [startedAt, setStartedAt] = useState<Date | null>(() => getPersistedStartedAt())
+  const [now, setNow] = useState<Date | null>(startedAt ?? new Date())
+  const [instanceId, setInstanceId] = useState<string | null>(() => getDurableSiteInstanceId())
 
   useEffect(() => {
-    const started = new Date()
-    setStartedAt(started)
-    setNow(started)
-    setInstanceId(createSessionInstanceId())
+    let cancelled = false
+
+    async function resolveStartedAt() {
+      if (startedAt) return
+      const serverStartedAt = await fetchStartedAtFromServer()
+      if (cancelled) return
+      const finalStartedAt = serverStartedAt ?? new Date()
+      setStartedAt(finalStartedAt)
+      setNow(finalStartedAt)
+      persistStartedAt(finalStartedAt)
+    }
+
+    resolveStartedAt()
     const timer = window.setInterval(() => setNow(new Date()), 1000)
-    return () => window.clearInterval(timer)
-  }, [])
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [startedAt])
 
   return (
     <Card className="border-dashed bg-muted/30 px-4 py-3 text-xs text-muted-foreground">

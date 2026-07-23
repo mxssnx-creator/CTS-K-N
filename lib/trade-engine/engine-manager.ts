@@ -2540,10 +2540,11 @@ export class TradeEngineManager {
         //                                     progression:{id}.
         if (cycleCount % 100 === 0) {
           try {
+            const existingState = await getSettings(`trade_engine_state:${this.connectionId}`).catch(() => ({} as Record<string, string>))
             await setSettings(`trade_engine_state:${this.connectionId}`, {
               connection_id: this.connectionId,
               status: "running",
-              started_at: this.startTime?.toISOString() || new Date().toISOString(),
+              started_at: (existingState as any)?.started_at || this.startTime?.toISOString() || new Date().toISOString(),
               last_indication_run: new Date().toISOString(),
               indication_avg_duration_ms: totalDuration > 0 ? Math.round(totalDuration / cycleCount) : 0,
               symbols_in_scope: symbols.length,

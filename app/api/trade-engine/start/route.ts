@@ -129,11 +129,12 @@ async function handlePost(request: NextRequest) {
     // honouring a prior explicit halt. Without this, a subsequent module
     // reload would re-respect the stop flag and refuse to bootstrap
     // engines, even though the operator just pressed Start.
+    const existingGlobalState = wasAlreadyRunning ? await client.hgetall("trade_engine:global").catch(() => ({} as Record<string, string>)) : {}
     await client.hset("trade_engine:global", { 
       status: "running", 
       desired_status: "running",
       operator_intent: "running",
-      started_at: new Date().toISOString(),
+      started_at: existingGlobalState.started_at || new Date().toISOString(),
       coordinator_ready: "true",
       operator_stopped: "0",
       operator_stopped_at: "",
