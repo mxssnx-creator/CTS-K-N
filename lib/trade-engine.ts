@@ -975,25 +975,20 @@ export class GlobalTradeEngineCoordinator {
 
   /**
    * Start all engines for enabled connections (modern Redis-based)
+   * SYSTEMWIDE LIVE TRADE: Automatically enables live trade for connections with valid credentials
    */
   async startAll(): Promise<void> {
     try {
       console.log("[v0] [Coordinator] Starting global trade engine...")
       
       // Import Redis functions
-      const { initRedis, getAssignedAndEnabledConnections, getAllConnections } = await import("@/lib/redis-db")
+      const { initRedis, getAssignedAndEnabledConnections, getAllConnections, getConnection, updateConnectionState } = await import("@/lib/redis-db")
       const { loadSettingsAsync } = await import("@/lib/settings-storage")
+      const { logProgressionEvent } = await import("@/lib/engine-progression-logs")
       
       // Initialize Redis and get connections
       await initRedis()
       const allConnections = await getAllConnections()
-      
-      // NOTE: Removed auto-enable logic
-      // Connections must be explicitly:
-      // 1. Created in base connections
-      // 2. Assigned to main connections via add-to-active flow
-      // 3. Enabled via dashboard toggle
-      // This ensures user control over which connections are processed
       
       // Get assigned + enabled connections (user must explicitly assign to main)
       const connections = await getAssignedAndEnabledConnections()
@@ -1019,8 +1014,9 @@ export class GlobalTradeEngineCoordinator {
         const isTestnet = c.is_testnet === "1" || c.is_testnet === true
         const isDemoMode = c.demo_mode === "1" || c.demo_mode === true
         const isPredefined = c.is_predefined === "1" || c.is_predefined === true
-        // Allow any assigned+enabled connection: with credentials, or testnet/demo/predefined mode
-        return hasCredentials || isTestnet || isDemoMode || isPredefined || true // allow all assigned+enabled
+        const isSimulated = c.connector_type === "simulated" || c.exchange_type === "simulated"
+        // Allow any assigned+enabled connection: with credentials, or testnet/demo/predefined/simulated mode
+        return hasCredentials || isTestnet || isDemoMode || isPredefined || isSimulated
       })
       
       console.log(`[v0] [Coordinator] Starting engines for ${validConnections.length}/${connections.length} assigned+enabled connections`)
@@ -1032,24 +1028,61 @@ export class GlobalTradeEngineCoordinator {
       }
       
       const settings = await loadSettingsAsync()
-      const { logProgressionEvent } = await import("@/lib/engine-progression-logs")
       let successCount = 0
       
-for (const connection of validConnections) {
-         try {
-           const config: EngineConfig = {
-             connectionId: connection.id,
-             allowInProcessStart: true,
-             // PRODUCTION FIX: forceLocalTakeover=true allows Vercel cron-triggered healing
-             // sweep to start engines. In-process timers still skip on Vercel, but this
-             // explicit call can take ownership for the duration of the request.
-             forceLocalTakeover: true,
-             indicationInterval: settings.mainEngineIntervalMs ? settings.mainEngineIntervalMs / 1000 : 5,
-             strategyInterval: settings.strategyUpdateIntervalMs ? settings.strategyUpdateIntervalMs / 1000 : 10,
-             realtimeInterval: settings.realtimeIntervalMs ? settings.realtimeIntervalMs / 1000 : 0.3,
-           }
-           
-           const didStart = await this.startEngine(connection.id, config)
+      for (const connection of validConnections) {
+        try {
+          const hasCredentials = ((connection.api_key || connection.apiKey || "").length > 5 && (connection.api_secret || connection.apiSecret || "").length > 5)
+          const isTestnet = connection.is_testnet === "1" || connection.is_testnet === true
+          const isDemoMode = connection.demo_mode === "1" || connection.demo_mode === true
+          const isPredefined = connection.is_predefined === "1" || connection.is_predefined === true
+          
+          // SYSTEMWIDE LIVE TRADE: Auto-enable live trade for connections with valid credentials
+          // Check if live trade should be auto-enabled (has real credentials and not already set)
+          const currentLiveTradeStatus = connection.is_live_trade === "1" || connection.live_trade_enabled === "1"
+          const shouldAutoEnableLiveTrade = hasCredentials && !currentLiveTradeStatus && !isTestnet && !isDemoMode && !isPredefined
+          
+          if (shouldAutoEnableLiveTrade) {
+            console.log(`[v0] [Coordinator] Auto-enabling live trade for ${connection.name} (${connection.id})`)
+            try {
+              const stateSwitchVersion = Date.now().toString()
+              await updateConnectionState(connection.id, {
+                is_live_trade: "1",
+                live_trade_enabled: "1",
+                live_trade_requested: "1",
+                is_assigned: "1",
+                is_active_inserted: "1",
+                is_enabled_dashboard: "1",
+                is_active: "1",
+                state_switch_version: stateSwitchVersion,
+                updated_at: new Date().toISOString(),
+              }, stateSwitchVersion)
+              await logProgressionEvent(
+                connection.id,
+                "auto_live_trade_enabled",
+                "info",
+                "Auto-enabled live trade during global engine start",
+                { connectionId: connection.id, connectionName: connection.name, exchange: connection.exchange }
+              )
+              // Update local reference
+              connection.is_live_trade = "1"
+              connection.live_trade_enabled = "1"
+              connection.live_trade_requested = "1"
+            } catch (liveErr) {
+              console.warn(`[v0] [Coordinator] Failed to auto-enable live trade for ${connection.name}:`, liveErr)
+            }
+          }
+          
+          const config: EngineConfig = {
+            connectionId: connection.id,
+            allowInProcessStart: true,
+            forceLocalTakeover: true,
+            indicationInterval: settings.mainEngineIntervalMs ? settings.mainEngineIntervalMs / 1000 : 5,
+            strategyInterval: settings.strategyUpdateIntervalMs ? settings.strategyUpdateIntervalMs / 1000 : 10,
+            realtimeInterval: settings.realtimeIntervalMs ? settings.realtimeIntervalMs / 1000 : 0.3,
+          }
+          
+          const didStart = await this.startEngine(connection.id, config)
           if (didStart === true) {
             successCount++
             console.log(`[v0] [Coordinator] ✓ Started: ${connection.name}`)

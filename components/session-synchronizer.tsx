@@ -5,6 +5,8 @@ import {
   initializeSessionRestoration,
   saveSessionState,
   synchronizeSessionSiteInstance,
+  getRunningState,
+  setRunningState,
 } from "@/lib/client-session-persistence"
 
 /**
@@ -16,11 +18,34 @@ import {
  * 2. Periodically syncs session state to ensure data continuity
  * 3. Saves scroll positions and UI state
  * 4. Maintains navigation history
+ * 5. Syncs running state with server for continuous operation
  */
 export function SessionSynchronizer() {
   useEffect(() => {
     // Initialize session on mount
     initializeSessionRestoration()
+
+    // Sync running state with server on mount
+    const syncRunningStateWithServer = async () => {
+      try {
+        const response = await fetch("/api/system/init-status", { cache: "no-store" })
+        const payload = await response.json().catch(() => null)
+        const serverRunning = payload?.system?.engine_running === true
+        
+        // Update local state to match server
+        const localRunning = getRunningState()
+        if (localRunning !== serverRunning) {
+          console.log(`[v0] Syncing running state: local=${localRunning}, server=${serverRunning}`)
+          setRunningState(serverRunning)
+          window.dispatchEvent(new CustomEvent("cts:running-state-changed", {
+            detail: { running: serverRunning, source: "server-sync" }
+          }))
+        }
+      } catch (err) {
+        console.warn("[v0] Failed to sync running state with server:", err)
+      }
+    }
+    void syncRunningStateWithServer()
 
     // Periodically save session state (every 30 seconds)
     const syncInterval = setInterval(() => {
@@ -98,10 +123,20 @@ export function SessionSynchronizer() {
       }, 200)
     }
 
+    // Listen for engine state changes from server
+    const handleEngineStateChanged = (e: Event) => {
+      const ev = e as CustomEvent
+      const running = ev.detail?.running
+      if (typeof running === "boolean") {
+        setRunningState(running)
+      }
+    }
+
     document.addEventListener("visibilitychange", handleVisibilityChange)
     window.addEventListener("beforeunload", handleBeforeUnload)
     window.addEventListener("pagehide", handleBeforeUnload)
     window.addEventListener("scroll", handleScroll, { passive: true })
+    window.addEventListener("cts:running-state-changed", handleEngineStateChanged)
     void synchronizeSiteIdentity()
 
     // Cleanup
@@ -113,6 +148,7 @@ export function SessionSynchronizer() {
       window.removeEventListener("beforeunload", handleBeforeUnload)
       window.removeEventListener("pagehide", handleBeforeUnload)
       window.removeEventListener("scroll", handleScroll)
+      window.removeEventListener("cts:running-state-changed", handleEngineStateChanged)
     }
   }, [])
 

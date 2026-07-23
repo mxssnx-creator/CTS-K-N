@@ -8,7 +8,7 @@
  */
 
 const SESSION_STORAGE_KEY = "cts-v-session-state"
-const SESSION_VERSION = "2.1"
+const SESSION_VERSION = "2.2"
 
 export interface SessionState {
   version: string
@@ -28,6 +28,8 @@ export interface SessionState {
   selectedSymbols?: string[]
   selectedConnection?: string
   activeStrategies?: string[]
+  // Running state - persists across reloads for continuous operation
+  isRunning?: boolean
   // Scroll positions
   scrollPositions?: Record<string, number>
   // Settings
@@ -36,10 +38,27 @@ export interface SessionState {
 
 function createClientSessionId(): string {
   try {
-    const uuid = globalThis.crypto?.randomUUID?.()
-    if (uuid) return `client_${uuid}`
+    // Try to get existing stable session ID from localStorage first
+    if (typeof window !== "undefined") {
+      const existingId = localStorage.getItem("cts:stable-session-id")
+      if (existingId && typeof existingId === "string") {
+        return existingId
+      }
+      // Generate new stable ID and persist it
+      const uuid = globalThis.crypto?.randomUUID?.()
+      if (uuid) {
+        localStorage.setItem("cts:stable-session-id", uuid)
+        return `client_${uuid}`
+      }
+    }
   } catch {}
-  return `client_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`
+  const fallbackId = `client_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`
+  try {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("cts:stable-session-id", fallbackId)
+    }
+  } catch {}
+  return fallbackId
 }
 
 function normalizeSessionState(value: unknown): SessionState | null {
@@ -56,6 +75,8 @@ function normalizeSessionState(value: unknown): SessionState | null {
     navigationHistory: Array.isArray(raw.navigationHistory)
       ? raw.navigationHistory.filter((item): item is string => typeof item === "string").slice(-20)
       : defaults.navigationHistory,
+    // Preserve isRunning state across reloads for continuous operation
+    isRunning: raw.isRunning ?? defaults.isRunning,
   }
 }
 
@@ -159,6 +180,10 @@ export function getDefaultSessionState(): SessionState {
     sidebarCollapsed: false,
     expandedSections: {},
     selectedFilters: {},
+    selectedSymbols: [],
+    selectedConnection: undefined,
+    activeStrategies: [],
+    isRunning: false,
     scrollPositions: {},
     userPreferences: {},
   }
@@ -252,6 +277,21 @@ export function getTradingSelection(): {
     connection: state?.selectedConnection ?? null,
     strategies: state?.activeStrategies ?? [],
   }
+}
+
+/**
+ * Get running state (for continuous operation across reloads)
+ */
+export function getRunningState(): boolean {
+  const state = getSessionState()
+  return state?.isRunning ?? false
+}
+
+/**
+ * Set running state (persists across reloads for continuous operation)
+ */
+export function setRunningState(running: boolean): void {
+  saveSessionState({ isRunning: running })
 }
 
 /**
