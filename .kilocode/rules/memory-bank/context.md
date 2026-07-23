@@ -38,6 +38,8 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] VolumeCalculator variant floor lowered 0.1 → 0.01
 - [x] `coordination_settings` char-indexed object bug fix in GET handler (parseIfString before spread)
 - [x] `posCountsVolumeRatio` 0.05 full prod flow: GET default 0.05, PATCH save/persist round-trip, flatKnobs mirror, clamp 0.01–0.25. Verified on prod build (.next-prod, :3100).
+- [x] Fix: QuickStart live button now shows ON when live_trade_requested is true - unified with options bar Control Orders switch behavior (checks live_trade_requested || is_live_trade || live_trade_enabled)
+- [x] Updated regression test to verify liveTradeUiFlag checks all three live trade states
 
 ## Current Structure
 
