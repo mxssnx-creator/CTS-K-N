@@ -45,6 +45,18 @@ function hasKiloSnapshotCoordinationConfig(): boolean {
 
 function hasDurableLiveCoordination(): boolean {
   if (hasSharedRedisConfig()) return true
+  // Kilo persistent inline Redis provides durability when explicitly configured
+  if (isKiloDeploymentRuntime()) {
+    const snapshotPath = String(process.env.V0_REDIS_SNAPSHOT_PATH || "").trim()
+    const persistentInline = process.env.CTS_INLINE_REDIS_PERSISTENT_VOLUME === "1" &&
+      snapshotPath.startsWith("/") &&
+      !snapshotPath.startsWith("/tmp/")
+    if (persistentInline) return true
+    return (
+      hasKiloSnapshotCoordinationConfig() &&
+      process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1"
+    )
+  }
   return (
     hasKiloSnapshotCoordinationConfig() &&
     process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1"
@@ -59,9 +71,19 @@ function isInlineRedisLiveTradingAllowed(): boolean {
     return false
   }
   if (isServerlessDeploymentRuntime()) {
-    // On Kilo/serverless, inline Redis live trading is allowed only when
-    // the Kilo managed SQLite snapshot backend provides durable coordination.
-    return isKiloDeploymentRuntime() && process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1"
+    // On Kilo/serverless, inline Redis live trading is allowed when either:
+    // 1. Kilo managed SQLite snapshot backend provides durable coordination, OR
+    // 2. Persistent inline Redis is explicitly configured (non-/tmp snapshot path)
+    if (hasKiloSnapshotCoordinationConfig() && process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1") {
+      return true
+    }
+    const snapshotPath = String(process.env.V0_REDIS_SNAPSHOT_PATH || "").trim()
+    return (
+      isKiloDeploymentRuntime() &&
+      process.env.CTS_INLINE_REDIS_PERSISTENT_VOLUME === "1" &&
+      snapshotPath.startsWith("/") &&
+      !snapshotPath.startsWith("/tmp/")
+    )
   }
   if (isKiloDeploymentRuntime()) {
     const snapshotPath = String(process.env.V0_REDIS_SNAPSHOT_PATH || "").trim()
