@@ -477,6 +477,15 @@ ensure_python_pip_and_bun() {
   python3 -m pip --version >/dev/null 2>&1 || fatal "python3 -m pip is not usable"
   ok "Python $(python3 --version 2>&1), pip $(python3 -m pip --version | awk '{print $2}')"
 
+  # Ensure the service user's home directory exists before running commands as that user
+  if id "$SERVICE_USER" >/dev/null 2>&1; then
+    local home
+    home="$(service_home)"
+    if [[ -n "$home" && ! -d "$home" ]]; then
+      run_root install -d -m 0750 -o "$SERVICE_USER" -g "$(id -gn "$SERVICE_USER")" "$home"
+    fi
+  fi
+
   local bun_install_dir="/opt/bun" existing_bun="" global_bun="/usr/local/bin/bun"
   if [[ -x "$global_bun" ]] && "$global_bun" --version >/dev/null 2>&1 && (( REINSTALL == 0 )); then
     existing_bun="$global_bun"
@@ -505,8 +514,9 @@ ensure_python_pip_and_bun() {
       || fatal "Bun installation failed"
     [[ -x "$bun_install_dir/bin/bun" ]] || fatal "Bun installer did not create its executable"
     run_root ln -sfn "$bun_install_dir/bin/bun" "$global_bun"
-    run_root chmod -R a+rX "$bun_install_dir"
   fi
+  # Ensure the service user can execute Bun from the installation directory
+  run_root chmod -R a+rX "$bun_install_dir" "$global_bun"
   [[ -x "$global_bun" ]] || fatal "Global Bun is missing after installation"
   run_as_service "$global_bun" --version >/dev/null 2>&1 || fatal "The service user cannot execute global Bun"
   ok "Global Bun $($global_bun --version)"
