@@ -2,10 +2,8 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="${SCRIPT_DIR}/.."
 INSTALL_DIR="${CTS_INSTALL_DIR:-/opt/cts-k-n}"
-RUNTIME_DIR="$PROJECT_ROOT/.cts-runtime"
-ENV_FILE="$PROJECT_ROOT/.env.production.local"
 APP_NAME="ctsv0.1.1"
 
 log_info() { echo "[update] $*"; }
@@ -30,7 +28,13 @@ run_as_service() {
   fi
 }
 
+resolve_runtime_paths() {
+  RUNTIME_DIR="$PROJECT_ROOT/.cts-runtime"
+  ENV_FILE="$PROJECT_ROOT/.env.production.local"
+}
+
 read_saved_values() {
+  resolve_runtime_paths
   [[ -r "$RUNTIME_DIR/install-values.env" ]] || return 0
   local key value
   while IFS='=' read -r key value || [[ -n "$key" ]]; do
@@ -65,6 +69,7 @@ ensure_active_dir() {
 }
 
 stop_services() {
+  resolve_runtime_paths
   log_info "Stopping services..."
   if [[ -x "$PROJECT_ROOT/scripts/service-control.sh" ]]; then
     as_root bash "$PROJECT_ROOT/scripts/service-control.sh" stop || true
@@ -104,6 +109,7 @@ build_production() {
 }
 
 restart_services() {
+  resolve_runtime_paths
   log_info "Restarting services..."
   if [[ -x "$PROJECT_ROOT/scripts/service-control.sh" ]]; then
     as_root bash "$PROJECT_ROOT/scripts/service-control.sh" restart
