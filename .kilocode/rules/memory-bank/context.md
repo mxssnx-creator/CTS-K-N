@@ -537,6 +537,11 @@ The architecture assumed a separate long-lived engine-owner worker, but the repo
     can execute Bun after installation.
 - [x] `scripts/update.sh`: new updater that stops services, pulls origin/main,
     installs deps, builds production, restarts, and verifies /api/health.
+- [x] `wrangler.jsonc`: updated `DISABLE_TRADE_ENGINE_IN_PROCESS` from `"1"` to `"0"`
+    to make the explicit in-process engine-owner intent part of the Kilo manifest.
+    `custom-worker.ts` still performs the runtime safety-gate refresh from the
+    live-trade opt-in pair, so the baked-in `"0"` is safe and operationally
+    preserved for production server installs.
 - [x] `custom-worker.ts` preflight vars: added DISABLE_IN_PROCESS_CONTINUITY=1,
     DISABLE_TRADE_ENGINE_IN_PROCESS=1, CTS_ENGINE_OWNER_WORKER=1 to wrangler.jsonc;
     custom-worker.ts resets both DISABLE flags to "0" when both live-trade safety
