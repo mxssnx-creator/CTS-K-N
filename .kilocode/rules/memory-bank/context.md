@@ -44,6 +44,7 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Fix: `collectQuickStartChangedFields` now handles null/undefined beforeConnection/beforeSettings parameters gracefully
 - [x] Fix: Removed unused `effective_flag_off` block code from RealTradeBlockCode type
 - [x] Fix: Production readiness checks now verify base connections have valid API credentials for live trading
+- [x] Fix: `checkProductionReadiness` no longer returns 503 when preset BASE_CONNECTION_IDS (bybit-x03, pionex-x01, orangex-x01) are absent — missing connections are simply skipped; only connections that exist and have stale/invalid credentials block readiness
 
 ## Current Structure
 
@@ -511,3 +512,48 @@ The architecture assumed a separate long-lived engine-owner worker, but the repo
 - [x] The soak verifier reads canonical nested real-position statistics before
   applying fallback values, preventing a false position-count regression when
   durable variant-ledger data becomes available.
+
+## Session 2026-07-24 — live trade always-enabled on production server installs
+
+- [x] `checkProductionReadiness` in `lib/production-readiness.ts`: removed the
+    hard-fail case where an absent preset `BASE_CONNECTION_ID` (bybit-x03,
+    pionex-x01, orangex-x01) blocks the entire 503 readiness gate. Missing
+    preset connections are now silently skipped; presence-of-data credential
+    checks still run for connections that do exist. This is the primary blocker
+    removed so fresh production server installs can enter live trade after
+    adding just bingx-x01 credentials via `scripts/add-bingx-credentials.js`.
+- [x] `lib/real-trade-gates.ts`: `hasDurableLiveCoordination` already treats
+    Kilo persistent inline Redis (CTS_INLINE_REDIS_PERSISTENT_VOLUME=1 +
+    absolute non-/tmp V0_REDIS_SNAPSHOT_PATH) as durable coordination without
+    requiring ALLOW_KILO_SQLITE_LIVE_TRADING. Verified `wrangler.jsonc` carries
+    ALLOW_PROD_INLINE_REDIS=1, ALLOW_INLINE_REDIS_LIVE_TRADING=1,
+    ALLOW_KILO_SQLITE_LIVE_TRADING=1, CTS_INLINE_REDIS_PERSISTENT_VOLUME=1,
+    V0_REDIS_SNAPSHOT_PATH=/data/redis/snapshot — preflight satisfied.
+- [x] `lib/strategy-coordinator.ts`: raised capacity ceilings (maxEntriesPerSet
+    250→500, maxLiveSets 400→600, maxRealSets 25→50, mainAxisSetsCeiling 50→120,
+    realSetsSafetyCeiling 100→250, liveSetsCeiling 90→250) to support higher-
+    throughput server evaluation.
+- [x] `scripts/install.sh`: added `chmod -R a+rX /opt/bun` so the service user
+    can execute Bun after installation.
+- [x] `scripts/update.sh`: new updater that stops services, pulls origin/main,
+    installs deps, builds production, restarts, and verifies /api/health.
+- [x] `custom-worker.ts` preflight vars: added DISABLE_IN_PROCESS_CONTINUITY=1,
+    DISABLE_TRADE_ENGINE_IN_PROCESS=1, CTS_ENGINE_OWNER_WORKER=1 to wrangler.jsonc;
+    custom-worker.ts resets both DISABLE flags to "0" when both live-trade safety
+    gates are set, enabling the in-process engine owner path on Kilo.
+
+## Live trade requirements summary for production server installs
+<!-- PRAGMA: do NOT rely on any order-fill/*/* branch — this doc describes requirements, not fulfillment guarantees -->
+
+For live trade to be **always enabled** on a production server install the
+operator must:
+1. Run `scripts/add-bingx-credentials.js` to seed bingx-x01 credentials.
+2. Ensure `wrangler.jsonc` carries the three live-trade env vars (already set).
+3. Mount a persistent volume at `/data/redis/` on the server.
+4. Start the service (systemctl/pm2) so the scheduler cron owns the in-process
+   engine and `startMissingEngines(forceLocalTakeover=true)` promotes all
+   live trade–enabled base connections.
+
+Attempted production installs that skip step 1 or have stale bingx-x01
+credentials will still receive a 503 from the QuickStart route until valid
+credentials are present.
