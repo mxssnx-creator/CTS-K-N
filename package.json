@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "NODE_OPTIONS='--max-old-space-size=5632 --max-semi-space-size=256 --expose-gc' node node_modules/next/dist/bin/next build",
-    "dev": "NODE_OPTIONS='--max-old-space-size=4096 --max-semi-space-size=192 --expose-gc' node node_modules/next/dist/bin/next dev -p ${PORT:-3002}",
+    "dev": "NODE_OPTIONS='--max-old-space-size=4096 --max-semi-space-size=192 --expose-gc' node node_modules/next/dist/bin/next dev -p ${PORT:-3000}",
     "dev:debug": "node scripts/dev-debug.js",
     "dev:debug:verbose": "node scripts/dev-debug.js verbose",
     "quickstart": "node scripts/quickstart-live-trading.js",
