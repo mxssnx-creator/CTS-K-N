@@ -106,7 +106,7 @@ describe("production continuity invariants", () => {
     expect(migrations).toContain("void promise.then(() =>")
     expect(instrumentation).toContain("critical startup failed; engines remain stopped")
     expect(instrumentation).toContain("scheduleStartupRetry()")
-    expect(session).toContain('const SESSION_VERSION = "2.1"')
+    expect(session).toContain('const SESSION_VERSION = "2.2"')
     expect(session).toContain("localStorage.setItem(SESSION_STORAGE_KEY")
     expect(session).toContain("synchronizeSessionSiteInstance")
     expect(synchronizer).toContain('fetch("/api/system/init-status"')
