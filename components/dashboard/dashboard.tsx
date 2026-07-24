@@ -88,6 +88,22 @@ function getDurableSiteInstanceId(): string | null {
   return document.documentElement.dataset.ctsSiteInstance || null
 }
 
+function createSessionInstanceId(): string {
+  if (typeof window !== "undefined") {
+    try {
+      const existing = localStorage.getItem("cts:session-instance-id")
+      if (existing && typeof existing === "string") return existing
+    } catch {}
+  }
+  const id = `session_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.setItem("cts:session-instance-id", id)
+    } catch {}
+  }
+  return id
+}
+
 function DashboardRuntimeFooter() {
   const [startedAt, setStartedAt] = useState<Date | null>(() => getPersistedStartedAt())
   const [now, setNow] = useState<Date | null>(startedAt ?? new Date())

@@ -147,7 +147,7 @@ describe("production installation and Kilo deployment contract", () => {
     expect(nextBuildWrapper).toContain('detached: process.platform !== "win32"')
     expect(nextBuildWrapper).toContain('process.kill(-pid, signal)')
     expect(nextBuildWrapper).toContain('signalProcessGroup(pid, "SIGKILL")')
-    expect(wrangler).toContain('"required": ["ADMIN_SECRET", "CRON_SECRET", "ENCRYPTION_KEY", "JWT_SECRET"]')
+    expect(wrangler).toContain('"required": ["ADMIN_SECRET", "CRON_SECRET", "ENCRYPTION_KEY", "JWT_SECRET", "BINGX_API_KEY", "BINGX_API_SECRET"]')
     expect(deployScript).toContain('"--secrets-file", secretsFile')
     expect(deployScript).toContain("KILO_REQUIRE_REMOTE_INSTALL_OWNER: \"1\"")
     expect(deployScript).toContain('REQUIRE_SHARED_PERSISTENCE: "1"')
