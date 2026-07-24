@@ -104,6 +104,10 @@ install_dependencies() {
 build_production() {
   log_info "Building production bundle..."
   cd "$PROJECT_ROOT"
+  # Turbopack in Next 15.3+ expects server-external-packages.jsonc but pnpm
+  # hoisting only provides server-external-packages.json. Ensure the .jsonc file
+  # exists to avoid build failures.
+  node scripts/prepare-turbopack.mjs 2>/dev/null || true
   NEXT_DIST_DIR="${NEXT_DIST_DIR:-.next-prod}" as_root node node_modules/next/dist/bin/next build
   log_ok "Production build complete"
 }

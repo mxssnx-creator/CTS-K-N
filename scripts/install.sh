@@ -787,6 +787,10 @@ install_dependencies_and_validate() {
   fi
 
   mkdir -p "$RUNTIME_DIR"
+  # Turbopack in Next 15.3+ expects server-external-packages.jsonc but pnpm
+  # hoisting only provides server-external-packages.json. Ensure the .jsonc file
+  # exists to avoid build failures.
+  node "$PROJECT_ROOT/scripts/prepare-turbopack.mjs" 2>/dev/null || true
   if ! node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- pnpm run build; then
     [[ -z "$BUILD_BACKUP" || ! -d "$BUILD_BACKUP" ]] || mv "$BUILD_BACKUP" "$PROJECT_ROOT/.next"
     ROLLBACK_ARMED=0
