@@ -534,7 +534,13 @@ The architecture assumed a separate long-lived engine-owner worker, but the repo
     realSetsSafetyCeiling 100→250, liveSetsCeiling 90→250) to support higher-
     throughput server evaluation.
 - [x] `scripts/install.sh`: added `chmod -R a+rX /opt/bun` so the service user
-    can execute Bun after installation.
+  can execute Bun after installation.
+- [x] `scripts/install.sh`: added service user home directory creation check before
+  any `run_as_service` calls.
+- [x] `scripts/update.sh`: fixed runtime path resolution where `RUNTIME_DIR` was
+  computed before `ensure_active_dir()` updated `PROJECT_ROOT`.
+- [x] `scripts/prepare-turbopack.mjs`: Turbopack compatibility fix for Next 15 + pnpm
+  (copies .json to .jsonc for `server-external-packages`).
 - [x] `scripts/update.sh`: new updater that stops services, pulls origin/main,
     installs deps, builds production, restarts, and verifies /api/health.
 - [x] `wrangler.jsonc`: updated `DISABLE_TRADE_ENGINE_IN_PROCESS` from `"1"` to `"0"`
