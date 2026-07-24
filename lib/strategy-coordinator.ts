@@ -1203,17 +1203,17 @@ export class StrategyCoordinator {
     StrategyCoordinator._axisLruMap.clear()
   }
   private config: StrategyCoordinatorConfig = {
-    maxEntriesPerSet: 250,
+    maxEntriesPerSet: 500,
     // Live Sets default is now per-exchange (see setExchangeMaxLive).
     // This is a placeholder; the real value is set during init.
     // 400 per symbol × 20 symbols = 8000 max live stage entries total;
     // calibrated to prevent InlineLocalRedis growth past the 1200 MB
     // eviction trigger between 4s cleanup cycles.
-    maxLiveSets: 400,
+    maxLiveSets: 600,
     // A bounded per-symbol Real core keeps 12-symbol cycles sub-minute while
     // variant-fair ranking preserves the best Default/Trailing/Block/DCA Sets.
     // Operators can raise this through Settings on workers with more capacity.
-    maxRealSets: 25,
+    maxRealSets: 50,
     pruneStrategy: "hybrid",
   }
 
@@ -1758,27 +1758,27 @@ export class StrategyCoordinator {
         if (!Number.isFinite(n) || n <= 0) return fallback
         return Math.max(min, Math.min(max, Math.floor(n)))
       }
-      this.config.maxEntriesPerSet = intSetting((s as any).strategyMaxEntriesPerSet, 250, 50, 750)
+      this.config.maxEntriesPerSet = intSetting((s as any).strategyMaxEntriesPerSet, 500, 100, 1500)
       // Only set when the connection explicitly provides a value; otherwise
       // leave null so the VM-memory-scaled dynamic default applies per cycle.
       const _rawAxisCeil = (s as any).strategyMainAxisSetsCeiling
       this.strategyMainAxisSetsCeiling =
         _rawAxisCeil != null && Number.isFinite(Number(_rawAxisCeil)) && Number(_rawAxisCeil) > 0
-          ? intSetting(_rawAxisCeil, 50, 10, 50_000)
+          ? intSetting(_rawAxisCeil, 120, 20, 50_000)
           : null
     // Only set when the connection explicitly provides a value; otherwise
     // leave null so the standard dev/prod defaults (60/100 per symbol) apply.
     const _rawRealCeil = (s as any).strategyRealSetsSafetyCeiling
     this.strategyRealSetsSafetyCeiling =
       _rawRealCeil != null && Number.isFinite(Number(_rawRealCeil)) && Number(_rawRealCeil) > 0
-        ? intSetting(_rawRealCeil, 100, 25, 50_000)
+        ? intSetting(_rawRealCeil, 250, 50, 50_000)
         : null
     // maxRealSets is uncapped (no Infinity default); let realSetsCap enforce the limit.
     this.config.maxRealSets = 
       _rawRealCeil != null && Number.isFinite(Number(_rawRealCeil)) && Number(_rawRealCeil) > 0
         ? intSetting((s as any).maxRealSets, Number(_rawRealCeil), 1, 50_000)
         : undefined
-      this.strategyLiveSetsCeiling = intSetting((s as any).strategyLiveSetsCeiling, 90, 1, 1_000)
+      this.strategyLiveSetsCeiling = intSetting((s as any).strategyLiveSetsCeiling, 250, 1, 2000)
       this.config.maxLiveSets = this.strategyLiveSetsCeiling
     } catch (err) {
       // Don't fail the whole flow on a settings read miss — the
