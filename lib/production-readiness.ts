@@ -220,29 +220,23 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
   for (const id of BASE_CONNECTION_IDS) {
     const exists = await client.exists(`connection:${id}`).catch(() => 0)
     if (!exists) {
-      missingFields.push({
-        field: `connection:${id}`,
-        expected: "hash exists",
-        actual: "missing",
-      })
-    } else {
-      // Check if the connection has valid credentials for live trading
-      const connData = (await client.hgetall(`connection:${id}`).catch(() => ({}))) as Record<string, string>
-      if (connData && Object.keys(connData).length > 0) {
-        const hasCreds = hasUsableCredentials(connData)
-        if (!hasCreds) {
-          missingFields.push({
-            field: `connection:${id}.credentials`,
-            expected: "valid API key/secret",
-            actual: "missing or invalid credentials",
-            details: {
-              connectionId: id,
-              hasApiKey: !!(connData.api_key || connData.apiKey),
-              hasApiSecret: !!(connData.api_secret || connData.apiSecret),
-              reason: "Live trading requires valid exchange API credentials",
-            },
-          })
-        }
+      continue
+    }
+    const connData = (await client.hgetall(`connection:${id}`).catch(() => ({}))) as Record<string, string>
+    if (connData && Object.keys(connData).length > 0) {
+      const hasCreds = hasUsableCredentials(connData)
+      if (!hasCreds) {
+        missingFields.push({
+          field: `connection:${id}.credentials`,
+          expected: "valid API key/secret",
+          actual: "missing or invalid credentials",
+          details: {
+            connectionId: id,
+            hasApiKey: !!(connData.api_key || connData.apiKey),
+            hasApiSecret: !!(connData.api_secret || connData.apiSecret),
+            reason: "Live trading requires valid exchange API credentials",
+          },
+        })
       }
     }
   }
