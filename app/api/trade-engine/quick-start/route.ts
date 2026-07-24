@@ -283,7 +283,10 @@ async function handlePost(request: Request) {
       if (isExplicitSimulatedConnection(c)) {
         return !liveTradeRequested || process.env.ALLOW_PROD_SIMULATED === "1" || process.env.NODE_ENV !== "production"
       }
-      return normalizeQuickstartExchange(c) !== "bingx" && !liveTradeRequested
+      // For non-BingX base exchanges (Pionex, OrangeX), allow selection when
+      // live trade is NOT requested. BingX connections are always preferred
+      // for live trade when they have credentials (handled by auto-discovery).
+      return normalizeQuickstartExchange(c) !== "bingx"
     }
 
     // Fall back to auto-discovery only when the requested connection is missing

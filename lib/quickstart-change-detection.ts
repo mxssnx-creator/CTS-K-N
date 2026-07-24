@@ -54,19 +54,21 @@ export function sameOrderedSymbols(left: unknown[], right: unknown[]): boolean {
  * Historic/Main progress even when the operator submitted the same values.
  */
 export function collectQuickStartChangedFields(input: {
-  beforeConnection: Record<string, unknown>
-  beforeSettings: Record<string, unknown>
+  beforeConnection: Record<string, unknown> | null | undefined
+  beforeSettings: Record<string, unknown> | null | undefined
   nextConnection: Record<string, unknown>
   nextSettings: Record<string, unknown>
 }): string[] {
   const changed = new Set<string>()
+  const beforeConnection = input.beforeConnection || {}
+  const beforeSettings = input.beforeSettings || {}
   for (const [field, value] of Object.entries(input.nextConnection)) {
     if (QUICKSTART_AUDIT_FIELDS.has(field)) continue
-    if (!quickStartValuesEqual(input.beforeConnection[field], value)) changed.add(field)
+    if (!quickStartValuesEqual(beforeConnection[field], value)) changed.add(field)
   }
   for (const [field, value] of Object.entries(input.nextSettings)) {
     if (QUICKSTART_AUDIT_FIELDS.has(field)) continue
-    if (!quickStartValuesEqual(input.beforeSettings[field], value)) {
+    if (!quickStartValuesEqual(beforeSettings[field], value)) {
       changed.add(`connection_settings.${field}`)
     }
   }

@@ -34,6 +34,14 @@ function isActiveConnection(connection: any): boolean {
   return isTruthyRedisFlag(connection?.is_enabled_dashboard) || isTruthyRedisFlag(connection?.is_active)
 }
 
+function hasUsableCredentials(connection: any): boolean {
+  const key = String(connection?.api_key || connection?.apiKey || "")
+  const secret = String(connection?.api_secret || connection?.apiSecret || "")
+  if (key.length < 10 || secret.length < 10) return false
+  const banned = /PLACEHOLDER|00998877|^test|^replace_me|^[\u00b7*]+$/i
+  return !banned.test(key) && !banned.test(secret)
+}
+
 export function productionReadinessJson(result: ProductionReadinessResult) {
   const sharedPersistenceMissing = result.missingFields.some((item) => item.field === "redis_backend")
   return {
@@ -206,6 +214,25 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
         expected: "hash exists",
         actual: "missing",
       })
+    } else {
+      // Check if the connection has valid credentials for live trading
+      const connData = (await client.hgetall(`connection:${id}`).catch(() => ({}))) as Record<string, string>
+      if (connData && Object.keys(connData).length > 0) {
+        const hasCreds = hasUsableCredentials(connData)
+        if (!hasCreds) {
+          missingFields.push({
+            field: `connection:${id}.credentials`,
+            expected: "valid API key/secret",
+            actual: "missing or invalid credentials",
+            details: {
+              connectionId: id,
+              hasApiKey: !!(connData.api_key || connData.apiKey),
+              hasApiSecret: !!(connData.api_secret || connData.apiSecret),
+              reason: "Live trading requires valid exchange API credentials",
+            },
+          })
+        }
+      }
     }
   }
 

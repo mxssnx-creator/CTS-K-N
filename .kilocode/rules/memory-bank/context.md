@@ -40,6 +40,10 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] `posCountsVolumeRatio` 0.05 full prod flow: GET default 0.05, PATCH save/persist round-trip, flatKnobs mirror, clamp 0.01–0.25. Verified on prod build (.next-prod, :3100).
 - [x] Fix: QuickStart live button now shows ON when live_trade_requested is true - unified with options bar Control Orders switch behavior (checks live_trade_requested || is_live_trade || live_trade_enabled)
 - [x] Updated regression test to verify liveTradeUiFlag checks all three live trade states
+- [x] Fix: QuickStart connection selection logic - removed incorrect `!liveTradeRequested` condition that prevented BingX auto-discovery in live trade mode
+- [x] Fix: `collectQuickStartChangedFields` now handles null/undefined beforeConnection/beforeSettings parameters gracefully
+- [x] Fix: Removed unused `effective_flag_off` block code from RealTradeBlockCode type
+- [x] Fix: Production readiness checks now verify base connections have valid API credentials for live trading
 
 ## Current Structure
 

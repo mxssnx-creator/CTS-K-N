@@ -13,7 +13,6 @@ export type RealTradeBlockCode =
   | "credentials_missing"
   | "explicit_block"
   | "shared_redis_required"
-  | "effective_flag_off"
 
 export interface RealTradeReadiness {
   intent: "main" | "preset"
