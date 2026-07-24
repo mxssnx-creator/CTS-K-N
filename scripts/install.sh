@@ -505,6 +505,7 @@ ensure_python_pip_and_bun() {
       || fatal "Bun installation failed"
     [[ -x "$bun_install_dir/bin/bun" ]] || fatal "Bun installer did not create its executable"
     run_root ln -sfn "$bun_install_dir/bin/bun" "$global_bun"
+    run_root chmod -R a+rX "$bun_install_dir"
   fi
   [[ -x "$global_bun" ]] || fatal "Global Bun is missing after installation"
   run_as_service "$global_bun" --version >/dev/null 2>&1 || fatal "The service user cannot execute global Bun"

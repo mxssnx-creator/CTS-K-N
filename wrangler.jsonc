@@ -17,6 +17,9 @@
     "DEPLOYMENT_URL": "https://cts-k-n-9179.d.kiloapps.io",
     "DB_URL": "",
     "DB_TOKEN": "",
+    "DISABLE_IN_PROCESS_CONTINUITY": "1",
+    "DISABLE_TRADE_ENGINE_IN_PROCESS": "1",
+    "CTS_ENGINE_OWNER_WORKER": "1",
     "CTS_INLINE_REDIS_PERSISTENT_VOLUME": "1",
     "V0_REDIS_SNAPSHOT_PATH": "/data/redis/snapshot"
   },
