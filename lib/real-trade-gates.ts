@@ -157,9 +157,6 @@ export function evaluateRealTradeReadiness(
   } else if (infrastructureReason) {
     blockCode = "shared_redis_required"
     blockReason = infrastructureReason
-  } else if (!enabled) {
-    blockCode = "effective_flag_off"
-    blockReason = `${label} was requested but its effective flag is off; toggle the mode again to re-apply the state`
   }
 
   const canPlaceRealOrders = blockCode === null
