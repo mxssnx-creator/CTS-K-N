@@ -1,30 +1,38 @@
 #!/usr/bin/env node
 /**
- * Script to add BingX credentials to the bingx-x01 connection
- * Usage: node scripts/add-bingx-credentials.js
+ * Script to add BingX credentials to the bingx-x01 connection.
+ * Credentials are read from environment variables BINGX_API_KEY and BINGX_API_SECRET,
+ * which should be set via wrangler.jsonc secrets or .env.local before running.
+ * Usage: BINGX_API_KEY=... BINGX_API_SECRET=... node scripts/add-bingx-credentials.js
  */
 
 const { spawnSync } = require("child_process");
 
-const BINGX_API_KEY = "0HTardBdI36NCTGLu0EA6A91IjwdObw7gpxyvdKn8bgA3abe19X7ZKTN3sUy3rOHuKBSA2YQKdg9AuBONQ";
-const BINGX_API_SECRET = "XsuPgjzQtFY5YzZYuaPlAxFwt6Ljq6jf8PmFD76TVhSD6v82KtzdWszI3nFBm5pePufhSQGuHj23UM48ZqYKQ";
+function getBingxCredentials() {
+  const apiKey = process.env.BINGX_API_KEY || "";
+  const apiSecret = process.env.BINGX_API_SECRET || "";
+  if (apiKey.length < 10 || apiSecret.length < 10) {
+    console.error("[Setup] BINGX_API_KEY and BINGX_API_SECRET must be set in the environment (each at least 10 characters).");
+    process.exit(1);
+  }
+  return { apiKey, apiSecret }
+}
 
 async function main() {
+  const { apiKey, apiSecret } = getBingxCredentials();
   console.log("[Setup] Adding BingX credentials to bingx-x01 connection...");
-  
-  // Check if Redis is available
+
   const redisCheck = spawnSync("redis-cli", ["ping"], { encoding: "utf-8" });
   if (redisCheck.status !== 0) {
     console.error("[Setup] Redis is not available. Please start Redis first.");
     process.exit(1);
   }
-  
+
   console.log("[Setup] Redis is available.");
-  
-  // Update the connection with credentials
+
   const updates = [
-    ["HSET", "connection:bingx-x01", "api_key", BINGX_API_KEY],
-    ["HSET", "connection:bingx-x01", "api_secret", BINGX_API_SECRET],
+    ["HSET", "connection:bingx-x01", "api_key", apiKey],
+    ["HSET", "connection:bingx-x01", "api_secret", apiSecret],
     ["HSET", "connection:bingx-x01", "is_live_trade", "1"],
     ["HSET", "connection:bingx-x01", "live_trade_enabled", "1"],
     ["HSET", "connection:bingx-x01", "is_assigned", "1"],
@@ -33,7 +41,7 @@ async function main() {
     ["HSET", "connection:bingx-x01", "is_active", "1"],
     ["HSET", "connection:bingx-x01", "live_trade_requested", "1"],
   ];
-  
+
   for (const [cmd, key, field, value] of updates) {
     const result = spawnSync("redis-cli", [cmd, key, field, value], { encoding: "utf-8" });
     if (result.status === 0) {
@@ -42,13 +50,12 @@ async function main() {
       console.error(`[Setup] Failed to ${cmd} ${key} ${field}`);
     }
   }
-  
-  // Also update settings hash
+
   const settingsUpdates = [
-    ["HSET", "settings:connection_settings:bingx-x01", "api_key", BINGX_API_KEY],
-    ["HSET", "settings:connection_settings:bingx-x01", "api_secret", BINGX_API_SECRET],
+    ["HSET", "settings:connection_settings:bingx-x01", "api_key", apiKey],
+    ["HSET", "settings:connection_settings:bingx-x01", "api_secret", apiSecret],
   ];
-  
+
   for (const [cmd, key, field, value] of settingsUpdates) {
     const result = spawnSync("redis-cli", [cmd, key, field, value], { encoding: "utf-8" });
     if (result.status === 0) {
@@ -57,12 +64,7 @@ async function main() {
       console.error(`[Setup] Failed to ${cmd} ${key} ${field}`);
     }
   }
-  
-  // Set environment variables for next restarts
-  console.log("\n[Setup] Add these to your .env.local file:");
-  console.log(`BINGX_API_KEY=${BINGX_API_KEY}`);
-  console.log(`BINGX_API_SECRET=${BINGX_API_SECRET}`);
-  
+
   console.log("\n[Setup] ✅ BingX credentials added to bingx-x01 connection");
 }
 

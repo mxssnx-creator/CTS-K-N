@@ -111,15 +111,27 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
   // one worker with no separate long-lived engine owner) legitimately opts into
   // inline-local when the operator sets ALLOW_PROD_INLINE_REDIS=1 and is NOT
   // enabling live trading against it. Honour that explicit opt-in instead of
-  // deadlocking production startup.
+  // deadlocking production startup. For persistent inline Redis on Kilo
+  // serverless, use kiloServerlessPersistentInline below.
   const serverlessInlineOptIn =
     serverlessRuntime &&
     process.env.ALLOW_PROD_INLINE_REDIS === "1" &&
     (process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1" || process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1")
+  // Kilo serverless deploys can also use persistent inline Redis when the
+  // operator has explicitly declared a persistent volume and snapshot path.
+  const snapshotPath = String(process.env.V0_REDIS_SNAPSHOT_PATH || "").trim()
+  const absoluteNonTmpPath = snapshotPath.startsWith("/") && !snapshotPath.startsWith("/tmp/")
+  const kiloServerlessPersistentInline =
+    serverlessRuntime &&
+    isKiloDeploymentRuntime() &&
+    process.env.ALLOW_PROD_INLINE_REDIS === "1" &&
+    process.env.CTS_INLINE_REDIS_PERSISTENT_VOLUME === "1" &&
+    absoluteNonTmpPath
   const inlineRedisEnvAllowed = process.env.ALLOW_PROD_INLINE_REDIS !== "0"
   const inlineRedisAllowed =
     kiloLocalPreviewInlineAllowed ||
     serverlessInlineOptIn ||
+    kiloServerlessPersistentInline ||
     (
       !serverlessRuntime &&
       (inlineRedisEnvAllowed || process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1")
@@ -132,7 +144,7 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
       details: {
         deploymentRuntime: getDeploymentRuntimeLabel(),
         reason: serverlessRuntime
-          ? "serverless request workers require shared Redis for settings, migrations, counters, and engine-owner coordination"
+          ? "serverless request workers require shared Redis for settings, migrations, counters, and engine-owner coordination; use CTS_INLINE_REDIS_PERSISTENT_VOLUME=1 with a valid V0_REDIS_SNAPSHOT_PATH on Kilo to opt into persistent inline Redis"
           : "inline-local Redis was explicitly disabled with ALLOW_PROD_INLINE_REDIS=0",
       },
     })
@@ -140,8 +152,7 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
   if (
     process.env.NODE_ENV === "production" &&
     backend === "inline-local" &&
-    isKiloDeploymentRuntime() &&
-    !serverlessRuntime
+    isKiloDeploymentRuntime()
   ) {
     const snapshotPath = String(process.env.V0_REDIS_SNAPSHOT_PATH || "").trim()
     const persistentVolumeDeclared = process.env.CTS_INLINE_REDIS_PERSISTENT_VOLUME === "1"
@@ -154,7 +165,7 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
         details: {
           deploymentRuntime: getDeploymentRuntimeLabel(),
           persistentVolumeDeclared,
-          reason: "Kilo long-lived Inline Redis requires an explicitly mounted persistent volume; container/tmp storage is not a cross-restart durability contract",
+          reason: "Kilo Inline Redis requires an explicitly mounted persistent volume; container/tmp storage is not a cross-restart durability contract",
         },
       })
     } else {

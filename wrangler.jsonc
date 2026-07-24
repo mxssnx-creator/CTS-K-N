@@ -16,7 +16,9 @@
     "NEXT_PUBLIC_APP_URL": "https://cts-k-n-9179.d.kiloapps.io",
     "DEPLOYMENT_URL": "https://cts-k-n-9179.d.kiloapps.io",
     "DB_URL": "",
-    "DB_TOKEN": ""
+    "DB_TOKEN": "",
+    "CTS_INLINE_REDIS_PERSISTENT_VOLUME": "1",
+    "V0_REDIS_SNAPSHOT_PATH": "/data/redis/snapshot"
   },
   "assets": {
     "directory": ".open-next/assets",
@@ -26,7 +28,7 @@
     "crons": ["* * * * *"]
   },
   "secrets": {
-    "required": ["ADMIN_SECRET", "CRON_SECRET", "ENCRYPTION_KEY", "JWT_SECRET"]
+    "required": ["ADMIN_SECRET", "CRON_SECRET", "ENCRYPTION_KEY", "JWT_SECRET", "BINGX_API_KEY", "BINGX_API_SECRET"]
   },
   "observability": {
     "enabled": true

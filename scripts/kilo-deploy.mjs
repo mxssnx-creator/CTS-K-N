@@ -55,6 +55,8 @@ const WORKER_BINDING_ALLOWLIST = [
   "PIONEX_API_SECRET",
   "ORANGEX_API_KEY",
   "ORANGEX_API_SECRET",
+  "CTS_INLINE_REDIS_PERSISTENT_VOLUME",
+  "V0_REDIS_SNAPSHOT_PATH",
 ]
 
 function run(command, args, extraEnv = {}) {
@@ -111,7 +113,8 @@ async function main() {
       (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) ||
       (process.env.DB_URL && process.env.DB_TOKEN) ||
       (process.env.KILO_DB_URL && process.env.KILO_DB_TOKEN) ||
-      (process.env.KILO_DATABASE_URL && process.env.KILO_DATABASE_TOKEN),
+      (process.env.KILO_DATABASE_URL && process.env.KILO_DATABASE_TOKEN) ||
+      (process.env.CTS_INLINE_REDIS_PERSISTENT_VOLUME === "1" && process.env.V0_REDIS_SNAPSHOT_PATH?.startsWith("/") && !process.env.V0_REDIS_SNAPSHOT_PATH?.startsWith("/tmp/")),
     )
     await run("bash", ["scripts/post-deploy-verify.sh"], {
       DEPLOYMENT_URL: deploymentUrl,
