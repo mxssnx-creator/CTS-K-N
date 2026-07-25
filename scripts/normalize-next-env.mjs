@@ -87,6 +87,24 @@ function isValidJson(filePath) {
   }
 }
 
+function isValidPrerenderManifest(filePath) {
+  if (!isValidJson(filePath)) return false
+  try {
+    const data = JSON.parse(readFileSync(filePath, 'utf8'))
+    if (typeof data !== 'object' || data === null) return false
+    return Number(data.version) === 4
+      && typeof data.routes === 'object' && data.routes !== null
+      && typeof data.dynamicRoutes === 'object' && data.dynamicRoutes !== null
+      && Array.isArray(data.notFoundRoutes)
+      && typeof data.preview === 'object' && data.preview !== null
+      && typeof data.preview.previewModeId === 'string' && data.preview.previewModeId.length === 32
+      && typeof data.preview.previewModeSigningKey === 'string'
+      && typeof data.preview.previewModeEncryptionKey === 'string'
+  } catch {
+    return false
+  }
+}
+
 function writeJsonAtomically(filePath, value) {
   mkdirSync(dirname(filePath), { recursive: true })
   const temporaryPath = `${filePath}.${process.pid}.tmp`
@@ -141,7 +159,18 @@ function reconstructPrerenderManifest(serverAppRoot) {
     }
   }
   if (Object.keys(routes).length === 0) {
-    throw new Error(`[next-env] cannot reconstruct prerender-manifest.json: no rendered app routes in ${serverAppRoot}`)
+    console.warn(`[next-env] cannot reconstruct prerender-manifest.json: no rendered app routes in ${serverAppRoot}; writing fallback`)
+    return {
+      version: 4,
+      routes: {},
+      dynamicRoutes: {},
+      notFoundRoutes: [],
+      preview: {
+        previewModeId: randomBytes(16).toString('hex'),
+        previewModeSigningKey: randomBytes(32).toString('hex'),
+        previewModeEncryptionKey: randomBytes(32).toString('hex'),
+      },
+    }
   }
   return {
     version: 4,
@@ -158,8 +187,8 @@ function reconstructPrerenderManifest(serverAppRoot) {
 
 const prerenderManifest = join(distDir, 'prerender-manifest.json')
 const standalonePrerenderManifest = join(standaloneDistDir, 'prerender-manifest.json')
-if (!isValidJson(prerenderManifest)) {
-  if (isValidJson(standalonePrerenderManifest)) {
+if (!isValidPrerenderManifest(prerenderManifest)) {
+  if (isValidPrerenderManifest(standalonePrerenderManifest)) {
     copyFileSync(standalonePrerenderManifest, prerenderManifest)
     console.warn(`[next-env] restored invalid ${prerenderManifest} from standalone build output`)
   } else {
@@ -168,10 +197,10 @@ if (!isValidJson(prerenderManifest)) {
     console.warn(`[next-env] reconstructed invalid ${prerenderManifest} from rendered app routes`)
   }
 }
-if (!isValidJson(prerenderManifest)) {
+if (!isValidPrerenderManifest(prerenderManifest)) {
   throw new Error(`[next-env] ${prerenderManifest} is missing or is not valid JSON`)
 }
-if (existsSync(join(distDir, 'standalone')) && !isValidJson(standalonePrerenderManifest)) {
+if (existsSync(join(distDir, 'standalone')) && !isValidPrerenderManifest(standalonePrerenderManifest)) {
   mkdirSync(dirname(standalonePrerenderManifest), { recursive: true })
   copyFileSync(prerenderManifest, standalonePrerenderManifest)
   console.warn(`[next-env] synchronized invalid ${standalonePrerenderManifest}`)
