@@ -40,16 +40,28 @@ import {
 } from "@/lib/sets-compaction"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import {
+  type CommonCoordinationSettings,
+} from "@/lib/common-indicator-config"
+import {
+  calculateMultiRangeCoordination,
+  DEFAULT_MAIN_COORDINATION_SETTINGS,
+  type MultiRangeCoordination,
+} from "@/lib/multi-range-coordination"
+import {
   buildAdaptiveTrendTpRange,
+  calculateCombinedTrendSignal,
   calculateTrendSignal,
   DEFAULT_TREND_ACTIVE_SITUATION_RATIOS,
   DEFAULT_TREND_DRAWDOWN_FACTORS,
   DEFAULT_TREND_LAST_SITUATION_RATIOS,
   DEFAULT_TREND_MIN_AGREEMENT,
+  DEFAULT_TREND_RANGE_STEPS,
+  DEFAULT_TREND_HIGHER_RANGE_DRAWDOWN_SCALE,
   DEFAULT_TREND_TIMEFRAMES_MINUTES,
   DEFAULT_TREND_TP_MAX_FACTOR,
   DEFAULT_TREND_TP_MIN_MULTIPLIER,
   DEFAULT_TREND_TP_STEP,
+  normalizeTrendTimeframesMinutes,
 } from "@/lib/trend-indication"
 
 // Default limits per indication type (independently configurable)
@@ -144,6 +156,22 @@ return { tostring(grossProfit), tostring(grossLoss), tostring(count) }
 `
 
 type IndicationCandidate = { setKey: string; indication: any; config: any }
+
+function resolveIndicationDirection(indication: any): "long" | "short" | null {
+  if (indication?.direction === "long" || indication?.direction === "short") {
+    return indication.direction
+  }
+  if (indication?.metadata?.direction === "long" || indication?.metadata?.direction === "short") {
+    return indication.metadata.direction
+  }
+  const signedValue = [
+    indication?.metadata?.secondDir,
+    indication?.metadata?.movement,
+    indication?.metadata?.signedPriceChange,
+    indication?.metadata?.netMovement,
+  ].map(Number).find((value) => Number.isFinite(value) && value !== 0)
+  return signedValue === undefined ? null : signedValue > 0 ? "long" : "short"
+}
 
 async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T, index: number) => Promise<R>): Promise<R[]> {
   if (items.length === 0) return []
@@ -242,12 +270,27 @@ export class IndicationSetsProcessor {
     : [0.5, 1.5, 3.0]
   private activeAdvancedMinPositions = 3
   private activeAdvancedContinuationRatio = 0.6
+  private directionEnabled = true
+  private moveEnabled = true
+  private activeEnabled = true
+  private activeAdvancedEnabled = true
+  private optimalEnabled = true
   private trendEnabled = true
   private trendTimeframesMinutes: number[] = [...DEFAULT_TREND_TIMEFRAMES_MINUTES]
   private trendDrawdownFactors: number[] = [...DEFAULT_TREND_DRAWDOWN_FACTORS]
   private trendLastSituationRatios: number[] = [...DEFAULT_TREND_LAST_SITUATION_RATIOS]
   private trendActiveSituationRatios: number[] = [...DEFAULT_TREND_ACTIVE_SITUATION_RATIOS]
   private trendMinAgreement = DEFAULT_TREND_MIN_AGREEMENT
+  private trendCombinedEnabled = true
+  private trendRangeSteps: number[] = [...DEFAULT_TREND_RANGE_STEPS]
+  private trendHigherRangeDrawdownScale = DEFAULT_TREND_HIGHER_RANGE_DRAWDOWN_SCALE
+  private defaultCoordination: CommonCoordinationSettings = {
+    ...DEFAULT_MAIN_COORDINATION_SETTINGS,
+    timeframesMinutes: [...DEFAULT_MAIN_COORDINATION_SETTINGS.timeframesMinutes],
+    rangeSteps: [...DEFAULT_MAIN_COORDINATION_SETTINGS.rangeSteps],
+    drawdownRatios: [...DEFAULT_MAIN_COORDINATION_SETTINGS.drawdownRatios],
+  }
+  private directionPostChangeOnly = true
   private trendPositionCostPct = 0.02
   private trendTpMinMultiplier = DEFAULT_TREND_TP_MIN_MULTIPLIER
   private trendTpMaxFactor = DEFAULT_TREND_TP_MAX_FACTOR
@@ -320,6 +363,45 @@ export class IndicationSetsProcessor {
       // is empty on a fresh install.
       const settings = await getAppSettings()
       if (settings && Object.keys(settings).length > 0) {
+        this.defaultCoordination = {
+          enabled:
+            settings.defaultCoordinationEnabled !== false &&
+            settings.defaultCoordinationEnabled !== "false",
+          timeframesMinutes: this.parsePositiveNumericList(
+            settings.defaultCoordinationRanges,
+            DEFAULT_MAIN_COORDINATION_SETTINGS.timeframesMinutes,
+          ).map((value) => Math.max(1, Math.round(value))),
+          rangeSteps: this.parsePositiveNumericList(
+            settings.defaultCoordinationRangeSteps,
+            DEFAULT_MAIN_COORDINATION_SETTINGS.rangeSteps,
+          ),
+          drawdownRatios: this.parsePositiveNumericList(
+            settings.defaultCoordinationDrawdownRatios,
+            DEFAULT_MAIN_COORDINATION_SETTINGS.drawdownRatios,
+          ),
+          higherRangeDrawdownScale: this.parseNonNegativeNumber(
+            settings.defaultCoordinationHigherRangeDrawdownScale,
+            DEFAULT_MAIN_COORDINATION_SETTINGS.higherRangeDrawdownScale,
+          ),
+          minAgreement: Math.max(0.5, Math.min(
+            1,
+            this.parsePositiveNumber(
+              settings.defaultCoordinationMinAgreement,
+              DEFAULT_MAIN_COORDINATION_SETTINGS.minAgreement,
+            ),
+          )),
+          minimumSignals: Math.max(1, Math.round(this.parsePositiveNumber(
+            settings.defaultCoordinationMinimumSignals,
+            DEFAULT_MAIN_COORDINATION_SETTINGS.minimumSignals,
+          ))),
+          shortDifferenceRatio: this.parseNonNegativeNumber(
+            settings.defaultCoordinationShortDifferenceRatio,
+            DEFAULT_MAIN_COORDINATION_SETTINGS.shortDifferenceRatio,
+          ),
+        }
+        this.directionPostChangeOnly =
+          settings.directionPostChangeOnly !== false &&
+          settings.directionPostChangeOnly !== "false"
         // Load independent limits per type
         if (settings.databaseSizeDirection) this.limits.direction = Number(settings.databaseSizeDirection)
         if (settings.databaseSizeMove) this.limits.move = Number(settings.databaseSizeMove)
@@ -336,19 +418,32 @@ export class IndicationSetsProcessor {
           this.indicationTimeoutMs = Math.max(100, Math.min(3000, Number(settings.indicationTimeoutMs)))
         }
 
-        // Config-grid controls (optional)
-        this.directionMoveRanges = this.parseRangeSettings(
-          settings.directionRangeStart,
-          settings.directionRangeEnd,
-          settings.directionRangeStep,
-          this.directionMoveRanges,
-        )
-        this.optimalRanges = this.parseRangeSettings(
-          settings.optimalRangeStart,
-          settings.optimalRangeEnd,
-          settings.optimalRangeStep,
-          this.optimalRanges,
-        )
+        this.directionEnabled = settings.directionEnabled !== false && settings.directionEnabled !== "false"
+        this.moveEnabled = settings.moveEnabled !== false && settings.moveEnabled !== "false"
+        this.activeEnabled = settings.activeEnabled !== false && settings.activeEnabled !== "false"
+        this.activeAdvancedEnabled =
+          settings.activeAdvancedEnabled !== false && settings.activeAdvancedEnabled !== "false"
+        this.optimalEnabled = settings.optimalEnabled !== false && settings.optimalEnabled !== "false"
+
+        // Config-grid controls. Explicit sample lists retain sparse
+        // short/medium/long coverage; legacy from/to/step values remain
+        // supported when no list is configured.
+        this.directionMoveRanges = settings.indicationSampleRanges !== undefined
+          ? this.parsePositiveNumericList(settings.indicationSampleRanges, this.directionMoveRanges)
+          : this.parseRangeSettings(
+              settings.directionRangeStart ?? settings.directionRangeFrom,
+              settings.directionRangeEnd ?? settings.directionRangeTo,
+              settings.directionRangeStep,
+              this.directionMoveRanges,
+            )
+        this.optimalRanges = settings.optimalSampleRanges !== undefined
+          ? this.parsePositiveNumericList(settings.optimalSampleRanges, this.directionMoveRanges)
+          : this.parseRangeSettings(
+              settings.optimalRangeStart,
+              settings.optimalRangeEnd,
+              settings.optimalRangeStep,
+              this.directionMoveRanges,
+            )
         this.drawdownRatios = this.parseNumericList(settings.indicationDrawdownRatios, this.drawdownRatios)
         this.lastPartRatios = this.parseNumericList(settings.indicationLastPartRatios, this.lastPartRatios)
         this.factorMultipliers = this.parseNumericList(settings.indicationFactorMultipliers, this.factorMultipliers)
@@ -356,7 +451,12 @@ export class IndicationSetsProcessor {
         this.activeTimeRatios = this.parseNumericList(settings.activeTimeRatios, this.activeTimeRatios)
         const activeAdvanced = settings.active_advanced || settings.activeAdvanced || {}
         this.activeAdvancedActivityRatios = this.parseRangeObject(
-          activeAdvanced.activity_ratios || settings.activeAdvancedActivityRatios,
+          activeAdvanced.activity_ratios ||
+            settings.activeAdvancedActivityRatios || {
+              from: settings.activeAdvancedActivityRatiosFrom,
+              to: settings.activeAdvancedActivityRatiosTo,
+              step: settings.activeAdvancedActivityRatiosStep,
+            },
           this.activeAdvancedActivityRatios,
         )
         this.activeAdvancedMinPositions = Math.max(
@@ -387,6 +487,21 @@ export class IndicationSetsProcessor {
         this.trendMinAgreement = Math.max(
           0.5,
           Math.min(1, this.parsePositiveNumber(settings.trendMinAgreement, this.trendMinAgreement)),
+        )
+        this.trendCombinedEnabled =
+          settings.trendCombinedEnabled !== false &&
+          settings.trendCombinedEnabled !== "false"
+        this.trendRangeSteps = this.parsePositiveNumericList(
+          settings.trendRangeSteps,
+          [...DEFAULT_TREND_RANGE_STEPS],
+        )
+        this.trendHigherRangeDrawdownScale = Math.max(
+          0,
+          Math.min(
+              5,
+              Number(settings.trendHigherRangeDrawdownScale) ||
+              DEFAULT_TREND_HIGHER_RANGE_DRAWDOWN_SCALE,
+          ),
         )
         this.trendPositionCostPct = this.parsePositiveNumber(
           settings.positionCost ?? settings.exchangePositionCost,
@@ -586,11 +701,8 @@ export class IndicationSetsProcessor {
   }
 
   private parseTrendTimeframes(raw: any, fallback: number[]): number[] {
-    const parsed = this.parseNumericList(raw, fallback)
-      .map((value) => Math.round(value))
-      .filter((value) => value >= 1 && value <= 60)
-      .sort((left, right) => left - right)
-    return parsed.length > 0 ? Array.from(new Set(parsed)) : fallback
+    const normalized = normalizeTrendTimeframesMinutes(raw)
+    return normalized.length > 0 ? normalized : fallback
   }
 
   private parseRangeObject(raw: any, fallback: number[]): number[] {
@@ -641,6 +753,21 @@ export class IndicationSetsProcessor {
         // history fills naturally.
         return
       }
+      const multiRangeCoordination = calculateMultiRangeCoordination({
+        pricesOldestFirst: priceHistory,
+        positionCostPct: this.trendPositionCostPct,
+        config: this.defaultCoordination,
+        rangeUnit: "samples",
+      })
+      const directionPostChangeCoordination = calculateMultiRangeCoordination({
+        pricesOldestFirst: priceHistory,
+        positionCostPct: this.trendPositionCostPct,
+        config: this.defaultCoordination,
+        requireDirectionChange: this.directionPostChangeOnly,
+        rangeUnit: "samples",
+      })
+      marketData.__multiRangeCoordination = multiRangeCoordination
+      marketData.__directionPostChangeCoordination = directionPostChangeCoordination
 
       const apiSetFillEnabled =
         !isServerlessDeploymentRuntime() ||
@@ -670,15 +797,28 @@ export class IndicationSetsProcessor {
           return { type, total: 0, qualified: 0, configs: 0, error: true }
         }
       }
+      const disabledResult = (type: string) => ({ type, total: 0, qualified: 0, configs: 0, disabled: true })
       const [directionResults, moveResults, activeResults, activeAdvancedResults, optimalResults, trendResults] = await Promise.all([
-        runType("direction", () => this.processDirectionSet(symbol, marketData)),
-        runType("move", () => this.processMoveSet(symbol, marketData)),
-        runType("active", () => this.processActiveSet(symbol, marketData)),
-        runType("active_advanced", () => this.processActiveAdvancedSet(symbol, marketData)),
-        runType("optimal", () => this.processOptimalSet(symbol, marketData)),
+        this.directionEnabled
+          ? runType("direction", () => this.processDirectionSet(symbol, marketData))
+          : disabledResult("direction"),
+        this.moveEnabled
+          ? runType("move", () => this.processMoveSet(symbol, marketData))
+          : disabledResult("move"),
+        this.activeEnabled
+          ? runType("active", () => this.processActiveSet(symbol, marketData))
+          : disabledResult("active"),
+        this.activeAdvancedEnabled
+          ? runType("active_advanced", () => this.processActiveAdvancedSet(symbol, marketData))
+          : disabledResult("active_advanced"),
+        this.optimalEnabled
+          ? runType("optimal", () => this.processOptimalSet(symbol, marketData))
+          : disabledResult("optimal"),
         // Trend is deliberately last: it is the newest Main indication type
         // and retains the requested ordering in engine output and Settings.
-        runType("trend", () => this.processTrendSet(symbol, marketData)),
+        this.trendEnabled
+          ? runType("trend", () => this.processTrendSet(symbol, marketData))
+          : disabledResult("trend"),
       ])
 
       const duration = Date.now() - startTime
@@ -863,10 +1003,14 @@ export class IndicationSetsProcessor {
             if (!indication) continue
             
             total++
-            // Derive direction from the actual signal — firstDir > 0 means long,
-            // firstDir < 0 means short. This MUST be computed BEFORE building the
-            // set key so long and short signals write to INDEPENDENT Redis keys.
-            const direction = indication.metadata?.firstDir > 0 ? "long" : "short"
+            // A reversal is traded in the NEW market direction (secondDir),
+            // never the direction that existed before the change. The old
+            // firstDir mapping inverted every reversal-side counter.
+            const direction =
+              indication.metadata?.direction === "short" ||
+              Number(indication.metadata?.secondDir) < 0
+                ? "short"
+                : "long"
             indication.direction = direction
             // Key includes direction so long/short never share the same Redis key.
             // Without :dir the same config combo for both directions overwrites each
@@ -881,6 +1025,43 @@ export class IndicationSetsProcessor {
           }
         }
       }
+    }
+
+    const coordinated =
+      marketData?.__directionPostChangeCoordination as MultiRangeCoordination | undefined
+    if (
+      coordinated?.passed &&
+      (coordinated.direction === "long" || coordinated.direction === "short")
+    ) {
+      total++
+      const direction = coordinated.direction
+      const stepKey = coordinated.passedRangeSteps.join("-") || "none"
+      const indication = {
+        profitFactor: 0,
+        signalScore: 1 + coordinated.score,
+        rawSignalStrength: coordinated.score,
+        confidence: coordinated.agreement,
+        direction,
+        metadata: {
+          direction,
+          mode: "multi_range",
+          sameMarketMoveRequired: true,
+          multiRangeCoordination: coordinated,
+        },
+      }
+      candidates.push({
+        setKey:
+          `indication_set:${this.connectionId}:${symbol}:direction:${direction}` +
+          `:multi_range:steps${stepKey}`,
+        indication,
+        config: {
+          mode: "multi_range",
+          ranges: this.defaultCoordination.timeframesMinutes,
+          rangeSteps: this.defaultCoordination.rangeSteps,
+          higherRangeDrawdownScale: this.defaultCoordination.higherRangeDrawdownScale,
+          postDirectionChangeOnly: this.directionPostChangeOnly,
+        },
+      })
     }
 
     const pendingWrites = await this.attachQualifiedCandidates(symbol, marketData, candidates)
@@ -936,6 +1117,40 @@ export class IndicationSetsProcessor {
       }
     }
 
+    const coordinated = marketData?.__multiRangeCoordination as MultiRangeCoordination | undefined
+    if (
+      coordinated?.passed &&
+      (coordinated.direction === "long" || coordinated.direction === "short")
+    ) {
+      total++
+      const direction = coordinated.direction
+      const stepKey = coordinated.passedRangeSteps.join("-") || "none"
+      candidates.push({
+        setKey:
+          `indication_set:${this.connectionId}:${symbol}:move:${direction}` +
+          `:multi_range:steps${stepKey}`,
+        indication: {
+          profitFactor: 0,
+          signalScore: 1 + coordinated.score * 0.9,
+          rawSignalStrength: coordinated.score,
+          confidence: coordinated.agreement,
+          direction,
+          metadata: {
+            direction,
+            mode: "multi_range",
+            sameMarketMoveRequired: true,
+            postDirectionChangeOnly: false,
+            multiRangeCoordination: coordinated,
+          },
+        },
+        config: {
+          mode: "multi_range",
+          rangeSteps: this.defaultCoordination.rangeSteps,
+          ranges: this.defaultCoordination.timeframesMinutes,
+        },
+      })
+    }
+
     const pendingWrites = await this.attachQualifiedCandidates(symbol, marketData, candidates)
     qualified = pendingWrites.length
 
@@ -974,7 +1189,12 @@ export class IndicationSetsProcessor {
                 })
                 if (indication) {
                   total++
-                  const setKey = `indication_set:${this.connectionId}:${symbol}:active:t${threshold}:dd${drawdownRatio}:ar${activeTimeRatio}:lp${lastPartRatio}:f${factorMultiplier}`
+                  const direction = resolveIndicationDirection(indication)
+                  if (!direction) continue
+                  indication.direction = direction
+                  const setKey =
+                    `indication_set:${this.connectionId}:${symbol}:active:${direction}` +
+                    `:t${threshold}:dd${drawdownRatio}:ar${activeTimeRatio}:lp${lastPartRatio}:f${factorMultiplier}`
                   candidates.push({
                     setKey,
                     indication,
@@ -988,6 +1208,41 @@ export class IndicationSetsProcessor {
           }
         }
       }
+    }
+
+    const coordinated = marketData?.__multiRangeCoordination as MultiRangeCoordination | undefined
+    if (
+      coordinated?.passed &&
+      coordinated.activityAgreement >= 0.5 &&
+      (coordinated.direction === "long" || coordinated.direction === "short")
+    ) {
+      total++
+      const direction = coordinated.direction
+      const stepKey = coordinated.passedRangeSteps.join("-") || "none"
+      candidates.push({
+        setKey:
+          `indication_set:${this.connectionId}:${symbol}:active:${direction}` +
+          `:multi_range:steps${stepKey}`,
+        indication: {
+          profitFactor: 0,
+          signalScore: 1 + coordinated.score * 0.8,
+          rawSignalStrength: coordinated.score,
+          confidence: coordinated.activityAgreement,
+          direction,
+          metadata: {
+            direction,
+            mode: "multi_range",
+            sameMarketMoveRequired: true,
+            postDirectionChangeOnly: false,
+            multiRangeCoordination: coordinated,
+          },
+        },
+        config: {
+          mode: "multi_range",
+          rangeSteps: this.defaultCoordination.rangeSteps,
+          ranges: this.defaultCoordination.timeframesMinutes,
+        },
+      })
     }
 
     const pendingWrites = await this.attachQualifiedCandidates(symbol, marketData, candidates)
@@ -1026,7 +1281,9 @@ export class IndicationSetsProcessor {
         total++
         const direction = indication.metadata?.direction === "short" ? "short" : "long"
         indication.direction = direction
-        const setKey = `indication_set:${this.connectionId}:${symbol}:active_advanced:ar${activityRatio}:min${minPositions}:cr${continuationRatio}:f${factorMultiplier}`
+        const setKey =
+          `indication_set:${this.connectionId}:${symbol}:active_advanced:${direction}` +
+          `:ar${activityRatio}:min${minPositions}:cr${continuationRatio}:f${factorMultiplier}`
 
         candidates.push({ setKey, indication, config })
       }
@@ -1059,7 +1316,12 @@ export class IndicationSetsProcessor {
         if (!indication) continue
         
         total++
-        const setKey = `indication_set:${this.connectionId}:${symbol}:optimal:range${range}:factor${factorMultiplier}`
+        const direction = resolveIndicationDirection(indication)
+        if (!direction) continue
+        indication.direction = direction
+        const setKey =
+          `indication_set:${this.connectionId}:${symbol}:optimal:${direction}` +
+          `:range${range}:factor${factorMultiplier}`
         candidates.push({ setKey, indication, config: { range, factorMultiplier } })
       }
     }
@@ -1142,6 +1404,52 @@ export class IndicationSetsProcessor {
       }
     }
 
+    if (this.trendCombinedEnabled) {
+      const combined = calculateCombinedTrendSignal(prices, {
+        timeframesMinutes: this.trendTimeframesMinutes,
+        drawdownFactors: this.trendDrawdownFactors,
+        lastSituationRatios: this.trendLastSituationRatios,
+        activeSituationRatios: this.trendActiveSituationRatios,
+        rangeSteps: this.trendRangeSteps,
+        positionCostPct: this.trendPositionCostPct,
+        minAgreement: this.trendMinAgreement,
+        higherRangeDrawdownScale: this.trendHigherRangeDrawdownScale,
+      })
+      if (combined) {
+        total++
+        const direction = combined.direction
+        const stepKey = combined.passedRangeSteps.join("-")
+        candidates.push({
+          setKey:
+            `indication_set:${this.connectionId}:${symbol}:trend:${direction}` +
+            `:combined:steps${stepKey}`,
+          indication: {
+            profitFactor: 0,
+            signalScore: combined.signalScore,
+            rawSignalStrength: combined.signalScore,
+            confidence: combined.confidence,
+            direction,
+            metadata: {
+              ...combined.metadata,
+              adaptiveTpRange: adaptiveTp,
+              combined: true,
+            },
+          },
+          config: {
+            combined: true,
+            timeframesMinutes: this.trendTimeframesMinutes,
+            drawdownFactors: this.trendDrawdownFactors,
+            rangeSteps: this.trendRangeSteps,
+            minAgreement: this.trendMinAgreement,
+            higherRangeDrawdownScale: this.trendHigherRangeDrawdownScale,
+            positionCostPct: this.trendPositionCostPct,
+            tpFactors: adaptiveTp.factors,
+            tpRange: adaptiveTp,
+          },
+        })
+      }
+    }
+
     const pendingWrites = await this.attachQualifiedCandidates(symbol, marketData, candidates)
     if (pendingWrites.length > 0) await this.batchSaveIndications(pendingWrites, "trend")
 
@@ -1187,17 +1495,10 @@ export class IndicationSetsProcessor {
       const compactionCfg = await this.resolveCompaction(type as keyof IndicationSetLimits)
       const grouped = new Map<string, string[]>()
       writes.forEach(({ setKey, indication, config }, idx) => {
-        // Resolve direction with progressive fallbacks. The strategy
-        // coordinator + live-stage both use this field, so it MUST
-        // be on the persisted entry to avoid silent "long" fallback.
-        const direction: "long" | "short" =
-          indication.direction === "short"
-            ? "short"
-            : indication.direction === "long"
-            ? "long"
-            : indication?.metadata?.firstDir < 0
-            ? "short"
-            : "long"
+        // Unknown direction is rejected rather than silently attributed to
+        // Long. Every supported calculator emits an explicit side.
+        const direction = resolveIndicationDirection(indication)
+        if (!direction) return
 
         const entry = {
           id: `${type}_${now}_${idx}_${Math.random().toString(36).slice(2, 6)}`,
@@ -1257,15 +1558,9 @@ export class IndicationSetsProcessor {
     try {
       const client = await getCachedClient()
 
-      // Same direction-resolution logic as batchSaveIndications — see comment there.
-      const direction: "long" | "short" =
-        indication.direction === "short"
-          ? "short"
-          : indication.direction === "long"
-          ? "long"
-          : indication?.metadata?.firstDir < 0
-          ? "short"
-          : "long"
+      // Same fail-closed direction resolution as batchSaveIndications.
+      const direction = resolveIndicationDirection(indication)
+      if (!direction) return
 
       const id = `${type}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
       // Newest-at-last per spec. Redis RPUSH appends at the tail, matching
@@ -1700,16 +1995,51 @@ export class IndicationSetsProcessor {
 
     // Opposite direction = signal
     if ((firstDir > 0 && secondDir < 0) || (firstDir < 0 && secondDir > 0)) {
-      const reversalStrength = Math.abs(firstDir + secondDir)
+      const direction = secondDir > 0 ? "long" : "short"
+      const oldestAfterChange = Number(secondHalf[0])
+      const newestAfterChange = Number(secondHalf[secondHalf.length - 1])
+      const postChangeMovement =
+        oldestAfterChange > 0
+          ? (newestAfterChange - oldestAfterChange) / oldestAfterChange
+          : 0
+      const postChangeCostRatio =
+        Math.abs(postChangeMovement * 100) / Math.max(this.trendPositionCostPct, 0.000001)
+      let alignedMoves = 0
+      for (let index = 1; index < secondHalf.length; index++) {
+        const move = secondHalf[index] - secondHalf[index - 1]
+        if ((direction === "long" && move > 0) || (direction === "short" && move < 0)) alignedMoves++
+      }
+      const postChangeAgreement = alignedMoves / Math.max(1, secondHalf.length - 1)
+      const passedRangeSteps = this.defaultCoordination.rangeSteps.filter(
+        (step) => postChangeCostRatio + Number.EPSILON >= step,
+      )
+      const reversalStrength = Math.abs(secondDir - firstDir)
       const drawdownPenalty = reversalStrength / Math.max(drawdownRatio * 10, 1)
       const tailWeight = 1 + lastPartRatio
-      const signalScore = 1.0 + reversalStrength * factorMultiplier * tailWeight - drawdownPenalty
+      const signalScore =
+        1.0 +
+        reversalStrength * factorMultiplier * tailWeight -
+        drawdownPenalty
       return {
         profitFactor: 0,
         signalScore,
         rawSignalStrength: signalScore,
         confidence: Math.min(1.0, ((Math.abs(firstDir) + Math.abs(secondDir)) / 2) * factorMultiplier),
-        metadata: { firstDir, secondDir, range, drawdownRatio, lastPartRatio, factorMultiplier },
+        metadata: {
+          firstDir,
+          secondDir,
+          direction,
+          directionChanged: true,
+          postChangeOnly: true,
+          postChangeMovement,
+          postChangeCostRatio,
+          postChangeAgreement,
+          passedRangeSteps,
+          range,
+          drawdownRatio,
+          lastPartRatio,
+          factorMultiplier,
+        },
       }
     }
 
@@ -1758,7 +2088,8 @@ export class IndicationSetsProcessor {
 
     const oldestPrice = prices[0]
     const newestPrice = prices[prices.length - 1]
-    const priceChange = Math.abs((newestPrice - oldestPrice) / oldestPrice) * 100
+    const signedPriceChange = ((newestPrice - oldestPrice) / oldestPrice) * 100
+    const priceChange = Math.abs(signedPriceChange)
 
     if (priceChange >= threshold) {
       const normalizedChange = priceChange / Math.max(threshold, 0.1)
@@ -1771,7 +2102,10 @@ export class IndicationSetsProcessor {
         signalScore,
         rawSignalStrength: signalScore,
         confidence: Math.min(1.0, priceChange / threshold / 2),
+        direction: signedPriceChange >= 0 ? "long" : "short",
         metadata: {
+          direction: signedPriceChange >= 0 ? "long" : "short",
+          signedPriceChange,
           priceChange,
           threshold,
           drawdownRatio,
@@ -1812,7 +2146,12 @@ export class IndicationSetsProcessor {
 
     const longMoves = moves.filter((m) => m > 0)
     const shortMoves = moves.filter((m) => m < 0)
-    const direction = longMoves.length >= shortMoves.length ? "long" : "short"
+    const netMovement = moves.reduce((sum, movement) => sum + movement, 0)
+    if (longMoves.length === shortMoves.length && netMovement === 0) return null
+    const direction =
+      longMoves.length === shortMoves.length
+        ? netMovement > 0 ? "long" : "short"
+        : longMoves.length > shortMoves.length ? "long" : "short"
     const alignedMoves = direction === "long" ? longMoves : shortMoves
     if (alignedMoves.length < minPositions) return null
 
@@ -1831,8 +2170,10 @@ export class IndicationSetsProcessor {
       signalScore,
       rawSignalStrength: signalScore,
       confidence: Math.min(1.0, 0.45 + continuity * 0.35 + Math.min(0.2, avgMagnitudePct / 20)),
+      direction,
       metadata: {
         direction,
+        netMovement,
         activityRatio,
         minPositions,
         continuationRatio,
@@ -1853,13 +2194,24 @@ export class IndicationSetsProcessor {
 
     if (steps >= 2) {
       const volatility = this.calculateVolatility(prices)
+      const netMovement = prices[prices.length - 1] - prices[0]
+      if (netMovement === 0) return null
+      const direction = netMovement > 0 ? "long" : "short"
       const signalScore = 1.0 + (steps * 0.5 + volatility) * factorMultiplier
       return {
         profitFactor: 0,
         signalScore,
         rawSignalStrength: signalScore,
         confidence: Math.min(1.0, steps / 3),
-        metadata: { consecutiveSteps: steps, volatility, range, factorMultiplier },
+        direction,
+        metadata: {
+          direction,
+          netMovement,
+          consecutiveSteps: steps,
+          volatility,
+          range,
+          factorMultiplier,
+        },
       }
     }
 
@@ -1921,17 +2273,13 @@ export class IndicationSetsProcessor {
   }
 
   private getLargestConfiguredRange(): number {
-    // Returns the maximum price history length required to generate strategies.
-    // Reduced multipliers for faster strategy generation in testing:
-    // OLD: range * 2 and range * 3 = 135 max (needs 135 hours = 5.6 days)
-    // NEW: range * 1 and range * 1.5 = 45 max (needs 45 hours = 1.9 days)
-    // NEWER: range * 1 and range * 1 = 30 max (needs 30 hours = 1.25 days - for testing)
-    //
-    // This drastically reduces warm-up period while maintaining core logic.
+    // Match the actual calculators exactly. Reporting warm-up complete before
+    // Direction (2× range) or Optimal (3× range) has enough samples produced
+    // misleading progress and permanently empty sets for the widest ranges.
     return Math.max(
       10,
-      ...this.directionMoveRanges.map((range) => range * 1),
-      ...this.optimalRanges.map((range) => range * 1),
+      ...this.directionMoveRanges.map((range) => range * 2),
+      ...this.optimalRanges.map((range) => range * 3),
       ...this.trendTimeframesMinutes.map((minutes) => minutes + 1),
     )
   }
@@ -1958,10 +2306,21 @@ export class IndicationSetsProcessor {
   }
 
   private getDirection(prices: number[]): number {
-    if (prices.length === 0) return 0
-    const avg = prices.reduce((a, b) => a + b, 0) / prices.length
-    if (!Number.isFinite(avg)) return 0
-    return prices.reduce((a, b) => a + (b > avg ? 1 : -1), 0) / prices.length
+    if (prices.length < 2) return 0
+    const first = Number(prices[0])
+    const last = Number(prices[prices.length - 1])
+    if (!Number.isFinite(first) || !Number.isFinite(last) || first <= 0 || first === last) return 0
+    const sign = last > first ? 1 : -1
+    let alignedMoves = 0
+    let directionalMoves = 0
+    for (let index = 1; index < prices.length; index++) {
+      const movement = Number(prices[index]) - Number(prices[index - 1])
+      if (!Number.isFinite(movement) || movement === 0) continue
+      directionalMoves++
+      if (Math.sign(movement) === sign) alignedMoves++
+    }
+    const agreement = directionalMoves > 0 ? alignedMoves / directionalMoves : 0
+    return sign * Math.max(0.01, agreement)
   }
 
   private calculateVolatility(prices: number[]): number {

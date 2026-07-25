@@ -2,6 +2,13 @@ const strings = new Map<string, string>()
 const hashes = new Map<string, Record<string, any>>()
 const lists = new Map<string, string[]>()
 const sets = new Map<string, Set<string>>()
+const mockRecordLiveOrderProgression = jest.fn(async () => true)
+const mockCalculateVolumeForConnection = jest.fn(async () => ({
+  finalVolume: 0.01,
+  volume: 0.01,
+  leverage: 10,
+  volumeAdjusted: false,
+}))
 
 const connection: Record<string, any> = {
   id: "bingx-main-recording",
@@ -172,12 +179,7 @@ jest.mock("@/lib/events/emitter", () => ({ emitCanonicalEvent: jest.fn() }))
 
 jest.mock("@/lib/volume-calculator", () => ({
   VolumeCalculator: {
-    calculateVolumeForConnection: jest.fn(async () => ({
-      finalVolume: 0.01,
-      volume: 0.01,
-      leverage: 10,
-      volumeAdjusted: false,
-    })),
+    calculateVolumeForConnection: (...args: any[]) => mockCalculateVolumeForConnection(...args),
     logVolumeCalculation: jest.fn(async () => undefined),
   },
 }))
@@ -211,6 +213,7 @@ jest.mock("@/lib/trade-engine/progression-writes", () => ({
 
 jest.mock("@/lib/live-order-service", () => ({
   recordPerSymbolOrderCounter: jest.fn(async () => undefined),
+  recordLiveOrderProgression: (...args: any[]) => mockRecordLiveOrderProgression(...args),
 }))
 
 jest.mock("@/lib/preset-store", () => ({
@@ -227,6 +230,12 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     lists.clear()
     sets.clear()
     jest.clearAllMocks()
+    mockCalculateVolumeForConnection.mockImplementation(async () => ({
+      finalVolume: 0.01,
+      volume: 0.01,
+      leverage: 10,
+      volumeAdjusted: false,
+    }))
     firstEntryRequestAt = 0
     protectionRequestTimes = []
     placeOrder.mockImplementation(async (symbol: string) => {
@@ -243,6 +252,14 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       protectionRequestTimes.push(performance.now())
       return { success: true, orderId: `bingx-${kind}-${symbol}` }
     })
+    recordingConnector.getPosition.mockImplementation(async () => ({
+      positionAmt: 0.01,
+      entryPrice: 100,
+      markPrice: 100,
+      liquidationPrice: 50,
+      unrealizedPnl: 0,
+      marginType: "cross",
+    }))
     connection.is_live_trade = "1"
     connection.live_trade_requested = "1"
     connection.is_preset_trade = "0"
@@ -407,6 +424,582 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     ]))
   })
 
+  test("keeps the confirmed quantity protected while an accumulation submission is unconfirmed", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const baseSetKey = "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0"
+    const common = {
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long" as const,
+      quantity: 0,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending" as const,
+      timestamp: Date.now(),
+      parentSetKey: "BTCUSDT:direction:long",
+      indicationType: "direction",
+    }
+
+    const parent = await executeLivePosition(connection.id, {
+      ...common,
+      id: "pending-acc-parent",
+      entryPrice: 100,
+      setKey: baseSetKey,
+      setVariant: "default",
+    } as any, recordingConnector)
+    expect(parent).toMatchObject({
+      status: "open",
+      executedQuantity: 0.01,
+      stopLossOrderId: expect.any(String),
+      takeProfitOrderId: expect.any(String),
+    })
+
+    placeOrder.mockResolvedValueOnce({
+      success: false,
+      error: "exchange response timeout after submission",
+    } as any)
+    const result = await executeLivePosition(connection.id, {
+      ...common,
+      id: "pending-acc-block",
+      entryPrice: 100,
+      setKey: `${baseSetKey}#block:2`,
+      setVariant: "block",
+      blockCount: 2,
+      blockVolumeRatio: 0.5,
+    } as any, recordingConnector)
+
+    expect(result.executedQuantity).toBeCloseTo(0.01, 12)
+    expect(result.pendingAccumulation).toMatchObject({
+      setKey: `${baseSetKey}#block:2`,
+      positionQuantityBefore: 0.01,
+      requestedQuantity: 0.01,
+    })
+    expect(result.stopLossOrderId).toEqual(expect.any(String))
+    expect(result.takeProfitOrderId).toEqual(expect.any(String))
+    expect(recordingConnector.cancelOrder).toHaveBeenCalledTimes(2)
+    expect(placeStopOrder).toHaveBeenCalledTimes(4)
+    for (const call of placeStopOrder.mock.calls.slice(-2)) {
+      expect(call[2]).toBeCloseTo(0.01, 12)
+      expect(call[5]).toMatchObject({ positionSide: "LONG" })
+    }
+    expect(
+      mockRecordLiveOrderProgression.mock.calls.filter((call) =>
+        call[2] === "long" && (call[3] === "placed" || call[3] === "filled"),
+      ),
+    ).toHaveLength(0)
+  })
+
+  test("does not cancel protection when a DCA delta is not ready", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const baseSetKey = "BTCUSDT:direction:short#axis:p4_l1_c1_opos_dshort_u0"
+    const common = {
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "short" as const,
+      quantity: 0,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending" as const,
+      timestamp: Date.now(),
+      parentSetKey: "BTCUSDT:direction:short",
+      indicationType: "direction",
+    }
+    const parent = await executeLivePosition(connection.id, {
+      ...common,
+      id: "not-ready-dca-parent",
+      entryPrice: 100,
+      setKey: baseSetKey,
+      setVariant: "default",
+    } as any, recordingConnector)
+    recordingConnector.cancelOrder.mockClear()
+    placeStopOrder.mockClear()
+
+    const result = await executeLivePosition(connection.id, {
+      ...common,
+      id: "not-ready-dca-step",
+      // A short DCA step needs an adverse move upward; unchanged price is
+      // intentionally not ready and must not disturb existing protection.
+      entryPrice: 100,
+      setKey: `${baseSetKey}#dca`,
+      setVariant: "dca",
+      dcaProfile: {
+        maxSteps: 2,
+        stepVolumeMultipliers: [0.5, 1],
+        stepDistancesPct: [0.5, 1],
+        takeProfitMode: "average",
+        breakevenProfitPct: 0.2,
+        cooldownSeconds: 0,
+      },
+    } as any, recordingConnector)
+
+    expect(result.id).toBe(parent.id)
+    expect(result.executedQuantity).toBeCloseTo(0.01, 12)
+    expect(result.pendingAccumulation).toBeUndefined()
+    expect(recordingConnector.cancelOrder).not.toHaveBeenCalled()
+    expect(placeStopOrder).not.toHaveBeenCalled()
+  })
+
+  test("protects only the intended retained quantity while a pos-count reduce is unconfirmed", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    let venueQuantity = 0
+    mockCalculateVolumeForConnection.mockImplementation(async (
+      _connectionId: string,
+      _symbol: string,
+      _price: number,
+      options: Record<string, any>,
+    ) => {
+      const quantity = Number(options?.sizeMultiplier || 0) * 0.01
+      return {
+        calculatedVolume: quantity,
+        finalVolume: quantity,
+        volume: quantity,
+        exchangeMinVolume: 0.001,
+        leverage: 10,
+        volumeAdjusted: false,
+      }
+    })
+    placeOrder.mockImplementation(async (
+      symbol: string,
+      _side: string,
+      quantity: number,
+      _price: number | undefined,
+      _type: string,
+      options: Record<string, any> = {},
+    ) => {
+      if (options.reduceOnly) {
+        return {
+          success: false,
+          error: "exchange response timeout after reduce submission",
+        }
+      }
+      venueQuantity += quantity
+      return {
+        success: true,
+        orderId: `combined-entry-${symbol}`,
+        status: "filled",
+        filledQty: quantity,
+        filledPrice: 100,
+      }
+    })
+    recordingConnector.getPosition.mockImplementation(async () => ({
+      positionAmt: venueQuantity,
+      entryPrice: 100,
+      markPrice: 100,
+      liquidationPrice: 50,
+      unrealizedPnl: 0,
+      marginType: "cross",
+    }))
+    const base = {
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long" as const,
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending" as const,
+      timestamp: Date.now(),
+      indicationType: "direction",
+      combinedPosCounts: true,
+      setVariant: "default" as const,
+      parentSetKey: "BTCUSDT:direction:long",
+    }
+    const initialMembers = [
+      "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0",
+      "BTCUSDT:direction:long#axis:p4_l1_c2_opos_dlong_u0",
+    ]
+    const parent = await executeLivePosition(connection.id, {
+      ...base,
+      id: "combined-target-two",
+      setKey: initialMembers[0],
+      accumulatedSetKeys: initialMembers,
+      posCountsSetRatios: {
+        [initialMembers[0]]: 1,
+        [initialMembers[1]]: 1,
+      },
+      posCountsLongSetCount: 2,
+      posCountsShortSetCount: 0,
+      posCountsNetSetCount: 2,
+      sizeMultiplier: 2,
+    } as any, recordingConnector)
+    expect(parent.executedQuantity).toBeCloseTo(0.02, 12)
+    recordingConnector.cancelOrder.mockClear()
+    placeStopOrder.mockClear()
+
+    const retainedMember = initialMembers[0]
+    const result = await executeLivePosition(connection.id, {
+      ...base,
+      id: "combined-target-one",
+      setKey: retainedMember,
+      accumulatedSetKeys: [retainedMember],
+      posCountsSetRatios: { [retainedMember]: 1 },
+      posCountsLongSetCount: 1,
+      posCountsShortSetCount: 0,
+      posCountsNetSetCount: 1,
+      sizeMultiplier: 1,
+    } as any, recordingConnector)
+
+    const reduceCall = placeOrder.mock.calls.find((call) => call[5]?.reduceOnly === true)
+    expect(reduceCall).toBeDefined()
+    expect(reduceCall?.[1]).toBe("sell")
+    expect(reduceCall?.[2]).toBeCloseTo(0.01, 12)
+    expect(reduceCall?.[5]).toMatchObject({
+      reduceOnly: true,
+      positionSide: "LONG",
+      clientOrderId: expect.any(String),
+    })
+    expect(result.executedQuantity).toBeCloseTo(0.02, 12)
+    expect(result.pendingReduction).toMatchObject({
+      requestedQuantity: 0.01,
+      targetQuantity: 0.01,
+      positionQuantityBefore: 0.02,
+    })
+    expect(recordingConnector.cancelOrder).toHaveBeenCalledTimes(2)
+    expect(placeStopOrder).toHaveBeenCalledTimes(2)
+    for (const call of placeStopOrder.mock.calls) {
+      expect(call[2]).toBeCloseTo(0.01, 12)
+      expect(call[5]).toMatchObject({
+        reduceOnly: true,
+        positionSide: "LONG",
+      })
+    }
+  })
+
+  test("keeps same-symbol Long/Short Block batches independent with exact add volumes", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const venueQuantity = { long: 0, short: 0 }
+    placeOrder.mockImplementation(async (
+      symbol: string,
+      _side: string,
+      quantity: number,
+      _price: number | undefined,
+      _type: string,
+      options: Record<string, any> = {},
+    ) => {
+      const direction = options.positionSide === "SHORT" ? "short" : "long"
+      venueQuantity[direction] += options.reduceOnly ? -quantity : quantity
+      return {
+        success: true,
+        orderId: `side-batch-${symbol}-${placeOrder.mock.calls.length}`,
+        status: "filled",
+        filledQty: quantity,
+        filledPrice: 100,
+      }
+    })
+    recordingConnector.getPosition.mockImplementation(async (_symbol: string, direction: "long" | "short") => ({
+      positionAmt: venueQuantity[direction],
+      entryPrice: 100,
+      markPrice: 100,
+      liquidationPrice: 50,
+      unrealizedPnl: 0,
+      marginType: "cross",
+    }))
+    const base = {
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending" as const,
+      timestamp: Date.now(),
+      indicationType: "direction",
+    }
+    const longSet = "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0"
+    const shortSet = "BTCUSDT:direction:short#axis:p4_l1_c1_opos_dshort_u0"
+
+    const [longParent, shortParent] = await Promise.all([
+      executeLivePosition(connection.id, {
+        ...base,
+        id: "long-parent",
+        direction: "long",
+        setKey: longSet,
+        parentSetKey: "BTCUSDT:direction:long",
+        setVariant: "default",
+      } as any, recordingConnector),
+      executeLivePosition(connection.id, {
+        ...base,
+        id: "short-parent",
+        direction: "short",
+        setKey: shortSet,
+        parentSetKey: "BTCUSDT:direction:short",
+        setVariant: "default",
+      } as any, recordingConnector),
+    ])
+    expect(longParent.executedQuantity).toBeCloseTo(0.01, 12)
+    expect(shortParent.executedQuantity).toBeCloseTo(0.01, 12)
+
+    const [longAfterBlock, shortAfterBlock] = await Promise.all([
+      executeLivePosition(connection.id, {
+        ...base,
+        id: "long-block-1",
+        direction: "long",
+        setKey: `${longSet}#block:1`,
+        parentSetKey: "BTCUSDT:direction:long",
+        setVariant: "block",
+        blockCount: 1,
+        blockVolumeRatio: 0.5,
+      } as any, recordingConnector),
+      executeLivePosition(connection.id, {
+        ...base,
+        id: "short-block-3",
+        direction: "short",
+        setKey: `${shortSet}#block:3`,
+        parentSetKey: "BTCUSDT:direction:short",
+        setVariant: "block",
+        blockCount: 3,
+        blockVolumeRatio: 0.75,
+      } as any, recordingConnector),
+    ])
+
+    expect(longAfterBlock.id).toBe(longParent.id)
+    expect(shortAfterBlock.id).toBe(shortParent.id)
+    expect(longAfterBlock.executedQuantity).toBeCloseTo(0.015, 12)
+    expect(shortAfterBlock.executedQuantity).toBeCloseTo(0.0325, 12)
+    expect(longAfterBlock.blockLegs?.[0]).toMatchObject({
+      blockCount: 1,
+      requestedQuantity: 0.005,
+      volumeIncrementRatio: 0.5,
+    })
+    expect(shortAfterBlock.blockLegs?.[0]).toMatchObject({
+      blockCount: 3,
+      requestedQuantity: 0.0225,
+      volumeIncrementRatio: 2.25,
+    })
+
+    const longBlockTwoKey = `${longSet}#block:2`
+    const longAfterSecondBlock = await executeLivePosition(connection.id, {
+      ...base,
+      id: "long-block-2",
+      direction: "long",
+      setKey: longBlockTwoKey,
+      parentSetKey: "BTCUSDT:direction:long",
+      setVariant: "block",
+      blockCount: 2,
+      blockVolumeRatio: 1.25,
+    } as any, recordingConnector)
+    expect(longAfterSecondBlock.executedQuantity).toBeCloseTo(0.04, 12)
+    expect(longAfterSecondBlock.blockLegs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        setKey: `${longSet}#block:1`,
+        requestedQuantity: 0.005,
+      }),
+      expect.objectContaining({
+        setKey: longBlockTwoKey,
+        blockCount: 2,
+        baseQuantity: 0.01,
+        requestedQuantity: 0.025,
+        positionQuantityAfter: 0.04,
+        volumeIncrementRatio: 2.5,
+      }),
+    ]))
+
+    const callsBeforeReplay = placeOrder.mock.calls.length
+    const replayedLongBlock = await executeLivePosition(connection.id, {
+      ...base,
+      id: "long-block-2-replay",
+      direction: "long",
+      setKey: longBlockTwoKey,
+      parentSetKey: "BTCUSDT:direction:long",
+      setVariant: "block",
+      blockCount: 2,
+      blockVolumeRatio: 1.25,
+    } as any, recordingConnector)
+    expect(replayedLongBlock.executedQuantity).toBeCloseTo(0.04, 12)
+    expect(placeOrder).toHaveBeenCalledTimes(callsBeforeReplay)
+
+    const entryCalls = placeOrder.mock.calls.map((call) => ({
+      side: call[1],
+      quantity: call[2],
+      positionSide: call[5]?.positionSide,
+    }))
+    expect(entryCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ side: "buy", quantity: 0.005, positionSide: "LONG" }),
+      expect.objectContaining({ side: "buy", quantity: 0.025, positionSide: "LONG" }),
+      expect.objectContaining({ side: "sell", quantity: 0.0225, positionSide: "SHORT" }),
+    ]))
+    const adjustmentAccounting = mockRecordLiveOrderProgression.mock.calls.map((call) => ({
+      symbol: call[1],
+      direction: call[2],
+      event: call[3],
+      volumeUsd: call[4],
+      options: call[6],
+    }))
+    expect(adjustmentAccounting.filter((call) => call.direction === "long" && call.event === "placed")).toHaveLength(2)
+    expect(adjustmentAccounting.filter((call) => call.direction === "long" && call.event === "filled")).toHaveLength(2)
+    expect(adjustmentAccounting.filter((call) => call.direction === "short" && call.event === "placed")).toHaveLength(1)
+    expect(adjustmentAccounting.filter((call) => call.direction === "short" && call.event === "filled")).toHaveLength(1)
+    expect(adjustmentAccounting.filter((call) => call.direction === "long" && call.event === "filled")
+      .reduce((sum, call) => sum + Number(call.volumeUsd || 0), 0)).toBeCloseTo(3, 10)
+    expect(adjustmentAccounting.filter((call) => call.direction === "short" && call.event === "filled")
+      .reduce((sum, call) => sum + Number(call.volumeUsd || 0), 0)).toBeCloseTo(2.25, 10)
+    expect(adjustmentAccounting.every((call) =>
+      call.options?.countPositionCreated === false &&
+      (call.event === "placed" || call.options?.countAccumulated === true)
+    )).toBe(true)
+  })
+
+  test("stress-checks asymmetric Long/Short Block ladders without duplicate or stranded mutations", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const venueQuantity = { long: 0, short: 0 }
+    placeOrder.mockImplementation(async (
+      symbol: string,
+      _side: string,
+      quantity: number,
+      _price: number | undefined,
+      _type: string,
+      options: Record<string, any> = {},
+    ) => {
+      const direction = options.positionSide === "SHORT" ? "short" : "long"
+      venueQuantity[direction] += options.reduceOnly ? -quantity : quantity
+      return {
+        success: true,
+        orderId: `stress-${direction}-${placeOrder.mock.calls.length}`,
+        status: "filled",
+        filledQty: quantity,
+        filledPrice: 100,
+      }
+    })
+    recordingConnector.getPosition.mockImplementation(async (_symbol: string, direction: "long" | "short") => ({
+      positionAmt: venueQuantity[direction],
+      entryPrice: 100,
+      markPrice: 100,
+      liquidationPrice: direction === "long" ? 50 : 150,
+      unrealizedPnl: 0,
+      marginType: "cross",
+    }))
+
+    const common = {
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending" as const,
+      timestamp: Date.now(),
+      indicationType: "direction",
+    }
+    const longSet = "BTCUSDT:direction:long#stress"
+    const shortSet = "BTCUSDT:direction:short#stress"
+    let [longPosition, shortPosition] = await Promise.all([
+      executeLivePosition(connection.id, {
+        ...common,
+        id: "stress-long-parent",
+        direction: "long",
+        setKey: longSet,
+        parentSetKey: "BTCUSDT:direction:long",
+        setVariant: "default",
+      } as any, recordingConnector),
+      executeLivePosition(connection.id, {
+        ...common,
+        id: "stress-short-parent",
+        direction: "short",
+        setKey: shortSet,
+        parentSetKey: "BTCUSDT:direction:short",
+        setVariant: "default",
+      } as any, recordingConnector),
+    ])
+
+    for (let count = 1; count <= 10; count++) {
+      const mutations = [
+        executeLivePosition(connection.id, {
+          ...common,
+          id: `stress-long-${count}`,
+          direction: "long",
+          setKey: `${longSet}#block:${count}`,
+          parentSetKey: "BTCUSDT:direction:long",
+          setVariant: "block",
+          blockCount: count,
+          blockVolumeRatio: 0.2,
+        } as any, recordingConnector),
+      ]
+      if (count <= 7) {
+        mutations.push(executeLivePosition(connection.id, {
+          ...common,
+          id: `stress-short-${count}`,
+          direction: "short",
+          setKey: `${shortSet}#block:${count}`,
+          parentSetKey: "BTCUSDT:direction:short",
+          setVariant: "block",
+          blockCount: count,
+          blockVolumeRatio: 0.35,
+        } as any, recordingConnector))
+      }
+      const [nextLong, nextShort] = await Promise.all(mutations)
+      longPosition = nextLong
+      if (nextShort) shortPosition = nextShort
+    }
+
+    expect(longPosition.executedQuantity).toBeCloseTo(0.12, 12)
+    expect(shortPosition.executedQuantity).toBeCloseTo(0.108, 12)
+    expect(longPosition.blockLegs).toHaveLength(10)
+    expect(shortPosition.blockLegs).toHaveLength(7)
+    expect(new Set(longPosition.blockLegs?.map((leg: any) => leg.setKey)).size).toBe(10)
+    expect(new Set(shortPosition.blockLegs?.map((leg: any) => leg.setKey)).size).toBe(7)
+    expect(longPosition.blockLegs?.reduce(
+      (sum: number, leg: any) => sum + Number(leg.requestedQuantity || 0),
+      0,
+    )).toBeCloseTo(0.11, 12)
+    expect(shortPosition.blockLegs?.reduce(
+      (sum: number, leg: any) => sum + Number(leg.requestedQuantity || 0),
+      0,
+    )).toBeCloseTo(0.098, 12)
+    expect(longPosition.pendingAccumulation).toBeUndefined()
+    expect(shortPosition.pendingAccumulation).toBeUndefined()
+    expect(longPosition.pendingReduction).toBeUndefined()
+    expect(shortPosition.pendingReduction).toBeUndefined()
+    expect(longPosition.stopLossOrderId).toBeTruthy()
+    expect(longPosition.takeProfitOrderId).toBeTruthy()
+    expect(shortPosition.stopLossOrderId).toBeTruthy()
+    expect(shortPosition.takeProfitOrderId).toBeTruthy()
+
+    const callsBeforeReplay = placeOrder.mock.calls.length
+    await Promise.all([
+      executeLivePosition(connection.id, {
+        ...common,
+        id: "stress-long-replay",
+        direction: "long",
+        setKey: `${longSet}#block:5`,
+        parentSetKey: "BTCUSDT:direction:long",
+        setVariant: "block",
+        blockCount: 5,
+        blockVolumeRatio: 0.2,
+      } as any, recordingConnector),
+      executeLivePosition(connection.id, {
+        ...common,
+        id: "stress-short-replay",
+        direction: "short",
+        setKey: `${shortSet}#block:5`,
+        parentSetKey: "BTCUSDT:direction:short",
+        setVariant: "block",
+        blockCount: 5,
+        blockVolumeRatio: 0.35,
+      } as any, recordingConnector),
+    ])
+    expect(placeOrder).toHaveBeenCalledTimes(callsBeforeReplay)
+
+    const longEntryCalls = placeOrder.mock.calls.filter((call) => call[5]?.positionSide === "LONG")
+    const shortEntryCalls = placeOrder.mock.calls.filter((call) => call[5]?.positionSide === "SHORT")
+    expect(longEntryCalls).toHaveLength(11)
+    expect(shortEntryCalls).toHaveLength(8)
+    expect(longEntryCalls.every((call) => call[1] === "buy" && call[5]?.reduceOnly !== true)).toBe(true)
+    expect(shortEntryCalls.every((call) => call[1] === "sell" && call[5]?.reduceOnly !== true)).toBe(true)
+    for (const call of placeStopOrder.mock.calls) {
+      const options = call[5]
+      expect(options?.reduceOnly).toBe(true)
+      expect(
+        (call[1] === "sell" && options?.positionSide === "LONG") ||
+        (call[1] === "buy" && options?.positionSide === "SHORT"),
+      ).toBe(true)
+    }
+  })
+
   test("applies persisted DCA setting changes to the very next independent step", async () => {
     const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
     const baseSetKey = "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0"
@@ -546,6 +1139,28 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     })
     expect(result.statusReason).toContain("shared Redis is not configured")
     expect(result.status).not.toBe("simulated")
+  })
+
+  test("rejects an invalid runtime direction before any exchange or control-order call", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const result = await executeLivePosition(connection.id, {
+      id: "real-invalid-direction",
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "sideways",
+      quantity: 1,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending",
+      timestamp: Date.now(),
+    } as any, recordingConnector)
+
+    expect(result.status).toBe("rejected")
+    expect(result.statusReason).toContain("Invalid inputs")
+    expect(placeOrder).not.toHaveBeenCalled()
+    expect(placeStopOrder).not.toHaveBeenCalled()
   })
 
   test("executes Preset-only mode with the selected optimized protection profile", async () => {

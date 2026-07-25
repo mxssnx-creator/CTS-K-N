@@ -68,7 +68,10 @@ describe("preset optimizer", () => {
       blockActiveRealEnabled: true,
       blockActiveLiveEnabled: true,
     })
-    expect(DEFAULT_PRESET_OPTIMIZER_SETTINGS.indicatorTypes).toHaveLength(9)
+    expect(DEFAULT_PRESET_OPTIMIZER_SETTINGS.indicatorTypes).toHaveLength(17)
+    expect(DEFAULT_PRESET_OPTIMIZER_SETTINGS.indicatorTypes).toEqual(
+      expect.arrayContaining(["stochastic", "obv", "psar", "fibonacci", "vwap"]),
+    )
     expect(rangeValues(settings.stopLossRatio)).toHaveLength(8)
   })
 
@@ -177,11 +180,15 @@ describe("preset optimizer", () => {
       }
     })
     const configurations = buildCommonIndicatorConfigurations({}, normalizePresetOptimizerSettings({
-      indicatorTypes: ["rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "sar"],
+      indicatorTypes: [
+        "rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "sar", "obv",
+      ],
       maxIndicatorVariantsPerType: 1,
     }))
     expect(new Set(configurations.map((configuration) => configuration.type))).toEqual(
-      new Set(["rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "sar"]),
+      new Set([
+        "rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "psar", "obv",
+      ]),
     )
     for (const configuration of configurations) {
       const signals = generatePresetSignals(candles, configuration, 32)
@@ -209,6 +216,36 @@ describe("preset optimizer", () => {
       params: { short: 5, long: 18 },
     }, 32)
     expect(emaSignals).not.toEqual(smaSignals)
+  })
+
+  test("coordinates OBV and Stochastic variants only on Common timeframes up to 15 minutes", () => {
+    const configurations = buildCommonIndicatorConfigurations({
+      coordination: { timeframesMinutes: [1, 5, 15, 30] },
+      obv: {
+        enabled: true,
+        shortPeriod: { from: 3, to: 6, step: 1 },
+        longPeriod: { from: 15, to: 25, step: 5 },
+      },
+      stochastic: {
+        enabled: true,
+        kPeriod: { from: 7, to: 13, step: 2 },
+        dPeriod: { from: 2, to: 4, step: 1 },
+        oversold: { from: 20, to: 30, step: 5 },
+        overbought: { from: 70, to: 80, step: 5 },
+      },
+    }, normalizePresetOptimizerSettings({
+      indicatorTypes: ["obv", "stochastic"],
+      maxIndicatorVariantsPerType: 4,
+    }))
+
+    expect(new Set(configurations.map((configuration) => configuration.type)))
+      .toEqual(new Set(["obv", "stochastic"]))
+    expect(configurations.every((configuration) =>
+      configuration.params.timeframeMinutes >= 1 &&
+      configuration.params.timeframeMinutes <= 15,
+    )).toBe(true)
+    expect(new Set(configurations.map((configuration) => configuration.params.timeframeMinutes)))
+      .toEqual(new Set([1, 5, 15]))
   })
 
   test("spreads historical signals across a 14-day window and keeps daily totals exact", () => {

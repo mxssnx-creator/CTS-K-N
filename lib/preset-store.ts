@@ -785,7 +785,8 @@ function inferIndicationType(realPosition: Record<string, any>): string | null {
 }
 
 const PRESET_TYPE_ALIASES: PresetIndicatorType[] = [
-  "bollinger", "stochastic", "macd", "rsi", "ema", "sma", "adx", "atr", "sar",
+  "bollinger", "stochastic", "macd", "rsi", "ema", "sma", "ma", "adx", "atr",
+  "psar", "sar", "cci", "adl", "fibonacci", "roc", "williamsR", "obv", "vwap",
 ]
 
 export async function resolveSelectedPresetForPosition(

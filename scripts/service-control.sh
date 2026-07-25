@@ -1,31 +1,48 @@
 #!/usr/bin/env bash
-# Start, stop, or restart an installed CTS-K-N service using its saved values.
+# Start, stop, restart, or inspect an installed CTS-K-N service using the
+# authoritative values recorded by scripts/install.sh.
 
 set -Eeuo pipefail
 
 ACTION="${1:-}"
-case "$ACTION" in start|stop|restart) shift ;; *) echo "Usage: service-control.sh <start|stop|restart> [--name NAME] [--port PORT]" >&2; exit 2 ;; esac
+case "$ACTION" in
+  start|stop|restart|resolve) shift ;;
+  *) echo "Usage: service-control.sh <start|stop|restart|resolve> [--name NAME] [--port PORT]" >&2; exit 2 ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUNTIME_DIR="$PROJECT_ROOT/.cts-runtime"
 VALUES_FILE="$RUNTIME_DIR/install-values.env"
 ENV_FILE="$PROJECT_ROOT/.env.production.local"
-APP_NAME="ctsv0.1.1"
+APP_NAME="cts-kn"
 APP_PORT="3002"
 RUNTIME="auto"
 SERVICE_USER=""
+ENV_FILE_MANAGED="0"
+SAVED_APP_NAME=""
+SAVED_APP_PORT=""
+SAVED_PROJECT_ROOT=""
 NAME_SET=0
 PORT_SET=0
 
 usage() {
   cat <<'EOF'
 Usage: scripts/{start,stop,restart}.sh [--name NAME] [--port PORT]
+       scripts/service-control.sh resolve
 
-Without arguments, saved values from .cts-runtime/install-values.env are used.
-`--port` persists the new port before start/restart. For stop it is displayed
-only, because no runtime configuration needs to change.
+Saved values from .cts-runtime/install-values.env are authoritative. `--name`
+must match the installed service. `--port` persists the new port before a
+start/restart. `resolve` prints the exact target without changing the system.
 EOF
+}
+
+valid_name() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]; }
+valid_user() { [[ "$1" =~ ^[a-zA-Z_][a-zA-Z0-9._-]*$ ]]; }
+valid_port() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 65535 )); }
+valid_absolute_path() {
+  [[ "$1" =~ ^/[a-zA-Z0-9._/-]+$ && "$1" != "/" && "$1" != *"//"* \
+    && "$1" != *"/./"* && "$1" != */. && "$1" != *"/../"* && "$1" != */.. ]]
 }
 
 read_saved_values() {
@@ -34,15 +51,37 @@ read_saved_values() {
   while IFS='=' read -r key value || [[ -n "$key" ]]; do
     [[ -z "$key" || "$key" == \#* ]] && continue
     case "$key" in
-      CTS_INSTALLED_APP_NAME) [[ "$value" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]] && APP_NAME="$value" ;;
-      CTS_INSTALLED_APP_PORT) [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 65535 )) && APP_PORT="$value" ;;
-      CTS_INSTALLED_RUNTIME) [[ "$value" =~ ^(systemd|pm2)$ ]] && RUNTIME="$value" ;;
-      CTS_INSTALLED_SERVICE_USER) [[ "$value" =~ ^[a-zA-Z_][a-zA-Z0-9._-]*$ ]] && SERVICE_USER="$value" ;;
+      CTS_INSTALLED_APP_NAME)
+        valid_name "$value" && APP_NAME="$value" && SAVED_APP_NAME="$value"
+        ;;
+      CTS_INSTALLED_APP_PORT)
+        valid_port "$value" && APP_PORT="$value" && SAVED_APP_PORT="$value"
+        ;;
+      CTS_INSTALLED_RUNTIME)
+        [[ "$value" =~ ^(systemd|pm2)$ ]] && RUNTIME="$value"
+        ;;
+      CTS_INSTALLED_SERVICE_USER)
+        valid_user "$value" && SERVICE_USER="$value"
+        ;;
+      CTS_INSTALLED_PROJECT_ROOT)
+        SAVED_PROJECT_ROOT="$value"
+        ;;
+      CTS_INSTALLED_ENV_FILE)
+        [[ "$value" == /* && "$value" != "/" ]] && ENV_FILE="$value"
+        ;;
+      CTS_INSTALLED_ENV_MANAGED)
+        [[ "$value" =~ ^[01]$ ]] && ENV_FILE_MANAGED="$value"
+        ;;
     esac
   done < "$VALUES_FILE"
 }
 
 read_saved_values
+if [[ ! -r "$VALUES_FILE" ]]; then
+  echo "Missing authoritative install metadata: $VALUES_FILE" >&2
+  echo "Run scripts/install.sh or bootstrap-install.sh before controlling this checkout." >&2
+  exit 1
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name) APP_NAME="${2:?--name requires a value}"; NAME_SET=1; shift 2 ;;
@@ -53,32 +92,66 @@ while [[ $# -gt 0 ]]; do
       if (( NAME_SET == 0 )); then APP_NAME="$1"; NAME_SET=1
       elif (( PORT_SET == 0 )); then APP_PORT="$1"; PORT_SET=1
       else echo "Unexpected argument: $1" >&2; exit 2; fi
-      shift ;;
+      shift
+      ;;
   esac
 done
 
-[[ "$APP_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]] || { echo "Invalid service name" >&2; exit 2; }
-[[ "$APP_PORT" =~ ^[0-9]+$ ]] && (( APP_PORT >= 1 && APP_PORT <= 65535 )) || { echo "Port must be 1..65535" >&2; exit 2; }
-[[ -d "$PROJECT_ROOT" ]] || { echo "Project directory not found: $PROJECT_ROOT" >&2; exit 1; }
-if [[ ! -r "$VALUES_FILE" ]]; then
-  echo "Warning: install-values.env missing at $VALUES_FILE; using defaults for $APP_NAME:$APP_PORT" >&2
+valid_name "$APP_NAME" || { echo "Invalid service name" >&2; exit 2; }
+valid_port "$APP_PORT" || { echo "Port must be 1..65535" >&2; exit 2; }
+valid_absolute_path "$PROJECT_ROOT" || { echo "Invalid project root" >&2; exit 2; }
+valid_absolute_path "$ENV_FILE" || { echo "Invalid installed environment path" >&2; exit 2; }
+if (( NAME_SET == 1 )) && [[ -n "$SAVED_APP_NAME" && "$APP_NAME" != "$SAVED_APP_NAME" ]]; then
+  echo "Requested service '$APP_NAME' does not match installed service '$SAVED_APP_NAME'" >&2
+  exit 2
 fi
+if (( PORT_SET == 1 )) && [[ "$ACTION" == "stop" || "$ACTION" == "resolve" ]] \
+  && [[ -n "$SAVED_APP_PORT" && "$APP_PORT" != "$SAVED_APP_PORT" ]]; then
+  echo "--port may change the installed port only during start/restart; saved port is '$SAVED_APP_PORT'" >&2
+  exit 2
+fi
+if [[ -n "$SAVED_PROJECT_ROOT" && "$SAVED_PROJECT_ROOT" != "$PROJECT_ROOT" ]]; then
+  echo "Saved project root '$SAVED_PROJECT_ROOT' does not match '$PROJECT_ROOT'" >&2
+  exit 1
+fi
+if [[ "$RUNTIME" == "auto" ]]; then
+  if [[ -f "/etc/systemd/system/$APP_NAME.service" ]]; then RUNTIME="systemd"
+  elif command -v pm2 >/dev/null 2>&1; then RUNTIME="pm2"
+  else RUNTIME="systemd"
+  fi
+fi
+
+if [[ "$ACTION" == "resolve" ]]; then
+  printf 'CTS_INSTALLED_APP_NAME=%s\n' "$APP_NAME"
+  printf 'CTS_INSTALLED_APP_PORT=%s\n' "$APP_PORT"
+  printf 'CTS_INSTALLED_RUNTIME=%s\n' "$RUNTIME"
+  printf 'CTS_INSTALLED_SERVICE_USER=%s\n' "$SERVICE_USER"
+  printf 'CTS_INSTALLED_PROJECT_ROOT=%s\n' "$PROJECT_ROOT"
+  printf 'CTS_INSTALLED_ENV_FILE=%s\n' "$ENV_FILE"
+  printf 'CTS_INSTALLED_ENV_MANAGED=%s\n' "$ENV_FILE_MANAGED"
+  exit 0
+fi
+
+[[ -d "$PROJECT_ROOT" ]] || { echo "Project directory not found: $PROJECT_ROOT" >&2; exit 1; }
 
 run_root() {
   if (( EUID == 0 )); then "$@"
   elif command -v sudo >/dev/null 2>&1; then sudo "$@"
-  else echo "sudo/root is required to control the installed service" >&2; exit 1; fi
+  else echo "sudo/root is required to control the installed service" >&2; exit 1
+  fi
 }
 
 run_as_service() {
-  [[ -n "$SERVICE_USER" ]] || { echo "Saved service user is missing" >&2; exit 1; }
+  valid_user "$SERVICE_USER" || { echo "Saved service user is missing or invalid" >&2; exit 1; }
   local home
   home="$(awk -F: -v user="$SERVICE_USER" '$1 == user { print $6; exit }' /etc/passwd 2>/dev/null || true)"
   [[ -n "$home" && "$home" != "/" ]] || home="/var/lib/$APP_NAME"
   if [[ "$(id -un)" == "$SERVICE_USER" ]]; then
     env HOME="$home" PM2_HOME="$home/.pm2" "$@"
+  elif (( EUID == 0 )); then
+    runuser -u "$SERVICE_USER" -- env HOME="$home" PM2_HOME="$home/.pm2" "$@"
   else
-    run_root -u "$SERVICE_USER" env HOME="$home" PM2_HOME="$home/.pm2" "$@"
+    sudo -u "$SERVICE_USER" env HOME="$home" PM2_HOME="$home/.pm2" "$@"
   fi
 }
 
@@ -86,7 +159,7 @@ update_value() {
   local file="$1" key="$2" value="$3" tmp
   [[ -f "$file" ]] || { echo "Required install file is missing: $file" >&2; exit 1; }
   tmp="$(mktemp)"
-  awk -v wanted="$key" -v replacement="$value" '
+  run_root awk -v wanted="$key" -v replacement="$value" '
     BEGIN { found = 0 }
     index($0, wanted "=") == 1 { print wanted "=" replacement; found = 1; next }
     { print }
@@ -96,21 +169,34 @@ update_value() {
   rm -f -- "$tmp"
 }
 
-if (( PORT_SET == 1 && ACTION != "stop" )); then
+if (( PORT_SET == 1 )) && [[ "$ACTION" != "stop" ]]; then
   update_value "$ENV_FILE" "PORT" "$APP_PORT"
   update_value "$ENV_FILE" "SCHEDULER_BASE_URL" "http://127.0.0.1:$APP_PORT"
   update_value "$VALUES_FILE" "CTS_INSTALLED_APP_PORT" "$APP_PORT"
   echo "Updated installed CTS port to $APP_PORT"
 fi
 
+pm2_start_or_restart() {
+  local name="$1" wrapper="$2"
+  if run_as_service pm2 describe "$name" >/dev/null 2>&1; then
+    run_as_service pm2 restart "$name" --update-env
+  else
+    [[ -x "$wrapper" ]] || { echo "Runtime wrapper is missing: $wrapper" >&2; exit 1; }
+    run_as_service pm2 start "$wrapper" --name "$name" --time --restart-delay 5000
+  fi
+}
+
 case "$RUNTIME" in
-  systemd|auto)
+  systemd)
     command -v systemctl >/dev/null 2>&1 || { echo "systemctl is unavailable" >&2; exit 1; }
     if [[ "$ACTION" == "stop" ]]; then
       run_root systemctl stop "$APP_NAME-scheduler" "$APP_NAME" 2>/dev/null || true
       run_root systemctl stop "$APP_NAME-redis" 2>/dev/null || true
       echo "Stopped $APP_NAME (port $APP_PORT)"
     else
+      if [[ -f "/etc/systemd/system/$APP_NAME-redis.service" ]]; then
+        run_root systemctl "$ACTION" "$APP_NAME-redis"
+      fi
       run_root systemctl "$ACTION" "$APP_NAME"
       run_root systemctl "$ACTION" "$APP_NAME-scheduler"
       echo "${ACTION^}ed $APP_NAME on port $APP_PORT"
@@ -122,7 +208,12 @@ case "$RUNTIME" in
       run_as_service pm2 stop "$APP_NAME-scheduler" "$APP_NAME" "$APP_NAME-redis" >/dev/null 2>&1 || true
       echo "Stopped $APP_NAME (port $APP_PORT)"
     else
-      run_as_service pm2 restart "$APP_NAME" "$APP_NAME-scheduler" --update-env
+      if [[ -x "$RUNTIME_DIR/start-redis.sh" ]]; then
+        pm2_start_or_restart "$APP_NAME-redis" "$RUNTIME_DIR/start-redis.sh"
+      fi
+      pm2_start_or_restart "$APP_NAME" "$RUNTIME_DIR/start-app.sh"
+      pm2_start_or_restart "$APP_NAME-scheduler" "$RUNTIME_DIR/start-scheduler.sh"
+      run_as_service pm2 save --force >/dev/null
       echo "${ACTION^}ed $APP_NAME on port $APP_PORT"
     fi
     ;;

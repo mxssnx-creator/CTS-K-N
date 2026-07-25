@@ -12,6 +12,7 @@ import {
   Zap, TrendingUp, Clock, ChevronDown, ChevronUp, CheckCircle2, Circle,
 } from "lucide-react"
 import { useExchange } from "@/lib/exchange-context"
+import { firstFiniteMetric } from "@/lib/dashboard-metrics"
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
@@ -256,7 +257,7 @@ export function QuickstartComprehensiveLogDialog() {
     { label: "Auto",       key: "auto"           as const },
   ]
   const totalIndByType = indTypes.reduce((s, { key }) => s + (bd?.indications[key] ?? 0), 0) || 1
-  const totalIndAll = rt?.indicationsTotal || bd?.indications.total || 0
+  const totalIndAll = firstFiniteMetric(rt?.indicationsTotal, bd?.indications.total)
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -549,9 +550,9 @@ export function QuickstartComprehensiveLogDialog() {
                 {/* 4th tier — Live exchange execution. Mirrors Real's shape with extra metrics. */}
                 <StratCard
                   label="Live"
-                  count={bd?.strategies.live || stats?.liveExecution?.positionsCreated || 0}
-                  evaluated={stats?.liveExecution?.ordersFilled || sd?.live?.passed || 0}
-                  evaluatedOf={stats?.liveExecution?.ordersPlaced || sd?.live?.evaluated || 0}
+                  count={firstFiniteMetric(bd?.strategies.live, stats?.liveExecution?.positionsCreated)}
+                  evaluated={firstFiniteMetric(stats?.liveExecution?.ordersFilled, sd?.live?.passed)}
+                  evaluatedOf={firstFiniteMetric(stats?.liveExecution?.ordersPlaced, sd?.live?.evaluated)}
                   detail={sd?.live}
                   accentCls="text-amber-600 dark:text-amber-400"
                   bgCls="bg-amber-50/40 dark:bg-amber-950/20 border-amber-200/50 dark:border-amber-800/30"

@@ -59,6 +59,10 @@ export function calculateRange(defaultValue: number, rangePercent = 0.6): Indica
  * Updated to work with trade engine and proper step values
  */
 export const INDICATOR_DEFAULTS = {
+  ma: {
+    shortPeriod: calculateRange(9),
+    longPeriod: calculateRange(40),
+  },
   rsi: {
     period: calculateRange(14), // 8.4-22.4, step 1
     oversold: calculateRange(30), // 18-48, step 1
@@ -77,6 +81,10 @@ export const INDICATOR_DEFAULTS = {
     acceleration: calculateRange(0.02), // 0.012-0.032, step 0.01
     maximum: calculateRange(0.2), // 0.12-0.32, step 0.1
   },
+  psar: {
+    acceleration: calculateRange(0.02),
+    maximum: calculateRange(0.2),
+  },
   adx: {
     period: calculateRange(14), // 8.4-22.4, step 1
     threshold: calculateRange(25), // 15-40, step 1
@@ -90,22 +98,43 @@ export const INDICATOR_DEFAULTS = {
   stochastic: {
     kPeriod: calculateRange(14), // 8.4-22.4, step 1
     dPeriod: calculateRange(3), // 1.8-4.8, step 0.5
-    smooth: calculateRange(3), // 1.8-4.8, step 0.5
+    oversold: { min: 15, max: 35, step: 5, default: 20 },
+    overbought: { min: 65, max: 85, step: 5, default: 80 },
   },
   atr: {
     period: calculateRange(14), // 8.4-22.4, step 1
   },
   cci: {
     period: calculateRange(20), // 12-32, step 1
+    threshold: calculateRange(100),
+  },
+  adl: {
+    shortPeriod: calculateRange(6),
+    longPeriod: calculateRange(25),
+  },
+  fibonacci: {
+    lookback: calculateRange(34),
+    tolerancePct: calculateRange(0.3),
+  },
+  roc: {
+    period: calculateRange(10),
+    thresholdPct: calculateRange(0.5),
+  },
+  williamsR: {
+    period: calculateRange(14),
+    oversold: { min: -90, max: -70, step: 5, default: -80 },
+    overbought: { min: -30, max: -10, step: 5, default: -20 },
   },
   mfi: {
     period: calculateRange(14), // 8.4-22.4, step 1
   },
   obv: {
-    // OBV doesn't have configurable parameters
+    shortPeriod: calculateRange(6),
+    longPeriod: calculateRange(25),
   },
   vwap: {
-    // VWAP doesn't have configurable parameters
+    period: calculateRange(20),
+    deviationPct: calculateRange(0.5),
   },
 } as const
 

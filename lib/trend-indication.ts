@@ -3,19 +3,52 @@
  * Base-pseudo-position generator.
  *
  * Price arrays are always oldest-first and represent one-minute closes. This
- * keeps the configured windows (1/3/5/10/15/30 minutes) deterministic and
+ * keeps the configured windows (1/5/15/30 minutes) deterministic and
  * avoids mixing wall-clock sampling with candle-based calculations.
  */
 
-export const DEFAULT_TREND_TIMEFRAMES_MINUTES = [1, 3, 5, 10, 15, 30] as const
+export const DEFAULT_TREND_TIMEFRAMES_MINUTES = [1, 5, 15, 30] as const
+export const TREND_TIMEFRAMES_MINUTES = DEFAULT_TREND_TIMEFRAMES_MINUTES
 export const DEFAULT_TREND_DRAWDOWN_FACTORS = [-1, -2, -3] as const
 export const DEFAULT_TREND_LAST_SITUATION_RATIOS = [0.5, 1] as const
 export const DEFAULT_TREND_ACTIVE_SITUATION_RATIOS = [0.5, 1] as const
+export const DEFAULT_TREND_RANGE_STEPS = [2, 2.5, 3] as const
 
 export const DEFAULT_TREND_MIN_AGREEMENT = 0.6
+export const DEFAULT_TREND_COMBINED_MIN_AGREEMENT = 0.6
+export const DEFAULT_TREND_HIGHER_RANGE_DRAWDOWN_SCALE = 0.5
 export const DEFAULT_TREND_TP_MIN_MULTIPLIER = 2
 export const DEFAULT_TREND_TP_MAX_FACTOR = 10
 export const DEFAULT_TREND_TP_STEP = 1
+
+/**
+ * Trend owns the fixed 1/5/15/30-minute windows. This deliberately rejects
+ * legacy 3/10-minute values instead of letting old Redis settings blur Trend
+ * with Common indicator timeframes.
+ */
+export function normalizeTrendTimeframesMinutes(raw: unknown): number[] {
+  let values: unknown[] = []
+  if (Array.isArray(raw)) {
+    values = raw
+  } else if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw)
+      values = Array.isArray(parsed) ? parsed : raw.split(/[\s,|]+/)
+    } catch {
+      values = raw.split(/[\s,|]+/)
+    }
+  } else if (raw !== undefined && raw !== null) {
+    values = [raw]
+  }
+  const allowed = new Set<number>(TREND_TIMEFRAMES_MINUTES)
+  const normalized = [...new Set(values
+    .map(Number)
+    .filter((value) => Number.isFinite(value) && allowed.has(value)))]
+    .sort((left, right) => left - right)
+  return normalized.length > 0
+    ? normalized
+    : [...DEFAULT_TREND_TIMEFRAMES_MINUTES]
+}
 
 export type TrendDirection = "long" | "short"
 
@@ -66,6 +99,31 @@ export interface AdaptiveTrendTpRange {
   maxFactor: number
   step: number
   minMultiplier: number
+}
+
+export interface CombinedTrendSignal {
+  direction: TrendDirection
+  signalScore: number
+  confidence: number
+  agreement: number
+  passedRangeSteps: number[]
+  signals: TrendSignal[]
+  metadata: {
+    combined: true
+    timeframesMinutes: number[]
+    evaluatedTimeframes: number
+    agreeingTimeframes: number
+    positionCostPct: number
+    higherRangeDrawdownScale: number
+    minimumAgreement: number
+    rangeSteps: number[]
+    passedRangeSteps: number[]
+    situations: Array<TrendSignal["metadata"] & {
+      baseDrawdownFactor: number
+      effectiveDrawdownFactor: number
+      passedRangeSteps: number[]
+    }>
+  }
 }
 
 function finitePositivePrices(prices: number[]): number[] {
@@ -137,6 +195,7 @@ export function calculateTrendSignal(
   config: TrendCalculationConfig,
 ): TrendSignal | null {
   const timeframeMinutes = Math.max(1, Math.round(Number(config.timeframeMinutes) || 1))
+  if (!(TREND_TIMEFRAMES_MINUTES as readonly number[]).includes(timeframeMinutes)) return null
   const prices = finitePositivePrices(pricesOldestFirst).slice(-(timeframeMinutes + 1))
   if (prices.length < timeframeMinutes + 1) return null
 
@@ -223,6 +282,166 @@ export function calculateTrendSignal(
       activeMarketChangePct: round(activeMarketChangePct),
       activeSituationRatio: round(activeSituationRatio),
       configuredActiveSituationRatio: round(requiredActiveRatio),
+    },
+  }
+}
+
+/**
+ * Coordinate the strongest independent situation on every configured
+ * 1/5/15/30-minute window. Longer ranges receive a wider PositionCost-based
+ * drawdown allowance, while the final signal still requires directional
+ * agreement and the configured 2/2.5/3 PositionCost movement steps.
+ */
+export function calculateCombinedTrendSignal(
+  pricesOldestFirst: number[],
+  config: {
+    timeframesMinutes?: readonly number[]
+    drawdownFactors?: readonly number[]
+    lastSituationRatios?: readonly number[]
+    activeSituationRatios?: readonly number[]
+    rangeSteps?: readonly number[]
+    positionCostPct: number
+    minAgreement?: number
+    minTimeframes?: number
+    higherRangeDrawdownScale?: number
+  },
+): CombinedTrendSignal | null {
+  const timeframes = normalizeTrendTimeframesMinutes(config.timeframesMinutes)
+  const drawdownFactors = [...new Set((config.drawdownFactors || DEFAULT_TREND_DRAWDOWN_FACTORS)
+    .map((value) => Math.min(-0.000001, Number(value) || -1)))]
+  const lastRatios = [...new Set((config.lastSituationRatios || DEFAULT_TREND_LAST_SITUATION_RATIOS)
+    .map(Number)
+    .filter((value) => Number.isFinite(value) && value >= 0))]
+  const activeRatios = [...new Set((config.activeSituationRatios || DEFAULT_TREND_ACTIVE_SITUATION_RATIOS)
+    .map(Number)
+    .filter((value) => Number.isFinite(value) && value >= 0))]
+  const rangeSteps = [...new Set((config.rangeSteps || DEFAULT_TREND_RANGE_STEPS)
+    .map(Number)
+    .filter((value) => Number.isFinite(value) && value > 0))]
+    .sort((left, right) => left - right)
+  if (
+    timeframes.length === 0 ||
+    drawdownFactors.length === 0 ||
+    lastRatios.length === 0 ||
+    activeRatios.length === 0 ||
+    rangeSteps.length === 0
+  ) {
+    return null
+  }
+
+  const positionCostPct = Math.max(0.000001, Number(config.positionCostPct) || 0.1)
+  const minimumAgreement = clamp(
+    Number(config.minAgreement ?? DEFAULT_TREND_COMBINED_MIN_AGREEMENT),
+    0.5,
+    1,
+  )
+  const minimumTimeframes = Math.max(
+    2,
+    Math.min(timeframes.length, Math.round(Number(config.minTimeframes) || 3)),
+  )
+  const higherRangeDrawdownScale = clamp(
+    Number(config.higherRangeDrawdownScale ?? DEFAULT_TREND_HIGHER_RANGE_DRAWDOWN_SCALE),
+    0,
+    5,
+  )
+  const maximumTimeframe = Math.max(...timeframes)
+  const evaluations: Array<{
+    signal: TrendSignal
+    baseDrawdownFactor: number
+    effectiveDrawdownFactor: number
+    passedRangeSteps: number[]
+  }> = []
+
+  for (const timeframeMinutes of timeframes) {
+    let best: (typeof evaluations)[number] | null = null
+    const rangeRelation = timeframeMinutes / maximumTimeframe
+    for (const baseDrawdownFactor of drawdownFactors) {
+      const effectiveDrawdownFactor =
+        baseDrawdownFactor * (1 + rangeRelation * higherRangeDrawdownScale)
+      for (const lastSituationRatio of lastRatios) {
+        for (const activeSituationRatio of activeRatios) {
+          const signal = calculateTrendSignal(pricesOldestFirst, {
+            timeframeMinutes,
+            drawdownFactor: effectiveDrawdownFactor,
+            lastSituationRatio,
+            activeSituationRatio,
+            positionCostPct,
+            minAgreement: minimumAgreement,
+          })
+          if (!signal) continue
+          const passedRangeSteps = rangeSteps.filter((step) =>
+            signal.metadata.positionCostRatio + Number.EPSILON >= step,
+          )
+          const candidate = {
+            signal,
+            baseDrawdownFactor,
+            effectiveDrawdownFactor,
+            passedRangeSteps,
+          }
+          if (!best || candidate.signal.signalScore > best.signal.signalScore) best = candidate
+        }
+      }
+    }
+    if (best) evaluations.push(best)
+  }
+  if (evaluations.length < minimumTimeframes) return null
+
+  const longWeight = evaluations
+    .filter(({ signal }) => signal.direction === "long")
+    .reduce((sum, { signal }) => sum + Math.sqrt(signal.metadata.timeframeMinutes), 0)
+  const shortWeight = evaluations
+    .filter(({ signal }) => signal.direction === "short")
+    .reduce((sum, { signal }) => sum + Math.sqrt(signal.metadata.timeframeMinutes), 0)
+  const totalWeight = longWeight + shortWeight
+  if (totalWeight <= 0 || longWeight === shortWeight) return null
+  const direction: TrendDirection = longWeight > shortWeight ? "long" : "short"
+  const agreement = Math.max(longWeight, shortWeight) / totalWeight
+  if (agreement < minimumAgreement) return null
+
+  const agreeing = evaluations.filter(({ signal }) => signal.direction === direction)
+  if (agreeing.length < minimumTimeframes) return null
+  const passedRangeSteps = rangeSteps.filter((step) =>
+    agreeing.filter((evaluation) => evaluation.passedRangeSteps.includes(step)).length >=
+      Math.max(1, Math.ceil(agreeing.length * minimumAgreement)),
+  )
+  if (passedRangeSteps.length === 0) return null
+
+  const averageScore = agreeing.reduce((sum, { signal }) => sum + signal.signalScore, 0) / agreeing.length
+  const averageConfidence = agreeing.reduce((sum, { signal }) => sum + signal.confidence, 0) / agreeing.length
+  const signalScore = round(
+    averageScore * (1 + agreement * 0.2) +
+      passedRangeSteps.length / rangeSteps.length * 0.15,
+  )
+  const confidence = round(clamp(
+    averageConfidence * 0.75 + agreement * 0.2 +
+      passedRangeSteps.length / rangeSteps.length * 0.05,
+    0,
+    1,
+  ))
+
+  return {
+    direction,
+    signalScore,
+    confidence,
+    agreement: round(agreement),
+    passedRangeSteps,
+    signals: agreeing.map(({ signal }) => signal),
+    metadata: {
+      combined: true,
+      timeframesMinutes: timeframes,
+      evaluatedTimeframes: evaluations.length,
+      agreeingTimeframes: agreeing.length,
+      positionCostPct: round(positionCostPct),
+      higherRangeDrawdownScale: round(higherRangeDrawdownScale),
+      minimumAgreement: round(minimumAgreement),
+      rangeSteps,
+      passedRangeSteps,
+      situations: agreeing.map((evaluation) => ({
+        ...evaluation.signal.metadata,
+        baseDrawdownFactor: round(evaluation.baseDrawdownFactor),
+        effectiveDrawdownFactor: round(evaluation.effectiveDrawdownFactor),
+        passedRangeSteps: evaluation.passedRangeSteps,
+      })),
     },
   }
 }

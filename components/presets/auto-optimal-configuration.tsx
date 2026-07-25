@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch"
 import { Loader2, Play } from "lucide-react"
 import { getIndicatorDefaults } from "@/lib/indication-range-calculator"
+import { COMMON_INDICATOR_DEFINITIONS } from "@/lib/common-indicator-config"
 import type { AutoOptimalConfiguration } from "@/lib/types-auto-optimal"
 
 interface AutoOptimalConfigurationProps {
@@ -175,14 +176,11 @@ export function AutoOptimalConfigurationForm({ onCalculate }: AutoOptimalConfigu
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">Without Indication (Market Changes)</SelectItem>
-                <SelectItem value="rsi">RSI</SelectItem>
-                <SelectItem value="macd">MACD</SelectItem>
-                <SelectItem value="bollinger">Bollinger Bands</SelectItem>
-                <SelectItem value="ema">EMA</SelectItem>
-                <SelectItem value="sma">SMA</SelectItem>
-                <SelectItem value="stochastic">Stochastic</SelectItem>
-                <SelectItem value="adx">ADX</SelectItem>
-                <SelectItem value="sar">Parabolic SAR</SelectItem>
+                {COMMON_INDICATOR_DEFINITIONS.map((definition) => (
+                  <SelectItem key={definition.type} value={definition.type}>
+                    {definition.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>

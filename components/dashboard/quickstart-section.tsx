@@ -77,6 +77,7 @@ interface VariantDetail {
 // counts. Renders as a row per type at the top of the expanded stats area.
 interface IndicationConfigCounts {
   totalPossibleSets: number
+  totalEvaluationConfigurations: number
   perSetDbCapacity:  number   // 250 default — per-Set position history length
   maxStorablePositions: number
   settings: {
@@ -86,11 +87,16 @@ interface IndicationConfigCounts {
     takeProfitRangeDivisor:    number
     validRangeCount:           number
     optimalBasePositionsLimit: number
+    commonTimeframes:          number[]
+    enabledCommonIndicators:   number
   }
   types: Array<{
-    type: "direction" | "move" | "active" | "optimal" | "auto" | "trend"
+    type: "direction" | "move" | "active" | "active_advanced" | "optimal" | "auto" | "trend" | "common"
     label: string
+    group: "default" | "additional" | "common"
+    storage: "independent_set" | "runtime"
     possibleSets: number
+    evaluationConfigurations: number
     formula: string
     params: Record<string, string | number>
     description: string
@@ -1834,7 +1840,9 @@ export function QuickstartSection() {
                     className="text-[10px] text-muted-foreground tabular-nums"
                     title="Sum of possible Independent Sets across all 5 Main indication types, per symbol. Each Set has its own position DB (capacity shown)."
                   >
-                    Total {fmt(configCounts.totalPossibleSets)} Sets
+                    {fmt(configCounts.totalPossibleSets)} Sets
+                    {" · "}
+                    {fmt(configCounts.totalEvaluationConfigurations)} eval/cycle
                     {" · "}
                     <span className="text-muted-foreground/70">
                       {configCounts.perSetDbCapacity}/Set DB
@@ -1852,13 +1860,13 @@ export function QuickstartSection() {
                     </span>
                   </span>
                   <span>
-                    tp-divisor <span className="text-foreground tabular-nums">
-                      {configCounts.settings.takeProfitRangeDivisor}
+                    valid ranges <span className="text-foreground tabular-nums">
+                      {configCounts.settings.validRangeCount}
                     </span>
                   </span>
                   <span>
-                    valid ranges <span className="text-foreground tabular-nums">
-                      {configCounts.settings.validRangeCount}
+                    Common <span className="text-foreground tabular-nums">
+                      {configCounts.settings.enabledCommonIndicators} indicators @ {configCounts.settings.commonTimeframes.join("/")}m
                     </span>
                   </span>
                 </div>
@@ -1866,8 +1874,8 @@ export function QuickstartSection() {
                 {/* Per-type rows */}
                 <div className="space-y-1">
                   {configCounts.types.map((t) => {
-                    const pct = configCounts.totalPossibleSets > 0
-                      ? Math.min(100, (t.possibleSets / configCounts.totalPossibleSets) * 100)
+                    const pct = configCounts.totalEvaluationConfigurations > 0
+                      ? Math.min(100, (t.evaluationConfigurations / configCounts.totalEvaluationConfigurations) * 100)
                       : 0
                     // color-code each indication type with a distinct hue so the
                     // row reads at a glance.
@@ -1875,28 +1883,35 @@ export function QuickstartSection() {
                       direction: "bg-violet-500/70",
                       move:      "bg-sky-500/70",
                       active:    "bg-amber-500/70",
+                      active_advanced: "bg-orange-500/70",
                       optimal:   "bg-emerald-500/70",
                       auto:      "bg-rose-500/70",
                       trend:     "bg-cyan-500/70",
+                      common:    "bg-indigo-500/70",
                     }
                     return (
                       <div key={t.type} className="space-y-0.5">
                         <div className="flex items-center gap-2 text-[10px]">
-                          <span className="w-14 text-foreground shrink-0 font-medium capitalize">
-                            {t.type}
+                          <span className="w-24 text-foreground shrink-0 font-medium">
+                            {t.label}
                           </span>
                           <div className="flex-1 h-1 bg-muted rounded-full overflow-hidden">
                             <div className={`h-full rounded-full ${hue[t.type] ?? "bg-muted-foreground/40"}`} style={{ width: `${pct}%` }} />
                           </div>
-                          <span className="w-12 text-right tabular-nums font-semibold">
-                            {fmt(t.possibleSets)}
+                          <span
+                            className="w-24 text-right tabular-nums font-semibold"
+                            title={t.storage === "runtime" ? "Runtime evaluations; no durable Set DB" : "Durable Long/Short Sets · evaluations per cycle"}
+                          >
+                            {t.storage === "runtime"
+                              ? `${fmt(t.evaluationConfigurations)} eval`
+                              : `${fmt(t.possibleSets)} / ${fmt(t.evaluationConfigurations)}`}
                           </span>
                           <span className="w-10 text-right tabular-nums text-muted-foreground">
                             {pct.toFixed(0)}%
                           </span>
                         </div>
                         <div
-                          className="pl-16 text-[9px] text-muted-foreground/80 truncate"
+                          className="pl-28 text-[9px] text-muted-foreground/80 truncate"
                           title={`${t.formula}${t.description ? " — " + t.description : ""}`}
                         >
                           {t.formula}

@@ -55,28 +55,36 @@ export async function createExchangeConnector(
     )
   }
 
-  // DEV/TEST: prefer simulated connector when API key is a placeholder or FORCE_SIMULATED set.
-  // Production must never silently swap a real exchange connector for simulation
-  // when real credentials are configured; that is how QuickStart ended up
-  // showing "sim" instead of placing live exchange orders.
-  try {
-    const forceSim = process.env.FORCE_SIMULATED === "1"
-    const allowProdSim = process.env.ALLOW_PROD_SIMULATED === "1"
-    const isProduction = process.env.NODE_ENV === "production"
-    const keyStr = String(credentials.apiKey || "")
-    const secretStr = String(credentials.apiSecret || "")
-    const hasRealCredentials =
-      keyStr.length >= 10 &&
-      secretStr.length >= 10 &&
-      !/PLACEHOLDER|00998877|^test/i.test(keyStr) &&
-      !/PLACEHOLDER|00998877|^test/i.test(secretStr)
-    const shouldUseSim = !hasRealCredentials || (forceSim && normalizedExchange !== "bingx")
-    if (shouldUseSim && (!isProduction || allowProdSim)) {
+  // DEV/TEST: prefer simulated connector when API key is a placeholder or
+  // FORCE_SIMULATED is explicitly set. The explicit safety override applies
+  // uniformly to every exchange, including BingX.
+  const forceSim = process.env.FORCE_SIMULATED === "1"
+  const allowProdSim = process.env.ALLOW_PROD_SIMULATED === "1"
+  const isProduction = process.env.NODE_ENV === "production"
+  const keyStr = String(credentials.apiKey || "")
+  const secretStr = String(credentials.apiSecret || "")
+  const hasRealCredentials =
+    keyStr.length >= 10 &&
+    secretStr.length >= 10 &&
+    !/PLACEHOLDER|00998877|^test/i.test(keyStr) &&
+    !/PLACEHOLDER|00998877|^test/i.test(secretStr)
+  const shouldUseSim = forceSim || (!hasRealCredentials && (!isProduction || allowProdSim))
+  if (shouldUseSim) {
+    try {
       const { SimulatedConnector } = await import("./simulated-connector")
       return new SimulatedConnector(credentials, "simulated")
+    } catch (error) {
+      throw new Error(
+        `Simulated exchange connector is unavailable while simulation is required: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
     }
-  } catch (e) {
-    // ignore and fall back to normal creation
+  }
+  if (!hasRealCredentials) {
+    throw new Error(
+      `Valid ${exchange} credentials are required because production simulation is not enabled`,
+    )
   }
 
   switch (normalizedExchange) {

@@ -39,7 +39,7 @@ export default function InstallManager() {
   const [installing, setInstalling] = useState(false)
   const [installLog, setInstallLog] = useState<string[]>([])
   const [activeTab, setActiveTab] = useState("status")
-  const [remoteForm, setRemoteForm] = useState({ adminSecret: "", host: "", port: "22", username: "root", password: "", sshKey: "", repoUrl: "https://github.com/mxssnx-creator/CTS-K-N.git", branch: "main", runtime: "auto", projectName: "ctsv0.1.1", installDir: "/opt/ctsv0.1.1", appPort: "3002", serviceUser: "ctsv0.1.1", redisUrl: "", reinstall: false })
+  const [remoteForm, setRemoteForm] = useState({ adminSecret: "", host: "", port: "22", username: "root", password: "", sshKey: "", repoUrl: "https://github.com/mxssnx-creator/CTS-K-N.git", branch: "main", runtime: "auto", projectName: "cts-kn", installDir: "/opt/cts-kn", appPort: "3002", serviceUser: "cts-kn", redisUrl: "", reinstall: false })
   const [remoteInstalling, setRemoteInstalling] = useState(false)
   const [remoteMode, setRemoteMode] = useState<"preflight" | "install" | null>(null)
   const [remotePreflightPassed, setRemotePreflightPassed] = useState(false)
@@ -194,7 +194,17 @@ export default function InstallManager() {
   }
 
   const updateRemoteForm = <K extends keyof typeof remoteForm>(key: K, value: (typeof remoteForm)[K]) => {
-    setRemoteForm(prev => ({ ...prev, [key]: value }))
+    setRemoteForm(prev => {
+      if (key !== "projectName") return { ...prev, [key]: value }
+      const previousName = prev.projectName
+      const nextName = String(value)
+      return {
+        ...prev,
+        projectName: nextName,
+        installDir: prev.installDir === `/opt/${previousName}` ? `/opt/${nextName}` : prev.installDir,
+        serviceUser: prev.serviceUser === previousName ? nextName : prev.serviceUser,
+      }
+    })
     setRemotePreflightPassed(false)
   }
 
@@ -778,14 +788,14 @@ export default function InstallManager() {
             <div>
               <p className="text-sm font-medium mb-2">1. Clone the verified repository</p>
               <div className="bg-muted/50 p-3 rounded-lg font-mono text-sm">
-                <code>git clone https://github.com/mxssnx-creator/CTS-K-N.git /opt/cts-k-n</code>
+                <code>git clone https://github.com/mxssnx-creator/CTS-K-N.git /opt/cts-kn</code>
               </div>
             </div>
 
             <div>
               <p className="text-sm font-medium mb-2">2. Run the non-mutating preflight</p>
               <div className="bg-muted/50 p-3 rounded-lg font-mono text-sm space-y-1">
-                <div><code>cd /opt/cts-k-n</code></div>
+                <div><code>cd /opt/cts-kn</code></div>
                 <div><code className="text-primary">bash scripts/install.sh --preflight-only --skip-system-packages</code></div>
               </div>
             </div>

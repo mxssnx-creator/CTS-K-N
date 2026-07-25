@@ -39,17 +39,17 @@ pnpm kilo:preflight
 ### Independent long-lived Linux server
 
 For a clean or repeatable Git-based server install (Ubuntu/Debian/RHEL/Fedora),
-run this one command. A repeat run stops the exact saved CTS services, replaces
-only `/opt/cts-k-n`, and preserves its protected environment/local CTS Redis
-state:
+run this one command. A repeat run stops the exact saved CTS services, stages
+only the resolved `/opt/<name>` checkout until verification passes, and
+preserves its protected environment/local CTS Redis state:
 
 ```bash
-tmp="$(mktemp -d)" && git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git "$tmp/cts-k-n" && cd "$tmp/cts-k-n" && sudo bash scripts/bootstrap-install.sh --dir /opt/cts-k-n --name cts-kn --port 3002
+tmp="$(mktemp -d)" && git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git "$tmp/cts-kn" && cd "$tmp/cts-kn" && sudo bash scripts/bootstrap-install.sh --name cts-kn --port 3002
 ```
 
 ```bash
-git clone https://github.com/mxssnx-creator/CTS-K-N.git /opt/cts-k-n
-cd /opt/cts-k-n
+git clone https://github.com/mxssnx-creator/CTS-K-N.git /opt/cts-kn
+cd /opt/cts-kn
 bash scripts/install.sh --preflight-only --skip-system-packages \
   --runtime auto --service-user cts-kn --create-service-user --non-interactive
 sudo bash scripts/install.sh --runtime auto --service-user cts-kn \
@@ -67,25 +67,36 @@ globally at `/usr/local/bin/bun` and launches the compact service wrapper; the
 Next standalone server remains on Node for exact Next.js compatibility. Each
 successful install records its values in `.cts-runtime/install-values.env`:
 
-When the Git bootstrap is run again for the same `--dir`, it reads those saved
-values (or an explicit `--name`/`--port`), stops the matching app and
-minute-scheduler, removes the old checkout, then clones a clean revision. It
-preserves only `.env.production.local` and CTS-managed local Redis data so
-secrets and durable local state survive; shared and external Redis are never
-deleted during an upgrade.
+When the Git bootstrap runs again, it resolves the saved installation from an
+explicit path/name, systemd `WorkingDirectory`, or a unique
+`/opt/*/.cts-runtime/install-values.env`. It stops the matching app and
+minute-scheduler, stages the old checkout for rollback, then clones and verifies
+a clean revision. The environment, application data/logs, and CTS-managed local
+Redis state survive; shared and external Redis are never deleted.
+Name-only discovery also covers PM2 installs whose checkout directory differs
+from the service name. Ambiguous duplicate names fail closed and require
+`--dir`. Dedicated install/environment paths use safe absolute Linux path
+components (letters, digits, `.`, `_`, `-`, and `/`).
 
 ```bash
-sudo /opt/cts-k-n/scripts/start.sh
-sudo /opt/cts-k-n/scripts/stop.sh
-sudo /opt/cts-k-n/scripts/restart.sh --port 3003
+sudo /opt/cts-kn/scripts/service-control.sh resolve
+sudo /opt/cts-kn/scripts/start.sh
+sudo /opt/cts-kn/scripts/stop.sh
+sudo /opt/cts-kn/scripts/restart.sh --port 3003
+sudo /opt/cts-kn/scripts/update.sh
 ```
+
+`update.sh` uses the saved service, runtime, user, port, environment, repository,
+branch, and project root. It refuses identity mismatches or tracked local
+changes, and keeps the previous production artifact until the canonical
+installer has rebuilt, migrated, restarted, and verified the update.
 
 To remove the CTS services, CTS-owned runtime data, installer-created service
 account and checkout, while preserving shared Bun/Node/Redis and external Redis
 data, run:
 
 ```bash
-sudo bash /opt/cts-k-n/scripts/bootstrap-install.sh --dir /opt/cts-k-n --uninstall
+sudo bash /opt/cts-kn/scripts/bootstrap-install.sh --name cts-kn --uninstall
 ```
 
 ### Kilo / Cloudflare Workers

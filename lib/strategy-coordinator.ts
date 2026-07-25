@@ -35,6 +35,7 @@ import {
   calculateBlockVolumeMultiplier,
   getActiveBlockSetKeys,
   getUnavailableBlockSetKeys,
+  resolveMirroredActiveBlockCount,
 } from "@/lib/block-count-state"
 import {
   getStrategySetLedgerBatch,
@@ -45,6 +46,45 @@ import {
 import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
 import { hedgeStrategyVolumeParts } from "@/lib/strategy-volume-coordination"
 import { buildProgressionScope } from "@/lib/progression-scope"
+
+export function normalizeStrategyDirection(...values: unknown[]): "long" | "short" | null {
+  for (const value of values) {
+    const normalized = String(value ?? "").trim().toLowerCase()
+    if (normalized === "long" || normalized === "buy") return "long"
+    if (normalized === "short" || normalized === "sell") return "short"
+  }
+  return null
+}
+
+export function resolveIndicationTradeDirection(indication: any): "long" | "short" | null {
+  const indicationType = String(indication?.type || indication?.indicationType || "direction").toLowerCase()
+  const explicit = normalizeStrategyDirection(
+    indication?.direction,
+    indication?.metadata?.direction,
+  )
+  if (explicit) return explicit
+
+  const secondDirection = Number(indication?.metadata?.secondDir)
+  if (Number.isFinite(secondDirection) && secondDirection !== 0) {
+    return secondDirection > 0 ? "long" : "short"
+  }
+
+  const firstDirection = Number(indication?.metadata?.firstDir)
+  if (Number.isFinite(firstDirection) && firstDirection !== 0) {
+    // Legacy Direction rows stored only the pre-reversal side. The executable
+    // signal belongs to the new, opposite regime; other legacy types retain
+    // the signed movement interpretation.
+    if (indicationType === "direction") return firstDirection > 0 ? "short" : "long"
+    return firstDirection > 0 ? "long" : "short"
+  }
+
+  const signedMovement = [
+    indication?.metadata?.movement,
+    indication?.metadata?.signedPriceChange,
+    indication?.metadata?.netMovement,
+  ].map(Number).find((value) => Number.isFinite(value) && value !== 0)
+  return signedMovement === undefined ? null : signedMovement > 0 ? "long" : "short"
+}
 
 function strategyProgressionKeys(connectionId: string): string[] {
   const scope = buildProgressionScope(connectionId, "main")
@@ -387,6 +427,50 @@ export interface PositionContext {
   activeStrategySetKeysBySymbol: Record<string, string[]>
   /** When true, active counts/lineage come from exchange-backed Live positions. */
   liveTradingEnabled?: boolean
+}
+
+/**
+ * Select the bounded exchange-dispatch batch for one symbol and cycle.
+ *
+ * Block counts remain independent, but only one new count per direction is
+ * submitted in a cycle. Counts already represented by a confirmed Block leg
+ * are skipped, allowing the next eligible count to advance on the following
+ * cycle instead of repeatedly selecting Count 1 and starving Counts 2..N.
+ */
+export function selectLiveDispatchCandidates(candidates: StrategySet[]): StrategySet[] {
+  const selected: StrategySet[] = []
+  const seenKeys = new Set<string>()
+  const seen = {
+    long: { standard: false, block: false, dca: false },
+    short: { standard: false, block: false, dca: false },
+  }
+
+  for (const candidate of candidates) {
+    const direction = normalizeStrategyDirection(candidate?.direction)
+    if (!direction || !candidate?.setKey || seenKeys.has(candidate.setKey)) continue
+    const isBlock = candidate.variant === "block"
+    const isDca = candidate.variant === "dca"
+    const isAxis = Boolean(candidate.axisWindows?.direction && (candidate.posCountsVolumeRatio ?? 0) > 0)
+
+    if (isAxis) {
+      selected.push(candidate)
+      seenKeys.add(candidate.setKey)
+      continue
+    }
+    if (isBlock) {
+      if ((candidate as any)._hasLivePositions === true || seen[direction].block) continue
+      seen[direction].block = true
+    } else if (isDca) {
+      if (seen[direction].dca) continue
+      seen[direction].dca = true
+    } else {
+      if (seen[direction].standard) continue
+      seen[direction].standard = true
+    }
+    selected.push(candidate)
+    seenKeys.add(candidate.setKey)
+  }
+  return selected
 }
 
 // ─── BASE-ANCHORED COORDINATION MODEL ────────────────────────────────────────
@@ -2332,28 +2416,23 @@ export class StrategyCoordinator {
     const setMap = new Map<string, { indicationType: string; direction: "long" | "short"; indications: any[] }>()
 
     for (const ind of indications) {
+      const indicationType = ind.type || "direction"
       // Direction resolution — check all sources in priority order:
       //   1. `ind.direction`          set by batchSaveIndications (IndicationSetsProcessor path)
       //   2. `ind.metadata.direction` set by cron route
-      //   3. `ind.metadata.firstDir`  numeric sign from calculateDirectionIndication
-      //   4. `ind.value`              negative value = short (legacy cron path)
+      //   3. `ind.metadata.secondDir` numeric sign of the NEW reversal regime
+      //   4. legacy `firstDir` is inverted for Direction only
       // Without this multi-source check, ALL indications from the
       // IndicationSetsProcessor path (which stores direction on ind.direction,
       // not ind.metadata.direction) defaulted to "long", making L and S Sets
       // identical (same content, same PF).
-      let direction: "long" | "short"
-      if (ind.direction === "short" || ind.direction === "long") {
-        direction = ind.direction
-      } else if (ind.metadata?.direction === "short") {
-        direction = "short"
-      } else if (typeof ind.metadata?.firstDir === "number") {
-        direction = ind.metadata.firstDir < 0 ? "short" : "long"
-      } else if (typeof ind.value === "number" && ind.value < 0) {
-        direction = "short"
-      } else {
-        direction = "long"
+      const direction = resolveIndicationTradeDirection(ind)
+      if (!direction) {
+        console.warn(
+          `[v0] [StrategyCoordinator] ${symbol}:${indicationType} skipped: no explicit long/short direction`,
+        )
+        continue
       }
-      const indicationType = ind.type || "direction"
       // Trend windows/configurations remain independent throughout Strategy
       // coordination. Other indication types preserve the legacy type×direction
       // grouping; Trend adds its evaluated parameter tuple to the identity.
@@ -3653,10 +3732,16 @@ export class StrategyCoordinator {
       // Pre-compute every set's deterministic identifiers once.
       // (workingSets == realSets in prod; capped top-N by PF in dev.)
       const setMeta = workingSets.map((set) => {
-        const setKey     = set.setKey || `${symbol}:${set.direction || "long"}`
+        const direction = normalizeStrategyDirection(set.direction)
+        if (!direction) return null
+        const setKey     = set.setKey || `${symbol}:${direction}`
         const existingKey = `pseudo_position_set_mapping:${this.connectionId}:${setKey}`
-        return { set, setKey, existingKey }
-      })
+        return { set: { ...set, direction }, setKey, existingKey }
+      }).filter((entry): entry is {
+        set: StrategySet
+        setKey: string
+        existingKey: string
+      } => entry !== null)
 
       const toRedisHash = (value: Record<string, any>): Record<string, string> => {
         const out: Record<string, string> = {}
@@ -3687,7 +3772,7 @@ export class StrategyCoordinator {
             id: `pseudo-${this.connectionId}-${setKey}-${nowMs}`,
             connectionId: this.connectionId,
             symbol,
-            direction: set.direction || "long",
+            direction: set.direction,
             entry_price: entryPrice,
             quantity,
             position_cost: positionCost,
@@ -3799,7 +3884,8 @@ export class StrategyCoordinator {
       const activePositions = await new PseudoPositionManager(this.connectionId).getActivePositions()
       for (const pos of activePositions) {
         if (String(pos.symbol || "").toUpperCase() !== symbol.toUpperCase()) continue
-        const dir = String(pos.direction || pos.side || "").toLowerCase() === "short" ? "short" : "long"
+        const dir = normalizeStrategyDirection(pos.direction, pos.side)
+        if (!dir) continue
         activeRealByDir[dir]++
       }
     }
@@ -3809,7 +3895,8 @@ export class StrategyCoordinator {
       for (const pos of livePositions) {
         if (String(pos.symbol || "").toUpperCase() !== symbol.toUpperCase()) continue
         if (["closed", "rejected", "cancelled", "canceled", "error"].includes(String(pos.status || "").toLowerCase())) continue
-        const dir = String(pos.direction || pos.side || "").toLowerCase() === "short" ? "short" : "long"
+        const dir = normalizeStrategyDirection(pos.direction, pos.side)
+        if (!dir) continue
         activeLiveByDir[dir]++
       }
     }
@@ -3853,11 +3940,26 @@ export class StrategyCoordinator {
       candidates.push({ source, boundedCount, scope, setKey })
     }
 
+    const activeCombinedByDir = {
+      long: resolveMirroredActiveBlockCount({
+        realCount: activeRealByDir.long,
+        liveCount: activeLiveByDir.long,
+        includeReal: this._coordinationSettings.blockActiveRealEnabled,
+        includeLive: this._coordinationSettings.blockActiveLiveEnabled,
+        maxStack,
+      }),
+      short: resolveMirroredActiveBlockCount({
+        realCount: activeRealByDir.short,
+        liveCount: activeLiveByDir.short,
+        includeReal: this._coordinationSettings.blockActiveRealEnabled,
+        includeLive: this._coordinationSettings.blockActiveLiveEnabled,
+        maxStack,
+      }),
+    }
+
     // Direction-wide active Real/Live exposure calculation.
     for (const dir of ["long", "short"] as const) {
-      const realCount = this._coordinationSettings.blockActiveRealEnabled ? activeRealByDir[dir] : 0
-      const liveCount = this._coordinationSettings.blockActiveLiveEnabled ? activeLiveByDir[dir] : 0
-      const activeCount = Math.max(realCount, liveCount)
+      const activeCount = activeCombinedByDir[dir]
       if (activeCount <= 0) continue
       const source = eligibleSources.find((set) => set.direction === dir)
       if (source) addCandidate(source, activeCount, "global")
@@ -3867,10 +3969,7 @@ export class StrategyCoordinator {
     // memberships, not candidate evaluations, so each Set retains independent
     // Block volume, PF/DDT result ring and cooldown state across restarts.
     for (const source of eligibleSources) {
-      const directionActive = Math.max(
-        this._coordinationSettings.blockActiveRealEnabled ? activeRealByDir[source.direction] : 0,
-        this._coordinationSettings.blockActiveLiveEnabled ? activeLiveByDir[source.direction] : 0,
-      )
+      const directionActive = activeCombinedByDir[source.direction]
       const exactCount = exactActiveLedger.active[source.setKey] || 0
       if (directionActive > 0 && exactCount > 0) addCandidate(source, exactCount, "set")
     }
@@ -3892,6 +3991,18 @@ export class StrategyCoordinator {
         [`s:${symbol}:active:rejected`]: "0",
         [`s:${symbol}:active:paused`]: "0",
         [`s:${symbol}:active:open`]: "0",
+        [`s:${symbol}:active:real:long`]: String(activeRealByDir.long),
+        [`s:${symbol}:active:real:short`]: String(activeRealByDir.short),
+        [`s:${symbol}:active:live:long`]: String(activeLiveByDir.long),
+        [`s:${symbol}:active:live:short`]: String(activeLiveByDir.short),
+        [`s:${symbol}:active:combined:long`]: String(activeCombinedByDir.long),
+        [`s:${symbol}:active:combined:short`]: String(activeCombinedByDir.short),
+        [`s:${symbol}:active:volume_increment:long`]: String(
+          calculateBlockVolumeIncrementRatio(activeCombinedByDir.long, ratio),
+        ),
+        [`s:${symbol}:active:volume_increment:short`]: String(
+          calculateBlockVolumeIncrementRatio(activeCombinedByDir.short, ratio),
+        ),
         [`s:${symbol}:active:updated_at`]: String(Date.now()),
         [`s:${symbol}:window`]: String(resultWindow),
         [`s:${symbol}:minimum_sample_count`]: String(minimumSampleCount),
@@ -4010,6 +4121,18 @@ export class StrategyCoordinator {
       [`s:${symbol}:active:rejected`]: String(rejected),
       [`s:${symbol}:active:paused`]: String(paused),
       [`s:${symbol}:active:open`]: String(active),
+      [`s:${symbol}:active:real:long`]: String(activeRealByDir.long),
+      [`s:${symbol}:active:real:short`]: String(activeRealByDir.short),
+      [`s:${symbol}:active:live:long`]: String(activeLiveByDir.long),
+      [`s:${symbol}:active:live:short`]: String(activeLiveByDir.short),
+      [`s:${symbol}:active:combined:long`]: String(activeCombinedByDir.long),
+      [`s:${symbol}:active:combined:short`]: String(activeCombinedByDir.short),
+      [`s:${symbol}:active:volume_increment:long`]: String(
+        calculateBlockVolumeIncrementRatio(activeCombinedByDir.long, ratio),
+      ),
+      [`s:${symbol}:active:volume_increment:short`]: String(
+        calculateBlockVolumeIncrementRatio(activeCombinedByDir.short, ratio),
+      ),
       [`s:${symbol}:active:updated_at`]: String(Date.now()),
       [`s:${symbol}:window`]: String(resultWindow),
       [`s:${symbol}:minimum_sample_count`]: String(minimumSampleCount),
@@ -4052,6 +4175,14 @@ export class StrategyCoordinator {
       [`s:${symbol}:active:rejected`]: "0",
       [`s:${symbol}:active:paused`]: "0",
       [`s:${symbol}:active:open`]: "0",
+      [`s:${symbol}:active:real:long`]: "0",
+      [`s:${symbol}:active:real:short`]: "0",
+      [`s:${symbol}:active:live:long`]: "0",
+      [`s:${symbol}:active:live:short`]: "0",
+      [`s:${symbol}:active:combined:long`]: "0",
+      [`s:${symbol}:active:combined:short`]: "0",
+      [`s:${symbol}:active:volume_increment:long`]: "0",
+      [`s:${symbol}:active:volume_increment:short`]: "0",
       [`s:${symbol}:active:updated_at`]: String(Date.now()),
     }
     for (let blockCount = 1; blockCount <= 10; blockCount++) {
@@ -4614,7 +4745,8 @@ export class StrategyCoordinator {
       const bucketKey = `${parentKey}|${symbol}|${s.indicationType}|v${variantKey}|p${aw?.prev ?? 0}|l${aw?.last ?? 0}|c${aw?.cont ?? 0}|o${outcome}`
       let b = hedgeBuckets.get(bucketKey)
       if (!b) { b = { long: [], short: [] }; hedgeBuckets.set(bucketKey, b) }
-      const dir = s.direction ?? "long"
+      const dir = normalizeStrategyDirection(s.direction)
+      if (!dir) continue
       if (dir === "short") b.short.push(s); else b.long.push(s)
     }
 
@@ -4671,11 +4803,11 @@ export class StrategyCoordinator {
     // will build asymmetric history over subsequent cycles naturally.
     let effectiveNetted = netted
     if (netted.length === 0 && axisPassthrough.length === 0 && realSorted.length > 0) {
-      const hasLong  = realSorted.some((s) => (s.direction ?? "long") === "long")
+      const hasLong  = realSorted.some((s) => s.direction === "long")
       const hasShort = realSorted.some((s) => s.direction === "short")
       // Bootstrap ONLY when signal is purely one-directional (no opposing pairs)
       if (hasLong !== hasShort) {
-        const topLong  = hasLong  ? realSorted.find((s) => (s.direction ?? "long") === "long")  : undefined
+        const topLong  = hasLong  ? realSorted.find((s) => s.direction === "long")  : undefined
         const topShort = hasShort ? realSorted.find((s) => s.direction === "short") : undefined
         effectiveNetted = [topLong, topShort].filter(Boolean) as StrategySet[]
         if (effectiveNetted.length > 0) {
@@ -5413,11 +5545,18 @@ export class StrategyCoordinator {
   /** Hedge all qualified pos-count Sets across both directions and emit at
    *  most one dominant-direction exchange target. */
   private combinePosCountAxisSets(sets: StrategySet[], symbol: string): StrategySet[] {
-    const axisSets = sets.filter((s) => !!(s.axisWindows?.direction) && (s.posCountsVolumeRatio ?? 0) > 0)
+    const axisSets = sets.filter((s) =>
+      !!(s.axisWindows?.direction) &&
+      (s.posCountsVolumeRatio ?? 0) > 0 &&
+      normalizeStrategyDirection(s.direction) !== null,
+    )
     if (axisSets.length === 0) return sets
     const nonAxis = sets.filter((s) => !(s.axisWindows?.direction) || (s.posCountsVolumeRatio ?? 0) <= 0)
     const byDir: Record<"long" | "short", StrategySet[]> = { long: [], short: [] }
-    for (const s of axisSets) byDir[(s.direction === "short" ? "short" : "long")].push(s)
+    for (const s of axisSets) {
+      const direction = normalizeStrategyDirection(s.direction)
+      if (direction) byDir[direction].push(s)
+    }
     const hedge = hedgeStrategyVolumeParts(axisSets.map((set) => ({
       setKey: set.setKey,
       direction: set.direction,
@@ -5547,9 +5686,29 @@ export class StrategyCoordinator {
           if (mainSets && mainSets.length > 0) {
             // Pick top Main set and convert to a minimal Real set
             const top = mainSets.sort((a: any, b: any) => (b.avgProfitFactor || 0) - (a.avgProfitFactor || 0))[0]
+            const topDirection = normalizeStrategyDirection(top.direction)
+            if (!topDirection) {
+              console.warn(
+                `[v0] [StrategyCoordinator] ${this.connectionId}:${symbol} - testnet synthetic Real set skipped: invalid direction`,
+              )
+              return {
+                result: {
+                  type: "live",
+                  symbol,
+                  timestamp: new Date(),
+                  totalCreated: 0,
+                  passedEvaluation: 0,
+                  failedEvaluation: 0,
+                  avgProfitFactor: 0,
+                  avgDrawdownTime: 0,
+                },
+                sets: [],
+              }
+            }
             const synthetic: any = {
               ...top,
-              setKey: top.setKey || `${symbol}:${top.direction || "long"}:synthetic`,
+              direction: topDirection,
+              setKey: top.setKey || `${symbol}:${topDirection}:synthetic`,
               parentSetKey: top.setKey || null,
               avgProfitFactor: Math.max(0.8, top.avgProfitFactor || 0.8),
               avgDrawdownTime: top.avgDrawdownTime || 0,
@@ -5891,9 +6050,9 @@ export class StrategyCoordinator {
             //   • "new" variants (default, trailing, pause): at most 1 per
             //     direction — first (highest-PF) wins.
             //   • "block" overlays: allowed through even when the direction
-            //     already has a "new" set selected. Block processes every
-            //     configured block size in parallel from completed-position
-            //     context; it is not gated by active open position count.
+            //     already has a "new" set selected. One new independent count
+            //     per direction advances per cycle; confirmed counts are
+            //     skipped so the ladder progresses without an exchange burst.
             //   • "dca" variant: same as block — at most 1 per direction,
             //     allowed alongside a "new" set.
             //
@@ -5906,46 +6065,12 @@ export class StrategyCoordinator {
             // would bypass the count-specific PF gate and duplicate identities.
             const dispatchCandidates = qualifying
 
-            let dispatchSets: StrategySet[] = []
-            {
-              let sawNewLong  = false
-              let sawNewShort = false
-              let sawDcaLong    = false
-              let sawDcaShort   = false
-              // Block overlays are capped to ONE per direction per cycle.
-              // Previously every block size [1..maxStack] was pushed
-              // unconditionally, so with maxStack=8 each direction dispatched
-              // 8 REAL exchange orders per cycle (observed: 18 order attempts
-              // per symbol per tick → request queue backlog → BingX 100421
-              // timestamp-mismatch rejections on everything). The block-size
-              // ladder remains fully tracked at the pseudo/stats level; live
-              // exchange dispatch only carries the top-ranked (highest-PF)
-              // block size for each direction per cycle.
-              let sawBlockLong  = false
-              let sawBlockShort = false
-              for (const s of dispatchCandidates) {
-                const isBlock = s.variant === "block"
-                const isDca   = s.variant === "dca"
-                const isAxis  = !!s.axisWindows?.direction && (s.posCountsVolumeRatio ?? 0) > 0
-                const isNew   = !isBlock && !isDca // default / trailing / pause
-                // Axis candidates must all reach the final hedge. Applying the
-                // ordinary one-per-direction cap first reduced any N-vs-M book
-                // to at most 1-vs-1 and was the source of wrong/stuck counts.
-                if (isAxis) {
-                  dispatchSets.push(s)
-                  continue
-                }
-                if (s.direction === "long") {
-                  if (isNew   && !sawNewLong)   { dispatchSets.push(s); sawNewLong   = true }
-                  if (isBlock && !sawBlockLong)  { dispatchSets.push(s); sawBlockLong  = true }
-                  if (isDca   && !sawDcaLong)    { dispatchSets.push(s); sawDcaLong    = true }
-                } else {
-                  if (isNew   && !sawNewShort)  { dispatchSets.push(s); sawNewShort  = true }
-                  if (isBlock && !sawBlockShort) { dispatchSets.push(s); sawBlockShort = true }
-                  if (isDca   && !sawDcaShort)   { dispatchSets.push(s); sawDcaShort   = true }
-                }
-              }
-            }
+            // A bounded batch avoids exchange bursts while advancing the
+            // independent Block ladder fairly: one not-yet-active Block count
+            // per direction per cycle. Confirmed counts are skipped, so the
+            // next cycle selects the next eligible count instead of starving
+            // behind the same already-accumulated top-ranked Set.
+            let dispatchSets = selectLiveDispatchCandidates(dispatchCandidates)
 
             // Combine hedge-netted pos-count (axis) Sets per symbol+direction into
             // ONE live dispatch Set with summed volume so the live pipeline opens
@@ -6471,8 +6596,9 @@ export class StrategyCoordinator {
       for (const p of active) {
         const sym = String(p.symbol || "")
         if (!sym) continue
+        const dir = normalizeStrategyDirection(p.direction, p.side)
+        if (!dir) continue
         if (!perSymbolOpenByDir[sym]) perSymbolOpenByDir[sym] = { long: 0, short: 0 }
-        const dir = String(p.direction || p.side || "long").toLowerCase()
         if (dir === "short") perSymbolOpenByDir[sym].short += 1
         else                 perSymbolOpenByDir[sym].long  += 1
         // Pseudo positions are the authoritative simulation book only while
@@ -6508,8 +6634,9 @@ export class StrategyCoordinator {
           if (["closed", "rejected", "cancelled", "canceled", "error"].includes(String(p.status || "").toLowerCase())) continue
           const sym = String(p.symbol || "")
           if (!sym) continue
+          const dir = normalizeStrategyDirection(p.direction, p.side)
+          if (!dir) continue
           if (!perSymbolLiveOpenByDir[sym]) perSymbolLiveOpenByDir[sym] = { long: 0, short: 0 }
-          const dir = String(p.direction || p.side || "long").toLowerCase()
           if (dir === "short") perSymbolLiveOpenByDir[sym].short += 1
           else                 perSymbolLiveOpenByDir[sym].long += 1
           if (!activeStrategySetKeySets[sym]) activeStrategySetKeySets[sym] = new Set<string>()

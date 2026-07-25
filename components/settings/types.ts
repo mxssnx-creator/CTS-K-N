@@ -200,12 +200,34 @@ export interface Settings {
   activeEnabled: boolean
   activeInterval: number
   activeTimeout: number
+  defaultCoordinationEnabled: boolean
+  defaultCoordinationRanges: number[] | string
+  defaultCoordinationRangeSteps: number[] | string
+  defaultCoordinationDrawdownRatios: number[] | string
+  defaultCoordinationHigherRangeDrawdownScale: number
+  defaultCoordinationMinAgreement: number
+  defaultCoordinationMinimumSignals: number
+  defaultCoordinationShortDifferenceRatio: number
+  directionPostChangeOnly: boolean
+  indicationSampleRanges: number[] | string
+  indicationDrawdownRatios: number[] | string
+  indicationLastPartRatios: number[] | string
+  indicationFactorMultipliers: number[] | string
+  activeThresholds: number[] | string
+  activeTimeRatios: number[] | string
+  activeAdvancedEnabled: boolean
+  activeAdvancedActivityRatios: number[] | string
+  activeAdvancedMinPositions: number
+  activeAdvancedContinuationRatio: number
 
   // Optimal Indication Settings
+  optimalEnabled: boolean
+  optimalSampleRanges: number[] | string
   optimalCoordinationEnabled: boolean
   trailingOptimalRanges: boolean
   simultaneousTrading: boolean
   positionIncrementAfterSituation: boolean
+  autoEnabled: boolean
 
   // Trend Indication Settings (final Main indication type)
   trendEnabled: boolean
@@ -214,6 +236,9 @@ export interface Settings {
   trendLastSituationRatios: number[] | string
   trendActiveSituationRatios: number[] | string
   trendMinAgreement: number
+  trendCombinedEnabled: boolean
+  trendRangeSteps: number[] | string
+  trendHigherRangeDrawdownScale: number
   trendTpMinMultiplier: number
   trendTpMaxFactor: number
   trendTpStep: number

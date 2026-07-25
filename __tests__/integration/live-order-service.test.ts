@@ -80,7 +80,7 @@ describe("live-order-service integration accounting", () => {
       live_positions_created_count: "1",
       live_volume_usd_total: "200",
     })
-    expect(hashStore.get("live_orders_by_symbol:conn-a")).toMatchObject({
+    expect(hashStore.get("live_orders_by_symbol_v2:conn-a")).toMatchObject({
       "BTCUSDT:long:placed": "1",
       "BTCUSDT:long:filled": "1",
     })
@@ -129,7 +129,7 @@ describe("live-order-service integration accounting", () => {
       live_positions_created_count: "1",
       live_volume_usd_total: "100",
     })
-    expect(hashStore.get("live_orders_by_symbol:conn-idem")).toMatchObject({
+    expect(hashStore.get("live_orders_by_symbol_v2:conn-idem")).toMatchObject({
       "ETHUSDT:long:placed": "1",
       "ETHUSDT:long:filled": "1",
     })
@@ -146,7 +146,7 @@ describe("live-order-service integration accounting", () => {
       live_orders_filled_count: "1",
       live_positions_created_count: "1",
     })
-    expect(hashStore.get("live_orders_by_symbol:conn-sim")).toEqual({
+    expect(hashStore.get("live_orders_by_symbol_v2:conn-sim")).toEqual({
       "SOLUSDT:short:placed": "1",
       "SOLUSDT:short:filled": "1",
     })
@@ -158,9 +158,139 @@ describe("live-order-service integration accounting", () => {
     await recordPerSymbolOrderCounter("conn-b", "ETHUSDT", "short", "placed")
     await recordPerSymbolOrderCounter("conn-b", "ETHUSDT", "short", "filled")
 
-    expect(hashStore.get("live_orders_by_symbol:conn-b")).toEqual({
+    expect(hashStore.get("live_orders_by_symbol_v2:conn-b")).toEqual({
       "ETHUSDT:short:placed": "1",
       "ETHUSDT:short:filled": "1",
     })
+  })
+
+  test("keeps unequal long and short order counts independently", async () => {
+    const { recordPerSymbolOrderCounter } = await import("@/lib/live-order-service")
+
+    await recordPerSymbolOrderCounter("conn-sides", "BTCUSDT", "long", "placed")
+    await recordPerSymbolOrderCounter("conn-sides", "BTCUSDT", "long", "placed")
+    await recordPerSymbolOrderCounter("conn-sides", "BTCUSDT", "long", "placed")
+    await recordPerSymbolOrderCounter("conn-sides", "BTCUSDT", "short", "placed")
+
+    expect(hashStore.get("live_orders_by_symbol_v2:conn-sides")).toEqual({
+      "BTCUSDT:long:placed": "3",
+      "BTCUSDT:short:placed": "1",
+    })
+  })
+
+  test("counts accumulation orders without inventing additional positions", async () => {
+    const { recordLiveOrderProgression } = await import("@/lib/live-order-service")
+
+    await recordLiveOrderProgression(
+      "conn-adjustments",
+      "BTCUSDT",
+      "long",
+      "placed",
+      0,
+      "long-block-2:placed",
+      { countPositionCreated: false },
+    )
+    await recordLiveOrderProgression(
+      "conn-adjustments",
+      "BTCUSDT",
+      "long",
+      "filled",
+      125,
+      "long-block-2:filled",
+      { countPositionCreated: false, countAccumulated: true },
+    )
+    await recordLiveOrderProgression(
+      "conn-adjustments",
+      "BTCUSDT",
+      "short",
+      "simulated",
+      40,
+      "short-block-1:simulated",
+      { countPositionCreated: false, countAccumulated: true },
+    )
+    // A crash/reconcile replay with the same durable event must not inflate
+    // either side, the total order count, or the traded volume.
+    await recordLiveOrderProgression(
+      "conn-adjustments",
+      "BTCUSDT",
+      "long",
+      "filled",
+      125,
+      "long-block-2:filled",
+      { countPositionCreated: false, countAccumulated: true },
+    )
+
+    expect(hashStore.get("progression:conn-adjustments")).toMatchObject({
+      live_orders_placed_count: "2",
+      live_orders_filled_count: "2",
+      live_orders_simulated_count: "1",
+      live_orders_accumulated_count: "2",
+      live_volume_usd_total: "165",
+    })
+    expect(hashStore.get("progression:conn-adjustments")?.live_positions_created_count).toBeUndefined()
+    expect(hashStore.get("live_orders_by_symbol_v2:conn-adjustments")).toEqual({
+      "BTCUSDT:long:placed": "1",
+      "BTCUSDT:long:filled": "1",
+      "BTCUSDT:short:placed": "1",
+      "BTCUSDT:short:filled": "1",
+    })
+  })
+
+  test("per-symbol primitive rejects an invalid runtime direction", async () => {
+    const { recordPerSymbolOrderCounter } = await import("@/lib/live-order-service")
+
+    await expect(
+      recordPerSymbolOrderCounter("conn-invalid-counter", "BTCUSDT", "sideways" as any, "placed"),
+    ).rejects.toThrow("Order side must be long, short, buy, or sell")
+    expect(hashStore.get("live_orders_by_symbol_v2:conn-invalid-counter")).toBeUndefined()
+  })
+
+  test("rejects unknown sides instead of silently counting them as long", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+
+    await expect(placeLiveOrder({
+      connectionId: "conn-invalid-side",
+      symbol: "BTCUSDT",
+      side: "unknown",
+      quantity: 1,
+      connection: { id: "conn-invalid-side" },
+    })).rejects.toThrow("Order side must be long, short, buy, or sell")
+  })
+
+  test("FORCE_SIMULATED remains usable for isolated production progression tests", async () => {
+    const previousNodeEnv = process.env.NODE_ENV
+    const previousForceSimulated = process.env.FORCE_SIMULATED
+    const previousAllowProductionSimulated = process.env.ALLOW_PROD_SIMULATED
+    try {
+      Object.defineProperty(process.env, "NODE_ENV", {
+        value: "production",
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      })
+      process.env.FORCE_SIMULATED = "1"
+      delete process.env.ALLOW_PROD_SIMULATED
+      const { createLiveOrderConnector } = await import("@/lib/live-order-service")
+
+      const result = await createLiveOrderConnector({
+        id: "conn-force-sim",
+        api_key: "",
+        api_secret: "",
+        is_testnet: "0",
+      })
+
+      expect(result).toMatchObject({ mode: "simulated", willUseRealExchange: false })
+    } finally {
+      Object.defineProperty(process.env, "NODE_ENV", {
+        value: previousNodeEnv,
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      })
+      if (previousForceSimulated === undefined) delete process.env.FORCE_SIMULATED
+      else process.env.FORCE_SIMULATED = previousForceSimulated
+      if (previousAllowProductionSimulated === undefined) delete process.env.ALLOW_PROD_SIMULATED
+      else process.env.ALLOW_PROD_SIMULATED = previousAllowProductionSimulated
+    }
   })
 })

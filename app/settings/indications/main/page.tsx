@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch" // Import Switch
 import { Badge } from "@/components/ui/badge"
 
 export default function MainIndicationsSettingsPage() {
-  const [settings, setSettings] = useState({
+  const [settings, setSettings] = useState<any>({
     marketActivity: {
       enabled: true, // Added enable/disable toggle
       minPriceChange: 0.1, // Minimum price change % to consider market active
@@ -60,9 +60,30 @@ export default function MainIndicationsSettingsPage() {
       min_calculation_time: 3,
     },
     active_advanced: {
+      enabled: true,
+      activity_values: [0.5, 1.5, 3],
       activity_ratios: { from: 0.5, to: 3.0, step: 0.5 },
       min_positions: 3,
       continuation_ratio: 0.6,
+    },
+    configuration: {
+      sample_ranges: [2, 5, 10, 20, 30],
+      drawdown_ratios: [0.5, 1, 1.5],
+      last_part_ratios: [0.25, 0.5],
+      factor_multipliers: [1],
+      active_thresholds: [0.5, 1.5, 2.5],
+      active_time_ratios: [0.5, 1],
+    },
+    coordination: {
+      enabled: true,
+      ranges: [2, 5, 10, 20, 30],
+      range_steps: [2, 2.5, 3],
+      drawdown_ratios: [1, 1.5, 2],
+      higher_range_drawdown_scale: 0.5,
+      min_agreement: 0.6,
+      minimum_signals: 3,
+      short_difference_ratio: 0.1,
+      direction_post_change_only: true,
     },
     optimal: {
       enabled: true,
@@ -123,13 +144,51 @@ export default function MainIndicationsSettingsPage() {
   }
 
   const updateSetting = (type: string, field: string, subfield: string | null, value: string) => {
-    setSettings((prev: any) => ({
-      ...prev,
-      [type]: {
-        ...prev[type],
-        [field]: subfield ? { ...prev[type][field], [subfield]: Number.parseFloat(value) } : Number.parseFloat(value),
-      },
-    }))
+    setSettings((prev: any) => {
+      const parsed = Number.parseFloat(value)
+      const nextField = subfield
+        ? { ...prev[type][field], [subfield]: parsed }
+        : parsed
+      let next: any = {
+        ...prev,
+        [type]: {
+          ...prev[type],
+          ...(type === "active_advanced" && field === "activity_ratios"
+            ? { activity_values: undefined }
+            : {}),
+          ...(type === "optimal" && field === "range"
+            ? { sample_ranges: undefined }
+            : {}),
+          [field]: nextField,
+        },
+      }
+
+      // Direction and Move intentionally share one base sample grid while
+      // their signals, histories and relative calculations remain
+      // independent. Keep both legacy builders synchronized with that
+      // canonical grid instead of letting one page show ignored values.
+      if ((type === "direction" || type === "move") && field === "range") {
+        const range = next[type].range
+        const from = Number(range?.from)
+        const to = Number(range?.to)
+        const step = Number(range?.step)
+        const values: number[] = []
+        if (Number.isFinite(from) && Number.isFinite(to) && Number.isFinite(step) && step > 0 && to >= from) {
+          for (let current = from; current <= to + Number.EPSILON && values.length < 500; current += step) {
+            values.push(Number(current.toFixed(8)))
+          }
+        }
+        if (values.length > 0) {
+          next = {
+            ...next,
+            configuration: { ...next.configuration, sample_ranges: values },
+            direction: { ...next.direction, range, sample_ranges: values },
+            move: { ...next.move, range, sample_ranges: values },
+          }
+        }
+      }
+      return next
+    })
   }
 
   const updateMarketActivitySetting = (field: string, value: any) => {
@@ -142,6 +201,19 @@ export default function MainIndicationsSettingsPage() {
       },
     }))
   }
+
+  const updateListSetting = (section: string, field: string, value: string) => {
+    setSettings((prev: any) => ({
+      ...prev,
+      [section]: {
+        ...prev[section],
+        [field]: value,
+      },
+    }))
+  }
+
+  const listValue = (value: unknown, fallback: number[]) =>
+    Array.isArray(value) ? value.join(", ") : typeof value === "string" ? value : fallback.join(", ")
 
   const toggleIndicationEnabled = (type: string) => {
     setSettings((prev: any) => ({
@@ -185,6 +257,100 @@ export default function MainIndicationsSettingsPage() {
       </div>
 
       <div className="grid gap-6">
+        <Card className="border-primary/40 bg-primary/[0.03]">
+          <CardHeader>
+            <CardTitle>Canonical Set Grid & Relative Coordination</CardTitle>
+            <CardDescription>
+              These values are written to the same live engine settings used by Main, progression and QuickStart.
+              Direction relative ranges begin at the newest reversal; its original base calculation remains independent.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="grid gap-3 md:grid-cols-3">
+              {[
+                ["sample_ranges", "Sample ranges", [2, 5, 10, 20, 30]],
+                ["drawdown_ratios", "Drawdown / PositionCost", [0.5, 1, 1.5]],
+                ["last_part_ratios", "Latest-window ratios", [0.25, 0.5]],
+                ["factor_multipliers", "Score multipliers", [1]],
+                ["active_thresholds", "Active thresholds", [0.5, 1.5, 2.5]],
+                ["active_time_ratios", "Active time ratios", [0.5, 1]],
+              ].map(([field, label, fallback]) => (
+                <div key={String(field)} className="space-y-1">
+                  <Label>{String(label)}</Label>
+                  <Input
+                    value={listValue(settings.configuration?.[String(field)], fallback as number[])}
+                    onChange={(event) =>
+                      updateListSetting("configuration", String(field), event.target.value)}
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div className="grid gap-3 border-t pt-4 md:grid-cols-3">
+              <div className="space-y-1">
+                <Label>Relative sample windows</Label>
+                <Input
+                  value={listValue(settings.coordination?.ranges, [2, 5, 10, 20, 30])}
+                  onChange={(event) => updateListSetting("coordination", "ranges", event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>PositionCost steps</Label>
+                <Input
+                  value={listValue(settings.coordination?.range_steps, [2, 2.5, 3])}
+                  onChange={(event) => updateListSetting("coordination", "range_steps", event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>Higher-range drawdown ratios</Label>
+                <Input
+                  value={listValue(settings.coordination?.drawdown_ratios, [1, 1.5, 2])}
+                  onChange={(event) =>
+                    updateListSetting("coordination", "drawdown_ratios", event.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="flex items-center justify-between rounded-lg border bg-background p-3">
+                <div>
+                  <Label>Relative coordination enabled</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Additional to each Default indicator&apos;s base calculation
+                  </p>
+                </div>
+                <Switch
+                  checked={settings.coordination?.enabled !== false}
+                  onCheckedChange={(checked) =>
+                    setSettings((prev: any) => ({
+                      ...prev,
+                      coordination: { ...prev.coordination, enabled: checked },
+                    }))}
+                />
+              </div>
+              <div className="flex items-center justify-between rounded-lg border bg-background p-3">
+                <div>
+                  <Label>Direction: newest reversal only</Label>
+                  <p className="text-xs text-muted-foreground">
+                    All relative Direction windows must follow the new market move
+                  </p>
+                </div>
+                <Switch
+                  checked={settings.coordination?.direction_post_change_only !== false}
+                  onCheckedChange={(checked) =>
+                    setSettings((prev: any) => ({
+                      ...prev,
+                      coordination: {
+                        ...prev.coordination,
+                        direction_post_change_only: checked,
+                      },
+                    }))}
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         <Card className="border-2 border-primary">
           <CardHeader>
             <div className="flex items-center gap-3 mb-2">
@@ -1206,22 +1372,44 @@ export default function MainIndicationsSettingsPage() {
         {/* Active Advanced Indication */}
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Zap className="h-5 w-5 text-purple-500" />
-              Active Advanced Indication
-              <Badge variant="default" className="text-xs">
-                NEW
-              </Badge>
-            </CardTitle>
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="flex items-center gap-2">
+                <Zap className="h-5 w-5 text-purple-500" />
+                Active Advanced Indication
+                <Badge variant="default" className="text-xs">
+                  NEW
+                </Badge>
+              </CardTitle>
+              <Switch
+                checked={settings.active_advanced?.enabled !== false}
+                onCheckedChange={(checked) =>
+                  setSettings((prev: any) => ({
+                    ...prev,
+                    active_advanced: { ...prev.active_advanced, enabled: checked },
+                  }))}
+              />
+            </div>
             <CardDescription>
-              Uses optimal market change calculations for positive success with activity percentage ratios for
-              frequently and short time trades (1-40 min)
+              Independent continuation and activity situations. These sample-based calculations do not share
+              Trend&apos;s 1/5/15/30-minute windows.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-4">
+              <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
+                <Label className="text-base font-semibold">Exact activity ratios</Label>
+                <Input
+                  value={listValue(settings.active_advanced?.activity_values, [0.5, 1.5, 3])}
+                  onChange={(event) =>
+                    updateListSetting("active_advanced", "activity_values", event.target.value)}
+                  placeholder="0.5, 1.5, 3"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Exact sparse values used by the engine. Editing the legacy range builder below replaces this list.
+                </p>
+              </div>
               <div>
-                <Label className="text-base font-semibold">Activity Ratios (%)</Label>
+                <Label className="text-base font-semibold">Legacy Activity Ratio Builder (%)</Label>
                 <p className="text-sm text-muted-foreground mb-2">
                   Percentage change thresholds: 0.5%, 1.0%, 1.5%, 2.0%, 2.5%, 3.0%
                 </p>
@@ -1415,7 +1603,7 @@ export default function MainIndicationsSettingsPage() {
                 <Switch
                   checked={settings.optimal?.enabled !== false}
                   onCheckedChange={(checked) =>
-                    setSettings((prev) => ({
+                    setSettings((prev: any) => ({
                       ...prev,
                       optimal: { ...prev.optimal, enabled: checked },
                     }))
@@ -1508,7 +1696,7 @@ export default function MainIndicationsSettingsPage() {
                   <Switch
                     checked={settings.optimal?.trailing_optimal_ranges !== false}
                     onCheckedChange={(checked) =>
-                      setSettings((prev) => ({
+                      setSettings((prev: any) => ({
                         ...prev,
                         optimal: { ...prev.optimal, trailing_optimal_ranges: checked },
                       }))

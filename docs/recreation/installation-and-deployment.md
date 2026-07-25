@@ -27,7 +27,7 @@ build, migration, scheduler, health, persistence, and restart verification:
 tmp="$(mktemp -d)" && git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git "$tmp/cts-k-n" \
   && cd "$tmp/cts-k-n" \
   && chmod 750 scripts/bootstrap-install.sh \
-  && sudo bash scripts/bootstrap-install.sh --dir /opt/cts-k-n --name cts-kn --port 3002
+  && sudo bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn --port 3002
 ```
 
 When the server is behind a domain or reverse proxy, pass its complete public
@@ -38,8 +38,16 @@ address (which commonly appears as a provider 404):
 tmp="$(mktemp -d)" && git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git "$tmp/cts-k-n" \
   && cd "$tmp/cts-k-n" \
   && chmod 750 scripts/bootstrap-install.sh \
-  && sudo bash scripts/bootstrap-install.sh --dir /opt/cts-k-n --name cts-kn --port 3002 --public-url https://example.com
+  && sudo bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn --port 3002 --public-url https://example.com
 ```
+
+Bootstrap, update, and uninstall resolve one authoritative installation from an
+explicit `--dir`, a systemd service working directory, or saved metadata below
+`/opt/*`. Name-only lookup also supports PM2 when the checkout folder and
+service name differ. If more than one saved install has the same name, the
+scripts stop without changing anything and require an explicit directory.
+Install and environment paths must be dedicated absolute Linux paths containing
+only letters, digits, `.`, `_`, `-`, and `/`.
 
 Pass installer options after `--`, for example:
 `-- --skip-tests --seed-env-file /root/cts-kn.seed.env`.
@@ -81,16 +89,15 @@ Then install:
 sudo bash scripts/install.sh
 
 # Positional arguments are supported too.
-sudo bash scripts/install.sh ctsv0.1.1 3002 \
+sudo bash scripts/install.sh cts-kn 3002 \
   --runtime auto --create-service-user \
-  --seed-env-file /root/ctsv0.1.1.seed.env --non-interactive
+  --seed-env-file /root/cts-kn.seed.env --non-interactive
 
 # Force reinstall of OS apps/runtimes/global tools and locked dependencies.
-sudo bash scripts/install.sh ctsv0.1.1 3002 --reinstall
+sudo bash scripts/install.sh cts-kn 3002 --reinstall
 ```
 
-The default project/service name is derived from `package.json` as
-`ctsv<major>.<minor>.<patch>` (currently `ctsv0.1.1`). Existing operating-system
+The canonical default project/service name is `cts-kn`. Existing operating-system
 packages and runtimes are detected and kept; `--reinstall` explicitly forces
 their reinstall. The installer verifies Node/npm/npx/pnpm, Next.js/React,
 Python/pip, Bun, Redis, migrations, the production build, the one-minute
@@ -128,9 +135,9 @@ Every successful installation writes the actual service values to
 when no arguments are provided:
 
 ```bash
-sudo /opt/cts-k-n/scripts/start.sh
-sudo /opt/cts-k-n/scripts/stop.sh
-sudo /opt/cts-k-n/scripts/restart.sh --port 3003
+sudo /opt/cts-kn/scripts/start.sh
+sudo /opt/cts-kn/scripts/stop.sh
+sudo /opt/cts-kn/scripts/restart.sh --port 3003
 ```
 
 `--port` persists the port before `start` or `restart`; `--name` selects an
@@ -142,7 +149,7 @@ To remove the CTS project directory, CTS-owned services/runtime data, and an
 installer-created service user, use its recorded defaults automatically:
 
 ```bash
-sudo bash /opt/cts-k-n/scripts/bootstrap-install.sh --dir /opt/cts-k-n --uninstall
+sudo bash /opt/cts-kn/scripts/bootstrap-install.sh --dir /opt/cts-kn --uninstall
 ```
 
 Shared Bun/Node/Redis and external Redis data are not removed because they can

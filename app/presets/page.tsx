@@ -28,9 +28,13 @@ import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { useExchange } from "@/lib/exchange-context"
+import {
+  PRESET_INDICATOR_TYPES,
+  type PresetIndicatorType,
+} from "@/lib/preset-optimizer"
 import { toast } from "@/lib/simple-toast"
 
-type IndicatorType = "rsi" | "macd" | "bollinger" | "ema" | "sma" | "stochastic" | "adx" | "atr" | "sar"
+type IndicatorType = PresetIndicatorType
 
 interface NumericRange {
   min: number
@@ -146,7 +150,7 @@ interface PresetOverview {
   engine: Record<string, string>
 }
 
-const INDICATORS: IndicatorType[] = ["rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "sar"]
+const INDICATORS: IndicatorType[] = [...PRESET_INDICATOR_TYPES]
 
 function formatNumber(value: number, digits = 2): string {
   return Number.isFinite(value) ? value.toFixed(digits) : "0.00"

@@ -7,6 +7,7 @@ import {
   calculateBlockVolumeMultiplier,
   getUnavailableBlockSetKeys,
   parseBlockCount,
+  resolveMirroredActiveBlockCount,
   syncActiveBlockCountIndex,
 } from "@/lib/block-count-state"
 
@@ -69,12 +70,22 @@ describe("independent Block count lifecycle", () => {
     })
   })
 
-  test("calculates every Block independently from that position's current base volume", () => {
+  test("calculates every Block independently from the immutable position base volume", () => {
     expect(calculateBlockVolumeMultiplier(1, 1, 1)).toBe(2)
     expect(calculateBlockVolumeMultiplier(2, 3, 1)).toBe(8)
     expect(calculateBlockAddQuantity(1, 1, 1)).toBe(1)
-    // Example: Block 1 left a current base of 2; valid Block 3 adds 2 × (3 × 1).
+    // Passing the immutable parent quantity is deliberate: earlier Block legs
+    // never become another count's base and cannot compound later volumes.
     expect(calculateBlockAddQuantity(2, 3, 1)).toBe(6)
+    const immutableBase = 0.04
+    const independentAdds = [1, 2, 4, 7].map((count) =>
+      calculateBlockAddQuantity(immutableBase, count, 0.35),
+    )
+    ;[0.014, 0.028, 0.056, 0.098].forEach((expected, index) => {
+      expect(independentAdds[index]).toBeCloseTo(expected, 12)
+    })
+    expect(immutableBase + independentAdds.reduce((sum, quantity) => sum + quantity, 0))
+      .toBeCloseTo(0.236, 12)
   })
 
   test("calculates a separate proportional minimum PF for every Block count", () => {
@@ -108,6 +119,37 @@ describe("independent Block count lifecycle", () => {
       }
     },
   )
+
+  test("combines mirrored Real/Live activity without double-counting and caps each direction independently", () => {
+    expect(resolveMirroredActiveBlockCount({
+      realCount: 4,
+      liveCount: 4,
+      includeReal: true,
+      includeLive: true,
+      maxStack: 10,
+    })).toBe(4)
+    expect(resolveMirroredActiveBlockCount({
+      realCount: 3,
+      liveCount: 7,
+      includeReal: true,
+      includeLive: true,
+      maxStack: 5,
+    })).toBe(5)
+    expect(resolveMirroredActiveBlockCount({
+      realCount: 3,
+      liveCount: 7,
+      includeReal: true,
+      includeLive: false,
+      maxStack: 10,
+    })).toBe(3)
+    expect(resolveMirroredActiveBlockCount({
+      realCount: -2,
+      liveCount: Number.NaN,
+      includeReal: true,
+      includeLive: true,
+      maxStack: 10,
+    })).toBe(0)
+  })
 
   test("pauses every realized Block count independently and advances by later PnLs", async () => {
     const redis = new MemoryRedis()

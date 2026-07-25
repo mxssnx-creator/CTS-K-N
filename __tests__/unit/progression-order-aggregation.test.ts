@@ -3,7 +3,7 @@ jest.mock("next/server", () => ({
 }))
 
 const hgetall = jest.fn(async (key: string) => {
-  if (key === "live_orders_by_symbol:conn-1") {
+  if (key === "live_orders_by_symbol_v2:conn-1") {
     return {
       "BTCUSDT:long:placed": "2",
       "BTCUSDT:long:filled": "1",
@@ -13,8 +13,24 @@ const hgetall = jest.fn(async (key: string) => {
       "ETHUSDT:short:failed": "4",
       SOLUSDT: JSON.stringify({ side: "sell", count: 2, failed: 1 }),
       XRPUSDT: JSON.stringify({ direction: "long", placed: 5, filled: 4, failed: 1 }),
+      UNKNOWNUSDT: JSON.stringify({ count: 100 }),
       "BROKEN:side:ignored": "99",
       MALFORMED: "{not json",
+    }
+  }
+  if (key === "strategy_block_pf_stats:conn-1") {
+    return {
+      "s:BTCUSDT:active:evaluated": "4",
+      "s:BTCUSDT:active:passed": "3",
+      "s:BTCUSDT:active:emitted": "2",
+      "s:BTCUSDT:active:real:long": "4",
+      "s:BTCUSDT:active:real:short": "1",
+      "s:BTCUSDT:active:live:long": "4",
+      "s:BTCUSDT:active:live:short": "3",
+      "s:BTCUSDT:active:combined:long": "4",
+      "s:BTCUSDT:active:combined:short": "3",
+      "s:BTCUSDT:active:volume_increment:long": "3",
+      "s:BTCUSDT:active:volume_increment:short": "2.25",
     }
   }
   return {}
@@ -80,5 +96,17 @@ describe("progression stats order aggregation", () => {
         short: { placed: 0, filled: 0, failed: 4 },
       },
     ])
+
+    expect(
+      response.body.strategyDetail.real.positionStats.adjustTypes.block.activeOverlayEvaluation,
+    ).toMatchObject({
+      evaluated: 4,
+      passed: 3,
+      emitted: 2,
+      real: { long: 4, short: 1 },
+      live: { long: 4, short: 3 },
+      combined: { long: 4, short: 3 },
+      volumeIncrement: { long: 3, short: 2.25 },
+    })
   })
 })

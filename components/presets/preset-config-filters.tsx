@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { PRESET_INDICATOR_TYPES } from "@/lib/preset-optimizer"
 
 interface PresetConfigFiltersProps {
   filters: {
@@ -16,7 +17,7 @@ interface PresetConfigFiltersProps {
 }
 
 export function PresetConfigFilters({ filters, onFilterChange }: PresetConfigFiltersProps) {
-  const indicatorTypes = ["rsi", "macd", "bollinger", "sar", "ema", "sma", "stochastic"]
+  const indicatorTypes = PRESET_INDICATOR_TYPES
   const availableSymbols = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "BCHUSDT", "LINKUSDT", "DOGEUSDT"]
 
   const toggleIndicator = (type: string) => {

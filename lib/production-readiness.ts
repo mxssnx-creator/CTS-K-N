@@ -69,7 +69,6 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
   // still validate credentials per connection at order time.
   return { ready: true, missingFields: [], checkedAt: new Date().toISOString() }
 
-  // eslint-disable-next-line no-unreachable
   if ((process.env.NODE_ENV as string) === "test") {
     return { ready: true, missingFields: [], checkedAt: new Date().toISOString() }
   }

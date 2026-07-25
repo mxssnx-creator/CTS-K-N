@@ -15,8 +15,26 @@ describe("live trading dashboard release contract", () => {
     expect(page).toContain("method: \"DELETE\"")
     expect(page).toContain("method: \"PATCH\"")
     expect(page).toContain("usePositionUpdates")
+    expect(page).toContain("connectionGenerationRef")
+    expect(page).toContain("selectedConnectionIdRef")
+    expect(page).toContain("resourceSequenceRef")
+    expect(page).toContain("tasks.map((task) => task.promise)")
+    expect(page).toContain("requestedSequences[kind] !== resourceSequenceRef.current[kind]")
+    expect(page).toContain("connectionId !== selectedConnectionIdRef.current")
+    expect(page).toContain("selectedConnectionIdRef.current === targetConnectionId")
+    expect(page).not.toContain("generationRef")
     expect(page).not.toContain("Math.random")
     expect(page).not.toContain("Start Simulation")
+  })
+
+  test("preserves canonical zero-valued open-position counts", () => {
+    const card = source("components/dashboard/active-connection-card.tsx")
+
+    expect(card).toContain("data?.openPositions?.live?.open")
+    expect(card).toContain("?? data?.liveExecution?.positionsOpen")
+    expect(card).not.toContain(
+      "data?.openPositions?.live?.open || data?.liveExecution?.positionsOpen",
+    )
   })
 
   test("renders every requested compact overview window", () => {

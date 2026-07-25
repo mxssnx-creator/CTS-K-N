@@ -39,6 +39,10 @@ export interface RealAdjustPositionStats extends RealVariantPositionStats {
     rejected: number
     paused: number
     active: number
+    real: { long: number; short: number }
+    live: { long: number; short: number }
+    combined: { long: number; short: number }
+    volumeIncrement: { long: number; short: number }
   }
   /** Block-only independently evaluated Count 1..N results. */
   countEvaluations?: RealBlockCountProfitFactorStats[]
@@ -468,6 +472,10 @@ export function buildRealStagePositionStats(input: {
           rejected: 0,
           paused: 0,
           active: 0,
+          real: { long: 0, short: 0 },
+          live: { long: 0, short: 0 },
+          combined: { long: 0, short: 0 },
+          volumeIncrement: { long: 0, short: 0 },
         },
         countEvaluations: Array.isArray(input.blockProfitFactor?.countEvaluations)
           ? input.blockProfitFactor!.countEvaluations

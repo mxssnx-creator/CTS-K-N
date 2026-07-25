@@ -11,6 +11,7 @@ import AutoIndicationSettings from "@/components/settings/auto-indication-settin
 import MultiTrailingSettings from "@/components/settings/strategy/multi-trailing-settings"
 import { useState } from "react"
 import { DEFAULT_DCA_PROFILE } from "@/lib/dca-strategy"
+import { PRESET_INDICATOR_TYPES } from "@/lib/preset-optimizer"
 import { parseStoredBoolean } from "@/lib/trailing-settings"
 
 interface StrategyTabProps {
@@ -61,7 +62,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
   const dcaMaxSteps = Math.max(1, Math.min(4, Number(settings.dcaMaxSteps) || DEFAULT_DCA_PROFILE.maxSteps))
   const presetIndicatorTypes: string[] = Array.isArray(settings.presetIndicatorTypes)
     ? settings.presetIndicatorTypes
-    : ["rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "sar"]
+    : [...PRESET_INDICATOR_TYPES]
   const updateDcaStep = (key: "dcaStepVolumeMultipliers" | "dcaStepDistancesPct", index: number, value: number) => {
     const fallback = key === "dcaStepVolumeMultipliers"
       ? DEFAULT_DCA_PROFILE.stepVolumeMultipliers
@@ -646,7 +647,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                 <div className="space-y-2">
                   <Label>Common indication types</Label>
                   <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
-                    {["rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "sar"].map((type) => {
+                    {PRESET_INDICATOR_TYPES.map((type) => {
                       const checked = presetIndicatorTypes.includes(type)
                       return (
                         <div key={type} className="flex items-center justify-between rounded-lg border px-3 py-2">

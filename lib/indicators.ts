@@ -2,9 +2,12 @@
  * Technical Indicators Library
  * Implements common trading indicators: RSI, MACD, Bollinger Bands, Parabolic SAR, etc.
  */
+import type { PresetIndicatorType } from "@/lib/preset-optimizer"
+import type { CommonIndicatorType } from "@/lib/common-indicator-config"
+import { evaluateTechnicalIndicators } from "@/lib/technical-indicators"
 
 export interface IndicatorConfig {
-  type: "rsi" | "macd" | "bollinger" | "sar" | "ema" | "sma" | "stochastic" | "adx"
+  type: PresetIndicatorType
   params: Record<string, number>
 }
 
@@ -307,6 +310,7 @@ export class TechnicalIndicators {
         return { type: "bollinger", strength: 0, direction: "neutral", value: position, timestamp: new Date() }
       }
 
+      case "psar":
       case "sar": {
         const highs = prices.map((p) => p * 1.01) // Approximate highs
         const lows = prices.map((p) => p * 0.99) // Approximate lows
@@ -340,8 +344,36 @@ export class TechnicalIndicators {
         }
       }
 
-      default:
-        return { type: indicator.type, strength: 0, direction: "neutral", value: 0, timestamp: new Date() }
+      default: {
+        const rawType = String(indicator.type)
+        const canonicalType = (rawType === "sar" ? "psar" : rawType) as CommonIndicatorType
+        const candles = prices.map((price, index) => {
+          const previous = prices[Math.max(0, index - 1)] || price
+          const spread = Math.max(Math.abs(price - previous), price * 0.0001)
+          return {
+            timestamp: index,
+            open: previous,
+            high: Math.max(previous, price) + spread * 0.1,
+            low: Math.min(previous, price) - spread * 0.1,
+            close: price,
+            volume: Math.max(1, Math.abs(price - previous) * 1_000),
+          }
+        })
+        const period = indicator.params.period ||
+          indicator.params.kPeriod ||
+          indicator.params.long ||
+          indicator.params.longPeriod ||
+          14
+        const evaluated = evaluateTechnicalIndicators(candles, period, [canonicalType])
+        const signal = evaluated[canonicalType]
+        return {
+          type: indicator.type,
+          strength: signal?.strength || 0,
+          direction: signal?.direction || "neutral",
+          value: signal?.value || 0,
+          timestamp: new Date(),
+        }
+      }
     }
   }
 

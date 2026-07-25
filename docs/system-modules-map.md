@@ -208,7 +208,7 @@ flowchart TB
       RedisLocal["redis-server\noptional local persistence"]
     end
 
-    subgraph AppDir["Install directory, e.g. /opt/cts-k-n"]
+    subgraph AppDir["Install directory, e.g. /opt/cts-kn"]
       Repo["Git checkout"]
       Env[".env.production / .env.local"]
       NextBuild[".next production build"]

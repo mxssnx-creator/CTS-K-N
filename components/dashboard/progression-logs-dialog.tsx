@@ -11,6 +11,7 @@ import { Loader2, Zap, TrendingUp, Clock, AlertCircle, RefreshCw, Trash2, Databa
 import { toast } from "@/lib/simple-toast"
 import { IndicationsDetail } from "@/components/dashboard/indications-detail"
 import { StrategyPipeline } from "@/components/dashboard/strategy-pipeline"
+import { firstFiniteMetric } from "@/lib/dashboard-metrics"
 
 // ─── interfaces ────────────────────────────────────────────────────────────────
 
@@ -192,18 +193,18 @@ export function ProgressionLogsDialog({
   const ac = stats?.activeCounts
   const ap = stats?.activeProgressing
   const activeIndications = {
-    direction: Number(ac?.indications?.direction) || Number(ap?.indications?.direction?.sets) || 0,
-    move:      Number(ac?.indications?.move)      || Number(ap?.indications?.move?.sets)      || 0,
-    active:    Number(ac?.indications?.active)    || Number(ap?.indications?.active?.sets)    || 0,
-    optimal:   Number(ac?.indications?.optimal)   || Number(ap?.indications?.optimal?.sets)   || 0,
-    trend:     Number(ac?.indications?.trend)     || Number(ap?.indications?.trend?.sets)     || 0,
-    total:     Number(ac?.indications?.total)     || Number(ap?.indications?.total?.sets)     || 0,
+    direction: firstFiniteMetric(ac?.indications?.direction, ap?.indications?.direction?.sets),
+    move:      firstFiniteMetric(ac?.indications?.move, ap?.indications?.move?.sets),
+    active:    firstFiniteMetric(ac?.indications?.active, ap?.indications?.active?.sets),
+    optimal:   firstFiniteMetric(ac?.indications?.optimal, ap?.indications?.optimal?.sets),
+    trend:     firstFiniteMetric(ac?.indications?.trend, ap?.indications?.trend?.sets),
+    total:     firstFiniteMetric(ac?.indications?.total, ap?.indications?.total?.sets),
   }
   const activeStrategies = {
-    base:  Number(ac?.strategies?.base)  || Number(ap?.strategies?.base?.sets)  || 0,
-    main:  Number(ac?.strategies?.main)  || Number(ap?.strategies?.main?.sets)  || 0,
-    real:  Number(ac?.strategies?.real)  || Number(ap?.strategies?.real?.sets)  || 0,
-    total: Number(ac?.strategies?.total) || Number(ap?.strategies?.total?.sets) || 0,
+    base:  firstFiniteMetric(ac?.strategies?.base, ap?.strategies?.base?.sets),
+    main:  firstFiniteMetric(ac?.strategies?.main, ap?.strategies?.main?.sets),
+    real:  firstFiniteMetric(ac?.strategies?.real, ap?.strategies?.real?.sets),
+    total: firstFiniteMetric(ac?.strategies?.total, ap?.strategies?.total?.sets),
   }
 
   // MUST stay in sync with `DEFAULT_LIMITS` in `lib/indication-sets-processor.ts`

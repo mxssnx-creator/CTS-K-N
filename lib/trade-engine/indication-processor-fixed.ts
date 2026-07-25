@@ -70,16 +70,29 @@ import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { trackIndicationStats } from "@/lib/statistics-tracker"
 import { StepBasedIndicators } from "@/lib/step-based-indicators"
 import {
+  DEFAULT_COMMON_INDICATION_SETTINGS,
+  enabledCommonIndicatorTypes,
+  normalizeCommonIndicationSettings,
+} from "@/lib/common-indicator-config"
+import {
+  calculateMultiRangeCoordination,
+  DEFAULT_MAIN_COORDINATION_SETTINGS,
+} from "@/lib/multi-range-coordination"
+import {
   buildAdaptiveTrendTpRange,
+  calculateCombinedTrendSignal,
   calculateTrendSignal,
   DEFAULT_TREND_ACTIVE_SITUATION_RATIOS,
   DEFAULT_TREND_DRAWDOWN_FACTORS,
   DEFAULT_TREND_LAST_SITUATION_RATIOS,
   DEFAULT_TREND_MIN_AGREEMENT,
+  DEFAULT_TREND_RANGE_STEPS,
+  DEFAULT_TREND_HIGHER_RANGE_DRAWDOWN_SCALE,
   DEFAULT_TREND_TIMEFRAMES_MINUTES,
   DEFAULT_TREND_TP_MAX_FACTOR,
   DEFAULT_TREND_TP_MIN_MULTIPLIER,
   DEFAULT_TREND_TP_STEP,
+  normalizeTrendTimeframesMinutes,
 } from "@/lib/trend-indication"
 
 // Pre-import modules at module load time (not per-call)
@@ -170,18 +183,89 @@ async function getSettingsCachedModule(): Promise<any> {
   try {
     await initRedis()
     // Mirror-aware read (covers both app_settings + all_settings).
-    const settings = (await getAppSettings()) || {}
+    const client = getRedisClient()
+    const [appSettings, commonSettingsRaw] = await Promise.all([
+      getAppSettings(),
+      client.get("indications:common").catch(() => null),
+    ])
+    const settings = appSettings || {}
+    let parsedCommonSettings: unknown = DEFAULT_COMMON_INDICATION_SETTINGS
+    if (commonSettingsRaw) {
+      try {
+        parsedCommonSettings = typeof commonSettingsRaw === "string"
+          ? JSON.parse(commonSettingsRaw)
+          : commonSettingsRaw
+      } catch {
+        parsedCommonSettings = DEFAULT_COMMON_INDICATION_SETTINGS
+      }
+    }
+    const commonSettings = normalizeCommonIndicationSettings(parsedCommonSettings)
+    const numericOr = (value: unknown, fallback: number) => {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : fallback
+    }
+    const defaultCoordination = {
+      enabled:
+        settings.defaultCoordinationEnabled !== false &&
+        settings.defaultCoordinationEnabled !== "false",
+      timeframesMinutes: parseNumericSettingList(
+        settings.defaultCoordinationRanges,
+        DEFAULT_MAIN_COORDINATION_SETTINGS.timeframesMinutes,
+      ),
+      rangeSteps: parseNumericSettingList(
+        settings.defaultCoordinationRangeSteps,
+        DEFAULT_MAIN_COORDINATION_SETTINGS.rangeSteps,
+      ),
+      drawdownRatios: parseNumericSettingList(
+        settings.defaultCoordinationDrawdownRatios,
+        DEFAULT_MAIN_COORDINATION_SETTINGS.drawdownRatios,
+      ),
+      higherRangeDrawdownScale: numericOr(
+        settings.defaultCoordinationHigherRangeDrawdownScale,
+        DEFAULT_MAIN_COORDINATION_SETTINGS.higherRangeDrawdownScale,
+      ),
+      minAgreement: numericOr(
+        settings.defaultCoordinationMinAgreement,
+        DEFAULT_MAIN_COORDINATION_SETTINGS.minAgreement,
+      ),
+      minimumSignals: numericOr(
+        settings.defaultCoordinationMinimumSignals,
+        DEFAULT_MAIN_COORDINATION_SETTINGS.minimumSignals,
+      ),
+      shortDifferenceRatio: numericOr(
+        settings.defaultCoordinationShortDifferenceRatio,
+        DEFAULT_MAIN_COORDINATION_SETTINGS.shortDifferenceRatio,
+      ),
+    }
 
     const indicationSettings = {
       minProfitFactor: settings.minProfitFactor || 1.2,
       minConfidence: settings.minConfidence || 0.6,
       timeframes: settings.timeframes || ["1h", "4h", "1d"],
+      directionEnabled: settings.directionEnabled !== false && settings.directionEnabled !== "false",
+      moveEnabled: settings.moveEnabled !== false && settings.moveEnabled !== "false",
+      activeEnabled: settings.activeEnabled !== false && settings.activeEnabled !== "false",
+      optimalEnabled: settings.optimalEnabled !== false && settings.optimalEnabled !== "false",
+      autoEnabled: settings.autoEnabled !== false && settings.autoEnabled !== "false",
       trendEnabled: settings.trendEnabled !== false && settings.trendEnabled !== "false",
-      trendTimeframesMinutes: settings.trendTimeframesMinutes || [...DEFAULT_TREND_TIMEFRAMES_MINUTES],
+      trendTimeframesMinutes: normalizeTrendTimeframesMinutes(settings.trendTimeframesMinutes),
       trendDrawdownValues: settings.trendDrawdownValues || [...DEFAULT_TREND_DRAWDOWN_FACTORS],
       trendLastSituationRatios: settings.trendLastSituationRatios || [...DEFAULT_TREND_LAST_SITUATION_RATIOS],
       trendActiveSituationRatios: settings.trendActiveSituationRatios || [...DEFAULT_TREND_ACTIVE_SITUATION_RATIOS],
       trendMinAgreement: Number(settings.trendMinAgreement) || DEFAULT_TREND_MIN_AGREEMENT,
+      trendCombinedEnabled: settings.trendCombinedEnabled !== false && settings.trendCombinedEnabled !== "false",
+      trendRangeSteps: settings.trendRangeSteps || commonSettings.coordination.rangeSteps || [...DEFAULT_TREND_RANGE_STEPS],
+      trendHigherRangeDrawdownScale:
+        Number(settings.trendHigherRangeDrawdownScale) ||
+        commonSettings.coordination.higherRangeDrawdownScale ||
+        DEFAULT_TREND_HIGHER_RANGE_DRAWDOWN_SCALE,
+      commonSettings,
+      commonCoordination: commonSettings.coordination,
+      defaultCoordination,
+      directionPostChangeOnly:
+        settings.directionPostChangeOnly !== false &&
+        settings.directionPostChangeOnly !== "false",
+      commonIndicatorTypes: enabledCommonIndicatorTypes(commonSettings),
       positionCost: Number(settings.positionCost) || 0.1,
       trendTpMinMultiplier: Number(settings.trendTpMinMultiplier) || DEFAULT_TREND_TP_MIN_MULTIPLIER,
       trendTpMaxFactor: Number(settings.trendTpMaxFactor) || DEFAULT_TREND_TP_MAX_FACTOR,
@@ -195,12 +279,32 @@ async function getSettingsCachedModule(): Promise<any> {
       minProfitFactor: 1.2,
       minConfidence: 0.6,
       timeframes: ["1h", "4h", "1d"],
+      directionEnabled: true,
+      moveEnabled: true,
+      activeEnabled: true,
+      optimalEnabled: true,
+      autoEnabled: true,
       trendEnabled: true,
       trendTimeframesMinutes: [...DEFAULT_TREND_TIMEFRAMES_MINUTES],
       trendDrawdownValues: [...DEFAULT_TREND_DRAWDOWN_FACTORS],
       trendLastSituationRatios: [...DEFAULT_TREND_LAST_SITUATION_RATIOS],
       trendActiveSituationRatios: [...DEFAULT_TREND_ACTIVE_SITUATION_RATIOS],
       trendMinAgreement: DEFAULT_TREND_MIN_AGREEMENT,
+      trendCombinedEnabled: true,
+      trendRangeSteps: [...DEFAULT_TREND_RANGE_STEPS],
+      trendHigherRangeDrawdownScale: DEFAULT_TREND_HIGHER_RANGE_DRAWDOWN_SCALE,
+      commonSettings: normalizeCommonIndicationSettings(DEFAULT_COMMON_INDICATION_SETTINGS),
+      commonCoordination: normalizeCommonIndicationSettings(DEFAULT_COMMON_INDICATION_SETTINGS).coordination,
+      commonIndicatorTypes: enabledCommonIndicatorTypes(
+        normalizeCommonIndicationSettings(DEFAULT_COMMON_INDICATION_SETTINGS),
+      ),
+      defaultCoordination: {
+        ...DEFAULT_MAIN_COORDINATION_SETTINGS,
+        timeframesMinutes: [...DEFAULT_MAIN_COORDINATION_SETTINGS.timeframesMinutes],
+        rangeSteps: [...DEFAULT_MAIN_COORDINATION_SETTINGS.rangeSteps],
+        drawdownRatios: [...DEFAULT_MAIN_COORDINATION_SETTINGS.drawdownRatios],
+      },
+      directionPostChangeOnly: true,
       positionCost: 0.1,
       trendTpMinMultiplier: DEFAULT_TREND_TP_MIN_MULTIPLIER,
       trendTpMaxFactor: DEFAULT_TREND_TP_MAX_FACTOR,
@@ -626,9 +730,36 @@ export class IndicationProcessor {
         }
       }
 
-      // Calculate step-based indicators
-      const stepRange = Array.from({ length: 29 }, (_, i) => i + 2)
-      const stepIndicators = StepBasedIndicators.calculateAll(candles, stepRange)
+      const pricesOldestFirst = oneMinuteClosesOldestFirst(candles)
+      const coordinatedTimeframes = parseNumericSettingList(
+        indicationSettings.commonCoordination?.timeframesMinutes,
+        [1, 3, 5, 15],
+      ).map((value) => Math.max(1, Math.round(value)))
+      const stepIndicators = StepBasedIndicators.calculateAll(
+        candles,
+        coordinatedTimeframes,
+        indicationSettings.commonIndicatorTypes,
+        indicationSettings.commonSettings,
+      )
+      const defaultMultiRangeCoordination = calculateMultiRangeCoordination({
+        pricesOldestFirst,
+        positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+        config: indicationSettings.defaultCoordination,
+        rangeUnit: "samples",
+      })
+      const directionPostChangeCoordination = calculateMultiRangeCoordination({
+        pricesOldestFirst,
+        positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+        config: indicationSettings.defaultCoordination,
+        requireDirectionChange: indicationSettings.directionPostChangeOnly !== false,
+        rangeUnit: "samples",
+      })
+      const commonMultiRangeCoordination = calculateMultiRangeCoordination({
+        pricesOldestFirst,
+        positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+        config: indicationSettings.commonCoordination,
+        rangeUnit: "minutes",
+      })
 
       // Extract prices safely. In replay mode the priceSource must be
       // the slice's tail candle (the simulated "current" bar), NOT the
@@ -653,21 +784,20 @@ export class IndicationProcessor {
 
       // Determine direction from real price data:
       // Use close vs open to set bullish/bearish direction for this candle.
-      // Also generate the opposite direction as a hedge indication.
+      // Do not synthesize an opposite hedge indication. The historical
+      // primary+opposite fan-out made every cycle contribute one long and one
+      // short candidate, which in turn produced identical side/order counts.
       const isBullish = currentClose >= currentOpen
       const primaryDir = isBullish ? "long" : "short"
-      const secondaryDir = isBullish ? "short" : "long"
 
       // Derive confidence from candle body vs wick ratio (stronger body = higher confidence)
       const range = currentHigh - currentLow
       const body = Math.abs(currentClose - currentOpen)
       const bodyRatio = range > 0 ? Math.min(0.99, body / range) : 0.5
       const primaryConf = 0.5 + bodyRatio * 0.4  // 0.5 – 0.9
-      const secondaryConf = 0.5 + (1 - bodyRatio) * 0.25 // 0.5 – 0.75 (weaker)
 
       // Profit factor proportional to confidence
       const primaryPF = 1.0 + primaryConf * 0.5
-      const secondaryPF = 1.0 + secondaryConf * 0.3
 
       // ── Indication emission with differentiated semantics ────────────────
       //
@@ -678,7 +808,7 @@ export class IndicationProcessor {
       // Each type now only fires when its own criterion is satisfied, so the
       // per-type counts naturally diverge and reflect real market structure:
       //
-      //   direction — always emitted (2/cycle): primary + hedge trend signal
+      //   direction — one independent observation in the actual market side
       //   move      — primary-direction candle expansion beyond a small live-noise floor
       //   active    — candle volume > recent-volume average (elevated activity)
       //   optimal   — strong confidence + strong body (conf ≥ 0.72 AND body-ratio ≥ 0.55)
@@ -715,45 +845,58 @@ export class IndicationProcessor {
         recentVolAvg = n > 0 ? sum / n : currentVolume
       }
 
-      // Auto-alignment: derived from the step-based indicator suite
-      // (MA + RSI + MACD) across short / mid / long windows. Each step
-      // indicator exposes `{ ma, rsi, macd: { macd, signal }, bb }`, so we
-      // project each to a direction:
-      //   * RSI  > 50 → long, RSI < 50 → short
-      //   * MACD histogram > 0 (macd > signal) → long, else short
-      //   * Price vs MA: close > ma → long, else short
-      // A window is "aligned" when at least 2 of those 3 sub-signals agree;
-      // we fire "auto" for the primary direction when ≥ 2 of the 3 windows
-      // (steps 5 / 15 / 28) align in that direction.
+      // Auto uses the full enabled Common catalogue (including OBV and
+      // Stochastic) on every configured range. A higher range only counts
+      // when both its internal indicator vote and the PositionCost-relative
+      // coordination point in the same market direction.
       const autoAlignment = (() => {
         try {
-          const projectWindow = (step: number): { dir: "long" | "short" | null; strength: number } => {
-            const s = (stepIndicators as any)?.[step]
-            if (!s) return { dir: null, strength: 0 }
-            const rsi = Number(s.rsi) || 50
-            const macdHist = (Number(s?.macd?.macd) || 0) - (Number(s?.macd?.signal) || 0)
-            const ma = Number(s.ma) || 0
-            const votes: Array<"long" | "short"> = []
-            if (rsi !== 50) votes.push(rsi > 50 ? "long" : "short")
-            if (macdHist !== 0) votes.push(macdHist > 0 ? "long" : "short")
-            if (ma > 0) votes.push(currentClose >= ma ? "long" : "short")
-            if (votes.length < 2) return { dir: null, strength: 0 }
-            const longs = votes.filter((v) => v === "long").length
-            const shorts = votes.length - longs
-            if (longs === shorts) return { dir: null, strength: 0 }
-            const dir: "long" | "short" = longs > shorts ? "long" : "short"
-            // Strength = RSI distance from 50 (0–1) blended with vote majority.
-            const rsiStrength = Math.min(1, Math.abs(rsi - 50) / 40)
-            const voteStrength = Math.max(longs, shorts) / votes.length
-            return { dir, strength: rsiStrength * 0.5 + voteStrength * 0.5 }
+          const minimumSignals = Math.max(
+            1,
+            Number(indicationSettings.commonCoordination?.minimumSignals) || 3,
+          )
+          const minimumAgreement = Math.max(
+            0.5,
+            Number(indicationSettings.commonCoordination?.minAgreement) || 0.6,
+          )
+          const windows = coordinatedTimeframes.map((timeframeMinutes) => {
+            const step = (stepIndicators as any)?.[String(timeframeMinutes)]
+            const summary = step?.summary
+            const direction = summary?.direction === "long" || summary?.direction === "short"
+              ? summary.direction
+              : null
+            return {
+              timeframeMinutes,
+              direction,
+              agreement: Number(summary?.agreement) || 0,
+              strength: Number(summary?.strength) || 0,
+              signals: Number(summary?.signals) || 0,
+              indicators: step?.indicators || {},
+            }
+          }).filter((window) =>
+            window.direction &&
+            window.signals >= minimumSignals &&
+            window.agreement >= minimumAgreement,
+          )
+          const coordinated = windows.filter((window) =>
+            window.direction === commonMultiRangeCoordination.direction,
+          )
+          if (
+            !commonMultiRangeCoordination.passed ||
+            coordinated.length < Math.min(2, coordinatedTimeframes.length)
+          ) {
+            return null
           }
-
-          const windows = [projectWindow(5), projectWindow(15), projectWindow(28)]
-          const alignedWindows = windows.filter((w) => w.dir === primaryDir)
-          if (alignedWindows.length < 2) return null
-          const avgStrength =
-            alignedWindows.reduce((a, b) => a + b.strength, 0) / alignedWindows.length
-          return { aligned: true, strength: Math.min(0.95, 0.5 + avgStrength * 0.45) }
+          const averageStrength = coordinated.reduce(
+            (sum, window) => sum + window.strength * 0.5 + window.agreement * 0.5,
+            0,
+          ) / coordinated.length
+          return {
+            aligned: true,
+            direction: commonMultiRangeCoordination.direction,
+            strength: Math.min(0.98, 0.45 + averageStrength * 0.35 + commonMultiRangeCoordination.score * 0.2),
+            windows: coordinated,
+          }
         } catch {
           return null
         }
@@ -761,11 +904,10 @@ export class IndicationProcessor {
 
       const trendEvaluations = (() => {
         if (indicationSettings.trendEnabled === false) return []
-        const prices = oneMinuteClosesOldestFirst(candles)
-        const timeframes = parseNumericSettingList(
+        const prices = pricesOldestFirst
+        const timeframes = normalizeTrendTimeframesMinutes(
           indicationSettings.trendTimeframesMinutes,
-          DEFAULT_TREND_TIMEFRAMES_MINUTES,
-        ).map((value) => Math.round(value)).filter((value) => value >= 1 && value <= 60)
+        )
         const drawdowns = parseNumericSettingList(
           indicationSettings.trendDrawdownValues,
           DEFAULT_TREND_DRAWDOWN_FACTORS,
@@ -812,29 +954,64 @@ export class IndicationProcessor {
           step: Number(indicationSettings.trendTpStep) || DEFAULT_TREND_TP_STEP,
           averageWindowMinutes: Math.max(...timeframes),
         })
-        return strongestByTimeframe.map((signal) => ({ signal, adaptiveTpRange }))
+        const evaluations: Array<{
+          signal: NonNullable<ReturnType<typeof calculateTrendSignal>> | NonNullable<ReturnType<typeof calculateCombinedTrendSignal>>
+          adaptiveTpRange: ReturnType<typeof buildAdaptiveTrendTpRange>
+          combined: boolean
+        }> = strongestByTimeframe.map((signal) => ({
+          signal,
+          adaptiveTpRange,
+          combined: false,
+        }))
+        if (indicationSettings.trendCombinedEnabled !== false) {
+          const combined = calculateCombinedTrendSignal(prices, {
+            timeframesMinutes: timeframes,
+            drawdownFactors: drawdowns,
+            lastSituationRatios: lastRatios,
+            activeSituationRatios: activeRatios,
+            rangeSteps: parseNumericSettingList(
+              indicationSettings.trendRangeSteps,
+              DEFAULT_TREND_RANGE_STEPS,
+            ),
+            positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+            minAgreement: Number(indicationSettings.trendMinAgreement) || DEFAULT_TREND_MIN_AGREEMENT,
+            higherRangeDrawdownScale:
+              Number(indicationSettings.trendHigherRangeDrawdownScale) ||
+              DEFAULT_TREND_HIGHER_RANGE_DRAWDOWN_SCALE,
+          })
+          if (combined) evaluations.push({ signal: combined, adaptiveTpRange, combined: true })
+        }
+        return evaluations
       })()
 
-      // Loop over primary + hedge directions. Each condition is independent
+      // Loop over the observed market direction only. Each condition remains independent
       // so in a calm market only `direction` fires; on a big bullish candle
       // with elevated volume, all legacy types can fire. Trend is appended
       // once after this loop so it is always the final indication type.
       const pairs: Array<["long" | "short", number, number, boolean]> = [
-        [primaryDir,   primaryConf,   primaryPF,   true],   // primary
-        [secondaryDir, secondaryConf, secondaryPF, false],  // hedge
+        [primaryDir, primaryConf, primaryPF, true],
       ]
 
       for (const [dir, conf, pf, isPrimary] of pairs) {
-        // 1. Direction — always emitted
-        indications.push({
-          type: "direction",
-          symbol,
-          value: currentClose,
-          profitFactor: pf,
-          confidence: conf,
-          timestamp: now,
-          metadata: { direction: dir, primary: isPrimary },
-        })
+        // 1. Direction — independent and operator-controllable.
+        if (indicationSettings.directionEnabled !== false) {
+          indications.push({
+            type: "direction",
+            symbol,
+            value: currentClose,
+            profitFactor: pf,
+            confidence: conf,
+            timestamp: now,
+            metadata: {
+              direction: dir,
+              primary: isPrimary,
+              mode: "independent",
+              higherRangeDirection: directionPostChangeCoordination.direction,
+              higherRangeAligned: dir === directionPostChangeCoordination.direction,
+              directionPostChangeCoordination,
+            },
+          })
+        }
 
         // 2. Move — independent from Direction. Emit only for the primary
         // candle direction and only when the candle expands beyond a tiny
@@ -842,7 +1019,11 @@ export class IndicationProcessor {
         // Move fire for every Direction signal (including hedge), so dashboard
         // counts for Direction and Move moved in lockstep.
         const moveThresholdPct = Math.max(0.01, Math.min(0.08, bodyRatio * 0.03))
-        if (isPrimary && (rangePercent >= moveThresholdPct || bodyRatio >= 0.18)) {
+        if (
+          indicationSettings.moveEnabled !== false &&
+          isPrimary &&
+          (rangePercent >= moveThresholdPct || bodyRatio >= 0.18)
+        ) {
           indications.push({
             type: "move",
             symbol,
@@ -855,7 +1036,11 @@ export class IndicationProcessor {
         }
 
         // 3. Active — only when volume is elevated above the recent baseline
-        if (recentVolAvg > 0 && currentVolume >= recentVolAvg * 1.05) {
+        if (
+          indicationSettings.activeEnabled !== false &&
+          recentVolAvg > 0 &&
+          currentVolume >= recentVolAvg * 1.05
+        ) {
           indications.push({
             type: "active",
             symbol,
@@ -873,7 +1058,12 @@ export class IndicationProcessor {
 
         // 4. Optimal — gated on high confidence AND strong body. Only the
         //    primary direction is ever optimal (hedge is never the "best" play).
-        if (isPrimary && conf >= 0.72 && bodyRatio >= 0.55) {
+        if (
+          indicationSettings.optimalEnabled !== false &&
+          isPrimary &&
+          conf >= 0.72 &&
+          bodyRatio >= 0.55
+        ) {
           indications.push({
             type: "optimal",
             symbol,
@@ -886,7 +1076,12 @@ export class IndicationProcessor {
         }
 
         // 5. Auto — step-based indicator alignment, primary direction only.
-        if (isPrimary && autoAlignment?.aligned) {
+        if (
+          indicationSettings.autoEnabled !== false &&
+          isPrimary &&
+          autoAlignment?.aligned &&
+          autoAlignment.direction === dir
+        ) {
           indications.push({
             type: "auto",
             symbol,
@@ -894,13 +1089,96 @@ export class IndicationProcessor {
             profitFactor: Math.min(2.3, pf * (1 + autoAlignment.strength * 0.35)),
             confidence: autoAlignment.strength,
             timestamp: now,
-            metadata: { direction: dir, alignment: "step_5_15_28", primary: true },
+            metadata: {
+              direction: dir,
+              alignment: "common_multi_range",
+              primary: true,
+              windows: autoAlignment.windows,
+              commonMultiRangeCoordination,
+            },
+          })
+        }
+      }
+
+      // Independent Direction remains available above. This additional
+      // Direction exists only when the higher relative ranges agree on the
+      // same market move and satisfy activity, drawdown and 2/2.5/3 cost
+      // steps; opposite ranges cannot contribute to its score.
+      if (
+        indicationSettings.directionEnabled !== false &&
+        directionPostChangeCoordination.passed &&
+        (directionPostChangeCoordination.direction === "long" || directionPostChangeCoordination.direction === "short")
+      ) {
+        const coordinatedDirection = directionPostChangeCoordination.direction
+        const coordinatedMetadata = {
+          direction: coordinatedDirection,
+          primary: coordinatedDirection === primaryDir,
+          mode: "multi_range",
+          sameMarketMoveRequired: true,
+          postDirectionChangeOnly: indicationSettings.directionPostChangeOnly !== false,
+          multiRangeCoordination: directionPostChangeCoordination,
+        }
+        indications.push({
+          type: "direction",
+          symbol,
+          value: currentClose,
+          profitFactor: 1 + directionPostChangeCoordination.score,
+          confidence: Math.min(0.99, directionPostChangeCoordination.agreement),
+          timestamp: now,
+          metadata: coordinatedMetadata,
+        })
+      }
+
+      // Move and Active keep their own independent relative-range
+      // coordination. They do not inherit Direction's reversal-only gate.
+      if (
+        defaultMultiRangeCoordination.passed &&
+        (defaultMultiRangeCoordination.direction === "long" || defaultMultiRangeCoordination.direction === "short")
+      ) {
+        const coordinatedDirection = defaultMultiRangeCoordination.direction
+        const coordinatedMetadata = {
+          direction: coordinatedDirection,
+          primary: coordinatedDirection === primaryDir,
+          mode: "multi_range",
+          sameMarketMoveRequired: true,
+          rangeUnit: "samples",
+          multiRangeCoordination: defaultMultiRangeCoordination,
+        }
+        const moveThresholdPct = Math.max(0.01, Math.min(0.08, bodyRatio * 0.03))
+        if (
+          indicationSettings.moveEnabled !== false &&
+          coordinatedDirection === primaryDir &&
+          (rangePercent >= moveThresholdPct || bodyRatio >= 0.18)
+        ) {
+          indications.push({
+            type: "move",
+            symbol,
+            value: currentClose,
+            profitFactor: 1 + defaultMultiRangeCoordination.score * 0.9,
+            confidence: Math.min(0.98, defaultMultiRangeCoordination.agreement * 0.95),
+            timestamp: now,
+            metadata: { ...coordinatedMetadata, rangePercent },
+          })
+        }
+        if (
+          indicationSettings.activeEnabled !== false &&
+          coordinatedDirection === primaryDir &&
+          defaultMultiRangeCoordination.activityAgreement >= 0.5
+        ) {
+          indications.push({
+            type: "active",
+            symbol,
+            value: currentClose,
+            profitFactor: 1 + defaultMultiRangeCoordination.score * 0.8,
+            confidence: Math.min(0.97, defaultMultiRangeCoordination.activityAgreement),
+            timestamp: now,
+            metadata: coordinatedMetadata,
           })
         }
       }
 
       // 6. Trend — deliberately appended last. Emit the strongest independent
-      // configuration for every enabled timeframe (up to 1/3/5/10/15/30m),
+      // configuration for every enabled Trend timeframe (1/5/15/30m by default),
       // while IndicationSetsProcessor retains every passing parameter tuple.
       for (const trendEvaluation of trendEvaluations) {
         indications.push({
@@ -913,6 +1191,7 @@ export class IndicationProcessor {
           metadata: {
             ...trendEvaluation.signal.metadata,
             adaptiveTpRange: trendEvaluation.adaptiveTpRange,
+            combined: trendEvaluation.combined,
           },
         })
       }

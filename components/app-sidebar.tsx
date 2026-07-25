@@ -145,6 +145,7 @@ const additionalItems: Array<{
 
 export function AppSidebar() {
   const pathname = usePathname()
+  const currentPath = pathname ?? ""
   const router = useRouter()
   const { user, logout } = useAuth()
 
@@ -175,7 +176,8 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {menuItems.map((item) => {
-                const isActive = pathname === item.href
+                const isActive = currentPath === item.href ||
+                  (item.href !== "/" && currentPath.startsWith(`${item.href}/`))
                 return (
                   <SidebarMenuItem key={item.href}>
                     <SidebarMenuButton asChild isActive={isActive} tooltip={item.title} className="h-9">
@@ -196,7 +198,8 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {testingItems.map((item) => {
-                const isActive = pathname === item.href
+                const isActive = currentPath === item.href ||
+                  currentPath.startsWith(`${item.href}/`)
                 return (
                   <SidebarMenuItem key={item.href}>
                     <SidebarMenuButton asChild isActive={isActive}>
@@ -217,7 +220,8 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {additionalItems.map((item) => {
-                const isActive = pathname === item.href
+                const isActive = currentPath === item.href ||
+                  currentPath.startsWith(`${item.href}/`)
                 return (
                   <SidebarMenuItem key={item.href}>
                     <SidebarMenuButton asChild isActive={isActive}>

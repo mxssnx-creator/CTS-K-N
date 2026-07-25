@@ -11,10 +11,11 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 
 export default function OptimalIndicationSettingsPage() {
-  const [settings, setSettings] = useState({
+  const [settings, setSettings] = useState<any>({
     optimal: {
       enabled: false,
       range: { from: 3, to: 30, step: 1 },
+      sample_ranges: [2, 5, 10, 20, 30],
       drawdown_ratio: { from: 0.1, to: 0.5, step: 0.1 },
       market_change_range: { from: 1, to: 10, step: 2 },
       market_change_lastpart_base: 20,
@@ -87,7 +88,17 @@ export default function OptimalIndicationSettingsPage() {
     setSettings((prev: any) => ({
       optimal: {
         ...prev.optimal,
+        ...(field === "range" ? { sample_ranges: undefined } : {}),
         [field]: subfield ? { ...prev.optimal[field], [subfield]: Number.parseFloat(value) } : Number.parseFloat(value),
+      },
+    }))
+  }
+
+  const updateSampleRanges = (value: string) => {
+    setSettings((prev: any) => ({
+      optimal: {
+        ...prev.optimal,
+        sample_ranges: value,
       },
     }))
   }
@@ -167,6 +178,22 @@ export default function OptimalIndicationSettingsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
+          <div className="rounded-lg border bg-muted/20 p-3">
+            <Label className="text-base font-semibold">Exact independent sample ranges</Label>
+            <Input
+              className="mt-2"
+              value={Array.isArray(settings.optimal.sample_ranges)
+                ? settings.optimal.sample_ranges.join(", ")
+                : settings.optimal.sample_ranges || "2, 5, 10, 20, 30"}
+              onChange={(event) => updateSampleRanges(event.target.value)}
+              placeholder="2, 5, 10, 20, 30"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Exact sparse ranges consumed by the engine. Editing the legacy from/to/step builder below replaces this
+              list.
+            </p>
+          </div>
+
           {/* Base Range Settings */}
           <div>
             <Label className="text-base font-semibold">Range Settings</Label>

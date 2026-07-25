@@ -2,6 +2,7 @@ import { createExchangeConnector, exchangeConnectorFactory } from "@/lib/exchang
 import { getLiveOrderSafetyFailure } from "@/lib/live-order-safety"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { getConnection, getMarketData, getRedisClient, initRedis, savePosition } from "@/lib/redis-db"
+import { liveOrdersBySymbolKey } from "@/lib/live-order-counter-keys"
 import type { ExchangeConnection } from "@/lib/types"
 
 export const LIVE_ORDER_REDIS_KEYS = {
@@ -9,7 +10,7 @@ export const LIVE_ORDER_REDIS_KEYS = {
   exchangeOrder: "live:order:{connectionId}:{exchangeOrderId}",
   livePosition: "live:position:{livePositionId} plus live:positions:{connectionId} index",
   progressionCounters: "progression:{connectionId}",
-  perSymbolOrderCounters: "live_orders_by_symbol:{connectionId}",
+  perSymbolOrderCounters: "live_orders_by_symbol_v2:{connectionId}",
 } as const
 
 export type LiveOrderDirection = "long" | "short"
@@ -43,7 +44,17 @@ export interface ParsedFill {
 
 function normalizeDirection(side: string): LiveOrderDirection {
   const sideKey = String(side || "").trim().toLowerCase()
-  return sideKey === "short" || sideKey === "sell" ? "short" : "long"
+  if (sideKey === "long" || sideKey === "buy") return "long"
+  if (sideKey === "short" || sideKey === "sell") return "short"
+  throw new Error(`Order side must be long, short, buy, or sell; received '${sideKey || "empty"}'`)
+}
+
+function normalizeOrderSymbol(symbol: string): string {
+  const normalized = String(symbol || "").trim().toUpperCase()
+  if (!/^[A-Z0-9/_-]{2,40}$/.test(normalized)) {
+    throw new Error("Order symbol must be a non-empty exchange symbol without Redis delimiters")
+  }
+  return normalized
 }
 
 export function exchangeSideForDirection(direction: LiveOrderDirection): "buy" | "sell" {
@@ -95,7 +106,12 @@ export async function createLiveOrderConnector(connection: any, payload: Record<
     const safetyFailure = getLiveOrderSafetyFailure(payload)
     if (safetyFailure) throw Object.assign(new Error(safetyFailure), { statusCode: 403, mode: "blocked_live_order_safety" })
   }
-  if (!willUseRealExchange && process.env.NODE_ENV === "production" && process.env.ALLOW_PROD_SIMULATED !== "1") {
+  if (
+    !willUseRealExchange &&
+    !forceSim &&
+    process.env.NODE_ENV === "production" &&
+    process.env.ALLOW_PROD_SIMULATED !== "1"
+  ) {
     throw Object.assign(new Error(`Live exchange credentials missing for ${connection.id || connection.name || "connection"}; refusing simulated fallback in production`), {
       statusCode: 409,
       mode: "missing_live_exchange_credentials",
@@ -142,8 +158,9 @@ export function validateLiveOrderQuantity(input: { quantity: number; price?: num
 
 export async function recordPerSymbolOrderCounter(connectionId: string, symbol: string, direction: LiveOrderDirection, metric: "placed" | "filled" | "failed"): Promise<void> {
   const client = getRedisClient() as any
-  const symbolKey = String(symbol || "").trim().toUpperCase()
-  await client.hincrby(`live_orders_by_symbol:${connectionId}`, `${symbolKey}:${direction}:${metric}`, 1)
+  const symbolKey = normalizeOrderSymbol(symbol)
+  const directionKey = normalizeDirection(direction)
+  await client.hincrby(liveOrdersBySymbolKey(connectionId), `${symbolKey}:${directionKey}:${metric}`, 1)
 }
 
 async function claimLiveOrderProgressionEvent(connectionId: string, eventKey?: string): Promise<boolean> {
@@ -166,14 +183,28 @@ async function claimLiveOrderProgressionEvent(connectionId: string, eventKey?: s
   return true
 }
 
-export async function recordLiveOrderProgression(connectionId: string, symbol: string, direction: LiveOrderDirection, event: "placed" | "filled" | "failed" | "simulated", volumeUsd = 0, eventKey?: string): Promise<boolean> {
+export async function recordLiveOrderProgression(
+  connectionId: string,
+  symbol: string,
+  direction: LiveOrderDirection,
+  event: "placed" | "filled" | "failed" | "simulated",
+  volumeUsd = 0,
+  eventKey?: string,
+  options: { countPositionCreated?: boolean; countAccumulated?: boolean } = {},
+): Promise<boolean> {
   const client = getRedisClient() as any
   const progKey = `progression:${connectionId}`
+  const directionKey = normalizeDirection(direction)
   if (!(await claimLiveOrderProgressionEvent(connectionId, eventKey))) return false
   if (event === "placed") await client.hincrby(progKey, "live_orders_placed_count", 1)
   if (event === "filled") {
     await client.hincrby(progKey, "live_orders_filled_count", 1)
-    await client.hincrby(progKey, "live_positions_created_count", 1)
+    if (options.countPositionCreated !== false) {
+      await client.hincrby(progKey, "live_positions_created_count", 1)
+    }
+    if (options.countAccumulated === true) {
+      await client.hincrby(progKey, "live_orders_accumulated_count", 1)
+    }
     if (volumeUsd) {
       if (typeof client.hincrbyfloat === "function") await client.hincrbyfloat(progKey, "live_volume_usd_total", volumeUsd)
       else await client.hincrby(progKey, "live_volume_usd_total", Math.round(volumeUsd))
@@ -188,17 +219,22 @@ export async function recordLiveOrderProgression(connectionId: string, symbol: s
     await client.hincrby(progKey, "live_orders_simulated_count", 1)
     await client.hincrby(progKey, "live_orders_placed_count", 1)
     await client.hincrby(progKey, "live_orders_filled_count", 1)
-    await client.hincrby(progKey, "live_positions_created_count", 1)
+    if (options.countPositionCreated !== false) {
+      await client.hincrby(progKey, "live_positions_created_count", 1)
+    }
+    if (options.countAccumulated === true) {
+      await client.hincrby(progKey, "live_orders_accumulated_count", 1)
+    }
     if (volumeUsd) {
       if (typeof client.hincrbyfloat === "function") await client.hincrbyfloat(progKey, "live_volume_usd_total", volumeUsd)
       else await client.hincrby(progKey, "live_volume_usd_total", Math.round(volumeUsd))
     }
   }
   if (event !== "simulated") {
-    await recordPerSymbolOrderCounter(connectionId, symbol, direction, event)
+    await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, event)
   } else {
-    await recordPerSymbolOrderCounter(connectionId, symbol, direction, "placed")
-    await recordPerSymbolOrderCounter(connectionId, symbol, direction, "filled")
+    await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, "placed")
+    await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, "filled")
   }
   return true
 }
@@ -241,7 +277,7 @@ export async function persistLiveOrderPosition(input: { connectionId: string; sy
 export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
   validateLiveOrderQuantity(input)
   const connection = input.connection || await loadLiveOrderConnection(input.connectionId)
-  const symbol = String(input.symbol).trim().toUpperCase()
+  const symbol = normalizeOrderSymbol(input.symbol)
   const direction = normalizeDirection(input.side)
   const exchangeSide = exchangeSideForDirection(direction)
   const { connector, mode, willUseRealExchange } = input.connector

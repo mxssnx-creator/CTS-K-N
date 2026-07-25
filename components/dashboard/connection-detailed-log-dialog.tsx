@@ -23,6 +23,7 @@ import {
   LineChart
 } from "lucide-react"
 import type { ExchangeConnection } from "@/lib/types"
+import { firstFiniteMetric } from "@/lib/dashboard-metrics"
 
 interface LogEntry {
   id: number
@@ -98,36 +99,65 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
       // only the per-name rollup. Non-finite values normalize to 0.
       const ac = statsData?.activeCounts
       const ap = statsData?.activeProgressing
-      const activeIndDirection = Number(ac?.indications?.direction) || Number(ap?.indications?.direction?.sets) || 0
-      const activeIndMove      = Number(ac?.indications?.move)      || Number(ap?.indications?.move?.sets)      || 0
-      const activeIndActive    = Number(ac?.indications?.active)    || Number(ap?.indications?.active?.sets)    || 0
-      const activeIndOptimal   = Number(ac?.indications?.optimal)   || Number(ap?.indications?.optimal?.sets)   || 0
-      const activeIndTotal     = Number(ac?.indications?.total)     || Number(ap?.indications?.total?.sets)
-                              || (activeIndDirection + activeIndMove + activeIndActive + activeIndOptimal)
-      const activeStratBase    = Number(ac?.strategies?.base)       || Number(ap?.strategies?.base?.sets)       || 0
-      const activeStratMain    = Number(ac?.strategies?.main)       || Number(ap?.strategies?.main?.sets)       || 0
-      const activeStratReal    = Number(ac?.strategies?.real)       || Number(ap?.strategies?.real?.sets)       || 0
-      const activeStratTotal   = Number(ac?.strategies?.total)      || Number(ap?.strategies?.total?.sets)
-                              || (activeStratBase + activeStratMain + activeStratReal)
+      const activeIndDirection = firstFiniteMetric(ac?.indications?.direction, ap?.indications?.direction?.sets)
+      const activeIndMove      = firstFiniteMetric(ac?.indications?.move, ap?.indications?.move?.sets)
+      const activeIndActive    = firstFiniteMetric(ac?.indications?.active, ap?.indications?.active?.sets)
+      const activeIndOptimal   = firstFiniteMetric(ac?.indications?.optimal, ap?.indications?.optimal?.sets)
+      const activeIndTotal     = firstFiniteMetric(
+        ac?.indications?.total,
+        ap?.indications?.total?.sets,
+        activeIndDirection + activeIndMove + activeIndActive + activeIndOptimal,
+      )
+      const activeStratBase    = firstFiniteMetric(ac?.strategies?.base, ap?.strategies?.base?.sets)
+      const activeStratMain    = firstFiniteMetric(ac?.strategies?.main, ap?.strategies?.main?.sets)
+      const activeStratReal    = firstFiniteMetric(ac?.strategies?.real, ap?.strategies?.real?.sets)
+      const activeStratTotal   = firstFiniteMetric(
+        ac?.strategies?.total,
+        ap?.strategies?.total?.sets,
+        activeStratReal,
+      )
 
       setMetrics({
-        cyclesCompleted: metricsData.state?.cyclesCompleted || metricsData.progressionState?.cyclesCompleted || 0,
-        cycleSuccessRate: metricsData.state?.cycleSuccessRate || metricsData.progressionState?.cycleSuccessRate || 0,
-        averageCycleTime: metricsData.metrics?.cycleTimeMs || metricsData.progressionState?.cycleTimeMs || 0,
-        indicationsTotal: metricsData.state?.indicationsCount || metricsData.progressionState?.indicationsCount || 
-                          metricsData.metrics?.indicationsCount
-                          || Number(statsData?.realtime?.indicationsTotal) || 0,
+        cyclesCompleted: firstFiniteMetric(
+          metricsData.state?.cyclesCompleted,
+          metricsData.progressionState?.cyclesCompleted,
+        ),
+        cycleSuccessRate: firstFiniteMetric(
+          metricsData.state?.cycleSuccessRate,
+          metricsData.progressionState?.cycleSuccessRate,
+        ),
+        averageCycleTime: firstFiniteMetric(
+          metricsData.metrics?.cycleTimeMs,
+          metricsData.progressionState?.cycleTimeMs,
+        ),
+        indicationsTotal: firstFiniteMetric(
+          metricsData.state?.indicationsCount,
+          metricsData.progressionState?.indicationsCount,
+          metricsData.metrics?.indicationsCount,
+          statsData?.realtime?.indicationsTotal,
+        ),
         // Canonical "strategies evaluated" = Real-stage count only.
         // Main contains related descendants of Base; Real is the canonical
         // final evaluated output, so stage populations are not summed.
-        strategiesEvaluated: metricsData.metrics?.totalStrategiesEvaluated
-                          || metricsData.progressionState?.strategyEvaluatedReal
-                          || Number(statsData?.realtime?.strategiesTotal) || 0,
-        prehistoricCandles: metricsData.metrics?.prehistoricCandlesProcessed || metricsData.progressionState?.prehistoricCandlesProcessed || 0,
-        symbolsLoaded: metricsData.metrics?.prehistoricSymbolsProcessed || metricsData.progressionState?.prehistoricSymbolsProcessedCount || 0,
-        cpuUsage: metricsData.monitoring?.cpu || 0,
-        memoryUsage: metricsData.monitoring?.memory || 0,
-        positionsGenerated: metricsData.metrics?.intervalsProcessed || metricsData.progressionState?.intervalsProcessed || 0,
+        strategiesEvaluated: firstFiniteMetric(
+          metricsData.metrics?.totalStrategiesEvaluated,
+          metricsData.progressionState?.strategyEvaluatedReal,
+          statsData?.realtime?.strategiesTotal,
+        ),
+        prehistoricCandles: firstFiniteMetric(
+          metricsData.metrics?.prehistoricCandlesProcessed,
+          metricsData.progressionState?.prehistoricCandlesProcessed,
+        ),
+        symbolsLoaded: firstFiniteMetric(
+          metricsData.metrics?.prehistoricSymbolsProcessed,
+          metricsData.progressionState?.prehistoricSymbolsProcessedCount,
+        ),
+        cpuUsage: firstFiniteMetric(metricsData.monitoring?.cpu),
+        memoryUsage: firstFiniteMetric(metricsData.monitoring?.memory),
+        positionsGenerated: firstFiniteMetric(
+          metricsData.metrics?.intervalsProcessed,
+          metricsData.progressionState?.intervalsProcessed,
+        ),
         activeIndicationsTotal: activeIndTotal,
         activeStrategiesTotal:  activeStratTotal,
         activeIndDirection,

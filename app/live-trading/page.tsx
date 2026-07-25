@@ -77,7 +77,11 @@ export default function LiveTradingPage() {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<number | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const generationRef = useRef(0)
+  const selectedConnectionIdRef = useRef(selectedConnectionId)
+  selectedConnectionIdRef.current = selectedConnectionId
+  const connectionGenerationRef = useRef(0)
+  const loadSequenceRef = useRef(0)
+  const resourceSequenceRef = useRef({ positions: 0, history: 0, summary: 0 })
   const busyRef = useRef<string | null>(null)
   const positionRefreshTimerRef = useRef<number | null>(null)
   const loadRef = useRef<(options?: { silent?: boolean; forceHistory?: boolean; positionsOnly?: boolean }) => Promise<void>>(async () => undefined)
@@ -87,8 +91,9 @@ export default function LiveTradingPage() {
     forceHistory?: boolean
     positionsOnly?: boolean
   }) => {
-    const connectionId = selectedConnectionId
-    const generation = ++generationRef.current
+    const connectionId = selectedConnectionIdRef.current
+    const connectionGeneration = connectionGenerationRef.current
+    const loadSequence = ++loadSequenceRef.current
     if (!connectionId) {
       setPositions([])
       setHistoryRows([])
@@ -107,41 +112,60 @@ export default function LiveTradingPage() {
     }
 
     const encoded = encodeURIComponent(connectionId)
-    const tasks: Array<Promise<{ kind: "positions" | "history" | "summary"; value: unknown }>> = [
-      fetchJson<LivePositionResponse>(`/api/trading/live-positions?connection_id=${encoded}&closedLimit=1`)
-        .then((value) => ({ kind: "positions" as const, value })),
+    type ResourceKind = "positions" | "history" | "summary"
+    const requestedSequences: Partial<Record<ResourceKind, number>> = {
+      positions: ++resourceSequenceRef.current.positions,
+    }
+    const tasks: Array<{ kind: ResourceKind; promise: Promise<unknown> }> = [
+      {
+        kind: "positions",
+        promise: fetchJson<LivePositionResponse>(`/api/trading/live-positions?connection_id=${encoded}&closedLimit=1`),
+      },
     ]
     if (!options?.positionsOnly) {
+      requestedSequences.history = ++resourceSequenceRef.current.history
+      requestedSequences.summary = ++resourceSequenceRef.current.summary
       tasks.push(
-        fetchJson<TradeHistoryResponse>(`/api/trading/trade-history?connection_id=${encoded}&limit=500${options?.forceHistory ? "&force=1" : ""}`)
-          .then((value) => ({ kind: "history" as const, value })),
-        fetchJson<LiveSummaryResponse>(`/api/exchange/live-summary?connection_id=${encoded}`)
-          .then((value) => ({ kind: "summary" as const, value })),
+        {
+          kind: "history",
+          promise: fetchJson<TradeHistoryResponse>(`/api/trading/trade-history?connection_id=${encoded}&limit=500${options?.forceHistory ? "&force=1" : ""}`),
+        },
+        {
+          kind: "summary",
+          promise: fetchJson<LiveSummaryResponse>(`/api/exchange/live-summary?connection_id=${encoded}`),
+        },
       )
     }
 
-    const results = await Promise.allSettled(tasks)
-    if (generation !== generationRef.current) return
+    const results = await Promise.allSettled(tasks.map((task) => task.promise))
+    if (
+      connectionGeneration !== connectionGenerationRef.current ||
+      connectionId !== selectedConnectionIdRef.current
+    ) return
 
     const errors: string[] = []
-    for (const result of results) {
+    let appliedFulfilledResult = false
+    for (const [index, result] of results.entries()) {
+      const kind = tasks[index].kind
+      if (requestedSequences[kind] !== resourceSequenceRef.current[kind]) continue
       if (result.status === "rejected") {
         errors.push(result.reason instanceof Error ? result.reason.message : String(result.reason))
         continue
       }
-      if (result.value.kind === "positions") {
-        const value = result.value.value as LivePositionResponse
+      appliedFulfilledResult = true
+      if (kind === "positions") {
+        const value = result.value as LivePositionResponse
         setPositionResponse(value)
         setPositions(filterOpenPositions(Array.isArray(value.positions) ? value.positions : []))
-      } else if (result.value.kind === "history") {
-        const value = result.value.value as TradeHistoryResponse
+      } else if (kind === "history") {
+        const value = result.value as TradeHistoryResponse
         if (value.success === false) errors.push("Trade history returned an error")
         else {
           setHistoryResponse(value)
           setHistoryRows(Array.isArray(value.rows) ? value.rows : [])
         }
       } else {
-        const value = result.value.value as LiveSummaryResponse
+        const value = result.value as LiveSummaryResponse
         const selected = Array.isArray(value.connections)
           ? value.connections.find((entry) => String(entry.connectionId) === connectionId) || null
           : null
@@ -149,18 +173,24 @@ export default function LiveTradingPage() {
       }
     }
 
-    setLoadError(errors.length > 0 ? [...new Set(errors)].join(" · ") : null)
-    if (results.some((result) => result.status === "fulfilled")) setLastUpdated(Date.now())
-    setIsLoading(false)
-    setIsRefreshing(false)
-  }, [lastUpdated, selectedConnectionId])
+    if (loadSequence === loadSequenceRef.current) {
+      setLoadError(errors.length > 0 ? [...new Set(errors)].join(" · ") : null)
+      if (appliedFulfilledResult) setLastUpdated(Date.now())
+      setIsLoading(false)
+      setIsRefreshing(false)
+    }
+  }, [lastUpdated])
 
   useEffect(() => {
     loadRef.current = loadDashboard
   }, [loadDashboard])
 
   useEffect(() => {
-    generationRef.current++
+    connectionGenerationRef.current++
+    loadSequenceRef.current++
+    resourceSequenceRef.current.positions++
+    resourceSequenceRef.current.history++
+    resourceSequenceRef.current.summary++
     setPositions([])
     setHistoryRows([])
     setHistoryResponse(null)
@@ -208,11 +238,12 @@ export default function LiveTradingPage() {
 
   const closePosition = useCallback(async (position: LivePositionView) => {
     if (!selectedConnectionId || busyRef.current) return
+    const targetConnectionId = selectedConnectionId
     busyRef.current = position.id
     setBusyId(position.id)
     try {
       const body = await fetchJson<{ success: boolean; state?: string; message?: string }>(
-        `/api/trading/live-positions/${encodeURIComponent(position.id)}?connectionId=${encodeURIComponent(selectedConnectionId)}`,
+        `/api/trading/live-positions/${encodeURIComponent(position.id)}?connectionId=${encodeURIComponent(targetConnectionId)}`,
         { method: "DELETE" },
       )
       if (!body.success) throw new Error(body.message || "Position close was not accepted")
@@ -221,7 +252,9 @@ export default function LiveTradingPage() {
       } else {
         toast.success(body.message || "Position closed")
       }
-      await loadDashboard({ silent: true })
+      if (selectedConnectionIdRef.current === targetConnectionId) {
+        await loadRef.current({ silent: true })
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to close position"
       toast.error(message)
@@ -230,10 +263,11 @@ export default function LiveTradingPage() {
       busyRef.current = null
       setBusyId(null)
     }
-  }, [loadDashboard, selectedConnectionId])
+  }, [selectedConnectionId])
 
   const updateProtection = useCallback(async (position: LivePositionView, update: ProtectionUpdate) => {
     if (!selectedConnectionId || busyRef.current) return
+    const targetConnectionId = selectedConnectionId
     busyRef.current = position.id
     setBusyId(position.id)
     try {
@@ -242,13 +276,15 @@ export default function LiveTradingPage() {
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ connectionId: selectedConnectionId, ...update }),
+          body: JSON.stringify({ connectionId: targetConnectionId, ...update }),
         },
       )
       if (!body.success) throw new Error(body.message || "Protection update was not accepted")
       if (body.state === "queued") toast.info(body.message || "Protection queued for reconciliation")
       else toast.success(body.message || "Protection updated")
-      await loadDashboard({ silent: true, positionsOnly: true })
+      if (selectedConnectionIdRef.current === targetConnectionId) {
+        await loadRef.current({ silent: true, positionsOnly: true })
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to update protection"
       toast.error(message)
@@ -257,10 +293,11 @@ export default function LiveTradingPage() {
       busyRef.current = null
       setBusyId(null)
     }
-  }, [loadDashboard, selectedConnectionId])
+  }, [selectedConnectionId])
 
   const restoreProtection = useCallback(async (position: LivePositionView) => {
     if (!selectedConnectionId || busyRef.current) return
+    const targetConnectionId = selectedConnectionId
     busyRef.current = position.id
     setBusyId(position.id)
     try {
@@ -269,12 +306,14 @@ export default function LiveTradingPage() {
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ connectionId: selectedConnectionId, action: "restore_strategy" }),
+          body: JSON.stringify({ connectionId: targetConnectionId, action: "restore_strategy" }),
         },
       )
       if (!body.success) throw new Error(body.message || "Strategy protection was not restored")
       toast.success(body.message || "Strategy protection restored")
-      await loadDashboard({ silent: true, positionsOnly: true })
+      if (selectedConnectionIdRef.current === targetConnectionId) {
+        await loadRef.current({ silent: true, positionsOnly: true })
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to restore strategy protection"
       toast.error(message)
@@ -283,7 +322,7 @@ export default function LiveTradingPage() {
       busyRef.current = null
       setBusyId(null)
     }
-  }, [loadDashboard, selectedConnectionId])
+  }, [selectedConnectionId])
 
   const integrity = positionResponse?.dataIntegrity
   const liveReady = integrity?.liveTradeEnabled === true

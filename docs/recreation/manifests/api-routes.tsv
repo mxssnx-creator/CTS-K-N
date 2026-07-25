@@ -3,6 +3,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/additional/chat-history/stats	GET	additional	force-dynamic		none-detected	app/api/additional/chat-history/stats/route.ts
 /api/admin/check-tables	GET	admin	force-dynamic		none-detected	app/api/admin/check-tables/route.ts
 /api/admin/clear-progressions	POST	admin	force-dynamic		session	app/api/admin/clear-progressions/route.ts
+/api/admin/enable-live-trading	GET,POST	admin	force-dynamic	60	cron	app/api/admin/enable-live-trading/route.ts
 /api/admin/end-test-progress	GET,POST	admin	force-dynamic		none-detected	app/api/admin/end-test-progress/route.ts
 /api/admin/force-reinit	POST	admin	force-dynamic		none-detected	app/api/admin/force-reinit/route.ts
 /api/admin/init-database-direct	POST	admin	force-dynamic		none-detected	app/api/admin/init-database-direct/route.ts

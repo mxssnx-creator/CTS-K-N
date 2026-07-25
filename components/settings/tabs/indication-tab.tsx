@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
-const TREND_TIMEFRAMES = [1, 3, 5, 10, 15, 30]
+const TREND_TIMEFRAMES = [1, 5, 15, 30]
 
 interface IndicationTabProps {
   settings: any
@@ -29,7 +29,7 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
     Array.isArray(value) ? value.join(", ") : typeof value === "string" ? value : fallback.join(", ")
   const trendTimeframeValues: unknown[] = Array.isArray(settings.trendTimeframesMinutes)
     ? settings.trendTimeframesMinutes
-    : String(settings.trendTimeframesMinutes || "1,3,5,10,15,30").split(",")
+    : String(settings.trendTimeframesMinutes || "1,5,15,30").split(",")
   const selectedTrendTimeframes = new Set<number>(
     trendTimeframeValues
       .map((value) => Number(value))
@@ -65,6 +65,217 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                 <CardDescription>Configure Direction, Move, and Active indication parameters</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
+                <div className="space-y-3 rounded-lg border border-primary/20 bg-primary/5 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <Label>Default higher-range coordination</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Direction, Move and Active stay independent. Direction ranges share the newest post-reversal regime;
+                        Move and Active coordinate their same-direction ranges without that reversal gate.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={settings.defaultCoordinationEnabled !== false}
+                      onCheckedChange={(checked) => handleSettingChange("defaultCoordinationEnabled", checked)}
+                    />
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Calculation ranges (samples)</Label>
+                      <Input
+                        value={numericListValue(settings.defaultCoordinationRanges, [2, 5, 10, 20, 30])}
+                        onChange={(event) =>
+                          handleSettingChange("defaultCoordinationRanges", event.target.value)}
+                        placeholder="2, 5, 10, 20, 30"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">PositionCost steps</Label>
+                      <Input
+                        value={numericListValue(settings.defaultCoordinationRangeSteps, [2, 2.5, 3])}
+                        onChange={(event) =>
+                          handleSettingChange("defaultCoordinationRangeSteps", event.target.value)}
+                        placeholder="2, 2.5, 3"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Drawdown ratios</Label>
+                      <Input
+                        value={numericListValue(settings.defaultCoordinationDrawdownRatios, [1, 1.5, 2])}
+                        onChange={(event) =>
+                          handleSettingChange("defaultCoordinationDrawdownRatios", event.target.value)}
+                        placeholder="1, 1.5, 2"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Minimum directional agreement</Label>
+                      <Slider
+                        min={0.5}
+                        max={1}
+                        step={0.05}
+                        value={[settings.defaultCoordinationMinAgreement ?? 0.6]}
+                        onValueChange={([value]) =>
+                          handleSettingChange("defaultCoordinationMinAgreement", value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {Math.round((settings.defaultCoordinationMinAgreement ?? 0.6) * 100)}%
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Higher-range drawdown scale</Label>
+                      <Slider
+                        min={0}
+                        max={2}
+                        step={0.1}
+                        value={[settings.defaultCoordinationHigherRangeDrawdownScale ?? 0.5]}
+                        onValueChange={([value]) =>
+                          handleSettingChange("defaultCoordinationHigherRangeDrawdownScale", value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        +{(settings.defaultCoordinationHigherRangeDrawdownScale ?? 0.5).toFixed(1)} × range relation
+                      </p>
+                    </div>
+                    <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
+                      <div>
+                        <Label className="text-xs">Direction: after reversal only</Label>
+                        <p className="text-[10px] text-muted-foreground">
+                          Anchor every Direction range at the same newest reversal
+                        </p>
+                      </div>
+                      <Switch
+                        checked={settings.directionPostChangeOnly !== false}
+                        onCheckedChange={(checked) => handleSettingChange("directionPostChangeOnly", checked)}
+                      />
+                    </div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Minimum agreeing windows</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={4}
+                        value={settings.defaultCoordinationMinimumSignals ?? 3}
+                        onChange={(event) =>
+                          handleSettingChange("defaultCoordinationMinimumSignals", Number(event.target.value))}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Minimum short difference / PositionCost</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={5}
+                        step={0.05}
+                        value={settings.defaultCoordinationShortDifferenceRatio ?? 0.1}
+                        onChange={(event) =>
+                          handleSettingChange("defaultCoordinationShortDifferenceRatio", Number(event.target.value))}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
+                  <div>
+                    <Label>Independent Set configuration grid</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Sparse lists are evaluated as exact configurations. Direction, Move and Active keep independent
+                      Long/Short Sets; relative higher-range calculations remain additional to this base grid.
+                    </p>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Sample ranges</Label>
+                      <Input
+                        value={numericListValue(settings.indicationSampleRanges, [2, 5, 10, 20, 30])}
+                        onChange={(event) => handleSettingChange("indicationSampleRanges", event.target.value)}
+                        placeholder="2, 5, 10, 20, 30"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Drawdown / PositionCost ratios</Label>
+                      <Input
+                        value={numericListValue(settings.indicationDrawdownRatios, [0.5, 1, 1.5])}
+                        onChange={(event) => handleSettingChange("indicationDrawdownRatios", event.target.value)}
+                        placeholder="0.5, 1, 1.5"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Latest-window ratios</Label>
+                      <Input
+                        value={numericListValue(settings.indicationLastPartRatios, [0.25, 0.5])}
+                        onChange={(event) => handleSettingChange("indicationLastPartRatios", event.target.value)}
+                        placeholder="0.25, 0.5"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Score factor multipliers</Label>
+                      <Input
+                        value={numericListValue(settings.indicationFactorMultipliers, [1])}
+                        onChange={(event) => handleSettingChange("indicationFactorMultipliers", event.target.value)}
+                        placeholder="1"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Active thresholds</Label>
+                      <Input
+                        value={numericListValue(settings.activeThresholds, [0.5, 1.5, 2.5])}
+                        onChange={(event) => handleSettingChange("activeThresholds", event.target.value)}
+                        placeholder="0.5, 1.5, 2.5"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Active time ratios</Label>
+                      <Input
+                        value={numericListValue(settings.activeTimeRatios, [0.5, 1])}
+                        onChange={(event) => handleSettingChange("activeTimeRatios", event.target.value)}
+                        placeholder="0.5, 1"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid gap-3 border-t pt-3 md:grid-cols-[minmax(0,1fr)_9rem_9rem]">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <Label className="text-xs">Active Advanced activity ratios</Label>
+                        <Switch
+                          checked={settings.activeAdvancedEnabled !== false}
+                          onCheckedChange={(checked) => handleSettingChange("activeAdvancedEnabled", checked)}
+                        />
+                      </div>
+                      <Input
+                        value={numericListValue(settings.activeAdvancedActivityRatios, [0.5, 1.5, 3])}
+                        onChange={(event) => handleSettingChange("activeAdvancedActivityRatios", event.target.value)}
+                        placeholder="0.5, 1.5, 3"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Minimum positions</Label>
+                      <Input
+                        type="number"
+                        min={2}
+                        step={1}
+                        value={settings.activeAdvancedMinPositions ?? 3}
+                        onChange={(event) =>
+                          handleSettingChange("activeAdvancedMinPositions", Number(event.target.value))}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Continuation ratio</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={settings.activeAdvancedContinuationRatio ?? 0.6}
+                        onChange={(event) =>
+                          handleSettingChange("activeAdvancedContinuationRatio", Number(event.target.value))}
+                      />
+                    </div>
+                  </div>
+                </div>
+
                 {/* Market Activity Configuration */}
                 <div className="space-y-4 border-b pb-4">
                   <h3 className="text-lg font-semibold">Market Activity</h3>
@@ -366,6 +577,19 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                   />
                 </div>
 
+                <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
+                  <Label>Optimal independent sample ranges</Label>
+                  <Input
+                    value={numericListValue(settings.optimalSampleRanges, [2, 5, 10, 20, 30])}
+                    onChange={(event) => handleSettingChange("optimalSampleRanges", event.target.value)}
+                    placeholder="2, 5, 10, 20, 30"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Each range is evaluated independently per direction; consecutive-step detection uses three times
+                    the selected range without sharing state with Direction, Move or Active.
+                  </p>
+                </div>
+
                 <div className="grid md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>Interval ({getMinIndicationInterval()}-1000ms, step 50ms)</Label>
@@ -571,6 +795,19 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                   />
                 </div>
 
+                <div className="flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3">
+                  <div>
+                    <Label>Combined higher-range Trend</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Requires the 1/5/15/30-minute situations to agree in one market direction
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings.trendCombinedEnabled !== false}
+                    onCheckedChange={(checked) => handleSettingChange("trendCombinedEnabled", checked)}
+                  />
+                </div>
+
                 <div className="space-y-3">
                   <div>
                     <Label>Calculation windows</Label>
@@ -618,6 +855,33 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                       placeholder="0.5, 1"
                     />
                     <p className="text-xs text-muted-foreground">Required last market change vs. 1m average</p>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Relative PositionCost steps</Label>
+                    <Input
+                      value={numericListValue(settings.trendRangeSteps, [2, 2.5, 3])}
+                      onChange={(event) => handleSettingChange("trendRangeSteps", event.target.value)}
+                      placeholder="2, 2.5, 3"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      A step counts only when the higher window has the same market direction.
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Higher-range drawdown scale</Label>
+                    <Slider
+                      min={0}
+                      max={2}
+                      step={0.1}
+                      value={[settings.trendHigherRangeDrawdownScale ?? 0.5]}
+                      onValueChange={([value]) => handleSettingChange("trendHigherRangeDrawdownScale", value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Current: +{(settings.trendHigherRangeDrawdownScale ?? 0.5).toFixed(1)} × range relation
+                    </p>
                   </div>
                 </div>
 

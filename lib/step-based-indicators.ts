@@ -1,59 +1,182 @@
-// Step-Based Indicators Calculator
-// Calculates indicators (MA, RSI, MACD, BB) for each position cost step (2-30)
-// This aligns indicators with your strategy's position sizing steps
+import {
+  COMMON_INDICATOR_DEFINITIONS,
+  DEFAULT_COMMON_INDICATION_SETTINGS,
+  normalizeCommonIndicationSettings,
+  type CommonIndicationSettingsDocument,
+  type CommonIndicatorSettings,
+  type CommonIndicatorType,
+  type CommonNumericRange,
+} from "@/lib/common-indicator-config"
+import {
+  evaluateTechnicalIndicators,
+  resampleTechnicalCandles,
+  summarizeTechnicalIndicators,
+  type TechnicalIndicatorParameters,
+  type TechnicalIndicatorResult,
+} from "@/lib/technical-indicators"
 
+function round(value: number, decimals = 8): number {
+  const scale = 10 ** decimals
+  return Math.round((value + Number.EPSILON) * scale) / scale
+}
+
+function buildParameterVariants(
+  settingsInput: CommonIndicationSettingsDocument | undefined,
+  enabledTypes: readonly CommonIndicatorType[],
+): TechnicalIndicatorParameters[] {
+  const settings = normalizeCommonIndicationSettings(
+    settingsInput || DEFAULT_COMMON_INDICATION_SETTINGS,
+  )
+  const enabled = new Set(enabledTypes)
+  // Low / midpoint / high coordinated configurations cover every configured
+  // parameter range in the realtime Main engine without creating an
+  // unbounded Cartesian product. Preset optimization still expands every
+  // configured step independently.
+  return [0, 0.5, 1].map((position) => {
+    const parameters: TechnicalIndicatorParameters = {}
+    for (const definition of COMMON_INDICATOR_DEFINITIONS) {
+      if (enabled.size > 0 && !enabled.has(definition.type)) continue
+      const indicator = settings[definition.storageKey] as CommonIndicatorSettings
+      if (indicator?.enabled === false) continue
+      const values: Record<string, number> = {}
+      for (const key of Object.keys(definition.parameters)) {
+        const range = indicator?.[key] as CommonNumericRange | undefined
+        if (!range) continue
+        values[key] = round(range.from + (range.to - range.from) * position)
+      }
+      parameters[definition.type] = values
+    }
+    return parameters
+  })
+}
+
+function aggregateIndicatorVariants(
+  variants: Array<ReturnType<typeof evaluateTechnicalIndicators>>,
+  enabledTypes: readonly CommonIndicatorType[],
+): Partial<Record<CommonIndicatorType, TechnicalIndicatorResult>> {
+  const output: Partial<Record<CommonIndicatorType, TechnicalIndicatorResult>> = {}
+  for (const type of enabledTypes) {
+    const values = variants
+      .map((variant) => variant[type])
+      .filter((value): value is TechnicalIndicatorResult => Boolean(value))
+    if (values.length === 0) continue
+    const long = values.filter((value) => value.direction === "long")
+    const short = values.filter((value) => value.direction === "short")
+    const finalDirection = long.length === short.length
+      ? "neutral"
+      : long.length > short.length
+        ? "long"
+        : "short"
+    const directionalValues = finalDirection === "long"
+      ? long
+      : finalDirection === "short"
+        ? short
+        : values
+    const detailKeys = [...new Set(values.flatMap((value) => Object.keys(value.details)))]
+    output[type] = {
+      type,
+      direction: finalDirection,
+      strength: round(
+        directionalValues.reduce((sum, value) => sum + value.strength, 0) /
+          Math.max(1, directionalValues.length),
+      ),
+      value: round(values.reduce((sum, value) => sum + value.value, 0) / values.length),
+      signal: round(values.reduce((sum, value) => sum + value.signal, 0) / values.length),
+      details: Object.fromEntries(detailKeys.map((key) => [
+        key,
+        round(values.reduce((sum, value) => sum + (Number(value.details[key]) || 0), 0) / values.length),
+      ])),
+    }
+  }
+  return output
+}
+
+/**
+ * Common technical indicator calculator used by the Main engine.
+ *
+ * Each key is an actual 1/3/5/15-minute candle timeframe. Indicator periods
+ * and thresholds come from Common Settings; they are not confused with the
+ * independent Direction/Move/Active sample ranges or Trend's 1/5/15/30
+ * situation windows.
+ */
 export class StepBasedIndicators {
-  static calculateAll(candles: any[], steps: number[] = Array.from({length: 28}, (_, i) => i + 3)) {
-    const results: any = {}
-    
-    for (const step of steps) {
-      results[step] = {
-        ma: this.calculateMA(candles, step),
-        rsi: this.calculateRSI(candles, step),
-        macd: this.calculateMACD(candles, step),
-        bb: this.calculateBollinger(candles, step),
+  static calculateAll(
+    candles: unknown[],
+    timeframesMinutes: number[] = [1, 3, 5, 15],
+    enabledTypes: readonly CommonIndicatorType[] = COMMON_INDICATOR_DEFINITIONS
+      .filter((definition) => definition.enabled)
+      .map((definition) => definition.type),
+    settings?: CommonIndicationSettingsDocument,
+  ) {
+    const results: Record<string, {
+      indicators: ReturnType<typeof evaluateTechnicalIndicators>
+      summary: ReturnType<typeof summarizeTechnicalIndicators>
+      configurations: Array<{
+        parameters: TechnicalIndicatorParameters
+        indicators: ReturnType<typeof evaluateTechnicalIndicators>
+        summary: ReturnType<typeof summarizeTechnicalIndicators>
+      }>
+      // Compatibility values consumed by older engine/dashboard code.
+      ma: number
+      rsi: number
+      macd: { macd: number; signal: number }
+      bb: { upper: number; middle: number; lower: number }
+      stochastic: { k: number; d: number }
+      obv: number
+    }> = {}
+
+    const parameterVariants = buildParameterVariants(settings, enabledTypes)
+    const normalizedTimeframes = [...new Set(
+      timeframesMinutes
+        .map(Number)
+        .filter(Number.isFinite)
+        .map((value) => Math.max(1, Math.min(15, Math.round(value)))),
+    )].sort((left, right) => left - right)
+
+    for (const timeframeMinutes of normalizedTimeframes) {
+      const resampled = resampleTechnicalCandles(candles, timeframeMinutes)
+      const configurations = parameterVariants.map((parameters) => {
+        const indicators = evaluateTechnicalIndicators(
+          resampled,
+          14,
+          enabledTypes,
+          parameters,
+        )
+        return {
+          parameters,
+          indicators,
+          summary: summarizeTechnicalIndicators(indicators),
+        }
+      })
+      const indicators = aggregateIndicatorVariants(
+        configurations.map((configuration) => configuration.indicators),
+        enabledTypes,
+      )
+      const macd = indicators.macd
+      const bollinger = indicators.bollinger
+      const stochastic = indicators.stochastic
+      results[String(timeframeMinutes)] = {
+        indicators,
+        summary: summarizeTechnicalIndicators(indicators),
+        configurations,
+        ma: indicators.ma?.details.simple ?? indicators.sma?.value ?? 0,
+        rsi: indicators.rsi?.value ?? 50,
+        macd: {
+          macd: macd?.value ?? 0,
+          signal: macd?.details.signalLine ?? 0,
+        },
+        bb: {
+          upper: bollinger?.details.upper ?? 0,
+          middle: bollinger?.details.middle ?? 0,
+          lower: bollinger?.details.lower ?? 0,
+        },
+        stochastic: {
+          k: stochastic?.details.k ?? 50,
+          d: stochastic?.details.d ?? 50,
+        },
+        obv: indicators.obv?.value ?? 0,
       }
     }
-    
     return results
-  }
-  
-  static calculateMA(candles: any[], period: number) {
-    if (candles.length < period) return 0
-    let sum = 0
-    for (let i = 0; i < period; i++) {
-      sum += Number(candles[i].close) || 0
-    }
-    return sum / period
-  }
-  
-  static calculateRSI(candles: any[], period: number) {
-    if (candles.length < period + 1) return 50
-    let gains = 0, losses = 0
-    for (let i = 0; i < period; i++) {
-      const change = (Number(candles[i].close) || 0) - (Number(candles[i+1].close) || 0)
-      if (change > 0) gains += change
-      else losses += Math.abs(change)
-    }
-    const rs = gains > 0 && losses > 0 ? gains / losses : 0
-    return 100 - (100 / (1 + rs))
-  }
-  
-  static calculateMACD(candles: any[], period: number) {
-    const ma12 = this.calculateMA(candles, Math.min(12, period))
-    const ma26 = this.calculateMA(candles, Math.min(26, period))
-    return { macd: ma12 - ma26, signal: (ma12 - ma26) * 0.66 }
-  }
-  
-  static calculateBollinger(candles: any[], period: number) {
-    if (candles.length < period) return { upper: 0, middle: 0, lower: 0 }
-    const ma = this.calculateMA(candles, period)
-    let variance = 0
-    for (let i = 0; i < period; i++) {
-      const diff = (Number(candles[i].close) || 0) - ma
-      variance += diff * diff
-    }
-    const stdDev = Math.sqrt(variance / period)
-    return { upper: ma + (2 * stdDev), middle: ma, lower: ma - (2 * stdDev) }
   }
 }

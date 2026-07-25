@@ -12,6 +12,7 @@ import {
   ChevronDown, ChevronUp, CheckCircle2, Circle, Clock, DollarSign,
 } from "lucide-react"
 import { useExchange } from "@/lib/exchange-context"
+import { firstFiniteMetric } from "@/lib/dashboard-metrics"
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
@@ -319,7 +320,7 @@ export function QuickstartOverviewDialog() {
   const totalIndByType = indTypes.reduce((s, r) => s + r.value, 0) || 1
   const evalMain5m  = win?.indications.last5m  || 0
   const evalMain60m = win?.indications.last60m || 0
-  const totalIndAll = rt?.indicationsTotal || bd?.indications.total || 0
+  const totalIndAll = firstFiniteMetric(rt?.indicationsTotal, bd?.indications.total)
 
   return (
     <Dialog open={isOpen} onOpenChange={setOpen}>

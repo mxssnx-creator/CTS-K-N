@@ -3,24 +3,27 @@ import {
   calculateAverageOneMinuteChangePct,
   calculateTrendSignal,
   DEFAULT_TREND_TIMEFRAMES_MINUTES,
+  normalizeTrendTimeframesMinutes,
 } from "@/lib/trend-indication"
 
 describe("Trend indication coordination", () => {
   test("keeps the requested calculation windows in ascending order", () => {
-    expect([...DEFAULT_TREND_TIMEFRAMES_MINUTES]).toEqual([1, 3, 5, 10, 15, 30])
+    expect([...DEFAULT_TREND_TIMEFRAMES_MINUTES]).toEqual([1, 5, 15, 30])
+    expect(normalizeTrendTimeframesMinutes([1, 3, 5, 10, 15, 30])).toEqual([1, 5, 15, 30])
+    expect(normalizeTrendTimeframesMinutes("3,10")).toEqual([1, 5, 15, 30])
   })
 
   test("coordinates overall, recent and active movement for long and short trends", () => {
-    const long = calculateTrendSignal([100, 100.03, 100.06, 100.09], {
-      timeframeMinutes: 3,
+    const long = calculateTrendSignal([100, 100.03, 100.06, 100.09, 100.12, 100.15], {
+      timeframeMinutes: 5,
       drawdownFactor: -1,
       lastSituationRatio: 0.5,
       activeSituationRatio: 0.5,
       positionCostPct: 0.01,
       minAgreement: 0.6,
     })
-    const short = calculateTrendSignal([100.09, 100.06, 100.03, 100], {
-      timeframeMinutes: 3,
+    const short = calculateTrendSignal([100.15, 100.12, 100.09, 100.06, 100.03, 100], {
+      timeframeMinutes: 5,
       drawdownFactor: -1,
       lastSituationRatio: 0.5,
       activeSituationRatio: 0.5,
@@ -37,9 +40,9 @@ describe("Trend indication coordination", () => {
   })
 
   test("rejects an excessive adverse drawdown but accepts a wider independent config", () => {
-    const prices = [100, 102, 100, 103]
+    const prices = [100, 101, 102, 100, 102, 103]
     const strict = calculateTrendSignal(prices, {
-      timeframeMinutes: 3,
+      timeframeMinutes: 5,
       drawdownFactor: -1,
       lastSituationRatio: 0.5,
       activeSituationRatio: 0.5,
@@ -47,7 +50,7 @@ describe("Trend indication coordination", () => {
       minAgreement: 0.6,
     })
     const wide = calculateTrendSignal(prices, {
-      timeframeMinutes: 3,
+      timeframeMinutes: 5,
       drawdownFactor: -3,
       lastSituationRatio: 0.5,
       activeSituationRatio: 0.5,
@@ -61,8 +64,8 @@ describe("Trend indication coordination", () => {
   })
 
   test("rejects a stale overall trend when the active market change points the other way", () => {
-    expect(calculateTrendSignal([100, 101, 102, 101.5], {
-      timeframeMinutes: 3,
+    expect(calculateTrendSignal([100, 101, 102, 103, 104, 103.5], {
+      timeframeMinutes: 5,
       drawdownFactor: -3,
       lastSituationRatio: 0.1,
       activeSituationRatio: 0.1,

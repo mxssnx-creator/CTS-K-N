@@ -12,8 +12,7 @@ export const runtime = "nodejs"
 export const maxDuration = 300
 
 const DEFAULT_REPOSITORY = "https://github.com/mxssnx-creator/CTS-K-N.git"
-const DEFAULT_PROJECT_NAME = "ctsv0.1.1"
-const DEFAULT_INSTALL_DIR = `/opt/${DEFAULT_PROJECT_NAME}`
+const DEFAULT_PROJECT_NAME = "cts-kn"
 const DEFAULT_SERVICE_USER = DEFAULT_PROJECT_NAME
 const MAX_REQUEST_BYTES = 512 * 1024
 const MAX_REMOTE_LOG_BYTES = 256 * 1024
@@ -152,11 +151,13 @@ function validateRuntime(value: unknown): RemoteInstallRuntime {
   return runtime
 }
 
-function validateInstallDir(value: unknown): string {
-  const installDir = assertText(value || DEFAULT_INSTALL_DIR, "Install directory", 240)
+function validateInstallDir(value: unknown, projectName: string): string {
+  const installDir = assertText(value || `/opt/${projectName}`, "Install directory", 240)
   const normalized = path.posix.normalize(installDir)
   if (
     !installDir.startsWith("/") ||
+    !/^\/[a-zA-Z0-9._/-]+$/.test(installDir) ||
+    installDir.includes("//") ||
     normalized !== installDir ||
     DANGEROUS_INSTALL_DIRS.has(installDir) ||
     installDir.split("/").filter(Boolean).length < 2
@@ -220,6 +221,7 @@ function validateRequest(input: RemoteInstallRequest): ValidatedRemoteInstall {
   if (sshKey && (sshKey.length > 128 * 1024 || !/^-----BEGIN [A-Z0-9 ]+PRIVATE KEY-----/.test(sshKey))) {
     throw new Error("SSH private key is invalid")
   }
+  const projectName = validateUnixName(input.projectName || DEFAULT_PROJECT_NAME, "Project name")
   return {
     mode,
     host: validateHost(input.host),
@@ -227,14 +229,14 @@ function validateRequest(input: RemoteInstallRequest): ValidatedRemoteInstall {
     username: validateUnixName(input.username, "SSH username"),
     password,
     sshKey,
-    installDir: validateInstallDir(input.installDir),
+    installDir: validateInstallDir(input.installDir, projectName),
     repoUrl: validateRepository(input.repoUrl),
     branch: validateBranch(input.branch),
     runtime: validateRuntime(input.runtime),
-    projectName: validateUnixName(input.projectName || DEFAULT_PROJECT_NAME, "Project name"),
+    projectName,
     reinstall: input.reinstall === true,
     appPort: parsePort(input.appPort, 3002, "Application port"),
-    serviceUser: validateUnixName(input.serviceUser || DEFAULT_SERVICE_USER, "Service user"),
+    serviceUser: validateUnixName(input.serviceUser || projectName || DEFAULT_SERVICE_USER, "Service user"),
     seedEnv: buildSeedEnvironment(input),
   }
 }

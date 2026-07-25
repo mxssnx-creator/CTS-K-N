@@ -230,6 +230,19 @@ function RealVariantStatsCard({
   const countEvaluations = Array.isArray(stats.countEvaluations)
     ? stats.countEvaluations.map(asRecord)
     : []
+  const activeOverlay = asRecord(stats.activeOverlayEvaluation)
+  const activeReal = asRecord(activeOverlay.real)
+  const activeLive = asRecord(activeOverlay.live)
+  const activeCombined = asRecord(activeOverlay.combined)
+  const activeVolumeIncrement = asRecord(activeOverlay.volumeIncrement)
+  const hasActiveBlockSnapshot = [
+    activeReal.long,
+    activeReal.short,
+    activeLive.long,
+    activeLive.short,
+    activeCombined.long,
+    activeCombined.short,
+  ].some((entry) => asNumber(entry) > 0)
   return (
     <div className="rounded-xl border bg-background/70 p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
@@ -274,6 +287,26 @@ function RealVariantStatsCard({
                 ? "Awaiting Standard baseline"
                 : `+${differencePercent.toFixed(1)}% · 0.2 level ${formatNumber(stats.ratioLevel, 1)}`}
             </strong>
+          </div>
+        </div>
+      )}
+      {label === "Block" && hasActiveBlockSnapshot && (
+        <div className="mt-3 rounded-lg border bg-muted/35 p-2 text-[10px]">
+          <div className="flex items-center justify-between gap-2">
+            <strong className="text-foreground">Active exposure coordination</strong>
+            <span className="text-muted-foreground">
+              mirrored Real/Live · not additive
+            </span>
+          </div>
+          <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1 tabular-nums sm:grid-cols-4">
+            <span>Real L/S {formatNumber(activeReal.long, 0)}/{formatNumber(activeReal.short, 0)}</span>
+            <span>Live L/S {formatNumber(activeLive.long, 0)}/{formatNumber(activeLive.short, 0)}</span>
+            <span className="font-semibold text-foreground">
+              Combined L/S {formatNumber(activeCombined.long, 0)}/{formatNumber(activeCombined.short, 0)}
+            </span>
+            <span>
+              Add vol L/S {formatNumber(activeVolumeIncrement.long, 2)}×/{formatNumber(activeVolumeIncrement.short, 2)}×
+            </span>
           </div>
         </div>
       )}

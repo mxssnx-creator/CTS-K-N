@@ -4,6 +4,7 @@ import {
   boundedPassedCount,
   boundedPercentage,
   boundedRatioPercentage,
+  firstFiniteMetric,
   finiteMetric,
   nonNegativeMetric,
 } from "@/lib/dashboard-metrics"
@@ -19,6 +20,8 @@ describe("Main Connections dashboard contracts", () => {
   test("normalizes distributed counters and ratios before rendering", () => {
     expect(finiteMetric("3.5")).toBe(3.5)
     expect(finiteMetric(Number.POSITIVE_INFINITY)).toBe(0)
+    expect(firstFiniteMetric(0, 99)).toBe(0)
+    expect(firstFiniteMetric(undefined, Number.NaN, "4.5")).toBe(4.5)
     expect(nonNegativeMetric(-4)).toBe(0)
     expect(boundedPercentage(-1)).toBe(0)
     expect(boundedPercentage(140)).toBe(100)
@@ -26,6 +29,23 @@ describe("Main Connections dashboard contracts", () => {
     expect(boundedRatioPercentage(1, 3)).toBe(33.3)
     expect(boundedRatioPercentage(4, 0)).toBe(0)
     expect(boundedPassedCount(12, 8)).toBe(8)
+  })
+
+  test("preserves canonical zero counters across dashboard compatibility fallbacks", () => {
+    const card = read("components/dashboard/active-connection-card.tsx")
+    const detailed = read("components/dashboard/connection-detailed-log-dialog.tsx")
+    const progression = read("components/dashboard/progression-logs-dialog.tsx")
+
+    expect(card).toContain("firstFiniteMetric(")
+    expect(card).not.toContain(
+      "data?.openPositions?.live?.open || data?.liveExecution?.positionsOpen",
+    )
+    expect(detailed).not.toMatch(
+      /Number\(ac\?\.indications\?\.[^)]+\)\s*\|\|\s*Number\(ap\?\.indications/,
+    )
+    expect(progression).not.toMatch(
+      /Number\(ac\?\.strategies\?\.[^)]+\)\s*\|\|\s*Number\(ap\?\.strategies/,
+    )
   })
 
   test("guided QuickStart preserves saved Live Trade intent", () => {

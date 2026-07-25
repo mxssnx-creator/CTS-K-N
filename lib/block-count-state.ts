@@ -47,6 +47,31 @@ export function calculateBlockVolumeIncrementRatio(
 }
 
 /**
+ * Resolve the one authoritative active-count snapshot used by Real Block
+ * coordination.
+ *
+ * Real and Live are mirrored stages of the same position flow, not additive
+ * books. Taking their maximum preserves a newer/larger authoritative snapshot
+ * during hand-off without double-counting positions that exist in both.
+ */
+export function resolveMirroredActiveBlockCount(input: {
+  realCount: number
+  liveCount: number
+  includeReal: boolean
+  includeLive: boolean
+  maxStack: number
+}): number {
+  const normalize = (raw: number): number => {
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0
+  }
+  const real = input.includeReal ? normalize(input.realCount) : 0
+  const live = input.includeLive ? normalize(input.liveCount) : 0
+  const maximum = Math.max(1, Math.min(10, normalize(input.maxStack) || 1))
+  return Math.min(maximum, Math.max(real, live))
+}
+
+/**
  * Count-specific Block ProfitFactor floor.
  *
  * The operator-controlled ratio is proportional to the normal/default stage

@@ -146,6 +146,7 @@ async function requestJson(pathname, options = {}) {
 function startServer({ engines = false } = {}) {
   const child = spawn(process.execPath, ["scripts/start-production.mjs"], {
     cwd: process.cwd(),
+    detached: process.platform !== "win32",
     env: {
       ...process.env,
       NODE_ENV: "production",
@@ -227,14 +228,31 @@ async function verifyDatabaseActivityMetrics() {
   return observedRates
 }
 
+function signalServerProcessGroup(child, signal) {
+  if (!child?.pid) return false
+  try {
+    if (process.platform !== "win32") process.kill(-child.pid, signal)
+    else child.kill(signal)
+    return true
+  } catch (error) {
+    if (error?.code === "ESRCH") return false
+    throw error
+  }
+}
+
 async function stopServer(child) {
-  if (child.exitCode != null || child.signalCode != null) return
-  child.kill("SIGTERM")
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    new Promise((resolve) => setTimeout(resolve, 5_000)),
-  ])
-  if (child.exitCode == null && child.signalCode == null) child.kill("SIGKILL")
+  if (!child?.pid) return
+  signalServerProcessGroup(child, "SIGTERM")
+  if (child.exitCode == null && child.signalCode == null) {
+    await Promise.race([
+      new Promise((resolve) => child.once("exit", resolve)),
+      new Promise((resolve) => setTimeout(resolve, 5_000)),
+    ])
+  }
+  // start-production owns the standalone child. Always signal the complete
+  // isolated process group after the graceful window so no descendant can
+  // keep the harness, port, or Redis snapshot alive after a successful run.
+  signalServerProcessGroup(child, "SIGKILL")
 }
 
 async function crashServer(child) {
@@ -243,7 +261,7 @@ async function crashServer(child) {
   // crash between position writes and the next reconcile loop. Use SIGKILL in
   // this isolated snapshot harness so the next boot must recover only from
   // durable state.
-  child.kill("SIGKILL")
+  signalServerProcessGroup(child, "SIGKILL")
   await Promise.race([
     new Promise((resolve) => child.once("exit", resolve)),
     new Promise((resolve) => setTimeout(resolve, 5_000)),

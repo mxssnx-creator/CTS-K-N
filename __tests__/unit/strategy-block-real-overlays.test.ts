@@ -1,6 +1,10 @@
 import { getRedisClient } from "@/lib/redis-db"
 import { markStrategyPositionInactive, recordStrategyPositionEntry } from "@/lib/pos-history"
-import { StrategyCoordinator, type StrategySet } from "@/lib/strategy-coordinator"
+import {
+  selectLiveDispatchCandidates,
+  StrategyCoordinator,
+  type StrategySet,
+} from "@/lib/strategy-coordinator"
 
 function source(setKey: string, direction: "long" | "short"): StrategySet {
   return {
@@ -95,6 +99,91 @@ describe("Real-stage Block overlays", () => {
     expect(overlays.find((set) => set.setKey.endsWith("#block:active:2"))?.blockCount).toBe(2)
   })
 
+  test("advances independent Block counts fairly in bounded asymmetric batches", () => {
+    const standardLong = { ...source("BTCUSDT:direction:long#standard", "long"), variant: "default" as const }
+    const standardLongLower = { ...source("BTCUSDT:move:long#standard", "long"), variant: "default" as const }
+    const activeLongOne = {
+      ...source("BTCUSDT:direction:long#block:1", "long"),
+      variant: "block" as const,
+      blockCount: 1,
+      _hasLivePositions: true,
+    } as StrategySet
+    const pendingLongTwo = {
+      ...source("BTCUSDT:direction:long#block:2", "long"),
+      variant: "block" as const,
+      blockCount: 2,
+    }
+    const pendingLongThree = {
+      ...source("BTCUSDT:direction:long#block:3", "long"),
+      variant: "block" as const,
+      blockCount: 3,
+    }
+    const pendingShortFour = {
+      ...source("BTCUSDT:direction:short#block:4", "short"),
+      variant: "block" as const,
+      blockCount: 4,
+    }
+
+    const firstBatch = selectLiveDispatchCandidates([
+      standardLong,
+      standardLongLower,
+      activeLongOne,
+      pendingLongTwo,
+      pendingLongThree,
+      pendingShortFour,
+    ])
+    expect(firstBatch.map((set) => set.setKey)).toEqual([
+      standardLong.setKey,
+      pendingLongTwo.setKey,
+      pendingShortFour.setKey,
+    ])
+
+    const secondBatch = selectLiveDispatchCandidates([
+      activeLongOne,
+      { ...pendingLongTwo, _hasLivePositions: true } as StrategySet,
+      pendingLongThree,
+      { ...pendingShortFour, _hasLivePositions: true } as StrategySet,
+    ])
+    expect(secondBatch.map((set) => set.setKey)).toEqual([pendingLongThree.setKey])
+  })
+
+  test("keeps standard, Block, DCA and combined-axis batch lanes independent per side", () => {
+    const candidates = [
+      { ...source("BTCUSDT:direction:long#standard:a", "long"), variant: "default" as const },
+      { ...source("BTCUSDT:direction:long#standard:b", "long"), variant: "default" as const },
+      { ...source("BTCUSDT:direction:short#standard:a", "short"), variant: "default" as const },
+      { ...source("BTCUSDT:direction:long#block:1", "long"), variant: "block" as const, blockCount: 1 },
+      { ...source("BTCUSDT:direction:long#block:2", "long"), variant: "block" as const, blockCount: 2 },
+      { ...source("BTCUSDT:direction:short#block:3", "short"), variant: "block" as const, blockCount: 3 },
+      { ...source("BTCUSDT:direction:long#dca", "long"), variant: "dca" as const },
+      { ...source("BTCUSDT:direction:short#dca", "short"), variant: "dca" as const },
+      {
+        ...source("BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0", "long"),
+        variant: "default" as const,
+        posCountsVolumeRatio: 0.1,
+        axisWindows: { prev: 4, last: 1, cont: 1, pause: 0, direction: "long" as const },
+      },
+      {
+        ...source("BTCUSDT:direction:short#axis:p4_l1_c1_opos_dshort_u0", "short"),
+        variant: "default" as const,
+        posCountsVolumeRatio: 0.1,
+        axisWindows: { prev: 4, last: 1, cont: 1, pause: 0, direction: "short" as const },
+      },
+    ] as StrategySet[]
+
+    const selected = selectLiveDispatchCandidates(candidates)
+    expect(selected.map((set) => set.setKey)).toEqual([
+      "BTCUSDT:direction:long#standard:a",
+      "BTCUSDT:direction:short#standard:a",
+      "BTCUSDT:direction:long#block:1",
+      "BTCUSDT:direction:short#block:3",
+      "BTCUSDT:direction:long#dca",
+      "BTCUSDT:direction:short#dca",
+      "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0",
+      "BTCUSDT:direction:short#axis:p4_l1_c1_opos_dshort_u0",
+    ])
+  })
+
   test("clears active-overlay stats after the final parent position closes", async () => {
     const client = getRedisClient()
     const statsKey = `strategy_block_pf_stats:${connectionId}`
@@ -124,6 +213,45 @@ describe("Real-stage Block overlays", () => {
     expect(stats["s:BTCUSDT:active:emitted"]).toBe("0")
     expect(stats["s:BTCUSDT:active:open"]).toBe("0")
     await client.del(statsKey)
+  })
+
+  test("keeps asymmetric Long/Short activity and mirrored volume increments independent", async () => {
+    const client = getRedisClient()
+    const coordinator = new StrategyCoordinator(connectionId) as any
+    coordinator._coordinationSettings.variants.block = true
+    coordinator._coordinationSettings.blockActiveRealEnabled = true
+    coordinator._coordinationSettings.blockActiveLiveEnabled = true
+    coordinator._coordinationSettings.blockMaxStack = 10
+    coordinator._coordinationSettings.blockVolumeRatio = 0.75
+    coordinator._coordinationSettings.blockProfitFactorRatio = 0.8
+    coordinator._coordinationSettings.blockPauseCountRatio = 1
+
+    const overlays = await coordinator.buildActiveRealBlockOverlaysForReal(
+      "BTCUSDT",
+      sources.map((set) => ({ ...set, avgProfitFactor: 100 })),
+      { minProfitFactor: 1.2, maxDrawdownTime: 240, confidence: 0.5, description: "test" },
+      undefined,
+      { long: 4, short: 1 },
+      // The books mirror the same exposure. Equal Long snapshots must remain
+      // four, while the newer/larger Short snapshot advances independently.
+      { long: 4, short: 3 },
+    ) as StrategySet[]
+
+    expect(overlays.some((set) => set.setKey.endsWith("#block:active:4"))).toBe(true)
+    expect(overlays.some((set) => set.setKey.endsWith("#block:active:3"))).toBe(true)
+    expect(overlays.find((set) => set.setKey.endsWith("#block:active:4"))?.blockVolumeIncrementRatio).toBe(3)
+    expect(overlays.find((set) => set.setKey.endsWith("#block:active:3"))?.blockVolumeIncrementRatio).toBe(2.25)
+
+    const stats = await client.hgetall(`strategy_block_pf_stats:${connectionId}`)
+    expect(stats["s:BTCUSDT:active:real:long"]).toBe("4")
+    expect(stats["s:BTCUSDT:active:real:short"]).toBe("1")
+    expect(stats["s:BTCUSDT:active:live:long"]).toBe("4")
+    expect(stats["s:BTCUSDT:active:live:short"]).toBe("3")
+    expect(stats["s:BTCUSDT:active:combined:long"]).toBe("4")
+    expect(stats["s:BTCUSDT:active:combined:short"]).toBe("3")
+    expect(stats["s:BTCUSDT:active:volume_increment:long"]).toBe("3")
+    expect(stats["s:BTCUSDT:active:volume_increment:short"]).toBe("2.25")
+    await client.del(`strategy_block_pf_stats:${connectionId}`)
   })
 
   test("evaluates every regular Block count as an independent Real Set", async () => {

@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
-import { Activity, Target, Zap, TrendingUp, PieChart, Cog, Calculator, Layers, Home, Monitor, Bot, Truck, MapPin } from "lucide-react"
+import { Activity, Zap, TrendingUp, PieChart, Cog, Calculator, Layers, Home, Monitor, Bot, Truck, MapPin } from "lucide-react"
 
 const menuItems = [
   {
@@ -35,12 +35,6 @@ const menuItems = [
     href: "/tracking",
     icon: "MapPin",
     description: "Track positions, progression, and trading activity",
-  },
-  {
-    title: "Presets",
-    href: "/presets",
-    icon: "Target",
-    description: "Manage trading presets and configurations",
   },
   {
     title: "Indications",
@@ -96,7 +90,6 @@ const iconMap = {
   Home,
   Activity,
   Bot,
-  Target,
   Zap,
   TrendingUp,
   PieChart,
@@ -110,11 +103,13 @@ const iconMap = {
 
 export function NavigationMenu() {
   const pathname = usePathname()
+  const currentPath = pathname ?? ""
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
       {menuItems.map((item) => {
-        const isActive = pathname === item.href
+        const isActive = currentPath === item.href ||
+          (item.href !== "/" && currentPath.startsWith(`${item.href}/`))
         const Icon = iconMap[item.icon as keyof typeof iconMap]
         return (
           <Link

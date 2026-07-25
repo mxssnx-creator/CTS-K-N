@@ -4,6 +4,7 @@ import { VolumeCalculator } from "@/lib/volume-calculator"
 import { aggregateLastXClosedPositions } from "@/lib/trade-engine/closed-position-aggregation"
 import { getGlobalCoordinator } from "@/lib/trade-engine"
 import { normalizeSymbolList } from "@/lib/trade-engine/symbol-selection-ownership"
+import { liveOrdersBySymbolKey } from "@/lib/live-order-counter-keys"
 import {
   buildProgressionScope,
   calculateHistoricProgress,
@@ -166,8 +167,13 @@ function aggregateOrdersBySymbol(
       try {
         const parsed = JSON.parse(raw)
         const rawSide = String(parsed?.side ?? parsed?.direction ?? "").trim().toLowerCase()
-        const legacyDirection: OrderDirection =
-          rawSide.includes("short") || rawSide === "sell" ? "short" : "long"
+        const legacyDirection: OrderDirection | null =
+          rawSide === "long" || rawSide === "buy"
+            ? "long"
+            : rawSide === "short" || rawSide === "sell"
+              ? "short"
+              : null
+        if (!legacyDirection) continue
         const entry = getEntry(field)
         const legacyCount = n(parsed?.count ?? 0)
         entry[legacyDirection].placed += n(parsed?.placed ?? parsed?.ordersPlaced ?? legacyCount)
@@ -582,7 +588,7 @@ export async function GET(
       // entire breakdown for the dashboard's "Orders BTCUSDT L:3 / S:2"
       // chip strip. Stays in lock-step with the global
       // `live_orders_placed_count` / `live_orders_filled_count` totals.
-      client.hgetall(`live_orders_by_symbol:${connectionId}`).catch(() => null),
+      client.hgetall(liveOrdersBySymbolKey(connectionId)).catch(() => null),
       // Per-Base hedge pos-count accumulation written by bumpHedgePosAccumulation
       // in the Real stage tuner loop. Fields: `{parentSetKey}:{long|short|sets_long|sets_short|ts}`
       // Consumed to surface long/short hedge breakdown per base Set in strategyDetail.real.
@@ -1760,6 +1766,10 @@ export async function GET(
       rejected: 0,
       paused: 0,
       active: 0,
+      real: { long: 0, short: 0 },
+      live: { long: 0, short: 0 },
+      combined: { long: 0, short: 0 },
+      volumeIncrement: { long: 0, short: 0 },
     }
     for (const [field, raw] of Object.entries(blockProfitFactorStatsHash)) {
       const meta = field.match(/^s:([^:]+):(profit_factor_ratio|default_min_pf|window|minimum_sample_count)$/)
@@ -1779,8 +1789,23 @@ export async function GET(
       if (activeMeta) {
         const symbol = activeMeta[1].toUpperCase()
         if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
-        const key = activeMeta[2] === "open" ? "active" : activeMeta[2]
-        blockActiveOverlayEvaluation[key as keyof typeof blockActiveOverlayEvaluation] += n(raw)
+        const key = (activeMeta[2] === "open" ? "active" : activeMeta[2]) as
+          "evaluated" | "passed" | "emitted" | "rejected" | "paused" | "active"
+        blockActiveOverlayEvaluation[key] += n(raw)
+        continue
+      }
+      const activeExposureMeta = field.match(
+        /^s:([^:]+):active:(real|live|combined|volume_increment):(long|short)$/,
+      )
+      if (activeExposureMeta) {
+        const symbol = activeExposureMeta[1].toUpperCase()
+        if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
+        const book: "real" | "live" | "combined" | "volumeIncrement" =
+          activeExposureMeta[2] === "volume_increment"
+          ? "volumeIncrement"
+          : activeExposureMeta[2] as "real" | "live" | "combined"
+        const direction = activeExposureMeta[3] as "long" | "short"
+        blockActiveOverlayEvaluation[book][direction] += n(raw)
         continue
       }
       const match = field.match(/^s:([^:]+):c:(\d+):(evaluated|passed|emitted|rejected|active|paused|avg_observed_pf|avg_min_pf|avg_volume_increment|sample_count)$/)

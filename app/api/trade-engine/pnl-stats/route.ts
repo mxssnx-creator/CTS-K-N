@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server"
-import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { initRedis } from "@/lib/redis-db"
 import { query } from "@/lib/db"
 
 export const dynamic = "force-dynamic"
@@ -58,7 +58,6 @@ export async function GET(request: NextRequest) {
   const startTime = Date.now()
   try {
     await initRedis()
-    const client = getRedisClient()
     
     const { searchParams } = new URL(request.url)
     const connectionId = searchParams.get("connection_id") || "bingx-x01"
@@ -117,19 +116,15 @@ export async function GET(request: NextRequest) {
     const last25Positions: PositionPnL[] = []
     let last25PnL = 0
     let last25Wins = 0
-    let last25Losses = 0
     let last25GrossProfit = 0
     let last25GrossLoss = 0
     
-    let last12Wins = 0
-    let last12Losses = 0
     let last12GrossProfit = 0
     let last12GrossLoss = 0
     
-    let last75Wins = 0
-    let last75Losses = 0
     let last75GrossProfit = 0
     let last75GrossLoss = 0
+    let validPositionIndex = 0
     
     for (let i = 0; i < positions.length; i++) {
       const pos = positions[i]
@@ -149,7 +144,7 @@ export async function GET(request: NextRequest) {
         const openedAt = new Date(pos.opened_at).getTime()
         const closedAt = new Date(pos.closed_at).getTime()
         if (isFinite(openedAt) && isFinite(closedAt)) {
-          holdingTimeMin = Math.round((closedAt - openedAt) / 60000)
+          holdingTimeMin = Math.max(0, Math.round((closedAt - openedAt) / 60000))
         }
       } catch {
         holdingTimeMin = 0
@@ -170,13 +165,13 @@ export async function GET(request: NextRequest) {
       }
       
       // Last N positions tracking for profit factor
-      if (i < 12) {
-        if (pnl > 0) { last12Wins++; last12GrossProfit += pnl }
-        else if (pnl < 0) { last12Losses++; last12GrossLoss += Math.abs(pnl) }
+      if (validPositionIndex < 12) {
+        if (pnl > 0) last12GrossProfit += pnl
+        else if (pnl < 0) last12GrossLoss += Math.abs(pnl)
       }
-      if (i < 25) {
+      if (validPositionIndex < 25) {
         if (pnl > 0) { last25Wins++; last25GrossProfit += pnl }
-        else if (pnl < 0) { last25Losses++; last25GrossLoss += Math.abs(pnl) }
+        else if (pnl < 0) last25GrossLoss += Math.abs(pnl)
         const entryPrice = parseFloat(String(pos.entry_price ?? 0)) || 0
         const exitPrice = parseFloat(String(pos.exit_price ?? 0)) || 0
         const quantity = parseFloat(String(pos.quantity ?? 0)) || 0
@@ -196,13 +191,13 @@ export async function GET(request: NextRequest) {
             holding_time_min: holdingTimeMin,
           })
           last25PnL += pnl
-          if (pnl > 0) last25Wins++
         }
       }
-      if (i < 75) {
-        if (pnl > 0) { last75Wins++; last75GrossProfit += pnl }
-        else if (pnl < 0) { last75Losses++; last75GrossLoss += Math.abs(pnl) }
+      if (validPositionIndex < 75) {
+        if (pnl > 0) last75GrossProfit += pnl
+        else if (pnl < 0) last75GrossLoss += Math.abs(pnl)
       }
+      validPositionIndex++
     }
     
     // Calculate derived metrics
@@ -211,10 +206,12 @@ export async function GET(request: NextRequest) {
     const last25WinRate = last25Positions.length > 0 ? (last25Wins / last25Positions.length) * 100 : 0
     const avgWin = wins > 0 ? totalWinPnL / wins : 0
     const avgLoss = losses > 0 ? totalLossPnL / losses : 0
-    const profitFactor = totalLossPnL > 0 ? totalWinPnL / totalLossPnL : totalWinPnL > 0 ? Infinity : 0
-    const profitFactorLast12 = last12GrossLoss > 0 ? last12GrossProfit / last12GrossLoss : last12GrossProfit > 0 ? Infinity : 0
-    const profitFactorLast25 = last25GrossLoss > 0 ? last25GrossProfit / last25GrossLoss : last25GrossProfit > 0 ? Infinity : 0
-    const profitFactorLast75 = last75GrossLoss > 0 ? last75GrossProfit / last75GrossLoss : last75GrossProfit > 0 ? Infinity : 0
+    const finiteProfitFactor = (grossProfit: number, grossLoss: number) =>
+      grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0
+    const profitFactor = finiteProfitFactor(totalWinPnL, totalLossPnL)
+    const profitFactorLast12 = finiteProfitFactor(last12GrossProfit, last12GrossLoss)
+    const profitFactorLast25 = finiteProfitFactor(last25GrossProfit, last25GrossLoss)
+    const profitFactorLast75 = finiteProfitFactor(last75GrossProfit, last75GrossLoss)
     const expectancy = totalTrades > 0 ? totalPnL / totalTrades : 0
     const avgHoldingTime = totalTrades > 0 ? Math.round(totalHoldingTime / totalTrades) : 0
     
@@ -223,7 +220,7 @@ export async function GET(request: NextRequest) {
       `SELECT COUNT(*) as count FROM positions WHERE connection_id = ? AND status = 'open'`,
       [connectionId]
     )
-    const openPositionsCount = openPos?.[0]?.count || 0
+    const openPositionsCount = Math.max(0, Number(openPos?.[0]?.count) || 0)
     
     const stats: PnLStats = {
       total_positions: totalTrades,
@@ -239,11 +236,11 @@ export async function GET(request: NextRequest) {
       avg_loss: parseFloat(avgLoss.toFixed(8)),
       largest_win: largestWin === -Infinity ? 0 : parseFloat(largestWin.toFixed(8)),
       largest_loss: largestLoss === Infinity ? 0 : parseFloat(largestLoss.toFixed(8)),
-      profit_factor: parseFloat((Number.isFinite(profitFactor) ? profitFactor : 0).toFixed(2)),
+      profit_factor: parseFloat(profitFactor.toFixed(2)),
       expectancy: parseFloat(expectancy.toFixed(8)),
-      profit_factor_last_12: parseFloat((Number.isFinite(profitFactorLast12) ? profitFactorLast12 : 0).toFixed(2)),
-      profit_factor_last_25: parseFloat((Number.isFinite(profitFactorLast25) ? profitFactorLast25 : 0).toFixed(2)),
-      profit_factor_last_75: parseFloat((Number.isFinite(profitFactorLast75) ? profitFactorLast75 : 0).toFixed(2)),
+      profit_factor_last_12: parseFloat(profitFactorLast12.toFixed(2)),
+      profit_factor_last_25: parseFloat(profitFactorLast25.toFixed(2)),
+      profit_factor_last_75: parseFloat(profitFactorLast75.toFixed(2)),
       avg_holding_time_min: avgHoldingTime,
       last_25_positions: last25Positions,
       last_25_pnl: parseFloat(last25PnL.toFixed(8)),

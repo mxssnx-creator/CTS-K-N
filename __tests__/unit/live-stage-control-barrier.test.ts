@@ -1,4 +1,8 @@
-import { __liveStageTest } from "@/lib/trade-engine/stages/live-stage"
+import {
+  __liveStageTest,
+  normalizeExchangePositionDirection,
+  normalizeLiveTradeDirection,
+} from "@/lib/trade-engine/stages/live-stage"
 import { resolveCombinedPosCountDelta } from "@/lib/pos-count-live-target"
 
 jest.mock("@/lib/redis-db", () => ({
@@ -54,6 +58,102 @@ function connector(overrides: Record<string, unknown> = {}) {
 }
 
 describe("executing Live-stage control barriers", () => {
+  test("accepts only explicit exchange directions and never defaults malformed state", () => {
+    expect(normalizeLiveTradeDirection("LONG")).toBe("long")
+    expect(normalizeLiveTradeDirection(undefined, "sell")).toBe("short")
+    expect(normalizeLiveTradeDirection("", "sideways", null)).toBeNull()
+    expect(normalizeExchangePositionDirection("SHORT", "buy", 4)).toBe("short")
+    expect(normalizeExchangePositionDirection("BOTH", undefined, -4)).toBe("short")
+    expect(normalizeExchangePositionDirection("BOTH", undefined, 4)).toBe("long")
+    expect(normalizeExchangePositionDirection("BOTH", undefined, 0)).toBeNull()
+  })
+
+  test("blocks every control and quantity mutation when the stored direction is invalid", async () => {
+    const position = livePosition({ direction: "sideways", side: undefined, exchangeData: {} })
+    const exchange = connector()
+
+    await expect(
+      __liveStageTest.settleControlOrdersBeforeSystemClose(exchange, position, "manual", 100),
+    ).resolves.toMatchObject({ decision: "wait", detail: "invalid position direction" })
+    await expect(
+      __liveStageTest.settleControlOrdersBeforeQuantityMutation(exchange, position, "accumulation"),
+    ).resolves.toBe(false)
+
+    expect(exchange.getOrder).not.toHaveBeenCalled()
+    expect(exchange.getPosition).not.toHaveBeenCalled()
+    expect(exchange.getOpenOrders).not.toHaveBeenCalled()
+    expect(exchange.cancelOrder).not.toHaveBeenCalled()
+    expect(exchange.placeOrder).not.toHaveBeenCalled()
+  })
+
+  test("sweeps only owned protection for the matching hedge-mode direction", async () => {
+    const openOrders = [
+      {
+        orderId: "long-sl",
+        clientOrderId: "long-sl-client",
+        side: "sell",
+        positionSide: "LONG",
+        type: "STOP_MARKET",
+      },
+      {
+        orderId: "short-sl",
+        clientOrderId: "short-sl-client",
+        side: "buy",
+        positionSide: "SHORT",
+        type: "STOP_MARKET",
+      },
+      {
+        orderId: "foreign-long-sl",
+        clientOrderId: "manual-foreign",
+        side: "sell",
+        positionSide: "LONG",
+        type: "STOP_MARKET",
+      },
+      {
+        orderId: "wrong-position-side",
+        clientOrderId: "long-owned-but-wrong-direction",
+        side: "sell",
+        positionSide: "SHORT",
+        type: "STOP_MARKET",
+      },
+    ]
+    const cancelOrder = jest.fn(async () => ({ success: true }))
+    const exchange = connector({
+      getOpenOrders: jest.fn(async () => openOrders),
+      cancelOrder,
+    })
+    const long = livePosition({
+      id: "long-position",
+      direction: "long",
+      stopLossOrderId: "long-sl",
+      takeProfitOrderId: undefined,
+      exchangeData: {
+        clientOrderIds: [
+          { kind: "stop_loss", clientOrderId: "long-sl-client" },
+          { kind: "stop_loss", clientOrderId: "long-owned-but-wrong-direction" },
+        ],
+      },
+    })
+    const short = livePosition({
+      id: "short-position",
+      direction: "short",
+      stopLossOrderId: "short-sl",
+      takeProfitOrderId: undefined,
+      exchangeData: {
+        clientOrderIds: [{ kind: "stop_loss", clientOrderId: "short-sl-client" }],
+      },
+    })
+
+    await expect(
+      __liveStageTest.sweepOrphanProtectionOrders(exchange, "BTCUSDT", "sell", long),
+    ).resolves.toEqual({ scanned: 4, cancelled: 1 })
+    await expect(
+      __liveStageTest.sweepOrphanProtectionOrders(exchange, "BTCUSDT", "buy", short),
+    ).resolves.toEqual({ scanned: 4, cancelled: 1 })
+
+    expect(cancelOrder.mock.calls.map((call) => call[1])).toEqual(["long-sl", "short-sl"])
+  })
+
   test("waits for an active trigger control order before allowing a system close", async () => {
     const position = livePosition()
     const exchange = connector({

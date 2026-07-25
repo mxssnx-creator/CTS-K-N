@@ -22,6 +22,7 @@ import {
   DEFAULT_TREND_TP_MAX_FACTOR,
   DEFAULT_TREND_TP_MIN_MULTIPLIER,
   DEFAULT_TREND_TP_STEP,
+  normalizeTrendTimeframesMinutes,
   type TrendSignal,
 } from "@/lib/trend-indication"
 
@@ -113,13 +114,9 @@ export class IndicationStateManager {
 
       const settings = appSettings || {}
       this.trendEnabled = settings.trendEnabled !== false && settings.trendEnabled !== "false"
-      const parsedTrendTimeframes = this.parseNumericList(
+      this.trendTimeframesMinutes = normalizeTrendTimeframesMinutes(
         settings.trendTimeframesMinutes,
-        this.trendTimeframesMinutes,
-      ).map((value) => Math.round(value)).filter((value) => value >= 1 && value <= 60)
-      this.trendTimeframesMinutes = parsedTrendTimeframes.length > 0
-        ? Array.from(new Set(parsedTrendTimeframes)).sort((left, right) => left - right)
-        : [...DEFAULT_TREND_TIMEFRAMES_MINUTES]
+      )
       const parsedTrendDrawdowns = this.parseNumericList(
         settings.trendDrawdownValues ?? settings.trendDrawdownFactors,
         this.trendDrawdownFactors,
@@ -679,7 +676,7 @@ export class IndicationStateManager {
   }
 
   /**
-   * Trend Type (kept last): coordinated 1/3/5/10/15/30-minute calculations
+   * Trend Type (kept last): coordinated 1/5/15/30-minute calculations
    * across independent negative-drawdown, recent-situation and active-market
    * configurations. The strongest passing configuration in each timeframe is
    * materialised into Base pseudo positions; every passing combination is

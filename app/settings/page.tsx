@@ -191,16 +191,41 @@ interface Settings {
   activeEnabled: boolean
   activeInterval: number
   activeTimeout: number
+  defaultCoordinationEnabled: boolean
+  defaultCoordinationRanges: number[] | string
+  defaultCoordinationRangeSteps: number[] | string
+  defaultCoordinationDrawdownRatios: number[] | string
+  defaultCoordinationHigherRangeDrawdownScale: number
+  defaultCoordinationMinAgreement: number
+  defaultCoordinationMinimumSignals: number
+  defaultCoordinationShortDifferenceRatio: number
+  directionPostChangeOnly: boolean
+  indicationSampleRanges: number[] | string
+  indicationDrawdownRatios: number[] | string
+  indicationLastPartRatios: number[] | string
+  indicationFactorMultipliers: number[] | string
+  activeThresholds: number[] | string
+  activeTimeRatios: number[] | string
+  activeAdvancedEnabled: boolean
+  activeAdvancedActivityRatios: number[] | string
+  activeAdvancedMinPositions: number
+  activeAdvancedContinuationRatio: number
+  optimalEnabled: boolean
+  optimalSampleRanges: number[] | string
   optimalCoordinationEnabled: boolean
   trailingOptimalRanges: boolean
   simultaneousTrading: boolean
   positionIncrementAfterSituation: boolean
+  autoEnabled: boolean
   trendEnabled: boolean
   trendTimeframesMinutes: number[] | string
   trendDrawdownValues: number[] | string
   trendLastSituationRatios: number[] | string
   trendActiveSituationRatios: number[] | string
   trendMinAgreement: number
+  trendCombinedEnabled: boolean
+  trendRangeSteps: number[] | string
+  trendHigherRangeDrawdownScale: number
   trendTpMinMultiplier: number
   trendTpMaxFactor: number
   trendTpStep: number
@@ -645,7 +670,10 @@ const initialSettings: Settings = {
   presetTrailStepRatio: 0.5,
   presetAutoGenerate: true,
   presetAutoSelect: true,
-  presetIndicatorTypes: ["rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "sar"],
+  presetIndicatorTypes: [
+    "ma", "rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr",
+    "psar", "sar", "cci", "adl", "fibonacci", "roc", "williamsR", "obv", "vwap",
+  ],
   presetMaxIndicatorVariants: 4,
   presetMaxSignalsPerVariant: 48,
   presetMaxCandlesPerRun: 6000,
@@ -687,18 +715,43 @@ const initialSettings: Settings = {
   activeEnabled: true, // Changed to enabled by default
   activeInterval: 100,
   activeTimeout: 3,
+  defaultCoordinationEnabled: true,
+  defaultCoordinationRanges: [2, 5, 10, 20, 30],
+  defaultCoordinationRangeSteps: [2, 2.5, 3],
+  defaultCoordinationDrawdownRatios: [1, 1.5, 2],
+  defaultCoordinationHigherRangeDrawdownScale: 0.5,
+  defaultCoordinationMinAgreement: 0.6,
+  defaultCoordinationMinimumSignals: 3,
+  defaultCoordinationShortDifferenceRatio: 0.1,
+  directionPostChangeOnly: true,
+  indicationSampleRanges: [2, 5, 10, 20, 30],
+  indicationDrawdownRatios: [0.5, 1, 1.5],
+  indicationLastPartRatios: [0.25, 0.5],
+  indicationFactorMultipliers: [1],
+  activeThresholds: [0.5, 1.5, 2.5],
+  activeTimeRatios: [0.5, 1],
+  activeAdvancedEnabled: true,
+  activeAdvancedActivityRatios: [0.5, 1.5, 3],
+  activeAdvancedMinPositions: 3,
+  activeAdvancedContinuationRatio: 0.6,
 
   // Optimal Indication Settings
+  optimalEnabled: true,
+  optimalSampleRanges: [2, 5, 10, 20, 30],
   optimalCoordinationEnabled: false,
   trailingOptimalRanges: false,
   simultaneousTrading: false,
   positionIncrementAfterSituation: false,
+  autoEnabled: true,
   trendEnabled: true,
-  trendTimeframesMinutes: [1, 3, 5, 10, 15, 30],
+  trendTimeframesMinutes: [1, 5, 15, 30],
   trendDrawdownValues: [-1, -2, -3],
   trendLastSituationRatios: [0.5, 1],
   trendActiveSituationRatios: [0.5, 1],
   trendMinAgreement: 0.6,
+  trendCombinedEnabled: true,
+  trendRangeSteps: [2, 2.5, 3],
+  trendHigherRangeDrawdownScale: 0.5,
   trendTpMinMultiplier: 2,
   trendTpMaxFactor: 10,
   trendTpStep: 1,
@@ -921,7 +974,10 @@ export default function SettingsPage() {
     presetTrailStepRatio: initialSettings.presetTrailStepRatio ?? 0.5,
     presetAutoGenerate: initialSettings.presetAutoGenerate ?? true,
     presetAutoSelect: initialSettings.presetAutoSelect ?? true,
-    presetIndicatorTypes: initialSettings.presetIndicatorTypes ?? ["rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "sar"],
+    presetIndicatorTypes: initialSettings.presetIndicatorTypes ?? [
+      "ma", "rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr",
+      "psar", "sar", "cci", "adl", "fibonacci", "roc", "williamsR", "obv", "vwap",
+    ],
     presetMaxIndicatorVariants: initialSettings.presetMaxIndicatorVariants ?? 4,
     presetMaxSignalsPerVariant: initialSettings.presetMaxSignalsPerVariant ?? 48,
     presetMaxCandlesPerRun: initialSettings.presetMaxCandlesPerRun ?? 6000,

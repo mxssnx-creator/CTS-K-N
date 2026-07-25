@@ -1,4 +1,5 @@
 export const PRESET_INDICATOR_TYPES = [
+  "ma",
   "rsi",
   "macd",
   "bollinger",
@@ -7,10 +8,22 @@ export const PRESET_INDICATOR_TYPES = [
   "stochastic",
   "adx",
   "atr",
-  "sar",
+  "psar",
+  "cci",
+  "adl",
+  "fibonacci",
+  "roc",
+  "williamsR",
+  "obv",
+  "vwap",
 ] as const
 
-export type PresetIndicatorType = (typeof PRESET_INDICATOR_TYPES)[number]
+/** `sar` remains readable for legacy presets but is not generated twice. */
+export type PresetIndicatorType = (typeof PRESET_INDICATOR_TYPES)[number] | "sar"
+const VALID_PRESET_INDICATOR_TYPES: readonly PresetIndicatorType[] = [
+  ...PRESET_INDICATOR_TYPES,
+  "sar",
+]
 
 export interface NumericPresetRange {
   min: number
@@ -225,7 +238,9 @@ export function normalizePresetOptimizerSettings(raw: Record<string, unknown> = 
   const indicatorTypes = Array.isArray(raw.indicatorTypes)
     ? raw.indicatorTypes
         .map(String)
-        .filter((type): type is PresetIndicatorType => PRESET_INDICATOR_TYPES.includes(type as PresetIndicatorType))
+        .map((type) => type === "sar" ? "psar" : type)
+        .filter((type): type is PresetIndicatorType =>
+          VALID_PRESET_INDICATOR_TYPES.includes(type as PresetIndicatorType))
     : d.indicatorTypes
 
   return {
@@ -388,6 +403,19 @@ function indicatorRecord(commonSettings: Record<string, unknown>, key: string): 
   return value && typeof value === "object" ? value as Record<string, unknown> : {}
 }
 
+function normalizedCommonTimeframes(commonSettings: Record<string, unknown>): number[] {
+  const coordination = indicatorRecord(commonSettings, "coordination")
+  const source = Array.isArray(coordination.timeframesMinutes)
+    ? coordination.timeframesMinutes
+    : [1, 3, 5, 15]
+  const values = [...new Set(source
+    .map(Number)
+    .filter(Number.isFinite)
+    .map((value) => Math.max(1, Math.min(15, Math.round(value)))))]
+    .sort((left, right) => left - right)
+  return values.length > 0 ? values : [1, 3, 5, 15]
+}
+
 export function buildCommonIndicatorConfigurations(
   commonSettings: Record<string, unknown> = {},
   settingsInput: Partial<PresetOptimizerSettings> = {},
@@ -395,12 +423,16 @@ export function buildCommonIndicatorConfigurations(
   const settings = normalizePresetOptimizerSettings(settingsInput as Record<string, unknown>)
   const max = settings.maxIndicatorVariantsPerType
   const configurations: PresetIndicatorConfiguration[] = []
+  const timeframes = normalizedCommonTimeframes(commonSettings)
 
   const add = (type: PresetIndicatorType, sourceKey: string, parameters: Record<string, number[]>) => {
     if (!settings.indicatorTypes.includes(type)) return
     const source = indicatorRecord(commonSettings, sourceKey)
     if (source.enabled === false) return
-    configurations.push(...latinVariants(type, parameters, max))
+    configurations.push(...latinVariants(type, {
+      ...parameters,
+      timeframeMinutes: timeframes,
+    }, max))
   }
 
   const rsi = indicatorRecord(commonSettings, "rsi")
@@ -423,6 +455,12 @@ export function buildCommonIndicatorConfigurations(
     stdDev: selectRangeValues(bollinger.stdDev, { min: 1.5, max: 2.5, step: 0.25 }, max),
   })
 
+  const ma = indicatorRecord(commonSettings, "ma")
+  add("ma", "ma", {
+    short: selectRangeValues(ma.shortPeriod, { min: 3, max: 15, step: 2 }, max),
+    long: selectRangeValues(ma.longPeriod, { min: 20, max: 80, step: 10 }, max),
+  })
+
   const ema = indicatorRecord(commonSettings, "ema")
   add("ema", "ema", {
     short: selectRangeValues(ema.shortPeriod ?? ema.period, { min: 5, max: 13, step: 2 }, max),
@@ -437,7 +475,8 @@ export function buildCommonIndicatorConfigurations(
 
   const stochastic = indicatorRecord(commonSettings, "stochastic")
   add("stochastic", "stochastic", {
-    period: selectRangeValues(stochastic.kPeriod, { min: 7, max: 21, step: 2 }, max),
+    kPeriod: selectRangeValues(stochastic.kPeriod, { min: 7, max: 21, step: 2 }, max),
+    dPeriod: selectRangeValues(stochastic.dPeriod, { min: 2, max: 5, step: 1 }, max),
     oversold: selectRangeValues(stochastic.oversold, { min: 20, max: 35, step: 5 }, max),
     overbought: selectRangeValues(stochastic.overbought, { min: 65, max: 80, step: 5 }, max),
   })
@@ -455,9 +494,51 @@ export function buildCommonIndicatorConfigurations(
   })
 
   const sar = indicatorRecord(commonSettings, "parabolicSAR")
-  add("sar", "parabolicSAR", {
+  add("psar", "parabolicSAR", {
     acceleration: selectRangeValues(sar.acceleration, { min: 0.01, max: 0.03, step: 0.005 }, max),
     maximum: selectRangeValues(sar.maximum, { min: 0.1, max: 0.3, step: 0.05 }, max),
+  })
+  const cci = indicatorRecord(commonSettings, "cci")
+  add("cci", "cci", {
+    period: selectRangeValues(cci.period, { min: 10, max: 30, step: 5 }, max),
+    threshold: selectRangeValues(cci.threshold, { min: 80, max: 160, step: 20 }, max),
+  })
+
+  const adl = indicatorRecord(commonSettings, "adl")
+  add("adl", "adl", {
+    short: selectRangeValues(adl.shortPeriod, { min: 3, max: 10, step: 1 }, max),
+    long: selectRangeValues(adl.longPeriod, { min: 15, max: 40, step: 5 }, max),
+  })
+
+  const fibonacci = indicatorRecord(commonSettings, "fibonacci")
+  add("fibonacci", "fibonacci", {
+    lookback: selectRangeValues(fibonacci.lookback, { min: 13, max: 55, step: 7 }, max),
+    tolerancePct: selectRangeValues(fibonacci.tolerancePct, { min: 0.1, max: 0.5, step: 0.1 }, max),
+  })
+
+  const roc = indicatorRecord(commonSettings, "roc")
+  add("roc", "roc", {
+    period: selectRangeValues(roc.period, { min: 3, max: 20, step: 1 }, max),
+    thresholdPct: selectRangeValues(roc.thresholdPct, { min: 0.1, max: 1, step: 0.1 }, max),
+  })
+
+  const williams = indicatorRecord(commonSettings, "williamsR")
+  add("williamsR", "williamsR", {
+    period: selectRangeValues(williams.period, { min: 7, max: 21, step: 2 }, max),
+    oversold: selectRangeValues(williams.oversold, { min: -90, max: -70, step: 5 }, max),
+    overbought: selectRangeValues(williams.overbought, { min: -30, max: -10, step: 5 }, max),
+  })
+
+  const obv = indicatorRecord(commonSettings, "obv")
+  add("obv", "obv", {
+    short: selectRangeValues(obv.shortPeriod, { min: 3, max: 10, step: 1 }, max),
+    long: selectRangeValues(obv.longPeriod, { min: 15, max: 40, step: 5 }, max),
+  })
+
+  const vwap = indicatorRecord(commonSettings, "vwap")
+  add("vwap", "vwap", {
+    period: selectRangeValues(vwap.period, { min: 5, max: 30, step: 5 }, max),
+    deviationPct: selectRangeValues(vwap.deviationPct, { min: 0.1, max: 1, step: 0.1 }, max),
   })
 
   return configurations
@@ -640,6 +721,52 @@ function parabolicSarDirections(
   return directions
 }
 
+function accumulationDistributionSeries(candles: PresetCandle[]): number[] {
+  const values = new Array<number>(candles.length).fill(0)
+  for (let index = 0; index < candles.length; index++) {
+    const candle = candles[index]
+    const range = candle.high - candle.low
+    const multiplier = range > 0
+      ? ((candle.close - candle.low) - (candle.high - candle.close)) / range
+      : 0
+    values[index] = (values[index - 1] || 0) + multiplier * candle.volume
+  }
+  return values
+}
+
+function onBalanceVolumeSeries(candles: PresetCandle[]): number[] {
+  const values = new Array<number>(candles.length).fill(0)
+  for (let index = 1; index < candles.length; index++) {
+    const volumeDirection = candles[index].close > candles[index - 1].close
+      ? 1
+      : candles[index].close < candles[index - 1].close
+        ? -1
+        : 0
+    values[index] = values[index - 1] + volumeDirection * candles[index].volume
+  }
+  return values
+}
+
+function rollingVwapSeries(candles: PresetCandle[], periodInput: number): number[] {
+  const period = Math.max(1, Math.round(periodInput))
+  const values = new Array<number>(candles.length).fill(0)
+  let priceVolume = 0
+  let volume = 0
+  for (let index = 0; index < candles.length; index++) {
+    const typical = (candles[index].high + candles[index].low + candles[index].close) / 3
+    priceVolume += typical * candles[index].volume
+    volume += candles[index].volume
+    if (index >= period) {
+      const old = candles[index - period]
+      const oldTypical = (old.high + old.low + old.close) / 3
+      priceVolume -= oldTypical * old.volume
+      volume -= old.volume
+    }
+    values[index] = volume > 0 ? priceVolume / volume : candles[index].close
+  }
+  return values
+}
+
 function buildSignalSeries(
   candles: PresetCandle[],
   config: PresetIndicatorConfiguration,
@@ -691,14 +818,16 @@ function buildSignalSeries(
       }
       break
     }
+    case "ma":
     case "ema":
     case "sma": {
       const short = Math.max(2, Math.round(p.short || 9))
       const long = Math.max(short + 1, Math.round(p.long || 21))
-      const shortAverage = config.type === "ema"
+      const useExponential = config.type === "ema" || config.type === "ma"
+      const shortAverage = useExponential
         ? exponentialMovingAverageSeries(closes, short)
         : simpleMovingAverageSeries(closes, short)
-      const longAverage = config.type === "ema"
+      const longAverage = useExponential
         ? exponentialMovingAverageSeries(closes, long)
         : simpleMovingAverageSeries(closes, long)
       for (let index = 1; index < candles.length; index++) {
@@ -711,7 +840,9 @@ function buildSignalSeries(
       break
     }
     case "stochastic": {
-      const period = Math.max(3, Math.round(p.period || 14))
+      const period = Math.max(3, Math.round(p.kPeriod || p.period || 14))
+      const dPeriod = Math.max(1, Math.round(p.dPeriod || 3))
+      const kValues = new Array<number>(candles.length).fill(50)
       for (let index = 0; index < candles.length; index++) {
         const start = Math.max(0, index - period + 1)
         let high = Number.NEGATIVE_INFINITY
@@ -720,9 +851,14 @@ function buildSignalSeries(
           high = Math.max(high, candles[cursor].high)
           low = Math.min(low, candles[cursor].low)
         }
-        const k = high > low ? ((candles[index].close - low) / (high - low)) * 100 : 50
-        if (k <= (p.oversold || 20)) result[index] = "long"
-        else if (k >= (p.overbought || 80)) result[index] = "short"
+        kValues[index] = high > low ? ((candles[index].close - low) / (high - low)) * 100 : 50
+      }
+      const dValues = simpleMovingAverageSeries(kValues, dPeriod)
+      for (let index = 1; index < candles.length; index++) {
+        const crossedUp = kValues[index] >= dValues[index] && kValues[index - 1] < dValues[index - 1]
+        const crossedDown = kValues[index] <= dValues[index] && kValues[index - 1] > dValues[index - 1]
+        if (crossedUp && kValues[index] <= (p.oversold || 20)) result[index] = "long"
+        else if (crossedDown && kValues[index] >= (p.overbought || 80)) result[index] = "short"
       }
       break
     }
@@ -746,10 +882,140 @@ function buildSignalSeries(
       }
       break
     }
+    case "psar":
     case "sar":
       return parabolicSarDirections(candles, p.acceleration || 0.02, p.maximum || 0.2)
+    case "cci": {
+      const period = Math.max(3, Math.round(p.period || 20))
+      const typical = candles.map((candle) => (candle.high + candle.low + candle.close) / 3)
+      const means = simpleMovingAverageSeries(typical, period)
+      const threshold = Math.max(1, Math.abs(p.threshold || 100))
+      for (let index = period - 1; index < candles.length; index++) {
+        const start = Math.max(0, index - period + 1)
+        let deviation = 0
+        for (let cursor = start; cursor <= index; cursor++) {
+          deviation += Math.abs(typical[cursor] - means[index])
+        }
+        deviation /= Math.max(1, index - start + 1)
+        const value = deviation > 0 ? (typical[index] - means[index]) / (0.015 * deviation) : 0
+        if (value <= -threshold) result[index] = "long"
+        else if (value >= threshold) result[index] = "short"
+      }
+      break
+    }
+    case "adl":
+    case "obv": {
+      const values = config.type === "obv"
+        ? onBalanceVolumeSeries(candles)
+        : accumulationDistributionSeries(candles)
+      const shortPeriod = Math.max(2, Math.round(p.short || 5))
+      const longPeriod = Math.max(shortPeriod + 1, Math.round(p.long || 20))
+      const short = simpleMovingAverageSeries(values, shortPeriod)
+      const long = simpleMovingAverageSeries(values, longPeriod)
+      for (let index = 1; index < candles.length; index++) {
+        if (short[index] > long[index] && short[index - 1] <= long[index - 1]) result[index] = "long"
+        else if (short[index] < long[index] && short[index - 1] >= long[index - 1]) result[index] = "short"
+      }
+      break
+    }
+    case "fibonacci": {
+      const lookback = Math.max(3, Math.round(p.lookback || 34))
+      const tolerancePct = Math.max(0.001, p.tolerancePct || 0.25)
+      for (let index = lookback - 1; index < candles.length; index++) {
+        const window = candles.slice(index - lookback + 1, index + 1)
+        const high = Math.max(...window.map((candle) => candle.high))
+        const low = Math.min(...window.map((candle) => candle.low))
+        const span = high - low
+        if (!(span > 0)) continue
+        const levels = [high - span * 0.382, high - span * 0.5, high - span * 0.618]
+        const nearest = levels.reduce((best, level) =>
+          Math.abs(candles[index].close - level) < Math.abs(candles[index].close - best) ? level : best,
+        )
+        const distancePct = Math.abs(candles[index].close - nearest) / candles[index].close * 100
+        if (distancePct > tolerancePct) continue
+        result[index] = candles[index].close <= high - span * 0.5 ? "long" : "short"
+      }
+      break
+    }
+    case "roc": {
+      const period = Math.max(1, Math.round(p.period || 12))
+      const threshold = Math.max(0, p.thresholdPct || 0.1)
+      for (let index = period; index < candles.length; index++) {
+        const reference = candles[index - period].close
+        const value = reference > 0 ? (candles[index].close - reference) / reference * 100 : 0
+        if (value >= threshold) result[index] = "long"
+        else if (value <= -threshold) result[index] = "short"
+      }
+      break
+    }
+    case "williamsR": {
+      const period = Math.max(3, Math.round(p.period || 14))
+      for (let index = period - 1; index < candles.length; index++) {
+        const window = candles.slice(index - period + 1, index + 1)
+        const high = Math.max(...window.map((candle) => candle.high))
+        const low = Math.min(...window.map((candle) => candle.low))
+        const value = high > low ? -100 * (high - candles[index].close) / (high - low) : -50
+        if (value <= (p.oversold || -80)) result[index] = "long"
+        else if (value >= (p.overbought || -20)) result[index] = "short"
+      }
+      break
+    }
+    case "vwap": {
+      const period = Math.max(2, Math.round(p.period || 20))
+      const threshold = Math.max(0, p.deviationPct || 0.1)
+      const values = rollingVwapSeries(candles, period)
+      for (let index = period - 1; index < candles.length; index++) {
+        const deviation = values[index] > 0 ? (candles[index].close - values[index]) / values[index] * 100 : 0
+        if (deviation <= -threshold) result[index] = "long"
+        else if (deviation >= threshold) result[index] = "short"
+      }
+      break
+    }
   }
   return result
+}
+
+function resamplePresetCandles(
+  candles: PresetCandle[],
+  timeframeMinutesInput: number,
+): { candles: PresetCandle[]; sourceIndexes: number[] } {
+  const timeframeMinutes = Math.max(1, Math.min(15, Math.round(timeframeMinutesInput || 1)))
+  if (candles.length < 2) {
+    return { candles, sourceIndexes: candles.map((_, index) => index) }
+  }
+  const positiveIntervals = candles.slice(1)
+    .map((candle, index) => candle.timestamp - candles[index].timestamp)
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((left, right) => left - right)
+  const baseIntervalMinutes = positiveIntervals.length > 0
+    ? positiveIntervals[Math.floor(positiveIntervals.length / 2)] / 60_000
+    : timeframeMinutes
+  if (timeframeMinutes <= baseIntervalMinutes + 0.001) {
+    return { candles, sourceIndexes: candles.map((_, index) => index) }
+  }
+
+  const bucketMs = timeframeMinutes * 60_000
+  const result: PresetCandle[] = []
+  const sourceIndexes: number[] = []
+  let bucket = Number.NaN
+  for (let index = 0; index < candles.length; index++) {
+    const candle = candles[index]
+    const nextBucket = Math.floor(candle.timestamp / bucketMs)
+    if (nextBucket !== bucket) {
+      bucket = nextBucket
+      result.push({ ...candle })
+      sourceIndexes.push(index)
+      continue
+    }
+    const target = result[result.length - 1]
+    target.high = Math.max(target.high, candle.high)
+    target.low = Math.min(target.low, candle.low)
+    target.close = candle.close
+    target.timestamp = candle.timestamp
+    target.volume += candle.volume
+    sourceIndexes[sourceIndexes.length - 1] = index
+  }
+  return { candles: result, sourceIndexes }
 }
 
 export function generatePresetSignals(
@@ -757,13 +1023,19 @@ export function generatePresetSignals(
   config: PresetIndicatorConfiguration,
   maximum: number,
 ): PresetSignalEntry[] {
-  const warmup = Math.max(30, ...Object.values(config.params).map((value) => Math.ceil(value || 0)))
-  const signalSeries = buildSignalSeries(candles, config)
+  const timeframeMinutes = Math.max(1, Math.min(15, Math.round(config.params.timeframeMinutes || 1)))
+  const resampled = resamplePresetCandles(candles, timeframeMinutes)
+  const calculationParams = Object.fromEntries(
+    Object.entries(config.params).filter(([key]) => key !== "timeframeMinutes"),
+  )
+  const calculationConfig = { ...config, params: calculationParams }
+  const warmup = Math.max(30, ...Object.values(calculationParams).map((value) => Math.ceil(value || 0)))
+  const signalSeries = buildSignalSeries(resampled.candles, calculationConfig)
   const candidates: PresetSignalEntry[] = []
-  for (let index = warmup; index < candles.length - 1; index++) {
+  for (let index = warmup; index < resampled.candles.length - 1; index++) {
     const direction = signalSeries[index]
     if (!direction) continue
-    candidates.push({ index, direction })
+    candidates.push({ index: resampled.sourceIndexes[index], direction })
   }
   const limit = Math.max(1, Math.floor(maximum))
   if (candidates.length <= limit) return candidates

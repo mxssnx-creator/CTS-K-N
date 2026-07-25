@@ -18,6 +18,7 @@ import {
   normalizePositionCostPercent,
   POSITION_COST_PERCENT_DEFAULT,
 } from "@/lib/position-cost"
+import { normalizeTrendTimeframesMinutes } from "@/lib/trend-indication"
 
 /**
  * Fan out a "settings_changed" progression log event AND a settings-
@@ -88,6 +89,11 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
       normalized[key] = normalizePositionCostPercent(value)
     }
   }
+  if (normalized.trendTimeframesMinutes !== undefined) {
+    normalized.trendTimeframesMinutes = normalizeTrendTimeframesMinutes(
+      normalized.trendTimeframesMinutes,
+    )
+  }
 
   return normalized as T
 }
@@ -146,6 +152,34 @@ function getDefaultSettings(): Record<string, any> {
     blockPauseCountRatio: 1,
     blockActiveRealEnabled: true,
     blockActiveLiveEnabled: true,
+    directionEnabled: true,
+    moveEnabled: true,
+    activeEnabled: true,
+    activeAdvancedEnabled: true,
+    optimalEnabled: true,
+    autoEnabled: true,
+    // Balanced sparse grids are the production default. Operators can enter
+    // every step explicitly in Settings without forcing every fresh install
+    // into the legacy 29-range Cartesian product.
+    indicationSampleRanges: [2, 5, 10, 20, 30],
+    optimalSampleRanges: [2, 5, 10, 20, 30],
+    indicationDrawdownRatios: [0.5, 1, 1.5],
+    indicationLastPartRatios: [0.25, 0.5],
+    indicationFactorMultipliers: [1],
+    activeThresholds: [0.5, 1.5, 2.5],
+    activeTimeRatios: [0.5, 1],
+    activeAdvancedActivityRatios: [0.5, 1.5, 3],
+    activeAdvancedMinPositions: 3,
+    activeAdvancedContinuationRatio: 0.6,
+    defaultCoordinationEnabled: true,
+    defaultCoordinationRanges: [2, 5, 10, 20, 30],
+    defaultCoordinationRangeSteps: [2, 2.5, 3],
+    defaultCoordinationDrawdownRatios: [1, 1.5, 2],
+    defaultCoordinationHigherRangeDrawdownScale: 0.5,
+    defaultCoordinationMinAgreement: 0.6,
+    defaultCoordinationMinimumSignals: 3,
+    defaultCoordinationShortDifferenceRatio: 0.1,
+    directionPostChangeOnly: true,
     profitFactorMinPreset: 0.7,
     drawdownTimePreset: 5,
     presetHistoryDays: 14,
@@ -162,12 +196,14 @@ function getDefaultSettings(): Record<string, any> {
     presetTrailStartMax: 1.5,
     presetTrailStartStep: 0.1,
     presetTrailStopMin: 0.2,
-    presetTrailStopMax: 0.4,
     presetTrailStopStep: 0.1,
     presetTrailStepRatio: 0.5,
     presetAutoGenerate: true,
     presetAutoSelect: true,
-    presetIndicatorTypes: ["rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr", "sar"],
+    presetIndicatorTypes: [
+      "ma", "rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr",
+      "psar", "cci", "adl", "fibonacci", "roc", "williamsR", "obv", "vwap",
+    ],
     presetMaxIndicatorVariants: 4,
     presetMaxSignalsPerVariant: 48,
     presetMaxCandlesPerRun: 6000,
@@ -187,11 +223,14 @@ function getDefaultSettings(): Record<string, any> {
     positionCost: POSITION_COST_PERCENT_DEFAULT,
     exchangePositionCost: POSITION_COST_PERCENT_DEFAULT,
     trendEnabled: true,
-    trendTimeframesMinutes: [1, 3, 5, 10, 15, 30],
+    trendTimeframesMinutes: [1, 5, 15, 30],
     trendDrawdownValues: [-1, -2, -3],
     trendLastSituationRatios: [0.5, 1],
     trendActiveSituationRatios: [0.5, 1],
     trendMinAgreement: 0.6,
+    trendCombinedEnabled: true,
+    trendRangeSteps: [2, 2.5, 3],
+    trendHigherRangeDrawdownScale: 0.5,
     trendTpMinMultiplier: 2,
     trendTpMaxFactor: 10,
     trendTpStep: 1,
@@ -232,6 +271,19 @@ async function handleGet() {
       }
       if (Object.keys(missingDefaults).length > 0) {
         settings = { ...defaults, ...(settings as Record<string, any>) }
+        await setAppSettings(settings)
+      }
+      const normalizedTrendTimeframes = normalizeTrendTimeframesMinutes(
+        (settings as Record<string, any>).trendTimeframesMinutes,
+      )
+      if (
+        JSON.stringify((settings as Record<string, any>).trendTimeframesMinutes) !==
+        JSON.stringify(normalizedTrendTimeframes)
+      ) {
+        settings = {
+          ...(settings as Record<string, any>),
+          trendTimeframesMinutes: normalizedTrendTimeframes,
+        }
         await setAppSettings(settings)
       }
     }

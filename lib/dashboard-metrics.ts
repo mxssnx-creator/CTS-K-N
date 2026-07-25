@@ -11,6 +11,20 @@ export function finiteMetric(value: unknown, fallback = 0): number {
   return Number.isFinite(numeric) ? numeric : fallback
 }
 
+/**
+ * Return the first present finite metric while preserving an authoritative
+ * zero. Truthiness fallbacks can otherwise revive stale legacy values after a
+ * current counter legitimately reaches zero.
+ */
+export function firstFiniteMetric(...values: unknown[]): number {
+  for (const value of values) {
+    if (value === undefined || value === null || value === "") continue
+    const numeric = Number(value)
+    if (Number.isFinite(numeric)) return numeric
+  }
+  return 0
+}
+
 export function nonNegativeMetric(value: unknown): number {
   return Math.max(0, finiteMetric(value))
 }

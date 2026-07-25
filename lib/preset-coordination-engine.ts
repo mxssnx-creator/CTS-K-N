@@ -435,15 +435,7 @@ export class PresetCoordinationEngine {
       setImmediate(() => {
         const prices = historicalData.map((d) => d.close)
         const indicatorConfig: IndicatorConfig = {
-          type: configSet.indication_type as
-            | "rsi"
-            | "macd"
-            | "bollinger"
-            | "sar"
-            | "ema"
-            | "sma"
-            | "stochastic"
-            | "adx",
+          type: configSet.indication_type as IndicatorConfig["type"],
           params: indicationParams,
         }
 

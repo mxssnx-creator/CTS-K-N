@@ -52,6 +52,7 @@ import { DEFAULT_VOLUME_STEP_RATIO, MIN_VOLUME_FACTOR } from "@/lib/constants"
 import {
   boundedPassedCount,
   boundedPercentage,
+  firstFiniteMetric,
   finiteMetric,
   nonNegativeMetric,
 } from "@/lib/dashboard-metrics"
@@ -847,15 +848,17 @@ export function ActiveConnectionCard({
         const cc = data.realtime?.cycleCounters || {}
         setLiveStats({
           indicationCycles:
-            Number(cc.indication) ||
-            data.realtime?.indicationCycles ||
-            data.indicationCycleCount ||
-            0,
+            firstFiniteMetric(
+              cc.indication,
+              data.realtime?.indicationCycles,
+              data.indicationCycleCount,
+            ),
           strategyCycles:
-            Number(cc.strategy) ||
-            data.realtime?.strategyCycles ||
-            data.strategyCycleCount ||
-            0,
+            firstFiniteMetric(
+              cc.strategy,
+              data.realtime?.strategyCycles,
+              data.strategyCycleCount,
+            ),
           // ── Indications / Strategies — actively processing Sets ───────
           // Operators want the "Ind." / "Strat." counters on the live
           // card to reflect what's processing RIGHT NOW (Sets currently
@@ -865,35 +868,26 @@ export function ActiveConnectionCard({
           // strategies}.total.sets`. Falls back to the legacy
           // cumulative counters when the new field is absent (older
           // API revs).
-          // For Ind./Strat. counters: prefer "alive now" (non-zero sets from
-          // activeProgressing.total.sets). Fall back to the cumulative total
-          // (`indicationsTotal`) when the active-sets hash is empty — e.g.
-          // when no per-cycle threshold crossing has been written yet, or when
-          // the indication processor hasn't qualified anything this tick. This
-          // keeps the tile non-zero so the operator can see the engine is
-          // actually processing data.
+          // Presence-based fallback is essential: an authoritative active
+          // value of zero means no Set is qualifying this cycle and must not
+          // be replaced by a stale cumulative total from an older API shape.
           indications: (() => {
-            const activeNow = data.activeProgressing?.indications?.total?.sets ?? 0
-            if (activeNow > 0) return activeNow
-            const activeCnt = data.activeCounts?.indications?.total ?? 0
-            if (activeCnt > 0) return activeCnt
-            const rt = data.realtime?.indicationsTotal ?? 0
-            if (rt > 0) return rt
-            const total = data.totalIndicationsCount ?? 0
-            if (total > 0) return total
-            // Final fallback: breakdown cumulative total (type-summed, most durable)
-            return data.breakdown?.indications?.total ?? 0
+            return firstFiniteMetric(
+              data.activeProgressing?.indications?.total?.sets,
+              data.activeCounts?.indications?.total,
+              data.realtime?.indicationsTotal,
+              data.totalIndicationsCount,
+              data.breakdown?.indications?.total,
+            )
           })(),
           strategies: (() => {
-            const activeNow = data.activeProgressing?.strategies?.total?.sets ?? 0
-            if (activeNow > 0) return activeNow
-            const activeCnt = data.activeCounts?.strategies?.total ?? 0
-            if (activeCnt > 0) return activeCnt
-            const rt = data.realtime?.strategiesTotal ?? 0
-            if (rt > 0) return rt
-            const total = data.totalStrategyCount ?? 0
-            if (total > 0) return total
-            return data.breakdown?.strategies?.total ?? 0
+            return firstFiniteMetric(
+              data.activeProgressing?.strategies?.total?.sets,
+              data.activeCounts?.strategies?.total,
+              data.realtime?.strategiesTotal,
+              data.totalStrategyCount,
+              data.breakdown?.strategies?.total,
+            )
           })(),
           // Positions: prefer pseudo open (evaluation pipeline) because live
           // exchange positions are 0 unless an order filled. This way the
@@ -982,7 +976,11 @@ export function ActiveConnectionCard({
           liveOrdersAccumulated: data?.liveExecution?.ordersAccumulated || 0,
           livePositionsCreated:  data?.liveExecution?.positionsCreated || 0,
           livePositionsClosed:   data?.liveExecution?.positionsClosed  || 0,
-          livePositionsOpen:     data?.openPositions?.live?.open || data?.liveExecution?.positionsOpen || 0,
+          livePositionsOpen:     Number(
+            data?.openPositions?.live?.open
+              ?? data?.liveExecution?.positionsOpen
+              ?? 0,
+          ),
           liveWins:              data?.liveExecution?.wins             || 0,
           // USDT figures shown on the card represent the **used balance
           // (margin)** committed to live exchange positions, NOT the
@@ -1201,7 +1199,9 @@ export function ActiveConnectionCard({
     const ordersFailed =
       (prehistoricStats?.liveOrdersFailed ?? 0) +
       (prehistoricStats?.liveOrdersRejected ?? 0)
-    const livePnl = prehistoricStats?.liveAggUnrealizedPnl || prehistoricStats?.liveTotalPnl || 0
+    const livePnl =
+      finiteMetric(prehistoricStats?.liveAggUnrealizedPnl) +
+      finiteMetric(prehistoricStats?.liveTotalPnl)
     const tiles: Array<{ label: string; value: string | number; title?: string; tone?: string }> = []
 
     if (symbolsProcessed > 0 || symbolsTotal > 0) {
@@ -1225,7 +1225,11 @@ export function ActiveConnectionCard({
       },
       {
         label: "Strat",
-        value: liveStats?.strategies ?? ((prehistoricStats?.stratBase ?? 0) + (prehistoricStats?.stratMain ?? 0) + (prehistoricStats?.stratReal ?? 0)),
+        value: liveStats?.strategies ?? firstFiniteMetric(
+          prehistoricStats?.stratReal,
+          prehistoricStats?.stratMain,
+          prehistoricStats?.stratBase,
+        ),
         title: "Current or cumulative strategy sets from the canonical progression stats endpoint.",
       },
       {

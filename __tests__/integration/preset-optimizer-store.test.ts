@@ -105,7 +105,7 @@ describe("preset optimizer store and API integration", () => {
       maxSignalsPerVariant: 16,
       maxCandlesPerRun: 500,
     })
-    expect(settings).toMatchObject({ presetsPerSymbol: 4, autoSelect: true, indicatorTypes: ["sar"] })
+    expect(settings).toMatchObject({ presetsPerSymbol: 4, autoSelect: true, indicatorTypes: ["psar"] })
 
     const blockSettings = await store.savePresetOptimizerSettings({
       blockEnabled: true,
@@ -177,7 +177,7 @@ describe("preset optimizer store and API integration", () => {
     )
     expect(applied).toMatchObject({
       presetId: overview.presets[0].id,
-      presetIndicatorType: "sar",
+      presetIndicatorType: "psar",
       presetPositionCostPct: 0.1,
       stopLoss: 0.3,
       takeProfit: 0.3,

@@ -538,6 +538,36 @@ interface LivePosition {
   progression?: { step: string; timestamp: number; success: boolean; details: string }[]
 }
 
+export function normalizeLiveTradeDirection(...values: unknown[]): "long" | "short" | null {
+  for (const value of values) {
+    const normalized = String(value ?? "").trim().toLowerCase()
+    if (normalized === "long" || normalized === "buy") return "long"
+    if (normalized === "short" || normalized === "sell") return "short"
+  }
+  return null
+}
+
+export function normalizeExchangePositionDirection(
+  positionSide: unknown,
+  side: unknown,
+  signedQuantity: unknown,
+): "long" | "short" | null {
+  const explicit = normalizeLiveTradeDirection(positionSide, side)
+  if (explicit) return explicit
+  const quantity = Number(signedQuantity)
+  if (!Number.isFinite(quantity) || quantity === 0) return null
+  return quantity > 0 ? "long" : "short"
+}
+
+function resolveLivePositionDirection(position: Pick<LivePosition, "direction" | "side" | "exchangeData">): "long" | "short" | null {
+  return normalizeLiveTradeDirection(
+    position.direction,
+    position.side,
+    (position.exchangeData as any)?.positionSide,
+    (position.exchangeData as any)?.side,
+  )
+}
+
 
 function hasFillCounterRecorded(position: Pick<LivePosition, "fillCounterRecordedAt">): boolean {
   return Number(position.fillCounterRecordedAt || 0) > 0
@@ -567,6 +597,8 @@ async function recordConfirmedStrategyEntry(
     axisWindows?: LivePosition["axisWindows"]
   },
 ): Promise<boolean> {
+  const direction = resolveLivePositionDirection(position)
+  if (!direction) return false
   const combinedMemberKeys = !lineage && position.combinedPosCounts
     ? [...new Set((position.accumulatedSetKeys || []).map(String).filter(Boolean))]
     : []
@@ -582,7 +614,7 @@ async function recordConfirmedStrategyEntry(
         parentSetKey: memberSetKey.split("#")[0] || memberSetKey,
         symbol: position.symbol,
         indicationType: String(position.indicationType || memberSetKey.split(":")[1] || "unknown"),
-        direction: position.direction === "short" || position.side === "short" ? "short" : "long",
+        direction,
         axisKey: axisKeyFromLineage(memberSetKey, position.axisWindows),
         countGlobalPosition: index === 0,
       })
@@ -592,7 +624,6 @@ async function recordConfirmedStrategyEntry(
   }
   const setKey = String(lineage?.setKey || position.setKey || "").trim()
   if (!setKey) return false
-  const direction = position.direction === "short" || position.side === "short" ? "short" : "long"
   const parentSetKey = String(
     lineage?.parentSetKey || position.parentSetKey || setKey.split("#")[0] || setKey,
   )
@@ -619,6 +650,24 @@ async function recordFillCountersOnce(
   symbol: string,
   side: string,
 ): Promise<boolean> {
+  const storedDirection = resolveLivePositionDirection(position)
+  const observedDirection = normalizeLiveTradeDirection(side)
+  if (
+    storedDirection &&
+    observedDirection &&
+    storedDirection !== observedDirection
+  ) {
+    pushStep(
+      position,
+      "fill_counter_direction_guard",
+      false,
+      `stored=${storedDirection}; observed=${observedDirection}; counter write blocked`,
+    )
+    return false
+  }
+  const direction = storedDirection ?? observedDirection
+  if (!direction) return false
+  position.direction = direction
   // Entry accounting is independently idempotent. Run it even when the legacy
   // fill marker exists so pre-rollout positions are backfilled on reconcile.
   await recordConfirmedStrategyEntry(connectionId, position, `${position.id}:initial`)
@@ -629,7 +678,7 @@ async function recordFillCountersOnce(
   // fill. The caller persists the position in the same save batch/tick.
   position.fillCounterRecordedAt = Date.now()
   await incrementMetric(connectionId, "live_orders_filled_count")
-  await incrementOrdersBySymbol(connectionId, symbol, side, "filled")
+  await incrementOrdersBySymbol(connectionId, symbol, direction, "filled")
   return true
 }
 
@@ -1271,14 +1320,48 @@ async function incrementOrdersBySymbol(connectionId: string, symbol: string, sid
   try {
     const { recordPerSymbolOrderCounter } = await import("@/lib/live-order-service")
     const sideKey = String(side || "").trim().toLowerCase()
-    const dir = (sideKey.includes("short") || sideKey === "sell") ? "short" : "long"
+    const dir =
+      sideKey === "long" || sideKey === "buy"
+        ? "long"
+        : sideKey === "short" || sideKey === "sell"
+          ? "short"
+          : null
+    if (!dir || !["placed", "filled", "failed"].includes(metric)) return
     const symbolKey = String(symbol || "").trim().toUpperCase()
-    const field = `${symbolKey}:${dir}:${metric}`
-    void field
     await recordPerSymbolOrderCounter(connectionId, symbolKey, dir, metric as any)
   } catch {
     /* best-effort */
   }
+}
+
+async function recordPositionAdjustmentProgression(
+  connectionId: string,
+  position: Pick<LivePosition, "id" | "symbol" | "direction" | "side">,
+  event: "placed" | "filled" | "failed" | "simulated",
+  eventIdentity: string,
+  volumeUsd = 0,
+): Promise<boolean> {
+  const direction = normalizeLiveTradeDirection(position.direction, position.side)
+  if (!direction) {
+    throw new Error(`Cannot account position adjustment ${position.id}: invalid long/short direction`)
+  }
+  const normalizedIdentity = String(eventIdentity || "").trim()
+  if (!normalizedIdentity) {
+    throw new Error(`Cannot account position adjustment ${position.id}: durable event identity is missing`)
+  }
+  const { recordLiveOrderProgression } = await import("@/lib/live-order-service")
+  return recordLiveOrderProgression(
+    connectionId,
+    position.symbol,
+    direction,
+    event,
+    volumeUsd,
+    `${position.id}:adjustment:${normalizedIdentity}:${event}`,
+    {
+      countPositionCreated: false,
+      countAccumulated: event === "filled" || event === "simulated",
+    },
+  )
 }
 
 function makeDurableClientOrderId(prefix: string, position: Pick<LivePosition, "id" | "symbol">): string {
@@ -1500,6 +1583,8 @@ async function resolveAccumulationPlan(
   }
 
   if (real?.setVariant === "dca") {
+    const direction = resolveLivePositionDirection(existing)
+    if (!direction) return null
     const client = getRedisClient()
     const [legacy, canonical] = await Promise.all([
       client.hgetall(`connection_settings:${connId}`).catch(() => ({})),
@@ -1517,7 +1602,7 @@ async function resolveAccumulationPlan(
     )
     const referencePrice = Number(existing.initialEntryPrice ?? existing.averageExecutionPrice ?? existing.entryPrice ?? 0)
     const next = resolveNextDcaStep({
-      direction: existing.direction || "long",
+      direction,
       referencePrice,
       currentPrice: price,
       profile: dcaProfile,
@@ -1562,6 +1647,18 @@ async function accumulateIntoSimulatedPosition(
   const lockId = `accumulate-sim:${process.pid}:${Date.now()}:${nanoid(8)}`
   if (!await acquirePositionMutationLock(connId, existing.id, lockId)) return existing
   try {
+    const storedDirection = resolveLivePositionDirection(existing)
+    const requestedDirection = normalizeLiveTradeDirection(real?.direction, real?.side)
+    if (!storedDirection || !requestedDirection || storedDirection !== requestedDirection) {
+      pushStep(
+        existing,
+        "accumulate_direction_guard",
+        false,
+        `stored=${storedDirection || "invalid"}; requested=${requestedDirection || "invalid"}`,
+      )
+      await savePosition(existing)
+      return existing
+    }
     const plan = await resolveAccumulationPlan(connId, existing, real, price)
     if (!plan) {
       pushStep(existing, "accumulate_skip", false, `${real?.setVariant || "adjustment"} trigger not ready`)
@@ -1576,6 +1673,12 @@ async function accumulateIntoSimulatedPosition(
     const prevAvg = Number(existing.averageExecutionPrice || existing.entryPrice || price)
     const filledQty = plan.addQty
     const newExec = prevExec + filledQty
+    const progressionIdentity = [
+      plan.variant,
+      accumulationSetKey || (real?.combinedPosCounts ? "combined-pos-counts" : "unkeyed"),
+      prevExec,
+      newExec,
+    ].join(":")
     const mutated = await mutatePositionWithVersionCheck(existing, ["simulated"], draft => {
       draft.executedQuantity = newExec
       draft.quantity = newExec
@@ -1621,7 +1724,7 @@ async function accumulateIntoSimulatedPosition(
           filledAt: Date.now(),
         })
         draft.dcaTakeProfitPrice = calculateDcaTakeProfitPrice({
-          direction: draft.direction || "long",
+          direction: storedDirection,
           profile: plan.dcaProfile!,
           initialEntryPrice: draft.initialEntryPrice || prevAvg,
           averageEntryPrice: draft.averageExecutionPrice,
@@ -1632,6 +1735,13 @@ async function accumulateIntoSimulatedPosition(
     })
     if (mutated) {
       Object.assign(existing, mutated)
+      await recordPositionAdjustmentProgression(
+        connId,
+        existing,
+        "simulated",
+        progressionIdentity,
+        filledQty * price,
+      )
       await savePosition(existing)
       if (real?.combinedPosCounts) {
         await recordConfirmedStrategyEntry(connId, existing, `${existing.id}:combined:${Date.now()}`)
@@ -1648,7 +1758,6 @@ async function accumulateIntoSimulatedPosition(
           },
         )
       }
-      await incrementMetric(connId, "live_orders_accumulated_count")
     }
   } finally {
     await releasePositionMutationLock(connId, existing.id, lockId).catch(() => false)
@@ -1674,10 +1783,90 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
   )
 
   try {
+    const storedDirection = resolveLivePositionDirection(existing)
+    const requestedDirection = normalizeLiveTradeDirection(real?.direction, real?.side)
+    if (!storedDirection || !requestedDirection || storedDirection !== requestedDirection) {
+      pushStep(
+        existing,
+        "accumulate_direction_guard",
+        false,
+        `stored=${storedDirection || "invalid"}; requested=${requestedDirection || "invalid"}`,
+      )
+      await savePosition(existing)
+      return existing
+    }
     existing.accumulatedSetKeys ||= []
+    if (!connector || typeof connector.placeOrder !== "function") {
+      pushStep(existing, "accumulate_skip", false, "exchange connector unavailable — accumulation deferred")
+      await savePosition(existing)
+      return existing
+    }
+
+    const hadPendingAccumulation = !!existing.pendingAccumulation?.clientOrderId
+    if (existing.pendingAccumulation?.clientOrderId) {
+      const pending = existing.pendingAccumulation
+      const recovered = await recoverEntryOrderByClientId(connector, existing.symbol, pending.clientOrderId)
+      const recoveredStatus = String(recovered?.status || "").toLowerCase()
+      const recoveredOrderId = recovered?.orderId || recovered?.id
+      if (recovered && recoveredOrderId && !["cancelled", "canceled", "rejected", "expired"].includes(recoveredStatus)) {
+        pending.orderId = String(recoveredOrderId)
+        pending.absenceConfirmations = 0
+        await recordPositionAdjustmentProgression(
+          connId,
+          existing,
+          "placed",
+          pending.clientOrderId,
+        )
+        pushStep(existing, "accumulation_submission_recovered", true, `orderId=${pending.orderId}; exact fill deferred to reconciliation`)
+        await savePosition(existing)
+        await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_recovered")
+        return existing
+      }
+      const liveOrderIds = await fetchLiveOrderIdSet(connector)
+      if (
+        liveOrderIds === null ||
+        liveOrderIds.has(pending.clientOrderId) ||
+        (pending.orderId ? liveOrderIds.has(pending.orderId) : false)
+      ) {
+        if (pending.orderId) {
+          await recordPositionAdjustmentProgression(
+            connId,
+            existing,
+            "placed",
+            pending.clientOrderId,
+          )
+        }
+        pushStep(existing, "accumulation_submission_wait", true, `tracking pending clientOrderId=${pending.clientOrderId}`)
+        await savePosition(existing)
+        await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_tracking_wait")
+        return existing
+      }
+      pending.absenceConfirmations = Number(pending.absenceConfirmations || 0) + 1
+      if (pending.absenceConfirmations < 2) {
+        await savePosition(existing)
+        await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_absence_wait")
+        return existing
+      }
+      pushStep(existing, "accumulation_submission_absent", false, `clientOrderId=${pending.clientOrderId} confirmed absent; retry allowed`)
+      await recordPositionAdjustmentProgression(
+        connId,
+        existing,
+        "failed",
+        pending.clientOrderId,
+      )
+      existing.pendingAccumulation = undefined
+      await savePosition(existing)
+    }
+
+    // Admission checks run only after a durable pending order was recovered
+    // or conclusively cleared. Otherwise a cap/dedup return could strand an
+    // exchange submission forever merely because its Set was already applied.
     if (!real?.combinedPosCounts && existing.accumulatedSetKeys.length >= MAX_ACCUMULATIONS_PER_POSITION) {
       pushStep(existing, "accumulate_skip", false, `cap reached (${MAX_ACCUMULATIONS_PER_POSITION} accumulations) — merge suppressed`)
       await savePosition(existing)
+      if (hadPendingAccumulation) {
+        await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_cap_after_recovery")
+      }
       return existing
     }
     // Block/default overlays execute once per exact Set key. DCA is repeatable
@@ -1686,43 +1875,9 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     if (!real?.combinedPosCounts && real?.setKey && real?.setVariant !== "dca" && existing.accumulatedSetKeys.includes(real.setKey)) {
       pushStep(existing, "accumulate_skip", false, `setKey ${real.setKey} already accumulated`)
       await savePosition(existing)
-      return existing
-    }
-    if (!connector || typeof connector.placeOrder !== "function") {
-      pushStep(existing, "accumulate_skip", false, "exchange connector unavailable — accumulation deferred")
-      await savePosition(existing)
-      return existing
-    }
-
-    if (existing.pendingAccumulation?.clientOrderId) {
-      const pending = existing.pendingAccumulation
-      const recovered = await recoverEntryOrderByClientId(connector, existing.symbol, pending.clientOrderId)
-      const recoveredStatus = String(recovered?.status || "").toLowerCase()
-      if (recovered && !["cancelled", "canceled", "rejected", "expired"].includes(recoveredStatus)) {
-        pending.orderId = String(recovered.orderId || recovered.id)
-        pending.absenceConfirmations = 0
-        pushStep(existing, "accumulation_submission_recovered", true, `orderId=${pending.orderId}; exact fill deferred to reconciliation`)
-        await savePosition(existing)
-        return existing
+      if (hadPendingAccumulation) {
+        await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_duplicate_after_recovery")
       }
-      const liveOrderIds = await fetchLiveOrderIdSet(connector)
-      if (liveOrderIds === null || liveOrderIds.has(pending.clientOrderId)) {
-        pushStep(existing, "accumulation_submission_wait", true, `tracking pending clientOrderId=${pending.clientOrderId}`)
-        await savePosition(existing)
-        return existing
-      }
-      pending.absenceConfirmations = Number(pending.absenceConfirmations || 0) + 1
-      if (pending.absenceConfirmations < 2) {
-        await savePosition(existing)
-        return existing
-      }
-      pushStep(existing, "accumulation_submission_absent", false, `clientOrderId=${pending.clientOrderId} confirmed absent; retry allowed`)
-      existing.pendingAccumulation = undefined
-      await savePosition(existing)
-    }
-
-    if (!await settleControlOrdersBeforeQuantityMutation(connector, existing, "accumulation")) {
-      await savePosition(existing)
       return existing
     }
 
@@ -1730,6 +1885,9 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     if (!plan || !Number.isFinite(plan.addQty) || plan.addQty <= 0) {
       pushStep(existing, "accumulate_skip", false, `${real?.setVariant || "adjustment"} trigger/quantity not ready`)
       await savePosition(existing)
+      if (hadPendingAccumulation) {
+        await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_retry_not_ready")
+      }
       return existing
     }
     const accumulationSetKey = plan.variant === "dca" && plan.dcaStep
@@ -1741,8 +1899,16 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       return existing
     }
 
+    // Resolve and validate the independent quantity delta before cancelling
+    // any existing SL/TP. A non-ready Block/DCA/default overlay must leave
+    // the currently protected position completely untouched.
+    if (!await settleControlOrdersBeforeQuantityMutation(connector, existing, "accumulation")) {
+      await savePosition(existing)
+      return existing
+    }
+
     const symbol = String(real?.symbol || existing.symbol || "")
-    const direction: "long" | "short" = real?.direction === "short" || existing.direction === "short" ? "short" : "long"
+    const direction = storedDirection
     const exchangeSide: "buy" | "sell" = direction === "long" ? "buy" : "sell"
     const clientOrderId = makeDurableClientOrderId("acc", existing)
     existing.initialExecutedQuantity ??= existing.executedQuantity
@@ -1807,12 +1973,19 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       if (recovered) orderRes = recovered
     }
     const orderId = orderRes?.orderId || orderRes?.id
-    if (!orderRes?.success || !orderId) {
+    if (orderRes?.success === false || !orderId) {
       pushStep(existing, "accumulate_order_unconfirmed", false, `tracking by clientOrderId until authoritative recovery: ${orderRes?.error || "no order id"}`)
       await savePosition(existing)
+      await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_unconfirmed")
       return existing
     }
     if (existing.pendingAccumulation) existing.pendingAccumulation.orderId = String(orderId)
+    await recordPositionAdjustmentProgression(
+      connId,
+      existing,
+      "placed",
+      clientOrderId,
+    )
     await savePosition(existing)
 
     let filledQty = parseFloat(String(orderRes.filledQty ?? orderRes.executedQty ?? orderRes.cumQty ?? "0")) || 0
@@ -1827,9 +2000,17 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     if (filledQty <= 0) {
       pushStep(existing, "accumulate_fill_pending", true, `orderId=${orderId}; exact fill deferred to reconciliation`)
       await savePosition(existing)
+      await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_fill_pending")
       return existing
     }
     if (!(filledPrice > 0)) filledPrice = price
+    await recordPositionAdjustmentProgression(
+      connId,
+      existing,
+      "filled",
+      clientOrderId,
+      filledQty * filledPrice,
+    )
 
     const prevExec = Number(existing.executedQuantity || 0)
     const prevAvg = Number(existing.averageExecutionPrice || existing.entryPrice || filledPrice)
@@ -1895,7 +2076,6 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       return existing
     }
     Object.assign(existing, mutated)
-    await incrementMetric(connId, "live_orders_accumulated_count")
     await savePosition(existing)
     if (pending.combinedPosCounts) {
       await recordConfirmedStrategyEntry(
@@ -1924,7 +2104,12 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     await savePosition(existing)
   } catch (err) {
     pushStep(existing, "accumulate_error", false, err instanceof Error ? err.message : String(err))
-    try { await savePosition(existing) } catch { /* best-effort */ }
+    try {
+      await savePosition(existing)
+      await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_error_rearm")
+    } catch {
+      /* best-effort; canonical reconcile retries the durable pending action */
+    }
   } finally {
     stopPositionLockLeaseRefresh()
     await releasePositionMutationLock(connId, existing.id, lockId).catch(() => false)
@@ -1977,6 +2162,93 @@ async function fetchAuthoritativeOpenQuantity(
   }
 }
 
+async function reconcilePendingReductionAndRearm(
+  connector: any,
+  position: LivePosition,
+  reason: string,
+): Promise<void> {
+  if (!connector || Number(position.executedQuantity || 0) <= 0) return
+  const direction = resolveLivePositionDirection(position)
+  if (!direction) {
+    pushStep(position, "reduction_rearm_direction_guard", false, `${reason}: invalid long/short direction`)
+    await savePosition(position)
+    return
+  }
+
+  const pending = position.pendingReduction
+  if (pending) {
+    const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+    if (authoritative.ok) {
+      const tolerance = Math.max(1e-12, pending.targetQuantity * 1e-8)
+      const targetReached = authoritative.quantity <= pending.targetQuantity + tolerance
+      const applied = applyReductionObservation(position, {
+        executionId: `${position.id}:poscounts:${pending.clientOrderId}`,
+        source: "poscounts_reduce",
+        status: targetReached ? "filled" : "partially_filled",
+        requestedQuantity: pending.requestedQuantity,
+        reportedFilledQuantity: 0,
+        previouslyAppliedQuantity: pending.appliedFilledQuantity,
+        authoritativeQuantity: authoritative.quantity,
+        price: Number(
+          authoritative.position?.markPrice ??
+          authoritative.position?.entryPrice ??
+          position.markPrice ??
+          position.averageExecutionPrice ??
+          position.entryPrice ??
+          0,
+        ),
+        orderId: pending.orderId,
+        clientOrderId: pending.clientOrderId,
+        setKeys: pending.targetMemberKeys,
+        setRatios: pending.targetSetRatios,
+      })
+      pending.appliedFilledQuantity = applied.cumulativeApplied
+      if (
+        targetReached ||
+        applied.cumulativeApplied >= pending.requestedQuantity * (1 - 1e-8)
+      ) {
+        position.pendingReduction = undefined
+      } else {
+        position.pendingReduction = pending
+      }
+    } else {
+      pushStep(
+        position,
+        "reduction_rearm_snapshot_unavailable",
+        false,
+        `${reason}: protecting intended remainder ${pending.targetQuantity}`,
+      )
+    }
+  }
+
+  const retainedQuantity = position.pendingReduction
+    ? Math.min(
+        Number(position.executedQuantity || 0),
+        Math.max(0, Number(position.pendingReduction.targetQuantity || 0)),
+      )
+    : Number(position.executedQuantity || 0)
+  position.stopLossLastArmedAt = undefined
+  position.takeProfitLastArmedAt = undefined
+  await updateProtectionOrders(
+    connector,
+    position,
+    reason,
+    null,
+    {
+      allowPendingReduction: true,
+      quantityOverride: retainedQuantity,
+    },
+  ).catch((error) => {
+    pushStep(
+      position,
+      "reduction_rearm_failed",
+      false,
+      error instanceof Error ? error.message : String(error),
+    )
+  })
+  await savePosition(position)
+}
+
 async function reduceCombinedPosCountPosition(
   connectionId: string,
   position: LivePosition,
@@ -1989,6 +2261,12 @@ async function reduceCombinedPosCountPosition(
   const initialQuantity = Number(position.executedQuantity || 0)
   const initialDelta = resolveCombinedPosCountDelta(initialQuantity, targetQuantity)
   if (initialDelta.action !== "reduce") return position
+  const direction = resolveLivePositionDirection(position)
+  if (!direction) {
+    pushStep(position, "poscounts_direction_guard", false, "No explicit long/short direction; reduction blocked")
+    await savePosition(position)
+    return position
+  }
   if (targetQuantity <= 0 || initialDelta.quantity >= initialQuantity * (1 - 1e-8)) {
     return (await closeLivePosition(
       connectionId,
@@ -2043,8 +2321,8 @@ async function reduceCombinedPosCountPosition(
   try {
     const fresh = await readLivePositionSnapshot(getRedisClient(), connectionId, position.id)
     if (fresh) Object.assign(position, fresh)
-    const direction: "long" | "short" = position.direction === "short" ? "short" : "long"
     const side: "buy" | "sell" = direction === "long" ? "sell" : "buy"
+    const hadPendingReduction = !!position.pendingReduction
 
     // Recover/reconcile an earlier reduce submission before considering a new
     // order. This is the durable multi-cycle/idempotency barrier.
@@ -2089,6 +2367,7 @@ async function reduceCombinedPosCountPosition(
           position.pendingReduction = pending
           pushStep(position, "poscounts_reduce_wait", true, `clientOrderId=${pending.clientOrderId}; authoritative order state pending`)
           await savePosition(position)
+          await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_tracking_wait")
           return position
         }
         pending.absenceConfirmations = Number(pending.absenceConfirmations || 0) + 1
@@ -2096,6 +2375,7 @@ async function reduceCombinedPosCountPosition(
         if (!targetReached && pending.absenceConfirmations < 2) {
           position.pendingReduction = pending
           await savePosition(position)
+          await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_absence_wait")
           return position
         }
         position.pendingReduction = undefined
@@ -2107,10 +2387,29 @@ async function reduceCombinedPosCountPosition(
         position.pendingReduction = pending
         pushStep(position, "poscounts_reduce_wait", true, `order=${pending.orderId || pending.clientOrderId} status=${status}; no duplicate submitted`)
         await savePosition(position)
+        await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_active_wait")
         return position
       }
       position.pendingReduction = undefined
       await savePosition(position)
+    }
+
+    const beforeBarrierDelta = resolveCombinedPosCountDelta(
+      Number(position.executedQuantity || 0),
+      targetQuantity,
+    )
+    if (beforeBarrierDelta.action !== "reduce") {
+      position.accumulatedSetKeys = [...new Set(targetMemberKeys)]
+      position.posCountsSetQuantities = allocatePositionSetQuantities(
+        position,
+        Number(position.executedQuantity || 0),
+        targetMemberKeys,
+      )
+      await savePosition(position)
+      if (hadPendingReduction) {
+        await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_already_reconciled")
+      }
+      return position
     }
 
     if (!await settleControlOrdersBeforeQuantityMutation(connector, position, "poscounts_reduce")) {
@@ -2124,6 +2423,7 @@ async function reduceCombinedPosCountPosition(
       position.accumulatedSetKeys = [...new Set(targetMemberKeys)]
       position.posCountsSetQuantities = allocatePositionSetQuantities(position, currentQuantity, targetMemberKeys)
       await savePosition(position)
+      await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_changed_during_barrier")
       return position
     }
 
@@ -2168,9 +2468,10 @@ async function reduceCombinedPosCountPosition(
       }
     }
     if (orderId && position.pendingReduction) position.pendingReduction.orderId = String(orderId)
-    if (!response?.success || !orderId) {
+    if (response?.success === false || !orderId) {
       pushStep(position, "poscounts_target_reduce", false, `${response?.error || "submission unconfirmed"}; durable clientOrderId retained`)
       await savePosition(position)
+      await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_unconfirmed")
       return position
     }
 
@@ -2209,6 +2510,7 @@ async function reduceCombinedPosCountPosition(
 
     if (!terminal) {
       pushStep(position, "poscounts_reduce_wait", true, `orderId=${orderId}; partial=${applied.cumulativeApplied}/${pending.requestedQuantity}`)
+      await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_partial_wait")
       return position
     }
 
@@ -2218,6 +2520,19 @@ async function reduceCombinedPosCountPosition(
       pushStep(position, "poscounts_partial_rearm", false, error instanceof Error ? error.message : String(error))
     })
     await savePosition(position)
+    return position
+  } catch (error) {
+    pushStep(
+      position,
+      "poscounts_reduce_error",
+      false,
+      error instanceof Error ? error.message : String(error),
+    )
+    try {
+      await reconcilePendingReductionAndRearm(connector, position, "poscounts_reduce_error_rearm")
+    } catch {
+      await savePosition(position).catch(() => undefined)
+    }
     return position
   } finally {
     stopLease()
@@ -2357,12 +2672,80 @@ async function reconcileCombinedPosCountTarget(
   return existing
 }
 
+/**
+ * An accepted/unconfirmed market accumulation must never leave the already
+ * open quantity without protection. Refresh the venue quantity first, apply
+ * any exact fill that is already visible, then arm SL/TP for that canonical
+ * quantity while retaining the durable pending order when its final state is
+ * still unknown. The normal reconcile loop repeats this after a later fill.
+ */
+async function reconcilePendingAccumulationAndRearm(
+  connector: any,
+  position: LivePosition,
+  reason: string,
+): Promise<void> {
+  if (!connector || Number(position.executedQuantity || 0) <= 0) return
+  const direction = resolveLivePositionDirection(position)
+  if (!direction) {
+    pushStep(position, "accumulation_rearm_direction_guard", false, `${reason}: invalid long/short direction`)
+    await savePosition(position)
+    return
+  }
+
+  const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
+  if (authoritative.ok) {
+    const entryPrice = Number(
+      authoritative.position?.entryPrice ??
+      authoritative.position?.avgPrice ??
+      authoritative.position?.averagePrice ??
+      position.averageExecutionPrice ??
+      position.entryPrice ??
+      0,
+    ) || 0
+    await reconcileAuthoritativeExchangeQuantity(position, authoritative.quantity, entryPrice)
+  } else {
+    // The last pre-submit snapshot was authoritative and the persisted local
+    // quantity is therefore the minimum quantity known to exist. Protect it
+    // immediately; the pending order remains durable and the next canonical
+    // sync expands protection if the exchange later confirms an added fill.
+    pushStep(
+      position,
+      "accumulation_rearm_snapshot_unavailable",
+      false,
+      `${reason}: protecting last confirmed quantity ${Number(position.executedQuantity || 0)}`,
+    )
+  }
+
+  position.stopLossLastArmedAt = undefined
+  position.takeProfitLastArmedAt = undefined
+  await updateProtectionOrders(
+    connector,
+    position,
+    reason,
+    null,
+    { allowPendingAccumulation: true },
+  ).catch((error) => {
+    pushStep(
+      position,
+      "accumulation_rearm_failed",
+      false,
+      error instanceof Error ? error.message : String(error),
+    )
+  })
+  await savePosition(position)
+}
+
 async function reconcileAuthoritativeExchangeQuantity(
   position: LivePosition,
   exchangeQuantity: number,
   exchangeEntryPrice: number,
 ): Promise<boolean> {
   if (!Number.isFinite(exchangeQuantity) || exchangeQuantity < 0) return false
+  const direction = resolveLivePositionDirection(position)
+  if (!direction) {
+    pushStep(position, "exchange_quantity_direction_guard", false, "Authoritative quantity ignored: direction is invalid")
+    return false
+  }
   const before = Number(position.executedQuantity || 0)
   const tolerance = Math.max(1e-12, Math.max(before, exchangeQuantity) * 1e-8)
   if (Math.abs(before - exchangeQuantity) <= tolerance) return false
@@ -2399,6 +2782,23 @@ async function reconcileAuthoritativeExchangeQuantity(
   position.submissionState = "confirmed"
 
   if (pending && exactAdded > 0) {
+    // A venue quantity increase is authoritative proof that the durable
+    // accumulation was both accepted and filled. Count it exactly once per
+    // direction even after a crash/restart replay, without inventing a second
+    // position for a Block/DCA/default adjustment.
+    await recordPositionAdjustmentProgression(
+      position.connectionId,
+      position,
+      "placed",
+      pending.clientOrderId,
+    )
+    await recordPositionAdjustmentProgression(
+      position.connectionId,
+      position,
+      "filled",
+      pending.clientOrderId,
+      exactAdded * Number(exchangeEntryPrice || position.averageExecutionPrice || position.entryPrice || 0),
+    )
     position.accumulatedSetKeys = pending.combinedPosCounts
       ? [...new Set((pending.accumulatedSetKeys || []).map(String).filter(Boolean))]
       : [...new Set([...(position.accumulatedSetKeys || []), ...(pending.setKey ? [pending.setKey] : [])])]
@@ -2435,7 +2835,7 @@ async function reconcileAuthoritativeExchangeQuantity(
         filledAt: Date.now(),
       })
       position.dcaTakeProfitPrice = calculateDcaTakeProfitPrice({
-        direction: position.direction || "long",
+        direction,
         profile,
         initialEntryPrice: position.initialEntryPrice || position.entryPrice,
         averageEntryPrice: position.averageExecutionPrice,
@@ -3633,7 +4033,8 @@ function ratchetManualTrailingStop(pos: LivePosition): boolean {
     return false
   }
 
-  const direction: "long" | "short" = pos.direction === "short" ? "short" : "long"
+  const direction = resolveLivePositionDirection(pos)
+  if (!direction) return false
   const candidate = direction === "long"
     ? markPrice * (1 - distancePct / 100)
     : markPrice * (1 + distancePct / 100)
@@ -3659,7 +4060,8 @@ function findCrossedProtectionTrigger(
   referencePrice: number,
 ): { leg: "StopLoss" | "TakeProfit"; triggerPrice: number; expectedSide: string } | null {
   if (!Number.isFinite(referencePrice) || referencePrice <= 0) return null
-  const direction = pos.direction === "short" ? "short" : "long"
+  const direction = resolveLivePositionDirection(pos)
+  if (!direction) return null
 
   if (Number.isFinite(desiredSl) && desiredSl > 0) {
     if (direction === "long" && desiredSl >= referencePrice) {
@@ -3693,7 +4095,8 @@ async function closeIfProtectionTriggerAlreadyCrossed(
   const crossed = findCrossedProtectionTrigger(pos, desiredSl, desiredTp, referencePrice)
   if (!crossed) return false
 
-  const direction = pos.direction === "short" ? "short" : "long"
+  const direction = resolveLivePositionDirection(pos)
+  if (!direction) return false
   const detail =
     `${crossed.leg} trigger already crossed for ${pos.symbol} ${direction}: ` +
     `trigger=${crossed.triggerPrice} must be ${crossed.expectedSide} reference=${referencePrice}; forcing close instead of placing invalid protection order`
@@ -3860,10 +4263,27 @@ async function updateProtectionOrders(
   // Pass `null`/omit to skip verification (legacy callers that only
   // want price/qty-drift reconciliation pay no extra REST cost).
   liveOrderIds?: Set<string> | null,
+  options: {
+    allowPendingAccumulation?: boolean
+    allowPendingReduction?: boolean
+    quantityOverride?: number
+  } = {},
 ): Promise<{ changed: boolean; slPlaced: boolean; tpPlaced: boolean }> {
   const result = { changed: false, slPlaced: false, tpPlaced: false }
   if (!connector) return result
-  const effectiveQty = pos.executedQuantity > 0 ? pos.executedQuantity : (pos.quantity ?? 0)
+  const direction = resolveLivePositionDirection(pos)
+  if (!direction) {
+    pos.statusReason = "protection_blocked_invalid_direction"
+    pushStep(pos, "protection_direction_guard", false, "No explicit long/short direction; no control order was changed")
+    return result
+  }
+  pos.direction = direction
+  pos.side ??= direction
+  const rawEffectiveQty = pos.executedQuantity > 0 ? pos.executedQuantity : (pos.quantity ?? 0)
+  const requestedOverride = Number(options.quantityOverride)
+  const effectiveQty = Number.isFinite(requestedOverride) && requestedOverride > 0
+    ? Math.min(rawEffectiveQty, requestedOverride)
+    : rawEffectiveQty
   if (effectiveQty <= 0) return result
 
   // ─── CRITICAL GUARD: Skip SL/TP placement if position closed externally ───
@@ -3892,8 +4312,8 @@ async function updateProtectionOrders(
     pos.status === "closing" ||
     pos.status === "closing_partial" ||
     pos.pendingSystemAction ||
-    pos.pendingReduction ||
-    pos.pendingAccumulation ||
+    (pos.pendingReduction && options.allowPendingReduction !== true) ||
+    (pos.pendingAccumulation && options.allowPendingAccumulation !== true) ||
     pos.pendingQuantityMutation
   ) {
     pushStep(
@@ -4733,7 +5153,11 @@ export async function executeLivePosition(
 
   try {
     // ── Step 1: Pre-flight validation ──────────────�������──────────────────────
-    if (!realPosition.direction || !realPosition.symbol) {
+    const requestedDirection = String(realPosition.direction || "").trim().toLowerCase()
+    if (
+      !String(realPosition.symbol || "").trim() ||
+      (requestedDirection !== "long" && requestedDirection !== "short")
+    ) {
       livePosition.status = "rejected"
       livePosition.statusReason = `Invalid inputs: symbol=${realPosition.symbol}, direction=${realPosition.direction}`
       pushStep(livePosition, "preflight", false, livePosition.statusReason)
@@ -6541,7 +6965,11 @@ async function settleControlOrdersBeforeSystemClose(
     }
   }
 
-  const direction: "long" | "short" = position.direction === "short" ? "short" : "long"
+  const direction = resolveLivePositionDirection(position)
+  if (!direction) {
+    pushStep(position, "system_close_direction_guard", false, "No explicit long/short direction; control and close orders blocked")
+    return { decision: "wait", detail: "invalid position direction" }
+  }
   const initialQuantity = Math.max(0, Number(position.executedQuantity || position.quantity || 0))
   const observations: Array<{ id: string; source: PartialOrderExecutionSource; order: any }> = []
   const unresolvedClientIds = new Set<string>()
@@ -6738,6 +7166,11 @@ async function settleControlOrdersBeforeQuantityMutation(
     pushStep(position, "quantity_change_wait", true, `${reason}: system action is still coordinated`)
     return false
   }
+  const direction = resolveLivePositionDirection(position)
+  if (!direction) {
+    pushStep(position, "quantity_change_direction_guard", false, `${reason}: invalid position direction`)
+    return false
+  }
 
   const quantityBefore = Math.max(0, Number(
     position.pendingQuantityMutation?.quantityBefore ?? position.executedQuantity ?? 0,
@@ -6824,7 +7257,6 @@ async function settleControlOrdersBeforeQuantityMutation(
   action.updatedAt = Date.now()
   position.pendingQuantityMutation = action
 
-  const direction: "long" | "short" = position.direction === "short" ? "short" : "long"
   const authoritative = await fetchAuthoritativeOpenQuantity(connector, position.symbol, direction)
   if (!authoritative.ok) {
     pushStep(position, "quantity_change_wait", true, `${reason}: authoritative position snapshot unavailable`)
@@ -6920,6 +7352,22 @@ export async function closeLivePosition(
   try {
     const position = await readLivePositionSnapshot(client, connectionId, livePositionId)
     if (!position) return null
+    const resolvedDirection = resolveLivePositionDirection(position)
+    if (!resolvedDirection) {
+      position.statusReason = "exchange_close_blocked_invalid_direction"
+      pushStep(position, "close_direction_guard", false, "No explicit long/short direction; no exchange close or control cancellation was sent")
+      await savePosition(position)
+      await logProgressionEvent(
+        connectionId,
+        "live_trading",
+        "error",
+        `Blocked exchange close for ${position.symbol}: missing explicit long/short direction`,
+        { positionId: position.id, symbol: position.symbol },
+      ).catch(() => {})
+      return position
+    }
+    position.direction = resolvedDirection
+    position.side ??= resolvedDirection
     const originalStatus = position.status
 
     const locked = await acquirePositionMutationLock(connectionId, livePositionId, lockId)
@@ -7203,8 +7651,7 @@ export async function closeLivePosition(
     // A partial or lagging snapshot remains `closing_partial` and is recovered
     // by the durable pendingSystemAction on the next cycle.
     if (exchangeCloseSuccess && exchangeCloseReason === "ok" && exchangeConnector) {
-      const direction: "long" | "short" = position.direction === "short" ? "short" : "long"
-      const authoritative = await fetchAuthoritativeOpenQuantity(exchangeConnector, position.symbol, direction)
+      const authoritative = await fetchAuthoritativeOpenQuantity(exchangeConnector, position.symbol, resolvedDirection)
       if (authoritative.ok) {
         const action = position.pendingSystemAction
         const executionId = `${position.id}:system-close:${action?.clientOrderId || action?.orderId || action?.token || "unknown"}`
@@ -7680,6 +8127,10 @@ async function checkAndForceCloseOnSltpCross(
 ): Promise<"sl_hit" | "tp_hit" | "close_unconfirmed" | null> {
   if (!Number.isFinite(markPrice) || markPrice <= 0) return null
   if (pos.executedQuantity <= 0) return null
+  const direction = resolveLivePositionDirection(pos)
+  if (!direction) return null
+  pos.direction = direction
+  pos.side ??= direction
   
   // CRITICAL GUARD: Skip positions that are already closed or have a close reason set.
   // Without this guard, multiple concurrent reconciliation paths call this function
@@ -8050,9 +8501,40 @@ export async function reconcileLivePositions(
 
     // Load live-positions index (single Redis round-trip, filtered in-memory)
     const allOpen = await getLivePositions(connectionId)
-    const openPositions = allOpen.filter(
-      (p) => p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "closing" || p.status === "closing_partial",
-    )
+    const invalidDirectionPositions: LivePosition[] = []
+    const openPositions = allOpen.filter((p) => {
+      const isOpen =
+        p.status === "open" ||
+        p.status === "filled" ||
+        p.status === "partially_filled" ||
+        p.status === "placed" ||
+        p.status === "pending_fill" ||
+        p.status === "placed_unconfirmed" ||
+        p.status === "closing" ||
+        p.status === "closing_partial"
+      if (!isOpen) return false
+      const direction = resolveLivePositionDirection(p)
+      if (!direction) {
+        p.statusReason = "reconcile_blocked_invalid_direction"
+        pushStep(p, "reconcile_direction_guard", false, "No explicit long/short direction; venue mutations are blocked")
+        invalidDirectionPositions.push(p)
+        return false
+      }
+      p.direction = direction
+      p.side ??= direction
+      return true
+    })
+    if (invalidDirectionPositions.length > 0) {
+      await Promise.all(invalidDirectionPositions.map((position) => savePosition(position).catch(() => {})))
+      summary.errors += invalidDirectionPositions.length
+      await logProgressionEvent(
+        connectionId,
+        "live_trading",
+        "error",
+        `${invalidDirectionPositions.length} live position(s) quarantined: missing explicit long/short direction`,
+        { positionIds: invalidDirectionPositions.map((position) => position.id) },
+      ).catch(() => {})
+    }
     if (openPositions.length === 0 && !reconcileMode) {
       await orphanCloseExpiredPositions(connectionId, exchangeConnector, summary)
       return summary
@@ -8102,8 +8584,12 @@ export async function reconcileLivePositions(
       if (!sym) continue
       const size = parseFloat(String(ep.size ?? ep.positionAmt ?? ep.quantity ?? "0"))
       if (!size) continue
-      const sideRaw = String(ep.side ?? ep.positionSide ?? (size > 0 ? "long" : "short")).toLowerCase()
-      const direction: "long" | "short" = (sideRaw.includes("short") || sideRaw === "sell") ? "short" : "long"
+      const direction = normalizeExchangePositionDirection(ep.positionSide, ep.side, size)
+      if (!direction) {
+        console.warn(`${LOG_PREFIX} [reconcile] skipped exchange position ${sym}: direction is not authoritative`)
+        summary.errors++
+        continue
+      }
       exchangeMap.set(`${sym}|${direction}`, ep)
     }
 
@@ -8289,7 +8775,7 @@ export async function reconcileLivePositions(
               pushStep(pos, "reconcile_fill_detected", true, pos.statusReason)
               pos.updatedAt = Date.now()
               justFilled = true
-              await recordFillCountersOnce(connectionId, pos, pos.symbol, pos.direction || pos.side || "long")
+              await recordFillCountersOnce(connectionId, pos, pos.symbol, pos.direction!)
             }
 
             if (pos.orderId) {
@@ -8309,7 +8795,7 @@ export async function reconcileLivePositions(
                   pos.updatedAt = Date.now()
                   if (!justFilled) {
                     justFilled = true
-                    await recordFillCountersOnce(connectionId, pos, pos.symbol, pos.direction || pos.side || "long")
+                    await recordFillCountersOnce(connectionId, pos, pos.symbol, pos.direction!)
                   }
                 } else if (statusLower === "cancelled" || statusLower === "canceled" || statusLower === "rejected") {
                   pos.status = "rejected"
@@ -8436,7 +8922,7 @@ export async function reconcileLivePositions(
                   pushStep(pos, "entry_submission_absent", false, pos.statusReason)
                   await savePosition(pos)
                   if (pos.liveLockToken) {
-                    await releaseLock(connectionId, pos.symbol, pos.direction || "long", pos.liveLockToken).catch(() => false)
+                    await releaseLock(connectionId, pos.symbol, pos.direction!, pos.liveLockToken).catch(() => false)
                   }
                   delta.updated++
                   return delta
@@ -8547,7 +9033,7 @@ export async function reconcileLivePositions(
             client.expire(closedIndexKey, 30 * 24 * 60 * 60).catch(() => {}),
           ]
           if (pos.liveLockToken) {
-            writes.push(releaseLock(connectionId, pos.symbol, pos.direction || "long", pos.liveLockToken).catch(() => false))
+            writes.push(releaseLock(connectionId, pos.symbol, pos.direction!, pos.liveLockToken).catch(() => false))
           }
           if (!alreadyMoved) {
             // Counter increments are the ONLY ops that must be deduped across
@@ -8887,7 +9373,30 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         }
       } catch { /* best-effort self-heal */ }
     }
-    const allOpen = allOpenRaw.filter((p) => !TERMINAL_SYNC_STATUSES.has(String(p.status)))
+    const invalidDirectionPositions: LivePosition[] = []
+    const allOpen = allOpenRaw.filter((p) => {
+      if (TERMINAL_SYNC_STATUSES.has(String(p.status))) return false
+      const direction = resolveLivePositionDirection(p)
+      if (!direction) {
+        p.statusReason = "sync_blocked_invalid_direction"
+        pushStep(p, "sync_direction_guard", false, "No explicit long/short direction; venue mutations are blocked")
+        invalidDirectionPositions.push(p)
+        return false
+      }
+      p.direction = direction
+      p.side ??= direction
+      return true
+    })
+    if (invalidDirectionPositions.length > 0) {
+      await Promise.all(invalidDirectionPositions.map((position) => savePosition(position).catch(() => {})))
+      await logProgressionEvent(
+        connectionId,
+        "live_trading",
+        "error",
+        `${invalidDirectionPositions.length} live position(s) quarantined during sync: invalid direction`,
+        { positionIds: invalidDirectionPositions.map((position) => position.id) },
+      ).catch(() => {})
+    }
 
     const openPositions = allOpen.filter(
       (p) => p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "closing" || p.status === "closing_partial",
@@ -9097,11 +9606,12 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
           // above) so we don't issue another Redis round-trip here.
           for (const p of recentlyClosedForOrphanGuard) {
             const closedAgoMs = Date.now() - (p.closedAt || 0)
+            const direction = resolveLivePositionDirection(p)
             // Within 60 s of close — exchange may still report position
             // until the close fill propagates. After that window treat
             // it as truly closed and orphan-adopt if it reappears.
-            if (closedAgoMs < 60_000) {
-              trackedKeys.add(`${normSym(p.symbol)}|${p.direction}`)
+            if (closedAgoMs < 60_000 && direction) {
+              trackedKeys.add(`${normSym(p.symbol)}|${direction}`)
             }
           }
 
@@ -9126,15 +9636,17 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
               const rawSym = String(exPos.symbol || (exPos as any).Symbol || "")
               const sym = normSym(rawSym)
               if (!sym) continue
-              const size = Math.abs(parseFloat(String(exPos.size ?? (exPos as any).positionAmt ?? exPos.quantity ?? "0")))
+              const signedSize = parseFloat(String(exPos.size ?? (exPos as any).positionAmt ?? exPos.quantity ?? "0"))
+              const size = Math.abs(signedSize)
               if (!size || size <= 0) continue
               // Determine direction. BingX returns "LONG"/"SHORT" in
               // `positionSide`; some venues encode via signed size.
-              const sideRaw = String(
-                exPos.side ?? (exPos as any).positionSide ?? (parseFloat(String(exPos.size ?? "0")) < 0 ? "short" : "long"),
-              ).toLowerCase()
-              const direction: "long" | "short" =
-                sideRaw.includes("short") || sideRaw === "sell" ? "short" : "long"
+              const direction = normalizeExchangePositionDirection(
+                (exPos as any).positionSide,
+                exPos.side,
+                signedSize,
+              )
+              if (!direction) continue
 
               const mapKey = `${sym}|${direction}`
               if (trackedKeys.has(mapKey)) continue // already tracked
@@ -9262,13 +9774,15 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
     for (const ep of exchangePositions) {
       const sym = normSym(String(ep.symbol || (ep as any).Symbol || ""))
       if (!sym) continue
-      const size = Math.abs(parseFloat(String(ep.size ?? (ep as any).positionAmt ?? ep.quantity ?? "0")))
+      const signedSize = parseFloat(String(ep.size ?? (ep as any).positionAmt ?? ep.quantity ?? "0"))
+      const size = Math.abs(signedSize)
       if (!size || size <= 0) continue // skip flat / zero-size entries
-      const sideRaw = String(
-        ep.side ?? (ep as any).positionSide ?? (parseFloat(String(ep.size ?? "0")) < 0 ? "short" : "long"),
-      ).toLowerCase()
-      const direction: "long" | "short" =
-        sideRaw.includes("short") || sideRaw === "sell" ? "short" : "long"
+      const direction = normalizeExchangePositionDirection(
+        (ep as any).positionSide,
+        ep.side,
+        signedSize,
+      )
+      if (!direction) continue
       exchangeMap.set(`${sym}|${direction}`, ep)
     }
 
@@ -9486,7 +10000,10 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
                 pushStep(position, "entry_submission_absent", false, position.statusReason)
                 await savePosition(position)
                 if (position.liveLockToken) {
-                  await releaseLock(connectionId, position.symbol, position.direction || "long", position.liveLockToken).catch(() => false)
+                  const direction = resolveLivePositionDirection(position)
+                  if (direction) {
+                    await releaseLock(connectionId, position.symbol, direction, position.liveLockToken).catch(() => false)
+                  }
                 }
                 return
               }
@@ -9509,7 +10026,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
             position.statusReason = `confirmed_position_fallback: sync saw exchange position size=${exSize} avg=${position.averageExecutionPrice}`
             position.updatedAt = Date.now()
             justFilled = true
-            await recordFillCountersOnce(connectionId, position, position.symbol, position.direction || position.side || "long")
+            await recordFillCountersOnce(connectionId, position, position.symbol, position.direction || position.side || "")
             pushStep(position, "sync_fill_detected", true, position.statusReason)
           }
         }
@@ -9554,7 +10071,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
               pushStep(position, "sync_fill_detected", true, position.statusReason)
               position.updatedAt = Date.now()
               justFilled = true
-              await recordFillCountersOnce(connectionId, position, position.symbol, position.direction || position.side || "long")
+              await recordFillCountersOnce(connectionId, position, position.symbol, position.direction || position.side || "")
               logProgressionEvent(
                 connectionId,
                 "live_trading",
@@ -10113,8 +10630,8 @@ export async function syncLiveFromPseudo(
     }
 
     const symbol = String(pseudoPos?.symbol || "").toUpperCase()
-    const side: "long" | "short" = pseudoPos?.side === "short" ? "short" : "long"
-    if (!symbol) return
+    const side = normalizeLiveTradeDirection(pseudoPos?.direction, pseudoPos?.side)
+    if (!symbol || !side) return
 
     const rawSL = Number(pseudoPos?.stoploss_ratio ?? pseudoPos?.stopLoss ?? NaN)
     const rawTP = Number(pseudoPos?.takeprofit_factor ?? pseudoPos?.takeProfit ?? NaN)
@@ -10158,8 +10675,7 @@ export async function syncLiveFromPseudo(
 
     const livePositions = await getLivePositions(connectionId)
     const slotMatches = livePositions.filter((p: any) => {
-      const liveSide: "long" | "short" =
-        p.direction === "short" || p.side === "short" ? "short" : "long"
+      const liveSide = resolveLivePositionDirection(p)
       return String(p.symbol || "").toUpperCase() === symbol && liveSide === side && p.status !== "closed"
     })
     if (slotMatches.length === 0) return
@@ -10227,8 +10743,8 @@ export async function syncLiveFromPseudo(
             const fill = Number(livePos.averageExecutionPrice || livePos.entryPrice || 0)
             // Ensure fill price is valid and positive before using in division
             if (Number.isFinite(fill) && fill > 0) {
-              const liveSide: "long" | "short" =
-                livePos.direction === "short" ? "short" : "long"
+              const liveSide = resolveLivePositionDirection(livePos)
+              if (!liveSide) continue
               // Distance from fill to the trailing stop expressed as a
               // percentage of the fill price (always positive regardless of
               // direction — the trailing machine ensures trailingStopPrice
@@ -10348,6 +10864,10 @@ export const __liveStageTest = {
   computeDesiredProtectionPrices,
   settleControlOrdersBeforeSystemClose,
   settleControlOrdersBeforeQuantityMutation,
+  reconcilePendingAccumulationAndRearm,
+  reconcileAuthoritativeExchangeQuantity,
+  sweepOrphanProtectionOrders,
+  updateProtectionOrders,
   readAbsoluteProtectionPrices(pos: LivePosition) {
     return computeDesiredProtectionPrices(pos)
   },

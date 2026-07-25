@@ -40,14 +40,17 @@ describe("production installation and Kilo deployment contract", () => {
   })
 
   it("keeps the canonical host installer fail-closed and complete", async () => {
-    const [installer, envExample, remoteRoute, vercelConfig] = await Promise.all([
+    const [installer, bootstrap, updater, serviceControl, envExample, remoteRoute, vercelConfig] = await Promise.all([
       readFile(path.join(process.cwd(), "scripts/install.sh"), "utf8"),
+      readFile(path.join(process.cwd(), "scripts/bootstrap-install.sh"), "utf8"),
+      readFile(path.join(process.cwd(), "scripts/update.sh"), "utf8"),
+      readFile(path.join(process.cwd(), "scripts/service-control.sh"), "utf8"),
       readFile(path.join(process.cwd(), ".env.example"), "utf8"),
       readFile(path.join(process.cwd(), "app/api/install/remote/route.ts"), "utf8"),
       readFile(path.join(process.cwd(), "vercel.json"), "utf8"),
     ])
     expect(installer).toContain('PNPM_VERSION="10.28.1"')
-    expect(installer).toContain('DEFAULT_PROJECT_NAME="ctsv$PACKAGE_VERSION"')
+    expect(installer).toContain('DEFAULT_PROJECT_NAME="cts-kn"')
     expect(installer).toContain("--reinstall")
     expect(installer).toContain("ensure_python_pip_and_bun")
     expect(installer).toContain('local pnpm_version=""')
@@ -64,6 +67,14 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain('upsert_env JWT_SECRET "$(openssl rand -hex 32)"')
     expect(installer).toContain("$APP_NAME-scheduler.service")
     expect(installer).toContain("scripts/run-minute-scheduler.mjs")
+    expect(installer).toContain("CTS_INSTALLED_ENV_FILE=$ENV_FILE")
+    expect(installer).toContain("CTS_INSTALLED_ENV_MANAGED=$ENV_FILE_MANAGED")
+    expect(installer).toContain("use bootstrap-install.sh to relocate it safely")
+    expect(installer).toContain('rm -f -- "$RUNTIME_DIR/managed-service-user"')
+    expect(installer).not.toContain("DEFAULT_PASSWORD")
+    expect(installer).not.toContain("chpasswd")
+    expect(installer).toContain("CTS_INSTALLED_REPOSITORY=$repository")
+    expect(installer).toContain("CTS_INSTALLED_BRANCH=$branch")
     expect(installer).toContain('for runtime_path in node_modules .next scripts package.json')
     expect(installer).toContain('scripts/run-with-env.mjs" "$ENV_FILE" --')
     expect(installer).toContain(
@@ -73,6 +84,28 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain("Site identity changed after restart")
     expect(installer).not.toContain("FORCE_LIVE=1")
     expect(installer).toContain("ADMIN_SECRET,\nCRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET")
+    expect(bootstrap).toContain('INSTALL_DIR="$INSTALL_SEARCH_ROOT/$PROJECT_NAME"')
+    expect(bootstrap).toContain("/opt/*/.cts-runtime/install-values.env")
+    expect(bootstrap).toContain("discover_saved_install_from_name")
+    expect(bootstrap).toContain('[[ "$runtime" == "systemd" || "$runtime" == "auto" ]]')
+    expect(bootstrap).toContain('[[ "$runtime" == "pm2" || "$runtime" == "auto" ]]')
+    expect(bootstrap).toContain("--resolve-only")
+    expect(bootstrap).toContain("cts-rollback")
+    expect(bootstrap).toContain("restoring the previous verified checkout")
+    expect(bootstrap).toContain('[[ "$ENV_FILE" == "$INSTALL_DIR"/* ]]')
+    expect(bootstrap).toContain('"$INSTALL_DIR/.cts-runtime/managed-service-user"')
+    expect(updater).toContain("Tracked local changes exist; refusing to overwrite them")
+    expect(updater).toContain("discover_saved_install_from_name")
+    expect(updater).toContain("-e .cts-runtime/ -e .next/ -e .env.production.local -e data/ -e logs/")
+    expect(updater).toContain("restoring the previous source, environment, and install identity")
+    expect(updater).toContain('git -C "$PROJECT_ROOT" checkout -B "$PREVIOUS_BRANCH" "$PREVIOUS_HEAD"')
+    expect(updater).toContain('bash "$PROJECT_ROOT/scripts/install.sh"')
+    expect(serviceControl).toContain("Requested service '$APP_NAME' does not match installed service '$SAVED_APP_NAME'")
+    expect(serviceControl).toContain("Missing authoritative install metadata")
+    expect(serviceControl).toContain('runuser -u "$SERVICE_USER"')
+    expect(serviceControl).toContain('run_root awk -v wanted="$key"')
+    expect(installer).toContain('run_root install -m 0600 -- "$tmp" "$ENV_FILE"')
+    expect(installer).toContain('run_root systemctl disable --now "$APP_NAME-redis"')
     expect(remoteRoute).toContain('command -v base64 >/dev/null 2>&1 || fatal "base64 is required')
     expect(remoteRoute).toContain('`UserKnownHostsFile=${knownHostsPath}`')
     expect(envExample).not.toMatch(/^[A-Z_][A-Z0-9_]*=[^\r\n#]*[ \t]+#/m)
@@ -88,8 +121,234 @@ describe("production installation and Kilo deployment contract", () => {
     expect(execFileSync("git", ["ls-files", "--stage"], { cwd: process.cwd(), encoding: "utf8" }))
       .not.toMatch(/^160000 /m)
     execFileSync("bash", ["-n", "scripts/install.sh"], { cwd: process.cwd() })
+    execFileSync("bash", ["-n", "scripts/bootstrap-install.sh"], { cwd: process.cwd() })
+    execFileSync("bash", ["-n", "scripts/update.sh"], { cwd: process.cwd() })
+    execFileSync("bash", ["-n", "scripts/service-control.sh"], { cwd: process.cwd() })
     expect(await readFile(path.join(process.cwd(), "pnpm-workspace.yaml"), "utf8"))
       .toContain("onlyBuiltDependencies:")
+  })
+
+  it("resolves bootstrap, update, and service controls from one saved identity", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "cts-install-resolution-"))
+    const scriptsDir = path.join(root, "scripts")
+    const runtimeDir = path.join(root, ".cts-runtime")
+    try {
+      await Promise.all([
+        mkdir(scriptsDir, { recursive: true }),
+        mkdir(runtimeDir, { recursive: true }),
+      ])
+      await Promise.all([
+        writeFile(path.join(root, "package.json"), '{"name":"cts-install-fixture"}\n'),
+        writeFile(path.join(scriptsDir, "install.sh"), "#!/usr/bin/env bash\nexit 0\n"),
+        writeFile(
+          path.join(runtimeDir, "install-values.env"),
+          [
+            "CTS_INSTALLED_APP_NAME=desk-alpha",
+            "CTS_INSTALLED_APP_PORT=4312",
+            "CTS_INSTALLED_RUNTIME=systemd",
+            "CTS_INSTALLED_SERVICE_USER=desk-alpha",
+            `CTS_INSTALLED_PROJECT_ROOT=${root}`,
+            `CTS_INSTALLED_ENV_FILE=${root}/config/production.env`,
+            "CTS_INSTALLED_ENV_MANAGED=0",
+            "CTS_INSTALLED_REPOSITORY=https://github.com/mxssnx-creator/CTS-K-N.git",
+            "CTS_INSTALLED_BRANCH=release/stable",
+            "",
+          ].join("\n"),
+        ),
+      ])
+      for (const script of ["bootstrap-install.sh", "update.sh", "service-control.sh"]) {
+        await writeFile(
+          path.join(scriptsDir, script),
+          await readFile(path.join(process.cwd(), "scripts", script), "utf8"),
+        )
+        await chmod(path.join(scriptsDir, script), 0o755)
+      }
+      execFileSync("git", ["init", "-q"], { cwd: root })
+      execFileSync("git", ["remote", "add", "origin", "https://github.com/mxssnx-creator/CTS-K-N.git"], { cwd: root })
+
+      const bootstrap = execFileSync("bash", [
+        path.join(scriptsDir, "bootstrap-install.sh"),
+        "--dir",
+        root,
+        "--resolve-only",
+      ], { encoding: "utf8" })
+      expect(bootstrap).toContain(`CTS_INSTALL_DIR=${root}`)
+      expect(bootstrap).toContain("CTS_PROJECT_NAME=desk-alpha")
+      expect(bootstrap).toContain("CTS_PORT=4312")
+      expect(bootstrap).toContain(`CTS_ENV_FILE=${root}/config/production.env`)
+
+      const update = execFileSync("bash", [
+        path.join(scriptsDir, "update.sh"),
+        "--resolve-only",
+      ], { encoding: "utf8" })
+      expect(update).toContain(`CTS_INSTALL_DIR=${root}`)
+      expect(update).toContain("CTS_PROJECT_NAME=desk-alpha")
+      expect(update).toContain("CTS_BRANCH=release/stable")
+
+      const control = execFileSync("bash", [
+        path.join(scriptsDir, "service-control.sh"),
+        "resolve",
+      ], { encoding: "utf8" })
+      expect(control).toContain("CTS_INSTALLED_APP_NAME=desk-alpha")
+      expect(control).toContain("CTS_INSTALLED_APP_PORT=4312")
+      expect(control).toContain(`CTS_INSTALLED_ENV_FILE=${root}/config/production.env`)
+      expect(control).toContain("CTS_INSTALLED_ENV_MANAGED=0")
+
+      expect(() => execFileSync("bash", [
+        path.join(scriptsDir, "service-control.sh"),
+        "start",
+        "--name",
+        "wrong-service",
+      ], { encoding: "utf8", stdio: "pipe" })).toThrow()
+      expect(() => execFileSync("bash", [
+        path.join(scriptsDir, "service-control.sh"),
+        "resolve",
+        "--port",
+        "9999",
+      ], { encoding: "utf8", stdio: "pipe" })).toThrow()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it("resolves name-only PM2 installs whose directory differs from the service name", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "cts-install-name-resolution-"))
+    const searchRoot = path.join(root, "opt")
+    const installRoot = path.join(searchRoot, "custom-checkout")
+    const launcherScripts = path.join(root, "launcher", "scripts")
+    const installScripts = path.join(installRoot, "scripts")
+    const runtimeDir = path.join(installRoot, ".cts-runtime")
+    try {
+      await Promise.all([
+        mkdir(launcherScripts, { recursive: true }),
+        mkdir(installScripts, { recursive: true }),
+        mkdir(runtimeDir, { recursive: true }),
+      ])
+      await Promise.all([
+        writeFile(path.join(installRoot, "package.json"), '{"name":"cts-install-fixture"}\n'),
+        writeFile(path.join(installScripts, "install.sh"), "#!/usr/bin/env bash\nexit 0\n"),
+        writeFile(
+          path.join(runtimeDir, "install-values.env"),
+          [
+            "CTS_INSTALLED_APP_NAME=desk-pm2",
+            "CTS_INSTALLED_APP_PORT=4512",
+            "CTS_INSTALLED_RUNTIME=pm2",
+            "CTS_INSTALLED_SERVICE_USER=desk-pm2",
+            `CTS_INSTALLED_PROJECT_ROOT=${installRoot}`,
+            `CTS_INSTALLED_ENV_FILE=${installRoot}/config/production.env`,
+            "CTS_INSTALLED_ENV_MANAGED=1",
+            "CTS_INSTALLED_REPOSITORY=https://github.com/mxssnx-creator/CTS-K-N.git",
+            "CTS_INSTALLED_BRANCH=main",
+            "",
+          ].join("\n"),
+        ),
+      ])
+      for (const script of ["bootstrap-install.sh", "update.sh"]) {
+        await writeFile(
+          path.join(launcherScripts, script),
+          await readFile(path.join(process.cwd(), "scripts", script), "utf8"),
+        )
+        await chmod(path.join(launcherScripts, script), 0o755)
+      }
+      execFileSync("git", ["init", "-q"], { cwd: installRoot })
+      execFileSync("git", ["remote", "add", "origin", "https://github.com/mxssnx-creator/CTS-K-N.git"], {
+        cwd: installRoot,
+      })
+      const env = { ...process.env, CTS_INSTALL_SEARCH_ROOT: searchRoot }
+
+      const bootstrap = execFileSync("bash", [
+        path.join(launcherScripts, "bootstrap-install.sh"),
+        "--name",
+        "desk-pm2",
+        "--resolve-only",
+      ], { encoding: "utf8", env })
+      expect(bootstrap).toContain(`CTS_INSTALL_DIR=${installRoot}`)
+      expect(bootstrap).toContain("CTS_PROJECT_NAME=desk-pm2")
+      expect(bootstrap).toContain("CTS_RUNTIME=pm2")
+
+      const update = execFileSync("bash", [
+        path.join(launcherScripts, "update.sh"),
+        "--name",
+        "desk-pm2",
+        "--resolve-only",
+      ], { encoding: "utf8", env })
+      expect(update).toContain(`CTS_INSTALL_DIR=${installRoot}`)
+      expect(update).toContain("CTS_PROJECT_NAME=desk-pm2")
+      expect(update).toContain("CTS_RUNTIME=pm2")
+
+      const duplicateRuntime = path.join(searchRoot, "duplicate", ".cts-runtime")
+      await mkdir(duplicateRuntime, { recursive: true })
+      await writeFile(
+        path.join(duplicateRuntime, "install-values.env"),
+        "CTS_INSTALLED_APP_NAME=desk-pm2\n",
+      )
+      expect(() => execFileSync("bash", [
+        path.join(launcherScripts, "bootstrap-install.sh"),
+        "--name",
+        "desk-pm2",
+        "--resolve-only",
+      ], { encoding: "utf8", env, stdio: "pipe" })).toThrow()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects direct identity relocation and service control without saved metadata", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "cts-install-identity-"))
+    const scriptsDir = path.join(root, "scripts")
+    const runtimeDir = path.join(root, ".cts-runtime")
+    const externalEnv = path.join(root, "..", `${path.basename(root)}.production.env`)
+    try {
+      await Promise.all([
+        mkdir(scriptsDir, { recursive: true }),
+        mkdir(runtimeDir, { recursive: true }),
+      ])
+      await Promise.all([
+        writeFile(path.join(root, "package.json"), '{"name":"cts-install-fixture","version":"0.1.1"}\n'),
+        writeFile(path.join(scriptsDir, "install.sh"), await readFile(path.join(process.cwd(), "scripts/install.sh"), "utf8")),
+        writeFile(path.join(scriptsDir, "service-control.sh"), await readFile(path.join(process.cwd(), "scripts/service-control.sh"), "utf8")),
+        writeFile(
+          path.join(runtimeDir, "install-values.env"),
+          [
+            "CTS_INSTALLED_APP_NAME=desk-beta",
+            "CTS_INSTALLED_APP_PORT=4412",
+            "CTS_INSTALLED_RUNTIME=systemd",
+            "CTS_INSTALLED_SERVICE_USER=desk-beta",
+            `CTS_INSTALLED_PROJECT_ROOT=${root}`,
+            `CTS_INSTALLED_ENV_FILE=${externalEnv}`,
+            "CTS_INSTALLED_ENV_MANAGED=0",
+            "",
+          ].join("\n"),
+        ),
+      ])
+      await Promise.all([
+        chmod(path.join(scriptsDir, "install.sh"), 0o755),
+        chmod(path.join(scriptsDir, "service-control.sh"), 0o755),
+      ])
+
+      expect(() => execFileSync("bash", [
+        path.join(scriptsDir, "install.sh"),
+        "--runtime",
+        "pm2",
+        "--non-interactive",
+      ], { encoding: "utf8", stdio: "pipe" })).toThrow()
+      expect(() => execFileSync("bash", [
+        path.join(scriptsDir, "install.sh"),
+        "--uninstall",
+        "--env-file",
+        path.join(root, "wrong.env"),
+        "--non-interactive",
+      ], { encoding: "utf8", stdio: "pipe" })).toThrow()
+
+      await rm(path.join(runtimeDir, "install-values.env"))
+      expect(() => execFileSync("bash", [
+        path.join(scriptsDir, "service-control.sh"),
+        "resolve",
+      ], { encoding: "utf8", stdio: "pipe" })).toThrow()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(externalEnv, { force: true })
+    }
   })
 
   it("passes the executable Kilo/Cloudflare static preflight", () => {
@@ -319,6 +578,20 @@ describe("production installation and Kilo deployment contract", () => {
     })
   })
 
+  it("keeps remote and host installer path validation identical", async () => {
+    const response = await POST(remoteRequest({
+      mode: "preflight",
+      host: "localhost",
+      username: "root",
+      installDir: "/opt/unsafe directory",
+    }))
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      error: "Install directory must be a normalized, dedicated absolute directory",
+    })
+  })
+
   it("fails closed on Kilo when no long-lived remote-install owner is configured", async () => {
     process.env.CTS_DEPLOYMENT_RUNTIME = "kilo-deploy"
     delete process.env.REMOTE_INSTALL_OWNER_URL
@@ -444,9 +717,9 @@ printf '[fixture-installer] canonical contract passed\\n'
       await expect(installResponse.json()).resolves.toMatchObject({
         success: true,
         mode: "install",
-        projectName: "ctsv0.1.1",
-        service: "ctsv0.1.1",
-        schedulerService: "ctsv0.1.1-scheduler",
+        projectName: "cts-kn",
+        service: "cts-kn",
+        schedulerService: "cts-kn-scheduler",
       })
       const installArgs = await readFile(capture, "utf8")
       expect(installArgs).toContain("--runtime auto")

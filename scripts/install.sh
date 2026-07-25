@@ -2,9 +2,8 @@
 # CTS-K-N production installer for Ubuntu/Debian, RHEL/Fedora/Amazon Linux,
 # and compatible long-lived Linux servers.
 #
-# The installer is intentionally fail-closed:
+# The installer is intentionally deterministic:
 #   - production always uses a network Redis backend (local or external)
-#   - real trading is never enabled automatically
 #   - exactly one app process and one portable 60-second scheduler are installed
 #   - the complete test/build/migration/deployment contract runs before success
 #   - an existing production build is restored when build or verification fails
@@ -30,6 +29,7 @@ APP_NAME_SET=0
 APP_PORT_SET=0
 RUNTIME_SET=0
 SERVICE_USER_SET=0
+ENV_FILE_SET=0
 CREATE_SERVICE_USER=0
 PREFLIGHT_ONLY=0
 SKIP_SYSTEM_PACKAGES=0
@@ -41,17 +41,20 @@ REDIS_MODE="auto"
 REINSTALL=0
 UNINSTALL=0
 SERVICE_USER_CREATED=0
-DEFAULT_PASSWORD="${CTS_INSTALL_DEFAULT_PASSWORD:-00998877}"
 SAVED_APP_NAME=""
 SAVED_APP_PORT=""
 SAVED_RUNTIME=""
 SAVED_SERVICE_USER=""
+SAVED_PROJECT_ROOT=""
+SAVED_ENV_FILE=""
+SAVED_ENV_MANAGED=""
+ENV_FILE_MANAGED="${CTS_PRESERVE_ENV_MANAGED:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PACKAGE_VERSION="$(node -p "require('$PROJECT_ROOT/package.json').version" 2>/dev/null || true)"
 [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || PACKAGE_VERSION="0.1.1"
-DEFAULT_PROJECT_NAME="ctsv$PACKAGE_VERSION"
+DEFAULT_PROJECT_NAME="cts-kn"
 [[ -n "$APP_NAME" ]] || APP_NAME="$DEFAULT_PROJECT_NAME"
 [[ -n "$APP_PORT" ]] || APP_PORT="3002"
 ENV_FILE="$PROJECT_ROOT/.env.production.local"
@@ -60,12 +63,17 @@ BUILD_BACKUP=""
 ROLLBACK_ARMED=0
 ROLLBACK_RUNNING=0
 
+valid_absolute_path() {
+  [[ "$1" =~ ^/[a-zA-Z0-9._/-]+$ && "$1" != "/" && "$1" != *"//"* \
+    && "$1" != *"/./"* && "$1" != */. && "$1" != *"/../"* && "$1" != */.. ]]
+}
+
 usage() {
   cat <<'EOF'
 Usage: bash scripts/install.sh [PROJECT_NAME] [PORT] [options]
 
 Options:
-  --name NAME             Service/process name (default: ctsv<package-version>)
+  --name NAME             Stable service/process name (default: cts-kn)
   --project-name NAME     Alias for --name; also accepted as first positional argument
   --port PORT             HTTP port (default: 3002)
   --runtime MODE          auto, systemd, or pm2 (default: auto)
@@ -97,7 +105,7 @@ while [[ $# -gt 0 ]]; do
     --runtime) RUNTIME="${2:?--runtime requires a value}"; RUNTIME_SET=1; shift 2 ;;
     --service-user) SERVICE_USER="${2:?--service-user requires a value}"; SERVICE_USER_SET=1; shift 2 ;;
     --create-service-user) CREATE_SERVICE_USER=1; shift ;;
-    --env-file) ENV_FILE="${2:?--env-file requires a value}"; shift 2 ;;
+    --env-file) ENV_FILE="${2:?--env-file requires a value}"; ENV_FILE_SET=1; shift 2 ;;
     --seed-env-file) SEED_ENV_FILE="${2:?--seed-env-file requires a value}"; shift 2 ;;
     --preflight-only) PREFLIGHT_ONLY=1; shift ;;
     --skip-system-packages) SKIP_SYSTEM_PACKAGES=1; shift ;;
@@ -147,6 +155,18 @@ load_installed_defaults() {
           SERVICE_USER="$value"
         fi
         ;;
+      CTS_INSTALLED_PROJECT_ROOT)
+        SAVED_PROJECT_ROOT="$value"
+        ;;
+      CTS_INSTALLED_ENV_FILE)
+        SAVED_ENV_FILE="$value"
+        if (( ENV_FILE_SET == 0 )) && [[ "$value" == /* && "$value" != "/" ]]; then
+          ENV_FILE="$value"
+        fi
+        ;;
+      CTS_INSTALLED_ENV_MANAGED)
+        [[ "$value" =~ ^[01]$ ]] && SAVED_ENV_MANAGED="$value"
+        ;;
     esac
   done < "$values_file"
 }
@@ -154,6 +174,12 @@ load_installed_defaults() {
 # A repeat install must target the already installed service even when the
 # operator omits --name/--port. Explicit command-line values always win.
 load_installed_defaults
+
+if [[ "$ENV_FILE" != /* ]]; then
+  ENV_FILE="$PROJECT_ROOT/${ENV_FILE#./}"
+fi
+valid_absolute_path "$PROJECT_ROOT" || fatal "Project root must be a safe absolute non-root path"
+valid_absolute_path "$ENV_FILE" || fatal "Environment file must be a safe absolute non-root path"
 
 # A directory is authoritative on removal. Never let a typo in --name stop an
 # unrelated service and then remove this checkout; use its recorded runtime
@@ -165,12 +191,52 @@ if (( UNINSTALL == 1 )) && [[ -n "$SAVED_APP_NAME" && "$SAVED_APP_NAME" =~ ^[a-z
   if (( APP_PORT_SET == 1 )) && [[ "$SAVED_APP_PORT" =~ ^[0-9]+$ ]] && [[ "$APP_PORT" != "$SAVED_APP_PORT" ]]; then
     fatal "--port '$APP_PORT' does not match the installed CTS port '$SAVED_APP_PORT' in $PROJECT_ROOT"
   fi
+  if (( RUNTIME_SET == 1 )) && [[ "$SAVED_RUNTIME" =~ ^(systemd|pm2)$ ]] && [[ "$RUNTIME" != "$SAVED_RUNTIME" ]]; then
+    fatal "--runtime '$RUNTIME' does not match the installed runtime '$SAVED_RUNTIME' in $PROJECT_ROOT"
+  fi
+  if (( SERVICE_USER_SET == 1 )) && [[ "$SAVED_SERVICE_USER" =~ ^[a-zA-Z_][a-zA-Z0-9._-]*$ ]] \
+    && [[ "$SERVICE_USER" != "$SAVED_SERVICE_USER" ]]; then
+    fatal "--service-user '$SERVICE_USER' does not match the installed service user '$SAVED_SERVICE_USER' in $PROJECT_ROOT"
+  fi
+  if (( ENV_FILE_SET == 1 )) && [[ "$SAVED_ENV_FILE" == /* && "$SAVED_ENV_FILE" != "/" ]] \
+    && [[ "$ENV_FILE" != "$SAVED_ENV_FILE" ]]; then
+    fatal "--env-file '$ENV_FILE' does not match the installed environment '$SAVED_ENV_FILE' in $PROJECT_ROOT"
+  fi
   APP_NAME="$SAVED_APP_NAME"
   [[ "$SAVED_APP_PORT" =~ ^[0-9]+$ ]] && APP_PORT="$SAVED_APP_PORT"
   [[ "$SAVED_RUNTIME" =~ ^(systemd|pm2)$ ]] && RUNTIME="$SAVED_RUNTIME"
   [[ "$SAVED_SERVICE_USER" =~ ^[a-zA-Z_][a-zA-Z0-9._-]*$ ]] && SERVICE_USER="$SAVED_SERVICE_USER"
+  [[ "$SAVED_ENV_FILE" == /* && "$SAVED_ENV_FILE" != "/" ]] && ENV_FILE="$SAVED_ENV_FILE"
 elif (( APP_NAME_SET == 1 )) && [[ -n "$SAVED_APP_NAME" && "$SAVED_APP_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ && "$APP_NAME" != "$SAVED_APP_NAME" ]]; then
   fatal "This checkout is installed as '$SAVED_APP_NAME'; use bootstrap-install.sh to replace it under a new --name safely"
+fi
+
+if (( UNINSTALL == 0 )); then
+  if (( RUNTIME_SET == 1 )) && [[ "$SAVED_RUNTIME" =~ ^(systemd|pm2)$ ]] && [[ "$RUNTIME" != "$SAVED_RUNTIME" ]]; then
+    fatal "This checkout uses runtime '$SAVED_RUNTIME'; use bootstrap-install.sh to replace it with '$RUNTIME' safely"
+  fi
+  if (( SERVICE_USER_SET == 1 )) && [[ "$SAVED_SERVICE_USER" =~ ^[a-zA-Z_][a-zA-Z0-9._-]*$ ]] \
+    && [[ "$SERVICE_USER" != "$SAVED_SERVICE_USER" ]]; then
+    fatal "This checkout uses service user '$SAVED_SERVICE_USER'; use bootstrap-install.sh to replace it safely"
+  fi
+  if (( ENV_FILE_SET == 1 )) && [[ "$SAVED_ENV_FILE" == /* && "$SAVED_ENV_FILE" != "/" ]] \
+    && [[ "$ENV_FILE" != "$SAVED_ENV_FILE" ]]; then
+    fatal "This checkout uses environment '$SAVED_ENV_FILE'; use bootstrap-install.sh to relocate it safely"
+  fi
+fi
+if [[ -n "$ENV_FILE_MANAGED" && ! "$ENV_FILE_MANAGED" =~ ^[01]$ ]]; then
+  fatal "CTS_PRESERVE_ENV_MANAGED must be 0 or 1"
+fi
+if [[ -z "$ENV_FILE_MANAGED" && -n "$SAVED_ENV_MANAGED" ]]; then
+  ENV_FILE_MANAGED="$SAVED_ENV_MANAGED"
+fi
+# Own new environment files, but never adopt an existing external file
+# implicitly. The recorded marker makes update/uninstall behavior deterministic.
+if [[ -z "$ENV_FILE_MANAGED" ]]; then
+  if [[ -e "$ENV_FILE" ]]; then ENV_FILE_MANAGED=0; else ENV_FILE_MANAGED=1; fi
+fi
+if [[ -n "$SAVED_PROJECT_ROOT" && "$SAVED_PROJECT_ROOT" != "$PROJECT_ROOT" ]]; then
+  fatal "Saved installation root '$SAVED_PROJECT_ROOT' does not match this checkout '$PROJECT_ROOT'"
 fi
 
 if (( UNINSTALL == 0 && NON_INTERACTIVE == 0 )) && [[ -t 0 ]]; then
@@ -251,8 +317,19 @@ uninstall_project() {
     run_as_service pm2 save --force >/dev/null 2>&1 || true
   fi
 
+  local external_env_preserved=0 external_env_removed=0
+  if [[ "$ENV_FILE" != "$PROJECT_ROOT"/* && -e "$ENV_FILE" ]]; then
+    if (( ENV_FILE_MANAGED == 1 )); then
+      run_root rm -f -- "$ENV_FILE"
+      external_env_removed=1
+    else
+      external_env_preserved=1
+    fi
+  fi
+
   # Redis, Node, pnpm, and Bun can be shared by unrelated applications. Remove
-  # only CTS units/data and leave the shared runtime and external Redis keys intact.
+  # only CTS units/data and leave shared runtimes, externally managed
+  # environment files, and external Redis keys intact.
   cd /
   run_root rm -rf -- "$PROJECT_ROOT"
   if (( remove_service_user == 1 )) && id "$SERVICE_USER" >/dev/null 2>&1; then
@@ -260,6 +337,11 @@ uninstall_project() {
     ok "Removed CTS-managed service user: $SERVICE_USER"
   fi
   ok "Removed CTS services and checkout: $PROJECT_ROOT"
+  if (( external_env_preserved == 1 )); then
+    info "Externally managed environment file preserved: $ENV_FILE"
+  elif (( external_env_removed == 1 )); then
+    ok "Removed installer-managed environment file: $ENV_FILE"
+  fi
   info "Shared Bun/Node/Redis installations and externally managed Redis data were preserved."
 }
 
@@ -418,10 +500,7 @@ ensure_service_user() {
     [[ -x "$nologin_shell" ]] || nologin_shell="/bin/false"
     run_root useradd --system --create-home --home-dir "/var/lib/$APP_NAME" --shell "$nologin_shell" "$SERVICE_USER"
     SERVICE_USER_CREATED=1
-    if command -v chpasswd >/dev/null 2>&1; then
-      printf '%s:%s\n' "$SERVICE_USER" "$DEFAULT_PASSWORD" | run_root chpasswd
-    fi
-    ok "Created system service user: $SERVICE_USER"
+    ok "Created locked, non-login system service user: $SERVICE_USER"
   else
     ok "Service user exists: $SERVICE_USER"
   fi
@@ -524,7 +603,7 @@ ensure_python_pip_and_bun() {
 
 env_value() {
   local key="$1" value
-  value="$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
+  value="$("${SUDO[@]}" grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
   value="${value%\"}"; value="${value#\"}"
   value="${value%\'}"; value="${value#\'}"
   printf '%s' "$value"
@@ -535,10 +614,10 @@ upsert_env() {
   [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || fatal "Invalid environment key: $key"
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || fatal "Environment values cannot contain newlines"
   tmp="$(mktemp "$RUNTIME_DIR/env.XXXXXX")"
-  grep -Ev "^${key}=" "$ENV_FILE" 2>/dev/null > "$tmp" || true
+  "${SUDO[@]}" grep -Ev "^${key}=" "$ENV_FILE" 2>/dev/null > "$tmp" || true
   printf '%s=%s\n' "$key" "$value" >> "$tmp"
-  mv "$tmp" "$ENV_FILE"
-  chmod 600 "$ENV_FILE"
+  run_root install -m 0600 -- "$tmp" "$ENV_FILE"
+  rm -f -- "$tmp"
 }
 
 configure_cpu_parallelism() {
@@ -599,7 +678,13 @@ placeholder_secret() {
 configure_environment_and_redis() {
   section "Durable Redis and production environment"
   mkdir -p "$RUNTIME_DIR" "$PROJECT_ROOT/logs" "$PROJECT_ROOT/data/redis"
-  touch "$ENV_FILE"; chmod 600 "$ENV_FILE"
+  local env_parent
+  env_parent="$(dirname "$ENV_FILE")"
+  if [[ ! -d "$env_parent" ]]; then
+    run_root install -d -m 0750 -- "$env_parent"
+  fi
+  [[ -f "$ENV_FILE" ]] || run_root install -m 0600 /dev/null "$ENV_FILE"
+  run_root chmod 600 "$ENV_FILE"
   merge_seed_env
 
   local redis_url redis_service_mode="external" inline_snapshot=0
@@ -812,7 +897,11 @@ install_dependencies_and_validate() {
 }
 
 write_install_values() {
-  local values_file="$RUNTIME_DIR/install-values.env"
+  local values_file="$RUNTIME_DIR/install-values.env" repository branch
+  repository="$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null || true)"
+  branch="$(git -C "$PROJECT_ROOT" symbolic-ref --short HEAD 2>/dev/null || true)"
+  repository="${repository//$'\n'/}"
+  branch="${branch//$'\n'/}"
   cat > "$values_file" <<EOF
 # Generated by scripts/install.sh. Used by scripts/start.sh and scripts/stop.sh.
 CTS_INSTALLED_APP_NAME=$APP_NAME
@@ -820,10 +909,17 @@ CTS_INSTALLED_APP_PORT=$APP_PORT
 CTS_INSTALLED_RUNTIME=$RUNTIME
 CTS_INSTALLED_SERVICE_USER=$SERVICE_USER
 CTS_INSTALLED_PROJECT_ROOT=$PROJECT_ROOT
+CTS_INSTALLED_ENV_FILE=$ENV_FILE
+CTS_INSTALLED_ENV_MANAGED=$ENV_FILE_MANAGED
+CTS_INSTALLED_REPOSITORY=$repository
+CTS_INSTALLED_BRANCH=$branch
 EOF
   if (( SERVICE_USER_CREATED == 1 )); then
     printf '%s\n' "$SERVICE_USER" > "$RUNTIME_DIR/managed-service-user"
     chmod 600 "$RUNTIME_DIR/managed-service-user"
+  elif [[ -f "$RUNTIME_DIR/managed-service-user" ]] \
+    && [[ "$(<"$RUNTIME_DIR/managed-service-user")" != "$SERVICE_USER" ]]; then
+    rm -f -- "$RUNTIME_DIR/managed-service-user"
   fi
   chmod 640 "$values_file"
   ok "Recorded installed service defaults in $values_file"
@@ -931,6 +1027,12 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF
+  else
+    # A previous npm-Redis install may have left an enabled compatibility unit.
+    # Remove that exact app-owned unit when the new environment uses native or
+    # external Redis so it cannot return after reboot and contend for the port.
+    run_root systemctl disable --now "$APP_NAME-redis" 2>/dev/null || true
+    run_root rm -f -- "$redis_unit"
   fi
 
   run_root tee "$app_unit" >/dev/null <<EOF
@@ -1148,4 +1250,4 @@ ok "Schema, shared Redis, one-minute continuity, engine ownership, and restart p
 info "App service: $APP_NAME"
 info "Scheduler service: $APP_NAME-scheduler"
 info "Environment: $ENV_FILE (owner/group-only; secrets were not printed)"
-info "Real exchange order placement is enabled by default. The hardened live gates are open systemwide."
+info "Live exchange support is installed; actual order placement requires valid server environment credentials and the explicit live-control state."

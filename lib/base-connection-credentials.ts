@@ -26,33 +26,6 @@ const ENV_ALIASES: Record<BaseConnectionId, { key: string[]; secret: string[] }>
   },
 }
 
-/**
- * Static fallback credentials for local/production testing when environment
- * variables are not configured. These MUST be replaced with real exchange
- * credentials before any live trading.
- *
- * To disable statically-injected credentials at runtime, set
- * `DISABLE_STATIC_CONNECTION_CREDENTIALS=1`.
- */
-const STATIC_FALLBACK_CREDENTIALS: Record<BaseConnectionId, BaseConnectionCredentials> = {
-  "bingx-x01": {
-    apiKey: "0HTardBdI36NCTGLu0EA6A91IjwdObw7gpxyvdKn8bgA3abe19X7ZKTN3sUy3rOHuKBSA2YQKdg9AuBONQ",
-    apiSecret: "XsuPgjzQtFY5YzZYuaPlAxFwt6Ljq6jf8PmFD76TVhSD6v82KtzdWszI3nFBm5pePufhSQGuHj23UM48ZqYKQ",
-  },
-  "bybit-x03": {
-    apiKey: "dev_bybit_api_key_0001",
-    apiSecret: "dev_bybit_api_secret_0001",
-  },
-  "pionex-x01": {
-    apiKey: "dev_pionex_api_key_0001",
-    apiSecret: "dev_pionex_api_secret_0001",
-  },
-  "orangex-x01": {
-    apiKey: "dev_orangex_api_key_0001",
-    apiSecret: "dev_orangex_api_secret_0001",
-  },
-}
-
 export function getBaseConnectionCredentials(id: BaseConnectionId): BaseConnectionCredentials {
   const aliases = ENV_ALIASES[id]
   const envKey = readEnvByAliases(aliases.key)
@@ -62,15 +35,9 @@ export function getBaseConnectionCredentials(id: BaseConnectionId): BaseConnecti
     return { apiKey: envKey, apiSecret: envSecret }
   }
 
-  if (process.env.DISABLE_STATIC_CONNECTION_CREDENTIALS === "1") {
-    return { apiKey: "", apiSecret: "" }
-  }
-
-  const staticCreds = STATIC_FALLBACK_CREDENTIALS[id]
-  if (staticCreds) {
-    return staticCreds
-  }
-
+  // Credentials are intentionally never embedded in source or client-side
+  // connection templates. Missing server environment values keep live
+  // execution fail-closed while simulated mode remains independently usable.
   return { apiKey: "", apiSecret: "" }
 }
 
