@@ -26,6 +26,9 @@ export async function POST() {
         results[connectionId] = "Skipped: no credentials found in env or database"
         return
       }
+      const hasValidCredentials = effectiveKey.length >= 10 && effectiveSecret.length >= 10
+      const banned = /PLACEHOLDER|00998877|^test|^replace_me|^[•*]+$/i
+      const credentialsSafe = hasValidCredentials && !banned.test(effectiveKey) && !banned.test(effectiveSecret)
       const dashboardEnabled = existing?.is_enabled_dashboard === "1" || existing?.is_enabled_dashboard === "true"
       await client.hset(`connection:${connectionId}`, {
         api_key: effectiveKey,
@@ -36,18 +39,29 @@ export async function POST() {
         is_testnet: (existing?.is_testnet as string) || "0",
         is_active_inserted: (existing?.is_active_inserted as string) || "0",
         is_enabled: (existing?.is_enabled as string) || "1",
-        is_enabled_dashboard: (existing?.is_enabled_dashboard as string) || "0",
-        is_active: dashboardEnabled ? "1" : "0",
+        is_enabled_dashboard: credentialsSafe ? "1" : (existing?.is_enabled_dashboard as string) || "0",
+        is_active: credentialsSafe ? "1" : (dashboardEnabled ? "1" : "0"),
         connection_method: "library",
+        connection_library: "sdk",
+        ...(credentialsSafe
+          ? {
+              is_live_trade: "1",
+              live_trade_requested: "1",
+              live_trade_enabled: "1",
+            }
+          : {}),
         updated_at: new Date().toISOString(),
       })
       await client.sadd("connections", connectionId)
+      await client.sadd("connections:main:enabled", connectionId)
       await client.hset(`settings:connection:${connectionId}`, {
         api_key: effectiveKey,
         api_secret: effectiveSecret,
         updated_at: new Date().toISOString(),
       })
-      results[connectionId] = "Credentials injected successfully"
+      results[connectionId] = credentialsSafe
+        ? "Credentials injected and live trade enabled"
+        : "Credentials injected (live trade remains disabled: placeholder/invalid credentials)"
     }
 
     await injectForConnection("bingx-x01")
@@ -84,7 +98,7 @@ export async function GET() {
     }
     
     // Check which connections have credentials in database
-    const dbStatus: Record<string, boolean> = {}
+    const dbStatus: Record<string, { hasCredentials: boolean; liveTradeEnabled: boolean }> = {}
     for (const connId of ["bingx-x01", "pionex-x01", "orangex-x01"]) {
       const [conn, settingsConn] = await Promise.all([
         client.hgetall(`connection:${connId}`),
@@ -94,7 +108,13 @@ export async function GET() {
       const secret = conn?.api_secret || settingsConn?.api_secret || ""
       const hasKey = !!(key && key.length > 10)
       const hasSecret = !!(secret && secret.length > 10)
-      dbStatus[connId] = hasKey && hasSecret
+      const hasCredentials = hasKey && hasSecret
+      const banned = /PLACEHOLDER|00998877|^test|^replace_me|^[•*]+$/i
+      const liveTradeEnabled = hasCredentials
+        && !banned.test(key)
+        && !banned.test(secret)
+        && (conn?.is_live_trade === "1" || conn?.live_trade_requested === "1" || conn?.live_trade_enabled === "1")
+      dbStatus[connId] = { hasCredentials, liveTradeEnabled }
     }
     
     return NextResponse.json({
@@ -102,7 +122,8 @@ export async function GET() {
       predefined: predefinedStatus,
       database: dbStatus,
       availablePredefined: Object.entries(predefinedStatus).filter(([_, v]) => v).map(([k]) => k),
-      configuredInDb: Object.entries(dbStatus).filter(([_, v]) => v).map(([k]) => k),
+      configuredInDb: Object.entries(dbStatus).filter(([_, v]) => v.hasCredentials).map(([k]) => k),
+      liveTradeReady: Object.entries(dbStatus).filter(([_, v]) => v.liveTradeEnabled).map(([k]) => k),
     })
   } catch (error) {
     return NextResponse.json(

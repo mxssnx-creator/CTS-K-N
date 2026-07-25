@@ -61,6 +61,15 @@ async function initialize() {
   if (result?.success !== true) throw new Error(`System initialization failed: ${JSON.stringify(result)}`)
 }
 
+async function injectCredentials() {
+  try {
+    await request("/api/system/inject-credentials", { method: "POST", timeoutMs: 30_000 })
+    console.log("[Prod Init] Injected predefined base credentials from environment")
+  } catch (error) {
+    console.warn(`[Prod Init] Credential injection skipped or failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 async function waitForReadiness(maxAttempts = 45) {
   let last = null
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -102,7 +111,9 @@ async function main() {
   console.log(`[Prod Init] Target ${BASE_URL}`)
   await waitForHealth()
   await initialize()
+  await injectCredentials()
   const readiness = await waitForReadiness()
+  await injectCredentials()
   const core = await verifyCoreApis()
   if (Number(core.database?.schemaVersion) !== Number(readiness.migrations.current_version)) {
     throw new Error(`Database schema version mismatch: ${core.database?.schemaVersion} != ${readiness.migrations.current_version}`)

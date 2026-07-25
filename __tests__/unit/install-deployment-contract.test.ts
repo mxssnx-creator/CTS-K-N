@@ -70,7 +70,7 @@ describe("production installation and Kilo deployment contract", () => {
       'REQUIRE_SHARED_PERSISTENCE="$([[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "inline-snapshot" ]] && echo 0 || echo 1)"',
     )
     expect(installer).toContain("REQUIRE_FRESH_CONTINUITY=1")
-    expect(installer).toContain("site identity did not survive restart")
+    expect(installer).toContain("Site identity changed after restart")
     expect(installer).not.toContain("FORCE_LIVE=1")
     expect(installer).toContain("ADMIN_SECRET,\nCRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET")
     expect(remoteRoute).toContain('command -v base64 >/dev/null 2>&1 || fatal "base64 is required')

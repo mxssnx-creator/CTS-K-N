@@ -86,7 +86,24 @@ pull_latest() {
   cd "$PROJECT_ROOT"
   as_root git fetch --prune origin
   as_root git reset --hard origin/main
+
+  # Preserve install-values.env across a clean reset. service-control.sh
+  # depends on .cts-runtime/install-values.env; git clean -fdx removes
+  # untracked runtime metadata unless we explicitly preserve it.
+  local preserve_dir="$PROJECT_ROOT/.cts-runtime"
+  local preserved_values=""
+  if [[ -r "$preserve_dir/install-values.env" ]]; then
+    preserved_values="$(mktemp)"
+    cp "$preserve_dir/install-values.env" "$preserved_values"
+  fi
+
   as_root git clean -fdx
+
+  if [[ -n "$preserved_values" && -r "$preserved_values" ]]; then
+    mkdir -p "$preserve_dir"
+    cp "$preserved_values" "$preserve_dir/install-values.env"
+    rm -f "$preserved_values"
+  fi
   log_ok "Code updated"
 }
 

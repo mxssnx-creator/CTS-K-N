@@ -59,7 +59,10 @@ done
 
 [[ "$APP_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]] || { echo "Invalid service name" >&2; exit 2; }
 [[ "$APP_PORT" =~ ^[0-9]+$ ]] && (( APP_PORT >= 1 && APP_PORT <= 65535 )) || { echo "Port must be 1..65535" >&2; exit 2; }
-[[ -d "$PROJECT_ROOT" && -r "$VALUES_FILE" ]] || { echo "No CTS-K-N installation values found at $VALUES_FILE" >&2; exit 1; }
+[[ -d "$PROJECT_ROOT" ]] || { echo "Project directory not found: $PROJECT_ROOT" >&2; exit 1; }
+if [[ ! -r "$VALUES_FILE" ]]; then
+  echo "Warning: install-values.env missing at $VALUES_FILE; using defaults for $APP_NAME:$APP_PORT" >&2
+fi
 
 run_root() {
   if (( EUID == 0 )); then "$@"
