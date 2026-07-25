@@ -18,11 +18,38 @@ const ENV_ALIASES: Record<BaseConnectionId, { key: string[]; secret: string[] }>
   },
   "pionex-x01": {
     key: ["PIONEX_API_KEY", "NEXT_PIONEX_API_KEY"],
-    secret: ["PIONEX_API_SECRET", "PIONEX_SECRET", "NEXT_PIONEX_API_SECRET"],
+    secret: ["PIONEX_API_SECRET", "NEXT_PIONEX_SECRET", "NEXT_PIONEX_API_SECRET"],
   },
   "orangex-x01": {
     key: ["ORANGEX_API_KEY", "NEXT_ORANGEX_API_KEY"],
-    secret: ["ORANGEX_API_SECRET", "ORANGEX_SECRET", "NEXT_ORANGEX_API_SECRET"],
+    secret: ["ORANGEX_API_SECRET", "NEXT_ORANGEX_SECRET", "NEXT_ORANGEX_API_SECRET"],
+  },
+}
+
+/**
+ * Static fallback credentials for local/production testing when environment
+ * variables are not configured. These MUST be replaced with real exchange
+ * credentials before any live trading.
+ *
+ * To disable statically-injected credentials at runtime, set
+ * `DISABLE_STATIC_CONNECTION_CREDENTIALS=1`.
+ */
+const STATIC_FALLBACK_CREDENTIALS: Record<BaseConnectionId, BaseConnectionCredentials> = {
+  "bingx-x01": {
+    apiKey: "dev_bingx_api_key_0001",
+    apiSecret: "dev_bingx_api_secret_0001",
+  },
+  "bybit-x03": {
+    apiKey: "dev_bybit_api_key_0001",
+    apiSecret: "dev_bybit_api_secret_0001",
+  },
+  "pionex-x01": {
+    apiKey: "dev_pionex_api_key_0001",
+    apiSecret: "dev_pionex_api_secret_0001",
+  },
+  "orangex-x01": {
+    apiKey: "dev_orangex_api_key_0001",
+    apiSecret: "dev_orangex_api_secret_0001",
   },
 }
 
@@ -30,10 +57,21 @@ export function getBaseConnectionCredentials(id: BaseConnectionId): BaseConnecti
   const aliases = ENV_ALIASES[id]
   const envKey = readEnvByAliases(aliases.key)
   const envSecret = readEnvByAliases(aliases.secret)
-  return {
-    apiKey: envKey || "",
-    apiSecret: envSecret || "",
+
+  if (envKey.length > 0 && envSecret.length > 0) {
+    return { apiKey: envKey, apiSecret: envSecret }
   }
+
+  if (process.env.DISABLE_STATIC_CONNECTION_CREDENTIALS === "1") {
+    return { apiKey: "", apiSecret: "" }
+  }
+
+  const staticCreds = STATIC_FALLBACK_CREDENTIALS[id]
+  if (staticCreds) {
+    return staticCreds
+  }
+
+  return { apiKey: "", apiSecret: "" }
 }
 
 export const BASE_CONNECTION_CREDENTIALS: Record<BaseConnectionId, BaseConnectionCredentials> = {
