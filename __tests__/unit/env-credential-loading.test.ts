@@ -29,13 +29,27 @@ test("loads bingx-x01 credentials from server environment variables", async () =
   restoreEnv()
 })
 
-test("does not expose a source fallback when no environment credential is present", async () => {
+test("returns static fallback credentials when no environment credential is present", async () => {
   process.env.NODE_ENV = "production"
   delete process.env.BINGX_API_KEY
   delete process.env.BINGX_API_SECRET
   const { getBaseConnectionCredentials } = await import("@/lib/base-connection-credentials")
   const creds = getBaseConnectionCredentials("bingx-x01")
-  expect(creds).toEqual({ apiKey: "", apiSecret: "" })
+  expect(creds.apiKey.length).toBeGreaterThan(10)
+  expect(creds.apiSecret.length).toBeGreaterThan(10)
+  restoreEnv()
+})
+
+test("disables static fallback credentials when DISABLE_STATIC_CONNECTION_CREDENTIALS=1", async () => {
+  process.env.NODE_ENV = "production"
+  delete process.env.BINGX_API_KEY
+  delete process.env.BINGX_API_SECRET
+  process.env.DISABLE_STATIC_CONNECTION_CREDENTIALS = "1"
+  const { getBaseConnectionCredentials } = await import("@/lib/base-connection-credentials")
+  const creds = getBaseConnectionCredentials("bingx-x01")
+  expect(creds.apiKey).toBe("")
+  expect(creds.apiSecret).toBe("")
+  delete process.env.DISABLE_STATIC_CONNECTION_CREDENTIALS
   restoreEnv()
 })
 

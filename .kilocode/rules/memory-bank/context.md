@@ -50,6 +50,9 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Fix: Production readiness check now accepts BASE_CONNECTION_CREDENTIALS static fallback for base connections whose Redis row lacks credentials, preventing live-trade enablement from failing when canonical connections rely on predefined creds
 - [x] Fix: `system:database:health` metadata mismatches in production readiness are now warnings instead of hard failures so fresh boots with unpopulated health hash can still start
 - [x] Fix: Missing `connection_settings:{id}` hash for active/main connections is now a warning instead of hard failure, allowing operators to enable connections before opening the settings dialog
+- [x] Fix: `env-credential-loading.test.ts` updated to match new static-fallback behavior (tests verify fallback is returned and `DISABLE_STATIC_CONNECTION_CREDENTIALS=1` suppresses it)
+- [x] Verified core production/live-trade tests pass: `main-live-trade-readiness.test.ts`, `env-credential-loading.test.ts`, `production-continuity.test.ts`
+- [x] Verified no new production test regressions were introduced; remaining test failures are pre-existing test-infrastructure issues unrelated to the readiness fixes
 - [ ] Verify production-mode live-trade UI navigation: Sidebar → Settings → Connections → bingx-x01 → enable Live Trade → /live-trading page shows positions, protection controls, trade history, and coordination counts correctly
 - [ ] Continue race-condition and stats/count coordination review across: live-stage save/close paths, progression snapshot writes, stats route counters, and client-side dashboard event coalescing
 
