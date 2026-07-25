@@ -2253,6 +2253,14 @@ export async function GET(
     // Sourced entirely from local Redis — the progression hash (counters) and
     // the closed-position archive written by the live-stage pipeline. No
     // exchange history calls required.
+    let profitFactor = 0
+    let profitFactorLast12 = 0
+    let profitFactorLast25 = 0
+    let profitFactorLast75 = 0
+    let winRate = 0
+    let winRateLast12 = 0
+    let winRateLast25 = 0
+    let winRateLast75 = 0
     {
       const livePlaced    = n(progHash.live_orders_placed_count)
       const liveFilled    = n(progHash.live_orders_filled_count)
@@ -2268,14 +2276,23 @@ export async function GET(
       const sampledClosed = sharedClosedParsed.slice(0, 200)
       const closedEval = evaluateClosedBatch(sampledClosed)
       const lastXClosed = aggregateLastXClosedPositions(sampledClosed, sampledClosed.length)
+      const last12Closed = aggregateLastXClosedPositions(sampledClosed, 12)
+      const last25Closed = aggregateLastXClosedPositions(sampledClosed, 25)
+      const last75Closed = aggregateLastXClosedPositions(sampledClosed, 75)
       const countSampled = closedEval.count
       const sumPnl = closedEval.sumPnl
       const avgHoldMin  = countSampled > 0 ? (closedEval.sumHoldMs / countSampled) / 60_000 : 0
       const avgPnl      = countSampled > 0 ? sumPnl / countSampled : 0
       const avgRoi      = lastXClosed.avgSignedR
-      const profitFactor = lastXClosed.profitFactor
+      profitFactor = lastXClosed.profitFactor
+      profitFactorLast12 = last12Closed.profitFactor
+      profitFactorLast25 = last25Closed.profitFactor
+      profitFactorLast75 = last75Closed.profitFactor
       const passRate   = livePlaced > 0 ? liveFilled / livePlaced : 0
-      const winRate    = lastXClosed.winRate
+      winRate    = lastXClosed.winRate
+      winRateLast12 = last12Closed.winRate
+      winRateLast25 = last25Closed.winRate
+      winRateLast75 = last75Closed.winRate
       const avgPosSize = countSampled > 0
         ? closedEval.sumVolumeUsd / countSampled
         : liveCreated > 0 ? liveVolumeUsd / liveCreated : 0
@@ -3009,6 +3026,18 @@ export async function GET(
           ),
           ordersPlaced: n(progHash.live_orders_placed_count),
           ordersFilled: n(progHash.live_orders_filled_count),
+          profitFactor: {
+            all:     Math.round(profitFactor * 1000) / 1000,
+            last12:  Math.round(profitFactorLast12 * 1000) / 1000,
+            last25:  Math.round(profitFactorLast25 * 1000) / 1000,
+            last75:  Math.round(profitFactorLast75 * 1000) / 1000,
+          },
+          winRate: {
+            all:    Math.round(winRate * 10) / 10,
+            last12: Math.round(winRateLast12 * 10) / 10,
+            last25: Math.round(winRateLast25 * 10) / 10,
+            last75: Math.round(winRateLast75 * 10) / 10,
+          },
         },
         isActive:         realtimeIsActive,
         successRate:      Math.round(successRate * 10) / 10,

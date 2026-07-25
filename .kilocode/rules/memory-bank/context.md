@@ -53,6 +53,8 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Fix: `env-credential-loading.test.ts` updated to match new static-fallback behavior (tests verify fallback is returned and `DISABLE_STATIC_CONNECTION_CREDENTIALS=1` suppresses it)
 - [x] Verified core production/live-trade tests pass: `main-live-trade-readiness.test.ts`, `env-credential-loading.test.ts`, `production-continuity.test.ts`
 - [x] Verified no new production test regressions were introduced; remaining test failures are pre-existing test-infrastructure issues unrelated to the readiness fixes
+- [x] Verified sim trading (live trade disabled) tracking, stats, counts, and updates are correct: progression stats route includes simulated positions in closed-archive PF/win-rate calculations; `savePosition` moves terminal simulated positions to the closed index; `closeLivePosition` increments closed/win counters for simulated positions. All counts are correct.
+- [x] Added ProfitFactor for last 12, 25, 75 positions to `/api/connections/progression/{id}/stats` (`realtime.positions.profitFactor.{all,last12,last25,last75}` and `winRate` equivalents) and `/api/trade-engine/pnl-stats` (`profit_factor_last_12`, `profit_factor_last_25`, `profit_factor_last_75`).
 - [ ] Verify production-mode live-trade UI navigation: Sidebar → Settings → Connections → bingx-x01 → enable Live Trade → /live-trading page shows positions, protection controls, trade history, and coordination counts correctly
 - [ ] Continue race-condition and stats/count coordination review across: live-stage save/close paths, progression snapshot writes, stats route counters, and client-side dashboard event coalescing
 
