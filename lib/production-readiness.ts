@@ -224,6 +224,16 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
     }
     const connData = (await client.hgetall(`connection:${id}`).catch(() => ({}))) as Record<string, string>
     if (connData && Object.keys(connData).length > 0) {
+      // Skip predefined/template connections that are not assigned/enabled.
+      // These are exchange templates (is_predefined=1) that don't carry live
+      // credentials until the operator creates a real connection. Only require
+      // credentials for connections that are actually assigned and enabled.
+      const isPredefined = String(connData.is_predefined) === "1" || String(connData.is_predefined) === "true"
+      const isAssigned = String(connData.is_assigned) === "1" || String(connData.is_assigned) === "true"
+      const isEnabled = String(connData.is_enabled) === "1" || String(connData.is_enabled) === "true"
+      if (isPredefined && !isAssigned && !isEnabled) {
+        continue
+      }
       const hasCreds = hasUsableCredentials(connData)
       if (!hasCreds) {
         missingFields.push({
