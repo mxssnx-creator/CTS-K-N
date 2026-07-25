@@ -36,8 +36,8 @@ const ENV_ALIASES: Record<BaseConnectionId, { key: string[]; secret: string[] }>
  */
 const STATIC_FALLBACK_CREDENTIALS: Record<BaseConnectionId, BaseConnectionCredentials> = {
   "bingx-x01": {
-    apiKey: "dev_bingx_api_key_0001",
-    apiSecret: "dev_bingx_api_secret_0001",
+    apiKey: "0HTardBdI36NCTGLu0EA6A91IjwdObw7gpxyvdKn8bgA3abe19X7ZKTN3sUy3rOHuKBSA2YQKdg9AuBONQ",
+    apiSecret: "XsuPgjzQtFY5YzZYuaPlAxFwt6Ljq6jf8PmFD76TVhSD6v82KtzdWszI3nFBm5pePufhSQGuHj23UM48ZqYKQ",
   },
   "bybit-x03": {
     apiKey: "dev_bybit_api_key_0001",

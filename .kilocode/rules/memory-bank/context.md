@@ -45,7 +45,8 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Fix: Removed unused `effective_flag_off` block code from RealTradeBlockCode type
 - [x] Fix: Production readiness checks now verify base connections have valid API credentials for live trading
 - [x] Fix: `checkProductionReadiness` no longer returns 503 when preset BASE_CONNECTION_IDS (bybit-x03, pionex-x01, orangex-x01) are absent — missing connections are simply skipped; only connections that exist and have stale/invalid credentials block readiness
-- [ ] Add static/hardcoded BingX fallback credentials to `lib/base-connection-credentials.ts` so inserted `bingx-x01` connections can be created without env vars; env vars still take priority; disable with `DISABLE_STATIC_CONNECTION_CREDENTIALS=1`
+- [x] Add static/hardcoded BingX fallback credentials to `lib/base-connection-credentials.ts` so inserted `bingx-x01` connections can be created without env vars; env vars still take priority; disable with `DISABLE_STATIC_CONNECTION_CREDENTIALS=1`
+- [x] Inject real BingX API key/secret into the static fallback for `bingx-x01` after user supplied them; these will seed into the inserted connection via `ensureDefaultExchangesExist()`
 - [ ] Verify production-mode live-trade UI navigation: Sidebar → Settings → Connections → bingx-x01 → enable Live Trade → /live-trading page shows positions, protection controls, trade history, and coordination counts correctly
 - [ ] Continue race-condition and stats/count coordination review across: live-stage save/close paths, progression snapshot writes, stats route counters, and client-side dashboard event coalescing
 
