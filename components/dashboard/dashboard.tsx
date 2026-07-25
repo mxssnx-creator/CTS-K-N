@@ -105,11 +105,29 @@ function createSessionInstanceId(): string {
 }
 
 function DashboardRuntimeFooter() {
-  const [startedAt, setStartedAt] = useState<Date | null>(() => getPersistedStartedAt())
-  const [now, setNow] = useState<Date | null>(startedAt ?? new Date())
-  const [instanceId, setInstanceId] = useState<string | null>(() => getDurableSiteInstanceId())
+  // All of these values are time/locale/DOM dependent. They must stay null on
+  // the server render AND the first client render, otherwise the SSR HTML
+  // (server clock + locale) won't match the client and React throws a
+  // hydration mismatch. They are populated after mount in the effects below.
+  const [mounted, setMounted] = useState(false)
+  const [startedAt, setStartedAt] = useState<Date | null>(null)
+  const [now, setNow] = useState<Date | null>(null)
+  const [instanceId, setInstanceId] = useState<string | null>(null)
 
   useEffect(() => {
+    setMounted(true)
+    setInstanceId(getDurableSiteInstanceId())
+    const persisted = getPersistedStartedAt()
+    if (persisted) {
+      setStartedAt(persisted)
+      setNow(persisted)
+    } else {
+      setNow(new Date())
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!mounted) return
     let cancelled = false
 
     async function resolveStartedAt() {
@@ -128,7 +146,7 @@ function DashboardRuntimeFooter() {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [startedAt])
+  }, [mounted, startedAt])
 
   return (
     <Card className="border-dashed bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
@@ -137,12 +155,16 @@ function DashboardRuntimeFooter() {
           <Badge variant="outline" className="font-mono">
             Unique Session / Instance ID
           </Badge>
-          <span className="font-mono text-foreground break-all">{instanceId ?? "—"}</span>
+          <span className="font-mono text-foreground break-all" suppressHydrationWarning>
+            {mounted ? (instanceId ?? "—") : "—"}
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono">
-          <span>Started: {startedAt ? startedAt.toLocaleString() : "—"}</span>
-          <span>Now: {now ? now.toLocaleString() : "—"}</span>
-          <span>Running: {formatDuration(startedAt && now ? now.getTime() - startedAt.getTime() : 0)}</span>
+          <span suppressHydrationWarning>Started: {mounted && startedAt ? startedAt.toLocaleString() : "—"}</span>
+          <span suppressHydrationWarning>Now: {mounted && now ? now.toLocaleString() : "—"}</span>
+          <span suppressHydrationWarning>
+            Running: {formatDuration(mounted && startedAt && now ? now.getTime() - startedAt.getTime() : 0)}
+          </span>
         </div>
       </div>
     </Card>
