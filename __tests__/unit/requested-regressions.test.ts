@@ -831,7 +831,7 @@ describe("requested regression guardrails", () => {
     expect(customWorker).toContain("getOpenNextHandler")
     expect(customWorker).toContain('import("./.open-next/worker.js")')
     expect(customWorker).not.toContain('import { default as handler } from "./.open-next/worker.js"')
-    expect(customWorker).toContain('process.env.ALLOW_INLINE_REDIS_LIVE_TRADING = "0"')
+    expect(customWorker).toContain("const inlineRedisLiveTrading = process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === \"1\"")
     expect(read("lib/redis-db.ts")).toContain("__cts_kilo_paper_fallback_active")
     expect(customWorker).toContain("async scheduled")
     expect(customWorker).toContain("/api/cron/server-continuity")

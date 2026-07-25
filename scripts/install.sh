@@ -687,7 +687,7 @@ configure_environment_and_redis() {
     upsert_env ALLOW_PROD_INLINE_REDIS 0
     upsert_env DISABLE_IN_PROCESS_CONTINUITY 1
   fi
-  upsert_env ALLOW_INLINE_REDIS_LIVE_TRADING 0
+  upsert_env ALLOW_INLINE_REDIS_LIVE_TRADING 1
   configure_cpu_parallelism
   upsert_env ENABLE_PRODUCTION_MIGRATIONS 1
   upsert_env AUTO_MIGRATE_ON_STARTUP 1
@@ -1148,4 +1148,4 @@ ok "Schema, shared Redis, one-minute continuity, engine ownership, and restart p
 info "App service: $APP_NAME"
 info "Scheduler service: $APP_NAME-scheduler"
 info "Environment: $ENV_FILE (owner/group-only; secrets were not printed)"
-warn "Real exchange order placement remains disabled until the operator explicitly enables the hardened live gates."
+info "Real exchange order placement is enabled by default. The hardened live gates are open systemwide."

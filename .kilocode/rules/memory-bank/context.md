@@ -568,3 +568,25 @@ operator must:
 Attempted production installs that skip step 1 or have stale bingx-x01
 credentials will still receive a 503 from the QuickStart route until valid
 credentials are present.
+
+## Session 2026-07-25 — systemwide always-on live trade for production installs
+
+- [x] `scripts/install.sh`: changed the production installer default from
+  `ALLOW_INLINE_REDIS_LIVE_TRADING 0` to `ALLOW_INLINE_REDIS_LIVE_TRADING 1` so
+  real exchange order placement is enabled by default on new server installs.
+- [x] `scripts/install.sh`: replaced the post-install warning about disabled live
+  gates with an info line stating real exchange order placement is enabled by
+  default and the hardened live gates are open systemwide.
+- [x] `custom-worker.ts`: simplified the Kilo/Cloudflare worker live-trade preflight
+  so it no longer requires `ALLOW_KILO_SQLITE_LIVE_TRADING=1` as a second safety
+  gate. When `ALLOW_INLINE_REDIS_LIVE_TRADING=1`, the worker now allows in-process
+  continuity and engine ownership directly, matching the new installer default.
+- [x] `__tests__/unit/install-deployment-contract.test.ts`: updated the installer
+  contract assertion to expect `ALLOW_INLINE_REDIS_LIVE_TRADING 1`.
+- [x] `__tests__/unit/requested-regressions.test.ts`: updated the custom-worker
+  regression assertion to match the simplified live-trade preflight logic.
+- [x] `docs/recreation/configuration-reference.md`: updated the safe production
+  example to show `ALLOW_INLINE_REDIS_LIVE_TRADING=1`.
+- [x] Verified with `bun run lint`, `bun run typecheck`, and targeted Jest runs;
+  the only remaining unit failures are preexisting Kilo preflight lockfile checks
+  unrelated to live-trade gating.

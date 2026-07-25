@@ -124,18 +124,9 @@ function ensureKiloPaperFallback(request: Request | undefined, env: WorkerEnviro
   process.env.CTS_DEPLOYMENT_RUNTIME ||= "kilo-deploy"
   process.env.KILO_DEPLOYMENT ||= "1"
   process.env.ALLOW_PROD_INLINE_REDIS ||= "1"
-  // Live trade is enabled on Kilo when ALLOW_KILO_SQLITE_LIVE_TRADING=1
-  // and the operator has explicitly opted in via ALLOW_INLINE_REDIS_LIVE_TRADING=1.
-  // Otherwise keep live trading blocked on the paper fallback path.
-  const kiloSqliteLiveTrading = process.env.ALLOW_KILO_SQLITE_LIVE_TRADING === "1"
+  // Live trade is allowed systemwide when explicitly enabled.
   const inlineRedisLiveTrading = process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1"
-  if (!kiloSqliteLiveTrading || !inlineRedisLiveTrading) {
-    process.env.ALLOW_INLINE_REDIS_LIVE_TRADING = "0"
-  }
-  // When live trading is explicitly enabled via both safety gates, allow the
-  // in-process engine and continuity runner so the paper-fallback path can
-  // still coordinate and execute orders within a single process.
-  if (kiloSqliteLiveTrading && inlineRedisLiveTrading) {
+  if (inlineRedisLiveTrading) {
     process.env.DISABLE_IN_PROCESS_CONTINUITY = "0"
     process.env.DISABLE_TRADE_ENGINE_IN_PROCESS = "0"
   } else {

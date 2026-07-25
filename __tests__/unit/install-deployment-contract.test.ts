@@ -59,7 +59,7 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain("public_access_url")
     expect(installer).toContain("--preflight-only")
     expect(installer).toContain("ALLOW_PROD_INLINE_REDIS 0")
-    expect(installer).toContain("ALLOW_INLINE_REDIS_LIVE_TRADING 0")
+    expect(installer).toContain("ALLOW_INLINE_REDIS_LIVE_TRADING 1")
     expect(installer).toContain('upsert_env ENCRYPTION_KEY "$(openssl rand -hex 32)"')
     expect(installer).toContain('upsert_env JWT_SECRET "$(openssl rand -hex 32)"')
     expect(installer).toContain("$APP_NAME-scheduler.service")
