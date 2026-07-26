@@ -566,15 +566,17 @@ export async function GET(
       activeProgressionKey === scope.legacyProgressionKey ? Promise.resolve(activeProgressionRaw) : client.hgetall(scope.legacyProgressionKey).catch(() => null),
       client.hgetall(scope.prehistoricKey).catch(() => null),
       client.hgetall(`realtime:${connectionId}`).catch(() => null),
-      getSettings(scope.tradeEngineStateKey)
-        .then((scopedState) => scopedState && Object.keys(scopedState).length > 0
-          ? scopedState
-          : getSettings(`trade_engine_state:${connectionId}:${engineType}`).then((typedState) => typedState && Object.keys(typedState).length > 0
-            ? typedState
-            : getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))
-          )
-        )
-        .catch(() => getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))),
+      Promise.all([
+        client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({})),
+        client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({})),
+        client.hgetall(`trade_engine_state:${connectionId}:${engineType}`).catch(() => ({})),
+        client.hgetall(scope.tradeEngineStateKey).catch(() => ({})),
+      ]).then(([legacyRaw, legacySettings, scopedRaw, scopedSettings]) => ({
+        ...(legacyRaw || {}),
+        ...(legacySettings || {}),
+        ...(scopedRaw || {}),
+        ...(scopedSettings || {}),
+      })),
       getSettings(scope.engineProgressionKey)
         .then((scopedProgression) => scopedProgression && Object.keys(scopedProgression).length > 0
           ? scopedProgression

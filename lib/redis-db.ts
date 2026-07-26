@@ -79,6 +79,12 @@ const globalForRedis = globalThis as unknown as {
   __redis_persistence_tick_started?: boolean
   __redis_persistence_signals_attached?: boolean
   __redis_snapshot_last_error_warn?: number
+  // Serialized append-only recovery journal for live-position lifecycle and
+  // quantity mutations. The full Redis snapshot intentionally runs only once
+  // per minute; this small WAL closes that crash window without serializing
+  // the complete multi-megabyte database on every engine cycle.
+  __redis_live_position_wal_promise?: Promise<boolean>
+  __redis_live_position_wal_write_counter?: number
   // Global equivalent of the module-scoped `isConnected` flag. Allows fresh
   // Next.js dev route modules (which re-evaluate and get isConnected=false) to
   // see the real connected state without re-running initRedis/migrations.
@@ -217,6 +223,7 @@ export interface RedisClientLike {
   loadFromDisk(): Promise<boolean>
   saveToDiskSync(): boolean
   persistNow(): Promise<boolean>
+  persistLivePositionCheckpoint?(position: Record<string, unknown>): Promise<boolean>
   cleanupExpiredKeysPublic(): Promise<number>
   trackDatabaseOperation(limit: number): Promise<{ current: number; limit: number; exceeded: boolean }>
   getDatabaseOperationCount(): Promise<number>
@@ -398,6 +405,194 @@ export class InlineLocalRedis implements RedisClientLike {
       return true
     } catch {
       return false
+    }
+  }
+
+  private async replayLivePositionWal(
+    snapshotFile: string,
+    fs: typeof import("fs/promises"),
+  ): Promise<number> {
+    const walFile = `${snapshotFile}.live-wal`
+    let raw = ""
+    try {
+      raw = await fs.readFile(walFile, "utf8")
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") this.warnRateLimited(`live-position WAL read failed (${walFile})`, error)
+      return 0
+    }
+
+    // Keep only the newest valid record per position. A SIGKILL may leave one
+    // partial final line; all earlier fsynced lines remain independently
+    // parseable and the malformed tail is safely ignored.
+    const newest = new Map<string, any>()
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue
+      try {
+        const entry = JSON.parse(line)
+        const connectionId = String(entry?.connectionId || entry?.position?.connectionId || "").trim()
+        const positionId = String(entry?.positionId || entry?.position?.id || "").trim()
+        if (entry?.v !== 1 || !connectionId || !positionId || !entry?.position) continue
+        const key = `${connectionId}\u0000${positionId}`
+        const previous = newest.get(key)
+        const nextVersion = Number(entry.position.version || 0)
+        const previousVersion = Number(previous?.position?.version || 0)
+        const nextUpdatedAt = Number(entry.position.updatedAt || entry.at || 0)
+        const previousUpdatedAt = Number(previous?.position?.updatedAt || previous?.at || 0)
+        if (
+          !previous ||
+          nextVersion > previousVersion ||
+          (nextVersion === previousVersion && nextUpdatedAt >= previousUpdatedAt)
+        ) {
+          newest.set(key, entry)
+        }
+      } catch {
+        // A torn final append is expected after an abrupt process kill.
+      }
+    }
+
+    const terminalStatuses = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
+    let restored = 0
+    for (const entry of newest.values()) {
+      const position = entry.position as Record<string, unknown>
+      const connectionId = String(entry.connectionId || position.connectionId || "").trim()
+      const positionId = String(entry.positionId || position.id || "").trim()
+      const hashKey = `live_positions:${connectionId}:${positionId}`
+      const jsonKey = `live:position:${positionId}`
+      const current = this.data.hashes.get(hashKey)
+      const currentVersion = Number(current?.version || 0)
+      const currentUpdatedAt = Number(current?.updatedAt || 0)
+      const walVersion = Number(position.version || 0)
+      const walUpdatedAt = Number(position.updatedAt || entry.at || 0)
+      if (
+        current &&
+        (
+          walVersion < currentVersion ||
+          (walVersion === currentVersion && walUpdatedAt <= currentUpdatedAt)
+        )
+      ) {
+        continue
+      }
+
+      this.data.hashes.set(hashKey, normalizeRedisHash(position))
+      this.data.strings.set(jsonKey, JSON.stringify(position))
+      this.data.ttl.delete(hashKey)
+      this.data.ttl.delete(jsonKey)
+
+      const openIndexKey = `live:positions:${connectionId}`
+      const closedIndexKey = `live:positions:${connectionId}:closed`
+      const openIds = (this.data.lists.get(openIndexKey) || []).filter((id) => id !== positionId)
+      const closedIds = (this.data.lists.get(closedIndexKey) || []).filter((id) => id !== positionId)
+      if (terminalStatuses.has(String(position.status || "").toLowerCase())) {
+        this.data.lists.set(openIndexKey, openIds)
+        this.data.lists.set(closedIndexKey, [positionId, ...closedIds].slice(0, 500))
+      } else {
+        this.data.lists.set(openIndexKey, [positionId, ...openIds])
+        this.data.lists.set(closedIndexKey, closedIds)
+      }
+      this.data.ttl.delete(openIndexKey)
+      this.data.ttl.delete(closedIndexKey)
+      restored++
+    }
+
+    if (restored > 0) this.markDirty()
+    return restored
+  }
+
+  private async compactLivePositionWalIfNeeded(
+    walFile: string,
+    fs: typeof import("fs/promises"),
+  ): Promise<void> {
+    const MAX_WAL_BYTES = 8 * 1024 * 1024
+    const MAX_WAL_POSITIONS = 2_048
+    const size = Number((await fs.stat(walFile)).size || 0)
+    if (size <= MAX_WAL_BYTES) return
+
+    const raw = await fs.readFile(walFile, "utf8")
+    const newest = new Map<string, any>()
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue
+      try {
+        const entry = JSON.parse(line)
+        const connectionId = String(entry?.connectionId || entry?.position?.connectionId || "").trim()
+        const positionId = String(entry?.positionId || entry?.position?.id || "").trim()
+        if (entry?.v !== 1 || !connectionId || !positionId || !entry?.position) continue
+        const key = `${connectionId}\u0000${positionId}`
+        const previous = newest.get(key)
+        const entryAt = Number(entry.position.updatedAt || entry.at || 0)
+        const previousAt = Number(previous?.position?.updatedAt || previous?.at || 0)
+        if (!previous || entryAt >= previousAt) newest.set(key, entry)
+      } catch {
+        // Ignore a torn tail while compacting earlier durable records.
+      }
+    }
+    const retained = Array.from(newest.values())
+      .sort((a, b) => Number(b.position?.updatedAt || b.at || 0) - Number(a.position?.updatedAt || a.at || 0))
+      .slice(0, MAX_WAL_POSITIONS)
+      .reverse()
+    const compacted = retained.map((entry) => JSON.stringify(entry)).join("\n") + (retained.length > 0 ? "\n" : "")
+    const tmp = `${walFile}.${this.nextWriteSuffix()}.tmp`
+    const handle = await fs.open(tmp, "w")
+    try {
+      await handle.writeFile(compacted, "utf8")
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    await fs.rename(tmp, walFile)
+  }
+
+  async persistLivePositionCheckpoint(position: Record<string, unknown>): Promise<boolean> {
+    if (hasKiloManagedDatabaseConfig()) return false
+    const connectionId = String(position?.connectionId || position?.connection_id || "").trim()
+    const positionId = String(position?.id || "").trim()
+    if (!connectionId || !positionId) return false
+
+    const primary = await this.resolveSnapshotPath()
+    if (!primary) return false
+    const candidates = process.env.V0_REDIS_SNAPSHOT_PATH
+      ? [primary]
+      : [primary, await this.tmpFallbackPath()].filter(Boolean) as Array<{ dir: string; file: string }>
+    const entry = JSON.stringify({
+      v: 1,
+      at: Date.now(),
+      connectionId,
+      positionId,
+      position,
+    }) + "\n"
+
+    const previous = globalForRedis.__redis_live_position_wal_promise || Promise.resolve(true)
+    const write = previous.catch(() => false).then(async () => {
+      let lastError: unknown = new Error("No writable live-position WAL path")
+      for (const candidate of candidates) {
+        const walFile = `${candidate.file}.live-wal`
+        try {
+          const fs = await import("fs/promises")
+          await fs.mkdir(candidate.dir, { recursive: true })
+          const handle = await fs.open(walFile, "a")
+          try {
+            await handle.writeFile(entry, "utf8")
+            await handle.sync()
+          } finally {
+            await handle.close()
+          }
+          await this.compactLivePositionWalIfNeeded(walFile, fs)
+          globalForRedis.__redis_live_position_wal_write_counter =
+            Number(globalForRedis.__redis_live_position_wal_write_counter || 0) + 1
+          return true
+        } catch (error) {
+          lastError = error
+        }
+      }
+      this.warnRateLimited("live-position WAL append failed", lastError)
+      return false
+    })
+    globalForRedis.__redis_live_position_wal_promise = write
+    try {
+      return await write
+    } finally {
+      if (globalForRedis.__redis_live_position_wal_promise === write) {
+        delete globalForRedis.__redis_live_position_wal_promise
+      }
     }
   }
 
@@ -629,11 +824,15 @@ export class InlineLocalRedis implements RedisClientLike {
         const parsed = JSON.parse(raw)
         if (this.applySnapshot(parsed)) {
           this.markPersisted(this.mutationVersion())
+          const restoredLivePositions = await this.replayLivePositionWal(c.file, fs)
           this.clearRestoredInlineProcessOwnership()
           const keys =
             this.data.strings.size + this.data.hashes.size + this.data.sets.size +
             this.data.lists.size + this.data.sorted_sets.size
-          console.log(`[v0] [Redis Persistence] Restored ${keys} keys from ${c.file}`)
+          console.log(
+            `[v0] [Redis Persistence] Restored ${keys} keys from ${c.file}` +
+            (restoredLivePositions > 0 ? ` plus ${restoredLivePositions} newer live-position checkpoint(s)` : ""),
+          )
           return true
         }
         // Parsed but didn't fit — quarantine and continue.
@@ -2494,17 +2693,55 @@ class NodeRedisClientAdapter implements RedisClientLike {
 
 class UpstashRestRedisClient implements RedisClientLike {
   constructor(private readonly url: string, private readonly token: string) {}
-  private async command<T = any>(command: Array<string | number>): Promise<T> {
+  private async executeCommands(commands: Array<Array<string | number>>): Promise<any[]> {
     const response = await fetch(this.url.replace(/\/$/, "") + "/pipeline", {
       method: "POST",
       headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
-      body: JSON.stringify([command]),
+      body: JSON.stringify(commands),
     })
     if (!response.ok) throw new Error(`Upstash Redis command failed: ${response.status} ${response.statusText}`)
     const payload = await response.json()
-    const item = Array.isArray(payload) ? payload[0] : payload
-    if (item?.error) throw new Error(String(item.error))
-    return item?.result as T
+    const items = Array.isArray(payload) ? payload : [payload]
+    return commands.map((_command, index) => {
+      const item = items[index]
+      return item?.error ? new Error(String(item.error)) : item?.result
+    })
+  }
+  private async command<T = any>(command: Array<string | number>): Promise<T> {
+    const item = (await this.executeCommands([command]))[0]
+    if (item instanceof Error) throw item
+    return item as T
+  }
+  private pipelineCommand(method: string, args: any[]): Array<string | number> {
+    const normalizedMethod = method.toLowerCase()
+    if (normalizedMethod === "hset" && args[1] && typeof args[1] === "object" && !Array.isArray(args[1])) {
+      const command: Array<string | number> = ["HSET", String(args[0])]
+      for (const [field, value] of Object.entries(normalizeRedisHash(args[1]))) {
+        command.push(field, value)
+      }
+      return command
+    }
+    if (normalizedMethod === "set" && args[2] && typeof args[2] === "object") {
+      const options = args[2] as { EX?: number; PX?: number; NX?: boolean; XX?: boolean }
+      const command: Array<string | number> = ["SET", String(args[0]), redisHashScalar(args[1])]
+      if (options.NX) command.push("NX")
+      if (options.XX) command.push("XX")
+      if (options.EX) command.push("EX", options.EX)
+      else if (options.PX) command.push("PX", options.PX)
+      return command
+    }
+    return [normalizedMethod.toUpperCase(), ...args.map((value) => redisHashScalar(value))]
+  }
+  private pipelineResult(method: string, result: any): any {
+    if (result instanceof Error) return result
+    if (method.toLowerCase() === "hgetall" && Array.isArray(result)) {
+      const object: Record<string, string> = {}
+      for (let index = 0; index < result.length; index += 2) {
+        object[String(result[index])] = String(result[index + 1])
+      }
+      return object
+    }
+    return result
   }
   async ping() { return String(await this.command(["PING"])) }
   async info() { return "redis_version:upstash-rest" }
@@ -2567,7 +2804,27 @@ class UpstashRestRedisClient implements RedisClientLike {
   async cleanupExpiredKeysPublic() { return 0 }
   async trackDatabaseOperation(limit: number) { return { current: 0, limit, exceeded: false } }
   async getDatabaseOperationCount() { return 0 }
-  multi() { const ops: Array<Array<string | number>> = []; const queue = new Proxy({}, { get: (_t, prop: string) => prop === "exec" ? async () => Promise.all(ops.map((op) => this.command(op))) : (...args: Array<string | number>) => { ops.push([prop.toUpperCase(), ...args]); return queue } }) as { [k: string]: any; exec: () => Promise<any[]> }; return queue }
+  multi() {
+    const ops: Array<{ method: string; args: any[] }> = []
+    const queue = new Proxy({}, {
+      get: (_target, prop: string) => {
+        if (prop === "exec") {
+          return async () => {
+            if (ops.length === 0) return []
+            const results = await this.executeCommands(
+              ops.map(({ method, args }) => this.pipelineCommand(method, args)),
+            )
+            return results.map((result, index) => this.pipelineResult(ops[index].method, result))
+          }
+        }
+        return (...args: any[]) => {
+          ops.push({ method: prop, args })
+          return queue
+        }
+      },
+    }) as { [k: string]: any; exec: () => Promise<any[]> }
+    return queue
+  }
   pipeline() { return this.multi() }
 }
 
@@ -3651,6 +3908,19 @@ export async function persistNow(): Promise<boolean> {
     return (client as any).saveToDisk()
   }
   return false
+}
+
+/**
+ * Durably journal a live-position lifecycle/quantity checkpoint without
+ * forcing a full InlineLocalRedis database snapshot. Network Redis already
+ * makes the preceding HSET/SET durable at command completion, while Kilo
+ * mutations are committed by their shared-snapshot lease.
+ */
+export async function persistLivePositionCheckpoint(position: Record<string, unknown>): Promise<boolean> {
+  const client = getClient()
+  if (getRedisBackend() !== "inline-local") return true
+  if (typeof (client as any).persistLivePositionCheckpoint !== "function") return false
+  return (client as any).persistLivePositionCheckpoint(position)
 }
 
 /**

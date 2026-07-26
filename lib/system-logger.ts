@@ -19,6 +19,17 @@ const logQueue: LogEntry[] = LOGGER.queue ?? (LOGGER.queue = [])
 const MAX_PENDING_LOGS = 1000
 const LOG_FLUSH_BATCH_SIZE = 50
 
+function serializeLogMetadata(metadata?: Record<string, any>): string {
+  if (!metadata) return ""
+  try {
+    return JSON.stringify(metadata).slice(0, 4000)
+  } catch (error) {
+    return JSON.stringify({
+      serializationError: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
 function scheduleLogFlush(): void {
   if (LOGGER.flushing) return
   LOGGER.flushing = true
@@ -55,6 +66,7 @@ export class SystemLogger {
 
     try {
       const client = getRedisClient()
+      const pipeline = client.pipeline()
       for (const entry of batch) {
         const logId = `log:${Date.now()}:${Math.random().toString(36).substr(2, 9)}`
         const logKey = logId
@@ -64,23 +76,25 @@ export class SystemLogger {
           level: entry.level,
           category: entry.category,
           message: entry.message,
-          metadata: entry.metadata ? JSON.stringify(entry.metadata).slice(0, 4000) : "",
+          metadata: serializeLogMetadata(entry.metadata),
         }
 
-        await client.hset(logKey, logEntry)
-        await client.lpush("logs:all:list", logId)
-        await client.lpush(`logs:${entry.category}:list`, logId)
-        await client.expire(logKey, 604800)
+        pipeline.hset(logKey, logEntry)
+        pipeline.lpush("logs:all:list", logId)
+        pipeline.lpush(`logs:${entry.category}:list`, logId)
+        pipeline.expire(logKey, 604800)
       }
 
-      await Promise.all([
-        client.ltrim("logs:all:list", 0, 4999),
-        client.expire("logs:all:list", 604800),
-        ...Array.from(new Set(batch.map((entry) => entry.category))).flatMap((category) => [
-          client.ltrim(`logs:${category}:list`, 0, 999),
-          client.expire(`logs:${category}:list`, 604800),
-        ]),
-      ])
+      pipeline.ltrim("logs:all:list", 0, 4999)
+      pipeline.expire("logs:all:list", 604800)
+      for (const category of new Set(batch.map((entry) => entry.category))) {
+        pipeline.ltrim(`logs:${category}:list`, 0, 999)
+        pipeline.expire(`logs:${category}:list`, 604800)
+      }
+      const results = await pipeline.exec()
+      if (results.some((result: any) => result instanceof Error || (Array.isArray(result) && result[0]))) {
+        throw new Error("System log pipeline returned an error")
+      }
     } catch (error) {
       // Drop this batch when logging storage is stuck. Logs are diagnostic only;
       // retry loops here previously caused high memory/CPU and made trading
@@ -196,20 +210,33 @@ export class SystemLogger {
         logIds = (await client.smembers(setKey).catch(() => [] as string[])).slice(-limit)
       }
 
-      const logs: LogEntry[] = []
-      for (const logId of logIds) {
-        const logData = await client.hgetall(logId)
-        if (logData && Object.keys(logData).length > 0) {
-          logs.push({
-            timestamp: logData.timestamp || "",
-            level: (logData.level as any) || "info",
-            category: logData.category || "",
-            message: logData.message || "",
-            metadata: logData.metadata ? JSON.parse(logData.metadata) : undefined,
-          })
-        }
+      // Fetch bounded diagnostic rows concurrently. The previous sequential
+      // loop made the Detailed Logs monitor wait for up to `limit` network
+      // round trips and could itself look like an engine stall.
+      const readPipeline = client.pipeline()
+      for (const logId of logIds.slice(0, Math.max(0, limit))) {
+        readPipeline.hgetall(logId)
       }
-      return logs
+      const rows = await readPipeline.exec()
+      return rows.flatMap((logData) => {
+        if (logData instanceof Error) return []
+        if (!logData || Object.keys(logData).length === 0) return []
+        let metadata: Record<string, any> | undefined
+        if (logData.metadata) {
+          try {
+            metadata = JSON.parse(logData.metadata)
+          } catch {
+            metadata = { raw: logData.metadata }
+          }
+        }
+        return [{
+          timestamp: logData.timestamp || "",
+          level: (logData.level as any) || "info",
+          category: logData.category || "",
+          message: logData.message || "",
+          metadata,
+        }]
+      })
     } catch (error) {
       console.error("[SystemLogger] Failed to retrieve logs:", error)
       return []

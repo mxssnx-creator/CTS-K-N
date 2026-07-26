@@ -326,7 +326,10 @@ async function verifyOpenPositionCrashRecovery(currentEngineServer, connectionId
     const beforeQuantity = Number(position?.totalExecutedQuantity ?? position?.executedQuantity ?? 0)
     const afterQuantity = Number(recovered?.totalExecutedQuantity ?? recovered?.executedQuantity ?? 0)
     if (Number.isFinite(beforeQuantity) && Number.isFinite(afterQuantity) && afterQuantity + 1e-10 < beforeQuantity) {
-      throw new Error(`Position ${id} quantity regressed after crash recovery`)
+      throw new Error(
+        `Position ${id} quantity regressed after crash recovery ` +
+        `(${beforeQuantity} -> ${afterQuantity}; version ${position?.version ?? "?"} -> ${recovered?.version ?? "?"})`,
+      )
     }
   }
   if (Number(afterPayload?.counts?.pending || 0) > 0 || Number(afterPayload?.counts?.placed || 0) > 0) {

@@ -52,6 +52,19 @@ export interface ProcessingResult {
   rangeEndMs: number
 }
 
+export interface PrehistoricProcessingOptions {
+  finalizePhase?: boolean
+  shouldContinue?: () => boolean
+  symbolSelectionEpoch?: string
+}
+
+class PrehistoricProcessingCancelledError extends Error {
+  constructor(connectionId: string) {
+    super(`Historic processing for ${connectionId} was superseded`)
+    this.name = "PrehistoricProcessingCancelledError"
+  }
+}
+
 export class ConfigSetProcessor {
   private connectionId: string
   private epoch: number
@@ -151,7 +164,7 @@ export class ConfigSetProcessor {
     rangeStart?: Date,
     rangeEnd?: Date,
     timeframeSec: number = 1,
-    options: { finalizePhase?: boolean } = {},
+    options: PrehistoricProcessingOptions = {},
   ): Promise<ProcessingResult> {
     const startTime = Date.now()
     const now = new Date()
@@ -182,11 +195,25 @@ export class ConfigSetProcessor {
       5,
     )
 
+    const assertRunActive = () => {
+      if (options.shouldContinue && !options.shouldContinue()) {
+        throw new PrehistoricProcessingCancelledError(this.connectionId)
+      }
+    }
     const initialSelection = await getCanonicalSymbolSelection(this.connectionId)
-    const writerSelectionEpoch = initialSelection?.epoch || ""
+    const writerSelectionEpoch = options.symbolSelectionEpoch ?? initialSelection?.epoch ?? ""
     const canonicalSymbolsTotal = await canonicalTotalForSymbols(this.connectionId, symbols)
     const ownsCurrentSelection = await ownsCanonicalSymbolSelectionEpoch(this.connectionId, symbols, writerSelectionEpoch)
     const stillOwnsCurrentSelection = () => ownsCanonicalSymbolSelectionEpoch(this.connectionId, symbols, writerSelectionEpoch)
+    const assertCurrentSelection = async () => {
+      assertRunActive()
+      if (!(await stillOwnsCurrentSelection())) {
+        throw new PrehistoricProcessingCancelledError(this.connectionId)
+      }
+      assertRunActive()
+    }
+    assertRunActive()
+    if (!ownsCurrentSelection) throw new PrehistoricProcessingCancelledError(this.connectionId)
 
     console.log(
       `[v0] [ConfigSetProcessor] ▶ prehistoric start | symbols=${symbols.length} canonicalTotal=${canonicalSymbolsTotal} | ` +
@@ -195,6 +222,7 @@ export class ConfigSetProcessor {
     )
 
     await initRedis()
+    await assertCurrentSelection()
     const client = getRedisClient()
     const progressionScope = buildProgressionScope(this.connectionId, "main")
     const prehistoricKey = progressionScope.prehistoricKey
@@ -211,8 +239,12 @@ export class ConfigSetProcessor {
           ...stringPatch,
           connection_id: this.connectionId,
           engine_type: progressionScope.engineType,
+          symbol_selection_epoch: writerSelectionEpoch,
         }).catch(() => 0),
-        client.hset(progressionScope.legacyProgressionKey, stringPatch).catch(() => 0),
+        client.hset(progressionScope.legacyProgressionKey, {
+          ...stringPatch,
+          symbol_selection_epoch: writerSelectionEpoch,
+        }).catch(() => 0),
       ])
     }
     const hincrProgressHash = async (field: string, amount: number) => {
@@ -226,6 +258,7 @@ export class ConfigSetProcessor {
         ...patch,
         connection_id: this.connectionId,
         engine_type: progressionScope.engineType,
+        symbol_selection_epoch: writerSelectionEpoch,
         updated_at: String(patch.updated_at || new Date().toISOString()),
       }
       await Promise.all([
@@ -240,6 +273,7 @@ export class ConfigSetProcessor {
     // DB lengths) reflect the actual configured ceiling instead of the
     // historical hard-coded 250.
     this.runtimeSetEntryCap = await this.resolveSetEntryCap()
+    await assertCurrentSelection()
     console.log(
       `[v0] [ConfigSetProcessor] per-Set entry cap = ${this.runtimeSetEntryCap} ` +
       `(from setCompactionFloor)`
@@ -262,6 +296,7 @@ export class ConfigSetProcessor {
       this.indicationManager.getEnabledConfigs(),
       this.strategyManager.getEnabledConfigs(),
     ])
+    await assertCurrentSelection()
     const indicationConfigs = selectBalancedConfigs(
       allIndicationConfigs,
       resolvePrehistoricConfigLimit("indication", allIndicationConfigs.length),
@@ -281,6 +316,7 @@ export class ConfigSetProcessor {
     // Store range/concurrency metadata for dashboard. One write is enough;
     // the previous duplicate Promise.all issued the exact same HSET twice.
     try {
+      await assertCurrentSelection()
       await client.hset(prehistoricKey, {
         range_start: effectiveStart.toISOString(),
         range_end: effectiveEnd.toISOString(),
@@ -314,6 +350,7 @@ export class ConfigSetProcessor {
     const processOneSymbol = async (symbol: string): Promise<void> => {
       const tSymStart = Date.now()
       try {
+        await assertCurrentSelection()
         // --- Load all available candles for this symbol ---
         let candles: any[] = []
 
@@ -338,22 +375,12 @@ export class ConfigSetProcessor {
             }
           }
         }
+        await assertCurrentSelection()
 
         if (candles.length === 0) {
           console.log(`[v0] [ConfigSetProcessor] ⚠ no candles for ${symbol} — skipping`)
           symbolsWithoutData++
-          // Always count progress for work this instance performed; ownership
-          // only governs whether to START work, not whether to record it. A
-          // stale-selection event is logged but must NOT suppress the processed
-          // count (that caused the "0/#" stuck-progress bug).
-          if (!(await stillOwnsCurrentSelection())) {
-            await logProgressionEvent(this.connectionId, "config_set_symbol_skipped_stale_selection", "info", `Symbol ${symbol} skipped (selection no longer owned) but still counted toward progress`, {
-              symbol,
-              stage: "prehistoric",
-              canonicalSymbolsTotal,
-              staleSymbolsTotal: symbols.length,
-            }).catch(() => {})
-          }
+          await assertCurrentSelection()
           // CRITICAL ("0/N stuck" + stalled progress-bar fix): a symbol with
           // no prehistoric candles must STILL count toward the processed
           // total, otherwise `symbols_processed` can never reach
@@ -406,6 +433,7 @@ export class ConfigSetProcessor {
             processedIntervals = new Set(arr)
           }
         } catch { /* non-critical */ }
+        const hadProcessedIntervals = processedIntervals.size > 0
 
         // --- Step through time range interval by interval, processing only missing ones ---
         let currentTs = effectiveStart.getTime()
@@ -455,35 +483,29 @@ export class ConfigSetProcessor {
         totalIntervalsProcessed += symbolIntervalCount
         missingIntervalsLoaded += symbolMissingCount
 
-        // Persist the updated processed-intervals set for this symbol (TTL = 25h)
-        try {
-          await client.set(processedKey, JSON.stringify([...processedIntervals]), { EX: 90000 })
-        } catch { /* non-critical */ }
-
-        // Merge interval candles with full candle array for processing
-        const combinedCandles = intervalCandles.length > 0 ? intervalCandles : candlesSorted
+        // A caught-up symbol must not re-run its entire candle window. The old
+        // fallback selected all candles whenever no interval was missing,
+        // duplicating indication/strategy entries on every restart/replay.
+        const combinedCandles = intervalCandles.length > 0
+          ? intervalCandles
+          : hadProcessedIntervals
+            ? []
+            : candlesSorted
         candlesProcessed += combinedCandles.length
         symbolsProcessed++
 
-        // --- Write live progress to Redis hash (fire concurrently with computation) ---
+        await assertCurrentSelection()
+
+        // --- Prepare the idempotent progress write. It runs only AFTER all
+        // config writes and the interval checkpoint succeed. ---
         // Use the same canonical processed-symbol SET as the skip/error paths
         // before touching the legacy counter. A settings restart or duplicate
         // bootstrap can replay the same symbol; blind HINCRBY made the status
         // state report 30/15 symbols in 15-symbol live tests even though the
         // distinct processed set was correct. SADD gives us an idempotent
         // "new symbol" signal, then SCARD becomes the displayed count.
-        const progressWrite = (async () => {
-          // Ownership only decides whether to DO the work; the work this
-          // instance already performed must always be recorded so the
-          // displayed processed count can reach the total (fixes "0/#").
-          if (!(await stillOwnsCurrentSelection())) {
-            await logProgressionEvent(this.connectionId, "config_set_symbol_progress_stale_selection", "info", `Recording progress for ${symbol} though selection is no longer owned`, {
-              symbol,
-              stage: "prehistoric",
-              canonicalSymbolsTotal,
-              staleSymbolsTotal: symbols.length,
-            }).catch(() => {})
-          }
+        const writeProgress = async () => {
+          await assertCurrentSelection()
           const added = Number(await client.sadd(prehistoricSymbolsKey, symbol).catch(() => 0)) || 0
           await client.expire(prehistoricSymbolsKey, 86400).catch(() => 0)
           if (added > 0) {
@@ -504,15 +526,49 @@ export class ConfigSetProcessor {
             }),
             client.expire(progressKey, 7 * 24 * 60 * 60),
           ])
-        })().catch(() => { /* non-critical */ })
+        }
 
         // --- Run indications + strategies in parallel for this symbol ---
         const tCalcStart = Date.now()
         const [indicationResults, strategyPositions] = await Promise.all([
-          this.processIndicationConfigs(symbol, combinedCandles, indicationConfigs, CONFIG_CONCURRENCY, CONFIG_TYPE_CONCURRENCY),
-          this.processStrategyConfigs(symbol, combinedCandles, strategyConfigs, CONFIG_CONCURRENCY, CONFIG_TYPE_CONCURRENCY),
+          combinedCandles.length > 0
+            ? this.processIndicationConfigs(
+                symbol,
+                combinedCandles,
+                indicationConfigs,
+                CONFIG_CONCURRENCY,
+                CONFIG_TYPE_CONCURRENCY,
+                assertRunActive,
+                `${writerSelectionEpoch || this.epoch}:${symbol}`,
+              )
+            : Promise.resolve(0),
+          combinedCandles.length > 0
+            ? this.processStrategyConfigs(
+                symbol,
+                combinedCandles,
+                strategyConfigs,
+                CONFIG_CONCURRENCY,
+                CONFIG_TYPE_CONCURRENCY,
+                assertRunActive,
+                `${writerSelectionEpoch || this.epoch}:${symbol}`,
+              )
+            : Promise.resolve(0),
         ])
         const tCalcMs = Date.now() - tCalcStart
+        await assertCurrentSelection()
+
+        // Checkpoint only after every Set write completed. A crash before this
+        // point leaves the interval eligible for a correct retry instead of
+        // silently skipping partially generated output.
+        try {
+          await client.set(processedKey, JSON.stringify([...processedIntervals]), { EX: 90000 })
+        } catch (checkpointError) {
+          throw new Error(
+            `Failed to checkpoint historic intervals for ${symbol}: ${
+              checkpointError instanceof Error ? checkpointError.message : String(checkpointError)
+            }`,
+          )
+        }
 
         totalIndicationResults += indicationResults
         totalStrategyPositions += strategyPositions
@@ -532,16 +588,12 @@ export class ConfigSetProcessor {
         // async write could stamp a STALE (lower) value over a newer one,
         // freezing the dashboard at "X/N". SADD + SCARD is order-independent
         // and idempotent, so the distinct count is always monotonic and exact.
-        if (!(await stillOwnsCurrentSelection())) {
-          console.log(`[v0] [ConfigSetProcessor] stale symbol-selection progress ignored for ${symbol} (${symbols.length} symbols; canonical=${canonicalSymbolsTotal})`)
-          return
-        }
-        await client.sadd(prehistoricSymbolsKey, symbol)
+        await assertCurrentSelection()
+        await writeProgress()
         const distinctProcessed = clampProcessedToTotal(await client
           .scard(prehistoricSymbolsKey)
           .catch(() => symbolsProcessed), canonicalSymbolsTotal)
         await Promise.all([
-          progressWrite,
           hincrProgressHash("prehistoric_indications_total", indicationResults),
           hincrProgressHash("prehistoric_strategies_total", strategyPositions),
           client.expire(progressKey, 7 * 24 * 60 * 60),
@@ -560,7 +612,11 @@ export class ConfigSetProcessor {
           // broke `/api/system/verify-engine` (reads the field), the
           // `progression/[id]/stats` route, and every dashboard that
           // distinguishes "prehistoric done" from "never ran".
-          ProgressionStateManager.incrementPrehistoricCycle(this.connectionId, symbol).catch(() => { /* non-critical */ }),
+          ProgressionStateManager.incrementPrehistoricCycle(
+            this.connectionId,
+            symbol,
+            writerSelectionEpoch,
+          ).catch(() => { /* non-critical */ }),
         ]).catch(() => { /* non-critical */ })
 
         // ── Live phase progression update (per-symbol cadence) ─────────
@@ -599,18 +655,10 @@ export class ConfigSetProcessor {
           `calc=${tCalcMs}ms | total=${tSymMs}ms`
         )
       } catch (error) {
+        if (error instanceof PrehistoricProcessingCancelledError) throw error
         console.error(`[v0] [ConfigSetProcessor] ✗ ${symbol}:`, error instanceof Error ? error.message : String(error))
         errors++
-        // Always count progress even when the selection is no longer owned;
-        // ownership gates STARTING work, not recording it (fixes stuck <100%).
-        if (!(await stillOwnsCurrentSelection())) {
-          await logProgressionEvent(this.connectionId, "config_set_symbol_error_stale_selection", "info", `Symbol ${symbol} errored (selection no longer owned) but still counted toward progress`, {
-            symbol,
-            error: error instanceof Error ? error.message : String(error),
-            canonicalSymbolsTotal,
-            staleSymbolsTotal: symbols.length,
-          }).catch(() => {})
-        }
+        await assertCurrentSelection()
         // CRITICAL ("stuck below 100%" fix): a symbol that throws mid-process
         // must STILL count toward progress, otherwise the SCARD-derived
         // distinct count never reaches N and the bar freezes forever. Mirror
@@ -651,12 +699,14 @@ export class ConfigSetProcessor {
     // Ordered cursor-based pool: no O(n) queue.shift() churn and no unbounded
     // Promise fan-out. Per-symbol errors remain isolated inside processOneSymbol.
     await mapWithConcurrency(symbols, SYMBOL_CONCURRENCY, processOneSymbol)
+    await assertCurrentSelection()
 
     const duration = Date.now() - startTime
     const finalDistinctProcessed = clampProcessedToTotal(
       Number(await client.scard(prehistoricSymbolsKey).catch(() => symbolsProcessed)) || 0,
       canonicalSymbolsTotal,
     )
+    await assertCurrentSelection()
     const result: ProcessingResult = {
       indicationConfigs: indicationConfigs.length,
       indicationResults: totalIndicationResults,
@@ -731,6 +781,7 @@ export class ConfigSetProcessor {
       for (let w = 0; w < Math.min(PF_SCAN_CONCURRENCY, queue.length); w++) {
         workers.push((async () => {
           while (true) {
+            assertRunActive()
             const cfg = queue.shift()
             if (!cfg) return
             try {
@@ -776,6 +827,7 @@ export class ConfigSetProcessor {
                 resultCount++
               }
             } catch (err) {
+              if (err instanceof PrehistoricProcessingCancelledError) throw err
               console.warn(
                 `[v0] [ConfigSetProcessor] PF scan failed for ${cfg.id}:`,
                 err instanceof Error ? err.message : String(err),
@@ -785,6 +837,7 @@ export class ConfigSetProcessor {
         })())
       }
       await Promise.all(workers)
+      await assertCurrentSelection()
 
       // Always write the PF field so the dashboard's "Historic PF" tile
       // renders immediately, even when no closed positions exist yet.
@@ -855,6 +908,7 @@ export class ConfigSetProcessor {
         )
       }
     } catch (err) {
+      if (err instanceof PrehistoricProcessingCancelledError) throw err
       // Aggregate PF is a UX nicety — never fail the prehistoric run.
       console.warn(
         `[v0] [ConfigSetProcessor] Historic PF aggregation failed:`,
@@ -869,9 +923,15 @@ export class ConfigSetProcessor {
     // forever even though processing had finished.
     try {
       if (options.finalizePhase !== false) {
-        await ProgressionStateManager.completePrehistoricPhase(this.connectionId, canonicalSymbolsTotal)
+        await assertCurrentSelection()
+        await ProgressionStateManager.completePrehistoricPhase(
+          this.connectionId,
+          canonicalSymbolsTotal,
+          writerSelectionEpoch,
+        )
       }
     } catch (err) {
+      if (err instanceof PrehistoricProcessingCancelledError) throw err
       console.warn(
         `[v0] [ConfigSetProcessor] completePrehistoricPhase failed:`,
         err instanceof Error ? err.message : String(err),
@@ -894,6 +954,7 @@ export class ConfigSetProcessor {
     // processed" column was permanently blank. TTL matches the sibling
     // keys (24h) so state doesn't linger forever after a disconnect.
     try {
+      await assertCurrentSelection()
       const client = getRedisClient()
       const finishedAt = new Date()
       await client.hset(prehistoricKey, {
@@ -910,6 +971,7 @@ export class ConfigSetProcessor {
       })
       await client.expire(`prehistoric:${this.connectionId}`, 86400)
     } catch (err) {
+      if (err instanceof PrehistoricProcessingCancelledError) throw err
       console.warn(
         `[v0] [ConfigSetProcessor] Failed to persist last-run metadata:`,
         err instanceof Error ? err.message : String(err),
@@ -917,6 +979,7 @@ export class ConfigSetProcessor {
     }
 
     if (options.finalizePhase !== false) {
+      await assertCurrentSelection()
       emitEngineStageAck(this.connectionId, "prehistoric_data", "ack", "Prehistoric processing completed", { symbolsProcessed: finalDistinctProcessed, candlesProcessed, totalIndicationResults, totalStrategyPositions })
       emitEngineStageAck(this.connectionId, "base_sets", "ack", "Base set stage completed", { totalStrategyPositions })
       emitEngineStageAck(this.connectionId, "main_sets", "ack", "Main set stage completed", { totalStrategyPositions })
@@ -937,6 +1000,8 @@ export class ConfigSetProcessor {
     configs: IndicationConfig[],
     concurrency: number,
     typeConcurrency: number,
+    assertRunActive: () => void = () => {},
+    dedupeScope = "",
   ): Promise<number> {
     if (configs.length === 0) return 0
 
@@ -952,17 +1017,26 @@ export class ConfigSetProcessor {
           perTypeConcurrency,
           async (config) => {
             try {
+              assertRunActive()
               await yieldToEventLoop()
+              assertRunActive()
               const results = this.calculateIndicationResults(symbol, candles, config)
               if (results.length === 0) return 0
+              assertRunActive()
               if (typeof (this.indicationManager as any).addResults === "function") {
-                await (this.indicationManager as any).addResults(config.id, results)
+                const added = await (this.indicationManager as any).addResults(
+                  config.id,
+                  results,
+                  dedupeScope,
+                )
+                return Number.isFinite(Number(added)) ? Number(added) : results.length
               } else {
                 // Fallback: fire in parallel instead of sequential awaits.
                 await Promise.all(results.map((r) => this.indicationManager.addResult(config.id, r)))
               }
               return results.length
             } catch (error) {
+              if (error instanceof PrehistoricProcessingCancelledError) throw error
               console.error(
                 `[v0] [ConfigSetProcessor] ✗ indication config ${config.id} (${type}):`,
                 error instanceof Error ? error.message : String(error),
@@ -1093,6 +1167,8 @@ export class ConfigSetProcessor {
     configs: StrategyConfig[],
     concurrency: number,
     typeConcurrency: number,
+    assertRunActive: () => void = () => {},
+    dedupeScope = "",
   ): Promise<number> {
     if (configs.length === 0) return 0
 
@@ -1129,14 +1205,26 @@ export class ConfigSetProcessor {
           perTypeConcurrency,
           async (config) => {
             try {
+              assertRunActive()
               await yieldToEventLoop()
+              assertRunActive()
               const positions = this.calculateStrategyPositions(symbol, candles, config)
               if (positions.length === 0) return 0
-              if (typeof (this.strategyManager as any).addPositions === "function") {
-                await (this.strategyManager as any).addPositions(config.id, positions)
+              assertRunActive()
+              let acceptedPositions = positions
+              if (typeof (this.strategyManager as any).addPositionsWithAccepted === "function") {
+                const batch = await (this.strategyManager as any).addPositionsWithAccepted(
+                  config.id,
+                  positions,
+                  dedupeScope,
+                )
+                acceptedPositions = Array.isArray(batch?.accepted) ? batch.accepted : positions
+              } else if (typeof (this.strategyManager as any).addPositions === "function") {
+                await (this.strategyManager as any).addPositions(config.id, positions, dedupeScope)
               } else {
                 await Promise.all(positions.map((p) => this.strategyManager.addPosition(config.id, p)))
               }
+              assertRunActive()
 
               // ── Mirror closed positions into pos_history (systemwide fix) ──
               // Compose every closed historic position into ONE pipeline so
@@ -1146,7 +1234,7 @@ export class ConfigSetProcessor {
               // semantically means "one closed trade observed", and
               // including open tails would over-count the count/wins/loss
               // accumulators feeding the Main gate.
-              const closed = positions.filter((p) => p.status === "closed")
+              const closed = acceptedPositions.filter((p: PseudoPosition) => p.status === "closed")
               if (closed.length > 0) {
                 try {
                   const pipeline = piClient.multi()
@@ -1203,8 +1291,9 @@ export class ConfigSetProcessor {
                 }
               }
 
-              return positions.length
+              return acceptedPositions.length
             } catch (error) {
+              if (error instanceof PrehistoricProcessingCancelledError) throw error
               console.error(
                 `[v0] [ConfigSetProcessor] ✗ strategy config ${config.id} (${type}):`,
                 error instanceof Error ? error.message : String(error),

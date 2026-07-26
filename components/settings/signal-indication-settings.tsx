@@ -64,6 +64,8 @@ interface SignalSettings {
   timeframeMinutes: number
   candleLimit: number
   maxSourcesPerCycle: number
+  maxPositionsTotal: number
+  positionSelectionMode: "best_first"
   requestIntervalSeconds: number
   requestTimeoutMs: number
   concurrency: number
@@ -270,7 +272,8 @@ export function SignalIndicationSettings() {
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {([
-              ["maxSourcesPerCycle", "Sources per cycle", 3, 35, 1],
+              ["maxSourcesPerCycle", "Website sources / symbol / cycle", 3, 35, 1],
+              ["maxPositionsTotal", "Max open positions (Long + Short)", 1, 500, 1],
               ["candleLimit", "Candles per source", 20, 250, 1],
               ["requestIntervalSeconds", "Request interval (seconds)", 30, 3600, 30],
               ["concurrency", "HTTP concurrency", 1, 10, 1],
@@ -292,6 +295,47 @@ export function SignalIndicationSettings() {
                 />
               </div>
             ))}
+          </div>
+          <div className="grid gap-2 rounded-md border border-primary/20 bg-primary/5 p-3 text-[11px] sm:grid-cols-2">
+            <div>
+              <div className="font-medium">Source coverage is independent</div>
+              <p className="mt-0.5 text-muted-foreground">
+                The 35-source registry counts different public websites only. It never limits symbols or positions.
+              </p>
+            </div>
+            <div>
+              <div className="flex items-center gap-2 font-medium">
+                Position admission
+                <Badge variant="outline" className="text-[10px]">Best quality first</Badge>
+              </div>
+              <p className="mt-0.5 text-muted-foreground">
+                Up to {settings.maxPositionsTotal} active physical Signal positions across Long and Short.
+                Consensus quality, confidence, agreement, strength, and reward/risk determine processing order.
+              </p>
+            </div>
+          </div>
+          <div className="space-y-2 rounded-md border bg-muted/15 p-3">
+            <div>
+              <div className="text-xs font-medium">Fixed Signal engine contracts</div>
+              <p className="text-[10px] text-muted-foreground">
+                Safety and comparability invariants are visible here but cannot be weakened by legacy JSON or a manual request.
+              </p>
+            </div>
+            <div className="grid gap-px overflow-hidden rounded border bg-border sm:grid-cols-3 lg:grid-cols-6">
+              {[
+                ["Timeframe", `${settings.timeframeMinutes} minute`],
+                ["Registry", `${sources.length} websites`],
+                ["Selection", settings.positionSelectionMode === "best_first" ? "Best first" : settings.positionSelectionMode],
+                ["PnL lookback", `${settings.performanceLookback} closed`],
+                ["Minimum evidence", `${settings.performanceMinSamples} closed`],
+                ["Disable boundary", `PnL < ${settings.performanceDisableBelowPnl}`],
+              ].map(([label, value]) => (
+                <div key={label} className="bg-background px-2.5 py-2">
+                  <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{label}</div>
+                  <div className="mt-0.5 font-mono text-[10px] font-medium">{value}</div>
+                </div>
+              ))}
+            </div>
           </div>
         </CardContent>
       </Card>

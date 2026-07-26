@@ -493,13 +493,12 @@ describe("requested regression guardrails", () => {
     expect(strategyConfig).toContain("calculatePseudoClosePnl")
   })
 
-  test("simulated live stage does not create duplicate open slots", () => {
+  test("simulated live stage reuses duplicate open slots without per-cycle log churn", () => {
     const source = read("lib/trade-engine/stages/live-stage.ts")
 
     expect(source).toContain("existingSimulatedSlot")
-    expect(source).toContain("simulated slot already open")
-    expect(source).toContain("existingSimulatedSlot,")
-    expect(source).toContain('"simulate_skip"')
+    expect(source).toContain("if (existingSimulatedSlot) return existingSimulatedSlot")
+    expect(source).not.toContain("simulated slot already open")
   })
 
   test("dev symbol cap honors operator-selected symbols before slicing", () => {
@@ -1710,14 +1709,19 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("...(hasFreshProcessorHeartbeat ? { last_update: nowIso } : {})")
   })
 
-  test("production prehistoric bootstrap cannot permanently gate live processing", () => {
+  test("production prehistoric bootstrap retries real work and never fabricates live readiness", () => {
     const source = read("lib/trade-engine/engine-manager.ts")
 
     expect(source).toContain("PREHISTORIC_BOOTSTRAP_DEADLINE_MS")
     expect(source).toContain("Engine ${this.connectionId} prehistoric bootstrap")
-    expect(source).toContain("FIRST_PASS_GATE_FALLBACK_MS")
-    expect(source).toContain("first-pass fallback opened live gates")
-    expect(source).toContain('writePrehistoricGate(client, connId, this.currentEngineType, "done")')
+    expect(source).toContain('prehistoric_bootstrap_status: "retry_wait"')
+    expect(source).toContain("entry_processors_gated: true")
+    expect(source).toContain("The full successful bootstrap is the sole completion owner")
+    expect(source.indexOf('prehistoric_data_source: "verified-cache"')).toBeGreaterThan(
+      source.indexOf("const dataLooksComplete"),
+    )
+    expect(source).not.toContain("first-pass fallback opened live gates")
+    expect(source).not.toContain('writePrehistoricGate(client, connId, this.currentEngineType, "done")')
     expect(source).toContain("schedulePrehistoricProgressionAfterRealtimeWarmup")
   })
 
@@ -1741,7 +1745,7 @@ describe("requested regression guardrails", () => {
     expect(cron).toContain("enableStrategyFlow: process.env.DISABLE_API_STRATEGY_FLOW === \"1\" ? false : true")
 
     const pseudoIdx = pipeline.indexOf("updateOpenPseudoPositionsForSymbol(symbol)")
-    const strategyIdx = pipeline.lastIndexOf("processStrategy(symbol, indications")
+    const strategyIdx = pipeline.lastIndexOf(".processStrategy(")
     expect(pseudoIdx).toBeGreaterThan(0)
     expect(strategyIdx).toBeGreaterThan(pseudoIdx)
     expect(pipeline).toContain("deps.enableStrategyFlow !== false")
@@ -1751,7 +1755,9 @@ describe("requested regression guardrails", () => {
     expect(pipeline).toContain("Live exchange dispatch is intentionally owned by")
     expect(pipeline).toContain("StrategyCoordinator.createLiveSets()")
     expect(strategy).toContain("skipLiveDispatch: boolean = false")
-    expect(strategy).toContain("executeStrategyFlow(symbol, validIndications, false, undefined, skipLiveDispatch)")
+    expect(strategy).toContain("skipLiveDispatch,")
+    expect(strategy).toContain("isCurrent,")
+    expect(pipeline).toContain("shouldContinue?: () => boolean")
   })
 
 
@@ -1958,7 +1964,8 @@ describe("requested regression guardrails", () => {
       expect(settingsCoordinator).toContain(`"${field}"`)
     }
 
-    expect(recoordinator).toContain("const destructiveProgressionChange = symbolsChanged || modeChanged")
+    expect(recoordinator).toContain("const destructiveProgressionChange = symbolsChanged")
+    expect(recoordinator).not.toContain("const destructiveProgressionChange = symbolsChanged || modeChanged")
     expect(recoordinator).toContain("const liveOrderSettingsChanged = hasAnyChangedField(normalizedChangedFields, LIVE_ORDER_SETTING_FIELDS)")
     expect(recoordinator).toContain("const requiresProgressRecoordination = destructiveProgressionChange || strategyOrCoordinationChanged")
     expect(recoordinator).toContain("if (requiresProgressRecoordination || liveOrderSettingsChanged)")

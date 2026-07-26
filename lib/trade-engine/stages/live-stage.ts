@@ -88,20 +88,32 @@ import {
   type PartialOrderExecutionSource,
 } from "@/lib/live-order-coordination"
 import {
+  loadSignalIndicationSettings,
   mergeSignalRisks,
   normalizeSignalRisk,
   recordSignalPerformanceOutcome,
   type SignalRisk,
 } from "@/lib/signal-indication"
 import {
+  evaluateSignalPositionCapacity,
+  isActiveSignalPosition,
+  type SignalPositionCapacity,
+} from "@/lib/signal-position-policy"
+import {
   isSignalDynamicTrailingProfile,
   resolveSignalExecutionLane,
   type SignalExecutionLane,
   type TrailingProfile,
 } from "@/lib/signal-trailing"
+import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 
 const LOG_PREFIX = "[v0] [LivePositionStage]"
 const MIN_EXCHANGE_STOP_LOSS_PERCENT = 0.2
+const SIGNAL_ADMISSION_LOCK_TTL_MS = 15_000
+const SIGNAL_ADMISSION_WAIT_MS = 2_000
+const SIGNAL_CAPACITY_NOTICE_INTERVAL_MS = 30_000
+const SIGNAL_CAPACITY_NOTICE_MAX_CONNECTIONS = 128
+const signalCapacityNoticeAt = new Map<string, number>()
 
 // ── Position snapshot cache for cycle-level deduplication ──
 // Per-cycle position cache keyed by {connId} to eliminate duplicate getPositions() 
@@ -937,8 +949,74 @@ function normalizeStopLossPercent(rawStopLoss: unknown): { value: number; adjust
 // at most ten seconds instead of the previous ninety-second blind interval.
 const POSITION_MUTATION_LOCK_TTL_MS = 10_000
 
+const livePositionDurabilityGlobal = globalThis as typeof globalThis & {
+  __livePositionDurabilityFingerprints?: Map<string, string>
+}
+const livePositionDurabilityFingerprints =
+  livePositionDurabilityGlobal.__livePositionDurabilityFingerprints ??
+  (livePositionDurabilityGlobal.__livePositionDurabilityFingerprints = new Map<string, string>())
+const LIVE_POSITION_DURABILITY_FINGERPRINT_LIMIT = 2_048
+
 function positionHashKey(connectionId: string, positionId: string): string {
   return `live_positions:${connectionId}:${positionId}`
+}
+
+function livePositionDurabilityFingerprint(position: LivePosition): string {
+  const accumulated = position.accumulatedSetKeys || []
+  const fills = position.fills || []
+  const blockLegs = position.blockLegs || []
+  const dcaLegs = position.dcaLegs || []
+  const partials = position.partialOrderExecutions || []
+  const latestBlock = blockLegs[blockLegs.length - 1]
+  const latestDca = dcaLegs[dcaLegs.length - 1]
+  const latestPartial = partials[partials.length - 1]
+  return [
+    String(position.status || ""),
+    Number(position.quantity || 0),
+    Number(position.executedQuantity || 0),
+    Number(position.totalExecutedQuantity || 0),
+    Number(position.closedQuantity || 0),
+    Number(position.remainingQuantity || 0),
+    accumulated.length,
+    String(accumulated[accumulated.length - 1] || ""),
+    fills.length,
+    blockLegs.length,
+    latestBlock ? JSON.stringify(latestBlock) : "",
+    dcaLegs.length,
+    latestDca ? JSON.stringify(latestDca) : "",
+    partials.length,
+    latestPartial ? JSON.stringify(latestPartial) : "",
+    position.pendingAccumulation ? JSON.stringify(position.pendingAccumulation) : "",
+    position.pendingReduction ? JSON.stringify(position.pendingReduction) : "",
+    position.pendingSystemAction ? JSON.stringify(position.pendingSystemAction) : "",
+    position.pendingQuantityMutation ? JSON.stringify(position.pendingQuantityMutation) : "",
+  ].join("|")
+}
+
+async function persistLivePositionCheckpointIfChanged(position: LivePosition): Promise<void> {
+  const fingerprint = livePositionDurabilityFingerprint(position)
+  const key = `${position.connectionId}:${position.id}`
+  if (livePositionDurabilityFingerprints.get(key) === fingerprint) return
+
+  livePositionDurabilityFingerprints.set(key, fingerprint)
+  if (livePositionDurabilityFingerprints.size > LIVE_POSITION_DURABILITY_FINGERPRINT_LIMIT) {
+    const oldest = livePositionDurabilityFingerprints.keys().next().value
+    if (oldest) livePositionDurabilityFingerprints.delete(oldest)
+  }
+
+  const { persistLivePositionCheckpoint } = await import("@/lib/redis-db")
+  const persisted = await persistLivePositionCheckpoint(position as unknown as Record<string, unknown>)
+  if (persisted) return
+
+  if (livePositionDurabilityFingerprints.get(key) === fingerprint) {
+    livePositionDurabilityFingerprints.delete(key)
+  }
+  logRuntimeWarning(
+    `live-position:${position.connectionId}:wal-failed`,
+    60_000,
+    `${LOG_PREFIX} Could not persist the live-position recovery checkpoint for ${position.id}`,
+  )
+  throw new Error(`Live-position recovery checkpoint failed for ${position.id}`)
 }
 
 function positionMutationLockKey(connectionId: string, positionId: string): string {
@@ -1160,14 +1238,17 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
   return position as LivePosition
 }
 
-async function readLivePositionSnapshot(client: any, connectionId: string, positionId: string): Promise<LivePosition | null> {
-  const [legacyRaw, hash] = await Promise.all([
-    client.get(`live:position:${positionId}`).catch(() => null),
-    client.hgetall(positionHashKey(connectionId, positionId)).catch(() => null),
-  ])
+function mergeLivePositionSnapshotSources(
+  legacyRaw: unknown,
+  hash: Record<string, unknown> | null | undefined,
+): LivePosition | null {
   let legacy: LivePosition | null = null
   if (legacyRaw) {
-    try { legacy = JSON.parse(legacyRaw as string) as LivePosition } catch { /* malformed legacy mirror */ }
+    try {
+      legacy = typeof legacyRaw === "string"
+        ? JSON.parse(legacyRaw) as LivePosition
+        : legacyRaw as LivePosition
+    } catch { /* malformed legacy mirror */ }
   }
   const hashPosition = hash && Object.keys(hash).length > 0
     ? parseRedisHashPosition(hash)
@@ -1186,6 +1267,14 @@ async function readLivePositionSnapshot(client: any, connectionId: string, posit
   return hashIsNewer
     ? { ...legacy, ...hashPosition }
     : { ...hashPosition, ...legacy }
+}
+
+async function readLivePositionSnapshot(client: any, connectionId: string, positionId: string): Promise<LivePosition | null> {
+  const [legacyRaw, hash] = await Promise.all([
+    client.get(`live:position:${positionId}`).catch(() => null),
+    client.hgetall(positionHashKey(connectionId, positionId)).catch(() => null),
+  ])
+  return mergeLivePositionSnapshotSources(legacyRaw, hash)
 }
 
 async function evalRedis(client: any, script: string, keys: string[], args: string[]): Promise<any> {
@@ -1227,6 +1316,244 @@ async function evalRedis(client: any, script: string, keys: string[], args: stri
   }
 
   throw new Error("Redis client does not support EVAL")
+}
+
+type SignalCapacityReservation =
+  | { state: "reserved"; capacity: SignalPositionCapacity }
+  | { state: "existing"; capacity: SignalPositionCapacity; existing: LivePosition }
+  | { state: "limit"; capacity: SignalPositionCapacity }
+  | { state: "busy"; capacity: SignalPositionCapacity }
+
+function signalCapacityKey(connectionId: string): string {
+  return `signal:position_capacity:${connectionId}`
+}
+
+function signalAdmissionLockKey(connectionId: string): string {
+  return `signal:position_admission:${connectionId}`
+}
+
+function shouldEmitSignalCapacityNotice(connectionId: string, now = Date.now()): boolean {
+  const previous = signalCapacityNoticeAt.get(connectionId) || 0
+  if (now - previous < SIGNAL_CAPACITY_NOTICE_INTERVAL_MS) return false
+  if (
+    signalCapacityNoticeAt.size >= SIGNAL_CAPACITY_NOTICE_MAX_CONNECTIONS &&
+    !signalCapacityNoticeAt.has(connectionId)
+  ) {
+    const oldest = signalCapacityNoticeAt.keys().next().value
+    if (oldest) signalCapacityNoticeAt.delete(oldest)
+  }
+  signalCapacityNoticeAt.set(connectionId, now)
+  return true
+}
+
+function parseSignalCapacitySnapshot(
+  raw: Record<string, unknown> | null | undefined,
+  fallbackLimit: number,
+): SignalPositionCapacity {
+  const total = Math.max(0, Number(raw?.total) || 0)
+  const long = Math.max(0, Number(raw?.long) || 0)
+  const short = Math.max(0, Number(raw?.short) || 0)
+  const limit = Math.max(1, Number(raw?.limit) || fallbackLimit)
+  return {
+    allowed: total < limit,
+    reason: total < limit ? "available" : "total_limit",
+    total,
+    long,
+    short,
+    limit,
+  }
+}
+
+async function readPositionsForSignalAdmission(
+  client: any,
+  connectionId: string,
+): Promise<LivePosition[]> {
+  const rawIds = (await client.lrange(`live:positions:${connectionId}`, 0, 500)) || []
+  const ids = [...new Set((rawIds as unknown[]).map(String).filter(Boolean))]
+  if (ids.length === 0) return []
+
+  let rows: unknown[] = []
+  if (typeof client.pipeline === "function") {
+    const pipeline = client.pipeline()
+    for (const id of ids) {
+      pipeline.get(`live:position:${id}`)
+      pipeline.hgetall(positionHashKey(connectionId, id))
+    }
+    rows = (await pipeline.exec()) || []
+  } else {
+    // Some supported adapters expose the Redis primitives without a pipeline
+    // builder. Keep their fallback bounded so one large open-position index
+    // cannot allocate thousands of simultaneous promises.
+    const FALLBACK_BATCH_SIZE = 32
+    for (let offset = 0; offset < ids.length; offset += FALLBACK_BATCH_SIZE) {
+      const batch = ids.slice(offset, offset + FALLBACK_BATCH_SIZE)
+      const batchRows = await Promise.all(
+        batch.flatMap((id) => [
+          client.get(`live:position:${id}`).catch(() => null),
+          client.hgetall(positionHashKey(connectionId, id)).catch(() => null),
+        ]),
+      )
+      rows.push(...batchRows)
+    }
+  }
+
+  const positions: LivePosition[] = []
+  for (let index = 0; index < ids.length; index++) {
+    const normalize = (value: unknown) => {
+      if (value instanceof Error) return null
+      return Array.isArray(value) ? value[1] : value
+    }
+    const legacyRaw = normalize(rows?.[index * 2])
+    const hash = normalize(rows?.[index * 2 + 1])
+    const position = mergeLivePositionSnapshotSources(
+      legacyRaw,
+      hash && typeof hash === "object"
+        ? hash as Record<string, unknown>
+        : null,
+    )
+    if (position) positions.push(position)
+  }
+  return positions
+}
+
+async function persistSignalCapacitySnapshot(
+  client: any,
+  connectionId: string,
+  capacity: SignalPositionCapacity,
+  selectionMode: string,
+  state: SignalCapacityReservation["state"],
+): Promise<void> {
+  const key = signalCapacityKey(connectionId)
+  await client.hset(key, {
+    total: String(capacity.total),
+    long: String(capacity.long),
+    short: String(capacity.short),
+    limit: String(capacity.limit),
+    remaining: String(Math.max(0, capacity.limit - capacity.total)),
+    selection_mode: selectionMode,
+    state,
+    updated_at: new Date().toISOString(),
+  })
+  await client.expire(key, 24 * 60 * 60).catch(() => 0)
+}
+
+/**
+ * Reserve one physical Signal position under a short connection-wide lease.
+ *
+ * The pending LivePosition is inserted into the canonical open index before
+ * the lease is released, so another worker sees it in its authoritative count.
+ * The lease expires automatically after a crash; later terminal writes remove
+ * the reservation through savePosition's normal open→closed transition.
+ */
+async function reserveSignalPositionCapacity(
+  connectionId: string,
+  candidate: LivePosition,
+  configuredLimit: number,
+  selectionMode: string,
+): Promise<SignalCapacityReservation> {
+  const client = getRedisClient()
+  const lockKey = signalAdmissionLockKey(connectionId)
+  const token = `signal-admission:${Date.now()}:${nanoid(8)}`
+  const deadline = Date.now() + SIGNAL_ADMISSION_WAIT_MS
+  let acquired = false
+
+  while (!acquired && Date.now() < deadline) {
+    const result = await client.set(lockKey, token, {
+      NX: true,
+      PX: SIGNAL_ADMISSION_LOCK_TTL_MS,
+    } as any)
+    acquired = result === "OK" || (result as any) === true
+    if (!acquired) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 40)
+        timer.unref?.()
+      })
+    }
+  }
+
+  if (!acquired) {
+    const raw = await client.hgetall(signalCapacityKey(connectionId)).catch(() => ({}))
+    return {
+      state: "busy",
+      capacity: parseSignalCapacitySnapshot(raw, configuredLimit),
+    }
+  }
+
+  try {
+    const positions = await readPositionsForSignalAdmission(client, connectionId)
+    const normalizedCandidateSymbol = String(candidate.symbol || "")
+      .toUpperCase()
+      .replace(/[-_]/g, "")
+    const existing = positions.find((position) => {
+      const normalizedPositionSymbol = String(position.symbol || "")
+        .toUpperCase()
+        .replace(/[-_]/g, "")
+      return (
+        isActiveSignalPosition(position as unknown as Record<string, unknown>) &&
+        normalizedPositionSymbol === normalizedCandidateSymbol &&
+        position.direction === candidate.direction &&
+        liveExecutionLane(position) === liveExecutionLane(candidate)
+      )
+    })
+    const capacity = evaluateSignalPositionCapacity(
+      positions as unknown as ReadonlyArray<Record<string, unknown>>,
+      candidate.direction,
+      configuredLimit,
+    )
+
+    if (existing) {
+      await persistSignalCapacitySnapshot(
+        client,
+        connectionId,
+        capacity,
+        selectionMode,
+        "existing",
+      )
+      return { state: "existing", capacity, existing }
+    }
+    if (!capacity.allowed) {
+      await persistSignalCapacitySnapshot(
+        client,
+        connectionId,
+        capacity,
+        selectionMode,
+        "limit",
+      )
+      return { state: "limit", capacity }
+    }
+
+    await savePosition(candidate)
+    clearPositionCache(connectionId)
+    const reservedCapacity: SignalPositionCapacity = {
+      ...capacity,
+      total: capacity.total + 1,
+      long: capacity.long + (candidate.direction === "long" ? 1 : 0),
+      short: capacity.short + (candidate.direction === "short" ? 1 : 0),
+      allowed: capacity.total + 1 < capacity.limit,
+      reason: capacity.total + 1 < capacity.limit ? "available" : "total_limit",
+    }
+    await persistSignalCapacitySnapshot(
+      client,
+      connectionId,
+      reservedCapacity,
+      selectionMode,
+      "reserved",
+    )
+    signalCapacityNoticeAt.delete(connectionId)
+    return { state: "reserved", capacity: reservedCapacity }
+  } finally {
+    await evalRedis(
+      client,
+      `
+        if redis.call("GET", KEYS[1]) == ARGV[1] then
+          return redis.call("DEL", KEYS[1])
+        end
+        return 0
+      `,
+      [lockKey],
+      [token],
+    ).catch(() => 0)
+  }
 }
 
 export async function acquirePositionMutationLock(
@@ -1427,6 +1754,11 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
         `live:position:${id}`,
       ])).catch(() => 0)
     }
+    // The full InlineLocalRedis checkpoint is intentionally minute-batched to
+    // avoid multi-megabyte disk writes in hot engine cycles. Journal only
+    // lifecycle/quantity changes here, so any position state already exposed
+    // by the API remains monotonic after a hard process crash.
+    await persistLivePositionCheckpointIfChanged(position)
   } catch (err) {
     console.warn(
       `${LOG_PREFIX} [RC2] savePosition failed for ${position.symbol}/${position.id}:`,
@@ -1727,7 +2059,7 @@ async function findOpenLivePositionByDir(
       psym === norm &&
       p.direction === side &&
       liveExecutionLane(p) === executionLane &&
-      (p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "simulated")
+      (p.status === "pending" || p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "simulated")
     ) {
       return p
     }
@@ -3683,10 +4015,18 @@ async function retry<T>(
   fn: () => Promise<T>,
   isSuccess: (r: T) => boolean,
   label: string,
-  maxAttempts = 3
+  maxAttempts = 3,
+  shouldContinue?: () => boolean,
 ): Promise<T> {
   let lastResult: T | undefined
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (shouldContinue?.() === false) {
+      return {
+        success: false,
+        error: "Execution generation superseded before exchange submission",
+        errorCode: "EXECUTION_SUPERSEDED",
+      } as unknown as T
+    }
     try {
       const result = await fn()
       lastResult = result
@@ -3725,6 +4065,13 @@ async function retry<T>(
       lastResult = undefined as unknown as T
     }
     if (attempt < maxAttempts) {
+      if (shouldContinue?.() === false) {
+        return {
+          success: false,
+          error: "Execution generation superseded during retry backoff",
+          errorCode: "EXECUTION_SUPERSEDED",
+        } as unknown as T
+      }
       // Tight backoff: 200 ms → 400 ms → 800 ms. Transient API blips
       // (network jitter, brief rate-limit, venue side proxy reload)
       // typically clear in well under 500 ms; the old 500/1000/2000 ms
@@ -5490,8 +5837,16 @@ async function updateProtectionOrders(
 export async function executeLivePosition(
   connectionId: string,
   sourceRealPosition: RealPosition,
-  exchangeConnector: any
+  exchangeConnector: any,
+  shouldContinue?: () => boolean,
 ): Promise<LivePosition> {
+  const isCurrent = (): boolean => {
+    try {
+      return shouldContinue?.() !== false
+    } catch {
+      return false
+    }
+  }
   await initRedis()
   const client = getRedisClient()
   const connectionTrackingId = makeConnectionTrackingId(connectionId)
@@ -5809,8 +6164,37 @@ export async function executeLivePosition(
   const executionLane = liveExecutionLane(realPosition)
   const _lockDirSuffix = liveLockDirection(realPosition).slice(realPosition.direction.length)
   let liveOrderLockToken: string | null = null
+  let signalCapacityReserved = false
+  let exchangeSubmissionStarted = false
+  const abortSuperseded = async (): Promise<boolean> => {
+    // Once a venue request may have left this process, cancellation would be
+    // unsafe: the response can race the settings event. Continue durable
+    // recovery, fill reconciliation, and protection for that exact
+    // clientOrderId, but suppress every not-yet-started retry below.
+    if (isCurrent() || exchangeSubmissionStarted) return false
+    livePosition.status = "rejected"
+    livePosition.statusReason =
+      "Execution generation changed before submission; no new order was sent"
+    livePosition.submissionState = undefined
+    pushStep(livePosition, "generation_guard", false, livePosition.statusReason)
+    if (signalCapacityReserved) {
+      await savePosition(livePosition).catch(() => {})
+      signalCapacityReserved = false
+    }
+    if (liveOrderLockToken) {
+      await releaseLock(
+        connectionId,
+        realPosition.symbol,
+        realPosition.direction + _lockDirSuffix,
+        liveOrderLockToken,
+      ).catch(() => {})
+      liveOrderLockToken = null
+    }
+    return true
+  }
 
   try {
+    if (await abortSuperseded()) return livePosition
     // ── Step 1: Pre-flight validation ──────────────�������──────────────────────
     const requestedDirection = String(realPosition.direction || "").trim().toLowerCase()
     if (
@@ -5845,6 +6229,7 @@ export async function executeLivePosition(
     livePosition.executionMode = liveReadiness.executionMode
     livePosition.executionBlockCode = liveReadiness.blockCode || undefined
     livePosition.executionBlockReason = liveReadiness.blockReason || undefined
+    if (await abortSuperseded()) return livePosition
 
     // A requested live run must fail visibly when its safety prerequisites are
     // not met. Falling back to paper here made the Main engine look healthy
@@ -5882,6 +6267,7 @@ export async function executeLivePosition(
     // on flat, and close-then-open on a direction flip. Ordinary dedup/merge
     // logic is additive and therefore cannot implement this target contract.
     if (realPosition.combinedPosCounts) {
+      if (await abortSuperseded()) return livePosition
       const reconciled = await reconcileCombinedPosCountTarget(
         connectionId,
         realPosition,
@@ -5904,6 +6290,7 @@ export async function executeLivePosition(
     // make protection ownership ambiguous.
     const isAdjustmentVariant = isBlockVariant || realPosition.setVariant === "dca"
     if (isAdjustmentVariant) {
+      if (await abortSuperseded()) return livePosition
       const existing = await findAuthoritativeAdjustmentParent(
         connectionId,
         realPosition.symbol,
@@ -5923,14 +6310,17 @@ export async function executeLivePosition(
       const adjustmentPrice = realPosition.entryPrice > 0
         ? realPosition.entryPrice
         : await fetchCurrentPrice(realPosition.symbol)
+      if (await abortSuperseded()) return livePosition
       if (!(adjustmentPrice > 0)) {
         pushStep(existing, "accumulate_skip", false, "market price unavailable — adjustment deferred")
         await savePosition(existing)
         return existing
       }
       if (existing.status === "simulated") {
+        if (await abortSuperseded()) return livePosition
         return accumulateIntoSimulatedPosition(connectionId, existing, realPosition, adjustmentPrice)
       }
+      if (await abortSuperseded()) return livePosition
       return accumulateIntoLivePosition(connectionId, existing, realPosition, adjustmentPrice, exchangeConnector)
     }
 
@@ -5993,6 +6383,11 @@ export async function executeLivePosition(
         realPosition.symbol,
         realPosition.direction + _lockDirSuffix,
       )
+      if (acquired) {
+        liveOrderLockToken = acquired
+        livePosition.liveLockToken = acquired
+      }
+      if (await abortSuperseded()) return livePosition
       if (!acquired) {
         // Slot is held — try to merge into the existing exchange
         // position. If we can't (in-flight entry from another tick),
@@ -6082,11 +6477,104 @@ export async function executeLivePosition(
         /* Do not refresh: this worker did not acquire the lock token. */
         return merged
       }
-      liveOrderLockToken = acquired
-      livePosition.liveLockToken = acquired
       // acquired === true: we own the slot. Continue to fresh-entry
       // path below. The historical `await acquireLock(...)` after order
       // placement is now redundant and has been removed (see Step 5).
+    }
+
+    // Simulation has no symbol-scoped Redis lock, so perform the cheap existing
+    // lane check before taking the connection-wide Signal admission lease. The
+    // authoritative re-check inside reserveSignalPositionCapacity closes the
+    // remaining cross-worker race.
+    if (!isLiveTradeEnabled) {
+      const existingSimulatedSlot = await findOpenLivePositionByDir(
+        connectionId,
+        realPosition.symbol,
+        realPosition.direction,
+        executionLane,
+      )
+      if (existingSimulatedSlot) return existingSimulatedSlot
+    }
+
+    const isSignalPositionCandidate = isActiveSignalPosition(
+      livePosition as unknown as Record<string, unknown>,
+    )
+    if (isSignalPositionCandidate) {
+      if (await abortSuperseded()) return livePosition
+      const signalSettings = await loadSignalIndicationSettings()
+      const admission = await reserveSignalPositionCapacity(
+        connectionId,
+        livePosition,
+        signalSettings.maxPositionsTotal,
+        signalSettings.positionSelectionMode,
+      )
+
+      if (admission.state === "existing") {
+        // A live lock can legitimately expire while its venue position remains
+        // open. Transfer the newly-acquired token to that canonical position
+        // instead of releasing it and reopening the duplicate window.
+        if (liveOrderLockToken) {
+          admission.existing.liveLockToken = liveOrderLockToken
+          await savePosition(admission.existing)
+        }
+        return admission.existing
+      }
+
+      if (admission.state === "limit" || admission.state === "busy") {
+        livePosition.status = "rejected"
+        livePosition.statusReason = admission.state === "limit"
+          ? `Signal position capacity reached (${admission.capacity.total}/${admission.capacity.limit} Long + Short); lower-ranked candidate deferred`
+          : "Signal position admission is coordinating another candidate; deferred to the next cycle"
+        pushStep(livePosition, "signal_position_admission", false, livePosition.statusReason)
+        if (liveOrderLockToken) {
+          await releaseLock(
+            connectionId,
+            realPosition.symbol,
+            realPosition.direction + _lockDirSuffix,
+            liveOrderLockToken,
+          ).catch(() => {})
+          liveOrderLockToken = null
+        }
+        if (shouldEmitSignalCapacityNotice(connectionId)) {
+          await Promise.all([
+            logProgressionEvent(
+              connectionId,
+              "signal_capacity",
+              admission.state === "limit" ? "warning" : "info",
+              livePosition.statusReason,
+              {
+                symbol: realPosition.symbol,
+                direction: realPosition.direction,
+                total: admission.capacity.total,
+                long: admission.capacity.long,
+                short: admission.capacity.short,
+                limit: admission.capacity.limit,
+                selectionMode: signalSettings.positionSelectionMode,
+              },
+            ),
+            SystemLogger.logTradeEngine(
+              livePosition.statusReason,
+              admission.state === "limit" ? "warn" : "info",
+              {
+                connectionId,
+                symbol: realPosition.symbol,
+                direction: realPosition.direction,
+                capacity: admission.capacity,
+                selectionMode: signalSettings.positionSelectionMode,
+              },
+            ),
+          ]).catch(() => {})
+        }
+        return livePosition
+      }
+
+      signalCapacityReserved = true
+      pushStep(
+        livePosition,
+        "signal_position_admission",
+        true,
+        `reserved ${admission.capacity.total}/${admission.capacity.limit}; best-quality-first`,
+      )
     }
 
     // Short-circuit on simulation mode — still record the intent.
@@ -6115,27 +6603,7 @@ export async function executeLivePosition(
     // `processSimulatedPositions` sweep walking Redis market_data
     // and force-closing on SL/TP cross or max-hold-time expiry.
     if (!isLiveTradeEnabled) {
-      const existingSimulatedSlot = await findOpenLivePositionByDir(
-        connectionId,
-        realPosition.symbol,
-        realPosition.direction,
-        executionLane,
-      )
-      if (existingSimulatedSlot) {
-        pushStep(
-          existingSimulatedSlot,
-          "simulate_skip",
-          false,
-          `simulated slot already open for ${realPosition.symbol} ${realPosition.direction}`,
-        )
-        existingSimulatedSlot.statusReason =
-          existingSimulatedSlot.statusReason || "live_trade disabled by operator — no exchange execution"
-        existingSimulatedSlot.executionMode = "simulation"
-        existingSimulatedSlot.updatedAt = Date.now()
-        await savePosition(existingSimulatedSlot)
-        return existingSimulatedSlot
-      }
-
+      if (await abortSuperseded()) return livePosition
       // Fetch the current market price so simulated positions open at a
       // real price (not 0). This mirrors the live path's Step 2 but runs
       // here before the simulation early-return so SL/TP cross-checks and
@@ -6168,6 +6636,7 @@ export async function executeLivePosition(
           livePosition.leverage = simVolResult.leverage || livePosition.leverage
         }
       } catch { /* fallback to realPosition.quantity */ }
+      if (await abortSuperseded()) return livePosition
 
       // Set averageExecutionPrice before calling computeDesiredProtectionPrices
       // because that function uses it as the fill price for SL/TP calculation.
@@ -6207,6 +6676,7 @@ export async function executeLivePosition(
       livePosition.statusReason = "live_trade disabled by operator — no exchange execution"
       livePosition.executionMode = "simulation"
       pushStep(livePosition, "simulate", true, `qty=${simQty} @ ${simEntryPrice}`)
+      if (await abortSuperseded()) return livePosition
       await savePosition(livePosition)
       await recordFillCountersOnce(
         connectionId,
@@ -6461,6 +6931,7 @@ export async function executeLivePosition(
     const [levResult, marginResult] = await Promise.all([setLeveragePromise, setMarginTypePromise])
     pushStep(livePosition, "set_leverage", levResult.ok, levResult.note)
     pushStep(livePosition, "set_margin_type", marginResult.ok, marginResult.note)
+    if (await abortSuperseded()) return livePosition
 
 
     // ── Step 5: Place entry order with retry ─────────────────────����─────────
@@ -6520,6 +6991,7 @@ export async function executeLivePosition(
     const freshReadiness = evaluateRealTradeReadiness(freshSettings, freshExecutionIntent)
     const supervisedSmokeId = await client.get("live_order_smoke:active").catch(() => null)
     const isStillLive = freshReadiness.canPlaceRealOrders && !supervisedSmokeId
+    if (await abortSuperseded()) return livePosition
     
     const isTestnetConnection = reCheckTruthy(freshSettings.is_testnet)
     if (isTestnetConnection) {
@@ -6573,6 +7045,10 @@ export async function executeLivePosition(
     pushStep(livePosition, "entry_submission_prepared", true, `clientOrderId=${orderTrace.exchangeTrackingId}`)
     await savePosition(livePosition)
     await persistCriticalLiveState(`entry:${livePosition.id}`)
+    if (await abortSuperseded()) {
+      await savePosition(livePosition).catch(() => {})
+      return livePosition
+    }
 
     // Strong diagnostic log right before real money order attempt
     console.log(
@@ -6603,20 +7079,36 @@ export async function executeLivePosition(
             attempt: placeAttempt,
             label: "primary",
           },
-          () => exchangeConnector.placeOrder(
-            realPosition.symbol,
-            exchangeSide,
-            computedVolume,
-            undefined,
-            "market",
-            entryOrderOptions,
-          ),
+          () => {
+            if (!isCurrent()) {
+              return Promise.resolve({
+                success: false,
+                error: "Execution generation superseded before exchange submission",
+                errorCode: "EXECUTION_SUPERSEDED",
+              })
+            }
+            exchangeSubmissionStarted = true
+            return exchangeConnector.placeOrder(
+              realPosition.symbol,
+              exchangeSide,
+              computedVolume,
+              undefined,
+              "market",
+              entryOrderOptions,
+            )
+          },
         )
         return raw
       },
       (r: any) => !!r?.success,
-      "placeOrder"
+      "placeOrder",
+      3,
+      isCurrent,
     )
+    if (await abortSuperseded()) {
+      await savePosition(livePosition).catch(() => {})
+      return livePosition
+    }
 
     // ── Volume reduction on 101204 (Insufficient margin) ────────────────
     // Leverage is kept at its maximum value — never reduced. When the
@@ -6627,7 +7119,7 @@ export async function executeLivePosition(
     // volume still fails, we fall back to the exchange minimum quantity at
     // the same leverage, which represents the absolute smallest notional
     // with the best leverage efficiency.
-    if (!orderResult?.success && isNonRecoverableExchangeError(orderResult)) {
+    if (isCurrent() && !orderResult?.success && isNonRecoverableExchangeError(orderResult)) {
       const reducedVolume = computedVolume / 2
       // Ensure the halved volume is meaningfully smaller (> 0.1% diff) and positive.
       const volumeDiffPct = computedVolume > 0 ? Math.abs(reducedVolume - computedVolume) / computedVolume : 0
@@ -6654,21 +7146,35 @@ export async function executeLivePosition(
                 attempt: placeAttempt,
                 label: "volume-halved",
               },
-              () => exchangeConnector.placeOrder(
-                realPosition.symbol,
-                exchangeSide,
-                reducedVolume,
-                undefined,
-                "market",
-                entryOrderOptions,
-              ),
+              () => {
+                if (!isCurrent()) {
+                  return Promise.resolve({
+                    success: false,
+                    error: "Execution generation superseded before reduced-volume retry",
+                    errorCode: "EXECUTION_SUPERSEDED",
+                  })
+                }
+                return exchangeConnector.placeOrder(
+                  realPosition.symbol,
+                  exchangeSide,
+                  reducedVolume,
+                  undefined,
+                  "market",
+                  entryOrderOptions,
+                )
+              },
             )
             return raw
           },
           (r: any) => !!r?.success && !!(r.orderId || r.id),
           "placeOrder-reducedVol",
-          1 // single retry — we already tried 3× above at original volume
+          1, // single retry — we already tried 3× above at original volume
+          isCurrent,
         )
+        if (await abortSuperseded()) {
+          await savePosition(livePosition).catch(() => {})
+          return livePosition
+        }
 
         if (retryResult?.success && (retryResult.orderId || retryResult.id)) {
           // Succeeded with reduced volume at max leverage — update position and continue.
@@ -6704,7 +7210,11 @@ export async function executeLivePosition(
           const minQuantityDiffPct = reducedVolume > 0
             ? Math.abs(minQtyForSymbol - reducedVolume) / reducedVolume
             : 1
-          if (minQtyForSymbol > 0 && minQuantityDiffPct > 0.001) {
+          if (isCurrent() && minQtyForSymbol > 0 && minQuantityDiffPct > 0.001) {
+            if (await abortSuperseded()) {
+              await savePosition(livePosition).catch(() => {})
+              return livePosition
+            }
             console.warn(
               `${LOG_PREFIX} 101204 at half-volume still fails on ${realPosition.symbol} — ` +
               `trying min notional qty=${minQtyForSymbol.toFixed(8)} at ${livePosition.leverage}x (max leverage kept)`,
@@ -6725,6 +7235,13 @@ export async function executeLivePosition(
                 label: "min-notional-max-lev",
               },
               async () => {
+                if (!isCurrent()) {
+                  return {
+                    success: false,
+                    error: "Execution generation superseded before minimum-volume retry",
+                    errorCode: "EXECUTION_SUPERSEDED",
+                  }
+                }
                 const r = await exchangeConnector.placeOrder(
                   realPosition.symbol,
                   exchangeSide,
@@ -6831,11 +7348,15 @@ export async function executeLivePosition(
       // message and retry IMMEDIATELY with corrected volume in THIS cycle.
       // This prevents wasting cycles on repeated sub-minimum rejections.
       let retryWasAttempted = false
-      if (isMinOrderSizeError(reason) && placeAttempt < 3) {
+      if (isCurrent() && isMinOrderSizeError(reason) && placeAttempt < 3) {
         const minQty = extractMinOrderQty(reason)
         if (minQty && minQty > 0 && minQty > computedVolume) {
           retryWasAttempted = true
           try {
+            if (await abortSuperseded()) {
+              await savePosition(livePosition).catch(() => {})
+              return livePosition
+            }
             const { setSettings } = await import("@/lib/redis-db")
             
             // Save the corrected minimum for future cycles
@@ -6856,14 +7377,24 @@ export async function executeLivePosition(
             )
             
             // Retry immediately with corrected quantity
-            const retryOrderResult = await exchangeConnector.placeOrder(
-              realPosition.symbol,
-              exchangeSide,
-              retryQty,
-              undefined,
-              "market",
-              entryOrderOptions,
-            )
+            if (await abortSuperseded()) {
+              await savePosition(livePosition).catch(() => {})
+              return livePosition
+            }
+            const retryOrderResult = isCurrent()
+              ? await exchangeConnector.placeOrder(
+                  realPosition.symbol,
+                  exchangeSide,
+                  retryQty,
+                  undefined,
+                  "market",
+                  entryOrderOptions,
+                )
+              : {
+                  success: false,
+                  error: "Execution generation superseded before minimum-order correction retry",
+                  errorCode: "EXECUTION_SUPERSEDED",
+                }
             
             if (retryOrderResult?.success && (retryOrderResult?.orderId || retryOrderResult?.id)) {
               console.log(
@@ -10111,16 +10642,22 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
     const liveTradeOn = await isLiveTradeEnabledForConnection(connectionId)
     if (!liveTradeOn) {
       const simSummary = await processSimulatedPositions(connectionId)
-      const statusBreakdown = allOpen.reduce<Record<string, number>>((acc, p) => {
-        const s = String(p.status || "unknown")
-        acc[s] = (acc[s] || 0) + 1
-        return acc
-      }, {})
-      console.log(
-        `${LOG_PREFIX} [sync-skip] conn=${connectionId} live_trade=false; ` +
-        `skipped private exchange sync, tracked=${allOpen.length}, ` +
-        `simProcessed=${simSummary.processed}, simClosed=${simSummary.closed}, ` +
-        `statuses=${JSON.stringify(statusBreakdown)}`,
+      logRuntimeInfo(
+        `live:${connectionId}:sync-skip`,
+        30_000,
+        () => {
+          const statusBreakdown = allOpen.reduce<Record<string, number>>((acc, p) => {
+            const status = String(p.status || "unknown")
+            acc[status] = (acc[status] || 0) + 1
+            return acc
+          }, {})
+          return (
+            `${LOG_PREFIX} [sync-skip] conn=${connectionId} live_trade=false; ` +
+            `skipped private exchange sync, tracked=${allOpen.length}, ` +
+            `simProcessed=${simSummary.processed}, simClosed=${simSummary.closed}, ` +
+            `statuses=${JSON.stringify(statusBreakdown)}`
+          )
+        },
       )
       return
     }

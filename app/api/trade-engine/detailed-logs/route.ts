@@ -1,85 +1,120 @@
 import { NextResponse } from "next/server"
-import { initRedis, getAllConnections, getConnectionPositions, getConnectionTrades, getRedisClient, getSettings } from "@/lib/redis-db"
+import { initRedis, getAllConnections, getRedisClient, getSettings } from "@/lib/redis-db"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { getProgressionLogs } from "@/lib/engine-progression-logs"
+import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
+import { buildPrehistoricGateKeys, buildProgressionScope } from "@/lib/progression-scope"
+import { SystemLogger } from "@/lib/system-logger"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 
-function mapPhaseToType(phase: string) {
+function mapPhaseToType(phase: string, level = "info") {
+  if (level === "error") return "error"
+  if (level === "warning" || level === "warn") return "warning"
   // Order matters — "live_trading" must be classified before "position" so
   // that the new Live filter in the UI captures exchange-side events only.
   if (phase.includes("live")) return "live"
+  if (phase.includes("setting") || phase.includes("recoordination") || phase.includes("toggle")) return "settings"
+  if (phase.includes("prehistoric") || phase.includes("historic")) return "processing"
   if (phase.includes("indication")) return "indication"
   if (phase.includes("strategy")) return "strategy"
   if (phase.includes("position")) return "position"
   if (phase.includes("error")) return "error"
   return "engine"
-  }
+}
 
 function isTruthy(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true"
 }
 
 const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto", "signal", "trend"] as const
+const HEARTBEAT_STALE_MS = 120_000
+const PROCESSING_STALE_MS = 120_000
+const MONITOR_READ_DEADLINE_MS = 10_000
 
 function toNumber(value: unknown): number {
   const n = Number(value)
   return Number.isFinite(n) ? n : 0
 }
 
-function enforceHierarchy(base: number, main: number, real: number) {
-  const normalizedMain = Math.max(0, Math.round(main))
-  const normalizedBase = Math.max(Math.round(base), normalizedMain * 2)
-  const normalizedReal = Math.min(Math.round(real), Math.floor(normalizedMain * 0.6))
-  return {
-    base: normalizedBase,
-    main: normalizedMain,
-    real: Math.max(0, normalizedReal),
+function toEpochMs(value: unknown): number {
+  if (value == null || value === "") return 0
+  const numeric = Number(value)
+  if (Number.isFinite(numeric) && numeric > 0) return numeric
+  const parsed = Date.parse(String(value))
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+function parseSymbols(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return Array.from(new Set(value.map((item) => String(item).trim().toUpperCase()).filter(Boolean)))
+  }
+  if (typeof value !== "string" || !value.trim()) return []
+  try {
+    const parsed = JSON.parse(value)
+    if (Array.isArray(parsed)) return parseSymbols(parsed)
+  } catch {
+    // Accept legacy comma-separated values.
+  }
+  return Array.from(new Set(value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean)))
+}
+
+type MonitorAlert = {
+  id: string
+  level: "critical" | "warning" | "info"
+  category: string
+  message: string
+  timestamp: string
+  connectionId?: string
+  details?: Record<string, unknown>
+}
+
+async function withinMonitorDeadline<T>(
+  work: Promise<T>,
+  deadlineAt: number,
+  label: string,
+): Promise<T> {
+  const remainingMs = Math.max(1, deadlineAt - Date.now())
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((_resolve, reject) => {
+        timeoutHandle = setTimeout(
+          () => reject(new Error(`Detailed monitoring timed out while reading ${label}`)),
+          remainingMs,
+        )
+      }),
+    ])
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle)
   }
 }
 
-
 async function getRecentLiveOrderAudits(client: ReturnType<typeof getRedisClient>, connectionIds: string[], limit = 75) {
-  const rows: any[] = []
-  for (const connectionId of connectionIds) {
+  const rowsByConnection = await mapWithConcurrency(connectionIds, 6, async (connectionId) => {
+    const rows: any[] = []
     try {
       const traceIds = await client.zrevrange(`live_order_audit:${connectionId}:recent`, 0, limit - 1).catch(() => [])
-      const fallbackKeys = traceIds.length > 0
-        ? []
-        : await client.keys(`live_order_audit:${connectionId}:*`).catch(() => [])
-
-      if (traceIds.length > 0) {
-        for (const traceId of traceIds) {
-          const raw = await client.get(`live_order_audit:${connectionId}:${traceId}`).catch(() => null)
-          if (!raw) continue
-          try { rows.push(typeof raw === "string" ? JSON.parse(raw) : raw) } catch { /* ignore malformed audit */ }
-        }
-      } else {
-        for (const key of fallbackKeys) {
-          if (key.endsWith(":recent")) continue
-          const raw = await client.get(key).catch(() => null)
-          if (!raw) continue
-          try { rows.push(typeof raw === "string" ? JSON.parse(raw) : raw) } catch { /* ignore malformed audit */ }
-        }
+      const rawRows = await mapWithConcurrency(
+        traceIds,
+        12,
+        (traceId) => client.get(`live_order_audit:${connectionId}:${traceId}`).catch(() => null),
+      )
+      for (const raw of rawRows) {
+        if (!raw) continue
+        try { rows.push(typeof raw === "string" ? JSON.parse(raw) : raw) } catch { /* ignore malformed audit */ }
       }
     } catch {
       // best-effort diagnostics only
     }
-  }
+    return rows
+  })
 
-  return rows
+  return rowsByConnection
+    .flat()
     .filter((row) => row && row.traceId && row.connectionId)
     .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime())
     .slice(0, limit)
-}
-
-async function countArrayEntries(client: ReturnType<typeof getRedisClient>, key: string): Promise<number> {
-  try {
-    const raw = await client.get(key)
-    if (!raw) return 0
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
-    return Array.isArray(parsed) ? parsed.length : 0
-  } catch {
-    return 0
-  }
 }
 
 async function countIndicationsByType(client: ReturnType<typeof getRedisClient>, connectionId: string) {
@@ -99,21 +134,8 @@ async function countIndicationsByType(client: ReturnType<typeof getRedisClient>,
     { direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, signal: 0, trend: 0, total: 0 } as Record<string, number>,
   )
 
-  if (result.total > 0) {
-    return result
-  }
-
-  // Fallback for older/newer set keys where counters are unavailable.
-  for (const type of INDICATION_TYPES) {
-    const keys = await client.keys(`indication_set:${connectionId}:*:${type}*`).catch(() => [])
-    let sum = 0
-    for (const key of keys) {
-      sum += await countArrayEntries(client, key)
-    }
-    result[type] = sum
-    result.total += sum
-  }
-
+  // Never wildcard-scan indication result keys from a polling endpoint. The
+  // bounded counters above are the canonical monitoring read model.
   return result
 }
 
@@ -147,18 +169,24 @@ async function countStrategiesByType(client: ReturnType<typeof getRedisClient>, 
     uniqueSymbols.push("BTCUSDT", "ETHUSDT", "SOLUSDT")
   }
 
-  const totals = { base: 0, main: 0, real: 0 }
-
-  for (const symbol of uniqueSymbols) {
-    for (const stage of ["base", "main", "real"] as const) {
+  const rows = await Promise.all(
+    uniqueSymbols.flatMap((symbol) =>
+      (["base", "main", "real"] as const).map(async (stage) => {
       try {
         const settingsHash = await client.hgetall(`settings:strategies:${connectionId}:${symbol}:${stage}:sets`)
-        if (settingsHash && settingsHash.count) {
-          totals[stage] += parseInt(settingsHash.count, 10) || 0
-        }
+        return { stage, count: parseInt(settingsHash?.count || "0", 10) || 0 }
       } catch { /* non-critical */ }
-    }
-  }
+        return { stage, count: 0 }
+      }),
+    ),
+  )
+  const totals = rows.reduce(
+    (acc, row) => {
+      acc[row.stage] += row.count
+      return acc
+    },
+    { base: 0, main: 0, real: 0 },
+  )
 
   return totals
 }
@@ -186,15 +214,21 @@ async function getStrategyEvaluationCounters(client: ReturnType<typeof getRedisC
 }
 
 export const dynamic = "force-dynamic"
+export const maxDuration = 15
 
 export async function GET(request: Request) {
   try {
-    await initRedis()
+    const monitorDeadlineAt = Date.now() + MONITOR_READ_DEADLINE_MS
+    await withinMonitorDeadline(initRedis(), monitorDeadlineAt, "database initialization")
     const { searchParams } = new URL(request.url)
     const selectedConnectionId = searchParams.get("connectionId")
     const selectedExchange = (searchParams.get("exchange") || "").toLowerCase()
 
-    const allConnections = await getAllConnections()
+    const allConnections = await withinMonitorDeadline(
+      getAllConnections(),
+      monitorDeadlineAt,
+      "connections",
+    )
     let activeConnections = allConnections.filter((c: any) => {
       const exch = (c.exchange || "").toLowerCase()
       const isBase = ["bingx", "bybit", "pionex", "orangex"].includes(exch)
@@ -207,21 +241,27 @@ export async function GET(request: Request) {
       activeConnections = activeConnections.filter((c: any) => (c.exchange || "").toLowerCase() === selectedExchange)
     }
 
-    const progressionStates = await Promise.all(activeConnections.map((c: any) => ProgressionStateManager.getProgressionState(c.id)))
-
-    const logsByConnection = await Promise.all(
-      activeConnections.map((c: any) => getProgressionLogs(c.id))
+    const [
+      connectionReadModels,
+      globalLogs,
+      systemLogsRaw,
+    ] = await withinMonitorDeadline(
+      Promise.all([
+        mapWithConcurrency(activeConnections, 6, async (connection: any) => {
+          const [progression, connectionLogs] = await Promise.all([
+            ProgressionStateManager.getProgressionState(connection.id),
+            getProgressionLogs(connection.id),
+          ])
+          return { progression, connectionLogs }
+        }),
+        getProgressionLogs("global"),
+        SystemLogger.getLogs(undefined, 200),
+      ]),
+      monitorDeadlineAt,
+      "progress and logs",
     )
-
-    const globalLogs = await getProgressionLogs("global")
-
-    const positionsByConnection = await Promise.all(
-      activeConnections.map((c: any) => getConnectionPositions(c.id))
-    )
-
-    const tradesByConnection = await Promise.all(
-      activeConnections.map((c: any) => getConnectionTrades(c.id))
-    )
+    const progressionStates = connectionReadModels.map((item) => item.progression)
+    const logsByConnection = connectionReadModels.map((item) => item.connectionLogs)
 
     const combinedLogsRaw = [...logsByConnection.flat(), ...globalLogs]
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
@@ -230,30 +270,75 @@ export async function GET(request: Request) {
     const logs = combinedLogsRaw.map((log, index) => ({
       id: `${log.connectionId}-${index}-${log.timestamp}`,
       timestamp: log.timestamp,
-      type: mapPhaseToType(log.phase),
+      level: log.level === "warning" ? "warn" : log.level,
+      category: "engine",
+      type: mapPhaseToType(log.phase, log.level),
       symbol: log.details?.symbol,
       phase: log.phase,
       message: log.message,
       connectionId: log.connectionId,
-      details: {
-        timeframe: log.details?.timeframe,
-        timeRange: log.details?.timeRange,
-        calculatedIndicators: log.details?.calculatedIndicators,
-        evaluatedStrategies: log.details?.evaluatedStrategies,
-        pseudoPositions: log.details?.pseudoPositions,
-        configs: log.details?.configs,
-        evals: log.details?.evals,
-        ratios: log.details?.ratios,
-        cycleDuration: log.details?.cycleDuration,
-      },
+      details: log.details || {},
     }))
 
+    const selectedIds = new Set(activeConnections.map((connection: any) => connection.id))
+    const systemLogs = systemLogsRaw
+      .filter((log) => {
+        if (!selectedConnectionId && !selectedExchange) return true
+        const logConnectionId = String(log.metadata?.connectionId || "")
+        return !logConnectionId || selectedIds.has(logConnectionId)
+      })
+      .map((log, index) => {
+        const connectionId = String(log.metadata?.connectionId || "") || undefined
+        const level = log.level === "warn" ? "warn" : log.level
+        return {
+          id: `system-${index}-${log.timestamp}`,
+          timestamp: log.timestamp,
+          level,
+          category: log.category || "system",
+          type: mapPhaseToType(`system_${log.category || "event"}`, level),
+          phase: `system_${log.category || "event"}`,
+          message: log.message,
+          connectionId,
+          symbol: typeof log.metadata?.symbol === "string" ? log.metadata.symbol : undefined,
+          details: log.metadata || {},
+        }
+      })
+
     const client = getRedisClient()
-    const auditRows = await getRecentLiveOrderAudits(client, activeConnections.map((c: any) => c.id))
+    const rawSignalSettings = await withinMonitorDeadline(
+      client.get("indications:signal").catch(() => null),
+      monitorDeadlineAt,
+      "Signal settings",
+    )
+    let configuredSignalPositionLimit = 120
+    try {
+      const parsed = typeof rawSignalSettings === "string"
+        ? JSON.parse(rawSignalSettings)
+        : rawSignalSettings
+      const configured = Number(parsed?.maxPositionsTotal)
+      if (Number.isFinite(configured)) {
+        configuredSignalPositionLimit = Math.max(1, Math.min(500, Math.round(configured)))
+      }
+    } catch {
+      // The engine applies the same safe default when legacy JSON is malformed.
+    }
+    const auditRows = await withinMonitorDeadline(
+      getRecentLiveOrderAudits(client, activeConnections.map((c: any) => c.id)),
+      monitorDeadlineAt,
+      "order audits",
+    )
     const auditLogs = auditRows.map((audit: any) => ({
       id: `audit-${audit.connectionId}-${audit.traceId}`,
       timestamp: audit.updatedAt || audit.createdAt || new Date().toISOString(),
-      type: "live",
+      level:
+        audit.entryOrderStatus === "failed" || audit.entryOrderStatus === "rejected"
+          ? "error"
+          : "info",
+      category: "orders",
+      type:
+        audit.entryOrderStatus === "failed" || audit.entryOrderStatus === "rejected"
+          ? "error"
+          : "live",
       symbol: audit.symbol,
       phase: "live_order_audit",
       message: `Live order audit ${audit.symbol} ${audit.direction} ${audit.entryOrderStatus || "pending"} protection=${audit.protectionState}`,
@@ -261,25 +346,77 @@ export async function GET(request: Request) {
       details: audit,
     }))
 
-    const perConnection = await Promise.all(
-      activeConnections.map(async (conn: any, index: number) => {
-        const state = (await getSettings(`trade_engine_state:${conn.id}`)) || {}
+    const perConnection = await withinMonitorDeadline(
+      mapWithConcurrency(activeConnections, 6, async (conn: any, index: number) => {
         const progression = progressionStates[index] || {}
+        const scope = buildProgressionScope(conn.id, "main")
+        const doneGateKeys = buildPrehistoricGateKeys(conn.id, "main", "done")
+        const firstPassGateKeys = buildPrehistoricGateKeys(conn.id, "main", "firstpass:done")
+        const [
+          settingsStateRaw,
+          rawState,
+          scopedState,
+          legacyProgHash,
+          scopedProgHash,
+          legacyPrehistoricHash,
+          scopedPrehistoricHash,
+          signalCapacityRaw,
+          heartbeatAt,
+          doneScoped,
+          doneLegacy,
+          firstPassScoped,
+          firstPassLegacy,
+        ] = await Promise.all([
+          getSettings(`trade_engine_state:${conn.id}`).catch(() => ({})),
+          client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
+          client.hgetall(scope.tradeEngineStateKey).catch(() => ({} as Record<string, string>)),
+          client.hgetall(`progression:${conn.id}`).catch(() => ({} as Record<string, string>)),
+          client.hgetall(scope.progressionKey).catch(() => ({} as Record<string, string>)),
+          client.hgetall(`prehistoric:${conn.id}`).catch(() => ({} as Record<string, string>)),
+          client.hgetall(scope.prehistoricKey).catch(() => ({} as Record<string, string>)),
+          client.hgetall(`signal:position_capacity:${conn.id}`).catch(() => ({} as Record<string, string>)),
+          getFreshestProcessorHeartbeat(conn.id),
+          client.get(doneGateKeys.scoped).catch(() => null),
+          client.get(doneGateKeys.legacy).catch(() => null),
+          client.get(firstPassGateKeys.scoped).catch(() => null),
+          client.get(firstPassGateKeys.legacy).catch(() => null),
+        ])
+        const state = {
+          ...(rawState || {}),
+          ...(scopedState || {}),
+          ...((settingsStateRaw as Record<string, unknown>) || {}),
+        }
+        const progHash = {
+          ...(legacyProgHash || {}),
+          ...(scopedProgHash || {}),
+        }
+        const progressionCounter = (field: string) =>
+          Math.max(
+            toNumber((legacyProgHash as Record<string, string>)?.[field]),
+            toNumber((scopedProgHash as Record<string, string>)?.[field]),
+          )
+        const hasScopedPrehistoric = Object.keys(scopedPrehistoricHash || {}).length > 0
+        const prehistoricHash = hasScopedPrehistoric
+          ? scopedPrehistoricHash
+          : legacyPrehistoricHash
 
-        // Read the live progression hash — written every indication cycle.
-        // This is more current than trade_engine_state (persisted every 50-100 cycles).
-        let progHash: Record<string, string> = {}
-        try {
-          progHash = (await client.hgetall(`progression:${conn.id}`)) || {}
-        } catch { /* non-critical */ }
+        const symbols =
+          parseSymbols((state as any).selected_symbols).length > 0
+            ? parseSymbols((state as any).selected_symbols)
+            : parseSymbols(
+                (state as any).force_symbols ||
+                (state as any).active_symbols ||
+                (state as any).symbols ||
+                conn.selected_symbols ||
+                conn.force_symbols ||
+                conn.active_symbols ||
+                conn.symbols,
+              )
 
-        const symbols = Array.isArray((state as any).symbols)
-          ? (state as any).symbols
-          : Array.isArray((state as any).active_symbols)
-            ? (state as any).active_symbols
-            : []
-
-        const [indicationsByType, strategyCounts, strategyEvaluations, basePseudoCount, mainPseudoCount, realPseudoCount, baseDirection, baseMove, baseActive, baseActiveAdvanced, baseOptimal, baseSignal, baseTrend, livePositionsCount, prehistoricSymbols, prehistoricDataKeys] =
+        const historicSymbolsKey = hasScopedPrehistoric
+          ? `${scope.prehistoricKey}:symbols`
+          : `prehistoric:${conn.id}:symbols`
+        const [indicationsByType, strategyCounts, strategyEvaluations, basePseudoCount, mainPseudoCount, realPseudoCount, baseDirection, baseMove, baseActive, baseActiveAdvanced, baseOptimal, baseSignal, baseTrend, livePositionsCount, prehistoricSymbols, processedIntervalsRaw] =
           await Promise.all([
             countIndicationsByType(client, conn.id),
             countStrategiesByType(client, conn.id, symbols),
@@ -295,28 +432,107 @@ export async function GET(request: Request) {
             client.scard(`base_pseudo:${conn.id}:signal`).catch(() => 0),
             client.scard(`base_pseudo:${conn.id}:trend`).catch(() => 0),
             client.scard(`positions:${conn.id}:live`).catch(() => 0),
-            client.scard(`prehistoric:${conn.id}:symbols`).catch(() => 0),
-            client.keys(`prehistoric:${conn.id}:*`).then((keys) => keys.length).catch(() => 0),
+            client.scard(historicSymbolsKey).catch(() => 0),
+            client.get(`intervals:${conn.id}:processed_count`).catch(() => 0),
           ])
 
-        const processedIntervals = toNumber(
-          await client.get(`intervals:${conn.id}:processed_count`).catch(() => 0),
+        const processedIntervals = toNumber(processedIntervalsRaw)
+        const now = Date.now()
+        const dashboardEnabled = isTruthy(conn.is_enabled_dashboard)
+        const heartbeatAgeMs = heartbeatAt > 0 ? Math.max(0, now - heartbeatAt) : null
+        const selectionEpoch = String(
+          (state as any).symbol_selection_epoch ||
+          progHash.symbol_selection_epoch ||
+          conn.symbol_selection_epoch ||
+          (state as any).quickstart_symbol_generation ||
+          "",
         )
+        const historicSelectionEpoch = String(prehistoricHash.symbol_selection_epoch || "")
+        const generationMatches =
+          !selectionEpoch ||
+          (!historicSelectionEpoch
+            ? !isTruthy((state as any).prehistoric_data_loaded)
+            : historicSelectionEpoch === selectionEpoch)
+        const historicSymbolsTotal = Math.max(
+          symbols.length,
+          toNumber(prehistoricHash.symbols_total),
+        )
+        const historicSymbolsProcessed = generationMatches
+          ? Math.min(
+              historicSymbolsTotal,
+              Math.max(prehistoricSymbols, toNumber(prehistoricHash.symbols_processed)),
+            )
+          : 0
+        const completionGatesOpen =
+          (doneScoped === "1" || doneLegacy === "1") &&
+          (firstPassScoped === "1" || firstPassLegacy === "1")
+        const prehistoricLoaded =
+          isTruthy((state as any).prehistoric_data_loaded) &&
+          generationMatches &&
+          completionGatesOpen &&
+          historicSymbolsTotal > 0 &&
+          historicSymbolsProcessed >= historicSymbolsTotal &&
+          prehistoricHash.is_complete === "1"
+        const bootstrapStatus = String(
+          (state as any).prehistoric_bootstrap_status ||
+          prehistoricHash.bootstrap_status ||
+          (prehistoricLoaded ? "complete" : dashboardEnabled ? "running" : "idle"),
+        )
+        const entryProcessorsGated =
+          isTruthy((state as any).entry_processors_gated) ||
+          (dashboardEnabled && !prehistoricLoaded)
+        const settingsRequestedVersion = String(
+          progHash.settings_recoordination_requested_version ||
+          (state as any).settings_recoordination_requested_version ||
+          "",
+        )
+        const settingsAppliedVersion = String(
+          progHash.settings_recoordination_applied_version ||
+          (state as any).settings_recoordination_applied_version ||
+          "",
+        )
+        const settingsSynchronized =
+          !settingsRequestedVersion || settingsRequestedVersion === settingsAppliedVersion
+        const lastProgressAt = Math.max(
+          toEpochMs(prehistoricHash.updated_at),
+          toEpochMs(prehistoricHash.last_processed_at),
+          toEpochMs((state as any).prehistoric_last_processed_at),
+          toEpochMs((state as any).prehistoric_bootstrap_started_at),
+          toEpochMs((state as any).prehistoric_recoordination_requested_at),
+          toEpochMs((state as any).prehistoric_bootstrap_failed_at),
+        )
+        const progressAgeMs = lastProgressAt > 0 ? Math.max(0, now - lastProgressAt) : null
+        const signalCapacityUpdatedAt = toEpochMs(signalCapacityRaw.updated_at)
+        const signalCapacityTotal = toNumber(signalCapacityRaw.total)
+        const signalCapacityLimit = Math.max(
+          1,
+          toNumber(signalCapacityRaw.limit) || configuredSignalPositionLimit,
+        )
+        const bootstrapActive = ["running", "queued", "superseding", "retry_wait"].includes(bootstrapStatus)
+        const stalled =
+          dashboardEnabled &&
+          (
+            (!entryProcessorsGated && (heartbeatAgeMs == null || heartbeatAgeMs > HEARTBEAT_STALE_MS)) ||
+            (bootstrapActive && progressAgeMs != null && progressAgeMs > PROCESSING_STALE_MS)
+          )
 
         return {
           id: conn.id,
+          name: conn.name || conn.id,
+          exchange: conn.exchange || "unknown",
+          dashboardEnabled,
           symbols,
           // Prefer live progression hash (updated every cycle) over engineState (every 50-100 cycles)
           indicationCycles:
-            parseInt(progHash.indication_cycle_count || "0", 10) ||
+            progressionCounter("indication_cycle_count") ||
             toNumber((state as any).indication_cycle_count) ||
             toNumber((progression as any).cyclesCompleted),
           strategyCycles:
-            parseInt(progHash.strategy_cycle_count || "0", 10) ||
+            progressionCounter("strategy_cycle_count") ||
             toNumber((state as any).strategy_cycle_count) ||
             toNumber((progression as any).successfulCycles),
           realtimeCycles:
-            parseInt(progHash.realtime_cycle_count || "0", 10) ||
+            progressionCounter("realtime_cycle_count") ||
             toNumber((state as any).realtime_cycle_count),
           strategiesEvaluated: toNumber((state as any).total_strategies_evaluated),
           durations: {
@@ -342,45 +558,92 @@ export async function GET(request: Request) {
             trend: baseTrend,
           },
           livePositions: livePositionsCount,
+          signalCapacity: {
+            total: signalCapacityTotal,
+            long: toNumber(signalCapacityRaw.long),
+            short: toNumber(signalCapacityRaw.short),
+            limit: signalCapacityLimit,
+            remaining: Math.max(0, signalCapacityLimit - signalCapacityTotal),
+            selectionMode: String(signalCapacityRaw.selection_mode || "best_first"),
+            state: String(signalCapacityRaw.state || "idle"),
+            updatedAt: signalCapacityUpdatedAt > 0
+              ? new Date(signalCapacityUpdatedAt).toISOString()
+              : null,
+            ageMs: signalCapacityUpdatedAt > 0
+              ? Math.max(0, now - signalCapacityUpdatedAt)
+              : null,
+          },
           // Live exchange execution metrics sourced from the progression hash
           // (written by live-stage.ts). Counters only — no exchange history
           // calls. Keeps the endpoint fast even with heavy live activity.
           liveMetrics: {
-            ordersPlaced:     parseInt(progHash.live_orders_placed_count    || "0", 10) || 0,
-            ordersFilled:     parseInt(progHash.live_orders_filled_count    || "0", 10) || 0,
-            ordersFailed:     parseInt(progHash.live_orders_failed_count    || "0", 10) || 0,
-            ordersRejected:   parseInt(progHash.live_orders_rejected_count  || "0", 10) || 0,
-            ordersSimulated:  parseInt(progHash.live_orders_simulated_count || "0", 10) || 0,
-            positionsCreated: parseInt(progHash.live_positions_created_count || "0", 10) || 0,
-            positionsClosed:  parseInt(progHash.live_positions_closed_count  || "0", 10) || 0,
-            wins:             parseInt(progHash.live_wins_count             || "0", 10) || 0,
-            volumeUsdTotal:   parseFloat(progHash.live_volume_usd_total     || "0") || 0,
+            ordersPlaced: progressionCounter("live_orders_placed_count"),
+            ordersFilled: progressionCounter("live_orders_filled_count"),
+            ordersFailed: progressionCounter("live_orders_failed_count"),
+            ordersRejected: progressionCounter("live_orders_rejected_count"),
+            ordersSimulated: progressionCounter("live_orders_simulated_count"),
+            positionsCreated: progressionCounter("live_positions_created_count"),
+            positionsClosed: progressionCounter("live_positions_closed_count"),
+            wins: progressionCounter("live_wins_count"),
+            volumeUsdTotal: progressionCounter("live_volume_usd_total"),
           },
           prehistoric: {
-            loaded: isTruthy((state as any).prehistoric_data_loaded),
-            symbols: prehistoricSymbols || toNumber((state as any).config_set_symbols_processed),
-            dataKeys: prehistoricDataKeys,
+            loaded: prehistoricLoaded,
+            symbols: historicSymbolsProcessed,
+            // A bounded set cardinality is used instead of a wildcard key scan.
+            dataKeys: prehistoricSymbols,
             indicationResults: toNumber((state as any).config_set_indication_results),
             strategyPositions: toNumber((state as any).config_set_strategy_positions),
             candlesProcessed: toNumber((state as any).config_set_candles_processed),
-            symbolsProcessed: toNumber((state as any).config_set_symbols_processed),
-            symbolsTotal: toNumber((state as any).config_set_symbols_total),
+            symbolsProcessed: historicSymbolsProcessed,
+            symbolsTotal: historicSymbolsTotal,
             symbolsWithoutData: toNumber((state as any).config_set_symbols_without_data),
             errors: toNumber((state as any).config_set_errors),
             durationMs: toNumber((state as any).config_set_duration_ms),
             lastProcessedAt: (state as any).prehistoric_last_processed_at || null,
           },
           intervalsProcessed: processedIntervals,
+          lifecycle: {
+            status: dashboardEnabled
+              ? stalled
+                ? "stalled"
+                : entryProcessorsGated
+                  ? "gated"
+                  : "running"
+              : "disabled",
+            heartbeatAt: heartbeatAt > 0 ? new Date(heartbeatAt).toISOString() : null,
+            heartbeatAgeMs,
+            heartbeatFresh: heartbeatAgeMs != null && heartbeatAgeMs <= HEARTBEAT_STALE_MS,
+            lastProgressAt: lastProgressAt > 0 ? new Date(lastProgressAt).toISOString() : null,
+            progressAgeMs,
+            stalled,
+            selectionEpoch: selectionEpoch || null,
+            historicSelectionEpoch: historicSelectionEpoch || null,
+            generationMatches,
+            bootstrapStatus,
+            bootstrapGeneration: toNumber((state as any).prehistoric_bootstrap_generation),
+            retryAttempt: toNumber((state as any).prehistoric_bootstrap_retry_attempt),
+            entryProcessorsGated,
+            settingsRequestedVersion: settingsRequestedVersion || null,
+            settingsAppliedVersion: settingsAppliedVersion || null,
+            settingsSynchronized,
+            stateSwitchVersion: String((state as any).state_switch_version || conn.state_switch_version || "") || null,
+            lastError: String(
+              (state as any).prehistoric_data_error ||
+              progHash.settings_recoordination_last_error ||
+              "",
+            ) || null,
+            recoordinationReason: String((state as any).prehistoric_recoordination_reason || "") || null,
+          },
         }
       }),
+      monitorDeadlineAt,
+      "connection lifecycle",
     )
 
     const indicationCycles = perConnection.reduce((sum, item) => sum + item.indicationCycles, 0)
     const strategyCycles = perConnection.reduce((sum, item) => sum + item.strategyCycles, 0)
     const realtimeCycles = perConnection.reduce((sum, item) => sum + item.realtimeCycles, 0)
-    const totalPositions = positionsByConnection.reduce((sum, arr) => sum + arr.length, 0)
-    const totalTrades = tradesByConnection.reduce((sum, arr) => sum + arr.length, 0)
-
     const aggregatedIndications = perConnection.reduce(
       (acc, item) => {
         acc.direction += item.indicationsByType.direction || 0
@@ -406,11 +669,10 @@ export async function GET(request: Request) {
       },
       { base: 0, main: 0, real: 0 },
     )
-    const normalizedStrategyHierarchy = enforceHierarchy(
-      aggregatedStrategyCounts.base,
-      aggregatedStrategyCounts.main,
-      aggregatedStrategyCounts.real,
-    )
+    // Monitoring is an observation surface, never a synthetic projection.
+    // Preserve the exact stage counters even when a partial/recovering run
+    // temporarily violates the expected Base → Main → Real relationship.
+    const normalizedStrategyHierarchy = { ...aggregatedStrategyCounts }
 
     const aggregatedStrategyEvaluations = perConnection.reduce(
       (acc, item) => {
@@ -434,11 +696,7 @@ export async function GET(request: Request) {
       },
       { base: 0, main: 0, real: 0 },
     )
-    const normalizedPseudoHierarchy = enforceHierarchy(
-      aggregatedPseudo.base || totalPositions,
-      aggregatedPseudo.main || strategyCycles,
-      aggregatedPseudo.real || totalTrades,
-    )
+    const normalizedPseudoHierarchy = { ...aggregatedPseudo }
 
     const aggregatedPrehistoric = perConnection.reduce(
       (acc, item) => {
@@ -528,8 +786,184 @@ export async function GET(request: Request) {
       { direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, signal: 0, trend: 0 },
     )
 
+    const unifiedLogs = [...auditLogs, ...systemLogs, ...logs]
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .slice(0, 500)
+    const alerts: MonitorAlert[] = []
+    const alertTimestamp = new Date().toISOString()
+    const recentFailedAuditsByConnection = auditRows.reduce((counts: Map<string, number>, audit: any) => {
+      const status = String(audit?.entryOrderStatus || "").toLowerCase()
+      const timestamp = toEpochMs(audit?.updatedAt || audit?.createdAt)
+      if (
+        (status === "failed" || status === "rejected") &&
+        timestamp > 0 &&
+        Date.now() - timestamp <= 60 * 60 * 1000
+      ) {
+        const connectionId = String(audit.connectionId || "")
+        if (connectionId) counts.set(connectionId, (counts.get(connectionId) || 0) + 1)
+      }
+      return counts
+    }, new Map<string, number>())
+
+    for (const item of perConnection) {
+      const lifecycle = item.lifecycle
+      if (item.dashboardEnabled && lifecycle.stalled) {
+        alerts.push({
+          id: `engine-stalled-${item.id}`,
+          level: "critical",
+          category: "Runtime",
+          message: `${item.name} has no fresh processing heartbeat or historic progress.`,
+          timestamp: alertTimestamp,
+          connectionId: item.id,
+          details: {
+            heartbeatAgeMs: lifecycle.heartbeatAgeMs,
+            progressAgeMs: lifecycle.progressAgeMs,
+            bootstrapStatus: lifecycle.bootstrapStatus,
+          },
+        })
+      }
+      if (item.dashboardEnabled && !lifecycle.generationMatches) {
+        alerts.push({
+          id: `historic-generation-${item.id}`,
+          level: "warning",
+          category: "Historic processing",
+          message: `${item.name} is discarding progress from an older symbol selection generation.`,
+          timestamp: alertTimestamp,
+          connectionId: item.id,
+          details: {
+            selectionEpoch: lifecycle.selectionEpoch,
+            historicSelectionEpoch: lifecycle.historicSelectionEpoch,
+          },
+        })
+      }
+      if (item.dashboardEnabled && !lifecycle.settingsSynchronized) {
+        alerts.push({
+          id: `settings-pending-${item.id}`,
+          level: "warning",
+          category: "Settings",
+          message: `${item.name} has a settings change waiting for engine acknowledgement.`,
+          timestamp: alertTimestamp,
+          connectionId: item.id,
+          details: {
+            requestedVersion: lifecycle.settingsRequestedVersion,
+            appliedVersion: lifecycle.settingsAppliedVersion,
+          },
+        })
+      }
+      if (item.dashboardEnabled && lifecycle.lastError) {
+        alerts.push({
+          id: `historic-error-${item.id}`,
+          level: "critical",
+          category: "Historic processing",
+          message: lifecycle.lastError,
+          timestamp: alertTimestamp,
+          connectionId: item.id,
+          details: {
+            retryAttempt: lifecycle.retryAttempt,
+            bootstrapStatus: lifecycle.bootstrapStatus,
+          },
+        })
+      } else if (item.dashboardEnabled && lifecycle.bootstrapStatus === "retry_wait") {
+        alerts.push({
+          id: `historic-retry-${item.id}`,
+          level: "warning",
+          category: "Historic processing",
+          message: `${item.name} is waiting for historic retry ${lifecycle.retryAttempt}. Entry processors remain safely gated.`,
+          timestamp: alertTimestamp,
+          connectionId: item.id,
+        })
+      }
+      if (item.dashboardEnabled && item.prehistoric.errors > 0) {
+        alerts.push({
+          id: `historic-symbol-errors-${item.id}`,
+          level: "warning",
+          category: "Historic processing",
+          message: `${item.name} recorded ${item.prehistoric.errors} historic symbol processing error(s).`,
+          timestamp: alertTimestamp,
+          connectionId: item.id,
+        })
+      }
+      if (
+        item.dashboardEnabled &&
+        item.signalCapacity.total >= item.signalCapacity.limit
+      ) {
+        alerts.push({
+          id: `signal-capacity-${item.id}`,
+          level: "warning",
+          category: "Signal capacity",
+          message:
+            `${item.name} has reached the Signal position capacity ` +
+            `(${item.signalCapacity.total}/${item.signalCapacity.limit} Long + Short). ` +
+            "Lower-ranked candidates wait for a slot.",
+          timestamp: alertTimestamp,
+          connectionId: item.id,
+          details: item.signalCapacity,
+        })
+      }
+      const recentFailedOrders = recentFailedAuditsByConnection.get(item.id) || 0
+      if (recentFailedOrders > 0) {
+        alerts.push({
+          id: `live-orders-${item.id}`,
+          level: "warning",
+          category: "Orders",
+          message: `${item.name} has ${recentFailedOrders} failed or rejected live order attempt(s) in the last hour.`,
+          timestamp: alertTimestamp,
+          connectionId: item.id,
+          details: item.liveMetrics,
+        })
+      }
+    }
+
+    const recentSystemErrors = systemLogs.filter(
+      (log) =>
+        log.level === "error" &&
+        Date.now() - toEpochMs(log.timestamp) <= 60 * 60 * 1000,
+    )
+    if (recentSystemErrors.length >= 5) {
+      alerts.push({
+        id: "recent-system-errors",
+        level: recentSystemErrors.length >= 10 ? "critical" : "warning",
+        category: "System",
+        message: `${recentSystemErrors.length} system errors were logged in the last hour.`,
+        timestamp: alertTimestamp,
+      })
+    }
+    if (activeConnections.length === 0) {
+      alerts.push({
+        id: "no-active-connections",
+        level: "info",
+        category: "Configuration",
+        message: "No active connection is currently selected for monitoring.",
+        timestamp: alertTimestamp,
+      })
+    }
+
+    const sectionCounts = {
+      overview: unifiedLogs.length,
+      activity: unifiedLogs.filter((log) => log.level === "info" || log.level === "debug").length,
+      processing: unifiedLogs.filter((log) =>
+        log.type === "processing" ||
+        log.type === "indication" ||
+        log.type === "strategy" ||
+        String(log.phase || "").includes("prehistoric"),
+      ).length,
+      settings: unifiedLogs.filter((log) =>
+        log.type === "settings" ||
+        String(log.category || "").includes("setting") ||
+        String(log.phase || "").includes("recoordination"),
+      ).length,
+      orders: unifiedLogs.filter((log) =>
+        log.category === "orders" ||
+        log.type === "live" ||
+        String(log.phase || "").includes("order"),
+      ).length,
+      warnings: unifiedLogs.filter((log) => log.level === "warn" || log.type === "warning").length + alerts.filter((alert) => alert.level === "warning").length,
+      errors: unifiedLogs.filter((log) => log.level === "error" || log.type === "error").length + alerts.filter((alert) => alert.level === "critical").length,
+      system: unifiedLogs.filter((log) => String(log.phase || "").startsWith("system_")).length,
+    }
+
     const summary = {
-      symbolsActive: Math.max(1, activeConnections.length),
+      symbolsActive: perConnection.reduce((sum, item) => sum + item.symbols.length, 0),
       indicationCycles,
       strategyCycles,
       totalIndicationsCalculated: aggregatedIndications.total || indicationCycles,
@@ -562,9 +996,9 @@ export async function GET(request: Request) {
         baseByIndication: basePseudoByIndication,
       },
       pseudoPositionsRaw: {
-        base: aggregatedPseudo.base || totalPositions,
-        main: aggregatedPseudo.main || strategyCycles,
-        real: aggregatedPseudo.real || totalTrades,
+        base: aggregatedPseudo.base,
+        main: aggregatedPseudo.main,
+        real: aggregatedPseudo.real,
       },
       livePositions,
       // Detailed Live execution metrics — orders, positions, fill & win rates
@@ -598,17 +1032,40 @@ export async function GET(request: Request) {
       evalsCompleted: aggregatedStrategyCounts.real,
       avgCycleDuration,
       lastUpdate: new Date().toISOString(),
-      errors: logs.filter((log: any) => log.type === "error").length,
-      warnings: logs.filter((log: any) => String(log.message || "").toLowerCase().includes("warn")).length,
+      errors: sectionCounts.errors,
+      warnings: sectionCounts.warnings,
     }
 
     return NextResponse.json({
       success: true,
-      logs: [...auditLogs, ...logs]
-        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-        .slice(0, 375),
+      logs: unifiedLogs,
       liveOrderAudits: auditRows,
       summary,
+      monitoring: {
+        status: alerts.some((alert) => alert.level === "critical")
+          ? "critical"
+          : alerts.some((alert) => alert.level === "warning")
+            ? "warning"
+            : "healthy",
+        alerts,
+        sectionCounts,
+        connections: perConnection.map((item) => ({
+          id: item.id,
+          name: item.name,
+          exchange: item.exchange,
+          dashboardEnabled: item.dashboardEnabled,
+          symbols: item.symbols,
+          prehistoric: item.prehistoric,
+          cycles: {
+            indication: item.indicationCycles,
+            strategy: item.strategyCycles,
+            realtime: item.realtimeCycles,
+          },
+          signalCapacity: item.signalCapacity,
+          liveMetrics: item.liveMetrics,
+          lifecycle: item.lifecycle,
+        })),
+      },
       timestamp: new Date().toISOString(),
       activeConnections: activeConnections.map((c: any) => ({
         id: c.id,

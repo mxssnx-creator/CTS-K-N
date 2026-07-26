@@ -5,6 +5,7 @@
  */
 
 import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { appendUniqueListEntries } from "@/lib/redis-idempotent-list"
 import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
 
 export interface StrategyConfig {
@@ -247,16 +248,43 @@ export class StrategyConfigManager {
    * pipelined LPUSH + LTRIM. Used by the prehistoric processor to cut
    * per-position Redis round-trips by a factor of N.
    */
-  async addPositions(configId: string, positions: PseudoPosition[]): Promise<void> {
-    if (!positions || positions.length === 0) return
+  async addPositions(
+    configId: string,
+    positions: PseudoPosition[],
+    dedupeScope?: string,
+  ): Promise<number> {
+    const result = await this.addPositionsWithAccepted(configId, positions, dedupeScope)
+    return result.accepted.length
+  }
+
+  async addPositionsWithAccepted(
+    configId: string,
+    positions: PseudoPosition[],
+    dedupeScope?: string,
+  ): Promise<{ accepted: PseudoPosition[] }> {
+    if (!positions || positions.length === 0) return { accepted: [] }
     await initRedis()
     const client = getRedisClient()
     const key = this.getPositionsKey(configId)
     const entries = positions.map((p) => StrategyConfigManager.serializeEntry(p))
+    if (dedupeScope) {
+      const dedupeKey = `${key}:historic_dedupe:${dedupeScope.replace(/[^A-Za-z0-9._:-]/g, "_")}`
+      const acceptedIndexes = await appendUniqueListEntries(
+        client,
+        key,
+        dedupeKey,
+        entries,
+        MAX_POSITIONS,
+        90_000,
+      )
+      return { accepted: acceptedIndexes.map((index) => positions[index]) }
+    }
+
     const pipeline = client.multi()
     pipeline.lpush(key, ...entries)
     pipeline.ltrim(key, 0, MAX_POSITIONS - 1)
     await pipeline.exec()
+    return { accepted: positions }
   }
 
   async getPositions(configId: string, limit = 50): Promise<PseudoPosition[]> {

@@ -75,6 +75,72 @@ function finiteNonNegative(value, label) {
   return number
 }
 
+function isTruthy(value) {
+  return value === true || value === 1 || value === "1" || value === "true"
+}
+
+function detailedMonitorSample(payload, connectionId, expectedEnabled) {
+  if (
+    payload?.success !== true ||
+    !Array.isArray(payload?.logs) ||
+    !Array.isArray(payload?.monitoring?.alerts) ||
+    !Array.isArray(payload?.monitoring?.connections)
+  ) {
+    throw new Error("Detailed Logs monitoring schema failed during soak")
+  }
+  const connection = payload.monitoring.connections.find(
+    (item) => String(item?.id) === String(connectionId),
+  )
+  if (!connection) throw new Error(`Detailed Logs did not expose connection ${connectionId}`)
+  if (expectedEnabled !== undefined && connection.dashboardEnabled !== expectedEnabled) {
+    throw new Error(
+      `Detailed Logs dashboard state mismatch for ${connectionId}: ` +
+      `${connection.dashboardEnabled} != ${expectedEnabled}`,
+    )
+  }
+  const processed = finiteNonNegative(
+    connection?.prehistoric?.symbolsProcessed,
+    "detailedLogs.prehistoric.symbolsProcessed",
+  )
+  const total = finiteNonNegative(
+    connection?.prehistoric?.symbolsTotal,
+    "detailedLogs.prehistoric.symbolsTotal",
+  )
+  if (total > 0 && processed > total) {
+    throw new Error(`Detailed Logs historic count exceeds total: ${processed}/${total}`)
+  }
+  if (connection?.lifecycle?.stalled === true) {
+    throw new Error(
+      `Detailed Logs detected a stalled lifecycle: ${JSON.stringify(connection.lifecycle)}`,
+    )
+  }
+  const signalCapacityTotal = finiteNonNegative(
+    connection?.signalCapacity?.total,
+    "detailedLogs.signalCapacity.total",
+  )
+  const signalCapacityLimit = finiteNonNegative(
+    connection?.signalCapacity?.limit,
+    "detailedLogs.signalCapacity.limit",
+  )
+  if (signalCapacityLimit < 1 || signalCapacityTotal > signalCapacityLimit) {
+    throw new Error(
+      `Detailed Logs Signal capacity is invalid: ${signalCapacityTotal}/${signalCapacityLimit}`,
+    )
+  }
+  if (String(connection?.signalCapacity?.selectionMode || "") !== "best_first") {
+    throw new Error("Detailed Logs does not expose best-first Signal selection")
+  }
+  return {
+    status: String(connection?.lifecycle?.status || ""),
+    processed,
+    total,
+    alerts: payload.monitoring.alerts.length,
+    logRows: payload.logs.length,
+    signalCapacityTotal,
+    signalCapacityLimit,
+  }
+}
+
 function progressionSample(stats) {
   const stages = stats?.breakdown?.strategies || stats?.strategies || {}
   const sample = {
@@ -257,6 +323,15 @@ function signalRuntimeSample(
       settings?.requestIntervalSeconds,
       "signal.settings.requestIntervalSeconds",
     ),
+    maxSourcesPerCycle: finiteNonNegative(
+      settings?.maxSourcesPerCycle,
+      "signal.settings.maxSourcesPerCycle",
+    ),
+    maxPositionsTotal: finiteNonNegative(
+      settings?.maxPositionsTotal,
+      "signal.settings.maxPositionsTotal",
+    ),
+    positionSelectionMode: String(settings?.positionSelectionMode || ""),
     trailingEnabled: settings?.trailingEnabled === true,
     trailingOnly: settings?.trailingOnly === true,
     trailingStartPct: finiteNonNegative(settings?.trailingStartPct, "signal.settings.trailingStartPct"),
@@ -478,6 +553,8 @@ async function main() {
             ...(current?.settings || {}),
             enabled: true,
             requestIntervalSeconds: 30,
+            maxPositionsTotal: 120,
+            positionSelectionMode: "best_first",
             trailingEnabled: true,
             trailingOnly: false,
             trailingStartPct: 0,
@@ -494,6 +571,8 @@ async function main() {
         applied?.success !== true ||
         applied?.settings?.enabled !== true ||
         Number(applied?.settings?.requestIntervalSeconds) !== 30 ||
+        Number(applied?.settings?.maxPositionsTotal) !== 120 ||
+        applied?.settings?.positionSelectionMode !== "best_first" ||
         applied?.settings?.trailingEnabled !== true ||
         applied?.settings?.trailingOnly !== false ||
         Number(applied?.settings?.trailingStartPct) !== 0 ||
@@ -592,6 +671,7 @@ async function main() {
     () => `/api/settings/indications/signal?connectionId=${encodeURIComponent(connectionId)}`,
     () => `/api/indications/signals/status?connectionId=${encodeURIComponent(connectionId)}`,
     () => `/api/statistics/indications?connectionId=${encodeURIComponent(connectionId)}`,
+    () => `/api/trade-engine/detailed-logs?connectionId=${encodeURIComponent(connectionId)}`,
   ]
 
   const startedAt = Date.now()
@@ -606,6 +686,7 @@ async function main() {
   const liveExecution = []
   const strategyRuntime = []
   const signalRuntime = []
+  const detailedMonitorRuntime = []
   const positionLifecycle = new Map()
   const executionProgress = new Map()
   let simulatedPositionsPeak = 0
@@ -625,6 +706,9 @@ async function main() {
     for (const build of signalEndpointBuilders) {
       const path = build()
       const response = await request(path)
+      if (path.startsWith("/api/trade-engine/detailed-logs")) {
+        detailedMonitorRuntime.push(detailedMonitorSample(response.json, connectionId, true))
+      }
       signalObservation.set(path, response.json)
       requests++
       signalObservationRequests++
@@ -800,6 +884,16 @@ async function main() {
     )
     const previousSignalSample = signalRuntime.at(-1)
     if (
+      VERIFY_SIGNAL_ENGINE &&
+      signalSample.openSignalPositions > signalSample.maxPositionsTotal
+    ) {
+      throw new Error(
+        `Signal position capacity exceeded: ` +
+        `${signalSample.openSignalPositions}/${signalSample.maxPositionsTotal}`,
+      )
+    }
+    if (
+      VERIFY_SIGNAL_ENGINE &&
       previousSignalSample &&
       signalSample.signalIndicationsTotal < previousSignalSample.signalIndicationsTotal
     ) {
@@ -809,6 +903,7 @@ async function main() {
       )
     }
     if (
+      VERIFY_SIGNAL_ENGINE &&
       previousSignalSample &&
       signalSample.sourceSuccesses < previousSignalSample.sourceSuccesses
     ) {
@@ -892,6 +987,12 @@ async function main() {
       lastByPath.get(`/api/statistics/indications?connectionId=${encodeURIComponent(connectionId)}`),
     )
     const previousFinalSignal = signalRuntime.at(-1)
+    if (finalSignalSample.openSignalPositions > finalSignalSample.maxPositionsTotal) {
+      throw new Error(
+        `Final Signal position capacity exceeded: ` +
+        `${finalSignalSample.openSignalPositions}/${finalSignalSample.maxPositionsTotal}`,
+      )
+    }
     if (
       previousFinalSignal &&
       (
@@ -902,6 +1003,98 @@ async function main() {
       throw new Error("Final Signal observation regressed")
     }
     signalRuntime.push(finalSignalSample)
+  }
+
+  // Exercise the real dashboard disable/re-enable lifecycle only after the
+  // complete soak sample has been captured. Stopping a connection must cancel
+  // timers immediately without deleting its verified Historic cache; the
+  // subsequent enable must hydrate that same N/N generation and resume
+  // processing without a crash, duplicate start, or false stalled alert.
+  let connectionToggleVerified = false
+  if (START_SIMULATED_ENGINE && process.env.VERIFY_CONNECTION_TOGGLE !== "0") {
+    const finalBeforeToggle = progression.at(-1)
+    const togglePath = `/api/settings/connections/${encodeURIComponent(connectionId)}/toggle-dashboard`
+    const disabled = (await request(togglePath, {
+      method: "POST",
+      body: { enabled: false },
+      timeoutMs: 120_000,
+    })).json
+    if (
+      disabled?.success !== true ||
+      isTruthy(disabled?.connection?.is_enabled_dashboard) ||
+      disabled?.engine?.status !== "stopped"
+    ) {
+      throw new Error(`Connection disable contract failed: ${JSON.stringify(disabled)}`)
+    }
+    const disabledMonitorPayload = (await request(
+      `/api/trade-engine/detailed-logs?connectionId=${encodeURIComponent(connectionId)}`,
+      { timeoutMs: 120_000 },
+    )).json
+    const disabledMonitor = detailedMonitorSample(disabledMonitorPayload, connectionId, false)
+    if (disabledMonitor.status !== "disabled") {
+      throw new Error(`Detailed Logs did not show disabled lifecycle: ${disabledMonitor.status}`)
+    }
+
+    const reenabled = (await request(togglePath, {
+      method: "POST",
+      body: { enabled: true },
+      timeoutMs: 120_000,
+    })).json
+    if (
+      reenabled?.success !== true ||
+      !isTruthy(reenabled?.connection?.is_enabled_dashboard) ||
+      !["started", "queued"].includes(String(reenabled?.engine?.status || ""))
+    ) {
+      throw new Error(`Connection re-enable contract failed: ${JSON.stringify(reenabled)}`)
+    }
+
+    const resumeDeadline = Date.now() + 120_000
+    let lastResumeDiagnostic = ""
+    while (Date.now() < resumeDeadline) {
+      const [engineResponse, statsResponse, monitorResponse] = await Promise.all([
+        request("/api/trade-engine/status-all", { timeoutMs: 60_000 }),
+        request(
+          `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`,
+          { timeoutMs: 60_000 },
+        ),
+        request(
+          `/api/trade-engine/detailed-logs?connectionId=${encodeURIComponent(connectionId)}`,
+          { timeoutMs: 60_000 },
+        ),
+      ])
+      const engine = Array.isArray(engineResponse.json?.engines)
+        ? engineResponse.json.engines.find((item) => String(item?.connectionId) === connectionId)
+        : null
+      const symbols = Array.isArray(engine?.engineStatus?.symbols)
+        ? engine.engineStatus.symbols.map(String)
+        : []
+      const resumedProgress = progressionSample(statsResponse.json)
+      const resumedMonitor = detailedMonitorSample(monitorResponse.json, connectionId, true)
+      lastResumeDiagnostic = JSON.stringify({
+        engine: Boolean(engine),
+        symbols: symbols.length,
+        historic: `${resumedProgress.historicSymbols}/${resumedProgress.historicTotal}`,
+        lifecycle: resumedMonitor.status,
+      })
+      const historicPreserved =
+        resumedProgress.historicTotal === finalBeforeToggle?.historicTotal &&
+        resumedProgress.historicSymbols >= (finalBeforeToggle?.historicSymbols || 0)
+      if (
+        engine &&
+        symbols.length === SYMBOLS.length &&
+        symbols.every((symbol, index) => symbol === SYMBOLS[index]) &&
+        historicPreserved &&
+        resumedMonitor.status !== "disabled" &&
+        resumedMonitor.status !== "stalled"
+      ) {
+        connectionToggleVerified = true
+        break
+      }
+      await sleep(1_000)
+    }
+    if (!connectionToggleVerified) {
+      throw new Error(`Connection did not resume with preserved Historic state: ${lastResumeDiagnostic}`)
+    }
   }
 
   const databaseStableGrowthLimit = Math.max(500, SYMBOLS.length * 50)
@@ -968,6 +1161,9 @@ async function main() {
       if (
         !finalSignal?.enabled ||
         finalSignal.requestIntervalSeconds < 30 ||
+        finalSignal.maxSourcesPerCycle > 35 ||
+        finalSignal.maxPositionsTotal !== 120 ||
+        finalSignal.positionSelectionMode !== "best_first" ||
         !finalSignal.trailingEnabled ||
         finalSignal.trailingOnly ||
         finalSignal.trailingStartPct !== 0 ||
@@ -1132,6 +1328,14 @@ async function main() {
     realActiveAverageEnd: strategyRuntime.at(-1)?.realActiveAverage || 0,
     observedPositionLifecycles: positionLifecycle.size,
     observedPartialExecutions: executionProgress.size,
+    detailedMonitorObservations: detailedMonitorRuntime.length,
+    detailedMonitorAlertsPeak: detailedMonitorRuntime.length
+      ? Math.max(...detailedMonitorRuntime.map((sample) => sample.alerts))
+      : 0,
+    detailedMonitorRowsPeak: detailedMonitorRuntime.length
+      ? Math.max(...detailedMonitorRuntime.map((sample) => sample.logRows))
+      : 0,
+    connectionToggleVerified,
     simulatedOrdersPeak: liveExecution.length ? Math.max(...liveExecution.map((sample) => sample.ordersSimulated)) : 0,
     simulatedPositionsCreatedPeak: liveExecution.length ? Math.max(...liveExecution.map((sample) => sample.positionsCreated)) : 0,
     simulatedPositionsPeak,
@@ -1143,6 +1347,9 @@ async function main() {
       settings: {
         enabled: finalSignal.enabled,
         requestIntervalSeconds: finalSignal.requestIntervalSeconds,
+        maxSourcesPerCycle: finalSignal.maxSourcesPerCycle,
+        maxPositionsTotal: finalSignal.maxPositionsTotal,
+        positionSelectionMode: finalSignal.positionSelectionMode,
         trailingEnabled: finalSignal.trailingEnabled,
         trailingOnly: finalSignal.trailingOnly,
         trailingStartPct: finalSignal.trailingStartPct,

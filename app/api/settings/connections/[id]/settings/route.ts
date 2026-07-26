@@ -508,7 +508,7 @@ export async function PUT(
       ...changedSettingKeys(
         currentSettings,
         mergedSettings,
-        [...Object.keys(incomingSettings), ...(hasSymbols ? ["symbols", "force_symbols", "active_symbols", "symbol_count"] : [])],
+        [...Object.keys(incomingSettings), ...(hasSymbols ? ["symbols", "force_symbols", "active_symbols", "selected_symbols", "symbol_count"] : [])],
       ),
     ]))
 
@@ -518,13 +518,22 @@ export async function PUT(
 
     const settingsVersion = `${id}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`
     const updatedAt = new Date().toISOString()
+    const symbolBasketChanged = changedFields.some((field) =>
+      ["symbols", "force_symbols", "active_symbols", "selected_symbols", "symbol_count", "symbol_order"]
+        .includes(String(field).replace(/^connection_settings\./, "")),
+    )
+    const symbolSelectionEpoch = symbolBasketChanged
+      ? `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+      : null
     connectionPatch.settings_version = settingsVersion
     connectionPatch.updated_at = updatedAt
+    if (symbolSelectionEpoch) connectionPatch.symbol_selection_epoch = symbolSelectionEpoch
 
     const settingsPatch = Object.keys(incomingSettings).length > 0 || hasSymbols
       ? {
           ...serializeConnectionSettingsHash(mergedSettings),
           settings_version: settingsVersion,
+          ...(symbolSelectionEpoch ? { symbol_selection_epoch: symbolSelectionEpoch } : {}),
         }
       : {}
     const tradeEngineStatePatch = {
@@ -533,8 +542,14 @@ export async function PUT(
         symbols: JSON.stringify(mergedSettings.symbols),
         force_symbols: JSON.stringify(mergedSettings.symbols),
         active_symbols: JSON.stringify(mergedSettings.symbols),
+        selected_symbols: JSON.stringify(mergedSettings.symbols),
         symbol_count: String((mergedSettings.symbols as string[]).length),
         config_set_symbols_total: String((mergedSettings.symbols as string[]).length),
+      } : {}),
+      ...(symbolSelectionEpoch ? {
+        symbol_selection_epoch: symbolSelectionEpoch,
+        quickstart_symbol_generation: symbolSelectionEpoch,
+        settings_change_marker: updatedAt,
       } : {}),
       settings_version: settingsVersion,
       updated_at: updatedAt,
@@ -552,7 +567,14 @@ export async function PUT(
         logTag: "PUT /settings",
       })
 
-    await SystemLogger.logConnection(`Updated settings`, id, "info")
+    await SystemLogger.logConnection("Settings saved and recoordination requested", id, "info", {
+      settingsVersion,
+      changedFields,
+      appliedLocally: recoordination.appliedLocally,
+      refreshQueued: recoordination.refreshQueued,
+      progressRecoordinationRequired: recoordination.progressRecoordinationRequired,
+      progressionReason: recoordination.progressionReason,
+    })
 
     return NextResponse.json({
       success: true,
@@ -832,6 +854,7 @@ export async function PATCH(
       Object.assign(connectionPatch, {
         active_symbols: resolvedSymbolsJson,
         force_symbols: resolvedSymbolsJson,
+        selected_symbols: resolvedSymbolsJson,
         symbol_count: String(resolvedSymbolsForSettings.length),
         symbol_order: finalSymbolOrder,
       })
@@ -1007,6 +1030,7 @@ export async function PATCH(
         symbols: JSON.stringify(resolvedSymbolsForSettings),
         active_symbols: JSON.stringify(resolvedSymbolsForSettings),
         force_symbols: JSON.stringify(resolvedSymbolsForSettings),
+        selected_symbols: JSON.stringify(resolvedSymbolsForSettings),
         symbol_count: String(resolvedSymbolsForSettings.length),
         symbol_order: finalSymbolOrder,
         config_set_symbols_total: String(resolvedSymbolsForSettings.length),
@@ -1029,16 +1053,12 @@ export async function PATCH(
       stableSymbolKey(normalizeSymbolList(beforeSettings.symbols).length > 0
         ? normalizeSymbolList(beforeSettings.symbols)
         : (beforeForcedSymbols.length > 0 ? beforeForcedSymbols : beforeActiveSymbols)) !== stableSymbolKey(normalizeSymbolList(afterSettings.symbols))
-    const symbolsModeChanged =
+    const symbolBasketChanged =
       symbolListChanged ||
       manualSymbolsChanged ||
       scalarChanged("symbol_order", (connection as Record<string, unknown>).symbol_order) ||
-      scalarChanged("symbol_count", (connection as Record<string, unknown>).symbol_count) ||
-      scalarChanged("is_live_trade", (connection as Record<string, unknown>).is_live_trade, connectionPatch.is_live_trade) ||
-      scalarChanged("is_testnet", (connection as Record<string, unknown>).is_testnet, connectionPatch.is_testnet) ||
-      scalarChanged("is_preset_trade", (connection as Record<string, unknown>).is_preset_trade, connectionPatch.is_preset_trade) ||
-      scalarChanged("connection_method", (connection as Record<string, unknown>).connection_method, connectionPatch.connection_method)
-    if (symbolsModeChanged) {
+      scalarChanged("symbol_count", (connection as Record<string, unknown>).symbol_count)
+    if (symbolBasketChanged) {
       const nextEpoch = `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
       Object.assign(connectionPatch, { symbol_selection_epoch: nextEpoch })
       Object.assign(settingsPatch, { symbol_selection_epoch: nextEpoch })
@@ -1061,6 +1081,19 @@ export async function PATCH(
     )
     if (activeIndicationsChanged) {
       changedFieldsOverride.push("active_indications", "indications")
+    }
+    if (symbolBasketChanged) {
+      // The submitted symbol_order/count can be unchanged while a fresh
+      // exchange ranking resolves to a different basket. Surface that
+      // effective change explicitly so the running owner cancels/restarts the
+      // prehistoric generation instead of treating the save as a no-op.
+      changedFieldsOverride.push(
+        "symbols",
+        "active_symbols",
+        "force_symbols",
+        "selected_symbols",
+        "symbol_selection_epoch",
+      )
     }
 
     const { connection: appliedConnection, completion: recoordination, durability } = await applyMainConnectionSettingsChange(
@@ -1088,7 +1121,15 @@ export async function PATCH(
       getTradeEngine()?.getEngineManager(id)?.invalidateSymbolsCache()
     } catch { /* engine may not be running yet — persisted state is enough */ }
 
-    await SystemLogger.logConnection(`Patched settings`, id, "info")
+    await SystemLogger.logConnection("Settings patch saved and recoordination requested", id, "info", {
+      settingsVersion,
+      changedFields: Array.from(new Set(changedFieldsOverride)),
+      appliedLocally: recoordination.appliedLocally,
+      refreshQueued: recoordination.refreshQueued,
+      progressRecoordinationRequired: recoordination.progressRecoordinationRequired,
+      progressionReason: recoordination.progressionReason,
+      symbolResolutionWarning: symbolResolutionWarning || undefined,
+    })
 
     return NextResponse.json({
       success: true,

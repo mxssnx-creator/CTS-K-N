@@ -185,6 +185,7 @@ jest.mock("@/lib/redis-db", () => ({
   initRedis: jest.fn(async () => undefined),
   getRedisBackend: jest.fn(() => "redis-network"),
   persistNow: jest.fn(async () => true),
+  persistLivePositionCheckpoint: jest.fn(async () => true),
   getRedisClient: jest.fn(() => fakeRedis),
   getConnection: jest.fn(async () => ({ ...connection })),
   getAppSettings: jest.fn(async () => ({})),

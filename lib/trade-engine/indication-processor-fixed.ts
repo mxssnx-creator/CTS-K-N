@@ -733,15 +733,29 @@ export class IndicationProcessor {
    *
    * Returns the active indication array for the (sliced) snapshot.
    */
-  async processIndication(symbol: string, asOfMs?: number): Promise<any[]> {
+  async processIndication(
+    symbol: string,
+    asOfMs?: number,
+    shouldContinue?: () => boolean,
+  ): Promise<any[]> {
+    const isCurrent = (): boolean => {
+      try {
+        return shouldContinue?.() !== false
+      } catch {
+        return false
+      }
+    }
     try {
+      if (!isCurrent()) return []
       // Defensive initialization
       if (!this.marketDataCache) {
         this.marketDataCache = new Map()
       }
       const indicationSettings = await getSettingsCachedModule(this.connectionId)
+      if (!isCurrent()) return []
       
       let marketData = await this.getLatestMarketDataCached(symbol)
+      if (!isCurrent()) return []
       if (!marketData) {
         await initRedis()
         const client = getRedisClient()
@@ -749,6 +763,7 @@ export class IndicationProcessor {
         // Indicators need a rolling window, not merely a one-candle realtime
         // tail that may have been written by the minute scheduler first.
         await loadMarketDataForEngine([symbol], { requireHistory: true, connectionId: this.connectionId })
+        if (!isCurrent()) return []
         SHARED_MARKET_DATA_CACHE.delete(symbol)
         
         // Spec §7: prefer the new :1s envelope, fall back to legacy :1m.
@@ -795,6 +810,7 @@ export class IndicationProcessor {
       // Sub-ms duplicate timestamps are tolerated — the slice keeps every
       // candle <= asOfMs and the last one becomes the "live" snapshot.
       let candles = await this.getHistoricalCandles(symbol)
+      if (!isCurrent()) return []
       if (candles.length === 0) {
         candles.push(marketData)
       }
@@ -1278,6 +1294,7 @@ export class IndicationProcessor {
           )
           return []
         })
+        if (!isCurrent()) return []
         indications.push(...signalIndications)
       }
 
@@ -1300,8 +1317,14 @@ export class IndicationProcessor {
         })
       }
 
+      // A generation can change while market/signal data is in flight. Drop
+      // the completed calculation before its first durable write so stale
+      // symbols/settings never leak into the next coordinated generation.
+      if (!isCurrent()) return []
+
       // Store indication payloads (raw JSON list, per-type TTL keys).
       await storeIndications(this.connectionId, symbol, indications)
+      if (!isCurrent()) return []
 
       // ── Increment the per-type counters that the dashboard reads ─────────
       //
@@ -1331,6 +1354,7 @@ export class IndicationProcessor {
           ),
         )
       }
+      if (!isCurrent()) return []
 
       // ── Write per-type counts to indications_active hash ─────────────
       // The dashboard "Indications" active tile reads from the
@@ -1339,6 +1363,7 @@ export class IndicationProcessor {
       // expires and every active-count tile shows 0 even while the
       // engine is producing thousands of indications per minute.
       {
+        if (!isCurrent()) return []
         const typeCounts: Record<string, number> = {
           direction: 0,
           move: 0,
@@ -1378,7 +1403,7 @@ export class IndicationProcessor {
         } catch { /* non-critical — falls back to cumulative indCounts */ }
       }
 
-      return indications
+      return isCurrent() ? indications : []
     } catch (error) {
       console.error(`[v0] [IndicationProcessor] Error in processIndication for ${symbol}:`, error)
       return []

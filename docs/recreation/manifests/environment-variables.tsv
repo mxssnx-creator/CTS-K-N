@@ -229,6 +229,7 @@ VERCEL_ENV	platform-provided	no	no	4	app/api/trade-engine/quick-start/route.ts,l
 VERCEL_GIT_COMMIT_SHA	platform-provided	no	no	1	lib/redis-db.ts
 VERCEL_PROJECT_PRODUCTION_URL	platform-provided	no	no	4	lib/deployment-runtime.ts,lib/startup-validation.ts,next.config.mjs,scripts/production-deploy-init.mjs
 VERCEL_URL	platform-provided	no	no	4	app/api/settings/connections/route.ts,lib/deployment-runtime.ts,lib/startup-validation.ts,scripts/verify-deployment-contract.mjs
+VERIFY_CONNECTION_TOGGLE	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 VERIFY_SIGNAL_ENGINE	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 VOLATILE_STATE_OWNER_FRESH_MS	application-runtime	no	no	1	lib/redis-db.ts
 VOLATILE_STATE_STALE_MS	application-runtime	no	no	1	lib/redis-db.ts

@@ -4,7 +4,8 @@ import { join } from "node:path"
 describe("strategy-flow diagnostic throttling", () => {
   test("bounds per-symbol summaries and durable events", () => {
     const source = readFileSync(join(process.cwd(), "lib/trade-engine/strategy-processor.ts"), "utf8")
-    expect(source).toContain("FLOW_SUMMARY_LOG_INTERVAL_MS = 15_000")
+    expect(source).toContain("FLOW_SUMMARY_LOG_INTERVAL_MS = 30_000")
+    expect(source).toContain("MAX_FLOW_THROTTLE_ENTRIES = 4096")
     expect(source).toContain("const logFlowSummary = shouldLogFlowSummary")
     expect(source).toContain("if (logFlowSummary) {")
     expect(source).toContain("flowSummaryLogAt.delete(key)")

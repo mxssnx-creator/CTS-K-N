@@ -1,7 +1,9 @@
 const SYMBOL_AFFECTING_SETTING_FIELDS = new Set([
   "active_symbols",
   "activeSymbols",
+  "selected_symbols",
   "symbols",
+  "symbol_selection_epoch",
   "symbol_mode",
   "symbolMode",
   "exchange_order_by",
