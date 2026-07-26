@@ -269,7 +269,8 @@ function applyBlockAdjustment(
   positions: Position[],
   baseRatio: number,
   blockSize: number,
-  adjustmentRatio: number
+  adjustmentRatio: number,
+  activeBlockCount: number
 ): number {
   const blocks = group(
     positions, 
@@ -283,9 +284,10 @@ function applyBlockAdjustment(
     calculateAvg(lastBlock)
   
   if (profitFactor < 0) {
-    // Increase RATIO
-    return baseRatio * 
-      (1 + adjustmentRatio)
+    // Absolute, non-compounding target:
+    return baseRatio * (
+      1 + adjustmentRatio * activeBlockCount
+    )
   }
   
   return baseRatio
@@ -304,7 +306,7 @@ function applyBlockAdjustment(
                   {`// ✅ CORRECT
 function applyDCAdjustment(
   positions: Position[],
-  currentFactor: number,
+  baseRatio: number,
   dcaLevels: number
 ): number {
   const lossPositions = 
@@ -317,12 +319,13 @@ function applyDCAdjustment(
       lossPositions.length / 
       positions.length
       
-    // Adjust FACTOR
-    return currentFactor * 
+    // Independent absolute DCA lane from identity;
+    // never compound with Block or channel factors.
+    return baseRatio *
       (1 + lossRatio)
   }
   
-  return currentFactor
+  return baseRatio
 }`}
                 </pre>
               </CardContent>

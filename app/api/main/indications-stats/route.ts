@@ -14,8 +14,10 @@ export async function GET() {
       direction: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0, signals: [] as any[] },
       move: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0, signals: [] as any[] },
       active: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0, signals: [] as any[] },
+      active_advanced: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0, signals: [] as any[] },
       optimal: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0, signals: [] as any[] },
       auto: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0, signals: [] as any[] },
+      signal: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0, signals: [] as any[] },
       trend: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0, signals: [] as any[] },
     }
 
@@ -25,7 +27,7 @@ export async function GET() {
       if (!indication) continue
 
       const data = JSON.parse(indication)
-      const type = data.type as "direction" | "move" | "active" | "optimal" | "auto" | "trend"
+      const type = data.type as "direction" | "move" | "active" | "active_advanced" | "optimal" | "auto" | "signal" | "trend"
 
       if (indicationStats[type]) {
         indicationStats[type].signals.push(data)
@@ -40,7 +42,7 @@ export async function GET() {
 
     // Calculate aggregates for each indication type
     Object.keys(indicationStats).forEach((type) => {
-      const stats = indicationStats[type as "direction" | "move" | "active" | "optimal" | "auto" | "trend"]
+      const stats = indicationStats[type as "direction" | "move" | "active" | "active_advanced" | "optimal" | "auto" | "signal" | "trend"]
       if (stats.signals.length > 0) {
         const avgSignalStrength = stats.signals.reduce((sum: number, s: any) => sum + (s.signal_strength || 0), 0) / stats.signals.length
         const avgProfitFactor = stats.signals.reduce((sum: number, s: any) => sum + (s.profit_factor || 1), 0) / stats.signals.length
@@ -66,8 +68,10 @@ export async function GET() {
         direction: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0 },
         move: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0 },
         active: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0 },
+        active_advanced: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0 },
         optimal: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0 },
         auto: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0 },
+        signal: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0 },
         trend: { count: 0, avgSignalStrength: 0, lastTrigger: null, profitFactor: 0 },
       },
     })

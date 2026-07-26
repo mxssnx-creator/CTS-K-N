@@ -362,7 +362,7 @@ export function PresetTradeCard({
                     <Slider
                       value={[1.0]}
                       onValueChange={() => {}}
-                      min={0.5}
+                      min={1}
                       max={2}
                       step={0.1}
                     />

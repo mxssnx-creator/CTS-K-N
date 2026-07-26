@@ -4320,7 +4320,14 @@ const migrations: Migration[] = [
             positionCostUpdates++
           }
         }
-        for (const field of ["live_volume_factor", "volume_factor_live", "preset_volume_factor", "volume_factor_preset"]) {
+        for (const field of [
+          "live_volume_factor",
+          "volume_factor_live",
+          "preset_volume_factor",
+          "volume_factor_preset",
+          "signal_volume_factor",
+          "volume_factor_signal",
+        ]) {
           const raw = values[field]
           if (raw == null || raw === "" || Number(raw) === 0.1) {
             patch[field] = "1"
@@ -4370,6 +4377,196 @@ const migrations: Migration[] = [
     down: async (client: any) => {
       // Operator-visible sizing values are intentionally preserved on rollback.
       await client.set("_schema_version", "81")
+    },
+  },
+  {
+    version: 83,
+    name: "083-enforce-identity-live-volume-ratios",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const ratioFields = [
+        "base_volume_factor",
+        "volume_factor",
+        "live_volume_factor",
+        "volume_factor_live",
+        "mainTradeVolumeFactor",
+        "main_trade_volume_factor",
+        "preset_volume_factor",
+        "volume_factor_preset",
+        "presetTradeVolumeFactor",
+        "preset_trade_volume_factor",
+        "signal_volume_factor",
+        "volume_factor_signal",
+        "signalTradeVolumeFactor",
+        "signal_trade_volume_factor",
+        "signalVolumeFactor",
+      ] as const
+      let normalized = 0
+      let seeded = 0
+
+      const normalizeHash = async (
+        key: string,
+        requiredFields: readonly string[] = [],
+      ): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+        for (const field of ratioFields) {
+          const raw = values[field]
+          if (raw == null || raw === "") continue
+          const parsed = Number(raw)
+          if (!Number.isFinite(parsed) || parsed < 1) {
+            patch[field] = "1"
+            normalized++
+          } else if (parsed > 10) {
+            patch[field] = "10"
+            normalized++
+          }
+        }
+        for (const field of requiredFields) {
+          if (values[field] == null || values[field] === "") {
+            patch[field] = "1"
+            seeded++
+          }
+        }
+        if (Object.keys(patch).length > 0) await client.hset(key, patch)
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeHash(key, [
+          "mainTradeVolumeFactor",
+          "presetTradeVolumeFactor",
+          "signalTradeVolumeFactor",
+        ])
+      }
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await normalizeHash(key)
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        live_volume_ratio_baseline: "1",
+        live_volume_ratio_range: "1-10",
+        signal_volume_ratio_semantics: "main-channel-times-signal-ratio-once",
+        identity_volume_fields_normalized: String(normalized),
+        identity_volume_fields_seeded: String(seeded),
+        schema_version: "83",
+        updated_at: new Date().toISOString(),
+      }).catch(() => 0)
+      console.log(
+        `[v0] Migration 083: normalized=${normalized}, identity defaults seeded=${seeded}`,
+      )
+    },
+    down: async (client: any) => {
+      // Operator-visible sizing values are intentionally preserved on rollback.
+      await client.set("_schema_version", "82")
+    },
+  },
+  {
+    version: 84,
+    name: "084-freeze-base-volume-coordination-at-identity",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const baseFields = [
+        "base_volume_factor",
+        "volume_factor",
+        "baseVolumeFactor",
+      ] as const
+      let normalized = 0
+      let seeded = 0
+      let nestedNormalized = 0
+
+      const normalizeHash = async (
+        key: string,
+        requiredFields: readonly string[] = [],
+        requireNestedBase = false,
+      ): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+
+        for (const field of baseFields) {
+          const raw = values[field]
+          if (raw == null || raw === "") continue
+          if (Number(raw) !== 1) {
+            patch[field] = "1"
+            normalized++
+          }
+        }
+        for (const field of requiredFields) {
+          if (values[field] == null || values[field] === "") {
+            patch[field] = "1"
+            seeded++
+          }
+        }
+
+        const nestedRaw = values.connection_settings
+        if (typeof nestedRaw === "string" && nestedRaw.trim().startsWith("{")) {
+          try {
+            const nested = JSON.parse(nestedRaw) as Record<string, unknown>
+            let changed = false
+            for (const field of baseFields) {
+              if (!(field in nested)) continue
+              if (Number(nested[field]) !== 1) {
+                nested[field] = 1
+                nestedNormalized++
+                changed = true
+              }
+            }
+            if (requireNestedBase && nested.baseVolumeFactor == null) {
+              nested.baseVolumeFactor = 1
+              nestedNormalized++
+              changed = true
+            }
+            if (changed) patch.connection_settings = JSON.stringify(nested)
+          } catch {
+            // Malformed legacy JSON remains operator-visible. Canonical flat
+            // hashes are still repaired and all current write paths reject or
+            // overwrite malformed settings before engine use.
+          }
+        }
+
+        if (Object.keys(patch).length > 0) await client.hset(key, patch)
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeHash(key, ["base_volume_factor", "volume_factor"])
+      }
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        await normalizeHash(`connection:${id}`, ["volume_factor"], true)
+        await normalizeHash(`settings:connection:${id}`, ["volume_factor"], true)
+        await normalizeHash(`connection_settings:${id}`, ["volume_factor", "baseVolumeFactor"])
+        await normalizeHash(`settings:connection_settings:${id}`, ["volume_factor", "baseVolumeFactor"])
+        await normalizeHash(`trade_engine_state:${id}`, ["volume_factor"])
+        await normalizeHash(`settings:trade_engine_state:${id}`, ["volume_factor"])
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        base_volume_ratio: "1",
+        base_volume_ratio_semantics: "immutable-coordination-identity",
+        base_volume_fields_normalized: String(normalized),
+        base_volume_fields_seeded: String(seeded),
+        nested_base_volume_fields_normalized: String(nestedNormalized),
+        schema_version: "84",
+        updated_at: new Date().toISOString(),
+      }).catch(() => 0)
+      console.log(
+        `[v0] Migration 084: base normalized=${normalized}, seeded=${seeded}, nested=${nestedNormalized}`,
+      )
+    },
+    down: async (client: any) => {
+      // Base identity is a safety invariant and intentionally remains at one.
+      await client.set("_schema_version", "83")
     },
   },
 ]
@@ -4611,8 +4808,9 @@ if (!hasExisting) {
         seedData["is_live_trade"]     = "1"
         seedData["symbol_count"]      = DEFAULT_SYMBOL_COUNT
         seedData["symbol_order"]      = "volatility_1h"
-        seedData["live_volume_factor"] = "0.1"
-        seedData["volume_factor_live"] = "0.1"
+        seedData["live_volume_factor"] = "1"
+        seedData["volume_factor_live"] = "1"
+        seedData["signal_volume_factor"] = "1"
         seedData["position_mode"]     = "hedge"
       }
       await client.hset(`connection:${cfg.id}`, seedData)
@@ -4644,7 +4842,8 @@ if (!hasExisting) {
           symbol_count:             DEFAULT_SYMBOL_COUNT,
           symbol_order:             "volatility_1h",
           config_set_symbols_total: DEFAULT_SYMBOL_COUNT,
-          live_volume_factor:       "0.1",
+          live_volume_factor:       "1",
+          signal_volume_factor:     "1",
         }).catch(() => {})
         const settConnKey = `settings:connection:${cfg.id}`
         await client.hset(settConnKey, {
@@ -4678,7 +4877,8 @@ if (!hasExisting) {
         const patchData: Record<string,string> = {}
         if (!hasOrder) patchData["symbol_order"] = "volatility_1h"
         if (!existing["symbol_count"]) patchData["symbol_count"] = DEFAULT_SYMBOL_COUNT
-        if (!existing["live_volume_factor"]) patchData["live_volume_factor"] = "0.1"
+        if (!existing["live_volume_factor"]) patchData["live_volume_factor"] = "1"
+        if (!existing["signal_volume_factor"]) patchData["signal_volume_factor"] = "1"
         if (!existing["position_mode"]) patchData["position_mode"] = "hedge"
         if (Object.keys(patchData).length > 0) {
           await client.hset(`connection:${cfg.id}`, patchData)

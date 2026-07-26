@@ -28,7 +28,7 @@ import {
 
 export interface IndicationState {
   symbol: string
-  type: "direction" | "move" | "active" | "optimal" | "active_advanced" | "trend"
+  type: "direction" | "move" | "active" | "optimal" | "active_advanced" | "signal" | "trend"
   range: number | null
   lastValidated: Date | null
   lastPositionClosed: Date | null
@@ -276,7 +276,7 @@ export class IndicationStateManager {
     ])
 
     // Log results for each type
-    const types = ["direction", "move", "active", "optimal", "active_advanced", "trend"]
+    const types = ["direction", "move", "active", "optimal", "active_advanced", "signal", "trend"]
     let totalIndications = 0
     let totalPositions = 0
     

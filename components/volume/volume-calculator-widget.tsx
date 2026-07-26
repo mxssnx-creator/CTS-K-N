@@ -5,11 +5,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Slider } from "@/components/ui/slider"
 import { Calculator } from "lucide-react"
 
 export default function VolumeCalculatorWidget() {
-  const [baseVolumeFactor, setBaseVolumeFactor] = useState(1.0)
   // Default 300 mirrors the global Settings default in
   // components/settings/utils.ts — keeps the standalone calculator
   // widget showing the same per-position size the real engine uses.
@@ -22,23 +20,24 @@ export default function VolumeCalculatorWidget() {
   const [result, setResult] = useState<any>(null)
 
   const calculateVolume = () => {
-    // Calculate leverage
-    const leverage = Math.max(1, maxLeverage / baseVolumeFactor)
+    // The shared Base coordination ratio is immutable identity 1. Channel and
+    // strategy adjustment ratios are applied later at their explicit Live
+    // boundaries and are intentionally not simulated by this Base preview.
+    const leverage = Math.max(1, maxLeverage)
 
     // Calculate risk per position
     const totalRiskAmount = accountBalance * (riskPercentage / 100)
     const riskPerPosition = totalRiskAmount / positionsAverage
-    const adjustedRisk = riskPerPosition * baseVolumeFactor
 
     // Calculate position size
-    const positionSize = adjustedRisk / (riskPercentage / 100)
+    const positionSize = riskPerPosition / (riskPercentage / 100)
 
     // Calculate volume
     const calculatedVolume = positionSize / (currentPrice * leverage)
 
     setResult({
       leverage: leverage.toFixed(2),
-      riskPerPosition: adjustedRisk.toFixed(2),
+      riskPerPosition: riskPerPosition.toFixed(2),
       positionSize: positionSize.toFixed(2),
       volume: calculatedVolume.toFixed(6),
       positionValue: (calculatedVolume * currentPrice).toFixed(2),
@@ -56,16 +55,12 @@ export default function VolumeCalculatorWidget() {
       </CardHeader>
       <CardContent className="space-y-6">
         <div className="space-y-4">
-          <div className="space-y-2">
-            <Label>Base Volume Factor: {baseVolumeFactor.toFixed(1)}</Label>
-            <Slider
-              min={1}
-              max={10}
-              step={0.5}
-              value={[baseVolumeFactor]}
-              onValueChange={([value]) => setBaseVolumeFactor(value)}
-            />
-            <p className="text-xs text-muted-foreground">1 = highest leverage, 10 = lowest leverage</p>
+          <div className="rounded-lg border bg-muted/40 p-3">
+            <Label>Base Coordination Ratio: 1.0x</Label>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Fixed identity basis. Main, Preset, Signal, Position-count, DCA
+              and Block ratios are applied independently at their own stages.
+            </p>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -158,8 +153,8 @@ export default function VolumeCalculatorWidget() {
 
             <div className="bg-blue-50 dark:bg-blue-950 p-3 rounded-lg text-sm">
               <p className="text-blue-800 dark:text-blue-200">
-                At factor {baseVolumeFactor.toFixed(1)} with {positionsAverage} positions, you can lose if market goes{" "}
-                {riskPercentage}% negative.
+                At the fixed 1.0x Base ratio with {positionsAverage} positions,
+                this preview budgets {riskPercentage}% total account risk.
               </p>
             </div>
           </div>

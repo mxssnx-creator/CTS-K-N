@@ -4,8 +4,8 @@ describe("indication configuration counts", () => {
   it("matches the processor's balanced default grids", () => {
     const result = calculateIndicationConfigurationCounts({}, undefined)
 
-    expect(result.totalPossibleSets).toBe(328)
-    expect(result.totalEvaluationConfigurations).toBe(289)
+    expect(result.totalPossibleSets).toBe(330)
+    expect(result.totalEvaluationConfigurations).toBe(300)
     expect(result.settings.commonTimeframes).toEqual([1, 3, 5, 15])
     expect(result.settings.enabledCommonIndicators).toBe(11)
     expect(Object.fromEntries(result.types.map((type) => [type.type, type.possibleSets]))).toEqual({
@@ -15,6 +15,7 @@ describe("indication configuration counts", () => {
       active_advanced: 6,
       optimal: 10,
       auto: 0,
+      signal: 2,
       trend: 102,
       common: 0,
     })
@@ -74,7 +75,7 @@ describe("indication configuration counts", () => {
       },
     )
 
-    expect(result.totalPossibleSets).toBe(6)
+    expect(result.totalPossibleSets).toBe(8)
     expect(result.types.find((type) => type.type === "auto")).toMatchObject({
       storage: "runtime",
       possibleSets: 0,
@@ -84,6 +85,11 @@ describe("indication configuration counts", () => {
       storage: "runtime",
       possibleSets: 0,
       evaluationConfigurations: 3,
+    })
+    expect(result.types.find((type) => type.type === "signal")).toMatchObject({
+      storage: "independent_set",
+      possibleSets: 2,
+      evaluationConfigurations: 11,
     })
   })
 

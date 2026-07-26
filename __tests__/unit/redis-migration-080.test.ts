@@ -16,7 +16,7 @@ function resetRedisGlobals(): void {
   ]) delete (globalThis as any)[key]
 }
 
-describe("migrations 080/081/082 exact Set indexes and sizing defaults", () => {
+describe("migrations 080/081/082/083/084 exact Set indexes and sizing defaults", () => {
   const originalEnv = { ...process.env }
 
   afterEach(() => {
@@ -54,6 +54,17 @@ describe("migrations 080/081/082 exact Set indexes and sizing defaults", () => {
       await client.hset("connection_settings:conn-ledger", {
         axisPrevMaxWindow: "5",
         blockProfitFactorRatio: "1.7",
+        signal_volume_factor: "0.2",
+        volume_factor: "7",
+        baseVolumeFactor: "9",
+      })
+      await client.hset("connection:conn-ledger", {
+        volume_factor: "8",
+        live_volume_factor: "2.5",
+        connection_settings: JSON.stringify({
+          baseVolumeFactor: 6,
+          live_volume_factor: 2.5,
+        }),
       })
       await client.hset("settings:connection_settings:conn-ledger", { axisPrevMaxWindow: "11" })
       await client.set("_schema_version", "79")
@@ -61,9 +72,9 @@ describe("migrations 080/081/082 exact Set indexes and sizing defaults", () => {
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 82 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 84 })
 
-      expect(await client.get("_schema_version")).toBe("82")
+      expect(await client.get("_schema_version")).toBe("84")
       expect(new Set(await client.smembers("strategy_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
       expect(await client.smembers("strategy_active_set_keys:conn-ledger")).toEqual(["set:a"])
       expect(new Set(await client.smembers("strategy_closed_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
@@ -80,7 +91,19 @@ describe("migrations 080/081/082 exact Set indexes and sizing defaults", () => {
       expect(await client.hget("connection_settings:conn-ledger", "positionCost")).toBe("0.1")
       expect(await client.hget("connection_settings:conn-ledger", "exchangePositionCost")).toBe("0.1")
       expect(await client.hget("connection_settings:conn-ledger", "live_volume_factor")).toBe("1")
+      expect(await client.hget("connection_settings:conn-ledger", "signal_volume_factor")).toBe("1")
+      expect(await client.hget("connection_settings:conn-ledger", "volume_factor")).toBe("1")
+      expect(await client.hget("connection_settings:conn-ledger", "baseVolumeFactor")).toBe("1")
+      expect(await client.hget("connection:conn-ledger", "volume_factor")).toBe("1")
+      expect(await client.hget("connection:conn-ledger", "live_volume_factor")).toBe("2.5")
+      expect(JSON.parse(
+        String(await client.hget("connection:conn-ledger", "connection_settings")),
+      )).toMatchObject({
+        baseVolumeFactor: 1,
+        live_volume_factor: 2.5,
+      })
       expect(await client.hget("connection_settings:conn-ledger", "posCountsVolumeRatio")).toBe("0.05")
+      expect(await client.hget("app_settings", "signalTradeVolumeFactor")).toBe("1")
       expect(await client.hget("system:database:coordination:performance", "inline_snapshot_interval_ms")).toBe("60000")
       expect(await client.hget("system:database:coordination:performance", "independent_block_profit_factor"))
         .toBe("default-pf-x-ratio-x-volume-increment-v1")

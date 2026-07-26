@@ -67,7 +67,18 @@ function assertBoundedPercentage(label, value) {
   }
 }
 
+function finiteNonNegative(value, label) {
+  const numeric = Number(value ?? 0)
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    throw new Error(`${label} is invalid: ${String(value)}`)
+  }
+  return numeric
+}
+
 function assertStatsRelationships(stats) {
+  for (const type of ["direction", "move", "active", "active_advanced", "optimal", "auto", "signal", "trend"]) {
+    finiteNonNegative(stats?.indicationsByType?.[type], `indicationsByType.${type}`)
+  }
   for (const [stage, value] of Object.entries(stats?.stageEvalPercent || {})) {
     assertBoundedPercentage(`stageEvalPercent.${stage}`, value)
   }
@@ -85,6 +96,13 @@ function assertStatsRelationships(stats) {
   const real = Number(stats?.breakdown?.strategies?.real || 0)
   const live = Number(stats?.breakdown?.strategies?.live || 0)
   if (live > real) throw new Error(`Live strategy count exceeds Real (${live} > ${real})`)
+
+  const blockPf = stats?.strategyDetail?.real?.positionStats?.adjustTypes?.block
+  if (!blockPf || !Array.isArray(blockPf.countEvaluations) || !Array.isArray(blockPf.scopedEvaluations)) {
+    throw new Error("Real Block PF/count/source-scope statistics are missing")
+  }
+  finiteNonNegative(blockPf.profitFactorWindow, "blockProfitFactor.window")
+  finiteNonNegative(blockPf.profitFactorMinimumSampleCount, "blockProfitFactor.minimumSampleCount")
 }
 
 async function waitFor(label, read, accept, timeoutMs = 30_000) {
@@ -228,25 +246,43 @@ async function main() {
     // The information dialog hydrates six independent read-only surfaces. A
     // partial failure is rendered explicitly, but a healthy production test
     // expects the complete detailed snapshot and both indication profiles.
-    const [infoSettings, infoIndications, infoPreset, infoRuntime, infoProgression, infoStats] = await Promise.all([
+    const [
+      infoSettings,
+      infoIndications,
+      infoPreset,
+      infoRuntime,
+      infoProgression,
+      infoStats,
+      signalStatus,
+      signalSettings,
+    ] = await Promise.all([
       request(`/api/settings/connections/${encodeURIComponent(connectionId)}/settings?t=${Date.now()}`),
       request(`/api/settings/connections/${encodeURIComponent(connectionId)}/active-indications?t=${Date.now()}`),
       request(`/api/settings/connections/${encodeURIComponent(connectionId)}/preset-type?t=${Date.now()}`),
       request(`/api/connections/${encodeURIComponent(connectionId)}/engine-states?t=${Date.now()}`),
       request(`/api/connections/progression/${encodeURIComponent(connectionId)}?t=${Date.now()}`, { timeoutMs: 30_000 }),
       request(`/api/connections/progression/${encodeURIComponent(connectionId)}/stats?t=${Date.now()}`, { timeoutMs: 30_000 }),
+      request(`/api/indications/signals/status?connectionId=${encodeURIComponent(connectionId)}&t=${Date.now()}`, { timeoutMs: 30_000 }),
+      request(`/api/settings/indications/signal?t=${Date.now()}`, { timeoutMs: 30_000 }),
     ])
     if (
       !infoSettings.data?.settings ||
       !infoIndications.data?.channels?.main ||
       !infoIndications.data?.channels?.preset ||
+      infoIndications.data?.channels?.main?.signal?.enabled !== true ||
       !("presetType" in infoPreset.data) ||
       infoRuntime.data?.connectionId !== connectionId ||
       infoProgression.data?.success !== true ||
-      infoStats.data?.success !== true
+      infoStats.data?.success !== true ||
+      signalStatus.data?.success !== true ||
+      Number(signalStatus.data?.sourceCount) !== 35 ||
+      signalStatus.data?.connections?.[0]?.sourceHealth?.length !== 35 ||
+      signalSettings.data?.success !== true ||
+      Number(signalSettings.data?.settings?.requestIntervalSeconds) < 30
     ) {
       throw new Error("Main Connection information dialog snapshot is incomplete")
     }
+    assertStatsRelationships(infoStats.data)
 
     // Exercise the quick-settings hot-reload contract while processing is
     // active. The response must acknowledge one version, persist both adjacent
@@ -304,23 +340,36 @@ async function main() {
       `/api/settings/connections/${encodeURIComponent(connectionId)}/volume?t=${Date.now()}`,
     )).data
     const originalLiveVolume = Number(originalVolume?.live_volume_factor ?? 1)
+    const originalSignalVolume = Number(originalVolume?.signal_volume_factor ?? 1)
     const nextLiveVolume = originalLiveVolume === 1.2 ? 1.3 : 1.2
+    const nextSignalVolume = originalSignalVolume === 1.4 ? 1.5 : 1.4
     const volumeUpdate = (await request(
       `/api/settings/connections/${encodeURIComponent(connectionId)}/volume`,
-      { method: "POST", body: { live_volume_factor: nextLiveVolume }, timeoutMs: 30_000 },
+      {
+        method: "POST",
+        body: {
+          live_volume_factor: nextLiveVolume,
+          signal_volume_factor: nextSignalVolume,
+        },
+        timeoutMs: 30_000,
+      },
     )).data
     if (
       !volumeUpdate?.success ||
       !volumeUpdate?.settingsVersion ||
       !volumeUpdate?.recoordination?.completedAt ||
-      Number(volumeUpdate.live_volume_factor) !== nextLiveVolume
+      Number(volumeUpdate.live_volume_factor) !== nextLiveVolume ||
+      Number(volumeUpdate.signal_volume_factor) !== nextSignalVolume
     ) {
       throw new Error(`Volume hot reload did not acknowledge the applied value: ${JSON.stringify(volumeUpdate)}`)
     }
     const volumeReadback = (await request(
       `/api/settings/connections/${encodeURIComponent(connectionId)}/volume?t=${Date.now()}`,
     )).data
-    if (Number(volumeReadback?.live_volume_factor) !== nextLiveVolume) {
+    if (
+      Number(volumeReadback?.live_volume_factor) !== nextLiveVolume ||
+      Number(volumeReadback?.signal_volume_factor) !== nextSignalVolume
+    ) {
       throw new Error("Volume setting read-after-write mismatch")
     }
 
@@ -405,7 +454,10 @@ async function main() {
     })
     await request(`/api/settings/connections/${encodeURIComponent(connectionId)}/volume`, {
       method: "POST",
-      body: { live_volume_factor: originalLiveVolume },
+      body: {
+        live_volume_factor: originalLiveVolume,
+        signal_volume_factor: originalSignalVolume,
+      },
       timeoutMs: 30_000,
     })
 
@@ -444,6 +496,9 @@ async function main() {
       cycleResetObserved,
       settingsHotReloadVerified: true,
       volumeHotReloadVerified: true,
+      signalSourceRegistryVerified: 35,
+      signalEnabledByDefaultVerified: true,
+      signalVolumeHotReloadVerified: true,
       mainConnectionToggleVerified: true,
       globalControlsVerified: ["pause", "resume", "stop", "start"],
       statusRelationshipsVerified: true,

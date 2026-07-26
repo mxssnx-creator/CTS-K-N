@@ -1,6 +1,14 @@
 "use client"
 
-import { DEFAULT_VOLUME_STEP_RATIO, MAX_VOLUME_STEP_RATIO, MIN_VOLUME_FACTOR, MIN_VOLUME_STEP_RATIO } from "@/lib/constants"
+import {
+  DEFAULT_VOLUME_STEP_RATIO,
+  MAX_VOLUME_FACTOR,
+  MAX_VOLUME_STEP_RATIO,
+  MIN_VOLUME_FACTOR,
+  MIN_VOLUME_STEP_RATIO,
+  normalizeIdentityVolumeFactor,
+  normalizeVolumeStepRatio,
+} from "@/lib/constants"
 import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import {
@@ -96,7 +104,7 @@ interface SettingsPreset {
 // DATA SHAPES
 // ─────────────────────────────────────────────────────────────────────
 
-const INDICATION_TYPES = ["direction", "move", "active", "optimal", "auto", "trend"] as const
+const INDICATION_TYPES = ["direction", "move", "active", "optimal", "auto", "signal", "trend"] as const
 type IndicationType = (typeof INDICATION_TYPES)[number]
 
 interface IndicationParams {
@@ -127,20 +135,21 @@ type SymbolOrder =
   | "manual"
 
 function parseVolumeFactor(raw: unknown, fallback: number): number {
-  if (raw === undefined || raw === null || raw === "") return fallback
-  const parsed = Number(raw)
-  return Number.isFinite(parsed) ? parsed : fallback
+  if (raw === undefined || raw === null || raw === "") {
+    return normalizeIdentityVolumeFactor(fallback)
+  }
+  return normalizeIdentityVolumeFactor(raw, fallback)
 }
 
 function parseVolumeStepRatio(raw: unknown, fallback = DEFAULT_VOLUME_STEP_RATIO): number {
-  const parsed = parseVolumeFactor(raw, fallback)
-  return Math.max(MIN_VOLUME_STEP_RATIO, Math.min(MAX_VOLUME_STEP_RATIO, parsed))
+  return normalizeVolumeStepRatio(raw, fallback)
 }
 
 interface OverviewSettings {
   volumeFactorBase:   number
   volumeFactorLive:   number
   volumeFactorPreset: number
+  volumeFactorSignal: number
   volumeStepRatio: number
   posCountsVolumeRatio: number
   marginMode:  "cross" | "isolated"
@@ -169,6 +178,7 @@ const DEFAULT_OVERVIEW_SETTINGS: OverviewSettings = {
   volumeFactorBase: MIN_VOLUME_FACTOR,
   volumeFactorLive: MIN_VOLUME_FACTOR,
   volumeFactorPreset: MIN_VOLUME_FACTOR,
+  volumeFactorSignal: MIN_VOLUME_FACTOR,
   volumeStepRatio: DEFAULT_VOLUME_STEP_RATIO,
   posCountsVolumeRatio: 0.05,
   marginMode: "cross",
@@ -276,6 +286,7 @@ export function ConnectionSettingsDialog({
       const payload = {
         volume_factor_live:   overview.volumeFactorLive,
         volume_factor_preset: overview.volumeFactorPreset,
+        volume_factor_signal: overview.volumeFactorSignal,
         volume_step_ratio:   overview.volumeStepRatio,
         margin_mode:          overview.marginMode,
         volume_type:          overview.volumeType,
@@ -328,9 +339,10 @@ export function ConnectionSettingsDialog({
       // Apply overview settings
       setOverview(prev => ({
         ...prev,
-        volumeFactorBase:   parseVolumeFactor(p.volume_factor, prev.volumeFactorBase),
+        volumeFactorBase:   MIN_VOLUME_FACTOR,
         volumeFactorLive:   parseVolumeFactor(p.volume_factor_live, prev.volumeFactorLive),
         volumeFactorPreset: parseVolumeFactor(p.volume_factor_preset, prev.volumeFactorPreset),
+        volumeFactorSignal: parseVolumeFactor(p.volume_factor_signal ?? p.signal_volume_factor, prev.volumeFactorSignal),
         volumeStepRatio:   parseVolumeStepRatio(p.volume_step_ratio ?? p.volumeStepRatio, prev.volumeStepRatio),
         marginMode:        (p.margin_mode    as "cross" | "isolated") || prev.marginMode,
         volumeType:        (p.volume_type    as "usdt" | "contract" | "spot") || prev.volumeType,
@@ -452,13 +464,14 @@ export function ConnectionSettingsDialog({
         const conn     = data.connection || {}
         setExchangeKey(String(conn.exchange || exchange).toLowerCase())
         setOverview({
-          volumeFactorBase:   parseVolumeFactor(settings.volume_factor, parseVolumeFactor(conn.volume_factor, MIN_VOLUME_FACTOR)),
+          volumeFactorBase:   MIN_VOLUME_FACTOR,
           // Read live/preset factor from BOTH the settings hash (volume_factor_live) and
           // the connection hash (live_volume_factor) so changes made via the card's inline
           // volume sliders (which write to the connection hash via the /volume route) are
           // always reflected when the dialog opens.
           volumeFactorLive:   parseVolumeFactor(settings.volume_factor_live, parseVolumeFactor(conn.live_volume_factor, MIN_VOLUME_FACTOR)),
           volumeFactorPreset: parseVolumeFactor(settings.volume_factor_preset, parseVolumeFactor(conn.preset_volume_factor, MIN_VOLUME_FACTOR)),
+          volumeFactorSignal: parseVolumeFactor(settings.volume_factor_signal, parseVolumeFactor(conn.signal_volume_factor, MIN_VOLUME_FACTOR)),
           volumeStepRatio:   parseVolumeStepRatio(settings.volume_step_ratio ?? conn.volume_step_ratio),
           posCountsVolumeRatio: typeof settings.posCountsVolumeRatio === "number" && settings.posCountsVolumeRatio >= 0.01 && settings.posCountsVolumeRatio <= 0.25 ? settings.posCountsVolumeRatio : 0.05,
           marginMode:  (settings.margin_mode || conn.margin_type || "cross") as "cross" | "isolated",
@@ -615,6 +628,7 @@ export function ConnectionSettingsDialog({
         // Overview
         volume_factor_live:   overview.volumeFactorLive,
         volume_factor_preset: overview.volumeFactorPreset,
+        volume_factor_signal: overview.volumeFactorSignal,
         volume_step_ratio:   overview.volumeStepRatio,
         margin_mode: overview.marginMode,
         volume_type: overview.volumeType,
@@ -714,6 +728,7 @@ export function ConnectionSettingsDialog({
           ...payload,
           live_volume_factor: overview.volumeFactorLive,
           preset_volume_factor: overview.volumeFactorPreset,
+          signal_volume_factor: overview.volumeFactorSignal,
           volume_step_ratio: overview.volumeStepRatio,
         },
       }
@@ -1173,7 +1188,7 @@ export function ConnectionSettingsDialog({
 
                   <Separator className="my-2" />
 
-                  <SectionHeading icon={ArrowDownUp} title="Volume Factors" subtitle="Multiplier applied to position size for live and preset channels. Base channel uses internal ratios (system-managed, not configurable)." />
+                  <SectionHeading icon={ArrowDownUp} title="Volume Factors" subtitle="Overall per-connection multipliers for Main Live, Preset, and Signal channels. Base stays system-managed at identity 1." />
                   <VolumeSlider
                     label="Live"
                     description="Applied while a Live position is open."
@@ -1185,6 +1200,12 @@ export function ConnectionSettingsDialog({
                     description="Applied to the preset profile when active."
                     value={overview.volumeFactorPreset}
                     onChange={(v) => setOverview(p => ({ ...p, volumeFactorPreset: v }))}
+                  />
+                  <VolumeSlider
+                    label="Signal"
+                    description="Signal-specific multiplier composed once with Main Live sizing; coordination base stays 1."
+                    value={overview.volumeFactorSignal}
+                    onChange={(v) => setOverview(p => ({ ...p, volumeFactorSignal: v }))}
                   />
                   <VolumeStepSlider
                     value={overview.volumeStepRatio}
@@ -1353,6 +1374,12 @@ export function ConnectionSettingsDialog({
                         description="Multiplier used only for exchange live orders."
                         value={overview.volumeFactorLive}
                         onChange={(v) => setOverview(p => ({ ...p, volumeFactorLive: v }))}
+                      />
+                      <VolumeSlider
+                        label="Signal Volume Factor"
+                        description="Additional multiplier only for Signal-originated Main orders."
+                        value={overview.volumeFactorSignal}
+                        onChange={(v) => setOverview(p => ({ ...p, volumeFactorSignal: v }))}
                       />
                       <VolumeStepSlider
                         value={overview.volumeStepRatio}
@@ -1859,13 +1886,13 @@ function VolumeSlider({
         <span className="text-xs font-mono tabular-nums w-12 text-right">{value.toFixed(2)}×</span>
       </div>
       <Slider
-        min={0.1} max={5} step={0.05}
+        min={MIN_VOLUME_FACTOR} max={MAX_VOLUME_FACTOR} step={0.1}
         value={[value]}
-        onValueChange={([v]) => onChange(v)}
+        onValueChange={([v]) => onChange(normalizeIdentityVolumeFactor(v))}
         className="py-1"
       />
       <div className="flex justify-between text-[10px] text-muted-foreground">
-        <span>0.1×</span><span>1.0×</span><span>5.0×</span>
+        <span>1.0× basis</span><span>5.0×</span><span>10.0×</span>
       </div>
     </div>
   )
@@ -1890,7 +1917,7 @@ function VolumeStepSlider({
         className="py-1"
       />
       <div className="flex justify-between text-[10px] text-muted-foreground">
-        <span>0.2</span><span>0.6 default</span><span>1.8</span>
+        <span>0.2</span><span>1.0 default</span><span>1.8</span>
       </div>
     </div>
   )
@@ -2099,7 +2126,7 @@ const VARIANT_META: {
   {
     key: "block",
     label: "Block · Adjust",
-    desc:  "Independent completed-position Block counts and active-position overlays; each add-on uses that position's base volume × count × configured ratio.",
+    desc:  "Base-derived Sets use independent non-compounding Block targets; Pos-Count Sets never spawn Blocks, while Active Real counts still include Pos-Count positions.",
     defaultOn: true,
   },
   {

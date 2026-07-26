@@ -47,7 +47,7 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
     block_adjustment_ratios: [0.5, 1.0, 1.5, 2.0],
     dca_adjustment_enabled: false,
     dca_levels: [3, 5, 7],
-    volume_factors: [0.1, 0.2, 0.5, 1.0],
+    volume_factors: [1, 1.5, 2, 3],
     min_profit_factor: 0.4,
     min_win_rate: 0.0,
     max_drawdown: 50.0,
@@ -78,7 +78,7 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
         block_adjustment_ratios: [0.5, 1.0, 1.5, 2.0],
         dca_adjustment_enabled: false,
         dca_levels: [3, 5, 7],
-        volume_factors: [0.1, 0.2, 0.5, 1.0],
+        volume_factors: [1, 1.5, 2, 3],
         min_profit_factor: 0.4,
         min_win_rate: 0.0,
         max_drawdown: 50.0,
@@ -268,11 +268,11 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
               <Card>
                 <CardHeader>
                   <CardTitle>Volume Factors</CardTitle>
-                  <CardDescription>Position size multipliers starting at the minimum/default 0.1x</CardDescription>
+                  <CardDescription>Position size multipliers with identity/default 1.0x</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="flex flex-wrap gap-2">
-                    {[0.1, 0.2, 0.5, 1.0].map((factor) => (
+                    {[1, 1.5, 2, 3].map((factor) => (
                       <Badge
                         key={factor}
                         variant={formData.volume_factors?.includes(factor) ? "default" : "outline"}

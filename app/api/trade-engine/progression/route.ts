@@ -159,6 +159,8 @@ export async function GET() {
               indicationsActiveAdvancedCount: progressionState.indicationsActiveAdvancedCount || 0,
               indicationsOptimalCount: progressionState.indicationsOptimalCount || 0,
               indicationsAutoCount: progressionState.indicationsAutoCount || 0,
+              indicationsSignalCount: progressionState.indicationsSignalCount || 0,
+              indicationsTrendCount: progressionState.indicationsTrendCount || 0,
               strategiesBaseTotal: progressionState.strategiesBaseTotal || 0,
               strategiesMainTotal: progressionState.strategiesMainTotal || 0,
               strategiesRealTotal: progressionState.strategiesRealTotal || 0,

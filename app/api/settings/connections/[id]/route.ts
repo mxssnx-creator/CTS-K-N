@@ -4,8 +4,58 @@ import { getConnection, deleteConnection, initRedis } from "@/lib/redis-db"
 import { ConnectionDataArchive } from "@/lib/connection-data-archive"
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 import { maskConnectionSecrets, preserveMaskedConnectionSecrets } from "@/lib/connection-secrets"
+import {
+  normalizeBaseVolumeFactor,
+  normalizeIdentityVolumeFactor,
+} from "@/lib/constants"
 
 export const dynamic = "force-dynamic"
+
+const BASE_VOLUME_KEYS = new Set([
+  "volume_factor",
+  "base_volume_factor",
+  "baseVolumeFactor",
+])
+const CHANNEL_VOLUME_KEYS = new Set([
+  "live_volume_factor",
+  "preset_volume_factor",
+  "signal_volume_factor",
+  "volume_factor_live",
+  "volume_factor_preset",
+  "volume_factor_signal",
+  "mainVolumeFactor",
+  "mainTradeVolumeFactor",
+  "main_trade_volume_factor",
+  "presetVolumeFactor",
+  "presetTradeVolumeFactor",
+  "preset_trade_volume_factor",
+  "signalVolumeFactor",
+  "signalTradeVolumeFactor",
+  "signal_trade_volume_factor",
+  "baseVolumeFactorLive",
+  "baseVolumeFactorPreset",
+  "baseVolumeFactorSignal",
+])
+
+function normalizeIdentityVolumePatch<T extends Record<string, any>>(value: T): T {
+  const normalized: Record<string, any> = { ...value }
+  for (const key of BASE_VOLUME_KEYS) {
+    if (normalized[key] === undefined || normalized[key] === null || normalized[key] === "") continue
+    normalized[key] = normalizeBaseVolumeFactor(normalized[key])
+  }
+  for (const key of CHANNEL_VOLUME_KEYS) {
+    if (normalized[key] === undefined || normalized[key] === null || normalized[key] === "") continue
+    normalized[key] = normalizeIdentityVolumeFactor(normalized[key])
+  }
+  if (
+    normalized.connection_settings &&
+    typeof normalized.connection_settings === "object" &&
+    !Array.isArray(normalized.connection_settings)
+  ) {
+    normalized.connection_settings = normalizeIdentityVolumePatch(normalized.connection_settings)
+  }
+  return normalized as T
+}
 
 function changedConnectionPatchFields(
   patch: Record<string, any>,
@@ -160,7 +210,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
 
-    const sanitizedBody = preserveMaskedConnectionSecrets(body, connection)
+    const sanitizedBody = normalizeIdentityVolumePatch(
+      preserveMaskedConnectionSecrets(body, connection),
+    )
     delete sanitizedBody.id
     delete sanitizedBody.created_at
 
@@ -214,7 +266,9 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       }
     } catch { /* non-critical */ }
 
-    const sanitizedBody = preserveMaskedConnectionSecrets(body, connection)
+    const sanitizedBody = normalizeIdentityVolumePatch(
+      preserveMaskedConnectionSecrets(body, connection),
+    )
     delete sanitizedBody.id
     delete sanitizedBody.created_at
 

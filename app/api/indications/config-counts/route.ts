@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 const COMMON_INDICATION_SETTINGS_KEY = "indications:common"
+const SIGNAL_INDICATION_SETTINGS_KEY = "indications:signal"
 
 function parseCommonSettings(raw: string | null): unknown {
   if (!raw) return undefined
@@ -29,13 +30,15 @@ export async function GET() {
   try {
     await initRedis()
     const client = getRedisClient()
-    const [settings, rawCommonSettings] = await Promise.all([
+    const [settings, rawCommonSettings, rawSignalSettings] = await Promise.all([
       getAppSettings({ bypassCache: true }),
       client.get(COMMON_INDICATION_SETTINGS_KEY),
+      client.get(SIGNAL_INDICATION_SETTINGS_KEY),
     ])
     const counts = calculateIndicationConfigurationCounts(
       settings,
       parseCommonSettings(rawCommonSettings),
+      parseCommonSettings(rawSignalSettings),
     )
 
     return NextResponse.json({

@@ -1,6 +1,6 @@
 "use client"
 
-import { MIN_VOLUME_FACTOR } from "@/lib/constants"
+import { MIN_VOLUME_FACTOR, normalizeIdentityVolumeFactor } from "@/lib/constants"
 import { useState, useEffect } from "react"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
@@ -17,6 +17,7 @@ interface ConnectionSettings {
   baseVolumeFactor: number
   baseVolumeFactorLive: number
   baseVolumeFactorPreset: number
+  baseVolumeFactorSignal: number
   liveTradeProfitFactorMinBase: number
   liveTradeProfitFactorMinMain: number
   liveTradeProfitFactorMinReal: number
@@ -64,6 +65,7 @@ export function ExchangeConnectionSettingsDialog({
     baseVolumeFactor: MIN_VOLUME_FACTOR,
     baseVolumeFactorLive: MIN_VOLUME_FACTOR,
     baseVolumeFactorPreset: MIN_VOLUME_FACTOR,
+    baseVolumeFactorSignal: MIN_VOLUME_FACTOR,
     liveTradeProfitFactorMinBase: 0.6,
     liveTradeProfitFactorMinMain: 0.6,
     liveTradeProfitFactorMinReal: 0.6,
@@ -127,9 +129,20 @@ export function ExchangeConnectionSettingsDialog({
       setSettings({
         ...settings,
         ...loadedSettings,
-        baseVolumeFactor: loadedSettings.baseVolumeFactor ?? globalSettings?.base_volume_factor ?? MIN_VOLUME_FACTOR,
-        baseVolumeFactorLive: loadedSettings.baseVolumeFactorLive ?? MIN_VOLUME_FACTOR,
-        baseVolumeFactorPreset: loadedSettings.baseVolumeFactorPreset ?? MIN_VOLUME_FACTOR,
+        baseVolumeFactor: MIN_VOLUME_FACTOR,
+        baseVolumeFactorLive: normalizeIdentityVolumeFactor(
+          loadedSettings.baseVolumeFactorLive,
+        ),
+        baseVolumeFactorPreset: normalizeIdentityVolumeFactor(
+          loadedSettings.baseVolumeFactorPreset,
+        ),
+        baseVolumeFactorSignal: normalizeIdentityVolumeFactor(
+          loadedSettings.baseVolumeFactorSignal ??
+          loadedSettings.volume_factor_signal ??
+          loadedSettings.signal_volume_factor ??
+          globalSettings?.signalTradeVolumeFactor ??
+          globalSettings?.signal_volume_factor,
+        ),
         trailingWithTrailing: loadedSettings.trailingWithTrailing ?? strategySettings?.trailing_enabled ?? true,
         blockEnabled: loadedSettings.blockEnabled ?? strategySettings?.block_enabled ?? true,
         dcaEnabled: loadedSettings.dcaEnabled ?? strategySettings?.dca_enabled ?? false,
@@ -147,15 +160,30 @@ export function ExchangeConnectionSettingsDialog({
   }
 
   const updateSetting = (key: keyof ConnectionSettings, value: any) => {
-    setSettings((prev) => ({ ...prev, [key]: value }))
+    const normalizedValue = [
+      "baseVolumeFactor",
+      "baseVolumeFactorLive",
+      "baseVolumeFactorPreset",
+      "baseVolumeFactorSignal",
+    ].includes(key)
+      ? normalizeIdentityVolumeFactor(value)
+      : value
+    setSettings((prev) => ({ ...prev, [key]: normalizedValue }))
   }
 
   const handleSave = async () => {
     try {
+      const normalizedSettings = {
+        ...settings,
+        baseVolumeFactor: MIN_VOLUME_FACTOR,
+        baseVolumeFactorLive: normalizeIdentityVolumeFactor(settings.baseVolumeFactorLive),
+        baseVolumeFactorPreset: normalizeIdentityVolumeFactor(settings.baseVolumeFactorPreset),
+        baseVolumeFactorSignal: normalizeIdentityVolumeFactor(settings.baseVolumeFactorSignal),
+      }
       const response = await fetch(`/api/settings/connections/${connectionId}/settings`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settings),
+        body: JSON.stringify(normalizedSettings),
       })
 
       if (!response.ok) {
@@ -247,6 +275,27 @@ export function ExchangeConnectionSettingsDialog({
                   </div>
                   <p className="text-xs text-muted-foreground">
                     Volume factor for preset trading (uses base config for range and positions)
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="signal-trade-volume-factor">Signal Volume Factor</Label>
+                  <div className="flex items-center gap-4">
+                    <Slider
+                      id="signal-trade-volume-factor"
+                      min={1}
+                      max={10}
+                      step={0.1}
+                      value={[settings.baseVolumeFactorSignal ?? MIN_VOLUME_FACTOR]}
+                      onValueChange={([value]) => updateSetting("baseVolumeFactorSignal", value)}
+                      className="flex-1"
+                    />
+                    <span className="text-sm font-medium w-12 text-right">
+                      {(settings.baseVolumeFactorSignal ?? MIN_VOLUME_FACTOR).toFixed(1)}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Additional Main-channel multiplier used only by Signal indications
                   </p>
                 </div>
               </div>

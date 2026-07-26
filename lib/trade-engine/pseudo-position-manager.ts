@@ -11,6 +11,12 @@ import { emitPositionUpdate } from "@/lib/broadcast-helpers"
 import { StrategyConfigManager, type PseudoPosition as StrategyPseudoPosition } from "@/lib/strategy-config-manager"
 import { calculatePseudoClosePnl, PSEUDO_POSITION_CLOSE_COST_RATIO } from "@/lib/pseudo-position-costs"
 import { markStrategyPositionInactive, recordStrategyPositionEntry } from "@/lib/pos-history"
+import {
+  isSignalDynamicTrailingProfile,
+  resolveSignalExecutionLane,
+  type SignalExecutionLane,
+  type TrailingProfile,
+} from "@/lib/signal-trailing"
 
 const DIRECTION_CREATION_LOCK_TTL_MS = 15_000
 const POSITION_CLOSE_LOCK_TTL_MS = 60_000
@@ -198,8 +204,12 @@ export class PseudoPositionManager {
    * per-direction count is O(1) via `scard` without having to enumerate
    * every active position's hash.
    */
-  private activeByDirectionKey(side: "long" | "short"): string {
-    return `pseudo_positions:${this.connectionId}:active_by_direction:${side}`
+  private activeByDirectionKey(
+    side: "long" | "short",
+    executionLane: SignalExecutionLane = "default",
+  ): string {
+    const laneSuffix = executionLane === "signal_trailing" ? ":signal_trailing" : ""
+    return `pseudo_positions:${this.connectionId}:active_by_direction:${side}${laneSuffix}`
   }
 
   // ── Per-direction cap cache (P0-4) ──────────────────────────────────
@@ -359,19 +369,39 @@ export class PseudoPositionManager {
     trailingStartRatio?: number
     trailingStopRatio?: number
     trailingStepRatio?: number
+    trailingProfile?: TrailingProfile
   }): Promise<string | null> {
     let creationLock: DirectionCreationLock | null = null
     let stopCreationLockRefresh: (() => void) | null = null
     try {
       // Multi-step path forces trailing on regardless of caller flag —
       // the operator opted into the matrix so the position MUST honour it.
-      const hasTrailingProfile =
+      const trailingProfile: TrailingProfile | undefined = params.trailingProfile ?? (
         Number.isFinite(params.trailingStartRatio) &&
         Number.isFinite(params.trailingStopRatio) &&
-        Number.isFinite(params.trailingStepRatio) &&
-        (params.trailingStartRatio as number) > 0 &&
-        (params.trailingStopRatio as number) > 0
+        Number.isFinite(params.trailingStepRatio)
+          ? {
+              startRatio: Number(params.trailingStartRatio),
+              stopRatio: Number(params.trailingStopRatio),
+              stepRatio: Number(params.trailingStepRatio),
+              mode: "fixed",
+            }
+          : undefined
+      )
+      const signalDynamicTrailing = isSignalDynamicTrailingProfile(trailingProfile)
+      const hasTrailingProfile =
+        signalDynamicTrailing ||
+        (
+          !!trailingProfile &&
+          trailingProfile.startRatio > 0 &&
+          trailingProfile.stopRatio > 0 &&
+          trailingProfile.stepRatio > 0
+        )
       const effectiveTrailing = hasTrailingProfile ? true : params.trailingEnabled
+      const executionLane = resolveSignalExecutionLane({
+        indicationType: params.indicationType,
+        trailingProfile,
+      })
 
       // Build a canonical config set key if not provided. Including the
       // trailing tuple makes each multi-step variant occupy its own
@@ -385,8 +415,10 @@ export class PseudoPositionManager {
         effectiveTrailing ? "1" : "0",
         ...(hasTrailingProfile
           ? [
-              `s${(params.trailingStartRatio as number).toFixed(2)}`,
-              `k${(params.trailingStopRatio as number).toFixed(2)}`,
+              `s${trailingProfile!.startRatio.toFixed(4)}`,
+              `k${trailingProfile!.stopRatio.toFixed(4)}`,
+              `u${trailingProfile!.stepRatio.toFixed(4)}`,
+              `m${trailingProfile!.mode || "fixed"}`,
             ]
           : []),
       ].join(":")
@@ -396,6 +428,7 @@ export class PseudoPositionManager {
         params.symbol,
         configSetKey,
         params.side,
+        executionLane,
       )
 
       if (!creationLock) {
@@ -480,6 +513,7 @@ export class PseudoPositionManager {
         config_set_key: configSetKey,
         strategy_set_key: params.strategySetKey || "",
         parent_set_key: params.parentSetKey || params.strategySetKey?.split("#")[0] || "",
+        execution_lane: executionLane,
         // Optional explicit link to the historic-fill Set namespace
         // (`strategy:{connId}:config:{strategy_config_id}:positions`).
         // When present, `closePosition` writes the closed row into that
@@ -499,38 +533,64 @@ export class PseudoPositionManager {
         profit_factor: String(params.profitFactor),
         effective_profit_factor: String(params.effectiveProfitFactor ?? params.profitFactor),
         trailing_enabled: effectiveTrailing ? "1" : "0",
-        trailing_stop_price: "0",
+        trailing_stop_price:
+          signalDynamicTrailing && trailingProfile
+            ? String(
+                params.side === "long"
+                  ? params.entryPrice * (1 - Math.max(0.008, trailingProfile.minStopRatio || trailingProfile.stopRatio))
+                  : params.entryPrice * (1 + Math.max(0.008, trailingProfile.minStopRatio || trailingProfile.stopRatio)),
+              )
+            : "0",
         // Multi-step trailing state machine — see
         // `realtime-processor.updateTrailingStop`. All three fields are
         // ratios (0.1 ≡ 10 %). When `trailing_start_ratio === "0"` the
         // legacy single-step code path runs (back-compat for positions
         // that pre-date this feature).
         trailing_start_ratio: hasTrailingProfile
-          ? String(params.trailingStartRatio)
+          ? String(trailingProfile!.startRatio)
           : "0",
         trailing_stop_ratio: hasTrailingProfile
-          ? String(params.trailingStopRatio)
+          ? String(trailingProfile!.stopRatio)
           : "0",
         // CRITICAL: Validate stepRatio is positive and finite before storing.
         // If stepRatio is 0, NaN, or negative, re-anchoring breaks (infinite loops
         // or immediate re-triggers). Default to stopRatio/2 if invalid.
         trailing_step_ratio: hasTrailingProfile
           ? (() => {
-              const stepRatio = params.trailingStepRatio || 0
+              const stepRatio = trailingProfile!.stepRatio || 0
               if (!Number.isFinite(stepRatio) || stepRatio <= 0) {
-                const fallback = (params.trailingStopRatio || 0) / 2
+                const fallback = (trailingProfile!.stopRatio || 0) / 2
                 return String(Number.isFinite(fallback) && fallback > 0 ? fallback : 0.01)
               }
               return String(stepRatio)
             })()
           : "0",
+        trailing_mode: hasTrailingProfile
+          ? String(trailingProfile!.mode || "fixed")
+          : "",
+        trailing_min_stop_ratio: signalDynamicTrailing
+          ? String(Math.max(0.008, trailingProfile!.minStopRatio || trailingProfile!.stopRatio))
+          : "0",
+        trailing_positive_move_ratio: signalDynamicTrailing
+          ? String(trailingProfile!.positiveMoveRatio || 0.4)
+          : "0",
+        trailing_update_stop_range_ratio: signalDynamicTrailing
+          ? String(trailingProfile!.updateStopRangeRatio || 0.5)
+          : "0",
+        trailing_dynamic_stop_range_ratio: signalDynamicTrailing
+          ? String(Math.max(0.008, trailingProfile!.minStopRatio || trailingProfile!.stopRatio))
+          : "0",
         // Activation state — flipped to "1" the first cycle in which
         // `gain_ratio >= trailing_start_ratio`. Until then trailing is
         // dormant and only the fixed TP/SL gates fire.
-        trailing_active: "0",
+        trailing_active:
+          signalDynamicTrailing && trailingProfile!.startRatio <= 0 ? "1" : "0",
         // High-water mark anchor for the ratchet. Long: highest price
         // seen since activation. Short: lowest price seen.
-        trailing_anchor: "0",
+        trailing_anchor:
+          signalDynamicTrailing && trailingProfile!.startRatio <= 0
+            ? String(params.entryPrice)
+            : "0",
         status: "open",
         opened_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -556,7 +616,7 @@ export class PseudoPositionManager {
       // `canCreatePosition` can enforce the spec cap
       // (`maxActiveBasePseudoPositionsPerDirection`, default 1) via O(1)
       // SCARD on the very next call. Removed on close.
-      createPipeline.sadd(this.activeByDirectionKey(params.side), id)
+      createPipeline.sadd(this.activeByDirectionKey(params.side, executionLane), id)
       await createPipeline.exec()
 
       await syncPseudoStrategyEntryLedger(
@@ -805,7 +865,19 @@ export class PseudoPositionManager {
       // stored `side` so this stays correct for legacy positions that
       // predate the direction-indexed sets.
       if (side === "long" || side === "short") {
-        pipeline.srem(this.activeByDirectionKey(side), positionId)
+        const executionLane = resolveSignalExecutionLane({
+          executionLane: position.execution_lane,
+          indicationType: position.indication_type,
+          trailingProfile: position.trailing_mode === "signal_dynamic"
+            ? {
+                mode: "signal_dynamic",
+                startRatio: Number(position.trailing_start_ratio || 0),
+                stopRatio: Number(position.trailing_stop_ratio || 0),
+                stepRatio: Number(position.trailing_step_ratio || 0),
+              }
+            : undefined,
+        })
+        pipeline.srem(this.activeByDirectionKey(side, executionLane), positionId)
       }
       // 7-day TTL on the closed hash for operator forensics.
       pipeline.expire(this.positionKey(positionId), 604800)
@@ -1278,6 +1350,7 @@ export class PseudoPositionManager {
     symbol: string,
     configSetKey: string,
     side?: "long" | "short",
+    executionLane: SignalExecutionLane = "default",
   ): Promise<DirectionCreationLock | null> {
     let lock: DirectionCreationLock | null = null
     try {
@@ -1285,7 +1358,11 @@ export class PseudoPositionManager {
       // One token-owned lease per connection+direction serializes both the
       // config uniqueness check and the direction-wide cap across symbols.
       lock = {
-        key: `pseudo:creation_lock:${this.connectionId}:${side || symbol || "legacy"}`,
+        key: `pseudo:creation_lock:${this.connectionId}:${
+          side
+            ? `${side}${executionLane === "signal_trailing" ? ":signal_trailing" : ""}`
+            : symbol || "legacy"
+        }`,
         token: nanoid(24),
       }
       const acquired = await client.set(lock.key, lock.token, {
@@ -1306,7 +1383,7 @@ export class PseudoPositionManager {
       // `createPosition` which always passes `side`.
       if (side) {
         const cap = await this.getMaxActivePerDirection()
-        const count = await client.scard(this.activeByDirectionKey(side))
+        const count = await client.scard(this.activeByDirectionKey(side, executionLane))
         if (Number(count) >= cap) {
           await this.releaseDirectionCreationLock(lock).catch(() => false)
           return null
@@ -1375,7 +1452,19 @@ export class PseudoPositionManager {
           }
           const side = hash?.side
           if (side === "long" || side === "short") {
-            pipeline.srem(this.activeByDirectionKey(side), id)
+            const executionLane = resolveSignalExecutionLane({
+              executionLane: hash?.execution_lane,
+              indicationType: hash?.indication_type,
+              trailingProfile: hash?.trailing_mode === "signal_dynamic"
+                ? {
+                    mode: "signal_dynamic",
+                    startRatio: Number(hash?.trailing_start_ratio || 0),
+                    stopRatio: Number(hash?.trailing_stop_ratio || 0),
+                    stepRatio: Number(hash?.trailing_step_ratio || 0),
+                  }
+                : undefined,
+            })
+            pipeline.srem(this.activeByDirectionKey(side, executionLane), id)
           }
           pipeline.expire(this.positionKey(id), 604800)
           closed++

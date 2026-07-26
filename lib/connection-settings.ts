@@ -11,6 +11,7 @@ import { getConnection, getRedisClient, initRedis, updateConnection } from "./re
 import { notifySettingsChanged } from "./settings-coordinator"
 import { recoordinateAfterSettingsChange } from "./connection-recoordinator"
 import { toRedisFlag } from "./boolean-utils"
+import { normalizeIdentityVolumeFactor } from "./constants"
 
 function deepMergeSettings(
   current: ConnectionSettings,
@@ -102,16 +103,23 @@ function extractEngineSettingsMirror(settings: Record<string, unknown>): Record<
 
   const liveVolume = Number(settings.live_volume_factor ?? settings.volume_factor_live)
   if (Number.isFinite(liveVolume) && liveVolume > 0) {
-    const value = String(Math.max(0.1, Math.min(10, liveVolume)))
+    const value = String(normalizeIdentityVolumeFactor(liveVolume))
     flat.live_volume_factor = value
     flat.volume_factor_live = value
   }
 
   const presetVolume = Number(settings.preset_volume_factor ?? settings.volume_factor_preset)
   if (Number.isFinite(presetVolume) && presetVolume > 0) {
-    const value = String(Math.max(0.1, Math.min(10, presetVolume)))
+    const value = String(normalizeIdentityVolumeFactor(presetVolume))
     flat.preset_volume_factor = value
     flat.volume_factor_preset = value
+  }
+
+  const signalVolume = Number(settings.signal_volume_factor ?? settings.volume_factor_signal)
+  if (Number.isFinite(signalVolume) && signalVolume > 0) {
+    const value = String(normalizeIdentityVolumeFactor(signalVolume))
+    flat.signal_volume_factor = value
+    flat.volume_factor_signal = value
   }
 
   const volumeStep = Number(settings.volume_step_ratio ?? settings.volumeStepRatio)
@@ -151,6 +159,7 @@ function extractConnectionTopLevelMirror(flat: Record<string, string>): Record<s
   for (const key of [
     "live_volume_factor",
     "preset_volume_factor",
+    "signal_volume_factor",
     "volume_step_ratio",
     "force_symbols",
     "symbol_count",

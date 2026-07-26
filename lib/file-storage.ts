@@ -64,6 +64,36 @@ export interface Settings {
   [key: string]: any
 }
 
+/**
+ * The file-backed diagnostics/fallback store must obey the same immutable
+ * Base-volume identity as Redis. Otherwise an old export can reintroduce a
+ * stale multiplier through startup/health tooling after migration 084.
+ */
+export function normalizeFileConnectionBaseIdentity(connection: Connection): Connection {
+  const normalizeNested = (raw: unknown): unknown => {
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const nested = { ...(raw as Record<string, unknown>), volume_factor: 1 }
+      if ("base_volume_factor" in nested) nested.base_volume_factor = 1
+      if ("baseVolumeFactor" in nested) nested.baseVolumeFactor = 1
+      return nested
+    }
+    if (typeof raw === "string" && raw.trim().startsWith("{")) {
+      try {
+        return JSON.stringify(normalizeNested(JSON.parse(raw)))
+      } catch {
+        return raw
+      }
+    }
+    return raw
+  }
+
+  return {
+    ...connection,
+    volume_factor: 1,
+    connection_settings: normalizeNested(connection.connection_settings),
+  }
+}
+
 export interface MainIndicationSettings {
   direction: {
     enabled: boolean
@@ -227,8 +257,11 @@ export function loadConnections(): Connection[] {
         try {
           const connections = JSON.parse(data)
           if (Array.isArray(connections)) {
-            setInCache("all_connections", connections)
-            return connections
+            const normalized = connections.map((connection) =>
+              normalizeFileConnectionBaseIdentity(connection),
+            )
+            setInCache("all_connections", normalized)
+            return normalized
           }
         } catch (parseError) {
           console.error("[v0] Error parsing connections file:", parseError)
@@ -247,12 +280,13 @@ export function loadConnections(): Connection[] {
 export function saveConnections(connections: Connection[]): void {
   try {
     ensureDataDir()
-    fs.writeFileSync(CONNECTIONS_FILE, JSON.stringify(connections, null, 2), "utf-8")
-    console.log("[v0] Saved", connections.length, "connections to file")
+    const normalized = connections.map(normalizeFileConnectionBaseIdentity)
+    fs.writeFileSync(CONNECTIONS_FILE, JSON.stringify(normalized, null, 2), "utf-8")
+    console.log("[v0] Saved", normalized.length, "connections to file")
 
-    setInCache("all_connections", connections)
+    setInCache("all_connections", normalized)
 
-    const groupedByExchange = groupConnectionsByExchange(connections)
+    const groupedByExchange = groupConnectionsByExchange(normalized)
     for (const [exchange, exchangeConnections] of groupedByExchange.entries()) {
       setInCache(`exchange:${exchange}`, exchangeConnections)
     }
@@ -542,8 +576,8 @@ function getDefaultConnections(): Connection[] {
 function getDefaultSettings(): Settings {
   return {
     // Overall / Main
-    base_volume_factor: 0.1,
-    volume_step_ratio: 0.6,
+    base_volume_factor: 1,
+    volume_step_ratio: 1,
     // Default raised 50 → 300 so volume math divides by 300 by
     // default — see components/settings/utils.ts for the rationale.
     positions_average: 300,

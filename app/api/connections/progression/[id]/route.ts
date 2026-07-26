@@ -272,6 +272,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         progressionState.indicationsDirectionCount ||
         progressionState.indicationsMoveCount ||
         progressionState.indicationsActiveCount ||
+        progressionState.indicationsActiveAdvancedCount ||
+        progressionState.indicationsOptimalCount ||
+        progressionState.indicationsAutoCount ||
+        progressionState.indicationsSignalCount ||
+        progressionState.indicationsTrendCount ||
         toNumber(engineState?.config_set_indication_results)
     }
     if (strategiesCount === 0) {

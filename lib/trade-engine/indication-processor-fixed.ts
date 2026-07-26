@@ -94,6 +94,15 @@ import {
   DEFAULT_TREND_TP_STEP,
   normalizeTrendTimeframesMinutes,
 } from "@/lib/trend-indication"
+import {
+  DEFAULT_SIGNAL_INDICATION_SETTINGS,
+  normalizeSignalIndicationSettings,
+  processSignalIndications,
+} from "@/lib/signal-indication"
+import {
+  DEFAULT_MAIN_INDICATION_PROFILE,
+  readStoredIndicationProfile,
+} from "@/lib/active-indication-profile"
 
 // Pre-import modules at module load time (not per-call)
 import { initRedis, getRedisClient, getMarketData, saveIndication, getSettings, getAppSettings, storeIndications } from "@/lib/redis-db"
@@ -133,8 +142,38 @@ function moduleCacheSet(key: string, value: { data: any; timestamp: number }) {
   MODULE_MARKET_DATA_CACHE.set(key, value)
 }
 
-// Module-level settings cache
-let MODULE_SETTINGS_CACHE: { data: any; timestamp: number } | null = null
+// Settings are connection-scoped. A single module-global snapshot allowed the
+// most recently processed connection to leak its indication selection into all
+// other connections during the cache TTL.
+const MODULE_SETTINGS_CACHE_MAX_ENTRIES = 256
+const MODULE_SETTINGS_CACHE = new Map<string, { data: any; timestamp: number }>()
+
+function moduleSettingsCacheSet(
+  connectionId: string,
+  value: { data: any; timestamp: number },
+): void {
+  if (
+    MODULE_SETTINGS_CACHE.size >= MODULE_SETTINGS_CACHE_MAX_ENTRIES &&
+    !MODULE_SETTINGS_CACHE.has(connectionId)
+  ) {
+    const oldestKey = MODULE_SETTINGS_CACHE.keys().next().value
+    if (oldestKey !== undefined) MODULE_SETTINGS_CACHE.delete(oldestKey)
+  }
+  MODULE_SETTINGS_CACHE.delete(connectionId)
+  MODULE_SETTINGS_CACHE.set(connectionId, value)
+}
+
+/**
+ * Settings-save/restart hook. Omitting the id is intentionally reserved for
+ * global settings writes which affect every connection.
+ */
+export function invalidateIndicationSettingsCache(connectionId?: string): void {
+  if (connectionId) {
+    MODULE_SETTINGS_CACHE.delete(connectionId)
+    return
+  }
+  MODULE_SETTINGS_CACHE.clear()
+}
 
 /**
  * Module-level market data fetcher with caching
@@ -173,22 +212,32 @@ async function getMarketDataCachedModule(symbol: string): Promise<any> {
 /**
  * Module-level settings fetcher with caching
  */
-async function getSettingsCachedModule(): Promise<any> {
+async function getSettingsCachedModule(connectionId: string): Promise<any> {
   const now = Date.now()
+  const cached = MODULE_SETTINGS_CACHE.get(connectionId)
 
-  if (MODULE_SETTINGS_CACHE && now - MODULE_SETTINGS_CACHE.timestamp < MODULE_CACHE_TTL) {
-    return MODULE_SETTINGS_CACHE.data
+  if (cached && now - cached.timestamp < MODULE_CACHE_TTL) {
+    return cached.data
   }
 
   try {
     await initRedis()
     // Mirror-aware read (covers both app_settings + all_settings).
     const client = getRedisClient()
-    const [appSettings, commonSettingsRaw] = await Promise.all([
+    const [appSettings, commonSettingsRaw, signalSettingsRaw, activeIndicationsRaw] = await Promise.all([
       getAppSettings(),
       client.get("indications:common").catch(() => null),
+      client.get("indications:signal").catch(() => null),
+      getSettings(`active_indications:${connectionId}`).catch(() => null),
     ])
     const settings = appSettings || {}
+    const activeProfile = readStoredIndicationProfile(
+      activeIndicationsRaw && typeof activeIndicationsRaw === "object"
+        ? activeIndicationsRaw as Record<string, unknown>
+        : undefined,
+      "",
+      DEFAULT_MAIN_INDICATION_PROFILE,
+    )
     let parsedCommonSettings: unknown = DEFAULT_COMMON_INDICATION_SETTINGS
     if (commonSettingsRaw) {
       try {
@@ -200,6 +249,21 @@ async function getSettingsCachedModule(): Promise<any> {
       }
     }
     const commonSettings = normalizeCommonIndicationSettings(parsedCommonSettings)
+    let parsedSignalSettings: unknown = DEFAULT_SIGNAL_INDICATION_SETTINGS
+    if (signalSettingsRaw) {
+      try {
+        parsedSignalSettings = typeof signalSettingsRaw === "string"
+          ? JSON.parse(signalSettingsRaw)
+          : signalSettingsRaw
+      } catch {
+        parsedSignalSettings = DEFAULT_SIGNAL_INDICATION_SETTINGS
+      }
+    }
+    const normalizedSignalSettings = normalizeSignalIndicationSettings(parsedSignalSettings)
+    const signalSettings = {
+      ...normalizedSignalSettings,
+      enabled: normalizedSignalSettings.enabled && activeProfile.signal.enabled,
+    }
     const numericOr = (value: unknown, fallback: number) => {
       const parsed = Number(value)
       return Number.isFinite(parsed) ? parsed : fallback
@@ -242,12 +306,30 @@ async function getSettingsCachedModule(): Promise<any> {
       minProfitFactor: settings.minProfitFactor || 1.2,
       minConfidence: settings.minConfidence || 0.6,
       timeframes: settings.timeframes || ["1h", "4h", "1d"],
-      directionEnabled: settings.directionEnabled !== false && settings.directionEnabled !== "false",
-      moveEnabled: settings.moveEnabled !== false && settings.moveEnabled !== "false",
-      activeEnabled: settings.activeEnabled !== false && settings.activeEnabled !== "false",
-      optimalEnabled: settings.optimalEnabled !== false && settings.optimalEnabled !== "false",
-      autoEnabled: settings.autoEnabled !== false && settings.autoEnabled !== "false",
-      trendEnabled: settings.trendEnabled !== false && settings.trendEnabled !== "false",
+      directionEnabled:
+        settings.directionEnabled !== false &&
+        settings.directionEnabled !== "false" &&
+        activeProfile.direction.enabled,
+      moveEnabled:
+        settings.moveEnabled !== false &&
+        settings.moveEnabled !== "false" &&
+        activeProfile.move.enabled,
+      activeEnabled:
+        settings.activeEnabled !== false &&
+        settings.activeEnabled !== "false" &&
+        activeProfile.active.enabled,
+      optimalEnabled:
+        settings.optimalEnabled !== false &&
+        settings.optimalEnabled !== "false" &&
+        activeProfile.optimal.enabled,
+      autoEnabled:
+        settings.autoEnabled !== false &&
+        settings.autoEnabled !== "false" &&
+        activeProfile.auto.enabled,
+      trendEnabled:
+        settings.trendEnabled !== false &&
+        settings.trendEnabled !== "false" &&
+        activeProfile.trend.enabled,
       trendTimeframesMinutes: normalizeTrendTimeframesMinutes(settings.trendTimeframesMinutes),
       trendDrawdownValues: settings.trendDrawdownValues || [...DEFAULT_TREND_DRAWDOWN_FACTORS],
       trendLastSituationRatios: settings.trendLastSituationRatios || [...DEFAULT_TREND_LAST_SITUATION_RATIOS],
@@ -260,6 +342,7 @@ async function getSettingsCachedModule(): Promise<any> {
         commonSettings.coordination.higherRangeDrawdownScale ||
         DEFAULT_TREND_HIGHER_RANGE_DRAWDOWN_SCALE,
       commonSettings,
+      signalSettings,
       commonCoordination: commonSettings.coordination,
       defaultCoordination,
       directionPostChangeOnly:
@@ -272,7 +355,7 @@ async function getSettingsCachedModule(): Promise<any> {
       trendTpStep: Number(settings.trendTpStep) || DEFAULT_TREND_TP_STEP,
     }
 
-    MODULE_SETTINGS_CACHE = { data: indicationSettings, timestamp: now }
+    moduleSettingsCacheSet(connectionId, { data: indicationSettings, timestamp: now })
     return indicationSettings
   } catch {
     return {
@@ -294,6 +377,7 @@ async function getSettingsCachedModule(): Promise<any> {
       trendRangeSteps: [...DEFAULT_TREND_RANGE_STEPS],
       trendHigherRangeDrawdownScale: DEFAULT_TREND_HIGHER_RANGE_DRAWDOWN_SCALE,
       commonSettings: normalizeCommonIndicationSettings(DEFAULT_COMMON_INDICATION_SETTINGS),
+      signalSettings: normalizeSignalIndicationSettings(DEFAULT_SIGNAL_INDICATION_SETTINGS),
       commonCoordination: normalizeCommonIndicationSettings(DEFAULT_COMMON_INDICATION_SETTINGS).coordination,
       commonIndicatorTypes: enabledCommonIndicatorTypes(
         normalizeCommonIndicationSettings(DEFAULT_COMMON_INDICATION_SETTINGS),
@@ -655,7 +739,7 @@ export class IndicationProcessor {
       if (!this.marketDataCache) {
         this.marketDataCache = new Map()
       }
-      const indicationSettings = await getSettingsCachedModule()
+      const indicationSettings = await getSettingsCachedModule(this.connectionId)
       
       let marketData = await this.getLatestMarketDataCached(symbol)
       if (!marketData) {
@@ -1177,7 +1261,27 @@ export class IndicationProcessor {
         }
       }
 
-      // 6. Trend — deliberately appended last. Emit the strongest independent
+      // 6. Signal — external public-market consensus is realtime-only. Replay
+      // must remain deterministic and must never issue HTTP requests. Signal
+      // persists its own bounded Set lane and returns the raw indication here
+      // so the canonical counters, strategy flow and lineage use the same item.
+      if (typeof asOfMs !== "number") {
+        const signalIndications = await processSignalIndications({
+          connectionId: this.connectionId,
+          symbol,
+          settings: indicationSettings.signalSettings,
+          positionCostPct: Number(indicationSettings.positionCost) || 0.1,
+        }).catch((error) => {
+          console.warn(
+            `[v0] [IndicationProcessor] Signal processing failed for ${symbol}:`,
+            error instanceof Error ? error.message : error,
+          )
+          return []
+        })
+        indications.push(...signalIndications)
+      }
+
+      // 7. Trend — deliberately appended last. Emit the strongest independent
       // configuration for every enabled Trend timeframe (1/5/15/30m by default),
       // while IndicationSetsProcessor retains every passing parameter tuple.
       for (const trendEvaluation of trendEvaluations) {
@@ -1242,6 +1346,7 @@ export class IndicationProcessor {
           active_advanced: 0,
           optimal: 0,
           auto: 0,
+          signal: 0,
           trend: 0,
         }
         for (const ind of indications) {
@@ -1357,4 +1462,9 @@ export class IndicationProcessor {
       return SHARED_SETTINGS_CACHE.data || {}
     }
   }
+}
+
+export const __indicationProcessorTestUtils = {
+  getSettingsCachedModule,
+  invalidateIndicationSettingsCache,
 }

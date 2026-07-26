@@ -3,7 +3,7 @@
  *
  * ── Design Principles ─────────────────────────────────────────────────
  *  1. Each indication TYPE (direction, move, active, optimal,
- *     active_advanced, trend) has independent sets.
+ *     active_advanced, signal, trend) has independent sets.
  *  2. Each CONFIG/parameter combination within a type has its OWN set.
  *  3. Each set is keyed `indication_set:{connId}:{symbol}:{type}:{configHash}`.
  *  4. Max positions per direction (long/short) is enforced per config.
@@ -71,6 +71,7 @@ const DEFAULT_LIMITS = {
   active: 250,
   optimal: 250,
   active_advanced: 250,
+  signal: 250,
   trend: 250,
 }
 
@@ -197,6 +198,7 @@ export interface IndicationSetLimits {
   active: number
   optimal: number
   active_advanced: number
+  signal: number
   trend: number
 }
 
@@ -206,7 +208,7 @@ export interface PositionLimits {
 }
 
 export interface IndicationSet {
-  type: "direction" | "move" | "active" | "optimal" | "active_advanced" | "trend"
+  type: "direction" | "move" | "active" | "optimal" | "active_advanced" | "signal" | "trend"
   connectionId: string
   symbol: string
   configKey: string // Unique key for this configuration combination
@@ -407,6 +409,7 @@ export class IndicationSetsProcessor {
         if (settings.databaseSizeMove) this.limits.move = Number(settings.databaseSizeMove)
         if (settings.databaseSizeActive) this.limits.active = Number(settings.databaseSizeActive)
         if (settings.databaseSizeOptimal) this.limits.optimal = Number(settings.databaseSizeOptimal)
+        if (settings.databaseSizeSignal) this.limits.signal = Number(settings.databaseSizeSignal)
         if (settings.databaseSizeTrend) this.limits.trend = Number(settings.databaseSizeTrend)
         
         // Load position limits per direction
@@ -526,7 +529,15 @@ export class IndicationSetsProcessor {
         // Fallback: legacy maxEntriesPerSet applies to all
         if (settings.maxEntriesPerSet && !settings.databaseSizeDirection) {
           const limit = Number(settings.maxEntriesPerSet)
-          this.limits = { direction: limit, move: limit, active: limit, optimal: limit, active_advanced: limit, trend: limit }
+          this.limits = {
+            direction: limit,
+            move: limit,
+            active: limit,
+            optimal: limit,
+            active_advanced: limit,
+            signal: limit,
+            trend: limit,
+          }
         }
       }
       
@@ -538,6 +549,7 @@ export class IndicationSetsProcessor {
         if (setsConfig.active) this.limits.active = Number(setsConfig.active)
         if (setsConfig.active_advanced) this.limits.active_advanced = Number(setsConfig.active_advanced)
         if (setsConfig.optimal) this.limits.optimal = Number(setsConfig.optimal)
+        if (setsConfig.signal) this.limits.signal = Number(setsConfig.signal)
         if (setsConfig.trend) this.limits.trend = Number(setsConfig.trend)
       }
     } catch (error) {

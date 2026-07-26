@@ -7,11 +7,32 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { connectionId, symbol, currentPrice } = body
 
-    if (!connectionId || !symbol || !currentPrice) {
+    if (
+      typeof connectionId !== "string" ||
+      typeof symbol !== "string" ||
+      !Number.isFinite(Number(currentPrice)) ||
+      Number(currentPrice) <= 0
+    ) {
       return NextResponse.json({ error: "Missing required parameters" }, { status: 400 })
     }
 
-    const result = await VolumeCalculator.calculateVolumeForConnection(connectionId, symbol, currentPrice)
+    const tradeMode = body.tradeMode === "main" || body.tradeMode === "preset"
+      ? body.tradeMode
+      : undefined
+    const result = await VolumeCalculator.calculateVolumeForConnection(
+      connectionId.trim(),
+      symbol.trim().toUpperCase(),
+      Number(currentPrice),
+      {
+        tradeMode,
+        indicationType: typeof body.indicationType === "string"
+          ? body.indicationType
+          : undefined,
+        sizeMultiplier: Number.isFinite(Number(body.sizeMultiplier))
+          ? Number(body.sizeMultiplier)
+          : undefined,
+      },
+    )
 
     return NextResponse.json(result)
   } catch (error) {

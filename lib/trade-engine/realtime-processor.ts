@@ -39,6 +39,10 @@ import { getEngineTimings } from "@/lib/engine-timings"
 import { performanceProfiler } from "@/lib/performance-profiler"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { buildPrehistoricGateKeys } from "@/lib/progression-scope"
+import {
+  calculateSignalTrailingTick,
+  type TrailingProfile,
+} from "@/lib/signal-trailing"
 
 // ── Module-level import memoization for live-sync hot paths ──────────
 // `fireSyncLiveFromPseudo` and `maybeRunLiveSync` were previously doing
@@ -863,6 +867,58 @@ export class RealtimeProcessor {
       const startRatio = parseFloat(position.trailing_start_ratio || "0")
       const stopRatio = parseFloat(position.trailing_stop_ratio || "0")
       let stepRatio = parseFloat(position.trailing_step_ratio || "0")
+      const client = getRedisClient()
+      const hashKey = `pseudo_position:${this.connectionId}:${position.id}`
+
+      // ── Signal dynamic path ─────────────────────────────────────────
+      // Starts with the general Signal entry by default. Its stop distance
+      // is max(0.8%, positive move × configured ratio), and its ratchet
+      // threshold is the configured fraction of the current stop range.
+      if (position.trailing_mode === "signal_dynamic") {
+        const profile: TrailingProfile = {
+          mode: "signal_dynamic",
+          startRatio,
+          stopRatio,
+          stepRatio,
+          minStopRatio: parseFloat(position.trailing_min_stop_ratio || String(stopRatio)),
+          positiveMoveRatio: parseFloat(position.trailing_positive_move_ratio || "0.4"),
+          updateStopRangeRatio: parseFloat(position.trailing_update_stop_range_ratio || "0.5"),
+        }
+        const update = calculateSignalTrailingTick({
+          entryPrice,
+          currentPrice,
+          side,
+          profile,
+          active: position.trailing_active === "1" || position.trailing_active === true,
+          anchor: parseFloat(position.trailing_anchor || "0"),
+          stopPrice: parseFloat(position.trailing_stop_price || "0"),
+          stopRangeRatio: parseFloat(position.trailing_dynamic_stop_range_ratio || "0"),
+        })
+        if (!update.changed) return
+
+        await client.hset(hashKey, {
+          trailing_active: update.active ? "1" : "0",
+          trailing_anchor: String(update.anchor),
+          trailing_stop_price: String(update.stopPrice),
+          trailing_dynamic_stop_range_ratio: String(update.stopRangeRatio),
+          updated_at: new Date().toISOString(),
+        })
+        position.trailing_active = update.active ? "1" : "0"
+        position.trailing_anchor = String(update.anchor)
+        position.trailing_stop_price = String(update.stopPrice)
+        position.trailing_dynamic_stop_range_ratio = String(update.stopRangeRatio)
+
+        void trackTrailingStopMetrics(
+          this.connectionId,
+          position.symbol,
+          "ratcheted",
+          update.stopRangeRatio,
+          update.favorableMoveRatio,
+          update.stopPrice,
+        ).catch(() => {})
+        void this.fireSyncLiveFromPseudo(position).catch(() => {})
+        return
+      }
       
       // CRITICAL: Validate stepRatio is not zero or too small. If stepRatio is
       // 0 or NaN, re-anchoring would happen on every price change, breaking the
@@ -873,9 +929,6 @@ export class RealtimeProcessor {
       }
       
       const useMultiStep = startRatio > 0 && stopRatio > 0
-
-      const client = getRedisClient()
-      const hashKey = `pseudo_position:${this.connectionId}:${position.id}`
 
       // ── Multi-step path ────────────────────────────────────────────
       if (useMultiStep) {

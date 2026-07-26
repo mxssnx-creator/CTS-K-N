@@ -3,6 +3,7 @@
 export const dynamic = "force-dynamic"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import { Activity, BarChart3, RefreshCw, Save, SlidersHorizontal } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -153,6 +154,12 @@ export default function CommonIndicationsSettingsPage() {
           <span className="rounded-md border bg-muted/40 px-2 py-1 text-xs">
             {enabledCount}/{COMMON_INDICATOR_DEFINITIONS.length} enabled
           </span>
+          <Button variant="outline" size="sm" asChild>
+            <Link href="/statistics/indications/common">
+              <BarChart3 className="mr-1.5 h-3.5 w-3.5" />
+              Statistics
+            </Link>
+          </Button>
           <Button variant="outline" size="sm" onClick={() => void loadSettings()}>
             <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
             Reload

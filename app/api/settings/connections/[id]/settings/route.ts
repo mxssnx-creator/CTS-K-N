@@ -108,6 +108,8 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "live_volume_factor",
   "volume_factor_preset",
   "preset_volume_factor",
+  "volume_factor_signal",
+  "signal_volume_factor",
   "volume_step_ratio",
   "block_volume_step_ratio",
   "control_orders",
@@ -142,6 +144,46 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "leveragePercentage",
   "useMaximalLeverage",
 ])
+
+const BASE_VOLUME_FACTOR_KEYS = [
+  "volume_factor",
+  "base_volume_factor",
+  "baseVolumeFactor",
+] as const
+const CHANNEL_VOLUME_FACTOR_KEYS = [
+  "live_volume_factor",
+  "preset_volume_factor",
+  "signal_volume_factor",
+  "volume_factor_live",
+  "volume_factor_preset",
+  "volume_factor_signal",
+  "mainVolumeFactor",
+  "mainTradeVolumeFactor",
+  "main_trade_volume_factor",
+  "presetVolumeFactor",
+  "presetTradeVolumeFactor",
+  "preset_trade_volume_factor",
+  "signalVolumeFactor",
+  "signalTradeVolumeFactor",
+  "signal_trade_volume_factor",
+  "baseVolumeFactorLive",
+  "baseVolumeFactorPreset",
+  "baseVolumeFactorSignal",
+] as const
+
+function normalizeIdentityVolumeFactors<T extends Record<string, any>>(settings: T): T {
+  const mutable = settings as Record<string, any>
+  for (const key of BASE_VOLUME_FACTOR_KEYS) {
+    if (mutable[key] === undefined || mutable[key] === null || mutable[key] === "") continue
+    mutable[key] = 1
+  }
+  for (const key of CHANNEL_VOLUME_FACTOR_KEYS) {
+    if (mutable[key] === undefined || mutable[key] === null || mutable[key] === "") continue
+    const value = Number(mutable[key])
+    mutable[key] = Number.isFinite(value) ? Math.max(1, Math.min(10, value)) : 1
+  }
+  return settings
+}
 
 function pickProgressionVisibleSettings(settings: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
@@ -216,6 +258,7 @@ export async function GET(
           "realEvalPosCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio", "trailingMinStep",
           // Volume / live trading factors
           "live_volume_factor", "volume_factor_live", "preset_volume_factor",
+          "signal_volume_factor", "volume_factor_signal",
           "volume_step_ratio", "block_volume_step_ratio",
           // Axis max-window values
           "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
@@ -422,7 +465,9 @@ export async function PUT(
     // Merge settings with existing (like PATCH does)
     const currentSettings = parseStoredConnectionSettings(connection.connection_settings)
     const incomingSettings = body.settings && typeof body.settings === "object" ? body.settings : {}
-    const mergedSettings = mergeConnectionSettings(currentSettings, incomingSettings)
+    const mergedSettings = normalizeIdentityVolumeFactors(
+      mergeConnectionSettings(currentSettings, incomingSettings),
+    )
     normalizeCoordinationAxesInSettings(mergedSettings)
     const hasSymbols = Array.isArray(body.symbols)
     if (hasSymbols) {
@@ -438,7 +483,11 @@ export async function PUT(
       "name", "api_type", "connection_method", "connection_library", "margin_type",
       "position_mode", "is_testnet", "is_enabled", "is_active", "volume_factor",
     ] as const) {
-      if (body[key] !== undefined) connectionPatch[key] = body[key]
+      if (body[key] !== undefined) {
+        connectionPatch[key] = key === "volume_factor"
+          ? 1
+          : body[key]
+      }
     }
     if (Object.keys(incomingSettings).length > 0 || hasSymbols) {
       connectionPatch.connection_settings = mergedSettings
@@ -542,7 +591,9 @@ export async function PATCH(
 
     const current = parseStoredConnectionSettings(connection.connection_settings)
 
-    const merged = mergeConnectionSettings(current, settings)
+    const merged = normalizeIdentityVolumeFactors(
+      mergeConnectionSettings(current, settings),
+    )
     normalizeCoordinationAxesInSettings(merged)
     // Keep the canonical nested coordination object in sync with the top-level
     // knob. The Settings UI may send `posCountsVolumeRatio` either at the top
@@ -875,17 +926,35 @@ export async function PATCH(
       flatKnobs.dcaCooldownSeconds = String(dca.cooldownSeconds)
     }
 
-    const vfl = Number(merged.volume_factor_live ?? merged.live_volume_factor)
+    const vfl = Number(
+      merged.volume_factor_live ??
+      merged.live_volume_factor ??
+      merged.baseVolumeFactorLive,
+    )
     if (Number.isFinite(vfl) && vfl > 0) {
       flatKnobs.volume_factor_live = String(Math.max(1, Math.min(10, vfl)))
       flatKnobs.live_volume_factor = flatKnobs.volume_factor_live
       connectionPatch.live_volume_factor = flatKnobs.volume_factor_live
     }
-    const vfp = Number(merged.volume_factor_preset ?? merged.preset_volume_factor)
+    const vfp = Number(
+      merged.volume_factor_preset ??
+      merged.preset_volume_factor ??
+      merged.baseVolumeFactorPreset,
+    )
     if (Number.isFinite(vfp) && vfp > 0) {
       flatKnobs.volume_factor_preset = String(Math.max(1, Math.min(10, vfp)))
       flatKnobs.preset_volume_factor = flatKnobs.volume_factor_preset
       connectionPatch.preset_volume_factor = flatKnobs.volume_factor_preset
+    }
+    const vfs = Number(
+      merged.volume_factor_signal ??
+      merged.signal_volume_factor ??
+      merged.baseVolumeFactorSignal,
+    )
+    if (Number.isFinite(vfs) && vfs > 0) {
+      flatKnobs.volume_factor_signal = String(Math.max(1, Math.min(10, vfs)))
+      flatKnobs.signal_volume_factor = flatKnobs.volume_factor_signal
+      connectionPatch.signal_volume_factor = flatKnobs.volume_factor_signal
     }
     const vsr = Number(merged.volume_step_ratio ?? merged.volumeStepRatio)
     if (Number.isFinite(vsr) && vsr > 0) {

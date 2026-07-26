@@ -9,6 +9,12 @@ import { getMaxLeverageForExchange } from "@/lib/leverage-policy"
 import type { MainPosition } from "./main-stage"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { STAGE_2_2_MAX_LONG_POSITIONS, STAGE_2_2_MAX_SHORT_POSITIONS, MIN_PROFIT_FACTOR, MAX_DRAWDOWN_TIME_MS } from "@/lib/constants"
+import type { SignalRisk } from "@/lib/signal-indication"
+import type { SignalExecutionLane, TrailingProfile } from "@/lib/signal-trailing"
+import {
+  calculateBlockVolumeMultiplier,
+  parseBlockCount,
+} from "@/lib/block-count-state"
 
 const LOG_PREFIX = "[v0] [RealPositionStage]"
 
@@ -47,6 +53,7 @@ export interface RealPosition {
   setKey?: string
   parentSetKey?: string
   indicationType?: string
+  signalRisk?: SignalRisk
   setVariant?: "default" | "trailing" | "block" | "dca"
   axisWindows?: { prev: number; last: number; cont: number; pause: number }
   // Variant size multiplier carried to the live executor for volume scaling.
@@ -57,18 +64,27 @@ export interface RealPosition {
   blockVolumeRatio?: number
   blockProfitFactorRatio?: number
   blockDefaultMinimumProfitFactor?: number
+  blockConfiguredMinimumProfitFactor?: number
+  blockNormalProfitFactor?: number
   blockMinimumProfitFactor?: number
   blockObservedProfitFactor?: number
+  blockProfitFactorDifference?: number
+  blockComparisonAvailable?: boolean
   blockProfitFactorWindow?: number
   blockProfitFactorSampleCount?: number
   blockCount?: number
+  blockScope?: "long" | "short" | "overall"
+  blockLaneKind?: "direction" | "signal_source"
+  blockLaneKey?: string
+  blockSourceId?: string
   blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
   // Exchange-cost-aware protection diagnostics supplied by the strategy
   // coordinator. Live execution treats this as explanatory metadata; the
   // actionable stopLoss/takeProfit percentages are already widened upstream.
   protectionCost?: Record<string, unknown>
-  trailingProfile?: { startRatio: number; stopRatio: number; stepRatio: number }
+  trailingProfile?: TrailingProfile
+  executionLane?: SignalExecutionLane
   // Historical performance snapshot from the originating StrategySet.
   // Forwarded through RealPosition → LivePosition for audit and future
   // re-scoring. Mirrors StrategySet.prevPos — see strategy-coordinator.ts.
@@ -285,6 +301,58 @@ function calculateEvaluationScore(
 }
 
 /**
+ * Compatibility Real-stage sizing resolver.
+ *
+ * The active StrategyCoordinator path resolves the same contract before
+ * executeLivePosition. Keeping this older exported stage fail-closed prevents
+ * a direct caller from resurrecting legacy `baseMultiplier` scaling:
+ * normal/trailing=1, Block=1+count×ratio, DCA=its explicit ratio and combined
+ * Position-count=its explicit net ratio (including a deliberate flat 0).
+ */
+export function resolveRealStageSizeMultiplier(variantSource?: Record<string, any>): number {
+  const setVariant = String(
+    variantSource?.variant || variantSource?.setVariant || "default",
+  ).toLowerCase()
+  if (setVariant === "block") {
+    const parsedCount =
+      parseBlockCount(variantSource?.setKey) ??
+      Math.floor(Number(variantSource?.blockCount || 0))
+    const ratio = Number(variantSource?.blockVolumeRatio)
+    return Number.isFinite(parsedCount) &&
+      parsedCount >= 1 &&
+      Number.isFinite(ratio) &&
+      ratio > 0
+      ? calculateBlockVolumeMultiplier(parsedCount, ratio)
+      : 1
+  }
+  if (variantSource?.combinedPosCounts) {
+    if (
+      variantSource?.posCountsTargetFlat === true ||
+      Number(variantSource?.posCountsVolumeRatio ?? variantSource?.sizeMultiplier) === 0
+    ) {
+      return 0
+    }
+    const ratio = Number(
+      variantSource?.posCountsVolumeRatio ?? variantSource?.sizeMultiplier,
+    )
+    return Number.isFinite(ratio) && ratio > 0
+      ? Math.max(0.01, Math.min(0.25, ratio))
+      : 1
+  }
+  if (setVariant === "dca") {
+    const ratio = Number(
+      variantSource?.variantSizeMultiplier ??
+      variantSource?.sizeMultiplier ??
+      variantSource?.baseMultiplier,
+    )
+    return Number.isFinite(ratio) && ratio > 0
+      ? Math.max(0.01, Math.min(5, ratio))
+      : 1
+  }
+  return 1
+}
+
+/**
  * Create real position from main position
  * @param variantSource Optional parent StrategySet context carrying lineage fields
  *   (setKey, setVariant, axisWindows, sizeMultiplier). When present, these are
@@ -343,24 +411,11 @@ function createRealPosition(
     Math.max(1, maxLeverageForExchange),
   )
 
-  // Phase 2 FIX: Propagate variant lineage and strategy type from parent StrategySet
-  // so the live executor receives correct position sizing.
-  // - For "adjust" type (Block/DCA): Use the coordinated baseMultiplier.
-  //   Block exchange add quantity is independently resolved from the
-  //   authoritative position basis as base × (count × volume ratio).
-  //   dca: reduced size (typically 0.5)
-  // - For "standard" type: Use 1.0 (position-count scaling applied separately)
-  // If no variantSource provided, defaults are sizeMultiplier=1.0, type="standard".
+  // Propagate variant lineage while recomputing the multiplier from canonical
+  // metadata. Never trust a restored legacy `baseMultiplier`.
   const strategyType = variantSource?.strategyType ?? "standard"
-  const sizeMultiplier = 
-    strategyType === "adjust" && variantSource?.baseMultiplier
-      ? variantSource.baseMultiplier  // Block/DCA: use computed volume-ratio scaled multiplier
-      // Position-Count (Pis) Sets: the additional Main-stage axis Sets carry
-      // their own reduced volume ratio so they trade at a fraction of base.
-      : variantSource?.posCountsVolumeRatio && variantSource.posCountsVolumeRatio > 0
-        ? variantSource.posCountsVolumeRatio
-        : 1.0  // Standard: use 1.0, continuousCount scaling applied separately
   const setVariant = variantSource?.variant || variantSource?.setVariant || "default"
+  const sizeMultiplier = resolveRealStageSizeMultiplier(variantSource)
   const axisWindows = variantSource?.axisWindows
   const setKey = variantSource?.setKey
   const parentSetKey = variantSource?.parentSetKey
@@ -371,7 +426,7 @@ function createRealPosition(
       console.log(
         `${LOG_PREFIX} [POSITION_TYPE_VALIDATION] Creating Block (Adjust) position: ` +
         `symbol=${mainPos.symbol} sizeMultiplier=${sizeMultiplier} ` +
-        `(independent add: positionBase × blockCount × volumeRatio)`
+        `(target: generalVolume × (1 + blockCount × volumeRatio))`
       )
     } else if (setVariant === "dca") {
       console.log(
@@ -416,11 +471,12 @@ function createRealPosition(
     //     Qty applies baseMultiplier (volume-ratio scaled) directly
     //
     // For "adjust" type: the coordination multiplier retains Set lineage:
-    //   block: baseMultiplier × blockCount × volumeRatio
+    //   block: general multiplier × (1 + blockCount × volumeRatio)
     //   dca: 0.5 (reduced averaging entries)
     // For "standard" type: sizeMultiplier=1.0, continuousCount scaling applied separately
     ...(setKey && { setKey }),
     ...(parentSetKey && { parentSetKey }),
+    ...(variantSource?.signalRisk && { signalRisk: variantSource.signalRisk }),
     ...(setVariant && setVariant !== "default" && { setVariant: setVariant as any }),
     ...(axisWindows && { axisWindows }),
     sizeMultiplier,
@@ -433,6 +489,40 @@ function createRealPosition(
     ...(variantSource?.posCountsSetRatios
       ? { posCountsSetRatios: { ...variantSource.posCountsSetRatios } }
       : {}),
+    ...(variantSource?.posCountsTargetFlat === true ? { posCountsTargetFlat: true } : {}),
+    ...(Number.isFinite(Number(variantSource?.posCountsLongSetCount))
+      ? { posCountsLongSetCount: Number(variantSource.posCountsLongSetCount) }
+      : {}),
+    ...(Number.isFinite(Number(variantSource?.posCountsShortSetCount))
+      ? { posCountsShortSetCount: Number(variantSource.posCountsShortSetCount) }
+      : {}),
+    ...(Number.isFinite(Number(variantSource?.posCountsNetSetCount))
+      ? { posCountsNetSetCount: Number(variantSource.posCountsNetSetCount) }
+      : {}),
+    ...([
+      "blockBaseVolumeMultiplier",
+      "blockVolumeRatio",
+      "blockProfitFactorRatio",
+      "blockDefaultMinimumProfitFactor",
+      "blockConfiguredMinimumProfitFactor",
+      "blockNormalProfitFactor",
+      "blockMinimumProfitFactor",
+      "blockObservedProfitFactor",
+      "blockProfitFactorDifference",
+      "blockComparisonAvailable",
+      "blockProfitFactorWindow",
+      "blockProfitFactorSampleCount",
+      "blockCount",
+      "blockScope",
+      "blockLaneKind",
+      "blockLaneKey",
+      "blockSourceId",
+      "blockVolumeIncrementRatio",
+      "blockCalculatedVolumeMultiplier",
+    ] as const).reduce<Record<string, unknown>>((fields, key) => {
+      if (variantSource?.[key] !== undefined) fields[key] = variantSource[key]
+      return fields
+    }, {}),
   }
 }
 

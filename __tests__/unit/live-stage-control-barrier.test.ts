@@ -58,6 +58,33 @@ function connector(overrides: Record<string, unknown> = {}) {
 }
 
 describe("executing Live-stage control barriers", () => {
+  test("does not charge virtual or zero-fill Block lanes against the physical accumulation cap", () => {
+    const coveredKeys = Array.from({ length: 1_500 }, (_, index) => `signal-covered-${index}`)
+    const setKeys = [
+      "base-set",
+      "physical-block",
+      ...coveredKeys.flatMap((key, index) => [
+        key,
+        `block_lane:BTCUSDT:signal_source:source:s${index}:overall:3`,
+      ]),
+    ]
+    const blockLegs = [
+      {
+        setKey: "physical-block",
+        quantity: 0.5,
+        requestedQuantity: 0.5,
+      },
+      ...coveredKeys.map((setKey) => ({
+        setKey,
+        quantity: 0,
+        requestedQuantity: 0,
+        targetSatisfied: true,
+      })),
+    ]
+
+    expect(__liveStageTest.physicalAccumulationCount(setKeys, blockLegs)).toBe(2)
+  })
+
   test("accepts only explicit exchange directions and never defaults malformed state", () => {
     expect(normalizeLiveTradeDirection("LONG")).toBe("long")
     expect(normalizeLiveTradeDirection(undefined, "sell")).toBe("short")

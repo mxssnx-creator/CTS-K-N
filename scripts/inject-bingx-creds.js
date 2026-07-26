@@ -27,7 +27,7 @@ async function main() {
     is_preset_trade: false,
     is_active: true,
     is_predefined: false,
-    volume_factor: 0.1,
+    volume_factor: 1,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }

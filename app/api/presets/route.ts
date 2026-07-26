@@ -6,6 +6,20 @@ import { SystemLogger } from "@/lib/system-logger"
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
+function normalizePresetVolumeFactors(value: unknown): number[] {
+  let raw = value
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw) } catch { raw = [] }
+  }
+  const factors = Array.isArray(raw)
+    ? raw
+        .map(Number)
+        .filter(Number.isFinite)
+        .map((factor) => Math.max(1, Math.min(10, factor)))
+    : []
+  return [...new Set(factors.length > 0 ? factors : [1, 1.5, 2])]
+}
+
 export async function GET(request: NextRequest) {
   try {
     console.log("[v0] GET /api/presets - Starting...")
@@ -49,7 +63,7 @@ export async function GET(request: NextRequest) {
         ? JSON.parse(preset.block_adjustment_ratios)
         : [0.5, 1.0, 1.5, 2.0],
       dca_levels: preset.dca_levels ? JSON.parse(preset.dca_levels) : [3, 5, 7],
-      volume_factors: preset.volume_factors ? JSON.parse(preset.volume_factors) : [0.1, 0.2, 0.5],
+      volume_factors: normalizePresetVolumeFactors(preset.volume_factors),
       trailing_enabled: preset.trailing_enabled === true,
       block_adjustment_enabled: preset.block_adjustment_enabled === true,
       dca_adjustment_enabled: preset.dca_adjustment_enabled === true,
@@ -111,7 +125,7 @@ export async function POST(request: NextRequest) {
         JSON.stringify(body.block_adjustment_ratios || [0.5, 1.0, 1.5, 2.0]),
         body.dca_adjustment_enabled !== undefined ? body.dca_adjustment_enabled : false,
         JSON.stringify(body.dca_levels || [3, 5, 7]),
-        JSON.stringify(body.volume_factors || [0.1, 0.2, 0.5]),
+        JSON.stringify(normalizePresetVolumeFactors(body.volume_factors)),
         body.min_profit_factor || 0.4,
         body.min_win_rate || 0.0,
         body.max_drawdown || 50.0,

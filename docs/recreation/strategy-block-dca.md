@@ -41,11 +41,13 @@ the same field.
 
 ## Exact Block formulas
 
-For count `n` and the position quantity confirmed immediately before the leg:
+For count `n` and the immutable confirmed general parent quantity:
 
 ```text
 volumeIncrement(n) = n × blockVolumeRatio
-requestedAddQty(n) = confirmedCurrentQty × volumeIncrement(n)
+targetAddQty(n) = immutableGeneralQty × volumeIncrement(n)
+targetBlockQty(n) = immutableGeneralQty + targetAddQty(n)
+requestedAddQty(n) = max(0, targetAddQty(n) - confirmedBlockAddQty)
 blockMinPF(n) = defaultMinPF × blockProfitFactorRatio × volumeIncrement(n)
 ```
 
@@ -54,22 +56,23 @@ The Block does not multiply its volume increment by the legacy profile base
 multiplier. The profile multiplier remains metadata/coordination; actual add-on
 quantity and minimum PF use the same increment ratio.
 
-Example: current confirmed quantity `2`, ratio `0.5`, factor `0.8`, default
+Example: immutable general quantity `2`, ratio `0.5`, factor `0.8`, default
 minimum PF `1.2`:
 
-| Count | Increment | Requested add | Minimum PF |
-| ---: | ---: | ---: | ---: |
-| 1 | 0.5× | 1 | 0.48 |
-| 2 | 1.0× | 2 | 0.96 |
-| 3 | 1.5× | 3 | 1.44 |
+| Count | Increment | Target add | Target total | Minimum PF |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.5× | 1 | 3 | 0.48 |
+| 2 | 1.0× | 2 | 4 | 0.96 |
+| 3 | 1.5× | 3 | 5 | 1.44 |
 
-If Count 1 fills before Count 3 is selected, Count 3 snapshots the newly
-confirmed aggregate quantity. This is intentional: every leg is independent,
-but all legs adjust one authoritative venue position.
+If Count 1 fills before Count 3 is selected, Count 3 requests only `2`: its
+absolute add target is `3`, while `1` is already confirmed. Every Count Set
+retains independent PF, result and pause state, but all Counts share one
+non-compounding physical Block target per symbol and direction.
 
 ## Independent Block evaluation
 
-For every source Set, Count1..CountN gets:
+For every normal Base-derived source Set, Count1..CountN gets:
 
 - a distinct `#block:N` Set key;
 - its own last-N realized result ring;
@@ -78,10 +81,30 @@ For every source Set, Count1..CountN gets:
   confirmed quantity, and stats row;
 - an active-exposure exemption until terminal reconciliation.
 
-Before the exact count has enough samples, observed PF inherits the eligible
-source Set's observed PF. It never borrows another count's results. Disabling
-Block or removing sources clears all Count1..10 and active-overlay stats so a
-stale non-zero dashboard value cannot survive.
+Pos-Count/axis Sets never spawn this regular Count ladder. Active Real Block is
+a separate procedure: it counts all non-terminal Real positions by exact symbol
+and Long/Short direction, including individual or combined Pos-Count positions,
+then emits one direction-wide `#block:active:N` overlay from an eligible normal
+Base lineage. Thus Pos-Count activity contributes to `N` without recursively
+creating Block-on-Pos-Count Sets.
+
+Before the exact count has enough samples, observed PF inherits the matching
+normal rolling PF and the enabled Block is immediately eligible without a
+Block-only progression. Once the exact lane reaches the normal minimum-sample
+threshold, its own PF is used and must be at least the matching normal PF plus
+any stronger configured count floor. It never borrows another count's results.
+
+The Real scope graph adds independent Strategy lanes for
+`symbol × long|short|overall × count` and Signal lanes for
+`source × symbol × long|short|overall × count`. Overall combines only realized
+evaluation history; physical Long and Short exposure is never netted.
+
+When the Block strategy switch is disabled, Count, scoped, and Active procedures
+still calculate normal/observed PF, difference, eligibility, volume increment,
+activity, and result statistics. They publish `evaluated=0`, `disabled>0`, and
+`emitted=0`; already-active Block exposure remains emitted only for terminal
+reconciliation. A source disappearing from the current basket publishes a
+zero-valued current snapshot so stale counts cannot survive.
 
 The Real safety cap retains active exact counts. New Block candidates do not
 consume the non-default fairness reserve because up to ten counts per source
@@ -91,7 +114,7 @@ could starve DCA/trailing; their own PF ranking competes for remaining capacity.
 
 A confirmed leg records count, exact key, requested/filled/base/aggregate
 quantities, base profile multiplier, volume ratio/increment, pause count,
-client/order IDs and timestamps. A partial fill adds only its observed delta
+target completion, client/order IDs and timestamps. A partial fill adds only its observed delta
 and leaves pending state until terminal or fully filled. Closing removes its
 active index and starts an exact pause. Close retry is idempotent.
 

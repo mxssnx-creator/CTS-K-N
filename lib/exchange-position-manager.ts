@@ -80,6 +80,10 @@ export class ExchangePositionManager {
         params.connectionId,
         params.symbol,
         params.entryPrice,
+        {
+          tradeMode: params.tradeMode,
+          indicationType: params.indicationType,
+        },
       )
 
       const finalQuantity = volumeResult.volume

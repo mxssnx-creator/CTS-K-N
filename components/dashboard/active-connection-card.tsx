@@ -48,7 +48,12 @@ import { ConnectionDetailedLogDialog } from "@/components/dashboard/connection-d
 import { EngineProcessingLogDialog }   from "@/components/dashboard/engine-processing-log-dialog"
 import { DetailedLoggingDialog }       from "@/components/dashboard/detailed-logging-dialog"
 import { VolumeConfigurationPanel } from "@/components/dashboard/volume-configuration-panel"
-import { DEFAULT_VOLUME_STEP_RATIO, MIN_VOLUME_FACTOR } from "@/lib/constants"
+import {
+  DEFAULT_VOLUME_STEP_RATIO,
+  MIN_VOLUME_FACTOR,
+  normalizeIdentityVolumeFactor,
+  normalizeVolumeStepRatio,
+} from "@/lib/constants"
 import {
   boundedPassedCount,
   boundedPercentage,
@@ -232,11 +237,13 @@ export function ActiveConnectionCard({
   const presetModeLoadingRef = useRef(false)
   const [liveVolumeFactor, setLiveVolumeFactor] = useState(1)
   const [presetVolumeFactor, setPresetVolumeFactor] = useState(1)
+  const [signalVolumeFactor, setSignalVolumeFactor] = useState(1)
   const [volumeStepRatio, setVolumeStepRatio] = useState(DEFAULT_VOLUME_STEP_RATIO)
   const liveVolumeFactorRef = useRef(MIN_VOLUME_FACTOR)
   const presetVolumeFactorRef = useRef(MIN_VOLUME_FACTOR)
+  const signalVolumeFactorRef = useRef(MIN_VOLUME_FACTOR)
   const volumeStepRatioRef = useRef(DEFAULT_VOLUME_STEP_RATIO)
-  const volumeSaveSequenceRef = useRef({ live: 0, preset: 0, step: 0 })
+  const volumeSaveSequenceRef = useRef({ live: 0, preset: 0, signal: 0, step: 0 })
   const [orderType, setOrderType] = useState<"market" | "limit">("market")
   const [volumeType, setVolumeType] = useState<"usdt" | "contract">("usdt")
   const [mainTradeStatus, setMainTradeStatus] = useState<"idle" | "active" | "paused" | "stopped">("idle")
@@ -262,6 +269,8 @@ export function ActiveConnectionCard({
     indicationsActiveAdvanced: number
     indicationsOptimal: number
     indicationsAuto: number
+    indicationsSignal: number
+    indicationsTrend: number
     indicationsTotal: number
     // Strategy stages
     stratBase: number
@@ -398,14 +407,17 @@ export function ActiveConnectionCard({
     if (details) {
       setLiveTrade(liveTradeUiFlag(details))
       setPresetMode(toBoolean(details.preset_trade_requested) || toBoolean(details.is_preset_trade))
-      const nextLiveFactor = Number(details.live_volume_factor) || MIN_VOLUME_FACTOR
-      const nextPresetFactor = Number(details.preset_volume_factor) || MIN_VOLUME_FACTOR
-      const nextStepRatio = Number(details.volume_step_ratio) || DEFAULT_VOLUME_STEP_RATIO
+      const nextLiveFactor = normalizeIdentityVolumeFactor(details.live_volume_factor)
+      const nextPresetFactor = normalizeIdentityVolumeFactor(details.preset_volume_factor)
+      const nextSignalFactor = normalizeIdentityVolumeFactor(details.signal_volume_factor)
+      const nextStepRatio = normalizeVolumeStepRatio(details.volume_step_ratio)
       liveVolumeFactorRef.current = nextLiveFactor
       presetVolumeFactorRef.current = nextPresetFactor
+      signalVolumeFactorRef.current = nextSignalFactor
       volumeStepRatioRef.current = nextStepRatio
       setLiveVolumeFactor(nextLiveFactor)
       setPresetVolumeFactor(nextPresetFactor)
+      setSignalVolumeFactor(nextSignalFactor)
       setVolumeStepRatio(nextStepRatio)
       setOrderType(details.order_type as "market" | "limit" || "market")
       setVolumeType(details.volume_type as "usdt" | "contract" || "usdt")
@@ -490,21 +502,24 @@ export function ActiveConnectionCard({
   // older request from reverting a newer slider value when responses arrive
   // out of order.
   const handleLiveVolumeChange = useCallback(async (value: number) => {
+    const normalizedValue = normalizeIdentityVolumeFactor(value)
     const previous = liveVolumeFactorRef.current
     const sequence = ++volumeSaveSequenceRef.current.live
-    liveVolumeFactorRef.current = value
-    setLiveVolumeFactor(value)
+    liveVolumeFactorRef.current = normalizedValue
+    setLiveVolumeFactor(normalizedValue)
     try {
       const res = await fetch(`/api/settings/connections/${connection.connectionId}/volume`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ live_volume_factor: value }),
+        body: JSON.stringify({ live_volume_factor: normalizedValue }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok || data?.success === false) throw new Error(data?.error || "Failed to save live volume factor")
       if (sequence !== volumeSaveSequenceRef.current.live) return
       const applied = Number(data?.live_volume_factor)
-      const next = Number.isFinite(applied) ? applied : value
+      const next = normalizeIdentityVolumeFactor(
+        Number.isFinite(applied) ? applied : normalizedValue,
+      )
       liveVolumeFactorRef.current = next
       setLiveVolumeFactor(next)
       dispatchVolumeSettingsChange({ live_volume_factor: next, volume_factor_live: next }, data)
@@ -518,21 +533,24 @@ export function ActiveConnectionCard({
   }, [connection.connectionId, dispatchVolumeSettingsChange])
 
   const handlePresetVolumeChange = useCallback(async (value: number) => {
+    const normalizedValue = normalizeIdentityVolumeFactor(value)
     const previous = presetVolumeFactorRef.current
     const sequence = ++volumeSaveSequenceRef.current.preset
-    presetVolumeFactorRef.current = value
-    setPresetVolumeFactor(value)
+    presetVolumeFactorRef.current = normalizedValue
+    setPresetVolumeFactor(normalizedValue)
     try {
       const res = await fetch(`/api/settings/connections/${connection.connectionId}/volume`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ preset_volume_factor: value }),
+        body: JSON.stringify({ preset_volume_factor: normalizedValue }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok || data?.success === false) throw new Error(data?.error || "Failed to save preset volume factor")
       if (sequence !== volumeSaveSequenceRef.current.preset) return
       const applied = Number(data?.preset_volume_factor)
-      const next = Number.isFinite(applied) ? applied : value
+      const next = normalizeIdentityVolumeFactor(
+        Number.isFinite(applied) ? applied : normalizedValue,
+      )
       presetVolumeFactorRef.current = next
       setPresetVolumeFactor(next)
       dispatchVolumeSettingsChange({ preset_volume_factor: next, volume_factor_preset: next }, data)
@@ -545,22 +563,59 @@ export function ActiveConnectionCard({
     }
   }, [connection.connectionId, dispatchVolumeSettingsChange])
 
-  const handleVolumeStepRatioChange = useCallback(async (value: number) => {
-    const previous = volumeStepRatioRef.current
-    const sequence = ++volumeSaveSequenceRef.current.step
-    volumeStepRatioRef.current = value
-    setVolumeStepRatio(value)
+  const handleSignalVolumeChange = useCallback(async (value: number) => {
+    const normalizedValue = normalizeIdentityVolumeFactor(value)
+    const previous = signalVolumeFactorRef.current
+    const sequence = ++volumeSaveSequenceRef.current.signal
+    signalVolumeFactorRef.current = normalizedValue
+    setSignalVolumeFactor(normalizedValue)
     try {
       const res = await fetch(`/api/settings/connections/${connection.connectionId}/volume`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ volume_step_ratio: value }),
+        body: JSON.stringify({ signal_volume_factor: normalizedValue }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data?.success === false) throw new Error(data?.error || "Failed to save Signal volume factor")
+      if (sequence !== volumeSaveSequenceRef.current.signal) return
+      const applied = Number(data?.signal_volume_factor)
+      const next = normalizeIdentityVolumeFactor(
+        Number.isFinite(applied) ? applied : normalizedValue,
+      )
+      signalVolumeFactorRef.current = next
+      setSignalVolumeFactor(next)
+      dispatchVolumeSettingsChange({
+        signal_volume_factor: next,
+        volume_factor_signal: next,
+      }, data)
+    } catch (error) {
+      if (sequence !== volumeSaveSequenceRef.current.signal) return
+      signalVolumeFactorRef.current = previous
+      setSignalVolumeFactor(previous)
+      console.error("[v0] Failed to save Signal volume factor:", error)
+      toast.error("Failed to save Signal volume factor")
+    }
+  }, [connection.connectionId, dispatchVolumeSettingsChange])
+
+  const handleVolumeStepRatioChange = useCallback(async (value: number) => {
+    const previous = volumeStepRatioRef.current
+    const sequence = ++volumeSaveSequenceRef.current.step
+    const normalizedValue = normalizeVolumeStepRatio(value)
+    volumeStepRatioRef.current = normalizedValue
+    setVolumeStepRatio(normalizedValue)
+    try {
+      const res = await fetch(`/api/settings/connections/${connection.connectionId}/volume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ volume_step_ratio: normalizedValue }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok || data?.success === false) throw new Error(data?.error || "Failed to save volume step ratio")
       if (sequence !== volumeSaveSequenceRef.current.step) return
       const applied = Number(data?.volume_step_ratio)
-      const next = Number.isFinite(applied) ? applied : value
+      const next = normalizeVolumeStepRatio(
+        Number.isFinite(applied) ? applied : normalizedValue,
+      )
       volumeStepRatioRef.current = next
       setVolumeStepRatio(next)
       dispatchVolumeSettingsChange({ volume_step_ratio: next }, data)
@@ -774,18 +829,27 @@ export function ActiveConnectionCard({
         const updatedSettings = customEvent.detail?.settings || {}
         const liveFactor = Number(updatedSettings.live_volume_factor ?? updatedSettings.volume_factor_live)
         const presetFactor = Number(updatedSettings.preset_volume_factor ?? updatedSettings.volume_factor_preset)
+        const signalFactor = Number(updatedSettings.signal_volume_factor ?? updatedSettings.volume_factor_signal)
         const stepRatio = Number(updatedSettings.volume_step_ratio)
-        if (Number.isFinite(liveFactor) && liveFactor > 0) {
-          liveVolumeFactorRef.current = liveFactor
-          setLiveVolumeFactor(liveFactor)
+        if (Number.isFinite(liveFactor)) {
+          const normalized = normalizeIdentityVolumeFactor(liveFactor)
+          liveVolumeFactorRef.current = normalized
+          setLiveVolumeFactor(normalized)
         }
-        if (Number.isFinite(presetFactor) && presetFactor > 0) {
-          presetVolumeFactorRef.current = presetFactor
-          setPresetVolumeFactor(presetFactor)
+        if (Number.isFinite(presetFactor)) {
+          const normalized = normalizeIdentityVolumeFactor(presetFactor)
+          presetVolumeFactorRef.current = normalized
+          setPresetVolumeFactor(normalized)
         }
-        if (Number.isFinite(stepRatio) && stepRatio > 0) {
-          volumeStepRatioRef.current = stepRatio
-          setVolumeStepRatio(stepRatio)
+        if (Number.isFinite(signalFactor)) {
+          const normalized = normalizeIdentityVolumeFactor(signalFactor)
+          signalVolumeFactorRef.current = normalized
+          setSignalVolumeFactor(normalized)
+        }
+        if (Number.isFinite(stepRatio)) {
+          const normalized = normalizeVolumeStepRatio(stepRatio)
+          volumeStepRatioRef.current = normalized
+          setVolumeStepRatio(normalized)
         }
         fetchProgression()
       }
@@ -913,6 +977,8 @@ export function ActiveConnectionCard({
           indicationsActiveAdvanced: ind.activeAdvanced || 0,
           indicationsOptimal:   ind.optimal   || 0,
           indicationsAuto:      ind.auto      || 0,
+          indicationsSignal:    ind.signal    || 0,
+          indicationsTrend:     ind.trend     || 0,
           indicationsTotal:     ind.total     || 0,
           stratBase:  strat.base || 0,
           stratMain:  strat.main || 0,
@@ -1848,7 +1914,7 @@ export function ActiveConnectionCard({
                         <div className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
                           Indications Evaluated ({prehistoricStats.indicationsTotal.toLocaleString()})
                         </div>
-                        <div className="grid grid-cols-6 gap-1">
+                        <div className="grid grid-cols-8 gap-1">
                           {[
                             { label: "Dir", value: prehistoricStats.indicationsDirection },
                             { label: "Move", value: prehistoricStats.indicationsMove },
@@ -1856,6 +1922,8 @@ export function ActiveConnectionCard({
                             { label: "Adv", value: prehistoricStats.indicationsActiveAdvanced },
                             { label: "Opt", value: prehistoricStats.indicationsOptimal },
                             { label: "Auto", value: prehistoricStats.indicationsAuto },
+                            { label: "Signal", value: prehistoricStats.indicationsSignal },
+                            { label: "Trend", value: prehistoricStats.indicationsTrend },
                           ].map(({ label, value }) => (
                             <div key={label} className="text-center">
                               <div className="text-[8px] text-muted-foreground">{label}</div>
@@ -2628,9 +2696,11 @@ export function ActiveConnectionCard({
               <VolumeConfigurationPanel
                 liveVolumeFactor={liveVolumeFactor}
                 presetVolumeFactor={presetVolumeFactor}
+                signalVolumeFactor={signalVolumeFactor}
                 volumeStepRatio={volumeStepRatio}
                 onLiveVolumeChange={handleLiveVolumeChange}
                 onPresetVolumeChange={handlePresetVolumeChange}
+                onSignalVolumeChange={handleSignalVolumeChange}
                 onVolumeStepRatioChange={handleVolumeStepRatioChange}
                 orderType={orderType}
                 onOrderTypeChange={setOrderType}

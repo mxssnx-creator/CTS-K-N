@@ -76,16 +76,20 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       direction: toNumber(progHashForLogs["indications_direction_count"]),
       move:      toNumber(progHashForLogs["indications_move_count"]),
       active:    toNumber(progHashForLogs["indications_active_count"]),
+      active_advanced: toNumber(progHashForLogs["indications_active_advanced_count"]),
       optimal:   toNumber(progHashForLogs["indications_optimal_count"]),
       auto:      toNumber(progHashForLogs["indications_auto_count"]),
+      signal:    toNumber(progHashForLogs["indications_signal_count"]),
       trend:     toNumber(progHashForLogs["indications_trend_count"]),
     }
     const indicationsByTypeTotal =
       indicationsByType.direction +
       indicationsByType.move +
       indicationsByType.active +
+      indicationsByType.active_advanced +
       indicationsByType.optimal +
       indicationsByType.auto +
+      indicationsByType.signal +
       indicationsByType.trend
 
     const mergedLogs = logs.length > 0
@@ -111,7 +115,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       indicationDirectionCount,
       indicationMoveCount,
       indicationActiveCount,
+      indicationActiveAdvancedCount,
       indicationOptimalCount,
+      indicationSignalCount,
       indicationTrendCount,
       redisDbSize,
       redisMemoryInfo,
@@ -128,7 +134,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       toNumber(await client.get(`indications:${connectionId}:direction:evaluated`).catch(() => 0)),
       toNumber(await client.get(`indications:${connectionId}:move:evaluated`).catch(() => 0)),
       toNumber(await client.get(`indications:${connectionId}:active:evaluated`).catch(() => 0)),
+      toNumber(await client.get(`indications:${connectionId}:active_advanced:evaluated`).catch(() => 0)),
       toNumber(await client.get(`indications:${connectionId}:optimal:evaluated`).catch(() => 0)),
+      toNumber(await client.get(`indications:${connectionId}:signal:evaluated`).catch(() => 0)),
       toNumber(await client.get(`indications:${connectionId}:trend:evaluated`).catch(() => 0)),
       client.dbSize().catch(() => 0),
       client.info().catch(() => ""),
@@ -176,7 +184,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         indicationEvaluatedDirection: sanitizeNonNegative(indicationDirectionCount),
         indicationEvaluatedMove: sanitizeNonNegative(indicationMoveCount),
         indicationEvaluatedActive: sanitizeNonNegative(indicationActiveCount),
+        indicationEvaluatedActiveAdvanced: sanitizeNonNegative(indicationActiveAdvancedCount),
         indicationEvaluatedOptimal: sanitizeNonNegative(indicationOptimalCount),
+        indicationEvaluatedSignal: sanitizeNonNegative(indicationSignalCount),
         indicationEvaluatedTrend: sanitizeNonNegative(indicationTrendCount),
         prehistoricSymbolsProcessed: sanitizeNonNegative(engineState?.config_set_symbols_processed),
         prehistoricCandlesProcessed: sanitizeNonNegative(engineState?.config_set_candles_processed),

@@ -2,6 +2,21 @@ import { type NextRequest, NextResponse } from "next/server"
 import { sql } from "@/lib/db"
 
 export const dynamic = "force-dynamic"
+
+function normalizePresetVolumeFactors(value: unknown): number[] {
+  let raw = value
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw) } catch { raw = [] }
+  }
+  const factors = Array.isArray(raw)
+    ? raw
+        .map(Number)
+        .filter(Number.isFinite)
+        .map((factor) => Math.max(1, Math.min(10, factor)))
+    : []
+  return [...new Set(factors.length > 0 ? factors : [1, 1.5, 2])]
+}
+
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
@@ -13,7 +28,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: "Preset not found" }, { status: 404 })
     }
 
-    return NextResponse.json(preset)
+    return NextResponse.json({
+      ...preset,
+      volume_factors: normalizePresetVolumeFactors(preset.volume_factors),
+    })
   } catch (error) {
     console.error("[v0] Failed to fetch preset:", error)
     return NextResponse.json({ error: "Failed to fetch preset" }, { status: 500 })
@@ -45,7 +63,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         block_adjustment_ratios = ${JSON.stringify(body.block_adjustment_ratios)},
         dca_adjustment_enabled = ${body.dca_adjustment_enabled},
         dca_levels = ${JSON.stringify(body.dca_levels)},
-        volume_factors = ${JSON.stringify(body.volume_factors)},
+        volume_factors = ${JSON.stringify(normalizePresetVolumeFactors(body.volume_factors))},
         min_profit_factor = ${body.min_profit_factor},
         min_win_rate = ${body.min_win_rate},
         max_drawdown = ${body.max_drawdown},

@@ -43,11 +43,66 @@ import { notifySettingsChanged, detectChangedFields } from "@/lib/settings-coord
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import {
+  normalizeBaseVolumeFactor,
+  normalizeIdentityVolumeFactor,
+} from "@/lib/constants"
 
 const inFlightRecoordinations = new Map<string, Promise<void>>()
 const inFlightSettingsCommits = new Map<string, Promise<unknown>>()
 const SETTINGS_COMMIT_LOCK_TTL_MS = 30_000
 const SETTINGS_COMMIT_LOCK_WAIT_MS = 8_000
+
+const BASE_VOLUME_FACTOR_FIELDS = new Set([
+  "base_volume_factor",
+  "volume_factor",
+  "baseVolumeFactor",
+])
+const CHANNEL_VOLUME_FACTOR_FIELDS = new Set([
+  "live_volume_factor",
+  "volume_factor_live",
+  "mainVolumeFactor",
+  "mainTradeVolumeFactor",
+  "main_trade_volume_factor",
+  "preset_volume_factor",
+  "volume_factor_preset",
+  "presetVolumeFactor",
+  "presetTradeVolumeFactor",
+  "preset_trade_volume_factor",
+  "signal_volume_factor",
+  "volume_factor_signal",
+  "signalVolumeFactor",
+  "signalTradeVolumeFactor",
+  "signal_trade_volume_factor",
+  "baseVolumeFactorLive",
+  "baseVolumeFactorPreset",
+  "baseVolumeFactorSignal",
+])
+
+/**
+ * Final settings-write guard shared by UI, API, and engine-owned mutations.
+ * Explicit Block/DCA/Position-Count ratios are deliberately not in this list.
+ */
+function normalizeIdentityVolumeFields<T extends Record<string, any>>(input: T): T {
+  const normalized: Record<string, any> = {}
+  for (const [key, value] of Object.entries(input || {})) {
+    if (BASE_VOLUME_FACTOR_FIELDS.has(key)) {
+      const next = normalizeBaseVolumeFactor(value)
+      normalized[key] = typeof value === "string" ? String(next) : next
+      continue
+    }
+    if (CHANNEL_VOLUME_FACTOR_FIELDS.has(key)) {
+      const next = normalizeIdentityVolumeFactor(value)
+      normalized[key] = typeof value === "string" ? String(next) : next
+      continue
+    }
+    normalized[key] =
+      value && typeof value === "object" && !Array.isArray(value)
+        ? normalizeIdentityVolumeFields(value as Record<string, any>)
+        : value
+  }
+  return normalized as T
+}
 
 async function acquireSharedSettingsCommitLock(redis: any, connectionId: string): Promise<string> {
   const key = `connection_settings_commit_lock:${connectionId}`
@@ -143,8 +198,11 @@ const LIVE_ORDER_SETTING_FIELDS = new Set([
   "volume_factor",
   "live_volume_factor",
   "preset_volume_factor",
+  "signal_volume_factor",
   "volume_factor_live",
   "volume_factor_preset",
+  "volume_factor_signal",
+  "signalTradeVolumeFactor",
   "volume_step_ratio",
   "blockVolumeRatio",
   "blockProfitFactorRatio",
@@ -302,7 +360,7 @@ export async function applyMainConnectionSettingsChange(
       ? withSharedPersistenceLease
       : async <T>(_scope: string, work: () => Promise<T>): Promise<T> => work()
     const commit = async () => {
-    const settingsPatch = opts.settingsPatch || {}
+    const settingsPatch = normalizeIdentityVolumeFields(opts.settingsPatch || {})
     const redis = getRedisClient()
     const sharedLockToken = typeof getRedisBackend === "function" && getRedisBackend() === "redis-network"
       ? await acquireSharedSettingsCommitLock(redis, id)
@@ -315,7 +373,9 @@ export async function applyMainConnectionSettingsChange(
     // deep-merging the nested settings envelope against the newest row keeps
     // sibling strategy/coordination fields from being reset by the later save.
     current = (await getConnection(id).catch(() => null)) || before
-    const effectiveConnectionPatch = { ...(opts.connectionPatch || {}) }
+    const effectiveConnectionPatch = normalizeIdentityVolumeFields({
+      ...(opts.connectionPatch || {}),
+    })
     if (effectiveConnectionPatch.connection_settings !== undefined) {
       const parseSettings = (value: unknown): Record<string, any> => {
         if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, any>
@@ -352,7 +412,10 @@ export async function applyMainConnectionSettingsChange(
 
     for (const related of opts.relatedHashPatches || []) {
       if (!related?.key || Object.keys(related.patch || {}).length === 0) continue
-      await writeOrBundle(related.key, stringifyHashPatch(related.patch))
+      await writeOrBundle(
+        related.key,
+        stringifyHashPatch(normalizeIdentityVolumeFields(related.patch)),
+      )
     }
 
     // A state switch and all of its dependent settings hashes are committed in
@@ -375,21 +438,26 @@ export async function applyMainConnectionSettingsChange(
 
     for (const additional of opts.additionalSettingsPatches || []) {
       if (!additional?.settingsKey || Object.keys(additional.settingsPatch || {}).length === 0) continue
+      const normalizedAdditionalPatch = normalizeIdentityVolumeFields(
+        additional.settingsPatch,
+      )
       if (stateGuardedBundle) {
-        const hashPatch = stringifyHashPatch(additional.settingsPatch)
+        const hashPatch = stringifyHashPatch(normalizedAdditionalPatch)
         await writeOrBundle(`settings:${additional.settingsKey}`, hashPatch)
         if (additional.mirrorSettingsKey !== false && !additional.settingsKey.startsWith("settings:")) {
           await writeOrBundle(`settings:settings:${additional.settingsKey}`, hashPatch)
         }
       } else {
-        await setSettings(additional.settingsKey, additional.settingsPatch)
+        await setSettings(additional.settingsKey, normalizedAdditionalPatch)
         if (additional.mirrorSettingsKey !== false && !additional.settingsKey.startsWith("settings:")) {
-          await setSettings(`settings:${additional.settingsKey}`, additional.settingsPatch).catch(() => undefined)
+          await setSettings(`settings:${additional.settingsKey}`, normalizedAdditionalPatch).catch(() => undefined)
         }
       }
     }
 
-    const tradeEngineStatePatch = opts.tradeEngineStatePatch || {}
+    const tradeEngineStatePatch = normalizeIdentityVolumeFields(
+      opts.tradeEngineStatePatch || {},
+    )
     if (Object.keys(tradeEngineStatePatch).length > 0) {
       const { buildProgressionScope } = await import("@/lib/progression-scope")
       const engineType = String((after as any).engine_type || (after as any).engineType || "main")

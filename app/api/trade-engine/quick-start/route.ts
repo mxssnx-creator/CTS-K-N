@@ -1,4 +1,9 @@
-import { DEFAULT_VOLUME_STEP_RATIO } from "@/lib/constants"
+import {
+  DEFAULT_VOLUME_STEP_RATIO,
+  MAX_VOLUME_STEP_RATIO,
+  MIN_VOLUME_STEP_RATIO,
+  normalizeIdentityVolumeFactor,
+} from "@/lib/constants"
 import { NextResponse } from "next/server"
 import { getAllConnections, getConnection, initRedis, updateConnectionState, setSettings, getSettings, getRedisClient,
   buildMainConnectionEnableUpdate, withSharedPersistenceLease } from "@/lib/redis-db"
@@ -205,6 +210,7 @@ const QUICKSTART_ZERO_COUNTERS: Record<string, string> = {
   indications_active_advanced_count: "0",
   indications_optimal_count: "0",
   indications_auto_count: "0",
+  indications_signal_count: "0",
   indications_trend_count: "0",
   strategies_count: "0",
   strategies_base_total: "0",
@@ -721,27 +727,45 @@ async function handlePost(request: Request) {
      // Step 3: QuickStart must assign + enable connection flow
      console.log(`${LOG_PREFIX}: [3/4] Updating connection state...`)
      
-     const resolvedLiveVolumeFactor = stringifySettingValue(resolveQuickStartValue(
-       body,
-       existingQuickStartSettings,
-       ["volume_factor_live", "live_volume_factor", "liveVolumeFactor"],
-       ["volume_factor_live", "live_volume_factor", "liveVolumeFactor"],
-       QUICKSTART_LIVE_VOLUME_FACTOR,
+     const resolvedLiveVolumeFactor = String(normalizeIdentityVolumeFactor(
+       resolveQuickStartValue(
+         body,
+         existingQuickStartSettings,
+         ["volume_factor_live", "live_volume_factor", "liveVolumeFactor"],
+         ["volume_factor_live", "live_volume_factor", "liveVolumeFactor"],
+         QUICKSTART_LIVE_VOLUME_FACTOR,
+       ),
      ))
-     const resolvedPresetVolumeFactor = stringifySettingValue(resolveQuickStartValue(
-       body,
-       existingQuickStartSettings,
-       ["volume_factor_preset", "preset_volume_factor", "presetVolumeFactor"],
-       ["volume_factor_preset", "preset_volume_factor", "presetVolumeFactor"],
-       "1.0",
+     const resolvedPresetVolumeFactor = String(normalizeIdentityVolumeFactor(
+       resolveQuickStartValue(
+         body,
+         existingQuickStartSettings,
+         ["volume_factor_preset", "preset_volume_factor", "presetVolumeFactor"],
+         ["volume_factor_preset", "preset_volume_factor", "presetVolumeFactor"],
+         "1.0",
+       ),
      ))
-     const resolvedVolumeStepRatio = stringifySettingValue(resolveQuickStartValue(
+     const resolvedSignalVolumeFactor = String(normalizeIdentityVolumeFactor(
+       resolveQuickStartValue(
+         body,
+         existingQuickStartSettings,
+         ["volume_factor_signal", "signal_volume_factor", "signalVolumeFactor"],
+         ["volume_factor_signal", "signal_volume_factor", "signalVolumeFactor"],
+         "1.0",
+       ),
+     ))
+     const rawVolumeStepRatio = Number(resolveQuickStartValue(
        body,
        existingQuickStartSettings,
        ["volume_step_ratio", "volumeStepRatio"],
        ["volume_step_ratio", "volumeStepRatio"],
        String(DEFAULT_VOLUME_STEP_RATIO),
      ))
+     const resolvedVolumeStepRatio = String(
+       Number.isFinite(rawVolumeStepRatio)
+         ? Math.max(MIN_VOLUME_STEP_RATIO, Math.min(MAX_VOLUME_STEP_RATIO, rawVolumeStepRatio))
+         : DEFAULT_VOLUME_STEP_RATIO,
+     )
      const resolvedBaseProfitFactor = stringifySettingValue(resolveQuickStartValue(
        body,
        existingQuickStartSettings,
@@ -885,6 +909,8 @@ async function handlePost(request: Request) {
        volume_factor_live: resolvedLiveVolumeFactor,
        preset_volume_factor: resolvedPresetVolumeFactor,
        volume_factor_preset: resolvedPresetVolumeFactor,
+       signal_volume_factor: resolvedSignalVolumeFactor,
+       volume_factor_signal: resolvedSignalVolumeFactor,
        volume_step_ratio: resolvedVolumeStepRatio,
        // QuickStart uses the minimum live volume factor so live-trade smoke tests
        // place only exchange-minimum orders when credentials are available.
@@ -911,6 +937,8 @@ async function handlePost(request: Request) {
       volume_step_ratio: resolvedVolumeStepRatio,
       volume_factor_preset: resolvedPresetVolumeFactor,
       preset_volume_factor: resolvedPresetVolumeFactor,
+      volume_factor_signal: resolvedSignalVolumeFactor,
+      signal_volume_factor: resolvedSignalVolumeFactor,
       // Symbol order/count
       symbol_order: requestedSymbolOrder,
       symbol_count: effectiveSymbolCount,
@@ -1516,8 +1544,10 @@ async function handlePost(request: Request) {
       directionIndications,
       moveIndications,
       activeIndications,
+      activeAdvancedIndications,
       optimalIndications,
       autoIndications,
+      signalIndications,
       trendIndications,
       stratBase,
       stratMain,
@@ -1535,7 +1565,9 @@ async function handlePost(request: Request) {
       basePseudoDir,
       basePseudoMove,
       basePseudoActive,
+      basePseudoActiveAdvanced,
       basePseudoOptimal,
+      basePseudoSignal,
       basePseudoTrend,
     ] = await Promise.all([
       getSettings(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string,unknown>)),
@@ -1546,8 +1578,10 @@ async function handlePost(request: Request) {
       client.get(`indications:${connectionId}:direction:count`).catch(() => null),
       client.get(`indications:${connectionId}:move:count`).catch(() => null),
       client.get(`indications:${connectionId}:active:count`).catch(() => null),
+      client.get(`indications:${connectionId}:active_advanced:count`).catch(() => null),
       client.get(`indications:${connectionId}:optimal:count`).catch(() => null),
       client.get(`indications:${connectionId}:auto:count`).catch(() => null),
+      client.get(`indications:${connectionId}:signal:count`).catch(() => null),
       client.get(`indications:${connectionId}:trend:count`).catch(() => null),
       client.get(`strategies:${connectionId}:base:count`).catch(() => null),
       client.get(`strategies:${connectionId}:main:count`).catch(() => null),
@@ -1566,7 +1600,9 @@ async function handlePost(request: Request) {
       client.scard(`base_pseudo:${connectionId}:direction`).catch(() => 0),
       client.scard(`base_pseudo:${connectionId}:move`).catch(() => 0),
       client.scard(`base_pseudo:${connectionId}:active`).catch(() => 0),
+      client.scard(`base_pseudo:${connectionId}:active_advanced`).catch(() => 0),
       client.scard(`base_pseudo:${connectionId}:optimal`).catch(() => 0),
+      client.scard(`base_pseudo:${connectionId}:signal`).catch(() => 0),
       client.scard(`base_pseudo:${connectionId}:trend`).catch(() => 0),
     ])
 
@@ -1576,8 +1612,10 @@ async function handlePost(request: Request) {
     const dirInd  = toNumber(directionIndications)
     const moveInd = toNumber(moveIndications)
     const actInd  = toNumber(activeIndications)
+    const actAdvInd = toNumber(activeAdvancedIndications)
     const optInd  = toNumber(optimalIndications)
     const autoInd = toNumber(autoIndications)
+    const signalInd = toNumber(signalIndications)
     const trendInd = toNumber(trendIndications)
     const cycleDuration = Number(
       safeEngineState?.last_cycle_duration ||
@@ -1609,10 +1647,13 @@ async function handlePost(request: Request) {
         direction: dirInd,
         move: moveInd,
         active: actInd,
+        activeAdvanced: actAdvInd,
+        active_advanced: actAdvInd,
         optimal: optInd,
         auto: autoInd,
+        signal: signalInd,
         trend: trendInd,
-        total: indCount || dirInd + moveInd + actInd + optInd + autoInd + trendInd,
+        total: indCount || dirInd + moveInd + actInd + actAdvInd + optInd + autoInd + signalInd + trendInd,
       },
       strategyCounts,
       strategyEvaluated,
@@ -1622,7 +1663,10 @@ async function handlePost(request: Request) {
           direction: basePseudoDir,
           move: basePseudoMove,
           active: basePseudoActive,
+          activeAdvanced: basePseudoActiveAdvanced,
+          active_advanced: basePseudoActiveAdvanced,
           optimal: basePseudoOptimal,
+          signal: basePseudoSignal,
           trend: basePseudoTrend,
         },
         main: mainPseudoPositions,
@@ -1639,7 +1683,7 @@ async function handlePost(request: Request) {
     
     console.log(`${LOG_PREFIX}: === COMPREHENSIVE STATS ===`)
     console.log(`${LOG_PREFIX}: Symbols: ${symbols.length}, Prehistoric: ${prehistoricSymbols}`)
-    console.log(`${LOG_PREFIX}: Indications - Direction: ${dirInd}, Move: ${moveInd}, Active: ${actInd}, Optimal: ${optInd}, Auto: ${autoInd}, Trend: ${trendInd}`)
+    console.log(`${LOG_PREFIX}: Indications - Direction: ${dirInd}, Move: ${moveInd}, Active: ${actInd}, Active Advanced: ${actAdvInd}, Optimal: ${optInd}, Auto: ${autoInd}, Signal: ${signalInd}, Trend: ${trendInd}`)
     console.log(`${LOG_PREFIX}: Pseudo Positions - Base: ${basePseudoPositions}, Main: ${mainPseudoPositions}, Real: ${realPseudoPositions}`)
     console.log(`${LOG_PREFIX}: Live Positions: ${livePositionsCount}, Cycle Duration: ${cycleDuration}ms`)
     invalidateTradeEngineStatusCache()

@@ -69,8 +69,9 @@ export interface CoordinationSettings {
   }
   // ── Block-strategy: completed-position block count × vol-ratio coordination ─
   // Knobs that flow into the Block variant's runtime size scaling.
-  // Each valid Block count is added independently from its position basis:
-  //   addVolume = positionBaseVolume × (blockCount × blockVolumeRatio)
+  // Each valid Block count owns an absolute target from the general basis:
+  //   targetVolume = generalVolume × (1 + blockCount × blockVolumeRatio)
+  // Physical orders submit only the still-missing delta to that target.
   // for every blockCount in [1..blockMaxStack]. pause count is derived as
   // round(blockCount × blockPauseCountRatio).
   blockVolumeRatio: number // 0.25..3.0 per spec band (UI clamps; engine re-clamps)
@@ -793,7 +794,7 @@ export function StrategyCoordinationSection({
 
       {/* ── Block tuning card ────────────────────────────────────────
           Completed-position Block coordination knobs:
-            • Volume-ratio slider → independent add-on from each position basis
+            • Volume-ratio slider → absolute target from the general volume
             • Max-stack stepper   → number of independent block counts
             • Pause ratio         → post-success pause window per block count */}
       <Card>
@@ -804,13 +805,14 @@ export function StrategyCoordinationSection({
                 Block — Completed Position Count × Vol-Ratio
               </CardTitle>
               <CardDescription className="text-xs">
-                Calculates every valid Block add-on independently from that
-                position&apos;s current volume basis. The add-on follows{" "}
+                Calculates every valid Block target independently from the
+                immutable general position volume. The total target follows{" "}
                 <span className="font-mono text-[11px]">
-                  add = base × (block count × ratio)
+                  total = base + ((base × ratio) × block count)
                 </span>{" "}
-                and every block count up to <strong>max stack</strong> is
-                processed independently, so coverage is bounded and parallel.
+                while each order sends only the missing delta. Every count up
+                to <strong>max stack</strong> keeps independent evaluation,
+                result and pause state.
               </CardDescription>
             </div>
             <Badge
@@ -828,10 +830,15 @@ export function StrategyCoordinationSection({
               <div>
                 <Label className="text-sm font-semibold">Volume Ratio</Label>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  Ratio applied independently to each valid Block count and
-                  that position&apos;s own current volume basis. The calculated
-                  quantity is added to the open position. Engine clamps this
+                  Additive step applied to the immutable general volume. Earlier
+                  confirmed Block fills are subtracted from the next target, so
+                  valid Counts never compound or over-add. Engine clamps this
                   setting to 0.25–3.0 even if the UI is bypassed.
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground leading-relaxed">
+                  Regular ladders use Base-derived Sets only, never Pos-Count
+                  Sets. Active Real counts remain separate and include active
+                  Pos-Count positions for the same symbol and direction.
                 </p>
               </div>
               <Badge variant="outline" className="text-[10px] tabular-nums">
@@ -866,7 +873,7 @@ export function StrategyCoordinationSection({
                       block={n}
                     </span>
                     <span className="font-mono tabular-nums font-semibold">
-                      +{mul.toFixed(2)}× base
+                      {(1 + mul).toFixed(2)}× total
                     </span>
                   </div>
                 )

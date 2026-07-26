@@ -65,6 +65,34 @@ describe('Progression State Manager - Stability Tests', () => {
   })
 
   describe('Scoped progression regression guards', () => {
+    test('preserves Signal counters through the canonical scoped state reader', async () => {
+      const { getRedisClient } = await import('@/lib/redis-db')
+      const { ProgressionStateManager } = await import('@/lib/progression-state-manager')
+      const { buildProgressionScope } = await import('@/lib/progression-scope')
+      const connectionId = `progression-signal-${Date.now()}`
+      const client = getRedisClient()
+      const scope = buildProgressionScope(connectionId, 'main')
+
+      try {
+        await client.del(scope.progressionKey, scope.legacyProgressionKey)
+        await client.hset(scope.progressionKey, {
+          connection_id: connectionId,
+          engine_type: 'main',
+          migrated_from_unscoped: 'true',
+          indications_active_advanced_count: '4',
+          indications_signal_count: '7',
+          indications_trend_count: '3',
+        })
+
+        const state = await ProgressionStateManager.getProgressionState(connectionId, 'main')
+        expect(state.indicationsActiveAdvancedCount).toBe(4)
+        expect(state.indicationsSignalCount).toBe(7)
+        expect(state.indicationsTrendCount).toBe(3)
+      } finally {
+        await client.del(scope.progressionKey, scope.legacyProgressionKey)
+      }
+    })
+
     test('stats route keeps scoped progression namespaces aligned and stale fallbacks isolated', () => {
       const fs = require('fs')
       const path = require('path')
@@ -102,6 +130,7 @@ describe('Progression State Manager - Stability Tests', () => {
       const routeSource = fs.readFileSync(path.join(process.cwd(), 'app/api/connections/progression/[id]/route.ts'), 'utf8')
       const writesSource = fs.readFileSync(path.join(process.cwd(), 'lib/trade-engine/progression-writes.ts'), 'utf8')
       const managerSource = fs.readFileSync(path.join(process.cwd(), 'lib/trade-engine/engine-manager.ts'), 'utf8')
+      const progressionSource = fs.readFileSync(path.join(process.cwd(), 'lib/progression-state-manager.ts'), 'utf8')
       const recoordinatorSource = fs.readFileSync(path.join(process.cwd(), 'lib/connection-recoordinator.ts'), 'utf8')
 
       expect(routeSource).toContain('getSettings(scope.engineProgressionKey)')
@@ -115,6 +144,8 @@ describe('Progression State Manager - Stability Tests', () => {
       expect(writesSource).toContain('client.del(legacyKey)')
 
       expect(managerSource).toContain('setSettings(legacyKey, progressionData)')
+      expect(progressionSource).toContain('"indications_signal_count"')
+      expect(progressionSource).toContain('indicationsSignalCount: parseInt(data.indications_signal_count || "0", 10)')
       expect(recoordinatorSource).toContain('writeOrBundle(scope.tradeEngineStateKey, hashPatch)')
       expect(recoordinatorSource).toContain('client.hset(scope.tradeEngineStateKey, marker)')
       expect(recoordinatorSource).toContain('client.hset(scope.progressionKey')

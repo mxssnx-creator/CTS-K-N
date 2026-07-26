@@ -11,6 +11,11 @@ export const maxDuration = 30
 
 const API_VERSION = API_VERSIONS.connections
 
+function identityVolumeFactor(value: unknown): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(10, parsed)) : 1
+}
+
 export async function GET(request: NextRequest) {
   try {
     // Set explicit cache-control headers to prevent caching
@@ -116,6 +121,25 @@ export async function POST(request: Request) {
     const isBingX = normalizedExchange.includes("bingx")
     const connectionMethod = body.connection_method || (isBingX ? "library" : "rest")
     const connectionLibrary = body.connection_library || (isBingX && connectionMethod === "library" ? "sdk" : "native")
+    const requestedSettings =
+      body.connection_settings && typeof body.connection_settings === "object" && !Array.isArray(body.connection_settings)
+        ? body.connection_settings
+        : {}
+    const liveVolumeFactor = identityVolumeFactor(
+      requestedSettings.volume_factor_live ??
+      requestedSettings.live_volume_factor ??
+      requestedSettings.baseVolumeFactorLive,
+    )
+    const presetVolumeFactor = identityVolumeFactor(
+      requestedSettings.volume_factor_preset ??
+      requestedSettings.preset_volume_factor ??
+      requestedSettings.baseVolumeFactorPreset,
+    )
+    const signalVolumeFactor = identityVolumeFactor(
+      requestedSettings.volume_factor_signal ??
+      requestedSettings.signal_volume_factor ??
+      requestedSettings.baseVolumeFactorSignal,
+    )
 
     // Create connection object with all required fields
     const connection = {
@@ -142,6 +166,22 @@ export async function POST(request: Request) {
       is_predefined: false, // User-created, not predefined template
       is_live_trade: false,
       is_preset_trade: false,
+      // Base is an immutable coordination identity. Main/Preset/Signal have
+      // their own independently persisted channel factors below.
+      volume_factor: 1,
+      live_volume_factor: liveVolumeFactor,
+      preset_volume_factor: presetVolumeFactor,
+      signal_volume_factor: signalVolumeFactor,
+      connection_settings: {
+        ...requestedSettings,
+        baseVolumeFactor: 1,
+        baseVolumeFactorLive: liveVolumeFactor,
+        baseVolumeFactorPreset: presetVolumeFactor,
+        baseVolumeFactorSignal: signalVolumeFactor,
+        volume_factor_live: liveVolumeFactor,
+        volume_factor_preset: presetVolumeFactor,
+        volume_factor_signal: signalVolumeFactor,
+      },
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }

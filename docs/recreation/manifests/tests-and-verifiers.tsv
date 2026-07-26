@@ -22,6 +22,7 @@ operator-tool	scripts/validate-comprehensive.mjs
 operator-tool	scripts/verify-migration-status.mjs
 operator-tool	scripts/verify-recreation-manifests.mjs
 operator-tool	scripts/verify-redis-endpoint.mjs
+operator-tool	scripts/verify-signal-sources.ts
 operator-tool	scripts/verify-source-syntax.mjs
 operator-tool	scripts/verify-volatile-cleanup.mjs
 performance	scripts/stress-bingx-public-32.mjs
@@ -56,12 +57,14 @@ unit	__tests__/unit/exchange-connector-factory.test.ts
 unit	__tests__/unit/exchange-force-simulated.test.ts
 unit	__tests__/unit/historic-candle-window.test.ts
 unit	__tests__/unit/indication-configuration-counts.test.ts
+unit	__tests__/unit/indication-connection-selection.test.ts
 unit	__tests__/unit/inline-local-redis.test.ts
 unit	__tests__/unit/install-deployment-contract.test.ts
 unit	__tests__/unit/live-order-coordination.test.ts
 unit	__tests__/unit/live-pos-count-target.test.ts
 unit	__tests__/unit/live-position-actions.test.ts
 unit	__tests__/unit/live-position-lineage-index.test.ts
+unit	__tests__/unit/live-position-read-model.test.ts
 unit	__tests__/unit/live-position-stats-sources.test.ts
 unit	__tests__/unit/live-position-status.test.ts
 unit	__tests__/unit/live-positions-pnl.test.ts
@@ -82,6 +85,7 @@ unit	__tests__/unit/performance-profiler.test.ts
 unit	__tests__/unit/pnl-stats-route.test.ts
 unit	__tests__/unit/position-flow-calculations.test.ts
 unit	__tests__/unit/preset-optimizer.test.ts
+unit	__tests__/unit/preset-type-config.test.ts
 unit	__tests__/unit/production-continuity.test.ts
 unit	__tests__/unit/progression-order-aggregation.test.ts
 unit	__tests__/unit/progression-scope.test.ts
@@ -102,6 +106,10 @@ unit	__tests__/unit/security-hardening-encryption.test.ts
 unit	__tests__/unit/settings-continuity.test.ts
 unit	__tests__/unit/settings-hot-reload.test.ts
 unit	__tests__/unit/settings-propagation.test.ts
+unit	__tests__/unit/signal-analytics.test.ts
+unit	__tests__/unit/signal-indication.test.ts
+unit	__tests__/unit/signal-source-registry.test.ts
+unit	__tests__/unit/signal-trailing.test.ts
 unit	__tests__/unit/startup-coordinator-cleanup.test.ts
 unit	__tests__/unit/startup-global-liveness.test.ts
 unit	__tests__/unit/state-switch-coordination.test.ts
@@ -125,3 +133,4 @@ unit	__tests__/unit/trailing-dca-strategy.test.ts
 unit	__tests__/unit/trend-indication.test.ts
 unit	__tests__/unit/trend-wiring.test.ts
 unit	__tests__/unit/volume-calculator-variants.test.ts
+unit	__tests__/unit/volume-identity-systemwide.test.ts

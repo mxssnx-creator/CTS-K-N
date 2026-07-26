@@ -1,6 +1,11 @@
-import { v4 as uuidv4 } from "uuid"
 import type { StrategyConfig, PseudoPosition, MainStrategyType, AdjustmentType } from "./types"
 import { buildStopLossRatios } from "@/lib/stoploss-ratio-range"
+import { calculateBlockVolumeMultiplier } from "@/lib/block-count-state"
+
+function strategyId(): string {
+  return globalThis.crypto?.randomUUID?.() ??
+    `strategy-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+}
 
 export interface StrategyResult {
   id: string
@@ -32,21 +37,17 @@ export interface StrategyType {
   config: StrategyConfig
 }
 
-interface BlockAdjustmentState {
-  blockSize: number
-  isAdjusted: boolean // true = using increased volume, false = using standard volume
-  lastCheckProfit: number // profit factor from last check
-  isEnabled: boolean // true = block strategy enabled, false = disabled
-  performanceHistory: {
-    withBlock: number[] // PnL values with block strategy
-    withoutBlock: number[] // PnL values without block strategy
-  }
-}
-
+/**
+ * Read-only/demo strategy projection.
+ *
+ * Production coordination is owned by StrategyCoordinator. This class keeps
+ * the Strategies demo endpoint contract-shaped, but deliberately shares the
+ * same volume invariants: normal Base is identity 1 and an enabled Block uses
+ * its absolute count target immediately without a private bootstrap state.
+ */
 export class StrategyEngine {
   private strategies: Map<string, StrategyResult> = new Map()
   private pseudoPositions: Map<string, PseudoPosition[]> = new Map()
-  private blockAdjustmentStates: Map<number, BlockAdjustmentState> = new Map()
 
   calculateBaseStrategy(
     pseudoPositions: PseudoPosition[],
@@ -59,7 +60,7 @@ export class StrategyEngine {
     // Check if meets minimum criteria (0.4)
     const isValid = avgProfitFactor >= 0.4
 
-    let adjustedVolumeFactor = config.volume_factor
+    let adjustedVolumeFactor = 1
     const appliedAdjustments: AdjustmentType[] = []
 
     if (applyAdjustments && config.adjustments) {
@@ -71,12 +72,12 @@ export class StrategyEngine {
           config.adjustments.block.adjustmentRatio,
         )
         appliedAdjustments.push("block")
-      }
-
-      if (config.adjustments.dca?.enabled) {
+      } else if (config.adjustments.dca?.enabled) {
+        // Block and DCA are independent physical/result lanes in production.
+        // This legacy single-result projection cannot represent two lanes, so
+        // never multiply them together when an imported config enables both.
         adjustedVolumeFactor = this.applyDCAdjustment(
           lastPositions,
-          adjustedVolumeFactor,
           config.adjustments.dca.levels,
         )
         appliedAdjustments.push("dca")
@@ -84,7 +85,7 @@ export class StrategyEngine {
     }
 
     return {
-      id: uuidv4(),
+      id: strategyId(),
       name: `Base Strategy (Last ${config.last_positions_count})${this.getAdjustmentSuffix(appliedAdjustments)}`,
       mainType: "base",
       adjustments: appliedAdjustments,
@@ -115,7 +116,7 @@ export class StrategyEngine {
     const overallAvg = this.calculateAverageProfitFactor(mainPositions)
     const isValid = overallAvg > 0
 
-    let adjustedVolumeFactor = config.volume_factor
+    let adjustedVolumeFactor = 1
     const appliedAdjustments: AdjustmentType[] = []
 
     if (applyAdjustments && config.adjustments) {
@@ -127,12 +128,10 @@ export class StrategyEngine {
           config.adjustments.block.adjustmentRatio,
         )
         appliedAdjustments.push("block")
-      }
-
-      if (config.adjustments.dca?.enabled) {
+      } else if (config.adjustments.dca?.enabled) {
+        // Keep legacy/demo output to one independent adjustment lane.
         adjustedVolumeFactor = this.applyDCAdjustment(
           mainPositions,
-          adjustedVolumeFactor,
           config.adjustments.dca.levels,
         )
         appliedAdjustments.push("dca")
@@ -140,7 +139,7 @@ export class StrategyEngine {
     }
 
     return {
-      id: uuidv4(),
+      id: strategyId(),
       name: `Main Strategy (${config.main_positions_count} positions)${this.getAdjustmentSuffix(appliedAdjustments)}`,
       mainType: "main",
       adjustments: appliedAdjustments,
@@ -172,7 +171,7 @@ export class StrategyEngine {
 
     const isValid = (avg15 > 0.4 || avg25 > 0.4) && avgProfitFactor >= 0.4
 
-    let adjustedVolumeFactor = config.volume_factor
+    let adjustedVolumeFactor = 1
     const appliedAdjustments: AdjustmentType[] = []
 
     if (applyAdjustments && config.adjustments) {
@@ -184,12 +183,10 @@ export class StrategyEngine {
           config.adjustments.block.adjustmentRatio,
         )
         appliedAdjustments.push("block")
-      }
-
-      if (config.adjustments.dca?.enabled) {
+      } else if (config.adjustments.dca?.enabled) {
+        // Keep legacy/demo output to one independent adjustment lane.
         adjustedVolumeFactor = this.applyDCAdjustment(
           lastPositions,
-          adjustedVolumeFactor,
           config.adjustments.dca.levels,
         )
         appliedAdjustments.push("dca")
@@ -197,7 +194,7 @@ export class StrategyEngine {
     }
 
     return {
-      id: uuidv4(),
+      id: strategyId(),
       name: `Real Strategy (${positionCount} positions)${this.getAdjustmentSuffix(appliedAdjustments)}`,
       mainType: "real",
       adjustments: appliedAdjustments,
@@ -213,71 +210,28 @@ export class StrategyEngine {
   }
 
   private applyBlockAdjustment(
-    pseudoPositions: PseudoPosition[],
-    config: StrategyConfig,
-    blockSize: number,
+    _pseudoPositions: PseudoPosition[],
+    _config: StrategyConfig,
+    blockCount: number,
     blockAdjustmentRatio = 1,
   ): number {
-    const allBlocks = this.groupPositionsIntoBlocks(pseudoPositions, blockSize)
-    const completeBlocks = allBlocks.filter((block) => block.length === blockSize)
-
-    if (!this.blockAdjustmentStates.has(blockSize)) {
-      this.blockAdjustmentStates.set(blockSize, {
-        blockSize,
-        isAdjusted: false,
-        lastCheckProfit: 0,
-        isEnabled: true,
-        performanceHistory: {
-          withBlock: [],
-          withoutBlock: [],
-        },
-      })
-    }
-
-    const state = this.blockAdjustmentStates.get(blockSize)!
-
-    if (!state.isEnabled) {
-      return config.volume_factor
-    }
-
-    if (completeBlocks.length > 0) {
-      const lastCompleteBlock = completeBlocks[completeBlocks.length - 1]
-      const lastBlockProfit = this.calculateAverageProfitFactor(lastCompleteBlock)
-
-      if (state.isAdjusted) {
-        if (lastBlockProfit >= 0) {
-          state.isAdjusted = false
-          state.lastCheckProfit = lastBlockProfit
-        } else {
-          state.lastCheckProfit = lastBlockProfit
-        }
-      } else {
-        if (lastBlockProfit < 0) {
-          state.isAdjusted = true
-          state.lastCheckProfit = lastBlockProfit
-        } else {
-          state.lastCheckProfit = lastBlockProfit
-        }
-      }
-    }
-
-    // This ratio will be multiplied with base position cost at Exchange level
-    const adjustedBlocksCount = Array.from(this.blockAdjustmentStates.values()).filter(
-      (s) => s.isAdjusted && s.isEnabled,
-    ).length
-
-    return config.volume_factor * (1 + adjustedBlocksCount * blockAdjustmentRatio)
+    // Demo projection mirrors the production cold-start contract:
+    // Base 1 + (Base 1 × ratio × count). There is no private state machine and
+    // no dependency on a preceding negative block. Mature PF no-regression is
+    // evaluated by StrategyCoordinator against realised per-lane windows.
+    return calculateBlockVolumeMultiplier(blockCount, blockAdjustmentRatio)
   }
 
-  private applyDCAdjustment(positions: PseudoPosition[], currentVolumeFactor: number, dcaLevels: number): number {
+  private applyDCAdjustment(positions: PseudoPosition[], _dcaLevels: number): number {
     const lossPositions = positions.filter((p) => p.profit_factor < 0)
 
     if (lossPositions.length > 0) {
-      // Return ratio adjustment factor (not volume)
-      return currentVolumeFactor * (1 + lossPositions.length / positions.length)
+      // DCA is its own identity-based lane. It must never compound a Block,
+      // Main, Preset, Signal, or other adjustment factor.
+      return 1 + lossPositions.length / positions.length
     }
 
-    return currentVolumeFactor
+    return 1
   }
 
   private getAdjustmentSuffix(adjustments: AdjustmentType[]): string {
@@ -288,8 +242,8 @@ export class StrategyEngine {
   generateAllStrategies(
     pseudoPositions: PseudoPosition[],
     blockAdjustmentRatio = 1,
-    blockAutoDisableEnabled = true,
-    blockAutoDisableComparisonWindow = 50,
+    _blockAutoDisableEnabled = true,
+    _blockAutoDisableComparisonWindow = 50,
   ): StrategyResult[] {
     const strategies: StrategyResult[] = []
 
@@ -329,21 +283,6 @@ export class StrategyEngine {
         strategies.push(this.calculateMainStrategy(pseudoPositions, configWithDCA, true))
       })
 
-      const configWithBoth: StrategyConfig = {
-        ...config,
-        adjustments: {
-          block: {
-            enabled: true,
-            blockSize: 2,
-            adjustmentRatio: blockAdjustmentRatio,
-          },
-          dca: {
-            enabled: true,
-            levels: 3,
-          },
-        },
-      }
-      strategies.push(this.calculateBaseStrategy(pseudoPositions, configWithBoth, true))
     })
 
     return strategies.slice(0, 150)
@@ -352,14 +291,6 @@ export class StrategyEngine {
   private calculateAverageProfitFactor(positions: PseudoPosition[]): number {
     if (positions.length === 0) return 0
     return positions.reduce((sum, p) => sum + p.profit_factor, 0) / positions.length
-  }
-
-  private groupPositionsIntoBlocks(positions: PseudoPosition[], blockSize: number): PseudoPosition[][] {
-    const blocks: PseudoPosition[][] = []
-    for (let i = 0; i < positions.length; i += blockSize) {
-      blocks.push(positions.slice(i, i + blockSize))
-    }
-    return blocks
   }
 
   private calculateStrategyStats(positions: PseudoPosition[], config: StrategyConfig) {
@@ -412,57 +343,6 @@ export class StrategyEngine {
     })
 
     return drawdownHours
-  }
-
-  private calculatePnLMoneySum(positions: PseudoPosition[]): number {
-    if (positions.length === 0) return 0
-    return positions.reduce((sum, p) => sum + p.profit_factor, 0)
-  }
-
-  private shouldDisableBlockStrategy(blockSize: number, positions: PseudoPosition[], comparisonWindow = 50): boolean {
-    const state = this.blockAdjustmentStates.get(blockSize)
-    if (!state) return false
-
-    const recentPositions = positions.slice(-comparisonWindow)
-    if (recentPositions.length < Math.min(20, comparisonWindow)) {
-      return false
-    }
-
-    const allBlocks = this.groupPositionsIntoBlocks(recentPositions, blockSize)
-    const completeBlocks = allBlocks.filter((block) => block.length === blockSize)
-
-    if (completeBlocks.length < 2) return false
-
-    const withBlockPnL: number[] = []
-    const withoutBlockPnL: number[] = []
-
-    completeBlocks.forEach((block, blockIndex) => {
-      const blockPnL = this.calculatePnLMoneySum(block)
-
-      if (blockIndex > 0) {
-        const previousBlockProfit = this.calculateAverageProfitFactor(completeBlocks[blockIndex - 1])
-        if (previousBlockProfit < 0) {
-          withBlockPnL.push(blockPnL)
-        } else {
-          withoutBlockPnL.push(blockPnL)
-        }
-      } else {
-        withoutBlockPnL.push(blockPnL)
-      }
-    })
-
-    if (withBlockPnL.length < 2 || withoutBlockPnL.length < 2) {
-      return false
-    }
-
-    const avgWithBlock = withBlockPnL.reduce((sum, pnl) => sum + pnl, 0) / withBlockPnL.length
-    const avgWithoutBlock = withoutBlockPnL.reduce((sum, pnl) => sum + pnl, 0) / withoutBlockPnL.length
-
-    console.log(
-      `[v0] Block size ${blockSize} comparison (last ${comparisonWindow} positions): WITH=${avgWithBlock.toFixed(4)}, WITHOUT=${avgWithoutBlock.toFixed(4)}`,
-    )
-
-    return avgWithBlock < avgWithoutBlock
   }
 
   validateStrategyForTrading(strategy: StrategyResult): boolean {

@@ -119,7 +119,7 @@ describe("Main Connections dashboard contracts", () => {
     const activeCard = read("components/dashboard/active-connection-card.tsx")
     const volumeRoute = read("app/api/settings/connections/[id]/volume/route.ts")
 
-    expect(activeCard).toContain("Number(details.live_volume_factor) || MIN_VOLUME_FACTOR")
+    expect(activeCard).toContain("normalizeIdentityVolumeFactor(details.live_volume_factor)")
     expect(activeCard).toContain("volumeSaveSequenceRef")
     expect(activeCard).toContain("setLiveVolumeFactor(previous)")
     expect(volumeRoute).toContain("const settingsVersion =")

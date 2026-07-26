@@ -19,7 +19,7 @@ import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } 
  *                              `connection_settings.profitFactorMin.{stage}`
  *                              via PATCH /settings (merged, not replaced)
  *
- *   • Volume Factor          — single slider 0.1 – 10 step 0.1 default 0.1
+ *   • Volume Factors         — Main + Signal sliders 1 – 10, default 1
  *                              persists into the canonical Redis fields
  *                              `live_volume_factor` via POST /volume
  *                              (same endpoint the dashboard volume panel
@@ -68,6 +68,7 @@ import {
   Boxes,
   Layers,
   TrendingUp,
+  Activity,
 } from "lucide-react"
 import { useExchange } from "@/lib/exchange-context"
 import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
@@ -264,9 +265,12 @@ export function QuickstartOptionsBar() {
   const [pfMin, setPfMin] = useState<ProfitFactorMin>(DEFAULT_PF_MIN)
   const pfMinRef = useRef<ProfitFactorMin>(DEFAULT_PF_MIN)
   const persistedPfMinRef = useRef<ProfitFactorMin>(DEFAULT_PF_MIN)
-  const [volumeFactor, setVolumeFactor] = useState<number>(0.1)
-  const volumeFactorRef = useRef(0.1)
-  const persistedVolumeFactorRef = useRef(0.1)
+  const [volumeFactor, setVolumeFactor] = useState<number>(1)
+  const volumeFactorRef = useRef(1)
+  const persistedVolumeFactorRef = useRef(1)
+  const [signalVolumeFactor, setSignalVolumeFactor] = useState<number>(1)
+  const signalVolumeFactorRef = useRef(1)
+  const persistedSignalVolumeFactorRef = useRef(1)
   const [minimalStepCount, setMinimalStepCount] = useState<number>(3)
   const [maxConcurrentTrades, setMaxConcurrentTrades] = useState<number>(10)
   const [blockEnabled, setBlockEnabled] = useState(true)
@@ -281,6 +285,7 @@ export function QuickstartOptionsBar() {
   // from a previous drag must not overwrite the thumb of a newer drag.
   const settingsDraftGenerationRef = useRef(0)
   const volumeSaveSequenceRef = useRef(0)
+  const signalVolumeSaveSequenceRef = useRef(0)
   const liveSaveSequenceRef = useRef(0)
 
   // Per-field save status — drives the inline chip. We track a single
@@ -406,6 +411,10 @@ export function QuickstartOptionsBar() {
         volumeFactorRef.current = hydratedVolume
         persistedVolumeFactorRef.current = hydratedVolume
         setVolumeFactor(hydratedVolume)
+        const hydratedSignalVolume = clampVf(data?.signal_volume_factor ?? 1)
+        signalVolumeFactorRef.current = hydratedSignalVolume
+        persistedSignalVolumeFactorRef.current = hydratedSignalVolume
+        setSignalVolumeFactor(hydratedSignalVolume)
       }
       if (sequence === hydrateSequenceRef.current) setHydratedConnectionId(cid)
     } catch (err) {
@@ -506,6 +515,14 @@ export function QuickstartOptionsBar() {
       volumeFactorRef.current = normalized
       persistedVolumeFactorRef.current = normalized
       setVolumeFactor(normalized)
+      applied = true
+    }
+    const signalFactor = Number(settings.signal_volume_factor ?? settings.volume_factor_signal)
+    if (Number.isFinite(signalFactor) && signalFactor > 0) {
+      const normalized = clampVf(signalFactor)
+      signalVolumeFactorRef.current = normalized
+      persistedSignalVolumeFactorRef.current = normalized
+      setSignalVolumeFactor(normalized)
       applied = true
     }
     return applied
@@ -630,6 +647,56 @@ export function QuickstartOptionsBar() {
     [cid, showSaved, showError],
   )
 
+  const saveSignalVolume = useCallback(
+    async (next: number) => {
+      if (!cid) return
+      const sequence = ++signalVolumeSaveSequenceRef.current
+      setSaveStatus("saving")
+      try {
+        const res = await fetch(`/api/settings/connections/${cid}/volume`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ signal_volume_factor: next }),
+        })
+        const data = await res.json().catch(() => ({} as any))
+        if (!res.ok || data?.success === false) throw new Error(data?.error || `HTTP ${res.status}`)
+        if (sequence !== signalVolumeSaveSequenceRef.current) return
+        const applied = Number(data?.signal_volume_factor)
+        const appliedValue = Number.isFinite(applied) ? clampVf(applied) : next
+        signalVolumeFactorRef.current = appliedValue
+        persistedSignalVolumeFactorRef.current = appliedValue
+        setSignalVolumeFactor(appliedValue)
+        showSaved()
+        if (typeof window !== "undefined") {
+          const settingsVersion = typeof data?.settingsVersion === "string" ? data.settingsVersion : undefined
+          const detail = {
+            connectionId: cid,
+            settings: {
+              signal_volume_factor: appliedValue,
+              volume_factor_signal: appliedValue,
+            },
+            settingsVersion,
+            recoordinationId: data?.recoordinationId ?? settingsVersion,
+            progressionEpoch: data?.progressionEpoch,
+          }
+          window.dispatchEvent(new CustomEvent("connection-settings-updated", { detail }))
+          if (settingsVersion) {
+            window.dispatchEvent(new CustomEvent("connection-settings-recoordination-complete", {
+              detail: { ...detail, recoordination: data?.recoordination },
+            }))
+          }
+        }
+      } catch (err) {
+        if (sequence !== signalVolumeSaveSequenceRef.current) return
+        signalVolumeFactorRef.current = persistedSignalVolumeFactorRef.current
+        setSignalVolumeFactor(persistedSignalVolumeFactorRef.current)
+        console.error("[v0] [QSOptions] POST Signal volume failed:", err)
+        showError()
+      }
+    },
+    [cid, showSaved, showError],
+  )
+
   const saveLiveTrade = useCallback(
     async (next: boolean, previous: boolean) => {
       if (!cid) return
@@ -738,6 +805,7 @@ export function QuickstartOptionsBar() {
   // edits become one deep-merged hot reload instead of cancelling each other.
   const debouncedSaveSettings = useDebouncedPatchSaver(patchSettings, 200)
   const debouncedSaveVolume = useDebouncedSaver(saveVolume, 350)
+  const debouncedSaveSignalVolume = useDebouncedSaver(saveSignalVolume, 350)
   // Live switch is intentionally NOT debounced: it is a safety-critical
   // operator intent bit, so send the exact checked value immediately and avoid
   // stale queued saves inverting rapid on/off clicks.
@@ -768,6 +836,16 @@ export function QuickstartOptionsBar() {
       debouncedSaveVolume(v)
     },
     [debouncedSaveVolume],
+  )
+
+  const handleSignalVolumeChange = useCallback(
+    (raw: number) => {
+      const v = clampVf(raw)
+      signalVolumeFactorRef.current = v
+      setSignalVolumeFactor(v)
+      debouncedSaveSignalVolume(v)
+    },
+    [debouncedSaveSignalVolume],
   )
 
   const handleMinimalStepCountChange = useCallback(
@@ -913,6 +991,13 @@ export function QuickstartOptionsBar() {
             >
               Vol {selectionReady ? `×${volumeFactor.toFixed(1)}` : "…"}
             </Badge>
+            <Badge
+              variant="outline"
+              className="h-4 text-[9px] px-1.5 py-0 tabular-nums"
+              title="Signal volume factor"
+            >
+              Sig {selectionReady ? `×${signalVolumeFactor.toFixed(1)}` : "…"}
+            </Badge>
           </div>
 
           {/* save status (replaces nothing — sits inline) */}
@@ -936,7 +1021,7 @@ export function QuickstartOptionsBar() {
             className="px-3 pb-3 pt-1 space-y-2.5"
           >
             {/* ── Row 1: Control Orders + Volume Factor ──────────────── */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
               {/* Control Orders */}
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -963,6 +1048,42 @@ export function QuickstartOptionsBar() {
                       onCheckedChange={handleControlOrdersChange}
                       aria-label="Control orders"
                     />
+                  </div>
+                </TooltipTrigger>
+                {disabled && (
+                  <TooltipContent side="bottom">{disabledReason}</TooltipContent>
+                )}
+              </Tooltip>
+
+              {/* Signal Volume Factor */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div
+                    className={`flex items-center gap-3 rounded-md border bg-card px-2.5 py-1.5 ${
+                      disabled ? "opacity-60" : ""
+                    }`}
+                  >
+                    <Activity className="w-3.5 h-3.5 text-cyan-500 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-semibold text-foreground">
+                          Signal Volume
+                        </span>
+                        <span className="text-[11px] font-bold tabular-nums text-foreground">
+                          ×{signalVolumeFactor.toFixed(1)}
+                        </span>
+                      </div>
+                      <Slider
+                        value={[signalVolumeFactor]}
+                        min={VF_MIN}
+                        max={VF_MAX}
+                        step={VF_STEP}
+                        disabled={disabled}
+                        onValueChange={(v) => handleSignalVolumeChange(v[0])}
+                        className="mt-1"
+                        aria-label="Signal volume factor"
+                      />
+                    </div>
                   </div>
                 </TooltipTrigger>
                 {disabled && (

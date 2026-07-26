@@ -1,10 +1,10 @@
 {
   "project": "CTS-K-N",
-  "sourceRevisionBeforeHandoffCommit": "2489eecc86779a6982d995b467b399d6abba6bf5",
-  "sourceTreeBeforeHandoffCommit": "073785a395b2fa8fc41cb9fb7d9417073b41a305",
-  "sourceRevisionTimestamp": "2026-07-25T18:13:49Z",
+  "sourceRevisionBeforeHandoffCommit": "2a26c816c9f5a3b1077d6bc5f58dd38fbda1ff42",
+  "sourceTreeBeforeHandoffCommit": "e3b354b32101c1049f520e9af6ecaef4217fabba",
+  "sourceRevisionTimestamp": "2026-07-25T22:17:50-07:00",
   "workingTreeChangesIncluded": true,
-  "workingTreeStatusEntryCount": 98,
+  "workingTreeStatusEntryCount": 36,
   "nodeRequirement": ">=20.16",
   "packageManager": "pnpm@10.28.1",
   "framework": {
@@ -13,13 +13,13 @@
     "typescript": "^5.8.3"
   },
   "counts": {
-    "projectFilesExcludingGeneratedManifests": 1214,
-    "apiRoutes": 283,
-    "apiMethods": 363,
-    "uiPages": 43,
-    "environmentVariables": 227,
-    "redisMigrations": 82,
-    "testsAndVerifiers": 126
+    "projectFilesExcludingGeneratedManifests": 1239,
+    "apiRoutes": 287,
+    "apiMethods": 371,
+    "uiPages": 46,
+    "environmentVariables": 234,
+    "redisMigrations": 84,
+    "testsAndVerifiers": 135
   },
   "apiGroups": {
     "additional": {
@@ -115,8 +115,8 @@
       "methods": 5
     },
     "indications": {
-      "routes": 1,
-      "methods": 1
+      "routes": 2,
+      "methods": 3
     },
     "init": {
       "routes": 1,
@@ -195,8 +195,8 @@
       "methods": 2
     },
     "preset-types": {
-      "routes": 3,
-      "methods": 6
+      "routes": 4,
+      "methods": 8
     },
     "presets": {
       "routes": 10,
@@ -219,12 +219,16 @@
       "methods": 2
     },
     "settings": {
-      "routes": 47,
-      "methods": 74
+      "routes": 48,
+      "methods": 76
     },
     "startup": {
       "routes": 1,
       "methods": 1
+    },
+    "statistics": {
+      "routes": 1,
+      "methods": 2
     },
     "strategies": {
       "routes": 2,

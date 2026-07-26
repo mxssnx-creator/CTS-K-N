@@ -19,6 +19,12 @@ post-position pause lifecycle.
 
 - Gate: every valid count in `1..blockMaxStack` is evaluated independently.
 - Default state: variant, Active Real, and Active Live are enabled.
+- Regular Count ladders are created only from normal Base-derived Sets
+  (including Base trailing variants), never from Pos-Count/axis Sets.
+- The independent Active Real procedure counts every non-terminal Real
+  position for the same symbol and direction, including Pos-Count positions.
+  Pos-Count activity changes the active count; it does not become a Block
+  source Set of its own.
 - Existing position: the Block is an add-on to the same symbol/direction parent.
 - No parent: the Block waits; it never opens a standalone adjustment position.
 - Each count remains unavailable only while its own leg is active or paused.
@@ -34,28 +40,33 @@ post-position pause lifecycle.
 For an existing live position:
 
 ```text
-addQty = currentPositionQty × (blockCount × blockVolumeRatio)
-aggregateQtyAfter = currentPositionQty + confirmedFilledAddQty
+targetAddQty = generalBaseQty × (blockCount × blockVolumeRatio)
+targetBlockQty = generalBaseQty + targetAddQty
+confirmedBlockAddQty = sum(confirmed Block leg fills)
+nextOrderQty = max(0, targetAddQty - confirmedBlockAddQty)
+aggregateQtyAfter = currentExchangeQty + confirmedFilledNextOrderQty
 ```
 
 Where:
 
-- `currentPositionQty` is the confirmed exchange quantity immediately before
-  this Block add-on.
+- `generalBaseQty` is the immutable confirmed Standard/Trailing parent fill.
 - `blockCount` is the independent count encoded in the Block Set key.
 - `blockVolumeRatio` is the operator setting (default `1.0`, range `0.25..3.0`).
+- Earlier Block fills are subtracted from the next absolute target.
 - Only an exchange-confirmed fill is added to local executed quantity.
 
-Example with ratio `1` and valid Blocks 1 and 3:
+Example with general volume `1`, ratio `1.5`, and valid Counts 1–3:
 
 ```text
-Block 1: base=1 → add=1 × (1 × 1)=1 → aggregate=2
-Block 3: base=2 → add=2 × (3 × 1)=6 → aggregate=8
+Count 1: target add=1.5; confirmed before=0.0 → order=1.5 → total=2.5
+Count 2: target add=3.0; confirmed before=1.5 → order=1.5 → total=4.0
+Count 3: target add=4.5; confirmed before=3.0 → order=1.5 → total=5.5
 ```
 
-The second calculation uses the quantity confirmed after the first leg. Thus
-non-consecutive Blocks retain independent calculations while still coordinating
-against the one authoritative exchange position.
+If Count 3 is selected first, its one order is `4.5` and the total is still
+`5.5`. A later lower Count remains an independent evaluated/paused Set but is
+recorded as already covered and sends no exchange order. This preserves
+independent Set results without over-adding physical exposure.
 
 ## Independent minimum ProfitFactor
 
@@ -69,23 +80,40 @@ blockVolumeIncrement = blockCount × blockVolumeRatio
 ```
 
 `blockProfitFactorRatio` is configurable from `0.2..5.0` and defaults to
-`0.8`. The exact Block Set reads the same latest-position window and uses the
-same minimum-sample threshold as the normal PF calculation. Until enough own
-samples exist, it uses its source Set's observed PF; results from another Block
-count are never reused. Active counts remain valid until their exchange
-position closes, even if a later settings change raises their current minimum.
+`0.8`. The exact Block Set reads the same latest-closed-position window and
+uses the same minimum-sample threshold as the normal PF calculation. A cold
+enabled lane starts immediately from the matching normal PF, with no private
+Block progression. Once its own window is mature, its effective minimum is the
+greater of the matching normal PF and the configured count-specific floor.
+Results from another Block count are never reused. Active counts remain valid
+until their exchange position closes, even if a later settings change raises
+their current minimum.
+
+The Real scope graph also evaluates Strategy lanes per
+`symbol × long|short|overall × count` and Signal lanes per
+`source × symbol × long|short|overall × count`. Overall combines realized
+evaluation history only; executable Long and Short quantities remain separate.
+All lanes keep calculated/eligible/difference/PF statistics while the strategy
+switch is disabled. Disabled means no new Block emission, while already-open
+exposure remains present for reconciliation.
 
 ## Data flow
 
 ```text
-Real-stage independent Count coordination
+normal Base-derived Set (Pos-Count Set excluded)
+  → Real-stage independent Count coordination
   blockCount × ratio
   → StrategySet Block metadata
-  → RealPosition Block metadata
-  → Live add-on from confirmed current exchange quantity
+  → RealPosition absolute target metadata
+  → Live remaining delta from immutable general base quantity
   → durable pending outbox before submission
   → confirmed/partial fill stored as BlockLegState
   → exact aggregate quantity reconciled and SL/TP re-armed
+
+all non-terminal Real positions (Pos-Count positions included)
+  → symbol + Long/Short activity count
+  → independent #block:active:N Real overlay
+  → same absolute target/delta execution procedure
 ```
 
 The Main/Real multiplier remains lineage and audit metadata. Live only executes
@@ -121,6 +149,10 @@ baseVolumeMultiplier: number
 volumeRatio: number
 volumeMultiplier: number
 baseQuantity?: number
+targetAdditionalQuantity?: number
+confirmedAdditionalQuantityBefore?: number
+targetBlockQuantity?: number
+targetSatisfied?: boolean
 requestedQuantity?: number
 quantity: number
 positionQuantityAfter?: number
@@ -155,13 +187,19 @@ request is observed.
 
 ## Validation checklist
 
-- [x] Formula: `baseQty × (blockCount × ratio)`.
+- [x] Formula: `total = baseQty + ((baseQty × ratio) × blockCount)`.
+- [x] Sequential Count orders submit only the remaining delta to that target.
 - [x] Non-consecutive counts retain independent volume metadata.
 - [x] Count range is clamped to `1..10` (default `10`).
 - [x] Ratio is clamped to `0.25..3.0` (default `1.0`).
 - [x] PF ratio is clamped to `0.2..5.0` (default `0.8`).
 - [x] Count 1..N each use an exact Set key, own PF/DDT window, own minimum PF,
       own active/pause state, and own Real-stage statistics.
+- [x] Cold Blocks use the matching normal closed-position PF immediately;
+      mature Blocks below that PF cannot create a new add-on.
+- [x] Strategy and Signal source Long/Short/Overall lanes remain independent.
+- [x] Disabled strategy paths still publish calculation, eligibility,
+      difference and PF statistics without new emission.
 - [x] Active Real and Active Live toggles persist independently.
 - [x] Partial fills and restart recovery retain exact order/quantity state.
 - [x] Concurrent close-PnL pause updates cannot lose a decrement.

@@ -33,7 +33,14 @@ export interface RealAdjustPositionStats extends RealVariantPositionStats {
   profitFactorMinimumSampleCount?: number
   /** Active Real/Live Block overlays evaluated under the same PF contract. */
   activeOverlayEvaluation?: {
+    calculated: number
     evaluated: number
+    eligible: number
+    disabled: number
+    comparisons: number
+    coldStart: number
+    outperformed: number
+    underperformed: number
     passed: number
     emitted: number
     rejected: number
@@ -43,23 +50,75 @@ export interface RealAdjustPositionStats extends RealVariantPositionStats {
     live: { long: number; short: number }
     combined: { long: number; short: number }
     volumeIncrement: { long: number; short: number }
+    avgObservedProfitFactor: number
+    avgNormalProfitFactor: number
+    avgConfiguredMinimumProfitFactor: number
+    avgMinimumProfitFactor: number
+    avgProfitFactorDifference: number
+    strategyEnabled: boolean
+    realEnabled: boolean
+    liveEnabled: boolean
   }
   /** Block-only independently evaluated Count 1..N results. */
   countEvaluations?: RealBlockCountProfitFactorStats[]
+  /**
+   * Real-stage scope graph. Signal rows are independently dimensioned by
+   * source × symbol × long/short/overall × count.
+   */
+  scopedEvaluations?: RealBlockScopedProfitFactorStats[]
 }
 
 export interface RealBlockCountProfitFactorStats {
   count: number
+  calculated: number
   evaluated: number
+  eligible: number
+  disabled: number
+  comparisons: number
+  coldStart: number
+  outperformed: number
+  underperformed: number
   passed: number
   emitted: number
   rejected: number
   active: number
   paused: number
   avgObservedProfitFactor: number
+  avgNormalProfitFactor: number
+  avgConfiguredMinimumProfitFactor: number
   avgMinimumProfitFactor: number
+  avgProfitFactorDifference: number
   avgVolumeIncrement: number
   sampleCount: number
+  window: number
+}
+
+export interface RealBlockScopedProfitFactorStats {
+  symbol: string
+  laneKind: "direction" | "signal_source"
+  sourceId?: string
+  scope: "long" | "short" | "overall"
+  count: number
+  calculated: number
+  evaluated: number
+  eligible: number
+  disabled: number
+  comparisons: number
+  coldStart: number
+  outperformed: number
+  underperformed: number
+  passed: number
+  emitted: number
+  rejected: number
+  active: number
+  paused: number
+  sampleCount: number
+  avgObservedProfitFactor: number
+  avgNormalProfitFactor: number
+  avgConfiguredMinimumProfitFactor: number
+  avgMinimumProfitFactor: number
+  avgProfitFactorDifference: number
+  avgVolumeIncrement: number
   window: number
 }
 
@@ -291,6 +350,7 @@ export function buildRealStagePositionStats(input: {
     minimumSampleCount?: unknown
     activeOverlayEvaluation?: RealAdjustPositionStats["activeOverlayEvaluation"]
     countEvaluations?: RealBlockCountProfitFactorStats[] | null
+    scopedEvaluations?: RealBlockScopedProfitFactorStats[] | null
   } | null
   openPositions?: {
     source?: RealOpenPositionSource
@@ -466,7 +526,14 @@ export function buildRealStagePositionStats(input: {
         profitFactorWindow: Math.max(0, Math.floor(count(input.blockProfitFactor?.window))),
         profitFactorMinimumSampleCount: Math.max(0, Math.floor(count(input.blockProfitFactor?.minimumSampleCount))),
         activeOverlayEvaluation: input.blockProfitFactor?.activeOverlayEvaluation || {
+          calculated: 0,
           evaluated: 0,
+          eligible: 0,
+          disabled: 0,
+          comparisons: 0,
+          coldStart: 0,
+          outperformed: 0,
+          underperformed: 0,
           passed: 0,
           emitted: 0,
           rejected: 0,
@@ -476,9 +543,20 @@ export function buildRealStagePositionStats(input: {
           live: { long: 0, short: 0 },
           combined: { long: 0, short: 0 },
           volumeIncrement: { long: 0, short: 0 },
+          avgObservedProfitFactor: 0,
+          avgNormalProfitFactor: 0,
+          avgConfiguredMinimumProfitFactor: 0,
+          avgMinimumProfitFactor: 0,
+          avgProfitFactorDifference: 0,
+          strategyEnabled: false,
+          realEnabled: false,
+          liveEnabled: false,
         },
         countEvaluations: Array.isArray(input.blockProfitFactor?.countEvaluations)
           ? input.blockProfitFactor!.countEvaluations
+          : [],
+        scopedEvaluations: Array.isArray(input.blockProfitFactor?.scopedEvaluations)
+          ? input.blockProfitFactor!.scopedEvaluations
           : [],
       },
       dca: buildAdjustStats(dcaStats, withoutAdjustPositions),

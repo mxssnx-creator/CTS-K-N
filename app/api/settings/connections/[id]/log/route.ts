@@ -92,13 +92,16 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
          lastUpdate: progressionState.lastUpdate?.toISOString() || null
        },
        
-       // Indications by type (direction, move, active, optimal, auto, trend)
+       // Indications by type
        indicationsCounts: {
          direction: progressionState.indicationsDirectionCount || 0,
          move: progressionState.indicationsMoveCount || 0,
          active: progressionState.indicationsActiveCount || 0,
+         activeAdvanced: progressionState.indicationsActiveAdvancedCount || 0,
          optimal: progressionState.indicationsOptimalCount || 0,
-         auto: progressionState.indicationsAutoCount || 0
+         auto: progressionState.indicationsAutoCount || 0,
+         signal: progressionState.indicationsSignalCount || 0,
+         trend: progressionState.indicationsTrendCount || 0,
        },
        
        // Strategy count sets and evaluated counts

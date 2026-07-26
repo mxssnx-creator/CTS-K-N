@@ -1,6 +1,10 @@
 "use client"
 
-import { DEFAULT_VOLUME_STEP_RATIO, MIN_VOLUME_FACTOR } from "@/lib/constants"
+import {
+  DEFAULT_VOLUME_STEP_RATIO,
+  MIN_VOLUME_FACTOR,
+  normalizeIdentityVolumeFactor,
+} from "@/lib/constants"
 import { DEFAULT_DCA_PROFILE, type DcaTakeProfitMode } from "@/lib/dca-strategy"
 export const dynamic = "force-dynamic"
 import { useState, useEffect } from "react"
@@ -411,6 +415,9 @@ interface Settings {
   // Volume Factor Settings
   baseVolumeFactorLive?: number
   baseVolumeFactorPreset?: number
+  mainTradeVolumeFactor?: number
+  presetTradeVolumeFactor?: number
+  signalTradeVolumeFactor?: number
   // Strategy Configuration Settings
   strategyTrailingEnabled?: boolean
   strategyBlockEnabled?: boolean
@@ -942,8 +949,11 @@ export default function SettingsPage() {
     // Ensure defaults are applied if not present in initialSettings
     positionCost: initialSettings.positionCost ?? 0.1, // 0.1% default (slider value)
     exchangePositionCost: initialSettings.exchangePositionCost ?? 0.1, // Sync with positionCost
-    baseVolumeFactorLive: initialSettings.baseVolumeFactorLive ?? MIN_VOLUME_FACTOR,
-    baseVolumeFactorPreset: initialSettings.baseVolumeFactorPreset ?? MIN_VOLUME_FACTOR,
+    baseVolumeFactorLive: normalizeIdentityVolumeFactor(initialSettings.baseVolumeFactorLive),
+    baseVolumeFactorPreset: normalizeIdentityVolumeFactor(initialSettings.baseVolumeFactorPreset),
+    mainTradeVolumeFactor: normalizeIdentityVolumeFactor(initialSettings.mainTradeVolumeFactor),
+    presetTradeVolumeFactor: normalizeIdentityVolumeFactor(initialSettings.presetTradeVolumeFactor),
+    signalTradeVolumeFactor: normalizeIdentityVolumeFactor(initialSettings.signalTradeVolumeFactor),
     profitFactorMinMain: initialSettings.profitFactorMinMain ?? 0.6,
     drawdownTimeMain: initialSettings.drawdownTimeMain ?? 300,
     mainDirectionEnabled: initialSettings.mainDirectionEnabled ?? true,

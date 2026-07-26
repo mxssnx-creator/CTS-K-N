@@ -63,6 +63,8 @@ describe("settings continuity", () => {
 
   test("flat indication storage round-trips booleans and numeric values", () => {
     const flat = indicationProfilesToFlat(DEFAULT_MAIN_INDICATION_PROFILE, DEFAULT_PRESET_INDICATION_PROFILE)
+    expect(flat.signal).toBe("true")
+    expect(flat.signal_preset).toBe("true")
     expect(readStoredIndicationProfile(flat, "", DEFAULT_MAIN_INDICATION_PROFILE)).toEqual(DEFAULT_MAIN_INDICATION_PROFILE)
     expect(readStoredIndicationProfile(flat, "_preset", DEFAULT_PRESET_INDICATION_PROFILE)).toEqual(DEFAULT_PRESET_INDICATION_PROFILE)
   })
@@ -194,7 +196,11 @@ describe("settings continuity", () => {
       applyMainConnectionSettingsChange("conn-commit-race", before, {
         connectionPatch: {
           live_volume_factor: "0.7",
-          connection_settings: { coordination_settings: { variants: { block: false } } },
+          connection_settings: {
+            coordination_settings: { variants: { block: false } },
+            blockVolumeRatio: 0.5,
+            posCountsVolumeRatio: 0.05,
+          },
         },
         changedFieldsOverride: [],
         logTag: "volume-save",
@@ -211,13 +217,15 @@ describe("settings continuity", () => {
 
     expect(maxActiveCommits).toBe(1)
     expect(stored).toEqual(expect.objectContaining({
-      live_volume_factor: "0.7",
+      live_volume_factor: "1",
       is_live_trade: "1",
     }))
     expect(stored.connection_settings.coordination_settings.variants).toEqual({
       block: false,
       dca: true,
     })
+    expect(stored.connection_settings.blockVolumeRatio).toBe(0.5)
+    expect(stored.connection_settings.posCountsVolumeRatio).toBe(0.05)
   })
 
   test("settings races and pseudo creation leases retain token ownership", () => {
