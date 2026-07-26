@@ -12,7 +12,7 @@ import type { PerformanceThresholds } from "./types"
 import { logProgressionEvent } from "./engine-progression-logs"
 import { DEFAULT_MAX_STOP_LOSS_RATIO, normalizeMaxStopLossRatio } from "@/lib/stoploss-ratio-range"
 
-export type BaseIndicationType = "direction" | "move" | "active" | "optimal" | "active_advanced" | "trend"
+export type BaseIndicationType = "direction" | "move" | "active" | "optimal" | "active_advanced" | "signal" | "trend"
 
 export interface BasePositionConfig {
   symbol: string

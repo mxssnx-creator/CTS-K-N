@@ -153,7 +153,7 @@ export class ConnectionManagerV2 {
         is_live_trade: "0",
         is_preset_trade: "0",
         is_predefined: false,
-        volume_factor: input.volume_factor ?? MIN_VOLUME_FACTOR,
+        volume_factor: MIN_VOLUME_FACTOR,
         created_at: now,
         updated_at: now,
       }
@@ -180,13 +180,17 @@ export class ConnectionManagerV2 {
         throw new Error(`Connection not found: ${id}`)
       }
 
+      const normalizedInput = {
+        ...input,
+        ...(input.volume_factor !== undefined ? { volume_factor: MIN_VOLUME_FACTOR } : {}),
+      }
       const updated = {
         ...conn,
-        ...input,
+        ...normalizedInput,
         updated_at: new Date().toISOString(),
       }
 
-      const persisted = await updateConnection(id, { ...input, updated_at: updated.updated_at })
+      const persisted = await updateConnection(id, { ...normalizedInput, updated_at: updated.updated_at })
       console.log("[v0] Connection updated:", id)
       return (persisted || updated) as ConnectionV2
     } catch (error) {

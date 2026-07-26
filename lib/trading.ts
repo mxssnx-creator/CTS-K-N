@@ -1,5 +1,9 @@
-import { v4 as uuidv4 } from "uuid"
 import type { RealPosition } from "./types"
+
+function tradingPositionId(): string {
+  return globalThis.crypto?.randomUUID?.() ??
+    `trading-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+}
 
 export interface TradingPosition extends RealPosition {
   unrealized_pnl: number
@@ -16,7 +20,7 @@ export interface TradingPosition extends RealPosition {
   volume_factor?: number
   base_volume?: number // Base volume before factor adjustment
   adjusted_volume?: number // Volume after applying volume_factor
-  indication_type?: "direction" | "move" | "active"
+  indication_type?: "direction" | "move" | "active" | "signal"
 }
 
 export interface TradingStats {
@@ -46,19 +50,31 @@ export interface TimeRangeStats {
 export class TradingEngine {
   private positions: Map<string, TradingPosition> = new Map()
   private connectionBalances: Map<string, number> = new Map()
-  private baseVolumeFactor = 0.01 // Default base volume factor
 
-  setBaseVolumeFactor(factor: number): void {
-    this.baseVolumeFactor = factor
+  /**
+   * Compatibility setter retained for older callers.
+   *
+   * Base → Main → Real always uses the immutable identity basis 1. Channel
+   * factors and explicit Position-count/DCA/Block adjustments are applied at
+   * their own boundaries; a generic Base setter must never create another
+   * hidden multiplier.
+   */
+  setBaseVolumeFactor(_factor: number): void {
+    // Intentionally no-op.
   }
 
   calculateVolume(baseVolume: number, volumeFactor = 1): { base: number; adjusted: number; factor: number } {
-    const base = baseVolume * this.baseVolumeFactor
-    const adjusted = base * volumeFactor
+    const parsedBase = Number(baseVolume)
+    const base = Number.isFinite(parsedBase) && parsedBase > 0 ? parsedBase : 0
+    const parsedFactor = Number(volumeFactor)
+    const factor = Number.isFinite(parsedFactor)
+      ? Math.max(1, Math.min(10, parsedFactor))
+      : 1
+    const adjusted = base * factor
     return {
       base,
       adjusted,
-      factor: volumeFactor,
+      factor,
     }
   }
 
@@ -74,7 +90,7 @@ export class TradingEngine {
     leverage?: number,
     positionSide?: "long" | "short",
     volumeFactor?: number,
-    indicationType?: "direction" | "move" | "active",
+    indicationType?: "direction" | "move" | "active" | "signal",
   ): Promise<TradingPosition> {
     const finalLeverage = leverage || 150 // Default to BingX max (150x); call sites should pass explicit max via getMaxLeverageForExchange()
     const finalPositionSide = positionSide || (side === "buy" ? "long" : "short")
@@ -83,7 +99,7 @@ export class TradingEngine {
     const finalVolume = volumeCalc ? volumeCalc.adjusted : volume
 
     const position: TradingPosition = {
-      id: uuidv4(),
+      id: tradingPositionId(),
       connection_id: connectionId,
       exchange_position_id: `ext_${Date.now()}`,
       symbol,
@@ -131,7 +147,7 @@ export class TradingEngine {
     strategyType?: string,
     leverage?: number,
     volumeFactor?: number,
-    indicationType?: "direction" | "move" | "active",
+    indicationType?: "direction" | "move" | "active" | "signal",
   ): Promise<{ longPosition: TradingPosition; shortPosition: TradingPosition }> {
     const longPosition = await this.openPosition(
       connectionId,
@@ -349,7 +365,12 @@ export class TradingEngine {
   generateMockPositions(connectionId: string, count = 20): void {
     const symbols = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "BCHUSDT", "LINKUSDT"]
     const strategies = ["Base Strategy", "Main Strategy", "Real Strategy", "Block Strategy", "DCA Strategy"]
-    const indicationTypes: ("direction" | "move" | "active")[] = ["direction", "move", "active"]
+    const indicationTypes: ("direction" | "move" | "active" | "signal")[] = [
+      "direction",
+      "move",
+      "active",
+      "signal",
+    ]
 
     for (let i = 0; i < count; i++) {
       const symbol = symbols[Math.floor(Math.random() * symbols.length)]
@@ -361,7 +382,7 @@ export class TradingEngine {
       const volumeCalc = this.calculateVolume(baseVolume, volumeFactor)
 
       const position: TradingPosition = {
-        id: uuidv4(),
+        id: tradingPositionId(),
         connection_id: connectionId,
         exchange_position_id: `mock_${i}`,
         symbol,

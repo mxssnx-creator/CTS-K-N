@@ -48,6 +48,9 @@ import {
   advanceBlockCountPausesOnPositionClose,
   buildBlockLegState,
   calculateBlockAddQuantity,
+  calculateBlockRemainingAddQuantity,
+  calculateBlockTargetQuantity,
+  calculateConfirmedBlockAddQuantity,
   calculateBlockVolumeIncrementRatio,
   parseBlockCount,
   syncActiveBlockCountIndex,
@@ -84,6 +87,18 @@ import {
   type PartialOrderExecution,
   type PartialOrderExecutionSource,
 } from "@/lib/live-order-coordination"
+import {
+  mergeSignalRisks,
+  normalizeSignalRisk,
+  recordSignalPerformanceOutcome,
+  type SignalRisk,
+} from "@/lib/signal-indication"
+import {
+  isSignalDynamicTrailingProfile,
+  resolveSignalExecutionLane,
+  type SignalExecutionLane,
+  type TrailingProfile,
+} from "@/lib/signal-trailing"
 
 const LOG_PREFIX = "[v0] [LivePositionStage]"
 const MIN_EXCHANGE_STOP_LOSS_PERCENT = 0.2
@@ -232,7 +247,9 @@ function computeSetAwareSL(
     // upward (long) or downward (short) as price moves in our favour. Using the
     // trailing stopRatio ensures the initial order and the ratchet machine are
     // in sync from the first tick.
-    const trailingSl = trailingProfile.stopRatio * 100
+    const trailingSl = isSignalDynamicTrailingProfile(trailingProfile)
+      ? Math.max(0.8, (trailingProfile.minStopRatio ?? trailingProfile.stopRatio) * 100)
+      : trailingProfile.stopRatio * 100
     return Math.max(MIN_EXCHANGE_STOP_LOSS_PERCENT, trailingSl)
   }
   // For all other variants (default, block, dca, pause) the PF-derived value
@@ -402,15 +419,29 @@ interface LivePosition {
     combinedPosCounts?: boolean
     requestedQuantity: number
     positionQuantityBefore: number
+    /** Cumulative quantity from this submission already applied locally. */
+    appliedFilledQuantity?: number
+    /** Confirmed quantity already assigned to the same Block Set before this submission. */
+    blockSetQuantityBefore?: number
     orderId?: string
     submittedAt: number
     variant?: "block" | "dca" | "default"
     blockCount?: number
     blockBaseQuantity?: number
+    blockConfirmedAddQuantity?: number
+    blockTargetAddQuantity?: number
+    blockTargetQuantity?: number
     blockBaseVolumeMultiplier?: number
     blockVolumeRatio?: number
     blockVolumeIncrementRatio?: number
     blockCalculatedVolumeMultiplier?: number
+    blockScope?: "long" | "short" | "overall"
+    blockLaneKind?: "direction" | "signal_source"
+    blockLaneKey?: string
+    blockSourceId?: string
+    signalRisk?: SignalRisk
+    stopLoss?: number
+    takeProfit?: number
     dcaStep?: number
     dcaVolumeMultiplier?: number
     dcaTriggerDistancePct?: number
@@ -470,11 +501,19 @@ interface LivePosition {
   blockVolumeRatio?: number
   blockProfitFactorRatio?: number
   blockDefaultMinimumProfitFactor?: number
+  blockConfiguredMinimumProfitFactor?: number
+  blockNormalProfitFactor?: number
   blockMinimumProfitFactor?: number
   blockObservedProfitFactor?: number
+  blockProfitFactorDifference?: number
+  blockComparisonAvailable?: boolean
   blockProfitFactorWindow?: number
   blockProfitFactorSampleCount?: number
   blockCount?: number
+  blockScope?: "long" | "short" | "overall"
+  blockLaneKind?: "direction" | "signal_source"
+  blockLaneKey?: string
+  blockSourceId?: string
   blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
   blockLegs?: BlockLegState[]
@@ -483,6 +522,7 @@ interface LivePosition {
   dcaTakeProfitPrice?: number
   setKey?: string
   indicationType?: string
+  signalRisk?: SignalRisk
   exchangeData?: Record<string, unknown>
   orderId?: string
   // Durable marker proving the live fill counters were already recorded for
@@ -497,8 +537,9 @@ interface LivePosition {
   current_price?: number
   quantity: number
   axisWindows?: { prev: number; last: number; cont: number; pause: number }
-  // Variant size multiplier mirrored from RealPosition (block=1.5-2.0,
-  // dca=0.5, others=1.0). Stored so accumulation can match original sizing.
+  // Variant size multiplier mirrored from RealPosition (Block uses the exact
+  // target factor 1 + count × ratio; DCA=0.5; others=1). Stored for audit and
+  // protection coordination; Block order deltas use the immutable base.
   sizeMultiplier?: number
   parentSetKey?: string
   setVariant?: "default" | "trailing" | "block" | "dca" | "pause"
@@ -532,7 +573,9 @@ interface LivePosition {
   //      the Set was scored against, available for audit and future re-scoring.
   // Both fields ride verbatim from StrategySet → RealPosition → LivePosition
   // via the dispatch payload in `createLiveSets`.
-  trailingProfile?: { startRatio: number; stopRatio: number; stepRatio: number }
+  trailingProfile?: TrailingProfile
+  /** Logical execution slot. Signal trailing is independent from default. */
+  executionLane?: SignalExecutionLane
   prevPos?: { count: number; successRate: number; profitFactor: number; avgDDT: number; recentPnls?: number[] }
 
   progression?: { step: string; timestamp: number; success: boolean; details: string }[]
@@ -595,34 +638,49 @@ async function recordConfirmedStrategyEntry(
     indicationType?: string
     axisKey?: string
     axisWindows?: LivePosition["axisWindows"]
+    setKeys?: string[]
   },
 ): Promise<boolean> {
   const direction = resolveLivePositionDirection(position)
   if (!direction) return false
-  const combinedMemberKeys = !lineage && position.combinedPosCounts
-    ? [...new Set((position.accumulatedSetKeys || []).map(String).filter(Boolean))]
-    : []
-  if (combinedMemberKeys.length > 0) {
+  const primarySetKey = String(lineage?.setKey || position.setKey || "").trim()
+  const memberKeys = lineage
+    ? [...new Set([
+        primarySetKey,
+        ...(lineage.setKeys || []),
+      ].map(String).filter(Boolean))]
+    : position.combinedPosCounts
+      ? [...new Set((position.accumulatedSetKeys || []).map(String).filter(Boolean))]
+      : [...new Set([
+          primarySetKey,
+          ...(position.accumulatedSetKeys || []),
+        ].map(String).filter(Boolean))]
+  if (memberKeys.length > 1 || (position.combinedPosCounts && memberKeys.length > 0)) {
     let inserted = false
-    for (let index = 0; index < combinedMemberKeys.length; index++) {
-      const memberSetKey = combinedMemberKeys[index]
+    for (let index = 0; index < memberKeys.length; index++) {
+      const memberSetKey = memberKeys[index]
+      const isPrimary = memberSetKey === primarySetKey
       const memberInserted = await recordStrategyPositionEntry({
         connectionId,
         positionId: position.id,
         entryId: `${entryId}:member:${memberSetKey}`,
         setKey: memberSetKey,
-        parentSetKey: memberSetKey.split("#")[0] || memberSetKey,
+        parentSetKey: isPrimary
+          ? String(lineage?.parentSetKey || position.parentSetKey || memberSetKey.split("#")[0] || memberSetKey)
+          : memberSetKey,
         symbol: position.symbol,
-        indicationType: String(position.indicationType || memberSetKey.split(":")[1] || "unknown"),
+        indicationType: String(lineage?.indicationType || position.indicationType || memberSetKey.split(":")[1] || "unknown"),
         direction,
-        axisKey: axisKeyFromLineage(memberSetKey, position.axisWindows),
+        axisKey: isPrimary
+          ? String(lineage?.axisKey || axisKeyFromLineage(memberSetKey, lineage?.axisWindows || position.axisWindows))
+          : "",
         countGlobalPosition: index === 0,
       })
       inserted = memberInserted || inserted
     }
     return inserted
   }
-  const setKey = String(lineage?.setKey || position.setKey || "").trim()
+  const setKey = primarySetKey
   if (!setKey) return false
   const parentSetKey = String(
     lineage?.parentSetKey || position.parentSetKey || setKey.split("#")[0] || setKey,
@@ -907,8 +965,23 @@ function safeJsonParse<T>(raw: unknown, fallback: T): T {
   try { return JSON.parse(raw) as T } catch { return fallback }
 }
 
+function parseRedisBoolean(raw: unknown): boolean | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined
+  if (typeof raw === "boolean") return raw
+  const normalized = String(raw).trim().toLowerCase()
+  if (["1", "true", "yes", "on"].includes(normalized)) return true
+  if (["0", "false", "no", "off"].includes(normalized)) return false
+  return undefined
+}
+
+function parseRedisFiniteNumber(raw: unknown): number | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined
+  const value = Number(raw)
+  return Number.isFinite(value) ? value : undefined
+}
+
 function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
-  return {
+  const position = {
     ...hash,
     entryPrice: Number(hash.entryPrice || hash.entry_price || 0),
     executedQuantity: Number(hash.executedQuantity || 0),
@@ -926,6 +999,53 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     fills: Array.isArray(hash.fills) ? hash.fills : safeJsonParse<FillRecord[]>(hash.fills, []),
     progression: Array.isArray(hash.progression) ? hash.progression : safeJsonParse<any[]>(hash.progression, []),
     exchangeData: typeof hash.exchangeData === "string" ? safeJsonParse<Record<string, unknown>>(hash.exchangeData, {}) : hash.exchangeData,
+    ...(hash.signalRisk !== undefined && {
+      signalRisk: typeof hash.signalRisk === "string"
+        ? normalizeSignalRisk(safeJsonParse<unknown>(hash.signalRisk, undefined))
+        : normalizeSignalRisk(hash.signalRisk),
+    }),
+    ...(hash.blockLegs !== undefined && {
+      blockLegs: Array.isArray(hash.blockLegs)
+        ? hash.blockLegs
+        : safeJsonParse<BlockLegState[]>(hash.blockLegs, []),
+    }),
+    ...(hash.dcaProfile !== undefined && {
+      dcaProfile: typeof hash.dcaProfile === "string"
+        ? safeJsonParse<DcaProfile | undefined>(hash.dcaProfile, undefined)
+        : hash.dcaProfile,
+    }),
+    ...(hash.dcaLegs !== undefined && {
+      dcaLegs: Array.isArray(hash.dcaLegs)
+        ? hash.dcaLegs
+        : safeJsonParse<DcaLegState[]>(hash.dcaLegs, []),
+    }),
+    ...(hash.axisWindows !== undefined && {
+      axisWindows: typeof hash.axisWindows === "string"
+        ? safeJsonParse<LivePosition["axisWindows"]>(hash.axisWindows, undefined)
+        : hash.axisWindows,
+    }),
+    ...(hash.trailingProfile !== undefined && {
+      trailingProfile: typeof hash.trailingProfile === "string"
+        ? safeJsonParse<LivePosition["trailingProfile"]>(hash.trailingProfile, undefined)
+        : hash.trailingProfile,
+    }),
+    ...(hash.prevPos !== undefined && {
+      prevPos: typeof hash.prevPos === "string"
+        ? safeJsonParse<LivePosition["prevPos"]>(hash.prevPos, undefined)
+        : hash.prevPos,
+    }),
+    ...(parseRedisBoolean(hash.combinedPosCounts) !== undefined && {
+      combinedPosCounts: parseRedisBoolean(hash.combinedPosCounts),
+    }),
+    ...(parseRedisBoolean(hash.posCountsTargetFlat) !== undefined && {
+      posCountsTargetFlat: parseRedisBoolean(hash.posCountsTargetFlat),
+    }),
+    ...(parseRedisBoolean(hash.blockComparisonAvailable) !== undefined && {
+      blockComparisonAvailable: parseRedisBoolean(hash.blockComparisonAvailable),
+    }),
+    ...(parseRedisBoolean(hash.trailingActive) !== undefined && {
+      trailingActive: parseRedisBoolean(hash.trailingActive),
+    }),
     accumulatedSetKeys: Array.isArray(hash.accumulatedSetKeys)
       ? hash.accumulatedSetKeys
       : safeJsonParse<string[]>(hash.accumulatedSetKeys, []),
@@ -956,7 +1076,88 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     partialOrderExecutions: Array.isArray(hash.partialOrderExecutions)
       ? hash.partialOrderExecutions
       : safeJsonParse<PartialOrderExecution[]>(hash.partialOrderExecutions, []),
-  } as LivePosition
+  } as Record<string, any>
+
+  // node-redis returns every hash scalar as a string. Keep the canonical hash
+  // usable without its JSON mirror after SIGKILL by restoring every numeric
+  // LivePosition field at this single hydration boundary. Leaving even one of
+  // the percentage/quantity/PF fields as a string makes arithmetic and strict
+  // comparison dependent on JavaScript coercion after restart.
+  for (const field of [
+    "entryPrice",
+    "entry_price",
+    "executedQuantity",
+    "remainingQuantity",
+    "averageExecutionPrice",
+    "quantity",
+    "volumeUsd",
+    "leverage",
+    "unrealized_pnl",
+    "unrealized_pnl_percent",
+    "markPrice",
+    "current_price",
+    "liquidationPrice",
+    "realizedPnL",
+    "realized_pnl",
+    "timestamp",
+    "fee",
+    "lastUpdate",
+    "last_update",
+    "stoppedAt",
+    "updatedAt",
+    "createdAt",
+    "closedAt",
+    "stopLoss",
+    "takeProfit",
+    "stopLossPrice",
+    "takeProfitPrice",
+    "stopLossLastArmedAt",
+    "takeProfitLastArmedAt",
+    "assignedStopLoss",
+    "assignedTakeProfit",
+    "protectionArmedQuantity",
+    "trailingStopPrice",
+    "presetRank",
+    "presetPositionCostPct",
+    "presetProfitFactor",
+    "closePrice",
+    "version",
+    "lockedAt",
+    "submissionAbsentConfirmations",
+    "initialExecutedQuantity",
+    "initialEntryPrice",
+    "blockBaseQuantity",
+    "blockBaseVolumeMultiplier",
+    "blockVolumeRatio",
+    "blockProfitFactorRatio",
+    "blockDefaultMinimumProfitFactor",
+    "blockConfiguredMinimumProfitFactor",
+    "blockNormalProfitFactor",
+    "blockMinimumProfitFactor",
+    "blockObservedProfitFactor",
+    "blockProfitFactorDifference",
+    "blockProfitFactorWindow",
+    "blockProfitFactorSampleCount",
+    "blockCount",
+    "blockVolumeIncrementRatio",
+    "blockCalculatedVolumeMultiplier",
+    "dcaTakeProfitPrice",
+    "fillCounterRecordedAt",
+    "sizeMultiplier",
+    "posCountsLongSetCount",
+    "posCountsShortSetCount",
+    "posCountsNetSetCount",
+    "totalExecutedQuantity",
+    "closedQuantity",
+  ]) {
+    const value = parseRedisFiniteNumber(hash[field])
+    if (value !== undefined) position[field] = value
+    else if (hash[field] !== undefined && hash[field] !== null && hash[field] !== "") {
+      delete position[field]
+    }
+  }
+
+  return position as LivePosition
 }
 
 async function readLivePositionSnapshot(client: any, connectionId: string, positionId: string): Promise<LivePosition | null> {
@@ -1494,13 +1695,40 @@ async function tryAcquireLock(connId: string, symbol: string, direction: string)
     return null
   }
 }
-async function findOpenLivePositionByDir(connId: string, symbol: string, side: string): Promise<LivePosition | null> {
+function liveExecutionLane(
+  position: Pick<LivePosition, "executionLane" | "indicationType" | "trailingProfile"> |
+    Pick<RealPosition, "executionLane" | "indicationType" | "trailingProfile">,
+): SignalExecutionLane {
+  return resolveSignalExecutionLane(position)
+}
+
+function liveLockDirection(
+  position: Pick<LivePosition, "direction" | "setVariant" | "executionLane" | "indicationType" | "trailingProfile"> |
+    Pick<RealPosition, "direction" | "setVariant" | "executionLane" | "indicationType" | "trailingProfile">,
+): string {
+  const lane = liveExecutionLane(position)
+  const laneSuffix = lane === "signal_trailing" ? ":signal-trailing" : ""
+  const variantSuffix = position.setVariant === "block" ? ":block" : ""
+  return `${position.direction}${laneSuffix}${variantSuffix}`
+}
+
+async function findOpenLivePositionByDir(
+  connId: string,
+  symbol: string,
+  side: string,
+  executionLane: SignalExecutionLane = "default",
+): Promise<LivePosition | null> {
   const { getLivePositions } = await import("@/lib/trade-engine/stages/live-stage")
   const positions = await getLivePositions(connId)
   const norm = String(symbol || "").toUpperCase().replace(/[-_]/g, "")
   for (const p of positions) {
     const psym = String(p.symbol || "").toUpperCase().replace(/[-_]/g, "")
-    if (psym === norm && p.direction === side && (p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "simulated")) {
+    if (
+      psym === norm &&
+      p.direction === side &&
+      liveExecutionLane(p) === executionLane &&
+      (p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "simulated")
+    ) {
       return p
     }
   }
@@ -1512,6 +1740,7 @@ async function findAuthoritativeAdjustmentParent(
   symbol: string,
   direction: "long" | "short",
   allowSimulated: boolean,
+  executionLane: SignalExecutionLane = "default",
 ): Promise<LivePosition | null> {
   const positions = await getLivePositions(connId)
   const normalized = String(symbol || "").toUpperCase().replace(/[-_]/g, "")
@@ -1520,7 +1749,13 @@ async function findAuthoritativeAdjustmentParent(
     const parentVariant = p.setVariant !== "block" && p.setVariant !== "dca"
     const active = p.status === "open" || p.status === "filled" || p.status === "partially_filled" || (allowSimulated && p.status === "simulated")
     const venueOwned = allowSimulated || !!(p.orderId || (p.exchangeData as any)?.exchangePositionId)
-    return sameSymbol && p.direction === direction && parentVariant && active && venueOwned && Number(p.executedQuantity || 0) > 0
+    return sameSymbol &&
+      p.direction === direction &&
+      liveExecutionLane(p) === executionLane &&
+      parentVariant &&
+      active &&
+      venueOwned &&
+      Number(p.executedQuantity || 0) > 0
   }) || null
 }
 async function fetchCurrentPrice(symbol: string, connId?: string): Promise<number> {
@@ -1554,6 +1789,9 @@ interface AccumulationPlan {
   variant: "block" | "dca" | "default"
   blockCount?: number
   blockBaseQuantity?: number
+  blockConfirmedAddQuantity?: number
+  blockTargetAddQuantity?: number
+  blockTargetQuantity?: number
   dcaStep?: number
   dcaVolumeMultiplier?: number
   dcaTriggerDistancePct?: number
@@ -1569,17 +1807,45 @@ async function resolveAccumulationPlan(
   if (real?.setVariant === "block") {
     const blockCount = parseBlockCount(real?.setKey)
     const blockVolumeRatio = Number(real?.blockVolumeRatio ?? existing.blockVolumeRatio ?? 1)
-    // Every Block count is derived from the immutable Base-Set leg (ratio 1),
-    // never from the already-expanded aggregate. Using current executed
-    // quantity here compounded Block 1 into Block 3 and was the main source of
-    // runaway live volumes across cycles.
-    const blockBaseQuantity = Number(
-      existing.initialExecutedQuantity ?? existing.blockBaseQuantity ?? existing.executedQuantity ?? existing.quantity ?? 0,
-    )
+    const blockConfirmedAddQuantity = calculateConfirmedBlockAddQuantity(existing.blockLegs)
+    // Every Block count is an absolute target derived from the immutable
+    // general/Base quantity. Confirmed fills from earlier independent Count
+    // Sets are subtracted below, so Count 1 + Count 2 + Count 3 reaches the
+    // Count-3 target instead of adding three cumulative targets.
+    const explicitBaseQuantity = Number(existing.initialExecutedQuantity ?? existing.blockBaseQuantity ?? 0)
+    const currentQuantity = Number(existing.executedQuantity ?? existing.quantity ?? 0)
+    const inferredLegacyBaseQuantity = currentQuantity - blockConfirmedAddQuantity
+    const blockBaseQuantity = explicitBaseQuantity > 0
+      ? explicitBaseQuantity
+      : inferredLegacyBaseQuantity > 0
+        ? inferredLegacyBaseQuantity
+        : currentQuantity
     if (!blockCount || blockBaseQuantity <= 0 || blockVolumeRatio <= 0) return null
-    // Per independent Block set: addQty = baseSetQty × (blockCount × ratio).
-    const addQty = calculateBlockAddQuantity(blockBaseQuantity, blockCount, blockVolumeRatio)
-    return { addQty, variant: "block", blockCount, blockBaseQuantity }
+    const blockTargetAddQuantity = calculateBlockAddQuantity(
+      blockBaseQuantity,
+      blockCount,
+      blockVolumeRatio,
+    )
+    const blockTargetQuantity = calculateBlockTargetQuantity(
+      blockBaseQuantity,
+      blockCount,
+      blockVolumeRatio,
+    )
+    const addQty = calculateBlockRemainingAddQuantity(
+      blockBaseQuantity,
+      blockCount,
+      blockVolumeRatio,
+      blockConfirmedAddQuantity,
+    )
+    return {
+      addQty,
+      variant: "block",
+      blockCount,
+      blockBaseQuantity,
+      blockConfirmedAddQuantity,
+      blockTargetAddQuantity,
+      blockTargetQuantity,
+    }
   }
 
   if (real?.setVariant === "dca") {
@@ -1626,7 +1892,11 @@ async function resolveAccumulationPlan(
     connId,
     String(real?.symbol || existing.symbol || ""),
     price,
-    { tradeMode: "main", sizeMultiplier: real?.sizeMultiplier ?? existing.sizeMultiplier },
+    {
+      tradeMode: "main",
+      sizeMultiplier: real?.sizeMultiplier ?? existing.sizeMultiplier,
+      indicationType: real?.indicationType ?? existing.indicationType,
+    },
   ).catch(() => null)
   let addQty = Number(volumeResult?.finalVolume || volumeResult?.volume || 0)
   if (!Number.isFinite(addQty) || addQty <= 0) addQty = price > 0 ? 5 / price : 0
@@ -1636,6 +1906,138 @@ async function resolveAccumulationPlan(
     addQty = delta.quantity
   }
   return Number.isFinite(addQty) && addQty > 0 ? { addQty, variant: "default" } : null
+}
+
+function markSatisfiedBlockTarget(
+  position: LivePosition,
+  real: Record<string, any>,
+  plan: AccumulationPlan,
+): string {
+  const setKey = String(real?.setKey || "")
+  if (
+    plan.variant !== "block" ||
+    !setKey ||
+    !plan.blockCount ||
+    !plan.blockBaseQuantity ||
+    plan.blockTargetAddQuantity === undefined ||
+    plan.blockTargetQuantity === undefined
+  ) return ""
+
+  const previous = position.blockLegs?.find((leg) => leg.setKey === setKey)
+  const leg = buildBlockLegState(
+    real,
+    Number(previous?.quantity || 0),
+    previous?.clientOrderId,
+    previous?.orderId,
+    {
+      baseQuantity: plan.blockBaseQuantity,
+      targetAdditionalQuantity: plan.blockTargetAddQuantity,
+      confirmedAdditionalQuantityBefore: plan.blockConfirmedAddQuantity,
+      targetBlockQuantity: plan.blockTargetQuantity,
+      targetSatisfied: true,
+      requestedQuantity: 0,
+      positionQuantityAfter: Number(position.executedQuantity || position.quantity || 0),
+    },
+  )
+  if (leg) {
+    position.blockLegs = [
+      ...(position.blockLegs || []).filter((item) => item.setKey !== leg.setKey),
+      leg,
+    ]
+  }
+  position.accumulatedSetKeys = [...new Set([
+    ...(position.accumulatedSetKeys || []),
+    ...strategyLineageKeysForAdjustment(real, setKey),
+  ])]
+  pushStep(
+    position,
+    "block_target_covered",
+    true,
+    `setKey=${setKey}; targetAdd=${plan.blockTargetAddQuantity}; ` +
+      `confirmedBlockAdd=${plan.blockConfirmedAddQuantity || 0}; orderDelta=0`,
+  )
+  return setKey
+}
+
+function strategyLineageKeysForAdjustment(
+  real: Record<string, any> | null | undefined,
+  primarySetKey?: string,
+): string[] {
+  const primary = String(primarySetKey || real?.setKey || "").trim()
+  if (real?.combinedPosCounts) {
+    return [...new Set(
+      (Array.isArray(real?.accumulatedSetKeys) ? real.accumulatedSetKeys : [])
+        .map((value: unknown) => String(value).trim())
+        .filter(Boolean),
+    )]
+  }
+  if (String(real?.setVariant || real?.variant || "") !== "block") {
+    return primary ? [primary] : []
+  }
+  return [...new Set([
+    primary,
+    ...(Array.isArray(real?.accumulatedSetKeys) ? real.accumulatedSetKeys : []),
+    real?.blockLaneKey,
+  ].map((value: unknown) => String(value || "").trim()).filter(Boolean))]
+}
+
+/**
+ * Preserve Signal attribution and its low-stop protection when a Signal leg
+ * is accumulated into an existing position owned by another indication.
+ * Manual absolute protection overrides remain authoritative in
+ * computeDesiredProtectionPrices; these fields update only the automatic
+ * percentage contract used for the next control-order re-arm.
+ */
+function applyAccumulatedSignalRisk(
+  position: Pick<LivePosition, "signalRisk" | "stopLoss" | "takeProfit">,
+  source: Record<string, any> | null | undefined,
+): void {
+  const incoming = normalizeSignalRisk(source?.signalRisk)
+  if (!incoming) return
+  position.signalRisk = mergeSignalRisks(position.signalRisk, incoming)
+
+  const positiveMinimum = (left: unknown, right: unknown): number | undefined => {
+    const values = [Number(left), Number(right)]
+      .filter((value) => Number.isFinite(value) && value > 0)
+    return values.length > 0 ? Math.min(...values) : undefined
+  }
+  const stopLoss = positiveMinimum(
+    position.stopLoss,
+    source?.stopLoss ?? incoming.stopLossPct,
+  )
+  const takeProfit = positiveMinimum(
+    position.takeProfit,
+    source?.takeProfit ?? incoming.takeProfitPct,
+  )
+  if (stopLoss !== undefined) position.stopLoss = stopLoss
+  if (takeProfit !== undefined) position.takeProfit = takeProfit
+}
+
+function isVirtualBlockLaneKey(setKey: unknown): boolean {
+  return String(setKey || "").startsWith("block_lane:")
+}
+
+function physicalAccumulationCount(setKeys: unknown, blockLegs?: unknown): number {
+  if (!Array.isArray(setKeys)) return 0
+  const coveredBlockKeys = new Set(
+    (Array.isArray(blockLegs) ? blockLegs : [])
+      .filter((leg: unknown) => {
+        if (!leg || typeof leg !== "object") return false
+        const item = leg as Record<string, unknown>
+        return Number(item.quantity || 0) <= 0 && Number(item.requestedQuantity || 0) <= 0
+      })
+      .map((leg: unknown) => String((leg as Record<string, unknown>).setKey || "").trim())
+      .filter(Boolean),
+  )
+  return new Set(
+    setKeys
+      .map((value: unknown) => String(value || "").trim())
+      .filter((setKey: string) =>
+        setKey &&
+        !isVirtualBlockLaneKey(setKey) &&
+        !coveredBlockKeys.has(setKey)
+      ),
+  ).size
 }
 
 async function accumulateIntoSimulatedPosition(
@@ -1669,6 +2071,25 @@ async function accumulateIntoSimulatedPosition(
       ? buildDcaStepSetKey(String(real?.setKey || "dca"), plan.dcaStep)
       : String(real?.setKey || "")
     if (!real?.combinedPosCounts && accumulationSetKey && existing.accumulatedSetKeys?.includes(accumulationSetKey)) return existing
+    if (plan.variant === "block" && plan.addQty <= 0) {
+      const coveredSetKey = markSatisfiedBlockTarget(existing, real, plan)
+      await savePosition(existing)
+      if (coveredSetKey) {
+        await recordConfirmedStrategyEntry(
+          connId,
+          existing,
+          `${existing.id}:set:${coveredSetKey}:covered`,
+          {
+            setKey: coveredSetKey,
+            parentSetKey: real.parentSetKey,
+            indicationType: real.indicationType,
+            axisWindows: real.axisWindows,
+            setKeys: strategyLineageKeysForAdjustment(real, coveredSetKey),
+          },
+        )
+      }
+      return existing
+    }
     const prevExec = Number(existing.executedQuantity || 0)
     const prevAvg = Number(existing.averageExecutionPrice || existing.entryPrice || price)
     const filledQty = plan.addQty
@@ -1695,7 +2116,11 @@ async function accumulateIntoSimulatedPosition(
       draft.fills = [...(draft.fills || []), { timestamp: Date.now(), quantity: filledQty, price, fee: 0, feeAsset: "" }]
       draft.accumulatedSetKeys = real?.combinedPosCounts
         ? Array.from(new Set<string>((Array.isArray(real.accumulatedSetKeys) ? real.accumulatedSetKeys : []).map((value: unknown) => String(value)).filter(Boolean)))
-        : [...new Set([...(draft.accumulatedSetKeys || []), ...(accumulationSetKey ? [accumulationSetKey] : [])])]
+        : [...new Set([
+            ...(draft.accumulatedSetKeys || []),
+            ...strategyLineageKeysForAdjustment(real, accumulationSetKey),
+          ])]
+      applyAccumulatedSignalRisk(draft, real)
       if (real?.combinedPosCounts) {
         draft.posCountsSetRatios = { ...(real?.posCountsSetRatios || draft.posCountsSetRatios || {}) }
         draft.posCountsSetQuantities = allocatePositionSetQuantities(draft, newExec, draft.accumulatedSetKeys)
@@ -1703,6 +2128,10 @@ async function accumulateIntoSimulatedPosition(
       if (plan.variant === "block") {
         const leg = buildBlockLegState(real, filledQty, undefined, undefined, {
           baseQuantity: plan.blockBaseQuantity,
+          targetAdditionalQuantity: plan.blockTargetAddQuantity,
+          confirmedAdditionalQuantityBefore: plan.blockConfirmedAddQuantity,
+          targetBlockQuantity: plan.blockTargetQuantity,
+          targetSatisfied: true,
           requestedQuantity: plan.addQty,
           positionQuantityAfter: newExec,
         })
@@ -1735,6 +2164,9 @@ async function accumulateIntoSimulatedPosition(
     })
     if (mutated) {
       Object.assign(existing, mutated)
+      const protection = computeDesiredProtectionPrices(existing)
+      if (protection.desiredSl > 0) existing.assignedStopLoss = protection.desiredSl
+      if (protection.desiredTp > 0) existing.assignedTakeProfit = protection.desiredTp
       await recordPositionAdjustmentProgression(
         connId,
         existing,
@@ -1755,6 +2187,7 @@ async function accumulateIntoSimulatedPosition(
             parentSetKey: real.parentSetKey,
             indicationType: real.indicationType,
             axisWindows: real.axisWindows,
+            setKeys: strategyLineageKeysForAdjustment(real, accumulationSetKey),
           },
         )
       }
@@ -1820,6 +2253,30 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
         pushStep(existing, "accumulation_submission_recovered", true, `orderId=${pending.orderId}; exact fill deferred to reconciliation`)
         await savePosition(existing)
         await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_recovered")
+        const recoveredTerminal = ["filled", "deal", "complete", "completed"].includes(recoveredStatus)
+        const retained = existing.pendingAccumulation
+        const appliedFilledQuantity = Number(retained?.appliedFilledQuantity || 0)
+        if (
+          recoveredTerminal &&
+          retained?.clientOrderId === pending.clientOrderId &&
+          appliedFilledQuantity > 0
+        ) {
+          await recordPositionAdjustmentProgression(
+            connId,
+            existing,
+            "filled",
+            retained.clientOrderId,
+            appliedFilledQuantity * Number(existing.averageExecutionPrice || existing.entryPrice || price || 0),
+          )
+          pushStep(
+            existing,
+            "accumulation_terminal_partial",
+            true,
+            `orderId=${pending.orderId}; confirmed partial=${appliedFilledQuantity}; residual retry allowed`,
+          )
+          existing.pendingAccumulation = undefined
+          await savePosition(existing)
+        }
         return existing
       }
       const liveOrderIds = await fetchLiveOrderIdSet(connector)
@@ -1848,12 +2305,23 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
         return existing
       }
       pushStep(existing, "accumulation_submission_absent", false, `clientOrderId=${pending.clientOrderId} confirmed absent; retry allowed`)
-      await recordPositionAdjustmentProgression(
-        connId,
-        existing,
-        "failed",
-        pending.clientOrderId,
-      )
+      const appliedFilledQuantity = Number(pending.appliedFilledQuantity || 0)
+      if (appliedFilledQuantity > 0) {
+        await recordPositionAdjustmentProgression(
+          connId,
+          existing,
+          "filled",
+          pending.clientOrderId,
+          appliedFilledQuantity * Number(existing.averageExecutionPrice || existing.entryPrice || price || 0),
+        )
+      } else {
+        await recordPositionAdjustmentProgression(
+          connId,
+          existing,
+          "failed",
+          pending.clientOrderId,
+        )
+      }
       existing.pendingAccumulation = undefined
       await savePosition(existing)
     }
@@ -1861,7 +2329,10 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     // Admission checks run only after a durable pending order was recovered
     // or conclusively cleared. Otherwise a cap/dedup return could strand an
     // exchange submission forever merely because its Set was already applied.
-    if (!real?.combinedPosCounts && existing.accumulatedSetKeys.length >= MAX_ACCUMULATIONS_PER_POSITION) {
+    if (
+      !real?.combinedPosCounts &&
+      physicalAccumulationCount(existing.accumulatedSetKeys, existing.blockLegs) >= MAX_ACCUMULATIONS_PER_POSITION
+    ) {
       pushStep(existing, "accumulate_skip", false, `cap reached (${MAX_ACCUMULATIONS_PER_POSITION} accumulations) — merge suppressed`)
       await savePosition(existing)
       if (hadPendingAccumulation) {
@@ -1882,12 +2353,36 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     }
 
     const plan = await resolveAccumulationPlan(connId, existing, real, price)
-    if (!plan || !Number.isFinite(plan.addQty) || plan.addQty <= 0) {
+    if (!plan) {
       pushStep(existing, "accumulate_skip", false, `${real?.setVariant || "adjustment"} trigger/quantity not ready`)
       await savePosition(existing)
       if (hadPendingAccumulation) {
         await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_retry_not_ready")
       }
+      return existing
+    }
+    if (plan.variant === "block" && plan.addQty <= 0) {
+      const coveredSetKey = markSatisfiedBlockTarget(existing, real, plan)
+      await savePosition(existing)
+      if (coveredSetKey) {
+        await recordConfirmedStrategyEntry(
+          connId,
+          existing,
+          `${existing.id}:set:${coveredSetKey}:covered`,
+          {
+            setKey: coveredSetKey,
+            parentSetKey: real.parentSetKey,
+            indicationType: real.indicationType,
+            axisWindows: real.axisWindows,
+            setKeys: strategyLineageKeysForAdjustment(real, coveredSetKey),
+          },
+        )
+      }
+      return existing
+    }
+    if (!Number.isFinite(plan.addQty) || plan.addQty <= 0) {
+      pushStep(existing, "accumulate_skip", false, `${real?.setVariant || "adjustment"} trigger/quantity not ready`)
+      await savePosition(existing)
       return existing
     }
     const accumulationSetKey = plan.variant === "dca" && plan.dcaStep
@@ -1916,30 +2411,55 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     if (plan.variant === "block") existing.blockBaseQuantity = plan.blockBaseQuantity
     else existing.blockBaseQuantity ??= existing.initialExecutedQuantity
     if (plan.dcaProfile) existing.dcaProfile = plan.dcaProfile
+    const blockSetQuantityBefore = plan.variant === "block"
+      ? Number(existing.blockLegs?.find((leg) => leg.setKey === accumulationSetKey)?.quantity || 0)
+      : undefined
     existing.pendingAccumulation = {
       clientOrderId,
       setKey: accumulationSetKey,
       parentSetKey: String(real?.parentSetKey || ""),
       indicationType: String(real?.indicationType || ""),
       axisKey: axisKeyFromLineage(String(real?.setKey || ""), real?.axisWindows),
-      accumulatedSetKeys: real?.combinedPosCounts
-        ? Array.from(new Set<string>((Array.isArray(real.accumulatedSetKeys) ? real.accumulatedSetKeys : []).map((value: unknown) => String(value)).filter(Boolean)))
+      accumulatedSetKeys: (
+        real?.combinedPosCounts ||
+        String(real?.setVariant || real?.variant || "") === "block"
+      )
+        ? strategyLineageKeysForAdjustment(real, accumulationSetKey)
         : undefined,
       posCountsSetRatios: real?.combinedPosCounts ? { ...(real?.posCountsSetRatios || {}) } : undefined,
       combinedPosCounts: real?.combinedPosCounts === true,
       requestedQuantity: plan.addQty,
       positionQuantityBefore: Number(existing.executedQuantity || 0),
+      appliedFilledQuantity: 0,
+      blockSetQuantityBefore,
       submittedAt: Date.now(),
       variant: plan.variant,
       blockCount: plan.blockCount,
       blockBaseQuantity: plan.blockBaseQuantity,
-      blockBaseVolumeMultiplier: Number(real?.blockBaseVolumeMultiplier || 1),
+      blockConfirmedAddQuantity: plan.blockConfirmedAddQuantity,
+      blockTargetAddQuantity: plan.blockTargetAddQuantity,
+      blockTargetQuantity: plan.blockTargetQuantity,
+      blockBaseVolumeMultiplier: plan.variant === "block"
+        ? 1
+        : Number(real?.blockBaseVolumeMultiplier || 1),
       blockVolumeRatio: Number(real?.blockVolumeRatio || 1),
       blockVolumeIncrementRatio: Number(
         real?.blockVolumeIncrementRatio ||
         (plan.blockCount ? calculateBlockVolumeIncrementRatio(plan.blockCount, Number(real?.blockVolumeRatio || 1)) : 1),
       ),
-      blockCalculatedVolumeMultiplier: Number(real?.blockCalculatedVolumeMultiplier || real?.sizeMultiplier || 1),
+      blockCalculatedVolumeMultiplier: plan.variant === "block" && plan.blockCount
+        ? 1 + calculateBlockVolumeIncrementRatio(
+            plan.blockCount,
+            Number(real?.blockVolumeRatio || 1),
+          )
+        : Number(real?.blockCalculatedVolumeMultiplier || real?.sizeMultiplier || 1),
+      blockScope: real?.blockScope,
+      blockLaneKind: real?.blockLaneKind,
+      blockLaneKey: real?.blockLaneKey,
+      blockSourceId: real?.blockSourceId,
+      signalRisk: normalizeSignalRisk(real?.signalRisk),
+      stopLoss: Number(real?.stopLoss) > 0 ? Number(real.stopLoss) : undefined,
+      takeProfit: Number(real?.takeProfit) > 0 ? Number(real.takeProfit) : undefined,
       dcaStep: plan.dcaStep,
       dcaVolumeMultiplier: plan.dcaVolumeMultiplier,
       dcaTriggerDistancePct: plan.dcaTriggerDistancePct,
@@ -1988,10 +2508,12 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     )
     await savePosition(existing)
 
+    let fillStatus = String(orderRes.status ?? orderRes.orderStatus ?? "").toLowerCase().trim()
     let filledQty = parseFloat(String(orderRes.filledQty ?? orderRes.executedQty ?? orderRes.cumQty ?? "0")) || 0
     let filledPrice = parseFloat(String(orderRes.filledPrice ?? orderRes.avgPrice ?? orderRes.price ?? "0")) || 0
     if (filledQty <= 0) {
       const fill = await pollOrderFill(connector, symbol, String(orderId), 5_000)
+      fillStatus = String(fill.status || fillStatus).toLowerCase().trim()
       if (fill.filledQty > 0) {
         filledQty = fill.filledQty
         filledPrice = fill.filledPrice
@@ -2004,18 +2526,26 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       return existing
     }
     if (!(filledPrice > 0)) filledPrice = price
-    await recordPositionAdjustmentProgression(
-      connId,
-      existing,
-      "filled",
-      clientOrderId,
-      filledQty * filledPrice,
-    )
 
     const prevExec = Number(existing.executedQuantity || 0)
     const prevAvg = Number(existing.averageExecutionPrice || existing.entryPrice || filledPrice)
     const newExec = prevExec + filledQty
     const pending = { ...existing.pendingAccumulation }
+    const requestedTolerance = Math.max(1e-12, plan.addQty * 1e-8)
+    const blockTargetSatisfied = plan.variant !== "block" ||
+      filledQty >= plan.addQty - requestedTolerance
+    const terminalFillStatus = [
+      "filled",
+      "deal",
+      "complete",
+      "completed",
+      "cancelled",
+      "canceled",
+      "rejected",
+      "expired",
+    ].includes(fillStatus)
+    const retainPartialPending = plan.variant === "block" && !blockTargetSatisfied
+    const blockSetQuantity = Number(pending.blockSetQuantityBefore || 0) + filledQty
     const mutated = await mutatePositionWithVersionCheck(existing, ["open", "filled", "partially_filled"], draft => {
       draft.executedQuantity = newExec
       draft.quantity = Math.max(Number(draft.quantity || 0), prevExec) + filledQty
@@ -2029,15 +2559,31 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       draft.fills = [...(draft.fills || []), { timestamp: Date.now(), quantity: filledQty, price: filledPrice, fee: 0, feeAsset: "USDT" }]
       draft.accumulatedSetKeys = real?.combinedPosCounts
         ? Array.from(new Set<string>((Array.isArray(real.accumulatedSetKeys) ? real.accumulatedSetKeys : []).map((value: unknown) => String(value)).filter(Boolean)))
-        : [...new Set([...(draft.accumulatedSetKeys || []), ...(accumulationSetKey ? [accumulationSetKey] : [])])]
+        : plan.variant === "block" && !blockTargetSatisfied
+          ? [...(draft.accumulatedSetKeys || [])]
+          : [...new Set([
+              ...(draft.accumulatedSetKeys || []),
+              ...strategyLineageKeysForAdjustment(real, accumulationSetKey),
+            ])]
+      applyAccumulatedSignalRisk(draft, real)
       if (real?.combinedPosCounts) {
         draft.posCountsSetRatios = { ...(pending.posCountsSetRatios || real?.posCountsSetRatios || draft.posCountsSetRatios || {}) }
         draft.posCountsSetQuantities = allocatePositionSetQuantities(draft, newExec, draft.accumulatedSetKeys)
       }
-      draft.pendingAccumulation = undefined
+      draft.pendingAccumulation = retainPartialPending
+        ? {
+            ...pending,
+            orderId: String(orderId),
+            appliedFilledQuantity: filledQty,
+          } as LivePosition["pendingAccumulation"]
+        : undefined
       if (plan.variant === "block") {
-        const leg = buildBlockLegState(real, filledQty, clientOrderId, String(orderId), {
+        const leg = buildBlockLegState(real, blockSetQuantity, clientOrderId, String(orderId), {
           baseQuantity: plan.blockBaseQuantity,
+          targetAdditionalQuantity: plan.blockTargetAddQuantity,
+          confirmedAdditionalQuantityBefore: plan.blockConfirmedAddQuantity,
+          targetBlockQuantity: plan.blockTargetQuantity,
+          targetSatisfied: blockTargetSatisfied,
           requestedQuantity: plan.addQty,
           positionQuantityAfter: newExec,
         })
@@ -2068,7 +2614,13 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
           takeProfitPct: draft.takeProfit || 0,
         })
       }
-      pushStep(draft, "accumulate", true, `+${filledQty} @ ${filledPrice} (setKey=${pending.setKey || "n/a"}, total=${newExec})`)
+      pushStep(
+        draft,
+        blockTargetSatisfied ? "accumulate" : "accumulate_partial",
+        true,
+        `+${filledQty} @ ${filledPrice} (setKey=${pending.setKey || "n/a"}, ` +
+          `total=${newExec}, requested=${plan.addQty}, pending=${retainPartialPending})`,
+      )
     })
     if (!mutated) {
       pushStep(existing, "accumulate_fill_pending", false, "stale version; exact fill deferred to reconciliation")
@@ -2076,14 +2628,55 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       return existing
     }
     Object.assign(existing, mutated)
+    if (retainPartialPending) {
+      await savePosition(existing)
+      await reconcilePendingAccumulationAndRearm(
+        connector,
+        existing,
+        terminalFillStatus
+          ? "accumulation_terminal_partial"
+          : "accumulation_partial_fill",
+      )
+      const retained = existing.pendingAccumulation
+      const appliedFilledQuantity = Number(retained?.appliedFilledQuantity || 0)
+      if (
+        terminalFillStatus &&
+        retained?.clientOrderId === clientOrderId &&
+        appliedFilledQuantity > 0
+      ) {
+        await recordPositionAdjustmentProgression(
+          connId,
+          existing,
+          "filled",
+          clientOrderId,
+          appliedFilledQuantity * Number(existing.averageExecutionPrice || existing.entryPrice || filledPrice),
+        )
+        pushStep(
+          existing,
+          "accumulation_terminal_partial",
+          true,
+          `orderId=${orderId}; confirmed partial=${appliedFilledQuantity}; residual retry allowed`,
+        )
+        existing.pendingAccumulation = undefined
+        await savePosition(existing)
+      }
+      return existing
+    }
+    await recordPositionAdjustmentProgression(
+      connId,
+      existing,
+      "filled",
+      clientOrderId,
+      filledQty * filledPrice,
+    )
     await savePosition(existing)
-    if (pending.combinedPosCounts) {
+    if (blockTargetSatisfied && pending.combinedPosCounts) {
       await recordConfirmedStrategyEntry(
         connId,
         existing,
         `${existing.id}:combined:${pending.clientOrderId}`,
       )
-    } else if (pending.setKey) {
+    } else if (blockTargetSatisfied && pending.setKey) {
       await recordConfirmedStrategyEntry(
         connId,
         existing,
@@ -2093,6 +2686,7 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
           parentSetKey: pending.parentSetKey,
           indicationType: pending.indicationType,
           axisKey: pending.axisKey,
+          setKeys: pending.accumulatedSetKeys,
         },
       )
     }
@@ -2594,7 +3188,11 @@ async function reconcileCombinedPosCountTarget(
     connectionId,
     realPosition.symbol,
     price,
-    { tradeMode: executionIntent, sizeMultiplier: realPosition.sizeMultiplier },
+    {
+      tradeMode: executionIntent,
+      sizeMultiplier: realPosition.sizeMultiplier,
+      indicationType: realPosition.indicationType,
+    },
   ).catch(() => null)
   const targetQuantity = resolveCombinedPosCountTargetQuantity(targetVolume)
   if (!(targetQuantity > 0)) {
@@ -2781,27 +3379,40 @@ async function reconcileAuthoritativeExchangeQuantity(
   position.volumeUsd = exchangeQuantity * Number(position.averageExecutionPrice || position.entryPrice || 0)
   position.submissionState = "confirmed"
 
+  let pendingAccumulationCompleted = false
   if (pending && exactAdded > 0) {
+    applyAccumulatedSignalRisk(position, pending)
     // A venue quantity increase is authoritative proof that the durable
-    // accumulation was both accepted and filled. Count it exactly once per
-    // direction even after a crash/restart replay, without inventing a second
-    // position for a Block/DCA/default adjustment.
+    // accumulation was accepted and at least partially filled. Block orders
+    // remain pending until their entire requested delta is authoritative;
+    // partial observations update the exact Block leg without prematurely
+    // completing the independent Count Set.
+    const requestedTolerance = Math.max(1e-12, Number(pending.requestedQuantity || 0) * 1e-8)
+    const blockTargetSatisfied = pending.variant !== "block" ||
+      exactAdded >= Number(pending.requestedQuantity || 0) - requestedTolerance
     await recordPositionAdjustmentProgression(
       position.connectionId,
       position,
       "placed",
       pending.clientOrderId,
     )
-    await recordPositionAdjustmentProgression(
-      position.connectionId,
-      position,
-      "filled",
-      pending.clientOrderId,
-      exactAdded * Number(exchangeEntryPrice || position.averageExecutionPrice || position.entryPrice || 0),
-    )
-    position.accumulatedSetKeys = pending.combinedPosCounts
-      ? [...new Set((pending.accumulatedSetKeys || []).map(String).filter(Boolean))]
-      : [...new Set([...(position.accumulatedSetKeys || []), ...(pending.setKey ? [pending.setKey] : [])])]
+    if (blockTargetSatisfied) {
+      await recordPositionAdjustmentProgression(
+        position.connectionId,
+        position,
+        "filled",
+        pending.clientOrderId,
+        exactAdded * Number(exchangeEntryPrice || position.averageExecutionPrice || position.entryPrice || 0),
+      )
+      position.accumulatedSetKeys = pending.combinedPosCounts
+        ? [...new Set((pending.accumulatedSetKeys || []).map(String).filter(Boolean))]
+        : [...new Set([
+            ...(position.accumulatedSetKeys || []),
+            ...((pending.accumulatedSetKeys && pending.accumulatedSetKeys.length > 0)
+              ? pending.accumulatedSetKeys
+              : (pending.setKey ? [pending.setKey] : [])),
+          ])]
+    }
     if (pending.variant === "block") {
       const leg = buildBlockLegState({
         setKey: pending.setKey,
@@ -2810,8 +3421,16 @@ async function reconcileAuthoritativeExchangeQuantity(
         blockVolumeRatio: pending.blockVolumeRatio,
         blockVolumeIncrementRatio: pending.blockVolumeIncrementRatio,
         blockCalculatedVolumeMultiplier: pending.blockCalculatedVolumeMultiplier,
-      }, exactAdded, pending.clientOrderId, pending.orderId, {
+        blockScope: pending.blockScope,
+        blockLaneKind: pending.blockLaneKind,
+        blockLaneKey: pending.blockLaneKey,
+        blockSourceId: pending.blockSourceId,
+      }, Number(pending.blockSetQuantityBefore || 0) + exactAdded, pending.clientOrderId, pending.orderId, {
         baseQuantity: pending.blockBaseQuantity,
+        targetAdditionalQuantity: pending.blockTargetAddQuantity,
+        confirmedAdditionalQuantityBefore: pending.blockConfirmedAddQuantity,
+        targetBlockQuantity: pending.blockTargetQuantity,
+        targetSatisfied: blockTargetSatisfied,
         requestedQuantity: pending.requestedQuantity,
         positionQuantityAfter: exchangeQuantity,
       })
@@ -2842,7 +3461,15 @@ async function reconcileAuthoritativeExchangeQuantity(
         takeProfitPct: position.takeProfit || 0,
       })
     }
-    position.pendingAccumulation = undefined
+    if (blockTargetSatisfied) {
+      position.pendingAccumulation = undefined
+      pendingAccumulationCompleted = true
+    } else {
+      position.pendingAccumulation = {
+        ...pending,
+        appliedFilledQuantity: exactAdded,
+      }
+    }
   }
   if (position.combinedPosCounts) {
     position.posCountsSetQuantities = allocatePositionSetQuantities(
@@ -2858,13 +3485,13 @@ async function reconcileAuthoritativeExchangeQuantity(
     `authoritative exchange quantity ${before} → ${exchangeQuantity}${exactAdded > 0 ? ` (+${exactAdded})` : ""}`,
   )
   position.updatedAt = Date.now()
-  if (pending && exactAdded > 0 && pending.combinedPosCounts) {
+  if (pendingAccumulationCompleted && pending?.combinedPosCounts) {
     await recordConfirmedStrategyEntry(
       position.connectionId,
       position,
       `${position.id}:combined:${pending.clientOrderId}`,
     )
-  } else if (pending && exactAdded > 0 && pending.setKey) {
+  } else if (pendingAccumulationCompleted && pending?.setKey) {
     await recordConfirmedStrategyEntry(
       position.connectionId,
       position,
@@ -2874,6 +3501,7 @@ async function reconcileAuthoritativeExchangeQuantity(
         parentSetKey: pending.parentSetKey,
         indicationType: pending.indicationType,
         axisKey: pending.axisKey,
+        setKeys: pending.accumulatedSetKeys,
       },
     )
   }
@@ -3000,7 +3628,13 @@ function resolveMaxHoldMs(connId: string): number {
  *   - 300 gives generous DCA headroom (1 initial entry + 299 merges ≈ 32× the
  *     initial allocation at equal-weight increments) for high-frequency strategies.
  */
-const MAX_ACCUMULATIONS_PER_POSITION = 300
+// 35 Signal sources × {direction, overall} × 10 Block counts can create 700
+// independent physical memberships for one symbol/side, in addition to the
+// general Strategy, exact-Set and active Block families. Keep a hard bound,
+// but size it above the complete supported graph so valid lanes never starve.
+// Virtual `block_lane:*` aliases and zero-quantity covered Block memberships
+// are excluded by physicalAccumulationCount().
+const MAX_ACCUMULATIONS_PER_POSITION = 1200
 
 /**
  * Recognise exchange errors that CANNOT be fixed by retrying. For these
@@ -4896,9 +5530,16 @@ export async function executeLivePosition(
       updatedAt: Date.now(),
       setKey:         realPosition.setKey,
       parentSetKey:   realPosition.parentSetKey,
+      indicationType: realPosition.indicationType,
+      signalRisk:     realPosition.signalRisk,
       setVariant:     realPosition.setVariant,
+      executionLane:  liveExecutionLane(realPosition),
       axisWindows:    realPosition.axisWindows,
       sizeMultiplier: realPosition.sizeMultiplier,
+      blockScope:     realPosition.blockScope,
+      blockLaneKind:  realPosition.blockLaneKind,
+      blockLaneKey:   realPosition.blockLaneKey,
+      blockSourceId:  realPosition.blockSourceId,
       accumulatedSetKeys:
       Array.isArray(realPosition.accumulatedSetKeys) && realPosition.accumulatedSetKeys.length > 0
         ? realPosition.accumulatedSetKeys
@@ -4970,9 +5611,16 @@ export async function executeLivePosition(
       updatedAt: Date.now(),
       setKey:         realPosition.setKey,
       parentSetKey:   realPosition.parentSetKey,
+      indicationType: realPosition.indicationType,
+      signalRisk:     realPosition.signalRisk,
       setVariant:     realPosition.setVariant,
+      executionLane:  liveExecutionLane(realPosition),
       axisWindows:    realPosition.axisWindows,
       sizeMultiplier: realPosition.sizeMultiplier,
+      blockScope:     realPosition.blockScope,
+      blockLaneKind:  realPosition.blockLaneKind,
+      blockLaneKey:   realPosition.blockLaneKey,
+      blockSourceId:  realPosition.blockSourceId,
       accumulatedSetKeys:
         Array.isArray(realPosition.accumulatedSetKeys) && realPosition.accumulatedSetKeys.length > 0
           ? realPosition.accumulatedSetKeys
@@ -5016,7 +5664,7 @@ export async function executeLivePosition(
   }
 
   const livePosition: LivePosition = {
-    id: `live:${connectionId}:${realPosition.symbol}:${realPosition.direction}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    id: `live:${connectionId}:${realPosition.symbol}:${realPosition.direction}:${liveExecutionLane(realPosition)}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
     connectionId,
     system_tracking_id: makeSystemTrackingId(connectionId),
     connection_tracking_id: connectionTrackingId,
@@ -5066,18 +5714,28 @@ export async function executeLivePosition(
     setKey:         realPosition.setKey,
     parentSetKey:   realPosition.parentSetKey,
     indicationType: realPosition.indicationType,
+    signalRisk:     realPosition.signalRisk,
     setVariant:     realPosition.setVariant,
+    executionLane:  liveExecutionLane(realPosition),
     axisWindows:    realPosition.axisWindows,
     sizeMultiplier: realPosition.sizeMultiplier,
     blockBaseVolumeMultiplier: realPosition.blockBaseVolumeMultiplier,
     blockVolumeRatio: realPosition.blockVolumeRatio,
     blockProfitFactorRatio: realPosition.blockProfitFactorRatio,
     blockDefaultMinimumProfitFactor: realPosition.blockDefaultMinimumProfitFactor,
+    blockConfiguredMinimumProfitFactor: realPosition.blockConfiguredMinimumProfitFactor,
+    blockNormalProfitFactor: realPosition.blockNormalProfitFactor,
     blockMinimumProfitFactor: realPosition.blockMinimumProfitFactor,
     blockObservedProfitFactor: realPosition.blockObservedProfitFactor,
+    blockProfitFactorDifference: realPosition.blockProfitFactorDifference,
+    blockComparisonAvailable: realPosition.blockComparisonAvailable,
     blockProfitFactorWindow: realPosition.blockProfitFactorWindow,
     blockProfitFactorSampleCount: realPosition.blockProfitFactorSampleCount,
     blockCount: realPosition.blockCount,
+    blockScope: realPosition.blockScope,
+    blockLaneKind: realPosition.blockLaneKind,
+    blockLaneKey: realPosition.blockLaneKey,
+    blockSourceId: realPosition.blockSourceId,
     blockVolumeIncrementRatio: realPosition.blockVolumeIncrementRatio,
     blockCalculatedVolumeMultiplier: realPosition.blockCalculatedVolumeMultiplier,
     accumulatedSetKeys:
@@ -5148,7 +5806,8 @@ export async function executeLivePosition(
 
   // Hoisted before the try/catch so the catch block can release the
   // correct variant-scoped dedup lock on unhandled errors.
-  const _lockDirSuffix = realPosition.setVariant === "block" ? ":block" : ""
+  const executionLane = liveExecutionLane(realPosition)
+  const _lockDirSuffix = liveLockDirection(realPosition).slice(realPosition.direction.length)
   let liveOrderLockToken: string | null = null
 
   try {
@@ -5250,6 +5909,7 @@ export async function executeLivePosition(
         realPosition.symbol,
         realPosition.direction,
         !isLiveTradeEnabled,
+        executionLane,
       )
       if (!existing) {
         livePosition.status = "rejected"
@@ -5346,6 +6006,7 @@ export async function executeLivePosition(
               connectionId,
               realPosition.symbol,
               realPosition.direction,
+              executionLane,
             )
 
         if (!existing) {
@@ -5458,6 +6119,7 @@ export async function executeLivePosition(
         connectionId,
         realPosition.symbol,
         realPosition.direction,
+        executionLane,
       )
       if (existingSimulatedSlot) {
         pushStep(
@@ -5494,6 +6156,11 @@ export async function executeLivePosition(
           connectionId,
           realPosition.symbol,
           simEntryPrice,
+          {
+            tradeMode: executionIntent,
+            sizeMultiplier: realPosition.sizeMultiplier,
+            indicationType: realPosition.indicationType,
+          },
         )
         const vol = simVolResult?.finalVolume ?? simVolResult?.calculatedVolume ?? simVolResult?.volume ?? 0
         if (vol > 0) {
@@ -5684,6 +6351,7 @@ export async function executeLivePosition(
         // Forward the Block/DCA variant multiplier so notional is correctly
         // scaled before the exchange order is placed (absent → 1.0 identity).
         sizeMultiplier: realPosition.sizeMultiplier,
+        indicationType: realPosition.indicationType,
       },
     ).catch(err => {
       console.error(`${LOG_PREFIX} volume calc error:`, err)
@@ -7884,13 +8552,33 @@ export async function closeLivePosition(
     await releasePositionMutationLock(connectionId, livePositionId, lockId).catch(() => false)
     mutationLockHeld = false
     if (position.liveLockToken) {
-      await releaseLock(connectionId, position.symbol, position.direction!, position.liveLockToken)
+      await releaseLock(connectionId, position.symbol, liveLockDirection(position), position.liveLockToken)
     } else {
       console.warn(`${LOG_PREFIX} [lock-coordination] close skipped live lock release for ${connectionId}/${position.symbol}/${position.direction} because no owner token is available`)
     }
     if (!wasAlreadyClosed) {
       await incrementMetric(connectionId, "live_positions_closed_count")
       if (pnl > 0) await incrementMetric(connectionId, "live_wins_count")
+      const closedDirection = resolveLivePositionDirection(position)
+      // A Signal/default or Signal/Block leg may have joined a position whose
+      // primary owner is another indication type. Attribution follows the
+      // durable Signal risk/source lineage, not the first leg's label.
+      if (closedDirection && position.signalRisk?.sourceIds?.length) {
+        await recordSignalPerformanceOutcome({
+          connectionId,
+          positionId: position.id,
+          symbol: position.symbol,
+          direction: closedDirection,
+          pnl,
+          sourceIds: position.signalRisk.sourceIds,
+          closedAt: position.closedAt || Date.now(),
+        }).catch((error) => {
+          console.warn(
+            `${LOG_PREFIX} Signal outcome attribution failed for ${position.id}:`,
+            error instanceof Error ? error.message : error,
+          )
+        })
+      }
       // Only count as exchange-close failure when the connector actually
       // failed. `already_closed` means the exchange-side state already
       // matches our intent (SL/TP fired first), and `skipped` means we
@@ -7911,6 +8599,9 @@ export async function closeLivePosition(
       realParentSetKey: position.parentSetKey,
       realSetVariant: position.setVariant,
       realAxisWindows: position.axisWindows,
+      signalSourceIds: position.signalRisk?.sourceIds,
+      signalStopLossPct: position.signalRisk?.stopLossPct,
+      signalTakeProfitPct: position.signalRisk?.takeProfitPct,
       pnl,
       roi,
       closePrice,
@@ -8592,7 +9283,6 @@ export async function reconcileLivePositions(
       }
       exchangeMap.set(`${sym}|${direction}`, ep)
     }
-
     // ── Once-per-tick venue open-orders snapshot ────���─────────────────���
     // Used by `updateProtectionOrders` to detect silently-gone SL/TP
     // (filled, externally cancelled, expired, sweep). One `getOpenOrders`
@@ -8635,10 +9325,16 @@ export async function reconcileLivePositions(
     // createdAt. Non-canonical duplicates are refreshed for the dashboard
     // but never drive SL/TP arming, force-close, or close counters.
     const canonicalIdBySlot = new Map<string, string>()
+    const executionLanesByPhysicalSlot = new Map<string, Set<SignalExecutionLane>>()
     {
       const bySlot = new Map<string, typeof openPositions>()
       for (const p of openPositions) {
-        const slot = `${normSym(p.symbol)}|${p.direction}`
+        const physicalSlot = `${normSym(p.symbol)}|${p.direction}`
+        const lane = liveExecutionLane(p)
+        const slot = `${physicalSlot}|${lane}`
+        const lanes = executionLanesByPhysicalSlot.get(physicalSlot) ?? new Set<SignalExecutionLane>()
+        lanes.add(lane)
+        executionLanesByPhysicalSlot.set(physicalSlot, lanes)
         const arr = bySlot.get(slot)
         if (arr) arr.push(p); else bySlot.set(slot, [p])
       }
@@ -8666,6 +9362,7 @@ export async function reconcileLivePositions(
       const delta: PosDelta = { reconciled: 1, updated: 0, closed: 0, errors: 0, protectionRearmed: 0 }
       try {
         const mapKey = `${normSym(pos.symbol)}|${pos.direction}`
+        const logicalSlotKey = `${mapKey}|${liveExecutionLane(pos)}`
         const exPos = exchangeMap.get(mapKey)
 
         // ── Non-canonical duplicate for this venue slot (BUG 4) ─────────
@@ -8674,7 +9371,7 @@ export async function reconcileLivePositions(
         // when the slot is live, or prune the phantom Redis record when the
         // venue slot is empty — without incrementing the close counter, so
         // the canonical record alone owns the single real close.
-        if (canonicalIdBySlot.get(mapKey) !== pos.id) {
+        if (canonicalIdBySlot.get(logicalSlotKey) !== pos.id) {
           if (exPos) {
             const mP = parseFloat(String(exPos.markPrice ?? exPos.indexPrice ?? exPos.lastPrice ?? "0"))
             const uP = parseFloat(String(exPos.unrealizedProfit ?? exPos.unrealisedPnl ?? exPos.unrealizedPnl ?? "0"))
@@ -8745,7 +9442,10 @@ export async function reconcileLivePositions(
             syncedAt: Date.now(),
           }
           pos.updatedAt = Date.now()
-          await reconcileAuthoritativeExchangeQuantity(pos, authoritativeSize, authoritativeEntry)
+          const parallelExecutionLanes = (executionLanesByPhysicalSlot.get(mapKey)?.size || 0) > 1
+          if (!parallelExecutionLanes) {
+            await reconcileAuthoritativeExchangeQuantity(pos, authoritativeSize, authoritativeEntry)
+          }
           pos.submissionAbsentConfirmations = 0
           if (!pos.orderId && pos.submissionState === "unconfirmed") {
             const clientOrderId = getTrackedClientOrderId(pos, "entry")
@@ -8764,7 +9464,7 @@ export async function reconcileLivePositions(
           if (pos.status === "placed" || pos.status === "pending_fill" || pos.status === "placed_unconfirmed") {
             const exSize  = Math.abs(parseFloat(String(exPos.size ?? exPos.positionAmt ?? exPos.quantity ?? "0"))) || 0
             const exEntry = parseFloat(String(exPos.entryPrice ?? exPos.avgPrice ?? exPos.markPrice ?? "0")) || 0
-            if (exSize > 0) {
+            if (exSize > 0 && !parallelExecutionLanes) {
               if (pos.executedQuantity <= 0) {
                 pos.executedQuantity = exSize
                 pos.remainingQuantity = 0
@@ -8922,7 +9622,7 @@ export async function reconcileLivePositions(
                   pushStep(pos, "entry_submission_absent", false, pos.statusReason)
                   await savePosition(pos)
                   if (pos.liveLockToken) {
-                    await releaseLock(connectionId, pos.symbol, pos.direction!, pos.liveLockToken).catch(() => false)
+                    await releaseLock(connectionId, pos.symbol, liveLockDirection(pos), pos.liveLockToken).catch(() => false)
                   }
                   delta.updated++
                   return delta
@@ -9033,7 +9733,7 @@ export async function reconcileLivePositions(
             client.expire(closedIndexKey, 30 * 24 * 60 * 60).catch(() => {}),
           ]
           if (pos.liveLockToken) {
-            writes.push(releaseLock(connectionId, pos.symbol, pos.direction!, pos.liveLockToken).catch(() => false))
+            writes.push(releaseLock(connectionId, pos.symbol, liveLockDirection(pos), pos.liveLockToken).catch(() => false))
           }
           if (!alreadyMoved) {
             // Counter increments are the ONLY ops that must be deduped across
@@ -9785,6 +10485,13 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
       if (!direction) continue
       exchangeMap.set(`${sym}|${direction}`, ep)
     }
+    const executionLanesByPhysicalSlot = new Map<string, Set<SignalExecutionLane>>()
+    for (const position of openPositions) {
+      const physicalSlot = `${normSym(position.symbol)}|${position.direction}`
+      const lanes = executionLanesByPhysicalSlot.get(physicalSlot) ?? new Set<SignalExecutionLane>()
+      lanes.add(liveExecutionLane(position))
+      executionLanesByPhysicalSlot.set(physicalSlot, lanes)
+    }
 
     // liveOrderIdsSync was fetched in the parallel prefetch above.
     // No separate serial call needed here.
@@ -9830,6 +10537,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         }
         
         const mapKey = `${normSym(position.symbol)}|${position.direction}`
+        const parallelExecutionLanes = (executionLanesByPhysicalSlot.get(mapKey)?.size || 0) > 1
         const exchangePos = exchangeMap.get(mapKey)
         if (!exchangePos) {
           if (!recordExchangeAbsence(position)) return
@@ -9890,7 +10598,9 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
             if (!(position.averageExecutionPrice > 0)) position.averageExecutionPrice = exEntry
             if (!(position.entryPrice > 0)) position.entryPrice = exEntry
           }
-          await reconcileAuthoritativeExchangeQuantity(position, authoritativeSize, exEntry)
+          if (!parallelExecutionLanes) {
+            await reconcileAuthoritativeExchangeQuantity(position, authoritativeSize, exEntry)
+          }
           position.submissionAbsentConfirmations = 0
           position.updatedAt = Date.now()
         } else if (
@@ -10002,7 +10712,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
                 if (position.liveLockToken) {
                   const direction = resolveLivePositionDirection(position)
                   if (direction) {
-                    await releaseLock(connectionId, position.symbol, direction, position.liveLockToken).catch(() => false)
+                    await releaseLock(connectionId, position.symbol, liveLockDirection(position), position.liveLockToken).catch(() => false)
                   }
                 }
                 return
@@ -10018,7 +10728,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         ) {
           const exSize = Math.abs(parseFloat(String(exchangePos.size ?? (exchangePos as any).positionAmt ?? exchangePos.quantity ?? "0"))) || 0
           const exEntry = parseFloat(String(exchangePos.entryPrice ?? (exchangePos as any).avgPrice ?? exchangePos.markPrice ?? "0")) || 0
-          if (exSize > 0) {
+          if (exSize > 0 && !parallelExecutionLanes) {
             position.executedQuantity = exSize
             position.remainingQuantity = Math.max(0, (position.quantity || exSize) - exSize)
             position.averageExecutionPrice = exEntry || position.entryPrice
@@ -10670,13 +11380,33 @@ export async function syncLiveFromPseudo(
     // flap between unrelated Sets. Scope the match to the owning Set's key
     // so each pseudo only steers the live position it actually backs.
     const pseudoSetKey = String(
-      pseudoPos?.set_id || pseudoPos?.config_set_key || pseudoPos?.source_set_key || "",
+      pseudoPos?.strategy_set_key ||
+      pseudoPos?.strategySetKey ||
+      pseudoPos?.set_id ||
+      pseudoPos?.config_set_key ||
+      pseudoPos?.source_set_key ||
+      "",
     ).trim()
+    const pseudoExecutionLane = resolveSignalExecutionLane({
+      executionLane: pseudoPos?.execution_lane ?? pseudoPos?.executionLane,
+      indicationType: pseudoPos?.indication_type ?? pseudoPos?.indicationType,
+      trailingProfile: pseudoPos?.trailing_mode === "signal_dynamic"
+        ? {
+            mode: "signal_dynamic",
+            startRatio: Number(pseudoPos?.trailing_start_ratio || 0),
+            stopRatio: Number(pseudoPos?.trailing_stop_ratio || 0),
+            stepRatio: Number(pseudoPos?.trailing_step_ratio || 0),
+          }
+        : undefined,
+    })
 
     const livePositions = await getLivePositions(connectionId)
     const slotMatches = livePositions.filter((p: any) => {
       const liveSide = resolveLivePositionDirection(p)
-      return String(p.symbol || "").toUpperCase() === symbol && liveSide === side && p.status !== "closed"
+      return String(p.symbol || "").toUpperCase() === symbol &&
+        liveSide === side &&
+        liveExecutionLane(p) === pseudoExecutionLane &&
+        p.status !== "closed"
     })
     if (slotMatches.length === 0) return
 
@@ -10866,6 +11596,7 @@ export const __liveStageTest = {
   settleControlOrdersBeforeQuantityMutation,
   reconcilePendingAccumulationAndRearm,
   reconcileAuthoritativeExchangeQuantity,
+  physicalAccumulationCount,
   sweepOrphanProtectionOrders,
   updateProtectionOrders,
   readAbsoluteProtectionPrices(pos: LivePosition) {

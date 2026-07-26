@@ -3105,8 +3105,8 @@ const NUMERIC_HASH_FIELDS = new Set([
   "min_step", "minStep",
   "trailing_min_step", "trailingMinStep",
   "leverage_percentage", "leveragePercentage",
-  "live_volume_factor", "preset_volume_factor",
-  "volume_factor", "volume_factor_live", "volume_factor_preset",
+  "live_volume_factor", "preset_volume_factor", "signal_volume_factor",
+  "volume_factor", "volume_factor_live", "volume_factor_preset", "volume_factor_signal",
   "volume_step_ratio",
   "axis_prev_max_window", "axisPrevMaxWindow",
   "axis_last_max_window", "axisLastMaxWindow",
@@ -3334,6 +3334,7 @@ const CONNECTION_SETTINGS_CANONICAL_FIELDS = new Set([
   "is_testnet",
   "leverage_percentage",
   "live_volume_factor",
+  "signal_volume_factor",
   "margin_mode",
   "margin_type",
   "position_mode",
@@ -3344,6 +3345,28 @@ const CONNECTION_SETTINGS_CANONICAL_FIELDS = new Set([
   "volume_factor",
   "volume_type",
 ])
+
+function normalizeConnectionBaseIdentity<T extends Record<string, any>>(input: T): T {
+  const normalized: Record<string, any> = { ...input }
+  if ("volume_factor" in normalized) normalized.volume_factor = 1
+  if ("base_volume_factor" in normalized) normalized.base_volume_factor = 1
+  if ("baseVolumeFactor" in normalized) normalized.baseVolumeFactor = 1
+
+  const rawNested = normalized.connection_settings
+  if (rawNested && typeof rawNested === "object" && !Array.isArray(rawNested)) {
+    normalized.connection_settings = normalizeConnectionBaseIdentity(rawNested)
+  } else if (typeof rawNested === "string" && rawNested.trim().startsWith("{")) {
+    try {
+      normalized.connection_settings = JSON.stringify(
+        normalizeConnectionBaseIdentity(JSON.parse(rawNested)),
+      )
+    } catch {
+      // Preserve malformed legacy payloads here; the typed settings APIs reject
+      // them and migration 084 repairs the canonical hash fields independently.
+    }
+  }
+  return normalized as T
+}
 
 function hasConnectionValue(value: unknown): boolean {
   if (value === undefined || value === null) return false
@@ -4520,7 +4543,11 @@ export async function getAllConnectionsWithStatus(): Promise<any[]> {
 export async function createConnection(data: any): Promise<any> {
   await initRedis()
   const client = getRedisClient()
-  const id = data.id || `conn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  const normalizedData = normalizeConnectionBaseIdentity({
+    ...data,
+    volume_factor: 1,
+  })
+  const id = normalizedData.id || `conn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 
   // Check if connection already exists to prevent duplicates — if it
   // does, update it in place rather than producing a conflicting
@@ -4532,7 +4559,7 @@ export async function createConnection(data: any): Promise<any> {
   if (existingConnection && Object.keys(existingConnection).length > 0) {
     console.log(`[v0] [Redis] Connection already exists with id ${id}, updating instead of creating duplicate`)
     const merged = {
-      ...data,
+      ...normalizedData,
       id,
       updated_at: new Date().toISOString(),
     }
@@ -4546,7 +4573,7 @@ export async function createConnection(data: any): Promise<any> {
   }
 
   const connectionData = {
-    ...data,
+    ...normalizedData,
     id,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -4567,7 +4594,8 @@ export async function updateConnection(id: string, updates: any): Promise<any> {
     return null
   }
   const updatedAt = new Date().toISOString()
-  const connectionPatch = Object.entries(updates || {}).reduce<Record<string, any>>(
+  const normalizedUpdates = normalizeConnectionBaseIdentity(updates || {})
+  const connectionPatch = Object.entries(normalizedUpdates).reduce<Record<string, any>>(
     (patch, [key, value]) => {
       // `undefined` means "not supplied" for every settings/switch route. Do
       // not stringify it into Redis or accidentally clear a sibling setting.

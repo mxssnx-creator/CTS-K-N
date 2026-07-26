@@ -18,7 +18,7 @@ function isTruthy(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true"
 }
 
-const INDICATION_TYPES = ["direction", "move", "active", "optimal", "auto", "trend"] as const
+const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto", "signal", "trend"] as const
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -96,7 +96,7 @@ async function countIndicationsByType(client: ReturnType<typeof getRedisClient>,
       acc.total += item.count
       return acc
     },
-    { direction: 0, move: 0, active: 0, optimal: 0, auto: 0, trend: 0, total: 0 } as Record<string, number>,
+    { direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, signal: 0, trend: 0, total: 0 } as Record<string, number>,
   )
 
   if (result.total > 0) {
@@ -279,7 +279,7 @@ export async function GET(request: Request) {
             ? (state as any).active_symbols
             : []
 
-        const [indicationsByType, strategyCounts, strategyEvaluations, basePseudoCount, mainPseudoCount, realPseudoCount, baseDirection, baseMove, baseActive, baseOptimal, baseTrend, livePositionsCount, prehistoricSymbols, prehistoricDataKeys] =
+        const [indicationsByType, strategyCounts, strategyEvaluations, basePseudoCount, mainPseudoCount, realPseudoCount, baseDirection, baseMove, baseActive, baseActiveAdvanced, baseOptimal, baseSignal, baseTrend, livePositionsCount, prehistoricSymbols, prehistoricDataKeys] =
           await Promise.all([
             countIndicationsByType(client, conn.id),
             countStrategiesByType(client, conn.id, symbols),
@@ -290,7 +290,9 @@ export async function GET(request: Request) {
             client.scard(`base_pseudo:${conn.id}:direction`).catch(() => 0),
             client.scard(`base_pseudo:${conn.id}:move`).catch(() => 0),
             client.scard(`base_pseudo:${conn.id}:active`).catch(() => 0),
+            client.scard(`base_pseudo:${conn.id}:active_advanced`).catch(() => 0),
             client.scard(`base_pseudo:${conn.id}:optimal`).catch(() => 0),
+            client.scard(`base_pseudo:${conn.id}:signal`).catch(() => 0),
             client.scard(`base_pseudo:${conn.id}:trend`).catch(() => 0),
             client.scard(`positions:${conn.id}:live`).catch(() => 0),
             client.scard(`prehistoric:${conn.id}:symbols`).catch(() => 0),
@@ -334,7 +336,9 @@ export async function GET(request: Request) {
             direction: baseDirection,
             move: baseMove,
             active: baseActive,
+            active_advanced: baseActiveAdvanced,
             optimal: baseOptimal,
+            signal: baseSignal,
             trend: baseTrend,
           },
           livePositions: livePositionsCount,
@@ -382,13 +386,15 @@ export async function GET(request: Request) {
         acc.direction += item.indicationsByType.direction || 0
         acc.move += item.indicationsByType.move || 0
         acc.active += item.indicationsByType.active || 0
+        acc.active_advanced += item.indicationsByType.active_advanced || 0
         acc.optimal += item.indicationsByType.optimal || 0
         acc.auto += item.indicationsByType.auto || 0
+        acc.signal += item.indicationsByType.signal || 0
         acc.trend += item.indicationsByType.trend || 0
         acc.total += item.indicationsByType.total || 0
         return acc
       },
-      { direction: 0, move: 0, active: 0, optimal: 0, auto: 0, trend: 0, total: 0 },
+      { direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, signal: 0, trend: 0, total: 0 },
     )
 
     const aggregatedStrategyCounts = perConnection.reduce(
@@ -513,11 +519,13 @@ export async function GET(request: Request) {
         acc.direction += item.basePseudoByIndication.direction
         acc.move += item.basePseudoByIndication.move
         acc.active += item.basePseudoByIndication.active
+        acc.active_advanced += item.basePseudoByIndication.active_advanced
         acc.optimal += item.basePseudoByIndication.optimal
+        acc.signal += item.basePseudoByIndication.signal
         acc.trend += item.basePseudoByIndication.trend
         return acc
       },
-      { direction: 0, move: 0, active: 0, optimal: 0, trend: 0 },
+      { direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, signal: 0, trend: 0 },
     )
 
     const summary = {

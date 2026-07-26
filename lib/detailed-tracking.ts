@@ -47,7 +47,7 @@
 
 import { getRedisClient } from "@/lib/redis-db"
 
-const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto", "trend"] as const
+const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto", "signal", "trend"] as const
 
 function aggregateWindowByType(hash: Record<string, string>): Record<string, number> {
   const totals: Record<string, number> = {}

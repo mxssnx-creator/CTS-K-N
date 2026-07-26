@@ -106,7 +106,7 @@ async function main() {
     maxSymbolsAllowed: 32,
     availableSymbols: available.length,
     missingSymbols: missing,
-    lowestVolumeFactor: 0.1,
+    lowestVolumeFactor: 1,
     hasCredentials: credentials,
     canPlaceLiveOrders: credentials && publicApiReachable && available.length > 0,
     note: credentials

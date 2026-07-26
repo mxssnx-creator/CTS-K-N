@@ -718,7 +718,9 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                   <div>
                     <h4 className="font-semibold">Block Strategy Type · Adjust</h4>
                     <p className="text-xs text-muted-foreground">
-                      Every valid Block count is coordinated independently. Exchange add quantity = current position base × (active Block count × volume ratio); its volume state remains attached until that position closes profitably, followed by its own count pause.
+                      Every valid Block count is evaluated independently. Its physical target is general volume + ((general volume × ratio) × active Block count); exchange orders submit only the missing delta, while result and pause state remain count-specific.
+                      Regular ladders use Base-derived Sets only; Active Real
+                      counts independently include Pos-Count positions.
                     </p>
                   </div>
                   <div className={presetBlockEnabled ? "grid gap-4 md:grid-cols-2 xl:grid-cols-4" : "grid gap-4 md:grid-cols-2 xl:grid-cols-4 pointer-events-none"}>
@@ -782,7 +784,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                   <div className="grid grid-cols-3 gap-2 text-[11px]">
                     {[1, 2, Math.max(3, Math.min(10, Math.floor(presetBlockMaxStack)))].map((count, index) => (
                       <div key={`${count}-${index}`} className="rounded border bg-muted/20 p-2 text-center tabular-nums">
-                        Block {count}: +{(count * presetBlockVolumeRatio).toFixed(2)}× base
+                        Block {count}: {(1 + count * presetBlockVolumeRatio).toFixed(2)}× total
                       </div>
                     ))}
                   </div>

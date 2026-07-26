@@ -1,4 +1,4 @@
-# Release verification record — 2026-07-22
+# Release verification record — 2026-07-26
 
 This record captures the final acceptance evidence for the Block PF/position
 count/DCA, deployment, installation, durability, and recreation handoff. All
@@ -6,22 +6,78 @@ ordinary tests ran with real exchange order placement disabled. A pass is not
 claimed for any credential- or target-dependent action that could not safely be
 executed.
 
+## Latest acceptance — Signal, Block PF and Base-volume identity
+
+The 2026-07-26 release extends the Common indication category with the
+default-enabled Signal engine and freezes all shared Base coordination at
+identity ratio `1`. Main, Preset, Signal, Pos-Count, DCA and Block adjustments
+remain explicit, independent factors. File-backed fallback imports, Redis
+writes and migration 084 all normalize legacy Base multipliers without
+changing the named channel factors.
+
+- The Signal registry contains exactly 35 documented public one-minute OHLCV
+  adapters. Four liquid core feeds stay in every bounded cycle while
+  priority-ordered pages cover every remaining compatible enabled source.
+- Signal source requests expose a persisted seconds-based interval. It defaults
+  to 30 seconds, clamps every API/legacy value to at least 30 seconds, and
+  drives both source-fetch and complete-cycle cache expiry. The production UI
+  contract verifies that the running API never exposes a sub-30-second value.
+- Fixture/schema tests cover all 35 request and response formats. The isolated
+  public HTTP probe reported 35/35 compatible adapters, zero authenticated
+  requests and zero order endpoints. This validation host blocks direct
+  exchange-domain egress, so its 35 bounded timeouts are recorded as an
+  environment reachability limitation, not as provider failures.
+- Signal performance is an exact rolling last-15 **closed** result ring for
+  each source × symbol × long/short lane. Negative mature PnL disables only
+  that lane; open positions never enter PnL or PF windows.
+- Strategy Block lanes are independent for symbol × long/short/overall and
+  Signal Block lanes for source × symbol × long/short/overall, for every
+  Block count. Their calculation, PF difference and statistics continue while
+  disabled; only new evaluation/emission is suppressed, while existing
+  exposure remains reconciled.
+- An enabled cold Block starts immediately from the matching normal rolling PF.
+  Once its own closed-result window is mature, it is held whenever Block PF is
+  lower than normal PF. The explicit PF=2/Last-25 regression rejects a mature
+  Block PF of 1.99 and accepts 2.0.
+- The physical target is
+  `general + general × BlockRatio × count`, and only the unconfirmed delta is
+  submitted. Source lanes never multiply exchange exposure; they keep
+  independent attribution/PnL while execution consolidates by symbol and
+  direction.
+
+Latest executable evidence:
+
+| Check | Result |
+| --- | --- |
+| Next 15.5.18 standalone build | pass; 41/41 pages, trace/postbuild complete |
+| Complete Jest application suite | pass; 108/108 suites, 749/749 tests |
+| Critical Block/Signal repetition | pass; 3 × 140 = 420 tests |
+| Extended production paper soak | pass; 240,134 ms, 12 symbols, 120 rounds, 1,320 requests |
+| Fresh final production paper soak | pass; 120,067 ms, 12 symbols, 60 rounds, 660 requests |
+| Fresh final production progression | 336 engine cycles; 2,304 Main strategy cycles |
+| Fresh final database stability | 533 → 2,318 keys; stable-window delta 1; schema v84 |
+| Fresh final production latency | steady p95 99 ms (1,000 ms budget) |
+| Crash recovery | 24/24 Paper positions recovered; no pending/placed residue |
+| 32-symbol production UI | pass; Signal enabled, 35-source registry, ≥30 s request interval, Signal volume hot reload |
+| Development/HMR paper soak | pass; 61,183 ms, 330 requests, steady p95 1,494 ms |
+| Real exchange activity | 0 real positions and 0 real order requests |
+
 ## Toolchain and static release gates
 
 | Check | Result |
 | --- | --- |
-| Source base before this handoff commit | `39844c0b6e523a6cb89f6851af741582ca6f1dcd` on `main` |
-| Validation host | Linux 6.12.47 x86_64; Node 24.14.0 |
+| Source base before this handoff commit | `8e46569b5203401876d9c7eb1a557521602574d1` on `origin/main` |
+| Validation host | Linux 6.12.13 x86_64; Node 24.14.0 |
 | Package manager | exact `pnpm 10.28.1` through Corepack |
 | Frozen dependency install | pass, offline, lockfile unchanged |
 | Shell/JS/JSON/source syntax | pass |
 | TypeScript | pass |
 | ESLint | pass |
-| Jest | 92 suites, 575 tests, 0 failures |
-| Next 15.5.18 optimized build | pass; 40 static pages generated |
+| Jest | 108 suites, 749 tests, 0 failures |
+| Next 15.5.18 optimized build | pass; 41 pages generated |
 | Isolated `.next-prod` build | pass; custom-dist static generation serialized and the Next 15 missing `pages-manifest.json` post-emit race repaired before page-data collection |
-| Release-tree secret scan | pass; 1,160 files inspected, 0 findings |
-| Redis schema | v82, sequential migration inventory |
+| Release-tree secret scan | pass; 1,236 files inspected, 0 findings |
+| Redis schema | v84, sequential migration inventory |
 
 ## Strategy correctness evidence
 
@@ -59,7 +115,7 @@ executed.
 | Full Vercel builder | pass locally; provider simulation reproduced and eliminated read-only `corepack enable` EROFS, Next 15's zero-byte `export-marker.json`, and stale `export-detail.json` false-static classification; dynamic/API functions are retained |
 | OpenNext 1.20.1 build | pass; generated `.open-next/worker.js` |
 | Wrangler 4.86.0 dry-run | pass; 831 assets accepted for upload |
-| Local Workerd Kilo runtime | pass; health, schema v82, 12 UI routes and 268 served UI scripts, non-collapsing header/sidebar CSS, exact 5/5 Historic/Main progress, version/event Settings ACK, Block-PF/position-count/volume changes, minute-deduplicated dashboard paper pulse, external-owner queue, all global/connection state switches, statistics/history, live fail-closed, admin auth, remote-owner fail-closed route, scheduled continuity and live recovery |
+| Local Workerd Kilo runtime | pass; health, schema v84, 12 UI routes and 268 served UI scripts, non-collapsing header/sidebar CSS, exact 5/5 Historic/Main progress, version/event Settings ACK, Block-PF/position-count/volume changes, minute-deduplicated dashboard paper pulse, external-owner queue, all global/connection state switches, statistics/history, live fail-closed, admin auth, remote-owner fail-closed route, scheduled continuity and live recovery |
 | Credential-less `kilo:deploy` | expected fail-closed before upload; required runtime/owner/controller inputs absent |
 
 OpenNext/Wrangler emitted their documented experimental `secrets`-field and

@@ -89,9 +89,10 @@ interface IndicationConfigCounts {
     optimalBasePositionsLimit: number
     commonTimeframes:          number[]
     enabledCommonIndicators:   number
+    enabledSignalSources:      number
   }
   types: Array<{
-    type: "direction" | "move" | "active" | "active_advanced" | "optimal" | "auto" | "trend" | "common"
+    type: "direction" | "move" | "active" | "active_advanced" | "optimal" | "auto" | "signal" | "trend" | "common"
     label: string
     group: "default" | "additional" | "common"
     storage: "independent_set" | "runtime"
@@ -220,6 +221,7 @@ interface LiveStats {
   indActiveAdvanced: number
   indOptimal: number
   indAuto: number
+  indSignal: number
   indTrend: number
   stratBase: number
   stratMain: number
@@ -326,7 +328,7 @@ const EMPTY_STATS: LiveStats = {
   historicAvgProfitFactor: 0, historicAvgProfitFactorCount: 0, executedPositions: 0,
   indicationCycles: 0, strategyCycles: 0, realtimeCycles: 0, indicationsTotal: 0,
   strategiesTotal: 0, positionsOpen: 0, successRate: 0, avgCycleMs: 0, isActive: false,
-  indDirection: 0, indMove: 0, indActive: 0, indActiveAdvanced: 0, indOptimal: 0, indAuto: 0, indTrend: 0,
+  indDirection: 0, indMove: 0, indActive: 0, indActiveAdvanced: 0, indOptimal: 0, indAuto: 0, indSignal: 0, indTrend: 0,
   stratBase: 0, stratMain: 0, stratReal: 0, stratLive: 0,
   stageBase:  { ...EMPTY_STAGE }, stageMain: { ...EMPTY_STAGE },
   stageReal:  { ...EMPTY_STAGE }, stageLive: { ...EMPTY_STAGE },
@@ -482,6 +484,7 @@ export function QuickstartSection() {
       let indActAdv  = s.breakdown?.indications?.activeAdvanced || 0
       let indOpt     = s.breakdown?.indications?.optimal  || 0
       let indAuto    = s.breakdown?.indications?.auto     || 0
+      let indSignal  = s.breakdown?.indications?.signal   || 0
       let indTrend   = s.breakdown?.indications?.trend    || 0
       let stratBase  = s.breakdown?.strategies?.base      || 0
       let stratMain  = s.breakdown?.strategies?.main      || 0
@@ -503,6 +506,7 @@ export function QuickstartSection() {
             indActAdv  = e.indicationsByType?.activeAdvanced || e.indicationsByType?.active_advanced || 0
             indOpt     = e.indicationsByType?.optimal   || 0
             indAuto    = e.indicationsByType?.auto      || 0
+            indSignal  = e.indicationsByType?.signal    || 0
             indTrend   = e.indicationsByType?.trend     || 0
             stratBase  = e.baseStrategyCount  || 0
             stratMain  = e.mainStrategyCount  || 0
@@ -591,6 +595,7 @@ export function QuickstartSection() {
         indActiveAdvanced:     indActAdv,
         indOptimal:            indOpt,
         indAuto:               indAuto,
+        indSignal:             indSignal,
         indTrend:              indTrend,
         stratBase:             stratBase,
         stratMain:             stratMain,
@@ -1156,6 +1161,7 @@ export function QuickstartSection() {
     { label: "Adv",  value: stats.indActiveAdvanced },
     { label: "Opt",  value: stats.indOptimal   },
     { label: "Auto", value: stats.indAuto      },
+    { label: "Signal", value: stats.indSignal  },
     { label: "Trend", value: stats.indTrend    },
   ]
 
@@ -1980,12 +1986,12 @@ export function QuickstartSection() {
                       </tr>
                     </thead>
                     <tbody>
-                      {(["direction", "move", "active", "activeAdvanced", "optimal", "auto", "trend"] as const).map((k) => {
+                      {(["direction", "move", "active", "activeAdvanced", "optimal", "auto", "signal", "trend"] as const).map((k) => {
                         const r = stats.apIndications[k] ?? EMPTY_AP_ROW
                         if (r.sets === 0 && r.trackings === 0 && r.positions === 0) return null
                         const labelMap: Record<string, string> = {
                           direction: "Direction", move: "Move", active: "Active",
-                          activeAdvanced: "Active Adv", optimal: "Optimal", auto: "Auto", trend: "Trend",
+                          activeAdvanced: "Active Adv", optimal: "Optimal", auto: "Auto", signal: "Signal", trend: "Trend",
                         }
                         return (
                           <tr key={k} className="border-b border-border/20 last:border-0">

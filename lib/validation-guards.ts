@@ -100,19 +100,24 @@ export function validateBlockStrategyEdgeCases(
     )
   }
 
-  // Guard: extreme size multiplier (>3x or <0.3x)
-  if (sizeMultiplier > 3 || sizeMultiplier < 0.3) {
+  // Canonical Block target is 1 + count × ratio. With the enforced settings
+  // bounds (count ≤ 10, ratio ≤ 3), 31x is the largest valid total target.
+  // Values below identity or above that ceiling indicate stale/double-scaled
+  // metadata rather than a legitimate high-count Block.
+  if (sizeMultiplier > 31 || sizeMultiplier < 1) {
     warnings.push(
       `[v0] [GUARD] ${symbol} block size multiplier=${sizeMultiplier} is extreme; ` +
-      `recommended range [0.5, 2.0]`
+      `valid canonical range is [1, 31] from 1 + count × ratio`
     )
   }
 
-  // Guard: independent block with existing positions (may be confusing but allowed)
-  if (isIndependentBlock && continuousCount > 0) {
+  // Every physical Block add-on is anchored to a confirmed normal position.
+  // Independent here means independent calculation/PF lane, not a standalone
+  // exchange order without a parent quantity.
+  if (isIndependentBlock && continuousCount === 0) {
     warnings.push(
-      `[v0] [GUARD] ${symbol} independent block created but ${continuousCount} continuous position(s) exist; ` +
-      `block is firing standalone (expected behavior, just noting)`
+      `[v0] [GUARD] ${symbol} independent Block has no confirmed normal parent; ` +
+      `calculation may continue but Live emission must wait for a base quantity`
     )
   }
 

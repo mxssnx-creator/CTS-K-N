@@ -12,6 +12,7 @@ export const INDICATION_TYPES = {
   ACTIVE: "active",
   OPTIMAL: "optimal",
   AUTO: "auto",
+  SIGNAL: "signal",
   TREND: "trend",
 } as const
 
@@ -23,6 +24,7 @@ export const INDICATION_TYPE_LABELS: Record<IndicationType, string> = {
   [INDICATION_TYPES.ACTIVE]: "Active",
   [INDICATION_TYPES.OPTIMAL]: "Optimal",
   [INDICATION_TYPES.AUTO]: "Auto",
+  [INDICATION_TYPES.SIGNAL]: "Signal",
   [INDICATION_TYPES.TREND]: "Trend",
 }
 
@@ -30,6 +32,7 @@ export const DEFAULT_INDICATION_TYPES: IndicationType[] = [
   INDICATION_TYPES.DIRECTION,
   INDICATION_TYPES.MOVE,
   INDICATION_TYPES.ACTIVE,
+  INDICATION_TYPES.SIGNAL,
   INDICATION_TYPES.TREND,
 ]
 

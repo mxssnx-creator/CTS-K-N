@@ -59,7 +59,7 @@ interface ConnectionInfoSnapshot {
   stats: JsonRecord
 }
 
-const INDICATION_TYPES = ["direction", "move", "active", "optimal", "auto", "trend"] as const
+const INDICATION_TYPES = ["direction", "move", "active", "optimal", "auto", "signal", "trend"] as const
 const STRATEGY_STAGES = ["base", "main", "real", "live"] as const
 
 const isRecord = (value: unknown): value is JsonRecord =>
@@ -230,11 +230,18 @@ function RealVariantStatsCard({
   const countEvaluations = Array.isArray(stats.countEvaluations)
     ? stats.countEvaluations.map(asRecord)
     : []
+  const scopedEvaluations = Array.isArray(stats.scopedEvaluations)
+    ? stats.scopedEvaluations.map(asRecord)
+    : []
   const activeOverlay = asRecord(stats.activeOverlayEvaluation)
   const activeReal = asRecord(activeOverlay.real)
   const activeLive = asRecord(activeOverlay.live)
   const activeCombined = asRecord(activeOverlay.combined)
   const activeVolumeIncrement = asRecord(activeOverlay.volumeIncrement)
+  const activeCalculated = asNumber(activeOverlay.calculated)
+  const activeEvaluated = asNumber(activeOverlay.evaluated)
+  const activeEligible = asNumber(activeOverlay.eligible)
+  const activeDisabled = asNumber(activeOverlay.disabled)
   const hasActiveBlockSnapshot = [
     activeReal.long,
     activeReal.short,
@@ -242,7 +249,7 @@ function RealVariantStatsCard({
     activeLive.short,
     activeCombined.long,
     activeCombined.short,
-  ].some((entry) => asNumber(entry) > 0)
+  ].some((entry) => asNumber(entry) > 0) || activeCalculated > 0
   return (
     <div className="rounded-xl border bg-background/70 p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
@@ -294,9 +301,9 @@ function RealVariantStatsCard({
         <div className="mt-3 rounded-lg border bg-muted/35 p-2 text-[10px]">
           <div className="flex items-center justify-between gap-2">
             <strong className="text-foreground">Active exposure coordination</strong>
-            <span className="text-muted-foreground">
-              mirrored Real/Live · not additive
-            </span>
+            <Badge variant={asBoolean(activeOverlay.strategyEnabled) ? "outline" : "secondary"}>
+              {asBoolean(activeOverlay.strategyEnabled) ? "evaluation enabled" : "calculation only"}
+            </Badge>
           </div>
           <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1 tabular-nums sm:grid-cols-4">
             <span>Real L/S {formatNumber(activeReal.long, 0)}/{formatNumber(activeReal.short, 0)}</span>
@@ -307,6 +314,21 @@ function RealVariantStatsCard({
             <span>
               Add vol L/S {formatNumber(activeVolumeIncrement.long, 2)}×/{formatNumber(activeVolumeIncrement.short, 2)}×
             </span>
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+            <span>{formatNumber(activeCalculated, 0)} calculated</span>
+            <span>{formatNumber(activeEvaluated, 0)} evaluated</span>
+            <span>{formatNumber(activeEligible, 0)} eligible</span>
+            {activeDisabled > 0 && <span>{formatNumber(activeDisabled, 0)} held by switch</span>}
+            <span>
+              PF {formatNumber(activeOverlay.avgObservedProfitFactor, 2)} vs normal{" "}
+              {formatNumber(activeOverlay.avgNormalProfitFactor, 2)} · Δ{" "}
+              {asNumber(activeOverlay.avgProfitFactorDifference) >= 0 ? "+" : ""}
+              {formatNumber(activeOverlay.avgProfitFactorDifference, 2)}
+            </span>
+            {asNumber(activeOverlay.coldStart) > 0 && (
+              <span>{formatNumber(activeOverlay.coldStart, 0)} cold-start</span>
+            )}
           </div>
         </div>
       )}
@@ -324,18 +346,76 @@ function RealVariantStatsCard({
             {countEvaluations.map((row) => {
               const observed = asNumber(row.avgObservedProfitFactor)
               const minimum = asNumber(row.avgMinimumProfitFactor)
-              const passing = observed >= minimum && minimum > 0
+              const normal = asNumber(row.avgNormalProfitFactor)
+              const difference = asNumber(row.avgProfitFactorDifference)
+              const passing = asNumber(row.eligible) > 0
               return (
                 <div key={asNumber(row.count)} className="rounded-lg border bg-muted/35 p-2 text-[10px]">
                   <div className="flex items-center justify-between gap-2">
                     <strong className="text-foreground">Count {formatNumber(row.count, 0)}</strong>
                     <span className={passing ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>
-                      PF {formatNumber(observed, 2)} / min {formatNumber(minimum, 2)}
+                      PF {formatNumber(observed, 2)} / normal {formatNumber(normal, 2)}
+                      {" · "}Δ {difference >= 0 ? "+" : ""}{formatNumber(difference, 2)}
                     </span>
                   </div>
                   <div className="mt-1 flex flex-wrap justify-between gap-x-2 text-muted-foreground">
-                    <span>{formatNumber(row.emitted, 0)} emitted / {formatNumber(row.evaluated, 0)} evaluated</span>
-                    <span>{formatNumber(row.avgVolumeIncrement, 2)}× vol · {formatNumber(row.active, 0)} active · {formatNumber(row.paused, 0)} paused</span>
+                    <span>
+                      {formatNumber(row.calculated, 0)} calculated · {formatNumber(row.evaluated, 0)} evaluated · {formatNumber(row.eligible, 0)} eligible
+                    </span>
+                    <span>
+                      min {formatNumber(minimum, 2)} · {formatNumber(row.avgVolumeIncrement, 2)}× vol ·{" "}
+                      {formatNumber(row.active, 0)} active · {formatNumber(row.paused, 0)} paused
+                      {asNumber(row.coldStart) > 0 ? ` · ${formatNumber(row.coldStart, 0)} cold-start` : ""}
+                    </span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+      {label === "Block" && scopedEvaluations.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Real scope lanes
+            </p>
+            <Badge variant="outline" className="text-[10px] tabular-nums">
+              {formatNumber(scopedEvaluations.length, 0)} source/scope/count rows
+            </Badge>
+          </div>
+          <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
+            {scopedEvaluations.map((row, index) => {
+              const observed = asNumber(row.avgObservedProfitFactor)
+              const minimum = asNumber(row.avgMinimumProfitFactor)
+              const normal = asNumber(row.avgNormalProfitFactor)
+              const difference = asNumber(row.avgProfitFactorDifference)
+              const passing = asNumber(row.eligible) > 0
+              const laneKind = asText(row.laneKind)
+              const source = asText(row.sourceId)
+              return (
+                <div
+                  key={`${asText(row.symbol)}:${laneKind}:${source}:${asText(row.scope)}:${asNumber(row.count)}:${index}`}
+                  className="rounded-lg border bg-muted/35 p-2 text-[10px]"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <strong className="text-foreground">
+                      {asText(row.symbol)} · {laneKind === "signal_source" ? `Signal ${source}` : "Strategy"} · {asText(row.scope)} · Count {formatNumber(row.count, 0)}
+                    </strong>
+                    <span className={passing ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>
+                      PF {formatNumber(observed, 2)} / normal {formatNumber(normal, 2)}
+                      {" · "}Δ {difference >= 0 ? "+" : ""}{formatNumber(difference, 2)}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap justify-between gap-x-2 text-muted-foreground">
+                    <span>
+                      {formatNumber(row.calculated, 0)} calculated · {formatNumber(row.evaluated, 0)} evaluated · {formatNumber(row.eligible, 0)} eligible
+                    </span>
+                    <span>
+                      min {formatNumber(minimum, 2)} · {formatNumber(row.avgVolumeIncrement, 2)}× add ·{" "}
+                      {formatNumber(row.sampleCount, 0)} samples · {formatNumber(row.active, 0)} active
+                      {asNumber(row.coldStart) > 0 ? ` · ${formatNumber(row.coldStart, 0)} cold-start` : ""}
+                    </span>
                   </div>
                 </div>
               )
@@ -1078,6 +1158,7 @@ export function ConnectionInfoDialog({ open, onOpenChange, connectionId, connect
                     <SectionPanel title="Volume and risk" description="Effective sizing multipliers and saved progression boundaries." icon={<Gauge className="h-4 w-4" />}>
                       <DetailRow label="Main volume factor" value={formatNumber(firstValue(derived.settings, ["live_volume_factor", "volume_factor_live", "baseVolumeFactorLive"]), 3)} />
                       <DetailRow label="Preset volume factor" value={formatNumber(firstValue(derived.settings, ["preset_volume_factor", "volume_factor_preset", "baseVolumeFactorPreset"]), 3)} />
+                      <DetailRow label="Signal volume factor" value={formatNumber(firstValue(derived.settings, ["signal_volume_factor", "volume_factor_signal", "signalVolumeFactor"]), 3)} />
                       <DetailRow label="Volume step ratio" value={formatNumber(firstValue(derived.settings, ["volume_step_ratio", "block_volume_step_ratio"]), 3)} />
                       <DetailRow label="Leverage" value={asBoolean(derived.settings.useMaximalLeverage) ? "Maximum allowed" : `${formatNumber(derived.settings.leveragePercentage, 1)}%`} />
                       <DetailRow label="Minimum step" value={formatNumber(firstValue(derived.settings, ["minStep", "minimal_step_count"]), 0)} />

@@ -75,7 +75,7 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
         margin_type: connection.margin_type || "cross",
         position_mode: connection.position_mode || "hedge",
         is_testnet: connection.is_testnet || false,
-        volume_factor: connection.volume_factor ?? MIN_VOLUME_FACTOR,
+        volume_factor: MIN_VOLUME_FACTOR,
       })
       setActiveTab("basic")
       setShowSecrets(false)
@@ -104,8 +104,6 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
     if (!formData.name.trim()) newErrors.name = "Name is required"
     if (!formData.api_key.trim()) newErrors.api_key = "API Key is required"
     if (!formData.api_secret.trim()) newErrors.api_secret = "API Secret is required"
-    if (formData.volume_factor <= 0) newErrors.volume_factor = "Volume factor must be positive"
-
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
@@ -169,7 +167,10 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
 
     setIsSaving(true)
     try {
-      await onSave(formData)
+      await onSave({
+        ...formData,
+        volume_factor: MIN_VOLUME_FACTOR,
+      })
       toast.success("Connection Updated", {
         description: "Connection settings have been saved successfully",
       })
@@ -358,20 +359,18 @@ export function ConnectionEditDialog({ isOpen, connection, onClose, onSave }: Co
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label htmlFor="volume_factor">Volume Factor</Label>
+                  <Label htmlFor="volume_factor">Base Coordination Factor</Label>
                   <Input
                     id="volume_factor"
                     type="number"
-                    step="0.1"
-                    min="0.1"
-                    value={formData.volume_factor}
-                    onChange={(e) => handleChange("volume_factor", parseFloat(e.target.value))}
-                    placeholder="1.0"
-                    disabled={isSaving}
-                    className={`bg-background h-8 text-sm ${errors.volume_factor ? "border-red-500" : ""}`}
+                    value={MIN_VOLUME_FACTOR}
+                    readOnly
+                    disabled
+                    className="bg-muted h-8 text-sm"
                   />
-                  {errors.volume_factor && <p className="text-xs text-red-500">{errors.volume_factor}</p>}
-                  <p className="text-xs text-muted-foreground">Multiplier for order volume (1.0 = 100%)</p>
+                  <p className="text-xs text-muted-foreground">
+                    Fixed at 1.0. Main, Preset and Signal volume use their independent sliders.
+                  </p>
                 </div>
               </div>
 

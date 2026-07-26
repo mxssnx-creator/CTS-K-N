@@ -59,7 +59,7 @@ sudo bash scripts/install.sh --runtime auto --service-user cts-kn \
 The installer supports Debian/Ubuntu and RHEL/Fedora/Amazon Linux families,
 uses systemd when available or PM2 when selected, provisions one application
 owner plus one minute-scheduler owner, verifies Redis persistence and schema
-v82, tests/builds before cutover, checks restart recovery, and restores the
+v84, tests/builds before cutover, checks restart recovery, and restores the
 previous `.next` build on failure.
 
 It reuses already-installed packages and runtimes. When absent, Bun is installed
@@ -126,6 +126,19 @@ jobs. Both share the same durable Redis state.
   Continuous, Pause, outcome, and direction axes.
 - Real applies position-count/PF/DDT gates, hedge coordination, safety caps,
   and independent Block Count 1..10 Sets.
+- Signal is a default-enabled Common indication engine. It normalizes 35
+  documented public one-minute OHLCV feeds, derives a low-stop consensus
+  locally, and enters the same Main → Real → Live lineage as every other
+  indication. It has no separate connection switch; the Indications selection
+  is authoritative. A liquid four-source core stays present while bounded
+  priority pages rotate through every other enabled compatible source, so all
+  35 sources are exercised without issuing 35 requests per symbol on every tick.
+- Regular Block ladders use normal Base-derived Sets only; Pos-Count Sets do
+  not recursively create Blocks. The separate Real-active Block calculation
+  still counts Pos-Count positions in its per-symbol, per-direction activity.
+- Real Block evaluation keeps independent Strategy lanes for
+  symbol × Long/Short/Overall and independent Signal lanes for
+  source × symbol × Long/Short/Overall, for every configured Block count.
 - Live executes Standard first and only then attaches Block or DCA adjustments
   to the confirmed authoritative parent position.
 - Every confirmed Set membership and realized result is booked idempotently in
@@ -138,9 +151,27 @@ The Block minimum ProfitFactor for count `n` is:
 blockMinPF(n) = defaultMinPF × blockProfitFactorRatio × (n × blockVolumeRatio)
 ```
 
+The physical Block target uses the immutable general order volume and never
+compounds earlier Count fills:
+
+```text
+blockTarget(n) = generalVolume + ((generalVolume × blockVolumeRatio) × n)
+nextOrderQty(n) = max(0, blockTarget(n) - generalVolume - confirmedBlockAdds)
+```
+
 Every count uses its own exact Set result ring and the same last-N window and
-minimum-sample rule as the normal PF calculation. The UI exposes the Block PF
-factor from `0.2` through `5.0`, default `0.8`.
+minimum-sample rule as the normal PF calculation. A cold enabled Block starts
+immediately from the matching normal PF without a Block-only progression. Once
+its own window is mature, it can emit only while its own PF is at least the
+matching normal rolling PF and any stronger configured minimum. Calculations,
+differences, and statistics continue while the Block switch is off; only new
+emission is suppressed. The UI exposes the Block PF factor from `0.2` through
+`5.0`, default `0.8`.
+
+Base volume coordination is always identity `1`. Explicit Main, Preset, Signal,
+Pos-Count, DCA, and Block factors are composed only at their own named boundary.
+Signal exposes its own volume-factor slider beside the other channel factors,
+including Overall settings.
 
 ## Documentation
 
@@ -149,14 +180,15 @@ The complete recreation kit begins at
 
 - system architecture, ownership, and complete directory map;
 - stage, Block, DCA, exchange, and settings propagation contracts;
-- Redis data model, schema v82 migrations, recovery, and backup rules;
+- Redis data model, schema v84 migrations, recovery, and backup rules;
 - complete environment/deployment/install procedures;
 - acceptance tests and a clean-room rebuild runbook;
 - generated API, page, environment, migration, test, source-tree, and SHA-256
   manifests under `docs/recreation/manifests/`.
 
-Supporting deep dives remain in `docs/`, `lib/BLOCK_STRATEGY_SYSTEM.md`, and
-the source-adjacent tests.
+Supporting deep dives remain in
+[`docs/signal-source-research.md`](docs/signal-source-research.md),
+`lib/BLOCK_STRATEGY_SYSTEM.md`, and the source-adjacent tests.
 
 ## Safety
 

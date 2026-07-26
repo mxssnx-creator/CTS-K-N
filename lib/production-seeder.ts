@@ -183,7 +183,8 @@ async function seedPredefinedConnections(): Promise<void> {
       active_symbols: "[]",
       live_volume_factor: "1.0",
       preset_volume_factor: "1.0",
-      volume_step_ratio: "0.6",
+      signal_volume_factor: "1.0",
+      volume_step_ratio: "1.0",
     }))
 
     // Save individual connections to Redis (connection:{id} hashes)

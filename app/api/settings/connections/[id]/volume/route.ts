@@ -20,7 +20,8 @@ import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinato
  *
  * This rewrite:
  *   - Persists into the canonical Redis connection record
- *     (`live_volume_factor`, `preset_volume_factor`) — exactly the
+ *     (`live_volume_factor`, `preset_volume_factor`,
+ *     `signal_volume_factor`) — exactly the
  *     fields `VolumeCalculator.resolveLiveEngine` looks up.
  *   - Accepts both factors in a single POST (the dashboard panel
  *     batches them via two separate slider handlers but a future
@@ -62,11 +63,13 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     // slider hydrates at exactly the value the engine will apply.
     const liveFactor = clampFactor(conn.live_volume_factor) ?? FACTOR_MIN
     const presetFactor = clampFactor(conn.preset_volume_factor) ?? FACTOR_MIN
+    const signalFactor = clampFactor(conn.signal_volume_factor) ?? FACTOR_MIN
     const stepRatio = clampStepRatio(conn.volume_step_ratio) ?? DEFAULT_VOLUME_STEP_RATIO
     return NextResponse.json({
       connectionId: id,
       live_volume_factor: liveFactor,
       preset_volume_factor: presetFactor,
+      signal_volume_factor: signalFactor,
       volume_step_ratio: stepRatio,
     })
   } catch (error) {
@@ -89,17 +92,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // a no-op malformed request (clearer error than silent 200).
     const liveRaw = body.live_volume_factor
     const presetRaw = body.preset_volume_factor
+    const signalRaw = body.signal_volume_factor
     const stepRaw = body.volume_step_ratio
     const live = clampFactor(liveRaw)
     const preset = clampFactor(presetRaw)
+    const signal = clampFactor(signalRaw)
     const stepRatio = clampStepRatio(stepRaw)
 
-    if (live === null && preset === null && stepRatio === null) {
+    if (live === null && preset === null && signal === null && stepRatio === null) {
       return NextResponse.json(
         {
           error: "At least one factor required",
           details:
-            "POST must include `live_volume_factor` / `preset_volume_factor` in [1, 10] and/or `volume_step_ratio` in [0.2, 1.8].",
+            "POST must include `live_volume_factor`, `preset_volume_factor`, or `signal_volume_factor` in [1, 10] and/or `volume_step_ratio` in [0.2, 1.8].",
         },
         { status: 400 },
       )
@@ -119,11 +124,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const patch: Record<string, string> = {}
     if (live !== null) patch.live_volume_factor = String(live)
     if (preset !== null) patch.preset_volume_factor = String(preset)
+    if (signal !== null) patch.signal_volume_factor = String(signal)
     if (stepRatio !== null) patch.volume_step_ratio = String(stepRatio)
 
     const settingsPatch: Record<string, string> = {}
     if (patch.live_volume_factor !== undefined) settingsPatch.volume_factor_live = patch.live_volume_factor
     if (patch.preset_volume_factor !== undefined) settingsPatch.volume_factor_preset = patch.preset_volume_factor
+    if (patch.signal_volume_factor !== undefined) settingsPatch.volume_factor_signal = patch.signal_volume_factor
     if (patch.volume_step_ratio !== undefined) settingsPatch.volume_step_ratio = patch.volume_step_ratio
 
     const { connection: effectiveConnection, completion: recoordination } = await applyMainConnectionSettingsChange(id, conn, {
@@ -151,6 +158,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       refreshStatus: recoordination.refreshStatus,
       live_volume_factor: live ?? clampFactor(effectiveConnection.live_volume_factor) ?? FACTOR_MIN,
       preset_volume_factor: preset ?? clampFactor(effectiveConnection.preset_volume_factor) ?? FACTOR_MIN,
+      signal_volume_factor: signal ?? clampFactor(effectiveConnection.signal_volume_factor) ?? FACTOR_MIN,
       volume_step_ratio: stepRatio ?? clampStepRatio(effectiveConnection.volume_step_ratio) ?? DEFAULT_VOLUME_STEP_RATIO,
     })
   } catch (error) {

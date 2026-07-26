@@ -6,12 +6,12 @@
  * RATIO-BASED SYSTEM:
  *   - Ratio 1.0 (default): Base volume for live trading (system internal default)
  *   - Ratio > 1.0: Higher volumes for strategy evaluations and optimizations
- *   - Ratio < 1.0: Lower volumes for conservative testing
+ *   - Channel/base ratios below 1.0 are normalized to identity 1.0
  *   - Live exchange volume = base_notional * ratio
  *   - Strategy internal calculations use higher ratios
  * 
  * Features:
- *   - Position volume calculated based on base volume factor, leverage, and risk management
+ *   - Position volume calculated from the immutable Base identity, leverage, and risk management
  *   - Volume calculated at Exchange level when actual orders are executed
  *   - ONLY used by ExchangePositionManager
  *   - Base/Main/Real pseudo positions use counts and ratios (no absolute volumes)
@@ -22,7 +22,12 @@
 
 import { initRedis, getSettings, getAppSettings, setSettings, getRedisClient, getConnection } from "@/lib/redis-db"
 import { getMaxLeverageForExchange } from "@/lib/leverage-policy"
-import { DEFAULT_VOLUME_STEP_RATIO, MAX_VOLUME_STEP_RATIO, MIN_VOLUME_STEP_RATIO } from "@/lib/constants"
+import {
+  BASE_VOLUME_RATIO,
+  DEFAULT_VOLUME_STEP_RATIO,
+  MAX_VOLUME_STEP_RATIO,
+  MIN_VOLUME_STEP_RATIO,
+} from "@/lib/constants"
 import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
 
@@ -62,16 +67,20 @@ interface VolumeCalculationParams {
   // These are RATIO MULTIPLIERS where:
   //   - 1.0 = system baseline (no scaling from engine factor)
   //   - >1.0 = higher volume for aggregated/optimized orders
-  //   - <1.0 = lower volume for conservative testing
+  //   - <1.0 = invalid for channel/base ratios and normalized to 1.0
   // Live-engine factors default to identity ratio 1 when missing or invalid.
-  // Bounded to [0.01, 10] inside `calculatePositionVolume` so a misconfigured
+  // Bounded to [1, 10] inside `calculatePositionVolume` so a misconfigured
   // setting can never blow out a live order to 100× the intended size.
   mainVolumeFactor?: number
   presetVolumeFactor?: number
+  /** Signal-specific Main-channel factor; identity 1 for non-Signal orders. */
+  signalVolumeFactor?: number
+  /** Originating indication type. Only `signal` activates signalVolumeFactor. */
+  indicationType?: string
   // Adjust-type variant multiplier: block=1.5-2.0, dca=0.5, others=1.0.
   // Applied after liveEngineFactor; absent/undefined → 1.0 (no scaling).
-  // Clamped to [0.1, 5] — narrower than engine factor's [0.1, 10] since
-  // this comes from automated variantProfiles, not operator overrides.
+  // Clamped to [0.01, 5]. Unlike channel/base ratios, this explicitly
+  // supports independent low-volume Position-Count/DCA variants.
   // RATIO-based: 1.0 = no variant scaling, >1 = larger, <1 = smaller
   sizeMultiplier?: number
 }
@@ -95,6 +104,7 @@ interface VolumeCalculationResult {
   positionCost?: number
   positionsAverage?: number
   liveEngineFactor?: number
+  signalVolumeFactor?: number
   sizeMultiplier?: number
   exchangeMinVolume?: number
   volumeStepRatio?: number
@@ -207,7 +217,6 @@ export class VolumeCalculator {
    */
   static calculatePositionVolume(params: VolumeCalculationParams): VolumeCalculationResult {
     const {
-      baseVolumeFactor,
       positionsAverage,
       riskPercentage,
       maxLeverage,
@@ -219,6 +228,8 @@ export class VolumeCalculator {
       tradeMode,
       mainVolumeFactor,
       presetVolumeFactor,
+      signalVolumeFactor,
+      indicationType,
       sizeMultiplier,
     } = params
 
@@ -238,26 +249,30 @@ export class VolumeCalculator {
     // Ratio multipliers:
     //   - 1.0 = identity (default, no engine scaling)
     //   - >1.0 = higher volumes for aggregation and optimization
-    //   - <1.0 = lower volumes for conservative sizing
+    //   - <1.0 = invalid for base/channel ratios and normalized to 1.0
     //
-    // Bounds: [0.01, 10]. Ratio 1 is the exchange-minimum baseline;
-    // smaller ratios are retained in `calculatedVolume` for pos-count hedge
-    // aggregation. That target is sent only once the COMBINED ratio reaches
-    // the venue minimum; it must never be rounded up per individual Set.
-    // position to zero (the universal $5 floor would clamp back up but
-    // we'd still log misleading numbers); a runaway 100× value would
-    // silently blow live orders. Clipping here means the slider's UI
-    // range (0.1-10x) is also enforced server-side even if a malformed
-    // POST bypasses the UI.
+    // Bounds: [1, 10]. Ratio 1 is the exchange-minimum baseline.
+    // Sub-unit Position-Count coordination is a separate variant multiplier
+    // and is retained by `clampVariant`; it must never leak into a channel
+    // factor or silently reduce the global basis. Clipping here means the
+    // slider's UI range (1-10x) is also enforced server-side even if a
+    // malformed POST bypasses the UI.
     const clampFactor = (raw: number | undefined): number => {
       const n = Number(raw)
       if (!Number.isFinite(n) || n <= 0) return 1
-      return Math.max(0.01, Math.min(10, n))
+      return Math.max(1, Math.min(10, n))
     }
-    const liveEngineFactor =
+    const channelVolumeFactor =
       tradeMode === "preset" ? clampFactor(presetVolumeFactor)
       : tradeMode === "main" ? clampFactor(mainVolumeFactor)
       : 1  // Strategy / pseudo-position path → identity (ratio-only)
+    const effectiveSignalVolumeFactor =
+      tradeMode === "main" && String(indicationType || "").trim().toLowerCase() === "signal"
+        ? clampFactor(signalVolumeFactor)
+        : 1
+    // Base coordination remains exactly 1. Main/Preset and Signal are
+    // independent, explicit ratios applied once at the Live boundary.
+    const liveEngineFactor = channelVolumeFactor * effectiveSignalVolumeFactor
 
     // ── Resolve the effective minimum that MUST be honored ──────────
     // Take the larger of the per-pair minimum and the universal $5
@@ -317,7 +332,7 @@ export class VolumeCalculator {
       // live positions calculate "indeed volume" (real notional) using
       // the per-engine ratio.
       // ── Adjust-type variant multiplier (Block / DCA) ──────────────────
-      // Clamped to [0.1, 5]; absent/invalid → 1.0 (identity).
+      // Clamped to [0.01, 5]; absent/invalid → 1.0 (identity).
       // Applied after liveEngineFactor so both multipliers compose:
       //   notional = balance × positionCost × liveEngineFactor × variantMult / posAvg
       const clampVariant = (raw: number | undefined): number => {
@@ -345,8 +360,12 @@ export class VolumeCalculator {
       // Surface multiplier provenance in the adjustment reason only when
       // the factor actually changed sizing (≠ 1.0) to avoid log spam.
       const factorReason =
-        liveEngineFactor !== 1 && tradeMode
-          ? `${tradeMode}-engine volume factor ${liveEngineFactor.toFixed(2)}x applied`
+        channelVolumeFactor !== 1 && tradeMode
+          ? `${tradeMode}-engine volume factor ${channelVolumeFactor.toFixed(2)}x applied`
+          : undefined
+      const signalFactorReason =
+        effectiveSignalVolumeFactor !== 1
+          ? `Signal volume factor ${effectiveSignalVolumeFactor.toFixed(2)}x applied`
           : undefined
       const variantReason =
         variantMult !== 1
@@ -355,6 +374,7 @@ export class VolumeCalculator {
       const composedReason = [
         adjusted ? reason : undefined,
         factorReason,
+        signalFactorReason,
         variantReason,
       ].filter(Boolean).join(" | ") || undefined
 
@@ -372,6 +392,7 @@ export class VolumeCalculator {
         positionCost,
         positionsAverage: posAvg,
         liveEngineFactor,
+        signalVolumeFactor: effectiveSignalVolumeFactor,
         sizeMultiplier: variantMult,
         exchangeMinVolume: effectiveMin,
       }
@@ -384,7 +405,21 @@ export class VolumeCalculator {
     const calculatedLeverage = maxLeverage || leverage
     const totalRiskAmount = accountBalance * (riskPercentage / 100)
     const riskPerPosition = totalRiskAmount / positionsAverage
-    const adjustedRisk = riskPerPosition * (baseVolumeFactor || 1)
+    const rawVariant = Number(sizeMultiplier)
+    const riskVariantMultiplier = Number.isFinite(rawVariant) && rawVariant > 0
+      ? Math.max(0.01, Math.min(5, rawVariant))
+      : 1
+    // The Base→Main→Real coordination basis is immutable identity.
+    // Low-volume variants are represented exclusively by `sizeMultiplier`
+    // (Position-Count/DCA), while Main/Preset/Signal are explicit Live
+    // channels. The deprecated `baseVolumeFactor` input is accepted by the
+    // public contract for snapshot compatibility but is intentionally ignored.
+    const strategyBaseRatio = BASE_VOLUME_RATIO
+    const adjustedRisk =
+      riskPerPosition *
+      strategyBaseRatio *
+      liveEngineFactor *
+      riskVariantMultiplier
     const positionSize = adjustedRisk / (riskPercentage / 100)
     const rawVolume = positionSize / (currentPrice * calculatedLeverage)
 
@@ -397,8 +432,15 @@ export class VolumeCalculator {
       volumeUsd: final * currentPrice,
       leverage: calculatedLeverage,
       positionSize,
-      volumeAdjusted: adjusted,
-      adjustmentReason: reason,
+      volumeAdjusted:
+        adjusted ||
+        liveEngineFactor !== 1 ||
+        riskVariantMultiplier !== 1,
+      adjustmentReason: [
+        reason,
+        liveEngineFactor !== 1 ? `live channel ratio ${liveEngineFactor.toFixed(2)}x applied` : undefined,
+        riskVariantMultiplier !== 1 ? `variant ratio ${riskVariantMultiplier.toFixed(2)}x applied` : undefined,
+      ].filter(Boolean).join(" | ") || undefined,
       riskAmount: adjustedRisk,
       intendedNotionalUsd: rawVolume * currentPrice,
       exchangeMinNotionalUsd: effectiveMin * currentPrice,
@@ -406,7 +448,8 @@ export class VolumeCalculator {
       positionCost,
       positionsAverage,
       liveEngineFactor,
-      sizeMultiplier: 1,
+      signalVolumeFactor: effectiveSignalVolumeFactor,
+      sizeMultiplier: riskVariantMultiplier,
       exchangeMinVolume: effectiveMin,
     }
   }
@@ -439,13 +482,20 @@ export class VolumeCalculator {
   static resolveLiveEngine(
     connection: Record<string, unknown> | null | undefined,
     appSettings: Record<string, unknown> | null | undefined,
-  ): { tradeMode: "main" | "preset"; mainVolumeFactor: number; presetVolumeFactor: number; volumeStepRatio: number } {
+  ): {
+    tradeMode: "main" | "preset"
+    mainVolumeFactor: number
+    presetVolumeFactor: number
+    signalVolumeFactor: number
+    volumeStepRatio: number
+  } {
     const truthy = (v: unknown) =>
       v === true || v === "true" || v === 1 || v === "1"
     const num = (v: unknown, fallback: number) => {
       const n = Number(v)
       return Number.isFinite(n) && n > 0 ? n : fallback
     }
+    const factor = (v: unknown): number => Math.max(1, Math.min(10, num(v, 1)))
     const conn = connection || {}
     const app = appSettings || {}
 
@@ -467,13 +517,12 @@ export class VolumeCalculator {
     //   The volume endpoint writes `live_volume_factor` to connection:{id}.
     //   Older UI code may have written `mainTradeVolumeFactor` / `main_trade_volume_factor`.
     //   All variants are tried so every write path resolves correctly.
-    const mainVolumeFactor = num(
+    const mainVolumeFactor = factor(
       conn["live_volume_factor"]
         ?? app["live_volume_factor"]
         ?? app["volume_factor_live"]
         ?? app["mainTradeVolumeFactor"]
         ?? app["main_trade_volume_factor"],
-      1,
     )
 
     // Priority stack for the preset volume factor:
@@ -481,13 +530,21 @@ export class VolumeCalculator {
     //   2. Global `volume_factor_preset` (migration 034)
     //   3. Legacy UI variants
     //   4. Canonical identity ratio (1.0) when unset
-    const presetVolumeFactor = num(
+    const presetVolumeFactor = factor(
       conn["preset_volume_factor"]
         ?? app["preset_volume_factor"]
         ?? app["volume_factor_preset"]
         ?? app["presetTradeVolumeFactor"]
         ?? app["preset_trade_volume_factor"],
-      1,
+    )
+
+    const signalVolumeFactor = factor(
+      conn["signal_volume_factor"]
+        ?? app["signal_volume_factor"]
+        ?? app["volume_factor_signal"]
+        ?? app["signalTradeVolumeFactor"]
+        ?? app["signal_trade_volume_factor"]
+        ?? app["signalVolumeFactor"],
     )
 
     const rawStep = num(
@@ -500,7 +557,13 @@ export class VolumeCalculator {
     )
     const volumeStepRatio = Math.max(MIN_VOLUME_STEP_RATIO, Math.min(MAX_VOLUME_STEP_RATIO, rawStep))
 
-    return { tradeMode, mainVolumeFactor, presetVolumeFactor, volumeStepRatio }
+    return {
+      tradeMode,
+      mainVolumeFactor,
+      presetVolumeFactor,
+      signalVolumeFactor,
+      volumeStepRatio,
+    }
   }
 
 
@@ -572,6 +635,8 @@ export class VolumeCalculator {
     currentPrice: number,
     options: {
       tradeMode?: "main" | "preset"
+      /** Originating indication; `signal` applies the independent Signal factor. */
+      indicationType?: string
       // Block/DCA variant multiplier from RealPosition.sizeMultiplier.
       // Absent / undefined → treated as 1.0 (no Block/DCA scaling).
       sizeMultiplier?: number
@@ -606,7 +671,7 @@ export class VolumeCalculator {
         const CONN_FIELDS_TO_OVERLAY = [
           "exchangePositionCost", "exchange_position_cost", "positionCost",
           "positions_average", "positionsAverage",
-          "live_volume_factor", "preset_volume_factor", "volume_step_ratio",
+          "live_volume_factor", "preset_volume_factor", "signal_volume_factor", "volume_step_ratio",
           "leveragePercentage", "useMaximalLeverage",
         ] as const
         for (const f of CONN_FIELDS_TO_OVERLAY) {
@@ -678,6 +743,7 @@ export class VolumeCalculator {
       let resolvedMode: "main" | "preset" | undefined = options.tradeMode
       let mainVolumeFactor = 1
       let presetVolumeFactor = 1
+      let signalVolumeFactor = 1
       let volumeStepRatio = DEFAULT_VOLUME_STEP_RATIO
       if (resolvedMode === "main" || resolvedMode === "preset") {
         // Pass BOTH the connection record (has live_volume_factor written
@@ -688,6 +754,7 @@ export class VolumeCalculator {
         const resolved = VolumeCalculator.resolveLiveEngine(connection, settings)
         mainVolumeFactor = resolved.mainVolumeFactor
         presetVolumeFactor = resolved.presetVolumeFactor
+        signalVolumeFactor = resolved.signalVolumeFactor
         volumeStepRatio = resolved.volumeStepRatio
         // We honour the CALLER's explicit mode; resolveLiveEngine's
         // tradeMode result is informational here (used only when the
@@ -713,6 +780,8 @@ export class VolumeCalculator {
         tradeMode: resolvedMode,
         mainVolumeFactor,
         presetVolumeFactor,
+        signalVolumeFactor,
+        indicationType: options.indicationType,
         // Variant multiplier forwarded from the callsite (Block/DCA sizing).
         sizeMultiplier: options.sizeMultiplier,
       })
@@ -758,6 +827,7 @@ export class VolumeCalculator {
         position_cost: calculation.positionCost,
         positions_average: calculation.positionsAverage,
         live_engine_factor: calculation.liveEngineFactor,
+        signal_volume_factor: calculation.signalVolumeFactor,
         size_multiplier: calculation.sizeMultiplier,
         volume_step_ratio: calculation.volumeStepRatio,
         volume_balance_anchor: calculation.volumeBalanceAnchor,

@@ -65,8 +65,10 @@ interface ProgressSummary {
     direction: number
     move: number
     active: number
+    active_advanced: number
     optimal: number
     auto: number
+    signal: number
     trend: number
     total: number
   }
@@ -90,7 +92,9 @@ interface ProgressSummary {
       direction: number
       move: number
       active: number
+      active_advanced: number
       optimal: number
+      signal: number
       trend: number
     }
   }
@@ -447,7 +451,7 @@ export function DetailedLoggingDialog() {
                       <BarChart3 className="h-4 w-4" />
                       Indications by Type
                     </div>
-                    <div className="grid grid-cols-3 sm:grid-cols-6 gap-1">
+                    <div className="grid grid-cols-3 sm:grid-cols-8 gap-1">
                       <div className="bg-purple-50 rounded p-2 text-center">
                         <div className="text-purple-700 font-bold">{summary.indicationsByType.direction}</div>
                         <div className="text-muted-foreground text-[8px]">Direction</div>
@@ -461,12 +465,20 @@ export function DetailedLoggingDialog() {
                         <div className="text-muted-foreground text-[8px]">Active</div>
                       </div>
                       <div className="bg-purple-50 rounded p-2 text-center">
+                        <div className="text-purple-700 font-bold">{summary.indicationsByType.active_advanced}</div>
+                        <div className="text-muted-foreground text-[8px]">Active Adv</div>
+                      </div>
+                      <div className="bg-purple-50 rounded p-2 text-center">
                         <div className="text-purple-700 font-bold">{summary.indicationsByType.optimal}</div>
                         <div className="text-muted-foreground text-[8px]">Optimal</div>
                       </div>
                       <div className="bg-purple-50 rounded p-2 text-center">
                         <div className="text-purple-700 font-bold">{summary.indicationsByType.auto}</div>
                         <div className="text-muted-foreground text-[8px]">Auto</div>
+                      </div>
+                      <div className="bg-purple-50 rounded p-2 text-center">
+                        <div className="text-purple-700 font-bold">{summary.indicationsByType.signal}</div>
+                        <div className="text-muted-foreground text-[8px]">Signal</div>
                       </div>
                       <div className="bg-purple-50 rounded p-2 text-center">
                         <div className="text-purple-700 font-bold">{summary.indicationsByType.trend}</div>
@@ -512,7 +524,7 @@ export function DetailedLoggingDialog() {
                         <GitBranch className="h-4 w-4" />
                         Base Pseudo by Indication Type
                       </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-1">
+                      <div className="grid grid-cols-2 sm:grid-cols-7 gap-1">
                         <div className="bg-cyan-50 rounded p-2 text-center">
                           <div className="text-cyan-700 font-bold">{summary.pseudoPositionsByType.baseByIndication.direction}</div>
                           <div className="text-muted-foreground text-[8px]">Direction</div>
@@ -525,9 +537,17 @@ export function DetailedLoggingDialog() {
                           <div className="text-cyan-700 font-bold">{summary.pseudoPositionsByType.baseByIndication.active}</div>
                           <div className="text-muted-foreground text-[8px]">Active</div>
                         </div>
+                        <div className="bg-cyan-50 rounded p-2 text-center">
+                          <div className="text-cyan-700 font-bold">{summary.pseudoPositionsByType.baseByIndication.active_advanced}</div>
+                          <div className="text-muted-foreground text-[8px]">Active Adv</div>
+                        </div>
                           <div className="bg-cyan-50 rounded p-2 text-center">
                             <div className="text-cyan-700 font-bold">{summary.pseudoPositionsByType.baseByIndication.optimal}</div>
                             <div className="text-muted-foreground text-[8px]">Optimal</div>
+                          </div>
+                          <div className="bg-cyan-50 rounded p-2 text-center">
+                            <div className="text-cyan-700 font-bold">{summary.pseudoPositionsByType.baseByIndication.signal}</div>
+                            <div className="text-muted-foreground text-[8px]">Signal</div>
                           </div>
                           <div className="bg-cyan-50 rounded p-2 text-center">
                             <div className="text-cyan-700 font-bold">{summary.pseudoPositionsByType.baseByIndication.trend}</div>

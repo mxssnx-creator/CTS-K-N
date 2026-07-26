@@ -453,9 +453,10 @@ export function ExchangeConnectionDialog({
         ...form,
         connection_settings: {
           // Volume factor only for active connections (not predefined)
-          baseVolumeFactor: globalSettings?.base_volume_factor ?? MIN_VOLUME_FACTOR,
+          baseVolumeFactor: MIN_VOLUME_FACTOR,
           baseVolumeFactorLive: MIN_VOLUME_FACTOR,
           baseVolumeFactorPreset: MIN_VOLUME_FACTOR,
+          baseVolumeFactorSignal: MIN_VOLUME_FACTOR,
           
           // Use indication settings as defaults
           indicationTimeInterval: indicationSettings?.direction?.interval || 1,

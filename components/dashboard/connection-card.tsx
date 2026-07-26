@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
 import { useDashboardEvents } from "@/lib/dashboard-events"
 import type { ExchangeConnection } from "@/lib/types"
+import { normalizeIdentityVolumeFactor } from "@/lib/constants"
 import { Activity, AlertCircle, CheckCircle, Trash2, Settings, Info } from "lucide-react"
 import { ConnectionDetailedLogDialog } from "./connection-detailed-log-dialog"
 
@@ -99,7 +100,7 @@ export function ConnectionCard({
   const [showStrategyDialog, setShowStrategyDialog] = useState(false)
   const [showActivateTradeDialog, setShowActivateTradeDialog] = useState(false)
   const [presetConfig, setPresetConfig] = useState({
-    volumeFactor: 0.1,
+    volumeFactor: 1,
     profitFactorMin: 0.6,
     maxDrawdownTime: 12,
     trailingEnabled: true,
@@ -109,9 +110,9 @@ export function ConnectionCard({
   const [connectionInfo, setConnectionInfo] = useState({
     marginMode: "cross",
     positionType: "single",
-    baseVolumeFactor: 0.1,
-    liveTradeVolumeFactor: 0.1,
-    presetTradeVolumeFactor: 0.1,
+    baseVolumeFactor: 1,
+    liveTradeVolumeFactor: 1,
+    presetTradeVolumeFactor: 1,
     profitFactorBase: 0.6,
     profitFactorMain: 0.6,
     profitFactorReal: 0.6,
@@ -131,6 +132,7 @@ export function ConnectionCard({
   const [testingProgress, setTestingProgress] = useState(0)
   const [volumeFactorLive, setVolumeFactorLive] = useState(1)
   const [volumeFactorPreset, setVolumeFactorPreset] = useState(1)
+  const [volumeFactorSignal, setVolumeFactorSignal] = useState(1)
 
   // Added state for strategy configuration
   const [activeIndications, setActiveIndications] = useState<ActiveIndicationConfig>({
@@ -245,9 +247,9 @@ export function ConnectionCard({
           setConnectionInfo({
             marginMode: data.marginMode || "cross",
             positionType: data.hedgingMode || "single",
-            baseVolumeFactor: 0.1,
-            liveTradeVolumeFactor: data.liveTradeVolumeFactor || 0.1,
-            presetTradeVolumeFactor: data.presetTradeVolumeFactor || 0.1,
+            baseVolumeFactor: 1,
+            liveTradeVolumeFactor: normalizeIdentityVolumeFactor(data.settings?.mainTradeVolumeFactor),
+            presetTradeVolumeFactor: normalizeIdentityVolumeFactor(data.settings?.presetTradeVolumeFactor),
             profitFactorBase: data.profitFactorBase || 0.7,
             profitFactorMain: data.profitFactorMain || 0.8,
             profitFactorReal: data.profitFactorReal || 0.9,
@@ -277,7 +279,7 @@ export function ConnectionCard({
         if (response.ok) {
           const data = await response.json()
           setPresetConfig({
-            volumeFactor: data.volume_factor || 0.1,
+            volumeFactor: normalizeIdentityVolumeFactor(data.volume_factor),
             profitFactorMin: data.profit_factor_min || 0.6,
             maxDrawdownTime: data.max_drawdown_time || 12,
             trailingEnabled: data.trailing_enabled !== false,
@@ -296,11 +298,12 @@ export function ConnectionCard({
   useEffect(() => {
     const loadVolumeFactors = async () => {
       try {
-        const response = await fetch(`/api/settings/connections/${connection.id}/settings`)
+        const response = await fetch(`/api/settings/connections/${connection.id}/volume`)
         if (response.ok) {
           const settings = await response.json()
-          setVolumeFactorLive(settings.baseVolumeFactorLive || 0.1)
-          setVolumeFactorPreset(settings.baseVolumeFactorPreset || 0.1)
+          setVolumeFactorLive(normalizeIdentityVolumeFactor(settings.live_volume_factor))
+          setVolumeFactorPreset(normalizeIdentityVolumeFactor(settings.preset_volume_factor))
+          setVolumeFactorSignal(normalizeIdentityVolumeFactor(settings.signal_volume_factor))
         }
       } catch { /* non-critical */ }
     }
@@ -560,37 +563,35 @@ export function ConnectionCard({
     }
   }, [])
 
-  const updateVolumeFactor = async (type: "live" | "preset", value: number) => {
+  const updateVolumeFactor = async (type: "live" | "preset" | "signal", value: number) => {
     try {
       // Validate value range
       const validatedValue = Math.max(1, Math.min(10.0, value))
 
-      const response = await fetch(`/api/settings/connections/${connection.id}/settings`)
-      if (!response.ok) throw new Error("Failed to load settings")
-
-      const currentSettings = await response.json()
-      const settingKey = type === "live" ? "baseVolumeFactorLive" : "baseVolumeFactorPreset"
-
-      const updatedSettings = {
-        ...currentSettings,
-        [settingKey]: validatedValue,
-      }
-
-      const updateResponse = await fetch(`/api/settings/connections/${connection.id}/settings`, {
-        method: "PATCH",
+      const settingKey =
+        type === "live"
+          ? "live_volume_factor"
+          : type === "preset"
+            ? "preset_volume_factor"
+            : "signal_volume_factor"
+      const updateResponse = await fetch(`/api/settings/connections/${connection.id}/volume`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(updatedSettings),
+        body: JSON.stringify({ [settingKey]: validatedValue }),
       })
 
       if (!updateResponse.ok) throw new Error("Failed to update volume factor")
 
       if (type === "live") {
         setVolumeFactorLive(validatedValue)
-      } else {
+      } else if (type === "preset") {
         setVolumeFactorPreset(validatedValue)
+      } else {
+        setVolumeFactorSignal(validatedValue)
       }
 
-      toast.success(`${type === "live" ? "Live" : "Preset"} volume factor updated to ${validatedValue.toFixed(1)}`)
+      const label = type === "live" ? "Live" : type === "preset" ? "Preset" : "Signal"
+      toast.success(`${label} volume factor updated to ${validatedValue.toFixed(1)}`)
     } catch {
       toast.error("Failed to update volume factor")
     }
@@ -600,10 +601,14 @@ export function ConnectionCard({
     if (!selectedPresetType) return
 
     try {
+      const normalizedPresetConfig = {
+        ...presetConfig,
+        volumeFactor: normalizeIdentityVolumeFactor(presetConfig.volumeFactor),
+      }
       const response = await fetch(`/api/preset-types/${selectedPresetType}/config`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(presetConfig),
+        body: JSON.stringify(normalizedPresetConfig),
       })
 
       if (!response.ok) throw new Error("Failed to save preset config")
@@ -929,15 +934,18 @@ export function ConnectionCard({
                         <Input
                           type="number"
                           step="0.1"
-                          min="0.1"
+                          min="1"
                           max="10"
                           value={presetConfig.volumeFactor}
                           onChange={(e) =>
-                            setPresetConfig({ ...presetConfig, volumeFactor: Number.parseFloat(e.target.value) })
+                            setPresetConfig({
+                              ...presetConfig,
+                              volumeFactor: normalizeIdentityVolumeFactor(e.target.value),
+                            })
                           }
                           className="h-9"
                         />
-                        <p className="text-[10px] text-muted-foreground">Multiplier for trade volume (0.1 - 10.0)</p>
+                        <p className="text-[10px] text-muted-foreground">Multiplier for trade volume (1.0 - 10.0; 1.0 is the basis)</p>
                       </div>
 
                       <div className="space-y-2">
@@ -1239,6 +1247,24 @@ export function ConnectionCard({
                   className="flex-1"
                 />
                 <span className="text-xs font-medium w-10 text-right">{volumeFactorPreset.toFixed(1)}</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor={`volume-signal-${connection.id}`} className="text-xs font-medium">
+                Signal Volume Factor
+              </Label>
+              <div className="flex items-center gap-3">
+                <Slider
+                  id={`volume-signal-${connection.id}`}
+                  min={1}
+                  max={10}
+                  step={0.1}
+                  value={[volumeFactorSignal]}
+                  onValueChange={([value]) => updateVolumeFactor("signal", value)}
+                  className="flex-1"
+                />
+                <span className="text-xs font-medium w-10 text-right">{volumeFactorSignal.toFixed(1)}</span>
               </div>
             </div>
 

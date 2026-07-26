@@ -512,7 +512,7 @@ export default function ExchangeConnectionManager() {
           is_preset_trade: toBooleanFlag(c.is_preset_trade),
           is_active: toBooleanFlag(c.is_active),
           is_predefined: toBooleanFlag(c.is_predefined),
-          volume_factor: typeof c.volume_factor === "number" ? c.volume_factor : MIN_VOLUME_FACTOR,
+          volume_factor: MIN_VOLUME_FACTOR,
           margin_type: c.margin_type || "cross",
           position_mode: c.position_mode || "hedge",
           api_type: c.api_type || "perpetual_futures",

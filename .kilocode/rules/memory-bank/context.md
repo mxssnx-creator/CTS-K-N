@@ -126,6 +126,8 @@ export async function GET() {
 
 | Date | Changes |
 |------|---------|
+| 2026-07-26 | Completed the Signal Engine trailing/statistics release. Signal requests are operator-configurable but clamped to a hard 30-second minimum. Signal now owns independent standard and dynamic-trailing execution lanes; trailing defaults on, trailing-only defaults off, with 0% start, 0.8% minimum stop, 0.4 favorable-move ratio and 0.5 stop-range update ratio. Signal volume factor is available in Signal Settings and Connection Settings → Overall. `/statistics` now loads directly with top navigation for Overall, Common and Signal analytics; both indication families expose PF/DDT over last 12/50 closed positions and 8/48 hours, TP/SL ranges and ratios, top/worst 12 symbols, filters, expandable type/source→symbol detail, and per-source Signal-symbol disable controls. Reporting reads a lightweight persisted live-position projection and never imports the exchange execution graph. Historic progression yields between indication, Set-fill and strategy phases so Signal/control APIs remain responsive without changing phase order. Acceptance passed 111 Jest suites/763 tests, TypeScript, project-wide ESLint, a fresh Next 15.5.18 standalone build with 41/41 pages, Installer/Kilo (37 checks, schema 84), scheduler, deployment-contract, volatile-cleanup, source-syntax, recreation-manifest (1,239 files) and secret-scan (1,247 files, zero findings) checks. The forced-paper 12-symbol Dev debug run lasted 303.6 seconds and completed 109 rounds/1,229 requests, 35/35 sources, 1,440 Signal indications, 24 Signal positions (12 standard + 12 trailing), 2,400 calculated/evaluated/eligible/emitted Signal Block rows, zero source failures, warm Signal-API p95 1,914 ms, and zero real exchange orders. |
+| 2026-07-26 | Corrected Block volume adjustment systemwide to use one absolute, non-compounding target per symbol/direction: `target = generalBase + ((generalBase × blockVolumeRatio) × blockCount)` and `nextOrder = targetAdd − confirmedBlockAdds`. Real/strategy overlays now use the general volume as the sole base instead of applying the historical Block profile multiplier a second time. Independent Count Sets retain their own PF/result/pause lineage, while sequential or out-of-order Counts submit only the missing physical delta; a lower already-covered Count sends no exchange order. Regular Count ladders now accept only normal Base-derived Sets and explicitly exclude individual/combined Pos-Count Sets. The separate Real-active procedure counts every non-terminal position per symbol and Long/Short—including Pos-Count positions—and can restore the normal Base lineage from the cycle index when only a Pos-Count remainder is active. Live/simulated metadata records exact base, target, confirmed-before, request, and completion state. Terminal partial fills retry only their residual; open partial fills remain durable, reconcile by client/order ID without duplicate submission, and keep SL/TP sized to authoritative exposure. Acceptance passed 103 Jest suites/652 tests, the focused 16-suite/173-test strategy/order/progression matrix, TypeScript, project-wide ESLint, source-syntax/secret scans, recreation-manifest verification, and diff checks. |
 | 2026-07-25 | Completed the indicator, Long/Short accounting, Block strategy, UI race, and dynamic installer release. Default Direction/Move/Active remain independent; Direction adds post-reversal same-market relative ranges without replacing the original calculation, Trend alone uses 1/5/15/30-minute windows, and Common indicators use bounded timeframes through 15 minutes with canonical MA/EMA/MACD/RSI/Bollinger/PSAR/ADX/CCI/ADL/Fibonacci/ROC/Williams R/VWAP/Stochastic/OBV support across settings and presets. Live accounting now validates direction/symbol, stores independent per-symbol/per-side v2 counters, records adjustments without inventing positions, serializes accumulation/reduction behind owned control-order barriers, recovers pending client/order IDs, reconciles authoritative quantities, and re-arms protection after partial/error paths. Block counts 1..10 retain independent quantities, PF/DDT/pause state and batch lanes while mirrored Real/Live exposure is not double-counted. Dashboard zero values and Live Trading SSE/request races now preserve canonical state. Bootstrap/update/install/uninstall/service controls resolve saved names, ports, runtimes, custom `/opt/*` directories and external env ownership safely; the production verifier now cleans complete process groups. Embedded exchange credentials were removed and live infrastructure coordination is fail-closed. Acceptance: fresh 40-page/331-trace standalone build; TypeScript, ESLint, Shell/Node syntax, installer/scheduler/Kilo/secret checks; 103 Jest suites/646 tests; 60-second 12-symbol Dev soak (330 requests, 162 cycles, 1.834 s steady p95); 120-second 12-symbol Production soak (660 requests, 352 cycles, 24/24 positions recovered after SIGKILL, DB 6,920–7,356 req/s); and 32-symbol Production UI/control workflow. Every runtime verification forced simulation with empty exchange keys and submitted zero real orders. |
 | 2026-07-23 | Completed the compact modern Live Trading operations release. `/live-trading` now uses only canonical persisted data and provides a dense balance/equity/margin/open-PnL overview, standard Profit Factor for 4/12/48 hours and the latest 25/75/150 closed positions, 4/24/48-hour order counts, five-day drawdown duration/depth, connection-scoped active-position search/sort/filtering, and a detailed expandable history with time/side/result/source/variant filters and execution, lineage, risk and DCA settings. Every open position exposes coordinated Close, absolute TP/SL, trailing-stop and Restore Strategy actions through per-position mutation locks, durable manual-protection overrides, exchange reconciliation, reduce-only partial-fill handling and fail-closed connector checks; the trailing ratchet remains monotonic across process restarts. Acceptance passed TypeScript, project-wide ESLint, 95 Jest suites/595 tests, installer preflight, exact minute scheduler, secret scan and recreation/diff checks. Passive isolated Dev and standalone Production smokes both completed schema 82/82, served the page and all analytics/action read contracts, and placed zero exchange orders; the production position/control-order crash-recovery protections remain covered by the prior 24-position SIGKILL recovery soak. |
 | 2026-07-22 | Kilo deploy migration and Redis hardening: `db:migrate` no longer requires Bun and cleanly skips the optional HTTP-SQLite migration when Kilo has not supplied both `DB_URL` and `DB_TOKEN`; a provisioned database still migrates and fails the deployment on a real migration error. The Ubuntu installer now installs, starts and verifies Redis, sets `REDIS_URL=redis://127.0.0.1:6379` for a long-lived local server, and enables AOF/everysec, protected mode and noeviction. Kilo Worker production cannot use localhost Redis: configure a TLS external shared Redis via Kilo deployment secrets before enabling durable cross-worker processing or live exchange coordination. |
@@ -602,3 +604,45 @@ credentials are present.
 - [x] Verified with `bun run lint`, `bun run typecheck`, and targeted Jest runs;
   the only remaining unit failures are preexisting Kilo preflight lockfile checks
   unrelated to live-trade gating.
+
+## Session 2026-07-26 — Signal engine, scoped Block lanes and identity volume
+
+- [x] Added `Signal` under Common as a default-enabled one-minute indication
+  engine. It uses 35 documented public OHLCV adapters, a persistent liquid
+  core plus bounded priority rotation, strict schema/timeouts/cache/circuit
+  handling, and local low-stop consensus. No separate Connection switch exists;
+  the active Indications profile is authoritative.
+- [x] Integrated Signal through Indication → Base → Main → Real → Live/Paper,
+  including quantity-independent SL/TP lineage, reduce-only control orders,
+  per-source attribution, restart recovery and a Signal volume slider on every
+  existing channel-volume surface including Overall Settings.
+- [x] Added exact last-15 closed-result PnL per source × symbol × direction.
+  Mature negative lanes auto-disable independently; open positions never enter
+  Signal PnL or Block PF windows.
+- [x] Added independent Strategy Block lanes for symbol × long/short/overall
+  and Signal Block lanes for source × symbol × long/short/overall. Regular
+  Blocks use only normal Base-derived Sets; Active Real/Live Blocks include
+  active Pos-Count positions. Virtual lanes retain independent PF/PnL/stats,
+  while physical execution consolidates to one target per symbol/direction.
+- [x] Canonical Block target is
+  `general + general × ratio × count`; retries submit only target minus
+  confirmed Block fills. Terminal and unresolved partial fills, idempotent
+  replay, crash recovery and correctly sided reduce-only SL/TP are covered.
+- [x] Block calculations/results/differences continue when Block is disabled,
+  but no new evaluation/emission occurs. Cold enabled Block starts immediately
+  from normal PF; after its own closed-result window matures, Block PF must be
+  at least the matching normal PF. Regression: normal Last-25 PF 2 rejects
+  mature Block PF 1.99 and accepts 2.
+- [x] Shared Base coordination is immutable ratio 1 across Redis/API/UI,
+  file-backed fallbacks, migration v84, Base/Main/Real and both volume
+  calculation branches. Only named Main/Preset/Signal/Pos-Count/DCA/Block
+  boundaries can adjust physical volume.
+- [x] Current acceptance: trace-valid 41-page standalone build; production
+  Paper soak 240 s/12 symbols/1,320 requests/682 engine cycles/4,452 Main
+  cycles/p95 100 ms; Redis stable-window delta 2; 24/24 positions recovered
+  after SIGKILL; 32-symbol Signal/UI/volume/status workflow green; Dev/HMR
+  330-request run p95 1,494 ms; zero real exchange orders.
+- [x] Added a visible Signal source-request interval with a 30-second default
+  and hard server-side minimum. The normalized interval controls both source
+  fetch and complete-cycle caches, hot-reloads through the existing Signal
+  settings API, and safely migrates legacy millisecond cache values.

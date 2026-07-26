@@ -619,7 +619,8 @@ export default function PresetsPage() {
                 <div>
                   <div className="text-xs font-semibold">Block Strategy Type · Adjust</div>
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    Independent Block counts keep their own volume state. Add quantity = current position base × (Block count × volume ratio), then that count pauses after profitable completion.
+                    Independent Block counts keep their own result and pause state. Target volume = general volume + ((general volume × ratio) × Block count); each exchange order sends only the still-missing delta, so Counts never compound.
+                    Regular ladders use Base-derived Sets, not Pos-Count Sets; the separate Active Real count still includes Pos-Count positions.
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -646,7 +647,7 @@ export default function PresetsPage() {
               <div className="grid grid-cols-3 gap-2 text-[10px] tabular-nums">
                 {[1, 2, Math.max(3, Math.min(10, Math.floor(draft.blockMaxStack)))].map((count, index) => (
                   <div key={`${count}-${index}`} className="rounded border bg-muted/20 px-2 py-1.5 text-center">
-                    Block {count}: +{formatNumber(count * draft.blockVolumeRatio, 2)}× base
+                    Block {count}: {formatNumber(1 + count * draft.blockVolumeRatio, 2)}× total
                   </div>
                 ))}
               </div>

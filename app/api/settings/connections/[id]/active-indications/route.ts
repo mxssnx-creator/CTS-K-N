@@ -18,7 +18,7 @@ import { settingsValuesEqual } from "@/lib/settings-diff"
 // saved alternate profile the operator can switch to).
 //
 // Storage layout under Redis key `active_indications:{connectionId}`:
-//   direction, move, active, optimal, auto, trend           ← Main toggles (legacy keys)
+//   direction, move, active, optimal, auto, signal, trend   ← Main toggles (legacy keys)
 //   {type}_range, {type}_timeout, {type}_interval           ← Main numeric params (legacy)
 //   direction_preset, move_preset, ...                      ← Preset toggles (new)
 //   {type}_preset_range, {type}_preset_timeout, ...         ← Preset numeric params (new)
@@ -45,6 +45,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       active:    main.active.enabled,
       optimal:   main.optimal.enabled,
       auto:      main.auto.enabled,
+      signal:    main.signal.enabled,
       trend:     main.trend.enabled,
       // Structured channel shape — for the redesigned dialog.
       channels: { main, preset },
@@ -54,7 +55,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json(
       {
         error: "Failed to fetch active indications",
-        direction: true, move: true, active: true, optimal: false, auto: false, trend: true,
+        direction: true, move: true, active: true, optimal: false, auto: false, signal: true, trend: true,
         channels: { main: DEFAULT_MAIN_INDICATION_PROFILE, preset: DEFAULT_PRESET_INDICATION_PROFILE },
       },
       { status: 200 },

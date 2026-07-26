@@ -1,5 +1,40 @@
 // Volume factor for live exchange positions (scaling multiplier)
 export const MIN_VOLUME_FACTOR = 1
+export const MAX_VOLUME_FACTOR = 10
+export const BASE_VOLUME_RATIO = 1.0
+
+/**
+ * Base is the immutable coordination identity.
+ *
+ * The argument is intentionally accepted for compatibility with old settings
+ * payloads and snapshots, but it can never influence pseudo-position or live
+ * sizing. Explicit Main, Preset, Signal, Position-Count, DCA and Block factors
+ * are applied by their own lanes.
+ */
+export function normalizeBaseVolumeFactor(_raw?: unknown): number {
+  return BASE_VOLUME_RATIO
+}
+
+/**
+ * Canonical shared/channel volume factor.
+ *
+ * Base, Main, Preset and Signal all use ratio 1 as their identity basis.
+ * Sub-unit ratios belong only to explicitly independent adjustment lanes
+ * (Position-Count, DCA and Block) and must never leak into these factors.
+ */
+export function normalizeIdentityVolumeFactor(
+  raw: unknown,
+  fallback = MIN_VOLUME_FACTOR,
+): number {
+  const parsed = Number(raw)
+  if (Number.isFinite(parsed)) {
+    return Math.max(MIN_VOLUME_FACTOR, Math.min(MAX_VOLUME_FACTOR, parsed))
+  }
+  const parsedFallback = Number(fallback)
+  return Number.isFinite(parsedFallback)
+    ? Math.max(MIN_VOLUME_FACTOR, Math.min(MAX_VOLUME_FACTOR, parsedFallback))
+    : MIN_VOLUME_FACTOR
+}
 
 // Volume step ratio system - ratio-based defaults
 // Default ratio 1.0 = system internal baseline
@@ -9,12 +44,27 @@ export const DEFAULT_VOLUME_STEP_RATIO = 1.0  // System internal default ratio
 export const MIN_VOLUME_STEP_RATIO = 0.2
 export const MAX_VOLUME_STEP_RATIO = 1.8
 
+/** Independent balance-recalculation ratio; unlike shared channel factors,
+ * this control is intentionally allowed below one. */
+export function normalizeVolumeStepRatio(
+  raw: unknown,
+  fallback = DEFAULT_VOLUME_STEP_RATIO,
+): number {
+  const parsed = Number(raw)
+  if (Number.isFinite(parsed)) {
+    return Math.max(MIN_VOLUME_STEP_RATIO, Math.min(MAX_VOLUME_STEP_RATIO, parsed))
+  }
+  const parsedFallback = Number(fallback)
+  return Number.isFinite(parsedFallback)
+    ? Math.max(MIN_VOLUME_STEP_RATIO, Math.min(MAX_VOLUME_STEP_RATIO, parsedFallback))
+    : DEFAULT_VOLUME_STEP_RATIO
+}
+
 // Volume calculation is ratio-based:
 // - Ratio 1.0 (default): Base volume for live trading
 // - Ratio > 1.0: Higher volume for strategy evaluations and optimizations
-// - Ratio < 1.0: Lower volume for conservative testing
-export const BASE_VOLUME_RATIO = 1.0  // Identity ratio - 1:1 with notional
-
+// - Ratio < 1.0: Reserved for explicit Position-Count/DCA variants only;
+//   shared Base/channel factors normalize to identity 1.0
 // Pos-count axis Set volume ratio (independent from Base volume)
 export const DEFAULT_POS_COUNT_VOLUME_RATIO = 0.05
 export const MIN_POS_COUNT_VOLUME_RATIO = 0.01

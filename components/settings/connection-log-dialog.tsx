@@ -40,8 +40,10 @@ type LogSummary = {
     direction: number
     move: number
     active: number
+    activeAdvanced: number
     optimal: number
     auto: number
+    signal: number
     trend: number
   }
   
@@ -123,8 +125,10 @@ export function ConnectionLogDialog({ open, onOpenChange, connectionId, connecti
           direction: data.progressionState?.indicationEvaluatedDirection || 0,
           move: data.progressionState?.indicationEvaluatedMove || 0,
           active: data.progressionState?.indicationEvaluatedActive || 0,
+          activeAdvanced: data.progressionState?.indicationEvaluatedActiveAdvanced || 0,
           optimal: data.progressionState?.indicationEvaluatedOptimal || 0,
-          auto: data.progressionState?.indicationsCount || 0,
+          auto: data.progressionState?.indicationsByType?.auto || 0,
+          signal: data.progressionState?.indicationEvaluatedSignal || 0,
           trend: data.progressionState?.indicationEvaluatedTrend || 0,
         },
         
@@ -300,12 +304,24 @@ export function ConnectionLogDialog({ open, onOpenChange, connectionId, connecti
                          <div className="text-xs text-muted-foreground">Active</div>
                        </div>
                        <div>
+                         <div className="font-semibold">{summary.indicationsCounts.activeAdvanced}</div>
+                         <div className="text-xs text-muted-foreground">Active Advanced</div>
+                       </div>
+                       <div>
                          <div className="font-semibold">{summary.indicationsCounts.optimal}</div>
                          <div className="text-xs text-muted-foreground">Optimal</div>
                        </div>
                        <div>
                          <div className="font-semibold">{summary.indicationsCounts.auto}</div>
                          <div className="text-xs text-muted-foreground">Auto</div>
+                       </div>
+                       <div>
+                         <div className="font-semibold">{summary.indicationsCounts.signal}</div>
+                         <div className="text-xs text-muted-foreground">Signal</div>
+                       </div>
+                       <div>
+                         <div className="font-semibold">{summary.indicationsCounts.trend}</div>
+                         <div className="text-xs text-muted-foreground">Trend</div>
                        </div>
                      </div>
                    </div>

@@ -22,6 +22,14 @@ const maxSymbolsRequested = process.argv.includes("--max-symbols")
 const devSoakSymbolCount = maxSymbolsRequested
   ? 32
   : Math.max(1, Math.min(32, Number(process.env.DEV_SOAK_SYMBOL_COUNT || 12)))
+// The regular interactive dev command intentionally stays at 4 GiB. A long
+// HMR soak compiles every operations/statistics route and retains those module
+// graphs for the whole run, so allow the dedicated debug harness to use the
+// same larger heap class as scripts/dev-debug.js without changing production.
+const devNodeHeapMb = Math.max(
+  4096,
+  Math.min(12288, Number(process.env.DEV_NODE_HEAP_MB || 4096)),
+)
 let outputTail = ""
 
 rmSync(snapshotPath, { force: true })
@@ -91,13 +99,18 @@ async function prewarmDevRoutes() {
     "/api/system/status",
     "/api/system/monitoring",
     "/api/trade-engine/status-all",
+    "/api/settings",
     `/api/connections/progression/${encoded}/stats`,
+    `/api/settings/connections/${encoded}/settings`,
     `/api/trading/trade-history?connection_id=${encoded}&limit=500`,
     `/api/logistics/queue?connectionId=${encoded}`,
     `/api/trading/live-positions?connection_id=${encoded}`,
     `/api/exchange/live-summary?connection_id=${encoded}`,
     `/api/preset-optimizer?connectionId=${encoded}`,
     `/api/connections/${encoded}/engine-states`,
+    `/api/settings/indications/signal?connectionId=${encoded}`,
+    `/api/indications/signals/status?connectionId=${encoded}`,
+    `/api/statistics/indications?connectionId=${encoded}`,
   ]) {
     await requestJson(pathname)
   }
@@ -120,6 +133,30 @@ async function prewarmDevRoutes() {
   const livePageHtml = await livePage.text()
   if (!livePageHtml.includes("Live Trading")) {
     throw new Error("Dev Live Trading page warmup did not render its release marker")
+  }
+  const signalPage = await fetch(`${baseUrl}/settings/indications/signal`, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(60_000),
+  })
+  if (!signalPage.ok) throw new Error(`Dev Signal Settings page warmup returned HTTP ${signalPage.status}`)
+  const signalPageHtml = await signalPage.text()
+  if (!signalPageHtml.includes("Signal")) {
+    throw new Error("Dev Signal Settings page warmup did not render its release marker")
+  }
+  for (const pathname of [
+    "/statistics",
+    "/statistics/indications/common",
+    "/statistics/indications/signal",
+  ]) {
+    const response = await fetch(`${baseUrl}${pathname}`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(60_000),
+    })
+    if (!response.ok) throw new Error(`Dev statistics page ${pathname} returned HTTP ${response.status}`)
+    const html = await response.text()
+    if (!html.includes("/_next/static/")) {
+      throw new Error(`Dev statistics page ${pathname} did not render client assets`)
+    }
   }
 }
 
@@ -211,7 +248,7 @@ async function main() {
       ORANGEX_API_KEY: "",
       ORANGEX_API_SECRET: "",
       V0_REDIS_SNAPSHOT_PATH: snapshotPath,
-      NODE_OPTIONS: "--max-old-space-size=4096 --max-semi-space-size=192 --expose-gc",
+      NODE_OPTIONS: `--max-old-space-size=${devNodeHeapMb} --max-semi-space-size=192 --expose-gc`,
       PORT: String(port),
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -243,6 +280,7 @@ async function main() {
       success: true,
       mode: "development-paper-engine",
       symbols: devSoakSymbolCount,
+      nodeHeapLimitMb: devNodeHeapMb,
       realExchangeOrdersSubmitted: 0,
     }, null, 2))
   } finally {

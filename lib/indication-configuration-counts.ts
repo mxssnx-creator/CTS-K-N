@@ -14,6 +14,9 @@ import {
   DEFAULT_TREND_RANGE_STEPS,
   normalizeTrendTimeframesMinutes,
 } from "@/lib/trend-indication"
+import {
+  normalizeSignalIndicationSettings,
+} from "@/lib/signal-indication"
 
 export type IndicationConfigurationType =
   | "direction"
@@ -22,6 +25,7 @@ export type IndicationConfigurationType =
   | "active_advanced"
   | "optimal"
   | "auto"
+  | "signal"
   | "trend"
   | "common"
 
@@ -51,6 +55,7 @@ export interface IndicationConfigurationCountResult {
     optimalBasePositionsLimit: number
     commonTimeframes: number[]
     enabledCommonIndicators: number
+    enabledSignalSources: number
   }
   types: IndicationConfigurationCount[]
 }
@@ -123,6 +128,7 @@ function activeAdvancedRatios(settings: Record<string, any>, fallback: readonly 
 export function calculateIndicationConfigurationCounts(
   rawSettings: unknown,
   rawCommonSettings: unknown,
+  rawSignalSettings?: unknown,
 ): IndicationConfigurationCountResult {
   const settings = rawSettings && typeof rawSettings === "object"
     ? rawSettings as Record<string, any>
@@ -205,6 +211,13 @@ export function calculateIndicationConfigurationCounts(
   const commonParameterVariants = 3
   const commonEvaluations =
     enabledCommon.length * commonTimeframes.length * commonParameterVariants
+  const signalSettings = normalizeSignalIndicationSettings(rawSignalSettings)
+  const enabledSignalSources = Object.values(signalSettings.sources)
+    .filter((source) => source.enabled)
+    .length
+  const selectedSignalSources = signalSettings.enabled
+    ? Math.min(enabledSignalSources, signalSettings.maxSourcesPerCycle)
+    : 0
 
   const setCount = (grid: number, dynamicVariants = 0) => (grid + dynamicVariants) * 2
   const types: IndicationConfigurationCount[] = [
@@ -303,6 +316,22 @@ export function calculateIndicationConfigurationCounts(
       description: "Runtime aggregate of Common indicator votes and higher-range coordination.",
     },
     {
+      type: "signal",
+      label: "Signal",
+      group: "common",
+      storage: "independent_set",
+      possibleSets: signalSettings.enabled ? 2 : 0,
+      evaluationConfigurations: selectedSignalSources > 0 ? selectedSignalSources + 1 : 0,
+      formula: `${selectedSignalSources} selected public sources → one Long/Short consensus`,
+      params: {
+        enabledSources: enabledSignalSources,
+        selectedSourcesPerCycle: selectedSignalSources,
+        registrySources: Object.keys(signalSettings.sources).length,
+        performanceLookback: signalSettings.performanceLookback,
+      },
+      description: "Multi-source short-time consensus with bounded low-stop risk and independent Last-15 PnL gates.",
+    },
+    {
       type: "trend",
       label: "Trend",
       group: "additional",
@@ -360,6 +389,7 @@ export function calculateIndicationConfigurationCounts(
       optimalBasePositionsLimit: perSetDbCapacity,
       commonTimeframes,
       enabledCommonIndicators: enabledCommon.length,
+      enabledSignalSources,
     },
     types,
   }

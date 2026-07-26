@@ -59,8 +59,11 @@ interface OverallStats {
     direction: number
     move: number
     active: number
+    activeAdvanced: number
+    active_advanced?: number
     optimal: number
     auto: number
+    signal: number
     trend: number
     total: number
   }
@@ -70,7 +73,10 @@ interface OverallStats {
       direction: number
       move: number
       active: number
+      activeAdvanced: number
+      active_advanced?: number
       optimal: number
+      signal: number
       trend: number
     }
     main: number
@@ -568,7 +574,7 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
             {/* Indications by Type */}
             <div className="space-y-1">
               <div className="text-muted-foreground text-[10px] font-medium">Indications by Type:</div>
-              <div className="grid grid-cols-3 sm:grid-cols-6 gap-1">
+              <div className="grid grid-cols-3 sm:grid-cols-8 gap-1">
                 <div className="rounded bg-purple-50 p-1 text-center dark:bg-purple-950/30">
                   <div className="text-sm font-bold text-purple-700 dark:text-purple-400">{overallStats.indicationsByType.direction}</div>
                   <div className="text-muted-foreground text-[8px]">Dir</div>
@@ -582,12 +588,20 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
                   <div className="text-muted-foreground text-[8px]">Act</div>
                 </div>
                 <div className="rounded bg-purple-50 p-1 text-center dark:bg-purple-950/30">
+                  <div className="text-sm font-bold text-purple-700 dark:text-purple-400">{overallStats.indicationsByType.activeAdvanced ?? overallStats.indicationsByType.active_advanced ?? 0}</div>
+                  <div className="text-muted-foreground text-[8px]">Act Adv</div>
+                </div>
+                <div className="rounded bg-purple-50 p-1 text-center dark:bg-purple-950/30">
                   <div className="text-sm font-bold text-purple-700 dark:text-purple-400">{overallStats.indicationsByType.optimal}</div>
                   <div className="text-muted-foreground text-[8px]">Opt</div>
                 </div>
                 <div className="rounded bg-purple-50 p-1 text-center dark:bg-purple-950/30">
                   <div className="text-sm font-bold text-purple-700 dark:text-purple-400">{overallStats.indicationsByType.auto}</div>
                   <div className="text-muted-foreground text-[8px]">Auto</div>
+                </div>
+                <div className="rounded bg-purple-50 p-1 text-center dark:bg-purple-950/30">
+                  <div className="text-sm font-bold text-purple-700 dark:text-purple-400">{overallStats.indicationsByType.signal}</div>
+                  <div className="text-muted-foreground text-[8px]">Signal</div>
                 </div>
                 <div className="rounded bg-purple-50 p-1 text-center dark:bg-purple-950/30">
                   <div className="text-sm font-bold text-purple-700 dark:text-purple-400">{overallStats.indicationsByType.trend}</div>

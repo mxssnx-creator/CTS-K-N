@@ -76,6 +76,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/health/readiness	GET	health	force-dynamic		none-detected	app/api/health/readiness/route.ts
 /api/health/startup-complete	POST	health	force-dynamic		none-detected	app/api/health/startup-complete/route.ts
 /api/indications/config-counts	GET	indications	force-dynamic		none-detected	app/api/indications/config-counts/route.ts
+/api/indications/signals/status	GET,POST	indications	force-dynamic		none-detected	app/api/indications/signals/status/route.ts
 /api/init	GET	init	force-dynamic		none-detected	app/api/init/route.ts
 /api/install/backup/create	POST	install	force-dynamic		none-detected	app/api/install/backup/create/route.ts
 /api/install/backup/delete	DELETE	install	force-dynamic		none-detected	app/api/install/backup/delete/route.ts
@@ -147,6 +148,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/preset-trade-engine/[id]/[presetId]/stop	POST	preset-trade-engine	force-dynamic		none-detected	app/api/preset-trade-engine/[id]/[presetId]/stop/route.ts
 /api/preset-types	GET,POST	preset-types	force-dynamic		none-detected	app/api/preset-types/route.ts
 /api/preset-types/[id]	DELETE,GET,PUT	preset-types	force-dynamic		none-detected	app/api/preset-types/[id]/route.ts
+/api/preset-types/[id]/config	GET,PATCH	preset-types	force-dynamic		none-detected	app/api/preset-types/[id]/config/route.ts
 /api/preset-types/[id]/statistics	GET	preset-types	force-dynamic		none-detected	app/api/preset-types/[id]/statistics/route.ts
 /api/presets	GET,POST	presets	force-dynamic		none-detected	app/api/presets/route.ts
 /api/presets/[id]	DELETE,GET,PUT	presets	force-dynamic		none-detected	app/api/presets/[id]/route.ts
@@ -206,10 +208,12 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/settings/indications/active-advanced	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/active-advanced/route.ts
 /api/settings/indications/common	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/common/route.ts
 /api/settings/indications/main	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/main/route.ts
+/api/settings/indications/signal	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/signal/route.ts
 /api/settings/risk-and-engines	GET,POST	settings	force-dynamic		none-detected	app/api/settings/risk-and-engines/route.ts
 /api/settings/set-limits	GET,POST	settings	force-dynamic		none-detected	app/api/settings/set-limits/route.ts
 /api/settings/system	GET,PATCH	settings	force-dynamic		none-detected	app/api/settings/system/route.ts
 /api/startup/initialize	POST	startup	force-dynamic		none-detected	app/api/startup/initialize/route.ts
+/api/statistics/indications	GET,PATCH	statistics	force-dynamic		none-detected	app/api/statistics/indications/route.ts
 /api/strategies	GET,POST	strategies	force-dynamic		none-detected	app/api/strategies/route.ts
 /api/strategies/overview	GET	strategies	force-dynamic		none-detected	app/api/strategies/overview/route.ts
 /api/structure/metrics	GET	structure	force-dynamic		none-detected	app/api/structure/metrics/route.ts

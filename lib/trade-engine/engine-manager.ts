@@ -339,7 +339,7 @@ refreshCyclePauseMsAsync()
 import { getSettings, setSettings, getAllConnections, getConnection, getRedisClient, initRedis, getSettingsVersionCachedSync, getAppSettings, getAppSetting, getSettingsVersion } from "@/lib/redis-db"
 import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSelection, ownsCanonicalSymbolSelection, ownsCanonicalSymbolSelectionEpoch } from "@/lib/trade-engine/symbol-selection-ownership"
 import { DataSyncManager } from "@/lib/data-sync-manager"
-import { IndicationProcessor } from "./indication-processor-fixed"
+import { IndicationProcessor, invalidateIndicationSettingsCache } from "./indication-processor-fixed"
 import { StrategyProcessor, clearFlowThrottleForConnection } from "./strategy-processor"
 import { PseudoPositionManager } from "./pseudo-position-manager"
 import { RealtimeProcessor } from "./realtime-processor"
@@ -883,6 +883,8 @@ export class TradeEngineManager {
           is_testnet: connData.is_testnet || "0",
           is_preset_trade: connData.is_preset_trade || "0",
           live_volume_factor: connData.live_volume_factor ?? String(MIN_VOLUME_FACTOR),
+          preset_volume_factor: connData.preset_volume_factor ?? String(MIN_VOLUME_FACTOR),
+          signal_volume_factor: connData.signal_volume_factor ?? String(MIN_VOLUME_FACTOR),
           connection_method: connData.connection_method || "library",
           margin_type: connData.margin_type || "cross",
           position_mode: connData.position_mode || "hedge",
@@ -4260,6 +4262,10 @@ export class TradeEngineManager {
   public invalidateStrategyAndCoordinationCaches(changedFields: string[] = [], reason = "settings-change"): void {
     const invalidatedCaches: string[] = []
     try {
+      invalidateIndicationSettingsCache(this.connectionId)
+      invalidatedCaches.push("indicationProcessor.connectionSettings")
+    } catch { /* best-effort */ }
+    try {
       clearFlowThrottleForConnection(this.connectionId)
       invalidatedCaches.push("strategy.flowThrottle")
     } catch { /* best-effort */ }
@@ -4869,6 +4875,9 @@ export class TradeEngineManager {
       const genericConnectionSettingsReload = isGenericConnectionSettingsReload(changedFields)
       const symbolAffectingChange = hasSymbolAffectingChange(changedFields)
       const strategyAffectingChange = genericConnectionSettingsReload || hasStrategyAffectingChange(changedFields)
+
+      invalidateIndicationSettingsCache(this.connectionId)
+      invalidatedCaches.push("indicationProcessor.connectionSettings")
 
       // System timing/neutralisation settings use a separate Redis hash from
       // connection settings. Refresh that synchronous hot-loop snapshot before

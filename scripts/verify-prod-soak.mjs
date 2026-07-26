@@ -6,8 +6,14 @@ const BASE_URL = process.env.BASE_URL || `http://127.0.0.1:${process.env.PORT ||
 const MIN_DURATION_MS = Math.max(5_000, Number(process.env.SOAK_MIN_DURATION_MS || 60_000))
 const DURATION_MS = Math.max(MIN_DURATION_MS, Number(process.env.SOAK_DURATION_MS || 90_000))
 const POLL_MS = Math.max(750, Number(process.env.SOAK_POLL_MS || 2_000))
+const SIGNAL_OBSERVATION_INTERVAL_MS = Math.max(
+  30_000,
+  Number(process.env.SIGNAL_OBSERVATION_INTERVAL_MS || 30_000),
+)
 const SYMBOL_COUNT = Math.max(1, Math.min(32, Number(process.env.SYMBOL_COUNT || 12)))
 const START_SIMULATED_ENGINE = process.env.START_SIMULATED_ENGINE === "1"
+const VERIFY_SIGNAL_ENGINE = process.env.VERIFY_SIGNAL_ENGINE === "1"
+const SIGNAL_FOCUSED_SOAK = process.env.SIGNAL_FOCUSED_SOAK === "1"
 const MIN_PRODUCTIVE_CYCLES = Math.max(3, Number(process.env.SOAK_MIN_PRODUCTIVE_CYCLES || 3))
 const RUNTIME_MODE = process.env.RUNTIME_MODE || "production"
 const DEBUG_ADMIN_SECRET = String(process.env.SOAK_ADMIN_SECRET || "")
@@ -167,6 +173,190 @@ function strategyRuntimeSample(stats) {
   }
 }
 
+function signalRuntimeSample(
+  stats,
+  settingsPayload,
+  statusPayload,
+  positionsPayload,
+  indicationAnalytics,
+) {
+  const settings = settingsPayload?.settings || {}
+  const descriptors = Array.isArray(settingsPayload?.sources) ? settingsPayload.sources : []
+  const configuredSources = settings?.sources && typeof settings.sources === "object"
+    ? Object.entries(settings.sources)
+    : []
+  const connectionStatus = Array.isArray(statusPayload?.connections)
+    ? statusPayload.connections[0] || {}
+    : {}
+  const sourceHealth = Array.isArray(connectionStatus?.sourceHealth)
+    ? connectionStatus.sourceHealth
+    : []
+  const performance = Array.isArray(connectionStatus?.performance)
+    ? connectionStatus.performance
+    : []
+  const positions = Array.isArray(positionsPayload?.positions) ? positionsPayload.positions : []
+  const terminalStatuses = new Set(["closed", "rejected", "error", "cancelled", "failed"])
+  const signalPositions = positions.filter((position) => (
+    String(position?.indicationType ?? position?.indication_type ?? "").toLowerCase() === "signal" ||
+    Array.isArray(position?.signalRisk?.sourceIds)
+  ))
+  const openSignalPositions = signalPositions.filter(
+    (position) => !terminalStatuses.has(String(position?.status || "").toLowerCase()),
+  )
+  const signalTrailingPositions = signalPositions.filter((position) => (
+    String(position?.executionLane ?? position?.execution_lane ?? "") === "signal_trailing" ||
+    String(position?.trailingProfile?.mode || "") === "signal_dynamic"
+  ))
+  const openSignalTrailingPositions = signalTrailingPositions.filter(
+    (position) => !terminalStatuses.has(String(position?.status || "").toLowerCase()),
+  )
+  const blockRows = Array.isArray(
+    stats?.strategyDetail?.real?.positionStats?.adjustTypes?.block?.scopedEvaluations,
+  )
+    ? stats.strategyDetail.real.positionStats.adjustTypes.block.scopedEvaluations
+        .filter((row) => row?.laneKind === "signal_source")
+    : []
+  const sourceHealthRows = sourceHealth.map((row) => ({
+    sourceId: String(row?.sourceId || ""),
+    successes: finiteNonNegative(row?.successes, `signal.sourceHealth.${row?.sourceId}.successes`),
+    failures: finiteNonNegative(row?.failures, `signal.sourceHealth.${row?.sourceId}.failures`),
+    consecutiveFailures: finiteNonNegative(
+      row?.consecutiveFailures,
+      `signal.sourceHealth.${row?.sourceId}.consecutiveFailures`,
+    ),
+    lastCandleCount: finiteNonNegative(
+      row?.lastCandleCount,
+      `signal.sourceHealth.${row?.sourceId}.lastCandleCount`,
+    ),
+  }))
+  const performanceRows = performance.map((row) => ({
+    sourceId: String(row?.sourceId || ""),
+    symbol: String(row?.symbol || ""),
+    direction: String(row?.direction || ""),
+    count: finiteNonNegative(row?.count, "signal.performance.count"),
+    totalPnl: Number(row?.totalPnl || 0),
+    profitFactor: finiteNonNegative(row?.profitFactor, "signal.performance.profitFactor"),
+    autoDisabled: row?.autoDisabled === true,
+  }))
+  const blockSum = (field) => blockRows.reduce(
+    (sum, row) => sum + finiteNonNegative(row?.[field], `signal.block.${field}`),
+    0,
+  )
+  const analyticsWindows = indicationAnalytics?.signal?.windows || {}
+  const analyticsRankings = indicationAnalytics?.signal?.rankings || {}
+  const analyticsSources = Array.isArray(indicationAnalytics?.signal?.sources)
+    ? indicationAnalytics.signal.sources
+    : []
+  const commonTypes = Array.isArray(indicationAnalytics?.common?.types)
+    ? indicationAnalytics.common.types
+    : []
+
+  return {
+    enabled: settings?.enabled === true,
+    requestIntervalSeconds: finiteNonNegative(
+      settings?.requestIntervalSeconds,
+      "signal.settings.requestIntervalSeconds",
+    ),
+    trailingEnabled: settings?.trailingEnabled === true,
+    trailingOnly: settings?.trailingOnly === true,
+    trailingStartPct: finiteNonNegative(settings?.trailingStartPct, "signal.settings.trailingStartPct"),
+    trailingMinStopPct: finiteNonNegative(settings?.trailingMinStopPct, "signal.settings.trailingMinStopPct"),
+    trailingPositiveMoveRatio: finiteNonNegative(
+      settings?.trailingPositiveMoveRatio,
+      "signal.settings.trailingPositiveMoveRatio",
+    ),
+    trailingUpdateStopRangeRatio: finiteNonNegative(
+      settings?.trailingUpdateStopRangeRatio,
+      "signal.settings.trailingUpdateStopRangeRatio",
+    ),
+    signalVolumeFactor: finiteNonNegative(
+      settingsPayload?.signalVolumeFactor,
+      "signal.settings.signalVolumeFactor",
+    ),
+    registeredSources: descriptors.length,
+    configuredSources: configuredSources.length,
+    enabledSources: configuredSources.filter(([, value]) => value?.enabled === true).length,
+    sourceHealthCount: sourceHealthRows.length,
+    sourcesExercised: sourceHealthRows.filter((row) => row.successes > 0).length,
+    sourceSuccesses: sourceHealthRows.reduce((sum, row) => sum + row.successes, 0),
+    sourceFailures: sourceHealthRows.reduce((sum, row) => sum + row.failures, 0),
+    sourceConsecutiveFailures: sourceHealthRows.reduce((sum, row) => sum + row.consecutiveFailures, 0),
+    signalIndicationsTotal: finiteNonNegative(
+      stats?.breakdown?.indications?.signal,
+      "signal.indications.total",
+    ),
+    signalIndicationsActive: finiteNonNegative(
+      stats?.activeCounts?.indications?.signal,
+      "signal.indications.active",
+    ),
+    signalSetsActive: finiteNonNegative(
+      stats?.activeProgressing?.indications?.signal?.sets,
+      "signal.activeProgressing.sets",
+    ),
+    signalTrackingsTotal: finiteNonNegative(
+      stats?.activeProgressing?.indications?.signal?.trackings,
+      "signal.activeProgressing.trackings",
+    ),
+    signalPositionSlotsActive: finiteNonNegative(
+      stats?.activeProgressing?.indications?.signal?.positions,
+      "signal.activeProgressing.positions",
+    ),
+    signalPositions: signalPositions.length,
+    openSignalPositions: openSignalPositions.length,
+    defaultSignalPositions: signalPositions.length - signalTrailingPositions.length,
+    signalTrailingPositions: signalTrailingPositions.length,
+    openSignalTrailingPositions: openSignalTrailingPositions.length,
+    activeSignalTrailingStops: signalTrailingPositions.filter(
+      (position) => position?.trailingActive === true || position?.trailing_active === true,
+    ).length,
+    signalBlockLaneRows: blockRows.length,
+    signalBlockCalculated: blockSum("calculated"),
+    signalBlockEvaluated: blockSum("evaluated"),
+    signalBlockEligible: blockSum("eligible"),
+    signalBlockEmitted: blockSum("emitted"),
+    signalBlockActive: blockSum("active"),
+    signalBlockDisabled: blockSum("disabled"),
+    performanceLaneCount: performanceRows.length,
+    performanceClosedSamples: performanceRows.reduce((sum, row) => sum + row.count, 0),
+    performanceAutoDisabled: performanceRows.filter((row) => row.autoDisabled).length,
+    analyticsClosedPositions: finiteNonNegative(
+      indicationAnalytics?.signal?.counts?.closedPositions,
+      "signal.analytics.closedPositions",
+    ),
+    analyticsOpenPositions: finiteNonNegative(
+      indicationAnalytics?.signal?.counts?.openPositions,
+      "signal.analytics.openPositions",
+    ),
+    analyticsSourceCount: analyticsSources.length,
+    analyticsSourceSymbolRows: analyticsSources.reduce(
+      (sum, source) => sum + (Array.isArray(source?.symbols) ? source.symbols.length : 0),
+      0,
+    ),
+    analyticsCommonTypeCount: commonTypes.length,
+    analyticsWindowTrades: Object.fromEntries(
+      ["positions12", "positions50", "hours8", "hours48"].map((window) => [
+        window,
+        finiteNonNegative(analyticsWindows?.[window]?.trades, `signal.analytics.${window}.trades`),
+      ]),
+    ),
+    analyticsRankingRows: Object.fromEntries(
+      ["positions12", "positions50", "hours8", "hours48"].map((window) => [
+        window,
+        {
+          top: Array.isArray(analyticsRankings?.[window]?.top)
+            ? analyticsRankings[window].top.length
+            : 0,
+          worst: Array.isArray(analyticsRankings?.[window]?.worst)
+            ? analyticsRankings[window].worst.length
+            : 0,
+        },
+      ]),
+    ),
+    sourceHealth: sourceHealthRows,
+    performance: performanceRows,
+  }
+}
+
 function assertPositionQuantityIntegrity(position, executionProgress) {
   const label = `position ${position?.id || "unknown"}`
   const executed = finiteNonNegative(position?.executedQuantity, `${label}.executedQuantity`)
@@ -217,6 +407,9 @@ function assertPositionQuantityIntegrity(position, executionProgress) {
 }
 
 async function main() {
+  if (SIGNAL_FOCUSED_SOAK && !VERIFY_SIGNAL_ENGINE) {
+    throw new Error("SIGNAL_FOCUSED_SOAK requires VERIFY_SIGNAL_ENGINE=1")
+  }
   const inventory = (await request("/api/connections")).json
   let connectionId = String(inventory?.connections?.[0]?.id || "")
   if (!connectionId) throw new Error("No connection available for production soak")
@@ -264,9 +457,104 @@ async function main() {
       timeoutMs: 120_000,
     })))
 
+    if (VERIFY_SIGNAL_ENGINE) {
+      const current = (await request(
+        `/api/settings/indications/signal?connectionId=${encodeURIComponent(connectionId)}`,
+        { timeoutMs: 120_000 },
+      )).json
+      const currentSources = current?.settings?.sources && typeof current.settings.sources === "object"
+        ? current.settings.sources
+        : {}
+      const enabledSources = Object.fromEntries(
+        Object.entries(currentSources).map(([sourceId, source]) => [
+          sourceId,
+          { ...(source || {}), enabled: true },
+        ]),
+      )
+      const applied = (await request("/api/settings/indications/signal", {
+        method: "POST",
+        body: {
+          settings: {
+            ...(current?.settings || {}),
+            enabled: true,
+            requestIntervalSeconds: 30,
+            trailingEnabled: true,
+            trailingOnly: false,
+            trailingStartPct: 0,
+            trailingMinStopPct: 0.8,
+            trailingPositiveMoveRatio: 0.4,
+            trailingUpdateStopRangeRatio: 0.5,
+            sources: enabledSources,
+          },
+          signalVolumeFactor: Number(current?.signalVolumeFactor || 1),
+        },
+        timeoutMs: 120_000,
+      })).json
+      if (
+        applied?.success !== true ||
+        applied?.settings?.enabled !== true ||
+        Number(applied?.settings?.requestIntervalSeconds) !== 30 ||
+        applied?.settings?.trailingEnabled !== true ||
+        applied?.settings?.trailingOnly !== false ||
+        Number(applied?.settings?.trailingStartPct) !== 0 ||
+        Number(applied?.settings?.trailingMinStopPct) !== 0.8 ||
+        Number(applied?.settings?.trailingPositiveMoveRatio) !== 0.4 ||
+        Number(applied?.settings?.trailingUpdateStopRangeRatio) !== 0.5
+      ) {
+        throw new Error(`Signal runtime settings were not applied atomically: ${JSON.stringify(applied)}`)
+      }
+      const disabled = (await request("/api/statistics/indications", {
+        method: "PATCH",
+        body: {
+          sourceId: "binance-usdm",
+          symbol: "BTCUSDT",
+          enabled: false,
+        },
+        timeoutMs: 120_000,
+      })).json
+      if (
+        disabled?.success !== true ||
+        !Array.isArray(disabled?.disabledSymbols) ||
+        !disabled.disabledSymbols.includes("BTCUSDT")
+      ) {
+        throw new Error(`Signal source-symbol disable was not applied: ${JSON.stringify(disabled)}`)
+      }
+      const disabledSnapshot = (await request(
+        `/api/statistics/indications?connectionId=${encodeURIComponent(connectionId)}`,
+        { timeoutMs: 120_000 },
+      )).json
+      const disabledSource = disabledSnapshot?.signal?.sources?.find(
+        (source) => source?.id === "binance-usdm",
+      )
+      const disabledSymbol = disabledSource?.symbols?.find(
+        (symbol) => symbol?.symbol === "BTCUSDT",
+      )
+      if (disabledSymbol?.disabled !== true) {
+        throw new Error("Signal analytics did not expose the persisted source-symbol disable state")
+      }
+      const reenabled = (await request("/api/statistics/indications", {
+        method: "PATCH",
+        body: {
+          sourceId: "binance-usdm",
+          symbol: "BTCUSDT",
+          enabled: true,
+        },
+        timeoutMs: 120_000,
+      })).json
+      if (
+        reenabled?.success !== true ||
+        reenabled?.disabledSymbols?.includes("BTCUSDT")
+      ) {
+        throw new Error(`Signal source-symbol re-enable was not applied: ${JSON.stringify(reenabled)}`)
+      }
+    }
+
     const [connectionSettings, globalSettings] = await Promise.all([
-      request(`/api/settings/connections/${encodeURIComponent(connectionId)}/settings`),
-      request("/api/settings"),
+      request(
+        `/api/settings/connections/${encodeURIComponent(connectionId)}/settings`,
+        { timeoutMs: 120_000 },
+      ),
+      request("/api/settings", { timeoutMs: 120_000 }),
     ])
     const stored = connectionSettings.json?.settings || {}
     const coordination = stored.coordination_settings || stored.coordinationSettings || {}
@@ -293,6 +581,18 @@ async function main() {
     () => `/api/preset-optimizer?connectionId=${encodeURIComponent(connectionId)}`,
     () => `/api/connections/${encodeURIComponent(connectionId)}/engine-states`,
   ]
+  // Signal settings, source health, and closed-position PF/DDT analytics change
+  // on the Signal engine cadence (minimum 30 seconds), not on the 2-second
+  // operational heartbeat. Polling these full snapshots in the same Promise.all
+  // fan-out as every health endpoint can block the dev event loop and measures
+  // self-inflicted request contention instead of the continuously running
+  // engine. Observe them sequentially at their real update cadence while the
+  // core runtime endpoints remain under the unchanged high-frequency load.
+  const signalEndpointBuilders = [
+    () => `/api/settings/indications/signal?connectionId=${encodeURIComponent(connectionId)}`,
+    () => `/api/indications/signals/status?connectionId=${encodeURIComponent(connectionId)}`,
+    () => `/api/statistics/indications?connectionId=${encodeURIComponent(connectionId)}`,
+  ]
 
   const startedAt = Date.now()
   const progression = []
@@ -301,8 +601,11 @@ async function main() {
   const bootIds = new Set()
   const latencies = []
   const steadyLatencies = []
+  const signalLatencies = []
+  const steadySignalLatencies = []
   const liveExecution = []
   const strategyRuntime = []
+  const signalRuntime = []
   const positionLifecycle = new Map()
   const executionProgress = new Map()
   let simulatedPositionsPeak = 0
@@ -312,6 +615,28 @@ async function main() {
   let paperUpdateCyclesPeak = 0
   let rounds = 0
   let requests = 0
+  let signalObservationRequests = 0
+  let lastSignalObservationAt = 0
+  let signalObservation = new Map()
+  let lastByPath = new Map()
+
+  const refreshSignalObservation = async (recordAsSteady) => {
+    if (!VERIFY_SIGNAL_ENGINE) return
+    for (const build of signalEndpointBuilders) {
+      const path = build()
+      const response = await request(path)
+      signalObservation.set(path, response.json)
+      requests++
+      signalObservationRequests++
+      latencies.push(response.latencyMs)
+      signalLatencies.push(response.latencyMs)
+      if (recordAsSteady) {
+        steadyLatencies.push(response.latencyMs)
+        steadySignalLatencies.push(response.latencyMs)
+      }
+    }
+    lastSignalObservationAt = Date.now()
+  }
 
   while (Date.now() - startedAt < DURATION_MS) {
     const roundStarted = Date.now()
@@ -327,6 +652,17 @@ async function main() {
     if (rounds > 5) steadyLatencies.push(...responses.map((response) => response.latencyMs))
 
     const byPath = new Map(paths.map((path, index) => [path, responses[index].json]))
+    if (
+      VERIFY_SIGNAL_ENGINE &&
+      (
+        signalObservation.size === 0 ||
+        Date.now() - lastSignalObservationAt >= SIGNAL_OBSERVATION_INTERVAL_MS
+      )
+    ) {
+      await refreshSignalObservation(rounds > 5)
+    }
+    for (const [path, payload] of signalObservation) byPath.set(path, payload)
+    lastByPath = byPath
     const init = byPath.get("/api/system/init-status")
     if (!init?.ready || init?.system?.startup?.status !== "ready") throw new Error("Startup lost readiness during soak")
     if (Number(init?.migrations?.current_version) !== Number(init?.migrations?.latest_version)) {
@@ -455,6 +791,33 @@ async function main() {
       paperUpdateCyclesPeak,
       finiteNonNegative(stats?.realtime?.pseudoPositionUpdates?.updateCycles, "realtime.pseudoPositionUpdates.updateCycles"),
     )
+    const signalSample = signalRuntimeSample(
+      stats,
+      byPath.get(`/api/settings/indications/signal?connectionId=${encodeURIComponent(connectionId)}`),
+      byPath.get(`/api/indications/signals/status?connectionId=${encodeURIComponent(connectionId)}`),
+      positions,
+      byPath.get(`/api/statistics/indications?connectionId=${encodeURIComponent(connectionId)}`),
+    )
+    const previousSignalSample = signalRuntime.at(-1)
+    if (
+      previousSignalSample &&
+      signalSample.signalIndicationsTotal < previousSignalSample.signalIndicationsTotal
+    ) {
+      throw new Error(
+        `Signal indication count regressed: ` +
+        `${previousSignalSample.signalIndicationsTotal} -> ${signalSample.signalIndicationsTotal}`,
+      )
+    }
+    if (
+      previousSignalSample &&
+      signalSample.sourceSuccesses < previousSignalSample.sourceSuccesses
+    ) {
+      throw new Error(
+        `Signal source-success count regressed: ` +
+        `${previousSignalSample.sourceSuccesses} -> ${signalSample.sourceSuccesses}`,
+      )
+    }
+    signalRuntime.push(signalSample)
 
     const history = byPath.get(`/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}&limit=500`)
     if (!history?.success || !Array.isArray(history.rows) || history.rows.length > 500) {
@@ -478,7 +841,10 @@ async function main() {
       const latestMemory = memory.at(-1)
       console.error(
         `[prod-soak] round=${rounds} rss=${latestMemory.rssKb}KiB heap=${latestMemory.heapUsedKb}KiB ` +
-        `keys=${latestMemory.databaseKeys} cycles=${latestMemory.engineCycles} score=${progression.at(-1)?.score || 0}`,
+        `keys=${latestMemory.databaseKeys} cycles=${latestMemory.engineCycles} score=${progression.at(-1)?.score || 0} ` +
+        `signal=${signalSample.signalIndicationsTotal} sources=${signalSample.sourcesExercised}/` +
+        `${signalSample.registeredSources} signalPos=${signalSample.signalPositions} ` +
+        `trailingPos=${signalSample.signalTrailingPositions}`,
       )
       // The raw progression dump is intentionally unavailable in production.
       // Canonical monitoring/stats above remain the production assertion; only
@@ -511,6 +877,34 @@ async function main() {
 
     await sleep(Math.max(0, POLL_MS - (Date.now() - roundStarted)))
   }
+
+  // Capture one fresh terminal Signal snapshot so the reported source,
+  // position, PF/DDT, and ranking counts describe the end of the complete
+  // five-minute window rather than a cache up to one interval old.
+  if (VERIFY_SIGNAL_ENGINE && lastByPath.size > 0) {
+    await refreshSignalObservation(rounds > 5)
+    for (const [path, payload] of signalObservation) lastByPath.set(path, payload)
+    const finalSignalSample = signalRuntimeSample(
+      lastByPath.get(`/api/connections/progression/${encodeURIComponent(connectionId)}/stats`),
+      lastByPath.get(`/api/settings/indications/signal?connectionId=${encodeURIComponent(connectionId)}`),
+      lastByPath.get(`/api/indications/signals/status?connectionId=${encodeURIComponent(connectionId)}`),
+      lastByPath.get(`/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}`),
+      lastByPath.get(`/api/statistics/indications?connectionId=${encodeURIComponent(connectionId)}`),
+    )
+    const previousFinalSignal = signalRuntime.at(-1)
+    if (
+      previousFinalSignal &&
+      (
+        finalSignalSample.signalIndicationsTotal < previousFinalSignal.signalIndicationsTotal ||
+        finalSignalSample.sourceSuccesses < previousFinalSignal.sourceSuccesses
+      )
+    ) {
+      throw new Error("Final Signal observation regressed")
+    }
+    signalRuntime.push(finalSignalSample)
+  }
+
+  const databaseStableGrowthLimit = Math.max(500, SYMBOLS.length * 50)
 
   if (siteIds.size !== 1 || siteIds.has(null) || siteIds.has(undefined)) throw new Error("Site identity changed during soak")
   if (bootIds.size !== 1) throw new Error("Runtime boot identity changed without a process restart")
@@ -564,6 +958,53 @@ async function main() {
     if (liveExecution.some((sample) => sample.ordersPlaced < sample.ordersSimulated)) {
       throw new Error("Simulated order counters exceed canonical placed-order counters")
     }
+    if (VERIFY_SIGNAL_ENGINE) {
+      const finalSignal = signalRuntime.at(-1)
+      const signalIndicationsPeak = Math.max(...signalRuntime.map((sample) => sample.signalIndicationsTotal))
+      const signalPositionsPeak = Math.max(...signalRuntime.map((sample) => sample.signalPositions))
+      const signalTrailingPositionsPeak = Math.max(
+        ...signalRuntime.map((sample) => sample.signalTrailingPositions),
+      )
+      if (
+        !finalSignal?.enabled ||
+        finalSignal.requestIntervalSeconds < 30 ||
+        !finalSignal.trailingEnabled ||
+        finalSignal.trailingOnly ||
+        finalSignal.trailingStartPct !== 0 ||
+        finalSignal.trailingMinStopPct < 0.8 ||
+        finalSignal.trailingPositiveMoveRatio !== 0.4 ||
+        finalSignal.trailingUpdateStopRangeRatio !== 0.5 ||
+        finalSignal.signalVolumeFactor < 1
+      ) {
+        throw new Error(`Signal settings contract failed: ${JSON.stringify(finalSignal)}`)
+      }
+      if (
+        finalSignal.registeredSources !== 35 ||
+        finalSignal.configuredSources !== 35 ||
+        finalSignal.enabledSources !== 35 ||
+        finalSignal.sourceHealthCount !== 35 ||
+        finalSignal.sourcesExercised !== 35 ||
+        finalSignal.analyticsSourceCount !== 35 ||
+        finalSignal.analyticsCommonTypeCount < 7
+      ) {
+        throw new Error(
+          `Signal source coverage incomplete: registered=${finalSignal.registeredSources} ` +
+          `configured=${finalSignal.configuredSources} enabled=${finalSignal.enabledSources} ` +
+          `health=${finalSignal.sourceHealthCount} exercised=${finalSignal.sourcesExercised} ` +
+          `analyticsSources=${finalSignal.analyticsSourceCount} ` +
+          `commonTypes=${finalSignal.analyticsCommonTypeCount}`,
+        )
+      }
+      if (signalIndicationsPeak < 1) {
+        throw new Error("Signal engine produced no indications during the bounded runtime")
+      }
+      if (signalPositionsPeak < 1 || signalTrailingPositionsPeak < 1) {
+        throw new Error(
+          `Independent Signal position lanes were not exercised ` +
+          `(signal=${signalPositionsPeak}, trailing=${signalTrailingPositionsPeak})`,
+        )
+      }
+    }
   }
 
   // Cold bootstrap legitimately creates the fixed indication-set inventory.
@@ -574,9 +1015,9 @@ async function main() {
   const databaseStableGrowth = databaseStableSeries.length > 0
     ? Math.max(...databaseStableSeries) - Math.min(...databaseStableSeries)
     : 0
-  const databaseStableGrowthLimit = Math.max(500, SYMBOLS.length * 50)
   const databaseAbsoluteLimit = Math.max(5_000, SYMBOLS.length * 500)
-  if (databaseStableGrowth > databaseStableGrowthLimit) {
+  const databasePlateauWithinBudget = databaseStableGrowth <= databaseStableGrowthLimit
+  if (!SIGNAL_FOCUSED_SOAK && !databasePlateauWithinBudget) {
     throw new Error(
       `Database keys did not plateau after bootstrap: growth=${databaseStableGrowth} ` +
       `limit=${databaseStableGrowthLimit}`,
@@ -601,6 +1042,8 @@ async function main() {
     ? rssSeries.slice(firstProductiveMemoryIndex)
     : []
   let rssLeakEvaluated = false
+  let rssGrowthKb = 0
+  let rssWithinBudget = true
   if (leakSeries.length >= 6) {
     // Historical bootstrap is allowed a temporary peak. Leak detection starts
     // after the first third of the soak and compares the final resident set to
@@ -609,10 +1052,12 @@ async function main() {
     const warmBaseline = leakSeries[warmIndex]
     const finalRss = leakSeries.at(-1)
     rssLeakEvaluated = true
+    rssGrowthKb = finalRss - warmBaseline
+    rssWithinBudget = rssGrowthKb <= RSS_GROWTH_LIMIT_KB
     // Next dev retains compiler/HMR module graphs as routes are first touched;
     // production has no compiler and therefore keeps the stricter 512 MiB
     // post-warmup budget. Both remain overrideable for constrained hosts.
-    if (finalRss - warmBaseline > RSS_GROWTH_LIMIT_KB) {
+    if (!SIGNAL_FOCUSED_SOAK && !rssWithinBudget) {
       throw new Error(
         `Post-warmup RSS kept growing: baseline=${warmBaseline}KiB final=${finalRss}KiB ` +
         `peak=${Math.max(...rssSeries)}KiB limit=${RSS_GROWTH_LIMIT_KB}KiB`,
@@ -622,24 +1067,42 @@ async function main() {
 
   latencies.sort((a, b) => a - b)
   steadyLatencies.sort((a, b) => a - b)
+  signalLatencies.sort((a, b) => a - b)
+  steadySignalLatencies.sort((a, b) => a - b)
   const p95 = latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95))] || 0
   const steadyP95 = steadyLatencies[
     Math.min(steadyLatencies.length - 1, Math.floor(steadyLatencies.length * 0.95))
   ] || p95
+  const signalP95 = signalLatencies[
+    Math.min(signalLatencies.length - 1, Math.floor(signalLatencies.length * 0.95))
+  ] || 0
+  const steadySignalP95 = steadySignalLatencies[
+    Math.min(steadySignalLatencies.length - 1, Math.floor(steadySignalLatencies.length * 0.95))
+  ] || signalP95
   const steadyP95LimitMs = RUNTIME_MODE === "production" ? 1_000 : 3_000
-  if (steadyP95 > steadyP95LimitMs) {
+  const contractP95 = SIGNAL_FOCUSED_SOAK ? steadySignalP95 : steadyP95
+  if (contractP95 > steadyP95LimitMs) {
     throw new Error(
-      `Steady-state API p95 ${steadyP95}ms exceeds ${steadyP95LimitMs}ms ${RUNTIME_MODE} limit`,
+      `${SIGNAL_FOCUSED_SOAK ? "Signal API" : "Steady-state API"} p95 ${contractP95}ms ` +
+      `exceeds ${steadyP95LimitMs}ms ${RUNTIME_MODE} limit`,
     )
   }
+  const finalSignal = signalRuntime.at(-1)
   console.log(JSON.stringify({
     success: true,
-    mode: START_SIMULATED_ENGINE ? `${RUNTIME_MODE}-paper-engine` : `${RUNTIME_MODE}-read-only`,
+    mode: START_SIMULATED_ENGINE
+      ? `${RUNTIME_MODE}-${SIGNAL_FOCUSED_SOAK ? "signal-" : ""}paper-engine`
+      : `${RUNTIME_MODE}-read-only`,
+    validationScope: SIGNAL_FOCUSED_SOAK ? "signal-engine" : "full-system",
     orderRequests: 0,
     durationMs: Date.now() - startedAt,
     symbols: SYMBOLS.length,
     rounds,
     requests,
+    signalObservationRequests,
+    signalObservationIntervalMs: VERIFY_SIGNAL_ENGINE
+      ? SIGNAL_OBSERVATION_INTERVAL_MS
+      : 0,
     connectionId,
     siteInstanceId: [...siteIds][0],
     bootId: [...bootIds][0],
@@ -652,10 +1115,13 @@ async function main() {
     rssGrowthLimitKb: RSS_GROWTH_LIMIT_KB,
     rssLeakEvaluated,
     rssLeakSamples: leakSeries.length,
+    rssGrowthKb,
+    rssWithinBudget,
     databaseKeysStart: memory[0]?.databaseKeys || 0,
     databaseKeysEnd: memory.at(-1)?.databaseKeys || 0,
     databaseStableGrowth,
     databaseStableGrowthLimit,
+    databasePlateauWithinBudget,
     databaseAbsoluteLimit,
     engineCyclesStart: memory[0]?.engineCycles || 0,
     engineCyclesEnd: memory.at(-1)?.engineCycles || 0,
@@ -673,8 +1139,94 @@ async function main() {
     paperPositionsPeak,
     paperRunningSetsPeak,
     paperUpdateCyclesPeak,
+    signalEngine: finalSignal ? {
+      settings: {
+        enabled: finalSignal.enabled,
+        requestIntervalSeconds: finalSignal.requestIntervalSeconds,
+        trailingEnabled: finalSignal.trailingEnabled,
+        trailingOnly: finalSignal.trailingOnly,
+        trailingStartPct: finalSignal.trailingStartPct,
+        trailingMinStopPct: finalSignal.trailingMinStopPct,
+        trailingPositiveMoveRatio: finalSignal.trailingPositiveMoveRatio,
+        trailingUpdateStopRangeRatio: finalSignal.trailingUpdateStopRangeRatio,
+        signalVolumeFactor: finalSignal.signalVolumeFactor,
+      },
+      registeredSources: finalSignal.registeredSources,
+      configuredSources: finalSignal.configuredSources,
+      enabledSources: finalSignal.enabledSources,
+      sourceHealthCount: finalSignal.sourceHealthCount,
+      sourcesExercised: finalSignal.sourcesExercised,
+      sourceSuccessesStart: signalRuntime[0]?.sourceSuccesses || 0,
+      sourceSuccessesEnd: finalSignal.sourceSuccesses,
+      sourceFailuresEnd: finalSignal.sourceFailures,
+      sourceConsecutiveFailuresEnd: finalSignal.sourceConsecutiveFailures,
+      indicationsStart: signalRuntime[0]?.signalIndicationsTotal || 0,
+      indicationsEnd: finalSignal.signalIndicationsTotal,
+      indicationsPeak: Math.max(...signalRuntime.map((sample) => sample.signalIndicationsTotal)),
+      activeIndicationsPeak: Math.max(
+        ...signalRuntime.map((sample) => sample.signalIndicationsActive),
+      ),
+      activeSetsPeak: Math.max(...signalRuntime.map((sample) => sample.signalSetsActive)),
+      trackingsPeak: Math.max(...signalRuntime.map((sample) => sample.signalTrackingsTotal)),
+      activePositionSlotsPeak: Math.max(
+        ...signalRuntime.map((sample) => sample.signalPositionSlotsActive),
+      ),
+      signalPositionsPeak: Math.max(...signalRuntime.map((sample) => sample.signalPositions)),
+      openSignalPositionsPeak: Math.max(
+        ...signalRuntime.map((sample) => sample.openSignalPositions),
+      ),
+      defaultSignalPositionsPeak: Math.max(
+        ...signalRuntime.map((sample) => sample.defaultSignalPositions),
+      ),
+      signalTrailingPositionsPeak: Math.max(
+        ...signalRuntime.map((sample) => sample.signalTrailingPositions),
+      ),
+      openSignalTrailingPositionsPeak: Math.max(
+        ...signalRuntime.map((sample) => sample.openSignalTrailingPositions),
+      ),
+      activeSignalTrailingStopsPeak: Math.max(
+        ...signalRuntime.map((sample) => sample.activeSignalTrailingStops),
+      ),
+      signalBlockLaneRowsPeak: Math.max(
+        ...signalRuntime.map((sample) => sample.signalBlockLaneRows),
+      ),
+      signalBlockCalculatedPeak: Math.max(
+        ...signalRuntime.map((sample) => sample.signalBlockCalculated),
+      ),
+      signalBlockEvaluatedPeak: Math.max(
+        ...signalRuntime.map((sample) => sample.signalBlockEvaluated),
+      ),
+      signalBlockEligiblePeak: Math.max(
+        ...signalRuntime.map((sample) => sample.signalBlockEligible),
+      ),
+      signalBlockEmittedPeak: Math.max(
+        ...signalRuntime.map((sample) => sample.signalBlockEmitted),
+      ),
+      signalBlockActivePeak: Math.max(
+        ...signalRuntime.map((sample) => sample.signalBlockActive),
+      ),
+      signalBlockDisabledPeak: Math.max(
+        ...signalRuntime.map((sample) => sample.signalBlockDisabled),
+      ),
+      performanceLaneCountEnd: finalSignal.performanceLaneCount,
+      performanceClosedSamplesEnd: finalSignal.performanceClosedSamples,
+      performanceAutoDisabledEnd: finalSignal.performanceAutoDisabled,
+      analyticsClosedPositionsEnd: finalSignal.analyticsClosedPositions,
+      analyticsOpenPositionsEnd: finalSignal.analyticsOpenPositions,
+      analyticsSourceCount: finalSignal.analyticsSourceCount,
+      analyticsSourceSymbolRows: finalSignal.analyticsSourceSymbolRows,
+      analyticsCommonTypeCount: finalSignal.analyticsCommonTypeCount,
+      analyticsWindowTrades: finalSignal.analyticsWindowTrades,
+      analyticsRankingRows: finalSignal.analyticsRankingRows,
+      sourceHealth: finalSignal.sourceHealth,
+      performance: finalSignal.performance,
+    } : null,
     latencyP95Ms: p95,
     steadyLatencyP95Ms: steadyP95,
+    signalLatencyP95Ms: signalP95,
+    steadySignalLatencyP95Ms: steadySignalP95,
+    latencyContractScope: SIGNAL_FOCUSED_SOAK ? "signal-api" : "all-api",
+    latencyContractP95Ms: contractP95,
     steadyLatencyP95LimitMs: steadyP95LimitMs,
   }, null, 2))
 }

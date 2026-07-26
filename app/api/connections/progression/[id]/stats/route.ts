@@ -243,7 +243,14 @@ function aggregateOrdersBySymbol(
     return Math.round(x * m) / m
   }
 
-  const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto", "trend"] as const
+  function sf(v: unknown, decimals = 2): number {
+    const x = Number(v)
+    if (!Number.isFinite(x)) return 0
+    const m = Math.pow(10, decimals)
+    return Math.round(x * m) / m
+  }
+
+  const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto", "signal", "trend"] as const
 
   function aggregateIndicationSnapshot(
     hash: Record<string, string> | null | undefined,
@@ -253,10 +260,10 @@ function aggregateOrdersBySymbol(
     activeSets: Record<string, number>
   } {
     const counts: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, trend: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, signal: 0, trend: 0,
     }
     const activeSets: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, trend: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, signal: 0, trend: 0,
     }
     const fields = hash && typeof hash === "object" ? hash : {}
 
@@ -267,7 +274,7 @@ function aggregateOrdersBySymbol(
     // data does not show false zeroes until the next cron tick rewrites scoped
     // fields.
     const hasScopedField: Record<string, boolean> = {
-      direction: false, move: false, active: false, active_advanced: false, optimal: false, auto: false, trend: false,
+      direction: false, move: false, active: false, active_advanced: false, optimal: false, auto: false, signal: false, trend: false,
     }
     for (const field of Object.keys(fields)) {
       const idx = field.lastIndexOf(":")
@@ -477,7 +484,7 @@ function aggregateOrdersBySymbol(
  *                                                            // — independent of 250 cap }
  *               ↑ strategiesTotal = Real-stage output (NOT sum of stages)
  *   breakdown: {
- *     indications: { direction, move, active, activeAdvanced, optimal, auto, trend, total }
+ *     indications: { direction, move, active, activeAdvanced, optimal, auto, signal, trend, total }
  *     strategies:  { base, main, real, live, total,
  *                    baseEvaluated, mainEvaluated, realEvaluated }
  *                    ↑ `total` = Real-stage count only, per pipeline rule above
@@ -1427,7 +1434,7 @@ export async function GET(
     //   - its own cumulative counter `indications_{type}_count` on progression:{id}
     //   - its own per-cycle increment via hincrby in EngineManager.startIndicationProcessor
     // `auto` is a synthetic legacy alias retained for back-compat with old runs.
-    const indTypes = ["direction", "move", "active", "active_advanced", "optimal", "auto", "trend"] as const
+    const indTypes = ["direction", "move", "active", "active_advanced", "optimal", "auto", "signal", "trend"] as const
     const indCounts: Record<string, number> = {}
     await Promise.all(
       indTypes.map(async (type) => {
@@ -1461,7 +1468,7 @@ export async function GET(
     // and all activeCounts come back zero — exactly the right "nothing
     // alive" semantic for the UI.
     const activeIndByType: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, trend: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, signal: 0, trend: 0,
     }
     const activeStratByStage: Record<string, number> = {
       base: 0, main: 0, real: 0, live: 0,
@@ -1479,7 +1486,7 @@ export async function GET(
     // nothing qualified that cycle) are excluded so the number tracks
     // currently-progressing pools, not all-ever-touched pools.
     const activeSetsIndByType: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, trend: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, optimal: 0, auto: 0, signal: 0, trend: 0,
     }
     const activeSetsStratByStage: Record<string, number> = {
       base: 0, main: 0, real: 0, live: 0,
@@ -1760,7 +1767,14 @@ export async function GET(
     let blockProfitFactorWindow = 0
     let blockProfitFactorMinimumSampleCount = 0
     const blockActiveOverlayEvaluation = {
+      calculated: 0,
       evaluated: 0,
+      eligible: 0,
+      disabled: 0,
+      comparisons: 0,
+      coldStart: 0,
+      outperformed: 0,
+      underperformed: 0,
       passed: 0,
       emitted: 0,
       rejected: 0,
@@ -1770,7 +1784,16 @@ export async function GET(
       live: { long: 0, short: 0 },
       combined: { long: 0, short: 0 },
       volumeIncrement: { long: 0, short: 0 },
+      avgObservedProfitFactor: 0,
+      avgNormalProfitFactor: 0,
+      avgConfiguredMinimumProfitFactor: 0,
+      avgMinimumProfitFactor: 0,
+      avgProfitFactorDifference: 0,
+      strategyEnabled: false,
+      realEnabled: false,
+      liveEnabled: false,
     }
+    const blockActivePerSymbol = new Map<string, Record<string, number>>()
     for (const [field, raw] of Object.entries(blockProfitFactorStatsHash)) {
       const meta = field.match(/^s:([^:]+):(profit_factor_ratio|default_min_pf|window|minimum_sample_count)$/)
       if (meta) {
@@ -1785,13 +1808,36 @@ export async function GET(
         }
         continue
       }
-      const activeMeta = field.match(/^s:([^:]+):active:(evaluated|passed|emitted|rejected|paused|open)$/)
+      const activeMeta = field.match(/^s:([^:]+):active:(calculated|evaluated|eligible|disabled|comparisons|cold_start|outperformed|underperformed|passed|emitted|rejected|paused|open)$/)
       if (activeMeta) {
         const symbol = activeMeta[1].toUpperCase()
         if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
-        const key = (activeMeta[2] === "open" ? "active" : activeMeta[2]) as
-          "evaluated" | "passed" | "emitted" | "rejected" | "paused" | "active"
+        const rawKey = activeMeta[2] === "open"
+          ? "active"
+          : activeMeta[2] === "cold_start"
+            ? "coldStart"
+            : activeMeta[2]
+        const key = rawKey as
+          "calculated" | "evaluated" | "eligible" | "disabled" | "comparisons" | "coldStart" |
+          "outperformed" | "underperformed" | "passed" | "emitted" | "rejected" | "paused" | "active"
         blockActiveOverlayEvaluation[key] += n(raw)
+        const row = blockActivePerSymbol.get(symbol) || {}
+        row[activeMeta[2]] = n(raw)
+        blockActivePerSymbol.set(symbol, row)
+        continue
+      }
+      const activeEnabledMeta = field.match(
+        /^s:([^:]+):active:(strategy_enabled|real_enabled|live_enabled)$/,
+      )
+      if (activeEnabledMeta) {
+        const symbol = activeEnabledMeta[1].toUpperCase()
+        if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
+        const key = activeEnabledMeta[2] === "strategy_enabled"
+          ? "strategyEnabled"
+          : activeEnabledMeta[2] === "real_enabled"
+            ? "realEnabled"
+            : "liveEnabled"
+        blockActiveOverlayEvaluation[key] = blockActiveOverlayEvaluation[key] || n(raw) > 0
         continue
       }
       const activeExposureMeta = field.match(
@@ -1808,7 +1854,20 @@ export async function GET(
         blockActiveOverlayEvaluation[book][direction] += n(raw)
         continue
       }
-      const match = field.match(/^s:([^:]+):c:(\d+):(evaluated|passed|emitted|rejected|active|paused|avg_observed_pf|avg_min_pf|avg_volume_increment|sample_count)$/)
+      const activeAverageMeta = field.match(
+        /^s:([^:]+):active:(avg_observed_pf|avg_normal_pf|avg_configured_min_pf|avg_min_pf|avg_pf_difference)$/,
+      )
+      if (activeAverageMeta) {
+        const symbol = activeAverageMeta[1].toUpperCase()
+        if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
+        const row = blockActivePerSymbol.get(symbol) || {}
+        row[activeAverageMeta[2]] = activeAverageMeta[2] === "avg_pf_difference"
+          ? (Number.isFinite(Number(raw)) ? Number(raw) : 0)
+          : n(raw)
+        blockActivePerSymbol.set(symbol, row)
+        continue
+      }
+      const match = field.match(/^s:([^:]+):c:(\d+):(calculated|evaluated|eligible|disabled|comparisons|cold_start|outperformed|underperformed|passed|emitted|rejected|active|paused|avg_observed_pf|avg_normal_pf|avg_configured_min_pf|avg_min_pf|avg_pf_difference|avg_volume_increment|sample_count)$/)
       if (!match) continue
       const symbol = match[1].toUpperCase()
       if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
@@ -1816,37 +1875,201 @@ export async function GET(
       if (countValue < 1 || countValue > 10) continue
       const key = `${symbol}|${countValue}`
       const row = blockPfPerSymbolCount.get(key) || { count: countValue }
-      row[match[3]] = n(raw)
+      row[match[3]] = match[3] === "avg_pf_difference"
+        ? (Number.isFinite(Number(raw)) ? Number(raw) : 0)
+        : n(raw)
       blockPfPerSymbolCount.set(key, row)
     }
+    if (blockActiveOverlayEvaluation.calculated === 0 && blockActiveOverlayEvaluation.evaluated > 0) {
+      blockActiveOverlayEvaluation.calculated = blockActiveOverlayEvaluation.evaluated
+    }
+    if (blockActiveOverlayEvaluation.eligible === 0 && blockActiveOverlayEvaluation.passed > 0) {
+      blockActiveOverlayEvaluation.eligible = blockActiveOverlayEvaluation.passed
+    }
+    const activeRows = [...blockActivePerSymbol.values()]
+    const activeWeight = activeRows.reduce(
+      (sum, row) => sum + (n(row.calculated) > 0 ? n(row.calculated) : n(row.evaluated)),
+      0,
+    )
+    const activeWeighted = (field: string): number => activeWeight > 0
+      ? activeRows.reduce((sum, row) => {
+          const weight = n(row.calculated) > 0 ? n(row.calculated) : n(row.evaluated)
+          const value = field === "avg_pf_difference"
+            ? (Number.isFinite(Number(row[field])) ? Number(row[field]) : 0)
+            : n(row[field])
+          return sum + value * weight
+        }, 0) / activeWeight
+      : 0
+    blockActiveOverlayEvaluation.avgObservedProfitFactor = nf(activeWeighted("avg_observed_pf"), 3)
+    blockActiveOverlayEvaluation.avgNormalProfitFactor = nf(activeWeighted("avg_normal_pf"), 3)
+    blockActiveOverlayEvaluation.avgConfiguredMinimumProfitFactor = nf(activeWeighted("avg_configured_min_pf"), 3)
+    blockActiveOverlayEvaluation.avgMinimumProfitFactor = nf(activeWeighted("avg_min_pf"), 3)
+    blockActiveOverlayEvaluation.avgProfitFactorDifference = sf(activeWeighted("avg_pf_difference"), 3)
     const blockCountProfitFactorStats = Array.from({ length: 10 }, (_, index) => {
       const countValue = index + 1
       const rows = Array.from(blockPfPerSymbolCount.values()).filter((row) => row.count === countValue)
+      const rowCalculated = (row: Record<string, number>): number =>
+        n(row.calculated) > 0 ? n(row.calculated) : n(row.evaluated)
+      const calculated = rows.reduce((sum, row) => sum + rowCalculated(row), 0)
       const evaluated = rows.reduce((sum, row) => sum + n(row.evaluated), 0)
       const weighted = (field: string): number => {
         // A symbol with no candidates publishes zero-valued count fields to
         // clear an older snapshot. It must not receive an artificial weight
         // of one and dilute symbols that actually evaluated this Block count.
-        const denominator = rows.reduce((sum, row) => sum + n(row.evaluated), 0)
+        const denominator = rows.reduce((sum, row) => sum + rowCalculated(row), 0)
         return denominator > 0
-          ? rows.reduce((sum, row) => sum + n(row[field]) * n(row.evaluated), 0) / denominator
+          ? rows.reduce((sum, row) => {
+              const value = field === "avg_pf_difference"
+                ? (Number.isFinite(Number(row[field])) ? Number(row[field]) : 0)
+                : n(row[field])
+              return sum + value * rowCalculated(row)
+            }, 0) / denominator
           : 0
       }
       return {
         count: countValue,
+        calculated,
         evaluated,
+        eligible: rows.reduce((sum, row) => sum + n(row.eligible), 0),
+        disabled: rows.reduce((sum, row) => sum + n(row.disabled), 0),
+        comparisons: rows.reduce((sum, row) => sum + n(row.comparisons), 0),
+        coldStart: rows.reduce((sum, row) => sum + n(row.cold_start), 0),
+        outperformed: rows.reduce((sum, row) => sum + n(row.outperformed), 0),
+        underperformed: rows.reduce((sum, row) => sum + n(row.underperformed), 0),
         passed: rows.reduce((sum, row) => sum + n(row.passed), 0),
         emitted: rows.reduce((sum, row) => sum + n(row.emitted), 0),
         rejected: rows.reduce((sum, row) => sum + n(row.rejected), 0),
         active: rows.reduce((sum, row) => sum + n(row.active), 0),
         paused: rows.reduce((sum, row) => sum + n(row.paused), 0),
         avgObservedProfitFactor: nf(weighted("avg_observed_pf"), 3),
+        avgNormalProfitFactor: nf(weighted("avg_normal_pf"), 3),
+        avgConfiguredMinimumProfitFactor: nf(weighted("avg_configured_min_pf"), 3),
         avgMinimumProfitFactor: nf(weighted("avg_min_pf"), 3),
+        avgProfitFactorDifference: sf(weighted("avg_pf_difference"), 3),
         avgVolumeIncrement: nf(weighted("avg_volume_increment"), 3),
         sampleCount: rows.reduce((sum, row) => sum + n(row.sample_count), 0),
         window: blockProfitFactorWindow,
       }
-    }).filter((row) => row.evaluated > 0 || row.active > 0 || row.paused > 0)
+    }).filter((row) => row.calculated > 0 || row.active > 0 || row.paused > 0)
+
+    const blockScopedProfitFactorStats: Array<{
+      symbol: string
+      laneKind: "direction" | "signal_source"
+      sourceId?: string
+      scope: "long" | "short" | "overall"
+      count: number
+      calculated: number
+      evaluated: number
+      eligible: number
+      disabled: number
+      comparisons: number
+      coldStart: number
+      outperformed: number
+      underperformed: number
+      passed: number
+      emitted: number
+      rejected: number
+      active: number
+      paused: number
+      sampleCount: number
+      avgObservedProfitFactor: number
+      avgNormalProfitFactor: number
+      avgConfiguredMinimumProfitFactor: number
+      avgMinimumProfitFactor: number
+      avgProfitFactorDifference: number
+      avgVolumeIncrement: number
+      window: number
+    }> = []
+    for (const [field, raw] of Object.entries(blockProfitFactorStatsHash)) {
+      const snapshotMatch = field.match(/^s:([^:]+):scoped_snapshot$/)
+      if (!snapshotMatch) continue
+      const symbol = snapshotMatch[1].toUpperCase()
+      if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
+      const snapshot = parseMaybeJson<Record<string, any>>(raw, {})
+      const lanes = snapshot.lanes && typeof snapshot.lanes === "object" && !Array.isArray(snapshot.lanes)
+        ? snapshot.lanes as Record<string, any>
+        : {}
+      const window = Math.max(0, Math.floor(n(snapshot.window)))
+      for (const [laneId, laneRaw] of Object.entries(lanes)) {
+        const directionMatch = laneId.match(/^direction:(long|short|overall)$/)
+        const signalMatch = laneId.match(/^signal:([^:]+):(long|short|overall)$/)
+        if (!directionMatch && !signalMatch) continue
+        const lane = laneRaw && typeof laneRaw === "object" && !Array.isArray(laneRaw)
+          ? laneRaw as Record<string, any>
+          : {}
+        const counts = lane.counts && typeof lane.counts === "object" && !Array.isArray(lane.counts)
+          ? lane.counts as Record<string, any>
+          : {}
+        for (const [rawCount, countRaw] of Object.entries(counts)) {
+          const countValue = Math.floor(Number(rawCount))
+          if (countValue < 1 || countValue > 10) continue
+          const countRow = countRaw && typeof countRaw === "object" && !Array.isArray(countRaw)
+            ? countRaw as Record<string, any>
+            : {}
+          const calculated = n(countRow.calculated) > 0
+            ? n(countRow.calculated)
+            : n(countRow.evaluated)
+          const evaluated = n(countRow.evaluated)
+          blockScopedProfitFactorStats.push({
+            symbol,
+            laneKind: signalMatch ? "signal_source" : "direction",
+            ...(signalMatch ? { sourceId: signalMatch[1] } : {}),
+            scope: (signalMatch?.[2] || directionMatch?.[1]) as "long" | "short" | "overall",
+            count: countValue,
+            calculated,
+            evaluated,
+            eligible: n(countRow.eligible) > 0 ? n(countRow.eligible) : n(countRow.passed),
+            disabled: n(countRow.disabled),
+            comparisons: n(countRow.comparisons),
+            coldStart: n(countRow.coldStart),
+            outperformed: n(countRow.outperformed),
+            underperformed: n(countRow.underperformed),
+            passed: n(countRow.passed),
+            emitted: n(countRow.emitted),
+            rejected: n(countRow.rejected),
+            active: n(countRow.active),
+            paused: n(countRow.paused),
+            sampleCount: n(countRow.sampleCount),
+            avgObservedProfitFactor: nf(
+              calculated > 0 ? n(countRow.observedProfitFactorSum) / calculated : 0,
+              3,
+            ),
+            avgNormalProfitFactor: nf(
+              calculated > 0 ? n(countRow.normalProfitFactorSum) / calculated : 0,
+              3,
+            ),
+            avgConfiguredMinimumProfitFactor: nf(
+              calculated > 0 ? n(countRow.configuredMinimumProfitFactorSum) / calculated : 0,
+              3,
+            ),
+            avgMinimumProfitFactor: nf(
+              calculated > 0 ? n(countRow.minimumProfitFactorSum) / calculated : 0,
+              3,
+            ),
+            avgProfitFactorDifference: sf(
+              calculated > 0
+                ? (Number.isFinite(Number(countRow.profitFactorDifferenceSum))
+                    ? Number(countRow.profitFactorDifferenceSum)
+                    : 0) / calculated
+                : 0,
+              3,
+            ),
+            avgVolumeIncrement: nf(
+              calculated > 0 ? n(countRow.volumeIncrementSum) / calculated : 0,
+              3,
+            ),
+            window,
+          })
+        }
+      }
+    }
+    blockScopedProfitFactorStats.sort((left, right) =>
+      left.symbol.localeCompare(right.symbol) ||
+      left.laneKind.localeCompare(right.laneKind) ||
+      String(left.sourceId || "").localeCompare(String(right.sourceId || "")) ||
+      left.scope.localeCompare(right.scope) ||
+      left.count - right.count,
+    )
 
     const realStagePositionStats = buildRealStagePositionStats({
       validPositionsHash,
@@ -1860,6 +2083,7 @@ export async function GET(
         minimumSampleCount: blockProfitFactorMinimumSampleCount,
         activeOverlayEvaluation: blockActiveOverlayEvaluation,
         countEvaluations: blockCountProfitFactorStats,
+        scopedEvaluations: blockScopedProfitFactorStats,
       },
       // Current open positions are a separate snapshot. Prefer actual exchange
       // exposure in live mode; fall back to open Real-stage promotions in
@@ -2867,6 +3091,7 @@ export async function GET(
     let volumeConfig: {
       liveVolumeFactor: number
       presetVolumeFactor: number
+      signalVolumeFactor: number
       tradeMode: "main" | "preset"
       positionCostPct: number
       positionsAverage: number
@@ -2874,6 +3099,7 @@ export async function GET(
     } = {
       liveVolumeFactor:   1,
       presetVolumeFactor: 1,
+      signalVolumeFactor: 1,
       tradeMode:          "main",
       positionCostPct:    0.1,
       positionsAverage:   2,
@@ -2897,7 +3123,7 @@ export async function GET(
         const CONN_FIELDS = [
           "exchangePositionCost", "exchange_position_cost", "positionCost",
           "positions_average", "positionsAverage",
-          "live_volume_factor", "preset_volume_factor",
+          "live_volume_factor", "preset_volume_factor", "signal_volume_factor",
           "leveragePercentage", "useMaximalLeverage",
           "is_live_trade", "is_preset_trade",
         ] as const
@@ -2914,6 +3140,7 @@ export async function GET(
       volumeConfig = {
         liveVolumeFactor:   resolved.mainVolumeFactor,
         presetVolumeFactor: resolved.presetVolumeFactor,
+        signalVolumeFactor: resolved.signalVolumeFactor,
         tradeMode:          resolved.tradeMode,
         positionCostPct:    Number.isFinite(posCostRaw) && posCostRaw > 0 ? posCostRaw : 0.1,
         positionsAverage:   Number.isFinite(posAvgRaw) && posAvgRaw > 0 ? posAvgRaw : 2,
@@ -3081,6 +3308,7 @@ export async function GET(
           activeAdvanced: indCounts.active_advanced || 0,
           optimal:        indCounts.optimal        || 0,
           auto:           indCounts.auto           || 0,
+          signal:         indCounts.signal         || 0,
           trend:          indCounts.trend          || 0,
           total:          indTotal,
         },
@@ -3137,6 +3365,7 @@ export async function GET(
           activeAdvanced: activeIndByType.active_advanced  || 0,
           optimal:        activeIndByType.optimal          || 0,
           auto:           activeIndByType.auto             || 0,
+          signal:         activeIndByType.signal           || 0,
           trend:          activeIndByType.trend            || 0,
           total:          activeIndTotal,
         },
@@ -3190,6 +3419,7 @@ export async function GET(
           activeAdvanced: { sets: activeSetsIndByType.active_advanced || 0, trackings: indCounts.active_advanced || 0, positions: activeIndByType.active_advanced  || 0 },
           optimal:        { sets: activeSetsIndByType.optimal         || 0, trackings: indCounts.optimal         || 0, positions: activeIndByType.optimal          || 0 },
           auto:           { sets: activeSetsIndByType.auto            || 0, trackings: indCounts.auto            || 0, positions: activeIndByType.auto             || 0 },
+          signal:         { sets: activeSetsIndByType.signal          || 0, trackings: indCounts.signal          || 0, positions: activeIndByType.signal           || 0 },
           trend:          { sets: activeSetsIndByType.trend           || 0, trackings: indCounts.trend           || 0, positions: activeIndByType.trend            || 0 },
           total:          { sets: activeSetsIndTotal,                       trackings: indTotal,                       positions: activeIndTotal },
         },

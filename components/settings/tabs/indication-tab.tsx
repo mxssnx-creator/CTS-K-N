@@ -7,6 +7,7 @@ import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { SignalIndicationSettings } from "@/components/settings/signal-indication-settings"
 
 const TREND_TIMEFRAMES = [1, 5, 15, 30]
 
@@ -965,13 +966,19 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
       </TabsContent>
 
       <TabsContent value="common" className="space-y-4">
-        <Card>
-          <CardHeader>
-            <CardTitle>Common Indication Settings</CardTitle>
-            <CardDescription>Shared parameters across all indication types</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="grid md:grid-cols-2 gap-4">
+        <Tabs defaultValue="common-indicators">
+          <TabsList>
+            <TabsTrigger value="common-indicators">Common</TabsTrigger>
+            <TabsTrigger value="signal">Signal</TabsTrigger>
+          </TabsList>
+          <TabsContent value="common-indicators" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Common Indication Settings</CardTitle>
+                <CardDescription>Shared parameters across all indication types</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="grid md:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Default Interval ({getMinIndicationInterval()}-1000ms, step 50ms)</Label>
                 <Slider
@@ -1052,9 +1059,14 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                   onCheckedChange={(checked) => handleSettingChange("indicationPerformanceMonitoring", checked)}
                 />
               </div>
-            </div>
-          </CardContent>
-        </Card>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+          <TabsContent value="signal" className="space-y-4">
+            <SignalIndicationSettings />
+          </TabsContent>
+        </Tabs>
       </TabsContent>
     </Tabs>
   )

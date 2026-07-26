@@ -81,3 +81,5 @@ version	name	source
 80	080-index-exact-strategy-set-ledgers-and-minute-snapshots	lib/redis-migrations.ts
 81	081-seed-independent-block-profit-factor-ratio	lib/redis-migrations.ts
 82	082-normalize-live-minimum-ratio-and-position-cost	lib/redis-migrations.ts
+83	083-enforce-identity-live-volume-ratios	lib/redis-migrations.ts
+84	084-freeze-base-volume-coordination-at-identity	lib/redis-migrations.ts

@@ -2,11 +2,16 @@ import {
   advanceBlockCountPausesOnPositionClose,
   buildBlockLegState,
   calculateBlockAddQuantity,
+  calculateBlockEffectiveMinimumProfitFactor,
+  calculateBlockRemainingAddQuantity,
+  calculateBlockTargetQuantity,
+  calculateConfirmedBlockAddQuantity,
   calculateBlockMinimumProfitFactor,
   calculateBlockVolumeIncrementRatio,
   calculateBlockVolumeMultiplier,
   getUnavailableBlockSetKeys,
   parseBlockCount,
+  resolveBlockProfitFactorDecision,
   resolveMirroredActiveBlockCount,
   syncActiveBlockCountIndex,
 } from "@/lib/block-count-state"
@@ -46,22 +51,30 @@ describe("independent Block count lifecycle", () => {
   test("retains each count's coordinated volume and pause metadata", () => {
     const leg = buildBlockLegState({
       setKey: "move:long#block:3",
-      blockBaseVolumeMultiplier: 2,
+      blockBaseVolumeMultiplier: 1,
       blockVolumeRatio: 1.25,
-      blockCalculatedVolumeMultiplier: 7.5,
+      blockCalculatedVolumeMultiplier: 4.75,
       axisWindows: { pause: 6 },
     }, 7.5, "client-3", "order-3", {
       baseQuantity: 2,
+      targetAdditionalQuantity: 7.5,
+      confirmedAdditionalQuantityBefore: 0,
+      targetBlockQuantity: 9.5,
+      targetSatisfied: true,
       requestedQuantity: 7.5,
       positionQuantityAfter: 9.5,
     })
     expect(leg).toMatchObject({
       blockCount: 3,
       quantity: 7.5,
-      baseVolumeMultiplier: 2,
+      baseVolumeMultiplier: 1,
       volumeRatio: 1.25,
-      volumeMultiplier: 7.5,
+      volumeMultiplier: 4.75,
       baseQuantity: 2,
+      targetAdditionalQuantity: 7.5,
+      confirmedAdditionalQuantityBefore: 0,
+      targetBlockQuantity: 9.5,
+      targetSatisfied: true,
       requestedQuantity: 7.5,
       positionQuantityAfter: 9.5,
       pauseCount: 6,
@@ -70,22 +83,49 @@ describe("independent Block count lifecycle", () => {
     })
   })
 
-  test("calculates every Block independently from the immutable position base volume", () => {
-    expect(calculateBlockVolumeMultiplier(1, 1, 1)).toBe(2)
-    expect(calculateBlockVolumeMultiplier(2, 3, 1)).toBe(8)
+  test("calculates every Block target independently from the immutable general volume", () => {
+    expect(calculateBlockVolumeMultiplier(1, 1)).toBe(2)
+    expect(calculateBlockVolumeMultiplier(3, 1)).toBe(4)
     expect(calculateBlockAddQuantity(1, 1, 1)).toBe(1)
-    // Passing the immutable parent quantity is deliberate: earlier Block legs
-    // never become another count's base and cannot compound later volumes.
+    expect(calculateBlockTargetQuantity(1, 3, 1.5)).toBe(5.5)
+    // Passing the immutable parent quantity is deliberate: earlier Block
+    // fills are subtracted from the next absolute target and never become
+    // another count's base.
     expect(calculateBlockAddQuantity(2, 3, 1)).toBe(6)
     const immutableBase = 0.04
-    const independentAdds = [1, 2, 4, 7].map((count) =>
-      calculateBlockAddQuantity(immutableBase, count, 0.35),
-    )
-    ;[0.014, 0.028, 0.056, 0.098].forEach((expected, index) => {
-      expect(independentAdds[index]).toBeCloseTo(expected, 12)
+    let confirmedAdd = 0
+    const orderDeltas = [1, 2, 4, 7].map((count) => {
+      const delta = calculateBlockRemainingAddQuantity(
+        immutableBase,
+        count,
+        0.35,
+        confirmedAdd,
+      )
+      confirmedAdd += delta
+      return delta
     })
-    expect(immutableBase + independentAdds.reduce((sum, quantity) => sum + quantity, 0))
-      .toBeCloseTo(0.236, 12)
+    ;[0.014, 0.014, 0.028, 0.042].forEach((expected, index) => {
+      expect(orderDeltas[index]).toBeCloseTo(expected, 12)
+    })
+    expect(immutableBase + confirmedAdd).toBeCloseTo(0.138, 12)
+    expect(calculateConfirmedBlockAddQuantity(
+      orderDeltas.map((quantity) => ({ quantity })),
+    )).toBeCloseTo(0.098, 12)
+  })
+
+  test("uses the requested base=1, ratio=1.5, count=3 formula without cumulative over-add", () => {
+    const base = 1
+    const ratio = 1.5
+    let confirmedAdd = 0
+    const deltas = [1, 2, 3].map((count) => {
+      const delta = calculateBlockRemainingAddQuantity(base, count, ratio, confirmedAdd)
+      confirmedAdd += delta
+      return delta
+    })
+
+    expect(deltas).toEqual([1.5, 1.5, 1.5])
+    expect(base + confirmedAdd).toBe(5.5)
+    expect(calculateBlockRemainingAddQuantity(base, 2, ratio, confirmedAdd)).toBe(0)
   })
 
   test("calculates a separate proportional minimum PF for every Block count", () => {
@@ -101,6 +141,64 @@ describe("independent Block count lifecycle", () => {
     expect(new Set(thresholds).size).toBe(10)
     expect(calculateBlockMinimumProfitFactor(defaultPf, 0.01, 1)).toBeCloseTo(0.24, 8)
     expect(calculateBlockMinimumProfitFactor(defaultPf, 9, 1)).toBeCloseTo(6, 8)
+  })
+
+  test("never lets a mature Block lane replace a better normal rolling PF", () => {
+    expect(calculateBlockEffectiveMinimumProfitFactor(0.96, 2)).toBe(2)
+    expect(calculateBlockEffectiveMinimumProfitFactor(2.4, 2)).toBe(2.4)
+    expect(calculateBlockEffectiveMinimumProfitFactor(Number.NaN, 2)).toBe(2)
+    expect(calculateBlockEffectiveMinimumProfitFactor(1.2, Number.NaN)).toBe(1.2)
+  })
+
+  test("starts an enabled Block directly from normal PF without Block-only progression", () => {
+    expect(resolveBlockProfitFactorDecision({
+      defaultMinimumProfitFactor: 1.2,
+      configuredMinimumProfitFactor: 4.8,
+      normalProfitFactor: 2,
+      observedProfitFactor: 0,
+      sampleCount: 0,
+      minimumSampleCount: 5,
+    })).toEqual({
+      comparisonAvailable: false,
+      coldStart: true,
+      observedProfitFactor: 2,
+      normalProfitFactor: 2,
+      configuredMinimumProfitFactor: 4.8,
+      effectiveMinimumProfitFactor: 2,
+      profitFactorDifference: 0,
+      passesProfitFactor: true,
+      sampleCount: 0,
+    })
+  })
+
+  test("rejects a mature Block below normal PF and accepts an equal or better lane", () => {
+    const below = resolveBlockProfitFactorDecision({
+      defaultMinimumProfitFactor: 1.2,
+      configuredMinimumProfitFactor: 0.96,
+      normalProfitFactor: 2,
+      observedProfitFactor: 1.99,
+      sampleCount: 25,
+      minimumSampleCount: 5,
+    })
+    expect(below).toMatchObject({
+      comparisonAvailable: true,
+      coldStart: false,
+      normalProfitFactor: 2,
+      observedProfitFactor: 1.99,
+      effectiveMinimumProfitFactor: 2,
+      passesProfitFactor: false,
+      sampleCount: 25,
+    })
+    expect(below.profitFactorDifference).toBeCloseTo(-0.01, 12)
+
+    expect(resolveBlockProfitFactorDecision({
+      defaultMinimumProfitFactor: 1.2,
+      configuredMinimumProfitFactor: 0.96,
+      normalProfitFactor: 2,
+      observedProfitFactor: 2,
+      sampleCount: 5,
+      minimumSampleCount: 5,
+    }).passesProfitFactor).toBe(true)
   })
 
   test.each([0.25, 0.75, 1, 1.5, 3])(
@@ -190,6 +288,32 @@ describe("independent Block count lifecycle", () => {
     await advanceBlockCountPausesOnPositionClose(redis, { ...nextPnl, id: "live:four" })
     unavailable = await getUnavailableBlockSetKeys(redis, "conn-1", "BTCUSDT")
     expect(unavailable.size).toBe(0)
+  })
+
+  test("does not mark a partially filled Count Set active before its target is satisfied", async () => {
+    const redis = new MemoryRedis()
+    await syncActiveBlockCountIndex(redis, {
+      id: "live:partial",
+      connectionId: "conn-partial",
+      symbol: "BTCUSDT",
+      direction: "long",
+      status: "open",
+      blockLegs: [{
+        setKey: "direction:long#block:3",
+        blockCount: 3,
+        quantity: 2,
+        baseVolumeMultiplier: 1,
+        volumeRatio: 1.5,
+        volumeIncrementRatio: 4.5,
+        volumeMultiplier: 5.5,
+        targetSatisfied: false,
+        pauseCount: 3,
+        addedAt: 1,
+      }],
+    })
+
+    expect(await getUnavailableBlockSetKeys(redis, "conn-partial", "BTCUSDT"))
+      .toEqual(new Set())
   })
 
   test("serializes simultaneous realized closes so no Block pause decrement is lost", async () => {

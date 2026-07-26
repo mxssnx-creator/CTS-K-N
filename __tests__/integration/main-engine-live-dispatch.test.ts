@@ -31,7 +31,16 @@ const fakeRedis = {
     return "OK"
   },
   async get(key: string) { return strings.get(key) ?? null },
-  async del(key: string) { return strings.delete(key) ? 1 : 0 },
+  async del(...keys: string[]) {
+    let deleted = 0
+    for (const key of keys) {
+      deleted += strings.delete(key) ? 1 : 0
+      deleted += hashes.delete(key) ? 1 : 0
+      deleted += lists.delete(key) ? 1 : 0
+      deleted += sets.delete(key) ? 1 : 0
+    }
+    return deleted
+  },
   async expire() { return 1 },
   async pexpire() { return 1 },
   async persist() { return 1 },
@@ -44,11 +53,16 @@ const fakeRedis = {
   },
   async hgetall(key: string) { return { ...(hashes.get(key) || {}) } },
   async hget(key: string, field: string) { return hashes.get(key)?.[field] ?? null },
-  async hdel(key: string, field: string) {
+  async hdel(key: string, ...fields: string[]) {
     const hash = hashes.get(key)
-    if (!hash || !(field in hash)) return 0
-    delete hash[field]
-    return 1
+    if (!hash) return 0
+    let deleted = 0
+    for (const field of fields) {
+      if (!(field in hash)) continue
+      delete hash[field]
+      deleted++
+    }
+    return deleted
   },
   async hincrby(key: string, field: string, delta: number) {
     const hash = hashes.get(key) || {}
@@ -99,7 +113,18 @@ const fakeRedis = {
   multi() {
     const operations: Array<() => Promise<any>> = []
     const pipeline: any = {}
-    for (const method of ["sadd", "expire", "hincrby", "hset"] as const) {
+    for (const method of [
+      "sadd",
+      "srem",
+      "expire",
+      "persist",
+      "hincrby",
+      "hset",
+      "hdel",
+      "lpush",
+      "ltrim",
+      "del",
+    ] as const) {
       pipeline[method] = (...args: any[]) => {
         operations.push(() => (fakeRedis as any)[method](...args))
         return pipeline
@@ -319,6 +344,519 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(performance.now() - dispatchStartedAt).toBeLessThan(1_000)
   })
 
+  test("preserves Signal source/risk lineage and arms correctly-sided SL/TP controls", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const signalRisk = {
+      stopLossPct: 0.45,
+      takeProfitPct: 1.05,
+      rewardRisk: 2.333333,
+      sourceIds: ["binance-usdm", "bybit-linear", "okx-swap"],
+      agreement: 0.82,
+      confidence: 0.86,
+      generatedAt: Date.now(),
+    }
+    const result = await executeLivePosition(connection.id, {
+      id: "real-signal-long",
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long",
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: signalRisk.stopLossPct,
+      takeProfit: signalRisk.takeProfitPct,
+      indicationType: "signal",
+      signalRisk,
+      setKey: "BTCUSDT:signal:long",
+      parentSetKey: "BTCUSDT:signal:long",
+      setVariant: "default",
+      status: "pending",
+      timestamp: Date.now(),
+    } as any, recordingConnector)
+
+    expect(result).toMatchObject({
+      status: "open",
+      indicationType: "signal",
+      signalRisk,
+      stopLoss: 0.45,
+      takeProfit: 1.05,
+      assignedStopLoss: 0.45,
+      assignedTakeProfit: 1.05,
+    })
+    expect(placeStopOrder).toHaveBeenCalledTimes(2)
+    for (const call of placeStopOrder.mock.calls) {
+      expect(call[1]).toBe("sell")
+      expect(call[2]).toBeCloseTo(result.executedQuantity, 10)
+    }
+    expect(placeStopOrder.mock.calls.map((call) => call[4]).sort()).toEqual(["stop_loss", "take_profit"])
+  })
+
+  test("keeps normal and trailing Signal positions in independent parallel simulation lanes", async () => {
+    connection.is_live_trade = "0"
+    connection.live_trade_requested = "0"
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const signalRisk = {
+      stopLossPct: 0.4,
+      takeProfitPct: 1,
+      rewardRisk: 2.5,
+      sourceIds: ["binance-usdm", "okx-swap"],
+      agreement: 0.8,
+      confidence: 0.85,
+      generatedAt: Date.now(),
+    }
+    const common = {
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long" as const,
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      takeProfit: signalRisk.takeProfitPct,
+      indicationType: "signal",
+      signalRisk,
+      status: "pending" as const,
+      timestamp: Date.now(),
+    }
+    const standard = await executeLivePosition(connection.id, {
+      ...common,
+      id: "signal-standard-sim",
+      stopLoss: signalRisk.stopLossPct,
+      setKey: "BTCUSDT:signal:long#default",
+      parentSetKey: "BTCUSDT:signal:long",
+      setVariant: "default",
+    } as any, recordingConnector)
+    const trailing = await executeLivePosition(connection.id, {
+      ...common,
+      id: "signal-trailing-sim",
+      stopLoss: 0.8,
+      setKey: "BTCUSDT:signal:long:signal-trailing#default",
+      parentSetKey: "BTCUSDT:signal:long:signal-trailing",
+      setVariant: "trailing",
+      trailingProfile: {
+        mode: "signal_dynamic",
+        startRatio: 0,
+        stopRatio: 0.008,
+        stepRatio: 0.004,
+        minStopRatio: 0.008,
+        positiveMoveRatio: 0.4,
+        updateStopRangeRatio: 0.5,
+      },
+    } as any, recordingConnector)
+
+    expect(standard).toMatchObject({
+      status: "simulated",
+      executionLane: "default",
+      stopLoss: 0.4,
+    })
+    expect(trailing).toMatchObject({
+      status: "simulated",
+      executionLane: "signal_trailing",
+      stopLoss: 0.8,
+      trailingProfile: expect.objectContaining({ mode: "signal_dynamic" }),
+    })
+    expect(trailing.id).not.toBe(standard.id)
+    expect(placeOrder).not.toHaveBeenCalled()
+  })
+
+  test("executes source-scoped Signal Block targets once, aliases covered lanes, and books close PnL exactly once", async () => {
+    const {
+      closeLivePosition,
+      executeLivePosition,
+    } = await import("@/lib/trade-engine/stages/live-stage")
+    let venueQuantity = 0
+    placeOrder.mockImplementation(async (
+      symbol: string,
+      _side: string,
+      quantity: number,
+      _price: number | undefined,
+      _type: string,
+      options: Record<string, any> = {},
+    ) => {
+      if (options.positionSide === "LONG") {
+        venueQuantity = options.reduceOnly === true
+          ? Math.max(0, venueQuantity - quantity)
+          : venueQuantity + quantity
+      }
+      return {
+        success: true,
+        orderId: `signal-block-${symbol}-${placeOrder.mock.calls.length}`,
+        status: "filled",
+        filledQty: quantity,
+        filledPrice: 100,
+      }
+    })
+    recordingConnector.getPosition.mockImplementation(async () => ({
+      positionAmt: venueQuantity,
+      entryPrice: 100,
+      markPrice: 100,
+      liquidationPrice: 50,
+      unrealizedPnl: 0,
+      marginType: "cross",
+    }))
+    const signalRisk = {
+      stopLossPct: 0.4,
+      takeProfitPct: 1,
+      rewardRisk: 2.5,
+      sourceIds: ["binance-usdm", "okx-swap"],
+      agreement: 0.9,
+      confidence: 0.9,
+      generatedAt: Date.now(),
+    }
+    const baseSetKey = "BTCUSDT:signal:long"
+    const common = {
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long" as const,
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: signalRisk.stopLossPct,
+      takeProfit: signalRisk.takeProfitPct,
+      status: "pending" as const,
+      timestamp: Date.now(),
+      indicationType: "signal",
+      signalRisk,
+      parentSetKey: baseSetKey,
+    }
+
+    const parent = await executeLivePosition(connection.id, {
+      ...common,
+      id: "signal-scoped-parent",
+      setKey: baseSetKey,
+      setVariant: "default",
+    } as any, recordingConnector)
+    expect(parent.executedQuantity).toBeCloseTo(0.01, 12)
+    expect(mockCalculateVolumeForConnection).toHaveBeenCalledWith(
+      connection.id,
+      "BTCUSDT",
+      100,
+      expect.objectContaining({
+        tradeMode: "main",
+        indicationType: "signal",
+      }),
+    )
+
+    const binancePhysical =
+      `${baseSetKey}#block:3#scope:overall:long#source:binance-usdm`
+    const binanceLane =
+      "block_lane:BTCUSDT:signal_source:source:binance-usdm:overall:3"
+    let position = await executeLivePosition(connection.id, {
+      ...common,
+      id: "signal-scoped-binance-block",
+      setKey: binancePhysical,
+      setVariant: "block",
+      blockCount: 3,
+      blockVolumeRatio: 1.5,
+      blockScope: "overall",
+      blockLaneKind: "signal_source",
+      blockLaneKey: binanceLane,
+      blockSourceId: "binance-usdm",
+      blockConfiguredMinimumProfitFactor: 4.32,
+      blockNormalProfitFactor: 2,
+      blockMinimumProfitFactor: 4.32,
+      blockObservedProfitFactor: 5,
+      blockProfitFactorDifference: 3,
+      blockComparisonAvailable: true,
+      accumulatedSetKeys: [binancePhysical, binanceLane],
+    } as any, recordingConnector)
+
+    // General 0.01 + (0.01 × 1.5 × Count 3) = 0.055.
+    expect(position.executedQuantity).toBeCloseTo(0.055, 12)
+    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.045, 12)
+    expect(position).toMatchObject({
+      indicationType: "signal",
+      signalRisk,
+      blockLegs: [
+        expect.objectContaining({
+          setKey: binancePhysical,
+          blockCount: 3,
+          requestedQuantity: 0.045,
+          targetBlockQuantity: 0.055,
+          laneKey: binanceLane,
+          sourceId: "binance-usdm",
+          scope: "overall",
+        }),
+      ],
+    })
+    expect(position.accumulatedSetKeys).toEqual(expect.arrayContaining([
+      baseSetKey,
+      binancePhysical,
+      binanceLane,
+    ]))
+    const latestLongProtection = placeStopOrder.mock.calls
+      .filter((call) => call[5]?.positionSide === "LONG")
+      .slice(-2)
+    expect(latestLongProtection).toHaveLength(2)
+    expect(latestLongProtection.every((call) =>
+      call[1] === "sell" &&
+      call[2] === 0.055 &&
+      call[5]?.reduceOnly === true
+    )).toBe(true)
+
+    // A second independent source/scope lane at the same absolute Count target
+    // receives lineage and PnL attribution, but cannot add the full volume a
+    // second time because the physical Long target is already covered.
+    const okxPhysical =
+      `${baseSetKey}#block:3#scope:overall:long#source:okx-swap`
+    const okxLane =
+      "block_lane:BTCUSDT:signal_source:source:okx-swap:overall:3"
+    const orderCallsBeforeCoveredLane = placeOrder.mock.calls.length
+    position = await executeLivePosition(connection.id, {
+      ...common,
+      id: "signal-scoped-okx-covered",
+      setKey: okxPhysical,
+      setVariant: "block",
+      blockCount: 3,
+      blockVolumeRatio: 1.5,
+      blockScope: "overall",
+      blockLaneKind: "signal_source",
+      blockLaneKey: okxLane,
+      blockSourceId: "okx-swap",
+      accumulatedSetKeys: [okxPhysical, okxLane],
+    } as any, recordingConnector)
+    expect(placeOrder).toHaveBeenCalledTimes(orderCallsBeforeCoveredLane)
+    expect(position.executedQuantity).toBeCloseTo(0.055, 12)
+    expect(position.accumulatedSetKeys).toEqual(expect.arrayContaining([
+      okxPhysical,
+      okxLane,
+    ]))
+    expect(position.blockLegs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        setKey: okxPhysical,
+        quantity: 0,
+        requestedQuantity: 0,
+        targetBlockQuantity: 0.055,
+        laneKey: okxLane,
+        sourceId: "okx-swap",
+      }),
+    ]))
+
+    const closed = await closeLivePosition(
+      connection.id,
+      position.id,
+      102,
+      undefined,
+      "exchange_reconciliation",
+    )
+    expect(closed).toMatchObject({
+      status: "closed",
+      direction: "long",
+      indicationType: "signal",
+      signalRisk,
+    })
+    expect(Number(closed?.realizedPnL)).toBeGreaterThan(0)
+
+    for (const key of [binancePhysical, binanceLane, okxPhysical, okxLane]) {
+      expect(lists.get(`strategy_set_result_ring:${connection.id}:${key}`)).toHaveLength(1)
+    }
+    for (const sourceId of ["binance-usdm", "okx-swap", "consensus"]) {
+      const performanceKey =
+        `signal:performance:${connection.id}:${sourceId}:BTCUSDT:long`
+      expect(hashes.get(performanceKey)).toEqual(expect.objectContaining({
+        count: "1",
+        wins: "1",
+        autoDisabled: "0",
+      }))
+      expect(lists.get(`${performanceKey}:samples`)).toHaveLength(1)
+    }
+
+    await expect(closeLivePosition(
+      connection.id,
+      position.id,
+      103,
+      undefined,
+      "signal_scope_replay",
+    )).resolves.toBeNull()
+    for (const sourceId of ["binance-usdm", "okx-swap", "consensus"]) {
+      expect(hashes.get(
+        `signal:performance:${connection.id}:${sourceId}:BTCUSDT:long`,
+      )?.count).toBe("1")
+    }
+  })
+
+  test("keeps Signal Block attribution and tighter protection on a Direction-owned parent across hash-only restart", async () => {
+    const {
+      closeLivePosition,
+      executeLivePosition,
+      getLivePositions,
+    } = await import("@/lib/trade-engine/stages/live-stage")
+    let venueQuantity = 0
+    placeOrder.mockImplementation(async (
+      symbol: string,
+      _side: string,
+      quantity: number,
+      _price: number | undefined,
+      _type: string,
+      options: Record<string, any> = {},
+    ) => {
+      if (options.positionSide === "LONG") {
+        venueQuantity = options.reduceOnly === true
+          ? Math.max(0, venueQuantity - quantity)
+          : venueQuantity + quantity
+      }
+      return {
+        success: true,
+        orderId: `mixed-signal-${symbol}-${placeOrder.mock.calls.length}`,
+        status: "filled",
+        filledQty: quantity,
+        filledPrice: 100,
+      }
+    })
+    recordingConnector.getPosition.mockImplementation(async () => ({
+      positionAmt: venueQuantity,
+      entryPrice: 100,
+      markPrice: 100,
+      liquidationPrice: 50,
+      unrealizedPnl: 0,
+      marginType: "cross",
+    }))
+
+    const parent = await executeLivePosition(connection.id, {
+      id: "mixed-direction-parent",
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long",
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 2,
+      takeProfit: 4,
+      indicationType: "direction",
+      setKey: "BTCUSDT:direction:long#base",
+      parentSetKey: "BTCUSDT:direction:long",
+      setVariant: "default",
+      status: "pending",
+      timestamp: Date.now(),
+    } as any, recordingConnector)
+
+    const signalRisk = {
+      stopLossPct: 0.35,
+      takeProfitPct: 0.9,
+      rewardRisk: 0.9 / 0.35,
+      sourceIds: ["binance-usdm", "okx-swap"],
+      agreement: 0.84,
+      confidence: 0.87,
+      generatedAt: Date.now(),
+    }
+    const signalSetKey =
+      "BTCUSDT:signal:long#block:1#scope:long#source:binance-usdm"
+    const signalLaneKey =
+      "block_lane:BTCUSDT:signal_source:source:binance-usdm:long:1"
+    const accumulated = await executeLivePosition(connection.id, {
+      id: "mixed-signal-block",
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long",
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: signalRisk.stopLossPct,
+      takeProfit: signalRisk.takeProfitPct,
+      indicationType: "signal",
+      signalRisk,
+      setKey: signalSetKey,
+      parentSetKey: "BTCUSDT:signal:long",
+      setVariant: "block",
+      blockCount: 1,
+      blockVolumeRatio: 1,
+      blockScope: "long",
+      blockLaneKind: "signal_source",
+      blockLaneKey: signalLaneKey,
+      blockSourceId: "binance-usdm",
+      accumulatedSetKeys: [signalSetKey, signalLaneKey],
+      status: "pending",
+      timestamp: Date.now(),
+    } as any, recordingConnector)
+
+    expect(accumulated).toMatchObject({
+      id: parent.id,
+      indicationType: "direction",
+      executedQuantity: 0.02,
+      stopLoss: 0.35,
+      takeProfit: 0.9,
+      signalRisk,
+    })
+    expect(accumulated.accumulatedSetKeys).toEqual(expect.arrayContaining([
+      signalSetKey,
+      signalLaneKey,
+    ]))
+    expect(accumulated.blockLegs).toEqual([
+      expect.objectContaining({
+        setKey: signalSetKey,
+        quantity: 0.01,
+        targetBlockQuantity: 0.02,
+        laneKey: signalLaneKey,
+        sourceId: "binance-usdm",
+      }),
+    ])
+    const rearmed = placeStopOrder.mock.calls
+      .filter((call) => call[5]?.positionSide === "LONG")
+      .slice(-2)
+    expect(rearmed).toHaveLength(2)
+    expect(rearmed.every((call) =>
+      call[1] === "sell" &&
+      call[2] === 0.02 &&
+      call[5]?.reduceOnly === true
+    )).toBe(true)
+    expect(rearmed.find((call) => call[4] === "stop_loss")?.[3]).toBeCloseTo(99.65, 10)
+    expect(rearmed.find((call) => call[4] === "take_profit")?.[3]).toBeCloseTo(100.9, 10)
+
+    // Reproduce a process restart where the legacy JSON mirror was not
+    // available and only Redis' string-valued canonical hash survived.
+    const canonicalHashKey =
+      `live_positions:${connection.id}:${accumulated.id}`
+    const persistedHash = hashes.get(canonicalHashKey)
+    expect(persistedHash).toBeDefined()
+    hashes.set(canonicalHashKey, Object.fromEntries(
+      Object.entries(persistedHash || {}).map(([field, value]) => [
+        field,
+        value && typeof value === "object" ? JSON.stringify(value) : String(value ?? ""),
+      ]),
+    ))
+    strings.delete(`live:position:${accumulated.id}`)
+
+    const restored = (await getLivePositions(connection.id))
+      .find((position) => position.id === accumulated.id)
+    expect(restored).toMatchObject({
+      indicationType: "direction",
+      stopLoss: 0.35,
+      takeProfit: 0.9,
+      signalRisk,
+    })
+    expect(restored?.blockLegs).toEqual([
+      expect.objectContaining({
+        setKey: signalSetKey,
+        quantity: 0.01,
+        targetBlockQuantity: 0.02,
+      }),
+    ])
+    expect(restored?.combinedPosCounts).toBe(false)
+
+    const closed = await closeLivePosition(
+      connection.id,
+      accumulated.id,
+      102,
+      recordingConnector,
+      "mixed_signal_restart",
+    )
+    expect(closed).toMatchObject({
+      status: "closed",
+      indicationType: "direction",
+      signalRisk,
+    })
+    expect(Number(closed?.realizedPnL)).toBeGreaterThan(0)
+    for (const sourceId of ["binance-usdm", "okx-swap", "consensus"]) {
+      const performanceKey =
+        `signal:performance:${connection.id}:${sourceId}:BTCUSDT:long`
+      expect(hashes.get(performanceKey)).toEqual(expect.objectContaining({
+        count: "1",
+        wins: "1",
+        autoDisabled: "0",
+      }))
+      expect(lists.get(`${performanceKey}:samples`)).toHaveLength(1)
+    }
+  })
+
   test("attaches independent Block counts and sequential DCA steps to one confirmed parent", async () => {
     const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
     const baseSetKey = "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0"
@@ -373,7 +911,9 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         requestedQuantity: 0.01,
         quantity: 0.01,
         positionQuantityAfter: 0.02,
+        baseVolumeMultiplier: 1,
         volumeIncrementRatio: 1,
+        volumeMultiplier: 2,
       }),
     ])
 
@@ -782,7 +1322,10 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       blockCount: 2,
       blockVolumeRatio: 1.25,
     } as any, recordingConnector)
-    expect(longAfterSecondBlock.executedQuantity).toBeCloseTo(0.04, 12)
+    // The second Count is an absolute target from the same 0.01 general
+    // volume. Count 2 × 1.25 targets +0.025 in total, so the earlier +0.005
+    // fill is subtracted and this order adds only +0.020.
+    expect(longAfterSecondBlock.executedQuantity).toBeCloseTo(0.035, 12)
     expect(longAfterSecondBlock.blockLegs).toEqual(expect.arrayContaining([
       expect.objectContaining({
         setKey: `${longSet}#block:1`,
@@ -792,8 +1335,11 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         setKey: longBlockTwoKey,
         blockCount: 2,
         baseQuantity: 0.01,
-        requestedQuantity: 0.025,
-        positionQuantityAfter: 0.04,
+        targetAdditionalQuantity: 0.025,
+        confirmedAdditionalQuantityBefore: 0.005,
+        targetBlockQuantity: 0.035,
+        requestedQuantity: 0.02,
+        positionQuantityAfter: 0.035,
         volumeIncrementRatio: 2.5,
       }),
     ]))
@@ -809,7 +1355,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       blockCount: 2,
       blockVolumeRatio: 1.25,
     } as any, recordingConnector)
-    expect(replayedLongBlock.executedQuantity).toBeCloseTo(0.04, 12)
+    expect(replayedLongBlock.executedQuantity).toBeCloseTo(0.035, 12)
     expect(placeOrder).toHaveBeenCalledTimes(callsBeforeReplay)
 
     const entryCalls = placeOrder.mock.calls.map((call) => ({
@@ -819,7 +1365,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     }))
     expect(entryCalls).toEqual(expect.arrayContaining([
       expect.objectContaining({ side: "buy", quantity: 0.005, positionSide: "LONG" }),
-      expect.objectContaining({ side: "buy", quantity: 0.025, positionSide: "LONG" }),
+      expect.objectContaining({ side: "buy", quantity: 0.02, positionSide: "LONG" }),
       expect.objectContaining({ side: "sell", quantity: 0.0225, positionSide: "SHORT" }),
     ]))
     const adjustmentAccounting = mockRecordLiveOrderProgression.mock.calls.map((call) => ({
@@ -834,13 +1380,358 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(adjustmentAccounting.filter((call) => call.direction === "short" && call.event === "placed")).toHaveLength(1)
     expect(adjustmentAccounting.filter((call) => call.direction === "short" && call.event === "filled")).toHaveLength(1)
     expect(adjustmentAccounting.filter((call) => call.direction === "long" && call.event === "filled")
-      .reduce((sum, call) => sum + Number(call.volumeUsd || 0), 0)).toBeCloseTo(3, 10)
+      .reduce((sum, call) => sum + Number(call.volumeUsd || 0), 0)).toBeCloseTo(2.5, 10)
     expect(adjustmentAccounting.filter((call) => call.direction === "short" && call.event === "filled")
       .reduce((sum, call) => sum + Number(call.volumeUsd || 0), 0)).toBeCloseTo(2.25, 10)
     expect(adjustmentAccounting.every((call) =>
       call.options?.countPositionCreated === false &&
       (call.event === "placed" || call.options?.countAccumulated === true)
     )).toBe(true)
+  })
+
+  test("reaches base + ((base × 1.5) × 3) across independent Count orders", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    let venueQuantity = 0
+    placeOrder.mockImplementation(async (
+      symbol: string,
+      _side: string,
+      quantity: number,
+      _price: number | undefined,
+      _type: string,
+      options: Record<string, any> = {},
+    ) => {
+      if (options.positionSide === "LONG" && options.reduceOnly !== true) {
+        venueQuantity += quantity
+      }
+      return {
+        success: true,
+        orderId: `formula-${symbol}-${placeOrder.mock.calls.length}`,
+        status: "filled",
+        filledQty: quantity,
+        filledPrice: 100,
+      }
+    })
+    recordingConnector.getPosition.mockImplementation(async () => ({
+      positionAmt: venueQuantity,
+      entryPrice: 100,
+      markPrice: 100,
+      liquidationPrice: 50,
+      unrealizedPnl: 0,
+      marginType: "cross",
+    }))
+    const baseSetKey = "BTCUSDT:direction:long#requested-formula"
+    const common = {
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long" as const,
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending" as const,
+      timestamp: Date.now(),
+      parentSetKey: "BTCUSDT:direction:long",
+      indicationType: "direction",
+    }
+
+    let position = await executeLivePosition(connection.id, {
+      ...common,
+      id: "requested-formula-parent",
+      setKey: baseSetKey,
+      setVariant: "default",
+    } as any, recordingConnector)
+    expect(position.executedQuantity).toBeCloseTo(0.01, 12)
+
+    for (const count of [1, 2, 3]) {
+      position = await executeLivePosition(connection.id, {
+        ...common,
+        id: `requested-formula-block-${count}`,
+        setKey: `${baseSetKey}#block:${count}`,
+        setVariant: "block",
+        blockCount: count,
+        blockVolumeRatio: 1.5,
+      } as any, recordingConnector)
+    }
+
+    const longEntryQuantities = placeOrder.mock.calls
+      .filter((call) => call[5]?.positionSide === "LONG" && call[5]?.reduceOnly !== true)
+      .map((call) => call[2])
+    expect(longEntryQuantities).toEqual([0.01, 0.015, 0.015, 0.015])
+
+    // General volume 0.01 + ((0.01 × 1.5) × 3) = 0.055.
+    expect(position.executedQuantity).toBeCloseTo(0.055, 12)
+    expect(position.blockLegs).toHaveLength(3)
+    expect(position.blockLegs?.map((leg: any) => leg.requestedQuantity))
+      .toEqual([0.015, 0.015, 0.015])
+    expect(position.blockLegs?.map((leg: any) => leg.targetAdditionalQuantity))
+      .toEqual([0.015, 0.03, 0.045])
+    expect(position.blockLegs?.map((leg: any) => leg.targetBlockQuantity))
+      .toEqual([0.025, 0.04, 0.055])
+
+    const latestStop = placeStopOrder.mock.calls
+      .filter((call) => call[5]?.positionSide === "LONG")
+      .at(-1)
+    expect(latestStop?.[2]).toBeCloseTo(0.055, 12)
+
+    const callsBeforeCoveredSet = placeOrder.mock.calls.length
+    position = await executeLivePosition(connection.id, {
+      ...common,
+      id: "requested-formula-covered-set",
+      setKey: "BTCUSDT:move:long#block:2",
+      parentSetKey: "BTCUSDT:move:long",
+      setVariant: "block",
+      blockCount: 2,
+      blockVolumeRatio: 1.5,
+    } as any, recordingConnector)
+    expect(position.executedQuantity).toBeCloseTo(0.055, 12)
+    expect(placeOrder).toHaveBeenCalledTimes(callsBeforeCoveredSet)
+    expect(position.blockLegs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        setKey: "BTCUSDT:move:long#block:2",
+        quantity: 0,
+        requestedQuantity: 0,
+        targetAdditionalQuantity: 0.03,
+        targetBlockQuantity: 0.04,
+      }),
+    ]))
+  })
+
+  test("retries only the missing Block target after a terminal partial fill", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    let venueQuantity = 0
+    let entryAttempt = 0
+    placeOrder.mockImplementation(async (
+      symbol: string,
+      _side: string,
+      quantity: number,
+      _price: number | undefined,
+      _type: string,
+      options: Record<string, any> = {},
+    ) => {
+      if (options.positionSide !== "LONG" || options.reduceOnly === true) {
+        return { success: true, orderId: `partial-control-${symbol}` }
+      }
+      entryAttempt += 1
+      const filledQty = entryAttempt === 2 ? 0.02 : quantity
+      venueQuantity += filledQty
+      return {
+        success: true,
+        orderId: `partial-block-${entryAttempt}`,
+        status: "filled",
+        filledQty,
+        filledPrice: 100,
+      }
+    })
+    recordingConnector.getPosition.mockImplementation(async () => ({
+      positionAmt: venueQuantity,
+      entryPrice: 100,
+      markPrice: 100,
+      liquidationPrice: 50,
+      unrealizedPnl: 0,
+      marginType: "cross",
+    }))
+
+    const baseSetKey = "BTCUSDT:direction:long#terminal-partial"
+    const blockSetKey = `${baseSetKey}#block:3`
+    const common = {
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long" as const,
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending" as const,
+      timestamp: Date.now(),
+      parentSetKey: "BTCUSDT:direction:long",
+      indicationType: "direction",
+    }
+
+    await executeLivePosition(connection.id, {
+      ...common,
+      id: "terminal-partial-parent",
+      setKey: baseSetKey,
+      setVariant: "default",
+    } as any, recordingConnector)
+
+    let position = await executeLivePosition(connection.id, {
+      ...common,
+      id: "terminal-partial-block-first",
+      setKey: blockSetKey,
+      setVariant: "block",
+      blockCount: 3,
+      blockVolumeRatio: 1.5,
+    } as any, recordingConnector)
+
+    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.045, 12)
+    expect(position.executedQuantity).toBeCloseTo(0.03, 12)
+    expect(position.pendingAccumulation).toBeUndefined()
+    expect(position.accumulatedSetKeys).not.toContain(blockSetKey)
+    expect(position.blockLegs).toEqual([
+      expect.objectContaining({
+        setKey: blockSetKey,
+        quantity: 0.02,
+        targetAdditionalQuantity: 0.045,
+        requestedQuantity: 0.045,
+        targetSatisfied: false,
+      }),
+    ])
+    expect(placeStopOrder.mock.calls.at(-1)?.[2]).toBeCloseTo(0.03, 12)
+
+    position = await executeLivePosition(connection.id, {
+      ...common,
+      id: "terminal-partial-block-residual",
+      setKey: blockSetKey,
+      setVariant: "block",
+      blockCount: 3,
+      blockVolumeRatio: 1.5,
+    } as any, recordingConnector)
+
+    expect(placeOrder.mock.calls[2]?.[2]).toBeCloseTo(0.025, 12)
+    expect(position.executedQuantity).toBeCloseTo(0.055, 12)
+    expect(position.pendingAccumulation).toBeUndefined()
+    expect(position.accumulatedSetKeys).toContain(blockSetKey)
+    expect(position.blockLegs).toHaveLength(1)
+    expect(position.blockLegs?.[0]).toMatchObject({
+      setKey: blockSetKey,
+      quantity: 0.045,
+      targetAdditionalQuantity: 0.045,
+      targetSatisfied: true,
+    })
+    expect(position.blockLegs?.[0]?.requestedQuantity).toBeCloseTo(0.025, 12)
+    expect(placeStopOrder.mock.calls.at(-1)?.[2]).toBeCloseTo(0.055, 12)
+  })
+
+  test("reconciles a still-open partial Block order without a duplicate submission", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    let venueQuantity = 0
+    let entryAttempt = 0
+    let blockOrderId = ""
+    const partialConnector = {
+      ...recordingConnector,
+      placeOrder: jest.fn(async (
+        symbol: string,
+        _side: string,
+        quantity: number,
+        _price: number | undefined,
+        _type: string,
+        options: Record<string, any> = {},
+      ) => {
+        if (options.positionSide !== "LONG" || options.reduceOnly === true) {
+          return { success: true, orderId: `pending-control-${symbol}` }
+        }
+        entryAttempt += 1
+        if (entryAttempt === 1) {
+          venueQuantity += quantity
+          return {
+            success: true,
+            orderId: "pending-parent-order",
+            status: "filled",
+            filledQty: quantity,
+            filledPrice: 100,
+          }
+        }
+        blockOrderId = "pending-block-order"
+        venueQuantity += 0.02
+        return {
+          success: true,
+          orderId: blockOrderId,
+          status: "partially_filled",
+          filledQty: 0.02,
+          filledPrice: 100,
+        }
+      }),
+      getPosition: jest.fn(async () => ({
+        positionAmt: venueQuantity,
+        entryPrice: 100,
+        markPrice: 100,
+        liquidationPrice: 50,
+        unrealizedPnl: 0,
+        marginType: "cross",
+      })),
+      getOrderDetails: jest.fn(async (
+        _symbol: string,
+        _orderId: string | undefined,
+        clientOrderId: string,
+      ) => {
+        venueQuantity = 0.055
+        return {
+          success: true,
+          orderId: blockOrderId,
+          clientOrderId,
+          status: "filled",
+          filledQty: 0.045,
+          filledPrice: 100,
+        }
+      }),
+    }
+
+    const baseSetKey = "BTCUSDT:direction:long#open-partial"
+    const blockSetKey = `${baseSetKey}#block:3`
+    const common = {
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long" as const,
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      status: "pending" as const,
+      timestamp: Date.now(),
+      parentSetKey: "BTCUSDT:direction:long",
+      indicationType: "direction",
+    }
+
+    await executeLivePosition(connection.id, {
+      ...common,
+      id: "open-partial-parent",
+      setKey: baseSetKey,
+      setVariant: "default",
+    } as any, partialConnector)
+
+    let position = await executeLivePosition(connection.id, {
+      ...common,
+      id: "open-partial-block",
+      setKey: blockSetKey,
+      setVariant: "block",
+      blockCount: 3,
+      blockVolumeRatio: 1.5,
+    } as any, partialConnector)
+
+    expect(position.executedQuantity).toBeCloseTo(0.03, 12)
+    expect(position.pendingAccumulation).toMatchObject({
+      setKey: blockSetKey,
+      requestedQuantity: 0.045,
+      appliedFilledQuantity: 0.02,
+    })
+    expect(position.accumulatedSetKeys).not.toContain(blockSetKey)
+    expect(position.blockLegs?.[0]).toMatchObject({
+      quantity: 0.02,
+      targetSatisfied: false,
+    })
+
+    position = await executeLivePosition(connection.id, {
+      ...common,
+      id: "open-partial-block-reconcile",
+      setKey: blockSetKey,
+      setVariant: "block",
+      blockCount: 3,
+      blockVolumeRatio: 1.5,
+    } as any, partialConnector)
+
+    expect(partialConnector.placeOrder).toHaveBeenCalledTimes(2)
+    expect(position.executedQuantity).toBeCloseTo(0.055, 12)
+    expect(position.pendingAccumulation).toBeUndefined()
+    expect(position.accumulatedSetKeys).toContain(blockSetKey)
+    expect(position.blockLegs?.[0]).toMatchObject({
+      quantity: 0.045,
+      targetAdditionalQuantity: 0.045,
+      targetSatisfied: true,
+    })
+    expect(placeStopOrder.mock.calls.at(-1)?.[2]).toBeCloseTo(0.055, 12)
   })
 
   test("stress-checks asymmetric Long/Short Block ladders without duplicate or stranded mutations", async () => {
@@ -936,8 +1827,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       if (nextShort) shortPosition = nextShort
     }
 
-    expect(longPosition.executedQuantity).toBeCloseTo(0.12, 12)
-    expect(shortPosition.executedQuantity).toBeCloseTo(0.108, 12)
+    expect(longPosition.executedQuantity).toBeCloseTo(0.03, 12)
+    expect(shortPosition.executedQuantity).toBeCloseTo(0.0345, 12)
     expect(longPosition.blockLegs).toHaveLength(10)
     expect(shortPosition.blockLegs).toHaveLength(7)
     expect(new Set(longPosition.blockLegs?.map((leg: any) => leg.setKey)).size).toBe(10)
@@ -945,11 +1836,11 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(longPosition.blockLegs?.reduce(
       (sum: number, leg: any) => sum + Number(leg.requestedQuantity || 0),
       0,
-    )).toBeCloseTo(0.11, 12)
+    )).toBeCloseTo(0.02, 12)
     expect(shortPosition.blockLegs?.reduce(
       (sum: number, leg: any) => sum + Number(leg.requestedQuantity || 0),
       0,
-    )).toBeCloseTo(0.098, 12)
+    )).toBeCloseTo(0.0245, 12)
     expect(longPosition.pendingAccumulation).toBeUndefined()
     expect(shortPosition.pendingAccumulation).toBeUndefined()
     expect(longPosition.pendingReduction).toBeUndefined()

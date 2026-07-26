@@ -86,209 +86,6 @@ export interface PipelineDeps {
   enableStrategyFlow?: boolean
 }
 
-// ── Lazy-import cache for Phase 4 live-order path ───────────────────
-// `executeReadyStrategiesAsLiveOrders` is the heavy Phase 4 that only
-// fires when liveReady > 0 (typically < 10% of cycles). We still want
-// dynamic imports so the 90% of ticks that don't enter Phase 4 pay
-// nothing, but we memoize at module level so the 10% that DO enter
-// resolve each import exactly once per process.
-let __liveExecExports: {
-  getConnection: any
-  createExchangeConnector: any
-} | null = null
-async function __ensureLiveExecExports() {
-  if (!__liveExecExports) {
-    const [redisDb, connMod] = await Promise.all([
-      import("@/lib/redis-db"),
-      import("@/lib/exchange-connectors"),
-    ])
-    __liveExecExports = {
-      getConnection: redisDb.getConnection,
-      createExchangeConnector: connMod.createExchangeConnector,
-    }
-  }
-  return __liveExecExports
-}
-
-async function executeReadyStrategiesAsLiveOrders(
-  connectionId: string,
-  symbol: string,
-  liveStageExports: any,
-): Promise<void> {
-  try {
-    const { getSettings, setSettings } = await import("@/lib/redis-db")
-    const { executeLivePosition } = liveStageExports
-
-    const realKey    = `strategies:${connectionId}:${symbol}:real:sets`
-    const stored     = await getSettings(realKey) as any
-    let realSets: any[] = []
-
-    if (stored && typeof stored === "object") {
-      if (stored._slim && Array.isArray(stored.setKeys)) {
-        // ── Slim format: resolve full Sets from Base (Step 5 of coord plan) ──
-        // Real/Live keys are now written as slim { setKeys[], _slim:true } blobs.
-        // Base sets are the single authoritative source for entries+quality data.
-        const baseKey  = `strategies:${connectionId}:${symbol}:base:sets`
-        const baseSt   = await getSettings(baseKey) as any
-        const baseArr: any[] = Array.isArray(baseSt?.sets) ? baseSt.sets : []
-        const keySet   = new Set<string>(stored.setKeys as string[])
-        realSets       = baseArr.filter((s: any) => keySet.has(s.setKey))
-      } else {
-        // Legacy full-blob format — tolerate during rollout.
-        realSets = Array.isArray(stored.sets) ? stored.sets : []
-      }
-    }
-
-    if (realSets.length === 0) return
-
-    const { getConnection } = await __ensureLiveExecExports()
-    const connection = await getConnection(connectionId).catch(() => null)
-    if (!connection) {
-      console.warn(`[v0] [Phase4] ${symbol}: connection ${connectionId} not found — skipping live orders`)
-      return
-    }
-    // Resolve the exchange connector via the SAME factory path Phase 3
-    // (StrategyCoordinator.createLiveSets) uses. The factory returns a real
-    // connector when API credentials are present and a SimulatedConnector when
-    // they are absent (dev / sim connections). Previously this Phase 4 path
-    // bailed whenever credentials were missing, which silently disabled the
-    // entire realtime live-dispatch loop in dev (placed=0 forever) even though
-    // is_live_trade was enabled. Mirroring Phase 3's factory keeps both paths
-    // consistent: executeLivePosition still gates on the is_live_trade flag.
-    const { exchangeConnectorFactory } = await import("@/lib/exchange-connectors/factory")
-    const exchangeConnector = await exchangeConnectorFactory
-      .getOrCreateConnector(connectionId)
-      .catch(() => null)
-    if (!exchangeConnector) {
-      console.warn(`[v0] [Phase4] ${symbol}: failed to create exchange connector for ${connection.exchange} — skipping`)
-      return
-    }
-
-    // Track execution statistics for monitoring
-    let createdCount = 0
-    let failedCount = 0
-    let totalEntries = 0
-
-    // ── CRITICAL: cap dispatch to 1 highest-PF Set per direction ─────────
-    // The exchange holds exactly ONE position per symbol+direction (the
-    // dedup lock `live:lock:{conn}:{sym}:{dir}` enforces this). Phase 3
-    // (`StrategyCoordinator.createLiveSets`) ALREADY dispatches the live
-    // position for the best Set per direction with that same cap. This
-    // Phase 4 pass previously looped over EVERY Real Set × EVERY entry and
-    // called the heavyweight `executeLivePosition` for each — on a symbol
-    // with ~2400 axis Real Sets that is thousands of price-fetch → volume →
-    // order → SL/TP → sync round-trips per realtime cycle. The result was
-    // event-loop starvation that made the whole server unresponsive
-    // (verified: 2000+ "Live pipeline start" floods → dev server crash).
-    //
-    // Fix: mirror the createLiveSets contract here. Pick the single
-    // highest-PF Set per direction; every duplicate would only hit the
-    // dedup lock and be deferred anyway, so dispatching it is pure waste.
-    // Sets are sorted by avgProfitFactor desc, then the first per direction
-    // is kept. The per-direction dedup lock inside executeLivePosition
-    // still guards against any residual concurrency.
-    const sortedSets = [...realSets]
-      .filter((s: any) => Array.isArray(s.entries) && s.entries.length > 0)
-      .sort((a: any, b: any) => (b.avgProfitFactor || 0) - (a.avgProfitFactor || 0))
-    const dispatchSets: any[] = []
-    {
-      let sawLong = false
-      let sawShort = false
-      for (const s of sortedSets) {
-        const dir = s.direction === "short" ? "short" : "long"
-        if (dir === "long" && !sawLong) { dispatchSets.push(s); sawLong = true }
-        if (dir === "short" && !sawShort) { dispatchSets.push(s); sawShort = true }
-        if (sawLong && sawShort) break
-      }
-    }
-
-    // One live order per dispatched Set, sized from its single best entry
-    // (highest PF). Accumulation onto an already-open position is handled
-    // inside executeLivePosition's dedup/accumulate branch.
-    for (const realSet of dispatchSets) {
-      const entries = realSet.entries || []
-      totalEntries += entries.length
-      if (!entries || entries.length === 0) continue
-
-      const bestEntry = entries.reduce(
-        (best: any, e: any) => ((e.profitFactor || 0) > (best?.profitFactor || 0) ? e : best),
-        entries[0],
-      )
-      if (!bestEntry) continue
-
-      try {
-        const realPosition = {
-          id: `real:${connectionId}:${symbol}:${realSet.setKey}:${bestEntry.id}:${Date.now()}`,
-          connectionId,
-          symbol,
-          direction: realSet.direction || "long",
-          quantity: Math.max(0.1, bestEntry.sizeMultiplier || 1.0),
-          entryPrice: 0,
-          leverage: Math.max(1, Math.min(20, bestEntry.leverage || 1)),
-          stopLoss: realSet.stopLoss,
-          takeProfit: realSet.takeProfit,
-          trailingStop: realSet.trailingStop,
-          trailingStepSize: realSet.trailingStepSize,
-          maxHoldTime: realSet.maxHoldTime,
-          setKey: realSet.setKey,
-          parentSetKey: realSet.parentSetKey,
-          setVariant: realSet.variant,
-          axisWindows: realSet.axisWindows,
-          entryConfidence: bestEntry.confidence,
-          entryProfitFactor: bestEntry.profitFactor,
-        }
-
-        const livePos = await executeLivePosition(connectionId, realPosition, exchangeConnector)
-        if (livePos?.status === "filled" || livePos?.status === "placed" || livePos?.status === "pending_fill" || livePos?.status === "placed_unconfirmed") {
-          createdCount++
-          // ── CRITICAL FIX: Log full RealPosition context to progression ──
-          // When a live position is created, the progression logs need to capture:
-          // - Which real Set it came from (setKey, profitFactor, variant)
-          // - Its axis windows (prev, last, cont, pause states)
-          // - The best-entry metrics (profitFactor, leverage, confidence)
-          // This is the "relay back to original progress" — linking the live
-          // execution back to its originating strategy set. Without this,
-          // dashboards show "position created" but lose the context of which
-          // strategy variation and set axis drove the creation.
-          const { logProgressionEvent } = await import("@/lib/engine-progression-logs")
-          await logProgressionEvent(
-            connectionId,
-            "live_trading",
-            "info",
-            `Live position dispatched from real set ${symbol}/${realSet.direction}`,
-            {
-              livePositionId: livePos.id,
-              realSetKey: realSet.setKey,
-              parentSetKey: realSet.parentSetKey,
-              setVariant: realSet.variant,
-              axisWindows: realSet.axisWindows,
-              entryProfitFactor: bestEntry.profitFactor,
-              entryConfidence: bestEntry.confidence,
-              leverage: realPosition.leverage,
-              quantity: realPosition.quantity,
-              status: livePos.status,
-            }
-          )
-        } else {
-          failedCount++
-        }
-      } catch (err) {
-        failedCount++
-        console.error(`[v0] [Phase4] ${symbol}: error=${err instanceof Error ? err.message : String(err)}`)
-      }
-    }
-
-    if (createdCount > 0) {
-      await setSettings(`live_execution:${connectionId}:${symbol}:latest`, {
-        timestamp: new Date().toISOString(),
-        created: createdCount,
-        failed: failedCount,
-      }).catch(() => {})
-    }
-  } catch (err) {
-    console.error(`[v0] [Phase4] error: ${err instanceof Error ? err.message : String(err)}`)
-  }
-}
 // ── Live dispatch ownership ───────────────────────────────────────
 // Live exchange dispatch is intentionally owned by
 // `StrategyCoordinator.createLiveSets()` in Phase 3. This shared pipeline
@@ -321,6 +118,26 @@ function withPhaseTimeout<T>(work: Promise<T>, label: string, ms: number): Promi
       (v) => { if (!done) { done = true; clearTimeout(t); resolve(v) } },
       (e) => { if (!done) { done = true; clearTimeout(t); reject(e) } },
     )
+  })
+}
+
+/**
+ * Give HTTP/control callbacks one full event-loop turn between the CPU-heavy
+ * historic phases. Promise continuations alone only drain the microtask queue,
+ * so a replay step could otherwise run indication calculation, Set filling and
+ * strategy coordination back-to-back before a waiting Signal/status request
+ * was allowed to run.
+ *
+ * `setImmediate` preserves the strict phase order while yielding to pending
+ * I/O. The timer fallback keeps non-Node test adapters compatible.
+ */
+function yieldPipelineEventLoop(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (typeof setImmediate === "function") {
+      setImmediate(resolve)
+    } else {
+      setTimeout(resolve, 0)
+    }
   })
 }
 
@@ -374,6 +191,7 @@ export async function runIndStratCycle(
         }
       }
     }
+    await yieldPipelineEventLoop()
 
     // ── Phase 1b: Sets-fill (replay only) ─────────────────────────────
     // The shared `indication_set:*` keyspace is the bridge between the
@@ -390,6 +208,7 @@ export async function runIndStratCycle(
             err instanceof Error ? err.message : String(err),
           )
         })
+      await yieldPipelineEventLoop()
     }
 
     // ── Phase 2: Open pseudo position handling (REALTIME ONLY) ────────
@@ -411,6 +230,7 @@ export async function runIndStratCycle(
           pseudoErr instanceof Error ? pseudoErr.message : String(pseudoErr),
         )
       }
+      await yieldPipelineEventLoop()
     }
 
     // ── Phase 3: Strategy evaluation (UNIFIED, indication-gated) ──────
@@ -445,6 +265,7 @@ export async function runIndStratCycle(
       deps.enableStrategyFlow !== false
     // Live dispatch can still be skipped independently by CRON_LIVE_DISPATCH=0.
     if (result.indicationCount > 0 && apiStrategyFlowEnabled) {
+      await yieldPipelineEventLoop()
       const stratResult = await withPhaseTimeout(
         deps.strategy
           .processStrategy(symbol, indications, process.env.CRON_LIVE_DISPATCH === "0" || process.env.CRON_LIVE_DISPATCH === "false" ? true : deps.skipLiveDispatch === true)

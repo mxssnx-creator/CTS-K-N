@@ -57,38 +57,15 @@ export default function BaseStrategySettings({
           </div>
 
           <div className="border-t pt-6 space-y-4">
-            <h3 className="text-lg font-semibold border-b pb-2">Ratio Settings</h3>
+            <h3 className="text-lg font-semibold border-b pb-2">Coordination Ratio</h3>
 
-            <div className="grid md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Base Ratio Min</Label>
-                <Input
-                  type="number"
-                  min="0.1"
-                  max="2"
-                  step="0.1"
-                  value={settings.strategyBaseRatioMin || 0.2}
-                  onChange={(e) => handleSettingChange("strategyBaseRatioMin", Number.parseFloat(e.target.value))}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Minimum base ratio for volume calculations (default: 0.2)
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Base Ratio Max</Label>
-                <Input
-                  type="number"
-                  min="0.5"
-                  max="5"
-                  step="0.1"
-                  value={settings.strategyBaseRatioMax || 1.0}
-                  onChange={(e) => handleSettingChange("strategyBaseRatioMax", Number.parseFloat(e.target.value))}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Maximum base ratio for volume calculations (default: 1.0)
-                </p>
-              </div>
+            <div className="rounded-lg border bg-muted/40 p-4">
+              <p className="text-sm font-medium">Base ratio: 1.0x (fixed)</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Base → Main → Real preserves the same unit basis. Only explicit
+                Main, Preset, Signal, Position-count, DCA and Block ratios can
+                adjust physical Live volume.
+              </p>
             </div>
           </div>
 
@@ -190,8 +167,8 @@ export default function BaseStrategySettings({
                 sizes and volume allocations.
               </p>
               <p>
-                Value ranges control the multiplier applied to position sizing, while ratio settings determine volume
-                distribution across different positions.
+                Value ranges control strategy configuration. The shared volume
+                coordination basis remains fixed at 1.0x.
               </p>
               <p>
                 Profit protection (trailing stop) is engine-managed

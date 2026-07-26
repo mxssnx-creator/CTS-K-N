@@ -1,6 +1,9 @@
 "use client"
 
-import { DEFAULT_VOLUME_STEP_RATIO } from "@/lib/constants"
+import {
+  DEFAULT_VOLUME_STEP_RATIO,
+  normalizeIdentityVolumeFactor,
+} from "@/lib/constants"
 
 // Settings Overall Tab - manages main configuration, connections, install, logs
 import { useState } from "react"
@@ -60,6 +63,9 @@ export function OverallTab({
 }: OverallTabProps) {
   const [overallSubTab, setOverallSubTab] = useState("main")
   const [isSettingsDialogOpen, setIsSettingsDialogOpen] = useState(false)
+  const mainVolumeFactor = normalizeIdentityVolumeFactor(settings.mainTradeVolumeFactor)
+  const signalVolumeFactor = normalizeIdentityVolumeFactor(settings.signalTradeVolumeFactor)
+  const presetVolumeFactor = normalizeIdentityVolumeFactor(settings.presetTradeVolumeFactor)
 
   return (
     <TabsContent value="overall" className="space-y-6 animate-in fade-in duration-300">
@@ -142,8 +148,8 @@ export function OverallTab({
                   Trade-engine volume factors and position calculation settings.
                   Strategy / pseudo positions are RATIO-based (count-driven, no
                   volume); only Live Positions on real exchange orders use these
-                  factors as a notional multiplier — Main and Preset engines are
-                  scaled independently.
+                  factors as a notional multiplier — Main, Signal and Preset
+                  channels are scaled independently.
                 </p>
 
                 <div className="grid md:grid-cols-2 gap-6">
@@ -154,13 +160,13 @@ export function OverallTab({
                    * volume calcs; for Live Positions calculate indeed volume
                    * with specific ratios. At settings dialog remove volume
                    * slider for Strategies — use sliders for Trade Engines:
-                   * Main, Preset."
+                   * Main, Signal, Preset."
                    *
                    * The previous single `base_volume_factor` slider was
                    * applied universally and conflated Strategy ratios with
                    * Live notional — it was misleading and is therefore gone.
-                   * These two replace it: each sets the GLOBAL default
-                   * volume multiplier for one Trade Engine, and the dashboard
+                   * These controls set the GLOBAL default volume multiplier
+                   * for each live channel, and the dashboard
                    * connection card may override on a per-connection basis.
                    *
                    * Wired into `lib/volume-calculator.ts` via
@@ -173,14 +179,14 @@ export function OverallTab({
                     <div className="flex items-center justify-between">
                       <Label>Main Trade Engine Volume Factor</Label>
                       <span className="text-sm font-medium">
-                        {(settings.mainTradeVolumeFactor ?? 1).toFixed(1)}x
+                        {mainVolumeFactor.toFixed(1)}x
                       </span>
                     </div>
                     <Slider
                       min={1}
                       max={10}
                       step={0.1}
-                      value={[settings.mainTradeVolumeFactor ?? 1]}
+                      value={[mainVolumeFactor]}
                       onValueChange={([value]) =>
                         handleSettingChange("mainTradeVolumeFactor", value)
                       }
@@ -194,16 +200,39 @@ export function OverallTab({
 
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label>Preset Trade Engine Volume Factor</Label>
+                      <Label>Signal Volume Factor</Label>
                       <span className="text-sm font-medium">
-                        {(settings.presetTradeVolumeFactor ?? 1).toFixed(1)}x
+                        {signalVolumeFactor.toFixed(1)}x
                       </span>
                     </div>
                     <Slider
                       min={1}
                       max={10}
                       step={0.1}
-                      value={[settings.presetTradeVolumeFactor ?? 1]}
+                      value={[signalVolumeFactor]}
+                      onValueChange={([value]) =>
+                        handleSettingChange("signalTradeVolumeFactor", value)
+                      }
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Additional Live multiplier for Signal indications
+                      (default 1.0x). It composes once with the Main factor;
+                      ordinary Main and Preset indications remain unchanged.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label>Preset Trade Engine Volume Factor</Label>
+                      <span className="text-sm font-medium">
+                        {presetVolumeFactor.toFixed(1)}x
+                      </span>
+                    </div>
+                    <Slider
+                      min={1}
+                      max={10}
+                      step={0.1}
+                      value={[presetVolumeFactor]}
                       onValueChange={([value]) =>
                         handleSettingChange("presetTradeVolumeFactor", value)
                       }

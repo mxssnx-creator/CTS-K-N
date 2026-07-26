@@ -5,7 +5,7 @@
  *
  * The command validates local runtime/deploy inputs, builds the OpenNext
  * Worker, uploads only an explicit allowlist of application bindings alongside
- * the Worker, initializes schema v82, and runs the production contract. No
+ * the Worker, initializes schema v84, and runs the production contract. No
  * Cloudflare credential is ever copied into the Worker environment.
  */
 

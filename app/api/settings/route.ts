@@ -1,4 +1,7 @@
-import { DEFAULT_VOLUME_STEP_RATIO } from "@/lib/constants"
+import {
+  DEFAULT_VOLUME_STEP_RATIO,
+  normalizeBaseVolumeFactor,
+} from "@/lib/constants"
 import { NextResponse } from "next/server"
 import {
   getAppSettings,
@@ -77,6 +80,26 @@ export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 const POSITION_COST_KEYS = ["positionCost", "exchangePositionCost", "exchange_position_cost"] as const
+const BASE_VOLUME_FACTOR_KEYS = [
+  "base_volume_factor",
+  "volume_factor",
+  "baseVolumeFactor",
+] as const
+const CHANNEL_VOLUME_FACTOR_KEYS = [
+  "live_volume_factor",
+  "volume_factor_live",
+  "mainTradeVolumeFactor",
+  "main_trade_volume_factor",
+  "preset_volume_factor",
+  "volume_factor_preset",
+  "presetTradeVolumeFactor",
+  "preset_trade_volume_factor",
+  "signal_volume_factor",
+  "volume_factor_signal",
+  "signalTradeVolumeFactor",
+  "signal_trade_volume_factor",
+  "signalVolumeFactor",
+] as const
 
 function normalizePositionCostSettings<T extends Record<string, any>>(settings: T): T {
   const normalized: Record<string, any> = { ...settings }
@@ -88,6 +111,17 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
     if (Number.isFinite(value)) {
       normalized[key] = normalizePositionCostPercent(value)
     }
+  }
+  for (const key of BASE_VOLUME_FACTOR_KEYS) {
+    if (normalized[key] === undefined || normalized[key] === null || normalized[key] === "") continue
+    normalized[key] = normalizeBaseVolumeFactor(normalized[key])
+  }
+  for (const key of CHANNEL_VOLUME_FACTOR_KEYS) {
+    if (normalized[key] === undefined || normalized[key] === null || normalized[key] === "") continue
+    const value = Number(normalized[key])
+    normalized[key] = Number.isFinite(value)
+      ? Math.max(1, Math.min(10, value))
+      : 1
   }
   if (normalized.trendTimeframesMinutes !== undefined) {
     normalized.trendTimeframesMinutes = normalizeTrendTimeframesMinutes(
@@ -114,6 +148,12 @@ function getDefaultSettings(): Record<string, any> {
     useMaximalLeverage: true,
     leveragePercentage: 100,
     default_volume: 100,
+    // Live sizing ratios are dimensionless and identity-based.  Ratio 1 is
+    // exactly one venue-minimum order; channel-specific factors are composed
+    // once at the Live boundary.
+    mainTradeVolumeFactor: 1,
+    presetTradeVolumeFactor: 1,
+    signalTradeVolumeFactor: 1,
     volume_step_ratio: DEFAULT_VOLUME_STEP_RATIO,
     max_open_positions: 10,
     max_drawdown_percent: 20,

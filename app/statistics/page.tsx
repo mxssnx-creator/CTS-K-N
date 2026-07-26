@@ -67,6 +67,7 @@ import { StatisticsOverview } from "@/components/settings/statistics-overview"
 import { useExchange } from "@/lib/exchange-context"
 import { PageHeader } from "@/components/page-header"
 import { TradeHistoryTable, type TradeHistoryRow } from "@/components/dashboard/trade-history-table"
+import { StatisticsSectionNav } from "@/components/statistics/statistics-section-nav"
 
 // Enhanced types for comprehensive analytics
 interface OptimalStrategyMetrics {
@@ -659,7 +660,8 @@ export default function StatisticsPage() {
 
   if (isLoading) {
     return (
-      <div className="p-4">
+      <div className="space-y-4 p-4">
+        <StatisticsSectionNav />
         <div className="flex items-center justify-center min-h-[50vh]">
           <div className="text-center space-y-3">
             <div className="animate-spin rounded-full h-8 w-8 border-2 border-muted border-t-primary mx-auto"></div>
@@ -672,6 +674,7 @@ export default function StatisticsPage() {
 
   return (
     <div className="p-4 space-y-4">
+      <StatisticsSectionNav />
       {!hasRealConnections && (
         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
           <div className="flex items-start gap-2">

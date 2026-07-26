@@ -53,7 +53,7 @@ interface StatsShape {
     avgCycleTimeMs: number
   }
   breakdown: {
-    indications: { direction: number; move: number; active: number; optimal: number; auto: number; trend?: number; total: number }
+    indications: { direction: number; move: number; active: number; activeAdvanced?: number; active_advanced?: number; optimal: number; auto: number; signal?: number; trend?: number; total: number }
     strategies: { base: number; main: number; real: number; live: number; total: number; baseEvaluated: number; mainEvaluated: number; realEvaluated: number }
   }
   // ── Active-now snapshot ────────────────────────────────────────
@@ -66,7 +66,7 @@ interface StatsShape {
   //      rollup; used as a fallback so older API revs still surface
   //      a non-zero "alive now" number.
   activeCounts?: {
-    indications?: { direction?: number; move?: number; active?: number; optimal?: number; trend?: number; total?: number }
+    indications?: { direction?: number; move?: number; active?: number; optimal?: number; signal?: number; trend?: number; total?: number }
     strategies?:  { base?: number; main?: number; real?: number; total?: number }
   }
   activeProgressing?: {
@@ -197,6 +197,7 @@ export function ProgressionLogsDialog({
     move:      firstFiniteMetric(ac?.indications?.move, ap?.indications?.move?.sets),
     active:    firstFiniteMetric(ac?.indications?.active, ap?.indications?.active?.sets),
     optimal:   firstFiniteMetric(ac?.indications?.optimal, ap?.indications?.optimal?.sets),
+    signal:    firstFiniteMetric(ac?.indications?.signal, ap?.indications?.signal?.sets),
     trend:     firstFiniteMetric(ac?.indications?.trend, ap?.indications?.trend?.sets),
     total:     firstFiniteMetric(ac?.indications?.total, ap?.indications?.total?.sets),
   }
@@ -217,6 +218,7 @@ export function ProgressionLogsDialog({
     { label: "Active Adv", value: (bd?.indications as any)?.activeAdvanced || 0 },
     { label: "Optimal",    value: bd?.indications.optimal        || 0 },
     { label: "Auto",       value: bd?.indications.auto           || 0 },
+    { label: "Signal",     value: bd?.indications.signal         || 0 },
     { label: "Trend",      value: bd?.indications.trend          || 0 },
   ]
   const totalIndByType = indTypes.reduce((s, r) => s + r.value, 0) || 1
@@ -385,7 +387,7 @@ export function ProgressionLogsDialog({
                         className="p-3 rounded-lg bg-violet-50 dark:bg-violet-950/40"
                         title={
                           `Indications passing thresholds this cycle: ${fmt(activeIndications.total)}\n` +
-                          `Per-type alive: D=${fmt(activeIndications.direction)} M=${fmt(activeIndications.move)} A=${fmt(activeIndications.active)} O=${fmt(activeIndications.optimal)} T=${fmt(activeIndications.trend)}\n` +
+                          `Per-type alive: D=${fmt(activeIndications.direction)} M=${fmt(activeIndications.move)} A=${fmt(activeIndications.active)} O=${fmt(activeIndications.optimal)} S=${fmt(activeIndications.signal)} T=${fmt(activeIndications.trend)}\n` +
                           `Cumulative since run start: ${fmt(rt?.indicationsTotal || 0)}`
                         }
                       >
@@ -401,6 +403,7 @@ export function ProgressionLogsDialog({
                           M {fmt(activeIndications.move)} ·
                           A {fmt(activeIndications.active)} ·
                           O {fmt(activeIndications.optimal)} ·
+                          S {fmt(activeIndications.signal)} ·
                           T {fmt(activeIndications.trend)}
                         </div>
                       </div>
