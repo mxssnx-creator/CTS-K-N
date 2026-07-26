@@ -91,7 +91,11 @@
 import { publishEngineEvent } from "@/lib/engine-event-bus"
 import { getRedisClient, initRedis, setSettings } from "@/lib/redis-db"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
-import { buildProgressionScope, ensureScopedProgressionFromLegacy } from "@/lib/progression-scope"
+import {
+  buildPrehistoricGateKeys,
+  buildProgressionScope,
+  ensureScopedProgressionFromLegacy,
+} from "@/lib/progression-scope"
 import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from "@/lib/progression-fingerprint"
 import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
@@ -506,7 +510,11 @@ export class ProgressionStateManager {
   /**
    * Track prehistoric phase progress (separate from realtime)
    */
-  static async incrementPrehistoricCycle(connectionId: string, symbol: string): Promise<void> {
+  static async incrementPrehistoricCycle(
+    connectionId: string,
+    symbol: string,
+    symbolSelectionEpoch?: string,
+  ): Promise<void> {
     try {
       if (!getRedisClient()) {
         await initRedis()
@@ -528,9 +536,18 @@ export class ProgressionStateManager {
       const canonicalSymbolsSetKey = `${scope.prehistoricKey}:symbols`
       const nowIso = new Date().toISOString()
 
-      const [prehistoricCycles] = await Promise.all([
-        client.hincrby(key, "prehistoric_cycles_completed", 1),
-        client.sadd(symbolsSetKey, symbol).catch(() => 0),
+      if (symbolSelectionEpoch) {
+        const activeEpoch = await client
+          .hget(scope.tradeEngineStateKey, "symbol_selection_epoch")
+          .catch(() => null)
+        if (activeEpoch && activeEpoch !== symbolSelectionEpoch) return
+      }
+
+      const added = Number(await client.sadd(symbolsSetKey, symbol).catch(() => 0)) || 0
+      const prehistoricCycles = added > 0
+        ? await client.hincrby(key, "prehistoric_cycles_completed", 1)
+        : Number(await client.hget(key, "prehistoric_cycles_completed").catch(() => 0)) || 0
+      await Promise.all([
         client.expire(symbolsSetKey, 7 * 24 * 60 * 60).catch(() => 0),
         // Keep the canonical `prehistoric:{id}:symbols` set in sync so the
         // progress display (which reads that key elsewhere) agrees with the
@@ -548,6 +565,7 @@ export class ProgressionStateManager {
         client.hset(key, {
           prehistoric_symbols_processed: JSON.stringify(symbolsProcessed),
           prehistoric_phase_active: "true",
+          ...(symbolSelectionEpoch ? { symbol_selection_epoch: symbolSelectionEpoch } : {}),
           last_update: nowIso,
         }),
         client.expire(key, 7 * 24 * 60 * 60),
@@ -564,14 +582,16 @@ export class ProgressionStateManager {
   /**
    * Mark prehistoric phase as complete.
    *
-   * Deterministically PINS the terminal progress state so the dashboard can
-   * never be left showing a sub-100% bar or an "X/N" label short of N once the
-   * run has actually finished — even if a symbol was skipped (no data) or threw
-   * mid-process and the live percent never organically reached the end. Pass
-   * `symbolTotal` (the connection's configured symbol count) to stamp the
-   * authoritative final counts.
+   * Reconciles the terminal progress state against the distinct processed
+   * symbol set. A caller cannot manufacture N/N when work was skipped or
+   * cancelled; incomplete coverage remains visible and completion gates stay
+   * closed. Pass `symbolTotal` to provide the authoritative denominator.
    */
-  static async completePrehistoricPhase(connectionId: string, symbolTotal?: number): Promise<void> {
+  static async completePrehistoricPhase(
+    connectionId: string,
+    symbolTotal?: number,
+    symbolSelectionEpoch?: string,
+  ): Promise<void> {
     try {
       // Ensure Redis is initialised BEFORE using the client.
       // getRedisClient() returns null on cold-boot; binding `client` first then
@@ -588,31 +608,35 @@ export class ProgressionStateManager {
 
       await client.hset(key, {
         prehistoric_phase_active: "false",
+        ...(symbolSelectionEpoch ? { symbol_selection_epoch: symbolSelectionEpoch } : {}),
         last_update: new Date().toISOString(),
       })
 
-      // Pin the prehistoric counter hash + the dashboard progress bar to their
-      // terminal values. We clamp the displayed processed count to the distinct
-      // SET cardinality (authoritative) but never below `symbolTotal` so the
-      // label reads a clean "N/N".
+      // Reconcile the prehistoric counter hash + dashboard progress bar to the
+      // authoritative distinct SET cardinality without fabricating completion.
       try {
         const distinct = await client
           .scard(`${scope.prehistoricKey}:symbols`)
           .catch(() => 0)
         const total = Math.max(1, symbolTotal ?? distinct ?? 1)
-        const finalProcessed = Math.max(distinct, total)
+        const finalProcessed = Math.min(Math.max(0, distinct), total)
+        const isComplete = finalProcessed >= total
         await client.hset(scope.prehistoricKey, {
           symbols_processed: String(finalProcessed),
           symbols_total: String(total),
-          is_complete: "1",
+          is_complete: isComplete ? "1" : "0",
+          ...(symbolSelectionEpoch ? { symbol_selection_epoch: symbolSelectionEpoch } : {}),
         })
         await setSettings(scope.engineProgressionKey, {
           phase: "prehistoric_data",
-          progress: 95,
-          detail: `Prehistoric calc complete — ${finalProcessed}/${total} symbols processed`,
+          progress: isComplete ? 95 : Math.max(15, Math.min(94, 15 + Math.round((finalProcessed / total) * 79))),
+          detail: isComplete
+            ? `Prehistoric calc complete — ${finalProcessed}/${total} symbols processed`
+            : `Prehistoric calc incomplete — ${finalProcessed}/${total} symbols processed`,
           sub_current: finalProcessed,
           sub_total: total,
           connection_id: connectionId,
+          ...(symbolSelectionEpoch ? { symbol_selection_epoch: symbolSelectionEpoch } : {}),
           updated_at: new Date().toISOString(),
         }).catch(() => { /* non-critical */ })
       } catch { /* non-critical */ }
@@ -990,6 +1014,8 @@ export class ProgressionStateManager {
 
       const scope = await ensureScopedProgressionFromLegacy(client, connectionId, engineType)
       const key = scope.progressionKey
+      const doneGateKeys = buildPrehistoricGateKeys(connectionId, engineType, "done")
+      const firstPassGateKeys = buildPrehistoricGateKeys(connectionId, engineType, "firstpass:done")
       let existing = await client.hgetall(key).catch(() => null)
       let initializedMissingProgression = false
       let initializedEpoch: number | undefined
@@ -1056,17 +1082,30 @@ export class ProgressionStateManager {
       // running production engine can still be stamping the previous basket while
       // QuickStart/settings recoordination is trying to start the next 12-symbol
       // epoch. Only fall back to engine state after connection/settings mirrors.
-      let currentSymbols: string[] = parseSymbols(connectionSettings.force_symbols)
+      let currentSymbols: string[] = parseSymbols(connectionSettings.selected_symbols)
+      if (currentSymbols.length === 0) currentSymbols = parseSymbols(connectionSettings.force_symbols)
+      if (currentSymbols.length === 0) currentSymbols = parseSymbols(cd.selected_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(cd.force_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(connectionSettings.symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(connectionSettings.active_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(cd.active_symbols)
+      if (currentSymbols.length === 0) currentSymbols = parseSymbols(state.selected_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(state.force_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(state.active_symbols)
       if (currentSymbols.length === 0) currentSymbols = parseSymbols(state.symbols)
+      currentSymbols = [...new Set(
+        currentSymbols
+          .map((symbol) => String(symbol).trim().toUpperCase())
+          .filter(Boolean),
+      )]
 
       const liveSymbolCount = currentSymbols.length
       const liveSymbolsHash = currentSymbols.slice().sort().join("|")
+      const intervalResetKeys = (symbols: string[]) => symbols.flatMap((symbol) => [
+        `prehistoric:${connectionId}:${symbol}:processed_intervals`,
+        `${scope.prehistoricKey}:${symbol}:processed_intervals`,
+        `prehistoric:checkpoint:${connectionId}:${symbol}`,
+      ])
 
       // ── Settings fingerprint ────────────────────────────────────────────
       // Centralized fingerprint construction keeps recoordination comparisons
@@ -1130,10 +1169,27 @@ export class ProgressionStateManager {
       const storedSymbolCount = parseInt(existing.symbol_count || "0", 10)
       const storedHash = existing.active_symbols_hash || ""
       const storedSymbols = storedHash
-        ? storedHash.split("|").map((symbol: string) => symbol.trim()).filter(Boolean)
+        ? storedHash.split("|").map((symbol: string) => symbol.trim().toUpperCase()).filter(Boolean)
         : []
       const storedSymbolSet = new Set(storedSymbols)
       const missingSymbols = currentSymbols.filter((symbol) => !storedSymbolSet.has(symbol))
+      const countPreservedProcessedSymbols = async (eligibleSymbols: string[]): Promise<number> => {
+        const eligible = new Set(eligibleSymbols)
+        const [canonicalMembers, progressionMembers] = await Promise.all([
+          client.smembers(`${scope.prehistoricKey}:symbols`).catch(() => [] as string[]),
+          client.smembers(`${key}:prehistoric_symbols_set`).catch(() => [] as string[]),
+        ])
+        const processed = new Set(
+          [...canonicalMembers, ...progressionMembers]
+            .map((symbol) => String(symbol).trim().toUpperCase())
+            .filter(Boolean),
+        )
+        let count = 0
+        for (const symbol of eligible) {
+          if (processed.has(symbol)) count++
+        }
+        return count
+      }
       const additiveSymbolOnlyChange =
         storedSymbols.length > 0 &&
         missingSymbols.length > 0 &&
@@ -1147,15 +1203,17 @@ export class ProgressionStateManager {
         // and clear only the gates for symbols that are genuinely missing so
         // the next prehistoric pass calculates the delta instead of replaying
         // the whole connection.
+        const preservedProcessedCount = await countPreservedProcessedSymbols(storedSymbols)
         await Promise.all([
-          client.del(`${scope.prehistoricKey}:done`).catch(() => {}),
-          client.del(`${scope.prehistoricKey}:firstpass:done`).catch(() => {}),
+          client.del(doneGateKeys.scoped).catch(() => {}),
+          client.del(doneGateKeys.legacy).catch(() => {}),
+          client.del(firstPassGateKeys.scoped).catch(() => {}),
+          client.del(firstPassGateKeys.legacy).catch(() => {}),
           client.del(scope.prehistoricLoadedKey).catch(() => {}),
           client.del(`${scope.prehistoricLoadedKey}:verified`).catch(() => {}),
+          client.del(`prehistoric_loaded:${connectionId}`).catch(() => {}),
           client.del(`${key}:prehistoric_symbols_set`).catch(() => {}),
-          ...missingSymbols.map((symbol) =>
-            client.del(`${scope.prehistoricKey}:${symbol}:processed_intervals`).catch(() => {}),
-          ),
+          ...intervalResetKeys(missingSymbols).map((key) => client.del(key).catch(() => {})),
         ])
 
         await client.hset(key, {
@@ -1169,15 +1227,21 @@ export class ProgressionStateManager {
           last_update: new Date().toISOString(),
         }).catch(() => {})
 
-        const actualProcessedCount = await client
-          .scard(`${scope.prehistoricKey}:symbols`)
-          .catch(async () => client.scard(`${key}:prehistoric_symbols_set`).catch(() => 0))
-        await client
-          .hset(scope.tradeEngineStateKey, {
+        await Promise.all([
+          client.hset(scope.prehistoricKey, {
+            symbols_total: String(liveSymbolCount),
+            symbols_processed: String(preservedProcessedCount),
+            is_complete: "0",
+            updated_at: new Date().toISOString(),
+          }),
+          client.hset(scope.tradeEngineStateKey, {
             config_set_symbols_total: String(liveSymbolCount > 0 ? liveSymbolCount : 1),
-            config_set_symbols_processed: String(Math.min(Math.max(0, actualProcessedCount || 0), liveSymbolCount)),
-          })
-          .catch(() => {})
+            config_set_symbols_processed: String(preservedProcessedCount),
+            missing_prehistoric_symbols: JSON.stringify(missingSymbols),
+            prehistoric_data_loaded: "false",
+            updated_at: new Date().toISOString(),
+          }),
+        ]).catch(() => {})
 
         return {
           changed: true,
@@ -1204,10 +1268,13 @@ export class ProgressionStateManager {
 
       if (initializedMissingProgression) {
         await Promise.all([
-          client.del(`${scope.prehistoricKey}:done`).catch(() => {}),
-          client.del(`${scope.prehistoricKey}:firstpass:done`).catch(() => {}),
+          client.del(doneGateKeys.scoped).catch(() => {}),
+          client.del(doneGateKeys.legacy).catch(() => {}),
+          client.del(firstPassGateKeys.scoped).catch(() => {}),
+          client.del(firstPassGateKeys.legacy).catch(() => {}),
           client.del(scope.prehistoricLoadedKey).catch(() => {}),
           client.del(`${scope.prehistoricLoadedKey}:verified`).catch(() => {}),
+          client.del(`prehistoric_loaded:${connectionId}`).catch(() => {}),
           client.del(`prehistoric:progress:${connectionId}`).catch(() => {}),
           client.del(`realtime:${connectionId}`).catch(() => {}),
         ])
@@ -1238,29 +1305,24 @@ export class ProgressionStateManager {
           `Keeping existing progress and re-opening prehistoric gates for new symbols only.`,
         )
 
-        const progressionProcessedSet = `${key}:prehistoric_symbols_set`
-        const canonicalProcessedSet = `${scope.prehistoricKey}:symbols`
-        const [progressionProcessedCountRaw, canonicalProcessedCountRaw] = await Promise.all([
-          client.scard(progressionProcessedSet).catch(() => 0),
-          client.scard(canonicalProcessedSet).catch(() => 0),
-        ])
-        const progressionProcessedCount = Number(progressionProcessedCountRaw) || 0
-        const canonicalProcessedCount = Number(canonicalProcessedCountRaw) || 0
-        const actualProcessedCount = progressionProcessedCount > 0
-          ? progressionProcessedCount
-          : canonicalProcessedCount
-        const configSetSymbolsProcessed = Math.min(actualProcessedCount, liveSymbolCount)
+        // Additive changes always have at least one genuinely missing symbol.
+        // Count only processed members from the preserved prior basket; a stale
+        // outsider in either Set must never make the new basket appear N/N.
+        const configSetSymbolsProcessed = await countPreservedProcessedSymbols(storedSymbols)
 
         await Promise.all([
-          client.del(`${scope.prehistoricKey}:done`).catch(() => {}),
-          client.del(`${scope.prehistoricKey}:firstpass:done`).catch(() => {}),
+          client.del(doneGateKeys.scoped).catch(() => {}),
+          client.del(doneGateKeys.legacy).catch(() => {}),
+          client.del(firstPassGateKeys.scoped).catch(() => {}),
+          client.del(firstPassGateKeys.legacy).catch(() => {}),
           client.del(scope.prehistoricLoadedKey).catch(() => {}),
           client.del(`${scope.prehistoricLoadedKey}:verified`).catch(() => {}),
+          client.del(`prehistoric_loaded:${connectionId}`).catch(() => {}),
           client.del(`prehistoric:progress:${connectionId}`).catch(() => {}),
         ])
 
         try {
-          const intervalKeys = missingPrehistoricSymbols.map((symbol) => `${scope.prehistoricKey}:${symbol}:processed_intervals`)
+          const intervalKeys = intervalResetKeys(missingPrehistoricSymbols)
           if (intervalKeys.length > 0) {
             await client.del(...intervalKeys).catch(() => {})
           }
@@ -1272,14 +1334,14 @@ export class ProgressionStateManager {
           started_for_settings_version: new Date().toISOString(),
           progress_settings_snapshot: JSON.stringify(liveSnapshot),
           engine_type: engineType || "main",
-          prehistoric_phase_active: configSetSymbolsProcessed < liveSymbolCount ? "true" : "false",
+          prehistoric_phase_active: "true",
           last_update: new Date().toISOString(),
         }).catch(() => {})
 
         await client.hset(scope.prehistoricKey, {
           symbols_total: String(liveSymbolCount),
           symbols_processed: String(configSetSymbolsProcessed),
-          is_complete: configSetSymbolsProcessed >= liveSymbolCount ? "1" : "0",
+          is_complete: "0",
           updated_at: new Date().toISOString(),
         }).catch(() => {})
 
@@ -1288,17 +1350,10 @@ export class ProgressionStateManager {
             config_set_symbols_total: String(liveSymbolCount > 0 ? liveSymbolCount : 1),
             config_set_symbols_processed: String(configSetSymbolsProcessed),
             missing_prehistoric_symbols: JSON.stringify(missingPrehistoricSymbols),
-            prehistoric_data_loaded: configSetSymbolsProcessed >= liveSymbolCount ? "true" : "false",
+            prehistoric_data_loaded: "false",
             updated_at: new Date().toISOString(),
           })
           .catch(() => {})
-
-        if (configSetSymbolsProcessed >= liveSymbolCount) {
-          await Promise.all([
-            client.set(`${scope.prehistoricKey}:done`, "1", { EX: 86400 } as any).catch(() => {}),
-            client.set(`${scope.prehistoricKey}:firstpass:done`, "1", { EX: 86400 } as any).catch(() => {}),
-          ])
-        }
 
         return { changed: true, reason, newEpoch: Number(existing.epoch || "0") || undefined }
       }
@@ -1322,10 +1377,13 @@ export class ProgressionStateManager {
         // previous run and skips prehistoric entirely, leaving the new
         // symbols completely unprocessed.
         await Promise.all([
-          client.del(`${scope.prehistoricKey}:done`).catch(() => {}),
-          client.del(`${scope.prehistoricKey}:firstpass:done`).catch(() => {}),
+          client.del(doneGateKeys.scoped).catch(() => {}),
+          client.del(doneGateKeys.legacy).catch(() => {}),
+          client.del(firstPassGateKeys.scoped).catch(() => {}),
+          client.del(firstPassGateKeys.legacy).catch(() => {}),
           client.del(scope.prehistoricLoadedKey).catch(() => {}),
           client.del(`${scope.prehistoricLoadedKey}:verified`).catch(() => {}),
+          client.del(`prehistoric_loaded:${connectionId}`).catch(() => {}),
           client.del(`prehistoric:progress:${connectionId}`).catch(() => {}),
           client.del(`prehistoric:${connectionId}`).catch(() => {}),
           client.del(`${scope.prehistoricKey}:symbols`).catch(() => {}),
@@ -1344,7 +1402,7 @@ export class ProgressionStateManager {
           // look stalled under large datasets. The live symbol list is exactly
           // the namespace that must be invalidated for the next prehistoric
           // run, so delete those bounded per-symbol interval gates directly.
-          const intervalKeys = currentSymbols.map((symbol) => `${scope.prehistoricKey}:${symbol}:processed_intervals`)
+          const intervalKeys = intervalResetKeys(currentSymbols)
           if (intervalKeys.length > 0) {
             await client.del(...intervalKeys).catch(() => {})
           }
@@ -1357,7 +1415,7 @@ export class ProgressionStateManager {
           started_for_settings_version: new Date().toISOString(),
           progress_settings_snapshot: JSON.stringify(liveSnapshot),
           engine_type: engineType || "main",
-          prehistoric_phase_active: "false",
+          prehistoric_phase_active: liveSymbolCount > 0 ? "true" : "false",
         }).catch(() => {})
 
         // Reset the stale `config_set_*` snapshot held in the engine-state hash.

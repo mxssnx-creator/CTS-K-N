@@ -19,6 +19,7 @@ import {
 } from "@/lib/signal-indication"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
 import { normalizeIdentityVolumeFactor } from "@/lib/constants"
+import { SystemLogger } from "@/lib/system-logger"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -78,8 +79,9 @@ export async function POST(request: Request) {
     const settings = normalizeSignalIndicationSettings(body.settings)
     const signalVolumeFactor = normalizeIdentityVolumeFactor(body.signalVolumeFactor)
     await initRedis()
+    const client = getRedisClient()
     await Promise.all([
-      getRedisClient().set(SIGNAL_INDICATION_STORAGE_KEY, JSON.stringify(settings)),
+      client.set(SIGNAL_INDICATION_STORAGE_KEY, JSON.stringify(settings)),
       setAppSettings({
         signal_volume_factor: signalVolumeFactor,
         volume_factor_signal: signalVolumeFactor,
@@ -90,14 +92,46 @@ export async function POST(request: Request) {
     invalidateSignalCycleCache()
     const connections = await getAllConnections().catch(() => [])
     await Promise.allSettled(
-      connections.map((connection: any) =>
-        notifySettingsChanged(String(connection.id), [
+      connections.map(async (connection: any) => {
+        const connectionId = String(connection.id)
+        await Promise.all([
+          notifySettingsChanged(connectionId, [
+            "signal_indication",
+            "signal_volume_factor",
+            "volume_factor_signal",
+            "signalTradeVolumeFactor",
+          ]),
+          client.hset(`signal:position_capacity:${connectionId}`, {
+            limit: String(settings.maxPositionsTotal),
+            selection_mode: settings.positionSelectionMode,
+            state: "settings_updated",
+            updated_at: new Date().toISOString(),
+          }),
+        ])
+        await client.expire(`signal:position_capacity:${connectionId}`, 24 * 60 * 60).catch(() => 0)
+      }),
+    )
+    await SystemLogger.logTradeEngine(
+      "Signal settings saved and dispatched to running engines",
+      "info",
+      {
+        enabled: settings.enabled,
+        enabledWebsiteSources: Object.values(settings.sources).filter((source) => source.enabled).length,
+        websiteSourceLimit: settings.maxSourcesPerCycle,
+        maxPositionsTotal: settings.maxPositionsTotal,
+        positionSelectionMode: settings.positionSelectionMode,
+        requestIntervalSeconds: settings.requestIntervalSeconds,
+        trailingEnabled: settings.trailingEnabled,
+        trailingOnly: settings.trailingOnly,
+        signalVolumeFactor,
+        connectionsNotified: connections.length,
+        changedFields: [
           "signal_indication",
           "signal_volume_factor",
           "volume_factor_signal",
           "signalTradeVolumeFactor",
-        ]),
-      ),
+        ],
+      },
     )
     return NextResponse.json({
       success: true,

@@ -15,6 +15,8 @@ function resetInlineGlobals() {
   delete (globalThis as any).__redis_persistence_tick_started
   delete (globalThis as any).__redis_persistence_signals_attached
   delete (globalThis as any).__redis_snapshot_last_error_warn
+  delete (globalThis as any).__redis_live_position_wal_promise
+  delete (globalThis as any).__redis_live_position_wal_write_counter
   delete (globalThis as any).__redis_cleanup_started
   delete (globalThis as any).__db_ops_tracker
   delete (globalThis as any).__kilo_snapshot_revision
@@ -239,6 +241,65 @@ describe("InlineLocalRedis compatibility and persistence", () => {
         exact_entries: "1",
         active_memberships: "1",
       })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("replays a newer live-position WAL checkpoint after an abrupt crash", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "inline-redis-live-wal-"))
+    const snapshotPath = join(dir, "redis-snapshot.json")
+    process.env.V0_REDIS_SNAPSHOT_PATH = snapshotPath
+    const connectionId = "conn-live"
+    const positionId = "live:conn-live:BTCUSDT:short:default:1"
+    const hashKey = `live_positions:${connectionId}:${positionId}`
+    const jsonKey = `live:position:${positionId}`
+
+    try {
+      const writer = new InlineLocalRedis()
+      const baseline = {
+        id: positionId,
+        connectionId,
+        symbol: "BTCUSDT",
+        direction: "short",
+        status: "simulated",
+        version: 1,
+        updatedAt: 100,
+        quantity: 1,
+        executedQuantity: 1,
+        totalExecutedQuantity: 1,
+      }
+      await writer.hset(hashKey, baseline as any)
+      await writer.set(jsonKey, JSON.stringify(baseline))
+      await writer.lpush(`live:positions:${connectionId}`, positionId)
+      await expect(writer.persistNow()).resolves.toBe(true)
+
+      const latest = {
+        ...baseline,
+        version: 2,
+        updatedAt: 200,
+        quantity: 2,
+        executedQuantity: 2,
+        totalExecutedQuantity: 2,
+        accumulatedSetKeys: ["base", "block:1"],
+      }
+      await writer.hset(hashKey, latest as any)
+      await writer.set(jsonKey, JSON.stringify(latest))
+      await expect(writer.persistLivePositionCheckpoint(latest)).resolves.toBe(true)
+
+      // Simulate SIGKILL: drop every in-memory map without a full snapshot.
+      resetInlineGlobals()
+      const reader = new InlineLocalRedis()
+      await expect(reader.loadFromDisk()).resolves.toBe(true)
+      await expect(reader.hgetall(hashKey)).resolves.toMatchObject({
+        version: "2",
+        quantity: "2",
+        executedQuantity: "2",
+        totalExecutedQuantity: "2",
+        accumulatedSetKeys: JSON.stringify(["base", "block:1"]),
+      })
+      await expect(reader.get(jsonKey)).resolves.toEqual(JSON.stringify(latest))
+      await expect(reader.lrange(`live:positions:${connectionId}`, 0, -1)).resolves.toEqual([positionId])
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

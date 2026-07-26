@@ -138,6 +138,8 @@ const SYMBOL_BASKET_SETTING_FIELDS = new Set([
   "symbols",
   "force_symbols",
   "active_symbols",
+  "selected_symbols",
+  "symbol_selection_epoch",
   "symbol_order",
   "symbol_count",
 ])
@@ -195,6 +197,10 @@ const STRATEGY_COORDINATION_SETTING_FIELDS = new Set([
 ])
 
 const LIVE_ORDER_SETTING_FIELDS = new Set([
+  "is_live_trade",
+  "is_testnet",
+  "is_preset_trade",
+  "connection_method",
   "volume_factor",
   "live_volume_factor",
   "preset_volume_factor",
@@ -335,6 +341,44 @@ function stringifyHashPatch(patch: Record<string, any>): Record<string, string> 
   return out
 }
 
+function normalizeSymbolAliasesInPatch(patch: Record<string, any>): Record<string, any> {
+  const symbolFields = ["selected_symbols", "force_symbols", "active_symbols", "symbols"] as const
+  if (!symbolFields.some((field) => Object.prototype.hasOwnProperty.call(patch, field))) return patch
+
+  const parse = (value: unknown): string[] => {
+    const normalize = (values: unknown[]) =>
+      Array.from(new Set(values.map((symbol) => String(symbol).trim().toUpperCase()).filter(Boolean)))
+    if (Array.isArray(value)) return normalize(value)
+    if (typeof value !== "string" || !value.trim()) return []
+    try {
+      const decoded = JSON.parse(value)
+      if (Array.isArray(decoded)) return normalize(decoded)
+    } catch {
+      // Legacy comma/newline separated values are accepted during migration.
+    }
+    return normalize(value.split(/[\n,|]/))
+  }
+
+  const symbols = symbolFields
+    .map((field) => parse(patch[field]))
+    .find((candidate) => candidate.length > 0)
+  if (!symbols) return patch
+
+  const serialized = JSON.stringify(symbols)
+  return {
+    ...patch,
+    selected_symbols: serialized,
+    force_symbols: serialized,
+    active_symbols: serialized,
+    symbols: serialized,
+    symbol_count: String(symbols.length),
+    config_set_symbols_total:
+      patch.config_set_symbols_total === undefined
+        ? String(symbols.length)
+        : patch.config_set_symbols_total,
+  }
+}
+
 /**
  * Persist and propagate a Main Connection runtime-settings change. This is the
  * route-facing helper for settings saves that affect running engines: it writes
@@ -373,9 +417,11 @@ export async function applyMainConnectionSettingsChange(
     // deep-merging the nested settings envelope against the newest row keeps
     // sibling strategy/coordination fields from being reset by the later save.
     current = (await getConnection(id).catch(() => null)) || before
-    const effectiveConnectionPatch = normalizeIdentityVolumeFields({
-      ...(opts.connectionPatch || {}),
-    })
+    const effectiveConnectionPatch = normalizeSymbolAliasesInPatch(
+      normalizeIdentityVolumeFields({
+        ...(opts.connectionPatch || {}),
+      }),
+    )
     if (effectiveConnectionPatch.connection_settings !== undefined) {
       const parseSettings = (value: unknown): Record<string, any> => {
         if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, any>
@@ -455,8 +501,8 @@ export async function applyMainConnectionSettingsChange(
       }
     }
 
-    const tradeEngineStatePatch = normalizeIdentityVolumeFields(
-      opts.tradeEngineStatePatch || {},
+    const tradeEngineStatePatch = normalizeSymbolAliasesInPatch(
+      normalizeIdentityVolumeFields(opts.tradeEngineStatePatch || {}),
     )
     if (Object.keys(tradeEngineStatePatch).length > 0) {
       const { buildProgressionScope } = await import("@/lib/progression-scope")
@@ -819,13 +865,12 @@ export async function recoordinateAfterSettingsChange(
   // resets indication progress. Only symbol-basket changes are destructive.
   const normalizedChangedFields = changedFields.map(normalizeChangedField)
   const symbolsChanged = hasAnyChangedField(normalizedChangedFields, SYMBOL_BASKET_SETTING_FIELDS)
-  const modeChanged = [
-    "is_live_trade",
-    "is_testnet",
-    "is_preset_trade",
-    "connection_method",
-  ].some((field) => normalizedChangedFields.includes(field))
-  const destructiveProgressionChange = symbolsChanged || modeChanged
+  // Trading/connector mode changes are observable live-runtime reloads (and
+  // `is_testnet` is escalated to a restart by SettingsCoordinator), but they
+  // do not alter the Historic/Main symbol result inventory. Resetting that
+  // inventory on a live/paper toggle made a completed connection jump back to
+  // 0/N and could leave it waiting on an unnecessary full replay.
+  const destructiveProgressionChange = symbolsChanged
   const strategyOrCoordinationChanged = changedFields.some(isStrategyCoordinationField)
   const liveOrderSettingsChanged = hasAnyChangedField(normalizedChangedFields, LIVE_ORDER_SETTING_FIELDS)
   const requiresProgressRecoordination = destructiveProgressionChange || strategyOrCoordinationChanged
@@ -878,16 +923,47 @@ export async function recoordinateAfterSettingsChange(
         }
 
         if (destructiveProgressionChange) {
-          const nextEpoch =
-            typeof (after as any).symbol_selection_epoch === "string" && (after as any).symbol_selection_epoch.length > 0
+          // Reuse only an epoch explicitly supplied by this exact settings
+          // event. A legacy PUT can change symbols while the connection row
+          // still contains the previous epoch; blindly reusing that value
+          // prevents the running generation from observing the replacement.
+          const suppliedEpoch =
+            normalizedChangedFields.includes("symbol_selection_epoch") &&
+            typeof (after as any).symbol_selection_epoch === "string" &&
+            (after as any).symbol_selection_epoch.length > 0
               ? (after as any).symbol_selection_epoch
-              : `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+              : ""
+          const nextEpoch =
+            suppliedEpoch || `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
           const engineStatePatch = {
             symbol_selection_epoch: nextEpoch,
             quickstart_symbol_generation: nextEpoch,
             settings_change_marker: now,
             updated_at: now,
           }
+          const parseSymbols = (value: unknown): string[] => {
+            const normalize = (values: unknown[]) =>
+              values.map(String).map((symbol) => symbol.trim().toUpperCase()).filter(Boolean)
+            if (Array.isArray(value)) return normalize(value)
+            if (typeof value !== "string" || !value.trim()) return []
+            try {
+              const decoded = JSON.parse(value)
+              if (Array.isArray(decoded)) return normalize(decoded)
+            } catch { /* legacy delimiter format */ }
+            return normalize(value.split(/[\n,|]/))
+          }
+          const affectedSymbols = Array.from(new Set(
+            [before, after].flatMap((snapshot) =>
+              ["selected_symbols", "force_symbols", "active_symbols", "symbols"]
+                .flatMap((field) => parseSymbols((snapshot as any)?.[field])),
+            ),
+          ))
+          const perSymbolResetKeys = affectedSymbols.flatMap((symbol) => [
+            `prehistoric:${id}:${symbol}:processed_intervals`,
+            `${scope.prehistoricKey}:${symbol}:processed_intervals`,
+            `prehistoric:checkpoint:${id}:${symbol}`,
+            `prehistoric:${id}:${symbol}:loaded`,
+          ])
           await Promise.all([
             client.hset(`trade_engine_state:${id}`, engineStatePatch).catch(() => 0),
             client.hdel(
@@ -905,11 +981,36 @@ export async function recoordinateAfterSettingsChange(
             client.del(`prehistoric:${id}:symbols`).catch(() => 0),
             client.del(scope.prehistoricKey).catch(() => 0),
             client.del(`${scope.prehistoricKey}:symbols`).catch(() => 0),
+            client.del(`prehistoric:${id}:done`).catch(() => 0),
+            client.del(`prehistoric:${id}:firstpass:done`).catch(() => 0),
+            client.del(`${scope.prehistoricKey}:done`).catch(() => 0),
+            client.del(`${scope.prehistoricKey}:firstpass:done`).catch(() => 0),
+            client.del(`prehistoric_loaded:${id}`).catch(() => 0),
+            client.del(scope.prehistoricLoadedKey).catch(() => 0),
+            client.del(`${scope.prehistoricLoadedKey}:verified`).catch(() => 0),
+            client.del(`${scope.progressionKey}:prehistoric_symbols_set`).catch(() => 0),
+            ...(perSymbolResetKeys.length > 0
+              ? [client.del(...perSymbolResetKeys).catch(() => 0)]
+              : []),
           ])
           const { ProgressionStateManager } = await import("@/lib/progression-state-manager")
           const result = await ProgressionStateManager.recoordinateForActualOne(id)
+          await client.hset(scope.prehistoricKey, {
+            symbol_selection_epoch: nextEpoch,
+            symbols_processed: "0",
+            symbols_total: String(
+              parseSymbols((after as any).selected_symbols).length ||
+              parseSymbols((after as any).force_symbols).length ||
+              parseSymbols((after as any).active_symbols).length ||
+              Number((after as any).symbol_count) ||
+              0
+            ),
+            is_complete: "0",
+            bootstrap_status: "queued",
+            updated_at: now,
+          }).catch(() => 0)
           progressionChanged = result?.changed
-          progressionReason = result?.reason || "symbol-basket-or-mode-change"
+          progressionReason = result?.reason || "symbol-basket-change"
           await hsetProgressionMarkers({
             // Resetting the generation is preparation, not processing. Keep
             // the UI request pending until the owning engine/portable cycle
@@ -922,9 +1023,10 @@ export async function recoordinateAfterSettingsChange(
             settings_recoordination_requested_version: requestedSettingsVersion,
             settings_recoordination_requested_event_id: requestedSettingsEventId,
             settings_recoordination_last_error: "",
+            symbol_selection_epoch: nextEpoch,
           }).catch(() => 0)
           console.log(
-            `[v0] [${opts.logTag}] Symbol basket/mode settings changed for ${id} → epoch bumped and progression recoordinated (changed:${result?.changed ?? "?"}, reason:${result?.reason ?? "?"})`,
+            `[v0] [${opts.logTag}] Symbol basket settings changed for ${id} → epoch bumped and progression recoordinated (changed:${result?.changed ?? "?"}, reason:${result?.reason ?? "?"})`,
           )
           emitCanonicalEvent({
             type: "connection.recoordinated",
@@ -1027,7 +1129,9 @@ export async function recoordinateAfterSettingsChange(
     })
   }
 
-  // Symbol/mode changes use the coupled destructive progression path above.
+  // Symbol-basket changes use the coupled destructive progression path above.
+  // Live/paper/testnet/method changes stay on the live runtime reload/restart
+  // path and preserve completed prehistoric results.
   // Strategy/coordination changes deliberately stay hot-reload-only so stats
   // remain visible and the global coordinator does not stop while settings are saved.
 
@@ -1064,6 +1168,16 @@ export async function recoordinateAfterSettingsChange(
         if (symbolsChanged && manager && typeof (manager as any).invalidateSymbolsCache === "function") {
           (manager as any).invalidateSymbolsCache()
           console.log(`[v0] [${opts.logTag}] Symbol cache invalidated for ${id}`)
+        }
+        if (
+          destructiveProgressionChange &&
+          manager &&
+          typeof (manager as any).requestPrehistoricRecoordination === "function"
+        ) {
+          await (manager as any).requestPrehistoricRecoordination(
+            `${opts.logTag}:${normalizedChangedFields.join(",")}`,
+          )
+          console.log(`[v0] [${opts.logTag}] Historic replacement generation queued for ${id}`)
         }
         if (
           strategyOrCoordinationChanged &&

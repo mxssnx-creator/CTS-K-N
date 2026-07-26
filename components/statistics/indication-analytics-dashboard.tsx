@@ -143,7 +143,7 @@ interface AnalyticsPayload {
   selectedConnectionId: string | null
   signal: {
     counts: Record<string, number>
-    settings: Record<string, number | boolean>
+    settings: Record<string, number | boolean | string>
     windows: Record<WindowKey, WindowMetric>
     rankings: Record<WindowKey, { top: Array<{ symbol: string; metric: WindowMetric }>; worst: Array<{ symbol: string; metric: WindowMetric }> }>
     sources: SignalSourceRow[]
@@ -527,9 +527,12 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "commo
 
       {mode === "signal" && (
         <Card className="border-emerald-500/20 bg-emerald-500/[0.025]">
-          <CardContent className="grid gap-2 p-3 sm:grid-cols-2 lg:grid-cols-4">
+          <CardContent className="grid gap-2 p-3 sm:grid-cols-2 lg:grid-cols-3">
             {[
               ["Request interval", `${payload.signal.settings.requestIntervalSeconds}s`, "Hard minimum 30 seconds"],
+              ["Website sources", String(payload.signal.settings.maxSourcesPerCycle), "Independent public feeds per symbol cycle"],
+              ["Position capacity", `${payload.signal.settings.maxPositionsTotal} total`, "Long + Short physical Signal positions"],
+              ["Selection", "Best first", "Quality · confidence · agreement · R/R"],
               ["Trailing mode", payload.signal.settings.trailingEnabled ? "Enabled" : "Disabled", payload.signal.settings.trailingOnly ? "Trailing only" : "Parallel standard + trailing"],
               ["Trailing stop", `${payload.signal.settings.trailingMinStopPct}% min`, `Market ratio ${payload.signal.settings.trailingPositiveMoveRatio}`],
               ["Update range", String(payload.signal.settings.trailingUpdateStopRangeRatio), `${counts.trailingClosedPositions || 0} trailing closes`],

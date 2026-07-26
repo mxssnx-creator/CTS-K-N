@@ -87,7 +87,7 @@ mockClient.multi = jest.fn(() => {
   const operations: Array<() => Promise<unknown>> = []
   const pipeline: any = {}
   for (const method of [
-    "set", "expire", "hset", "hincrby", "sadd", "lpush", "rpush", "ltrim",
+    "set", "expire", "hset", "hdel", "hincrby", "sadd", "lpush", "rpush", "ltrim",
   ]) {
     pipeline[method] = (...args: unknown[]) => {
       operations.push(() => mockClient[method](...args))
@@ -190,6 +190,17 @@ describe("Signal indication persistence and Last-15 gate", () => {
     expect(mockHashes.get("indications_active:conn-a")?.["BTCUSDT:signal"]).toBe("1")
     expect(mockHashes.get("indication_sets_active:conn-a")?.["BTCUSDT:signal"]).toBe("1")
     expect(JSON.parse(mockStrings.get("signal:cycle:conn-a:BTCUSDT") || "{}").sourceRegistrySize).toBe(35)
+    const candidateRank = JSON.parse(
+      mockHashes.get("signal:candidate_rank:conn-a")?.BTCUSDT || "{}",
+    )
+    expect(candidateRank).toEqual(expect.objectContaining({
+      symbol: "BTCUSDT",
+      direction: "long",
+      score: expect.any(Number),
+      confidence: expect.any(Number),
+      agreement: expect.any(Number),
+    }))
+    expect(candidateRank.score).toBeGreaterThan(0)
   })
 
   test("merges mixed-position Signal sources without widening SL or TP protection", () => {
@@ -468,6 +479,18 @@ describe("Signal indication persistence and Last-15 gate", () => {
     expect(settings.performanceLookback).toBe(15)
     expect(settings.performanceMinSamples).toBe(15)
     expect(settings.performanceDisableBelowPnl).toBe(0)
+  })
+
+  test("defaults Signal physical capacity to 120 and fixes best-first admission", () => {
+    const defaults = normalizeSignalIndicationSettings({})
+    const clamped = normalizeSignalIndicationSettings({
+      maxPositionsTotal: 9_999,
+      positionSelectionMode: "fifo",
+    })
+    expect(defaults.maxPositionsTotal).toBe(120)
+    expect(defaults.positionSelectionMode).toBe("best_first")
+    expect(clamped.maxPositionsTotal).toBe(500)
+    expect(clamped.positionSelectionMode).toBe("best_first")
   })
 
   test("drops old losses when the newest rolling 15 outcomes are profitable", async () => {

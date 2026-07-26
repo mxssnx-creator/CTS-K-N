@@ -103,7 +103,7 @@ describe('Progression State Manager - Stability Tests', () => {
       expect(source).toContain('client.hgetall(scope.prehistoricKey)')
       expect(source).toContain('getSettings(scope.engineProgressionKey)')
       expect(source).toContain('getSettings(`engine_progression:${connectionId}`)')
-      expect(source).toContain('getSettings(scope.tradeEngineStateKey)')
+      expect(source).toContain('client.hgetall(scope.tradeEngineStateKey)')
       expect(source).toContain('progression: unscopedProgressionUsable ? undefined : legacyProgHash')
       expect(source).not.toContain('const engineType = request.nextUrl.searchParams.get("engineType") || "main"')
     })

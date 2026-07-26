@@ -5,6 +5,7 @@
  */
 
 import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { appendUniqueListEntries } from "@/lib/redis-idempotent-list"
 
 export interface IndicationConfig {
   id: string
@@ -170,8 +171,12 @@ export class IndicationConfigManager {
    * a single ltrim. Used by the prehistoric processor to cut per-result
    * Redis round-trips by a factor of N.
    */
-  async addResults(configId: string, results: IndicationResult[]): Promise<void> {
-    if (!results || results.length === 0) return
+  async addResults(
+    configId: string,
+    results: IndicationResult[],
+    dedupeScope?: string,
+  ): Promise<number> {
+    if (!results || results.length === 0) return 0
     await initRedis()
     const client = getRedisClient()
 
@@ -179,9 +184,24 @@ export class IndicationConfigManager {
     const entries = results.map(
       (r) => `${r.timestamp}|${r.symbol}|${r.value}|${r.signal}`,
     )
-    // lpush accepts varargs — spread once.
-    await client.lpush(key, ...entries)
-    await client.ltrim(key, 0, MAX_RESULTS - 1)
+    if (dedupeScope) {
+      const dedupeKey = `${key}:historic_dedupe:${dedupeScope.replace(/[^A-Za-z0-9._:-]/g, "_")}`
+      const acceptedIndexes = await appendUniqueListEntries(
+        client,
+        key,
+        dedupeKey,
+        entries,
+        MAX_RESULTS,
+        90_000,
+      )
+      return acceptedIndexes.length
+    }
+
+    const pipeline = client.multi()
+    pipeline.lpush(key, ...entries)
+    pipeline.ltrim(key, 0, MAX_RESULTS - 1)
+    await pipeline.exec()
+    return entries.length
   }
 
   async getResults(configId: string, limit = 50): Promise<IndicationResult[]> {

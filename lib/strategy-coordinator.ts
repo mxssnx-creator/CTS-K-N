@@ -2363,12 +2363,25 @@ export class StrategyCoordinator {
     // The serverless cron uses this so it can drive variant generation without
     // double-placing orders that the engine/live-sync loop already owns.
     skipLiveDispatch: boolean = false,
+    // Optional engine generation guard. When settings, symbols, ownership, or
+    // enabled state changes during an expensive flow, every downstream stage
+    // fails closed before publishing or dispatching stale work.
+    shouldContinue?: () => boolean,
   ): Promise<StrategyEvaluation[]> {
     const results: StrategyEvaluation[] = []
+    const isCurrent = (): boolean => {
+      try {
+        return shouldContinue?.() !== false
+      } catch {
+        return false
+      }
+    }
+    if (!isCurrent()) return results
     this._stratCycleCount++
 
     // Reclaim memory before this symbol's BASE→MAIN→REAL allocation burst.
     await this.memoryCircuitBreaker(symbol)
+    if (!isCurrent()) return results
 
     try {
       // ── Hydrate PF thresholds + Coordination settings + stage thresholds + normalise ─
@@ -2378,6 +2391,7 @@ export class StrategyCoordinator {
         this.loadHedgeAccumulationParams(),
         this.loadStageThresholds(),
       ])
+      if (!isCurrent()) return results
 
       // Fetch the per-cycle position coordination context once. Prehistoric
       // runs use a neutral context (no open positions, no prior outcomes) so
@@ -2387,6 +2401,7 @@ export class StrategyCoordinator {
         ?? (isPrehistoric
           ? this.neutralPositionContext()
           : await this.getPositionContext())
+      if (!isCurrent()) return results
 
       // ── OPTIMIZATION: Skip processing if position state unchanged ──
       // Check fingerprint of position counts to skip redundant calculations when
@@ -2407,9 +2422,16 @@ export class StrategyCoordinator {
         // protection reconciliation and armoring still happen every cycle.
         const cachedRealSets: any[] = (this as any)._lastRealSets?.[symbol] ?? []
         const cachedCoordIndex: any = (this as any)._lastCoordIndex?.[symbol]
-        if (cachedRealSets.length > 0 && cachedCoordIndex && !skipLiveDispatch) {
+        if (cachedRealSets.length > 0 && cachedCoordIndex && !skipLiveDispatch && isCurrent()) {
           // Re-run LIVE stage only — uses cached real sets, no Base/Main/Real recalc
-          const { result: liveResult } = await this.createLiveSets(symbol, cachedRealSets, cachedCoordIndex, skipLiveDispatch)
+          const { result: liveResult } = await this.createLiveSets(
+            symbol,
+            cachedRealSets,
+            cachedCoordIndex,
+            skipLiveDispatch,
+            isCurrent,
+          )
+          if (!isCurrent()) return []
           results.push(liveResult)
         }
         return results
@@ -2434,26 +2456,32 @@ export class StrategyCoordinator {
       //
       // STAGE 1: BASE — one Set per (indication_type × direction)
       const { result: baseResult, sets: baseSets, coordIndex } = await this.createBaseSets(symbol, indications, posCtx)
+      if (!isCurrent()) return []
       results.push(baseResult)
       emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "base", data: baseResult })
       await new Promise<void>((resolve) => setImmediate(resolve))
+      if (!isCurrent()) return []
 
       // STAGE 2: MAIN — validate Base Sets AND create additional related
       // variant Sets (Default / Trailing / Block / DCA) gated by posCtx.
       // CoordIndex receives a SetCoordRecord per built set (O(1) per set).
       const { result: mainResult, sets: mainSets } = await this.createMainSets(symbol, baseSets, posCtx, coordIndex, isPrehistoric)
+      if (!isCurrent()) return []
       results.push(mainResult)
       emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "main", data: mainResult })
       await new Promise<void>((resolve) => setImmediate(resolve))
+      if (!isCurrent()) return []
 
       // STAGE 3: REAL ��� promote Sets with avgPF >= 1.4 (base-promoted AND
       // additional related variants flow uniformly through this filter).
       // CoordIndex.validRealKeys is populated here; Real tuner writes sizeDelta
       // / tunedAvgPF onto each record for O(1) access at Live dispatch.
       const { result: realResult, sets: realSets } = await this.evaluateRealSets(symbol, mainSets, coordIndex, posCtx)
+      if (!isCurrent()) return []
       results.push(realResult)
       emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "real", data: realResult })
       await new Promise<void>((resolve) => setImmediate(resolve))
+      if (!isCurrent()) return []
 
       // Cache real sets for the "state-unchanged" fast-path: LIVE stage always
       // needs the latest real sets for SL/TP armoring even when base/main/real
@@ -2473,7 +2501,14 @@ export class StrategyCoordinator {
       // Axis-entry hydration uses coordIndex.base.byKey.get(parentKey) — O(1)
       // instead of the prior O(N) realSets.find() scan.
       if (!isPrehistoric) {
-        const { result: liveResult } = await this.createLiveSets(symbol, realSets, coordIndex, skipLiveDispatch)
+        const { result: liveResult } = await this.createLiveSets(
+          symbol,
+          realSets,
+          coordIndex,
+          skipLiveDispatch,
+          isCurrent,
+        )
+        if (!isCurrent()) return []
         results.push(liveResult)
         emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "live", data: liveResult })
 
@@ -2497,6 +2532,7 @@ export class StrategyCoordinator {
         } catch { /* best-effort; lifecycle enforcement */ }
       }
 
+      if (!isCurrent()) return []
       await this.logStrategyProgression(symbol, results)
 
       // Explicitly release the CoordIndex Maps so V8 can reclaim them before
@@ -6659,7 +6695,29 @@ export class StrategyCoordinator {
     // When true, build the live mirror + pseudo-positions + stats but DO NOT
     // place real exchange orders (see executeStrategyFlow docstring).
     skipLiveDispatch: boolean = false,
+    shouldContinue?: () => boolean,
   ): Promise<{ result: StrategyEvaluation; sets: StrategySet[] }> {
+    const isCurrent = (): boolean => {
+      try {
+        return shouldContinue?.() !== false
+      } catch {
+        return false
+      }
+    }
+    const cancelled = (): { result: StrategyEvaluation; sets: StrategySet[] } => ({
+      result: {
+        type: "live",
+        symbol,
+        timestamp: new Date(),
+        totalCreated: 0,
+        passedEvaluation: 0,
+        failedEvaluation: 0,
+        avgProfitFactor: 0,
+        avgDrawdownTime: 0,
+      },
+      sets: [],
+    })
+    if (!isCurrent()) return cancelled()
     let realSets: StrategySet[]
     if (inputSets) {
       realSets = inputSets
@@ -6743,6 +6801,7 @@ export class StrategyCoordinator {
         }
       } catch (e) { /* non-fatal */ }
     }
+    if (!isCurrent()) return cancelled()
 
     const metrics = this.METRICS.live
     let maxLive = this.config.maxLiveSets || 500
@@ -6783,6 +6842,7 @@ export class StrategyCoordinator {
     }
 
     const isLiveTradeEnabled = await this.isLiveTradingEnabledForConnection()
+    if (!isCurrent()) return cancelled()
     const activeStrategyKeys = new Set<string>()
     const cachedActive = this._activeKeysCache.get(symbol)
     if (cachedActive && Date.now() - cachedActive.cycleAt < 30_000) {
@@ -6850,6 +6910,7 @@ export class StrategyCoordinator {
 
 
     const liveKey = `strategies:${this.connectionId}:${symbol}:live:sets`
+    if (!isCurrent()) return cancelled()
     await setSettings(liveKey, {
       setKeys:    qualifying.map((s) => s.setKey),
       count:      qualifying.length,
@@ -6857,6 +6918,7 @@ export class StrategyCoordinator {
       executable: true,
       _slim:      true,
     })
+    if (!isCurrent()) return cancelled()
 
     // Qualifying Sets are candidates, not positions. The price-validated,
     // direction-capped creation path below is the sole pseudo/live writer;
@@ -6935,6 +6997,7 @@ export class StrategyCoordinator {
       // here made Live's lifetime total reset to the current-cycle count every
       // cycle, so the dashboard always showed a tiny snapshot instead of the
       // true accumulated lifetime count.
+      if (!isCurrent()) return cancelled()
       await Promise.all([
         qualifying.length > 0
           ? hincrbyStrategyProgression(client, this.connectionId, "strategies_live_total", qualifying.length)
@@ -6990,6 +7053,7 @@ export class StrategyCoordinator {
         ...liveVariantWrites,
       ])
     } catch { /* non-critical */ }
+    if (!isCurrent()) return cancelled()
 
     // Pre-fetch the current market price ONCE so both the live exchange dispatch
     // and the pseudo-position creation below share the same price without
@@ -7031,14 +7095,16 @@ export class StrategyCoordinator {
     // The real pipeline now produces qualifying sets reliably (REAL bootstrap relaxes
     // minProfitFactor to 0.75 on first run), so this workaround is no longer needed.
 
-    if (qualifying.length > 0 && !skipLiveDispatch) {
+    if (qualifying.length > 0 && !skipLiveDispatch && isCurrent()) {
       try {
         const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+        if (!isCurrent()) return cancelled()
         let connector: any = null
         if (isLiveTradeEnabled) {
           const { exchangeConnectorFactory } = await import("@/lib/exchange-connectors/factory")
           connector = await exchangeConnectorFactory.getOrCreateConnector(this.connectionId)
         }
+        if (!isCurrent()) return cancelled()
         // The LiveStage owns both exchange and paper execution. Running the
         // same ordered path in simulation is essential: Standard creates the
         // confirmed parent first, then Block/DCA adjust that parent. The old
@@ -7111,6 +7177,7 @@ export class StrategyCoordinator {
             let errored = 0
 
             for (const set of dispatchSets) {
+              if (!isCurrent()) return cancelled()
               try {
                 // ── Axis-entry hydration — O(1) via BaseRegistry ──────────────
                 // Axis Sets carry one synthetic representative entry. When
@@ -7204,6 +7271,7 @@ export class StrategyCoordinator {
                   sl = Math.max(0.2, resolvedTrailingProfile.stopRatio * 100)
                 }
 
+                if (!isCurrent()) return cancelled()
                 const liveResult = await executeLivePosition(
                   this.connectionId,
                   {
@@ -7327,8 +7395,10 @@ export class StrategyCoordinator {
                       (coordIndex ? coordIndex.base.byKey.get(parentKey)?.prevPos : undefined)
                     ),
                   },
-                  connector
+                  connector,
+                  isCurrent,
                 )
+                if (!isCurrent()) return cancelled()
 
                 if (!liveResult) continue
                 if (liveResult.status === "open" || liveResult.status === "filled" || liveResult.status === "partially_filled") {
@@ -7425,7 +7495,7 @@ export class StrategyCoordinator {
     // Prehistoric/backfill mode intentionally skips LiveStage dispatch. It may
     // still materialise non-adjustment pseudo candidates for historical
     // evaluation, but Block/DCA can never exist without a confirmed parent.
-    if (qualifying.length > 0 && !isLiveTradeEnabled && skipLiveDispatch) {
+    if (qualifying.length > 0 && !isLiveTradeEnabled && skipLiveDispatch && isCurrent()) {
       try {
         const posManager = new PseudoPositionManager(this.connectionId)
 
@@ -7465,6 +7535,7 @@ export class StrategyCoordinator {
           )
           await Promise.all(
             historicalCandidates.map(async (set) => {
+              if (!isCurrent()) return false
               try {
                 // Axis Sets carry one synthetic representative entry; for SL/TP
                 // derivation we need the full entries[] from the Base Set.
@@ -7531,6 +7602,7 @@ export class StrategyCoordinator {
                   `${set.indicationType}:${set.direction}:${symbol}` +
                   `:tp${tp.toFixed(2)}:sl${sl.toFixed(2)}${trailingSuffix}${axisSuffix}`
 
+                if (!isCurrent()) return false
                 const posId = await posManager.createPosition({
                   symbol,
                   side: set.direction,
@@ -7564,6 +7636,7 @@ export class StrategyCoordinator {
         console.warn(`[v0] [StrategyFlow] ${symbol} LIVE: Position creation error:`, posErr instanceof Error ? posErr.message : String(posErr))
       }
     }
+    if (!isCurrent()) return cancelled()
 
     // Perf: Populate coordIndex.liveSetsByVariant index so downstream code
     // (stats aggregation, pseudo-position lookups) can retrieve sets by variant

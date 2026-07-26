@@ -167,6 +167,40 @@ describe("connection recoordinator serialization", () => {
     expect(activeProgressionRecoordinates).toBe(0)
   })
 
+  test("a live-mode toggle reloads runtime settings without resetting historic progress", async () => {
+    const { recoordinateAfterSettingsChange } = await import("@/lib/connection-recoordinator")
+    const { ProgressionStateManager } = await import("@/lib/progression-state-manager")
+
+    await recoordinateAfterSettingsChange(
+      "conn-live-toggle",
+      { id: "conn-live-toggle", is_live_trade: "0", symbol_selection_epoch: "historic-epoch" },
+      { id: "conn-live-toggle", is_live_trade: "1", symbol_selection_epoch: "historic-epoch" },
+      { logTag: "live-toggle", changedFieldsOverride: ["is_live_trade"] },
+    )
+
+    expect(ProgressionStateManager.recoordinateForActualOne).not.toHaveBeenCalled()
+    expect(hashes.get("trade_engine_state:conn-live-toggle")?.symbol_selection_epoch).toBeUndefined()
+    expect(hashes.get("trade_engine_state:conn-live-toggle")?.live_order_settings_fields)
+      .toBe(JSON.stringify(["is_live_trade"]))
+    expect(hashes.get("progression:conn-live-toggle")?.settings_recoordination_reason)
+      .toBe("live-order-settings-reload:queued-for-processing")
+  })
+
+  test("a legacy symbol save cannot reuse an old persisted epoch", async () => {
+    const { recoordinateAfterSettingsChange } = await import("@/lib/connection-recoordinator")
+
+    await recoordinateAfterSettingsChange(
+      "conn-stale-epoch",
+      { id: "conn-stale-epoch", symbols: ["BTCUSDT"], symbol_selection_epoch: "old-epoch" },
+      { id: "conn-stale-epoch", symbols: ["ETHUSDT"], symbol_selection_epoch: "old-epoch" },
+      { logTag: "legacy-symbol-save", changedFieldsOverride: ["symbols"] },
+    )
+
+    const replacementEpoch = hashes.get("trade_engine_state:conn-stale-epoch")?.symbol_selection_epoch
+    expect(replacementEpoch).toEqual(expect.any(String))
+    expect(replacementEpoch).not.toBe("old-epoch")
+  })
+
   test("reports a superseded refresh as durably queued for the existing stronger owner job", async () => {
     const { queueEngineRefreshRequest } = await import("@/lib/engine-refresh-queue")
     ;(queueEngineRefreshRequest as jest.Mock).mockResolvedValueOnce({

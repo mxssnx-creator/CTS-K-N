@@ -36,10 +36,9 @@ rmSync(snapshotPath, { force: true })
 rmSync(devDistPath, { recursive: true, force: true })
 
 function keepTail(chunk) {
-  // Strategy processing is intentionally chatty in development. Keep enough
-  // context that a compiler/runtime stack cannot be displaced by the next
-  // symbol cycle before the harness reports it.
-  outputTail = `${outputTail}${String(chunk)}`.slice(-512_000)
+  // Runtime summaries are coalesced. Keep a bounded diagnostic tail large
+  // enough for a compiler stack without retaining half a megabyte of stdout.
+  outputTail = `${outputTail}${String(chunk)}`.slice(-128_000)
 }
 
 async function waitForReady(child, timeoutMs = 120_000) {
@@ -99,6 +98,7 @@ async function prewarmDevRoutes() {
     "/api/system/status",
     "/api/system/monitoring",
     "/api/trade-engine/status-all",
+    "/api/trade-engine/detailed-logs",
     "/api/settings",
     `/api/connections/progression/${encoded}/stats`,
     `/api/settings/connections/${encoded}/settings`,
@@ -114,6 +114,17 @@ async function prewarmDevRoutes() {
   ]) {
     await requestJson(pathname)
   }
+
+  // Compile the state-changing toggle route before the engine begins its
+  // memory-intensive Historic/Strategy work. An empty POST is a strict no-op:
+  // it neither starts nor stops the connection, but avoids a first-use HMR
+  // compile competing with the post-soak disable/re-enable contract.
+  await requestJson(`/api/settings/connections/${encoded}/toggle-dashboard`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+    signal: AbortSignal.timeout(120_000),
+  })
 
   // The soak reads this authenticated diagnostic every tenth round. Compile
   // it before the engine starts allocating so a parallel production run cannot

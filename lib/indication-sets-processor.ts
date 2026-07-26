@@ -39,6 +39,7 @@ import {
   type SetCompactionType,
 } from "@/lib/sets-compaction"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import {
   type CommonCoordinationSettings,
 } from "@/lib/common-indicator-config"
@@ -297,7 +298,6 @@ export class IndicationSetsProcessor {
   private trendTpMinMultiplier = DEFAULT_TREND_TP_MIN_MULTIPLIER
   private trendTpMaxFactor = DEFAULT_TREND_TP_MAX_FACTOR
   private trendTpStep = DEFAULT_TREND_TP_STEP
-  private shortPriceHistoryWarnings: Set<string> = new Set()
   private outcomeHorizonCandles = 12
   private outcomeTakeProfitPct = 0.01
   private outcomeStopLossPct = 0.01
@@ -938,23 +938,24 @@ export class IndicationSetsProcessor {
       } catch { /* non-critical: dashboard falls back to cumulative */ }
 
       if (totalQualified > 0) {
-        // Throttle console log to once per 60 s per symbol.
-        // During historical replay a single cycle runs up to 30 steps; each
-        // step calls processAllIndicationSets and would emit this line, producing
-        // 30+ identical lines per symbol per cycle. One line per minute is enough.
-        const throttleKey = `${symbol}:${this.connectionId}`
-        const lastLogBucket = (this as any)._setsLogBucket
-        const nowBucket = Math.floor(Date.now() / 60_000)
-        if (!lastLogBucket || lastLogBucket[throttleKey] !== nowBucket) {
-          if (!(this as any)._setsLogBucket) (this as any)._setsLogBucket = {}
-          ;(this as any)._setsLogBucket[throttleKey] = nowBucket
-          console.log(
-            `[v0] [IndicationSets] ${symbol}: COMPLETE in ${duration}ms | Direction=${directionResults?.qualified}/${directionResults?.total} Move=${moveResults?.qualified}/${moveResults?.total} Active=${activeResults?.qualified}/${activeResults?.total} ActiveAdvanced=${activeAdvancedResults?.qualified}/${activeAdvancedResults?.total} Optimal=${optimalResults?.qualified}/${optimalResults?.total} Trend=${trendResults?.qualified}/${trendResults?.total}`
-          )
-        }
+        // A processor is intentionally short-lived and reconstructed for each
+        // pipeline call, so an instance-local throttle resets every cycle.
+        // Use the HMR-safe bounded runtime registry and write the durable event
+        // only when the one-minute console summary is actually emitted.
+        const didLogSummary = logRuntimeInfo(
+          `indication-sets:${this.connectionId}:${symbol}:complete`,
+          60_000,
+          () =>
+            `[v0] [IndicationSets] ${symbol}: COMPLETE in ${duration}ms | ` +
+            `Direction=${directionResults?.qualified}/${directionResults?.total} ` +
+            `Move=${moveResults?.qualified}/${moveResults?.total} ` +
+            `Active=${activeResults?.qualified}/${activeResults?.total} ` +
+            `ActiveAdvanced=${activeAdvancedResults?.qualified}/${activeAdvancedResults?.total} ` +
+            `Optimal=${optimalResults?.qualified}/${optimalResults?.total} ` +
+            `Trend=${trendResults?.qualified}/${trendResults?.total}`,
+        )
 
-        // Also throttle the Redis progression event — same 60s bucket.
-        if ((this as any)._setsLogBucket?.[throttleKey] === nowBucket) {
+        if (didLogSummary) {
           await logProgressionEvent(this.connectionId, "indications_sets", "info", `All indication types processed for ${symbol}`, {
             direction: directionResults,
             move: moveResults,
@@ -2301,19 +2302,21 @@ export class IndicationSetsProcessor {
     const requiredPrices = this.getLargestConfiguredRange()
     if (availablePrices >= requiredPrices) return true
 
-    const warningKey = `${symbol}:${requiredPrices}`
-    if (this.shortPriceHistoryWarnings.has(warningKey)) return false
-    this.shortPriceHistoryWarnings.add(warningKey)
-
-    console.warn(
-      `[v0] [IndicationSets] ${symbol}: only ${availablePrices} price(s) available; largest configured range requires ${requiredPrices}. Some sets may not be produced.`,
+    const didLogWarning = logRuntimeWarning(
+      `indication-sets:${this.connectionId}:${symbol}:short-history:${requiredPrices}`,
+      60_000,
+      () =>
+        `[v0] [IndicationSets] ${symbol}: only ${availablePrices} price(s) available; ` +
+        `largest configured range requires ${requiredPrices}. Some sets may not be produced.`,
     )
-    await logProgressionEvent(this.connectionId, "indications_sets", "warning", `Insufficient price history for ${symbol}`, {
-      symbol,
-      availablePrices,
-      requiredPrices,
-      reason: "insufficient_price_history",
-    }).catch(() => {})
+    if (didLogWarning) {
+      await logProgressionEvent(this.connectionId, "indications_sets", "warning", `Insufficient price history for ${symbol}`, {
+        symbol,
+        availablePrices,
+        requiredPrices,
+        reason: "insufficient_price_history",
+      }).catch(() => {})
+    }
     return false
   }
 

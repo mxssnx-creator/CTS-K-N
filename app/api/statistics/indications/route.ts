@@ -386,6 +386,9 @@ export async function GET(request: Request) {
         },
         settings: {
           requestIntervalSeconds: signalSettings.requestIntervalSeconds,
+          maxSourcesPerCycle: signalSettings.maxSourcesPerCycle,
+          maxPositionsTotal: signalSettings.maxPositionsTotal,
+          positionSelectionMode: signalSettings.positionSelectionMode,
           trailingEnabled: signalSettings.trailingEnabled,
           trailingOnly: signalSettings.trailingOnly,
           trailingStartPct: signalSettings.trailingStartPct,

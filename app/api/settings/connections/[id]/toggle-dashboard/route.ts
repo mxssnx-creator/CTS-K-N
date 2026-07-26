@@ -10,6 +10,7 @@ import { allocateStateSwitchVersion, currentStateSwitchVersion, queueEngineRefre
 import { buildMissingTradeEngineWorkerDiagnostic } from "@/lib/trade-engine-worker-heartbeat"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { invalidateTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
+import { SystemLogger } from "@/lib/system-logger"
 
 // POST toggle connection active status (inserted/enabled) - INDEPENDENT from Settings
 // When enabling, also triggers engine start for this connection
@@ -459,6 +460,18 @@ async function handlePost(request: NextRequest, { params }: { params: Promise<{ 
         is_enabled_dashboard: effectiveEnabled,
       },
     })
+    await SystemLogger.logConnection(
+      `Dashboard connection ${effectiveEnabled ? "enabled" : "disabled"}; engine ${engineStatus}`,
+      resolvedId,
+      engineStatus === "error" ? "error" : engineWarning ? "warn" : "info",
+      {
+        changed: wasChange,
+        engineAction,
+        engineStatus,
+        engineWarning,
+        stateSwitchVersion,
+      },
+    )
     invalidateTradeEngineStatusCache()
     return NextResponse.json({
       success: true,
@@ -482,6 +495,9 @@ async function handlePost(request: NextRequest, { params }: { params: Promise<{ 
     })
   } catch (error) {
     console.error(`[v0] [Toggle] Error:`, error)
+    await SystemLogger.logError("connections", error, {
+      endpoint: "POST /api/settings/connections/[id]/toggle-dashboard",
+    }).catch(() => undefined)
     return NextResponse.json(
       { error: "Failed to update active status", details: error instanceof Error ? error.message : "Unknown error" },
       { status: 500 }

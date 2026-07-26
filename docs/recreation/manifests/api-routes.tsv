@@ -248,7 +248,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/tracking/overview	GET	tracking	force-dynamic		none-detected	app/api/tracking/overview/route.ts
 /api/trade-engine/auto-setup	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/auto-setup/route.ts
 /api/trade-engine/auto-start	GET,POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/auto-start/route.ts
-/api/trade-engine/detailed-logs	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/detailed-logs/route.ts
+/api/trade-engine/detailed-logs	GET	trade-engine	force-dynamic	15	none-detected	app/api/trade-engine/detailed-logs/route.ts
 /api/trade-engine/diagnostic	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/diagnostic/route.ts
 /api/trade-engine/emergency-stop	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/emergency-stop/route.ts
 /api/trade-engine/enable-symbols	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/enable-symbols/route.ts

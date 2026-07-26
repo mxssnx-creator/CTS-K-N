@@ -84,6 +84,13 @@ export interface PipelineDeps {
   setsProcessor?: IndicationSetsProcessor
   skipLiveDispatch?: boolean
   enableStrategyFlow?: boolean
+  /**
+   * Cooperative generation guard supplied by the owning engine loop. A
+   * settings save, symbol recoordination, disable, restart, or ownership loss
+   * flips this to false so an already-running cycle cannot publish stale
+   * results or reach Live dispatch.
+   */
+  shouldContinue?: () => boolean
 }
 
 // ── Live dispatch ownership ───────────────────────────────────────
@@ -159,15 +166,23 @@ export async function runIndStratCycle(
     liveReady: 0,
     durationMs: 0,
   }
+  const shouldContinue = (): boolean => {
+    try {
+      return deps.shouldContinue?.() !== false
+    } catch {
+      return false
+    }
+  }
 
   try {
+    if (!shouldContinue()) return result
     // ── Phase 1: Indication evaluation (UNIFIED) ──────────────────────
     // One method, both modes. asOfMs threads through to control which
     // candle slice and emission timestamp the processor uses.
     // Hard per-phase timeout of 20s — prevents one stuck Redis fetch from
     // blocking all other symbols until the outer 120s deadline fires.
     const indications = await withPhaseTimeout(
-      deps.indication.processIndication(symbol, deps.asOfMs),
+      deps.indication.processIndication(symbol, deps.asOfMs, shouldContinue),
       `Phase1/processIndication/${symbol}`,
       20_000,
     ).catch((err) => {
@@ -177,6 +192,7 @@ export async function runIndStratCycle(
         )
         return [] as any[]
       })
+    if (!shouldContinue()) return result
     result.indicationCount = Array.isArray(indications) ? indications.length : 0
     if (Array.isArray(indications)) {
       for (const indication of indications) {
@@ -192,6 +208,7 @@ export async function runIndStratCycle(
       }
     }
     await yieldPipelineEventLoop()
+    if (!shouldContinue()) return result
 
     // ── Phase 1b: Sets-fill (replay only) ─────────────────────────────
     // The shared `indication_set:*` keyspace is the bridge between the
@@ -199,6 +216,7 @@ export async function runIndStratCycle(
     // writes to it, and only on replay steps where we have an explicit
     // candle to attribute.
     if (mode === "historical" && deps.asOfCandle) {
+      if (!shouldContinue()) return result
       const setsProc = deps.setsProcessor ?? new IndicationSetsProcessor(connectionId)
       await setsProc
         .processAllIndicationSets(symbol, deps.asOfCandle)
@@ -209,6 +227,7 @@ export async function runIndStratCycle(
           )
         })
       await yieldPipelineEventLoop()
+      if (!shouldContinue()) return result
     }
 
     // ── Phase 2: Open pseudo position handling (REALTIME ONLY) ────────
@@ -217,6 +236,7 @@ export async function runIndStratCycle(
     // position instantly. Realtime mode marks against the live price.
     // Timeout: 8s — exchange price fetch + Redis writes should be <2s normally.
     if (mode === "realtime") {
+      if (!shouldContinue()) return result
       try {
         const pseudoUpdates = await withPhaseTimeout(
           deps.realtime.updateOpenPseudoPositionsForSymbol(symbol),
@@ -231,6 +251,7 @@ export async function runIndStratCycle(
         )
       }
       await yieldPipelineEventLoop()
+      if (!shouldContinue()) return result
     }
 
     // ── Phase 3: Strategy evaluation (UNIFIED, indication-gated) ──────
@@ -266,9 +287,18 @@ export async function runIndStratCycle(
     // Live dispatch can still be skipped independently by CRON_LIVE_DISPATCH=0.
     if (result.indicationCount > 0 && apiStrategyFlowEnabled) {
       await yieldPipelineEventLoop()
+      if (!shouldContinue()) return result
       const stratResult = await withPhaseTimeout(
         deps.strategy
-          .processStrategy(symbol, indications, process.env.CRON_LIVE_DISPATCH === "0" || process.env.CRON_LIVE_DISPATCH === "false" ? true : deps.skipLiveDispatch === true)
+          .processStrategy(
+            symbol,
+            indications,
+            process.env.CRON_LIVE_DISPATCH === "0" ||
+              process.env.CRON_LIVE_DISPATCH === "false"
+              ? true
+              : deps.skipLiveDispatch === true,
+            shouldContinue,
+          )
           .catch((err) => {
             console.error(
               `[v0] [SharedPipeline] processStrategy failed for ${symbol} (mode=${mode}):`,
@@ -279,6 +309,7 @@ export async function runIndStratCycle(
         `Phase3/processStrategy/${symbol}`,
         PHASE3_TIMEOUT_MS,
       )
+      if (!shouldContinue()) return result
       result.strategiesEvaluated = stratResult.strategiesEvaluated || 0
       result.liveReady = stratResult.liveReady || 0
     }

@@ -14,6 +14,15 @@ import {
   SIGNAL_TRAILING_DEFAULT_UPDATE_STOP_RANGE_RATIO,
   SIGNAL_TRAILING_MIN_STOP_PCT_FLOOR,
 } from "@/lib/signal-trailing"
+import {
+  SIGNAL_MAX_POSITIONS_DEFAULT,
+  SIGNAL_POSITION_SELECTION_MODE,
+  calculateSignalCandidateQuality,
+  normalizeSignalMaxPositions,
+  normalizeSignalPositionSelectionMode,
+  signalCandidateRankKey,
+  type SignalPositionSelectionMode,
+} from "@/lib/signal-position-policy"
 
 export type SignalDirection = "long" | "short"
 export const SIGNAL_PERFORMANCE_LOOKBACK = 15
@@ -37,6 +46,8 @@ export interface SignalIndicationSettings {
   timeframeMinutes: number
   candleLimit: number
   maxSourcesPerCycle: number
+  maxPositionsTotal: number
+  positionSelectionMode: SignalPositionSelectionMode
   requestIntervalSeconds: number
   requestTimeoutMs: number
   concurrency: number
@@ -229,6 +240,8 @@ export const DEFAULT_SIGNAL_INDICATION_SETTINGS: SignalIndicationSettings = {
   timeframeMinutes: 1,
   candleLimit: 60,
   maxSourcesPerCycle: 10,
+  maxPositionsTotal: SIGNAL_MAX_POSITIONS_DEFAULT,
+  positionSelectionMode: SIGNAL_POSITION_SELECTION_MODE,
   requestIntervalSeconds: SIGNAL_REQUEST_INTERVAL_MIN_SECONDS,
   requestTimeoutMs: 2500,
   concurrency: 10,
@@ -401,6 +414,8 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     timeframeMinutes: 1,
     candleLimit: Math.round(boundedNumber(raw.candleLimit, 60, 20, 250)),
     maxSourcesPerCycle,
+    maxPositionsTotal: normalizeSignalMaxPositions(raw.maxPositionsTotal),
+    positionSelectionMode: normalizeSignalPositionSelectionMode(raw.positionSelectionMode),
     requestIntervalSeconds,
     requestTimeoutMs: Math.round(boundedNumber(raw.requestTimeoutMs, 2500, 500, 10_000)),
     concurrency: Math.round(boundedNumber(raw.concurrency, 10, 1, 10)),
@@ -1360,6 +1375,36 @@ async function persistSignalCycle(
   const diagnosticKey = `signal:cycle:${safePart(connectionId)}:${normalizeSymbol(symbol)}`
   pipeline.set(diagnosticKey, JSON.stringify({ ...diagnostic, timestamp: Date.now() }))
   pipeline.expire(diagnosticKey, 3600)
+  const rankKey = signalCandidateRankKey(connectionId)
+  const primary = indications[0]
+  if (
+    primary &&
+    (primary.direction === "long" || primary.direction === "short")
+  ) {
+    const confidence = clamp(Number(primary.confidence) || 0, 0, 1)
+    const agreement = clamp(Number(primary.metadata?.signal?.agreement) || 0, 0, 1)
+    const strength = clamp(Number(primary.rawSignalStrength) || 0, 0, 1)
+    const rewardRisk = clamp(Number(primary.metadata?.signal?.rewardRisk) || 0, 0, 5)
+    pipeline.hset(rankKey, normalizeSymbol(symbol), JSON.stringify({
+      symbol: normalizeSymbol(symbol),
+      direction: primary.direction,
+      score: calculateSignalCandidateQuality({
+        confidence,
+        agreement,
+        strength,
+        rewardRisk,
+      }),
+      confidence,
+      agreement,
+      strength,
+      rewardRisk,
+      generatedAt: Number(primary.timestamp) || Date.now(),
+      expiresAt: Date.now() + Math.max(120_000, settings.requestIntervalSeconds * 3_000),
+    }))
+  } else {
+    pipeline.hdel(rankKey, normalizeSymbol(symbol))
+  }
+  pipeline.expire(rankKey, 24 * 60 * 60)
   await pipeline.exec()
 }
 
@@ -1549,6 +1594,8 @@ export async function processSignalIndications(
     timeframeMinutes: settings.timeframeMinutes,
     candleLimit: settings.candleLimit,
     maxSourcesPerCycle: settings.maxSourcesPerCycle,
+    maxPositionsTotal: settings.maxPositionsTotal,
+    positionSelectionMode: settings.positionSelectionMode,
     requestIntervalSeconds: settings.requestIntervalSeconds,
     minimumSourceSignals: settings.minimumSourceSignals,
     minimumAgreement: settings.minimumAgreement,

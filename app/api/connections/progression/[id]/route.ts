@@ -150,10 +150,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // progress endpoint use stale symbol totals and appear stuck in prod.
     const client = getRedisClient()
     const [scopedEngineState, scopedRawEngineState, legacySettingsEngineState, legacyRawEngineState] = await Promise.all([
-      getSettings(scope.tradeEngineStateKey).catch(() => ({})),
-      getSettings(`trade_engine_state:${connectionId}:${engineType}`).catch(() => ({})),
-      getSettings(`settings:trade_engine_state:${connectionId}`).catch(() => ({})),
-      getSettings(`trade_engine_state:${connectionId}`).catch(() => ({})),
+      client.hgetall(scope.tradeEngineStateKey).catch(() => ({})),
+      client.hgetall(`trade_engine_state:${connectionId}:${engineType}`).catch(() => ({})),
+      client.hgetall(`settings:trade_engine_state:${connectionId}`).catch(() => ({})),
+      client.hgetall(`trade_engine_state:${connectionId}`).catch(() => ({})),
     ]).catch((e) => {
       console.warn(`[v0] [ProgressionAPI] Failed to get engine state for ${connectionId}:`, e)
       return [{}, {}, {}, {}] as any[]
@@ -164,6 +164,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       ...(scopedRawEngineState || {}),
       ...(scopedEngineState || {}),
     }
+    const activeSymbolSelectionEpoch = String(
+      engineState?.symbol_selection_epoch ||
+      connection?.symbol_selection_epoch ||
+      engineState?.quickstart_symbol_generation ||
+      "",
+    )
     
     // Also check global state (stored as Redis HASH via hset, not a string)
     let globalState: any = {}
@@ -308,10 +314,17 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // The downstream auto-derivation only kicks in once prehistoric is
     // truly complete, so the user always sees the honest phase + percent.
     const prehistoricGateKeys = buildPrehistoricGateKeys(connectionId, scope.engineType, "done")
-    const prehistoricDoneRaw =
-      await client?.get(prehistoricGateKeys.scoped).catch(() => null) ||
-      await client?.get(prehistoricGateKeys.legacy).catch(() => null)
-    const prehistoricDone = String(prehistoricDoneRaw) === "1"
+    const [prehistoricDoneRaw, prehistoricGateEpoch] = await Promise.all([
+      (async () =>
+        await client?.get(prehistoricGateKeys.scoped).catch(() => null) ||
+        await client?.get(prehistoricGateKeys.legacy).catch(() => null))(),
+      client?.hget(scope.prehistoricKey, "symbol_selection_epoch").catch(() => null),
+    ])
+    const prehistoricGenerationMatches =
+      !activeSymbolSelectionEpoch ||
+      String(prehistoricGateEpoch || "") === activeSymbolSelectionEpoch
+    const prehistoricDone =
+      String(prehistoricDoneRaw) === "1" && prehistoricGenerationMatches
 
     if (engineRunning && !prehistoricDone) {
       // Trust the engine's own phase update (written per-symbol-completion
@@ -409,9 +422,23 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
           client.hgetall(`prehistoric:${connectionId}`).catch(() => null),
         ])
         const doneMarker = scopedDoneMarker || legacyDoneMarker
-        const prehistoricData = (prehistoricDataRaw as Record<string, string> | null) || {}
-        const legacyPrehistoric = (legacyPrehistoricRaw as Record<string, string> | null) || {}
-        const processedSet = Array.isArray(prehistoricSymbolsSet) ? prehistoricSymbolsSet : []
+        const rawPrehistoricData = (prehistoricDataRaw as Record<string, string> | null) || {}
+        const rawLegacyPrehistoric = (legacyPrehistoricRaw as Record<string, string> | null) || {}
+        const scopedEpochMatches =
+          !activeSymbolSelectionEpoch ||
+          rawPrehistoricData.symbol_selection_epoch === activeSymbolSelectionEpoch
+        const legacyEpochMatches =
+          !activeSymbolSelectionEpoch ||
+          rawLegacyPrehistoric.symbol_selection_epoch === activeSymbolSelectionEpoch
+        const progressionEpochMatches =
+          !activeSymbolSelectionEpoch ||
+          progHash.symbol_selection_epoch === activeSymbolSelectionEpoch
+        const prehistoricData = scopedEpochMatches ? rawPrehistoricData : {}
+        const legacyPrehistoric = legacyEpochMatches ? rawLegacyPrehistoric : {}
+        const processedSet =
+          scopedEpochMatches && Array.isArray(prehistoricSymbolsSet)
+            ? prehistoricSymbolsSet
+            : []
 
         if (Object.keys(prehistoricData).length > 0 || processedSet.length > 0 || doneMarker) {
           prehistoricProgress.currentSymbol = prehistoricData.current_symbol || ""
@@ -443,8 +470,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
           //      scanned from the UI poll path.
           const hashProcessed = Number(prehistoricData.symbols_processed || 0)
           const legacyHashProcessed = Number(legacyPrehistoric.symbols_processed || 0)
-          const progHashCount = toNumber(progHash.prehistoric_symbols_processed_count)
-          const portableProcessed = toNumber(progHash.portable_symbols_processed)
+          const progHashCount = progressionEpochMatches
+            ? toNumber(progHash.prehistoric_symbols_processed_count)
+            : 0
+          const portableProcessed = progressionEpochMatches
+            ? toNumber(progHash.portable_symbols_processed)
+            : 0
           const engineStateProcessed = toNumber(engineState?.config_set_symbols_processed)
           const setProcessed = processedSet.length
           let processed = Math.max(hashProcessed, legacyHashProcessed, progHashCount, portableProcessed, engineStateProcessed, setProcessed)
@@ -492,16 +523,34 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const subItem = progression?.sub_item || (phase === "prehistoric_data" ? "symbols" : "")
     const storedSubCurrent = Number(progression?.sub_current) || 0
     const storedSubTotal = Number(progression?.sub_total) || 0
+    const engineProgressionEpochMatches =
+      !activeSymbolSelectionEpoch ||
+      progression?.symbol_selection_epoch === activeSymbolSelectionEpoch
+    const progressionHashEpochMatches =
+      !activeSymbolSelectionEpoch ||
+      progHash.symbol_selection_epoch === activeSymbolSelectionEpoch
     const prehistoricProcessedFallback = Math.max(
       toNumber(engineState?.config_set_symbols_processed),
-      toNumber(progHash.prehistoric_symbols_processed_count),
-      toNumber(progHash.portable_symbols_processed),
+      progressionHashEpochMatches
+        ? toNumber(progHash.prehistoric_symbols_processed_count)
+        : 0,
+      progressionHashEpochMatches
+        ? toNumber(progHash.portable_symbols_processed)
+        : 0,
     )
     const subCurrent = phase === "prehistoric_data"
-      ? Math.max(storedSubCurrent, prehistoricProgress.symbolsProcessed, prehistoricProcessedFallback)
+      ? Math.max(
+          engineProgressionEpochMatches ? storedSubCurrent : 0,
+          prehistoricProgress.symbolsProcessed,
+          prehistoricProcessedFallback,
+        )
       : storedSubCurrent
     const subTotal = phase === "prehistoric_data"
-      ? Math.max(storedSubTotal, prehistoricProgress.symbolsTotal, configuredSymbolCount)
+      ? Math.max(
+          engineProgressionEpochMatches ? storedSubTotal : 0,
+          prehistoricProgress.symbolsTotal,
+          configuredSymbolCount,
+        )
       : storedSubTotal
 
     // Build comprehensive message
@@ -556,6 +605,20 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
           liveTradingActive: phase === "live_trading",
         },
         prehistoricProgress: prehistoricProgress,
+        lifecycle: {
+          symbolSelectionEpoch: activeSymbolSelectionEpoch || null,
+          historicSelectionEpoch: prehistoricGateEpoch || null,
+          generationMatches: prehistoricGenerationMatches,
+          bootstrapStatus: engineState?.prehistoric_bootstrap_status || (prehistoricDone ? "complete" : "pending"),
+          entryProcessorsGated:
+            engineState?.entry_processors_gated === true ||
+            engineState?.entry_processors_gated === "true" ||
+            engineState?.entry_processors_gated === "1" ||
+            !prehistoricDone,
+          retryAttempt: toNumber(engineState?.prehistoric_bootstrap_retry_attempt),
+          lastError: engineState?.prehistoric_data_error || null,
+          recoordinationReason: engineState?.prehistoric_recoordination_reason || null,
+        },
         error: phase === "error" ? detail : null,
       },
       state: {

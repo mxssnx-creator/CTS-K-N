@@ -7,17 +7,19 @@ export interface SymbolSelectionSnapshot {
 }
 
 export function normalizeSymbolList(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map((s) => String(s).trim()).filter(Boolean)
+  const normalize = (values: unknown[]) =>
+    Array.from(new Set(values.map((s) => String(s).trim().toUpperCase()).filter(Boolean)))
+  if (Array.isArray(value)) return normalize(value)
   if (typeof value !== "string") return []
   const trimmed = value.trim()
   if (!trimmed) return []
   try {
     const parsed = JSON.parse(trimmed)
-    if (Array.isArray(parsed)) return parsed.map((s) => String(s).trim()).filter(Boolean)
+    if (Array.isArray(parsed)) return normalize(parsed)
   } catch {
     // Legacy fields may be comma/newline separated.
   }
-  return trimmed.split(/[\n,]/).map((s) => s.trim()).filter(Boolean)
+  return normalize(trimmed.split(/[\n,]/))
 }
 
 export function sameSymbolSelection(a: string[], b: string[]): boolean {
@@ -29,7 +31,15 @@ export function sameSymbolSelection(a: string[], b: string[]): boolean {
 
 export async function getCanonicalSymbolSelection(connectionId: string): Promise<SymbolSelectionSnapshot | null> {
   const state = (await getSettings(`trade_engine_state:${connectionId}`).catch(() => ({}))) as Record<string, unknown>
-  const symbols = normalizeSymbolList(state.selected_symbols)
+  // `selected_symbols` is canonical, but older routes only mirrored one of
+  // the runtime aliases. Falling back in priority order keeps a mixed-version
+  // deployment from binding progress ownership to an empty/stale selection.
+  const symbols = [
+    state.selected_symbols,
+    state.force_symbols,
+    state.active_symbols,
+    state.symbols,
+  ].map(normalizeSymbolList).find((candidate) => candidate.length > 0) || []
   const total = Number(state.config_set_symbols_total)
   if (symbols.length === 0 && (!Number.isFinite(total) || total <= 0)) return null
   return {

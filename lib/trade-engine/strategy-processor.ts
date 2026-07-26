@@ -13,6 +13,7 @@ import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { buildStrategyIndicationFingerprint, StrategyCoordinator, getStrategyCoordinator } from "@/lib/strategy-coordinator"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { trackStrategyStats } from "@/lib/statistics-tracker"
+import { clearRuntimeLogThrottle, logRuntimeInfo } from "@/lib/runtime-log-throttle"
 // Strategy-flow throttle values are read live from `settings:system`. The
 // module-level constants below remain as defaults — used when the
 // engine-timings cache is empty (process cold start) or holds an invalid
@@ -52,13 +53,20 @@ interface FlowThrottleEntry {
 // Map<`${connectionId}:${symbol}`, FlowThrottleEntry>
 const flowThrottle = new Map<string, FlowThrottleEntry>()
 const flowSummaryLogAt = new Map<string, number>()
-const FLOW_SUMMARY_LOG_INTERVAL_MS = 15_000
+const FLOW_SUMMARY_LOG_INTERVAL_MS = 30_000
+const MAX_FLOW_THROTTLE_ENTRIES = 4096
 
 function shouldLogFlowSummary(connectionId: string, symbol: string, now = Date.now()): boolean {
   const key = `${connectionId}:${symbol}`
   const previous = flowSummaryLogAt.get(key) || 0
   if (now - previous < FLOW_SUMMARY_LOG_INTERVAL_MS) return false
+  flowSummaryLogAt.delete(key)
   flowSummaryLogAt.set(key, now)
+  while (flowSummaryLogAt.size > MAX_FLOW_THROTTLE_ENTRIES) {
+    const oldest = flowSummaryLogAt.keys().next().value
+    if (!oldest) break
+    flowSummaryLogAt.delete(oldest)
+  }
   return true
 }
 
@@ -80,6 +88,7 @@ export function clearFlowThrottleForConnection(connectionId: string): void {
   for (const key of flowSummaryLogAt.keys()) {
     if (key.startsWith(prefix)) flowSummaryLogAt.delete(key)
   }
+  clearRuntimeLogThrottle(`strategy:${connectionId}:`)
 }
 
 export class StrategyProcessor {
@@ -95,11 +104,30 @@ export class StrategyProcessor {
    * Process strategy - executes complete coordinated flow
    * BASE → Evaluate BASE → MAIN → REAL → LIVE with detailed calculations
    */
-  async processStrategy(symbol: string, indications: any[] = [], skipLiveDispatch: boolean = false): Promise<{ strategiesEvaluated: number; liveReady: number }> {
+  async processStrategy(
+    symbol: string,
+    indications: any[] = [],
+    skipLiveDispatch: boolean = false,
+    shouldContinue?: () => boolean,
+  ): Promise<{ strategiesEvaluated: number; liveReady: number }> {
     let reservedThrottleKey: string | undefined
     let reservedAt = 0
+    const isCurrent = (): boolean => {
+      try {
+        return shouldContinue?.() !== false
+      } catch {
+        return false
+      }
+    }
+    const releaseReservation = (): void => {
+      if (!reservedThrottleKey) return
+      const reserved = flowThrottle.get(reservedThrottleKey)
+      if (reserved?.lastRunAt === reservedAt) flowThrottle.delete(reservedThrottleKey)
+    }
     try {
+      if (!isCurrent()) return { strategiesEvaluated: 0, liveReady: 0 }
       await initRedis()
+      if (!isCurrent()) return { strategiesEvaluated: 0, liveReady: 0 }
       
       // ── CHECK: Settings dirty flag and reload if needed ────────────────────────
       // When user updates connection settings via UI, a dirty flag is set.
@@ -150,9 +178,14 @@ export class StrategyProcessor {
       if (!indications || indications.length === 0) {
         indications = await this.getActiveIndications(symbol)
       }
+      if (!isCurrent()) return { strategiesEvaluated: 0, liveReady: 0 }
 
       if (indications.length === 0) {
-        console.log(`[v0] [StrategyProcessor] No indications for ${symbol}/${this.connectionId}`)
+        logRuntimeInfo(
+          `strategy:${this.connectionId}:${symbol}:no-indications`,
+          30_000,
+          `[v0] [StrategyProcessor] No indications for ${symbol}/${this.connectionId}`,
+        )
         return { strategiesEvaluated: 0, liveReady: 0 }
       }
 
@@ -207,6 +240,7 @@ export class StrategyProcessor {
         ).catch(() => { /* non-critical */ })
         return { strategiesEvaluated: 0, liveReady: 0 }
       }
+      if (!isCurrent()) return { strategiesEvaluated: 0, liveReady: 0 }
 
       // ── Throttle gate ────────────────────────────────────────────────
       // Compute a compact fingerprint of indication identities, timestamps,
@@ -263,8 +297,17 @@ export class StrategyProcessor {
         lastRunAt: now,
         lastFingerprint: indicationFingerprint,
       })
+      while (flowThrottle.size > MAX_FLOW_THROTTLE_ENTRIES) {
+        const oldest = flowThrottle.keys().next().value
+        if (!oldest) break
+        flowThrottle.delete(oldest)
+      }
       reservedThrottleKey = throttleKey
       reservedAt = now
+      if (!isCurrent()) {
+        releaseReservation()
+        return { strategiesEvaluated: 0, liveReady: 0 }
+      }
 
       // Execute complete strategy coordination flow using ONLY the
       // validated indications. Base/Main/Real/Live filtering downstream
@@ -272,7 +315,18 @@ export class StrategyProcessor {
       // the input to that pipeline is now pre-filtered to validated
       // indications only.
       const coordinator = getStrategyCoordinator(this.connectionId)
-      const results = await coordinator.executeStrategyFlow(symbol, validIndications, false, undefined, skipLiveDispatch)
+      const results = await coordinator.executeStrategyFlow(
+        symbol,
+        validIndications,
+        false,
+        undefined,
+        skipLiveDispatch,
+        isCurrent,
+      )
+      if (!isCurrent()) {
+        releaseReservation()
+        return { strategiesEvaluated: 0, liveReady: 0 }
+      }
 
       // ── Pipeline-aware counting ────────────────────────────────────────
       // BASE → MAIN → REAL → LIVE is a coordinated transformation pipeline,
@@ -293,6 +347,10 @@ export class StrategyProcessor {
       const logFlowSummary = shouldLogFlowSummary(this.connectionId, symbol)
 
       for (const result of results) {
+        if (!isCurrent()) {
+          releaseReservation()
+          return { strategiesEvaluated: 0, liveReady: 0 }
+        }
         stageSummary[result.type] = {
           setsEvaluated: result.totalCreated,
           setsPassed: result.passedEvaluation,
@@ -313,20 +371,6 @@ export class StrategyProcessor {
           realLiveReady = result.passedEvaluation
         }
 
-        // MAIN fans out (more output than input), so label differs:
-        // BASE/REAL/LIVE: "N passed / M evaluated" (filter). MAIN: "N from M base" (fanout).
-        const stageLabel = result.type === "main"
-          ? `${result.passedEvaluation} Sets from ${result.totalCreated} base`
-          : result.type === "live"
-            ? `${result.passedEvaluation}/${result.totalCreated} candidates passed, ${result.dispatchSelected ?? result.passedEvaluation} dispatch selected, ${result.dispatchSuppressed ?? 0} suppressed`
-            : `${result.passedEvaluation}/${result.totalCreated} Sets passed`
-        if (logFlowSummary) {
-          console.log(
-            `[v0] [StrategyFlow] ${symbol} ${result.type.toUpperCase()}: ${stageLabel} | ` +
-            `PF=${result.avgProfitFactor.toFixed(2)} | DDT=${Math.round(result.avgDrawdownTime)}min`
-          )
-        }
-
         statsWrites.push(
           trackStrategyStats(
             this.connectionId,
@@ -342,12 +386,21 @@ export class StrategyProcessor {
 
       // Await all stats writes together — no per-stage blocking.
       if (statsWrites.length > 0) await Promise.all(statsWrites)
+      if (!isCurrent()) {
+        releaseReservation()
+        return { strategiesEvaluated: 0, liveReady: 0 }
+      }
+
+      if (logFlowSummary) {
+        logRuntimeInfo(
+          `strategy:${this.connectionId}:${symbol}:flow-summary`,
+          FLOW_SUMMARY_LOG_INTERVAL_MS,
+          `[v0] [StrategyFlow] ${symbol}: evaluated=${realEvaluated}, liveReady=${realLiveReady}, ` +
+            `indications=${indications.length}, stages=${JSON.stringify(stageSummary)}`,
+        )
+      }
 
       if (realLiveReady > 0) {
-        if (logFlowSummary) {
-          console.log(`[v0] [StrategyFlow] ${symbol}: READY FOR TRADING - ${realLiveReady} live Sets selected`)
-        }
-
         // One bounded event per symbol/window is enough for diagnostics. The
         // prior per-flow write added thousands of equivalent Redis events and
         // megabytes of dev stdout during a short five-symbol soak.
@@ -371,10 +424,7 @@ export class StrategyProcessor {
       // reserved flow itself fails, remove only that exact reservation so the
       // next engine tick retries immediately instead of serving stale output
       // until the heartbeat interval elapses.
-      if (reservedThrottleKey) {
-        const reserved = flowThrottle.get(reservedThrottleKey)
-        if (reserved?.lastRunAt === reservedAt) flowThrottle.delete(reservedThrottleKey)
-      }
+      releaseReservation()
       console.error(
         `[v0] [Strategy] Failed for ${symbol}:`,
         error instanceof Error ? error.message : String(error)
@@ -465,11 +515,19 @@ export class StrategyProcessor {
 
       if (allIndications && Array.isArray(allIndications) && allIndications.length > 0) {
         const sample = allIndications[0]
-        console.log(`[v0] [StrategyProcessor] Retrieved ${allIndications.length} indications for ${symbol}/${this.connectionId} | sample conf=${sample.confidence} (${typeof sample.confidence}), pf=${sample.profitFactor} (${typeof sample.profitFactor})`)
+        logRuntimeInfo(
+          `strategy:${this.connectionId}:${symbol}:retrieved`,
+          30_000,
+          `[v0] [StrategyProcessor] Retrieved ${allIndications.length} indications for ${symbol}/${this.connectionId} | sample conf=${sample.confidence}, pf=${sample.profitFactor}`,
+        )
         return allIndications
       }
 
-      console.log(`[v0] [StrategyProcessor] No indications found for ${symbol} in connection ${this.connectionId}, generating inline...`)
+      logRuntimeInfo(
+        `strategy:${this.connectionId}:${symbol}:inline-missing`,
+        30_000,
+        `[v0] [StrategyProcessor] No indications found for ${symbol}/${this.connectionId}; generating inline`,
+      )
 
       // INLINE INDICATION GENERATION v4 — generates both long + short for each type
       // so the Base stage produces 8 sets (4 types × 2 directions).
@@ -491,7 +549,11 @@ export class StrategyProcessor {
         { type: "active",    symbol, value: -1, profitFactor: 1.42 + variation, confidence: 0.67, timestamp: now, metadata: { direction: "short" } },
         { type: "optimal",   symbol, value: -1, profitFactor: 1.52 + variation, confidence: 0.71, timestamp: now, metadata: { direction: "short" } },
       ]
-      console.log(`[v0] [StrategyProcessor] INLINE_V4: Generated ${inlineIndications.length} indications for ${symbol} (PF range: ${(1.42 + variation).toFixed(2)}-${(1.60 + variation).toFixed(2)})`)
+      logRuntimeInfo(
+        `strategy:${this.connectionId}:${symbol}:inline-generated`,
+        30_000,
+        `[v0] [StrategyProcessor] INLINE_V4 generated ${inlineIndications.length} indications for ${symbol} (PF ${(1.42 + variation).toFixed(2)}-${(1.60 + variation).toFixed(2)})`,
+      )
       return inlineIndications
     } catch (error) {
       console.error(`[v0] [StrategyProcessor] Error retrieving indications for ${symbol}:`, error)

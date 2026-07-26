@@ -47,6 +47,7 @@ unit	__tests__/unit/database-validator-migration-contract.test.ts
 unit	__tests__/unit/default-indication-direction.test.ts
 unit	__tests__/unit/engine-event-bus-regression.test.ts
 unit	__tests__/unit/engine-progress-manager.test.ts
+unit	__tests__/unit/engine-progression-log-coalescing.test.ts
 unit	__tests__/unit/engine-progression-long-cycle.test.ts
 unit	__tests__/unit/engine-refresh-queue-claim.test.ts
 unit	__tests__/unit/engine-refresh-queue-ttl.test.ts
@@ -84,6 +85,7 @@ unit	__tests__/unit/orders-route-concurrency.test.ts
 unit	__tests__/unit/performance-profiler.test.ts
 unit	__tests__/unit/pnl-stats-route.test.ts
 unit	__tests__/unit/position-flow-calculations.test.ts
+unit	__tests__/unit/prehistoric-runtime-stability.test.ts
 unit	__tests__/unit/preset-optimizer.test.ts
 unit	__tests__/unit/preset-type-config.test.ts
 unit	__tests__/unit/production-continuity.test.ts
@@ -102,12 +104,14 @@ unit	__tests__/unit/redis-migration-080.test.ts
 unit	__tests__/unit/redis-secondary-indexes.test.ts
 unit	__tests__/unit/redis-stats.test.ts
 unit	__tests__/unit/requested-regressions.test.ts
+unit	__tests__/unit/runtime-log-throttle.test.ts
 unit	__tests__/unit/security-hardening-encryption.test.ts
 unit	__tests__/unit/settings-continuity.test.ts
 unit	__tests__/unit/settings-hot-reload.test.ts
 unit	__tests__/unit/settings-propagation.test.ts
 unit	__tests__/unit/signal-analytics.test.ts
 unit	__tests__/unit/signal-indication.test.ts
+unit	__tests__/unit/signal-position-policy.test.ts
 unit	__tests__/unit/signal-source-registry.test.ts
 unit	__tests__/unit/signal-trailing.test.ts
 unit	__tests__/unit/startup-coordinator-cleanup.test.ts
