@@ -660,6 +660,10 @@ credentials are present.
   incremental legacy cleanup. The full 12-symbol/35-source production soak
   completed with a bounded keyspace, 4,199,040 evaluations, 532 ms API p95,
   monotonic progress/restart recovery and zero real order requests.
+- [x] The legacy Indications fallback is exhaustive as well: it no longer
+  silently truncates configuration rows at 500, orders lanes deterministically
+  and bounds Redis reads to 32 concurrent pairs. Common coordination preserves
+  configured 30-minute timeframes (and accepts values through 60 minutes).
 - [x] Repaired Base → Main → Real → Live lineage and readiness semantics,
   including Main-enabled Signal execution, exact identity history, independent
   Pos-Count targets and the 10:0.03 Pos-Count volume ratio. The settings UI
