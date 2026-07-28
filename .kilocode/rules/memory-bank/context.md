@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 31385)
-Total output lines: 455
-
 # Active Context: CTS-V-yd Trading System (main project)
 
 ## Current State
