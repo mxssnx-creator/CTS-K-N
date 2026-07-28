@@ -127,6 +127,7 @@ unit	__tests__/unit/statistics-rollups.test.ts
 unit	__tests__/unit/strategy-axis-coordination.test.ts
 unit	__tests__/unit/strategy-block-real-overlays.test.ts
 unit	__tests__/unit/strategy-flow-log-throttle.test.ts
+unit	__tests__/unit/strategy-memory-guard.test.ts
 unit	__tests__/unit/strategy-position-entry-ledger.test.ts
 unit	__tests__/unit/strategy-real-stats.test.ts
 unit	__tests__/unit/strategy-sets-processor.test.ts

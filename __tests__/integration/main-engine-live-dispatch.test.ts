@@ -542,6 +542,70 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(placeOrder).not.toHaveBeenCalled()
   })
 
+  test("seeds an exact Signal Block parent in paper Block-only mode", async () => {
+    connection.is_live_trade = "0"
+    connection.live_trade_requested = "0"
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const sourceId = "binance-usdm"
+    const configId = "tp1_00:slr0_50:standard"
+    const signalRisk = {
+      sourceId,
+      sourceIds: [sourceId],
+      configId,
+      configIds: [configId],
+      signalLanes: [{ sourceId, configId }],
+      stopLossPct: 0.5,
+      takeProfitPct: 1,
+      rewardRisk: 2,
+      agreement: 1,
+      confidence: 0.9,
+      generatedAt: Date.now(),
+    }
+
+    const result = await executeLivePosition(connection.id, {
+      id: "signal-block-only-paper-seed",
+      connectionId: connection.id,
+      symbol: "AVAXUSDT",
+      direction: "long",
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 0.5,
+      takeProfit: 1,
+      indicationType: "signal",
+      signalRisk,
+      setKey: `AVAXUSDT:signal:long:source:${sourceId}:config:${configId}#block:1`,
+      parentSetKey: `AVAXUSDT:signal:long:source:${sourceId}:config:${configId}`,
+      setVariant: "block",
+      blockOnly: true,
+      blockSourceId: sourceId,
+      blockCount: 1,
+      blockVolumeRatio: 1,
+      sizeMultiplier: 2,
+      blockCalculatedVolumeMultiplier: 2,
+      status: "pending",
+      timestamp: Date.now(),
+    } as any, recordingConnector)
+
+    expect(result).toMatchObject({
+      status: "simulated",
+      executionMode: "simulation",
+      indicationType: "signal",
+      setVariant: "block",
+      blockOnly: true,
+      blockBaseQuantity: 0.005,
+      signalRisk: expect.objectContaining({ sourceId, configId }),
+    })
+    expect(result.blockLegs).toEqual([
+      expect.objectContaining({
+        blockCount: 1,
+        baseQuantity: 0.005,
+        targetBlockQuantity: 0.01,
+      }),
+    ])
+    expect(placeOrder).not.toHaveBeenCalled()
+  })
+
   test("executes source-scoped Signal Block targets once, aliases covered lanes, and books close PnL exactly once", async () => {
     const {
       closeLivePosition,

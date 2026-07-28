@@ -27,7 +27,7 @@ describe("requested regression guardrails", () => {
 
     expect(coordinator).toContain("let realStageRelatedCreated = 0")
     expect(coordinator).toContain("realStageRelatedCreated += activePositionBlockOverlays.length")
-    expect(coordinator).toContain("const realRelatedCreated = Math.max(0, realSets.length - mainPFEligible)")
+    expect(coordinator).toContain("const realRelatedCreated = realStageRelatedCreated")
     expect(coordinator).toContain("const realTotalEvaluated = mainPFEligible + realRelatedCreated")
     expect(coordinator).toContain('`${symbol}:real:input`')
     expect(coordinator).toContain('`${symbol}:real:relatedCreated`')
@@ -584,13 +584,14 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain("Engine start skipped - missing credentials")
   })
 
-  test("base pseudo-position step range includes the requested 2-step floor", () => {
+  test("base pseudo-position steps keep the 2-step floor and default to 4", () => {
     const manager = read("lib/indication-config-manager.ts")
     const constants = read("lib/constants.ts")
     const settingsTab = read("components/settings/tabs/strategy-tab.tsx")
     const coordinationSection = read("components/settings/strategy-coordination-section.tsx")
 
-    expect(constants).toContain("export const DEFAULT_BASE_MIN_STEP = 2")
+    expect(constants).toContain("export const MIN_BASE_STEP = 2")
+    expect(constants).toContain("export const DEFAULT_BASE_MIN_STEP = 4")
     expect(manager).toContain("MAX_BASE_STEP - minStep + 1")
     expect(manager).toContain("(_, index) => index + minStep")
     expect(settingsTab).toContain("Steps generated: 2, 3, 4, …, 29, 30")
@@ -735,6 +736,16 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("_independentBlockMaterializationCursorBySymbol")
     expect(source).toContain("Every unique qualifying row reaches Real")
     expect(source).toContain("private static readonly _AXIS_LRU_MAX = (() =>")
+    expect(source).toContain("STRATEGY_VARIANT_BUILD_CONCURRENCY")
+    expect(source).toContain("const buildTasks: Array<() => Promise<VariantBuildResult>>")
+    expect(source).toContain(".map((task) => task())")
+    expect(source).toContain("await yieldStrategyScheduler()")
+    expect(source).not.toContain("const results = await Promise.all(buildTasks)")
+    expect(source).toContain("._lastRealSets[symbol] = liveSets")
+    expect(source).toContain("._lastRealSetCounts[symbol] = realSets.length")
+    expect(source).toContain("snapshotCoordIndexForLive(coordIndex, liveSets)")
+    expect(source).not.toContain("._lastRealSets[symbol] = realSets")
+    expect(source).not.toContain("snapshotCoordIndexForLive(coordIndex, realSets)")
   })
 
   test("coordinator startEngine allows explicit local takeover while passive production starts stay queued", () => {
@@ -1031,7 +1042,10 @@ describe("requested regression guardrails", () => {
     expect(pkg.scripts["test:quickstart-12"]).toBe("node scripts/run-dev-preview-check.mjs")
     expect(devRunner).toContain('RUNTIME_MODE: "development"')
     expect(devRunner).toContain('process.env.DEV_NODE_HEAP_MB || 12288')
+    expect(devRunner).toContain("60_000 + devSoakSymbolCount * 10_000")
     expect(devRunner).toContain('WATCHPACK_POLLING: process.env.WATCHPACK_POLLING || "true"')
+    expect(devRunner).toContain('process.env.DEV_STRATEGY_REAL_SETS_CEILING || "600"')
+    expect(devRunner).toContain('process.env.DEV_STRATEGY_VARIANT_BUILD_CONCURRENCY || "32"')
     expect(devRunner).toContain('BINGX_API_KEY: ""')
     expect(soak).toContain("liveTrade: false")
     expect(soak).toContain("is_live_trade: false")
@@ -1048,6 +1062,8 @@ describe("requested regression guardrails", () => {
     expect(soak).toContain('RUNTIME_MODE === "development" ? 1024 * 1024 : 512 * 1024')
     expect(soak).toContain('memory.findIndex((sample) => sample.engineCycles > 0)')
     expect(soak).toContain("A real exchange position appeared during safe paper soak")
+    expect(soak).toContain("Live mirrored row exceeds its Real-row input")
+    expect(soak).not.toContain("Live output exceeds Real output")
     expect(liveQuickstart).toContain('process.env.ALLOW_REAL_ORDER_TEST !== "1"')
   })
 
@@ -1076,6 +1092,16 @@ describe("requested regression guardrails", () => {
     expect(strategy).toContain("sourceOffset + sourceBatchSize < sources.length")
     expect(strategy).toContain("await new Promise<void>((resolve) => setImmediate(resolve))")
     expect(strategy).toContain("materialization_batch_size")
+  })
+
+  test("position-count Real rows and Live targets preserve Long and Short independently", () => {
+    const strategy = read("lib/strategy-coordinator.ts")
+
+    expect(strategy).toContain("axisPassthrough.push(s)")
+    expect(strategy).toContain("never subject to")
+    expect(strategy).toContain("opposite-direction netting")
+    expect(strategy).toContain("`${parentSetKey}#poscounts:combined:${direction}`")
+    expect(strategy).not.toContain("hedgeStrategyVolumeParts(axisSets.map")
   })
 
   test("production status routes merge raw and settings-prefixed engine heartbeat state", () => {
@@ -1727,7 +1753,7 @@ describe("requested regression guardrails", () => {
   test("Real-stage evaluation denominator includes related outputs and never reports negative failures", () => {
     const source = read("lib/strategy-coordinator.ts")
 
-    expect(source).toContain("const realRelatedCreated = Math.max(0, realSets.length - mainPFEligible)")
+    expect(source).toContain("const realRelatedCreated = realStageRelatedCreated")
     expect(source).toContain("const realTotalEvaluated = mainPFEligible + realRelatedCreated")
     expect(source).toContain("const passRatioReal = realTotalEvaluated > 0 ? n / realTotalEvaluated : 0")
     expect(source).toContain("evaluated:          String(realEvaluatedAfterFanOut)")
@@ -1739,7 +1765,8 @@ describe("requested regression guardrails", () => {
 
     const mainPFEligible = 3
     const realSetsLength = 5
-    const realRelatedCreated = Math.max(0, realSetsLength - mainPFEligible)
+    const realStageRelatedCreated = 2
+    const realRelatedCreated = realStageRelatedCreated
     const realTotalEvaluated = mainPFEligible + realRelatedCreated
 
     expect(Math.max(0, realTotalEvaluated - realSetsLength)).toBe(0)
@@ -1898,14 +1925,13 @@ describe("requested regression guardrails", () => {
     const admission = liveStage.slice(admissionStart, admissionEnd)
 
     expect(signal).toContain("SIGNAL_PERFORMANCE_LOOKBACK = 12")
-    expect(signal).toContain("SIGNAL_SOURCE_PERFORMANCE_LOOKBACK = 12")
-    expect(signal).toContain("SIGNAL_LANE_PERFORMANCE_LOOKBACK = 10")
+    expect(signal).toContain("PREVIOUS_POSITION_MIN_PF_RATIO")
     expect(signal).toContain("directExecutionEnabled: true")
     expect(signal).toContain("maxSourcesPerCycle: SIGNAL_SOURCE_DEFINITIONS.length")
-    expect(signal).toContain("return { allowed: sourceAllowed && laneAllowed, sourceAllowed, laneAllowed }")
+    expect(signal).toContain("return { allowed: true, sourceAllowed: true, laneAllowed: true }")
     expect(policy).toContain("SIGNAL_MAX_POSITIONS_DEFAULT = 120")
     expect(settings).toContain("Max open positions (Long + Short)")
-    expect(settings).toContain("Direct bootstrap execution")
+    expect(settings).toContain("Automatic Previous-position bootstrap")
     expect(admission).toContain('lrange(`live:positions:${connectionId}`, 0, -1)')
     expect(admission).toContain("const READ_BATCH_SIZE = 250")
     expect(admission).not.toContain("lrange(`live:positions:${connectionId}`, 0, 500)")
@@ -1989,6 +2015,32 @@ describe("requested regression guardrails", () => {
     expect(createRoute).toContain("block_only: body.block_only !== false")
     expect(updateRoute).toContain("block_enabled: body.block_enabled !== false")
     expect(updateRoute).toContain("block_only: body.block_only !== false")
+  })
+
+  test("Base, Main, Real and Live remain mandatory steps with independent settings", () => {
+    const dialog = read("components/settings/connection-settings-dialog.tsx")
+    const settingsRoute = read("app/api/settings/connections/[id]/settings/route.ts")
+    const strategiesRoute = read("app/api/settings/connections/[id]/strategies/route.ts")
+    const migrations = read("lib/redis-migrations.ts")
+    const stageEditor = dialog.slice(
+      dialog.indexOf("function StrategyProfileEditor"),
+      dialog.indexOf("// ── Strategy Options Panel"),
+    )
+
+    expect(stageEditor).toContain("Pipeline step · always active")
+    expect(dialog).toContain("function normalizeStrategyChannel")
+    expect(dialog).toContain("enabled: true")
+    expect(stageEditor).not.toContain("onCheckedChange={(v) => update(type, { enabled: v })}")
+    expect(settingsRoute).toContain("function enforceCombinedStrategyPipeline")
+    expect(settingsRoute.match(/enforceCombinedStrategyPipeline\(/g)?.length).toBeGreaterThanOrEqual(4)
+    expect(settingsRoute).toContain('"strategies", "coordination_settings", "coordinationSettings"')
+    expect(strategiesRoute).toContain("is_enabled: true")
+    expect(strategiesRoute).toContain("enabled: true")
+    expect(strategiesRoute).not.toContain("is_enabled: !!strat.is_enabled")
+    expect(migrations).toContain('strategy_stage_switches: "compatibility-only-always-true"')
+    expect(read("lib/strategy-coordinator.ts")).toContain(
+      "blockOnly: this._coordinationSettings.blockOnly === true",
+    )
   })
 
   test("statistics never invent portfolio balance, TP/SL values, trailing values, or execution PF", () => {

@@ -228,6 +228,95 @@ describe("Real-stage Block overlays", () => {
     expect(coordinator._coordinationSettings.variants.block).toBe(false)
   })
 
+  test("preserves matching Long and Short position-count rows through Real", async () => {
+    const coordinator = new StrategyCoordinator(`${connectionId}-axis-directions`) as any
+    coordinator._coordinationSettings.variants.block = false
+    coordinator._coordinationSettings.realEvalPosCount = 1
+    coordinator.getOpenLiveSetKeys = jest.fn(async () => new Set<string>())
+    coordinator.buildIndependentBlockCountOverlaysForReal = jest.fn(async () => [])
+    coordinator.buildScopedBlockOverlaysForReal = jest.fn(async () => [])
+    coordinator.buildActiveRealBlockOverlaysForReal = jest.fn(async () => [])
+
+    const axis = (direction: "long" | "short"): StrategySet => ({
+      ...source(`BTCUSDT:direction:${direction}#axis:p4_l1_c1_opos_d${direction}`, direction),
+      axisWindows: {
+        prev: 4,
+        last: 1,
+        cont: 1,
+        pause: 0,
+        direction,
+        outcome: "pos",
+        axisKey: `p4_l1_c1_opos_d${direction}`,
+      },
+      posCountsVolumeRatio: 0.05,
+    })
+
+    const evaluated = await coordinator.evaluateRealSets(
+      "BTCUSDT",
+      [axis("long"), axis("short")],
+      undefined,
+      {
+        prevPosCount: 0,
+        prevLosses: 0,
+        lastPosCount: 0,
+        lastWins: 0,
+        lastLosses: 0,
+        continuousCount: 0,
+        perSymbolOpen: { BTCUSDT: 0 },
+        perSymbolOpenByDir: { BTCUSDT: { long: 0, short: 0 } },
+        perSymbolLiveOpenByDir: { BTCUSDT: { long: 0, short: 0 } },
+        activeStrategySetKeysBySymbol: { BTCUSDT: [] },
+        liveTradingEnabled: false,
+      },
+    )
+
+    expect(evaluated.sets.map((set: StrategySet) => set.direction).sort()).toEqual([
+      "long",
+      "short",
+    ])
+  })
+
+  test("evaluates and retains every Real candidate despite legacy cap fields", async () => {
+    const coordinator = new StrategyCoordinator(`${connectionId}-post-eval-boundary`) as any
+    coordinator._coordinationSettings.variants.block = false
+    coordinator._coordinationSettings.realEvalPosCount = 1
+    coordinator.config.maxRealSets = 1
+    coordinator.strategyRealSetsSafetyCeiling = 1
+    coordinator.getOpenLiveSetKeys = jest.fn(async () => new Set<string>())
+    coordinator.buildIndependentBlockCountOverlaysForReal = jest.fn(async () => [])
+    coordinator.buildScopedBlockOverlaysForReal = jest.fn(async () => [])
+    coordinator.buildActiveRealBlockOverlaysForReal = jest.fn(async () => [])
+    const candidates = [
+      source("BTCUSDT:direction:long-a", "long"),
+      source("BTCUSDT:move:long-b", "long"),
+      source("BTCUSDT:trend:long-c", "long"),
+    ]
+
+    const evaluated = await coordinator.evaluateRealSets(
+      "BTCUSDT",
+      candidates,
+      undefined,
+      {
+        prevPosCount: 0,
+        prevLosses: 0,
+        lastPosCount: 0,
+        lastWins: 0,
+        lastLosses: 0,
+        continuousCount: 0,
+        perSymbolOpen: { BTCUSDT: 0 },
+        perSymbolOpenByDir: { BTCUSDT: { long: 0, short: 0 } },
+        perSymbolLiveOpenByDir: { BTCUSDT: { long: 0, short: 0 } },
+        activeStrategySetKeysBySymbol: { BTCUSDT: [] },
+        liveTradingEnabled: false,
+      },
+    )
+
+    expect(candidates.every((candidate) => candidate.status === "valid_real")).toBe(true)
+    expect(coordinator.buildIndependentBlockCountOverlaysForReal.mock.calls[0][1])
+      .toHaveLength(3)
+    expect(evaluated.sets).toHaveLength(3)
+  })
+
   test("creates independent exact-Set overlays plus direction-wide active Real overlays", async () => {
     const coordinator = new StrategyCoordinator(connectionId) as any
     coordinator._coordinationSettings.variants.block = true
@@ -741,6 +830,37 @@ describe("Real-stage Block overlays", () => {
     expect(selectLiveDispatchCandidates(candidates).map((set) => set.setKey)).toEqual(
       candidates.map((set) => set.setKey),
     )
+  })
+
+  test("keeps exact Signal Block lanes eligible when Block-only removes their Standard rows", () => {
+    const signalBlock = (sourceId: string, configId: string) => ({
+      ...source(`BTCUSDT:signal:long:${sourceId}:${configId}#block:1`, "long"),
+      indicationType: "signal",
+      variant: "block" as const,
+      blockCount: 1,
+      blockSourceId: sourceId,
+      signalRisk: {
+        stopLossPct: 0.5,
+        takeProfitPct: 1,
+        rewardRisk: 2,
+        sourceId,
+        sourceIds: [sourceId],
+        configId,
+        configIds: [configId],
+        agreement: 1,
+        confidence: 0.8,
+        generatedAt: Date.now(),
+      },
+    })
+    const candidates = [
+      signalBlock("binance-usdm", "tp1_00:slr0_50:standard"),
+      signalBlock("okx-swap", "tp1_00:slr0_50:standard"),
+    ] as StrategySet[]
+
+    expect(selectLiveDispatchCandidates(
+      candidates,
+      { blockEnabled: true, blockOnly: true },
+    ).map((set) => set.setKey)).toEqual(candidates.map((set) => set.setKey))
   })
 
   test("clears active-overlay stats after the final parent position closes", async () => {

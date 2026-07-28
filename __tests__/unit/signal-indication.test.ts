@@ -123,8 +123,9 @@ function recordSyntheticSignalOutcome(
 ) {
   return recordSignalPerformanceOutcome({
     ...input,
-    // Test PnL values are synthetic market-move percentages. Exercise the
-    // production cost-relative path using the canonical 0.10% PositionCost.
+    // Test PnL values are synthetic market-move percentages. Preserve their
+    // old numeric assertions while exercising the production cost-relative
+    // outcome path explicitly.
     pnlPct: input.pnlPct ?? input.pnl,
     positionCostPct: input.positionCostPct ?? 0.1,
   })
@@ -155,7 +156,7 @@ describe("Signal indication persistence and independent performance gates", () =
     __signalIndicationTestUtils.clearCaches()
   })
 
-  test("direct mode bypasses mature config PF but never a permanent live disable", () => {
+  test("mature exact config PF cannot be bypassed, and permanent live disable still wins", () => {
     const matureNegative = {
       allowed: false,
       ratio: -0.2,
@@ -168,22 +169,97 @@ describe("Signal indication persistence and independent performance gates", () =
       permanentlyDisabled: true,
     }
 
-    expect(signalConfigurationExecutionAllowed(true, matureNegative)).toBe(true)
+    expect(signalConfigurationExecutionAllowed(true, matureNegative)).toBe(false)
     expect(signalConfigurationExecutionAllowed(false, matureNegative)).toBe(false)
     expect(signalConfigurationExecutionAllowed(true, permanentlyDisabled)).toBe(false)
     expect(signalConfigurationExecutionAllowed(true, undefined)).toBe(true)
   })
 
-  test("keeps direct execution configurable and derives permanent config disable only from real exchange closes", async () => {
-    expect(normalizeSignalIndicationSettings({}).directExecutionEnabled).toBe(true)
+  test("gates only the mature exact Previous-position lane", async () => {
+    const settings = normalizeSignalIndicationSettings({
+      configMinimumPfRatio: 0.3,
+    })
+    for (let index = 0; index < 16; index++) {
+      await recordSyntheticSignalOutcome({
+        connectionId: "conn-exact-config",
+        positionId: `exact-loss-${index}`,
+        symbol: "BTCUSDT",
+        direction: "long",
+        pnl: -1,
+        sourceIds: ["source-exact"],
+        signalLanes: [{ sourceId: "source-exact", configId: "config-failing" }],
+        liveExchange: false,
+        settings,
+        closedAt: 1_800_000_000_000 + index,
+      })
+    }
+
+    const decisions = await getSignalConfigurationPerformanceBatch(
+      "conn-exact-config",
+      [
+        {
+          sourceId: "source-exact",
+          symbol: "BTCUSDT",
+          direction: "long",
+          configId: "config-failing",
+        },
+        {
+          sourceId: "source-exact",
+          symbol: "BTCUSDT",
+          direction: "long",
+          configId: "config-fresh",
+        },
+        {
+          sourceId: "source-exact",
+          symbol: "BTCUSDT",
+          direction: "short",
+          configId: "config-failing",
+        },
+      ],
+      settings.configMinimumPfRatio,
+    )
+    const [mature, freshConfig, freshDirection] = [...decisions.values()]
+
+    expect(mature).toEqual({
+      allowed: false,
+      ratio: -1,
+      samples: 12,
+      permanentlyDisabled: false,
+    })
+    expect(signalConfigurationExecutionAllowed(true, mature)).toBe(false)
+    expect(freshConfig).toEqual(expect.objectContaining({
+      allowed: true,
+      samples: 0,
+      permanentlyDisabled: false,
+    }))
+    expect(freshDirection).toEqual(expect.objectContaining({
+      allowed: true,
+      samples: 0,
+      permanentlyDisabled: false,
+    }))
+    await expect(getSignalSourceLanePerformanceDecision(mockClient, {
+      connectionId: "conn-exact-config",
+      sourceId: "source-exact",
+      symbol: "BTCUSDT",
+      direction: "long",
+    })).resolves.toEqual({
+      allowed: true,
+      sourceAllowed: true,
+      laneAllowed: true,
+    })
+  })
+
+  test("derives permanent exact-config disable only from real exchange closes", async () => {
     expect(normalizeSignalIndicationSettings({
       directExecutionEnabled: false,
-    }).directExecutionEnabled).toBe(false)
-
-    const settings = normalizeSignalIndicationSettings({
+      configMinimumPfRatio: 2.7,
+    })).toMatchObject({
       directExecutionEnabled: true,
+      configMinimumPfRatio: 0.3,
     })
-    const paperRequest = {
+
+    const settings = normalizeSignalIndicationSettings({})
+    const request = {
       sourceId: "paper-source",
       symbol: "BTCUSDT",
       direction: "long" as const,
@@ -193,14 +269,11 @@ describe("Signal indication persistence and independent performance gates", () =
       await recordSyntheticSignalOutcome({
         connectionId: "conn-live-disable",
         positionId: `paper-loss-${index}`,
-        symbol: paperRequest.symbol,
-        direction: paperRequest.direction,
+        symbol: request.symbol,
+        direction: request.direction,
         pnl: -1,
-        sourceIds: [paperRequest.sourceId],
-        signalLanes: [{
-          sourceId: paperRequest.sourceId,
-          configId: paperRequest.configId,
-        }],
+        sourceIds: [request.sourceId],
+        signalLanes: [{ sourceId: request.sourceId, configId: request.configId }],
         liveExchange: false,
         settings,
         closedAt: 1_800_000_000_000 + index,
@@ -208,7 +281,7 @@ describe("Signal indication persistence and independent performance gates", () =
     }
     const paperDecision = (await getSignalConfigurationPerformanceBatch(
       "conn-live-disable",
-      [paperRequest],
+      [request],
       settings.configMinimumPfRatio,
     )).get("paper-source|BTCUSDT|long|tp1_00:slr0_50:standard")
     expect(paperDecision).toEqual(expect.objectContaining({
@@ -216,12 +289,8 @@ describe("Signal indication persistence and independent performance gates", () =
       samples: 12,
       permanentlyDisabled: false,
     }))
-    expect(signalConfigurationExecutionAllowed(true, paperDecision)).toBe(true)
 
-    const liveRequest = {
-      ...paperRequest,
-      sourceId: "live-source",
-    }
+    const liveRequest = { ...request, sourceId: "live-source" }
     for (let index = 0; index < 16; index++) {
       await recordSyntheticSignalOutcome({
         connectionId: "conn-live-disable",
@@ -230,10 +299,7 @@ describe("Signal indication persistence and independent performance gates", () =
         direction: liveRequest.direction,
         pnl: -1,
         sourceIds: [liveRequest.sourceId],
-        signalLanes: [{
-          sourceId: liveRequest.sourceId,
-          configId: liveRequest.configId,
-        }],
+        signalLanes: [{ sourceId: liveRequest.sourceId, configId: liveRequest.configId }],
         liveExchange: true,
         settings,
         closedAt: 1_800_000_100_000 + index,
@@ -667,7 +733,7 @@ describe("Signal indication persistence and independent performance gates", () =
     expect(clamped.positionSelectionMode).toBe("best_first")
   })
 
-  test("gates a source after 12 closes and each source/symbol/direction lane after 10 independently", async () => {
+  test("keeps source health diagnostic while exact configuration lanes own admission", async () => {
     const settings = normalizeSignalIndicationSettings({})
     // BTC/Long loses its newest ten outcomes. Later ETH/Long wins keep the
     // source-wide newest-12 window positive, so only the exact BTC/Long lane
@@ -703,9 +769,9 @@ describe("Signal indication persistence and independent performance gates", () =
       symbol: "BTCUSDT",
       direction: "long",
     })).resolves.toEqual({
-      allowed: false,
+      allowed: true,
       sourceAllowed: true,
-      laneAllowed: false,
+      laneAllowed: true,
     })
     await expect(getSignalSourceLanePerformanceDecision(mockClient, {
       connectionId: "conn-v2-lanes",
@@ -728,7 +794,7 @@ describe("Signal indication persistence and independent performance gates", () =
       laneAllowed: true,
     })
 
-    // A separate source with twelve negative closes is disabled source-wide,
+    // A separate source with twelve negative closes remains diagnostic only,
     // even for a fresh symbol/direction lane.
     for (let index = 0; index < 12; index++) {
       await recordSyntheticSignalOutcome({
@@ -748,8 +814,8 @@ describe("Signal indication persistence and independent performance gates", () =
       symbol: "XRPUSDT",
       direction: "long",
     })).resolves.toEqual({
-      allowed: false,
-      sourceAllowed: false,
+      allowed: true,
+      sourceAllowed: true,
       laneAllowed: true,
     })
   })
@@ -779,9 +845,9 @@ describe("Signal indication persistence and independent performance gates", () =
       symbol: "BTCUSDT",
       direction: "long",
     })).resolves.toEqual({
-      allowed: false,
-      sourceAllowed: false,
-      laneAllowed: false,
+      allowed: true,
+      sourceAllowed: true,
+      laneAllowed: true,
     })
     await expect(getSignalSourceLanePerformanceDecision(mockClient, {
       connectionId: "conn-consensus-isolation",
@@ -820,9 +886,9 @@ describe("Signal indication persistence and independent performance gates", () =
       symbol: "ETHUSDT",
       direction: "short",
     })).resolves.toEqual({
-      allowed: false,
-      sourceAllowed: false,
-      laneAllowed: false,
+      allowed: true,
+      sourceAllowed: true,
+      laneAllowed: true,
     })
     for (const sourceId of ["okx-swap", "consensus"]) {
       await expect(getSignalSourceLanePerformanceDecision(mockClient, {

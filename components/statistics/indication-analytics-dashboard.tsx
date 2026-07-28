@@ -534,9 +534,9 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "commo
             {[
               ["Request interval", `${payload.signal.settings.requestIntervalSeconds}s`, "Hard minimum 30 seconds"],
               [
-                "Direct execution",
-                payload.signal.settings.directExecutionEnabled ? "Enabled" : "Config PF-gated",
-                "Source 12 · source/symbol/direction 10",
+                "Previous-position gate",
+                `12 closed · ratio ≥ ${Number(payload.signal.settings.configMinimumPfRatio || 0.3).toFixed(2)}`,
+                "Exact source × symbol × direction × config",
               ],
               ["Website sources", String(payload.signal.settings.maxSourcesPerCycle), "Independent public feeds per symbol cycle"],
               ["Position capacity", `${payload.signal.settings.maxPositionsTotal} total`, "Long + Short physical Signal positions"],

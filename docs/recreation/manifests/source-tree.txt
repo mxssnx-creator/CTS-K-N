@@ -156,6 +156,7 @@ __tests__/unit/statistics-rollups.test.ts
 __tests__/unit/strategy-axis-coordination.test.ts
 __tests__/unit/strategy-block-real-overlays.test.ts
 __tests__/unit/strategy-flow-log-throttle.test.ts
+__tests__/unit/strategy-memory-guard.test.ts
 __tests__/unit/strategy-position-entry-ledger.test.ts
 __tests__/unit/strategy-real-stats.test.ts
 __tests__/unit/strategy-sets-processor.test.ts
@@ -1080,6 +1081,7 @@ lib/strategy-axis-settings.ts
 lib/strategy-config-manager.ts
 lib/strategy-coordinator.ts
 lib/strategy-evaluator.ts
+lib/strategy-memory-guard.ts
 lib/strategy-real-stats.ts
 lib/strategy-sets-processor.ts
 lib/strategy-volume-coordination.ts

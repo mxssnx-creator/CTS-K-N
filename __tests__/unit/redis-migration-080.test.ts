@@ -177,7 +177,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         live_volume_factor: 2.5,
       })
       expect(await client.hget("connection_settings:conn-ledger", "posCountsVolumeRatio")).toBe("3")
-      expect(await client.hget("connection_settings:conn-ledger", "baseProfitFactor")).toBe("0.8")
+      expect(await client.hget("connection_settings:conn-ledger", "baseProfitFactor")).toBe("0.4")
       expect(await client.hget("connection_settings:conn-ledger", "mainProfitFactor")).toBe("1.12")
       expect(await client.hget("connection_settings:conn-ledger", "realProfitFactor")).toBe("1.12")
       expect(await client.hget("connection_settings:conn-ledger", "liveProfitFactor")).toBe("1.12")
@@ -193,13 +193,13 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         "connection_settings:conn-ledger",
         "strategyBlockMaterializationBatchSize",
       )).toBe("1024")
-      expect(await client.hget("connection_settings:conn-ledger", "minStep")).toBe("2")
+      expect(await client.hget("connection_settings:conn-ledger", "minStep")).toBe("4")
       expect(await client.hget("connection_settings:conn-ledger", "mainEvalPosCount")).toBe("25")
       expect(await client.hget("connection_settings:conn-ledger", "realEvalPosCount")).toBe("20")
       expect(JSON.parse(String(
         await client.hget("connection_settings:conn-ledger", "coordination_settings"),
       ))).toMatchObject({
-        minStep: 2,
+        minStep: 4,
         mainEvalPosCount: 25,
         realEvalPosCount: 20,
       })
@@ -260,7 +260,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
     }
   })
 
-  test("repairs schema-88 Base PF values and preserves explicit Signal direct execution choices", async () => {
+  test("repairs schema-88 Base PF values and pins the exact Signal admission contract", async () => {
     const dir = await mkdtemp(join(tmpdir(), "migration-090-"))
     process.env = {
       ...originalEnv,
@@ -320,43 +320,43 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 91 })
 
-      expect(await client.hget("connection:conn-stage-floor", "baseProfitFactor")).toBe("0.8")
-      expect(await client.hget("connection:conn-stage-floor", "base_min_profit_factor")).toBe("0.8")
+      expect(await client.hget("connection:conn-stage-floor", "baseProfitFactor")).toBe("0.4")
+      expect(await client.hget("connection:conn-stage-floor", "base_min_profit_factor")).toBe("0.4")
       expect(await client.hget("connection:conn-stage-floor", "mainProfitFactor")).toBe("0.08")
       expect(JSON.parse(String(
         await client.hget("connection:conn-stage-floor", "connection_settings"),
       ))).toMatchObject({
-        baseProfitFactor: 0.8,
+        baseProfitFactor: 0.4,
         mainProfitFactor: 0.08,
         strategies: {
           main: {
-            base: { min_profit_factor: 0.8 },
+            base: { min_profit_factor: 0.4 },
             main: { min_profit_factor: 0.08 },
           },
         },
       })
-      expect(await client.hget("connection_settings:conn-stage-floor", "baseProfitFactor")).toBe("0.8")
-      expect(await client.hget("connection_settings:conn-stage-floor", "base_min_profit_factor")).toBe("0.8")
+      expect(await client.hget("connection_settings:conn-stage-floor", "baseProfitFactor")).toBe("0.4")
+      expect(await client.hget("connection_settings:conn-stage-floor", "base_min_profit_factor")).toBe("0.4")
       expect(await client.hget("connection_settings:conn-stage-floor", "mainProfitFactor")).toBe("0.08")
       expect(JSON.parse(String(
         await client.hget("connection_settings:conn-stage-floor", "strategies"),
       ))).toMatchObject({
         main: {
-          base: { min_profit_factor: 0.8 },
+          base: { min_profit_factor: 0.4 },
           main: { min_profit_factor: 0.08 },
         },
         preset: {
-          base: { min_profit_factor: 0.8 },
+          base: { min_profit_factor: 0.4 },
         },
       })
       expect(JSON.parse(String(await client.get("indications:signal")))).toMatchObject({
-        directExecutionEnabled: false,
+        directExecutionEnabled: true,
         maxSourcesPerCycle: 35,
         maxPositionsTotal: 120,
         performanceLookback: 12,
         performanceMinSamples: 12,
         performanceDisableBelowPnl: 0,
-        configMinimumPfRatio: 0.7,
+        configMinimumPfRatio: 0.3,
       })
       expect(await client.hget(
         "system:database:coordination:performance",
@@ -367,7 +367,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
     }
   })
 
-  test("keeps the schema-89 Base 0.80 floor and preserves independent downstream settings", async () => {
+  test("upgrades the schema-89 Base default to 0.40 and preserves independent downstream settings", async () => {
     const dir = await mkdtemp(join(tmpdir(), "migration-090-default-"))
     process.env = {
       ...originalEnv,
@@ -398,8 +398,12 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         mainProfitFactor: "1.3",
         strategies: JSON.stringify({
           main: {
-            base: { min_profit_factor: 0.8 },
-            main: { min_profit_factor: 1.3 },
+            base: { enabled: false, is_enabled: false, min_profit_factor: 0.8 },
+            main: { enabled: false, is_enabled: false, min_profit_factor: 1.3 },
+          },
+          preset: {
+            real: { enabled: false, is_enabled: false, min_profit_factor: 1.4 },
+            live: { enabled: false, is_enabled: false, min_profit_factor: 1.5 },
           },
         }),
       })
@@ -419,29 +423,37 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         version: 91,
       })
 
-      expect(await client.hget("connection:conn-v90", "baseProfitFactor")).toBe("0.8")
+      expect(await client.hget("connection:conn-v90", "baseProfitFactor")).toBe("0.4")
       expect(await client.hget("connection:conn-v90", "mainProfitFactor")).toBe("1.3")
-      expect(await client.hget("connection_settings:conn-v90", "baseProfitFactor")).toBe("0.8")
-      expect(await client.hget("connection_settings:conn-v90", "base_min_profit_factor")).toBe("0.8")
+      expect(await client.hget("connection_settings:conn-v90", "baseProfitFactor")).toBe("0.4")
+      expect(await client.hget("connection_settings:conn-v90", "base_min_profit_factor")).toBe("0.4")
       expect(await client.hget("connection_settings:conn-v90", "mainProfitFactor")).toBe("1.3")
       expect(JSON.parse(String(
         await client.hget("connection_settings:conn-v90", "strategies"),
       ))).toMatchObject({
         main: {
-          base: { min_profit_factor: 0.8 },
-          main: { min_profit_factor: 1.3 },
+          base: { enabled: true, is_enabled: true, min_profit_factor: 0.4 },
+          main: { enabled: true, is_enabled: true, min_profit_factor: 1.3 },
+        },
+        preset: {
+          real: { enabled: true, is_enabled: true, min_profit_factor: 1.4 },
+          live: { enabled: true, is_enabled: true, min_profit_factor: 1.5 },
         },
       })
       expect(JSON.parse(String(await client.get("indications:signal")))).toMatchObject({
-        directExecutionEnabled: false,
+        directExecutionEnabled: true,
         performanceLookback: 12,
         performanceMinSamples: 12,
-        configMinimumPfRatio: 0.7,
+        configMinimumPfRatio: 0.3,
       })
       expect(await client.hget(
         "system:database:coordination:performance",
         "strategy_stages",
       )).toBe("combined-base-main-real-live-process")
+      expect(await client.hget(
+        "system:database:coordination:performance",
+        "strategy_stage_switches",
+      )).toBe("compatibility-only-always-true")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

@@ -403,12 +403,14 @@ export function calculateIndicationConfigurationCounts(
         possibleSourceInputs: signalPossibleInputs,
         registrySources: Object.keys(signalSettings.sources).length,
         tradeConfigurations: signalTradeConfigurations,
+        exactConfigPerformanceLookback: 12,
         sourcePerformanceLookback: 12,
         symbolDirectionPerformanceLookback: 10,
       },
       description:
         "Independent source × symbol × direction × TP/SL/trailing Sets; " +
-        "sources use the newest 12 closes and source/symbol/direction lanes the newest 10.",
+        "exact configs use the newest 12 closes for admission, while source and " +
+        "source/symbol/direction windows remain aggregate diagnostics.",
     },
     {
       type: "trend",

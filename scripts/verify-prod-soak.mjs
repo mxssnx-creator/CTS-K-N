@@ -848,7 +848,16 @@ async function main() {
     if (sample.mainEvaluated > 0 && sample.main > sample.mainEvaluated) {
       throw new Error(`Main output exceeds its evaluated pool: ${sample.main} > ${sample.mainEvaluated}`)
     }
-    if (sample.live > sample.real) throw new Error(`Live output exceeds Real output: ${sample.live} > ${sample.real}`)
+    // The headline Real "active" count is intentionally lineage-collapsed
+    // while Live counts exact mirrored execution rows, so Live may be larger.
+    // The row contract itself must remain bounded: mirrored Live rows can
+    // never exceed the complete Real input presented to Live.
+    const strategyRows = stats?.strategyRows || {}
+    const liveRowTotal = finiteNonNegative(strategyRows?.live?.total, "strategyRows.live.total")
+    const liveRowMirrored = finiteNonNegative(strategyRows?.live?.mirrored, "strategyRows.live.mirrored")
+    if (liveRowMirrored > liveRowTotal) {
+      throw new Error(`Live mirrored row exceeds its Real-row input: ${liveRowMirrored} > ${liveRowTotal}`)
+    }
     if (sample.real > sample.realEvaluated && sample.realEvaluated > 0) {
       throw new Error(`Real output exceeds its evaluated pool: ${sample.real} > ${sample.realEvaluated}`)
     }

@@ -18,7 +18,7 @@ describe("Main Trade PositionCost-relative PF ratios", () => {
     expect(MAIN_TRADE_PF_RATIO_MIN).toBe(0.08)
     expect(MAIN_TRADE_PF_RATIO_MAX).toBe(2.7)
     expect(MAIN_TRADE_STAGE_PF_DEFAULTS).toEqual({
-      base: 0.8,
+      base: 0.4,
       main: 1.12,
       real: 1.12,
       live: 1.12,
@@ -28,11 +28,11 @@ describe("Main Trade PositionCost-relative PF ratios", () => {
     expect(normalizeMainTradePfRatio(99)).toBe(2.7)
   })
 
-  test("enforces the Base 0.80 floor without weakening the downstream 0.08 floor", () => {
-    expect(mainTradeStagePfMin("base")).toBe(0.8)
+  test("enforces the Base 0.40 floor without weakening the downstream 0.08 floor", () => {
+    expect(mainTradeStagePfMin("base")).toBe(0.4)
     expect(mainTradeStagePfMin("main")).toBe(0.08)
-    expect(normalizeMainTradeStagePfRatio("base", 0.08)).toBe(0.8)
-    expect(normalizeMainTradeStagePfRatio("base", 0.79)).toBe(0.8)
+    expect(normalizeMainTradeStagePfRatio("base", 0.08)).toBe(0.4)
+    expect(normalizeMainTradeStagePfRatio("base", 0.39)).toBe(0.4)
     expect(normalizeMainTradeStagePfRatio("base", 0.82)).toBe(0.82)
     expect(normalizeMainTradeStagePfRatio("main", 0.08)).toBe(0.08)
   })

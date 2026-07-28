@@ -3,6 +3,7 @@ import {
   coordinateActiveRealLiveCounts,
   hydrateStrategySetSnapshots,
   selectLiveSetsWithActivePriority,
+  selectRealEvaluationWorkingSet,
   selectRealSetsWithActiveAndVariantPriority,
   StrategyCoordinator,
   type StrategySet,
@@ -303,20 +304,53 @@ describe("strategy position-count axis coordination", () => {
       variant: "trailing" as const,
       avgProfitFactor: 0.3,
     }
+    const block = {
+      ...baseSet([]),
+      setKey: "adjust:block",
+      variant: "block" as const,
+      avgProfitFactor: 0.15,
+    }
 
     const result = selectRealSetsWithActiveAndVariantPriority(
-      [...defaults, active, dca, trailing],
+      [...defaults, active, dca, trailing, block],
       new Set([active.setKey]),
-      4,
+      5,
     )
 
-    expect(result.selected).toHaveLength(11)
+    expect(result.selected).toHaveLength(12)
     expect(result.selected.map((set) => set.setKey)).toEqual(expect.arrayContaining([
       active.setKey,
       dca.setKey,
       trailing.setKey,
+      block.setKey,
     ]))
-    expect(result.reservedByVariant).toMatchObject({ dca: 1, trailing: 1 })
+    expect(result.reservedByVariant).toMatchObject({ dca: 1, trailing: 1, block: 1 })
+  })
+
+  test("keeps all evaluated axis rows despite a legacy working-set argument", () => {
+    const axisRows = (["long", "short"] as const).flatMap((direction) =>
+      Array.from({ length: 5 }, (_, index) => ({
+        ...baseSet([]),
+        setKey: `axis:${direction}:${index}`,
+        direction,
+        avgProfitFactor: 10 - index,
+        axisWindows: {
+          prev: 4,
+          last: 1,
+          cont: index,
+          pause: 0,
+          direction,
+          outcome: "pos" as const,
+          axisKey: `p4_l1_c${index}_opos_d${direction}`,
+        },
+        posCountsVolumeRatio: 0.05,
+      })),
+    )
+
+    const selected = selectRealEvaluationWorkingSet(axisRows, new Set(), 4)
+    expect(selected).toHaveLength(10)
+    expect(selected.filter((set) => set.direction === "long")).toHaveLength(5)
+    expect(selected.filter((set) => set.direction === "short")).toHaveLength(5)
   })
 
   test("round-trips derived Real Set scalars through compact v2 snapshots", () => {
@@ -365,6 +399,20 @@ describe("strategy position-count axis coordination", () => {
     ]
     const counts = coordinateActiveRealLiveCounts(real, [real[0]], new Set(["real:active"]))
     expect(counts).toEqual({ real: 1, live: 1, liveEvaluated: 2 })
+  })
+
+  test("keeps the complete Real-row count when the Live fast-path cache is compact", () => {
+    const cachedLive = [
+      { ...baseSet([]), setKey: "real:active" },
+      { ...baseSet([]), setKey: "real:candidate" },
+    ]
+    const counts = coordinateActiveRealLiveCounts(
+      cachedLive,
+      [cachedLive[0]],
+      new Set(["real:active"]),
+      5000,
+    )
+    expect(counts).toEqual({ real: 1, live: 1, liveEvaluated: 5000 })
   })
 
   test("combines pos-count Sets per exact Base and direction without hedging", () => {

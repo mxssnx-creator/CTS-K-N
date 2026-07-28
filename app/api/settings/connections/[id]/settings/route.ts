@@ -89,6 +89,26 @@ function normalizeCoordinationAxesInSettings(settings: Record<string, any>): voi
   settings.coordinationSettings = normalized
 }
 
+/**
+ * Base → Main → Real → Live is one mandatory processing pipeline.  The
+ * persisted `enabled` fields are retained only for backwards-compatible
+ * response shapes; callers cannot disable an individual stage.
+ */
+function enforceCombinedStrategyPipeline(settings: Record<string, any>): void {
+  const strategies = settings.strategies
+  if (!strategies || typeof strategies !== "object") return
+  for (const channelName of ["main", "preset"]) {
+    const channel = strategies[channelName]
+    if (!channel || typeof channel !== "object") continue
+    for (const stage of ["base", "main", "real", "live"]) {
+      const row = channel[stage]
+      if (!row || typeof row !== "object") continue
+      row.enabled = true
+      row.is_enabled = true
+    }
+  }
+}
+
 function parseStoredConnectionSettings(value: unknown): Record<string, any> {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, any>
@@ -368,6 +388,7 @@ export async function GET(
       ...jsonSettings,
       ...hashSettings,
     })
+    enforceCombinedStrategyPipeline(settings)
 
     // Rehydrate the canonical nested coordination object from both storage
     // forms. Quick Start and migrations may only have flat HASH fields while
@@ -545,6 +566,7 @@ export async function PUT(
       mergeConnectionSettings(currentSettings, incomingSettings),
     ))
     normalizeCoordinationAxesInSettings(mergedSettings)
+    enforceCombinedStrategyPipeline(mergedSettings)
     const hasSymbols = Array.isArray(body.symbols)
     if (hasSymbols) {
       const symbols = body.symbols.map(String).map((symbol: string) => symbol.trim()).filter(Boolean)
@@ -693,6 +715,7 @@ export async function PATCH(
       mergeConnectionSettings(current, settings),
     ))
     normalizeCoordinationAxesInSettings(merged)
+    enforceCombinedStrategyPipeline(merged)
     // Keep the canonical nested coordination object in sync with the top-level
     // knob. The Settings UI may send `posCountsVolumeRatio` either at the top
     // level or inside `coordinationSettings`; GET re-derives the value from the

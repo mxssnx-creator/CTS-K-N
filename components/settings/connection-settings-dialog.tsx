@@ -288,6 +288,15 @@ function normalizeStrategyChannel(
   }
 }
 
+function enforceStrategyChannelPipeline(profile: StrategyChannel): StrategyChannel {
+  return Object.fromEntries(
+    STRATEGY_TYPES.map((stage) => [
+      stage,
+      { ...profile[stage], enabled: true },
+    ]),
+  ) as StrategyChannel
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // COMPONENT
 // ─────────────────────────────────────────────────────────────────────
@@ -384,7 +393,10 @@ export function ConnectionSettingsDialog({
         symbol_count:         symbolsCfg.symbolCount,
         symbols:              symbolsCfg.symbols,
         indication_channels:  { main: indMain, preset: indPreset },
-        strategies:           { main: stratMain, preset: stratPreset },
+        strategies: {
+          main: enforceStrategyChannelPipeline(stratMain),
+          preset: enforceStrategyChannelPipeline(stratPreset),
+        },
         coordination_settings: coordination,
         prevPosMinCount:      coordination.prevPosMinCount,
         mainEvalPosCount:     coordination.mainEvalPosCount,
@@ -746,8 +758,8 @@ export function ConnectionSettingsDialog({
         symbols_confirmed: symbolsCfg.symbolOrder === "manual",
         // Strategies (per channel)
         strategies: {
-          main:   stratMain,
-          preset: stratPreset,
+          main: enforceStrategyChannelPipeline(stratMain),
+          preset: enforceStrategyChannelPipeline(stratPreset),
         },
         // Strategy coordination (axes + variants toggles).
         // These MUST be top-level keys in the payload — NOT nested inside
@@ -2221,7 +2233,9 @@ function StrategyProfileEditor({
                 <span className={`h-2 w-2 rounded-full ${ac.dot} shrink-0`} />
                 <span className="text-sm font-semibold tracking-tight">{ac.label} Stage</span>
               </div>
-              <Badge variant="secondary" className="text-[9px]">Pipeline active</Badge>
+              <span className="text-[10px] font-medium text-foreground">
+                Pipeline step · always active
+              </span>
             </div>
 
             {/* Min PF slider */}

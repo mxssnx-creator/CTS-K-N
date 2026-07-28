@@ -34,6 +34,7 @@ describe("instant settings hot reload", () => {
     coordinator._lastPosFingerprint = { BTCUSDT: "old-position-book" }
     coordinator._lastIndicationFingerprint = { BTCUSDT: "old-indications" }
     coordinator._lastRealSets = { BTCUSDT: [{ setKey: "old-set" }] }
+    coordinator._lastRealSetCounts = { BTCUSDT: 5000 }
     ;(StrategyCoordinator as any)._fpLru.set("settings-hot-reload-test:old", { setKey: "old-set" })
     ;(StrategyCoordinator as any)._axisLruMap.set("settings-hot-reload-test:old", { setKey: "old-axis" })
 
@@ -50,6 +51,7 @@ describe("instant settings hot reload", () => {
     expect(coordinator._lastPosFingerprint).toEqual({})
     expect(coordinator._lastIndicationFingerprint).toEqual({})
     expect(coordinator._lastRealSets).toEqual({})
+    expect(coordinator._lastRealSetCounts).toEqual({})
     expect((StrategyCoordinator as any)._fpLru.size).toBe(0)
     expect((StrategyCoordinator as any)._axisLruMap.size).toBe(0)
   })

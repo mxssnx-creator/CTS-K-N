@@ -466,7 +466,7 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
                       }
                     />
                     <p className="text-xs text-muted-foreground">
-                      Base Valid grid 0.80–2.70, step 0.02. Downstream Main/Real/Live defaults remain independently set to 1.12.
+                      Base Valid grid 0.40–2.70, step 0.02. Downstream Main/Real/Live defaults remain independently set to 1.12.
                     </p>
                   </div>
 
