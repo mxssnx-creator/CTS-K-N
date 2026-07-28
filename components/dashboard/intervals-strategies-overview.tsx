@@ -99,12 +99,12 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
         const statsRes = await fetch("/api/main/system-stats-v3").catch(() => null)
         if (statsRes?.ok) {
           const statsData = await statsRes.json()
-          const phases = statsData.workflowPhases || []
+          const pipelineEnabled = Boolean(statsData.tradeEngines?.mainEnabled)
           const fallbackStrategies: StrategyStats[] = [
-            { type: "base", enabled: true, rangeCount: 0, activePositions: statsData.activeConnections?.total || 0, totalIndications: 0, successRate: 0 },
-            { type: "main", enabled: statsData.tradeEngines?.mainEnabled || false, rangeCount: 0, activePositions: statsData.activeConnections?.active || 0, totalIndications: 0, successRate: 0 },
-            { type: "real", enabled: statsData.tradeEngines?.liveTradeEnabled || false, rangeCount: 0, activePositions: statsData.activeConnections?.liveTrade || 0, totalIndications: 0, successRate: 0 },
-            { type: "live", enabled: statsData.tradeEngines?.liveTradeEnabled || false, rangeCount: 0, activePositions: statsData.activeConnections?.liveTrade || 0, totalIndications: 0, successRate: 0 },
+            { type: "base", enabled: pipelineEnabled, rangeCount: 0, activePositions: statsData.activeConnections?.total || 0, totalIndications: 0, successRate: 0 },
+            { type: "main", enabled: pipelineEnabled, rangeCount: 0, activePositions: statsData.activeConnections?.active || 0, totalIndications: 0, successRate: 0 },
+            { type: "real", enabled: pipelineEnabled, rangeCount: 0, activePositions: statsData.activeConnections?.liveTrade || 0, totalIndications: 0, successRate: 0 },
+            { type: "live", enabled: pipelineEnabled, rangeCount: 0, activePositions: statsData.activeConnections?.liveTrade || 0, totalIndications: 0, successRate: 0 },
           ]
           setStrategies(fallbackStrategies)
         }
@@ -241,7 +241,7 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
             <Activity className="h-5 w-5 text-green-500" />
             Strategies Overview
           </CardTitle>
-          <CardDescription>Active strategies, ranges, and performance metrics</CardDescription>
+          <CardDescription>Fresh Base → Main → Real → Live set and pass snapshots</CardDescription>
         </CardHeader>
         <CardContent>
           {strategies.length === 0 ? (
@@ -258,7 +258,7 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
                       </Badge>
                     </div>
                     <Badge variant="outline" className="text-xs">
-                      {strategy.rangeCount} ranges
+                      {strategy.rangeCount} current sets
                     </Badge>
                   </div>
                   <div className="grid grid-cols-3 gap-4 text-sm">
@@ -267,11 +267,11 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
                       <div className="text-lg font-semibold">{strategy.activePositions}</div>
                     </div>
                     <div>
-                      <div className="text-muted-foreground text-xs">Total Indications</div>
+                      <div className="text-muted-foreground text-xs">Entries</div>
                       <div className="text-lg font-semibold">{strategy.totalIndications}</div>
                     </div>
                     <div>
-                      <div className="text-muted-foreground text-xs">Success Rate</div>
+                      <div className="text-muted-foreground text-xs">Pass Rate</div>
                       <div className="text-lg font-semibold">{strategy.successRate.toFixed(1)}%</div>
                     </div>
                   </div>

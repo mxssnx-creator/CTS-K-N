@@ -16,6 +16,14 @@ export const MAIN_TRADE_PF_RATIO_MIN = 0.08
 export const MAIN_TRADE_PF_RATIO_MAX = 2.7
 export const MAIN_TRADE_PF_RATIO_STEP = 0.02
 export const MAIN_TRADE_PF_RATIO_BASE = 0.1
+/**
+ * Canonical minimum for every Previous/Last-position quality check.
+ *
+ * This is deliberately independent from the Base/Main/Real/Live promotion
+ * thresholds below. With PositionCost 0.10%, ratio 0.30 means the rolling
+ * realised market move must average at least 0.30% (3 × PositionCost).
+ */
+export const PREVIOUS_POSITION_MIN_PF_RATIO = 0.3
 
 export const MAIN_TRADE_BASE_PF_RATIO_MIN = 0.8
 export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 0.8

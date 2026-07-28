@@ -285,8 +285,8 @@ export function calculateIndicationConfigurationCounts(
   const selectedSignalSources = signalSettings.enabled
     ? Math.min(enabledSignalSources, signalSettings.maxSourcesPerCycle)
     : 0
-  // Source rows always remain independent. `directExecutionEnabled` is the
-  // exact-config bootstrap bypass, not a switch that removes source rows.
+  // Source rows always remain independent. Fresh exact configs bootstrap
+  // automatically; the fixed 12-result quality gate is applied downstream.
   const signalDirectInputs = selectedSignalSources
   const signalConsensusInputs =
     selectedSignalSources >= signalSettings.minimumSourceSignals ? 1 : 0

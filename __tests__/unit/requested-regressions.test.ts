@@ -1222,6 +1222,9 @@ describe("requested regression guardrails", () => {
     expect(source).toContain('const heartbeatFresh = (() => {')
     expect(source).toContain('statusText === "running"')
     expect(source).toContain('isEnabledFlag((redisStatus as Record<string, unknown> | null | undefined)?.engine_ready)')
+    expect(source).toContain("...settingsState")
+    expect(source).toContain("...runtimeState")
+    expect(source).toContain("runtimeState.force_symbols || runtimeState.active_symbols || runtimeState.symbols")
     expect(source).not.toContain('const isRunning = globallyRunning && !globallyPaused')
   })
 
@@ -1846,14 +1849,15 @@ describe("requested regression guardrails", () => {
     const admissionEnd = liveStage.indexOf("async function persistSignalCapacitySnapshot", admissionStart)
     const admission = liveStage.slice(admissionStart, admissionEnd)
 
+    expect(signal).toContain("SIGNAL_PERFORMANCE_LOOKBACK = 12")
     expect(signal).toContain("SIGNAL_SOURCE_PERFORMANCE_LOOKBACK = 12")
     expect(signal).toContain("SIGNAL_LANE_PERFORMANCE_LOOKBACK = 10")
     expect(signal).toContain("directExecutionEnabled: true")
     expect(signal).toContain("maxSourcesPerCycle: SIGNAL_SOURCE_DEFINITIONS.length")
-    expect(signal).toContain("sourceAllowed && laneAllowed")
+    expect(signal).toContain("return { allowed: sourceAllowed && laneAllowed, sourceAllowed, laneAllowed }")
     expect(policy).toContain("SIGNAL_MAX_POSITIONS_DEFAULT = 120")
     expect(settings).toContain("Max open positions (Long + Short)")
-    expect(settings).toContain("Source 12 · lane 10")
+    expect(settings).toContain("Direct bootstrap execution")
     expect(admission).toContain('lrange(`live:positions:${connectionId}`, 0, -1)')
     expect(admission).toContain("const READ_BATCH_SIZE = 250")
     expect(admission).not.toContain("lrange(`live:positions:${connectionId}`, 0, 500)")
@@ -3068,6 +3072,20 @@ describe("requested regression guardrails", () => {
     expect(optimizer).toContain("Math.min(60, Math.round(config.params.timeframeMinutes || 1))")
     expect(optimizer).not.toContain("Math.min(15, Math.round(timeframeMinutesInput || 1))")
     expect(optimizer).not.toContain("Math.min(15, Math.round(config.params.timeframeMinutes || 1))")
+  })
+
+  test("legacy strategy monitoring reads canonical fresh Base/Main/Real/Live row snapshots", () => {
+    const route = read("app/api/monitoring/strategies/[id]/route.ts")
+    const overview = read("components/dashboard/intervals-strategies-overview.tsx")
+
+    expect(route).toContain('STRATEGY_STAGES: readonly StrategyStage[] = ["base", "main", "real", "live"]')
+    expect(route).toContain("strategy_detail:${connectionId}:${stage}")
+    expect(route).toContain('semantics: "current-fresh-row-snapshot"')
+    expect(route).toContain("now - timestamp > 5 * 60_000")
+    expect(route).not.toContain("`strategies:${connectionId}:${type}`")
+    expect(overview).toContain("current sets")
+    expect(overview).toContain("Pass Rate")
+    expect(overview).not.toContain("Total Indications")
   })
 
 })

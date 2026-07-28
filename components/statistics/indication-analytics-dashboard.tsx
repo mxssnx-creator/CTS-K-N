@@ -534,8 +534,8 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "commo
             {[
               ["Request interval", `${payload.signal.settings.requestIntervalSeconds}s`, "Hard minimum 30 seconds"],
               [
-                "Direct bootstrap",
-                payload.signal.settings.directExecutionEnabled ? "Enabled" : "PF-gated",
+                "Direct execution",
+                payload.signal.settings.directExecutionEnabled ? "Enabled" : "Config PF-gated",
                 "Source 12 · source/symbol/direction 10",
               ],
               ["Website sources", String(payload.signal.settings.maxSourcesPerCycle), "Independent public feeds per symbol cycle"],

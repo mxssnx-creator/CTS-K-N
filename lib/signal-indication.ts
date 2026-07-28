@@ -26,6 +26,7 @@ import {
 import { movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 
 export type SignalDirection = "long" | "short"
+export type SignalPerformanceDirection = SignalDirection | "overall"
 export const SIGNAL_PERFORMANCE_LOOKBACK = 12
 export const SIGNAL_SOURCE_PERFORMANCE_LOOKBACK = 12
 export const SIGNAL_LANE_PERFORMANCE_LOOKBACK = 10
@@ -371,12 +372,9 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     stopLossMinPct,
     boundedNumber(raw.stopLossMaxPct, DEFAULT_SIGNAL_INDICATION_SETTINGS.stopLossMaxPct, 0.2, 5),
   )
-  // The source/config performance gate is fixed to the newest 12 realised
-  // positions. Accepting a persisted/UI override here would make otherwise
-  // identical source × symbol × direction lanes use different evidence
-  // windows and violate the Signal contract. The PnL boundary is equally
-  // strict: every mature lane with a negative total is disabled; a legacy
-  // negative threshold must never keep a losing lane enabled.
+  // Exact-config and source evaluation use fixed windows so equal lanes always
+  // use equal evidence. The independent source-wide newest-12 and
+  // source×symbol×direction newest-10 gates are enforced below.
   const performanceLookback = SIGNAL_PERFORMANCE_LOOKBACK
   const performanceMinSamples = SIGNAL_PERFORMANCE_LOOKBACK
   const maxSourcesPerCycle = Math.round(boundedNumber(
@@ -409,6 +407,9 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
 
   return {
     enabled: bool(raw.enabled, true),
+    // Direct execution is enabled by default but remains an operator choice:
+    // when enabled it bypasses only the exact-config 12-result PF gate. The
+    // source-wide and source×symbol×direction negative-average gates still run.
     directExecutionEnabled: bool(raw.directExecutionEnabled, true),
     trailingEnabled,
     trailingOnly,
@@ -561,7 +562,7 @@ function signalPerformanceV2LaneKey(
   connectionId: string,
   sourceId: string,
   symbol: string,
-  direction: SignalDirection,
+  direction: SignalPerformanceDirection,
 ): string {
   return (
     `signal:performance:v2:${safePart(connectionId)}:lane:${safePart(sourceId)}:` +
@@ -573,7 +574,7 @@ function signalPerformanceV2ConfigKey(
   connectionId: string,
   sourceId: string,
   symbol: string,
-  direction: SignalDirection,
+  direction: SignalPerformanceDirection,
   configId: string,
   liveOnly = false,
 ): string {
@@ -602,7 +603,9 @@ function signalPerformanceV2Allowed(
 
 /**
  * Source and source×symbol×direction admission. Fresh lanes bootstrap
- * directly; mature negative lanes are independently disabled.
+ * directly; a mature negative source or direction lane is independently
+ * disabled. These guards always apply, including when direct execution
+ * bypasses the exact-config PF check.
  */
 export async function getSignalSourceLanePerformanceDecision(
   client: RedisClientLike,
@@ -658,11 +661,11 @@ export interface SignalConfigurationPerformanceDecision {
 }
 
 /**
- * Direct execution deliberately bypasses the rolling 12-position config PF
- * gate. Source-wide newest-12 and source×symbol×direction newest-10 negative
- * PnL gates are evaluated before this point. A permanently disabled exact
- * config (newest 16 real exchange closes negative) remains blocked in either
- * mode.
+ * Direct execution deliberately bypasses the rolling 12-position exact-config
+ * PF gate. Source-wide newest-12 and source×symbol×direction newest-10
+ * negative-average gates are evaluated before this point. A permanently
+ * disabled exact config (newest 16 real exchange closes negative) remains
+ * blocked in either mode.
  */
 export function signalConfigurationExecutionAllowed(
   directExecutionEnabled: boolean,
@@ -872,7 +875,7 @@ async function recordSignalPerformanceLane(input: {
   markerId: string
   sourceId: string
   symbol: string
-  direction: SignalDirection
+  direction: SignalPerformanceDirection
   sampleValue: number
   closedAt: number
   lookback: number
@@ -1026,6 +1029,20 @@ export async function recordSignalPerformanceOutcome(input: {
         ],
   )]
   const closedAt = input.closedAt ?? Date.now()
+  const explicitMovePct = Number(input.pnlPct)
+  const marketMovePct = Number.isFinite(explicitMovePct)
+    ? explicitMovePct
+    : input.pnl
+  const positionCostPct =
+    Number(input.positionCostPct) > 0 ? Number(input.positionCostPct) : 0.1
+  // Previous-position quality is stored in PositionCost-relative units so
+  // different volumes remain comparable. Older close callers and deterministic
+  // tests may not yet carry pnlPct; their signed PnL is retained as a
+  // compatibility fallback instead of silently dropping the outcome.
+  const costRelativeRatio = movePctToMainTradePfRatio(
+    marketMovePct,
+    positionCostPct,
+  )
 
   await Promise.all(sourceIds.map(async (sourceId) => {
     const key = performanceStateKey(input.connectionId, sourceId, input.symbol, input.direction)
@@ -1034,7 +1051,9 @@ export async function recordSignalPerformanceOutcome(input: {
     const indexKey = `signal:performance:index:${safePart(input.connectionId)}`
     const sample = JSON.stringify({
       positionId: input.positionId,
-      pnl: input.pnl,
+      pnl: costRelativeRatio,
+      marketMovePct,
+      positionCostPct,
       closedAt,
     })
     if (typeof client.eval === "function") {
@@ -1128,6 +1147,9 @@ export async function recordSignalPerformanceOutcome(input: {
   const v2IndexKey = `signal:performance:v2:index:${safePart(input.connectionId)}`
   const cooldownMs = settings.performanceCooldownMinutes * 60_000
   const attributedSources = sourceIds
+  // Source, source×symbol×direction and exact-config rows all use the same
+  // PositionCost-relative unit. Long+Short rows are stored beside the
+  // direction-specific admission rows for independent aggregate analytics.
   await Promise.all(attributedSources.flatMap((sourceId) => [
     recordSignalPerformanceLane({
       client,
@@ -1136,8 +1158,8 @@ export async function recordSignalPerformanceOutcome(input: {
       markerId: input.positionId,
       sourceId,
       symbol: "_overall",
-      direction: input.direction,
-      sampleValue: input.pnl,
+      direction: "overall",
+      sampleValue: costRelativeRatio,
       closedAt,
       lookback: SIGNAL_SOURCE_PERFORMANCE_LOOKBACK,
       minimumSamples: SIGNAL_SOURCE_PERFORMANCE_LOOKBACK,
@@ -1145,33 +1167,31 @@ export async function recordSignalPerformanceOutcome(input: {
       cooldownMs,
       laneKind: "source",
     }),
-    recordSignalPerformanceLane({
-      client,
-      key: signalPerformanceV2LaneKey(
-        input.connectionId,
+    ...([input.direction, "overall"] as const).map((performanceDirection) =>
+      recordSignalPerformanceLane({
+        client,
+        key: signalPerformanceV2LaneKey(
+          input.connectionId,
+          sourceId,
+          input.symbol,
+          performanceDirection,
+        ),
+        indexKey: v2IndexKey,
+        markerId: input.positionId,
         sourceId,
-        input.symbol,
-        input.direction,
-      ),
-      indexKey: v2IndexKey,
-      markerId: input.positionId,
-      sourceId,
-      symbol: input.symbol,
-      direction: input.direction,
-      sampleValue: input.pnl,
-      closedAt,
-      lookback: SIGNAL_LANE_PERFORMANCE_LOOKBACK,
-      minimumSamples: SIGNAL_LANE_PERFORMANCE_LOOKBACK,
-      disableBelowTotal: 0,
-      cooldownMs,
-      laneKind: "lane",
-    }),
+        symbol: input.symbol,
+        direction: performanceDirection,
+        sampleValue: costRelativeRatio,
+        closedAt,
+        lookback: SIGNAL_LANE_PERFORMANCE_LOOKBACK,
+        minimumSamples: SIGNAL_LANE_PERFORMANCE_LOOKBACK,
+        disableBelowTotal: 0,
+        cooldownMs,
+        laneKind: "lane",
+      }),
+    ),
   ]))
 
-  const costRelativeRatio = movePctToMainTradePfRatio(
-    Number.isFinite(Number(input.pnlPct)) ? Number(input.pnlPct) : input.pnl,
-    Number(input.positionCostPct) > 0 ? Number(input.positionCostPct) : 0.1,
-  )
   const exactLanes = Array.from(new Map(
     (input.signalLanes || []).map((lane) => {
       const normalized = {
@@ -1181,63 +1201,65 @@ export async function recordSignalPerformanceOutcome(input: {
       return [`${normalized.sourceId}|${normalized.configId}`, normalized]
     }),
   ).values()).filter((lane) => lane.sourceId && lane.configId)
-  await Promise.all(exactLanes.flatMap((lane) => {
-    const tasks: Promise<void>[] = [
-      recordSignalPerformanceLane({
-        client,
-        key: signalPerformanceV2ConfigKey(
-          input.connectionId,
-          lane.sourceId,
-          input.symbol,
-          input.direction,
-          lane.configId,
-          false,
-        ),
-        indexKey: v2IndexKey,
-        markerId: input.positionId,
-        sourceId: lane.sourceId,
-        symbol: input.symbol,
-        direction: input.direction,
-        sampleValue: costRelativeRatio,
-        closedAt,
-        lookback: SIGNAL_PERFORMANCE_LOOKBACK,
-        minimumSamples: SIGNAL_PERFORMANCE_LOOKBACK,
-        disableBelowTotal:
-          settings.configMinimumPfRatio * SIGNAL_PERFORMANCE_LOOKBACK,
-        cooldownMs,
-        laneKind: "config",
-        configId: lane.configId,
-      }),
-    ]
-    if (input.liveExchange) {
-      tasks.push(recordSignalPerformanceLane({
-        client,
-        key: signalPerformanceV2ConfigKey(
-          input.connectionId,
-          lane.sourceId,
-          input.symbol,
-          input.direction,
-          lane.configId,
-          true,
-        ),
-        indexKey: v2IndexKey,
-        markerId: input.positionId,
-        sourceId: lane.sourceId,
-        symbol: input.symbol,
-        direction: input.direction,
-        sampleValue: input.pnl,
-        closedAt,
-        lookback: SIGNAL_LIVE_DISABLE_LOOKBACK,
-        minimumSamples: SIGNAL_LIVE_DISABLE_LOOKBACK,
-        disableBelowTotal: 0,
-        cooldownMs,
-        laneKind: "live_config",
-        configId: lane.configId,
-        permanent: true,
-      }))
-    }
-    return tasks
-  }))
+  await Promise.all(exactLanes.flatMap((lane) =>
+    ([input.direction, "overall"] as const).flatMap((performanceDirection) => {
+      const tasks: Promise<void>[] = [
+        recordSignalPerformanceLane({
+          client,
+          key: signalPerformanceV2ConfigKey(
+            input.connectionId,
+            lane.sourceId,
+            input.symbol,
+            performanceDirection,
+            lane.configId,
+            false,
+          ),
+          indexKey: v2IndexKey,
+          markerId: input.positionId,
+          sourceId: lane.sourceId,
+          symbol: input.symbol,
+          direction: performanceDirection,
+          sampleValue: costRelativeRatio,
+          closedAt,
+          lookback: SIGNAL_PERFORMANCE_LOOKBACK,
+          minimumSamples: SIGNAL_PERFORMANCE_LOOKBACK,
+          disableBelowTotal:
+            settings.configMinimumPfRatio * SIGNAL_PERFORMANCE_LOOKBACK,
+          cooldownMs,
+          laneKind: "config",
+          configId: lane.configId,
+        }),
+      ]
+      if (input.liveExchange) {
+        tasks.push(recordSignalPerformanceLane({
+          client,
+          key: signalPerformanceV2ConfigKey(
+            input.connectionId,
+            lane.sourceId,
+            input.symbol,
+            performanceDirection,
+            lane.configId,
+            true,
+          ),
+          indexKey: v2IndexKey,
+          markerId: input.positionId,
+          sourceId: lane.sourceId,
+          symbol: input.symbol,
+          direction: performanceDirection,
+          sampleValue: costRelativeRatio,
+          closedAt,
+          lookback: SIGNAL_LIVE_DISABLE_LOOKBACK,
+          minimumSamples: SIGNAL_LIVE_DISABLE_LOOKBACK,
+          disableBelowTotal: 0,
+          cooldownMs,
+          laneKind: "live_config",
+          configId: lane.configId,
+          permanent: true,
+        }))
+      }
+      return tasks
+    }),
+  ))
 }
 
 export async function listSignalPerformance(
@@ -2080,10 +2102,9 @@ async function processSignalIndicationsUncached(
 
   const consensus = lowStopConsensus(allowedEvaluations, settings)
   const indications: any[] = []
-  // Every website source remains an independent Signal lane. The
-  // `directExecutionEnabled` setting controls only whether its exact
-  // configuration can bootstrap before the 12-result PF window; disabling
-  // it must not collapse all source lanes into the optional consensus row.
+  // Every website source remains an independent Signal lane. The direct
+  // setting controls only the exact-config PF check; source-wide and
+  // source×symbol×direction performance guards already ran above.
   const directSources = [...allowedEvaluations].sort(
     (left, right) =>
       left.stopLossPct - right.stopLossPct ||

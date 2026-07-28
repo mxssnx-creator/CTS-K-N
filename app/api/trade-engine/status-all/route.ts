@@ -140,12 +140,27 @@ export async function GET() {
     const engineStatuses = await Promise.all(
       activeConnections.map(async (conn) => {
         try {
-          const redisStatePromise = client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>))
-          const settingsStatePromise = client.hgetall(`settings:trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>))
-          const status = await withTimeout(coordinator.getEngineStatus(conn.id), 1200, null)
-          const redisStatus = status ?? {
-            ...(await withTimeout(redisStatePromise, 750, {} as Record<string, string>)),
-            ...(await withTimeout(settingsStatePromise, 750, {} as Record<string, string>)),
+          const [runtimeState, settingsState, status] = await Promise.all([
+            withTimeout(
+              client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
+              750,
+              {} as Record<string, string>,
+            ),
+            withTimeout(
+              client.hgetall(`settings:trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
+              750,
+              {} as Record<string, string>,
+            ),
+            withTimeout(coordinator.getEngineStatus(conn.id), 1200, null),
+          ])
+          // A newly compiled Next route can have a coordinator facade without
+          // the worker that owns the engine. Merge that facade with both Redis
+          // read models instead of replacing them: otherwise a small
+          // `{status:"ready"}` response erases the authoritative symbol basket.
+          const redisStatus = {
+            ...settingsState,
+            ...runtimeState,
+            ...(status || {}),
           }
           const statusText = String((redisStatus as Record<string, unknown> | null | undefined)?.status || "")
           const statusHeartbeat = String(
@@ -163,9 +178,19 @@ export async function GET() {
             heartbeatFresh ||
             isEnabledFlag((redisStatus as Record<string, unknown> | null | undefined)?.engine_ready)
           )
-          const configuredSymbols = parseSymbols(conn.active_symbols || conn.symbols)
-          const statusSymbols = parseSymbols(redisStatus?.symbols || redisStatus?.active_symbols)
-          const effectiveSymbols = configuredSymbols.length > 0 ? configuredSymbols : statusSymbols
+          const configuredSymbols = parseSymbols(conn.force_symbols || conn.active_symbols || conn.symbols)
+          const coordinatorSymbols = parseSymbols(status?.symbols || status?.active_symbols || status?.force_symbols)
+          const runtimeSymbols = parseSymbols(
+            runtimeState.force_symbols || runtimeState.active_symbols || runtimeState.symbols,
+          )
+          const settingsSymbols = parseSymbols(
+            settingsState.force_symbols || settingsState.active_symbols || settingsState.symbols,
+          )
+          const effectiveSymbols =
+            configuredSymbols.length > 0 ? configuredSymbols :
+              coordinatorSymbols.length > 0 ? coordinatorSymbols :
+                runtimeSymbols.length > 0 ? runtimeSymbols :
+                  settingsSymbols
           const rawEngineStatus = {
             ...((redisStatus ?? {
               status: globallyPaused ? "paused" : (isRunning ? "running" : "stopped"),

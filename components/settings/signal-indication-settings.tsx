@@ -82,6 +82,7 @@ interface SignalSettings {
   performanceLookback: number
   performanceMinSamples: number
   performanceDisableBelowPnl: number
+  configMinimumPfRatio: number
   performanceCooldownMinutes: number
   circuitFailureThreshold: number
   circuitCooldownSeconds: number
@@ -354,9 +355,10 @@ export function SignalIndicationSettings() {
                 ["Timeframe", `${settings.timeframeMinutes} minute`],
                 ["Registry", `${sources.length} websites`],
                 ["Selection", settings.positionSelectionMode === "best_first" ? "Best first" : settings.positionSelectionMode],
-                ["PnL lookback", `${settings.performanceLookback} closed`],
-                ["Minimum evidence", `${settings.performanceMinSamples} closed`],
-                ["Disable boundary", `PnL < ${settings.performanceDisableBelowPnl}`],
+                ["Source gate", "12 closed · avg ≥ 0"],
+                ["Symbol + direction", "10 closed · avg ≥ 0"],
+                ["Config PF", `${settings.performanceLookback} · ratio ${settings.configMinimumPfRatio.toFixed(2)}`],
+                ["Permanent disable", "16-result avg < 0"],
               ].map(([label, value]) => (
                 <div key={label} className="bg-background px-2.5 py-2">
                   <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{label}</div>

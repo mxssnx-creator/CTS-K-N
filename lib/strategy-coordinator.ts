@@ -68,6 +68,7 @@ import {
 } from "@/lib/signal-config-matrix"
 import {
   MAIN_TRADE_STAGE_PF_DEFAULTS,
+  PREVIOUS_POSITION_MIN_PF_RATIO,
   movePctToMainTradePfRatio,
   normalizeMainTradeStagePfRatio,
 } from "@/lib/main-trade-profit-factor"
@@ -3813,7 +3814,10 @@ export class StrategyCoordinator {
     // adjusting exchange exposure as new entries land.
     let axisSetsAdded = 0
     if (!skipAxisFanout && defaultByBaseKey.size > 0) {
-      const minPF = metrics.minProfitFactor   // Same gate as Base→Main
+      // Previous/Last axes have one system-wide realised-result boundary
+      // (0.30 = 3 × PositionCost). Stage promotion remains governed by its
+      // independent Base/Main/Real/Live threshold later in the pipeline.
+      const minPF = PREVIOUS_POSITION_MIN_PF_RATIO
       const liveCont = symbolCtx?.continuousCount ?? 0
       // Direction-specific open counts for this symbol — gives expandAxisSets
       // independent liveCont per direction so long and short axis Sets get
@@ -8149,7 +8153,7 @@ export class StrategyCoordinator {
       const hasOwnDdtWindow = !!ownWindow && ownWindow.count >= previousWindow
       const ownPfFails =
         hasOwnRatioWindow &&
-        ownWindow!.positionCostRatio < metrics.minProfitFactor
+        ownWindow!.positionCostRatio < PREVIOUS_POSITION_MIN_PF_RATIO
       const ownDdtFails =
         hasOwnDdtWindow &&
         ownWindow!.avgDDT > metrics.maxDrawdownTime
