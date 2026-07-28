@@ -741,6 +741,12 @@ credentials are present.
   target, delete the exact checkout, clone the requested revision, restore that
   state and run the canonical installer. In-place Git rewrites and silent
   rollback of a partially upgraded checkout are no longer used.
+- [x] CTS-K-N release handoffs preserve both local and remote recovery points:
+  create and verify a complete Git bundle under `/workspace/CTS-K-N-backups`,
+  create exact pre-release backup refs for every rewritten GitHub branch, then
+  update the release branch and `main` atomically with SHA-pinned
+  `--force-with-lease`. Never use an unguarded blind force push; verify all
+  destination and backup SHAs independently after publication.
 - [x] Final release checks: 122 Jest suites / 859 tests, TypeScript, ESLint,
   Kilo preflight (37 checks, schema 90), installer/volatile-cleanup gates,
   secret scan, recreation-manifest verification, and a fresh production build
