@@ -49,6 +49,7 @@ CTS_NODE_BIN	test-or-operator-tool	no	no	1	scripts/start-production.mjs
 CTS_NPM_REDIS_ROOT	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 CTS_REDIS_DATA_DIR	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 CTS_REDIS_PORT	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
+CTS_TEST_BOOTSTRAP	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
 CTS_TEST_CAPTURE	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
 CTS_TEST_EXPECT_MODE	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
 CTS_TEST_INSTALLER	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
@@ -140,6 +141,7 @@ NEXT_PUBLIC_KILO_DASHBOARD_PULSE	application-runtime	no	no	1	components/engine-a
 NEXT_PUBLIC_QUICKSTART_AWAIT_ENGINE_BOOT	application-runtime	no	no	1	app/api/trade-engine/quick-start/route.ts
 NEXT_RUNTIME	platform-provided	no	no	16	__tests__/unit/live-trade-block-clearance.test.ts,__tests__/unit/requested-regressions.test.ts,__tests__/unit/trade-engine-start-lock.test.ts,app/api/settings/connections/[id]/enable/route.ts,app/api/settings/connections/[id]/live-trade/route.ts,app/api/settings/connections/[id]/preset-toggle/route.ts,app/api/settings/connections/[id]/signal-toggle/route.ts,app/api/settings/connections/[id]/toggle-dashboard/route.ts,app/api/trade-engine/start/route.ts,instrumentation.ts,lib/deployment-runtime.ts,lib/engine-refresh-queue.ts,lib/metrics-collector.ts,lib/pre-startup.ts,lib/runtime-startup-state.ts,lib/trade-engine.ts
 NEXT_TRACE_BUILD_ATTEMPTS	test-or-operator-tool	no	no	1	scripts/build-next-with-trace-retry.mjs
+NEXT_TRACE_CHILD_SETTLE_MS	test-or-operator-tool	no	no	1	scripts/build-next-with-trace-retry.mjs
 NEXT_TRACE_SETTLE_MS	test-or-operator-tool	no	no	1	scripts/build-next-with-trace-retry.mjs
 NEXT_TRACE_SUCCESS_SETTLE_MS	test-or-operator-tool	no	no	1	scripts/build-next-with-trace-retry.mjs
 NEXTAUTH_URL	test-or-operator-tool	no	yes	1	.env.example

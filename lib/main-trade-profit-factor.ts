@@ -17,6 +17,7 @@ export const MAIN_TRADE_PF_RATIO_MAX = 2.7
 export const MAIN_TRADE_PF_RATIO_STEP = 0.02
 export const MAIN_TRADE_PF_RATIO_BASE = 0.1
 
+export const MAIN_TRADE_BASE_PF_RATIO_MIN = 0.8
 export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 0.8
 export const MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT = 1.12
 
@@ -67,11 +68,20 @@ export function mainTradeStagePfDefault(stage: MainTradeStage): number {
   return MAIN_TRADE_STAGE_PF_DEFAULTS[stage]
 }
 
+export function mainTradeStagePfMin(stage: MainTradeStage): number {
+  return stage === "base"
+    ? MAIN_TRADE_BASE_PF_RATIO_MIN
+    : MAIN_TRADE_PF_RATIO_MIN
+}
+
 export function normalizeMainTradeStagePfRatio(
   stage: MainTradeStage,
   value: unknown,
 ): number {
-  return normalizeMainTradePfRatio(value, mainTradeStagePfDefault(stage))
+  return Math.max(
+    mainTradeStagePfMin(stage),
+    normalizeMainTradePfRatio(value, mainTradeStagePfDefault(stage)),
+  )
 }
 
 /**

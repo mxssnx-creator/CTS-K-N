@@ -560,12 +560,13 @@ describe("Signal indication persistence and independent performance gates", () =
     expect(settings.performanceDisableBelowPnl).toBe(0)
   })
 
-  test("defaults Signal physical capacity to 120 and fixes best-first admission", () => {
+  test("defaults all 35 sources, physical capacity 120 and best-first admission", () => {
     const defaults = normalizeSignalIndicationSettings({})
     const clamped = normalizeSignalIndicationSettings({
       maxPositionsTotal: 9_999,
       positionSelectionMode: "fifo",
     })
+    expect(defaults.maxSourcesPerCycle).toBe(35)
     expect(defaults.maxPositionsTotal).toBe(120)
     expect(defaults.positionSelectionMode).toBe("best_first")
     expect(clamped.maxPositionsTotal).toBe(120)

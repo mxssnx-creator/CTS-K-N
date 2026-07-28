@@ -39,21 +39,21 @@ pnpm kilo:preflight
 ### Independent long-lived Linux server
 
 For a clean or repeatable Git-based server install (Ubuntu/Debian/RHEL/Fedora),
-run this one command. A repeat run stops the exact saved CTS services, stages
-only the resolved `/opt/<name>` checkout until verification passes, and
-preserves its protected environment/local CTS Redis state:
+run this one command. A repeat run stops the exact saved CTS services, preserves
+its protected environment/local CTS Redis state outside the target, deletes only
+the resolved `/opt/<name>` checkout, then clones and verifies a fresh revision:
 
 ```bash
 tmp="$(mktemp -d)" && git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git "$tmp/cts-kn" && cd "$tmp/cts-kn" && sudo bash scripts/bootstrap-install.sh --name cts-kn --port 3002
 ```
 
 ```bash
-git clone https://github.com/mxssnx-creator/CTS-K-N.git /opt/cts-kn
-cd /opt/cts-kn
+tmp="$(mktemp -d)" && git clone https://github.com/mxssnx-creator/CTS-K-N.git "$tmp/cts-kn"
+cd "$tmp/cts-kn"
 bash scripts/install.sh --preflight-only --skip-system-packages \
   --runtime auto --service-user cts-kn --create-service-user --non-interactive
-sudo bash scripts/install.sh --runtime auto --service-user cts-kn \
-  --create-service-user --non-interactive
+sudo bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn \
+  --runtime auto --service-user cts-kn
 ```
 
 The installer supports Debian/Ubuntu and RHEL/Fedora/Amazon Linux families,
@@ -70,9 +70,10 @@ successful install records its values in `.cts-runtime/install-values.env`:
 When the Git bootstrap runs again, it resolves the saved installation from an
 explicit path/name, systemd `WorkingDirectory`, or a unique
 `/opt/*/.cts-runtime/install-values.env`. It stops the matching app and
-minute-scheduler, stages the old checkout for rollback, then clones and verifies
-a clean revision. The environment, application data/logs, and CTS-managed local
-Redis state survive; shared and external Redis are never deleted.
+minute-scheduler, copies protected CTS state outside the target, removes the
+exact checkout, then clones and verifies a clean revision. The environment,
+application data/logs, and CTS-managed local Redis state survive; shared and
+external Redis are never deleted.
 Name-only discovery also covers PM2 installs whose checkout directory differs
 from the service name. Ambiguous duplicate names fail closed and require
 `--dir`. Dedicated install/environment paths use safe absolute Linux path
@@ -88,8 +89,8 @@ sudo /opt/cts-kn/scripts/update.sh
 
 `update.sh` uses the saved service, runtime, user, port, environment, repository,
 branch, and project root. It refuses identity mismatches or tracked local
-changes, and keeps the previous production artifact until the canonical
-installer has rebuilt, migrated, restarted, and verified the update.
+changes, then delegates to the same stop → delete → fresh-install lifecycle as
+the bootstrap script.
 
 To remove the CTS services, CTS-owned runtime data, installer-created service
 account and checkout, while preserving shared Bun/Node/Redis and external Redis
@@ -180,7 +181,7 @@ The complete recreation kit begins at
 
 - system architecture, ownership, and complete directory map;
 - stage, Block, DCA, exchange, and settings propagation contracts;
-- Redis data model, schema v84 migrations, recovery, and backup rules;
+- Redis data model, schema v89 migrations, recovery, and backup rules;
 - complete environment/deployment/install procedures;
 - acceptance tests and a clean-room rebuild runbook;
 - generated API, page, environment, migration, test, source-tree, and SHA-256

@@ -258,7 +258,7 @@ export const DEFAULT_SIGNAL_INDICATION_SETTINGS: SignalIndicationSettings = {
   trailingUpdateStopRangeRatio: SIGNAL_TRAILING_DEFAULT_UPDATE_STOP_RANGE_RATIO,
   timeframeMinutes: 1,
   candleLimit: 60,
-  maxSourcesPerCycle: 10,
+  maxSourcesPerCycle: SIGNAL_SOURCE_DEFINITIONS.length,
   maxPositionsTotal: SIGNAL_MAX_POSITIONS_DEFAULT,
   positionSelectionMode: SIGNAL_POSITION_SELECTION_MODE,
   requestIntervalSeconds: SIGNAL_REQUEST_INTERVAL_MIN_SECONDS,
@@ -383,7 +383,7 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     raw.maxSourcesPerCycle,
     DEFAULT_SIGNAL_INDICATION_SETTINGS.maxSourcesPerCycle,
     3,
-    35,
+    SIGNAL_SOURCE_DEFINITIONS.length,
   ))
   const minimumSourceSignals = Math.min(
     maxSourcesPerCycle,

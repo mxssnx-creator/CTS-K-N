@@ -19,6 +19,7 @@ import { clearRuntimeLogThrottle, logRuntimeInfo } from "@/lib/runtime-log-throt
 // engine-timings cache is empty (process cold start) or holds an invalid
 // value that fails the clamp.
 import { getEngineTimings } from "@/lib/engine-timings"
+import { MAIN_TRADE_BASE_PF_RATIO_MIN } from "@/lib/main-trade-profit-factor"
 
 // ── Per-(connection,symbol) strategy-flow throttle ─────────────────────
 // PROBLEM: the engine strategy timer fires every DEFAULT_CYCLE_PAUSE_MS
@@ -207,7 +208,7 @@ export class StrategyProcessor {
       // thresholds on derived Sets, so passing fresh indications through
       // here does not weaken the production order pipeline — it only
       // ensures the engine can bootstrap its statistics.
-      const VALIDITY_PF_FLOOR = 0.5
+      const VALIDITY_PF_FLOOR = MAIN_TRADE_BASE_PF_RATIO_MIN
       const validIndications = indications.filter((ind) => {
         if (!ind) return false
         // Explicit skip markers — an indication with `validated === false`

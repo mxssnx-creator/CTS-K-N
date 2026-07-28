@@ -49,8 +49,15 @@ scripts stop without changing anything and require an explicit directory.
 Install and environment paths must be dedicated absolute Linux paths containing
 only letters, digits, `.`, `_`, `-`, and `/`.
 
-Pass installer options after `--`, for example:
-`-- --skip-tests --seed-env-file /root/cts-kn.seed.env`.
+Every install/upgrade uses the same explicit order: stop the resolved CTS app,
+scheduler and local Redis service; preserve CTS-owned state outside the target;
+delete the exact target directory; clone the requested revision; then run the
+complete installation, migration, build, restart and continuity contract.
+
+Pass canonical installer options after `--`, for example `-- --skip-tests`.
+Pass bootstrap options, including `--seed-env-file /root/cts-kn.seed.env`,
+before `--` so a seed located inside the old target can be preserved before
+that target is removed.
 
 ### Host requirements
 
@@ -82,19 +89,17 @@ NEXT_PUBLIC_APP_URL=https://owner.example.com
 DEPLOYMENT_URL=https://owner.example.com
 ```
 
-Then install:
+Then perform the complete clean server install:
 
 ```bash
-# Interactive: prompts for project/service name and port when omitted.
-sudo bash scripts/install.sh
+# Clean install or upgrade: services stop first, then /opt/cts-kn is removed,
+# then the selected revision is cloned and verified from scratch.
+sudo bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn \
+  --runtime auto --service-user cts-kn --seed-env-file /root/cts-kn.seed.env
 
-# Positional arguments are supported too.
-sudo bash scripts/install.sh cts-kn 3002 \
-  --runtime auto --create-service-user \
-  --seed-env-file /root/cts-kn.seed.env --non-interactive
-
-# Force reinstall of OS apps/runtimes/global tools and locked dependencies.
-sudo bash scripts/install.sh cts-kn 3002 --reinstall
+# Also reinstall OS apps/runtimes/global tools and locked dependencies.
+sudo bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn -- \
+  --reinstall
 ```
 
 The canonical default project/service name is `cts-kn`. Existing operating-system
@@ -110,12 +115,14 @@ The installer:
 3. provisions/verifies durable Redis and safe environment gates;
 4. generates missing admin, cron, encryption and JWT secrets;
 5. installs the frozen lockfile, typechecks, lints and runs all Jest tests;
-6. stops the old runtime, stages its `.next`, and builds production;
+6. stops the old runtime, preserves CTS-owned state outside the target, removes
+   the exact target directory, clones a fresh revision, and builds production;
 7. creates read-only runtime code ownership plus writable `.next/cache`;
 8. installs one app and one minute-scheduler service under the unprivileged user;
 9. initializes schema, performs one scheduler tick and runs the deployment contract;
 10. restarts services, verifies durable site identity and repeats the contract;
-11. removes the staged backup only after success, or restores it on any failure.
+11. removes the temporary state archive only after success; on failure it stays
+   outside the removed target so the operator can rerun the clean installer.
 
 The Git bootstrap treats its `--dir` as one installation boundary. On a repeat
 run it reads `.cts-runtime/install-values.env` (or explicit `--name`/`--port`),
@@ -174,13 +181,13 @@ The API validates host/ports/names/branch/repository/directory/environment,
 blocks dangerous directories and environment injection, stores a supplied SSH
 key in a private temporary directory, uses `BatchMode` when applicable, requires
 passwordless sudo, checks capacity, clones a disposable revision for preflight,
-then delegates installation to `scripts/install.sh`. Each request uses its own
+then delegates installation to `scripts/bootstrap-install.sh`. Each request uses its own
 temporary `known_hosts` file, so a read-only service home neither breaks the SSH
 client nor shares target trust between requests. Secrets are base64-carried
 inside SSH stdin rather than exposed in command arguments.
 
-Existing checkouts must be clean, match the requested origin, and fast-forward.
-Non-empty non-Git targets fail closed.
+An existing CTS target is resolved by its saved identity, stopped, preserved
+outside the target, removed, and freshly cloned. Non-CTS targets fail closed.
 
 ## Kilo / Cloudflare deployment
 

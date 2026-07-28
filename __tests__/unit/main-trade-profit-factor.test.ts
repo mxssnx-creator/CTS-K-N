@@ -2,10 +2,12 @@ import {
   MAIN_TRADE_PF_RATIO_MAX,
   MAIN_TRADE_PF_RATIO_MIN,
   MAIN_TRADE_STAGE_PF_DEFAULTS,
+  mainTradeStagePfMin,
   mainTradePfRatioPasses,
   mainTradePfRatioToMovePct,
   movePctToMainTradePfRatio,
   normalizeMainTradePfRatio,
+  normalizeMainTradeStagePfRatio,
 } from "@/lib/main-trade-profit-factor"
 import { derivePosWindowStats } from "@/lib/pos-history"
 import fs from "node:fs"
@@ -24,6 +26,15 @@ describe("Main Trade PositionCost-relative PF ratios", () => {
     expect(normalizeMainTradePfRatio(0.079)).toBe(0.08)
     expect(normalizeMainTradePfRatio(0.111)).toBe(0.12)
     expect(normalizeMainTradePfRatio(99)).toBe(2.7)
+  })
+
+  test("enforces the Base 0.80 floor without weakening the downstream 0.08 floor", () => {
+    expect(mainTradeStagePfMin("base")).toBe(0.8)
+    expect(mainTradeStagePfMin("main")).toBe(0.08)
+    expect(normalizeMainTradeStagePfRatio("base", 0.08)).toBe(0.8)
+    expect(normalizeMainTradeStagePfRatio("base", 0.79)).toBe(0.8)
+    expect(normalizeMainTradeStagePfRatio("base", 0.82)).toBe(0.82)
+    expect(normalizeMainTradeStagePfRatio("main", 0.08)).toBe(0.08)
   })
 
   test("converts the ratio against PositionCost exactly once", () => {

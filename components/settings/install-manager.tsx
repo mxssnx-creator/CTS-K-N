@@ -221,11 +221,13 @@ export default function InstallManager() {
       toast.error("Run and pass the remote preflight first")
       return
     }
-    if (mode === "install" && !confirm(`Install or upgrade ${remoteForm.projectName} on ${remoteForm.host}:${remoteForm.appPort}?`)) return
+    if (mode === "install" && !confirm(
+      `Clean-install ${remoteForm.projectName} on ${remoteForm.host}:${remoteForm.appPort}? Running CTS services are stopped, the exact target directory is removed, then a fresh verified installation runs.`,
+    )) return
 
     setRemoteInstalling(true)
     setRemoteMode(mode)
-    setRemoteLog([mode === "preflight" ? "Running non-persistent remote production preflight..." : "Connecting over SSH and starting the verified production deployment..."])
+    setRemoteLog([mode === "preflight" ? "Running non-persistent remote production preflight..." : "Connecting over SSH: stop services → delete target → fresh verified installation..."])
 
     try {
       const { adminSecret, ...payload } = remoteForm
@@ -649,13 +651,13 @@ export default function InstallManager() {
           <Card>
             <CardHeader>
               <CardTitle>Install Remote on Server through SSH</CardTitle>
-              <CardDescription>Deploy, validate, build, and keep the app plus its minute scheduler running through systemd or PM2 on a remote Linux server.</CardDescription>
+              <CardDescription>Cleanly replace, validate, build, and run the app plus its minute scheduler through systemd or PM2 on a remote Linux server.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <Alert>
                 <Server className="h-4 w-4" />
                 <AlertDescription className="text-xs">
-                  A successful non-persistent preflight is required before installation. The target needs passwordless sudo. SSH private-key auth is recommended; password auth additionally requires sshpass on this API host.
+                  A successful non-persistent preflight is required before installation. The exact CTS services are stopped, the target directory is removed, and a fresh checkout is installed; protected CTS state is preserved outside the target for the handoff. The target needs passwordless sudo. SSH private-key auth is recommended; password auth additionally requires sshpass on this API host.
                 </AlertDescription>
               </Alert>
 
@@ -786,24 +788,24 @@ export default function InstallManager() {
         <CardContent className="space-y-4">
           <div className="space-y-3">
             <div>
-              <p className="text-sm font-medium mb-2">1. Clone the verified repository</p>
+              <p className="text-sm font-medium mb-2">1. Clone the verified repository into a temporary bootstrap location</p>
               <div className="bg-muted/50 p-3 rounded-lg font-mono text-sm">
-                <code>git clone https://github.com/mxssnx-creator/CTS-K-N.git /opt/cts-kn</code>
+                <code>tmp=&quot;$(mktemp -d)&quot; &amp;&amp; git clone https://github.com/mxssnx-creator/CTS-K-N.git &quot;$tmp/cts-kn&quot;</code>
               </div>
             </div>
 
             <div>
               <p className="text-sm font-medium mb-2">2. Run the non-mutating preflight</p>
               <div className="bg-muted/50 p-3 rounded-lg font-mono text-sm space-y-1">
-                <div><code>cd /opt/cts-kn</code></div>
+                <div><code>cd &quot;$tmp/cts-kn&quot;</code></div>
                 <div><code className="text-primary">bash scripts/install.sh --preflight-only --skip-system-packages</code></div>
               </div>
             </div>
 
             <div>
-              <p className="text-sm font-medium mb-2">3. Install app, scheduler, Redis contract, and boot services</p>
+              <p className="text-sm font-medium mb-2">3. Stop existing CTS services, replace the target, then install app, scheduler, Redis contract, and boot services</p>
               <div className="bg-muted/50 p-3 rounded-lg font-mono text-sm space-y-1">
-                <div><code className="text-primary">sudo bash scripts/install.sh --runtime systemd --service-user cts-kn --create-service-user --non-interactive</code></div>
+                <div><code className="text-primary">sudo bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn --runtime systemd --service-user cts-kn</code></div>
               </div>
             </div>
           </div>

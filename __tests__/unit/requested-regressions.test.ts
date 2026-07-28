@@ -1845,6 +1845,7 @@ describe("requested regression guardrails", () => {
     expect(signal).toContain("SIGNAL_SOURCE_PERFORMANCE_LOOKBACK = 12")
     expect(signal).toContain("SIGNAL_LANE_PERFORMANCE_LOOKBACK = 10")
     expect(signal).toContain("directExecutionEnabled: true")
+    expect(signal).toContain("maxSourcesPerCycle: SIGNAL_SOURCE_DEFINITIONS.length")
     expect(signal).toContain("sourceAllowed && laneAllowed")
     expect(policy).toContain("SIGNAL_MAX_POSITIONS_DEFAULT = 120")
     expect(settings).toContain("Max open positions (Long + Short)")
@@ -1932,6 +1933,24 @@ describe("requested regression guardrails", () => {
     expect(createRoute).toContain("block_only: body.block_only !== false")
     expect(updateRoute).toContain("block_enabled: body.block_enabled !== false")
     expect(updateRoute).toContain("block_only: body.block_only !== false")
+  })
+
+  test("statistics never invent portfolio balance, TP/SL values, trailing values, or execution PF", () => {
+    const analytics = read("lib/analytics.ts")
+    const page = read("app/statistics/page.tsx")
+    const table = read("components/statistics/strategy-performance-table.tsx")
+
+    expect(analytics).toContain("grossProfit / grossLoss")
+    expect(analytics).toContain("let balance = 0")
+    expect(analytics).not.toContain("let balance = 10000")
+    expect(analytics).not.toContain("trail_start: 0.6")
+    expect(analytics).not.toContain("trail_stop: 0.2")
+    expect(analytics).not.toContain("return 1.05")
+    expect(analytics).not.toContain("return 2 // Default 2:1 ratio")
+    expect(page).toContain(".map(toStatisticsPseudoPosition)")
+    expect(page).not.toContain("takeprofit_factor: 2.0")
+    expect(page).not.toContain("p.margin_used || 100")
+    expect(table).toContain("TP Move")
   })
 
   test("Main axes and Base profiles remain exhaustive without a candidate ceiling", () => {
