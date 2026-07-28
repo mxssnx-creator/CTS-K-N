@@ -532,6 +532,54 @@ async function main() {
       timeoutMs: 120_000,
     })))
 
+    // QuickStart commits settings before its intentionally asynchronous engine
+    // boot has necessarily published the new runtime inventory. A network
+    // Redis cold install makes that hand-off visible for a few seconds; do not
+    // treat the prior migration basket as the first soak sample. Wait for the
+    // exact configured basket while still failing on a stalled start.
+    const inventoryDeadline = Date.now() + 120_000
+    let lastInventory = ""
+    while (Date.now() < inventoryDeadline) {
+      const status = (await request("/api/trade-engine/status-all", {
+        timeoutMs: 60_000,
+      })).json
+      const active = Array.isArray(status?.engines)
+        ? status.engines.find((entry) => String(entry?.connectionId) === connectionId)
+        : null
+      const symbols = Array.isArray(active?.engineStatus?.symbols)
+        ? active.engineStatus.symbols.map(String)
+        : []
+      lastInventory = JSON.stringify({
+        engine: Boolean(active),
+        running: active?.isRunning,
+        symbols,
+      })
+      if (
+        active &&
+        symbols.length === SYMBOLS.length &&
+        symbols.every((symbol, index) => symbol === SYMBOLS[index])
+      ) {
+        break
+      }
+      await sleep(500)
+    }
+    const readyStatus = (await request("/api/trade-engine/status-all", {
+      timeoutMs: 60_000,
+    })).json
+    const readyEngine = Array.isArray(readyStatus?.engines)
+      ? readyStatus.engines.find((entry) => String(entry?.connectionId) === connectionId)
+      : null
+    const readySymbols = Array.isArray(readyEngine?.engineStatus?.symbols)
+      ? readyEngine.engineStatus.symbols.map(String)
+      : []
+    if (
+      !readyEngine ||
+      readySymbols.length !== SYMBOLS.length ||
+      readySymbols.some((symbol, index) => symbol !== SYMBOLS[index])
+    ) {
+      throw new Error(`Engine did not publish the exact ${SYMBOLS.length}-symbol basket: ${lastInventory}`)
+    }
+
     if (VERIFY_SIGNAL_ENGINE) {
       const current = (await request(
         `/api/settings/indications/signal?connectionId=${encodeURIComponent(connectionId)}`,

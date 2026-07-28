@@ -470,8 +470,12 @@ export class InlineLocalRedis implements RedisClientLike {
         fsSync = getBuiltinModule("fs")
         readline = getBuiltinModule("readline")
       } else {
-        fsSync = await import("fs")
-        readline = await import("readline")
+        // Keep built-ins out of Webpack's module graph. Supported Node
+        // runtimes expose getBuiltinModule; this fallback covers earlier Node
+        // 20 patch releases without a statically analyzable import.
+        const dynamicRequire = Function("m", "return require(m)") as (name: string) => any
+        fsSync = dynamicRequire("fs")
+        readline = dynamicRequire("readline")
       }
     } catch {
       return false
