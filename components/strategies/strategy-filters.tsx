@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Filter, RotateCcw, Sparkles, SlidersHorizontal } from "lucide-react"
+import { MAIN_TRADE_BASE_PF_RATIO_DEFAULT } from "@/lib/main-trade-profit-factor"
 
 interface StrategyFiltersProps {
   filters: {
@@ -34,7 +35,7 @@ export function StrategyFilters({ filters, onFiltersChange }: StrategyFiltersPro
       mainStrategyType: [],
       adjustmentType: [],
       validationState: [],
-      profitFactorMin: 0.4,
+      profitFactorMin: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
       volumeFactorMin: 1,
       volumeFactorMax: 5,
       trailingOnly: false,

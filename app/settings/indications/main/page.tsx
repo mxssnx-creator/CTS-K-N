@@ -27,28 +27,28 @@ export default function MainIndicationsSettingsPage() {
     },
     direction: {
       enabled: true,
-      range: { from: 3, to: 30, step: 1 },
+      range: { from: 2, to: 30, step: 1 },
       drawdown_ratio: { from: 0.1, to: 0.5, step: 0.1 },
       market_change_range: { from: 1, to: 10, step: 2 },
       market_change_lastpart_base: 20,
       market_change_lastpart_ratios: { from: 1.0, to: 2.5, step: 0.5 },
       min_calculation_time: 3,
       interval: 1,
-      timeout: 3,
+      timeout: 0.25,
     },
     move: {
       enabled: true,
-      range: { from: 3, to: 30, step: 1 },
+      range: { from: 2, to: 30, step: 1 },
       drawdown_ratio: { from: 0.1, to: 0.5, step: 0.1 },
       market_change_range: { from: 1, to: 10, step: 2 },
       market_change_lastpart_base: 20,
       market_change_lastpart_ratios: { from: 1.0, to: 2.5, step: 0.5 },
       min_calculation_time: 3,
       interval: 1,
-      timeout: 3,
+      timeout: 0.25,
     },
     active: {
-      enabled: false,
+      enabled: true,
       range: { from: 1, to: 10, step: 1 },
       activity_calculated: { from: 10, to: 90, step: 10 },
       activity_lastpart: { from: 10, to: 90, step: 10 },
@@ -56,7 +56,7 @@ export default function MainIndicationsSettingsPage() {
       market_change_lastpart_base: 20,
       market_change_lastpart_ratios: { from: 1.0, to: 2.5, step: 0.5 },
       interval: 1,
-      timeout: 3,
+      timeout: 0.25,
       min_calculation_time: 3,
     },
     active_advanced: {
@@ -67,11 +67,11 @@ export default function MainIndicationsSettingsPage() {
       continuation_ratio: 0.6,
     },
     configuration: {
-      sample_ranges: [2, 5, 10, 20, 30],
+      sample_ranges: Array.from({ length: 29 }, (_, index) => index + 2),
       drawdown_ratios: [0.5, 1, 1.5],
       last_part_ratios: [0.25, 0.5],
-      factor_multipliers: [1],
-      active_thresholds: [0.5, 1.5, 2.5],
+      factor_multipliers: [0.9, 1, 1.1],
+      active_thresholds: [0.5, 1, 1.5, 2, 2.5],
       active_time_ratios: [0.5, 1],
     },
     coordination: {
@@ -87,14 +87,14 @@ export default function MainIndicationsSettingsPage() {
     },
     optimal: {
       enabled: true,
-      range: { from: 3, to: 30, step: 1 },
+      range: { from: 2, to: 30, step: 1 },
       drawdown_ratio: { from: 0.1, to: 0.5, step: 0.1 },
       market_change_range: { from: 1, to: 10, step: 2 },
       market_change_lastpart_base: 20,
       market_change_lastpart_ratios: { from: 1.0, to: 2.5, step: 0.5 },
       min_calculation_time: 3,
       interval: 2,
-      timeout: 10,
+      timeout: 0.25,
       trailing_optimal_ranges: true,
     },
   })
@@ -174,7 +174,7 @@ export default function MainIndicationsSettingsPage() {
         const step = Number(range?.step)
         const values: number[] = []
         if (Number.isFinite(from) && Number.isFinite(to) && Number.isFinite(step) && step > 0 && to >= from) {
-          for (let current = from; current <= to + Number.EPSILON && values.length < 500; current += step) {
+          for (let current = from; current <= to + Number.EPSILON; current += step) {
             values.push(Number(current.toFixed(8)))
           }
         }
@@ -268,11 +268,11 @@ export default function MainIndicationsSettingsPage() {
           <CardContent className="space-y-5">
             <div className="grid gap-3 md:grid-cols-3">
               {[
-                ["sample_ranges", "Sample ranges", [2, 5, 10, 20, 30]],
+                ["sample_ranges", "Sample ranges", Array.from({ length: 29 }, (_, index) => index + 2)],
                 ["drawdown_ratios", "Drawdown / PositionCost", [0.5, 1, 1.5]],
                 ["last_part_ratios", "Latest-window ratios", [0.25, 0.5]],
-                ["factor_multipliers", "Score multipliers", [1]],
-                ["active_thresholds", "Active thresholds", [0.5, 1.5, 2.5]],
+                ["factor_multipliers", "Score multipliers", [0.9, 1, 1.1]],
+                ["active_thresholds", "Active thresholds", [0.5, 1, 1.5, 2, 2.5]],
                 ["active_time_ratios", "Active time ratios", [0.5, 1]],
               ].map(([field, label, fallback]) => (
                 <div key={String(field)} className="space-y-1">
@@ -826,11 +826,13 @@ export default function MainIndicationsSettingsPage() {
                   <Label>Timeout Time (seconds)</Label>
                   <Input
                     type="number"
+                    min="0.05"
+                    step="0.05"
                     value={settings.direction.timeout}
                     onChange={(e) => updateSetting("direction", "timeout", "", e.target.value)}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Pause duration after validated state (Default: 3 seconds)
+                    Exact config/direction cooldown after validation (Default: 0.25 seconds)
                   </p>
                 </div>
               </div>
@@ -1061,11 +1063,13 @@ export default function MainIndicationsSettingsPage() {
                   <Label>Timeout Time (seconds)</Label>
                   <Input
                     type="number"
+                    min="0.05"
+                    step="0.05"
                     value={settings.move.timeout}
                     onChange={(e) => updateSetting("move", "timeout", "", e.target.value)}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Pause duration after validated state (Default: 3 seconds)
+                    Exact config/direction cooldown after validation (Default: 0.25 seconds)
                   </p>
                 </div>
               </div>
@@ -1343,11 +1347,13 @@ export default function MainIndicationsSettingsPage() {
                   <Label>Timeout Time (seconds)</Label>
                   <Input
                     type="number"
+                    min="0.05"
+                    step="0.05"
                     value={settings.active.timeout}
                     onChange={(e) => updateSetting("active", "timeout", "", e.target.value)}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Pause duration after validated state (Default: 3 seconds)
+                    Exact config/direction cooldown after validation (Default: 0.25 seconds)
                   </p>
                 </div>
               </div>
@@ -1674,13 +1680,13 @@ export default function MainIndicationsSettingsPage() {
                     <Label className="text-sm font-medium">Timeout (seconds)</Label>
                     <Input
                       type="number"
-                      step="1"
-                      min="3"
+                      step="0.05"
+                      min="0.05"
                       max="60"
-                      value={settings.optimal?.timeout || 10}
+                      value={settings.optimal?.timeout ?? 0.25}
                       onChange={(e) => updateSetting("optimal", "timeout", null, e.target.value)}
                     />
-                    <p className="text-xs text-muted-foreground">Maximum wait time (Interval × 5)</p>
+                    <p className="text-xs text-muted-foreground">Exact config/direction cooldown after validation (default 0.25s)</p>
                   </div>
                 </div>
               </div>

@@ -39,6 +39,12 @@ interface StratDetail {
 }
 
 interface StatsResponse {
+  strategyRows?: {
+    base: { total: number; valid: number; totalOpen: number; validOpen: number }
+    main: { valid: number; overall: number; validOpen: number; overallOpen: number }
+    real: { valid: number; active: number; activeExactRows: number }
+    live: { total: number; mirrored: number; active: number }
+  }
   // The /stats endpoint actually returns a much richer historic block
   // than originally typed here. Adding the missing fields as optional
   // so the JSX below compiles and the older callers keep working.
@@ -851,6 +857,25 @@ export function QuickstartOverviewDialog() {
               continuous-count factors plus additional strategies — not always new sets but coordinated variable
               mappings for high-frequency evaluation. Real strategies filter Main by highest-confidence coordination.
             </p>
+
+            {stats?.strategyRows && (
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                {[
+                  ["Base", "Total", stats.strategyRows.base.total, "Valid", stats.strategyRows.base.valid],
+                  ["Main", "Valid", stats.strategyRows.main.valid, "Overall", stats.strategyRows.main.overall],
+                  ["Row-Real", "Valid", stats.strategyRows.real.valid, "Active", stats.strategyRows.real.active],
+                  ["Row-Live", "Rows", stats.strategyRows.live.total, "Mirrored", stats.strategyRows.live.mirrored],
+                ].map(([title, firstLabel, first, secondLabel, second]) => (
+                  <div key={String(title)} className="rounded-lg border bg-card p-2.5">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+                    <div className="mt-1 grid grid-cols-2 gap-2">
+                      <div><span className="text-[9px] text-muted-foreground">{firstLabel}</span><p className="font-mono text-base">{fmt(Number(first))}</p></div>
+                      <div><span className="text-[9px] text-muted-foreground">{secondLabel}</span><p className="font-mono text-base">{fmt(Number(second))}</p></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* ── Strategy stage counts ─────────────────────────────────────
                 The `count` prop is the ACTIVE-PROCESSING SETS count — how

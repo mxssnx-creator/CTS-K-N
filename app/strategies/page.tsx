@@ -16,6 +16,7 @@ import { toast } from "@/lib/simple-toast"
 import { useExchange } from "@/lib/exchange-context"
 import { PageHeader } from "@/components/page-header"
 import { useStrategyUpdates } from "@/lib/use-websocket"
+import { MAIN_TRADE_BASE_PF_RATIO_DEFAULT } from "@/lib/main-trade-profit-factor"
 
 // Define advanced filter type
 interface AdvancedFilters {
@@ -174,7 +175,11 @@ export default function StrategiesPage() {
     const total = strategies.length
     const active = strategies.filter((s) => s.isActive).length
     const valid = strategies.filter((s) => s.validation_state === "valid").length
-    const profitable = strategies.filter((s) => s.avg_profit_factor >= 0.4).length
+    const profitable = strategies.filter(
+      (s) => s.avg_profit_factor >= (
+        Number(s.config.min_profit_factor) || MAIN_TRADE_BASE_PF_RATIO_DEFAULT
+      ),
+    ).length
     const avgProfitFactor = total > 0 ? strategies.reduce((sum, s) => sum + s.avg_profit_factor, 0) / total : 0
 
     return { total, active, valid, profitable, avgProfitFactor }
@@ -298,7 +303,10 @@ export default function StrategiesPage() {
                     )
                     toast.success(`Strategy ${active ? "activated" : "deactivated"}`)
                   }}
-                  minimalProfitFactor={0.4}
+                  minimalProfitFactor={
+                    Number(strategy.config.min_profit_factor) ||
+                    MAIN_TRADE_BASE_PF_RATIO_DEFAULT
+                  }
                   index={index}
                 />
               ))

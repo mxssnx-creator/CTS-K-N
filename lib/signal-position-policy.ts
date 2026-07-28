@@ -1,6 +1,6 @@
 export const SIGNAL_MAX_POSITIONS_DEFAULT = 120
 export const SIGNAL_MAX_POSITIONS_MIN = 1
-export const SIGNAL_MAX_POSITIONS_MAX = 500
+export const SIGNAL_MAX_POSITIONS_MAX = 120
 export const SIGNAL_POSITION_SELECTION_MODE = "best_first" as const
 
 export type SignalPositionDirection = "long" | "short"

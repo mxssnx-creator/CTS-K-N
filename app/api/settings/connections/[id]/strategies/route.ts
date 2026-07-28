@@ -1,9 +1,14 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getConnection } from "@/lib/redis-db"
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
+import {
+  MAIN_TRADE_STAGE_PF_DEFAULTS,
+  normalizeMainTradeStagePfRatio,
+  type MainTradeStage,
+} from "@/lib/main-trade-profit-factor"
 
 /**
- * Per-connection strategy settings (Base / Main / Real channels).
+ * Per-connection strategy settings (Base / Main / Real / Live channels).
  *
  * This route uses the Redis SQL compatibility layer.
  * `connection_strategy_settings` table that does not exist in this
@@ -15,23 +20,47 @@ import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinato
  *     coordinator reads each refresh window (PF / DDT / stage pos-counts).
  *
  * Channel param semantics (matching the dialog + coordinator):
- *   min_profit_factor → baseProfitFactor / mainProfitFactor / realProfitFactor
- *   max_drawdown_time (MINUTES) → maxDrawdownTime{Main,Real}Hours (÷60)
- *   max_positions → stageMinPosCount{Base,Main,Real}
+ *   min_profit_factor → baseProfitFactor / mainProfitFactor /
+ *                       realProfitFactor / liveProfitFactor
+ *   max_drawdown_time (MINUTES) → maxDrawdownTime{Main,Real,Live}Hours (÷60)
+ *   max_positions → independent stage output caps. It never mutates the
+ *                   stageMinPosCount* history-evidence gates.
  */
 
 type StratRow = {
-  strategy_type: "base" | "main" | "real"
+  strategy_type: MainTradeStage
   is_enabled: boolean
+  enabled?: boolean
   min_profit_factor: number
   max_drawdown_time: number
   max_positions: number
 }
 
 const DEFAULTS: Record<StratRow["strategy_type"], Omit<StratRow, "strategy_type">> = {
-  base: { is_enabled: true, min_profit_factor: 1.1, max_drawdown_time: 180, max_positions: 250 },
-  main: { is_enabled: true, min_profit_factor: 1.15, max_drawdown_time: 180, max_positions: 250 },
-  real: { is_enabled: true, min_profit_factor: 1.2, max_drawdown_time: 180, max_positions: 100 },
+  base: {
+    is_enabled: true,
+    min_profit_factor: MAIN_TRADE_STAGE_PF_DEFAULTS.base,
+    max_drawdown_time: 0,
+    max_positions: 0,
+  },
+  main: {
+    is_enabled: true,
+    min_profit_factor: MAIN_TRADE_STAGE_PF_DEFAULTS.main,
+    max_drawdown_time: 240,
+    max_positions: 0,
+  },
+  real: {
+    is_enabled: true,
+    min_profit_factor: MAIN_TRADE_STAGE_PF_DEFAULTS.real,
+    max_drawdown_time: 240,
+    max_positions: 5_000,
+  },
+  live: {
+    is_enabled: true,
+    min_profit_factor: MAIN_TRADE_STAGE_PF_DEFAULTS.live,
+    max_drawdown_time: 240,
+    max_positions: 500,
+  },
 }
 
 export const dynamic = "force-dynamic"
@@ -53,8 +82,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       const d = DEFAULTS[type]
       return {
         strategy_type: type,
-        is_enabled: typeof saved.is_enabled === "boolean" ? saved.is_enabled : d.is_enabled,
-        min_profit_factor: Number(saved.min_profit_factor ?? d.min_profit_factor),
+        is_enabled:
+          typeof saved.is_enabled === "boolean"
+            ? saved.is_enabled
+            : typeof saved.enabled === "boolean"
+              ? saved.enabled
+              : d.is_enabled,
+        min_profit_factor: normalizeMainTradeStagePfRatio(
+          type,
+          saved.min_profit_factor,
+        ),
         max_drawdown_time: Number(saved.max_drawdown_time ?? d.max_drawdown_time),
         max_positions: Number(saved.max_positions ?? d.max_positions),
       }
@@ -89,14 +126,15 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 
     for (const strat of strategies) {
       const type = strat.strategy_type
-      if (type !== "base" && type !== "main" && type !== "real") continue
+      if (!["base", "main", "real", "live"].includes(type)) continue
       const d = DEFAULTS[type]
-      const pf = Number(strat.min_profit_factor ?? d.min_profit_factor)
+      const pf = normalizeMainTradeStagePfRatio(type, strat.min_profit_factor)
       const ddtMin = Number(strat.max_drawdown_time ?? d.max_drawdown_time)
       const maxPos = Number(strat.max_positions ?? d.max_positions)
 
       channel[type] = {
         is_enabled: !!strat.is_enabled,
+        enabled: !!strat.is_enabled,
         min_profit_factor: pf,
         max_drawdown_time: ddtMin,
         max_positions: maxPos,
@@ -104,22 +142,24 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 
       // Flatten into the coordinator-readable hash fields (same mapping as
       // the PATCH /settings route). DDT minutes → hours, clamp [1,72].
-      if (Number.isFinite(pf) && pf > 0) {
-        const pfStr = String(Math.max(0, Math.min(5, pf)))
-        if (type === "base") flat.baseProfitFactor = pfStr
-        if (type === "main") flat.mainProfitFactor = pfStr
-        if (type === "real") flat.realProfitFactor = pfStr
-      }
+      const pfStr = String(pf)
+      if (type === "base") flat.baseProfitFactor = pfStr
+      if (type === "main") flat.mainProfitFactor = pfStr
+      if (type === "real") flat.realProfitFactor = pfStr
+      if (type === "live") flat.liveProfitFactor = pfStr
       if (Number.isFinite(ddtMin) && ddtMin > 0 && type !== "base") {
         const hrs = String(Math.max(1, Math.min(72, ddtMin / 60)))
         if (type === "main") flat.maxDrawdownTimeMainHours = hrs
         if (type === "real") flat.maxDrawdownTimeRealHours = hrs
+        if (type === "live") flat.maxDrawdownTimeLiveHours = hrs
       }
-      if (Number.isFinite(maxPos) && maxPos > 0) {
-        const posStr = String(Math.floor(maxPos))
-        if (type === "base") flat.stageMinPosCountBase = posStr
-        if (type === "main") flat.stageMinPosCountMain = posStr
-        if (type === "real") flat.stageMinPosCountReal = posStr
+      if (Number.isFinite(maxPos) && maxPos >= 0) {
+        const posStr = String(Math.max(0, Math.floor(maxPos)))
+        if (type === "real") {
+          flat.strategyRealSetsSafetyCeiling = posStr
+          flat.maxRealSets = posStr
+        }
+        if (type === "live") flat.strategyLiveSetsCeiling = posStr
       }
     }
 

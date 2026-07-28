@@ -275,7 +275,7 @@ export default function CommonIndicationsSettingsPage() {
             />
           </div>
           <div className="rounded-md border bg-muted/30 p-2 text-[11px] text-muted-foreground">
-            Default: 1/3/5/15m (maximum 15m) · 2/2.5/3 steps · +0.5 drawdown scale.
+            Default: 1/5/15/30m · 2/2.5/3 steps · +0.5 drawdown scale · 3s validated cooldown per exact config/direction.
           </div>
         </CardContent>
       </Card>

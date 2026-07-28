@@ -4,7 +4,7 @@ import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Clock, TrendingUp, Activity, Zap, CheckCircle, AlertCircle, RefreshCw } from "lucide-react"
+import { Clock, Activity, CheckCircle, AlertCircle, RefreshCw } from "lucide-react"
 
 interface IntervalHealth {
   enabled: boolean
@@ -16,12 +16,28 @@ interface IntervalHealth {
   lastEnd?: string
 }
 
-interface IntervalsData {
-  direction?: IntervalHealth
-  move?: IntervalHealth
-  active?: IntervalHealth
-  optimal?: IntervalHealth
-}
+type IndicationIntervalType =
+  | "direction" | "move" | "active"
+  | "trend" | "optimal" | "auto"
+  | "common" | "signal"
+
+type IntervalsData = Partial<Record<IndicationIntervalType, IntervalHealth>>
+
+const INDICATION_INTERVALS: Array<{
+  type: IndicationIntervalType
+  label: string
+  group: "Default" | "Additional" | "Common"
+  timeout: number
+}> = [
+  { type: "direction", label: "Direction", group: "Default", timeout: 0.25 },
+  { type: "move", label: "Move", group: "Default", timeout: 0.25 },
+  { type: "active", label: "Active", group: "Default", timeout: 0.25 },
+  { type: "trend", label: "Trend", group: "Additional", timeout: 0.25 },
+  { type: "optimal", label: "Optimal", group: "Additional", timeout: 0.25 },
+  { type: "auto", label: "Auto", group: "Additional", timeout: 0.25 },
+  { type: "common", label: "Common", group: "Common", timeout: 3 },
+  { type: "signal", label: "Signal", group: "Common", timeout: 0.25 },
+]
 
 interface StrategyStats {
   type: string
@@ -62,12 +78,16 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
           const sysData = await sysRes.json()
           const engineRunning = sysData.services?.tradeEngine || false
           const indicationsRunning = sysData.services?.indicationsEngine || false
-          setIntervals({
-            direction: { enabled: indicationsRunning, isRunning: indicationsRunning, isProgressing: engineRunning, intervalTime: 1, timeout: 5 },
-            move: { enabled: indicationsRunning, isRunning: indicationsRunning, isProgressing: engineRunning, intervalTime: 1, timeout: 5 },
-            active: { enabled: indicationsRunning, isRunning: indicationsRunning, isProgressing: engineRunning, intervalTime: 1, timeout: 5 },
-            optimal: { enabled: indicationsRunning, isRunning: indicationsRunning, isProgressing: engineRunning, intervalTime: 2, timeout: 10 },
-          })
+          setIntervals(Object.fromEntries(INDICATION_INTERVALS.map(({ type, timeout }) => [
+            type,
+            {
+              enabled: indicationsRunning,
+              isRunning: indicationsRunning,
+              isProgressing: engineRunning,
+              intervalTime: 0.25,
+              timeout,
+            },
+          ])) as IntervalsData)
         }
       }
 
@@ -168,142 +188,48 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
           <CardDescription>Real-time interval progression status for all indication types</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Direction Interval */}
-            <div className="p-4 border rounded-lg space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <TrendingUp className="h-4 w-4 text-orange-500" />
-                  <span className="font-semibold">Direction</span>
-                </div>
-                <Badge className={`${getStatusColor(getIntervalStatus(intervals.direction))} text-white`}>
-                  <div className="flex items-center gap-1">
-                    {getStatusIcon(getIntervalStatus(intervals.direction))}
-                    {getIntervalStatus(intervals.direction)}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            {INDICATION_INTERVALS.map(({ type, label, group, timeout }) => {
+              const interval = intervals[type]
+              const status = getIntervalStatus(interval)
+              return (
+                <div key={type} className="p-4 border rounded-lg space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Activity className="h-4 w-4 text-blue-500" />
+                      <div>
+                        <div className="font-semibold">{label}</div>
+                        <div className="text-[10px] text-muted-foreground">{group}</div>
+                      </div>
+                    </div>
+                    <Badge className={`${getStatusColor(status)} text-white`}>
+                      <span className="flex items-center gap-1">
+                        {getStatusIcon(status)}
+                        {status}
+                      </span>
+                    </Badge>
                   </div>
-                </Badge>
-              </div>
-              <div className="space-y-1 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Interval:</span>
-                  <span className="font-mono">{intervals.direction?.intervalTime || 1}s</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Timeout:</span>
-                  <span className="font-mono">{intervals.direction?.timeout || 5}s</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Last Start:</span>
-                  <span className="text-xs">{formatTimestamp(intervals.direction?.lastStart)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Last End:</span>
-                  <span className="text-xs">{formatTimestamp(intervals.direction?.lastEnd)}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Move Interval */}
-            <div className="p-4 border rounded-lg space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Activity className="h-4 w-4 text-green-500" />
-                  <span className="font-semibold">Move</span>
-                </div>
-                <Badge className={`${getStatusColor(getIntervalStatus(intervals.move))} text-white`}>
-                  <div className="flex items-center gap-1">
-                    {getStatusIcon(getIntervalStatus(intervals.move))}
-                    {getIntervalStatus(intervals.move)}
+                  <div className="space-y-1 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Interval:</span>
+                      <span className="font-mono">{interval?.intervalTime ?? 0.25}s</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Exact-lane timeout:</span>
+                      <span className="font-mono">{interval?.timeout ?? timeout}s</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Last Start:</span>
+                      <span className="text-xs">{formatTimestamp(interval?.lastStart)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Last End:</span>
+                      <span className="text-xs">{formatTimestamp(interval?.lastEnd)}</span>
+                    </div>
                   </div>
-                </Badge>
-              </div>
-              <div className="space-y-1 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Interval:</span>
-                  <span className="font-mono">{intervals.move?.intervalTime || 1}s</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Timeout:</span>
-                  <span className="font-mono">{intervals.move?.timeout || 5}s</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Last Start:</span>
-                  <span className="text-xs">{formatTimestamp(intervals.move?.lastStart)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Last End:</span>
-                  <span className="text-xs">{formatTimestamp(intervals.move?.lastEnd)}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Active Interval */}
-            <div className="p-4 border rounded-lg space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Zap className="h-4 w-4 text-yellow-500" />
-                  <span className="font-semibold">Active</span>
-                </div>
-                <Badge className={`${getStatusColor(getIntervalStatus(intervals.active))} text-white`}>
-                  <div className="flex items-center gap-1">
-                    {getStatusIcon(getIntervalStatus(intervals.active))}
-                    {getIntervalStatus(intervals.active)}
-                  </div>
-                </Badge>
-              </div>
-              <div className="space-y-1 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Interval:</span>
-                  <span className="font-mono">{intervals.active?.intervalTime || 1}s</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Timeout:</span>
-                  <span className="font-mono">{intervals.active?.timeout || 5}s</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Last Start:</span>
-                  <span className="text-xs">{formatTimestamp(intervals.active?.lastStart)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Last End:</span>
-                  <span className="text-xs">{formatTimestamp(intervals.active?.lastEnd)}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Optimal Interval */}
-            <div className="p-4 border rounded-lg space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <TrendingUp className="h-4 w-4 text-blue-500" />
-                  <span className="font-semibold">Optimal</span>
-                </div>
-                <Badge className={`${getStatusColor(getIntervalStatus(intervals.optimal))} text-white`}>
-                  <div className="flex items-center gap-1">
-                    {getStatusIcon(getIntervalStatus(intervals.optimal))}
-                    {getIntervalStatus(intervals.optimal)}
-                  </div>
-                </Badge>
-              </div>
-              <div className="space-y-1 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Interval:</span>
-                  <span className="font-mono">{intervals.optimal?.intervalTime || 2}s</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Timeout:</span>
-                  <span className="font-mono">{intervals.optimal?.timeout || 10}s</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Last Start:</span>
-                  <span className="text-xs">{formatTimestamp(intervals.optimal?.lastStart)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Last End:</span>
-                  <span className="text-xs">{formatTimestamp(intervals.optimal?.lastEnd)}</span>
-                </div>
-              </div>
-            </div>
+              )
+            })}
           </div>
         </CardContent>
       </Card>

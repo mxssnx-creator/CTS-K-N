@@ -2,6 +2,10 @@ import { DEFAULT_VOLUME_STEP_RATIO } from "@/lib/constants"
 import { DEFAULT_MAX_STOP_LOSS_RATIO } from "@/lib/stoploss-ratio-range"
 import { Settings } from "./types"
 import { toast } from "@/lib/simple-toast"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+} from "@/lib/main-trade-profit-factor"
 
 export const EXCHANGE_MAX_POSITIONS: Record<string, number> = {
   bybit: 500,
@@ -31,13 +35,13 @@ export const initialSettings: Settings = {
   marketTimeframe: 1,
   tradeIntervalSeconds: 1,
   realPositionsIntervalSeconds: 0.3,
-  validationTimeoutSeconds: 15,
+  validationTimeoutSeconds: 0.25,
   mainTradeInterval: 1,
   presetTradeInterval: 2,
   positionCost: 0.1, // Canonical default: 0.1%
   useMaximalLeverage: true,
   min_volume_enforcement: true, // Added missing min_volume_enforcement property
-  minStep: 5, // 2-30 step 1 — minimum pseudo-position step-window size
+  minStep: 2, // fixed compatibility value; exhaustive windows are always 2..30
   maxStopLossRatio: DEFAULT_MAX_STOP_LOSS_RATIO, // 0.25-2.5 step 0.25 — max SL ratio for Base pseudo-position Sets
   trailingMinStep: 6, // 2-30 step 1 — minimum Base step allowed to fan out into trailing Sets
 
@@ -82,14 +86,11 @@ export const initialSettings: Settings = {
   arrangementType: "marketCap24h",
   quoteAsset: "USDT",
 
-  // ── Main Trade PF thresholds per stage (spec defaults) ───────────
-  // Base 0.9 / Main 1.0 / Real 1.0 / Live 1.0 — mirrored from
-  // `app/settings/page.tsx`. Engine reads via
-  // `lib/strategy-coordinator.ts:loadAppPFThresholds()` (5s TTL).
-  baseProfitFactor: 0.9,
-  mainProfitFactor: 1.0,
-  realProfitFactor: 1.0,
-  liveProfitFactor: 1.0,
+  // Main Trade PositionCost-relative ratios (not realised PF).
+  baseProfitFactor: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  mainProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  realProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  liveProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
 
   // Risk Management
   trailingStopLoss: false,
@@ -112,22 +113,20 @@ export const initialSettings: Settings = {
   databaseSizePreset: 250,
 
   // Trade Engine Configuration
-  positionCooldownMs: 100, // 50-3000ms, default 100ms
-  maxPositionsPerConfigDirection: 2, // default 2
+  positionCooldownMs: 3000, // exact Base-lane re-entry after close
+  maxPositionsPerConfigDirection: 1, // one open pseudo position per exact Base lane
   maxConcurrentOperations: 100, // 10-250, default 100
   // P0-4: Spec-mandated per-direction cap on active pseudo positions.
   // Default 1 (Long/Short each capped at 1 concurrent pseudo position
   // across ALL Sets). Operator-tunable in Settings → Strategy → Base.
   maxActiveBasePseudoPositionsPerDirection: 1,
 
-  // Strategy pipeline ceilings — Settings → System. Defaults match the
-  // production coordinator safety rails so the UI never advertises a value
-  // higher than the engine can actually honour.
+  // Strategy retention/scheduling controls — batching never truncates Sets.
   strategyMaxEntriesPerSet: 250,
-  strategyMainAxisSetsCeiling: 20,
-  strategyRealSetsSafetyCeiling: 25,
-  maxRealSets: 25,
-  strategyLiveSetsCeiling: 90,
+  strategyMainAxisBatchSize: 8,
+  strategyRealSetsSafetyCeiling: 5000,
+  maxRealSets: 5000,
+  strategyLiveSetsCeiling: 500,
 
   // System Configuration
   autoRestartOnErrors: true,
@@ -206,20 +205,20 @@ export const initialSettings: Settings = {
   defaultCoordinationMinimumSignals: 3,
   defaultCoordinationShortDifferenceRatio: 0.1,
   directionPostChangeOnly: true,
-  indicationSampleRanges: [2, 5, 10, 20, 30],
+  indicationSampleRanges: Array.from({ length: 29 }, (_, index) => index + 2),
   indicationDrawdownRatios: [0.5, 1, 1.5],
   indicationLastPartRatios: [0.25, 0.5],
-  indicationFactorMultipliers: [1],
-  activeThresholds: [0.5, 1.5, 2.5],
+  indicationFactorMultipliers: [0.9, 1, 1.1],
+  activeThresholds: [0.5, 1, 1.5, 2, 2.5],
   activeTimeRatios: [0.5, 1],
   activeAdvancedEnabled: true,
-  activeAdvancedActivityRatios: [0.5, 1.5, 3],
+  activeAdvancedActivityRatios: [0.5, 1, 1.5, 2, 2.5, 3],
   activeAdvancedMinPositions: 3,
   activeAdvancedContinuationRatio: 0.6,
 
   // Optimal Indication Settings
   optimalEnabled: true,
-  optimalSampleRanges: [2, 5, 10, 20, 30],
+  optimalSampleRanges: Array.from({ length: 29 }, (_, index) => index + 2),
   optimalCoordinationEnabled: false,
   trailingOptimalRanges: false,
   simultaneousTrading: false,

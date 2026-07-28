@@ -18,7 +18,7 @@ describe("main indication settings compatibility", () => {
       range: { from: 4, to: 8, step: 2 },
     })
     expect(document.move.enabled).toBe(true)
-    expect(document.active_advanced.activity_values).toEqual([0.5, 1.5, 3])
+    expect(document.active_advanced.activity_values).toEqual([0.5, 1, 1.5, 2, 2.5, 3])
     expect(document.coordination.direction_post_change_only).toBe(true)
   })
 

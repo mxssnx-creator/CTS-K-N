@@ -2,8 +2,9 @@
  * GET /api/connections/[id]/engine-states
  *
  * Returns the shared per-connection engine state together with the persisted
- * Main Trade and Preset Trade mode flags. The UI uses this
- * to keep the Enable / Live Trade / Preset Mode switches bidirectionally synced
+ * Main Trade, Preset Trade, and Signal Trade mode flags. The UI uses this
+ * to keep the Enable / Live Trade / Preset Mode / Signal switches
+ * bidirectionally synced
  * with the actual engine state and to surface drift (e.g. flag is ON but the
  * engine is not actually running).
  *
@@ -17,11 +18,12 @@
  *   modes: {
  *     mainTrade:   { flag: boolean, running: boolean, inSync: boolean },
  *     presetTrade: { flag: boolean, running: boolean, inSync: boolean },
+ *     signalTrade: { flag: boolean, running: boolean, inSync: boolean },
  *   },
  * }
  */
 import { type NextRequest, NextResponse } from "next/server"
-import { initRedis, getConnection, getRedisClient, getSettings } from "@/lib/redis-db"
+import { initRedis, getConnection, getRedisClient } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
@@ -89,6 +91,10 @@ export async function GET(
     const presetEffective = presetReadiness.canPlaceRealOrders
     const presetRequested = presetReadiness.requested
     const flagPreset  = presetRequested || presetEffective
+    const signalReadiness = evaluateRealTradeReadiness(connection as Record<string, any>, "signal")
+    const signalEffective = signalReadiness.canPlaceRealOrders
+    const signalRequested = signalReadiness.requested
+    const flagSignal = signalRequested || signalEffective
 
     // Correct semantics now that Live/Preset are mode flags on a single engine
     // (not separate engines). One TradeEngineManager per connection services all
@@ -132,6 +138,14 @@ export async function GET(
       credentialsValid: presetReadiness.credentialsValid,
       durableCoordinationReady: presetReadiness.durableCoordinationReady,
     }
+    const signalTradeState = {
+      ...buildModeState(flagSignal, signalEffective),
+      executionMode: signalReadiness.executionMode,
+      blockCode: signalReadiness.blockCode,
+      blockReason: signalReadiness.blockReason,
+      credentialsValid: signalReadiness.credentialsValid,
+      durableCoordinationReady: signalReadiness.durableCoordinationReady,
+    }
 
     return NextResponse.json(
       {
@@ -145,9 +159,11 @@ export async function GET(
         // state from being confused with the shared processing engine.
         live: mainTradeState,
         preset: presetTradeState,
+        signal: signalTradeState,
         modes: {
           mainTrade: mainTradeState,
           presetTrade: presetTradeState,
+          signalTrade: signalTradeState,
         },
         timestamp: new Date().toISOString(),
       },

@@ -166,6 +166,9 @@ export async function POST(request: Request) {
       is_predefined: false, // User-created, not predefined template
       is_live_trade: false,
       is_preset_trade: false,
+      is_signal_trade: false,
+      signal_trade_enabled: false,
+      signal_trade_requested: false,
       // Base is an immutable coordination identity. Main/Preset/Signal have
       // their own independently persisted channel factors below.
       volume_factor: 1,

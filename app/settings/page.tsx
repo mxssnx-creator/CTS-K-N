@@ -6,6 +6,8 @@ import {
   normalizeIdentityVolumeFactor,
 } from "@/lib/constants"
 import { DEFAULT_DCA_PROFILE, type DcaTakeProfitMode } from "@/lib/dca-strategy"
+import { MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT } from "@/lib/main-trade-profit-factor"
+import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "@/lib/pos-count-volume-ratio"
 export const dynamic = "force-dynamic"
 import { useState, useEffect } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -93,7 +95,7 @@ interface Settings {
   quoteAsset: string
   // ── Main Trade PF thresholds per stage ───────────────────────────
   // Operator-tunable gates for Base → Main → Real → Live promotion.
-  // Spec defaults: 0.9 / 1.0 / 1.0 / 1.0. Wired into
+  // PositionCost-ratio defaults: Base 0.80; Main/Real/Live 1.12. Wired into
   // `lib/strategy-coordinator.ts` via `loadAppPFThresholds()` so a
   // slider change in the Strategies tab flows into the live engine
   // within 5s (TTL cap on the loader cache).
@@ -106,18 +108,11 @@ interface Settings {
   maxDrawdownTimeRealHours: number
   maxDrawdownTimeLiveHours: number
 
-  // ── Stage minimum position-count evaluation thresholds ──────────────────
-  // Per-stage thresholds for how many completed pseudo-positions a Base/Main/
-  // Real set must accumulate before PF + drawdown validation runs. Below the
-  // threshold the set is SKIPPED (not promoted, not counted as failed) to
-  // avoid false negatives on warming-up sets. Values are snapped to the 5-step
-  // grid inside the StrategyCoordinator; set 0 → coordinator default applies.
-  stageMinPosCountBase: number  // Base→Main  (coord default 15)
-  stageMinPosCountMain: number  // Main→Real  (coord default 15)
-  stageMinPosCountReal: number  // Real→Live  (coord default 10)
+  mainEvalPosCount: number
+  realEvalPosCount: number
 
-  // Position-Count (Pis) Sets volume ratio — applied ONLY to the additional
-  // pos-count axis Sets created at Main stage. Default 0.05 (range 0.01–0.25).
+  // Position-Count coordination ratio for additional Main axis Sets.
+  // Range 0.1–10 step 0.1, default 3; ratio 10 = 0.02× Base per valid Set.
   posCountsVolumeRatio: number
 
   mainEngineIntervalMs: number
@@ -134,11 +129,11 @@ interface Settings {
   maxActiveBasePseudoPositionsPerDirection: number
   maxPositionsLong: number // Max 1 long position per config
   maxPositionsShort: number // Max 1 short position per config
-  indicationTimeoutMs: number // 100ms to 3000ms, step 100ms
+  indicationTimeoutMs: number // 50ms to 3000ms; canonical default 250ms
   maxConcurrentOperations: number
   cyclePauseMs?: number // 10-200ms, step 10, default 50ms — pause between engine cycles
   strategyMaxEntriesPerSet: number
-  strategyMainAxisSetsCeiling: number
+  strategyMainAxisBatchSize: number
   strategyRealSetsSafetyCeiling: number
   maxRealSets: number
   strategyLiveSetsCeiling: number
@@ -493,7 +488,7 @@ const initialSettings: Settings = {
   marketTimeframe: 1,
   tradeIntervalSeconds: 1,
   realPositionsIntervalSeconds: 0.3,
-  validationTimeoutSeconds: 15,
+  validationTimeoutSeconds: 0.25,
   mainTradeInterval: 1,
   presetTradeInterval: 2,
   positionCost: 0.1, // Canonical default: 0.1%
@@ -547,10 +542,10 @@ const initialSettings: Settings = {
   // Base 0.9 / Main 1.0 / Real 1.0 / Live 1.0 — operator-tunable via
   // Settings → Strategy → Main → Profit Factor Thresholds. Read by
   // `lib/strategy-coordinator.ts` on every flow cycle (5s TTL cache).
-  baseProfitFactor: 0.9,
-  mainProfitFactor: 1.0,
-  realProfitFactor: 1.0,
-  liveProfitFactor: 1.0,
+  baseProfitFactor: 0.8,
+  mainProfitFactor: 1.12,
+  realProfitFactor: 1.12,
+  liveProfitFactor: 1.12,
 
   // Risk Management
   trailingStopLoss: false,
@@ -558,13 +553,11 @@ const initialSettings: Settings = {
   maxDrawdownTimeRealHours: 4,
   maxDrawdownTimeLiveHours: 4,
 
-  // ── Stage minimum position-count thresholds ───────────────────��────────
-  stageMinPosCountBase: 0,   // 0 = coordinator default (15)
-  stageMinPosCountMain: 0,   // 0 = coordinator default (15)
-  stageMinPosCountReal: 0,   // 0 = coordinator default (10)
+  mainEvalPosCount: 25,
+  realEvalPosCount: 20,
 
   // Position-Count (Pis) Sets volume ratio (Main-stage axis Sets only).
-  posCountsVolumeRatio: 0.05,   // 0.01–0.25 step 0.01, default 0.05
+  posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
 
   // Trade Engine Intervals (milliseconds)
   mainEngineIntervalMs: 100, // 50-1000ms, step 50, default 200ms
@@ -578,21 +571,21 @@ const initialSettings: Settings = {
   databaseSizePreset: 250,
 
   // Trade Engine Configuration
-  positionCooldownMs: 100, // 50-3000ms, default 100ms
+  positionCooldownMs: 3000, // exact Base-lane re-entry after close
   maxPositionsPerConfigDirection: 1, // default 1 (max positions per config per direction)
   // P0-4: spec default 1 — hard cap on concurrent active pseudo
   // positions PER DIRECTION across all config Sets.
   maxActiveBasePseudoPositionsPerDirection: 1,
   maxPositionsLong: 1, // Max 1 long position per configuration
   maxPositionsShort: 1, // Max 1 short position per configuration
-  indicationTimeoutMs: 1000, // 100ms to 3000ms, step 100ms, default 1000ms
+  indicationTimeoutMs: 250, // exact type/name/config/direction cooldown
   maxConcurrentOperations: 100, // 10-250, default 100
   cyclePauseMs: 50, // 10-200ms, step 10, default 50ms — pause between engine cycles
   strategyMaxEntriesPerSet: 250,
-  strategyMainAxisSetsCeiling: 20,
-  strategyRealSetsSafetyCeiling: 25,
-  maxRealSets: 25,
-  strategyLiveSetsCeiling: 90,
+  strategyMainAxisBatchSize: 8,
+  strategyRealSetsSafetyCeiling: 5000,
+  maxRealSets: 5000,
+  strategyLiveSetsCeiling: 500,
   // prehistoric_range_hours is already set at line 366 above (first occurrence wins)
 
   // System Configuration
@@ -731,20 +724,20 @@ const initialSettings: Settings = {
   defaultCoordinationMinimumSignals: 3,
   defaultCoordinationShortDifferenceRatio: 0.1,
   directionPostChangeOnly: true,
-  indicationSampleRanges: [2, 5, 10, 20, 30],
+  indicationSampleRanges: Array.from({ length: 29 }, (_, index) => index + 2),
   indicationDrawdownRatios: [0.5, 1, 1.5],
   indicationLastPartRatios: [0.25, 0.5],
-  indicationFactorMultipliers: [1],
-  activeThresholds: [0.5, 1.5, 2.5],
+  indicationFactorMultipliers: [0.9, 1, 1.1],
+  activeThresholds: [0.5, 1, 1.5, 2, 2.5],
   activeTimeRatios: [0.5, 1],
   activeAdvancedEnabled: true,
-  activeAdvancedActivityRatios: [0.5, 1.5, 3],
+  activeAdvancedActivityRatios: [0.5, 1, 1.5, 2, 2.5, 3],
   activeAdvancedMinPositions: 3,
   activeAdvancedContinuationRatio: 0.6,
 
   // Optimal Indication Settings
   optimalEnabled: true,
-  optimalSampleRanges: [2, 5, 10, 20, 30],
+  optimalSampleRanges: Array.from({ length: 29 }, (_, index) => index + 2),
   optimalCoordinationEnabled: false,
   trailingOptimalRanges: false,
   simultaneousTrading: false,
@@ -954,7 +947,8 @@ export default function SettingsPage() {
     mainTradeVolumeFactor: normalizeIdentityVolumeFactor(initialSettings.mainTradeVolumeFactor),
     presetTradeVolumeFactor: normalizeIdentityVolumeFactor(initialSettings.presetTradeVolumeFactor),
     signalTradeVolumeFactor: normalizeIdentityVolumeFactor(initialSettings.signalTradeVolumeFactor),
-    profitFactorMinMain: initialSettings.profitFactorMinMain ?? 0.6,
+    profitFactorMinMain:
+      initialSettings.profitFactorMinMain ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
     drawdownTimeMain: initialSettings.drawdownTimeMain ?? 300,
     mainDirectionEnabled: initialSettings.mainDirectionEnabled ?? true,
     mainMoveEnabled: initialSettings.mainMoveEnabled ?? true,
@@ -1220,10 +1214,10 @@ export default function SettingsPage() {
           }
           // Ensure trade engine configuration defaults are applied
           if (data.settings.positionCooldownMs === undefined) {
-            updatedSettings.positionCooldownMs = 100
+            updatedSettings.positionCooldownMs = 3000
           }
           if (data.settings.maxPositionsPerConfigDirection === undefined) {
-            updatedSettings.maxPositionsPerConfigDirection = 2
+            updatedSettings.maxPositionsPerConfigDirection = 1
           }
           // P0-4 migration: default to spec value 1 when the setting
           // isn't present in the persisted state hash.
@@ -1264,7 +1258,8 @@ export default function SettingsPage() {
           updatedSettings.exchangeDcaEnabled = data.settings.exchangeDcaEnabled ?? prevSettings.dcaAdjustment
 
           // Apply specific settings from loaded data or fall back to initial defaults
-          updatedSettings.profitFactorMinMain = data.settings.profitFactorMinMain ?? initialSettings.profitFactorMinMain
+          updatedSettings.profitFactorMinMain =
+            data.settings.profitFactorMinMain ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT
           updatedSettings.drawdownTimeMain = data.settings.drawdownTimeMain ?? initialSettings.drawdownTimeMain
           updatedSettings.mainDirectionEnabled =
             data.settings.mainDirectionEnabled ?? initialSettings.mainDirectionEnabled
@@ -1947,9 +1942,9 @@ export default function SettingsPage() {
               if (data.settings.mainEngineEnabled === undefined) updatedSettings.mainEngineEnabled = true
               if (data.settings.presetEngineEnabled === undefined) updatedSettings.presetEngineEnabled = true
               // Trade engine config defaults
-              if (data.settings.positionCooldownMs === undefined) updatedSettings.positionCooldownMs = 100
+              if (data.settings.positionCooldownMs === undefined) updatedSettings.positionCooldownMs = 3000
               if (data.settings.maxPositionsPerConfigDirection === undefined)
-                updatedSettings.maxPositionsPerConfigDirection = 2
+                updatedSettings.maxPositionsPerConfigDirection = 1
               // P0-4 migration (spec default = 1).
               if (data.settings.maxActiveBasePseudoPositionsPerDirection === undefined)
                 updatedSettings.maxActiveBasePseudoPositionsPerDirection = 1
@@ -1977,7 +1972,7 @@ export default function SettingsPage() {
               updatedSettings.exchangeDcaEnabled = data.settings.exchangeDcaEnabled ?? prevSettings.dcaAdjustment
               // Apply specific settings or fall back
               updatedSettings.profitFactorMinMain =
-                data.settings.profitFactorMinMain ?? initialSettings.profitFactorMinMain
+                data.settings.profitFactorMinMain ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT
               updatedSettings.drawdownTimeMain = data.settings.drawdownTimeMain ?? initialSettings.drawdownTimeMain
               updatedSettings.mainDirectionEnabled =
                 data.settings.mainDirectionEnabled ?? initialSettings.mainDirectionEnabled

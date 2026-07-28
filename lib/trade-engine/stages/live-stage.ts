@@ -102,10 +102,12 @@ import {
 import {
   isSignalDynamicTrailingProfile,
   resolveSignalExecutionLane,
+  resolveSignalExecutionSlot,
   type SignalExecutionLane,
   type TrailingProfile,
 } from "@/lib/signal-trailing"
 import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
+import { archiveClosedLivePositionAnalytics } from "@/lib/live-position-analytics-archive"
 
 const LOG_PREFIX = "[v0] [LivePositionStage]"
 const MIN_EXCHANGE_STOP_LOSS_PERCENT = 0.2
@@ -113,6 +115,27 @@ const SIGNAL_ADMISSION_LOCK_TTL_MS = 15_000
 const SIGNAL_ADMISSION_WAIT_MS = 2_000
 const SIGNAL_CAPACITY_NOTICE_INTERVAL_MS = 30_000
 const SIGNAL_CAPACITY_NOTICE_MAX_CONNECTIONS = 128
+type LiveExecutionIntent = "main" | "preset" | "signal"
+
+function volumeTradeModeForIntent(intent: LiveExecutionIntent): "main" | "preset" {
+  return intent === "preset" ? "preset" : "main"
+}
+
+/**
+ * Signal is a normal Main indication, not a third mutually-exclusive live
+ * engine.  Its dedicated switch starts the Signal-only lane only when neither
+ * Main nor Preset is already live; an enabled Main/Preset connection must
+ * therefore remain able to execute a Signal-originated Real position.
+ */
+function readinessIntentForExecution(
+  settings: Record<string, any>,
+  intent: LiveExecutionIntent,
+): LiveExecutionIntent {
+  if (intent !== "signal") return intent
+  if (isConnectionLiveTradeEnabled(settings)) return "main"
+  if (isConnectionPresetTradeEnabled(settings)) return "preset"
+  return "signal"
+}
 const signalCapacityNoticeAt = new Map<string, number>()
 
 // ── Position snapshot cache for cycle-level deduplication ──
@@ -344,6 +367,8 @@ interface LivePosition {
   markPrice?: number
   liquidationPrice?: number
   realizedPnL?: number
+  /** PositionCost percentage captured at entry for canonical PF-ratio history. */
+  positionCostPct?: number
   timestamp?: number
   fee?: number
   feeAsset?: string
@@ -397,7 +422,7 @@ interface LivePosition {
   status?: "open" | "closed" | "filled" | "partially_filled" | "placed" | "pending_fill" | "placed_unconfirmed" | "rejected" | "cancelled" | "error" | "simulated" | "pending" | "closing" | "closing_partial"
   statusReason?: string
   executionMode?: "live" | "blocked" | "simulation"
-  executionIntent?: "main" | "preset"
+  executionIntent?: LiveExecutionIntent
   executionBlockCode?: string
   executionBlockReason?: string
   presetId?: string
@@ -528,6 +553,8 @@ interface LivePosition {
   blockSourceId?: string
   blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
+  /** Persisted dispatch mode so Block-only restarts retain parent semantics. */
+  blockOnly?: boolean
   blockLegs?: BlockLegState[]
   dcaProfile?: DcaProfile
   dcaLegs?: DcaLegState[]
@@ -1121,6 +1148,9 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     ...(parseRedisBoolean(hash.blockComparisonAvailable) !== undefined && {
       blockComparisonAvailable: parseRedisBoolean(hash.blockComparisonAvailable),
     }),
+    ...(parseRedisBoolean(hash.blockOnly) !== undefined && {
+      blockOnly: parseRedisBoolean(hash.blockOnly),
+    }),
     ...(parseRedisBoolean(hash.trailingActive) !== undefined && {
       trailingActive: parseRedisBoolean(hash.trailingActive),
     }),
@@ -1177,6 +1207,7 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "liquidationPrice",
     "realizedPnL",
     "realized_pnl",
+    "positionCostPct",
     "timestamp",
     "fee",
     "lastUpdate",
@@ -1368,18 +1399,25 @@ async function readPositionsForSignalAdmission(
   client: any,
   connectionId: string,
 ): Promise<LivePosition[]> {
-  const rawIds = (await client.lrange(`live:positions:${connectionId}`, 0, 500)) || []
+  // Capacity is connection-wide and must remain authoritative even when a
+  // large Main book places Signal rows beyond the beginning of the shared
+  // open-position index. Read the complete index; bound only Redis batch
+  // concurrency, never the number of positions included in the count.
+  const rawIds = (await client.lrange(`live:positions:${connectionId}`, 0, -1)) || []
   const ids = [...new Set((rawIds as unknown[]).map(String).filter(Boolean))]
   if (ids.length === 0) return []
 
   let rows: unknown[] = []
+  const READ_BATCH_SIZE = 250
   if (typeof client.pipeline === "function") {
-    const pipeline = client.pipeline()
-    for (const id of ids) {
-      pipeline.get(`live:position:${id}`)
-      pipeline.hgetall(positionHashKey(connectionId, id))
+    for (let offset = 0; offset < ids.length; offset += READ_BATCH_SIZE) {
+      const pipeline = client.pipeline()
+      for (const id of ids.slice(offset, offset + READ_BATCH_SIZE)) {
+        pipeline.get(`live:position:${id}`)
+        pipeline.hgetall(positionHashKey(connectionId, id))
+      }
+      rows.push(...((await pipeline.exec()) || []))
     }
-    rows = (await pipeline.exec()) || []
   } else {
     // Some supported adapters expose the Redis primitives without a pipeline
     // builder. Keep their fallback bounded so one large open-position index
@@ -1492,7 +1530,7 @@ async function reserveSignalPositionCapacity(
         isActiveSignalPosition(position as unknown as Record<string, unknown>) &&
         normalizedPositionSymbol === normalizedCandidateSymbol &&
         position.direction === candidate.direction &&
-        liveExecutionLane(position) === liveExecutionLane(candidate)
+        liveExecutionSlot(position) === liveExecutionSlot(candidate)
       )
     })
     const capacity = evaluateSignalPositionCapacity(
@@ -1719,12 +1757,39 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       }
       const openedAt = Number(position.createdAt || position.timestamp || 0)
       const closedAt = Number(position.closedAt || position.updatedAt || Date.now())
+      await archiveClosedLivePositionAnalytics(
+        client,
+        position as unknown as Record<string, unknown>,
+      ).catch((error) => {
+        logRuntimeWarning(
+          `live-analytics-archive:${position.connectionId}`,
+          60_000,
+          `${LOG_PREFIX} analytics archive write failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        )
+      })
+      const entryPrice = Number(position.averageExecutionPrice || position.entryPrice || 0)
+      const totalQuantity = Math.max(
+        Number(position.totalExecutedQuantity || 0),
+        Number(position.closedQuantity || 0),
+        Number(position.executedQuantity || 0),
+        Number(position.quantity || 0),
+      )
+      const notional = entryPrice > 0 && totalQuantity > 0 ? entryPrice * totalQuantity : 0
+      const realizedPnl = Number.isFinite(Number(position.realizedPnL))
+        ? Number(position.realizedPnL)
+        : 0
       await markStrategyPositionInactive(
         position.connectionId,
         position.id,
         String(position.status).toLowerCase() === "closed"
           ? {
-              pnl: Number.isFinite(Number(position.realizedPnL)) ? Number(position.realizedPnL) : 0,
+              pnl: realizedPnl,
+              ...(notional > 0 && { pnlPct: (realizedPnl / notional) * 100 }),
+              ...(Number(position.positionCostPct) > 0 && {
+                positionCostPct: Number(position.positionCostPct),
+              }),
               drawdownMinutes: openedAt > 0 && closedAt > openedAt
                 ? (closedAt - openedAt) / 60_000
                 : 0,
@@ -2034,21 +2099,83 @@ function liveExecutionLane(
   return resolveSignalExecutionLane(position)
 }
 
-function liveLockDirection(
-  position: Pick<LivePosition, "direction" | "setVariant" | "executionLane" | "indicationType" | "trailingProfile"> |
-    Pick<RealPosition, "direction" | "setVariant" | "executionLane" | "indicationType" | "trailingProfile">,
+function liveExecutionSlot(
+  position: Pick<
+    LivePosition,
+    "executionLane" | "indicationType" | "trailingProfile" | "signalRisk" | "setKey" | "parentSetKey"
+  > |
+    Pick<
+      RealPosition,
+      "executionLane" | "indicationType" | "trailingProfile" | "signalRisk" | "setKey" | "parentSetKey"
+    >,
 ): string {
-  const lane = liveExecutionLane(position)
-  const laneSuffix = lane === "signal_trailing" ? ":signal-trailing" : ""
+  return resolveSignalExecutionSlot(position)
+}
+
+function liveLockDirection(
+  position: Pick<
+    LivePosition,
+    "direction" | "setVariant" | "executionLane" | "indicationType" | "trailingProfile" |
+    "signalRisk" | "setKey" | "parentSetKey"
+  > |
+    Pick<
+      RealPosition,
+      "direction" | "setVariant" | "executionLane" | "indicationType" | "trailingProfile" |
+      "signalRisk" | "setKey" | "parentSetKey"
+    >,
+): string {
+  const slot = liveExecutionSlot(position)
+  const laneSuffix = slot === "default" ? "" : `:${slot}`
   const variantSuffix = position.setVariant === "block" ? ":block" : ""
   return `${position.direction}${laneSuffix}${variantSuffix}`
+}
+
+function initializeBlockOnlySeed(
+  position: LivePosition,
+  source: RealPosition,
+  filledQuantity: number,
+  clientOrderId?: string,
+  orderId?: string,
+): void {
+  if (
+    source.setVariant !== "block" ||
+    source.blockOnly !== true ||
+    !(filledQuantity > 0)
+  ) return
+  const multiplier = Math.max(
+    1,
+    Number(
+      source.blockCalculatedVolumeMultiplier ??
+      source.sizeMultiplier ??
+      1,
+    ),
+  )
+  const baseQuantity = filledQuantity / multiplier
+  const addedQuantity = Math.max(0, filledQuantity - baseQuantity)
+  position.blockBaseQuantity = baseQuantity
+  const leg = buildBlockLegState(
+    source as unknown as Record<string, any>,
+    addedQuantity,
+    clientOrderId,
+    orderId,
+    {
+      baseQuantity,
+      targetAdditionalQuantity: addedQuantity,
+      confirmedAdditionalQuantityBefore: 0,
+      targetBlockQuantity: filledQuantity,
+      targetSatisfied: true,
+      requestedQuantity: addedQuantity,
+      positionQuantityAfter: filledQuantity,
+    },
+  )
+  if (leg) position.blockLegs = [leg]
 }
 
 async function findOpenLivePositionByDir(
   connId: string,
   symbol: string,
   side: string,
-  executionLane: SignalExecutionLane = "default",
+  executionSlot = "default",
 ): Promise<LivePosition | null> {
   const { getLivePositions } = await import("@/lib/trade-engine/stages/live-stage")
   const positions = await getLivePositions(connId)
@@ -2058,7 +2185,7 @@ async function findOpenLivePositionByDir(
     if (
       psym === norm &&
       p.direction === side &&
-      liveExecutionLane(p) === executionLane &&
+      liveExecutionSlot(p) === executionSlot &&
       (p.status === "pending" || p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "simulated")
     ) {
       return p
@@ -2072,23 +2199,31 @@ async function findAuthoritativeAdjustmentParent(
   symbol: string,
   direction: "long" | "short",
   allowSimulated: boolean,
-  executionLane: SignalExecutionLane = "default",
+  executionSlot = "default",
+  allowBlockParent = false,
+  fallbackExecutionSlot?: string,
 ): Promise<LivePosition | null> {
   const positions = await getLivePositions(connId)
   const normalized = String(symbol || "").toUpperCase().replace(/[-_]/g, "")
-  return positions.find((p) => {
+  const matchesParent = (p: LivePosition, slot: string): boolean => {
     const sameSymbol = String(p.symbol || "").toUpperCase().replace(/[-_]/g, "") === normalized
-    const parentVariant = p.setVariant !== "block" && p.setVariant !== "dca"
+    const parentVariant =
+      p.setVariant !== "dca" &&
+      (p.setVariant !== "block" || allowBlockParent)
     const active = p.status === "open" || p.status === "filled" || p.status === "partially_filled" || (allowSimulated && p.status === "simulated")
     const venueOwned = allowSimulated || !!(p.orderId || (p.exchangeData as any)?.exchangePositionId)
     return sameSymbol &&
       p.direction === direction &&
-      liveExecutionLane(p) === executionLane &&
+      liveExecutionSlot(p) === slot &&
       parentVariant &&
       active &&
       venueOwned &&
       Number(p.executedQuantity || 0) > 0
-  }) || null
+  }
+  return positions.find((p) => matchesParent(p, executionSlot)) ||
+    (fallbackExecutionSlot && fallbackExecutionSlot !== executionSlot
+      ? positions.find((p) => matchesParent(p, fallbackExecutionSlot)) || null
+      : null)
 }
 async function fetchCurrentPrice(symbol: string, connId?: string): Promise<number> {
   const { getMarketData, getRedisClient } = await import("@/lib/redis-db")
@@ -2139,19 +2274,23 @@ async function resolveAccumulationPlan(
   if (real?.setVariant === "block") {
     const blockCount = parseBlockCount(real?.setKey)
     const blockVolumeRatio = Number(real?.blockVolumeRatio ?? existing.blockVolumeRatio ?? 1)
-    const blockConfirmedAddQuantity = calculateConfirmedBlockAddQuantity(existing.blockLegs)
+    const recordedBlockAddQuantity = calculateConfirmedBlockAddQuantity(existing.blockLegs)
     // Every Block count is an absolute target derived from the immutable
     // general/Base quantity. Confirmed fills from earlier independent Count
     // Sets are subtracted below, so Count 1 + Count 2 + Count 3 reaches the
     // Count-3 target instead of adding three cumulative targets.
-    const explicitBaseQuantity = Number(existing.initialExecutedQuantity ?? existing.blockBaseQuantity ?? 0)
+    const explicitBaseQuantity = Number(existing.blockBaseQuantity ?? existing.initialExecutedQuantity ?? 0)
     const currentQuantity = Number(existing.executedQuantity ?? existing.quantity ?? 0)
-    const inferredLegacyBaseQuantity = currentQuantity - blockConfirmedAddQuantity
+    const inferredLegacyBaseQuantity = currentQuantity - recordedBlockAddQuantity
     const blockBaseQuantity = explicitBaseQuantity > 0
       ? explicitBaseQuantity
       : inferredLegacyBaseQuantity > 0
         ? inferredLegacyBaseQuantity
         : currentQuantity
+    const blockConfirmedAddQuantity = Math.max(
+      recordedBlockAddQuantity,
+      Math.max(0, currentQuantity - blockBaseQuantity),
+    )
     if (!blockCount || blockBaseQuantity <= 0 || blockVolumeRatio <= 0) return null
     const blockTargetAddQuantity = calculateBlockAddQuantity(
       blockBaseQuantity,
@@ -2227,6 +2366,7 @@ async function resolveAccumulationPlan(
     {
       tradeMode: "main",
       sizeMultiplier: real?.sizeMultiplier ?? existing.sizeMultiplier,
+      allowUnboundedVariantMultiplier: Boolean(real?.combinedPosCounts || existing.combinedPosCounts),
       indicationType: real?.indicationType ?? existing.indicationType,
     },
   ).catch(() => null)
@@ -3473,7 +3613,7 @@ async function reconcileCombinedPosCountTarget(
   connectionId: string,
   realPosition: RealPosition,
   connector: any,
-  executionIntent: "main" | "preset",
+  executionIntent: LiveExecutionIntent,
   liveExecutionEnabled: boolean,
 ): Promise<LivePosition | null> {
   const existingPositions = await findOpenCombinedPosCountPositions(connectionId, realPosition.symbol)
@@ -3521,8 +3661,9 @@ async function reconcileCombinedPosCountTarget(
     realPosition.symbol,
     price,
     {
-      tradeMode: executionIntent,
+      tradeMode: volumeTradeModeForIntent(executionIntent),
       sizeMultiplier: realPosition.sizeMultiplier,
+      allowUnboundedVariantMultiplier: realPosition.combinedPosCounts === true,
       indicationType: realPosition.indicationType,
     },
   ).catch(() => null)
@@ -5976,6 +6117,7 @@ export async function executeLivePosition(
       blockLaneKind:  realPosition.blockLaneKind,
       blockLaneKey:   realPosition.blockLaneKey,
       blockSourceId:  realPosition.blockSourceId,
+      blockOnly:      realPosition.blockOnly,
       accumulatedSetKeys:
         Array.isArray(realPosition.accumulatedSetKeys) && realPosition.accumulatedSetKeys.length > 0
           ? realPosition.accumulatedSetKeys
@@ -6006,9 +6148,30 @@ export async function executeLivePosition(
   // strategy order. In Preset-only mode the active optimized preset is applied
   // before SL/TP/trailing fields are copied into the LivePosition.
   const initialConnectionSettings = (await getConnection(connectionId).catch(() => null)) || {}
+  const initialAppSettings = (await getAppSettings().catch(() => null)) || {}
+  const configuredPositionCostPct = Number(
+    (initialConnectionSettings as any).positionCost ??
+    (initialConnectionSettings as any).exchangePositionCost ??
+    (initialConnectionSettings as any).exchange_position_cost ??
+    initialAppSettings.positionCost ??
+    initialAppSettings.exchangePositionCost ??
+    initialAppSettings.exchange_position_cost ??
+    0.1,
+  )
+  const positionCostPct =
+    Number.isFinite(configuredPositionCostPct) && configuredPositionCostPct > 0
+      ? configuredPositionCostPct
+      : 0.1
   const mainModeEnabled = isConnectionLiveTradeEnabled(initialConnectionSettings)
   const presetModeEnabled = isConnectionPresetTradeEnabled(initialConnectionSettings)
-  const executionIntent: "main" | "preset" = presetModeEnabled && !mainModeEnabled ? "preset" : "main"
+  const isSignalPosition =
+    String(realPosition.indicationType || "").trim().toLowerCase() === "signal" ||
+    Boolean(realPosition.signalRisk?.sourceIds?.length)
+  const executionIntent: LiveExecutionIntent = isSignalPosition
+    ? "signal"
+    : presetModeEnabled && !mainModeEnabled
+      ? "preset"
+      : "main"
   if (executionIntent === "preset") {
     const { applySelectedPresetToRealPosition } = await import("@/lib/preset-store")
     realPosition = await applySelectedPresetToRealPosition(
@@ -6033,6 +6196,7 @@ export async function executeLivePosition(
     averageExecutionPrice: 0,
     volumeUsd: 0,
     leverage: realPosition.leverage,
+    positionCostPct,
     marginType: "cross",
     // ── Set-config-aware initial SL% ──────────────────────────────────────
     // Use `computeSetAwareSL` so the protection level is derived from the Set's
@@ -6091,6 +6255,7 @@ export async function executeLivePosition(
     blockLaneKind: realPosition.blockLaneKind,
     blockLaneKey: realPosition.blockLaneKey,
     blockSourceId: realPosition.blockSourceId,
+    blockOnly: realPosition.blockOnly,
     blockVolumeIncrementRatio: realPosition.blockVolumeIncrementRatio,
     blockCalculatedVolumeMultiplier: realPosition.blockCalculatedVolumeMultiplier,
     accumulatedSetKeys:
@@ -6161,7 +6326,7 @@ export async function executeLivePosition(
 
   // Hoisted before the try/catch so the catch block can release the
   // correct variant-scoped dedup lock on unhandled errors.
-  const executionLane = liveExecutionLane(realPosition)
+  const executionSlot = liveExecutionSlot(realPosition)
   const _lockDirSuffix = liveLockDirection(realPosition).slice(realPosition.direction.length)
   let liveOrderLockToken: string | null = null
   let signalCapacityReserved = false
@@ -6224,7 +6389,8 @@ export async function executeLivePosition(
     // APIs. Previously each path implemented a slightly different combination
     // of flags, credentials, and Redis checks, so production could display Live
     // ON while this branch silently created paper positions.
-    const liveReadiness = evaluateRealTradeReadiness(connSettings, executionIntent)
+    const readinessIntent = readinessIntentForExecution(connSettings, executionIntent)
+    const liveReadiness = evaluateRealTradeReadiness(connSettings, readinessIntent)
     const isLiveTradeEnabled = liveReadiness.canPlaceRealOrders
     livePosition.executionMode = liveReadiness.executionMode
     livePosition.executionBlockCode = liveReadiness.blockCode || undefined
@@ -6284,10 +6450,9 @@ export async function executeLivePosition(
     // the try block) so the catch handler can also release the correct key.
     const isBlockVariant = realPosition.setVariant === "block"
 
-    // Block and DCA are adjustment-only variants. They must attach to an
-    // already confirmed parent position; opening a second standalone venue
-    // position would destroy the independent base/count ratio calculation and
-    // make protection ownership ambiguous.
+    // DCA and ordinary Block rows attach to an already confirmed parent.
+    // Block-only has no Standard row by design, so its first adjusted row
+    // seeds the physical parent and later counts reconcile into that parent.
     const isAdjustmentVariant = isBlockVariant || realPosition.setVariant === "dca"
     if (isAdjustmentVariant) {
       if (await abortSuperseded()) return livePosition
@@ -6296,32 +6461,54 @@ export async function executeLivePosition(
         realPosition.symbol,
         realPosition.direction,
         !isLiveTradeEnabled,
-        executionLane,
+        executionSlot,
+        isBlockVariant && realPosition.blockOnly === true,
+        // Source-specific Signal Blocks retain their own bookkeeping lane,
+        // but adjust the ordinary Direction parent when no matching source
+        // parent is open. This preserves a single physical target while
+        // keeping source attribution independent.
+        isBlockVariant && realPosition.blockOnly !== true && executionSlot !== "default"
+          ? "default"
+          : undefined,
       )
       if (!existing) {
-        livePosition.status = "rejected"
-        livePosition.statusReason = isBlockVariant
-          ? `Block Set ${realPosition.setKey || "unknown"} waits for authoritative parent fill`
-          : `DCA Set ${realPosition.setKey || "unknown"} waits for authoritative parent fill`
-        pushStep(livePosition, "adjustment_wait", false, livePosition.statusReason)
-        await savePosition(livePosition)
-        return livePosition
-      }
-      const adjustmentPrice = realPosition.entryPrice > 0
-        ? realPosition.entryPrice
-        : await fetchCurrentPrice(realPosition.symbol)
-      if (await abortSuperseded()) return livePosition
-      if (!(adjustmentPrice > 0)) {
-        pushStep(existing, "accumulate_skip", false, "market price unavailable — adjustment deferred")
-        await savePosition(existing)
-        return existing
-      }
-      if (existing.status === "simulated") {
+        if (isBlockVariant && realPosition.blockOnly === true) {
+          // A fresh Block-only lane has no Standard parent by definition.
+          // Continue into the ordinary entry pipeline with the already
+          // calculated absolute Block multiplier; the persisted Block
+          // position becomes the authoritative parent for later counts.
+          pushStep(
+            livePosition,
+            "block_only_parent_seed",
+            true,
+            `opening adjusted Block parent for ${realPosition.setKey || "unknown"}`,
+          )
+        } else {
+          livePosition.status = "rejected"
+          livePosition.statusReason = isBlockVariant
+            ? `Block Set ${realPosition.setKey || "unknown"} waits for authoritative parent fill`
+            : `DCA Set ${realPosition.setKey || "unknown"} waits for authoritative parent fill`
+          pushStep(livePosition, "adjustment_wait", false, livePosition.statusReason)
+          await savePosition(livePosition)
+          return livePosition
+        }
+      } else {
+        const adjustmentPrice = realPosition.entryPrice > 0
+          ? realPosition.entryPrice
+          : await fetchCurrentPrice(realPosition.symbol)
         if (await abortSuperseded()) return livePosition
-        return accumulateIntoSimulatedPosition(connectionId, existing, realPosition, adjustmentPrice)
+        if (!(adjustmentPrice > 0)) {
+          pushStep(existing, "accumulate_skip", false, "market price unavailable — adjustment deferred")
+          await savePosition(existing)
+          return existing
+        }
+        if (existing.status === "simulated") {
+          if (await abortSuperseded()) return livePosition
+          return accumulateIntoSimulatedPosition(connectionId, existing, realPosition, adjustmentPrice)
+        }
+        if (await abortSuperseded()) return livePosition
+        return accumulateIntoLivePosition(connectionId, existing, realPosition, adjustmentPrice, exchangeConnector)
       }
-      if (await abortSuperseded()) return livePosition
-      return accumulateIntoLivePosition(connectionId, existing, realPosition, adjustmentPrice, exchangeConnector)
     }
 
     pushStep(livePosition, "preflight", true, `execution_mode=${liveReadiness.executionMode}`)
@@ -6401,7 +6588,7 @@ export async function executeLivePosition(
               connectionId,
               realPosition.symbol,
               realPosition.direction,
-              executionLane,
+              executionSlot,
             )
 
         if (!existing) {
@@ -6491,7 +6678,7 @@ export async function executeLivePosition(
         connectionId,
         realPosition.symbol,
         realPosition.direction,
-        executionLane,
+        executionSlot,
       )
       if (existingSimulatedSlot) return existingSimulatedSlot
     }
@@ -6625,8 +6812,9 @@ export async function executeLivePosition(
           realPosition.symbol,
           simEntryPrice,
           {
-            tradeMode: executionIntent,
+            tradeMode: volumeTradeModeForIntent(executionIntent),
             sizeMultiplier: realPosition.sizeMultiplier,
+            allowUnboundedVariantMultiplier: realPosition.combinedPosCounts === true,
             indicationType: realPosition.indicationType,
           },
         )
@@ -6656,6 +6844,7 @@ export async function executeLivePosition(
       livePosition.totalExecutedQuantity = simQty
       livePosition.initialEntryPrice = simEntryPrice
       livePosition.blockBaseQuantity = simQty
+      initializeBlockOnlySeed(livePosition, realPosition, simQty)
       if (livePosition.combinedPosCounts) {
         livePosition.posCountsSetQuantities = allocatePositionSetQuantities(
           livePosition,
@@ -6807,10 +6996,7 @@ export async function executeLivePosition(
     //                    multiplier).
     // Strategy / pseudo-position callers (in pseudo-position-manager)
     // do NOT pass `tradeMode` — they remain ratio-only per spec.
-    const liveTradeMode: "main" | "preset" =
-      isTruthyFlag(connSettings.is_preset_trade) && !isTruthyFlag(connSettings.is_live_trade)
-        ? "preset"
-        : "main"
+    const liveTradeMode = volumeTradeModeForIntent(executionIntent)
 
     const volumeResult = await VolumeCalculator.calculateVolumeForConnection(
       connectionId,
@@ -6821,6 +7007,9 @@ export async function executeLivePosition(
         // Forward the Block/DCA variant multiplier so notional is correctly
         // scaled before the exchange order is placed (absent → 1.0 identity).
         sizeMultiplier: realPosition.sizeMultiplier,
+        // Only a combined Position-Count target represents the sum of every
+        // valid Set. Ordinary Block/DCA variants remain safely bounded.
+        allowUnboundedVariantMultiplier: realPosition.combinedPosCounts === true,
         indicationType: realPosition.indicationType,
       },
     ).catch(err => {
@@ -6987,8 +7176,13 @@ export async function executeLivePosition(
       : { hedgeMode: false, clientOrderId: orderTrace.exchangeTrackingId }
     const freshMainModeEnabled = reCheckMainEnabled(freshSettings)
     const freshPresetModeEnabled = reCheckPresetEnabled(freshSettings)
-    const freshExecutionIntent: "main" | "preset" = freshPresetModeEnabled && !freshMainModeEnabled ? "preset" : "main"
-    const freshReadiness = evaluateRealTradeReadiness(freshSettings, freshExecutionIntent)
+    const freshExecutionIntent: LiveExecutionIntent = isSignalPosition
+      ? "signal"
+      : freshPresetModeEnabled && !freshMainModeEnabled
+        ? "preset"
+        : "main"
+    const freshReadinessIntent = readinessIntentForExecution(freshSettings, freshExecutionIntent)
+    const freshReadiness = evaluateRealTradeReadiness(freshSettings, freshReadinessIntent)
     const supervisedSmokeId = await client.get("live_order_smoke:active").catch(() => null)
     const isStillLive = freshReadiness.canPlaceRealOrders && !supervisedSmokeId
     if (await abortSuperseded()) return livePosition
@@ -7633,6 +7827,13 @@ export async function executeLivePosition(
       )
       livePosition.initialEntryPrice ??= fill.filledPrice || currentPrice
       livePosition.blockBaseQuantity ??= fill.filledQty
+      initializeBlockOnlySeed(
+        livePosition,
+        realPosition,
+        fill.filledQty,
+        orderTrace.exchangeTrackingId,
+        livePosition.orderId,
+      )
       if (livePosition.combinedPosCounts) {
         livePosition.posCountsSetQuantities = allocatePositionSetQuantities(
           livePosition,
@@ -9095,13 +9296,26 @@ export async function closeLivePosition(
       // primary owner is another indication type. Attribution follows the
       // durable Signal risk/source lineage, not the first leg's label.
       if (closedDirection && position.signalRisk?.sourceIds?.length) {
+        const signalAppSettings = await getAppSettings().catch(() => ({} as any))
+        const positionCostPct = Math.max(
+          0.000001,
+          Number(
+            signalAppSettings?.positionCost ??
+            signalAppSettings?.exchangePositionCost ??
+            signalAppSettings?.exchange_position_cost,
+          ) || 0.1,
+        )
         await recordSignalPerformanceOutcome({
           connectionId,
           positionId: position.id,
           symbol: position.symbol,
           direction: closedDirection,
           pnl,
+          pnlPct: notional > 0 ? (pnl / notional) * 100 : 0,
+          positionCostPct,
           sourceIds: position.signalRisk.sourceIds,
+          signalLanes: position.signalRisk.signalLanes,
+          liveExchange: originalStatus !== "simulated" && Boolean(exchangeConnector),
           closedAt: position.closedAt || Date.now(),
         }).catch((error) => {
           console.warn(
@@ -9856,16 +10070,16 @@ export async function reconcileLivePositions(
     // createdAt. Non-canonical duplicates are refreshed for the dashboard
     // but never drive SL/TP arming, force-close, or close counters.
     const canonicalIdBySlot = new Map<string, string>()
-    const executionLanesByPhysicalSlot = new Map<string, Set<SignalExecutionLane>>()
+    const executionSlotsByPhysicalSlot = new Map<string, Set<string>>()
     {
       const bySlot = new Map<string, typeof openPositions>()
       for (const p of openPositions) {
         const physicalSlot = `${normSym(p.symbol)}|${p.direction}`
-        const lane = liveExecutionLane(p)
-        const slot = `${physicalSlot}|${lane}`
-        const lanes = executionLanesByPhysicalSlot.get(physicalSlot) ?? new Set<SignalExecutionLane>()
-        lanes.add(lane)
-        executionLanesByPhysicalSlot.set(physicalSlot, lanes)
+        const executionSlot = liveExecutionSlot(p)
+        const slot = `${physicalSlot}|${executionSlot}`
+        const slots = executionSlotsByPhysicalSlot.get(physicalSlot) ?? new Set<string>()
+        slots.add(executionSlot)
+        executionSlotsByPhysicalSlot.set(physicalSlot, slots)
         const arr = bySlot.get(slot)
         if (arr) arr.push(p); else bySlot.set(slot, [p])
       }
@@ -9893,7 +10107,7 @@ export async function reconcileLivePositions(
       const delta: PosDelta = { reconciled: 1, updated: 0, closed: 0, errors: 0, protectionRearmed: 0 }
       try {
         const mapKey = `${normSym(pos.symbol)}|${pos.direction}`
-        const logicalSlotKey = `${mapKey}|${liveExecutionLane(pos)}`
+        const logicalSlotKey = `${mapKey}|${liveExecutionSlot(pos)}`
         const exPos = exchangeMap.get(mapKey)
 
         // ── Non-canonical duplicate for this venue slot (BUG 4) ─────────
@@ -9973,7 +10187,7 @@ export async function reconcileLivePositions(
             syncedAt: Date.now(),
           }
           pos.updatedAt = Date.now()
-          const parallelExecutionLanes = (executionLanesByPhysicalSlot.get(mapKey)?.size || 0) > 1
+          const parallelExecutionLanes = (executionSlotsByPhysicalSlot.get(mapKey)?.size || 0) > 1
           if (!parallelExecutionLanes) {
             await reconcileAuthoritativeExchangeQuantity(pos, authoritativeSize, authoritativeEntry)
           }
@@ -10258,8 +10472,8 @@ export async function reconcileLivePositions(
           const progKey = `progression:${connectionId}`
           const writes: Promise<any>[] = [
             client.expire(progKey, 7 * 24 * 60 * 60).catch(() => {}),
-            // Bound the closed archive + refresh its TTL (savePosition does the
-            // lpush move but not these housekeeping ops). Idempotent to repeat.
+            // Bound the compatibility ring + refresh its TTL. Complete 48-hour
+            // analytics use the independent time index written by savePosition.
             client.ltrim(closedIndexKey, 0, 499).catch(() => {}),
             client.expire(closedIndexKey, 30 * 24 * 60 * 60).catch(() => {}),
           ]
@@ -11022,12 +11236,12 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
       if (!direction) continue
       exchangeMap.set(`${sym}|${direction}`, ep)
     }
-    const executionLanesByPhysicalSlot = new Map<string, Set<SignalExecutionLane>>()
+    const executionSlotsByPhysicalSlot = new Map<string, Set<string>>()
     for (const position of openPositions) {
       const physicalSlot = `${normSym(position.symbol)}|${position.direction}`
-      const lanes = executionLanesByPhysicalSlot.get(physicalSlot) ?? new Set<SignalExecutionLane>()
-      lanes.add(liveExecutionLane(position))
-      executionLanesByPhysicalSlot.set(physicalSlot, lanes)
+      const slots = executionSlotsByPhysicalSlot.get(physicalSlot) ?? new Set<string>()
+      slots.add(liveExecutionSlot(position))
+      executionSlotsByPhysicalSlot.set(physicalSlot, slots)
     }
 
     // liveOrderIdsSync was fetched in the parallel prefetch above.
@@ -11074,7 +11288,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         }
         
         const mapKey = `${normSym(position.symbol)}|${position.direction}`
-        const parallelExecutionLanes = (executionLanesByPhysicalSlot.get(mapKey)?.size || 0) > 1
+        const parallelExecutionLanes = (executionSlotsByPhysicalSlot.get(mapKey)?.size || 0) > 1
         const exchangePos = exchangeMap.get(mapKey)
         if (!exchangePos) {
           if (!recordExchangeAbsence(position)) return

@@ -282,7 +282,10 @@ export function calculateBlockRemainingAddQuantity(
   if (!Number.isFinite(confirmed) || confirmed < 0) return 0
   const remaining = targetAdditionalQuantity - confirmed
   const tolerance = Math.max(1e-12, targetAdditionalQuantity * 1e-9)
-  return remaining > tolerance ? remaining : 0
+  // This value crosses the order boundary.  Normalize binary subtraction
+  // drift (for example 0.045 - 0.03) so a Count ladder emits the exact
+  // configured delta rather than 0.014999999999999998.
+  return remaining > tolerance ? Number(remaining.toFixed(12)) : 0
 }
 
 export function buildBlockLegState(

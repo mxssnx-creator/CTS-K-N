@@ -8,7 +8,8 @@
  *
  *   ┌──────────┐
  *   │ INDICATIONS (per type, with pseudo-position limit per Set)       │
- *   │   • direction / move / active / active_advanced / optimal / auto / trend │
+ *   │   • direction / move / active / active_advanced / optimal / auto       │
+ *   │   • trend / common / signal                                             │
  *   │   • each indication Set has its own positions (capped by limit)  │
  *   │   • windowed counts: Last 5 / Last 60 min / Active                │
  *   └─────────────┬─────────────────────────────────────────────────────┘
@@ -17,9 +18,9 @@
  *   ┌─────────────────────────────────────────────────────────────────┐
  *   │ BASE  — INDEPENDENT Sets (one per indication_type × direction)  │
  *   │   • each Base Set has its OWN pseudo-positions (independent)    │
- *   │   • count ≈ 1,000 across symbols (filter: PF >= 1.0)            │
+ *   │   • count is exhaustive across full configurations and directions│
  *   └─────────────┬───────────────────────────────────────────────────┘
- *                 │ promote when avgPF >= 1.2 + DDT <= 24h
+ *                 │ promote by PositionCost-relative ratio + DDT
  *                 ▼
  *   ┌─────────────────────────────────────────────────────────────────┐
  *   │ MAIN  — VARIANT Sets per Base (NO new positions; reuse Base's)  │
@@ -29,7 +30,7 @@
  *   │   • Pos-count variants are validated here via axisWindows tag   │
  *   │     (prev 1-12 × last 1-4 × cont 1-8 × pause 1-8 = up to 384)   │
  *   └─────────────┬───────────────────────────────────────────────────┘
- *                 │ promote when avgPF >= 1.4 + DDT <= 16h
+ *                 │ promote by configured PositionCost-relative PF + DDT
  *                 ▼
  *   ┌─────────────────────────────────────────────────────────────────┐
  *   │ REAL  — ACCUMULATION stage (cumulative across cycles)           │
@@ -38,7 +39,7 @@
  *   │   • per-variant counts: default / block / dca / trailing        │
  *   │   • cumulative entries_count grows across cycles                │
  *   └─────────────┬───────────────────────────────────────────────────┘
- *                 │ rank by avgPF, take top 500
+ *                 │ mirror validated rows into the configured Live ceiling
  *                 ▼
  *   ┌─────────────────────────────────────────────────────────────────┐
  *   │ LIVE  — TOP 500 Sets, one pseudo-position per Set on exchange   │
@@ -46,8 +47,12 @@
  */
 
 import { getRedisClient } from "@/lib/redis-db"
+import {
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  normalizeMainTradePfRatio,
+} from "@/lib/main-trade-profit-factor"
 
-const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto", "signal", "trend"] as const
+const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto", "common", "signal", "trend"] as const
 
 function aggregateWindowByType(hash: Record<string, string>): Record<string, number> {
   const totals: Record<string, number> = {}
@@ -105,6 +110,12 @@ export interface IndicationTracking {
 }
 
 export interface StrategyStageTracking {
+  rows: {
+    base: { total: number; valid: number; totalOpen: number; validOpen: number; validRatio: number }
+    main: { valid: number; overall: number; validOpen: number; overallOpen: number; overallToValidRatio: number }
+    real: { valid: number; active: number; activeExactRows: number; activeRatio: number }
+    live: { total: number; mirrored: number; active: number; mirroredRatio: number }
+  }
   base: {
     setsActivelyProcessing: number   // Sets alive this cycle (per-symbol snapshot)
     setsRunningNow: number           // ★ canonical "active": setKey ∈ active_config_keys
@@ -257,6 +268,7 @@ export interface StrategyStageTracking {
     base: number
     main: number
     real: number
+    live: number
   }
 }
 
@@ -411,11 +423,11 @@ export async function getStrategyTracking(
   const mainDdtCeilingMin = resolveDdtMin("maxDrawdownTimeMainHours", 4)
   const realDdtCeilingMin = resolveDdtMin("maxDrawdownTimeRealHours", 4)
 
-  // Canonical per-stage min Profit-Factor thresholds — read from the SAME
+  // Canonical per-stage PositionCost-relative result ratios — read from the SAME
   // source + key names + defaults the engine gate uses in
   // `strategy-coordinator.loadAppPFThresholds` (`mainProfitFactor` /
   // `realProfitFactor`, connection hash overlaid on global app settings,
-  // clamp [0,5], defaults main 1.2 / real 1.2). The old display read
+  // 0.08..2.70 grid, defaults main/real 1.12). The old display read
   // `settings.minProfitFactorMain` / `minProfitFactorReal` (legacy keys)
   // which are NEVER written anywhere — so the dashboard PF
   // ceiling permanently diverged from the gate the engine enforced.
@@ -424,12 +436,10 @@ export async function getStrategyTracking(
     const raw =
       (settings as Record<string, string>)[key] ??
       (appSettings as Record<string, unknown>)[key]
-    const n = Number(raw)
-    if (!Number.isFinite(n) || n < 0) return fallback
-    return Math.max(0, Math.min(5, n))
+    return normalizeMainTradePfRatio(raw, fallback)
   }
-  const mainPFThreshold = resolvePF("mainProfitFactor", 1.2)
-  const realPFThreshold = resolvePF("realProfitFactor", 1.2)
+  const mainPFThreshold = resolvePF("mainProfitFactor", MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT)
+  const realPFThreshold = resolvePF("realProfitFactor", MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT)
 
   // Variant breakdowns.
   // NOTE: The MAIN stage never writes strategy_variant_main:* keys —
@@ -482,13 +492,75 @@ export async function getStrategyTracking(
   const liveDetailKey = `strategy_detail:${connectionId}:live`
   const liveDetail = ((await client.hgetall(liveDetailKey).catch(() => ({}))) || {}) as Record<string, string>
 
+  const sumFreshRow = (
+    hash: Record<string, string>,
+    field: string,
+    fallbackField: string,
+  ): number => {
+    const now = Date.now()
+    let total = 0
+    let samples = 0
+    for (const key of Object.keys(hash)) {
+      if (!key.startsWith("s:") || !key.endsWith(":ts")) continue
+      const symbol = key.slice(2, -3)
+      const timestamp = Number(hash[key] || 0)
+      if (!(timestamp > 0) || now - timestamp > 5 * 60_000) continue
+      total += Math.max(0, Number(hash[`s:${symbol}:${field}`]) || 0)
+      samples++
+    }
+    return samples > 0
+      ? total
+      : Math.max(0, Number(hash[field] ?? hash[fallbackField]) || 0)
+  }
+  const rowPercent = (numerator: number, denominator: number, cap = true): number => {
+    if (!(denominator > 0)) return 0
+    const result = Number(((numerator / denominator) * 100).toFixed(1))
+    return cap ? Math.min(100, result) : result
+  }
+  const baseRowTotal = sumFreshRow(base, "row_total", "created_sets")
+  const baseRowValid = sumFreshRow(base, "row_valid", "passed_sets")
+  const mainRowValid = sumFreshRow(main, "row_valid", "parent_sets_passed")
+  const mainRowOverall = sumFreshRow(main, "row_overall", "created_sets")
+  const realRowValid = sumFreshRow(real, "row_valid", "created_sets")
+  const realRowActive = sumFreshRow(real, "row_active", "sets_running_now")
+  const liveRowTotal = sumFreshRow(liveDetail, "row_total", "evaluated")
+  const liveRowMirrored = sumFreshRow(liveDetail, "row_mirrored", "created_sets")
+  const rows: StrategyStageTracking["rows"] = {
+    base: {
+      total: baseRowTotal,
+      valid: baseRowValid,
+      totalOpen: sumFreshRow(base, "row_total_open", "sets_running_now"),
+      validOpen: sumFreshRow(base, "row_valid_open", "sets_running_now"),
+      validRatio: rowPercent(baseRowValid, baseRowTotal),
+    },
+    main: {
+      valid: mainRowValid,
+      overall: mainRowOverall,
+      validOpen: sumFreshRow(main, "row_valid_open", "sets_running_now"),
+      overallOpen: sumFreshRow(main, "row_overall_open", "sets_running_now"),
+      overallToValidRatio: rowPercent(mainRowOverall, mainRowValid, false),
+    },
+    real: {
+      valid: realRowValid,
+      active: realRowActive,
+      activeExactRows: sumFreshRow(real, "row_active_exact", "sets_running_now"),
+      activeRatio: rowPercent(realRowActive, realRowValid),
+    },
+    live: {
+      total: liveRowTotal,
+      mirrored: liveRowMirrored,
+      active: sumFreshRow(liveDetail, "row_active", "sets_running_now"),
+      mirroredRatio: rowPercent(liveRowMirrored, liveRowTotal),
+    },
+  }
+
   // ── Pre-derive Real 4-perspective so the UI doesn't have to ──
   // Overall is cumulative across cycles, accumulated is the axis sum
   // (already pre-computed by the coordinator under `stat_accumulated`,
   // with a graceful fallback to summing `axisAccumulation` here).
   const realOverall    = Number(prog.strategies_real_total || "0")
   const realGeneral    = Number(prog.strategies_real_current || real.created_sets || "0")
-  const realCombined   = Number(real.sets_running_now || real.sets_with_open_positions || "0")
+  const realCombined   = rows.real.active
   const realAccumulated = (() => {
     const fromCoord = Number(real.stat_accumulated || "")
     if (Number.isFinite(fromCoord) && fromCoord > 0) return fromCoord
@@ -578,19 +650,23 @@ export async function getStrategyTracking(
   // main = passed Base parents ÷ evaluated Base parents.
   // real = real output ÷ Real evaluated pool (already includes Real fan-out).
   const stageEvalPercent = {
-    base: pct(baseInput, baseOutput),
-    main: pct(mainParentsPassed || Math.min(mainOutput, mainInput), mainInput),
-    real: pct(realOutput, realInput),
+    base: rows.base.total > 0 ? pct(rows.base.valid, rows.base.total) : pct(baseInput, baseOutput),
+    main: rows.base.total > 0
+      ? pct(rows.main.valid, rows.base.total)
+      : pct(mainParentsPassed || Math.min(mainOutput, mainInput), mainInput),
+    real: rows.main.overall > 0 ? pct(rows.real.valid, rows.main.overall) : pct(realOutput, realInput),
+    live: rows.live.total > 0 ? pct(rows.live.mirrored, rows.live.total) : 0,
   }
 
   return {
+    rows,
     base: {
-      setsActivelyProcessing: baseActivelyProcessing,
-      setsRunningNow: Number(base.sets_running_now || base.sets_with_open_positions || "0"),
-      setsWithOpenPositions: Number(base.sets_running_now || base.sets_with_open_positions || "0"),
+      setsActivelyProcessing: rows.base.totalOpen || baseActivelyProcessing,
+      setsRunningNow: rows.base.totalOpen,
+      setsWithOpenPositions: rows.base.totalOpen,
       setsProgressing: Number(base.sets_progressing || base.created_sets || "0"),
       setsTotal: Number(prog.strategies_base_total || "0"),
-      setsCurrent: Number(prog.strategies_base_current || base.created_sets || "0"),
+      setsCurrent: rows.base.total,
       avgProfitFactor: Number(base.avg_profit_factor || "0"),
       avgDrawdownTime: Number(base.avg_drawdown_time || "0"),
       avgPosPerSet: Number(base.avg_pos_per_set || "0"),
@@ -600,11 +676,11 @@ export async function getStrategyTracking(
       variantCountStep: Number(settings.strategyVariantCountStep || "10"),
     },
     main: {
-      evaluatedFromBase: Number(main.evaluated || "0"),
-      setsCreated: Number(prog.strategies_main_current || main.created_sets || "0"),
+      evaluatedFromBase: rows.main.valid,
+      setsCreated: rows.main.overall,
       setsTotal: Number(prog.strategies_main_total || "0"),
-      setsRunningNow: Number(main.sets_running_now || main.sets_with_open_positions || "0"),
-      setsWithOpenPositions: Number(main.sets_running_now || main.sets_with_open_positions || "0"),
+      setsRunningNow: rows.main.overallOpen,
+      setsWithOpenPositions: rows.main.overallOpen,
       setsProgressing: Number(main.sets_progressing || main.created_sets || "0"),
       avgProfitFactor: Number(main.avg_profit_factor || "0"),
       avgDrawdownTime: Number(main.avg_drawdown_time || "0"),
@@ -614,12 +690,12 @@ export async function getStrategyTracking(
       variants: mainVariants,
     },
     real: {
-      setsCurrent: realGeneral,
+      setsCurrent: rows.real.valid || realGeneral,
       setsTotal: realOverall,
       setsRunningNow: realCombined,
       setsWithOpenPositions: realCombined,
       setsProgressing: Number(real.sets_progressing || real.created_sets || "0"),
-      evaluatedFromMain: Number(real.evaluated || "0"),
+      evaluatedFromMain: rows.main.overall,
       avgProfitFactor: Number(real.avg_profit_factor || "0"),
       avgDrawdownTime: Number(real.avg_drawdown_time || "0"),
       avgPosPerSet: Number(real.avg_pos_per_set || "0"),
@@ -636,9 +712,9 @@ export async function getStrategyTracking(
       averages: realAverages,
     },
     live: {
-      setsActive: liveActive,
-      setsRunningNow: Number(liveDetail.sets_running_now || liveDetail.sets_with_open_positions || liveActive),
-      setsWithOpenPositions: Number(liveDetail.sets_running_now || liveDetail.sets_with_open_positions || liveActive),
+      setsActive: rows.live.mirrored || liveActive,
+      setsRunningNow: rows.live.active,
+      setsWithOpenPositions: rows.live.active,
       setsProgressing: Number(liveDetail.sets_progressing || "0"),
       setsTotal: Number(prog.strategies_live_total || "0"),
       setsCandidatesTotal: Number(prog.strategies_live_candidates_total || "0"),

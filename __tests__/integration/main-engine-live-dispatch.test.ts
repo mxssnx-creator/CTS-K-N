@@ -459,6 +459,73 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(placeOrder).not.toHaveBeenCalled()
   })
 
+  test("opens every exact Signal source and TP/SL configuration in its own slot under the shared 120 cap", async () => {
+    connection.is_live_trade = "0"
+    connection.live_trade_requested = "0"
+    const {
+      executeLivePosition,
+      getLivePositions,
+    } = await import("@/lib/trade-engine/stages/live-stage")
+    const configurations = [
+      { sourceId: "binance-usdm", configId: "tp1_00:slr0_50:standard", takeProfitPct: 1, stopLossPct: 0.5 },
+      { sourceId: "binance-usdm", configId: "tp1_50:slr1_00:standard", takeProfitPct: 1.5, stopLossPct: 1.5 },
+      { sourceId: "okx-swap", configId: "tp1_00:slr0_50:standard", takeProfitPct: 1, stopLossPct: 0.5 },
+    ]
+
+    const positions = await Promise.all(configurations.map((configuration, index) => {
+      const signalRisk = {
+        ...configuration,
+        rewardRisk: configuration.takeProfitPct / configuration.stopLossPct,
+        sourceIds: [configuration.sourceId],
+        configIds: [configuration.configId],
+        signalLanes: [{
+          sourceId: configuration.sourceId,
+          configId: configuration.configId,
+        }],
+        agreement: 0.82,
+        confidence: 0.86,
+        generatedAt: Date.now(),
+      }
+      return executeLivePosition(connection.id, {
+        id: `signal-exact-slot-${index}`,
+        connectionId: connection.id,
+        symbol: "SOLUSDT",
+        direction: "long",
+        quantity: 0,
+        entryPrice: 100,
+        leverage: 2,
+        stopLoss: configuration.stopLossPct,
+        takeProfit: configuration.takeProfitPct,
+        indicationType: "signal",
+        signalRisk,
+        setKey:
+          `SOLUSDT:signal:long:source:${configuration.sourceId}:config:${configuration.configId}`,
+        parentSetKey: "SOLUSDT:signal:long",
+        setVariant: "default",
+        status: "pending",
+        timestamp: Date.now(),
+      } as any, recordingConnector)
+    }))
+
+    expect(positions.every((position) => position.status === "simulated")).toBe(true)
+    expect(new Set(positions.map((position) => position.id)).size).toBe(3)
+    expect(new Set(positions.map((position) => position.signalRisk?.sourceId))).toEqual(
+      new Set(["binance-usdm", "okx-swap"]),
+    )
+    const stored = (await getLivePositions(connection.id))
+      .filter((position) => position.symbol === "SOLUSDT")
+    expect(stored).toHaveLength(3)
+    expect(hashes.get(`signal:position_capacity:${connection.id}`)).toEqual(
+      expect.objectContaining({
+        total: "3",
+        long: "3",
+        short: "0",
+        limit: "120",
+      }),
+    )
+    expect(placeOrder).not.toHaveBeenCalled()
+  })
+
   test("executes source-scoped Signal Block targets once, aliases covered lanes, and books close PnL exactly once", async () => {
     const {
       closeLivePosition,
@@ -845,6 +912,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       indicationType: "direction",
       signalRisk,
     })
+    expect(strings.has(`live:lock:${connection.id}:BTCUSDT:long`)).toBe(false)
     expect(Number(closed?.realizedPnL)).toBeGreaterThan(0)
     for (const sourceId of ["binance-usdm", "okx-swap", "consensus"]) {
       const performanceKey =
@@ -963,6 +1031,157 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       `${dcaSetKey}#step:1`,
       `${dcaSetKey}#step:2`,
     ]))
+  })
+
+  test("seeds Block-only at its absolute target and advances independent counts correctly after hash-only restart", async () => {
+    const {
+      executeLivePosition,
+      getLivePositions,
+    } = await import("@/lib/trade-engine/stages/live-stage")
+    let venueQuantity = 0
+    mockCalculateVolumeForConnection.mockImplementation(async (
+      _connectionId: string,
+      _symbol: string,
+      _price: number,
+      options: Record<string, any>,
+    ) => {
+      const quantity = Math.max(0, Number(options?.sizeMultiplier) || 1) * 0.01
+      return {
+        calculatedVolume: quantity,
+        finalVolume: quantity,
+        volume: quantity,
+        exchangeMinVolume: 0.001,
+        leverage: 10,
+        volumeAdjusted: false,
+      }
+    })
+    placeOrder.mockImplementation(async (
+      symbol: string,
+      _side: string,
+      quantity: number,
+      _price: number | undefined,
+      _type: string,
+      options: Record<string, any> = {},
+    ) => {
+      if (options.positionSide === "LONG" && options.reduceOnly !== true) {
+        venueQuantity += quantity
+      }
+      return {
+        success: true,
+        orderId: `block-only-${symbol}-${placeOrder.mock.calls.length}`,
+        status: "filled",
+        filledQty: quantity,
+        filledPrice: 100,
+      }
+    })
+    recordingConnector.getPosition.mockImplementation(async () => ({
+      positionAmt: venueQuantity,
+      entryPrice: 100,
+      markPrice: 100,
+      liquidationPrice: 50,
+      unrealizedPnl: 0,
+      marginType: "cross",
+    }))
+
+    const baseSetKey = "AVAXUSDT:direction:long#axis:p4_l1_c1_opos_dlong_u0"
+    const common = {
+      connectionId: connection.id,
+      symbol: "AVAXUSDT",
+      direction: "long" as const,
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      indicationType: "direction",
+      parentSetKey: "AVAXUSDT:direction:long",
+      setVariant: "block" as const,
+      blockOnly: true,
+      blockVolumeRatio: 1,
+      blockScope: "long" as const,
+      status: "pending" as const,
+      timestamp: Date.now(),
+    }
+
+    const countTwo = await executeLivePosition(connection.id, {
+      ...common,
+      id: "block-only-count-2",
+      setKey: `${baseSetKey}#block:2`,
+      blockCount: 2,
+      sizeMultiplier: 3,
+      blockCalculatedVolumeMultiplier: 3,
+    } as any, recordingConnector)
+
+    expect(placeOrder.mock.calls[0]?.[2]).toBeCloseTo(0.03, 12)
+    expect(countTwo).toMatchObject({
+      status: "open",
+      setVariant: "block",
+      blockOnly: true,
+      executedQuantity: 0.03,
+      blockBaseQuantity: 0.01,
+    })
+    expect(countTwo.blockLegs).toEqual([
+      expect.objectContaining({
+        setKey: `${baseSetKey}#block:2`,
+        blockCount: 2,
+        baseQuantity: 0.01,
+        targetBlockQuantity: 0.03,
+      }),
+    ])
+    expect(countTwo.blockLegs?.[0]?.requestedQuantity).toBeCloseTo(0.02, 12)
+    expect(countTwo.blockLegs?.[0]?.quantity).toBeCloseTo(0.02, 12)
+
+    const countThree = await executeLivePosition(connection.id, {
+      ...common,
+      id: "block-only-count-3",
+      setKey: `${baseSetKey}#block:3`,
+      blockCount: 3,
+      sizeMultiplier: 4,
+      blockCalculatedVolumeMultiplier: 4,
+    } as any, recordingConnector)
+    expect(countThree.id).toBe(countTwo.id)
+    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.01, 12)
+    expect(countThree.executedQuantity).toBeCloseTo(0.04, 12)
+    expect(countThree.blockBaseQuantity).toBeCloseTo(0.01, 12)
+    const countTwoLeg = countThree.blockLegs?.find(
+      (leg: any) => leg.setKey === `${baseSetKey}#block:2`,
+    )
+    const countThreeLeg = countThree.blockLegs?.find(
+      (leg: any) => leg.setKey === `${baseSetKey}#block:3`,
+    )
+    expect(countTwoLeg?.quantity).toBeCloseTo(0.02, 12)
+    expect(countThreeLeg?.quantity).toBeCloseTo(0.01, 12)
+
+    const canonicalHashKey = `live_positions:${connection.id}:${countThree.id}`
+    const persistedHash = hashes.get(canonicalHashKey)
+    expect(persistedHash).toBeDefined()
+    hashes.set(canonicalHashKey, Object.fromEntries(
+      Object.entries(persistedHash || {}).map(([field, value]) => [
+        field,
+        value && typeof value === "object" ? JSON.stringify(value) : String(value ?? ""),
+      ]),
+    ))
+    strings.delete(`live:position:${countThree.id}`)
+    const restored = (await getLivePositions(connection.id))
+      .find((position) => position.id === countThree.id)
+    expect(restored).toMatchObject({
+      blockOnly: true,
+      blockBaseQuantity: 0.01,
+      executedQuantity: 0.04,
+    })
+
+    const countFour = await executeLivePosition(connection.id, {
+      ...common,
+      id: "block-only-count-4-after-restart",
+      setKey: `${baseSetKey}#block:4`,
+      blockCount: 4,
+      sizeMultiplier: 5,
+      blockCalculatedVolumeMultiplier: 5,
+    } as any, recordingConnector)
+    expect(countFour.id).toBe(countTwo.id)
+    expect(placeOrder.mock.calls[2]?.[2]).toBeCloseTo(0.01, 12)
+    expect(countFour.executedQuantity).toBeCloseTo(0.05, 12)
+    expect(countFour.blockBaseQuantity).toBeCloseTo(0.01, 12)
   })
 
   test("keeps the confirmed quantity protected while an accumulation submission is unconfirmed", async () => {

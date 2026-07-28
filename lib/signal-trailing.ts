@@ -29,6 +29,21 @@ export type SignalTrailingSettings = {
 
 export type SignalExecutionLane = "default" | "signal_trailing"
 
+export type SignalExecutionSlotInput = {
+  executionLane?: unknown
+  indicationType?: unknown
+  trailingProfile?: TrailingProfile | null
+  setKey?: unknown
+  parentSetKey?: unknown
+  signalRisk?: {
+    sourceId?: unknown
+    sourceIds?: unknown
+    configId?: unknown
+    configIds?: unknown
+    signalLanes?: unknown
+  } | null
+}
+
 export function buildSignalTrailingProfile(
   settings: SignalTrailingSettings,
 ): TrailingProfile {
@@ -75,6 +90,77 @@ export function resolveSignalExecutionLane(position: {
     isSignalDynamicTrailingProfile(position.trailingProfile)
     ? "signal_trailing"
     : "default"
+}
+
+function stableSlotHash(value: string): string {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(36).padStart(7, "0")
+}
+
+function executionSlotPart(value: unknown, fallback: string): string {
+  const raw = String(value ?? "").trim().toLowerCase()
+  if (!raw) return fallback
+  const readable = raw.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48)
+  return `${readable || fallback}-${stableSlotHash(raw)}`
+}
+
+/**
+ * Return the exact physical/logical execution identity.
+ *
+ * Main/Default positions retain the historical two-lane contract. Signal
+ * positions additionally include source and TP/SL/trailing configuration so
+ * one open Binance/BTC/Long config cannot collapse an independent OKX config
+ * or another protection range into the same dedup slot. The compact stable
+ * hash prevents punctuation-normalisation collisions while keeping Redis lock
+ * keys readable.
+ */
+export function resolveSignalExecutionSlot(
+  position: SignalExecutionSlotInput,
+): string {
+  const lane = resolveSignalExecutionLane(position)
+  const risk = position.signalRisk && typeof position.signalRisk === "object"
+    ? position.signalRisk
+    : undefined
+  const indicationType = String(position.indicationType || "").trim().toLowerCase()
+  const isSignal =
+    indicationType === "signal" ||
+    // Compatibility for pre-type Signal rows. Once another indication type
+    // owns the physical position, merged Signal risk is attribution metadata
+    // only and must not rename its Redis lock/reconciliation slot.
+    (!indicationType && Boolean(risk))
+  if (!isSignal) return lane
+
+  const signalLanes = Array.isArray(risk?.signalLanes)
+    ? risk.signalLanes.filter((entry): entry is Record<string, unknown> =>
+        Boolean(entry && typeof entry === "object"))
+    : []
+  const sourceIds = Array.isArray(risk?.sourceIds)
+    ? risk.sourceIds.map(String).map((value) => value.trim()).filter(Boolean).sort()
+    : []
+  const configIds = Array.isArray(risk?.configIds)
+    ? risk.configIds.map(String).map((value) => value.trim()).filter(Boolean).sort()
+    : []
+  const sourceId =
+    risk?.sourceId ??
+    signalLanes[0]?.sourceId ??
+    (sourceIds.length > 0 ? sourceIds.join("+") : "source")
+  const configId =
+    risk?.configId ??
+    signalLanes[0]?.configId ??
+    (configIds.length > 0
+      ? configIds.join("+")
+      : position.parentSetKey || position.setKey || "dynamic")
+
+  return [
+    "signal",
+    lane,
+    executionSlotPart(sourceId, "source"),
+    executionSlotPart(configId, "dynamic"),
+  ].join(":")
 }
 
 export type SignalTrailingTickInput = {

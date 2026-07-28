@@ -32,6 +32,8 @@ const STRATEGY_AFFECTING_SETTING_FIELDS = new Set([
   "stageMinPosCountReal",
   "variantTrailingEnabled",
   "variantBlockEnabled",
+  "variantBlockOnly",
+  "blockOnly",
   "variantDcaEnabled",
   "strategyBaseTrailingEnabled",
   "strategyBaseTrailingVariants",
