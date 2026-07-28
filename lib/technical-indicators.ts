@@ -84,7 +84,7 @@ export function resampleTechnicalCandles(
   timeframeMinutesInput: number,
 ): TechnicalCandle[] {
   const candles = normalizeTechnicalCandles(rawCandles)
-  const timeframeMinutes = Math.max(1, Math.min(15, Math.round(timeframeMinutesInput)))
+  const timeframeMinutes = Math.max(1, Math.min(60, Math.round(timeframeMinutesInput)))
   if (timeframeMinutes === 1 || candles.length <= 1) return candles
 
   const durationMs = timeframeMinutes * 60_000
@@ -369,7 +369,8 @@ function result(
  * Evaluate every canonical Common indicator for one already-resampled candle
  * stream. `periodInput` is only the fallback lookback; each indicator's
  * configured period/threshold range remains independent. Common callers use
- * actual 1–15-minute timeframes, never Trend's 1/5/15/30-minute windows or
+ * actual configured candle timeframes, never Default Direction/Move/Active
+ * sample ranges or Trend's independent situation coordination.
  * Default Direction/Move/Active sample ranges.
  */
 export function evaluateTechnicalIndicators(

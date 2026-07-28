@@ -8,7 +8,6 @@ import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { getMaxLeverageForExchange } from "@/lib/leverage-policy"
 import type { MainPosition } from "./main-stage"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
-import { STAGE_2_2_MAX_LONG_POSITIONS, STAGE_2_2_MAX_SHORT_POSITIONS, MIN_PROFIT_FACTOR, MAX_DRAWDOWN_TIME_MS } from "@/lib/constants"
 import type { SignalRisk } from "@/lib/signal-indication"
 import type { SignalExecutionLane, TrailingProfile } from "@/lib/signal-trailing"
 import {
@@ -79,6 +78,8 @@ export interface RealPosition {
   blockSourceId?: string
   blockVolumeIncrementRatio?: number
   blockCalculatedVolumeMultiplier?: number
+  /** Block-only can seed its own adjusted physical parent when none exists. */
+  blockOnly?: boolean
   // Exchange-cost-aware protection diagnostics supplied by the strategy
   // coordinator. Live execution treats this as explanatory metadata; the
   // actionable stopLoss/takeProfit percentages are already widened upstream.
@@ -336,7 +337,7 @@ export function resolveRealStageSizeMultiplier(variantSource?: Record<string, an
       variantSource?.posCountsVolumeRatio ?? variantSource?.sizeMultiplier,
     )
     return Number.isFinite(ratio) && ratio > 0
-      ? Math.max(0.01, Math.min(0.25, ratio))
+      ? ratio
       : 1
   }
   if (setVariant === "dca") {

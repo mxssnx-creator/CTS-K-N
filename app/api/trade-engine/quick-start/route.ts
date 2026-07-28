@@ -29,6 +29,7 @@ import {
   collectQuickStartChangedFields,
   sameOrderedSymbols,
 } from "@/lib/quickstart-change-detection"
+import { normalizeMainTradeStagePfRatio } from "@/lib/main-trade-profit-factor"
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -393,14 +394,12 @@ async function handlePost(request: Request) {
       ["volume_step_ratio"],
       String(DEFAULT_VOLUME_STEP_RATIO),
     )
-    const effectiveBaseMinProfitFactor = firstExistingSetting(existingConnectionSettings, ["base_min_profit_factor"], "1.0")
-    const effectiveMainMinProfitFactor = firstExistingSetting(existingConnectionSettings, ["main_min_profit_factor"], "1.2")
-    const effectiveRealMinProfitFactor = firstExistingSetting(existingConnectionSettings, ["real_min_profit_factor"], "1.2")
     const effectiveVariantTrailing = firstExistingSetting(existingConnectionSettings, ["variant_trailing"], "true")
     const effectiveVariantBlock = firstExistingSetting(existingConnectionSettings, ["variant_block"], "true")
     const effectiveVariantDca = firstExistingSetting(existingConnectionSettings, ["variant_dca"], "false")
     const effectiveControlOrders = firstExistingSetting(existingConnectionSettings, ["control_orders"], "true")
-    const effectiveMinStep = firstExistingSetting(existingConnectionSettings, ["minStep"], "5")
+    // Compatibility mirror only: generation is always exhaustive 2..30.
+    const effectiveMinStep = "2"
     
     // DISABLE ACTION
     if (action === "disable") {
@@ -766,27 +765,34 @@ async function handlePost(request: Request) {
          ? Math.max(MIN_VOLUME_STEP_RATIO, Math.min(MAX_VOLUME_STEP_RATIO, rawVolumeStepRatio))
          : DEFAULT_VOLUME_STEP_RATIO,
      )
-     const resolvedBaseProfitFactor = stringifySettingValue(resolveQuickStartValue(
+     const resolvedBaseProfitFactor = String(normalizeMainTradeStagePfRatio("base", resolveQuickStartValue(
        body,
        existingQuickStartSettings,
        ["baseProfitFactor", "base_min_profit_factor"],
        ["baseProfitFactor", "base_min_profit_factor"],
-       "1.0",
-     ))
-     const resolvedMainProfitFactor = stringifySettingValue(resolveQuickStartValue(
+       0.8,
+     )))
+     const resolvedMainProfitFactor = String(normalizeMainTradeStagePfRatio("main", resolveQuickStartValue(
        body,
        existingQuickStartSettings,
        ["mainProfitFactor", "main_min_profit_factor"],
        ["mainProfitFactor", "main_min_profit_factor"],
-       "1.2",
-     ))
-     const resolvedRealProfitFactor = stringifySettingValue(resolveQuickStartValue(
+       1.12,
+     )))
+     const resolvedRealProfitFactor = String(normalizeMainTradeStagePfRatio("real", resolveQuickStartValue(
        body,
        existingQuickStartSettings,
        ["realProfitFactor", "real_min_profit_factor"],
        ["realProfitFactor", "real_min_profit_factor"],
-       "1.2",
-     ))
+       1.12,
+     )))
+     const resolvedLiveProfitFactor = String(normalizeMainTradeStagePfRatio("live", resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["liveProfitFactor", "live_min_profit_factor"],
+       ["liveProfitFactor", "live_min_profit_factor"],
+       1.12,
+     )))
      const resolvedVariantTrailing = stringifySettingValue(resolveQuickStartValue(
        body,
        existingQuickStartSettings,
@@ -799,6 +805,13 @@ async function handlePost(request: Request) {
        existingQuickStartSettings,
        ["variantBlockEnabled", "variant_block"],
        ["variantBlockEnabled", "variant_block"],
+       "true",
+     ))
+     const resolvedBlockOnly = stringifySettingValue(resolveQuickStartValue(
+       body,
+       existingQuickStartSettings,
+       ["blockOnly", "variantBlockOnly", "block_only"],
+       ["blockOnly", "variantBlockOnly", "block_only"],
        "true",
      ))
      const resolvedVariantDca = stringifySettingValue(resolveQuickStartValue(
@@ -814,13 +827,6 @@ async function handlePost(request: Request) {
        ["control_orders", "controlOrders"],
        ["control_orders", "controlOrders"],
        "true",
-     ))
-     const resolvedMinStep = stringifySettingValue(resolveQuickStartValue(
-       body,
-       existingQuickStartSettings,
-       ["minStep", "min_step"],
-       ["minStep", "min_step"],
-       "5",
      ))
      const resolvedPrevPosMinCount = resolveQuickStartValue(
        body,
@@ -926,7 +932,8 @@ async function handlePost(request: Request) {
     // `config_set_symbols_total` so the /stats endpoint no longer defaults
     // to the hard-coded "3" when the historical phase reports progress.
     // Also reset the processed counter to 0 so progress starts correctly.
-    // Operator-spec defaults for quickstart: base PF=1.0, main/real PF=1.2,
+    // Operator-spec defaults for quickstart: Base ratio 0.80 and
+    // Main/Real/Live ratios 1.12,
     // trailing on, block on, dca off, control orders on, minimum live volume, volatility_1h.
     // These are persisted to connection_settings so the engine reads them on the
     // first tick instead of using its compiled defaults.
@@ -952,12 +959,17 @@ async function handlePost(request: Request) {
       baseProfitFactor: resolvedBaseProfitFactor,
       mainProfitFactor: resolvedMainProfitFactor,
       realProfitFactor: resolvedRealProfitFactor,
-      base_min_profit_factor: effectiveBaseMinProfitFactor,
-      main_min_profit_factor: effectiveMainMinProfitFactor,
-      real_min_profit_factor: effectiveRealMinProfitFactor,
+      liveProfitFactor: resolvedLiveProfitFactor,
+      base_min_profit_factor: resolvedBaseProfitFactor,
+      main_min_profit_factor: resolvedMainProfitFactor,
+      real_min_profit_factor: resolvedRealProfitFactor,
+      live_min_profit_factor: resolvedLiveProfitFactor,
       // Variant toggles
       variantTrailingEnabled: resolvedVariantTrailing,
       variantBlockEnabled: resolvedVariantBlock,
+      blockOnly: resolvedBlockOnly,
+      variantBlockOnly: resolvedBlockOnly,
+      block_only: resolvedBlockOnly,
       variantDcaEnabled: resolvedVariantDca,
       variant_trailing: effectiveVariantTrailing,
       variant_block: effectiveVariantBlock,

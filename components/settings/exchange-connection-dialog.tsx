@@ -478,7 +478,7 @@ export function ExchangeConnectionDialog({
           trailingWithTrailing: strategySettings?.trailing_enabled ?? true,
           trailingOnly: false,
           blockEnabled: strategySettings?.block_enabled ?? true,
-          blockOnly: false,
+          blockOnly: true,
           dcaEnabled: strategySettings?.dca_enabled ?? false,
           dcaOnly: false,
           presetTradeBlockEnabled: true,

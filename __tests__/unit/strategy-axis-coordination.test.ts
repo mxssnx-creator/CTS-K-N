@@ -36,8 +36,14 @@ function baseSet(recentPnls: number[]): StrategySet {
       count: recentPnls.length,
       successRate: recentPnls.filter((pnl) => pnl > 0).length / Math.max(1, recentPnls.length),
       profitFactor: 2,
+      positionCostRatio: 2,
+      positionCostRatioCount: recentPnls.length,
+      averagePnlPct: recentPnls.reduce((sum, value) => sum + value, 0) /
+        Math.max(1, recentPnls.length),
       avgDDT: 10,
       recentPnls,
+      recentPnlPcts: recentPnls,
+      recentPositionCostPcts: recentPnls.map(() => 0.1),
     },
   }
 }
@@ -157,7 +163,7 @@ describe("strategy position-count axis coordination", () => {
     },
   )
 
-  test("uses closed PnLs and direction-specific live counts", () => {
+  test("uses closed PnLs and direction-specific live counts while rejecting a failed previous-PF window", () => {
     const coordinator = new StrategyCoordinator("axis-test") as any
     coordinator._coordinationSettings.axes = {
       prev: { enabled: true, maxWindow: 4 },
@@ -175,10 +181,12 @@ describe("strategy position-count axis coordination", () => {
       100,
     ) as StrategySet[]
 
-    expect(sets).toHaveLength(30)
+    // The four closed results average only 0.75× their PositionCost, so the
+    // `prev=4` PF filter must be withheld below the configured 1.2 threshold.
+    expect(sets).toHaveLength(15)
     expect(sets.every((set) => set.setKey.includes("_u3"))).toBe(true)
     expect(sets.every((set) => set.axisWindows?.pause === 3)).toBe(true)
-    expect(sets.every((set) => [0, 4].includes(set.axisWindows?.prev))).toBe(true)
+    expect(sets.every((set) => set.axisWindows?.prev === 0)).toBe(true)
     expect(sets.every((set) => [0, 1, 2].includes(set.axisWindows?.last))).toBe(true)
     expect(sets.every((set) => [0, 1, 2].includes(set.axisWindows?.cont))).toBe(true)
     expect(sets.some((set) => set.axisWindows?.cont === 2 && set.direction === "short")).toBe(false)

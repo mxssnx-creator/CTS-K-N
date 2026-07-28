@@ -577,8 +577,15 @@ export async function GET(request: Request) {
       const allSymbols = symbolsRaw.length > 0
         ? symbolsRaw
         : [primarySymbol].filter(Boolean)
-      const symbolLimit = parsePositiveInteger(process.env.CRON_SYMBOL_LIMIT, 20)
-      const symbolsToProcess = allSymbols.slice(0, symbolLimit)
+      // Realtime owns the complete configured symbol basket. Concurrency is
+      // bounded below, but no `slice(0, N)` may permanently omit symbols after
+      // the first N entries. `CRON_SYMBOL_LIMIT` remains a compatibility hint
+      // for the resumable prehistoric batch only.
+      const symbolsToProcess = allSymbols
+      const legacyHistoricBatchHint = parsePositiveInteger(
+        process.env.CRON_SYMBOL_LIMIT,
+        20,
+      )
 
       // Kilo/serverless does not retain timer-backed managers after a request.
       // Therefore the durable minute owner must also advance a fresh QuickStart
@@ -603,7 +610,7 @@ export async function GET(request: Request) {
         const remainingSymbols = allSymbols.filter((symbol) => !processedSymbols.has(symbol))
         const historicLimit = parsePositiveInteger(
           process.env.CRON_PREHISTORIC_SYMBOL_LIMIT,
-          Math.min(symbolLimit, 5),
+          Math.min(legacyHistoricBatchHint, 5),
         )
         const historicChunk = remainingSymbols.slice(0, historicLimit)
 

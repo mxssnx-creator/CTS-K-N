@@ -3,6 +3,7 @@ import {
   buildSignalTrailingProfile,
   calculateSignalTrailingTick,
   resolveSignalExecutionLane,
+  resolveSignalExecutionSlot,
 } from "@/lib/signal-trailing"
 
 describe("Signal trailing contract", () => {
@@ -93,6 +94,61 @@ describe("Signal trailing contract", () => {
     })
     expect(expanded.stopRangeRatio).toBeCloseTo(0.02, 12)
     expect(expanded.stopPrice).toBeCloseTo(102.9, 12)
+  })
+
+  test("keeps every Signal source and protection configuration in an independent execution slot", () => {
+    const common = {
+      indicationType: "signal",
+      executionLane: "default",
+    }
+    const binanceTp1 = resolveSignalExecutionSlot({
+      ...common,
+      signalRisk: {
+        sourceId: "binance-usdm",
+        configId: "tp1_00:slr0_50:standard",
+      },
+    })
+    const okxTp1 = resolveSignalExecutionSlot({
+      ...common,
+      signalRisk: {
+        sourceId: "okx-swap",
+        configId: "tp1_00:slr0_50:standard",
+      },
+    })
+    const binanceTp2 = resolveSignalExecutionSlot({
+      ...common,
+      signalRisk: {
+        sourceId: "binance-usdm",
+        configId: "tp2_00:slr0_50:standard",
+      },
+    })
+    const binanceTrailing = resolveSignalExecutionSlot({
+      ...common,
+      executionLane: "signal_trailing",
+      signalRisk: {
+        sourceId: "binance-usdm",
+        configId: "tp1_00:slr0_50:trail0_80",
+      },
+    })
+
+    expect(new Set([
+      binanceTp1,
+      okxTp1,
+      binanceTp2,
+      binanceTrailing,
+    ]).size).toBe(4)
+    expect(resolveSignalExecutionSlot({
+      indicationType: "direction",
+      setKey: "direction:one",
+    })).toBe("default")
+    expect(resolveSignalExecutionSlot({
+      indicationType: "direction",
+      setKey: "direction:one",
+      signalRisk: {
+        sourceId: "binance-usdm",
+        configId: "tp1_00:slr0_50:standard",
+      },
+    })).toBe("default")
   })
 
   test("mirrors the dynamic stop for shorts and keeps the lane independent", () => {

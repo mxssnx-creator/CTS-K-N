@@ -11,6 +11,7 @@ import {
   invalidateSignalSettingsCache,
   loadSignalIndicationSettings,
   normalizeSignalIndicationSettings,
+  signalSourceLaneIdentity,
 } from "@/lib/signal-indication"
 import {
   SIGNAL_SOURCE_DEFINITIONS,
@@ -27,6 +28,7 @@ import {
   getClosedLivePositionReadModels,
   getOpenLivePositionReadModels,
 } from "@/lib/live-position-read-model"
+import { LIVE_POSITION_ANALYTICS_WINDOW_MS } from "@/lib/live-position-analytics-archive"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
 
 export const dynamic = "force-dynamic"
@@ -63,7 +65,7 @@ function parseSymbols(connection: Record<string, any>): string[] {
       values = raw.split(/[\s,|]+/)
     }
   }
-  return Array.from(new Set(values.map(normalizeSymbol).filter(Boolean))).slice(0, 100)
+  return Array.from(new Set(values.map(normalizeSymbol).filter(Boolean)))
 }
 
 function positionDirection(position: any): "long" | "short" {
@@ -193,11 +195,17 @@ export async function GET(request: Request) {
       )
     }
 
+    const now = Date.now()
     const snapshots = await Promise.all(selectedConnections.map(async (connection: any) => {
       const connectionId = String(connection.id)
       const [closed, open, sourceHealth] = await Promise.all([
-        getClosedLivePositionReadModels(connectionId, 500),
-        getOpenLivePositionReadModels(connectionId, 500),
+        getClosedLivePositionReadModels(connectionId, {
+          recentLimit: 50,
+          sinceMs: now - LIVE_POSITION_ANALYTICS_WINDOW_MS,
+        }),
+        // Open counts must cover every active indication lane. A concurrency
+        // batch bounds Redis I/O inside the reader; it does not omit rows.
+        getOpenLivePositionReadModels(connectionId, 0),
         getSignalSourceHealth(connectionId),
       ])
       return { connection, connectionId, closed, open, sourceHealth }
@@ -226,7 +234,6 @@ export async function GET(request: Request) {
             : "default",
       })),
     )
-    const now = Date.now()
     const signalRowsUnfiltered = allClosed.filter((row) =>
       row.type === "signal" || row.trade.sourceIds.length > 0,
     )
@@ -265,6 +272,14 @@ export async function GET(request: Request) {
         return {
           symbol,
           disabled: signalSettings.sources[descriptor.id]?.disabledSymbols.includes(symbol) ?? false,
+          disabledDirections: {
+            long: signalSettings.sources[descriptor.id]?.disabledLanes.includes(
+              signalSourceLaneIdentity(symbol, "long"),
+            ) ?? false,
+            short: signalSettings.sources[descriptor.id]?.disabledLanes.includes(
+              signalSourceLaneIdentity(symbol, "short"),
+            ) ?? false,
+          },
           openPositions: openRows.filter(
             (row) =>
               row.symbol === symbol &&
@@ -280,6 +295,7 @@ export async function GET(request: Request) {
         enabled: signalSettings.sources[descriptor.id]?.enabled !== false,
         weight: signalSettings.sources[descriptor.id]?.weight ?? 1,
         disabledSymbols: signalSettings.sources[descriptor.id]?.disabledSymbols ?? [],
+        disabledLanes: signalSettings.sources[descriptor.id]?.disabledLanes ?? [],
         closedPositions: sourceTrades.length,
         openPositions: openRows.filter((row) =>
           row.sourceIds.includes(descriptor.id) &&
@@ -385,9 +401,12 @@ export async function GET(request: Request) {
           missingSourceAttribution: signalTrades.filter((trade) => trade.sourceIds.length === 0).length,
         },
         settings: {
+          directExecutionEnabled: signalSettings.directExecutionEnabled,
           requestIntervalSeconds: signalSettings.requestIntervalSeconds,
           maxSourcesPerCycle: signalSettings.maxSourcesPerCycle,
           maxPositionsTotal: signalSettings.maxPositionsTotal,
+          sourcePerformanceLookback: 12,
+          lanePerformanceLookback: 10,
           positionSelectionMode: signalSettings.positionSelectionMode,
           trailingEnabled: signalSettings.trailingEnabled,
           trailingOnly: signalSettings.trailingOnly,
@@ -442,6 +461,10 @@ export async function PATCH(request: Request) {
   const sourceId = String(body.sourceId || "").trim().toLowerCase()
   const symbol = normalizeSymbol(body.symbol)
   const enabled = body.enabled === true
+  const direction =
+    body.direction === "long" || body.direction === "short"
+      ? body.direction
+      : null
   if (!SIGNAL_SOURCE_DEFINITIONS.some((source) => source.id === sourceId) || !symbol) {
     return NextResponse.json(
       { success: false, error: "A valid sourceId and symbol are required" },
@@ -452,16 +475,25 @@ export async function PATCH(request: Request) {
   const save = async () => {
     const current = await loadSignalIndicationSettings()
     const source = current.sources[sourceId]
-    const disabled = new Set(source.disabledSymbols)
-    if (enabled) disabled.delete(symbol)
-    else disabled.add(symbol)
+    const disabledSymbols = new Set(source.disabledSymbols)
+    const disabledLanes = new Set(source.disabledLanes)
+    if (direction) {
+      const lane = signalSourceLaneIdentity(symbol, direction)
+      if (enabled) disabledLanes.delete(lane)
+      else disabledLanes.add(lane)
+    } else if (enabled) {
+      disabledSymbols.delete(symbol)
+    } else {
+      disabledSymbols.add(symbol)
+    }
     const settings = normalizeSignalIndicationSettings({
       ...current,
       sources: {
         ...current.sources,
         [sourceId]: {
           ...source,
-          disabledSymbols: [...disabled],
+          disabledSymbols: [...disabledSymbols],
+          disabledLanes: [...disabledLanes],
         },
       },
     })
@@ -473,23 +505,25 @@ export async function PATCH(request: Request) {
     await Promise.allSettled(connections.map((connection: any) =>
       notifySettingsChanged(String(connection.id), [
         "signal_indication",
-        `signal_source_symbol:${sourceId}:${symbol}`,
+        `signal_source_symbol:${sourceId}:${symbol}${direction ? `:${direction}` : ""}`,
       ]),
     ))
     return NextResponse.json({
       success: true,
       sourceId,
       symbol,
+      direction,
       enabled,
       disabledSymbols: settings.sources[sourceId].disabledSymbols,
-      message: `${sourceId}/${symbol} ${enabled ? "enabled" : "disabled"} and applied`,
+      disabledLanes: settings.sources[sourceId].disabledLanes,
+      message: `${sourceId}/${symbol}${direction ? `/${direction}` : ""} ${enabled ? "enabled" : "disabled"} and applied`,
     })
   }
 
   try {
     if (typeof withSharedPersistenceLease !== "function") return await save()
     return await withSharedPersistenceLease(
-      `settings:indications:signal:symbol:${sourceId}:${symbol}`,
+      `settings:indications:signal:symbol:${sourceId}:${symbol}:${direction || "all"}`,
       save,
     )
   } catch (error) {

@@ -46,6 +46,7 @@
  */
 
 import { getRedisClient } from "@/lib/redis-db"
+import { movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 import {
   inferRealStrategyVariant,
   type RealStrategyVariant,
@@ -124,21 +125,39 @@ export interface PosWindowStats {
   successRate: number
   /** Windowed profit factor: ∑max(0,pnl) / ∑max(0,-pnl). 0 = no data, 99 = all-wins cap. */
   profitFactor: number
+  /**
+   * PositionCost-relative rolling result ratio used by Main Trade stage gates.
+   * This is deliberately separate from classic gross-profit/gross-loss PF.
+   */
+  positionCostRatio: number
+  /** Number of rows in this window carrying canonical percentage/cost data. */
+  positionCostRatioCount: number
+  /** Mean signed realised result percentage across canonical rows. */
+  averagePnlPct: number
   /** Mean drawdown minutes per position over the window. */
   avgDDT: number
   /** count >= requested threshold. */
   hasSignal: boolean
   /** Cost-adjusted realised PnLs, newest first, for Previous/Last axes. */
   recentPnls: number[]
+  /** Signed realised percentage results, newest first, for ratio axes. */
+  recentPnlPcts: number[]
+  /** Per-row PositionCost percentages aligned with `recentPnlPcts`. */
+  recentPositionCostPcts: number[]
 }
 
 const EMPTY_WINDOW: PosWindowStats = {
   count: 0,
   successRate: 0,
   profitFactor: 0,
+  positionCostRatio: 0,
+  positionCostRatioCount: 0,
+  averagePnlPct: 0,
   avgDDT: 0,
   hasSignal: false,
   recentPnls: [],
+  recentPnlPcts: [],
+  recentPositionCostPcts: [],
 }
 
 // ── Key builders ───────────────────────────────────────────────────────
@@ -171,6 +190,10 @@ export interface RecordPosClosedInput {
   direction: "long" | "short"
   /** Cost-adjusted realised PnL in quote currency. Positive = win after costs. */
   pnl: number
+  /** Cost-adjusted realised PnL as a signed percentage of market/notional. */
+  pnlPct?: number
+  /** Operator PositionCost percentage used when this position was opened. */
+  positionCostPct?: number
   /** Drawdown duration in minutes (best-effort, 0 ok). */
   drawdownMinutes?: number
   /** Entry price retained for compatibility/diagnostics. PnL is already cost-adjusted by the close path. */
@@ -207,6 +230,8 @@ export function recordPosClosed(input: RecordPosClosedInput): void {
     indicationType,
     direction,
     pnl,
+    pnlPct,
+    positionCostPct,
     drawdownMinutes = 0,
     entryPrice,
     quantity,
@@ -273,7 +298,19 @@ export function recordPosClosed(input: RecordPosClosedInput): void {
   // lpush (newest at head) then ltrim to [0, RING_CAP-1]; readers lrange
   // the head N. Both per-bucket and overall rings are maintained so the
   // eval gates and the dashboard "any-symbol" tile can both read windows.
-  const ringRecord = `${pnl.toFixed(6)}|0|${ddt.toFixed(3)}`
+  const canonicalPnlPct = Number(pnlPct)
+  const canonicalPositionCostPct = Number(positionCostPct)
+  const hasCanonicalRatio =
+    Number.isFinite(canonicalPnlPct) &&
+    Number.isFinite(canonicalPositionCostPct) &&
+    canonicalPositionCostPct > 0
+  const ringRecord = [
+    pnl.toFixed(6),
+    "0",
+    ddt.toFixed(3),
+    hasCanonicalRatio ? canonicalPnlPct.toFixed(8) : "",
+    hasCanonicalRatio ? canonicalPositionCostPct.toFixed(8) : "",
+  ].join("|")
   const ringK = listKey(connectionId, cleanSymbol, cleanType, cleanDir)
   client.lpush(ringK, ringRecord)
   client.ltrim(ringK, 0, RING_CAP - 1)
@@ -406,7 +443,7 @@ export async function getPosHistoryBatch(
  * is up to ~2h and the DDT *threshold* is a per-stage time ceiling, not a
  * position count.)
  */
-function deriveWindow(records: string[], window: number): PosWindowStats {
+export function derivePosWindowStats(records: string[], window: number): PosWindowStats {
   if (!records || records.length === 0) return EMPTY_WINDOW
   // records arrive newest-first (lpush head).
   const winN = Math.max(1, window)
@@ -418,8 +455,11 @@ function deriveWindow(records: string[], window: number): PosWindowStats {
   let ddtSum = 0
   let ddtCount = 0
   const recentPnls: number[] = []
+  const recentPnlPcts: number[] = []
+  const recentPositionCostPcts: number[] = []
   for (let i = 0; i < records.length && i < winN; i++) {
     const rec = records[i]
+    // CANONICAL FORMAT: "pnl|cost|ddt|pnlPct|positionCostPct"
     // NEW FORMAT: "pnl|cost|ddt" (cost-adjusted)
     // LEGACY FORMAT: "pnl|ddt" (backward compat)
     const parts = rec.split("|")
@@ -429,7 +469,9 @@ function deriveWindow(records: string[], window: number): PosWindowStats {
     // Detect format: if parts.length === 2, legacy format (pnl|ddt)
     // if parts.length >= 3, new format (pnl|cost|ddt)
     const cost = parts.length >= 3 ? Number(parts[1]) : 0
-    const ddt = Number(parts[parts.length - 1])
+    const ddt = Number(parts.length >= 3 ? parts[2] : parts[1])
+    const pnlPct = parts.length >= 5 ? Number(parts[3]) : Number.NaN
+    const positionCostPct = parts.length >= 5 ? Number(parts[4]) : Number.NaN
     
     if (Number.isFinite(pnl)) {
       n++
@@ -444,6 +486,14 @@ function deriveWindow(records: string[], window: number): PosWindowStats {
       if (Number.isFinite(cost) && cost > 0) {
         costSum += cost
       }
+      if (
+        Number.isFinite(pnlPct) &&
+        Number.isFinite(positionCostPct) &&
+        positionCostPct > 0
+      ) {
+        recentPnlPcts.push(pnlPct)
+        recentPositionCostPcts.push(positionCostPct)
+      }
       // DDT averaged over the SAME window sample as PF.
       if (Number.isFinite(ddt) && ddt > 0) {
         ddtSum += ddt
@@ -457,14 +507,33 @@ function deriveWindow(records: string[], window: number): PosWindowStats {
   // This ensures profitability is measured after fees
   const adjustedDen = den + costSum
   const profitFactor = adjustedDen > 0 ? num / adjustedDen : (num > 0 ? 99 : 0)
+  const ratioCount = recentPnlPcts.length
+  const averagePnlPct = ratioCount > 0
+    ? recentPnlPcts.reduce((sum, value) => sum + value, 0) / ratioCount
+    : 0
+  // Every percentage sample owns its exact PositionCost. Normalise each one
+  // independently before averaging so settings changes during the window do
+  // not distort the result by applying today's cost to old closes.
+  const positionCostRatio = ratioCount > 0
+    ? recentPnlPcts.reduce(
+        (sum, value, index) =>
+          sum + movePctToMainTradePfRatio(value, recentPositionCostPcts[index]),
+        0,
+      ) / ratioCount
+    : 0
   
   return {
     count: n,
     successRate: wins / n,
     profitFactor,
+    positionCostRatio,
+    positionCostRatioCount: ratioCount,
+    averagePnlPct,
     avgDDT: ddtCount > 0 ? ddtSum / ddtCount : 0,
     hasSignal: n >= winN,
     recentPnls,
+    recentPnlPcts,
+    recentPositionCostPcts,
   }
 }
 
@@ -489,7 +558,7 @@ export async function getPosWindow(
       0,
       winN - 1,
     )) as string[]
-    return deriveWindow(records, winN)
+    return derivePosWindowStats(records, winN)
   } catch {
     return EMPTY_WINDOW
   }
@@ -508,7 +577,7 @@ export async function getPosWindowOverall(
       0,
       winN - 1,
     )) as string[]
-    return deriveWindow(records, winN)
+    return derivePosWindowStats(records, winN)
   } catch {
     return EMPTY_WINDOW
   }
@@ -538,7 +607,7 @@ export async function getPosWindowBatch(
     pairs.forEach((p, i) => {
       const raw = results?.[i]
       const records = (Array.isArray(raw) ? raw[1] : raw) as string[] | null | undefined
-      out.set(`${p.indicationType}|${p.direction}`, deriveWindow(records || [], winN))
+      out.set(`${p.indicationType}|${p.direction}`, derivePosWindowStats(records || [], winN))
     })
   } catch {
     /* partial results ok; callers default missing to EMPTY_WINDOW */
@@ -874,6 +943,10 @@ export async function recordStrategyPositionEntry(
 export interface StrategyPositionCloseOutcome {
   /** Net realised PnL after trading costs. */
   pnl: number
+  /** Net realised result as a signed percentage of market/notional. */
+  pnlPct?: number
+  /** PositionCost percentage effective when the position was opened. */
+  positionCostPct?: number
   /** Position drawdown/hold duration in minutes. */
   drawdownMinutes?: number
 }
@@ -936,7 +1009,19 @@ async function recordStrategyCloseOutcomes(
   if (memberships.length === 0 || !Number.isFinite(pnl)) return
 
   const ddt = Math.max(0, Number(outcome?.drawdownMinutes || 0))
-  const record = `${pnl.toFixed(6)}|0|${ddt.toFixed(3)}`
+  const pnlPct = Number(outcome?.pnlPct)
+  const positionCostPct = Number(outcome?.positionCostPct)
+  const hasCanonicalRatio =
+    Number.isFinite(pnlPct) &&
+    Number.isFinite(positionCostPct) &&
+    positionCostPct > 0
+  const record = [
+    pnl.toFixed(6),
+    "0",
+    ddt.toFixed(3),
+    hasCanonicalRatio ? pnlPct.toFixed(8) : "",
+    hasCanonicalRatio ? positionCostPct.toFixed(8) : "",
+  ].join("|")
   const closeIdsKey = STRATEGY_SET_CLOSE_IDS_KEY(connectionId)
   const closedCountsKey = STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId)
   const closedSetKeysKey = STRATEGY_CLOSED_SET_KEYS_KEY(connectionId)
@@ -1160,23 +1245,30 @@ export async function getStrategySetLedgerBatch(
   if (unique.length === 0) return { entries: {}, active: {}, closed: {} }
   try {
     const client = getRedisClient()
-    const pipeline = client.multi()
-    for (const setKey of unique) {
-      pipeline.hget(STRATEGY_SET_ENTRY_COUNTS_KEY(connectionId), setKey)
-      pipeline.hget(STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId), setKey)
-      pipeline.hget(STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId), setKey)
-    }
-    const results = await pipeline.exec()
     const snapshot: StrategySetLedgerSnapshot = { entries: {}, active: {}, closed: {} }
-    unique.forEach((setKey, index) => {
-      const offset = index * 3
-      const entries = Number(pipelineValue(results?.[offset])) || 0
-      const active = Number(pipelineValue(results?.[offset + 1])) || 0
-      const closed = Number(pipelineValue(results?.[offset + 2])) || 0
-      if (entries > 0) snapshot.entries[setKey] = entries
-      if (active > 0) snapshot.active[setKey] = active
-      if (closed > 0) snapshot.closed[setKey] = closed
-    })
+    // Exhaustive callers may provide tens of thousands of exact Set keys.
+    // Process every key, but keep each Redis MULTI bounded so completeness
+    // never turns into an unbounded command buffer or response allocation.
+    const batchSize = 500
+    for (let start = 0; start < unique.length; start += batchSize) {
+      const batch = unique.slice(start, start + batchSize)
+      const pipeline = client.multi()
+      for (const setKey of batch) {
+        pipeline.hget(STRATEGY_SET_ENTRY_COUNTS_KEY(connectionId), setKey)
+        pipeline.hget(STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId), setKey)
+        pipeline.hget(STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId), setKey)
+      }
+      const results = await pipeline.exec()
+      batch.forEach((setKey, index) => {
+        const offset = index * 3
+        const entries = Number(pipelineValue(results?.[offset])) || 0
+        const active = Number(pipelineValue(results?.[offset + 1])) || 0
+        const closed = Number(pipelineValue(results?.[offset + 2])) || 0
+        if (entries > 0) snapshot.entries[setKey] = entries
+        if (active > 0) snapshot.active[setKey] = active
+        if (closed > 0) snapshot.closed[setKey] = closed
+      })
+    }
     return snapshot
   } catch {
     return { entries: {}, active: {}, closed: {} }
@@ -1230,18 +1322,22 @@ export async function getStrategySetWindowBatch(
   try {
     const winN = Math.min(RING_CAP, Math.max(1, Math.floor(window)))
     const client = getRedisClient()
-    const pipeline = client.multi()
-    for (const setKey of unique) {
-      pipeline.lrange(strategySetResultRingKey(connectionId, setKey), 0, winN - 1)
+    const batchSize = 500
+    for (let start = 0; start < unique.length; start += batchSize) {
+      const batch = unique.slice(start, start + batchSize)
+      const pipeline = client.multi()
+      for (const setKey of batch) {
+        pipeline.lrange(strategySetResultRingKey(connectionId, setKey), 0, winN - 1)
+      }
+      const results = (await (pipeline as any).exec()) as any[]
+      batch.forEach((setKey, index) => {
+        const raw = results?.[index]
+        const records = (Array.isArray(raw) && raw.length === 2 && Array.isArray(raw[1])
+          ? raw[1]
+          : raw) as string[] | undefined
+        out.set(setKey, derivePosWindowStats(Array.isArray(records) ? records : [], winN))
+      })
     }
-    const results = (await (pipeline as any).exec()) as any[]
-    unique.forEach((setKey, index) => {
-      const raw = results?.[index]
-      const records = (Array.isArray(raw) && raw.length === 2 && Array.isArray(raw[1])
-        ? raw[1]
-        : raw) as string[] | undefined
-      out.set(setKey, deriveWindow(Array.isArray(records) ? records : [], winN))
-    })
   } catch {
     // Missing per-Set history is a normal bootstrap state.
   }

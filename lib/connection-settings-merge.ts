@@ -36,14 +36,14 @@ export function mergeConnectionSettings<T extends Record<string, any>>(
     mutable.coordination_settings = coordination
     mutable.coordinationSettings = coordination
   }
-  // Clamp the pos-count axis Sets volume ratio at the canonical merge point so
+  // Normalize the pos-count coordination ratio at the canonical merge point so
   // an out-of-range value can never reach the persisted connection settings,
   // the recoordinator re-merge, or the nested coordination object. The ratio
-  // must stay within [0.01, 0.25] (default 0.05) wherever it is stored.
+  // it stays on the exact [0.1, 10] step-0.1 grid wherever it is stored.
   const clampPcvr = (value: unknown): number | undefined => {
     const n = Number(value)
     if (!Number.isFinite(n) || n <= 0) return undefined
-    return Math.max(0.01, Math.min(0.25, n))
+    return normalizePosCountVolumeRatio(n, POS_COUNT_VOLUME_RATIO_DEFAULT)
   }
   const clampedTop = clampPcvr(mutable.posCountsVolumeRatio)
   if (clampedTop !== undefined) mutable.posCountsVolumeRatio = clampedTop
@@ -53,3 +53,7 @@ export function mergeConnectionSettings<T extends Record<string, any>>(
   }
   return merged
 }
+import {
+  normalizePosCountVolumeRatio,
+  POS_COUNT_VOLUME_RATIO_DEFAULT,
+} from "@/lib/pos-count-volume-ratio"

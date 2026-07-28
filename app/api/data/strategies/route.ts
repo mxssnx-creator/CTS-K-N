@@ -1,6 +1,10 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { StrategyEngine } from "@/lib/strategies"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+} from "@/lib/main-trade-profit-factor"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -88,27 +92,36 @@ export async function GET(request: NextRequest) {
       Number(hash?.[`s:${sym}:${field}`] ?? 0) || 0
 
     const strategies = Array.from(symbols).map((sym) => {
-      const avgPF =
-        getField(detailReal, sym, "apf") ||
-        getField(detailMain, sym, "apf") ||
-        getField(detailBase, sym, "apf")
-
       const baseCreated = getField(detailBase, sym, "created")
       const mainCreated = getField(detailMain, sym, "created")
       const realCreated = getField(detailReal, sym, "created")
       const mainAvgDDT = getField(detailMain, sym, "addt")
+      const effectiveStage =
+        realCreated > 0 ? "real"
+          : mainCreated > 0 ? "main"
+            : "base"
+      const avgPF =
+        effectiveStage === "real"
+          ? getField(detailReal, sym, "apf")
+          : effectiveStage === "main"
+            ? getField(detailMain, sym, "apf")
+            : getField(detailBase, sym, "apf")
+      const minimumPfRatio =
+        effectiveStage === "base"
+          ? MAIN_TRADE_BASE_PF_RATIO_DEFAULT
+          : MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT
 
       // Shape each record as a StrategyResult so strategy-row-compact renders without crashes
       return {
         id: `${connectionId}-${sym}`,
         name: sym,
         connectionId,
-        mainType: "direction" as const,
+        mainType: effectiveStage as "base" | "main" | "real",
         adjustments: [] as string[],
         isActive: true,
         validation_state: "valid" as const,
         last_positions: [],
-        should_open_position: avgPF >= 1.0,
+        should_open_position: avgPF >= minimumPfRatio,
         // Profit factor: prefer Real, then Main, then Base
         avg_profit_factor: avgPF,
         volume_factor: 1,
@@ -116,7 +129,7 @@ export async function GET(request: NextRequest) {
           takeprofit_factor: 8,
           stoploss_ratio: 1,
           last_positions_count: 20,
-          min_profit_factor: 1.0,
+          min_profit_factor: minimumPfRatio,
           trailing_stop: { enabled: false, start_percent: 0.3, stop_percent: 0.1 },
         },
         stats: {
@@ -126,7 +139,9 @@ export async function GET(request: NextRequest) {
           positions_per_day: mainCreated > 0 ? mainCreated / Math.max(1, 1) : 0,
           drawdown_hours: mainAvgDDT / 60,
           total_trades: realCreated,
-          win_rate: avgPF > 1 ? Math.min(100, (avgPF - 1) * 50 + 50) : 30,
+          // No realised W/L ledger is stored in strategy_detail. Zero is an
+          // honest "not available" value; deriving it from PF invents data.
+          win_rate: 0,
         },
         // Extended engine fields for the progression breakdown
         base: {

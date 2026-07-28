@@ -41,8 +41,13 @@ import {
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import {
+  DEFAULT_COMMON_INDICATION_SETTINGS,
+  enabledCommonIndicatorTypes,
+  normalizeCommonIndicationSettings,
   type CommonCoordinationSettings,
+  type CommonIndicationSettingsDocument,
 } from "@/lib/common-indicator-config"
+import { StepBasedIndicators } from "@/lib/step-based-indicators"
 import {
   calculateMultiRangeCoordination,
   DEFAULT_MAIN_COORDINATION_SETTINGS,
@@ -64,6 +69,16 @@ import {
   DEFAULT_TREND_TP_STEP,
   normalizeTrendTimeframesMinutes,
 } from "@/lib/trend-indication"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  movePctToMainTradePfRatio,
+  normalizeMainTradeStagePfRatio,
+} from "@/lib/main-trade-profit-factor"
+import { indicationValidatedCooldownKey } from "@/lib/indication-lane-identity"
+import {
+  DEFAULT_MAIN_INDICATION_PROFILE,
+  readStoredIndicationProfile,
+} from "@/lib/active-indication-profile"
 
 // Default limits per indication type (independently configurable)
 const DEFAULT_LIMITS = {
@@ -74,6 +89,7 @@ const DEFAULT_LIMITS = {
   active_advanced: 250,
   signal: 250,
   trend: 250,
+  common: 250,
 }
 
 // Pre-cached client reference
@@ -97,8 +113,11 @@ const DEFAULT_POSITION_LIMITS = {
   maxShort: 1,
 }
 
-// Indication timeout after valid evaluation (100ms - 3000ms)
-const DEFAULT_INDICATION_TIMEOUT_MS = 1000
+// Exact indication configuration/direction may recalculate after 250 ms.
+const DEFAULT_INDICATION_TIMEOUT_MS = 250
+// Common technical indicators intentionally run on a slower exact-lane
+// cadence. This is a validation cooldown, not a candidate/configuration cap.
+const DEFAULT_COMMON_INDICATION_TIMEOUT_MS = 3_000
 
 const DEFAULT_OUTCOME_ATTACHMENT_CONCURRENCY = 20
 
@@ -158,6 +177,12 @@ return { tostring(grossProfit), tostring(grossLoss), tostring(count) }
 `
 
 type IndicationCandidate = { setKey: string; indication: any; config: any }
+type OutcomePerformance = {
+  classicProfitFactor: number
+  averageMovePct: number
+  positionCostRatio: number
+  count: number
+}
 
 function resolveIndicationDirection(indication: any): "long" | "short" | null {
   if (indication?.direction === "long" || indication?.direction === "short") {
@@ -201,6 +226,7 @@ export interface IndicationSetLimits {
   active_advanced: number
   signal: number
   trend: number
+  common: number
 }
 
 export interface PositionLimits {
@@ -209,7 +235,7 @@ export interface PositionLimits {
 }
 
 export interface IndicationSet {
-  type: "direction" | "move" | "active" | "optimal" | "active_advanced" | "signal" | "trend"
+  type: "direction" | "move" | "active" | "optimal" | "active_advanced" | "signal" | "trend" | "common"
   connectionId: string
   symbol: string
   configKey: string // Unique key for this configuration combination
@@ -240,37 +266,43 @@ export interface IndicationSet {
 export class IndicationSetsProcessor {
   private connectionId: string
   private sets: Map<string, IndicationSet> = new Map()
+  /**
+   * Exact current-cycle rows handed directly to Strategy/Base.
+   *
+   * Historical retention remains bounded per Redis Set, but the current
+   * Cartesian result must never be reconstructed through a top-N read.  This
+   * collector is populated by the same writes that commit each qualified
+   * configuration and is cleared as soon as the cycle is published.
+   */
+  private currentCycleEntries: any[] | null = null
   private limits: IndicationSetLimits = { ...DEFAULT_LIMITS }
   private positionLimits: PositionLimits = { ...DEFAULT_POSITION_LIMITS }
   private indicationTimeoutMs: number = DEFAULT_INDICATION_TIMEOUT_MS
+  private indicationTimeoutMsByType: Record<string, number> = {
+    direction: DEFAULT_INDICATION_TIMEOUT_MS,
+    move: DEFAULT_INDICATION_TIMEOUT_MS,
+    active: DEFAULT_INDICATION_TIMEOUT_MS,
+    active_advanced: DEFAULT_INDICATION_TIMEOUT_MS,
+    optimal: DEFAULT_INDICATION_TIMEOUT_MS,
+    trend: DEFAULT_INDICATION_TIMEOUT_MS,
+    signal: DEFAULT_INDICATION_TIMEOUT_MS,
+  }
   /**
    * Per-type compaction config, resolved once per ~5s via the cached
    * `loadCompactionConfig` helper. Keeping a per-processor copy lets the
    * hot-path append helper enforce compaction without touching the settings
    * hash on every fill.
    */
-  // Balanced production grid. The previous implicit default materialised
-  // 1,329 candidate configs per symbol (15,948 for a 12-symbol cycle) before
-  // Strategy processing even began. These five representative windows retain
-  // short/medium/long coverage while keeping the default at 104 candidates per
-  // symbol. Operators can still provide the full lists/ranges in Settings or
-  // opt into the legacy grid with INDICATION_FULL_CONFIG_GRID=1.
-  private directionMoveRanges: number[] = process.env.INDICATION_FULL_CONFIG_GRID === "1"
-    ? Array.from({ length: 29 }, (_, i) => i + 2)
-    : [2, 5, 10, 20, 30]
+  // Full inclusive grids are the default. Batching/concurrency may bound work
+  // in flight, but never the configured calculation space.
+  private directionMoveRanges: number[] = Array.from({ length: 29 }, (_, i) => i + 2)
   private optimalRanges: number[] = [...this.directionMoveRanges]
   private drawdownRatios: number[] = [0.5, 1.0, 1.5]
   private lastPartRatios: number[] = [0.25, 0.5]
-  private factorMultipliers: number[] = process.env.INDICATION_FULL_CONFIG_GRID === "1"
-    ? [0.9, 1.0, 1.1]
-    : [1.0]
-  private activeThresholds: number[] = process.env.INDICATION_FULL_CONFIG_GRID === "1"
-    ? [0.5, 1.0, 1.5, 2.0, 2.5]
-    : [0.5, 1.5, 2.5]
+  private factorMultipliers: number[] = [0.9, 1.0, 1.1]
+  private activeThresholds: number[] = [0.5, 1.0, 1.5, 2.0, 2.5]
   private activeTimeRatios: number[] = [0.5, 1.0]
-  private activeAdvancedActivityRatios: number[] = process.env.INDICATION_FULL_CONFIG_GRID === "1"
-    ? [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
-    : [0.5, 1.5, 3.0]
+  private activeAdvancedActivityRatios: number[] = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
   private activeAdvancedMinPositions = 3
   private activeAdvancedContinuationRatio = 0.6
   private directionEnabled = true
@@ -278,6 +310,7 @@ export class IndicationSetsProcessor {
   private activeEnabled = true
   private activeAdvancedEnabled = true
   private optimalEnabled = true
+  private commonEnabled = true
   private trendEnabled = true
   private trendTimeframesMinutes: number[] = [...DEFAULT_TREND_TIMEFRAMES_MINUTES]
   private trendDrawdownFactors: number[] = [...DEFAULT_TREND_DRAWDOWN_FACTORS]
@@ -294,10 +327,13 @@ export class IndicationSetsProcessor {
     drawdownRatios: [...DEFAULT_MAIN_COORDINATION_SETTINGS.drawdownRatios],
   }
   private directionPostChangeOnly = true
-  private trendPositionCostPct = 0.02
+  private trendPositionCostPct = 0.1
+  private baseMinimumPfRatio = MAIN_TRADE_BASE_PF_RATIO_DEFAULT
   private trendTpMinMultiplier = DEFAULT_TREND_TP_MIN_MULTIPLIER
   private trendTpMaxFactor = DEFAULT_TREND_TP_MAX_FACTOR
   private trendTpStep = DEFAULT_TREND_TP_STEP
+  private commonSettings: CommonIndicationSettingsDocument =
+    normalizeCommonIndicationSettings(DEFAULT_COMMON_INDICATION_SETTINGS)
   private outcomeHorizonCandles = 12
   private outcomeTakeProfitPct = 0.01
   private outcomeStopLossPct = 0.01
@@ -360,10 +396,50 @@ export class IndicationSetsProcessor {
 
   private async loadSettings(): Promise<void> {
     try {
+      await initRedis()
+      const client = getRedisClient()
       // Mirror-aware read so operator values saved via the UI
       // (`app_settings`) apply even if the legacy `all_settings` hash
       // is empty on a fresh install.
-      const settings = await getAppSettings()
+      const [settings, rawCommonSettings, rawActiveProfile] = await Promise.all([
+        getAppSettings(),
+        client.get("indications:common").catch(() => null),
+        getSettings(`active_indications:${this.connectionId}`).catch(() => null),
+      ])
+      let parsedCommonSettings: unknown = rawCommonSettings
+      if (typeof rawCommonSettings === "string") {
+        try {
+          parsedCommonSettings = JSON.parse(rawCommonSettings)
+        } catch {
+          parsedCommonSettings = DEFAULT_COMMON_INDICATION_SETTINGS
+        }
+      }
+      this.commonSettings = normalizeCommonIndicationSettings(
+        parsedCommonSettings || DEFAULT_COMMON_INDICATION_SETTINGS,
+      )
+      const activeProfile = readStoredIndicationProfile(
+        rawActiveProfile && typeof rawActiveProfile === "object"
+          ? rawActiveProfile as Record<string, unknown>
+          : undefined,
+        "",
+        DEFAULT_MAIN_INDICATION_PROFILE,
+      )
+      this.indicationTimeoutMsByType = {
+        direction: Math.round(activeProfile.direction.timeout * 1_000),
+        move: Math.round(activeProfile.move.timeout * 1_000),
+        active: Math.round(activeProfile.active.timeout * 1_000),
+        active_advanced: Math.round(activeProfile.active.timeout * 1_000),
+        optimal: Math.round(activeProfile.optimal.timeout * 1_000),
+        trend: Math.round(activeProfile.trend.timeout * 1_000),
+        signal: Math.round(activeProfile.signal.timeout * 1_000),
+      }
+      this.directionEnabled = activeProfile.direction.enabled
+      this.moveEnabled = activeProfile.move.enabled
+      this.activeEnabled = activeProfile.active.enabled
+      this.activeAdvancedEnabled = activeProfile.active.enabled
+      this.optimalEnabled = activeProfile.optimal.enabled
+      this.commonEnabled = activeProfile.common.enabled
+      this.trendEnabled = activeProfile.trend.enabled
       if (settings && Object.keys(settings).length > 0) {
         this.defaultCoordination = {
           enabled:
@@ -418,15 +494,30 @@ export class IndicationSetsProcessor {
         
         // Load indication timeout
         if (settings.indicationTimeoutMs) {
-          this.indicationTimeoutMs = Math.max(100, Math.min(3000, Number(settings.indicationTimeoutMs)))
+          this.indicationTimeoutMs = Math.max(50, Math.min(3000, Number(settings.indicationTimeoutMs)))
         }
 
-        this.directionEnabled = settings.directionEnabled !== false && settings.directionEnabled !== "false"
-        this.moveEnabled = settings.moveEnabled !== false && settings.moveEnabled !== "false"
-        this.activeEnabled = settings.activeEnabled !== false && settings.activeEnabled !== "false"
+        this.directionEnabled =
+          settings.directionEnabled !== false &&
+          settings.directionEnabled !== "false" &&
+          activeProfile.direction.enabled
+        this.moveEnabled =
+          settings.moveEnabled !== false &&
+          settings.moveEnabled !== "false" &&
+          activeProfile.move.enabled
+        this.activeEnabled =
+          settings.activeEnabled !== false &&
+          settings.activeEnabled !== "false" &&
+          activeProfile.active.enabled
         this.activeAdvancedEnabled =
-          settings.activeAdvancedEnabled !== false && settings.activeAdvancedEnabled !== "false"
-        this.optimalEnabled = settings.optimalEnabled !== false && settings.optimalEnabled !== "false"
+          settings.activeAdvancedEnabled !== false &&
+          settings.activeAdvancedEnabled !== "false" &&
+          activeProfile.active.enabled
+        this.optimalEnabled =
+          settings.optimalEnabled !== false &&
+          settings.optimalEnabled !== "false" &&
+          activeProfile.optimal.enabled
+        this.commonEnabled = activeProfile.common.enabled
 
         // Config-grid controls. Explicit sample lists retain sparse
         // short/medium/long coverage; legacy from/to/step values remain
@@ -470,7 +561,10 @@ export class IndicationSetsProcessor {
           0,
           Math.min(1, this.parsePositiveNumber(activeAdvanced.continuation_ratio ?? settings.activeAdvancedContinuationRatio, this.activeAdvancedContinuationRatio)),
         )
-        this.trendEnabled = settings.trendEnabled !== false && settings.trendEnabled !== "false"
+        this.trendEnabled =
+          settings.trendEnabled !== false &&
+          settings.trendEnabled !== "false" &&
+          activeProfile.trend.enabled
         this.trendTimeframesMinutes = this.parseTrendTimeframes(
           settings.trendTimeframesMinutes,
           this.trendTimeframesMinutes,
@@ -510,6 +604,10 @@ export class IndicationSetsProcessor {
           settings.positionCost ?? settings.exchangePositionCost,
           this.trendPositionCostPct,
         )
+        this.baseMinimumPfRatio = normalizeMainTradeStagePfRatio(
+          "base",
+          settings.baseProfitFactor,
+        )
         this.trendTpMinMultiplier = this.parsePositiveNumber(
           settings.trendTpMinMultiplier,
           this.trendTpMinMultiplier,
@@ -537,6 +635,7 @@ export class IndicationSetsProcessor {
             active_advanced: limit,
             signal: limit,
             trend: limit,
+            common: limit,
           }
         }
       }
@@ -551,6 +650,7 @@ export class IndicationSetsProcessor {
         if (setsConfig.optimal) this.limits.optimal = Number(setsConfig.optimal)
         if (setsConfig.signal) this.limits.signal = Number(setsConfig.signal)
         if (setsConfig.trend) this.limits.trend = Number(setsConfig.trend)
+        if (setsConfig.common) this.limits.common = Number(setsConfig.common)
       }
     } catch (error) {
       console.error("[v0] [IndicationSets] Failed to load settings:", error)
@@ -738,10 +838,14 @@ export class IndicationSetsProcessor {
   /**
    * Process all indication types independently for a symbol
    */
-  async processAllIndicationSets(symbol: string, marketData: any): Promise<void> {
+  async processAllIndicationSets(symbol: string, marketData: any): Promise<any[]> {
     const startTime = Date.now()
-    const TIMEOUT_MS = 15000 // 15 second timeout per symbol
+    // A slow exhaustive cycle is diagnostic information, not a cancellation
+    // boundary.  Returning here used to discard the already-completed current
+    // snapshot and made large, valid configuration grids look incomplete.
+    const SLOW_CYCLE_MS = 15_000
     
+    this.currentCycleEntries = []
     try {
       await this.settingsReady
       await this.closePendingRealtimeOutcomes(symbol, marketData)
@@ -751,7 +855,7 @@ export class IndicationSetsProcessor {
           symbol,
           reason: "null_market_data",
         })
-        return
+        return []
       }
 
       const priceHistory = this.normalizePriceHistory(marketData)
@@ -763,7 +867,7 @@ export class IndicationSetsProcessor {
         // can monopolize the API worker in production. Return after the
         // throttled warning so status/health endpoints remain responsive while
         // history fills naturally.
-        return
+        return []
       }
       const multiRangeCoordination = calculateMultiRangeCoordination({
         pricesOldestFirst: priceHistory,
@@ -786,10 +890,12 @@ export class IndicationSetsProcessor {
         process.env.ENABLE_API_INDICATION_SET_FILL === "1" ||
         process.env.ENABLE_API_INDICATION_SET_FILL === "true"
       if (!apiSetFillEnabled) {
-        return
+        return []
       }
 
-      // Process all 6 set-backed types in parallel with independent logic.
+      // Process every set-backed type with independent logic. Work-in-flight
+      // is bounded inside the persistence/evaluation helpers; no configuration
+      // is sampled away.
       // Use per-type isolation so an Optimal/Auto calculation failure never
       // aborts Direction/Move/Active for the same symbol and never crashes the
       // whole progression cycle.
@@ -810,7 +916,7 @@ export class IndicationSetsProcessor {
         }
       }
       const disabledResult = (type: string) => ({ type, total: 0, qualified: 0, configs: 0, disabled: true })
-      const [directionResults, moveResults, activeResults, activeAdvancedResults, optimalResults, trendResults] = await Promise.all([
+      const [directionResults, moveResults, activeResults, activeAdvancedResults, optimalResults, commonResults, trendResults] = await Promise.all([
         this.directionEnabled
           ? runType("direction", () => this.processDirectionSet(symbol, marketData))
           : disabledResult("direction"),
@@ -826,6 +932,9 @@ export class IndicationSetsProcessor {
         this.optimalEnabled
           ? runType("optimal", () => this.processOptimalSet(symbol, marketData))
           : disabledResult("optimal"),
+        this.commonEnabled
+          ? runType("common", () => this.processCommonSet(symbol, marketData))
+          : disabledResult("common"),
         // Trend is deliberately last: it is the newest Main indication type
         // and retains the requested ordering in engine output and Settings.
         this.trendEnabled
@@ -835,15 +944,28 @@ export class IndicationSetsProcessor {
 
       const duration = Date.now() - startTime
       
-      // Check for timeout
-      if (duration > TIMEOUT_MS) {
-        console.warn(`[v0] [IndicationSets] TIMEOUT: Processing exceeded ${TIMEOUT_MS}ms for ${symbol} (took ${duration}ms)`)
-        await logProgressionEvent(this.connectionId, "indications_sets", "warning", `Indication set processing timeout for ${symbol}`, {
-          symbol,
-          timeoutMs: TIMEOUT_MS,
-          actualMs: duration,
-        })
-        return
+      if (duration > SLOW_CYCLE_MS) {
+        const didLogSlowCycle = logRuntimeWarning(
+          `indication-sets:${this.connectionId}:${symbol}:slow-cycle`,
+          60_000,
+          () =>
+            `[v0] [IndicationSets] SLOW CYCLE: ${symbol} took ${duration}ms ` +
+            `(diagnostic threshold ${SLOW_CYCLE_MS}ms); publishing the complete snapshot`,
+        )
+        if (didLogSlowCycle) {
+          await logProgressionEvent(
+            this.connectionId,
+            "indications_sets",
+            "warning",
+            `Slow indication set cycle completed for ${symbol}`,
+            {
+              symbol,
+              diagnosticThresholdMs: SLOW_CYCLE_MS,
+              actualMs: duration,
+              snapshotPublished: true,
+            },
+          )
+        }
       }
 
       const totalQualified = 
@@ -852,6 +974,7 @@ export class IndicationSetsProcessor {
         (activeResults?.qualified || 0) +
         (activeAdvancedResults?.qualified || 0) +
         (optimalResults?.qualified || 0) +
+        (commonResults?.qualified || 0) +
         (trendResults?.qualified || 0)
 
       // ── ACTIVE-VALID indication snapshot (per cycle, per (symbol, type)) ──
@@ -880,6 +1003,7 @@ export class IndicationSetsProcessor {
           [`${symbol}:active`]:          String(activeResults?.qualified    ?? 0),
           [`${symbol}:active_advanced`]: String(activeAdvancedResults?.qualified ?? 0),
           [`${symbol}:optimal`]:         String(optimalResults?.qualified   ?? 0),
+          [`${symbol}:common`]:          String(commonResults?.qualified    ?? 0),
           [`${symbol}:trend`]:           String(trendResults?.qualified     ?? 0),
         })
         await client.expire(activeKey, 600) // 10 min — engine refreshes each cycle
@@ -900,6 +1024,7 @@ export class IndicationSetsProcessor {
         const actQ  = activeResults?.qualified     ?? 0
         const advQ  = activeAdvancedResults?.qualified ?? 0
         const optQ  = optimalResults?.qualified    ?? 0
+        const commonQ = commonResults?.qualified   ?? 0
         const trendQ = trendResults?.qualified     ?? 0
         const pipe = client.multi()
         pipe.hset(w5Key, {
@@ -908,6 +1033,7 @@ export class IndicationSetsProcessor {
           [`${symbol}:active`]: String(actQ),
           [`${symbol}:active_advanced`]: String(advQ),
           [`${symbol}:optimal`]: String(optQ),
+          [`${symbol}:common`]: String(commonQ),
           [`${symbol}:trend`]: String(trendQ),
         })
         pipe.expire(w5Key,   300) // 5 min rolling window
@@ -917,10 +1043,11 @@ export class IndicationSetsProcessor {
           [`${symbol}:active`]: String(actQ),
           [`${symbol}:active_advanced`]: String(advQ),
           [`${symbol}:optimal`]: String(optQ),
+          [`${symbol}:common`]: String(commonQ),
           [`${symbol}:trend`]: String(trendQ),
         })
         pipe.expire(w60Key,  4200) // 70 min rolling window
-        if (dirQ > 0 || moveQ > 0 || actQ > 0 || advQ > 0 || optQ > 0 || trendQ > 0) {
+        if (dirQ > 0 || moveQ > 0 || actQ > 0 || advQ > 0 || optQ > 0 || commonQ > 0 || trendQ > 0) {
           // Total indication Sets active this cycle: configs that qualified across
           // all types. Stored as a progression field so getIndicationTracking has
           // a non-zero totalIndicationSets without a separate keys() scan.
@@ -929,6 +1056,7 @@ export class IndicationSetsProcessor {
                                      (activeResults?.configs    ?? actQ) +
                                      (activeAdvancedResults?.configs ?? advQ) +
                                      (optimalResults?.configs   ?? optQ) +
+                                     (commonResults?.configs    ?? commonQ) +
                                      (trendResults?.configs     ?? trendQ)
           if (totalSetsThisCycle > 0) {
             pipe.hincrby(progKey, "indication_sets_total", totalSetsThisCycle)
@@ -952,6 +1080,7 @@ export class IndicationSetsProcessor {
             `Active=${activeResults?.qualified}/${activeResults?.total} ` +
             `ActiveAdvanced=${activeAdvancedResults?.qualified}/${activeAdvancedResults?.total} ` +
             `Optimal=${optimalResults?.qualified}/${optimalResults?.total} ` +
+            `Common=${commonResults?.qualified}/${commonResults?.total} ` +
             `Trend=${trendResults?.qualified}/${trendResults?.total}`,
         )
 
@@ -962,13 +1091,20 @@ export class IndicationSetsProcessor {
             active: activeResults,
             active_advanced: activeAdvancedResults,
             optimal: optimalResults,
+            common: commonResults,
             trend: trendResults,
             duration,
           })
         }
       }
+      const completed = [...(this.currentCycleEntries || [])]
+        .sort((left, right) => String(left.setKey).localeCompare(String(right.setKey)))
+      this.currentCycleEntries = null
+      return completed
     } catch (error) {
       console.error(`[v0] [IndicationSets] Failed to process sets for ${symbol}:`, error)
+      this.currentCycleEntries = null
+      return []
     }
   }
 
@@ -984,7 +1120,50 @@ export class IndicationSetsProcessor {
         candidate.setKey,
         candidate.indication,
       )
-      return profitFactor >= 1.0 ? candidate : null
+      if (profitFactor < this.baseMinimumPfRatio) return null
+
+      // The cooldown is claimed only AFTER a valid evaluation. Its key is the
+      // exact durable Set identity, which already includes connection, symbol,
+      // indicator type, complete parameters and direction. This means a valid
+      // MACD/Long tuple cannot throttle RSI, another MACD tuple, or Short.
+      const client = await getCachedClient()
+      const type = String(candidate.setKey.split(":")[3] || "")
+      const commonType = String(candidate.config?.indicatorType || "")
+      const direction =
+        candidate.indication?.direction === "short" ? "short" : "long"
+      const indicationName =
+        commonType ||
+        String(candidate.indication?.metadata?.name || type || "unknown")
+      const configuredCommonTimeoutSeconds = Number(
+        (this.commonSettings?.[commonType] as any)?.timeout,
+      )
+      const timeoutMs = type === "common"
+        ? Math.max(
+            0,
+            Math.round(
+              (Number.isFinite(configuredCommonTimeoutSeconds)
+                ? configuredCommonTimeoutSeconds
+                : DEFAULT_COMMON_INDICATION_TIMEOUT_MS / 1_000) * 1_000,
+            ),
+          )
+        : Math.max(
+            0,
+            this.indicationTimeoutMsByType[type] ?? this.indicationTimeoutMs,
+          )
+      if (timeoutMs <= 0) return candidate
+      const admitted = await client.set(
+        indicationValidatedCooldownKey({
+          connectionId: this.connectionId,
+          symbol,
+          type,
+          name: indicationName,
+          direction,
+          config: candidate.config,
+        }),
+        String(Date.now()),
+        { NX: true, PX: timeoutMs },
+      ).catch(() => null)
+      return admitted ? candidate : null
     })
 
     return attached.filter((candidate): candidate is IndicationCandidate => candidate !== null)
@@ -1350,6 +1529,90 @@ export class IndicationSetsProcessor {
   }
 
   /**
+   * Process every enabled official Common-indicator parameter tuple. Each
+   * timeframe × indicator × complete parameter configuration × direction
+   * receives its own Set key; no low/mid/high sampling is used.
+   */
+  private async processCommonSet(symbol: string, marketData: any): Promise<any> {
+    const enabledTypes = enabledCommonIndicatorTypes(this.commonSettings)
+    if (enabledTypes.length === 0) {
+      return { type: "common", total: 0, qualified: 0, configs: 0, disabled: true }
+    }
+
+    let candles = this.getForwardCandles(marketData)
+    if (candles.length === 0) {
+      const prices = this.normalizePriceHistory(marketData)
+      candles = prices.map((price, index) => ({
+        timestamp: index * 60_000,
+        open: price,
+        high: price,
+        low: price,
+        close: price,
+        volume: 0,
+      }))
+    }
+    if (candles.length === 0) {
+      return { type: "common", total: 0, qualified: 0, configs: 0 }
+    }
+
+    const calculated = await StepBasedIndicators.calculateAllAsync(
+      candles,
+      this.commonSettings.coordination.timeframesMinutes,
+      enabledTypes,
+      this.commonSettings,
+    )
+    const candidates: IndicationCandidate[] = []
+    let total = 0
+    for (const [timeframeRaw, timeframe] of Object.entries(calculated)) {
+      const timeframeMinutes = Number(timeframeRaw)
+      for (const configuration of timeframe.configurations) {
+        total++
+        const result = configuration.indicators[configuration.type]
+        if (!result || result.direction === "neutral") continue
+        const direction = result.direction
+        const parameterValues = configuration.parameters[configuration.type] || {}
+        const fingerprint = encodeURIComponent(JSON.stringify(parameterValues))
+        const config = {
+          indicatorType: configuration.type,
+          timeframeMinutes,
+          parameters: parameterValues,
+        }
+        candidates.push({
+          setKey:
+            `indication_set:${this.connectionId}:${symbol}:common:${direction}` +
+            `:${configuration.type}:tf${timeframeMinutes}:p${fingerprint}`,
+          indication: {
+            profitFactor: 0,
+            signalScore: result.strength,
+            rawSignalStrength: Math.abs(result.signal),
+            confidence: result.strength,
+            direction,
+            metadata: {
+              direction,
+              commonIndicatorType: configuration.type,
+              timeframeMinutes,
+              parameters: parameterValues,
+              value: result.value,
+              signal: result.signal,
+              details: result.details,
+            },
+          },
+          config,
+        })
+      }
+    }
+
+    const pendingWrites = await this.attachQualifiedCandidates(symbol, marketData, candidates)
+    if (pendingWrites.length > 0) await this.batchSaveIndications(pendingWrites, "common")
+    return {
+      type: "common",
+      total,
+      qualified: pendingWrites.length,
+      configs: pendingWrites.length,
+    }
+  }
+
+  /**
    * Process Trend as the final Main indication type.
    *
    * Every timeframe/drawdown/last-situation/active-situation tuple owns an
@@ -1526,6 +1789,15 @@ export class IndicationSetsProcessor {
           metadata: indication.metadata,
         }
 
+        // Strategy/Base consumes this exact snapshot directly.  Adding it at
+        // the write boundary guarantees the runtime view and persisted Set
+        // view contain the same complete configuration identities.
+        this.currentCycleEntries?.push({
+          ...entry,
+          setKey,
+          symbol: setKey.split(":")[2],
+        })
+
         const bucket = grouped.get(setKey)
         if (bucket) bucket.push(JSON.stringify(entry))
         else grouped.set(setKey, [JSON.stringify(entry)])
@@ -1644,24 +1916,34 @@ export class IndicationSetsProcessor {
         pnlPct: outcome.pnlPct,
         closedAt: new Date().toISOString(),
       }
-      const pf = await this.recordOutcomeSample(setKey, sample)
-      indication.profitFactor = pf
+      const performance = await this.recordOutcomeSample(setKey, sample)
+      indication.profitFactor = performance.positionCostRatio
       indication.metadata = {
         ...indication.metadata,
         outcome,
-        profitFactorSource: "realized_forward_outcomes",
+        realizedProfitFactor: performance.classicProfitFactor,
+        averageMovePct: performance.averageMovePct,
+        positionCostRatio: performance.positionCostRatio,
+        positionCostPct: this.trendPositionCostPct,
+        profitFactorSource: "position_cost_relative_realized_outcomes",
       }
-      return pf
+      return performance.positionCostRatio
     }
 
-    indication.profitFactor = 0
+    // Bootstrap path: no forward/live close exists yet. Preserve the exact
+    // candidate at the Base minimum instead of silently dropping every new
+    // configuration before it has a chance to produce its first result.
+    indication.profitFactor = this.baseMinimumPfRatio
     indication.metadata = {
       ...indication.metadata,
       outcomePending: true,
+      positionCostRatio: this.baseMinimumPfRatio,
+      positionCostPct: this.trendPositionCostPct,
+      bootstrapWithoutHistory: true,
       profitFactorSource: "pending_realtime_outcome",
     }
     await this.persistPendingRealtimeOutcome(symbol, setKey, indication)
-    return indication.signalScore || indication.rawSignalStrength || 0
+    return this.baseMinimumPfRatio
   }
 
   /**
@@ -1673,7 +1955,7 @@ export class IndicationSetsProcessor {
    * every sample. If the aggregate hash is missing or malformed, rebuild it
    * once from the capped list and continue from the repaired values.
    */
-  private async recordOutcomeSample(setKey: string, sample: any): Promise<number> {
+  private async recordOutcomeSample(setKey: string, sample: any): Promise<OutcomePerformance> {
     const client = await getCachedClient()
     const key = `${setKey}:outcomes`
     const statsKey = `${setKey}:outcome_stats`
@@ -1692,7 +1974,8 @@ export class IndicationSetsProcessor {
       })
       const grossProfit = Number(result?.[0] ?? 0)
       const grossLoss = Number(result?.[1] ?? 0)
-      return this.profitFactorFromOutcomeStats(grossProfit, grossLoss)
+      const count = Number(result?.[2] ?? 0)
+      return this.outcomePerformanceFromStats(grossProfit, grossLoss, count)
     }
 
     return this.recordOutcomeSampleWithWatch(client, key, statsKey, serializedSample, sampleProfit, sampleLoss, cap)
@@ -1706,7 +1989,7 @@ export class IndicationSetsProcessor {
     sampleProfit: number,
     sampleLoss: number,
     cap: number,
-  ): Promise<number> {
+  ): Promise<OutcomePerformance> {
     const canWatch = typeof client?.watch === "function" && typeof client?.unwatch === "function"
     const maxAttempts = canWatch ? 8 : 1
 
@@ -1757,7 +2040,7 @@ export class IndicationSetsProcessor {
         })
         const execResult = await tx.exec()
         if (!canWatch || execResult !== null) {
-          return this.profitFactorFromOutcomeStats(grossProfit, grossLoss)
+            return this.outcomePerformanceFromStats(grossProfit, grossLoss, count)
         }
       } finally {
         if (canWatch) await client.unwatch().catch(() => {})
@@ -1811,7 +2094,11 @@ export class IndicationSetsProcessor {
     return { grossProfit, grossLoss, count }
   }
 
-  private async repairOutcomeStatsFromSamples(client: any, key: string, statsKey: string): Promise<number> {
+  private async repairOutcomeStatsFromSamples(
+    client: any,
+    key: string,
+    statsKey: string,
+  ): Promise<OutcomePerformance> {
     const raw: string[] = await client.lrange(key, 0, -1)
     let grossProfit = 0
     let grossLoss = 0
@@ -1828,12 +2115,35 @@ export class IndicationSetsProcessor {
       grossLoss: String(grossLoss),
       count: String(count),
     })
-    return this.profitFactorFromOutcomeStats(grossProfit, grossLoss)
+    return this.outcomePerformanceFromStats(grossProfit, grossLoss, count)
   }
 
   private profitFactorFromOutcomeStats(grossProfit: number, grossLoss: number): number {
     if (grossLoss <= 0) return grossProfit > 0 ? grossProfit / 0.000001 : 0
     return grossProfit / grossLoss
+  }
+
+  private outcomePerformanceFromStats(
+    grossProfit: number,
+    grossLoss: number,
+    count: number,
+  ): OutcomePerformance {
+    const safeCount = Math.max(0, Number(count) || 0)
+    // Outcome samples are stored as decimal market returns (0.01 = 1%).
+    // Convert their rolling signed average to percentage points before
+    // mapping onto the operator's PositionCost-relative 0.08…2.70 scale.
+    const averageMovePct = safeCount > 0
+      ? ((grossProfit - grossLoss) / safeCount) * 100
+      : 0
+    return {
+      classicProfitFactor: this.profitFactorFromOutcomeStats(grossProfit, grossLoss),
+      averageMovePct,
+      positionCostRatio: movePctToMainTradePfRatio(
+        averageMovePct,
+        this.trendPositionCostPct,
+      ),
+      count: safeCount,
+    }
   }
 
   private async persistPendingRealtimeOutcome(symbol: string, setKey: string, indication: any): Promise<void> {
@@ -1863,7 +2173,6 @@ export class IndicationSetsProcessor {
   private async closePendingRealtimeOutcomes(symbol: string, marketData: any): Promise<void> {
     if (!marketData) return
     try {
-      if (this.getForwardCandles(marketData).length < 2) return
       const client = await getCachedClient()
       const key = `indication_outcomes_pending:${this.connectionId}:${symbol}`
       const raw: string[] = await client.lrange(key, 0, -1)
@@ -1877,7 +2186,11 @@ export class IndicationSetsProcessor {
       for (const item of raw) {
         let pending: any
         try { pending = JSON.parse(item) } catch { continue }
-        const closed = this.evaluateForwardOutcome(marketData, pending.direction)
+        const closed = this.evaluateForwardOutcome(
+          marketData,
+          pending.direction,
+          Number(pending.openedAt),
+        )
         if (!closed.completed) {
           stillPending.push(item)
         } else {
@@ -1907,9 +2220,9 @@ export class IndicationSetsProcessor {
         async ([setKey, items]) => {
           // Record all outcome samples for this setKey before reading entries,
           // so the final PF reflects all closed outcomes from this cycle.
-          let pf = 0
+          let performance: OutcomePerformance = this.outcomePerformanceFromStats(0, 0, 0)
           for (const { closed } of items) {
-            pf = await this.recordOutcomeSample(setKey, {
+            performance = await this.recordOutcomeSample(setKey, {
               profit:   Math.max(closed.pnlPct, 0),
               loss:     Math.max(-closed.pnlPct, 0),
               pnlPct:   closed.pnlPct,
@@ -1926,8 +2239,17 @@ export class IndicationSetsProcessor {
           for (let i = entries.length - 1; i >= 0 && patchCount > 0; i--) {
             if (entries[i]?.profitFactor === 0 && entries[i]?.metadata?.outcomePending) {
               const closed = items[items.length - patchCount].closed
-              entries[i].profitFactor = pf
-              entries[i].metadata = { ...entries[i].metadata, outcomePending: false, outcome: closed }
+              entries[i].profitFactor = performance.positionCostRatio
+              entries[i].metadata = {
+                ...entries[i].metadata,
+                outcomePending: false,
+                outcome: closed,
+                realizedProfitFactor: performance.classicProfitFactor,
+                averageMovePct: performance.averageMovePct,
+                positionCostRatio: performance.positionCostRatio,
+                positionCostPct: this.trendPositionCostPct,
+                profitFactorSource: "position_cost_relative_realized_outcomes",
+              }
               patchCount--
               patched = true
             }
@@ -1954,8 +2276,12 @@ export class IndicationSetsProcessor {
     } catch { /* non-critical */ }
   }
 
-  private evaluateForwardOutcome(marketData: any, direction: "long" | "short"): any {
-    const candles = this.getForwardCandles(marketData)
+  private evaluateForwardOutcome(
+    marketData: any,
+    direction: "long" | "short",
+    openedAt?: number,
+  ): any {
+    const candles = this.getForwardCandles(marketData, openedAt)
     if (candles.length < 2) return { completed: false, reason: "insufficient_forward_candles" }
     const entry = Number(marketData.executionPrice ?? candles[1].open ?? candles[1].close ?? candles[1].price)
     if (!Number.isFinite(entry) || entry <= 0) return { completed: false, reason: "invalid_entry_price" }
@@ -1977,15 +2303,32 @@ export class IndicationSetsProcessor {
     return { completed: true, entry, exit, reason, pnlPct: gross - cost, costPct: cost, horizonCandles: horizon }
   }
 
-  private getForwardCandles(marketData: any): any[] {
-    const raw = Array.isArray(marketData?.forwardCandles)
-      ? marketData.forwardCandles
-      : Array.isArray(marketData?.candles)
-      ? marketData.candles
-      : []
+  private getForwardCandles(marketData: any, openedAt?: number): any[] {
+    // A fresh calculation may only consume an explicitly supplied forward
+    // replay window. Treating the current historical candle array as
+    // "future" was look-ahead bias. Pending realtime samples may consume the
+    // normal candle stream, but only records timestamped at/after openedAt.
+    const raw = Number.isFinite(openedAt)
+      ? Array.isArray(marketData?.candles)
+        ? marketData.candles
+        : Array.isArray(marketData?.forwardCandles)
+          ? marketData.forwardCandles
+          : []
+      : Array.isArray(marketData?.forwardCandles)
+        ? marketData.forwardCandles
+        : []
     const candles = raw
       .map((c: any) => (typeof c === "number" ? { open: c, high: c, low: c, close: c } : c))
       .filter((c: any) => Number.isFinite(Number(c?.close ?? c?.price ?? c?.open)))
+      .filter((c: any) => {
+        if (!Number.isFinite(openedAt)) return true
+        const rawTimestamp = c?.timestamp ?? c?.time ?? c?.t
+        const numeric = Number(rawTimestamp)
+        const timestamp = Number.isFinite(numeric)
+          ? numeric < 10_000_000_000 ? numeric * 1_000 : numeric
+          : new Date(String(rawTimestamp || "")).getTime()
+        return Number.isFinite(timestamp) && timestamp >= Number(openedAt)
+      })
     if (candles.length < 2) return candles
     const firstTs = Number(candles[0]?.timestamp ?? candles[0]?.time ?? 0)
     const lastTs = Number(candles[candles.length - 1]?.timestamp ?? candles[candles.length - 1]?.time ?? 0)

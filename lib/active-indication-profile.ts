@@ -1,4 +1,13 @@
-export const INDICATION_PROFILE_TYPES = ["direction", "move", "active", "optimal", "auto", "signal", "trend"] as const
+export const INDICATION_PROFILE_TYPES = [
+  "direction",
+  "move",
+  "active",
+  "trend",
+  "optimal",
+  "auto",
+  "common",
+  "signal",
+] as const
 export type IndicationProfileType = (typeof INDICATION_PROFILE_TYPES)[number]
 
 export interface IndicationProfileParams {
@@ -11,23 +20,25 @@ export interface IndicationProfileParams {
 export type IndicationChannelProfile = Record<IndicationProfileType, IndicationProfileParams>
 
 export const DEFAULT_MAIN_INDICATION_PROFILE: IndicationChannelProfile = {
-  direction: { enabled: true,  range: 5,  timeout: 30, interval: 1 },
-  move:      { enabled: true,  range: 10, timeout: 30, interval: 1 },
-  active:    { enabled: true,  range: 15, timeout: 60, interval: 5 },
-  optimal:   { enabled: false, range: 20, timeout: 60, interval: 5 },
-  auto:      { enabled: false, range: 25, timeout: 90, interval: 15 },
-  signal:    { enabled: true,  range: 15, timeout: 60, interval: 1 },
-  trend:     { enabled: true,  range: 30, timeout: 60, interval: 1 },
+  direction: { enabled: true, range: 5,  timeout: 0.25, interval: 1 },
+  move:      { enabled: true, range: 10, timeout: 0.25, interval: 1 },
+  active:    { enabled: true, range: 15, timeout: 0.25, interval: 1 },
+  trend:     { enabled: true, range: 30, timeout: 0.25, interval: 1 },
+  optimal:   { enabled: true, range: 20, timeout: 0.25, interval: 1 },
+  auto:      { enabled: true, range: 25, timeout: 0.25, interval: 1 },
+  common:    { enabled: true, range: 30, timeout: 3,    interval: 1 },
+  signal:    { enabled: true, range: 15, timeout: 0.25, interval: 1 },
 }
 
 export const DEFAULT_PRESET_INDICATION_PROFILE: IndicationChannelProfile = {
-  direction: { enabled: true,  range: 8,  timeout: 45, interval: 1 },
-  move:      { enabled: true,  range: 12, timeout: 45, interval: 1 },
-  active:    { enabled: false, range: 20, timeout: 90, interval: 5 },
-  optimal:   { enabled: true,  range: 25, timeout: 90, interval: 5 },
-  auto:      { enabled: false, range: 30, timeout: 120, interval: 15 },
-  signal:    { enabled: true,  range: 15, timeout: 60, interval: 1 },
-  trend:     { enabled: false, range: 30, timeout: 120, interval: 5 },
+  direction: { enabled: true, range: 8,  timeout: 0.25, interval: 1 },
+  move:      { enabled: true, range: 12, timeout: 0.25, interval: 1 },
+  active:    { enabled: true, range: 20, timeout: 0.25, interval: 1 },
+  trend:     { enabled: true, range: 30, timeout: 0.25, interval: 1 },
+  optimal:   { enabled: true, range: 25, timeout: 0.25, interval: 1 },
+  auto:      { enabled: true, range: 30, timeout: 0.25, interval: 1 },
+  common:    { enabled: true, range: 30, timeout: 3,    interval: 1 },
+  signal:    { enabled: true, range: 15, timeout: 0.25, interval: 1 },
 }
 
 function bool(value: unknown, fallback: boolean): boolean {
@@ -53,7 +64,7 @@ export function normalizeIndicationProfile(
     out[type] = {
       enabled: bool(item.enabled, fallback[type].enabled),
       range: bounded(item.range, fallback[type].range, 1, 500),
-      timeout: bounded(item.timeout, fallback[type].timeout, 1, 3_600),
+      timeout: bounded(item.timeout, fallback[type].timeout, 0.05, 3_600),
       interval: bounded(item.interval, fallback[type].interval, 0.1, 3_600),
     }
   }

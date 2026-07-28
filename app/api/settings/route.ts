@@ -22,6 +22,11 @@ import {
   POSITION_COST_PERCENT_DEFAULT,
 } from "@/lib/position-cost"
 import { normalizeTrendTimeframesMinutes } from "@/lib/trend-indication"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+} from "@/lib/main-trade-profit-factor"
+import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "@/lib/pos-count-volume-ratio"
 
 /**
  * Fan out a "settings_changed" progression log event AND a settings-
@@ -103,6 +108,11 @@ const CHANNEL_VOLUME_FACTOR_KEYS = [
 
 function normalizePositionCostSettings<T extends Record<string, any>>(settings: T): T {
   const normalized: Record<string, any> = { ...settings }
+  // Retained for compatibility with older clients only. Base indication
+  // generation is always exhaustive across every integer step 2..30.
+  if (Object.prototype.hasOwnProperty.call(normalized, "minStep")) {
+    normalized.minStep = 2
+  }
 
   for (const key of POSITION_COST_KEYS) {
     if (normalized[key] === undefined || normalized[key] === null || normalized[key] === "") continue
@@ -170,21 +180,43 @@ function getDefaultSettings(): Record<string, any> {
     prehistoric_range_hours: 8,
     // Prehistoric progression timeout minutes (5-25, default 10)
     prehistoric_progression_timeout_minutes: 10,
+    // Exact-lane timing. The 250 ms indication cooldown is keyed by
+    // connection + symbol + type + name + complete config + direction; Base
+    // re-entry is independently keyed at 3 seconds after that exact Set closes.
+    validationTimeoutSeconds: 0.25,
+    indicationTimeoutMs: 250,
+    positionCooldownMs: 3000,
+    maxPositionsPerConfigDirection: 1,
+    maxPositionsLong: 1,
+    maxPositionsShort: 1,
     // P0-4 spec cap — hard cap on concurrent pseudo positions per direction
     // (Long / Short). Kept in the defaults so fresh installs boot with the
     // spec-mandated value instead of an undefined sentinel.
     maxActiveBasePseudoPositionsPerDirection: 1,
-    // Strategy pipeline ceilings. Seeded here so fresh installs expose the
-    // same limits the coordinator enforces in production.
+    minStep: 2,
+    // Strategy retention/scheduling controls. Main batching never truncates
+    // the exhaustive position-count configuration space.
     strategyMaxEntriesPerSet: 250,
-    strategyMainAxisSetsCeiling: 20,
-    strategyRealSetsSafetyCeiling: 25,
-    maxRealSets: 25,
-    strategyLiveSetsCeiling: 90,
+    strategyMainAxisBatchSize: 8,
+    strategyRealSetsSafetyCeiling: 5000,
+    maxRealSets: 5000,
+    strategyLiveSetsCeiling: 500,
+    baseProfitFactor: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+    mainProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+    realProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+    liveProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+    maxDrawdownTimeMainHours: 4,
+    maxDrawdownTimeRealHours: 4,
+    maxDrawdownTimeLiveHours: 4,
+    mainEvalPosCount: 25,
+    realEvalPosCount: 20,
+    posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
     strategyBaseTrailingEnabled: true,
     strategyBaseTrailingVariants: DEFAULT_TRAILING_VARIANTS,
     blockAdjustment: true,
     variantBlockEnabled: true,
+    blockOnly: true,
+    variantBlockOnly: true,
     blockVolumeRatio: 1,
     blockProfitFactorRatio: 0.8,
     presetBlockProfitFactorRatio: 0.8,
@@ -198,17 +230,16 @@ function getDefaultSettings(): Record<string, any> {
     activeAdvancedEnabled: true,
     optimalEnabled: true,
     autoEnabled: true,
-    // Balanced sparse grids are the production default. Operators can enter
-    // every step explicitly in Settings without forcing every fresh install
-    // into the legacy 29-range Cartesian product.
-    indicationSampleRanges: [2, 5, 10, 20, 30],
-    optimalSampleRanges: [2, 5, 10, 20, 30],
+    // Exhaustive inclusive range grids. Bounded concurrency controls runtime
+    // pressure; the configured indicator space itself is never sampled.
+    indicationSampleRanges: Array.from({ length: 29 }, (_, index) => index + 2),
+    optimalSampleRanges: Array.from({ length: 29 }, (_, index) => index + 2),
     indicationDrawdownRatios: [0.5, 1, 1.5],
     indicationLastPartRatios: [0.25, 0.5],
-    indicationFactorMultipliers: [1],
-    activeThresholds: [0.5, 1.5, 2.5],
+    indicationFactorMultipliers: [0.9, 1, 1.1],
+    activeThresholds: [0.5, 1, 1.5, 2, 2.5],
     activeTimeRatios: [0.5, 1],
-    activeAdvancedActivityRatios: [0.5, 1.5, 3],
+    activeAdvancedActivityRatios: [0.5, 1, 1.5, 2, 2.5, 3],
     activeAdvancedMinPositions: 3,
     activeAdvancedContinuationRatio: 0.6,
     defaultCoordinationEnabled: true,

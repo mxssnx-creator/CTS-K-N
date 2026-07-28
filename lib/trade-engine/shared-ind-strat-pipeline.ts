@@ -31,7 +31,6 @@
  *
  * ── Phase order per symbol per cycle ──────────────────────────────────
  *   Phase 1   processIndication(symbol, asOfMs?)            (both modes)
- *   Phase 1b  setsProcessor.processAllIndicationSets         (replay)
  *   Phase 2   updateOpenPseudoPositionsForSymbol            (realtime)
  *   Phase 3   processStrategy(symbol, indications)          (both modes,
  *             gated on indicationCount > 0)
@@ -105,9 +104,10 @@ export interface PipelineDeps {
  * Run one full per-symbol pipeline pass. Errors are isolated to the
  * result object — they never propagate so the caller's loop survives.
  */
-// Per-phase deadline: each individual phase gets its own timeout so one
-// slow Redis call in Phase 1 never wedges all 8 symbols for 120s.
-// Phase budgets: Phase1=20s, Phase2=8s, Phase3=25s (well under the 120s outer deadline).
+// Phase 1 and Phase 3 can legitimately enumerate large operator-defined
+// configuration spaces. Their runtime thresholds are diagnostics only; the
+// owning generation guard is the cancellation mechanism. Phase 2 remains
+// bounded because it is exchange/network I/O rather than Cartesian work.
 function withPhaseTimeout<T>(work: Promise<T>, label: string, ms: number): Promise<T> {
   // When ms=Infinity, skip the timeout entirely — the outer cycle deadline
   // (engine-manager) is the correct bound. setTimeout(fn, Infinity) would fire
@@ -179,12 +179,13 @@ export async function runIndStratCycle(
     // ── Phase 1: Indication evaluation (UNIFIED) ──────────────────────
     // One method, both modes. asOfMs threads through to control which
     // candle slice and emission timestamp the processor uses.
-    // Hard per-phase timeout of 20s — prevents one stuck Redis fetch from
-    // blocking all other symbols until the outer 120s deadline fires.
+    // Exhaustive calculation has no fixed completion timeout. A fixed 20s
+    // Promise.race discarded a valid completed snapshot while its underlying
+    // work continued, making Base/Stats look partially populated.
     const indications = await withPhaseTimeout(
       deps.indication.processIndication(symbol, deps.asOfMs, shouldContinue),
       `Phase1/processIndication/${symbol}`,
-      20_000,
+      Infinity,
     ).catch((err) => {
         console.error(
           `[v0] [SharedPipeline] processIndication failed for ${symbol} (mode=${mode}, asOfMs=${deps.asOfMs ?? "now"}):`,
@@ -210,25 +211,10 @@ export async function runIndStratCycle(
     await yieldPipelineEventLoop()
     if (!shouldContinue()) return result
 
-    // ── Phase 1b: Sets-fill (replay only) ─────────────────────────────
-    // The shared `indication_set:*` keyspace is the bridge between the
-    // two loops. Realtime reads it on every live tick; only Prehistoric
-    // writes to it, and only on replay steps where we have an explicit
-    // candle to attribute.
-    if (mode === "historical" && deps.asOfCandle) {
-      if (!shouldContinue()) return result
-      const setsProc = deps.setsProcessor ?? new IndicationSetsProcessor(connectionId)
-      await setsProc
-        .processAllIndicationSets(symbol, deps.asOfCandle)
-        .catch((err) => {
-          console.warn(
-            `[v0] [SharedPipeline] Sets-fill warning for ${symbol} @${deps.asOfMs}:`,
-            err instanceof Error ? err.message : String(err),
-          )
-        })
-      await yieldPipelineEventLoop()
-      if (!shouldContinue()) return result
-    }
+    // Phase 1 now materialises and returns the exact Set snapshot in both
+    // realtime and replay modes. A second replay-only fill here used to
+    // calculate and write every Cartesian row twice while Strategy consumed
+    // only the reduced Phase-1 array.
 
     // ── Phase 2: Open pseudo position handling (REALTIME ONLY) ────────
     // Backdated candles must NEVER reach the pseudo-position close

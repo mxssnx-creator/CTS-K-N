@@ -21,10 +21,9 @@ function parseCommonSettings(raw: string | null): unknown {
 /**
  * Returns counts from the same grids that `IndicationSetsProcessor` evaluates.
  *
- * `possibleSets` is durable Long/Short set capacity. Runtime-only Common and
- * Auto calculations intentionally report zero durable sets and instead expose
- * `evaluationConfigurations`, so the dashboard cannot mistake per-cycle
- * calculations for independent position databases.
+ * `possibleSets` is durable Long/Short set capacity. Default, Additional,
+ * Common and Signal configurations all retain exact independent identities;
+ * only the coordinated Auto aggregate is runtime-only.
  */
 export async function GET() {
   try {

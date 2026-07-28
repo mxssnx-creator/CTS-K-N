@@ -730,6 +730,7 @@ export function ConnectionInfoDialog({ open, onOpenChange, connectionId, connect
     const strategyTrackingCounts = asRecord(breakdown.strategies)
     const indicationTrackingCounts = asRecord(breakdown.indications)
     const strategyDetail = asRecord(stats.strategyDetail)
+    const strategyRows = asRecord(stats.strategyRows)
     const stageEvalPercent = asRecord(stats.stageEvalPercent)
 
     return {
@@ -752,6 +753,7 @@ export function ConnectionInfoDialog({ open, onOpenChange, connectionId, connect
       strategyTrackingCounts,
       indicationTrackingCounts,
       strategyDetail,
+      strategyRows,
       stageEvalPercent,
     }
   }, [info])
@@ -1065,6 +1067,22 @@ export function ConnectionInfoDialog({ open, onOpenChange, connectionId, connect
 
                 <TabsContent value="strategies" className="m-0 space-y-4">
                   <SectionPanel title="Stage coordination" description="Active Sets, evaluated entries, bounded pass ratios, and profitability metrics by pipeline stage." icon={<Layers3 className="h-4 w-4" />}>
+                    <div className="mb-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                      {[
+                        ["Base", asRecord(derived.strategyRows.base), "Total", "total", "Valid", "valid"],
+                        ["Main", asRecord(derived.strategyRows.main), "Valid", "valid", "Overall", "overall"],
+                        ["Row-Real", asRecord(derived.strategyRows.real), "Valid", "valid", "Active", "active"],
+                        ["Row-Live", asRecord(derived.strategyRows.live), "Rows", "total", "Mirrored", "mirrored"],
+                      ].map(([label, row, firstLabel, firstKey, secondLabel, secondKey]) => (
+                        <div key={String(label)} className="rounded-xl border bg-primary/[0.025] p-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{String(label)}</p>
+                          <div className="mt-2 grid grid-cols-2 gap-2">
+                            <div><p className="text-[9px] text-muted-foreground">{String(firstLabel)}</p><p className="font-mono text-lg">{formatNumber(asRecord(row)[String(firstKey)], 0)}</p></div>
+                            <div><p className="text-[9px] text-muted-foreground">{String(secondLabel)}</p><p className="font-mono text-lg">{formatNumber(asRecord(row)[String(secondKey)], 0)}</p></div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                       {STRATEGY_STAGES.map((stage) => {
                         const detail = asRecord(derived.strategyDetail[stage])

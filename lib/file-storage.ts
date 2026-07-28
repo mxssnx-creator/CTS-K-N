@@ -1,5 +1,7 @@
 import fs from "fs"
 import path from "path"
+import { DEFAULT_MAIN_INDICATION_SETTINGS } from "@/lib/main-indication-settings"
+import { DEFAULT_COMMON_INDICATION_SETTINGS } from "@/lib/common-indicator-config"
 
 const DATA_DIR =
   process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME
@@ -649,130 +651,18 @@ function getDefaultSettings(): Settings {
 }
 
 function getDefaultMainIndicationSettings(): MainIndicationSettings {
-  return {
-    direction: {
-      enabled: true,
-      range: { from: 3, to: 30, step: 1 },
-      drawdown_ratio: { from: 0.1, to: 0.5, step: 0.1 },
-      market_change_range: { from: 1, to: 10, step: 2 }, // 5 variations: 1, 3, 5, 7, 9
-      market_change_lastpart_base: 20, // 20% = 0.2 ratio
-      market_change_lastpart_ratios: { from: 1.0, to: 2.5, step: 0.5 }, // 1.0, 1.5, 2.0, 2.5 (4 variations)
-      min_calculation_time: 3, // 3 seconds minimum
-      interval: 1,
-      timeout: 3,
-    },
-    move: {
-      enabled: true,
-      range: { from: 3, to: 30, step: 1 },
-      drawdown_ratio: { from: 0.1, to: 0.5, step: 0.1 },
-      market_change_range: { from: 1, to: 10, step: 2 }, // 5 variations: 1, 3, 5, 7, 9
-      market_change_lastpart_base: 20, // 20% = 0.2 ratio
-      market_change_lastpart_ratios: { from: 1.0, to: 2.5, step: 0.5 }, // 1.0, 1.5, 2.0, 2.5 (4 variations)
-      min_calculation_time: 3, // 3 seconds minimum
-      interval: 1,
-      timeout: 3,
-    },
-    active: {
-      enabled: false,
-      range: { from: 1, to: 10, step: 1 },
-      activity_calculated: { from: 10, to: 90, step: 10 },
-      activity_lastpart: { from: 10, to: 90, step: 10 },
-      market_change_range: { from: 1, to: 10, step: 1 }, // 10 variations: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
-      market_change_lastpart_base: 20, // 20% = 0.2 ratio
-      market_change_lastpart_ratios: { from: 1.0, to: 2.5, step: 0.5 }, // 1.0, 1.5, 2.0, 2.5 (4 variations)
-      interval: 1,
-      timeout: 3,
-      min_calculation_time: 3,
-    },
-    optimal: {
-      enabled: false,
-      range: { from: 3, to: 30, step: 1 },
-      drawdown_ratio: { from: 0.1, to: 0.5, step: 0.1 },
-      market_change_range: { from: 1, to: 10, step: 2 },
-      market_change_lastpart_base: 20,
-      market_change_lastpart_ratios: { from: 1.0, to: 2.5, step: 0.5 },
-      min_calculation_time: 3,
-      base_positions_limit: 250,
-      interval: 1,
-      timeout: 3,
-      // Performance thresholds
-      initial_min_win_rate: 0.4,
-      expanded_min_win_rate: 0.45,
-      expanded_min_profit_ratio: 1.2,
-      production_min_win_rate: 0.42,
-      production_max_drawdown: 0.3,
-    },
-  }
+  // Recovery/diagnostic storage must not reintroduce a smaller sampled grid.
+  return JSON.parse(JSON.stringify(
+    DEFAULT_MAIN_INDICATION_SETTINGS,
+  )) as unknown as MainIndicationSettings
 }
 
 function getDefaultCommonIndicationSettings(): CommonIndicationSettings {
-  return {
-    rsi: {
-      enabled: false,
-      period: { from: 8, to: 20, step: 1 },
-      overbought: { from: 65, to: 80, step: 1 },
-      oversold: { from: 20, to: 35, step: 1 },
-      interval: 1,
-      timeout: 3,
-    },
-    macd: {
-      enabled: false,
-      fastPeriod: { from: 8, to: 16, step: 1 },
-      slowPeriod: { from: 20, to: 32, step: 1 },
-      signalPeriod: { from: 6, to: 12, step: 1 },
-      interval: 1,
-      timeout: 3,
-    },
-    bollinger: {
-      enabled: true,
-      period: { from: 14, to: 26, step: 1 },
-      stdDev: { from: 1.5, to: 2.5, step: 0.1 },
-      interval: 1,
-      timeout: 3,
-    },
-    ema: {
-      enabled: true,
-      period: { from: 8, to: 50, step: 2 },
-      interval: 1,
-      timeout: 3,
-    },
-    sma: {
-      enabled: true,
-      period: { from: 10, to: 50, step: 2 },
-      interval: 1,
-      timeout: 3,
-    },
-    stochastic: {
-      enabled: true,
-      kPeriod: { from: 10, to: 18, step: 1 },
-      dPeriod: { from: 2, to: 6, step: 1 },
-      overbought: { from: 75, to: 85, step: 1 },
-      oversold: { from: 15, to: 25, step: 1 },
-      interval: 1,
-      timeout: 3,
-    },
-    atr: {
-      enabled: true,
-      period: { from: 10, to: 18, step: 1 },
-      multiplier: { from: 1.5, to: 3.0, step: 0.1 },
-      interval: 1,
-      timeout: 3,
-    },
-    parabolicSAR: {
-      enabled: true,
-      acceleration: { from: 0.012, to: 0.024, step: 0.001 },
-      maximum: { from: 0.12, to: 0.24, step: 0.01 },
-      interval: 1,
-      timeout: 3,
-    },
-    adx: {
-      enabled: true,
-      period: { from: 10, to: 18, step: 1 },
-      threshold: { from: 20, to: 30, step: 1 },
-      interval: 1,
-      timeout: 3,
-    },
-  }
+  // All official Common types use the same canonical parameter grids and
+  // independent three-second Set timeout as the Redis/Main engine path.
+  return JSON.parse(JSON.stringify(
+    DEFAULT_COMMON_INDICATION_SETTINGS,
+  )) as unknown as CommonIndicationSettings
 }
 
 export async function exportConnectionsToFile() {

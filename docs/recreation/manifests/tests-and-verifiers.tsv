@@ -29,6 +29,7 @@ performance	scripts/stress-bingx-public-32.mjs
 performance	scripts/verify-prod-soak.mjs
 regression	scripts/regression/live-stage-simulated-protection.test.ts
 unit	__tests__/unit/admin-auth.test.ts
+unit	__tests__/unit/advanced-config-exhaustive.test.ts
 unit	__tests__/unit/balanced-config-selection.test.ts
 unit	__tests__/unit/base-position-batch-coordination.test.ts
 unit	__tests__/unit/base-stage-concurrency.test.ts
@@ -59,11 +60,13 @@ unit	__tests__/unit/exchange-force-simulated.test.ts
 unit	__tests__/unit/historic-candle-window.test.ts
 unit	__tests__/unit/indication-configuration-counts.test.ts
 unit	__tests__/unit/indication-connection-selection.test.ts
+unit	__tests__/unit/indication-lane-identity.test.ts
 unit	__tests__/unit/inline-local-redis.test.ts
 unit	__tests__/unit/install-deployment-contract.test.ts
 unit	__tests__/unit/live-order-coordination.test.ts
 unit	__tests__/unit/live-pos-count-target.test.ts
 unit	__tests__/unit/live-position-actions.test.ts
+unit	__tests__/unit/live-position-analytics-archive.test.ts
 unit	__tests__/unit/live-position-lineage-index.test.ts
 unit	__tests__/unit/live-position-read-model.test.ts
 unit	__tests__/unit/live-position-stats-sources.test.ts
@@ -77,6 +80,7 @@ unit	__tests__/unit/live-trading-dashboard-contract.test.ts
 unit	__tests__/unit/logistics-workflow.test.ts
 unit	__tests__/unit/main-indication-settings.test.ts
 unit	__tests__/unit/main-live-trade-readiness.test.ts
+unit	__tests__/unit/main-trade-profit-factor.test.ts
 unit	__tests__/unit/multi-range-coordination.test.ts
 unit	__tests__/unit/navigation-contract.test.ts
 unit	__tests__/unit/no-fixed-sleeps-regression.test.ts
@@ -84,6 +88,7 @@ unit	__tests__/unit/orders-market-notional.test.ts
 unit	__tests__/unit/orders-route-concurrency.test.ts
 unit	__tests__/unit/performance-profiler.test.ts
 unit	__tests__/unit/pnl-stats-route.test.ts
+unit	__tests__/unit/pos-count-volume-ratio.test.ts
 unit	__tests__/unit/position-flow-calculations.test.ts
 unit	__tests__/unit/prehistoric-runtime-stability.test.ts
 unit	__tests__/unit/preset-optimizer.test.ts
@@ -110,6 +115,7 @@ unit	__tests__/unit/settings-continuity.test.ts
 unit	__tests__/unit/settings-hot-reload.test.ts
 unit	__tests__/unit/settings-propagation.test.ts
 unit	__tests__/unit/signal-analytics.test.ts
+unit	__tests__/unit/signal-config-matrix.test.ts
 unit	__tests__/unit/signal-indication.test.ts
 unit	__tests__/unit/signal-position-policy.test.ts
 unit	__tests__/unit/signal-source-registry.test.ts

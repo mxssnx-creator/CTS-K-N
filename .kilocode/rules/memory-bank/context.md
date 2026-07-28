@@ -647,3 +647,32 @@ credentials are present.
   and hard server-side minimum. The normalized interval controls both source
   fetch and complete-cycle caches, hot-reloads through the existing Signal
   settings API, and safely migrates legacy millisecond cache values.
+
+## Session 2026-07-28 — exhaustive indication and stage-release hardening
+
+- [x] Released the complete, non-sampling indication topology: Direction,
+  Move, Active, Advanced, Optimal, Trend, Common and Signal now report every
+  valid configuration identity. Signal keeps independent
+  source × symbol × direction × TP/SL/trailing cells, while Common preserves
+  each indicator parameter tuple and 1/5/15/30-minute timeframe.
+- [x] Compact Signal storage now uses bounded source hashes instead of one
+  Redis list key per logical configuration, with backward-compatible reads and
+  incremental legacy cleanup. The full 12-symbol/35-source production soak
+  completed with a bounded keyspace, 4,199,040 evaluations, 532 ms API p95,
+  monotonic progress/restart recovery and zero real order requests.
+- [x] Repaired Base → Main → Real → Live lineage and readiness semantics,
+  including Main-enabled Signal execution, exact identity history, independent
+  Pos-Count targets and the 10:0.03 Pos-Count volume ratio. The settings UI
+  exposes complete stage controls and keeps Trend as the final indication tab.
+- [x] Preserved one physical Direction parent for source-scoped Signal Block
+  adjustments while allowing ordinary Block-only lanes to seed and recover
+  their own parent. Explicit Consensus and direct-source outcomes now update
+  only their exact lane; legacy outcomes retain source-plus-consensus
+  accounting.
+- [x] Added schema v88 compatibility/migration coverage, browser-safe
+  indication-topology counting, deterministic bounded build tracing, and the
+  missing `ts-node` test-runtime dependency; Vercel is pinned to 54.18.0.
+- [x] Final release checks: 121 Jest suites / 829 tests, TypeScript, ESLint,
+  Kilo preflight (37 checks, schema 88), secret scan (1,266 files, zero
+  findings), offline frozen pnpm install, recreation-manifest verification,
+  and a production Next build with 41/41 pages and 339 complete server traces.

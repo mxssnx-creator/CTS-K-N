@@ -61,9 +61,6 @@ import {
   finiteMetric,
   nonNegativeMetric,
 } from "@/lib/dashboard-metrics"
-import { OrderSettingsPanel } from "@/components/dashboard/order-settings-panel"
-import { MainTradeCard } from "@/components/dashboard/main-trade-card"
-import { PresetTradeCard } from "@/components/dashboard/preset-trade-card"
 import type { Connection } from "@/lib/db-types"
 import type { ActiveConnection } from "@/lib/active-connections"
 import { toast } from "@/lib/simple-toast"
@@ -124,6 +121,10 @@ function getProgressionCacheKey(connectionId: string): string | null {
 const toBoolean = (value: unknown): boolean => value === true || value === 1 || value === "1" || value === "true" || value === "yes" || value === "on"
 const liveTradeUiFlag = (details: any): boolean =>
   toBoolean(details?.live_trade_requested) || toBoolean(details?.is_live_trade)
+const signalTradeUiFlag = (details: any): boolean =>
+  toBoolean(details?.signal_trade_requested) ||
+  toBoolean(details?.signal_trade_enabled) ||
+  toBoolean(details?.is_signal_trade)
 
 interface ActiveConnectionCardProps {
   connection: ActiveConnection & { details?: Connection }
@@ -212,11 +213,18 @@ export function ActiveConnectionCard({
     base: number
     main: number
     real: number
+    live: number
+  } | null>(null)
+  const [strategyRows, setStrategyRows] = useState<{
+    base: { total: number; valid: number }
+    main: { valid: number; overall: number }
+    real: { valid: number; active: number }
+    live: { total: number; mirrored: number; active: number }
   } | null>(null)
   const [infoDialogOpen, setInfoDialogOpen] = useState(false)
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const [logsDialogOpen, setLogsDialogOpen] = useState(false)
-  // Seed live-trade / preset switches from the connection prop so they
+  // Seed live-trade / preset / signal switches from the connection prop so they
   // render correctly on first mount before the engine-states poll fires.
   // The poll (every 3–8 s) then corrects any drift against the DB flag.
   const toInitBool = (v: unknown) =>
@@ -228,13 +236,18 @@ export function ActiveConnectionCard({
     toInitBool((connection.details as any)?.preset_trade_requested) ||
     toInitBool((connection.details as any)?.is_preset_trade)
   )
+  const [signalMode, setSignalMode] = useState(() =>
+    signalTradeUiFlag(connection.details as any)
+  )
   const [liveTradeLoading, setLiveTradeLoading] = useState(false)
   const [presetModeLoading, setPresetModeLoading] = useState(false)
+  const [signalModeLoading, setSignalModeLoading] = useState(false)
   // Refs that mirror the loading states — mutated synchronously so the
   // engine-states poller (a closure captured at effect-mount time) can
   // read the current value without stale-closure issues.
   const liveTradeLoadingRef  = useRef(false)
   const presetModeLoadingRef = useRef(false)
+  const signalModeLoadingRef = useRef(false)
   const [liveVolumeFactor, setLiveVolumeFactor] = useState(1)
   const [presetVolumeFactor, setPresetVolumeFactor] = useState(1)
   const [signalVolumeFactor, setSignalVolumeFactor] = useState(1)
@@ -244,10 +257,6 @@ export function ActiveConnectionCard({
   const signalVolumeFactorRef = useRef(MIN_VOLUME_FACTOR)
   const volumeStepRatioRef = useRef(DEFAULT_VOLUME_STEP_RATIO)
   const volumeSaveSequenceRef = useRef({ live: 0, preset: 0, signal: 0, step: 0 })
-  const [orderType, setOrderType] = useState<"market" | "limit">("market")
-  const [volumeType, setVolumeType] = useState<"usdt" | "contract">("usdt")
-  const [mainTradeStatus, setMainTradeStatus] = useState<"idle" | "active" | "paused" | "stopped">("idle")
-  const [presetTradeStatus, setPresetTradeStatus] = useState<"idle" | "active" | "paused" | "stopped">("idle")
   // Live engine-stats counters displayed under the progress bar
   // Ref to current phase — used inside stable interval callback to avoid recreating on every phase change
   const progressionFetchSeqRef = useRef(0)
@@ -260,6 +269,20 @@ export function ActiveConnectionCard({
     indications: number
     strategies: number
     positions: number
+  } | null>(null)
+  const [signalOverview, setSignalOverview] = useState<{
+    openPositions: number
+    closedPositions: number
+    maxPositionsTotal: number
+    standardClosedPositions: number
+    trailingClosedPositions: number
+    positions12: {
+      trades: number
+      profitFactor: number | null
+      infiniteProfitFactor: boolean
+      netPnl: number
+      drawdownHours: number
+    }
   } | null>(null)
   const [prehistoricStats, setPrehistoricStats] = useState<{
     // Indication breakdown
@@ -399,6 +422,15 @@ export function ActiveConnectionCard({
       blockCode?: string | null
       blockReason?: string
     }
+    signal:  {
+      flag: boolean
+      effective?: boolean
+      running: boolean
+      inSync: boolean
+      executionMode?: "live" | "blocked" | "simulation"
+      blockCode?: string | null
+      blockReason?: string
+    }
   } | null>(null)
   const details = connection.details
 
@@ -407,6 +439,7 @@ export function ActiveConnectionCard({
     if (details) {
       setLiveTrade(liveTradeUiFlag(details))
       setPresetMode(toBoolean(details.preset_trade_requested) || toBoolean(details.is_preset_trade))
+      setSignalMode(signalTradeUiFlag(details))
       const nextLiveFactor = normalizeIdentityVolumeFactor(details.live_volume_factor)
       const nextPresetFactor = normalizeIdentityVolumeFactor(details.preset_volume_factor)
       const nextSignalFactor = normalizeIdentityVolumeFactor(details.signal_volume_factor)
@@ -419,12 +452,11 @@ export function ActiveConnectionCard({
       setPresetVolumeFactor(nextPresetFactor)
       setSignalVolumeFactor(nextSignalFactor)
       setVolumeStepRatio(nextStepRatio)
-      setOrderType(details.order_type as "market" | "limit" || "market")
-      setVolumeType(details.volume_type as "usdt" | "contract" || "usdt")
     }
   }, [details])
 
-  // Poll per-connection engine-states endpoint so the Enable / Live / Preset
+  // Poll per-connection engine-states endpoint so the Enable / Live / Preset /
+  // Signal switches stay in sync with actual engine state.
   // sliders stay in sync with actual engine state. Uses a self-scheduling
   // timeout that picks a faster cadence when the connection is marked active.
   useEffect(() => {
@@ -446,6 +478,7 @@ export function ActiveConnectionCard({
           enabled: data.enabled,
           live:    data.live,
           preset:  data.preset,
+          signal:  data.signal,
         })
         // Re-sync local toggle state to the DB flag (authoritative) so drift
         // is corrected on every poll cycle. Guard: skip the write while a
@@ -458,6 +491,9 @@ export function ActiveConnectionCard({
         }
         if (typeof data?.preset?.flag === "boolean" && !presetModeLoadingRef.current) {
           setPresetMode(data.preset.flag)
+        }
+        if (typeof data?.signal?.flag === "boolean" && !signalModeLoadingRef.current) {
+          setSignalMode(data.signal.flag)
         }
       } catch {
         /* non-critical polling */
@@ -732,6 +768,28 @@ export function ActiveConnectionCard({
             base: boundedPercentage(tracking.stageEvalPercent.base),
             main: boundedPercentage(tracking.stageEvalPercent.main),
             real: boundedPercentage(tracking.stageEvalPercent.real),
+            live: boundedPercentage(tracking.stageEvalPercent.live),
+          })
+        }
+        if (tracking?.rows) {
+          setStrategyRows({
+            base: {
+              total: nonNegativeMetric(tracking.rows.base?.total),
+              valid: nonNegativeMetric(tracking.rows.base?.valid),
+            },
+            main: {
+              valid: nonNegativeMetric(tracking.rows.main?.valid),
+              overall: nonNegativeMetric(tracking.rows.main?.overall),
+            },
+            real: {
+              valid: nonNegativeMetric(tracking.rows.real?.valid),
+              active: nonNegativeMetric(tracking.rows.real?.active),
+            },
+            live: {
+              total: nonNegativeMetric(tracking.rows.live?.total),
+              mirrored: nonNegativeMetric(tracking.rows.live?.mirrored),
+              active: nonNegativeMetric(tracking.rows.live?.active),
+            },
           })
         }
       }
@@ -891,13 +949,51 @@ export function ActiveConnectionCard({
       const requestSeq = ++liveStatsFetchSeqRef.current
       try {
         // Use canonical stats endpoint — same source as progression info, per-connection
-        const res = await fetch(
-          `/api/connections/progression/${connection.connectionId}/stats`,
-          { cache: "no-store" }
-        )
+        const [res, signalRes] = await Promise.all([
+          fetch(
+            `/api/connections/progression/${connection.connectionId}/stats`,
+            { cache: "no-store" },
+          ),
+          signalMode
+            ? fetch(
+                `/api/statistics/indications?connectionId=${encodeURIComponent(connection.connectionId)}`,
+                { cache: "no-store" },
+              )
+            : Promise.resolve(null),
+        ])
         if (!res.ok) return
-        const data = await res.json()
+        const [data, signalData] = await Promise.all([
+          res.json(),
+          signalRes?.ok ? signalRes.json() : Promise.resolve(null),
+        ])
         if (requestSeq !== liveStatsFetchSeqRef.current) return
+        if (signalData?.success && signalData?.signal) {
+          const positions12 = signalData.signal.windows?.positions12 || {}
+          setSignalOverview({
+            openPositions: nonNegativeMetric(signalData.signal.counts?.openPositions),
+            closedPositions: nonNegativeMetric(signalData.signal.counts?.closedPositions),
+            maxPositionsTotal: nonNegativeMetric(signalData.signal.settings?.maxPositionsTotal),
+            standardClosedPositions: nonNegativeMetric(
+              signalData.signal.counts?.standardClosedPositions,
+            ),
+            trailingClosedPositions: nonNegativeMetric(
+              signalData.signal.counts?.trailingClosedPositions,
+            ),
+            positions12: {
+              trades: nonNegativeMetric(positions12.trades),
+              profitFactor:
+                positions12.profitFactor === null ||
+                !Number.isFinite(Number(positions12.profitFactor))
+                  ? null
+                  : Number(positions12.profitFactor),
+              infiniteProfitFactor: positions12.infiniteProfitFactor === true,
+              netPnl: finiteMetric(positions12.netPnl),
+              drawdownHours: nonNegativeMetric(positions12.drawdown?.maxDurationHours),
+            },
+          })
+        } else if (signalMode) {
+          setSignalOverview(null)
+        }
         // Cycles label in the header should report the real interval-
         // frame count — every loop tick the indication processor fired
         // since the engine started — NOT the "live cycle" subset that
@@ -1103,7 +1199,13 @@ export function ActiveConnectionCard({
     return () => {
       window.clearInterval(liveStatsPollInterval)
     }
-  }, [globalEngineRunning, connection.connectionId, connection.isActive, dashboardEventRefreshKey])
+  }, [
+    globalEngineRunning,
+    connection.connectionId,
+    connection.isActive,
+    dashboardEventRefreshKey,
+    signalMode,
+  ])
 
   // Handle Live Trade toggle ��� no longer gated on connection.isActive:
   // the /live-trade route auto-starts the engine when Live is turned on,
@@ -1203,6 +1305,84 @@ export function ActiveConnectionCard({
     }
   }
 
+  // Signal Trade is an independent execution intent. It can start the shared
+  // engine without enabling Main or Preset execution, and its requested state
+  // remains visible when exchange readiness blocks real order placement.
+  const handleSignalModeToggle = async (newState: boolean) => {
+    const previousState = signalMode
+    setSignalMode(newState)
+    signalModeLoadingRef.current = true
+    setSignalModeLoading(true)
+    try {
+      const res = await fetch(`/api/settings/connections/${connection.connectionId}/signal-toggle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_signal_trade: newState }),
+        cache: "no-store",
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.success) {
+        const requestedState =
+          typeof data.signal_trade_requested === "boolean"
+            ? data.signal_trade_requested
+            : newState
+        const effectiveState =
+          typeof data.is_signal_trade === "boolean"
+            ? data.is_signal_trade
+            : requestedState
+        setSignalMode(requestedState)
+        if (requestedState && !effectiveState) {
+          toast.warning(
+            `Signal Trade blocked: ${
+              data.signal_trade_blocked_reason ||
+              "production exchange requirements are not satisfied"
+            }`,
+          )
+        } else {
+          toast.success(requestedState ? "Signal Trade engine starting..." : "Signal Trade stopped")
+        }
+        dispatchConnectionMutationEvents(buildConnectionMutationEventDetail(data, {
+          connectionId: connection.connectionId,
+          connection: { id: connection.connectionId, name: connection.exchangeName },
+          engine: {
+            action: requestedState ? "start" : "stop",
+            status: data.engineStatus,
+          },
+          source: "active-connection-card.signalTrade",
+        }))
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("signal-trade-toggled", {
+            detail: {
+              connectionId: connection.connectionId,
+              newState: requestedState,
+              effectiveState,
+            },
+          }))
+          window.dispatchEvent(new CustomEvent("connection-settings-updated", {
+            detail: {
+              connectionId: connection.connectionId,
+              settings: {
+                is_signal_trade: effectiveState,
+                signal_trade_enabled: effectiveState,
+                signal_trade_requested: requestedState,
+                is_enabled_dashboard: effectiveState ? true : undefined,
+              },
+            },
+          }))
+        }
+      } else {
+        setSignalMode(previousState)
+        toast.error(data.error || "Failed to toggle Signal Trade")
+      }
+    } catch {
+      setSignalMode(previousState)
+      toast.error("Failed to toggle Signal Trade")
+    } finally {
+      signalModeLoadingRef.current = false
+      setSignalModeLoading(false)
+    }
+  }
+
   const phase = progression?.phase || "idle"
   // Override the engine's coarse phase progress with the live prehistoric
   // symbols-processed percent while we're in `prehistoric_data`. The
@@ -1257,6 +1437,8 @@ export function ActiveConnectionCard({
             ? { label: "Ready", className: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300" }
             : { label: "Off", className: "text-muted-foreground" }
 
+  const signalOnlyOverview = signalMode && !liveTrade && !presetMode
+
   const renderOverviewTiles = () => {
     const symbolsProcessed = progression?.prehistoricProgress?.symbolsProcessed ?? 0
     const symbolsTotal = progression?.prehistoricProgress?.symbolsTotal ?? 0
@@ -1269,6 +1451,76 @@ export function ActiveConnectionCard({
       finiteMetric(prehistoricStats?.liveAggUnrealizedPnl) +
       finiteMetric(prehistoricStats?.liveTotalPnl)
     const tiles: Array<{ label: string; value: string | number; title?: string; tone?: string }> = []
+
+    if (signalOnlyOverview) {
+      const metric = signalOverview?.positions12
+      const pf = metric?.trades
+        ? metric.infiniteProfitFactor
+          ? "∞"
+          : metric.profitFactor === null
+            ? "—"
+            : metric.profitFactor.toFixed(2)
+        : "—"
+      tiles.push(
+        {
+          label: "Signal cycles",
+          value: liveStats?.indicationCycles ?? 0,
+          title: "Realtime indication cycles that drive the independent Signal engine.",
+        },
+        {
+          label: "Signals",
+          value: prehistoricStats?.indicationsSignal ?? 0,
+          title: "Current Signal indication rows only; Main indication types are excluded.",
+        },
+        {
+          label: "Open",
+          value:
+            `${signalOverview?.openPositions ?? 0}` +
+            `/${signalOverview?.maxPositionsTotal || 120}`,
+          title: "Open physical Signal positions across Long + Short / independent Signal capacity.",
+        },
+        {
+          label: "Closed",
+          value: signalOverview?.closedPositions ?? 0,
+          title: "Closed Signal positions with Signal source/config attribution.",
+        },
+        {
+          label: "PF12",
+          value: pf,
+          title: "Profit factor over the newest 12 closed Signal positions.",
+          tone:
+            metric?.trades && !metric.infiniteProfitFactor && Number(metric.profitFactor) < 1
+              ? "text-red-600 dark:text-red-400"
+              : metric?.trades
+                ? "text-green-600 dark:text-green-400"
+                : undefined,
+        },
+        {
+          label: "DDT12",
+          value: metric?.trades ? `${metric.drawdownHours.toFixed(2)}h` : "—",
+          title: "Maximum drawdown duration over the newest 12 closed Signal positions.",
+        },
+        {
+          label: "PnL12",
+          value: metric?.trades
+            ? `${metric.netPnl >= 0 ? "+" : ""}${metric.netPnl.toFixed(2)}`
+            : "—",
+          title: "Net result over the newest 12 closed Signal positions.",
+          tone:
+            metric?.trades
+              ? metric.netPnl >= 0
+                ? "text-green-600 dark:text-green-400"
+                : "text-red-600 dark:text-red-400"
+              : undefined,
+        },
+      )
+      return tiles.map(({ label, value, title, tone }) => (
+        <div key={label} className="flex items-center gap-1 text-[10px]" title={title}>
+          <span className="text-muted-foreground">{label}</span>
+          <span className={`font-semibold tabular-nums ${tone ?? ""}`}>{value}</span>
+        </div>
+      ))
+    }
 
     if (symbolsProcessed > 0 || symbolsTotal > 0) {
       tiles.push({
@@ -1328,6 +1580,15 @@ export function ActiveConnectionCard({
         value: `${livePnl > 0 ? "+" : ""}$${Math.abs(livePnl).toFixed(2)}`,
         title: "Live exchange unrealized/realized PnL.",
         tone: livePnl > 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400",
+      })
+    }
+
+    if (signalMode && signalOverview) {
+      tiles.push({
+        label: "Signal",
+        value: `${signalOverview.openPositions}/${signalOverview.maxPositionsTotal || 120}`,
+        title: "Independent Signal positions open / Signal Long + Short capacity.",
+        tone: "text-cyan-700 dark:text-cyan-400",
       })
     }
 
@@ -1460,7 +1721,7 @@ export function ActiveConnectionCard({
               )}
             </CardDescription>
 
-            {/* Row 3: Three toggle switches */}
+            {/* Row 3: independent processing/execution switches */}
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-2 border-t border-border/50">
               {/* Enable toggle — no pre-condition on global engine; toggle-dashboard API starts the engine */}
               <div className="flex items-center gap-2">
@@ -1540,6 +1801,54 @@ export function ActiveConnectionCard({
                       {engineStates && liveTrade && engineStates.live.executionMode !== "blocked" && !engineStates.live.inSync && (
                         <span
                           title="Live flag ON but engine state differs — reconciling"
+                          className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse"
+                          aria-hidden="true"
+                        />
+                      )}
+                    </span>
+                  )}
+                </Label>
+              </div>
+
+              <Separator orientation="vertical" className="h-4" />
+
+              {/* Signal Trade toggle — independent of Main and Preset. */}
+              <div className="flex items-center gap-2">
+                <Switch
+                  id={`signal-${connection.connectionId}`}
+                  checked={signalMode}
+                  onClick={(event) => event.stopPropagation()}
+                  onCheckedChange={handleSignalModeToggle}
+                  disabled={signalModeLoading}
+                  className="scale-[0.8]"
+                />
+                <Label
+                  htmlFor={`signal-${connection.connectionId}`}
+                  className={`text-xs font-medium cursor-pointer ${
+                    signalMode && engineStates?.signal.executionMode === "blocked"
+                      ? "text-red-600 dark:text-red-400"
+                      : signalMode
+                        ? "text-cyan-600 dark:text-cyan-400"
+                        : ""
+                  }`}
+                >
+                  {signalModeLoading ? (
+                    <span className="flex items-center gap-1">
+                      <Loader2 className="h-3 w-3 animate-spin" /> Signal
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1">
+                      <Activity className="h-3 w-3" /> Signal
+                      {engineStates && signalMode && engineStates.signal.executionMode === "blocked" && (
+                        <span
+                          title={engineStates.signal.blockReason || "Signal exchange execution is blocked"}
+                          className="inline-block h-1.5 w-1.5 rounded-full bg-red-500"
+                          aria-label={engineStates.signal.blockReason || "Signal exchange execution is blocked"}
+                        />
+                      )}
+                      {engineStates && signalMode && engineStates.signal.executionMode !== "blocked" && !engineStates.signal.inSync && (
+                        <span
+                          title="Signal flag ON but engine state differs — reconciling"
                           className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse"
                           aria-hidden="true"
                         />
@@ -1688,7 +1997,7 @@ export function ActiveConnectionCard({
                     is the exchange itself (count + real USD volume).
                     Do NOT sum across stages — they mirror the same
                     signal. */}
-                {prehistoricStats && (
+                {!signalOnlyOverview && prehistoricStats && (
                   prehistoricStats.pseudoOpen > 0 ||
                   prehistoricStats.realOpen > 0 ||
                   prehistoricStats.liveOpenPositions > 0 ||
@@ -1758,7 +2067,7 @@ export function ActiveConnectionCard({
                 )}
 
                 {/* Rich prehistoric progress display */}
-                {(phase === "prehistoric_data" || (prehistoricStats && (prehistoricStats.indicationsTotal > 0 || prehistoricStats.stratBase > 0))) && (
+                {!signalOnlyOverview && (phase === "prehistoric_data" || (prehistoricStats && (prehistoricStats.indicationsTotal > 0 || prehistoricStats.stratBase > 0))) && (
                   <div className="mt-2 p-2 bg-amber-50/50 dark:bg-amber-950/20 rounded border border-amber-200/50 dark:border-amber-800/30 space-y-2">
                     {/* Header row */}
                     <div className="flex items-center justify-between">
@@ -1887,14 +2196,28 @@ export function ActiveConnectionCard({
                               </div>
                             </>
                           )}
+                          {strategyRows && (
+                            <div
+                              className="flex items-center gap-1"
+                              title="Current rows: Base Total/Valid · Main Valid/Overall · Real Valid/Active · Live Rows/Mirrored."
+                            >
+                              <span className="text-muted-foreground">Rows B/M/R/L</span>
+                              <span className="font-medium tabular-nums text-violet-700 dark:text-violet-400">
+                                {strategyRows.base.total}/{strategyRows.base.valid} ·{" "}
+                                {strategyRows.main.valid}/{strategyRows.main.overall} ·{" "}
+                                {strategyRows.real.valid}/{strategyRows.real.active} ·{" "}
+                                {strategyRows.live.total}/{strategyRows.live.mirrored}
+                              </span>
+                            </div>
+                          )}
                           {stageEvalPercent && (
                             <div
                               className="flex items-center gap-1"
                               title="Stage pass-through: Base is the 100% entry point; Main = survived Base→Main; Real = survived Main→Real."
                             >
-                              <span className="text-muted-foreground">Evals B/M/R</span>
+                              <span className="text-muted-foreground">Evals B/M/R/L</span>
                               <span className="font-medium tabular-nums text-sky-700 dark:text-sky-400">
-                                {stageEvalPercent.base.toFixed(0)}% / {stageEvalPercent.main.toFixed(0)}% / {stageEvalPercent.real.toFixed(0)}%
+                                {stageEvalPercent.base.toFixed(0)}% / {stageEvalPercent.main.toFixed(0)}% / {stageEvalPercent.real.toFixed(0)}% / {stageEvalPercent.live.toFixed(0)}%
                               </span>
                             </div>
                           )}
@@ -2089,7 +2412,7 @@ export function ActiveConnectionCard({
                                   </span>
                                 )}
                                 <span className="text-muted-foreground ml-auto">
-                                  PF <span className={`font-medium ${avgPF >= 1.4 ? "text-green-600 dark:text-green-400" : avgPF >= 1.0 ? "text-foreground" : "text-red-500"}`}>
+                                  PF <span className={`font-medium ${avgPF >= 1 ? "text-green-600 dark:text-green-400" : avgPF > 0 ? "text-red-500" : "text-foreground"}`}>
                                     {avgPF > 0 ? avgPF.toFixed(2) : "—"}
                                   </span>
                                 </span>
@@ -2702,96 +3025,8 @@ export function ActiveConnectionCard({
                 onPresetVolumeChange={handlePresetVolumeChange}
                 onSignalVolumeChange={handleSignalVolumeChange}
                 onVolumeStepRatioChange={handleVolumeStepRatioChange}
-                orderType={orderType}
-                onOrderTypeChange={setOrderType}
-                volumeType={volumeType}
-                onVolumeTypeChange={setVolumeType}
                 enginePhase={phase}
                 globalEngineRunning={globalEngineRunning}
-              />
-
-              <Separator />
-
-              {/* Order Settings Panel */}
-              <OrderSettingsPanel
-                orderType={orderType}
-                marketSettings={{ slippageTolerance: 0.06, autoExecution: true }}
-                limitSettings={{ priceOffset: 0.5, timeoutSeconds: 300 }}
-              />
-
-              <Separator />
-
-              {/* Main Trade Card */}
-              <MainTradeCard
-                config={{
-                  enabled: true,
-                  status: mainTradeStatus,
-                  entrySettings: {
-                    indicationBased: true,
-                    confirmationRequired: 2,
-                    sizeCalculationMethod: "percentage",
-                  },
-                  exitSettings: {
-                    takeProfitPercent: 5,
-                    stopLossPercent: 2,
-                    trailingStopEnabled: false,
-                  },
-                  positionManagement: {
-                    maxPositionsTotal: 10,
-                    maxPerSymbol: 2,
-                    positionScaling: true,
-                    partialExitRules: "None",
-                  },
-                  statistics: {
-                    activePositions: 3,
-                    unrealizedPnL: 1245.5,
-                    unrealizedPnLPercent: 2.45,
-                    winRate: 65,
-                    maxDailyDrawdown: 1.2,
-                    averageEntryPrice: 0,
-                  },
-                }}
-                onStatusChange={setMainTradeStatus}
-              />
-
-              <Separator />
-
-              {/* Preset Trade Card */}
-              <PresetTradeCard
-                config={{
-                  enabled: true,
-                  status: presetTradeStatus,
-                  activePreset: "preset-1",
-                  presetType: "auto-optimal",
-                  availablePresets: [
-                    {
-                      id: "preset-1",
-                      name: "Auto-Optimal",
-                      description: "Auto-tuned indicators and strategies",
-                      type: "auto-optimal",
-                      createdDate: "2024-03-15",
-                      backtestScore: 87.5,
-                    },
-                    {
-                      id: "preset-2",
-                      name: "Conservative",
-                      description: "Low-risk conservative trading",
-                      type: "conservative",
-                      createdDate: "2024-03-10",
-                      backtestScore: 72.3,
-                    },
-                  ],
-                  autoUpdateEnabled: true,
-                  statistics: {
-                    coordinatedPositions: 5,
-                    testProgress: 0,
-                    activeTrades: 3,
-                    presetPnL: 2450.75,
-                    presetPnLPercent: 3.2,
-                    expectedWinRate: 72,
-                  },
-                }}
-                onStatusChange={setPresetTradeStatus}
               />
 
               {/* Engine progression details when running */}

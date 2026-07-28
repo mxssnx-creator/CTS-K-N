@@ -3,6 +3,12 @@ import { initRedis, getRedisClient } from "@/lib/redis-db"
 
 export const dynamic = "force-dynamic"
 
+const INDICATION_INTERVAL_TYPES = [
+  "direction", "move", "active",
+  "trend", "optimal", "auto",
+  "common", "signal",
+] as const
+
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     await initRedis()
@@ -14,24 +20,27 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     }
 
     // Get interval tracking data from Redis
-    const intervals = {
-      direction: await getIntervalData(client, connectionId, "direction"),
-      move: await getIntervalData(client, connectionId, "move"),
-      active: await getIntervalData(client, connectionId, "active"),
-      optimal: await getIntervalData(client, connectionId, "optimal"),
-    }
+    const entries = await Promise.all(INDICATION_INTERVAL_TYPES.map(async (type) => [
+      type,
+      await getIntervalData(client, connectionId, type),
+    ] as const))
+    const intervals = Object.fromEntries(entries)
 
     return NextResponse.json({ intervals })
   } catch (error) {
     console.error("[Intervals API] Error:", error)
     return NextResponse.json(
       {
-        intervals: {
-          direction: { enabled: false, isRunning: false, isProgressing: false, intervalTime: 1, timeout: 5 },
-          move: { enabled: false, isRunning: false, isProgressing: false, intervalTime: 1, timeout: 5 },
-          active: { enabled: false, isRunning: false, isProgressing: false, intervalTime: 1, timeout: 5 },
-          optimal: { enabled: false, isRunning: false, isProgressing: false, intervalTime: 2, timeout: 10 },
-        },
+        intervals: Object.fromEntries(INDICATION_INTERVAL_TYPES.map((type) => [
+          type,
+          {
+            enabled: false,
+            isRunning: false,
+            isProgressing: false,
+            intervalTime: 0.25,
+            timeout: type === "common" ? 3 : 0.25,
+          },
+        ])),
         error: error instanceof Error ? error.message : "Unknown error"
       },
       { status: 500 }
@@ -46,13 +55,12 @@ async function getIntervalData(client: any, connectionId: string, type: string) 
 
     if (!data || Object.keys(data).length === 0) {
       // Return default values based on type
-      const defaults = {
-        direction: { enabled: true, intervalTime: 1, timeout: 5 },
-        move: { enabled: true, intervalTime: 1, timeout: 5 },
-        active: { enabled: true, intervalTime: 1, timeout: 5 },
-        optimal: { enabled: true, intervalTime: 2, timeout: 10 },
+      const known = (INDICATION_INTERVAL_TYPES as readonly string[]).includes(type)
+      const def = {
+        enabled: known,
+        intervalTime: 0.25,
+        timeout: type === "common" ? 3 : 0.25,
       }
-      const def = defaults[type as keyof typeof defaults] || { enabled: false, intervalTime: 1, timeout: 5 }
       return {
         enabled: def.enabled,
         isRunning: false,
@@ -66,8 +74,8 @@ async function getIntervalData(client: any, connectionId: string, type: string) 
       enabled: data.enabled === "true" || data.enabled === "1",
       isRunning: data.isRunning === "true" || data.isRunning === "1",
       isProgressing: data.isProgressing === "true" || data.isProgressing === "1",
-      intervalTime: parseInt(data.intervalTime) || 1,
-      timeout: parseInt(data.timeout) || 5,
+      intervalTime: Number(data.intervalTime) || 0.25,
+      timeout: Number(data.timeout) || (type === "common" ? 3 : 0.25),
       lastStart: data.lastStart,
       lastEnd: data.lastEnd,
     }
@@ -77,8 +85,8 @@ async function getIntervalData(client: any, connectionId: string, type: string) 
       enabled: false,
       isRunning: false,
       isProgressing: false,
-      intervalTime: 1,
-      timeout: 5,
+      intervalTime: 0.25,
+      timeout: type === "common" ? 3 : 0.25,
     }
   }
 }
