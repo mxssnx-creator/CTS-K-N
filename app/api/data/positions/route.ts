@@ -154,23 +154,40 @@ async function getLivePositions(connectionId: string): Promise<Position[]> {
   try {
     await initRedis()
     const client = getRedisClient()
-    const ids = await client.lrange(`live:positions:${connectionId}`, 0, 500).catch(() => [])
+    // The open-position index is the current ledger, not a paginated UI list.
+    // Read it completely so exhaustive Main/Real/Live rows and the independent
+    // 120-position Signal capacity cannot disappear from statistics after an
+    // unrelated 500-row boundary. Redis reads remain bounded in batches.
+    const rawIds = await client.lrange(`live:positions:${connectionId}`, 0, -1).catch(() => [])
+    const ids = [...new Set((rawIds || []).map(String).filter(Boolean))]
     if (!ids || ids.length === 0) return []
 
-    const jsonValues = await client.mget(...ids.map((id) => `live:position:${id}`)).catch(() => ids.map(() => null))
     const positions: Position[] = []
-    for (let i = 0; i < ids.length; i++) {
-      const raw = jsonValues[i]
-      if (!raw) continue
-      let parsed: Record<string, any> | null = null
-      try {
-        parsed = JSON.parse(raw)
-      } catch {
-        continue
+    const READ_BATCH_SIZE = 250
+    for (let offset = 0; offset < ids.length; offset += READ_BATCH_SIZE) {
+      const batch = ids.slice(offset, offset + READ_BATCH_SIZE)
+      const jsonValues = await client
+        .mget(...batch.map((id) => `live:position:${id}`))
+        .catch(() => batch.map(() => null))
+      for (let index = 0; index < batch.length; index++) {
+        const raw = jsonValues[index]
+        let parsed: Record<string, any> | null = null
+        if (raw) {
+          try {
+            parsed = JSON.parse(raw)
+          } catch {
+            parsed = null
+          }
+        }
+        if (!parsed) {
+          const hash = await client
+            .hgetall(`live_positions:${connectionId}:${batch[index]}`)
+            .catch(() => null)
+          if (hash && Object.keys(hash).length > 0) parsed = hash
+        }
+        if (!parsed || !isLiveOpenStatus(parsed.status)) continue
+        positions.push(normaliseLivePosition({ ...parsed, id: parsed.id || batch[index] }))
       }
-      if (!parsed) continue
-      if (!isLiveOpenStatus(parsed.status)) continue
-      positions.push(normaliseLivePosition(parsed))
     }
     return positions
   } catch (error) {
