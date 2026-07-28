@@ -584,9 +584,9 @@ interface LivePosition {
   parentSetKey?: string
   setVariant?: "default" | "trailing" | "block" | "dca" | "pause"
   accumulatedSetKeys?: string[]
-  /** Combined position-count (axis) Set: multiple hedge-netted pos-count Sets
-   *  merged into this ONE live exchange order. Member keys live in
-   *  accumulatedSetKeys. Global stats stay aggregated (no per-Set split). */
+  /** Combined position-count (axis) Set: multiple same-direction pos-count
+   *  Sets merged into one directional live order. Long and Short remain
+   *  independent. Member keys live in accumulatedSetKeys. */
   combinedPosCounts?: boolean
   posCountsTargetFlat?: boolean
   posCountsLongSetCount?: number
@@ -594,7 +594,7 @@ interface LivePosition {
   posCountsNetSetCount?: number
   /** Current authoritative open quantity distributed over exact member Sets. */
   posCountsSetQuantities?: Record<string, number>
-  /** Exact surviving Strategy-Set ratio parts after the long/short hedge. */
+  /** Exact same-direction Strategy-Set ratio parts in this target. */
   posCountsSetRatios?: Record<string, number>
   /** Total confirmed entry quantity over the position lifetime. */
   totalExecutedQuantity?: number
@@ -6464,10 +6464,10 @@ export async function executeLivePosition(
         !isLiveTradeEnabled,
         executionSlot,
         isBlockVariant && realPosition.blockOnly === true,
-        // Source-specific Signal Blocks retain their own bookkeeping lane,
-        // but adjust the ordinary Direction parent when no matching source
-        // parent is open. This preserves a single physical target while
-        // keeping source attribution independent.
+        // Source-specific Signal Blocks retain their own bookkeeping lane. In
+        // parallel Standard+Block mode they may fall back to the ordinary
+        // Direction parent; Block-only lanes instead seed their exact physical
+        // parent below because no Standard row can exist in that mode.
         isBlockVariant && realPosition.blockOnly !== true && executionSlot !== "default"
           ? "default"
           : undefined,

@@ -45,6 +45,7 @@ CTS_DB_URL	application-runtime	no	no	2	app/api/settings/database-status/route.ts
 CTS_DEPLOYMENT_RUNTIME	application-runtime	no	yes	8	.env.example,__tests__/unit/install-deployment-contract.test.ts,__tests__/unit/requested-regressions.test.ts,custom-worker.ts,lib/deployment-runtime.ts,scripts/run-managed-db-migrate.mjs,scripts/verify-deployment-contract.mjs,src/db/migrate.ts
 CTS_ENGINE_OWNER_WORKER	application-runtime	no	no	1	lib/trade-engine.ts
 CTS_INLINE_REDIS_PERSISTENT_VOLUME	application-runtime	no	yes	4	.env.example,lib/production-readiness.ts,lib/real-trade-gates.ts,scripts/kilo-deploy.mjs
+CTS_MEMORY_LIMIT_MB	application-runtime	no	no	1	lib/strategy-memory-guard.ts
 CTS_NODE_BIN	test-or-operator-tool	no	no	1	scripts/start-production.mjs
 CTS_NPM_REDIS_ROOT	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 CTS_REDIS_DATA_DIR	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
@@ -66,7 +67,9 @@ DEV_NODE_HEAP_MB	test-or-operator-tool	no	no	2	__tests__/unit/requested-regressi
 DEV_PREHISTORIC_SYMBOL_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
 DEV_SOAK_DURATION_MS	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
 DEV_SOAK_SYMBOL_COUNT	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
+DEV_STRATEGY_REAL_SETS_CEILING	test-or-operator-tool	no	no	2	__tests__/unit/requested-regressions.test.ts,scripts/run-dev-preview-check.mjs
 DEV_STRATEGY_SYMBOL_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
+DEV_STRATEGY_VARIANT_BUILD_CONCURRENCY	test-or-operator-tool	no	no	2	__tests__/unit/requested-regressions.test.ts,scripts/run-dev-preview-check.mjs
 DEV_URL	test-or-operator-tool	no	no	1	scripts/verify-migration-status.mjs
 DISABLE_API_STRATEGY_FLOW	application-runtime	no	no	3	__tests__/unit/requested-regressions.test.ts,app/api/cron/generate-indications/route.ts,lib/trade-engine/shared-ind-strat-pipeline.ts
 DISABLE_BINGX_SDK_ORDERS	application-runtime	no	no	1	lib/exchange-connectors/bingx-connector.ts
@@ -216,6 +219,7 @@ STRATEGY_AXIS_LRU_MAX	application-runtime	no	no	1	lib/strategy-coordinator.ts
 STRATEGY_FLOW_SYMBOL_CONCURRENCY	application-runtime	no	yes	2	.env.example,lib/strategy-coordinator.ts
 STRATEGY_MAIN_AXIS_SETS_CEILING	test-or-operator-tool	no	yes	1	.env.example
 STRATEGY_REAL_SETS_CEILING	application-runtime	no	yes	2	.env.example,lib/strategy-coordinator.ts
+STRATEGY_VARIANT_BUILD_CONCURRENCY	application-runtime	no	no	1	lib/strategy-coordinator.ts
 SYMBOL_COUNT	test-or-operator-tool	no	no	2	scripts/test-quickstart-3symbols.js,scripts/verify-prod-soak.mjs
 SYMBOLS	test-or-operator-tool	no	no	2	scripts/run-engine-probe.mjs,scripts/test-quickstart-3symbols.js
 TRADE_ENGINE_MAX_ACTIVE	application-runtime	no	no	1	lib/trade-engine.ts

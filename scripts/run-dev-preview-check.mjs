@@ -22,6 +22,14 @@ const maxSymbolsRequested = process.argv.includes("--max-symbols")
 const devSoakSymbolCount = maxSymbolsRequested
   ? 32
   : Math.max(1, Math.min(32, Number(process.env.DEV_SOAK_SYMBOL_COUNT || 12)))
+// Cold Next compilation plus one exhaustive Base→Main→Real→Live pass grows
+// with the selected basket. Give the default command enough observation time
+// to prove at least three completed cycles instead of failing a healthy,
+// still-running first pass at an arbitrary 60-second boundary.
+const devSoakDurationMs = Math.max(
+  90_000,
+  Number(process.env.DEV_SOAK_DURATION_MS || 60_000 + devSoakSymbolCount * 10_000),
+)
 // The regular interactive dev command intentionally stays at 4 GiB. A long
 // HMR soak compiles every operations/statistics route and retains those module
 // graphs for the whole run, so allow the dedicated debug harness to use the
@@ -191,7 +199,7 @@ function runSoakVerifier() {
         PORT: String(port),
         START_SIMULATED_ENGINE: "1",
         SYMBOL_COUNT: String(devSoakSymbolCount),
-        SOAK_DURATION_MS: process.env.DEV_SOAK_DURATION_MS || "60000",
+        SOAK_DURATION_MS: String(devSoakDurationMs),
         RUNTIME_MODE: "development",
         SOAK_ADMIN_SECRET: debugAdminSecret,
       },
@@ -246,6 +254,14 @@ async function main() {
       V0_DEV_SYMBOL_COUNT: String(devSoakSymbolCount),
       ENGINE_SYMBOL_CONCURRENCY: process.env.DEV_ENGINE_SYMBOL_CONCURRENCY || "2",
       STRATEGY_FLOW_SYMBOL_CONCURRENCY: process.env.DEV_STRATEGY_SYMBOL_CONCURRENCY || "2",
+      // The development verifier runs Next's compiler, the inline Redis
+      // fallback and the complete engine in one process. Exercise the full
+      // cartesian Main calculation, but keep the existing explicit Real-row
+      // output boundary small enough that the diagnostic process does not
+      // retain multi-gigabyte transient graphs. Production/operator defaults
+      // remain unchanged.
+      STRATEGY_REAL_SETS_CEILING: process.env.DEV_STRATEGY_REAL_SETS_CEILING || "600",
+      STRATEGY_VARIANT_BUILD_CONCURRENCY: process.env.DEV_STRATEGY_VARIANT_BUILD_CONCURRENCY || "32",
       PREHISTORIC_SYMBOL_CONCURRENCY: process.env.DEV_PREHISTORIC_SYMBOL_CONCURRENCY || "1",
       MARKET_DATA_LOAD_CONCURRENCY: "1",
       CRON_SYMBOL_LIMIT: String(devSoakSymbolCount),

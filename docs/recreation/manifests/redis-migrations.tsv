@@ -88,3 +88,4 @@ version	name	source
 87	087-signal-bootstrap-direction-lanes-and-strategy-rows	lib/redis-migrations.ts
 88	088-repair-exhaustive-indications-signal-capacity-and-stage-caps	lib/redis-migrations.ts
 89	089-signal-full-source-cycle-and-base-pf-floor	lib/redis-migrations.ts
+90	090-base-valid-and-signal-admission-contract	lib/redis-migrations.ts

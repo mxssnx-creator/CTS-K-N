@@ -23,7 +23,10 @@ import {
   signalCandidateRankKey,
   type SignalPositionSelectionMode,
 } from "@/lib/signal-position-policy"
-import { movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
+import {
+  PREVIOUS_POSITION_MIN_PF_RATIO,
+  movePctToMainTradePfRatio,
+} from "@/lib/main-trade-profit-factor"
 
 export type SignalDirection = "long" | "short"
 export type SignalPerformanceDirection = SignalDirection | "overall"
@@ -31,7 +34,7 @@ export const SIGNAL_PERFORMANCE_LOOKBACK = 12
 export const SIGNAL_SOURCE_PERFORMANCE_LOOKBACK = 12
 export const SIGNAL_LANE_PERFORMANCE_LOOKBACK = 10
 export const SIGNAL_LIVE_DISABLE_LOOKBACK = 16
-export const SIGNAL_CONFIG_MINIMUM_PF_RATIO = 0.7
+export const SIGNAL_CONFIG_MINIMUM_PF_RATIO = PREVIOUS_POSITION_MIN_PF_RATIO
 export const SIGNAL_REQUEST_INTERVAL_MIN_SECONDS = 30
 export const SIGNAL_REQUEST_INTERVAL_MAX_SECONDS = 3600
 
@@ -372,9 +375,9 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     stopLossMinPct,
     boundedNumber(raw.stopLossMaxPct, DEFAULT_SIGNAL_INDICATION_SETTINGS.stopLossMaxPct, 0.2, 5),
   )
-  // Exact-config and source evaluation use fixed windows so equal lanes always
-  // use equal evidence. The independent source-wide newest-12 and
-  // source×symbol×direction newest-10 gates are enforced below.
+  // Exact-config evaluation uses a fixed window so equal lanes always use the
+  // same evidence. Source-wide rows remain diagnostic and never suppress an
+  // independent exact configuration.
   const performanceLookback = SIGNAL_PERFORMANCE_LOOKBACK
   const performanceMinSamples = SIGNAL_PERFORMANCE_LOOKBACK
   const maxSourcesPerCycle = Math.round(boundedNumber(
@@ -407,10 +410,10 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
 
   return {
     enabled: bool(raw.enabled, true),
-    // Direct execution is enabled by default but remains an operator choice:
-    // when enabled it bypasses only the exact-config 12-result PF gate. The
-    // source-wide and source×symbol×direction negative-average gates still run.
-    directExecutionEnabled: bool(raw.directExecutionEnabled, true),
+    // Fresh exact configurations always bootstrap. Keep the legacy response
+    // field pinned to true so persisted settings and clients retain a stable
+    // schema without allowing a bypass of the mature exact-config gate.
+    directExecutionEnabled: true,
     trailingEnabled,
     trailingOnly,
     trailingStartPct: boundedNumber(
@@ -461,12 +464,9 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     performanceLookback,
     performanceMinSamples,
     performanceDisableBelowPnl: 0,
-    configMinimumPfRatio: boundedNumber(
-      raw.configMinimumPfRatio,
-      SIGNAL_CONFIG_MINIMUM_PF_RATIO,
-      0.08,
-      2.7,
-    ),
+    // This is a system-wide Previous-position contract, not a per-request
+    // tuning knob. Legacy payloads cannot weaken or raise the exact gate.
+    configMinimumPfRatio: SIGNAL_CONFIG_MINIMUM_PF_RATIO,
     performanceCooldownMinutes: Math.round(boundedNumber(raw.performanceCooldownMinutes, 60, 1, 24 * 60)),
     circuitFailureThreshold: Math.round(boundedNumber(raw.circuitFailureThreshold, 3, 1, 20)),
     circuitCooldownSeconds: Math.round(boundedNumber(raw.circuitCooldownSeconds, 120, 10, 3600)),
@@ -590,22 +590,9 @@ function performanceNumber(raw: Record<string, string> | null | undefined, field
   return Number.isFinite(value) ? value : 0
 }
 
-function signalPerformanceV2Allowed(
-  raw: Record<string, string> | null | undefined,
-  minimumSamples: number,
-  minimumAverage: number,
-): boolean {
-  if (raw?.permanentlyDisabled === "1" || raw?.permanentlyDisabled === "true") return false
-  const count = performanceNumber(raw, "count")
-  if (count < minimumSamples) return true
-  return performanceNumber(raw, "averagePnl") + Number.EPSILON >= minimumAverage
-}
-
 /**
- * Source and source×symbol×direction admission. Fresh lanes bootstrap
- * directly; a mature negative source or direction lane is independently
- * disabled. These guards always apply, including when direct execution
- * bypasses the exact-config PF check.
+ * Source and source×symbol×direction rows are diagnostics. They are retained
+ * for analytics, but cannot block a separate exact configuration lane.
  */
 export async function getSignalSourceLanePerformanceDecision(
   client: RedisClientLike,
@@ -616,34 +603,9 @@ export async function getSignalSourceLanePerformanceDecision(
     direction: SignalDirection
   },
 ): Promise<{ allowed: boolean; sourceAllowed: boolean; laneAllowed: boolean }> {
-  const sourceKey = signalPerformanceV2SourceKey(input.connectionId, input.sourceId)
-  const laneKey = signalPerformanceV2LaneKey(
-    input.connectionId,
-    input.sourceId,
-    input.symbol,
-    input.direction,
-  )
-  const pipeline = client.multi()
-  pipeline.hgetall(sourceKey)
-  pipeline.hgetall(laneKey)
-  const values = await pipeline.exec().catch(() => [])
-  const sourceRaw = (Array.isArray(values?.[0]) ? values[0]?.[1] : values?.[0]) as
-    | Record<string, string>
-    | undefined
-  const laneRaw = (Array.isArray(values?.[1]) ? values[1]?.[1] : values?.[1]) as
-    | Record<string, string>
-    | undefined
-  const sourceAllowed = signalPerformanceV2Allowed(
-    sourceRaw,
-    SIGNAL_SOURCE_PERFORMANCE_LOOKBACK,
-    0,
-  )
-  const laneAllowed = signalPerformanceV2Allowed(
-    laneRaw,
-    SIGNAL_LANE_PERFORMANCE_LOOKBACK,
-    0,
-  )
-  return { allowed: sourceAllowed && laneAllowed, sourceAllowed, laneAllowed }
+  void client
+  void input
+  return { allowed: true, sourceAllowed: true, laneAllowed: true }
 }
 
 export interface SignalConfigurationPerformanceRequest {
@@ -661,19 +623,17 @@ export interface SignalConfigurationPerformanceDecision {
 }
 
 /**
- * Direct execution deliberately bypasses the rolling 12-position exact-config
- * PF gate. Source-wide newest-12 and source×symbol×direction newest-10
- * negative-average gates are evaluated before this point. A permanently
- * disabled exact config (newest 16 real exchange closes negative) remains
- * blocked in either mode.
+ * Fresh lanes bootstrap through the first twelve results. Thereafter, the
+ * exact source × symbol × direction × config lane must meet the canonical
+ * Previous-position ratio; a permanently disabled real-exchange lane remains
+ * blocked. The legacy direct-execution setting cannot bypass either rule.
  */
 export function signalConfigurationExecutionAllowed(
   directExecutionEnabled: boolean,
   decision: SignalConfigurationPerformanceDecision | undefined,
 ): boolean {
-  if (!decision) return true
-  if (decision.permanentlyDisabled) return false
-  return directExecutionEnabled ? true : decision.allowed
+  void directExecutionEnabled
+  return decision ? decision.allowed && !decision.permanentlyDisabled : true
 }
 
 export function signalConfigurationPerformanceIdentity(
@@ -2102,9 +2062,9 @@ async function processSignalIndicationsUncached(
 
   const consensus = lowStopConsensus(allowedEvaluations, settings)
   const indications: any[] = []
-  // Every website source remains an independent Signal lane. The direct
-  // setting controls only the exact-config PF check; source-wide and
-  // source×symbol×direction performance guards already ran above.
+  // Every website source remains an independent Signal lane. Source and
+  // source×symbol diagnostics do not suppress another exact configuration;
+  // exact Previous-position quality is enforced downstream.
   const directSources = [...allowedEvaluations].sort(
     (left, right) =>
       left.stopLossPct - right.stopLossPct ||

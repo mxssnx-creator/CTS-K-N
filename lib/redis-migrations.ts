@@ -5513,7 +5513,9 @@ const migrations: Migration[] = [
         let changed = false
         for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
           if (document[alias] == null) continue
-          const normalized = normalizeMainTradeStagePfRatio("base", document[alias])
+          const normalized = Number(document[alias]) === 0.8
+            ? MAIN_TRADE_STAGE_PF_DEFAULTS.base
+            : normalizeMainTradeStagePfRatio("base", document[alias])
           if (Number(document[alias]) !== normalized) {
             document[alias] = normalized
             changed = true
@@ -5617,6 +5619,7 @@ const migrations: Migration[] = [
       }
 
       let baseValuesRepaired = 0
+      let stageFlagsRepaired = 0
       const repairBaseValueInDocument = (document: Record<string, any>): boolean => {
         let changed = false
         for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
@@ -5630,12 +5633,23 @@ const migrations: Migration[] = [
         for (const container of [document?.strategies, document]) {
           if (!container || typeof container !== "object") continue
           for (const channelName of ["main", "preset"]) {
-            const baseRow = container?.[channelName]?.base
+            const channel = container?.[channelName]
+            if (!channel || typeof channel !== "object") continue
+            for (const stage of ["base", "main", "real", "live"]) {
+              const row = channel[stage]
+              if (!row || typeof row !== "object") continue
+              for (const enabledField of ["enabled", "is_enabled"]) {
+                if (row[enabledField] === true) continue
+                row[enabledField] = true
+                stageFlagsRepaired++
+                changed = true
+              }
+            }
+            const baseRow = channel.base
             if (!baseRow || typeof baseRow !== "object") continue
-            const normalized = normalizeMainTradeStagePfRatio(
-              "base",
-              baseRow.min_profit_factor,
-            )
+            const normalized = Number(baseRow.min_profit_factor) === 0.8
+              ? MAIN_TRADE_STAGE_PF_DEFAULTS.base
+              : normalizeMainTradeStagePfRatio("base", baseRow.min_profit_factor)
             if (Number(baseRow.min_profit_factor) !== normalized) {
               baseRow.min_profit_factor = normalized
               changed = true
@@ -5651,7 +5665,9 @@ const migrations: Migration[] = [
         const patch: Record<string, string> = {}
         for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
           if (values[alias] == null) continue
-          const normalized = normalizeMainTradeStagePfRatio("base", values[alias])
+          const normalized = Number(values[alias]) === 0.8
+            ? MAIN_TRADE_STAGE_PF_DEFAULTS.base
+            : normalizeMainTradeStagePfRatio("base", values[alias])
           if (Number(values[alias]) !== normalized) {
             patch[alias] = String(normalized)
             baseValuesRepaired++
@@ -5696,9 +5712,9 @@ const migrations: Migration[] = [
         try {
           const signal = JSON.parse(rawSignal) as Record<string, any>
           let changed = false
-          // Direct execution is the fresh-install default, not a forced value:
-          // an explicit operator choice of false must survive upgrades.
-          if (signal.directExecutionEnabled == null) {
+          // Automatic bootstrap is a compatibility field, not an admission
+          // bypass. Mature exact lanes always enforce the canonical gate.
+          if (signal.directExecutionEnabled !== true) {
             signal.directExecutionEnabled = true
             changed = true
           }
@@ -5714,8 +5730,8 @@ const migrations: Migration[] = [
             signal.performanceDisableBelowPnl = 0
             changed = true
           }
-          if (signal.configMinimumPfRatio == null) {
-            signal.configMinimumPfRatio = 0.7
+          if (Number(signal.configMinimumPfRatio) !== 0.3) {
+            signal.configMinimumPfRatio = 0.3
             changed = true
           }
           if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24) {
@@ -5740,14 +5756,16 @@ const migrations: Migration[] = [
         main_trade_base_valid_minimum: String(MAIN_TRADE_STAGE_PF_DEFAULTS.base),
         main_trade_base_values_repaired: String(baseValuesRepaired),
         main_trade_main_input_semantics: "base-valid-only",
+        strategy_stage_switches: "compatibility-only-always-true",
+        strategy_stage_flags_repaired: String(stageFlagsRepaired),
         signal_previous_position_scope: "source-symbol-direction-config",
         signal_previous_position_window: "12",
-        signal_previous_position_default_minimum_ratio: "0.7",
-        signal_source_window: "12",
-        signal_symbol_direction_window: "10",
-        signal_source_and_direction_rows: "independent-negative-average-admission-gates",
+        signal_previous_position_minimum_ratio: "0.3",
+        signal_source_window: "diagnostic-12",
+        signal_symbol_direction_window: "diagnostic-10",
+        signal_source_and_direction_rows: "diagnostic-only",
         signal_direct_execution_default: "true",
-        signal_direct_execution_operator_configurable: "true",
+        signal_direct_execution_operator_configurable: "false",
         signal_max_open_positions_long_short_total: "120",
         signal_live_permanent_disable_window: "16",
         signal_settings_updated: String(signalSettingsUpdated),

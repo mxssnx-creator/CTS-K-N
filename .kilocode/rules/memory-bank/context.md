@@ -31,7 +31,9 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Updated Redis/bootstrap state for `bingx-x01` without embedding exchange credentials; server environment values remain the only credential source
 - [x] Connection progress 0/# fix - production symbol cap now resolves after force_symbols read
 - [x] `posCountsVolumeRatio` 0.05 wiring - Settings interface, sliders, coordination-section, expandAxisSets
-- [x] Axis Sets hedge netting + `combinePosCountAxisSets` extraction with regression test
+- [x] Position-Count axis coordination keeps Long and Short independent through
+  Real and combines only same-direction members for the Live targets; opposite
+  directions never hedge or cancel each other.
 - [x] VolumeCalculator variant floor lowered 0.1 → 0.01
 - [x] `coordination_settings` char-indexed object bug fix in GET handler (parseIfString before spread)
 - [x] `posCountsVolumeRatio` 0.05 full prod flow: GET default 0.05, PATCH save/persist round-trip, flatKnobs mirror, clamp 0.01–0.25. Verified on prod build (.next-prod, :3100).
@@ -123,6 +125,7 @@ export async function GET() {
 
 | Date | Changes |
 |------|---------|
+| 2026-07-28 | Completed the combined Base→Main→Real→Live processing release on schema v90. All four stages are mandatory pipeline rows with independently persisted configuration; stage enable flags are normalized on every settings/API/migration path and are no longer operator switches. Base PF minimum/default is 0.40. Signal evaluation is exact Source×Symbol×Direction×Config: empty history executes immediately, 12 exact closed results activate the PositionCost-relative 0.30 gate, source-12 and source×symbol×direction-10 remain diagnostics, and 16 negative real-exchange closes permanently disable only that exact configuration. Signal capacity remains one atomic 120 Long+Short pool across all 35 sources, with minimum/default volume factor 1 and Block-only true. PF/DDT row statistics retain last 12/25/75 positions, 4/12/48 hours, and three-day DDT. The exhaustive Main fan-out uses lazy bounded workers and evaluates every candidate before selecting a direction-/variant-fair Row-Real working set for the expensive Block/scoped fan-out; active exposure is preserved and the final output ceiling remains authoritative. Position-Count Long and Short Sets never hedge each other and combine only within their own direction for Live. Exact Signal Blocks can seed their physical parent in Block-only mode. Acceptance passed 122 Jest suites/859 tests, TypeScript, project-wide ESLint, source syntax, Kilo 37/37, installer/volatile preflights, a fresh Next 15.5.18 production build (41 pages/339 traces), and a 12-symbol forced-paper Dev soak (1,008 API requests, 564 live-position cycles, 120/120 Signal slots, 6,020 Signal Block rows, 120 simulated lifecycles, 2.301 s warm p95, bounded post-warm memory/key growth, stop/restart verified, zero real positions or exchange order requests). |
 | 2026-07-26 | Completed the connection-progress, Signal-capacity, Detailed Logs, cycle-load and crash-recovery release. Connection recoordination now uses generation-owned cancellation/epochs, canonical symbol deduplication, truthful historic progress and idempotent prehistoric inventories, so settings, symbol changes and disable/re-enable take effect immediately without stale/doubled workers or false 100% states. The compact top-right Detailed Logs monitor provides Overview, Activity, Processing, Settings, Orders, Warnings, Errors and System sections with bounded reads, generation/settings diagnostics, alerts and Signal capacity. Signal's 35 limit is explicitly website-source coverage only; Long+Short position capacity defaults to 120, admits under an exact connection lock and processes bounded quality-ranked candidates best-first while preserving independent standard/trailing lanes. Signal Settings now expose the missing capacity and operational contracts. Healthy cycle/Set/sync logs use an HMR-safe bounded throttle, progression rows coalesce, queues/maps are capped, and historical phases yield cooperatively. InlineLocalRedis adds an 8 MiB-compacted fsynced live-position WAL so lifecycle/quantity state cannot regress after SIGKILL without full-database writes in hot cycles. Acceptance passed 115 Jest suites/787 tests, TypeScript, project-wide ESLint, fresh Next 15.5.18 standalone build (41/41 pages), production restart/SIGKILL recovery of 36/36 positions, schema 84 and zero real orders. The final forced-paper Dev run lasted 306.3 seconds/1,437 requests with 12 symbols, 35/35 sources, zero source errors, 1,260 Signal indications, 24 positions (12 standard + 12 trailing) under max 120/best-first, 10 Detailed Logs snapshots/zero alerts, Redis warm growth 7 keys, Signal p95 1,053 ms and verified disable/re-enable; the standalone full-system run passed RSS/Redis budgets at 126 ms p95. |
 | 2026-07-26 | Completed the Signal Engine trailing/statistics release. Signal requests are operator-configurable but clamped to a hard 30-second minimum. Signal now owns independent standard and dynamic-trailing execution lanes; trailing defaults on, trailing-only defaults off, with 0% start, 0.8% minimum stop, 0.4 favorable-move ratio and 0.5 stop-range update ratio. Signal volume factor is available in Signal Settings and Connection Settings → Overall. `/statistics` now loads directly with top navigation for Overall, Common and Signal analytics; both indication families expose PF/DDT over last 12/50 closed positions and 8/48 hours, TP/SL ranges and ratios, top/worst 12 symbols, filters, expandable type/source→symbol detail, and per-source Signal-symbol disable controls. Reporting reads a lightweight persisted live-position projection and never imports the exchange execution graph. Historic progression yields between indication, Set-fill and strategy phases so Signal/control APIs remain responsive without changing phase order. Acceptance passed 111 Jest suites/763 tests, TypeScript, project-wide ESLint, a fresh Next 15.5.18 standalone build with 41/41 pages, Installer/Kilo (37 checks, schema 84), scheduler, deployment-contract, volatile-cleanup, source-syntax, recreation-manifest (1,239 files) and secret-scan (1,247 files, zero findings) checks. The forced-paper 12-symbol Dev debug run lasted 303.6 seconds and completed 109 rounds/1,229 requests, 35/35 sources, 1,440 Signal indications, 24 Signal positions (12 standard + 12 trailing), 2,400 calculated/evaluated/eligible/emitted Signal Block rows, zero source failures, warm Signal-API p95 1,914 ms, and zero real exchange orders. |
 | 2026-07-26 | Corrected Block volume adjustment systemwide to use one absolute, non-compounding target per symbol/direction: `target = generalBase + ((generalBase × blockVolumeRatio) × blockCount)` and `nextOrder = targetAdd − confirmedBlockAdds`. Real/strategy overlays now use the general volume as the sole base instead of applying the historical Block profile multiplier a second time. Independent Count Sets retain their own PF/result/pause lineage, while sequential or out-of-order Counts submit only the missing physical delta; a lower already-covered Count sends no exchange order. Regular Count ladders now accept only normal Base-derived Sets and explicitly exclude individual/combined Pos-Count Sets. The separate Real-active procedure counts every non-terminal position per symbol and Long/Short—including Pos-Count positions—and can restore the normal Base lineage from the cycle index when only a Pos-Count remainder is active. Live/simulated metadata records exact base, target, confirmed-before, request, and completion state. Terminal partial fills retry only their residual; open partial fills remain durable, reconcile by client/order ID without duplicate submission, and keep SL/TP sized to authoritative exposure. Acceptance passed 103 Jest suites/652 tests, the focused 16-suite/173-test strategy/order/progression matrix, TypeScript, project-wide ESLint, source-syntax/secret scans, recreation-manifest verification, and diff checks. |
@@ -661,13 +664,16 @@ credentials are present.
   silently truncates configuration rows at 500, orders lanes deterministically
   and bounds Redis reads to 32 concurrent pairs. Common coordination preserves
   configured 30-minute timeframes (and accepts values through 60 minutes).
-- [x] Repaired Base → Main → Real → Live lineage and readiness semantics,
-  including Main-enabled Signal execution, exact identity history, independent
-  Pos-Count targets and the 10:0.03 Pos-Count volume ratio. The settings UI
-  exposes complete stage controls and keeps Trend as the final indication tab.
+- [x] Repaired Base → Main → Real → Live lineage and readiness semantics.
+  The four rows are one mandatory processing pipeline with independently
+  persisted configuration, not separately switchable strategies. Signal uses
+  exact identity history. Position-Count Long and Short Sets stay independent
+  through Real and are combined only within their own direction for Live; the
+  10:0.03 Position-Count volume ratio remains intact. The settings UI exposes
+  complete stage configuration and keeps Trend as the final indication tab.
 - [x] New connections, legacy connection settings and Preset CRUD use the
   same canonical Main/Preset four-stage PositionCost-relative defaults as the
-  runtime (Base 0.80; Main, Real and Live 1.12), with legacy aliases retained
+  runtime (Base 0.40; Main, Real and Live 1.12), with legacy aliases retained
   for older readers. Preset creation, activation and testing retain the full
   indication/range/stage matrix; bounded worker pools replace former 500/100
   configuration persistence ceilings.
@@ -713,10 +719,11 @@ credentials are present.
   their own parent. Explicit Consensus and direct-source outcomes now update
   only their exact lane; legacy outcomes retain source-plus-consensus
   accounting.
-- [x] Schema v89 upgrades the former ten-source Signal default to the complete
-  35-source cycle while retaining explicit operator choices. It also repairs
-  legacy Base PF values to the enforced 0.80 floor across connection hashes and
-  nested stage documents without altering Main/Real/Live thresholds.
+- [x] Schema v90 upgrades the former ten-source Signal default to the complete
+  35-source cycle while retaining explicit operator choices. It normalizes all
+  legacy stage switches to the mandatory pipeline and repairs Base PF values to
+  the enforced 0.40 floor across connection hashes and nested stage documents
+  without altering Main/Real/Live thresholds.
 - [x] Statistics now derive balances, drawdown, PF, trailing metadata and TP
   movement from persisted values only; no synthetic starting balance, TP/SL,
   trailing values or execution PF is displayed. Rolling dashboard windows use
@@ -734,8 +741,12 @@ credentials are present.
   target, delete the exact checkout, clone the requested revision, restore that
   state and run the canonical installer. In-place Git rewrites and silent
   rollback of a partially upgraded checkout are no longer used.
-- [x] Final release checks: 121 Jest suites / 843 tests, TypeScript, ESLint,
-  Kilo preflight (37 checks, schema 89), secret scan (1,267 files, zero
-  findings), recreation-manifest verification (1,259 project files), and a
-  fresh production build with 41/41 pages, standalone assets and 339 complete
-  server traces.
+- [x] Final release checks: 122 Jest suites / 859 tests, TypeScript, ESLint,
+  Kilo preflight (37 checks, schema 90), installer/volatile-cleanup gates,
+  secret scan, recreation-manifest verification, and a fresh production build
+  with 41/41 pages, standalone assets and 339 complete server traces. The final
+  12-symbol forced-paper Dev soak completed 1,008 API requests, 564
+  live-position cycles, 120/120 Signal slots, 6,020 Signal Block rows and 120
+  simulated lifecycles at 2.301 s warm p95; stop/restart, bounded key growth
+  and post-warm memory stability passed with zero real positions or exchange
+  order requests.

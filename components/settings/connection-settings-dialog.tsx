@@ -249,6 +249,15 @@ const DEFAULT_STRATEGY_PROFILE: StrategyChannel = {
   live: { enabled: true, min_profit_factor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT, max_drawdown_time: 240, max_positions: 500 },
 }
 
+function enforceStrategyChannelPipeline(profile: StrategyChannel): StrategyChannel {
+  return Object.fromEntries(
+    STRATEGY_TYPES.map((stage) => [
+      stage,
+      { ...profile[stage], enabled: true },
+    ]),
+  ) as StrategyChannel
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // COMPONENT
 // ─────────────────────────────────────────────────────────────────────
@@ -344,7 +353,10 @@ export function ConnectionSettingsDialog({
         symbol_count:         symbolsCfg.symbolCount,
         symbols:              symbolsCfg.symbols,
         indication_channels:  { main: indMain, preset: indPreset },
-        strategies:           { main: stratMain, preset: stratPreset },
+        strategies: {
+          main: enforceStrategyChannelPipeline(stratMain),
+          preset: enforceStrategyChannelPipeline(stratPreset),
+        },
         coordination_settings: coordination,
         prevPosMinCount:      coordination.prevPosMinCount,
         mainEvalPosCount:     coordination.mainEvalPosCount,
@@ -408,8 +420,18 @@ export function ConnectionSettingsDialog({
 
       // Apply strategy channel settings
       const strats = p.strategies as Record<string, unknown> | undefined
-      if (strats?.main) setStratMain(prev => ({ ...prev, ...(strats.main as object) }))
-      if (strats?.preset) setStratPreset(prev => ({ ...prev, ...(strats.preset as object) }))
+      if (strats?.main) {
+        setStratMain(prev => enforceStrategyChannelPipeline({
+          ...prev,
+          ...(strats.main as object),
+        }))
+      }
+      if (strats?.preset) {
+        setStratPreset(prev => enforceStrategyChannelPipeline({
+          ...prev,
+          ...(strats.preset as object),
+        }))
+      }
 
       const indicationChannels = p.indication_channels as Record<string, unknown> | undefined
       if (indicationChannels) {
@@ -559,7 +581,9 @@ export function ConnectionSettingsDialog({
             const raw = (rawVal && typeof rawVal === "object" ? rawVal : {}) as Record<string, unknown>
             const def = defaults[stage]
             return {
-              enabled:           typeof raw.enabled === "boolean" ? raw.enabled : def.enabled,
+              // Compatibility field only: Base → Main → Real → Live is one
+              // mandatory pipeline and no individual stage can be disabled.
+              enabled:           true,
               min_profit_factor: normalizeMainTradeStagePfRatio(stage, raw.min_profit_factor ?? def.min_profit_factor),
               max_drawdown_time: Number.isFinite(Number(raw.max_drawdown_time)) && Number(raw.max_drawdown_time) >= 20  ? Number(raw.max_drawdown_time)  : def.max_drawdown_time,
               max_positions:     stage === "base" || stage === "main"
@@ -710,8 +734,8 @@ export function ConnectionSettingsDialog({
         symbols_confirmed: symbolsCfg.symbolOrder === "manual",
         // Strategies (per channel)
         strategies: {
-          main:   stratMain,
-          preset: stratPreset,
+          main: enforceStrategyChannelPipeline(stratMain),
+          preset: enforceStrategyChannelPipeline(stratPreset),
         },
         // Strategy coordination (axes + variants toggles).
         // These MUST be top-level keys in the payload — NOT nested inside
@@ -2091,7 +2115,7 @@ function StrategyProfileEditor({
         return (
           <div
             key={type}
-            className={`rounded-lg border ${ac.border} ${ac.bg} p-3.5 transition-opacity ${p.enabled ? "" : "opacity-50"}`}
+            className={`rounded-lg border ${ac.border} ${ac.bg} p-3.5`}
           >
             {/* Header row */}
             <div className="flex items-center justify-between mb-3.5">
@@ -2099,15 +2123,9 @@ function StrategyProfileEditor({
                 <span className={`h-2 w-2 rounded-full ${ac.dot} shrink-0`} />
                 <span className="text-sm font-semibold tracking-tight">{ac.label} Stage</span>
               </div>
-              <div className="flex items-center gap-2">
-                <span className={`text-[10px] font-medium ${p.enabled ? "text-foreground" : "text-muted-foreground"}`}>
-                  {p.enabled ? "Active" : "Disabled"}
-                </span>
-                <Switch
-                  checked={p.enabled}
-                  onCheckedChange={(v) => update(type, { enabled: v })}
-                />
-              </div>
+              <span className="text-[10px] font-medium text-foreground">
+                Pipeline step · always active
+              </span>
             </div>
 
             {/* Min PF slider */}
@@ -2125,7 +2143,6 @@ function StrategyProfileEditor({
                 min={mainTradeStagePfMin(type)} max={MAIN_TRADE_PF_RATIO_MAX} step={MAIN_TRADE_PF_RATIO_STEP}
                 value={[p.min_profit_factor]}
                 onValueChange={([v]) => update(type, { min_profit_factor: normalizeMainTradeStagePfRatio(type, v) })}
-                disabled={!p.enabled}
                 className="py-1"
               />
               <div className="flex justify-between text-[10px] text-muted-foreground">
@@ -2152,7 +2169,6 @@ function StrategyProfileEditor({
                 min={20} max={800} step={2}
                 value={[p.max_drawdown_time]}
                 onValueChange={([v]) => update(type, { max_drawdown_time: v })}
-                disabled={!p.enabled}
                 className="py-1"
               />
               <div className="flex justify-between text-[10px] text-muted-foreground">
@@ -2183,7 +2199,6 @@ function StrategyProfileEditor({
                     min={100} max={50000} step={100}
                     value={[p.max_positions]}
                     onValueChange={([v]) => update(type, { max_positions: v })}
-                    disabled={!p.enabled}
                     className="py-1"
                   />
                   <div className="flex justify-between text-[10px] text-muted-foreground">

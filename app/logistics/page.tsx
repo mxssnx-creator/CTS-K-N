@@ -303,7 +303,7 @@ function MainSystemTab({
     return fallback
   }
   const positionCost = settingNumber("positionCost", 0.1)
-  const basePf = settingNumber("baseProfitFactor", 0.8)
+  const basePf = settingNumber("baseProfitFactor", 0.4)
   const mainPf = settingNumber("mainProfitFactor", 1.12)
   const realPf = settingNumber("realProfitFactor", 1.12)
   const livePf = settingNumber("liveProfitFactor", 1.12)

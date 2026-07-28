@@ -25,8 +25,8 @@ export const MAIN_TRADE_PF_RATIO_BASE = 0.1
  */
 export const PREVIOUS_POSITION_MIN_PF_RATIO = 0.3
 
-export const MAIN_TRADE_BASE_PF_RATIO_MIN = 0.8
-export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 0.8
+export const MAIN_TRADE_BASE_PF_RATIO_MIN = 0.4
+export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 0.4
 export const MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT = 1.12
 
 export type MainTradeStage = "base" | "main" | "real" | "live"

@@ -82,12 +82,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       const d = DEFAULTS[type]
       return {
         strategy_type: type,
-        is_enabled:
-          typeof saved.is_enabled === "boolean"
-            ? saved.is_enabled
-            : typeof saved.enabled === "boolean"
-              ? saved.enabled
-              : d.is_enabled,
+        // Compatibility field only. The four rows form one mandatory
+        // processing pipeline and cannot be switched independently.
+        is_enabled: true,
         min_profit_factor: normalizeMainTradeStagePfRatio(
           type,
           saved.min_profit_factor,
@@ -122,6 +119,13 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         : conn.connection_settings || {}
 
     const channel: Record<string, Partial<StratRow>> = { ...(cs?.strategies?.main || {}) }
+    for (const type of Object.keys(DEFAULTS) as StratRow["strategy_type"][]) {
+      channel[type] = {
+        ...(channel[type] || {}),
+        is_enabled: true,
+        enabled: true,
+      }
+    }
     const flat: Record<string, string> = {}
 
     for (const strat of strategies) {
@@ -133,8 +137,8 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       const maxPos = Number(strat.max_positions ?? d.max_positions)
 
       channel[type] = {
-        is_enabled: !!strat.is_enabled,
-        enabled: !!strat.is_enabled,
+        is_enabled: true,
+        enabled: true,
         min_profit_factor: pf,
         max_drawdown_time: ddtMin,
         max_positions: maxPos,
@@ -175,7 +179,21 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       logTag: "PUT /settings/connections/[id]/strategies",
     })
 
-    return NextResponse.json({ success: true, strategies })
+    const normalizedStrategies = (Object.keys(DEFAULTS) as StratRow["strategy_type"][]).map((type) => ({
+      strategy_type: type,
+      is_enabled: true,
+      min_profit_factor: normalizeMainTradeStagePfRatio(
+        type,
+        channel[type]?.min_profit_factor,
+      ),
+      max_drawdown_time: Number(
+        channel[type]?.max_drawdown_time ?? DEFAULTS[type].max_drawdown_time,
+      ),
+      max_positions: Number(
+        channel[type]?.max_positions ?? DEFAULTS[type].max_positions,
+      ),
+    }))
+    return NextResponse.json({ success: true, strategies: normalizedStrategies })
   } catch (error) {
     console.error("[v0] Failed to update connection strategies:", error)
     return NextResponse.json({ error: "Failed to update strategies" }, { status: 500 })

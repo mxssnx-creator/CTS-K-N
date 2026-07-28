@@ -98,7 +98,7 @@ interface Settings {
   quoteAsset: string
   // ── Main Trade PF thresholds per stage ───────────────────────────
   // Operator-tunable gates for Base → Main → Real → Live promotion.
-  // PositionCost-ratio defaults: Base Valid 0.80; Main/Real/Live 1.12. Wired into
+  // PositionCost-ratio defaults: Base Valid 0.40; Main/Real/Live 1.12. Wired into
   // `lib/strategy-coordinator.ts` via `loadAppPFThresholds()` so a
   // slider change in the Strategies tab flows into the live engine
   // within 5s (TTL cap on the loader cache).
