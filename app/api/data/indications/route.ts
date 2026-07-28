@@ -21,6 +21,7 @@ interface Indication {
     bbUpper?: number
     bbLower?: number
     volatility?: number
+    [key: string]: unknown
   }
 }
 
@@ -64,14 +65,101 @@ function normaliseTimestamp(raw: string | number | undefined): string {
   return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString()
 }
 
+function percentMetric(raw: unknown): number {
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return 0
+  const scaled = Math.abs(parsed) <= 1 ? Math.abs(parsed) * 100 : Math.abs(parsed)
+  return Math.min(100, Math.max(0, scaled))
+}
+
+function displayType(raw: Record<string, any>): string {
+  const type = String(raw.type || "unknown").trim().toLowerCase()
+  const commonName = String(raw.metadata?.commonIndicatorType || "").trim()
+  if (type === "common" && commonName) {
+    return `Common · ${commonName.toUpperCase()}`
+  }
+  return type
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ") || "Unknown"
+}
+
+function normaliseSnapshotIndication(
+  raw: Record<string, any>,
+  fallbackSymbol: string,
+  index: number,
+): Indication | null {
+  if (!raw || typeof raw !== "object") return null
+  const symbol = String(raw.symbol || fallbackSymbol || "UNKNOWN").trim().toUpperCase()
+  const rawDirection = String(
+    raw.direction || raw.metadata?.direction || raw.signal || "neutral",
+  ).toLowerCase()
+  const direction: "UP" | "DOWN" | "NEUTRAL" =
+    rawDirection === "long" || rawDirection === "buy" || rawDirection === "up"
+      ? "UP"
+      : rawDirection === "short" || rawDirection === "sell" || rawDirection === "down"
+        ? "DOWN"
+        : "NEUTRAL"
+  const metadata = raw.metadata && typeof raw.metadata === "object"
+    ? { ...raw.metadata }
+    : {}
+  const commonName = String(metadata.commonIndicatorType || "").toLowerCase()
+  const commonValue = Number(metadata.value)
+  if (commonName === "rsi" && Number.isFinite(commonValue)) metadata.rsiValue = commonValue
+  if (commonName === "macd" && Number.isFinite(commonValue)) metadata.macdValue = commonValue
+  if (
+    metadata.volatility === undefined &&
+    Number.isFinite(Number(metadata.atrPct))
+  ) {
+    metadata.volatility = Number(metadata.atrPct)
+  }
+
+  return {
+    id: String(
+      raw.id ||
+      raw.setKey ||
+      `${symbol}:${raw.type || "unknown"}:${rawDirection}:${index}`,
+    ),
+    symbol,
+    indicationType: displayType(raw),
+    direction,
+    confidence: percentMetric(raw.confidence),
+    strength: percentMetric(
+      raw.rawSignalStrength ?? raw.signalScore ?? raw.strength ?? raw.confidence,
+    ),
+    timestamp: normaliseTimestamp(raw.timestamp),
+    enabled: raw.enabled !== false,
+    metadata,
+  }
+}
+
+async function scanSnapshotKeys(client: any, connectionId: string): Promise<string[]> {
+  if (typeof client.scan !== "function") return []
+  const keys: string[] = []
+  let cursor = "0"
+  do {
+    const result = await client
+      .scan(cursor, "MATCH", `indications_snapshot:${connectionId}:*`, "COUNT", 100)
+      .catch(() => null)
+    if (!result) break
+    cursor = String(Array.isArray(result) ? result[0] : result.cursor || "0")
+    keys.push(...((Array.isArray(result) ? result[1] : result.keys || []) as string[]))
+  } while (cursor !== "0")
+  return [...new Set(keys)].sort((left, right) => left.localeCompare(right))
+}
+
 /**
  * Read real indications from the canonical engine keyspace.
  *
- * Primary path: the cron `generate-indications` writes Redis hashes:
- *   indications:{connId}:{type}:latest
- *   Fields: symbol, value, confidence, profitFactor, timestamp
- *   Known types: direction, move, active, active_advanced, optimal, auto, signal, trend
- *   TTL: 1 hour
+ * Primary path: the engine writes one exhaustive current snapshot per symbol:
+ *   indications_snapshot:{connId}:{symbol}
+ * and maintains:
+ *   indications_snapshot:index:{connId}
+ *
+ * Each snapshot contains every exact Default, Additional, Common and Signal
+ * configuration emitted by the current cycle. The index is a navigation aid,
+ * never a top-N list.
  *
  * Fallback: the legacy IndicationConfigManager keys if canonical hashes
  * are absent (cold-boot before first cron cycle).
@@ -84,49 +172,58 @@ async function getRealIndications(connectionId: string): Promise<Indication[]> {
     const client = getRedisClient()
     if (!client) return []
 
-    // ── Primary path: canonical engine hashes ───────────────────────────────
-    const KNOWN_TYPES = ["direction", "move", "active", "active_advanced", "optimal", "auto", "signal", "trend"]
-    const canonicalKeys = KNOWN_TYPES.map((t) => `indications:${connectionId}:${t}:latest`)
-
-    const hashes = await Promise.all(
-      canonicalKeys.map((k) =>
-        (client.hgetall(k) as Promise<Record<string, string> | null>).catch(() => null)
-      )
-    )
-
-    const canonicalIndications: Indication[] = []
-    for (let i = 0; i < KNOWN_TYPES.length; i++) {
-      const h = hashes[i]
-      if (!h || Object.keys(h).length === 0) continue
-
-      const type = KNOWN_TYPES[i]
-      const symbol: string = h.symbol || "UNKNOWN"
-      const rawConf = parseFloat(h.confidence || h.value || "0") || 0
-      // confidence stored as 0-1 fraction; scale to 0-100 for display
-      const confidence = Math.min(100, Math.max(0, rawConf <= 1 ? rawConf * 100 : rawConf))
-      const signal: string = h.signal || h.direction || "neutral"
-      const direction: "UP" | "DOWN" | "NEUTRAL" =
-        signal === "buy" || signal === "long" || signal === "UP" ? "UP"
-        : signal === "sell" || signal === "short" || signal === "DOWN" ? "DOWN"
-        : "NEUTRAL"
-      const timestamp = normaliseTimestamp(h.timestamp)
-
-      canonicalIndications.push({
-        id: `${connectionId}-${type}`,
-        symbol,
-        indicationType: type.charAt(0).toUpperCase() + type.slice(1),
-        direction,
-        confidence,
-        strength: confidence,
-        timestamp,
-        enabled: true,
-        metadata: {
-          macdValue: parseFloat(h.value || "0") || undefined,
-        },
-      })
+    // ── Primary path: canonical exhaustive per-symbol snapshots ─────────────
+    const indexedSymbols = (
+      await client.smembers(`indications_snapshot:index:${connectionId}`).catch(() => [])
+    ) as string[]
+    let snapshotKeys = [...new Set(indexedSymbols.map((symbol) =>
+      `indications_snapshot:${connectionId}:${String(symbol).trim().toUpperCase()}`,
+    ))]
+    if (snapshotKeys.length === 0) {
+      // Upgrade repair only. Once found, restore the maintained index so
+      // subsequent dashboard polls are O(symbols) without a keyspace scan.
+      snapshotKeys = await scanSnapshotKeys(client, connectionId)
+      if (snapshotKeys.length > 0) {
+        const symbols = snapshotKeys.map((key) =>
+          key.slice(`indications_snapshot:${connectionId}:`.length),
+        )
+        await client
+          .sadd(`indications_snapshot:index:${connectionId}`, ...symbols)
+          .catch(() => 0)
+      }
     }
 
-    if (canonicalIndications.length > 0) return canonicalIndications
+    if (snapshotKeys.length > 0) {
+      const snapshots = await mapWithConcurrency(snapshotKeys, 32, async (key) => ({
+        key,
+        raw: await client.get(key).catch(() => null),
+      }))
+      const canonicalIndications: Indication[] = []
+      for (const snapshot of snapshots) {
+        if (!snapshot.raw) continue
+        let rows: unknown[] = []
+        try {
+          const parsed = JSON.parse(String(snapshot.raw))
+          rows = Array.isArray(parsed) ? parsed : []
+        } catch {
+          rows = []
+        }
+        const fallbackSymbol = snapshot.key.slice(
+          `indications_snapshot:${connectionId}:`.length,
+        )
+        for (let index = 0; index < rows.length; index++) {
+          const row = rows[index]
+          if (!row || typeof row !== "object") continue
+          const normalized = normaliseSnapshotIndication(
+            row as Record<string, any>,
+            fallbackSymbol,
+            index,
+          )
+          if (normalized) canonicalIndications.push(normalized)
+        }
+      }
+      if (canonicalIndications.length > 0) return canonicalIndications
+    }
 
     // ── Fallback: legacy indication:config:* keys ────────────────────────────
     const configPattern = `indication:${connectionId}:config:*`
