@@ -678,6 +678,8 @@ credentials are present.
   verified zero/unknown state, render only measured Redis/workflow/module
   health and derive pressure from real metrics; they no longer present
   fabricated capacities, placeholder health or a global 500-position ceiling.
+  Connection state tabs consume those measured endpoints, and logistics reports
+  the actual maximum latency rather than a fabricated average-plus-offset.
 - [x] Preserved one physical Direction parent for source-scoped Signal Block
   adjustments while allowing ordinary Block-only lanes to seed and recover
   their own parent. Explicit Consensus and direct-source outcomes now update
