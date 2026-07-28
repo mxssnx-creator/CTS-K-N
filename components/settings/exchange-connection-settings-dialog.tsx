@@ -1,6 +1,14 @@
 "use client"
 
 import { MIN_VOLUME_FACTOR, normalizeIdentityVolumeFactor } from "@/lib/constants"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  MAIN_TRADE_PF_RATIO_MAX,
+  MAIN_TRADE_PF_RATIO_MIN,
+  MAIN_TRADE_PF_RATIO_STEP,
+  normalizeMainTradeStagePfRatio,
+} from "@/lib/main-trade-profit-factor"
 import { useState, useEffect } from "react"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
@@ -21,10 +29,12 @@ interface ConnectionSettings {
   liveTradeProfitFactorMinBase: number
   liveTradeProfitFactorMinMain: number
   liveTradeProfitFactorMinReal: number
+  liveTradeProfitFactorMinLive: number
   liveTradeDrawdownTimeHours: number
   presetTradeProfitFactorMinBase: number
   presetTradeProfitFactorMinMain: number
   presetTradeProfitFactorMinReal: number
+  presetTradeProfitFactorMinLive: number
   presetTradeDrawdownTimeHours: number
   presetTradeBlockEnabled: boolean
   presetTradeDcaEnabled: boolean
@@ -66,13 +76,15 @@ export function ExchangeConnectionSettingsDialog({
     baseVolumeFactorLive: MIN_VOLUME_FACTOR,
     baseVolumeFactorPreset: MIN_VOLUME_FACTOR,
     baseVolumeFactorSignal: MIN_VOLUME_FACTOR,
-    liveTradeProfitFactorMinBase: 0.6,
-    liveTradeProfitFactorMinMain: 0.6,
-    liveTradeProfitFactorMinReal: 0.6,
+    liveTradeProfitFactorMinBase: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+    liveTradeProfitFactorMinMain: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+    liveTradeProfitFactorMinReal: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+    liveTradeProfitFactorMinLive: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
     liveTradeDrawdownTimeHours: 12,
-    presetTradeProfitFactorMinBase: 0.6,
-    presetTradeProfitFactorMinMain: 0.6,
-    presetTradeProfitFactorMinReal: 0.6,
+    presetTradeProfitFactorMinBase: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+    presetTradeProfitFactorMinMain: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+    presetTradeProfitFactorMinReal: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+    presetTradeProfitFactorMinLive: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
     presetTradeDrawdownTimeHours: 12,
     presetTradeBlockEnabled: true,
     presetTradeDcaEnabled: false,
@@ -125,6 +137,8 @@ export function ExchangeConnectionSettingsDialog({
       const indicationSettings = indicationRes.ok ? await indicationRes.json() : null
       const strategySettings = strategyRes.ok ? await strategyRes.json() : null
       const globalSettings = globalSettingsRes.ok ? await globalSettingsRes.json() : null
+      const mainStages = loadedSettings?.strategies?.main || {}
+      const presetStages = loadedSettings?.strategies?.preset || {}
 
       setSettings({
         ...settings,
@@ -147,6 +161,38 @@ export function ExchangeConnectionSettingsDialog({
         blockEnabled: loadedSettings.blockEnabled ?? strategySettings?.block_enabled ?? true,
         dcaEnabled: loadedSettings.dcaEnabled ?? strategySettings?.dca_enabled ?? false,
         targetPositions: loadedSettings.targetPositions ?? globalSettings?.positions_average ?? 300,
+        liveTradeProfitFactorMinBase: normalizeMainTradeStagePfRatio(
+          "base",
+          mainStages.base?.min_profit_factor ?? loadedSettings.liveTradeProfitFactorMinBase,
+        ),
+        liveTradeProfitFactorMinMain: normalizeMainTradeStagePfRatio(
+          "main",
+          mainStages.main?.min_profit_factor ?? loadedSettings.liveTradeProfitFactorMinMain,
+        ),
+        liveTradeProfitFactorMinReal: normalizeMainTradeStagePfRatio(
+          "real",
+          mainStages.real?.min_profit_factor ?? loadedSettings.liveTradeProfitFactorMinReal,
+        ),
+        liveTradeProfitFactorMinLive: normalizeMainTradeStagePfRatio(
+          "live",
+          mainStages.live?.min_profit_factor ?? loadedSettings.liveTradeProfitFactorMinLive,
+        ),
+        presetTradeProfitFactorMinBase: normalizeMainTradeStagePfRatio(
+          "base",
+          presetStages.base?.min_profit_factor ?? loadedSettings.presetTradeProfitFactorMinBase,
+        ),
+        presetTradeProfitFactorMinMain: normalizeMainTradeStagePfRatio(
+          "main",
+          presetStages.main?.min_profit_factor ?? loadedSettings.presetTradeProfitFactorMinMain,
+        ),
+        presetTradeProfitFactorMinReal: normalizeMainTradeStagePfRatio(
+          "real",
+          presetStages.real?.min_profit_factor ?? loadedSettings.presetTradeProfitFactorMinReal,
+        ),
+        presetTradeProfitFactorMinLive: normalizeMainTradeStagePfRatio(
+          "live",
+          presetStages.live?.min_profit_factor ?? loadedSettings.presetTradeProfitFactorMinLive,
+        ),
       })
 
       const connResponse = await fetch(`/api/settings/connections/${connectionId}`)
@@ -179,6 +225,68 @@ export function ExchangeConnectionSettingsDialog({
         baseVolumeFactorLive: normalizeIdentityVolumeFactor(settings.baseVolumeFactorLive),
         baseVolumeFactorPreset: normalizeIdentityVolumeFactor(settings.baseVolumeFactorPreset),
         baseVolumeFactorSignal: normalizeIdentityVolumeFactor(settings.baseVolumeFactorSignal),
+        liveTradeProfitFactorMinBase: normalizeMainTradeStagePfRatio("base", settings.liveTradeProfitFactorMinBase),
+        liveTradeProfitFactorMinMain: normalizeMainTradeStagePfRatio("main", settings.liveTradeProfitFactorMinMain),
+        liveTradeProfitFactorMinReal: normalizeMainTradeStagePfRatio("real", settings.liveTradeProfitFactorMinReal),
+        liveTradeProfitFactorMinLive: normalizeMainTradeStagePfRatio("live", settings.liveTradeProfitFactorMinLive),
+        presetTradeProfitFactorMinBase: normalizeMainTradeStagePfRatio("base", settings.presetTradeProfitFactorMinBase),
+        presetTradeProfitFactorMinMain: normalizeMainTradeStagePfRatio("main", settings.presetTradeProfitFactorMinMain),
+        presetTradeProfitFactorMinReal: normalizeMainTradeStagePfRatio("real", settings.presetTradeProfitFactorMinReal),
+        presetTradeProfitFactorMinLive: normalizeMainTradeStagePfRatio("live", settings.presetTradeProfitFactorMinLive),
+        strategies: {
+          main: {
+            base: {
+              enabled: true,
+              min_profit_factor: normalizeMainTradeStagePfRatio("base", settings.liveTradeProfitFactorMinBase),
+              max_drawdown_time: settings.liveTradeDrawdownTimeHours * 60,
+              max_positions: 0,
+            },
+            main: {
+              enabled: true,
+              min_profit_factor: normalizeMainTradeStagePfRatio("main", settings.liveTradeProfitFactorMinMain),
+              max_drawdown_time: settings.liveTradeDrawdownTimeHours * 60,
+              max_positions: 0,
+            },
+            real: {
+              enabled: true,
+              min_profit_factor: normalizeMainTradeStagePfRatio("real", settings.liveTradeProfitFactorMinReal),
+              max_drawdown_time: settings.liveTradeDrawdownTimeHours * 60,
+              max_positions: 5_000,
+            },
+            live: {
+              enabled: true,
+              min_profit_factor: normalizeMainTradeStagePfRatio("live", settings.liveTradeProfitFactorMinLive),
+              max_drawdown_time: settings.liveTradeDrawdownTimeHours * 60,
+              max_positions: 500,
+            },
+          },
+          preset: {
+            base: {
+              enabled: true,
+              min_profit_factor: normalizeMainTradeStagePfRatio("base", settings.presetTradeProfitFactorMinBase),
+              max_drawdown_time: settings.presetTradeDrawdownTimeHours * 60,
+              max_positions: 0,
+            },
+            main: {
+              enabled: true,
+              min_profit_factor: normalizeMainTradeStagePfRatio("main", settings.presetTradeProfitFactorMinMain),
+              max_drawdown_time: settings.presetTradeDrawdownTimeHours * 60,
+              max_positions: 0,
+            },
+            real: {
+              enabled: true,
+              min_profit_factor: normalizeMainTradeStagePfRatio("real", settings.presetTradeProfitFactorMinReal),
+              max_drawdown_time: settings.presetTradeDrawdownTimeHours * 60,
+              max_positions: 5_000,
+            },
+            live: {
+              enabled: true,
+              min_profit_factor: normalizeMainTradeStagePfRatio("live", settings.presetTradeProfitFactorMinLive),
+              max_drawdown_time: settings.presetTradeDrawdownTimeHours * 60,
+              max_positions: 500,
+            },
+          },
+        },
       }
       const response = await fetch(`/api/settings/connections/${connectionId}/settings`, {
         method: "PATCH",
@@ -379,18 +487,25 @@ export function ExchangeConnectionSettingsDialog({
             <div className="space-y-6">
               <div className="space-y-4 p-4 border rounded-lg">
                 <h4 className="font-semibold text-base">Live Trade Limits</h4>
+                <p className="text-xs text-muted-foreground">
+                  PositionCost-relative stage ratios. Base starts at 0.80; Main, Real and Live default to 1.12.
+                  Every value uses the canonical 0.08–2.70 grid with 0.02 steps.
+                </p>
 
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                   <div className="space-y-2">
                     <Label htmlFor="live-profit-base">Profit Factor Min (Base)</Label>
                     <Input
                       id="live-profit-base"
                       type="number"
-                      step="0.1"
-                      min="0.1"
-                      max="2.0"
+                      step={MAIN_TRADE_PF_RATIO_STEP}
+                      min={MAIN_TRADE_BASE_PF_RATIO_DEFAULT}
+                      max={MAIN_TRADE_PF_RATIO_MAX}
                       value={settings.liveTradeProfitFactorMinBase}
-                      onChange={(e) => updateSetting("liveTradeProfitFactorMinBase", Number.parseFloat(e.target.value))}
+                      onChange={(e) => updateSetting(
+                        "liveTradeProfitFactorMinBase",
+                        normalizeMainTradeStagePfRatio("base", Number.parseFloat(e.target.value)),
+                      )}
                     />
                   </div>
 
@@ -399,11 +514,14 @@ export function ExchangeConnectionSettingsDialog({
                     <Input
                       id="live-profit-main"
                       type="number"
-                      step="0.1"
-                      min="0.1"
-                      max="2.0"
+                      step={MAIN_TRADE_PF_RATIO_STEP}
+                      min={MAIN_TRADE_PF_RATIO_MIN}
+                      max={MAIN_TRADE_PF_RATIO_MAX}
                       value={settings.liveTradeProfitFactorMinMain}
-                      onChange={(e) => updateSetting("liveTradeProfitFactorMinMain", Number.parseFloat(e.target.value))}
+                      onChange={(e) => updateSetting(
+                        "liveTradeProfitFactorMinMain",
+                        normalizeMainTradeStagePfRatio("main", Number.parseFloat(e.target.value)),
+                      )}
                     />
                   </div>
 
@@ -412,11 +530,30 @@ export function ExchangeConnectionSettingsDialog({
                     <Input
                       id="live-profit-real"
                       type="number"
-                      step="0.1"
-                      min="0.1"
-                      max="2.0"
+                      step={MAIN_TRADE_PF_RATIO_STEP}
+                      min={MAIN_TRADE_PF_RATIO_MIN}
+                      max={MAIN_TRADE_PF_RATIO_MAX}
                       value={settings.liveTradeProfitFactorMinReal}
-                      onChange={(e) => updateSetting("liveTradeProfitFactorMinReal", Number.parseFloat(e.target.value))}
+                      onChange={(e) => updateSetting(
+                        "liveTradeProfitFactorMinReal",
+                        normalizeMainTradeStagePfRatio("real", Number.parseFloat(e.target.value)),
+                      )}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="live-profit-live">Profit Factor Min (Live)</Label>
+                    <Input
+                      id="live-profit-live"
+                      type="number"
+                      step={MAIN_TRADE_PF_RATIO_STEP}
+                      min={MAIN_TRADE_PF_RATIO_MIN}
+                      max={MAIN_TRADE_PF_RATIO_MAX}
+                      value={settings.liveTradeProfitFactorMinLive}
+                      onChange={(e) => updateSetting(
+                        "liveTradeProfitFactorMinLive",
+                        normalizeMainTradeStagePfRatio("live", Number.parseFloat(e.target.value)),
+                      )}
                     />
                   </div>
                 </div>
@@ -440,19 +577,25 @@ export function ExchangeConnectionSettingsDialog({
 
               <div className="space-y-4 p-4 border rounded-lg">
                 <h4 className="font-semibold text-base">Preset Trade Limits</h4>
+                <p className="text-xs text-muted-foreground">
+                  The Preset channel mirrors the same independent Base/Main/Real/Live stage contract.
+                </p>
 
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                   <div className="space-y-2">
                     <Label htmlFor="preset-profit-base">Profit Factor Min (Base)</Label>
                     <Input
                       id="preset-profit-base"
                       type="number"
-                      step="0.1"
-                      min="0.1"
-                      max="2.0"
+                      step={MAIN_TRADE_PF_RATIO_STEP}
+                      min={MAIN_TRADE_BASE_PF_RATIO_DEFAULT}
+                      max={MAIN_TRADE_PF_RATIO_MAX}
                       value={settings.presetTradeProfitFactorMinBase}
                       onChange={(e) =>
-                        updateSetting("presetTradeProfitFactorMinBase", Number.parseFloat(e.target.value))
+                        updateSetting(
+                          "presetTradeProfitFactorMinBase",
+                          normalizeMainTradeStagePfRatio("base", Number.parseFloat(e.target.value)),
+                        )
                       }
                     />
                   </div>
@@ -462,12 +605,15 @@ export function ExchangeConnectionSettingsDialog({
                     <Input
                       id="preset-profit-main"
                       type="number"
-                      step="0.1"
-                      min="0.1"
-                      max="2.0"
+                      step={MAIN_TRADE_PF_RATIO_STEP}
+                      min={MAIN_TRADE_PF_RATIO_MIN}
+                      max={MAIN_TRADE_PF_RATIO_MAX}
                       value={settings.presetTradeProfitFactorMinMain}
                       onChange={(e) =>
-                        updateSetting("presetTradeProfitFactorMinMain", Number.parseFloat(e.target.value))
+                        updateSetting(
+                          "presetTradeProfitFactorMinMain",
+                          normalizeMainTradeStagePfRatio("main", Number.parseFloat(e.target.value)),
+                        )
                       }
                     />
                   </div>
@@ -477,12 +623,33 @@ export function ExchangeConnectionSettingsDialog({
                     <Input
                       id="preset-profit-real"
                       type="number"
-                      step="0.1"
-                      min="0.1"
-                      max="2.0"
+                      step={MAIN_TRADE_PF_RATIO_STEP}
+                      min={MAIN_TRADE_PF_RATIO_MIN}
+                      max={MAIN_TRADE_PF_RATIO_MAX}
                       value={settings.presetTradeProfitFactorMinReal}
                       onChange={(e) =>
-                        updateSetting("presetTradeProfitFactorMinReal", Number.parseFloat(e.target.value))
+                        updateSetting(
+                          "presetTradeProfitFactorMinReal",
+                          normalizeMainTradeStagePfRatio("real", Number.parseFloat(e.target.value)),
+                        )
+                      }
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="preset-profit-live">Profit Factor Min (Live)</Label>
+                    <Input
+                      id="preset-profit-live"
+                      type="number"
+                      step={MAIN_TRADE_PF_RATIO_STEP}
+                      min={MAIN_TRADE_PF_RATIO_MIN}
+                      max={MAIN_TRADE_PF_RATIO_MAX}
+                      value={settings.presetTradeProfitFactorMinLive}
+                      onChange={(e) =>
+                        updateSetting(
+                          "presetTradeProfitFactorMinLive",
+                          normalizeMainTradeStagePfRatio("live", Number.parseFloat(e.target.value)),
+                        )
                       }
                     />
                   </div>

@@ -1026,7 +1026,7 @@ function resamplePresetCandles(
   candles: PresetCandle[],
   timeframeMinutesInput: number,
 ): { candles: PresetCandle[]; sourceIndexes: number[] } {
-  const timeframeMinutes = Math.max(1, Math.min(15, Math.round(timeframeMinutesInput || 1)))
+  const timeframeMinutes = Math.max(1, Math.min(60, Math.round(timeframeMinutesInput || 1)))
   if (candles.length < 2) {
     return { candles, sourceIndexes: candles.map((_, index) => index) }
   }
@@ -1070,7 +1070,7 @@ export function generatePresetSignals(
   config: PresetIndicatorConfiguration,
   maximum: number,
 ): PresetSignalEntry[] {
-  const timeframeMinutes = Math.max(1, Math.min(15, Math.round(config.params.timeframeMinutes || 1)))
+  const timeframeMinutes = Math.max(1, Math.min(60, Math.round(config.params.timeframeMinutes || 1)))
   const resampled = resamplePresetCandles(candles, timeframeMinutes)
   const calculationParams = Object.fromEntries(
     Object.entries(config.params).filter(([key]) => key !== "timeframeMinutes"),

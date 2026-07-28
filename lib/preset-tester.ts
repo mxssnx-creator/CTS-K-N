@@ -7,6 +7,7 @@ import { resolveStopLossPercent } from "@/lib/tp-sl-ratio"
 import { initRedis, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
 import { TechnicalIndicators } from "./indicators"
 import type { PresetConfiguration } from "./preset-config-generator"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 export interface TestResult {
   configId: string
@@ -46,17 +47,15 @@ export class PresetTester {
 
     let tested = 0
     const total = configurations.length
-    const promises: Promise<void>[] = []
-
-    for (const [symbol, configs] of configsBySymbol.entries()) {
-      const promise = this.testSymbolConfigurations(symbol, configs, testPeriodHours).then(() => {
+    await mapWithConcurrency(
+      [...configsBySymbol.entries()],
+      4,
+      async ([symbol, configs]) => {
+        await this.testSymbolConfigurations(symbol, configs, testPeriodHours)
         tested += configs.length
         if (this.progressCallback) this.progressCallback(tested, total)
-      })
-      promises.push(promise)
-    }
-
-    await Promise.all(promises)
+      },
+    )
     console.log(`[v0] Completed testing ${tested} configurations`)
     return this.testResults
   }
@@ -69,8 +68,11 @@ export class PresetTester {
         return
       }
 
-      for (const config of configurations) {
+      const results = await mapWithConcurrency(configurations, 8, async (config) => {
         const result = await this.testConfiguration(config, marketData)
+        return { config, result }
+      })
+      for (const { config, result } of results) {
         this.testResults.set(config.id, result)
       }
     } catch (error) {
@@ -86,12 +88,10 @@ export class PresetTester {
 
       // Get from Redis sorted set
       const dataIds = await client.zrangebyscore(`market_data:${this.connectionId}:${symbol}`, cutoff, "+inf")
-      const data: any[] = []
-
-      for (const dataId of dataIds) {
-        const entry = await getSettings(`market_candle:${this.connectionId}:${symbol}:${dataId}`)
-        if (entry) data.push(entry)
-      }
+      const entries = await mapWithConcurrency(dataIds, 32, (dataId) =>
+        getSettings(`market_candle:${this.connectionId}:${symbol}:${dataId}`),
+      )
+      const data = entries.filter(Boolean) as any[]
 
       // If no candle data, try to get from the generic market data
       if (data.length === 0) {
@@ -205,7 +205,7 @@ export class PresetTester {
       await initRedis()
       const client = getRedisClient()
 
-      for (const [configId, result] of this.testResults.entries()) {
+      await mapWithConcurrency([...this.testResults.entries()], 16, async ([configId, result]) => {
         const resultKey = `preset_test:${presetId}:${configId}`
         await setSettings(resultKey, {
           ...result,
@@ -213,7 +213,7 @@ export class PresetTester {
           tested_at: new Date().toISOString(),
         })
         await client.sadd(`preset_tests:${presetId}`, configId)
-      }
+      })
 
       console.log(`[v0] Saved ${this.testResults.size} test results to Redis`)
     } catch (error) {
