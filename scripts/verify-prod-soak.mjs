@@ -639,8 +639,8 @@ async function main() {
     const coordination = stored.coordination_settings || stored.coordinationSettings || {}
     const posCountsRatio = Number(stored.posCountsVolumeRatio ?? coordination.posCountsVolumeRatio)
     const positionCost = Number(globalSettings.json?.settings?.positionCost)
-    if (posCountsRatio !== 0.05) {
-      throw new Error(`Position-count volume ratio default is ${posCountsRatio}, expected 0.05`)
+    if (posCountsRatio !== 3) {
+      throw new Error(`Position-count volume ratio default is ${posCountsRatio}, expected 3`)
     }
     if (positionCost !== 0.1) {
       throw new Error(`System positionCost default is ${positionCost}, expected 0.1%`)
