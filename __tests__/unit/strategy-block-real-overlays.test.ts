@@ -143,6 +143,8 @@ describe("Real-stage Block overlays", () => {
           count: 25,
           successRate: 0.72,
           profitFactor: 2,
+          positionCostRatio: 2,
+          positionCostRatioCount: 25,
           avgDDT: 18,
           recentPnls: [],
         },
@@ -160,6 +162,8 @@ describe("Real-stage Block overlays", () => {
           count: 4,
           successRate: 0.5,
           profitFactor: 2,
+          positionCostRatio: 2,
+          positionCostRatioCount: 4,
           avgDDT: 18,
         },
       },
@@ -176,6 +180,8 @@ describe("Real-stage Block overlays", () => {
           count: 25,
           successRate: 0,
           profitFactor: 0,
+          positionCostRatio: 0,
+          positionCostRatioCount: 25,
           avgDDT: 18,
         },
       },
@@ -282,20 +288,38 @@ describe("Real-stage Block overlays", () => {
       metadata: { direction: "long", signal: signalRisk },
     }])
 
-    expect(result.sets).toHaveLength(2)
-    const standard = result.sets.find((set) => set.setKey === "BTCUSDT:signal:long")
-    const trailing = result.sets.find((set) => set.setKey === "BTCUSDT:signal:long:signal-trailing")
+    expect(result.sets).toHaveLength(324)
+    const standardSets = result.sets.filter((set) => !set.trailingProfile)
+    const trailingSets = result.sets.filter((set) => set.trailingProfile?.mode === "signal_dynamic")
+    expect(standardSets).toHaveLength(54)
+    expect(trailingSets).toHaveLength(270)
+    expect(new Set(result.sets.map((set) => set.setKey)).size).toBe(324)
+    const standard = standardSets.find((set) =>
+      set.signalRisk?.configId === "tp1_00:slr0_50:standard")
+    const trailing = trailingSets.find((set) =>
+      set.signalRisk?.configId === "tp1_00:slr0_50:trail0_80")
     expect(standard).toMatchObject({
-      setKey: "BTCUSDT:signal:long",
       indicationType: "signal",
       direction: "long",
-      signalRisk,
+      signalRisk: {
+        sourceIds: signalRisk.sourceIds,
+        configId: "tp1_00:slr0_50:standard",
+        takeProfitPct: 1,
+        stopLossPct: 0.5,
+      },
     })
     expect(standard?.trailingProfile).toBeUndefined()
     expect(trailing).toMatchObject({
       indicationType: "signal",
       direction: "long",
-      signalRisk,
+      signalRisk: {
+        sourceIds: signalRisk.sourceIds,
+        configId: "tp1_00:slr0_50:trail0_80",
+        takeProfitPct: 1,
+        stopLossPct: 0.5,
+        trailing: true,
+        trailingStopPct: 0.8,
+      },
       trailingProfile: {
         mode: "signal_dynamic",
         startRatio: 0,
@@ -338,8 +362,9 @@ describe("Real-stage Block overlays", () => {
       invalidateSignalSettingsCache()
       const trailingOnly = await (new StrategyCoordinator(`${connectionId}-trailing-only`) as any)
         .createBaseSets("BTCUSDT", [indication])
-      expect(trailingOnly.sets).toHaveLength(1)
-      expect(trailingOnly.sets[0].trailingProfile?.mode).toBe("signal_dynamic")
+      expect(trailingOnly.sets).toHaveLength(270)
+      expect(trailingOnly.sets.every((set: StrategySet) =>
+        set.trailingProfile?.mode === "signal_dynamic")).toBe(true)
 
       await client.set(SIGNAL_INDICATION_STORAGE_KEY, JSON.stringify({
         ...DEFAULT_SIGNAL_INDICATION_SETTINGS,
@@ -349,9 +374,9 @@ describe("Real-stage Block overlays", () => {
       invalidateSignalSettingsCache()
       const standardOnly = await (new StrategyCoordinator(`${connectionId}-standard-only`) as any)
         .createBaseSets("BTCUSDT", [indication])
-      expect(standardOnly.sets).toHaveLength(1)
-      expect(standardOnly.sets[0].setKey).toBe("BTCUSDT:signal:long")
-      expect(standardOnly.sets[0].trailingProfile).toBeUndefined()
+      expect(standardOnly.sets).toHaveLength(54)
+      expect(standardOnly.sets.every((set: StrategySet) =>
+        !set.trailingProfile && set.signalRisk?.trailing === false)).toBe(true)
     } finally {
       await client.del(SIGNAL_INDICATION_STORAGE_KEY)
       invalidateSignalSettingsCache()
@@ -563,6 +588,41 @@ describe("Real-stage Block overlays", () => {
     ])
   })
 
+  test("enforces Block-Only while preserving concurrent Standard plus Block mode", () => {
+    const standardLong = {
+      ...source("BTCUSDT:direction:long#standard", "long"),
+      variant: "default" as const,
+    }
+    const blockLong = {
+      ...source("BTCUSDT:direction:long#block:1", "long"),
+      variant: "block" as const,
+      blockCount: 1,
+    }
+    const dcaLong = {
+      ...source("BTCUSDT:direction:long#dca", "long"),
+      variant: "dca" as const,
+    }
+
+    expect(selectLiveDispatchCandidates(
+      [standardLong, blockLong, dcaLong],
+      { blockEnabled: true, blockOnly: true },
+    ).map((set) => set.setKey)).toEqual([blockLong.setKey])
+
+    expect(selectLiveDispatchCandidates(
+      [standardLong, blockLong, dcaLong],
+      { blockEnabled: true, blockOnly: false },
+    ).map((set) => set.setKey)).toEqual([
+      standardLong.setKey,
+      blockLong.setKey,
+      dcaLong.setKey,
+    ])
+
+    expect(selectLiveDispatchCandidates(
+      [standardLong],
+      { blockEnabled: false, blockOnly: true },
+    ).map((set) => set.setKey)).toEqual([standardLong.setKey])
+  })
+
   test("dispatches one normal Signal and one Signal trailing candidate per direction", () => {
     const signalRisk = {
       stopLossPct: 0.4,
@@ -603,6 +663,50 @@ describe("Real-stage Block overlays", () => {
       standard.setKey,
       trailing.setKey,
     ])
+  })
+
+  test("dispatches independent Signal source and TP/SL configuration slots up to shared capacity", () => {
+    const candidate = (
+      sourceId: string,
+      configId: string,
+      variant: "default" | "trailing" = "default",
+    ) => ({
+      ...source(`BTCUSDT:signal:long:${sourceId}:${configId}`, "long"),
+      indicationType: "signal",
+      variant,
+      signalRisk: {
+        stopLossPct: 0.5,
+        takeProfitPct: 1,
+        rewardRisk: 2,
+        sourceId,
+        sourceIds: [sourceId],
+        configId,
+        configIds: [configId],
+        agreement: 1,
+        confidence: 0.8,
+        generatedAt: Date.now(),
+      },
+      ...(variant === "trailing"
+        ? {
+            trailingProfile: {
+              mode: "signal_dynamic" as const,
+              startRatio: 0,
+              stopRatio: 0.008,
+              stepRatio: 0.004,
+            },
+          }
+        : {}),
+    })
+    const candidates = [
+      candidate("binance-usdm", "tp1_00:slr0_50:standard"),
+      candidate("okx-swap", "tp1_00:slr0_50:standard"),
+      candidate("binance-usdm", "tp2_00:slr0_50:standard"),
+      candidate("binance-usdm", "tp1_00:slr0_50:trail0_80", "trailing"),
+    ] as StrategySet[]
+
+    expect(selectLiveDispatchCandidates(candidates).map((set) => set.setKey)).toEqual(
+      candidates.map((set) => set.setKey),
+    )
   })
 
   test("clears active-overlay stats after the final parent position closes", async () => {
@@ -893,6 +997,8 @@ describe("Real-stage Block overlays", () => {
         count: 25,
         successRate: 0.72,
         profitFactor: 2,
+        positionCostRatio: 2,
+        positionCostRatioCount: 25,
         avgDDT: 18,
         recentPnls: [],
       },

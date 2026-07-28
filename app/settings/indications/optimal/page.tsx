@@ -13,9 +13,9 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 export default function OptimalIndicationSettingsPage() {
   const [settings, setSettings] = useState<any>({
     optimal: {
-      enabled: false,
-      range: { from: 3, to: 30, step: 1 },
-      sample_ranges: [2, 5, 10, 20, 30],
+      enabled: true,
+      range: { from: 2, to: 30, step: 1 },
+      sample_ranges: Array.from({ length: 29 }, (_, index) => index + 2),
       drawdown_ratio: { from: 0.1, to: 0.5, step: 0.1 },
       market_change_range: { from: 1, to: 10, step: 2 },
       market_change_lastpart_base: 20,
@@ -23,7 +23,7 @@ export default function OptimalIndicationSettingsPage() {
       min_calculation_time: 3,
       base_positions_limit: 250,
       interval: 1,
-      timeout: 3,
+      timeout: 0.25,
       initial_min_win_rate: 0.4,
       expanded_min_win_rate: 0.45,
       expanded_min_profit_ratio: 1.2,
@@ -506,10 +506,12 @@ export default function OptimalIndicationSettingsPage() {
                 <Label>Timeout Time (seconds)</Label>
                 <Input
                   type="number"
+                  min="0.05"
+                  step="0.05"
                   value={settings.optimal.timeout}
                   onChange={(e) => updateSetting("timeout", "", e.target.value)}
                 />
-                <p className="text-xs text-muted-foreground">Pause duration after validated state (Default: 3 seconds)</p>
+                <p className="text-xs text-muted-foreground">Exact config/direction cooldown after validation (Default: 0.25 seconds)</p>
               </div>
             </div>
           </div>
@@ -544,7 +546,11 @@ export default function OptimalIndicationSettingsPage() {
                 </span>
               </div>
               <div className="flex justify-between text-muted-foreground">
-                <span>Selected for evaluation (max):</span>
+                <span>Configurations evaluated:</span>
+                <span className="font-mono">All · unlimited</span>
+              </div>
+              <div className="flex justify-between text-muted-foreground">
+                <span>History retained per independent Set:</span>
                 <span className="font-mono">{settings.optimal.base_positions_limit}</span>
               </div>
             </div>

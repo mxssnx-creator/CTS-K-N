@@ -1,6 +1,10 @@
 import type { StrategyConfig, PseudoPosition, MainStrategyType, AdjustmentType } from "./types"
 import { buildStopLossRatios } from "@/lib/stoploss-ratio-range"
 import { calculateBlockVolumeMultiplier } from "@/lib/block-count-state"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+} from "@/lib/main-trade-profit-factor"
 
 function strategyId(): string {
   return globalThis.crypto?.randomUUID?.() ??
@@ -57,8 +61,7 @@ export class StrategyEngine {
     const lastPositions = pseudoPositions.slice(-config.last_positions_count)
     const avgProfitFactor = this.calculateAverageProfitFactor(lastPositions)
 
-    // Check if meets minimum criteria (0.4)
-    const isValid = avgProfitFactor >= 0.4
+    const isValid = avgProfitFactor >= MAIN_TRADE_BASE_PF_RATIO_DEFAULT
 
     let adjustedVolumeFactor = 1
     const appliedAdjustments: AdjustmentType[] = []
@@ -114,7 +117,7 @@ export class StrategyEngine {
     const negativeAvg = negativePositions.length > 0 ? this.calculateAverageProfitFactor(negativePositions) : 0
 
     const overallAvg = this.calculateAverageProfitFactor(mainPositions)
-    const isValid = overallAvg > 0
+    const isValid = overallAvg >= MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT
 
     let adjustedVolumeFactor = 1
     const appliedAdjustments: AdjustmentType[] = []
@@ -163,13 +166,16 @@ export class StrategyEngine {
     const lastPositions = pseudoPositions.slice(-config.last_positions_count)
     const avgProfitFactor = this.calculateAverageProfitFactor(lastPositions)
 
-    const last15 = pseudoPositions.slice(-15)
+    const last20 = pseudoPositions.slice(-20)
     const last25 = pseudoPositions.slice(-25)
 
-    const avg15 = this.calculateAverageProfitFactor(last15)
+    const avg20 = this.calculateAverageProfitFactor(last20)
     const avg25 = this.calculateAverageProfitFactor(last25)
 
-    const isValid = (avg15 > 0.4 || avg25 > 0.4) && avgProfitFactor >= 0.4
+    const isValid =
+      (avg20 >= MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT ||
+        avg25 >= MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT) &&
+      avgProfitFactor >= MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT
 
     let adjustedVolumeFactor = 1
     const appliedAdjustments: AdjustmentType[] = []
@@ -285,7 +291,10 @@ export class StrategyEngine {
 
     })
 
-    return strategies.slice(0, 150)
+    // This compatibility/demo projection must preserve the same exhaustive
+    // configuration contract as production. Consumers may paginate the
+    // result, but generation itself never drops valid configuration rows.
+    return strategies
   }
 
   private calculateAverageProfitFactor(positions: PseudoPosition[]): number {
@@ -346,7 +355,11 @@ export class StrategyEngine {
   }
 
   validateStrategyForTrading(strategy: StrategyResult): boolean {
-    return strategy.validation_state === "valid" && strategy.should_open_position && strategy.avg_profit_factor >= 0.4
+    return (
+      strategy.validation_state === "valid" &&
+      strategy.should_open_position &&
+      strategy.avg_profit_factor >= MAIN_TRADE_BASE_PF_RATIO_DEFAULT
+    )
   }
 
   private generateBaseConfigurations(): StrategyConfig[] {
@@ -380,6 +393,6 @@ export class StrategyEngine {
       }
     }
 
-    return configs.slice(0, 50)
+    return configs
   }
 }

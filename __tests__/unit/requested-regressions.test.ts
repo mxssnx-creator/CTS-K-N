@@ -21,7 +21,7 @@ describe("requested regression guardrails", () => {
     expect(source.indexOf("authorizeAdminBearer")).toBeLessThan(source.indexOf("await initRedis()"))
   })
 
-  test("progression stats preserve valid strategy fan-out and clamp only Live to Real", () => {
+  test("progression stats preserve canonical row fan-out without cross-stage clamping", () => {
     const coordinator = read("lib/strategy-coordinator.ts")
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
 
@@ -33,11 +33,12 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain('`${symbol}:real:relatedCreated`')
     expect(coordinator).toContain('`${symbol}:real:evaluated`]: String(realTotalEvaluated)')
 
-    expect(statsRoute).toContain("[STATS-VALIDATION]")
-    expect(statsRoute).toContain("Main and Real materialise related/adjusted Sets")
+    expect(statsRoute).toContain("const strategyRows = {")
+    expect(statsRoute).toContain("overallToValidRatio: ratio(mainRowOverall, mainRowValid, false)")
+    expect(statsRoute).toContain('semantics: "current-open-row-snapshot"')
     expect(statsRoute).not.toContain("stratCounts.real = stratCounts.main")
-    expect(statsRoute).toContain("if (stratCounts.live > stratCounts.real)")
-    expect(statsRoute).toContain("stratCounts.live = stratCounts.real")
+    expect(statsRoute).toContain("Do not clamp stage snapshots against each other")
+    expect(statsRoute).not.toContain("stratCounts.live = stratCounts.real")
     expect(coordinator).not.toContain("dev fallback - injected synthetic qualifying set from MAIN")
 
     const snapshot = { main: 10, real: 12, live: 14 }
@@ -351,8 +352,48 @@ describe("requested regression guardrails", () => {
     expect(presetToggle).toContain('engine_type: "main"')
     expect(presetToggle).toContain("one shared Main progression")
     expect(mainToggle).toContain('engine_type: "main"')
-    expect(liveStage).toContain('executionIntent: "main" | "preset"')
+    expect(liveStage).toContain('type LiveExecutionIntent = "main" | "preset" | "signal"')
     expect(liveStage).toContain("applySelectedPresetToRealPosition")
+  })
+
+  test("legacy Preset CRUD and test paths cannot reintroduce sampled indication or stage grids", () => {
+    const defaults = read("lib/preset-crud-defaults.ts")
+    const dialog = read("components/presets/preset-dialog.tsx")
+    const generator = read("lib/preset-config-generator.ts")
+    const tester = read("lib/preset-tester.ts")
+    const testRoute = read("app/api/presets/[id]/test/route.ts")
+
+    expect(defaults).toContain("...COMMON_INDICATOR_TYPES")
+    expect(defaults).toContain('\"signal\"')
+    expect(defaults).toContain('\"live\"')
+    expect(defaults).toContain("Array.from({ length: 29 }")
+    expect(dialog).toContain("PRESET_INDICATION_GROUPS")
+    expect(dialog).toContain("PRESET_DEFAULT_INDICATION_RANGES")
+    expect(generator).not.toContain("maxConfigs")
+    expect(generator).not.toContain("configurations.slice")
+    expect(testRoute).not.toContain("generateAllConfigurations(testSymbols, indicatorConfigs, 500)")
+    expect(testRoute).not.toContain("validConfigs.slice(0, 100)")
+    expect(testRoute).toContain("mapWithConcurrency(validConfigs, 8")
+    expect(tester).toContain("mapWithConcurrency(configurations, 8")
+  })
+
+  test("every connection creation and legacy settings dialog persists the canonical four-stage ratio contract", () => {
+    const createDialog = read("components/settings/exchange-connection-dialog.tsx")
+    const legacySettingsDialog = read("components/settings/exchange-connection-settings-dialog.tsx")
+
+    for (const source of [createDialog, legacySettingsDialog]) {
+      expect(source).toContain("MAIN_TRADE_BASE_PF_RATIO_DEFAULT")
+      expect(source).toContain("MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT")
+      expect(source).toContain("liveTradeProfitFactorMinLive")
+      expect(source).toContain("presetTradeProfitFactorMinLive")
+      expect(source).toContain("min_profit_factor")
+      expect(source).not.toContain("liveTradeProfitFactorMinBase: 0.6")
+      expect(source).not.toContain("presetTradeProfitFactorMinBase: 0.6")
+    }
+    expect(createDialog).toContain("indicationTimeoutMs: 250")
+    expect(createDialog).toContain("indicationSettings?.direction?.timeout ?? 0.25")
+    expect(legacySettingsDialog).toContain('normalizeMainTradeStagePfRatio("live"')
+    expect(legacySettingsDialog).toContain("MAIN_TRADE_PF_RATIO_STEP")
   })
 
   test("disabling one connection does not stop the global coordinator", () => {
@@ -429,14 +470,14 @@ describe("requested regression guardrails", () => {
   })
 
 
-  test("live requested mode bootstraps Main and Real evaluation gates", () => {
+  test("live requested mode never bypasses configured Main and Real evaluation gates", () => {
     const source = read("lib/strategy-coordinator.ts")
 
-    expect(source).toContain("isTruthyFlag(conn?.live_trade_requested)")
-    expect(source).toContain("const mainMinPos = liveQuickstartOn")
-    expect(source).toContain("? 1")
-    expect(source).toContain("realMinPos = 1")
-    expect(source).toContain("const relaxed = Math.min(realMinPF, 0.75)")
+    expect(source).toContain("const mainMinPos = this._coordinationSettings.mainEvalPosCount")
+    expect(source).toContain("const realMinPos = this._coordinationSettings.realEvalPosCount")
+    expect(source).toContain("Live enablement never changes Strategy validation")
+    expect(source).not.toContain("const mainMinPos = liveQuickstartOn")
+    expect(source).not.toContain("const relaxed = Math.min(realMinPF")
   })
 
 
@@ -548,12 +589,11 @@ describe("requested regression guardrails", () => {
     const settingsTab = read("components/settings/tabs/strategy-tab.tsx")
     const coordinationSection = read("components/settings/strategy-coordination-section.tsx")
 
-    expect(manager).toContain("parsed >= 2 && parsed <= 30")
-    expect(manager).toContain("const ALL_STEPS = [2, 3, 5, 10, 15, 20, 25, 30]")
-    expect(settingsTab).toContain("Minimum pseudo-position step-window size (Steps 2–30).")
-    expect(settingsTab).toContain("min={2}")
+    expect(manager).toContain("const stepsOptions = Array.from({ length: 29 }, (_, index) => index + 2)")
+    expect(manager).toContain("Every integer window is materialized")
+    expect(settingsTab).toContain("Steps generated: 2, 3, 4, …, 29, 30")
     expect(coordinationSection).toContain("2–30, step 1")
-    expect(coordinationSection).toContain("Setting to 2 adds the fastest 2 and 3 step windows")
+    expect(coordinationSection).toContain("Generated steps: 2, 3, 4, …, 29, 30")
   })
 
   test("standard, axis and trailing sets are ordered before adjust variants", () => {
@@ -680,13 +720,13 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain("Math.max(1, Math.min(4, Math.round(bpcr * 2) / 2))")
   })
 
-  test("production strategy fan-out has env-overridable liveness ceilings", () => {
+  test("production strategy fan-out is exhaustive while caches and explicit Real output remain bounded", () => {
     const source = read("lib/strategy-coordinator.ts")
 
-    expect(source).toContain("STRATEGY_MAIN_AXIS_SETS_CEILING")
-    expect(source).toContain("_boundedDynCeiling")
-    expect(source).toContain("STRATEGY_REAL_SETS_SAFETY_CEILING")
-    expect(source).toContain("_realCapForBound")
+    expect(source).not.toContain("STRATEGY_MAIN_AXIS_SETS_CEILING")
+    expect(source).not.toContain("_boundedDynCeiling")
+    expect(source).toContain("STRATEGY_REAL_SETS_CEILING")
+    expect(source).toContain("const realSetsCap = Math.min(")
     expect(source).toContain("private static readonly _AXIS_LRU_MAX = (() =>")
   })
 
@@ -982,6 +1022,8 @@ describe("requested regression guardrails", () => {
 
     expect(pkg.scripts["test:quickstart-12"]).toBe("node scripts/run-dev-preview-check.mjs")
     expect(devRunner).toContain('RUNTIME_MODE: "development"')
+    expect(devRunner).toContain('process.env.DEV_NODE_HEAP_MB || 12288')
+    expect(devRunner).toContain('WATCHPACK_POLLING: process.env.WATCHPACK_POLLING || "true"')
     expect(devRunner).toContain('BINGX_API_KEY: ""')
     expect(soak).toContain("liveTrade: false")
     expect(soak).toContain("is_live_trade: false")
@@ -1442,6 +1484,7 @@ describe("requested regression guardrails", () => {
     expect(route).toContain('const MONITORING_KEY_SAMPLE_TTL_MS = 5_000')
     expect(route).toContain('collectConnectionIds(client, allKeys)')
     expect(route).toContain('maxField(progressionHashes, "realtime_cycle_count")')
+    expect(route).toContain('maxField(progressionHashes, "live_positions_cycle_count")')
     expect(route).toContain('progression:${connectionId}:${type}')
     expect(route).toContain('client.hgetall(`realtime:${connectionId}`)')
     expect(route).toContain('const connectionMatch = /^(?:settings:)?connection:([^:]+)$/')
@@ -1725,6 +1768,18 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("schedulePrehistoricProgressionAfterRealtimeWarmup")
   })
 
+  test("continuous historic replay reports slow cycles without detaching live workers", () => {
+    const source = read("lib/trade-engine/engine-manager.ts")
+    const start = source.indexOf("Determine the slow-cycle diagnostic threshold")
+    const end = source.indexOf("cycleCount++", start)
+    const block = source.slice(start, end)
+
+    expect(block).toContain("slowReplayDiagnostic")
+    expect(block).toContain("await mapWithConcurrency(symbols, replayConcurrency, replayOneSymbol)")
+    expect(block).toContain("clearTimeout(slowReplayDiagnostic)")
+    expect(block).not.toContain("withCycleDeadline(")
+  })
+
   test("production cron route uses canonical ind-strat pipeline for all configured symbols", () => {
     const cron = read("app/api/cron/generate-indications/route.ts")
     const pipeline = read("lib/trade-engine/shared-ind-strat-pipeline.ts")
@@ -1737,7 +1792,9 @@ describe("requested regression guardrails", () => {
     expect(cron).toContain("new IndicationSetsProcessor(connection.id)")
     expect(cron).toContain("ensureCurrentMarketDataCandle(symbol, client)")
     expect(cron).toContain("const symbolConcurrency = parsePositiveInteger(process.env.CRON_SYMBOL_CONCURRENCY, 4)")
-    expect(cron).toContain("const symbolLimit = parsePositiveInteger(process.env.CRON_SYMBOL_LIMIT, 20)")
+    expect(cron).toContain("const symbolsToProcess = allSymbols")
+    expect(cron).not.toContain("allSymbols.slice(0, symbolLimit)")
+    expect(cron).toContain("const legacyHistoricBatchHint = parsePositiveInteger(")
     expect(cron).toContain("symbolsToProcess,")
     expect(cron).not.toContain("executeStrategyFlowBatch(strategyItems.slice(0, 2)")
     expect(cron).not.toContain("strategyItems.slice(0, 2)")
@@ -1758,6 +1815,155 @@ describe("requested regression guardrails", () => {
     expect(strategy).toContain("skipLiveDispatch,")
     expect(strategy).toContain("isCurrent,")
     expect(pipeline).toContain("shouldContinue?: () => boolean")
+  })
+
+  test("current statistics and indication entrypoints never substitute samples or random values", () => {
+    const progression = read("app/api/connections/progression/[id]/stats/route.ts")
+    const strategyRow = read("components/strategies/strategy-row-compact.tsx")
+    const presetStats = read("components/statistics/preset-trade-stats.tsx")
+    const legacyEntrypoint = read("app/api/trade-engine/generate-indications/route.ts")
+    const indicationData = read("app/api/data/indications/route.ts")
+
+    expect(progression).toContain("mapInBatches")
+    expect(progression).not.toContain("pseudoRaw.slice(0, 500)")
+    expect(progression).not.toMatch(/lrange\([^)]*,\s*0,\s*499\)/)
+    expect(strategyRow).not.toContain("Math.random")
+    expect(presetStats).not.toContain("Math.random")
+    expect(presetStats).toContain('String(position.preset_id || "") === String(preset.id)')
+    expect(legacyEntrypoint).toContain('from "@/app/api/cron/generate-indications/route"')
+    expect(legacyEntrypoint).not.toContain("generateDirectionIndication")
+    expect(indicationData).toContain("mapWithConcurrency(configKeys, 32")
+    expect(indicationData).not.toContain(".slice(0, 500)")
+  })
+
+  test("Signal's 120-position lease counts the complete mixed Main/Signal open book", () => {
+    const signal = read("lib/signal-indication.ts")
+    const policy = read("lib/signal-position-policy.ts")
+    const settings = read("components/settings/signal-indication-settings.tsx")
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const admissionStart = liveStage.indexOf("async function readPositionsForSignalAdmission")
+    const admissionEnd = liveStage.indexOf("async function persistSignalCapacitySnapshot", admissionStart)
+    const admission = liveStage.slice(admissionStart, admissionEnd)
+
+    expect(signal).toContain("SIGNAL_SOURCE_PERFORMANCE_LOOKBACK = 12")
+    expect(signal).toContain("SIGNAL_LANE_PERFORMANCE_LOOKBACK = 10")
+    expect(signal).toContain("directExecutionEnabled: true")
+    expect(signal).toContain("maxSourcesPerCycle: SIGNAL_SOURCE_DEFINITIONS.length")
+    expect(signal).toContain("sourceAllowed && laneAllowed")
+    expect(policy).toContain("SIGNAL_MAX_POSITIONS_DEFAULT = 120")
+    expect(settings).toContain("Max open positions (Long + Short)")
+    expect(settings).toContain("Source 12 · lane 10")
+    expect(admission).toContain('lrange(`live:positions:${connectionId}`, 0, -1)')
+    expect(admission).toContain("const READ_BATCH_SIZE = 250")
+    expect(admission).not.toContain("lrange(`live:positions:${connectionId}`, 0, 500)")
+    expect(admission).not.toContain("for (const id of ids) {\n      pipeline")
+  })
+
+  test("active strategy and position views use complete canonical ledgers without implicit demo state", () => {
+    const strategyPage = read("app/strategies/page.tsx")
+    const strategyApi = read("app/api/data/strategies/route.ts")
+    const strategyRow = read("components/strategies/strategy-row-compact.tsx")
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const positionsApi = read("app/api/positions/route.ts")
+    const connectionStats = read("app/api/settings/connections/[id]/statistics/route.ts")
+    const legacyStrategies = read("lib/strategies.ts")
+    const legacyIndications = read("lib/indications.ts")
+
+    expect(strategyPage).not.toContain('selectedConnectionId || "demo-mode"')
+    expect(strategyPage).toContain("Strategy rows are loaded only from the selected connection")
+    expect(strategyPage).toContain('}, 3_000)')
+    expect(strategyApi).toContain('strategy_detail:${connectionId}:live')
+    expect(strategyApi).toContain("getCanonicalConnectionSettingsOverlay(connectionId)")
+    expect(strategyApi).toContain('normalizeMainTradeStagePfRatio("live"')
+    expect(strategyApi).toContain("isActive: !stale && running > 0")
+    expect(strategyApi).not.toContain("isActive: true")
+    expect(strategyRow).toContain("disabled={!onToggle}")
+
+    const liveGetterStart = liveStage.indexOf("export async function getLivePositions(")
+    const liveGetterEnd = liveStage.indexOf("export async function getLivePositionsByStatus", liveGetterStart)
+    const liveGetter = liveStage.slice(liveGetterStart, liveGetterEnd)
+    expect(liveGetter).toContain('lrange(`live:positions:${connectionId}`, 0, -1)')
+    expect(liveGetter).toContain("const READ_BATCH_SIZE = 32")
+    expect(liveGetter).not.toContain("0, 500")
+
+    expect(positionsApi).toContain("getOpenLivePositionReadModels(connectionId, 0)")
+    expect(positionsApi).toContain("getClosedLivePositionReadModels(connectionId, 0)")
+    expect(positionsApi).not.toContain("live:positions:${connectionId}:closed`, 0, 99")
+    expect(connectionStats).not.toContain("symbolsSet.slice(0, 50)")
+    expect(connectionStats).toContain("const READ_BATCH_SIZE = 32")
+    expect(legacyStrategies).not.toContain("return configs.slice(0, 50)")
+    expect(legacyStrategies).not.toContain("return strategies.slice(0, 150)")
+    expect(legacyIndications).not.toContain("return positions.slice(0, 250)")
+  })
+
+  test("QuickStart functional overview aggregates fresh canonical stage rows without fabricated PF", () => {
+    const overview = read("app/api/trade-engine/functional-overview/route.ts")
+    const progression = read("app/api/connections/progression/[id]/stats/route.ts")
+
+    expect(overview).toContain("aggregateStage")
+    expect(overview).toContain('field.match(/^s:([^:]+):(created|evaluated|passed|running|apf|ts)$/)')
+    expect(overview).toContain("now - timestamp > 5 * 60_000")
+    expect(overview).toContain("mapInBatches")
+    expect(overview).toContain("client.dbSize()")
+    expect(overview).toContain('dataSource: "canonical-stage-and-position-ledgers"')
+    expect(overview).not.toContain('const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]')
+    expect(overview).not.toContain("avgProfitFactorBase = 1.2")
+    expect(overview).not.toContain("mainSetsCount * 4")
+    expect(overview).not.toContain("each item ~200 bytes")
+    expect(progression).not.toContain("baseWinRateProxy")
+    expect(progression).not.toContain("approxSharpe")
+    expect(progression).not.toContain("ratePerMin")
+    expect(progression).not.toContain("indication_live_cycle_count),\n      n(progHash.indication_cycle_count)")
+    expect(progression).toContain('client.zcount(`indications:${connectionId}:window`')
+    expect(progression).toContain("indicationWindowMeasured")
+    expect(progression).toContain("avgNotionalUsd")
+    expect(progression).toContain("avgPosPerSet:    0")
+    expect(read("components/dashboard/quickstart-overview-dialog.tsx")).not.toContain(
+      "(value / totalIndAll) * evalMain5m",
+    )
+  })
+
+  test("new custom preset types inherit the systemwide Block-Only default while explicit false remains valid", () => {
+    const dialog = read("components/presets/preset-type-dialog.tsx")
+    const createRoute = read("app/api/preset-types/route.ts")
+    const updateRoute = read("app/api/preset-types/[id]/route.ts")
+
+    expect(dialog).toContain("const [blockEnabled, setBlockEnabled] = useState(true)")
+    expect(dialog).toContain("const [blockOnly, setBlockOnly] = useState(true)")
+    expect(dialog).toContain("setBlockEnabled(presetType.block_enabled ?? true)")
+    expect(dialog).toContain("setBlockOnly(presetType.block_only ?? true)")
+    expect(createRoute).toContain("block_enabled: body.block_enabled !== false")
+    expect(createRoute).toContain("block_only: body.block_only !== false")
+    expect(updateRoute).toContain("block_enabled: body.block_enabled !== false")
+    expect(updateRoute).toContain("block_only: body.block_only !== false")
+  })
+
+  test("statistics never invent portfolio balance, TP/SL values, trailing values, or execution PF", () => {
+    const analytics = read("lib/analytics.ts")
+    const page = read("app/statistics/page.tsx")
+    const table = read("components/statistics/strategy-performance-table.tsx")
+
+    expect(analytics).toContain("grossProfit / grossLoss")
+    expect(analytics).toContain("let balance = 0")
+    expect(analytics).not.toContain("let balance = 10000")
+    expect(analytics).not.toContain("trail_start: 0.6")
+    expect(analytics).not.toContain("trail_stop: 0.2")
+    expect(analytics).not.toContain("return 1.05")
+    expect(analytics).not.toContain("return 2 // Default 2:1 ratio")
+    expect(page).toContain(".map(toStatisticsPseudoPosition)")
+    expect(page).not.toContain("takeprofit_factor: 2.0")
+    expect(page).not.toContain("p.margin_used || 100")
+    expect(table).toContain("TP Move")
+  })
+
+  test("Main axes and Base profiles remain exhaustive without a candidate ceiling", () => {
+    const coordinator = read("lib/strategy-coordinator.ts")
+    const configManager = read("lib/indication-config-manager.ts")
+
+    expect(coordinator).toContain("complete, uncapped axis Cartesian product")
+    expect(coordinator).not.toContain("cap at 1619")
+    expect(coordinator).not.toContain("axis ceiling was")
+    expect(configManager).not.toMatch(/\.slice\(\s*0\s*,\s*500\s*\)/)
   })
 
 
@@ -1928,8 +2134,8 @@ describe("requested regression guardrails", () => {
     const setsProcessor = read("lib/strategy-sets-processor.ts")
     const engineManager = read("lib/trade-engine/engine-manager.ts")
 
-    expect(statsRoute).toContain("let timeoutHandle: ReturnType<typeof setTimeout> | null = null")
-    expect(statsRoute).toContain("if (timeoutHandle) clearTimeout(timeoutHandle)")
+    expect(statsRoute).toContain("const slowDiagnostic = setTimeout")
+    expect(statsRoute).toContain("clearTimeout(slowDiagnostic)")
     expect(coordinator).toContain("PositionContext")
     expect(coordinator).toContain("perSymbolOpenByDir")
     expect(coordinator).toContain("posCtx?.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 }")
@@ -2039,10 +2245,10 @@ describe("requested regression guardrails", () => {
   test("progression stats timeout timer is cleared after successful polls", () => {
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
 
-    expect(statsRoute).toContain("let timeoutHandle: ReturnType<typeof setTimeout> | null = null")
-    expect(statsRoute).toContain("timeoutHandle = setTimeout")
+    expect(statsRoute).toContain("const slowDiagnostic = setTimeout")
+    expect(statsRoute).toContain("slowDiagnostic.unref?.()")
     expect(statsRoute).toContain("finally {")
-    expect(statsRoute).toContain("if (timeoutHandle) clearTimeout(timeoutHandle)")
+    expect(statsRoute).toContain("clearTimeout(slowDiagnostic)")
   })
 
   test("real-stage active block overlays reuse per-cycle direction indexes", () => {
@@ -2159,8 +2365,10 @@ describe("requested regression guardrails", () => {
     expect(gates).toContain("ALLOW_INLINE_REDIS_LIVE_TRADING")
     expect(gates).toContain("ALLOW_KILO_SQLITE_LIVE_TRADING")
     expect(gates).toContain("shared Redis is not configured")
-    expect(liveStage).toContain("evaluateRealTradeReadiness(connSettings, executionIntent)")
-    expect(liveStage).toContain("evaluateRealTradeReadiness(freshSettings, freshExecutionIntent)")
+    expect(liveStage).toContain("readinessIntentForExecution(connSettings, executionIntent)")
+    expect(liveStage).toContain("evaluateRealTradeReadiness(connSettings, readinessIntent)")
+    expect(liveStage).toContain("readinessIntentForExecution(freshSettings, freshExecutionIntent)")
+    expect(liveStage).toContain("evaluateRealTradeReadiness(freshSettings, freshReadinessIntent)")
     expect(liveStage).toContain("A requested live run must fail visibly")
     expect(liveStage).toContain('livePosition.executionMode = "blocked"')
   })
@@ -2232,7 +2440,7 @@ describe("requested regression guardrails", () => {
     expect(slRange).toContain("STOP_LOSS_RATIO_MIN = 0.25")
     expect(slRange).toContain("STOP_LOSS_RATIO_MAX = 2.5")
     expect(slRange).toContain("STOP_LOSS_RATIO_STEP = 0.25")
-    expect(basePseudo).toContain("if (Number(slRatio) > maxStopLossRatio)")
+    expect(basePseudo).toContain("if (Number(config.slRatio) > maxStopLossRatio)")
     expect(indicationState).toContain("const slRatios = await this.getStopLossRatios()")
     expect(calculator).toContain("Math.floor((2.5 - 0.25) / 0.25) + 1")
   })
@@ -2258,6 +2466,79 @@ describe("requested regression guardrails", () => {
     expect(liveStage).toContain("const [slOrderId, tpOrderId] = await Promise.all")
     expect(migrations).toContain("066-bingx-sdk-fast-order-default")
     expect(migrations).toContain('connection_library: "sdk"')
+  })
+
+  test("realtime and monitoring surfaces never present random telemetry as live", () => {
+    const marketMonitor = read("components/realtime/market-data-monitor.tsx")
+    const marketRoute = read("app/api/market-data/route.ts")
+    const healthRoute = read("app/api/monitoring/health/route.ts")
+    const positionMonitor = read("components/realtime/position-monitor.tsx")
+    const positionRoute = read("app/api/data/positions/route.ts")
+    const connectionState = read("components/dashboard/connection-state-tabs.tsx")
+    const logistics = read("lib/logistics-workflow.ts")
+
+    for (const source of [marketMonitor, marketRoute, healthRoute, connectionState, logistics]) {
+      expect(source).not.toContain("Math.random()")
+    }
+
+    expect(marketMonitor).toContain("Paper/synthetic engine snapshots (never presented as live)")
+    expect(marketMonitor).toContain('setStatus("simulated")')
+    expect(marketRoute).toContain("Synthetic engine data is explicitly labelled")
+    expect(marketRoute).toContain("no configured symbol is sliced or dropped")
+    expect(marketRoute).toContain("MARKET_READ_CONCURRENCY = 8")
+    expect(marketRoute).not.toContain("getBasePrice")
+    expect(healthRoute).toContain("getSystemResourceMetrics")
+    expect(healthRoute).toContain("getDashboardWorkflowSnapshot")
+    expect(healthRoute).not.toContain("System Operational")
+    expect(positionMonitor).toContain("/api/data/positions?connectionId=")
+    expect(positionMonitor).toContain("payload.data")
+    expect(positionMonitor).not.toContain("/api/positions/${connectionId}")
+    expect(positionRoute).toContain("lrange(`live:positions:${connectionId}`, 0, -1)")
+    expect(positionRoute).not.toContain("lrange(`live:positions:${connectionId}`, 0, 500)")
+    expect(connectionState).toContain("/api/structure/metrics?connectionId=")
+    expect(logistics).toContain("Math.max(...latencySamples)")
+    expect(logistics).not.toContain("avgLatency + 120")
+  })
+
+  test("Indications page reads every canonical exact snapshot and exposes measured filters", () => {
+    const route = read("app/api/data/indications/route.ts")
+    const page = read("app/indications/page.tsx")
+    const filters = read("components/indications/indication-filters-advanced.tsx")
+    const row = read("components/indications/indication-row-compact.tsx")
+
+    expect(route).toContain("indications_snapshot:index:${connectionId}")
+    expect(route).toContain("scanSnapshotKeys")
+    expect(route).toContain("mapWithConcurrency(snapshotKeys, 32")
+    expect(route).toContain("Common · ${commonName.toUpperCase()}")
+    expect(route).not.toContain("indications:${connectionId}:${t}:latest")
+    expect(page).not.toContain('resolvedConnectionId || "demo-mode"')
+    expect(page).toContain("availableSymbols={availableSymbols}")
+    expect(page).toContain("availableTypes={availableTypes}")
+    expect(page).toContain("Exported ${rows.length} measured indications")
+    expect(filters).not.toContain('const defaultSymbols = ["BTC"')
+    expect(filters).toContain("availableTypes.map")
+    expect(row).toContain("Runtime indication state (read only)")
+  })
+
+  test("monitoring pages use canonical ledgers and the current bounded log index", () => {
+    const system = read("app/api/monitoring/system/route.ts")
+    const comprehensive = read("app/api/monitoring/comprehensive/route.ts")
+    const logs = read("app/api/monitoring/logs/route.ts")
+    const logger = read("lib/system-logger.ts")
+    const monitoringPage = read("app/monitoring/page.tsx")
+
+    expect(system).toContain("getDashboardWorkflowSnapshot")
+    expect(system).toContain("getOpenLivePositionReadModels(connectionId, 0)")
+    expect(system).toContain("new PseudoPositionManager(connectionId).getActivePositions()")
+    expect(system).not.toContain("getPseudoPositions(undefined, 10)")
+    expect(system).not.toContain('status: "running"')
+    expect(comprehensive).toContain("getClosedLivePositionReadModels(connectionId, 0)")
+    expect(comprehensive).toContain("getSystemResourceMetrics")
+    expect(comprehensive).not.toContain("DatabaseManager")
+    expect(logs).toContain("SystemLogger.getLogs")
+    expect(logs).not.toContain('smembers("logs:all")')
+    expect(logger).toContain('pipeline.lpush("logs:all:list", logId)')
+    expect(monitoringPage).toContain("[selectedConnectionId]")
   })
 
   test("queued refresh requests stay durable when drained by a non-owner process", () => {
@@ -2741,5 +3022,51 @@ describe("requested regression guardrails", () => {
     expect(read("scripts/verify-prod-soak.mjs")).toContain('RUNTIME_MODE === "production" ? 1_000 : 3_000')
   })
 
+  test("Structure and Logistics surfaces publish measured runtime data without placeholder health", () => {
+    const metrics = read("app/api/structure/metrics/route.ts")
+    const modules = read("app/api/structure/modules/route.ts")
+    const workflow = read("lib/dashboard-workflow.ts")
+    const logistics = read("lib/logistics-workflow.ts")
+    const page = read("app/structure/page.tsx")
+    const connectionState = read("components/dashboard/connection-state-tabs.tsx")
+
+    expect(metrics).toContain("getSystemResourceMetrics()")
+    expect(metrics).toContain("getObservedRedisRequestsPerSecond()")
+    expect(metrics).toContain("client.dbSize()")
+    expect(metrics).toContain("database_keys: databaseKeys")
+    expect(metrics).toContain("uptime_hours: Math.round((process.uptime() / 3600)")
+    expect(metrics).not.toContain("database_size: 45")
+    expect(metrics).not.toContain("const cpuUsage = (memoryUsage.heapUsed")
+    expect(metrics).not.toContain("AVG(profit_loss_percent)")
+
+    expect(modules).toContain("getDashboardWorkflowSnapshot({ preferredConnectionId })")
+    expect(modules).toContain("await getRedisClient().ping()")
+    expect(modules).toContain("progression?.cycleSuccessRate")
+    expect(modules).not.toContain("health: activeConnections > 0 ? 98")
+    expect(modules).not.toContain('last_update: "2 min ago"')
+
+    expect(workflow).toContain("while (cursor !== \"0\")")
+    expect(workflow).not.toContain("keys.length < limit")
+    expect(workflow).not.toContain("return keys.slice(0, limit)")
+    expect(logistics).toContain("Math.max(...latencySamples)")
+    expect(logistics).not.toContain("avgLatency + 120")
+    expect(page).toContain("Redis Operations/min")
+    expect(page).toContain("Not instrumented")
+    expect(page).not.toContain("<Badge variant=\"default\">Excellent</Badge>")
+    expect(page).not.toContain("System Running Optimally")
+    expect(connectionState).toContain("/api/structure/metrics?connectionId=")
+    expect(connectionState).not.toContain("Math.random()")
+    expect(connectionState).not.toContain("High latency detected")
+  })
+
+  test("Preset Common processing preserves the configured 30-minute lane end to end", () => {
+    const optimizer = read("lib/preset-optimizer.ts")
+
+    expect(optimizer).toContain(": [1, 5, 15, 30]")
+    expect(optimizer).toContain("Math.min(60, Math.round(timeframeMinutesInput || 1))")
+    expect(optimizer).toContain("Math.min(60, Math.round(config.params.timeframeMinutes || 1))")
+    expect(optimizer).not.toContain("Math.min(15, Math.round(timeframeMinutesInput || 1))")
+    expect(optimizer).not.toContain("Math.min(15, Math.round(config.params.timeframeMinutes || 1))")
+  })
 
 })

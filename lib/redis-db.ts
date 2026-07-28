@@ -9,6 +9,12 @@ import {
 } from "./database-indexes"
 import { createKiloDatabaseQuery, hasKiloDatabaseBackend, resolveKiloDatabaseConfig, type KiloDatabaseMethod } from "./kilo-database-client"
 import { scanRedisKeys } from "./redis-scan"
+import {
+  archiveClosedLivePositionAnalytics,
+  buildLivePositionAnalyticsSnapshot,
+  liveClosedAnalyticsDataKey,
+  liveClosedAnalyticsTimeKey,
+} from "./live-position-analytics-archive"
 
 /**
  * Redis Database Layer - High Performance Edition v3.0
@@ -210,6 +216,7 @@ export interface RedisClientLike {
   scan?(cursor: string | number, ...args: any[]): Promise<{ cursor: string; keys: string[] } | [string, string[]]>
   zadd(key: string, score: number, member: string): Promise<number>
   zrangebyscore(key: string, min: number | string, max: number | string): Promise<string[]>
+  zcount(key: string, min: number | string, max: number | string): Promise<number>
   zremrangebyscore(key: string, min: number | string, max: number | string): Promise<number>
   zrange(key: string, start: number, stop: number): Promise<string[]>
   zrevrange(key: string, start: number, stop: number): Promise<string[]>
@@ -361,9 +368,10 @@ export class InlineLocalRedis implements RedisClientLike {
   }
 
   /**
-   * Build a JSON-safe snapshot of the in-memory data. We can't JSON-stringify
-   * Maps and Sets directly, so we materialise them as arrays of entries.
-   * Format is versioned (`v: 1`) so future shape changes can migrate cleanly.
+   * Build the legacy single-payload snapshot used by the managed shared
+   * database adapter. Disk persistence uses the streaming v2 format below so
+   * exhaustive indication/strategy grids never have to be duplicated into one
+   * process-sized JSON string.
    */
   private buildSnapshot(): string {
     const d = this.data
@@ -378,6 +386,174 @@ export class InlineLocalRedis implements RedisClientLike {
       ttl: Array.from(d.ttl.entries()),
       mutationVersion: this.mutationVersion(),
     })
+  }
+
+  /**
+   * Yield a complete snapshot one Redis key at a time. Keeping each line
+   * independently parseable avoids V8's maximum-string limit and bounds the
+   * additional heap used while an exhaustive engine dataset is persisted.
+   */
+  private *snapshotV2Lines(snapshotVersion: number): Iterable<string> {
+    const d = this.data
+    yield JSON.stringify({ v: 2, savedAt: Date.now(), mutationVersion: snapshotVersion })
+    for (const [key, value] of d.strings.entries()) yield JSON.stringify(["s", key, value])
+    for (const [key, value] of d.hashes.entries()) yield JSON.stringify(["h", key, value])
+    for (const [key, value] of d.sets.entries()) yield JSON.stringify(["S", key, Array.from(value)])
+    for (const [key, value] of d.lists.entries()) yield JSON.stringify(["l", key, value])
+    for (const [key, value] of d.sorted_sets.entries()) yield JSON.stringify(["z", key, value.entries])
+    for (const [key, value] of d.ttl.entries()) yield JSON.stringify(["t", key, value])
+  }
+
+  private async writeSnapshotV2(
+    handle: { writeFile(data: string, options?: any): Promise<void> },
+    snapshotVersion: number,
+  ): Promise<void> {
+    const maxChunkBytes = 1024 * 1024
+    let chunk = ""
+    let chunkBytes = 0
+    for (const line of this.snapshotV2Lines(snapshotVersion)) {
+      const framed = `${line}\n`
+      const framedBytes = Buffer.byteLength(framed)
+      if (chunk && chunkBytes + framedBytes > maxChunkBytes) {
+        await handle.writeFile(chunk, "utf8")
+        chunk = ""
+        chunkBytes = 0
+      }
+      if (framedBytes > maxChunkBytes) {
+        await handle.writeFile(framed, "utf8")
+      } else {
+        chunk += framed
+        chunkBytes += framedBytes
+      }
+    }
+    if (chunk) await handle.writeFile(chunk, "utf8")
+  }
+
+  private writeSnapshotV2Sync(
+    fsSync: typeof import("fs"),
+    fd: number,
+    snapshotVersion: number,
+  ): void {
+    const maxChunkBytes = 1024 * 1024
+    let chunk = ""
+    let chunkBytes = 0
+    for (const line of this.snapshotV2Lines(snapshotVersion)) {
+      const framed = `${line}\n`
+      const framedBytes = Buffer.byteLength(framed)
+      if (chunk && chunkBytes + framedBytes > maxChunkBytes) {
+        fsSync.writeFileSync(fd, chunk, "utf8")
+        chunk = ""
+        chunkBytes = 0
+      }
+      if (framedBytes > maxChunkBytes) {
+        fsSync.writeFileSync(fd, framed, "utf8")
+      } else {
+        chunk += framed
+        chunkBytes += framedBytes
+      }
+    }
+    if (chunk) fsSync.writeFileSync(fd, chunk, "utf8")
+  }
+
+  /**
+   * Restore a v2 NDJSON snapshot without reading the entire file into a
+   * string. Data is staged in fresh maps and swapped in only after every line
+   * validates, so a torn/corrupt file can never partially replace live state.
+   * `null` means the file is a legacy v1 JSON snapshot.
+   */
+  private async applySnapshotV2File(file: string): Promise<boolean | null> {
+    const getBuiltinModule = (process as any).getBuiltinModule as undefined | ((name: string) => any)
+    let fsSync: typeof import("fs")
+    let readline: typeof import("readline")
+    try {
+      if (typeof getBuiltinModule === "function") {
+        fsSync = getBuiltinModule("fs")
+        readline = getBuiltinModule("readline")
+      } else {
+        fsSync = await import("fs")
+        readline = await import("readline")
+      }
+    } catch {
+      return false
+    }
+
+    const strings = new Map<string, string>()
+    const hashes = new Map<string, Record<string, string>>()
+    const sets = new Map<string, Set<string>>()
+    const lists = new Map<string, string[]>()
+    const sortedSets = new Map<string, ReturnType<InlineLocalRedis["createSortedSet"]>>()
+    const ttl = new Map<string, number>()
+    let header: { v: number; mutationVersion?: number } | null = null
+    let lineNumber = 0
+    const stream = fsSync.createReadStream(file, { encoding: "utf8" })
+    const reader = readline.createInterface({ input: stream, crlfDelay: Infinity })
+
+    try {
+      for await (const rawLine of reader) {
+        const line = String(rawLine)
+        if (!line.trim()) continue
+        lineNumber++
+        const parsed = JSON.parse(line)
+        if (lineNumber === 1) {
+          if (!parsed || parsed.v !== 2) {
+            reader.close()
+            stream.destroy()
+            return null
+          }
+          header = parsed
+          continue
+        }
+        if (!Array.isArray(parsed) || typeof parsed[0] !== "string" || typeof parsed[1] !== "string") {
+          throw new SyntaxError(`Invalid v2 snapshot record at line ${lineNumber}`)
+        }
+        const [type, key, value] = parsed
+        switch (type) {
+          case "s":
+            strings.set(key, String(value ?? ""))
+            break
+          case "h":
+            if (!value || typeof value !== "object" || Array.isArray(value)) {
+              throw new SyntaxError(`Invalid hash record at line ${lineNumber}`)
+            }
+            hashes.set(key, value as Record<string, string>)
+            break
+          case "S":
+            if (!Array.isArray(value)) throw new SyntaxError(`Invalid set record at line ${lineNumber}`)
+            sets.set(key, new Set(value.map(String)))
+            break
+          case "l":
+            if (!Array.isArray(value)) throw new SyntaxError(`Invalid list record at line ${lineNumber}`)
+            lists.set(key, value.map(String))
+            break
+          case "z":
+            if (!Array.isArray(value)) throw new SyntaxError(`Invalid sorted-set record at line ${lineNumber}`)
+            sortedSets.set(key, this.createSortedSet(value as SortedSetEntry[]))
+            break
+          case "t": {
+            const expiry = Number(value)
+            if (!Number.isFinite(expiry)) throw new SyntaxError(`Invalid TTL record at line ${lineNumber}`)
+            ttl.set(key, expiry)
+            break
+          }
+          default:
+            throw new SyntaxError(`Unknown v2 snapshot record at line ${lineNumber}`)
+        }
+      }
+    } finally {
+      reader.close()
+      stream.destroy()
+    }
+
+    if (!header) return false
+    const d = this.data
+    d.strings = strings
+    d.hashes = hashes
+    d.sets = sets
+    d.lists = lists
+    d.sorted_sets = sortedSets
+    d.ttl = ttl
+    globalForRedis.__redis_snapshot_mutation_version = Number(header.mutationVersion || 0)
+    return true
   }
 
   /** Restore Maps/Sets from a parsed snapshot. Tolerant of partial files. */
@@ -485,6 +661,29 @@ export class InlineLocalRedis implements RedisClientLike {
       if (terminalStatuses.has(String(position.status || "").toLowerCase())) {
         this.data.lists.set(openIndexKey, openIds)
         this.data.lists.set(closedIndexKey, [positionId, ...closedIds].slice(0, 500))
+        const analytics = buildLivePositionAnalyticsSnapshot(position)
+        if (analytics) {
+          const analyticsDataKey = liveClosedAnalyticsDataKey(connectionId)
+          const analyticsTimeKey = liveClosedAnalyticsTimeKey(connectionId)
+          const analyticsRows = this.data.hashes.get(analyticsDataKey) || {}
+          analyticsRows[positionId] = JSON.stringify(analytics)
+          this.data.hashes.set(analyticsDataKey, analyticsRows)
+          const zset = this.getSortedSet(analyticsTimeKey) || this.createSortedSet()
+          const existing = zset.memberIndex.get(positionId)
+          if (existing) {
+            const existingIndex = this.insertionIndex(zset.entries, existing)
+            if (zset.entries[existingIndex]?.member === positionId) {
+              zset.entries.splice(existingIndex, 1)
+            }
+          }
+          const entry = {
+            score: Number(analytics.closedAt),
+            member: positionId,
+          }
+          zset.memberIndex.set(positionId, entry)
+          zset.entries.splice(this.insertionIndex(zset.entries, entry), 0, entry)
+          this.data.sorted_sets.set(analyticsTimeKey, zset)
+        }
       } else {
         this.data.lists.set(openIndexKey, [positionId, ...openIds])
         this.data.lists.set(closedIndexKey, closedIds)
@@ -820,9 +1019,18 @@ export class InlineLocalRedis implements RedisClientLike {
       : [target, await this.tmpFallbackPath()].filter(Boolean) as Array<{ file: string }>
     for (const c of candidates) {
       try {
-        const raw = await fs.readFile(c.file, "utf8")
-        const parsed = JSON.parse(raw)
-        if (this.applySnapshot(parsed)) {
+        const restoredV2 = await this.applySnapshotV2File(c.file)
+        let restored = restoredV2 === true
+        let parsed: any = null
+        if (restoredV2 === null) {
+          const raw = await fs.readFile(c.file, "utf8")
+          parsed = JSON.parse(raw)
+          restored = this.applySnapshot(parsed)
+          if (restored) {
+            globalForRedis.__redis_snapshot_mutation_version = Number(parsed?.mutationVersion || 0)
+          }
+        }
+        if (restored) {
           this.markPersisted(this.mutationVersion())
           const restoredLivePositions = await this.replayLivePositionWal(c.file, fs)
           this.clearRestoredInlineProcessOwnership()
@@ -884,7 +1092,6 @@ export class InlineLocalRedis implements RedisClientLike {
         return false
       }
       const snapshotVersion = this.mutationVersion()
-      const json = this.buildSnapshot()
       // With an explicit persistent-volume path, fail closed instead of
       // silently succeeding on ephemeral `/tmp`.
       const candidates = process.env.V0_REDIS_SNAPSHOT_PATH
@@ -898,7 +1105,7 @@ export class InlineLocalRedis implements RedisClientLike {
           const tmpPath = `${c.file}.${this.nextWriteSuffix()}.tmp`
           const handle = await fs.open(tmpPath, "w")
           try {
-            await handle.writeFile(json, "utf8")
+            await this.writeSnapshotV2(handle, snapshotVersion)
             await handle.sync()
           } finally {
             await handle.close()
@@ -959,7 +1166,6 @@ export class InlineLocalRedis implements RedisClientLike {
     const tmpFile = pathMod.join("/tmp", "v0-redis-snapshot.json")
     if (this.persistedVersion() >= this.mutationVersion()) return true
     const snapshotVersion = this.mutationVersion()
-    const json = this.buildSnapshot()
     const candidates = explicit ? [primaryFile] : [primaryFile, tmpFile]
     for (const file of candidates) {
       try {
@@ -968,7 +1174,7 @@ export class InlineLocalRedis implements RedisClientLike {
         const tmp = `${file}.${this.nextWriteSuffix()}.tmp`
         const fd = fsSync.openSync(tmp, "w")
         try {
-          fsSync.writeFileSync(fd, json, "utf8")
+          this.writeSnapshotV2Sync(fsSync, fd, snapshotVersion)
           fsSync.fsyncSync(fd)
         } finally {
           fsSync.closeSync(fd)
@@ -2323,6 +2529,15 @@ export class InlineLocalRedis implements RedisClientLike {
     return entries.slice(start, end).map((entry) => entry.member)
   }
 
+  /** Return the number of sorted-set members in the inclusive score range. */
+  async zcount(key: string, min: number | string, max: number | string): Promise<number> {
+    if (this.isExpired(key)) return 0
+    const entries = this.getSortedSet(key)?.entries || []
+    const minValue = this.parseSortedSetScore(min, Number.NEGATIVE_INFINITY)
+    const maxValue = this.parseSortedSetScore(max, Number.POSITIVE_INFINITY)
+    return this.upperBoundByScore(entries, maxValue) - this.lowerBoundByScore(entries, minValue)
+  }
+
   async zremrangebyscore(key: string, min: number | string, max: number | string): Promise<number> {
     const zset = this.getSortedSet(key)
     if (!zset) return 0
@@ -2629,6 +2844,7 @@ class NodeRedisClientAdapter implements RedisClientLike {
   }
   async zadd(key: string, score: number, member: string) { return await (await this.c()).zAdd(key, { score, value: member }) }
   async zrangebyscore(key: string, min: number | string, max: number | string) { return await (await this.c()).zRangeByScore(key, min as any, max as any) }
+  async zcount(key: string, min: number | string, max: number | string) { return await (await this.c()).zCount(key, min as any, max as any) }
   async zremrangebyscore(key: string, min: number | string, max: number | string) { return await (await this.c()).zRemRangeByScore(key, min as any, max as any) }
   async zrange(key: string, start: number, stop: number) { return await (await this.c()).zRange(key, start, stop) }
   async zrevrange(key: string, start: number, stop: number) { return await (await this.c()).zRange(key, start, stop, { REV: true } as any) }
@@ -2790,6 +3006,7 @@ class UpstashRestRedisClient implements RedisClientLike {
   }
   async zadd(key: string, score: number, member: string) { return await this.command<number>(["ZADD", key, score, member]) }
   async zrangebyscore(key: string, min: number | string, max: number | string) { return await this.command<string[]>(["ZRANGEBYSCORE", key, min, max]) }
+  async zcount(key: string, min: number | string, max: number | string) { return await this.command<number>(["ZCOUNT", key, min, max]) }
   async zremrangebyscore(key: string, min: number | string, max: number | string) { return await this.command<number>(["ZREMRANGEBYSCORE", key, min, max]) }
   async zrange(key: string, start: number, stop: number) { return await this.command<string[]>(["ZRANGE", key, start, stop]) }
   async zrevrange(key: string, start: number, stop: number) { return await this.command<string[]>(["ZREVRANGE", key, start, stop]) }
@@ -4343,6 +4560,10 @@ export async function savePosition(position: any): Promise<void> {
           // Only add if not already present
           await client.lpush(`live:positions:${connId}:closed`, id).catch(() => 0)
         }
+        await archiveClosedLivePositionAnalytics(client, {
+          ...position,
+          connectionId: connId,
+        }).catch(() => {})
         await client.ltrim(`live:positions:${connId}:closed`, 0, 499).catch(() => {})
         // Mark moved so closeLivePosition can detect duplicate increments
         await client.set(`live:positions:${connId}:moved:${id}`, String(Date.now())).catch(() => null)
@@ -5075,11 +5296,25 @@ export async function getIndications(connectionId?: string, symbol?: string): Pr
   const indications: any[] = []
   
   try {
-    // Indications are stored as Redis lists at: indications:{connectionId}:{symbol}
-    // If symbol is provided, fetch directly from that list
+    // Canonical storage is one complete, current JSON snapshot per symbol.
+    // Historical per-configuration rings live under `indication_set:*` and
+    // may be compacted independently; the current snapshot is never top-N
+    // sliced because Strategy/Base must observe every qualified tuple.
     if (connectionId && symbol) {
+      const snapshot = await client.get(`indications_snapshot:${connectionId}:${symbol}`)
+      if (snapshot) {
+        try {
+          const parsed = typeof snapshot === "string" ? JSON.parse(snapshot) : snapshot
+          if (Array.isArray(parsed)) return parsed
+        } catch {
+          // Continue into the legacy repair path.
+        }
+      }
+
+      // Legacy symbol LIST fallback. Read the complete value once; the
+      // previous 500-row LRANGE was an unintended current-processing ceiling.
       const listKey = `indications:${connectionId}:${symbol}`
-      const listData = await client.lrange(listKey, 0, 499) // Get last 500
+      const listData = await client.lrange(listKey, 0, -1).catch(() => [])
       if (listData && listData.length > 0) {
         for (const item of listData) {
           try {
@@ -5093,8 +5328,31 @@ export async function getIndications(connectionId?: string, symbol?: string): Pr
       }
     }
     
-    // If no symbol specified, collect from all symbol lists for this connection
+    // If no symbol is specified, use the maintained snapshot index rather
+    // than a hot-path KEYS scan.
     if (connectionId) {
+      const indexedSymbols = await client
+        .smembers(`indications_snapshot:index:${connectionId}`)
+        .catch(() => [])
+      if (indexedSymbols.length > 0) {
+        const snapshots = await Promise.all(
+          indexedSymbols.map((indexedSymbol) =>
+            client.get(`indications_snapshot:${connectionId}:${indexedSymbol}`).catch(() => null),
+          ),
+        )
+        for (const snapshot of snapshots) {
+          if (!snapshot) continue
+          try {
+            const parsed = typeof snapshot === "string" ? JSON.parse(snapshot) : snapshot
+            if (Array.isArray(parsed)) indications.push(...parsed)
+          } catch {
+            // Ignore one malformed/stale symbol without dropping siblings.
+          }
+        }
+        if (indications.length > 0) return indications
+      }
+
+      // Upgrade fallback for pre-snapshot installations.
       const pattern = `indications:${connectionId}:*`
       const keys = await client.keys(pattern)
       
@@ -5107,7 +5365,7 @@ export async function getIndications(connectionId?: string, symbol?: string): Pr
         
         if (isSymbolKey) {
           // This is a symbol-specific list, fetch with LRANGE
-          const listData = await client.lrange(key, 0, 499)
+          const listData = await client.lrange(key, 0, -1).catch(() => [])
           if (listData && listData.length > 0) {
             for (const item of listData) {
               try {
@@ -5155,7 +5413,14 @@ export async function storeIndications(connectionId: string, symbol: string, ind
       configSet: getConfigurationSet(ind.type, ind.value),
     }))
 
-    // ── Main key: read → append → trim → write ───────────────────────────
+    // ── Canonical complete current snapshot ───────────────────────────────
+    // This is intentionally separate from bounded historical rings. It is
+    // overwritten atomically each cycle and therefore has no growth problem
+    // and no configuration-count ceiling.
+    const snapshotKey = `indications_snapshot:${connectionId}:${symbol}`
+    const snapshotIndexKey = `indications_snapshot:index:${connectionId}`
+
+    // ── Legacy aggregate compatibility ────────────────────────────────────
     const existingRaw = await client.get(mainKey)
     let existing: any[] = []
     if (existingRaw) {
@@ -5183,6 +5448,9 @@ export async function storeIndications(connectionId: string, symbol: string, ind
 
     // Fan out all writes in parallel — single await instead of sequential loop.
     await Promise.all([
+      client.set(snapshotKey, JSON.stringify(newIndications), { EX: 3600 } as any),
+      client.sadd(snapshotIndexKey, symbol),
+      client.expire(snapshotIndexKey, 24 * 60 * 60),
       client.set(mainKey, JSON.stringify(existing), { EX: 3600 } as any),
       ...Array.from(byType.entries()).map(([type, typeInds]) =>
         client.set(`indications:${connectionId}:${type}`, JSON.stringify(typeInds), { EX: 3600 } as any)

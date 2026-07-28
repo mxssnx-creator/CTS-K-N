@@ -2,6 +2,15 @@ import { type NextRequest, NextResponse } from "next/server"
 import { query, execute } from "@/lib/db"
 import { nanoid } from "nanoid"
 import { SystemLogger } from "@/lib/system-logger"
+import {
+  PRESET_DEFAULT_INDICATION_RANGES,
+  PRESET_DEFAULT_INDICATION_TYPES,
+  PRESET_DEFAULT_MIN_PF_RATIO,
+  PRESET_DEFAULT_STRATEGY_TYPES,
+  presetNumberList,
+  presetStringList,
+} from "@/lib/preset-crud-defaults"
+import { normalizeMainTradeStagePfRatio } from "@/lib/main-trade-profit-factor"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -41,17 +50,15 @@ export async function GET(request: NextRequest) {
 
     const validatedPresets = presets.map((preset: any) => ({
       ...preset,
-      indication_types: preset.indication_types ? JSON.parse(preset.indication_types) : ["direction", "move", "active"],
-      indication_ranges: preset.indication_ranges
-        ? JSON.parse(preset.indication_ranges)
-        : [3, 5, 8, 12, 15, 20, 25, 30],
+      indication_types: presetStringList(preset.indication_types, PRESET_DEFAULT_INDICATION_TYPES),
+      indication_ranges: presetNumberList(preset.indication_ranges, PRESET_DEFAULT_INDICATION_RANGES),
       takeprofit_steps: preset.takeprofit_steps ? JSON.parse(preset.takeprofit_steps) : [2, 3, 4, 6, 8, 12],
       stoploss_ratios: preset.stoploss_ratios
         ? JSON.parse(preset.stoploss_ratios)
         : [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
       trail_starts: preset.trail_starts ? JSON.parse(preset.trail_starts) : [0.3, 0.6, 1.0],
       trail_stops: preset.trail_stops ? JSON.parse(preset.trail_stops) : [0.1, 0.2, 0.3],
-      strategy_types: preset.strategy_types ? JSON.parse(preset.strategy_types) : ["base", "main", "real"],
+      strategy_types: presetStringList(preset.strategy_types, PRESET_DEFAULT_STRATEGY_TYPES),
       last_positions_counts: preset.last_positions_counts
         ? JSON.parse(preset.last_positions_counts)
         : [3, 4, 5, 6, 8, 12, 25],
@@ -110,14 +117,14 @@ export async function POST(request: NextRequest) {
         presetId,
         body.name,
         body.description || null,
-        JSON.stringify(body.indication_types || ["direction", "move", "active"]),
-        JSON.stringify(body.indication_ranges || [3, 5, 8, 12, 15, 20, 25, 30]),
+        JSON.stringify(presetStringList(body.indication_types, PRESET_DEFAULT_INDICATION_TYPES)),
+        JSON.stringify(presetNumberList(body.indication_ranges, PRESET_DEFAULT_INDICATION_RANGES)),
         JSON.stringify(body.takeprofit_steps || [2, 3, 4, 6, 8, 12]),
         JSON.stringify(body.stoploss_ratios || [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5]),
         body.trailing_enabled !== undefined ? body.trailing_enabled : true,
         JSON.stringify(body.trail_starts || [0.3, 0.6, 1.0]),
         JSON.stringify(body.trail_stops || [0.1, 0.2, 0.3]),
-        JSON.stringify(body.strategy_types || ["base", "main", "real"]),
+        JSON.stringify(presetStringList(body.strategy_types, PRESET_DEFAULT_STRATEGY_TYPES)),
         JSON.stringify(body.last_positions_counts || [3, 4, 5, 6, 8, 12, 25]),
         JSON.stringify(body.main_positions_count || [1, 2, 3, 4, 5]),
         body.block_adjustment_enabled !== undefined ? body.block_adjustment_enabled : true,
@@ -126,7 +133,10 @@ export async function POST(request: NextRequest) {
         body.dca_adjustment_enabled !== undefined ? body.dca_adjustment_enabled : false,
         JSON.stringify(body.dca_levels || [3, 5, 7]),
         JSON.stringify(normalizePresetVolumeFactors(body.volume_factors)),
-        body.min_profit_factor || 0.4,
+        normalizeMainTradeStagePfRatio(
+          "base",
+          body.min_profit_factor ?? PRESET_DEFAULT_MIN_PF_RATIO,
+        ),
         body.min_win_rate || 0.0,
         body.max_drawdown || 50.0,
         body.backtest_period_days || 30,

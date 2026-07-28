@@ -1,5 +1,11 @@
 import { StepBasedIndicators } from "@/lib/step-based-indicators"
 import {
+  COMMON_INDICATOR_DEFINITIONS,
+  DEFAULT_COMMON_INDICATION_SETTINGS,
+  commonIndicatorParameterConfigurations,
+  type CommonIndicatorSettings,
+} from "@/lib/common-indicator-config"
+import {
   evaluateTechnicalIndicators,
   normalizeTechnicalCandles,
   onBalanceVolume,
@@ -18,17 +24,17 @@ function candles(prices: number[]) {
 }
 
 describe("Common technical indicators", () => {
-  test("normalizes chronological candles and resamples only to the Common 15-minute ceiling", () => {
+  test("normalizes chronological candles and supports the Common 30-minute range", () => {
     const source = candles(Array.from({ length: 30 }, (_, index) => 100 + index))
     const reversed = [...source].reverse()
 
     expect(normalizeTechnicalCandles(reversed)[0].close).toBe(100)
     const resampled = resampleTechnicalCandles(reversed, 30)
-    expect(resampled).toHaveLength(2)
+    expect(resampled).toHaveLength(1)
     expect(resampled[0]).toMatchObject({
       open: 100,
-      close: 114,
-      volume: source.slice(0, 15).reduce((sum, candle) => sum + candle.volume, 0),
+      close: 129,
+      volume: source.reduce((sum, candle) => sum + candle.volume, 0),
     })
   })
 
@@ -62,15 +68,22 @@ describe("Common technical indicators", () => {
     }).stochastic).toBeUndefined()
   })
 
-  test("keeps Common timeframes independent from Trend and clamps them to 15 minutes", () => {
+  test("keeps Common timeframes independent from Trend through 30 minutes", () => {
     const result = StepBasedIndicators.calculateAll(
       candles(Array.from({ length: 120 }, (_, index) => 100 + index * 0.01)),
       [1, 3, 5, 15, 30],
       ["obv", "stochastic"],
     )
 
-    expect(Object.keys(result)).toEqual(["1", "3", "5", "15"])
-    expect(result["1"].configurations).toHaveLength(3)
+    expect(Object.keys(result)).toEqual(["1", "3", "5", "15", "30"])
+    const expectedConfigurations = COMMON_INDICATOR_DEFINITIONS
+      .filter((definition) => definition.type === "obv" || definition.type === "stochastic")
+      .reduce((total, definition) => total + commonIndicatorParameterConfigurations(
+        definition,
+        DEFAULT_COMMON_INDICATION_SETTINGS[definition.storageKey] as CommonIndicatorSettings,
+      ).length, 0)
+    expect(result["1"].configurations).toHaveLength(expectedConfigurations)
+    expect(expectedConfigurations).toBeGreaterThan(3)
     expect(result["1"].indicators.obv).toBeDefined()
     expect(result["1"].indicators.stochastic).toBeDefined()
   })

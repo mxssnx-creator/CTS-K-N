@@ -6,6 +6,7 @@
 
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { appendUniqueListEntries } from "@/lib/redis-idempotent-list"
+import { COMMON_INDICATOR_DEFINITIONS } from "@/lib/common-indicator-config"
 
 export interface IndicationConfig {
   id: string
@@ -108,14 +109,20 @@ export class IndicationConfigManager {
     }
     if (keys.length === 0) return []
 
-    // Fan out all GETs in parallel — was O(N) serial round-trips.
-    const values = await Promise.all(keys.map((k: string) => client.get(k).catch(() => null)))
     const configs: IndicationConfig[] = []
-    for (const data of values) {
-      if (!data) continue
-      try {
-        configs.push(JSON.parse(typeof data === "string" ? data : JSON.stringify(data)))
-      } catch { /* skip malformed */ }
+    // Bound pipeline size without omitting any indexed configuration.
+    for (let offset = 0; offset < keys.length; offset += 500) {
+      const batch = keys.slice(offset, offset + 500)
+      const pipeline = client.multi()
+      for (const key of batch) pipeline.get(key)
+      const values = await pipeline.exec()
+      for (const raw of values || []) {
+        const data = Array.isArray(raw) ? raw[1] : raw
+        if (!data) continue
+        try {
+          configs.push(JSON.parse(typeof data === "string" ? data : JSON.stringify(data)))
+        } catch { /* skip malformed */ }
+      }
     }
     return configs
   }
@@ -244,64 +251,58 @@ export class IndicationConfigManager {
   }
 
   async generateDefaultConfigs(): Promise<IndicationConfig[]> {
-    // Read per-connection minStep from Redis.
-    // Only step-window sizes >= minStep are generated — raising the floor
-    // eliminates fast short-window configs that tend to trigger on noise.
-    let minStep = 5
-    try {
-      await initRedis()
-      const client = getRedisClient()
-      if (client) {
-        const raw = await client.hget(`connection_settings:${this.connectionId}`, "minStep")
-        const parsed = Number(raw)
-        if (Number.isFinite(parsed) && parsed >= 2 && parsed <= 30) {
-          minStep = Math.floor(parsed)
-        }
-      }
-    } catch {
-      // Redis unavailable — fall through to default (5)
-    }
-
-    const types = ["SMA", "EMA", "RSI", "MACD"]
-    const ALL_STEPS = [2, 3, 5, 10, 15, 20, 25, 30]
-    const stepsOptions = ALL_STEPS.filter((s) => s >= minStep)
+    const types = COMMON_INDICATOR_DEFINITIONS.map((definition) => definition.label)
+    // Exhaustive by contract: a legacy `minStep` value must never filter
+    // valid indication lanes. Every integer window is materialized.
+    const stepsOptions = Array.from({ length: 29 }, (_, index) => index + 2)
     const drawdownOptions = [0.05, 0.1, 0.15]
     const activeRatioOptions = [0.6, 0.7, 0.8]
     const lastPartRatioOptions = [0.2, 0.3, 0.4]
 
-    // Build a balanced high-performance core: eight representative variants
-    // for each indication type. The old nested loop stopped globally at 100,
-    // so early types monopolised the universe and a 12-symbol cold start had
-    // to materialise thousands of redundant Set calculations before realtime
-    // could begin.
     const pending: Array<Omit<IndicationConfig, "connectionId" | "createdAt">> = []
-    let idCounter = 1
-    const VARIANTS_PER_TYPE = 8
     for (const type of types) {
-      for (let variant = 0; variant < VARIANTS_PER_TYPE; variant++) {
-        pending.push({
-          id: `ind_${this.connectionId}_${idCounter++}`,
-          steps: stepsOptions[variant % stepsOptions.length],
-          drawdown_ratio: drawdownOptions[variant % drawdownOptions.length],
-          active_ratio: activeRatioOptions[(variant + Math.floor(variant / 3)) % activeRatioOptions.length],
-          last_part_ratio: lastPartRatioOptions[(variant * 2) % lastPartRatioOptions.length],
-          type,
-          enabled: true,
-        })
+      for (const steps of stepsOptions) {
+        for (const drawdownRatio of drawdownOptions) {
+          for (const activeRatio of activeRatioOptions) {
+            for (const lastPartRatio of lastPartRatioOptions) {
+              const fingerprint = [
+                type,
+                steps,
+                drawdownRatio,
+                activeRatio,
+                lastPartRatio,
+              ].join("_").replace(/[^A-Za-z0-9_-]/g, "-")
+              pending.push({
+                id: `ind_${this.connectionId}_${fingerprint}`,
+                steps,
+                drawdown_ratio: drawdownRatio,
+                active_ratio: activeRatio,
+                last_part_ratio: lastPartRatio,
+                type,
+                enabled: true,
+              })
+            }
+          }
+        }
       }
     }
 
-    // Persist all configs in parallel — was sequential await per config.
     const now = new Date().toISOString()
     await initRedis()
     const client = getRedisClient()
-    const pipe = client.multi()
     const configs: IndicationConfig[] = pending.map((cfg) => {
-      const full: IndicationConfig = { ...cfg, connectionId: this.connectionId, createdAt: now }
-      pipe.set(this.getConfigKey(cfg.id), JSON.stringify(full))
-      return full
+      return { ...cfg, connectionId: this.connectionId, createdAt: now }
     })
-    await pipe.exec()
+    for (let offset = 0; offset < configs.length; offset += 500) {
+      const batch = configs.slice(offset, offset + 500)
+      const pipeline = client.multi()
+      for (const config of batch) {
+        const key = this.getConfigKey(config.id)
+        pipeline.set(key, JSON.stringify(config))
+        pipeline.sadd(this.getConfigIndexKey(), key)
+      }
+      await pipeline.exec()
+    }
 
     return configs
   }
@@ -311,9 +312,12 @@ export class IndicationConfigManager {
     const client = getRedisClient()
 
     const configs = await this.getAllConfigs()
-    for (const config of configs) {
-      const key = this.getResultsKey(config.id)
-      await client.del(key)
+    for (let offset = 0; offset < configs.length; offset += 500) {
+      const pipeline = client.multi()
+      for (const config of configs.slice(offset, offset + 500)) {
+        pipeline.del(this.getResultsKey(config.id))
+      }
+      await pipeline.exec()
     }
 
     console.log(`[v0] [IndicationConfigManager] Cleared all results for ${this.connectionId}`)

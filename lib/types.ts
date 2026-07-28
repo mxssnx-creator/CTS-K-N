@@ -217,6 +217,7 @@ export interface StrategyConfig {
   last_positions_count: number // 3,4,5,6,8,12,25
   main_positions_count: number // 1,2,3,4,5 (was partial_positions_count)
   volume_factor: number // 1-10
+  min_profit_factor?: number // Canonical PositionCost-relative stage ratio
   adjustments?: {
     block?: {
       enabled: boolean
@@ -345,8 +346,8 @@ export interface SystemSettings {
 
   tradeMode?: "preset" | "main" // preset = common indicators, main = step-based
 
-  indicationValidationTimeout?: number // seconds, default 15
-  positionCooldownTimeout?: number // seconds, default 20
+  indicationValidationTimeout?: number // seconds; legacy alias, canonical exact-lane default 0.25
+  positionCooldownTimeout?: number // seconds, default 3 per exact Base lane
   maxPositionsPerConfigSet?: number // default 1
 
   // Historical Preset optimizer. These keys are persisted in app settings and

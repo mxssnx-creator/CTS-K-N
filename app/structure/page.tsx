@@ -31,9 +31,14 @@ interface SystemMetrics {
   cpu_usage: number
   memory_usage: number
   database_size: number
+  database_keys: number
   database_connections: number
+  database_latency_ms: number
+  database_connected: boolean
+  redis_operations_per_minute: number
   api_requests_per_minute: number
   websocket_connections: number
+  websocket_instrumented: boolean
   uptime_hours: number
 }
 
@@ -56,45 +61,48 @@ interface ModuleStatus {
   status: "active" | "inactive" | "error"
   health: number
   last_update: string
+  detail?: string
+}
+
+function safePercent(numerator: number, denominator: number): number {
+  return denominator > 0
+    ? Math.max(0, Math.min(100, (numerator / denominator) * 100))
+    : 0
 }
 
 export default function OverviewPage() {
   const { selectedConnectionId, selectedConnection } = useExchange()
   const [activeTab, setActiveTab] = useState("system")
   const [systemMetrics, setSystemMetrics] = useState<SystemMetrics>({
-    cpu_usage: 35,
-    memory_usage: 62,
-    database_size: 245,
-    database_connections: 12,
-    api_requests_per_minute: 450,
-    websocket_connections: 8,
-    uptime_hours: 168,
+    cpu_usage: 0,
+    memory_usage: 0,
+    database_size: 0,
+    database_keys: 0,
+    database_connections: 0,
+    database_latency_ms: 0,
+    database_connected: false,
+    redis_operations_per_minute: 0,
+    api_requests_per_minute: 0,
+    websocket_connections: 0,
+    websocket_instrumented: false,
+    uptime_hours: 0,
   })
 
   const [tradingLogistics, setTradingLogistics] = useState<TradingLogistics>({
-    active_connections: 3,
-    total_strategies: 48,
-    active_strategies: 24,
-    open_positions: 156,
-    total_volume_24h: 125000,
-    trades_per_hour: 32,
-    avg_response_time: 45,
+    active_connections: 0,
+    total_strategies: 0,
+    active_strategies: 0,
+    open_positions: 0,
+    total_volume_24h: 0,
+    trades_per_hour: 0,
+    avg_response_time: 0,
     workflow_health: "unknown",
     queue_backlog: 0,
     processing_pressure: 0,
     success_rate: 0,
   })
 
-  const [modules, setModules] = useState<ModuleStatus[]>([
-    { name: "Live Trading Engine", status: "active", health: 98, last_update: "2 min ago" },
-    { name: "Indication Generator", status: "active", health: 95, last_update: "1 min ago" },
-    { name: "Strategy Optimizer", status: "active", health: 92, last_update: "3 min ago" },
-    { name: "Position Manager", status: "active", health: 97, last_update: "1 min ago" },
-    { name: "Analytics Engine", status: "active", health: 89, last_update: "5 min ago" },
-    { name: "Database Sync", status: "active", health: 94, last_update: "2 min ago" },
-    { name: "API Gateway", status: "active", health: 96, last_update: "1 min ago" },
-    { name: "WebSocket Server", status: "active", health: 93, last_update: "2 min ago" },
-  ])
+  const [modules, setModules] = useState<ModuleStatus[]>([])
 
   useEffect(() => {
     // When the user picks a connection in the sidebar exchange selector the
@@ -241,8 +249,15 @@ export default function OverviewPage() {
             icon: Zap,
             label: "Active Modules",
             value: `${activeModuleCount}/${modules.length}`,
-            sub: activeModuleCount === modules.length ? "All operational" : "Some degraded",
-            tint: activeModuleCount === modules.length ? "text-green-500" : "text-amber-500",
+            sub: modules.length === 0
+              ? "Awaiting measured state"
+              : activeModuleCount === modules.length
+                ? "All operational"
+                : "Some inactive or degraded",
+            tint:
+              modules.length > 0 && activeModuleCount === modules.length
+                ? "text-green-500"
+                : "text-amber-500",
           },
           {
             icon: TrendingUp,
@@ -351,8 +366,16 @@ export default function OverviewPage() {
                     <span className="font-semibold">{systemMetrics.database_connections}</span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-sm text-muted-foreground">Query Performance</span>
-                    <Badge variant="default">Excellent</Badge>
+                    <span className="text-sm text-muted-foreground">Stored Keys</span>
+                    <span className="font-semibold">{formatNumber(systemMetrics.database_keys)}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-muted-foreground">Measured Redis Latency</span>
+                    <Badge variant={systemMetrics.database_connected ? "default" : "destructive"}>
+                      {systemMetrics.database_connected
+                        ? `${systemMetrics.database_latency_ms} ms`
+                        : "Unavailable"}
+                    </Badge>
                   </div>
                 </div>
               </CardContent>
@@ -365,21 +388,27 @@ export default function OverviewPage() {
                   <Network className="h-5 w-5 text-orange-500" />
                   Network Activity
                 </CardTitle>
-                <CardDescription>API and WebSocket connections</CardDescription>
+                <CardDescription>Measured persistence traffic and engine latency</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
                   <div className="flex justify-between items-center">
-                    <span className="text-sm text-muted-foreground">API Requests/min</span>
-                    <span className="font-semibold">{formatNumber(systemMetrics.api_requests_per_minute)}</span>
+                    <span className="text-sm text-muted-foreground">Redis Operations/min</span>
+                    <span className="font-semibold">{formatNumber(systemMetrics.redis_operations_per_minute)}</span>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-muted-foreground">WebSocket Connections</span>
-                    <span className="font-semibold">{systemMetrics.websocket_connections}</span>
+                    <span className="font-semibold">
+                      {systemMetrics.websocket_instrumented
+                        ? systemMetrics.websocket_connections
+                        : "Not instrumented"}
+                    </span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-sm text-muted-foreground">Network Latency</span>
-                    <Badge variant="default">Low</Badge>
+                    <span className="text-sm text-muted-foreground">Average Engine Latency</span>
+                    <Badge variant={tradingLogistics.avg_response_time <= 250 ? "default" : "destructive"}>
+                      {tradingLogistics.avg_response_time} ms
+                    </Badge>
                   </div>
                 </div>
               </CardContent>
@@ -432,12 +461,20 @@ export default function OverviewPage() {
                     </div>
                     <div className="text-right">
                       <div className="text-2xl font-semibold text-green-600">
-                        {((tradingLogistics.active_strategies / tradingLogistics.total_strategies) * 100).toFixed(0)}%
+                        {safePercent(
+                          tradingLogistics.active_strategies,
+                          tradingLogistics.total_strategies,
+                        ).toFixed(0)}%
                       </div>
                       <div className="text-xs text-muted-foreground">Active</div>
                     </div>
                   </div>
-                  <Progress value={(tradingLogistics.active_strategies / tradingLogistics.total_strategies) * 100} />
+                  <Progress
+                    value={safePercent(
+                      tradingLogistics.active_strategies,
+                      tradingLogistics.total_strategies,
+                    )}
+                  />
                 </div>
               </CardContent>
             </Card>
@@ -484,14 +521,8 @@ export default function OverviewPage() {
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-                {[
-                  { name: "Market Data", status: "active", health: 98 },
-                  { name: "Signal Generation", status: "active", health: 95 },
-                  { name: "Strategy Execution", status: "active", health: 96 },
-                  { name: "Position Management", status: "active", health: Math.max(0, 100 - (tradingLogistics.processing_pressure || 0)) },
-                  { name: "Risk Control", status: "active", health: tradingLogistics.success_rate || 94 },
-                ].map((step, index) => (
-                  <div key={index} className="text-center space-y-2">
+                {modules.slice(0, 5).map((step) => (
+                  <div key={step.name} className="text-center space-y-2">
                     <div className="flex justify-center">
                       {/*
                         Swapped `bg-green-100` / `bg-gray-100` (light-mode-only)
@@ -510,6 +541,11 @@ export default function OverviewPage() {
                     <div className={`text-[11px] font-medium tabular-nums ${getHealthColor(step.health)}`}>{step.health}% Health</div>
                   </div>
                 ))}
+                {modules.length === 0 && (
+                  <div className="col-span-full rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
+                    No verified module-health snapshot is available yet.
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -535,8 +571,17 @@ export default function OverviewPage() {
                     <Progress value={module.health} className="h-2" />
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-muted-foreground">Last Update</span>
-                      <span className="font-medium">{module.last_update}</span>
+                      <span className="font-medium">
+                        {Number.isFinite(new Date(module.last_update).getTime())
+                          ? new Date(module.last_update).toLocaleString()
+                          : module.last_update}
+                      </span>
                     </div>
+                    {module.detail && (
+                      <div className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                        {module.detail}
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -563,13 +608,25 @@ export default function OverviewPage() {
                 so it remains legible in both themes.
               */}
               <div className="space-y-4">
-                <div className="flex items-start gap-3 py-2 px-4 rounded-md border border-green-500/30 bg-green-500/10">
-                  <CheckCircle className="h-5 w-5 text-green-500 mt-0.5 flex-shrink-0" />
+                <div
+                  className={`flex items-start gap-3 rounded-md border px-4 py-2 ${
+                    systemHealth >= 90
+                      ? "border-green-500/30 bg-green-500/10"
+                      : "border-amber-500/30 bg-amber-500/10"
+                  }`}
+                >
+                  <CheckCircle
+                    className={`mt-0.5 h-5 w-5 flex-shrink-0 ${
+                      systemHealth >= 90 ? "text-green-500" : "text-amber-500"
+                    }`}
+                  />
                   <div className="flex-1">
-                    <div className="font-semibold text-sm text-foreground">System Running Optimally</div>
+                    <div className="font-semibold text-sm text-foreground">
+                      {systemHealth >= 90 ? "Measured Runtime Healthy" : "Runtime Review Recommended"}
+                    </div>
                     <div className="text-xs text-muted-foreground mt-1">
-                      All metrics are within optimal ranges. CPU at {systemMetrics.cpu_usage.toFixed(1)}%, memory at{" "}
-                      {systemMetrics.memory_usage.toFixed(1)}%.
+                      Module health {systemHealth}%, CPU {systemMetrics.cpu_usage.toFixed(1)}%, memory{" "}
+                      {systemMetrics.memory_usage.toFixed(1)}%, workflow {tradingLogistics.workflow_health || "unknown"}.
                     </div>
                   </div>
                 </div>
@@ -582,8 +639,9 @@ export default function OverviewPage() {
                     <div className="flex-1">
                       <div className="font-semibold text-sm text-foreground">Database Optimization</div>
                       <div className="text-xs text-muted-foreground mt-1">
-                        Consider archiving positions older than 90 days to maintain optimal query performance. Current
-                        database size: {systemMetrics.database_size} MB.
+                        Redis currently holds {formatNumber(systemMetrics.database_keys)} keys using{" "}
+                        {systemMetrics.database_size} MB; the measured monitoring round-trip is{" "}
+                        {systemMetrics.database_latency_ms} ms.
                       </div>
                     </div>
                   </div>
@@ -602,10 +660,11 @@ export default function OverviewPage() {
                   <div className="flex items-start gap-3 py-2 px-4 rounded-md border border-amber-500/30 bg-amber-500/10">
                     <Zap className="h-5 w-5 text-amber-500 mt-0.5 flex-shrink-0" />
                     <div className="flex-1">
-                      <div className="font-semibold text-sm text-foreground">API Rate Optimization</div>
+                      <div className="font-semibold text-sm text-foreground">Persistence Throughput</div>
                       <div className="text-xs text-muted-foreground mt-1">
-                        Current API request rate: {formatNumber(systemMetrics.api_requests_per_minute)}/min. Consider
-                        implementing request batching for improved efficiency.
+                        Current observed Redis activity is{" "}
+                        {formatNumber(systemMetrics.redis_operations_per_minute)} operations/min; workflow backlog is{" "}
+                        {tradingLogistics.queue_backlog || 0}.
                       </div>
                     </div>
                   </div>
@@ -620,8 +679,17 @@ export default function OverviewPage() {
                 <div className="mt-4">
                   <h4 className="font-semibold text-sm mb-2">System Capacity Analysis</h4>
                   {(() => {
-                    const MAX_POSITIONS = 500
-                    const loadPct = Math.min(100, (tradingLogistics.open_positions / MAX_POSITIONS) * 100)
+                    // Position limits differ by exchange and by independently
+                    // enabled Main/Signal channels. Never compare the combined
+                    // open book to a fabricated global 500-position ceiling.
+                    const loadPct = Math.max(
+                      0,
+                      Math.min(
+                        100,
+                        Number(tradingLogistics.processing_pressure) ||
+                        Math.max(systemMetrics.cpu_usage, systemMetrics.memory_usage),
+                      ),
+                    )
                     const loadLabel = loadPct < 25 ? "Low" : loadPct < 60 ? "Medium" : loadPct < 85 ? "High" : "Critical"
                     const loadTint =
                       loadPct < 60 ? "text-green-500" : loadPct < 85 ? "text-amber-500" : "text-red-500"
@@ -639,7 +707,7 @@ export default function OverviewPage() {
                           <div className="text-xs text-muted-foreground">Current Load</div>
                           <div className={`text-xl font-bold mt-1 ${loadTint}`}>{loadLabel}</div>
                           <div className="text-[10px] text-muted-foreground mt-1">
-                            {tradingLogistics.open_positions} / {MAX_POSITIONS} positions
+                            {tradingLogistics.open_positions} open positions · {loadPct.toFixed(0)}% processing pressure
                           </div>
                         </div>
                         <div className="rounded-md bg-muted/50 p-3">

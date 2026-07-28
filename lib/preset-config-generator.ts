@@ -109,7 +109,6 @@ export class PresetConfigGenerator {
   static async generateAllConfigurations(
     symbols: string[],
     indicatorConfigs: IndicatorConfig[],
-    maxConfigs = 500,
   ): Promise<PresetConfiguration[]> {
     const configurations: PresetConfiguration[] = []
     const timeframes = ["4h", "8h", "12h"]
@@ -139,41 +138,31 @@ export class PresetConfigGenerator {
                 position_cost: positionCost,
               })
 
-              // With trailing (sample combinations)
-              if (configurations.length < maxConfigs) {
-                for (const trailStart of trailStarts) {
-                  for (const trailStop of trailStops) {
-                    configurations.push({
-                      id: `config_${configId++}`,
-                      indicator,
-                      symbol,
-                      timeframe,
-                      takeprofit_factor: tp,
-                      stoploss_ratio: sl,
-                      trailing_enabled: true,
-                      trail_start: trailStart,
-                      trail_stop: trailStop,
-                      position_cost: positionCost,
-                    })
-
-                    if (configurations.length >= maxConfigs) break
-                  }
-                  if (configurations.length >= maxConfigs) break
+              // With trailing. Every configured combination remains present;
+              // runtime batching controls throughput, never topology.
+              for (const trailStart of trailStarts) {
+                for (const trailStop of trailStops) {
+                  configurations.push({
+                    id: `config_${configId++}`,
+                    indicator,
+                    symbol,
+                    timeframe,
+                    takeprofit_factor: tp,
+                    stoploss_ratio: sl,
+                    trailing_enabled: true,
+                    trail_start: trailStart,
+                    trail_stop: trailStop,
+                    position_cost: positionCost,
+                  })
                 }
               }
-
-              if (configurations.length >= maxConfigs) break
             }
-            if (configurations.length >= maxConfigs) break
           }
-          if (configurations.length >= maxConfigs) break
         }
-        if (configurations.length >= maxConfigs) break
       }
-      if (configurations.length >= maxConfigs) break
     }
 
-    return configurations.slice(0, maxConfigs)
+    return configurations
   }
 
   /**

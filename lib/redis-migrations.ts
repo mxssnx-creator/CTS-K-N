@@ -18,6 +18,23 @@ import {
   DEFAULT_SYMBOL_COUNT as CANONICAL_DEFAULT_SYMBOL_COUNT,
   DEFAULT_SYMBOL_ORDER,
 } from "./symbol-selection-defaults"
+import {
+  MAIN_TRADE_STAGE_PF_DEFAULTS,
+  normalizeMainTradeStagePfRatio,
+} from "./main-trade-profit-factor"
+import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "./pos-count-volume-ratio"
+import {
+  DEFAULT_COMMON_INDICATION_SETTINGS,
+  normalizeCommonIndicationSettings,
+} from "./common-indicator-config"
+import {
+  normalizeMainIndicationSettings,
+} from "./main-indication-settings"
+import {
+  DEFAULT_MAIN_INDICATION_PROFILE,
+  DEFAULT_PRESET_INDICATION_PROFILE,
+  INDICATION_PROFILE_TYPES,
+} from "./active-indication-profile"
 
 /**
  * Reset the in-process migration guards.
@@ -4567,6 +4584,1022 @@ const migrations: Migration[] = [
     down: async (client: any) => {
       // Base identity is a safety invariant and intentionally remains at one.
       await client.set("_schema_version", "83")
+    },
+  },
+  {
+    version: 85,
+    name: "085-main-trade-position-cost-ratio-four-stage",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const stages = ["base", "main", "real", "live"] as const
+      const fieldNames = {
+        base: ["baseProfitFactor", "base_min_profit_factor"],
+        main: ["mainProfitFactor", "main_min_profit_factor"],
+        real: ["realProfitFactor", "real_min_profit_factor"],
+        live: ["liveProfitFactor", "live_min_profit_factor"],
+      } as const
+      let normalized = 0
+      let nestedNormalized = 0
+
+      const migrateStageValue = (
+        stage: typeof stages[number],
+        value: unknown,
+        legacySemantics: boolean,
+      ): number => {
+        const parsed = Number(value)
+        if (!Number.isFinite(parsed)) return MAIN_TRADE_STAGE_PF_DEFAULTS[stage]
+        if (legacySemantics) {
+          const legacyDefaults = stage === "base"
+            ? new Set([0.4, 0.7, 0.9, 1])
+            : new Set([0.7, 0.9, 1, 1.2])
+          if (legacyDefaults.has(parsed)) return MAIN_TRADE_STAGE_PF_DEFAULTS[stage]
+        }
+        return normalizeMainTradeStagePfRatio(stage, parsed)
+      }
+
+      const normalizeNested = (
+        nested: Record<string, any>,
+        legacySemantics: boolean,
+      ): boolean => {
+        let changed = false
+        for (const stage of stages) {
+          const aliases = fieldNames[stage]
+          const current = aliases.map((field) => nested[field]).find((value) => value != null)
+          const next = migrateStageValue(stage, current, legacySemantics)
+          for (const field of aliases) {
+            if (Number(nested[field]) !== next) {
+              nested[field] = next
+              changed = true
+            }
+          }
+          for (const channelName of ["main", "preset"]) {
+            const stageRow = nested?.strategies?.[channelName]?.[stage]
+            if (!stageRow || typeof stageRow !== "object") continue
+            if (Number(stageRow.min_profit_factor) !== next) {
+              stageRow.min_profit_factor = next
+              changed = true
+            }
+          }
+        }
+        if (nested.mainTradePfRatioSemantics !== "position-cost-v2") {
+          nested.mainTradePfRatioSemantics = "position-cost-v2"
+          changed = true
+        }
+        return changed
+      }
+
+      const normalizeHash = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const legacySemantics =
+          values.mainTradePfRatioSemantics !== "position-cost-v2" &&
+          values._main_trade_pf_ratio_semantics !== "position-cost-v2"
+        const patch: Record<string, string> = {
+          mainTradePfRatioSemantics: "position-cost-v2",
+          _main_trade_pf_ratio_semantics: "position-cost-v2",
+        }
+        for (const stage of stages) {
+          const aliases = fieldNames[stage]
+          const current = aliases.map((field) => values[field]).find((value) => value != null && value !== "")
+          const next = migrateStageValue(stage, current, legacySemantics)
+          for (const field of aliases) {
+            if (Number(values[field]) !== next) {
+              patch[field] = String(next)
+              normalized++
+            }
+          }
+        }
+        for (const jsonField of ["connection_settings", "coordination_settings"]) {
+          const raw = values[jsonField]
+          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+          try {
+            const nested = JSON.parse(raw) as Record<string, any>
+            if (normalizeNested(nested, legacySemantics)) {
+              patch[jsonField] = JSON.stringify(nested)
+              nestedNormalized++
+            }
+          } catch {
+            // Preserve malformed legacy payloads; canonical flat fields still
+            // repair runtime behavior and the next settings save rewrites JSON.
+          }
+        }
+        await client.hset(key, patch)
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeHash(key)
+      }
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await normalizeHash(key)
+        }
+      }
+      await client.hset("system:database:coordination:performance", {
+        main_trade_pf_semantics: "position-cost-v2",
+        main_trade_pf_range: "0.08-2.70",
+        main_trade_pf_step: "0.02",
+        main_trade_pf_base_default: String(MAIN_TRADE_STAGE_PF_DEFAULTS.base),
+        main_trade_pf_downstream_default: String(MAIN_TRADE_STAGE_PF_DEFAULTS.main),
+        main_trade_pf_fields_normalized: String(normalized),
+        main_trade_pf_nested_normalized: String(nestedNormalized),
+        schema_version: "85",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      // Ratio values are operator-visible and remain valid on rollback.
+      await client.set("_schema_version", "84")
+    },
+  },
+  {
+    version: 86,
+    name: "086-exhaustive-indication-base-and-block-only-defaults",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      let hashesUpdated = 0
+      let commonProfilesUpdated = 0
+
+      const normalizeHash = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+        if (values.indicationTimeoutMs == null || [1000, 15000].includes(Number(values.indicationTimeoutMs))) {
+          patch.indicationTimeoutMs = "250"
+        }
+        if (values.positionCooldownMs == null || Number(values.positionCooldownMs) !== 3000) {
+          patch.positionCooldownMs = "3000"
+        }
+        if (
+          values.positionCooldownTimeout == null ||
+          [10, 15, 30].includes(Number(values.positionCooldownTimeout))
+        ) {
+          patch.positionCooldownTimeout = "3"
+        }
+        if (values.maxActiveBasePseudoPositionsPerDirection !== "1") {
+          patch.maxActiveBasePseudoPositionsPerDirection = "1"
+        }
+        if (values.maxPositionsPerConfigDirection !== "1") {
+          patch.maxPositionsPerConfigDirection = "1"
+        }
+        if (
+          values.posCountsVolumeRatio == null ||
+          values.posCountsVolumeRatio === "" ||
+          Number(values.posCountsVolumeRatio) === 0.05
+        ) {
+          patch.posCountsVolumeRatio = String(POS_COUNT_VOLUME_RATIO_DEFAULT)
+        }
+        if (values.blockOnly == null && values.variantBlockOnly == null) {
+          patch.blockOnly = "true"
+          patch.variantBlockOnly = "true"
+        }
+        const rawCoord = values.coordination_settings
+        if (typeof rawCoord === "string" && rawCoord.trim().startsWith("{")) {
+          try {
+            const coordination = JSON.parse(rawCoord) as Record<string, any>
+            let changed = false
+            if (coordination.blockOnly == null) {
+              coordination.blockOnly = true
+              changed = true
+            }
+            if (
+              coordination.posCountsVolumeRatio == null ||
+              Number(coordination.posCountsVolumeRatio) === 0.05
+            ) {
+              coordination.posCountsVolumeRatio = POS_COUNT_VOLUME_RATIO_DEFAULT
+              changed = true
+            }
+            if (changed) patch.coordination_settings = JSON.stringify(coordination)
+          } catch {
+            // Flat fields remain authoritative for malformed legacy JSON.
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, patch)
+          hashesUpdated++
+        }
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeHash(key)
+      }
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+        ]) {
+          await normalizeHash(key)
+        }
+      }
+
+      const commonRaw = await client.get("indications:common").catch(() => null)
+      if (typeof commonRaw === "string" && commonRaw.trim().startsWith("{")) {
+        try {
+          const common = JSON.parse(commonRaw) as Record<string, any>
+          for (const profile of Object.values(common)) {
+            if (!profile || typeof profile !== "object" || Array.isArray(profile)) continue
+            if ("timeout" in profile && Number(profile.timeout) !== 3) {
+              profile.timeout = 3
+              commonProfilesUpdated++
+            }
+          }
+          await client.set("indications:common", JSON.stringify(common))
+        } catch {
+          // The settings route repairs malformed JSON using canonical defaults.
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        indication_exact_lane_timeout_ms: "250",
+        common_indication_exact_lane_timeout_ms: "3000",
+        base_exact_lane_cooldown_ms: "3000",
+        base_open_positions_per_exact_lane: "1",
+        pos_counts_volume_ratio_default: String(POS_COUNT_VOLUME_RATIO_DEFAULT),
+        block_only_default: "true",
+        exhaustive_configuration_space: "true",
+        settings_hashes_updated: String(hashesUpdated),
+        common_profiles_updated: String(commonProfilesUpdated),
+        schema_version: "86",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      await client.set("_schema_version", "85")
+    },
+  },
+  {
+    version: 87,
+    name: "087-signal-bootstrap-direction-lanes-and-strategy-rows",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      let signalSourcesUpdated = 0
+      let stageCapsUpdated = 0
+      const signalRaw = await client.get("indications:signal").catch(() => null)
+      if (typeof signalRaw === "string" && signalRaw.trim().startsWith("{")) {
+        try {
+          const signal = JSON.parse(signalRaw) as Record<string, any>
+          if (signal.directExecutionEnabled == null) signal.directExecutionEnabled = true
+          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24) {
+            signal.maxPositionsTotal = 120
+          }
+          if (signal.sources && typeof signal.sources === "object") {
+            for (const source of Object.values(signal.sources) as Array<Record<string, any>>) {
+              if (!source || typeof source !== "object") continue
+              if (!Array.isArray(source.disabledSymbols)) source.disabledSymbols = []
+              if (!Array.isArray(source.disabledLanes)) {
+                source.disabledLanes = []
+                signalSourcesUpdated++
+              }
+            }
+          }
+          await client.set("indications:signal", JSON.stringify(signal))
+        } catch {
+          // Canonical Signal normalization repairs malformed payloads on load.
+        }
+      }
+
+      const normalizeStageCaps = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+        const legacyRealCaps = new Set(["", "25", "50", "100"])
+        const legacyLiveCaps = new Set(["", "90"])
+        if (legacyRealCaps.has(String(values.strategyRealSetsSafetyCeiling ?? ""))) {
+          patch.strategyRealSetsSafetyCeiling = "5000"
+        }
+        if (legacyRealCaps.has(String(values.maxRealSets ?? ""))) {
+          patch.maxRealSets = "5000"
+        }
+        if (legacyLiveCaps.has(String(values.strategyLiveSetsCeiling ?? ""))) {
+          patch.strategyLiveSetsCeiling = "500"
+        }
+        for (const jsonField of ["connection_settings", "coordination_settings"]) {
+          const raw = values[jsonField]
+          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+          try {
+            const nested = JSON.parse(raw) as Record<string, any>
+            const channel = nested?.strategies?.main
+            let changed = false
+            if (channel && typeof channel === "object") {
+              if (channel.base && Number(channel.base.max_positions) !== 0) {
+                channel.base.max_positions = 0
+                changed = true
+              }
+              if (channel.main && Number(channel.main.max_positions) !== 0) {
+                channel.main.max_positions = 0
+                changed = true
+              }
+              if (
+                channel.real &&
+                legacyRealCaps.has(String(channel.real.max_positions ?? ""))
+              ) {
+                channel.real.max_positions = 5000
+                changed = true
+              }
+              if (
+                channel.live &&
+                legacyLiveCaps.has(String(channel.live.max_positions ?? ""))
+              ) {
+                channel.live.max_positions = 500
+                changed = true
+              }
+            }
+            if (changed) patch[jsonField] = JSON.stringify(nested)
+          } catch {
+            // Flat fields remain authoritative for malformed legacy JSON.
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, patch)
+          stageCapsUpdated++
+        }
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeStageCaps(key)
+      }
+
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await normalizeStageCaps(key)
+        }
+        for (const [stage, defaults] of [
+          ["base", { row_total: "0", row_valid: "0", row_total_open: "0", row_valid_open: "0" }],
+          ["main", { row_valid: "0", row_overall: "0", row_valid_open: "0", row_overall_open: "0" }],
+          ["real", { row_valid: "0", row_active: "0", row_active_exact: "0" }],
+          ["live", { row_total: "0", row_mirrored: "0", row_active: "0" }],
+        ] as const) {
+          const key = `strategy_detail:${id}:${stage}`
+          const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+          const patch: Record<string, string> = {}
+          for (const [field, value] of Object.entries(defaults)) {
+            if (existing[field] == null) patch[field] = value
+          }
+          if (Object.keys(patch).length > 0) await client.hset(key, patch)
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        signal_direct_bootstrap_default: "true",
+        signal_source_window: "12",
+        signal_symbol_direction_window: "10",
+        signal_max_open_positions_long_short_total: "120",
+        signal_manual_lane_identity: "source-symbol-direction",
+        strategy_row_snapshot_semantics: "current-open-row-snapshot",
+        base_configuration_index: "exact-hash-lazy-v2",
+        signal_sources_direction_lists_seeded: String(signalSourcesUpdated),
+        strategy_real_sets_default: "5000",
+        strategy_live_sets_default: "500",
+        strategy_base_main_sets: "unlimited",
+        strategy_stage_caps_updated: String(stageCapsUpdated),
+        schema_version: "87",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      await client.set("_schema_version", "86")
+    },
+  },
+  {
+    version: 88,
+    name: "088-repair-exhaustive-indications-signal-capacity-and-stage-caps",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const exhaustiveRanges = Array.from({ length: 29 }, (_, index) => index + 2)
+      const exhaustiveFactors = [0.9, 1, 1.1]
+      const exhaustiveThresholds = [0.5, 1, 1.5, 2, 2.5]
+      const exhaustiveActivity = [0.5, 1, 1.5, 2, 2.5, 3]
+      const trendTimeframes = [1, 5, 15, 30]
+      const legacyTrendTimeframes = [1, 3, 5, 10, 15, 30]
+      const legacyCommonTimeframes = [1, 3, 5, 15]
+      const legacyRanges = [2, 5, 10, 20, 30]
+      const legacyFactors = [1]
+      const legacyThresholds = [0.5, 1.5, 2.5]
+      const legacyActivity = [0.5, 1.5, 3]
+      const legacyRealCaps = new Set(["", "25", "50", "100"])
+      const legacyLiveCaps = new Set(["", "90"])
+      const legacyMainEvalCounts = new Set(["", "3", "15"])
+      const legacyRealEvalCounts = new Set(["", "3", "10"])
+      let settingsHashesUpdated = 0
+      let mainDocumentUpdated = 0
+      let commonProfilesUpdated = 0
+      let signalSettingsUpdated = 0
+
+      const parseNumberList = (value: unknown): number[] => {
+        let source: unknown[] = []
+        if (Array.isArray(value)) {
+          source = value
+        } else if (typeof value === "string" && value.trim()) {
+          try {
+            const parsed = JSON.parse(value)
+            source = Array.isArray(parsed) ? parsed : value.split(/[\s,|]+/)
+          } catch {
+            source = value.split(/[\s,|]+/)
+          }
+        }
+        return source.map(Number).filter(Number.isFinite)
+      }
+      const sameNumberList = (value: unknown, expected: readonly number[]): boolean => {
+        const parsed = parseNumberList(value)
+        return parsed.length === expected.length &&
+          parsed.every((entry, index) => Math.abs(entry - expected[index]) <= Number.EPSILON)
+      }
+      const replaceLegacyList = (
+        target: Record<string, any>,
+        field: string,
+        legacy: readonly number[],
+        next: readonly number[],
+      ): boolean => {
+        if (target[field] == null || sameNumberList(target[field], legacy)) {
+          target[field] = [...next]
+          return true
+        }
+        return false
+      }
+      const replaceLegacyRange = (section: Record<string, any>): boolean => {
+        const range = section?.range
+        if (
+          !range ||
+          (Number(range.from) === 3 && Number(range.to) === 30 && Number(range.step) === 1)
+        ) {
+          section.range = { from: 2, to: 30, step: 1 }
+          return true
+        }
+        return false
+      }
+
+      const normalizeSettingsHash = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+        const replaceFlatList = (
+          field: string,
+          legacy: readonly number[],
+          next: readonly number[],
+        ) => {
+          if (values[field] == null || sameNumberList(values[field], legacy)) {
+            patch[field] = JSON.stringify(next)
+          }
+        }
+        replaceFlatList("indicationSampleRanges", legacyRanges, exhaustiveRanges)
+        replaceFlatList("optimalSampleRanges", legacyRanges, exhaustiveRanges)
+        replaceFlatList("indicationFactorMultipliers", legacyFactors, exhaustiveFactors)
+        replaceFlatList("activeThresholds", legacyThresholds, exhaustiveThresholds)
+        replaceFlatList("activeAdvancedActivityRatios", legacyActivity, exhaustiveActivity)
+        replaceFlatList("trendTimeframesMinutes", legacyTrendTimeframes, trendTimeframes)
+
+        if (values.indicationTimeoutMs == null || [1_000, 3_000, 15_000].includes(Number(values.indicationTimeoutMs))) {
+          patch.indicationTimeoutMs = "250"
+        }
+        if (values.positionCooldownMs == null || Number(values.positionCooldownMs) !== 3_000) {
+          patch.positionCooldownMs = "3000"
+        }
+        if (values.maxActiveBasePseudoPositionsPerDirection !== "1") {
+          patch.maxActiveBasePseudoPositionsPerDirection = "1"
+        }
+        if (values.maxPositionsPerConfigDirection !== "1") {
+          patch.maxPositionsPerConfigDirection = "1"
+        }
+        if (values.minStep !== "2") {
+          patch.minStep = "2"
+        }
+        if (legacyMainEvalCounts.has(String(values.mainEvalPosCount ?? ""))) {
+          patch.mainEvalPosCount = "25"
+        }
+        if (legacyRealEvalCounts.has(String(values.realEvalPosCount ?? ""))) {
+          patch.realEvalPosCount = "20"
+        }
+        if (legacyRealCaps.has(String(values.strategyRealSetsSafetyCeiling ?? ""))) {
+          patch.strategyRealSetsSafetyCeiling = "5000"
+        }
+        if (legacyRealCaps.has(String(values.maxRealSets ?? ""))) {
+          patch.maxRealSets = "5000"
+        }
+        if (legacyLiveCaps.has(String(values.strategyLiveSetsCeiling ?? ""))) {
+          patch.strategyLiveSetsCeiling = "500"
+        }
+
+        for (const jsonField of ["connection_settings", "coordination_settings"]) {
+          const raw = values[jsonField]
+          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+          try {
+            const nested = JSON.parse(raw) as Record<string, any>
+            let changed = false
+            changed = replaceLegacyList(
+              nested,
+              "indicationSampleRanges",
+              legacyRanges,
+              exhaustiveRanges,
+            ) || changed
+            changed = replaceLegacyList(
+              nested,
+              "optimalSampleRanges",
+              legacyRanges,
+              exhaustiveRanges,
+            ) || changed
+            changed = replaceLegacyList(
+              nested,
+              "indicationFactorMultipliers",
+              legacyFactors,
+              exhaustiveFactors,
+            ) || changed
+            changed = replaceLegacyList(
+              nested,
+              "activeThresholds",
+              legacyThresholds,
+              exhaustiveThresholds,
+            ) || changed
+            changed = replaceLegacyList(
+              nested,
+              "activeAdvancedActivityRatios",
+              legacyActivity,
+              exhaustiveActivity,
+            ) || changed
+            changed = replaceLegacyList(
+              nested,
+              "trendTimeframesMinutes",
+              legacyTrendTimeframes,
+              trendTimeframes,
+            ) || changed
+            if (nested.indicationTimeoutMs == null || [1_000, 3_000, 15_000].includes(Number(nested.indicationTimeoutMs))) {
+              nested.indicationTimeoutMs = 250
+              changed = true
+            }
+            if (Number(nested.positionCooldownMs) !== 3_000) {
+              nested.positionCooldownMs = 3_000
+              changed = true
+            }
+            if (Number(nested.maxActiveBasePseudoPositionsPerDirection) !== 1) {
+              nested.maxActiveBasePseudoPositionsPerDirection = 1
+              changed = true
+            }
+            if (Number(nested.maxPositionsPerConfigDirection) !== 1) {
+              nested.maxPositionsPerConfigDirection = 1
+              changed = true
+            }
+            if (Number(nested.minStep) !== 2) {
+              nested.minStep = 2
+              changed = true
+            }
+            if (legacyMainEvalCounts.has(String(nested.mainEvalPosCount ?? ""))) {
+              nested.mainEvalPosCount = 25
+              changed = true
+            }
+            if (legacyRealEvalCounts.has(String(nested.realEvalPosCount ?? ""))) {
+              nested.realEvalPosCount = 20
+              changed = true
+            }
+            const mainChannel = nested?.strategies?.main
+            if (mainChannel && typeof mainChannel === "object") {
+              if (mainChannel.base && Number(mainChannel.base.max_positions) !== 0) {
+                mainChannel.base.max_positions = 0
+                changed = true
+              }
+              if (mainChannel.main && Number(mainChannel.main.max_positions) !== 0) {
+                mainChannel.main.max_positions = 0
+                changed = true
+              }
+              if (
+                mainChannel.real &&
+                legacyRealCaps.has(String(mainChannel.real.max_positions ?? ""))
+              ) {
+                mainChannel.real.max_positions = 5000
+                changed = true
+              }
+              if (
+                mainChannel.live &&
+                legacyLiveCaps.has(String(mainChannel.live.max_positions ?? ""))
+              ) {
+                mainChannel.live.max_positions = 500
+                changed = true
+              }
+            }
+            if (changed) patch[jsonField] = JSON.stringify(nested)
+          } catch {
+            // Preserve malformed legacy JSON; flat canonical fields still
+            // repair runtime behavior and the next settings save rewrites it.
+          }
+        }
+
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, patch)
+          settingsHashesUpdated++
+        }
+      }
+
+      const normalizeActiveIndicationProfile = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+        const legacyMainTimeouts: Record<string, number> = {
+          direction: 30,
+          move: 30,
+          active: 60,
+          optimal: 60,
+          auto: 90,
+          signal: 60,
+          trend: 60,
+        }
+        const legacyPresetTimeouts: Record<string, number> = {
+          direction: 45,
+          move: 45,
+          active: 90,
+          optimal: 90,
+          auto: 120,
+          signal: 60,
+          trend: 120,
+        }
+        const profileWasLegacy = Object.entries(legacyMainTimeouts).some(
+          ([type, timeout]) => Number(values[`${type}_timeout`]) === timeout,
+        )
+        const presetWasLegacy = Object.entries(legacyPresetTimeouts).some(
+          ([type, timeout]) => Number(values[`${type}_preset_timeout`]) === timeout,
+        )
+
+        for (const [profile, suffix, legacyTimeouts, wasLegacy] of [
+          [DEFAULT_MAIN_INDICATION_PROFILE, "", legacyMainTimeouts, profileWasLegacy],
+          [DEFAULT_PRESET_INDICATION_PROFILE, "_preset", legacyPresetTimeouts, presetWasLegacy],
+        ] as const) {
+          for (const type of INDICATION_PROFILE_TYPES) {
+            const enabledField = suffix === "" ? type : `${type}_preset`
+            const rangeField = `${type}${suffix}_range`
+            const timeoutField = `${type}${suffix}_timeout`
+            const intervalField = `${type}${suffix}_interval`
+            if (
+              values[enabledField] == null ||
+              (wasLegacy && values[enabledField] === "false")
+            ) {
+              patch[enabledField] = String(profile[type].enabled)
+            }
+            if (values[rangeField] == null) patch[rangeField] = String(profile[type].range)
+            if (
+              values[timeoutField] == null ||
+              Number(values[timeoutField]) === legacyTimeouts[type]
+            ) {
+              patch[timeoutField] = String(profile[type].timeout)
+            }
+            if (values[intervalField] == null) {
+              patch[intervalField] = String(profile[type].interval)
+            }
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, patch)
+          settingsHashesUpdated++
+        }
+      }
+
+      for (const key of [
+        "app_settings",
+        "all_settings",
+        "settings:app_settings",
+        "settings:all_settings",
+        "settings:system",
+      ]) {
+        await normalizeSettingsHash(key)
+      }
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await normalizeSettingsHash(key)
+        }
+        await normalizeActiveIndicationProfile(`settings:active_indications:${id}`)
+      }
+
+      const rawMain = await client.get("indications:main").catch(() => null)
+      let parsedMain: Record<string, any> = {}
+      if (typeof rawMain === "string" && rawMain.trim().startsWith("{")) {
+        try {
+          parsedMain = JSON.parse(rawMain) as Record<string, any>
+        } catch {
+          parsedMain = {}
+        }
+      }
+      const main = normalizeMainIndicationSettings(parsedMain)
+      let mainChanged = rawMain == null
+      mainChanged = replaceLegacyList(
+        main.configuration,
+        "sample_ranges",
+        legacyRanges,
+        exhaustiveRanges,
+      ) || mainChanged
+      mainChanged = replaceLegacyList(
+        main.configuration,
+        "factor_multipliers",
+        legacyFactors,
+        exhaustiveFactors,
+      ) || mainChanged
+      mainChanged = replaceLegacyList(
+        main.configuration,
+        "active_thresholds",
+        legacyThresholds,
+        exhaustiveThresholds,
+      ) || mainChanged
+      for (const sectionName of ["direction", "move", "optimal"] as const) {
+        const section = main[sectionName] as Record<string, any>
+        mainChanged = replaceLegacyList(
+          section,
+          "sample_ranges",
+          legacyRanges,
+          exhaustiveRanges,
+        ) || mainChanged
+        mainChanged = replaceLegacyRange(section) || mainChanged
+        if (section.timeout == null || [3, 10].includes(Number(section.timeout))) {
+          section.timeout = 0.25
+          mainChanged = true
+        }
+      }
+      mainChanged = replaceLegacyList(
+        main.active,
+        "thresholds",
+        legacyThresholds,
+        exhaustiveThresholds,
+      ) || mainChanged
+      mainChanged = replaceLegacyList(
+        main.active_advanced,
+        "activity_values",
+        legacyActivity,
+        exhaustiveActivity,
+      ) || mainChanged
+      if (main.active.timeout == null || Number(main.active.timeout) === 3) {
+        main.active.timeout = 0.25
+        mainChanged = true
+      }
+      if (mainChanged || rawMain !== JSON.stringify(main)) {
+        await client.set("indications:main", JSON.stringify(main))
+        mainDocumentUpdated = 1
+      }
+
+      const rawCommon = await client.get("indications:common").catch(() => null)
+      let parsedCommon: Record<string, any> = {}
+      if (typeof rawCommon === "string" && rawCommon.trim().startsWith("{")) {
+        try {
+          parsedCommon = JSON.parse(rawCommon) as Record<string, any>
+        } catch {
+          parsedCommon = {}
+        }
+      }
+      const common = normalizeCommonIndicationSettings(parsedCommon)
+      if (
+        parsedCommon.coordination == null ||
+        sameNumberList(
+          (parsedCommon.coordination as Record<string, any>)?.timeframesMinutes,
+          legacyCommonTimeframes,
+        )
+      ) {
+        common.coordination.timeframesMinutes = [...trendTimeframes]
+      }
+      for (const profileName of Object.keys(DEFAULT_COMMON_INDICATION_SETTINGS)) {
+        if (profileName === "coordination") continue
+        const profile = common[profileName] as Record<string, any>
+        if (Number(profile.timeout) !== 3) {
+          profile.timeout = 3
+          commonProfilesUpdated++
+        }
+      }
+      await client.set("indications:common", JSON.stringify(common))
+
+      const rawSignal = await client.get("indications:signal").catch(() => null)
+      if (typeof rawSignal === "string" && rawSignal.trim().startsWith("{")) {
+        try {
+          const signal = JSON.parse(rawSignal) as Record<string, any>
+          let changed = false
+          if (signal.directExecutionEnabled == null) {
+            signal.directExecutionEnabled = true
+            changed = true
+          }
+          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24) {
+            signal.maxPositionsTotal = 120
+            changed = true
+          }
+          if (signal.maxSourcesPerCycle == null || Number(signal.maxSourcesPerCycle) === 10) {
+            signal.maxSourcesPerCycle = 35
+            changed = true
+          }
+          if (signal.sources && typeof signal.sources === "object") {
+            for (const source of Object.values(signal.sources) as Array<Record<string, any>>) {
+              if (!source || typeof source !== "object") continue
+              if (!Array.isArray(source.disabledSymbols)) {
+                source.disabledSymbols = []
+                changed = true
+              }
+              if (!Array.isArray(source.disabledLanes)) {
+                source.disabledLanes = []
+                changed = true
+              }
+            }
+          }
+          if (changed) {
+            await client.set("indications:signal", JSON.stringify(signal))
+            signalSettingsUpdated = 1
+          }
+        } catch {
+          // Canonical Signal settings normalization repairs malformed payloads
+          // on load without risking an operator's raw recovery data.
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        indication_configuration_profile: "exhaustive-v2",
+        indication_sample_ranges: "2-30-step-1",
+        indication_min_step_compatibility: "2-fixed",
+        indication_factor_multipliers: "0.9,1,1.1",
+        common_indication_exact_lane_timeout_ms: "3000",
+        signal_direct_bootstrap_default: "true",
+        signal_source_window: "12",
+        signal_symbol_direction_window: "10",
+        signal_max_open_positions_long_short_total: "120",
+        signal_sources_per_symbol_cycle_default: "35",
+        strategy_real_sets_default: "5000",
+        strategy_live_sets_default: "500",
+        strategy_main_eval_positions_default: "25",
+        strategy_real_eval_positions_default: "20",
+        settings_hashes_updated: String(settingsHashesUpdated),
+        main_document_updated: String(mainDocumentUpdated),
+        common_profiles_updated: String(commonProfilesUpdated),
+        signal_settings_updated: String(signalSettingsUpdated),
+        schema_version: "88",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      // Exhaustive settings and operator-visible capacity values remain valid
+      // during rollback; only the schema cursor moves back.
+      await client.set("_schema_version", "87")
+    },
+  },
+  {
+    version: 89,
+    name: "089-signal-full-source-cycle-and-base-pf-floor",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const connectionIds = new Set(
+        connections
+          .map((connection) => String(connection.id || ""))
+          .filter(Boolean),
+      )
+      for (const id of await client.smembers("connections").catch(() => [])) {
+        if (id) connectionIds.add(String(id))
+      }
+      const rawSignal = await client.get("indications:signal").catch(() => null)
+      let signalSettingsUpdated = 0
+      let basePfFieldsRepaired = 0
+      let basePfDocumentsRepaired = 0
+      if (typeof rawSignal === "string" && rawSignal.trim().startsWith("{")) {
+        try {
+          const signal = JSON.parse(rawSignal) as Record<string, any>
+          let changed = false
+          if (signal.directExecutionEnabled == null) {
+            signal.directExecutionEnabled = true
+            changed = true
+          }
+          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24) {
+            signal.maxPositionsTotal = 120
+            changed = true
+          }
+          if (Number(signal.performanceLookback) !== 12) {
+            signal.performanceLookback = 12
+            changed = true
+          }
+          if (Number(signal.performanceMinSamples) !== 12) {
+            signal.performanceMinSamples = 12
+            changed = true
+          }
+          if (Number(signal.performanceDisableBelowPnl) !== 0) {
+            signal.performanceDisableBelowPnl = 0
+            changed = true
+          }
+          // Ten was the previous sampled/rotating default. Upgrade only that
+          // known default (or a missing value); any other explicit operator
+          // choice remains intact.
+          if (signal.maxSourcesPerCycle == null || Number(signal.maxSourcesPerCycle) === 10) {
+            signal.maxSourcesPerCycle = 35
+            changed = true
+          }
+          if (changed) {
+            await client.set("indications:signal", JSON.stringify(signal))
+            signalSettingsUpdated = 1
+          }
+        } catch {
+          // Canonical settings normalization repairs malformed JSON on load.
+        }
+      }
+
+      const repairBasePfObject = (document: Record<string, any>): boolean => {
+        let changed = false
+        for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
+          if (document[alias] == null) continue
+          const normalized = normalizeMainTradeStagePfRatio("base", document[alias])
+          if (Number(document[alias]) !== normalized) {
+            document[alias] = normalized
+            changed = true
+          }
+        }
+        for (const container of [
+          document?.strategies,
+          document,
+        ]) {
+          if (!container || typeof container !== "object") continue
+          for (const channelName of ["main", "preset"]) {
+            const row = container?.[channelName]?.base
+            if (!row || typeof row !== "object") continue
+            const normalized = normalizeMainTradeStagePfRatio("base", row.min_profit_factor)
+            if (Number(row.min_profit_factor) !== normalized) {
+              row.min_profit_factor = normalized
+              changed = true
+            }
+          }
+        }
+        return changed
+      }
+
+      const repairBasePfHash = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        if (Object.keys(values).length === 0) return
+        const current = values.baseProfitFactor ?? values.base_min_profit_factor
+        const normalized = normalizeMainTradeStagePfRatio("base", current)
+        const patch: Record<string, string> = {}
+        for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
+          if (Number(values[alias]) !== normalized) {
+            patch[alias] = String(normalized)
+            basePfFieldsRepaired++
+          }
+        }
+        for (const jsonField of ["connection_settings", "strategies"]) {
+          const raw = values[jsonField]
+          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+          try {
+            const document = JSON.parse(raw) as Record<string, any>
+            if (repairBasePfObject(document)) {
+              patch[jsonField] = JSON.stringify(document)
+              basePfDocumentsRepaired++
+            }
+          } catch {
+            // Keep malformed recovery data untouched. Canonical flat fields
+            // still enforce the Base floor and a subsequent settings save
+            // rewrites the structured document.
+          }
+        }
+        if (Object.keys(patch).length > 0) await client.hset(key, patch)
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await repairBasePfHash(key)
+      }
+      for (const id of connectionIds) {
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await repairBasePfHash(key)
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        signal_direct_bootstrap_default: "true",
+        signal_source_window: "12",
+        signal_symbol_direction_window: "10",
+        signal_max_open_positions_long_short_total: "120",
+        signal_sources_per_symbol_cycle_default: "35",
+        signal_full_source_cycle: "true",
+        signal_settings_updated: String(signalSettingsUpdated),
+        main_trade_pf_base_minimum: String(MAIN_TRADE_STAGE_PF_DEFAULTS.base),
+        main_trade_pf_base_fields_repaired: String(basePfFieldsRepaired),
+        main_trade_pf_base_documents_repaired: String(basePfDocumentsRepaired),
+        schema_version: "89",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      await client.set("_schema_version", "88")
     },
   },
 ]

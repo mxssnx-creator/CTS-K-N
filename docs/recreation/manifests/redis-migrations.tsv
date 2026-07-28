@@ -83,3 +83,8 @@ version	name	source
 82	082-normalize-live-minimum-ratio-and-position-cost	lib/redis-migrations.ts
 83	083-enforce-identity-live-volume-ratios	lib/redis-migrations.ts
 84	084-freeze-base-volume-coordination-at-identity	lib/redis-migrations.ts
+85	085-main-trade-position-cost-ratio-four-stage	lib/redis-migrations.ts
+86	086-exhaustive-indication-base-and-block-only-defaults	lib/redis-migrations.ts
+87	087-signal-bootstrap-direction-lanes-and-strategy-rows	lib/redis-migrations.ts
+88	088-repair-exhaustive-indications-signal-capacity-and-stage-caps	lib/redis-migrations.ts
+89	089-signal-full-source-cycle-and-base-pf-floor	lib/redis-migrations.ts

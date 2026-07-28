@@ -52,6 +52,13 @@ import {
 } from "@/lib/trailing-settings"
 import { DEFAULT_DCA_PROFILE, type DcaTakeProfitMode } from "@/lib/dca-strategy"
 import { STRATEGY_AXIS_SPECS } from "@/lib/strategy-axis-settings"
+import {
+  POS_COUNT_VOLUME_RATIO_DEFAULT,
+  POS_COUNT_VOLUME_RATIO_MAX,
+  POS_COUNT_VOLUME_RATIO_MIN,
+  POS_COUNT_VOLUME_RATIO_STEP,
+  posCountVolumeRatioToSetMultiplier,
+} from "@/lib/pos-count-volume-ratio"
 
 export interface CoordinationSettings {
   // ── Position-Count axes ─────────────────────────────────────────────
@@ -80,6 +87,7 @@ export interface CoordinationSettings {
   blockPauseCountRatio: number // 1..4, step 0.5
   blockActiveRealEnabled: boolean // active real-position Block overlay, default true
   blockActiveLiveEnabled: boolean // active live-position Block overlay, default true
+  blockOnly: boolean // dispatch only Block rows while Block is enabled
 
   // Per-connection trailing matrix. Values use the canonical "start:stop"
   // encoding and are validated again by the engine before Base fan-out.
@@ -87,10 +95,9 @@ export interface CoordinationSettings {
 
   /**
    * ── Position-Count (Pis) Sets volume ratio ───────────────────────
-   * Independent volume ratio applied ONLY to the pos-count (axis) Sets
-   * created at Main stage. Kept deliberately small (default 0.05) so
-   * the additional axis-related Sets trade at a fraction of the base
-   * volume. Range 0.01..0.25 step 0.01.
+   * Operator coordination ratio applied ONLY to pos-count (axis) Sets.
+   * Range 0.1..10 step 0.1, default 3. Ratio 10 maps to 0.02× Base
+   * volume for each valid Set.
    * Backed by `connection_settings:{conn}.posCountsVolumeRatio`.
    */
   posCountsVolumeRatio: number
@@ -137,28 +144,20 @@ export interface CoordinationSettings {
    * fewer completed pseudo-positions are SKIPPED (not counted as passed,
    * not promoted) — they re-enter the validation pool on subsequent
    * cycles once enough positions have closed.
-   * Range 5..50 step 5, default 15.
+   * Range 5..80 step 1, default 25.
    */
   mainEvalPosCount: number
 
   /**
    * ── Real-stage validation min position-count ───────────────────────
    * Same semantics as `mainEvalPosCount` but applied at Real (Main →
-   * Real promotion). Range 5..50 step 5, default 10.
+   * Real promotion). Range 5..80 step 1, default 20.
    */
   realEvalPosCount: number
 
   /**
-   * ── Minimal Step (pseudo-position window floor) ─────────────────────
-   * Filters the `stepsOptions` array in `IndicationConfigManager` so only
-   * step-window sizes ≥ minStep are generated and evaluated. A lower value
-   * (e.g. 3) includes fast short-window configs that react quickly but
-   * can produce more losing trades on noisy data. Raising the floor (e.g.
-   * 10–15) keeps only longer, smoother windows that typically yield higher
-   * signal quality at the cost of slower response.
-   *
-   * Range 2..30 step 1, default 5.
-   * Backed by `connection_settings:{conn}.minStep`.
+   * Legacy compatibility field. Exhaustive Base generation always evaluates
+   * every integer step from 2 through 30 and keeps this fixed at 2.
    */
   minStep: number
 
@@ -181,7 +180,7 @@ export interface CoordinationSettings {
 /**
  * Operator-spec defaults.
  * - trailing: on, block: on, dca: off (per directive)
- * - minStep: 5 (default; range 2-30)
+ * - minStep: 2 (fixed; exhaustive 2-30)
  * - maxStopLossRatio: 2.5 (default=max; range 0.25-2.5, step 0.25)
  * - trailingMinStep: 6 (default; range 2-30)
  * - PF defaults set in DEFAULT_STRATEGY_PROFILE (base=1.0, main/real=1.2)
@@ -204,8 +203,9 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockPauseCountRatio: 1.0,
   blockActiveRealEnabled: true,
   blockActiveLiveEnabled: true,
+  blockOnly: true,
   trailingVariants: [...DEFAULT_TRAILING_VARIANTS],
-  posCountsVolumeRatio: 0.05,
+  posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
   dcaMaxSteps: DEFAULT_DCA_PROFILE.maxSteps,
   dcaStepVolumeMultipliers: [...DEFAULT_DCA_PROFILE.stepVolumeMultipliers],
   dcaStepDistancesPct: [...DEFAULT_DCA_PROFILE.stepDistancesPct],
@@ -214,9 +214,9 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   dcaCooldownSeconds: DEFAULT_DCA_PROFILE.cooldownSeconds,
   prevPosMinCount:   5,
   prevPosWindow:    25,
-  mainEvalPosCount: 15,
-  realEvalPosCount: 10,
-  minStep:           5,
+  mainEvalPosCount: 25,
+  realEvalPosCount: 20,
+  minStep:           2,
   maxStopLossRatio:  2.5,
   trailingMinStep:   6,
 }
@@ -824,6 +824,24 @@ export function StrategyCoordinationSection({
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="rounded-lg border border-primary/25 bg-primary/5 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="space-y-1">
+                <Label className="text-sm font-semibold">Block-Only execution</Label>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Enabled systemwide by default. With Block active, only evaluated
+                  Block Rows reach exchange dispatch. Disable this to run the
+                  Standard and Block strategies concurrently. If Block itself is
+                  disabled, Standard execution remains available.
+                </p>
+              </div>
+              <Switch
+                checked={value.blockOnly}
+                onCheckedChange={(checked) => onChange({ ...value, blockOnly: checked })}
+                disabled={!value.variants.block}
+              />
+            </div>
+          </div>
           {/* Volume ratio */}
           <div className="rounded-lg border border-border/60 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">
@@ -1031,11 +1049,8 @@ export function StrategyCoordinationSection({
         </CardContent>
       </Card>
 
-      {/* ── Position-Count (Pis) Sets Volume Ratio card ─────────────
-          Operator spec: lower the volume for the pis-counts (axis) Sets
-          to ratio 0.05. Slider 0.01–0.25 step 0.01, default 0.05.
-          Applies ONLY to the Main-stage additional pos-count (axis) Sets,
-          never to the Base/Default/Block volumes. */}
+      {/* Position-Count coordination ratio. The 0.1..10 operator value is
+          converted to a direct per-valid-Set multiplier (10 → 0.02). */}
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between gap-2">
@@ -1044,13 +1059,12 @@ export function StrategyCoordinationSection({
                 Position-Count (Pis) Sets Volume Ratio
               </CardTitle>
               <CardDescription className="text-xs">
-                Volume ratio applied only to the additional pos-count Sets
-                created at Main stage. Kept small so the axis-related Sets
-                trade at a fraction of the base volume.
+                Coordination ratio for every independently valid additional
+                Main Position-Count Set.
               </CardDescription>
             </div>
             <Badge variant="outline" className="text-[10px] tabular-nums">
-              0.01–0.25
+              0.1–10
             </Badge>
           </div>
         </CardHeader>
@@ -1059,25 +1073,25 @@ export function StrategyCoordinationSection({
             <div className="flex items-center justify-between gap-3">
               <Label className="text-sm font-semibold">Pis Volume Ratio</Label>
               <span className="text-xs font-semibold tabular-nums w-12 text-right">
-                {value.posCountsVolumeRatio.toFixed(2)}×
+                {value.posCountsVolumeRatio.toFixed(1)}
               </span>
             </div>
             <div className="flex items-center gap-3 pt-1">
               <Slider
                 value={[value.posCountsVolumeRatio]}
-                min={0.01}
-                max={0.25}
-                step={0.01}
+                min={POS_COUNT_VOLUME_RATIO_MIN}
+                max={POS_COUNT_VOLUME_RATIO_MAX}
+                step={POS_COUNT_VOLUME_RATIO_STEP}
                 onValueChange={(v) =>
-                  onChange({ ...value, posCountsVolumeRatio: Number(v[0].toFixed(2)) })
+                  onChange({ ...value, posCountsVolumeRatio: Number(v[0].toFixed(1)) })
                 }
                 className="flex-1"
               />
             </div>
             <p className="text-[11px] text-muted-foreground leading-relaxed">
-              Axis (position-count) Sets only. Base, Default and Block
-              Sets keep their own independent volume ratios. Engine clamps to
-              0.01–0.25 even if the UI is bypassed.
+              Per valid Set: {posCountVolumeRatioToSetMultiplier(value.posCountsVolumeRatio).toFixed(4)}×
+              Base volume. At ratio 10, 300 valid Sets coordinate to 6× Base
+              volume before the exchange minimum-volume floor.
             </p>
           </div>
         </CardContent>
@@ -1200,8 +1214,8 @@ export function StrategyCoordinationSection({
       {/* ── Stage Validation Position-Count card ─────────────────────
           Operator spec:
             • Main evaluates Base with PF + DDT for X pre pseudo
-              positions per Set (min positions to validate). Default 15.
-            • Real evaluates Main the same way. Default 10.
+              positions per Set (min positions to validate). Default 25.
+            • Real evaluates Main the same way. Default 20.
           If a Set has fewer positions than the threshold it is SKIPPED
           (not validated, not promoted, no count bump) — re-evaluated
           on subsequent cycles once enough positions accumulate. */}
@@ -1244,7 +1258,7 @@ export function StrategyCoordinationSection({
                 </p>
               </div>
               <Badge variant="secondary" className="text-[10px] tabular-nums">
-                default 15
+                default 25
               </Badge>
             </div>
             <div className="flex items-center gap-3 pt-1">
@@ -1278,7 +1292,7 @@ export function StrategyCoordinationSection({
                 </p>
               </div>
               <Badge variant="secondary" className="text-[10px] tabular-nums">
-                default 10
+                default 20
               </Badge>
             </div>
             <div className="flex items-center gap-3 pt-1">
@@ -1301,11 +1315,7 @@ export function StrategyCoordinationSection({
         </CardContent>
       </Card>
 
-      {/* ── Minimal Step card ─────────────────────────────────────────
-          Controls which step-window sizes the indication config manager
-          generates. Only step values ≥ minStep are included in
-          stepsOptions, filtering out fast short-window configs that
-          tend to produce more losing trades on noisy/flat markets. */}
+      {/* Legacy compatibility card. Generation is intentionally exhaustive. */}
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between gap-2">
@@ -1314,12 +1324,9 @@ export function StrategyCoordinationSection({
                 Minimal Base Pseudo-Position Range Step
               </CardTitle>
               <CardDescription className="text-xs">
-                Minimum step size used when generating pseudo-position windows
-                for Base-stage indication configs (range 2–30, monotonic step
-                5 by default). Only step values <strong>≥ this floor</strong>{" "}
-                are created and evaluated. Raising the value removes fast
-                short-window configs that react quickly but fire on noise.
-                Lower = more configs; higher = fewer, smoother signals.
+                Base always creates and evaluates every integer step from 2
+                through 30. This value is fixed so no saved legacy setting can
+                silently remove valid configurations.
               </CardDescription>
             </div>
             <Badge variant="outline" className="text-[10px] tabular-nums">
@@ -1334,34 +1341,30 @@ export function StrategyCoordinationSection({
                 Min position-creation step
               </Label>
               <Badge variant="secondary" className="text-[10px] tabular-nums">
-                default 5
+                exhaustive
               </Badge>
             </div>
             <div className="flex items-center gap-3 pt-1">
               <Slider
-                value={[value.minStep ?? 5]}
-                min={1}
-                max={30}
+                value={[2]}
+                min={2}
+                max={2}
                 step={1}
-                onValueChange={(v) =>
-                  onChange({ ...value, minStep: v[0] })
-                }
+                disabled
                 className="flex-1"
               />
               <span className="text-sm font-semibold tabular-nums w-8 text-right">
-                {value.minStep ?? 5}
+                2
               </span>
             </div>
             <div className="flex justify-between text-[10px] text-muted-foreground pt-0.5">
               <span>2 (all)</span>
-              <span className="text-muted-foreground/60">default 5</span>
-              <span>30 (slowest)</span>
+              <span className="text-muted-foreground/60">all 29 windows</span>
+              <span>30 (included)</span>
             </div>
             <p className="text-[11px] text-muted-foreground leading-relaxed pt-1">
-              At default 5 the engine creates windows [5, 10, 15, 20, 25, 30].
-              Setting to 2 adds the fastest 2 and 3 step windows. Setting to 10 removes
-              the shortest noisy windows. Changes take effect from the next
-              indication-config regeneration cycle.
+              Generated steps: 2, 3, 4, …, 29, 30. Concurrency controls only
+              scheduling; it never reduces this configuration space.
             </p>
           </div>
         </CardContent>

@@ -103,6 +103,7 @@ import {
   DEFAULT_MAIN_INDICATION_PROFILE,
   readStoredIndicationProfile,
 } from "@/lib/active-indication-profile"
+import { logRuntimeWarning } from "@/lib/runtime-log-throttle"
 
 // Pre-import modules at module load time (not per-call)
 import { initRedis, getRedisClient, getMarketData, saveIndication, getSettings, getAppSettings, storeIndications } from "@/lib/redis-db"
@@ -348,7 +349,9 @@ async function getSettingsCachedModule(connectionId: string): Promise<any> {
       directionPostChangeOnly:
         settings.directionPostChangeOnly !== false &&
         settings.directionPostChangeOnly !== "false",
-      commonIndicatorTypes: enabledCommonIndicatorTypes(commonSettings),
+      commonIndicatorTypes: activeProfile.common.enabled
+        ? enabledCommonIndicatorTypes(commonSettings)
+        : [],
       positionCost: Number(settings.positionCost) || 0.1,
       trendTpMinMultiplier: Number(settings.trendTpMinMultiplier) || DEFAULT_TREND_TP_MIN_MULTIPLIER,
       trendTpMaxFactor: Number(settings.trendTpMaxFactor) || DEFAULT_TREND_TP_MAX_FACTOR,
@@ -563,7 +566,11 @@ export class IndicationProcessor {
    */
   async processHistoricalIndications(symbol: string, startDate: Date, endDate: Date): Promise<void> {
     const processStartTime = Date.now()
-    const TIMEOUT_MS = 30000 // 30 second timeout per symbol
+    // Historical replay must consume every candle.  The previous 30-second
+    // `break` silently published a partial replay.  This value is now only a
+    // slow-progress diagnostic; cancellation is owned by the generation/
+    // selection guards in the calling pipeline.
+    const SLOW_REPLAY_MS = 30_000
     
     try {
       console.log(`[v0] [PrehistoricIndication] START: Processing ${symbol} | Period: ${startDate.toISOString()} to ${endDate.toISOString()}`)
@@ -596,17 +603,31 @@ export class IndicationProcessor {
       let recordsProcessed = 0
       for (let index = 0; index < candlesOldestFirst.length; index++) {
         const currentCandle = candlesOldestFirst[index]
-        // Check timeout
         const elapsed = Date.now() - processStartTime
-        if (elapsed > TIMEOUT_MS) {
-          console.warn(`[v0] [PrehistoricIndication] TIMEOUT: Processing exceeded ${TIMEOUT_MS}ms for ${symbol}`)
-          await logProgressionEvent(this.connectionId, "indications_prehistoric", "warning", `Historical indication timeout for ${symbol}`, {
-            symbol,
-            timeoutMs: TIMEOUT_MS,
-            elapsedMs: elapsed,
-            recordsProcessed,
-          })
-          break
+        if (elapsed > SLOW_REPLAY_MS) {
+          const didLogSlowReplay = logRuntimeWarning(
+            `prehistoric-indication:${this.connectionId}:${symbol}:slow-replay`,
+            30_000,
+            () =>
+              `[v0] [PrehistoricIndication] SLOW REPLAY: ${symbol} ` +
+              `${recordsProcessed}/${candlesOldestFirst.length} records in ${elapsed}ms; continuing`,
+          )
+          if (didLogSlowReplay) {
+            await logProgressionEvent(
+              this.connectionId,
+              "indications_prehistoric",
+              "warning",
+              `Historical indication replay is still progressing for ${symbol}`,
+              {
+                symbol,
+                diagnosticThresholdMs: SLOW_REPLAY_MS,
+                elapsedMs: elapsed,
+                recordsProcessed,
+                recordsTotal: candlesOldestFirst.length,
+                replayContinues: true,
+              },
+            )
+          }
         }
 
         const recentCandles = candlesOldestFirst.slice(0, index + 1)
@@ -833,9 +854,9 @@ export class IndicationProcessor {
       const pricesOldestFirst = oneMinuteClosesOldestFirst(candles)
       const coordinatedTimeframes = parseNumericSettingList(
         indicationSettings.commonCoordination?.timeframesMinutes,
-        [1, 3, 5, 15],
+        [1, 5, 15, 30],
       ).map((value) => Math.max(1, Math.round(value)))
-      const stepIndicators = StepBasedIndicators.calculateAll(
+      const stepIndicators = await StepBasedIndicators.calculateAllAsync(
         candles,
         coordinatedTimeframes,
         indicationSettings.commonIndicatorTypes,
@@ -920,7 +941,7 @@ export class IndicationProcessor {
       // (currentOpen/High/Low/Close/Volume, candles[], stepIndicators), so we
       // don't incur any extra fetches.
 
-      const indications: any[] = []
+      let indications: any[] = []
       // Realtime mode anchors indications at wall-clock now. Replay mode
       // anchors them at the simulated candle timestamp so downstream
       // throttle keys, Set entries, and dashboard ordering line up with
@@ -1315,6 +1336,46 @@ export class IndicationProcessor {
             combined: trendEvaluation.combined,
           },
         })
+      }
+
+      // Materialise every qualified parameter tuple in realtime and replay,
+      // then hand those exact rows directly to Strategy/Base. Reconstructing
+      // the current cycle through a capped Redis read was the hidden boundary
+      // that made exhaustive calculations appear as a tiny representative
+      // subset downstream.
+      const exactSetProcessor = new IndicationSetsProcessor(this.connectionId)
+      const exactSetIndications = await exactSetProcessor
+        .processAllIndicationSets(symbol, {
+          ...marketData,
+          candles,
+          prices: pricesOldestFirst,
+          priceOrder: "oldest-first",
+          executionPrice: currentClose,
+        })
+        .catch((error) => {
+          console.warn(
+            `[v0] [IndicationProcessor] Exhaustive Set processing failed for ${symbol}:`,
+            error instanceof Error ? error.message : error,
+          )
+          return [] as any[]
+        })
+      if (!isCurrent()) return []
+
+      // Exact Set rows replace reduced representatives only for families that
+      // produced an exact snapshot. Signal/Auto and disabled/empty families
+      // retain their direct processor output.
+      if (exactSetIndications.length > 0) {
+        const exactTypes = new Set(
+          exactSetIndications.map((indication) => String(indication?.type || "")),
+        )
+        indications = [
+          ...exactSetIndications,
+          ...indications.filter((indication) =>
+            indication?.type === "signal" ||
+            indication?.type === "auto" ||
+            !exactTypes.has(String(indication?.type || "")),
+          ),
+        ]
       }
 
       // A generation can change while market/signal data is in flight. Drop

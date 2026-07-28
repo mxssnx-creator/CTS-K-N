@@ -8,6 +8,7 @@
  * - Real position execution
  * - Live exchange trading
  */
+import { createHash } from "node:crypto"
 
 export interface PrehistoricDataConfig {
   timeframeSeconds: number // Load timeframe in seconds (default: 1)
@@ -48,15 +49,15 @@ export interface PseudoPositionConfig {
 }
 
 export interface StrategyEvaluationConfig {
-  // Main strategy: min profit factor (0.1-3.0, default: 0.5)
+  // Main strategy: PositionCost-relative PF ratio (0.08-2.70, default: 1.12)
   mainMinProfitFactor: { min: number; max: number; default: number; step: number }
-  // Real strategy: min profit factor (default: 0.7)
+  // Real strategy: PositionCost-relative PF ratio (default: 1.12)
   realMinProfitFactor: number
   // Real strategy: max drawdown time (12 hours)
   realMaxDrawdownTimeSeconds: number
   // Position counts to evaluate
   positionCountsToEvaluate: number[] // [1,2,3,4,5,6,8,10,12,15,20,30]
-  // Recent position counts (min PF: 0.6)
+  // Recent position counts (PositionCost-relative min PF ratio: 1.12)
   recentPositionCounts: number[] // [1,2,3,4]
   recentPositionMinProfitFactor: number
   // Configuration variations (1-6 independent sets)
@@ -91,12 +92,16 @@ export const DEFAULT_ADVANCED_CONFIG: AdvancedEngineConfig = {
   },
 
   indicationEvaluation: {
-    timeoutSeconds: { min: 0, max: 5, default: 1, step: 0.2 },
-    maxPositionsPerDirection: { min: 1, max: 8, default: 1, step: 1 },
+    // Default/Additional indication lanes recalculate independently after
+    // exactly 250 ms. Common lanes use their separate 3-second contract.
+    timeoutSeconds: { min: 0.25, max: 0.25, default: 0.25, step: 0.25 },
+    // One active Base pseudo position per exact
+    // symbol+type+name+config+direction identity.
+    maxPositionsPerDirection: { min: 1, max: 1, default: 1, step: 1 },
   },
 
   pseudoPosition: {
-    timeoutSeconds: { min: 0, max: 5, default: 1, step: 0.2 },
+    timeoutSeconds: { min: 3, max: 3, default: 3, step: 3 },
     takeProfitSteps: { min: 2, max: 20, default: 5, step: 1 },
     stopLossRatio: { min: 0.25, max: 2.5, default: 0.5, step: 0.25 },
     trailingStart: { min: 0.2, max: 1.0, default: 0.5, step: 0.2 },
@@ -106,12 +111,12 @@ export const DEFAULT_ADVANCED_CONFIG: AdvancedEngineConfig = {
   },
 
   strategyEvaluation: {
-    mainMinProfitFactor: { min: 0.1, max: 3.0, default: 0.5, step: 0.1 },
-    realMinProfitFactor: 0.7,
+    mainMinProfitFactor: { min: 0.08, max: 2.7, default: 1.12, step: 0.02 },
+    realMinProfitFactor: 1.12,
     realMaxDrawdownTimeSeconds: 43200, // 12 hours
-    positionCountsToEvaluate: [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30],
+    positionCountsToEvaluate: Array.from({ length: 30 }, (_, index) => index + 1),
     recentPositionCounts: [1, 2, 3, 4],
-    recentPositionMinProfitFactor: 0.6,
+    recentPositionMinProfitFactor: 1.12,
     pseudoPositionConfigurations: [1, 2, 3, 4, 5, 6],
   },
 }
@@ -226,34 +231,73 @@ export function generateStrategyConfigurationSets(
 }
 
 /**
- * Helper: Generate parameter combinations (for now, return single default set per type)
- * In production, this would generate all valid combinations for comprehensive coverage
+ * Generate the full Cartesian product of every configured inclusive range.
+ *
+ * There is deliberately no candidate cap or representative-value sampling
+ * here. Runtime callers may process the returned rows in bounded asynchronous
+ * batches, but batching must never change which configurations exist.
  */
 function generateParameterCombinations(
   config: AdvancedEngineConfig,
   paramTypes: string[]
 ): Array<Record<string, number>> {
-  // For high-frequency performance, use default values only
-  // Extended variations can be added to HOT_CONFIGS for A/B testing
-  const defaults: Record<string, number> = {
-    steps: config.indicationParameters.steps.default,
-    drawdownRatio: config.indicationParameters.drawdownRatio.default,
-    marketActivity: config.indicationParameters.marketActivity.default,
-    rangeRatio: config.indicationParameters.rangeRatio.default,
-    activityRatio: config.indicationParameters.activityRatio.default,
-    marketDistanceRatio: config.indicationParameters.marketDistanceRatio.default,
-    takeProfitSteps: config.pseudoPosition.takeProfitSteps.default,
-    stopLossRatio: config.pseudoPosition.stopLossRatio.default,
-    trailingStart: config.pseudoPosition.trailingStart.default,
-    trailingStop: config.pseudoPosition.trailingStop.default,
+  const definitions: Record<string, { min: number; max: number; default: number; step: number }> = {
+    steps: config.indicationParameters.steps,
+    drawdownRatio: config.indicationParameters.drawdownRatio,
+    marketActivity: config.indicationParameters.marketActivity,
+    rangeRatio: config.indicationParameters.rangeRatio,
+    activityRatio: config.indicationParameters.activityRatio,
+    marketDistanceRatio: config.indicationParameters.marketDistanceRatio,
+    takeProfitSteps: config.pseudoPosition.takeProfitSteps,
+    stopLossRatio: config.pseudoPosition.stopLossRatio,
+    trailingStart: config.pseudoPosition.trailingStart,
+    trailingStop: config.pseudoPosition.trailingStop,
   }
 
-  const result: Record<string, number> = {}
+  const valuesFor = (name: string): number[] => {
+    const definition = definitions[name]
+    if (!definition) return [0]
+    const min = Number(definition.min)
+    const max = Number(definition.max)
+    const step = Math.abs(Number(definition.step))
+    if (
+      !Number.isFinite(min) ||
+      !Number.isFinite(max) ||
+      !Number.isFinite(step) ||
+      step === 0 ||
+      max < min
+    ) {
+      return [Number(definition.default) || 0]
+    }
+    const precision = Math.max(
+      0,
+      String(step).split(".")[1]?.length || 0,
+      String(min).split(".")[1]?.length || 0,
+      String(max).split(".")[1]?.length || 0,
+    )
+    const scale = 10 ** Math.min(precision, 8)
+    const start = Math.round(min * scale)
+    const end = Math.round(max * scale)
+    const increment = Math.max(1, Math.round(step * scale))
+    const values: number[] = []
+    for (let value = start; value <= end; value += increment) {
+      values.push(value / scale)
+    }
+    if (values.at(-1) !== end / scale) values.push(end / scale)
+    return values
+  }
+
+  let combinations: Array<Record<string, number>> = [{}]
   for (const param of paramTypes) {
-    result[param] = defaults[param] || 0
+    const next: Array<Record<string, number>> = []
+    for (const combination of combinations) {
+      for (const value of valuesFor(param)) {
+        next.push({ ...combination, [param]: value })
+      }
+    }
+    combinations = next
   }
-
-  return [result]
+  return combinations
 }
 
 /**
@@ -264,7 +308,7 @@ function generateParamHash(params: Record<string, number>): string {
     .sort()
     .map(k => `${k}:${params[k].toFixed(2)}`)
     .join("|")
-  return Buffer.from(sorted).toString("base64").substring(0, 8)
+  return createHash("sha256").update(sorted).digest("hex").slice(0, 16)
 }
 
 /**

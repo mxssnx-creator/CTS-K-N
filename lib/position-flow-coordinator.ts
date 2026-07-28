@@ -6,11 +6,19 @@
  * Redis-native: All data stored in Redis via redis-db
  */
 
-import { initRedis, getSettings, setSettings, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getSettings, setSettings, getRedisClient, getAppSettings } from "@/lib/redis-db"
 import { BasePseudoPositionManager } from "./base-pseudo-position-manager"
 import { ExchangePositionManager } from "./exchange-position-manager"
 import { logProgressionEvent } from "./engine-progression-logs"
 import { concurrencyFromEnv, forEachWithConcurrency, mapWithConcurrency } from "./bounded-concurrency"
+import {
+  movePctToMainTradePfRatio,
+  normalizeMainTradeStagePfRatio,
+} from "@/lib/main-trade-profit-factor"
+import {
+  getCanonicalConnectionSettingsOverlay,
+  overlayNonEmpty,
+} from "@/lib/connection-settings-overlay"
 
 export function calculatePositionProtectionPrices(position: any): { takeprofit: number; stoploss: number } {
   const entryPrice = Number(position.entry_price) || 0
@@ -21,6 +29,24 @@ export function calculatePositionProtectionPrices(position: any): { takeprofit: 
     takeprofit: entryPrice * (isShort ? 1 - takeprofitRatio : 1 + takeprofitRatio),
     stoploss: entryPrice * (isShort ? 1 + stoplossRatio : 1 - stoplossRatio),
   }
+}
+
+export function calculatePositionCostRelativeAverageRatio(
+  positions: ReadonlyArray<Record<string, unknown>>,
+  positionCostPct: number,
+): number {
+  if (positions.length === 0) return 0
+  const totalRatio = positions.reduce((sum, position) => {
+    const pnlPct = Number(
+      position.profit_loss ??
+      position.profitLoss ??
+      position.pnl_pct ??
+      position.pnlPct ??
+      0,
+    )
+    return sum + movePctToMainTradePfRatio(pnlPct, positionCostPct)
+  }, 0)
+  return totalRatio / positions.length
 }
 
 export class PositionFlowCoordinator {
@@ -44,6 +70,45 @@ export class PositionFlowCoordinator {
       this.readConcurrency(keys.length),
       async (key) => getSettings(key),
     )
+  }
+
+  private async loadMainTradeStageSettings(): Promise<{
+    positionCostPct: number
+    baseRatio: number
+    mainRatio: number
+    realRatio: number
+    mainEvalPosCount: number
+    realEvalPosCount: number
+    realMaxDrawdownHours: number
+  }> {
+    const globalSettings = await getAppSettings().catch(() => ({} as Record<string, unknown>))
+    const connectionSettings = await getCanonicalConnectionSettingsOverlay(this.connectionId)
+      .catch(() => ({} as Record<string, string>))
+    const settings = overlayNonEmpty(
+      { ...(globalSettings as Record<string, unknown>) },
+      connectionSettings,
+    )
+    const positive = (value: unknown, fallback: number): number => {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+    }
+    return {
+      positionCostPct: positive(
+        settings.positionCost ??
+        settings.exchangePositionCost ??
+        settings.exchange_position_cost,
+        0.1,
+      ),
+      baseRatio: normalizeMainTradeStagePfRatio("base", settings.baseProfitFactor),
+      mainRatio: normalizeMainTradeStagePfRatio("main", settings.mainProfitFactor),
+      realRatio: normalizeMainTradeStagePfRatio("real", settings.realProfitFactor),
+      mainEvalPosCount: Math.max(1, Math.floor(positive(settings.mainEvalPosCount, 25))),
+      realEvalPosCount: Math.max(1, Math.floor(positive(settings.realEvalPosCount, 20))),
+      realMaxDrawdownHours: Math.max(
+        1,
+        Math.min(72, positive(settings.maxDrawdownTimeRealHours, 4)),
+      ),
+    }
   }
 
   /** Serialize the check-and-create transition for one Main→Real parent. */
@@ -115,6 +180,7 @@ export class PositionFlowCoordinator {
     try {
       await initRedis()
       const client = getRedisClient()
+      const stageSettings = await this.loadMainTradeStageSettings()
       await this.reconcileActiveRealPseudo()
 
       // Get main pseudo positions for this connection+symbol
@@ -125,13 +191,13 @@ export class PositionFlowCoordinator {
       )
       for (const mainPos of mainPositions) {
         if (!mainPos || mainPos.symbol !== symbol || !["open", "active", "main_active"].includes(mainPos.status)) continue
-        if ((mainPos.profit_factor || 0) < 0.6) continue
+        if ((mainPos.profit_factor || 0) < stageSettings.mainRatio) continue
 
         // Check if real pseudo already exists
         const existingReal = await getSettings(`real_pseudo:${this.connectionId}:main:${mainPos.id}`)
         if (existingReal) continue
 
-        if (await this.isValidForRealPseudo(mainPos)) {
+        if (await this.isValidForRealPseudo(mainPos, stageSettings)) {
           await this.createRealPseudoPosition(mainPos)
         }
       }
@@ -143,13 +209,16 @@ export class PositionFlowCoordinator {
   /**
    * Check if Main Pseudo position qualifies for Real Pseudo
    */
-  private async isValidForRealPseudo(mainPosition: any): Promise<boolean> {
-    if ((mainPosition.profit_factor || 0) < 0.6) return false
+  private async isValidForRealPseudo(
+    mainPosition: any,
+    stageSettings: Awaited<ReturnType<PositionFlowCoordinator["loadMainTradeStageSettings"]>>,
+  ): Promise<boolean> {
+    if ((mainPosition.profit_factor || 0) < stageSettings.realRatio) return false
 
     const hoursOpen = mainPosition.created_at
       ? (Date.now() - new Date(mainPosition.created_at).getTime()) / (1000 * 60 * 60)
       : 0
-    if (hoursOpen > 12) return false
+    if (hoursOpen > stageSettings.realMaxDrawdownHours) return false
 
     if (mainPosition.base_position_id) {
       const basePos = await getSettings(`base_pseudo:${mainPosition.base_position_id}`)
@@ -228,20 +297,19 @@ export class PositionFlowCoordinator {
         const mirrored = await getSettings(`exchange_mirror:${this.connectionId}:${realId}`)
         if (mirrored) continue
 
-        const lastXProfitFactor = await this.getLastXPositionsProfitFactor(realPos.base_config_id, 30)
-
-        if (lastXProfitFactor < 0.6) {
-          console.log(`[v0] Last 30 positions PF ${lastXProfitFactor.toFixed(2)} < 0.6, skipping exchange mirror`)
-          continue
-        }
-
+        // A validated Real row has already completed its rolling PF/DDT gate.
+        // Mirroring is therefore direct: applying another threshold here
+        // would make Live a hidden fifth evaluation stage.
         await this.exchangePositionManager.mirrorToExchange(realPos)
         await setSettings(`exchange_mirror:${this.connectionId}:${realId}`, {
           mirrored_at: new Date().toISOString(),
         })
 
         await this.closeOrInvalidateRealPseudo(realId, "mirrored_to_live_exchange")
-        console.log(`[v0] Mirrored REAL PSEUDO ${realId} to EXCHANGE (PF: ${lastXProfitFactor.toFixed(2)})`)
+        console.log(
+          `[v0] Mirrored validated REAL PSEUDO ${realId} directly to LIVE ` +
+          `(ratio: ${Number(realPos.profit_factor || 0).toFixed(2)})`,
+        )
       }
     } catch (error) {
       console.error(`[v0] Error processing exchange mirroring:`, error)
@@ -268,14 +336,18 @@ export class PositionFlowCoordinator {
       const client = getRedisClient()
       const basePos = await getSettings(`base_pseudo:${basePositionId}`)
       if (!basePos) return
+      const stageSettings = await this.loadMainTradeStageSettings()
+      const sampleCount = Math.max(0, Number(basePos.total_positions) || 0)
+      const averagePnlPct = sampleCount > 0
+        ? (Number(basePos.total_profit_loss) || 0) / sampleCount
+        : 0
+      const profitFactor = movePctToMainTradePfRatio(
+        averagePnlPct,
+        stageSettings.positionCostPct,
+      )
 
-      const profitFactor =
-        (basePos.winning_positions || 0) > 0 && (basePos.losing_positions || 0) > 0
-          ? ((basePos.avg_profit || 0) * (basePos.win_rate || 0)) / (Math.abs(basePos.avg_loss || 1) * (1 - (basePos.win_rate || 0)))
-          : 0
-
-      if (profitFactor < 0.5) return
-      if ((basePos.total_positions || 0) < 10) return
+      if (profitFactor < stageSettings.baseRatio) return
+      if (sampleCount < stageSettings.mainEvalPosCount) return
 
       // Check if MAIN PSEUDO already exists for this base
       const existingMain = await getSettings(`main_pseudo:${this.connectionId}:base:${basePositionId}`)
@@ -330,6 +402,7 @@ export class PositionFlowCoordinator {
     try {
       await initRedis()
       const client = getRedisClient()
+      const stageSettings = await this.loadMainTradeStageSettings()
 
       // Get recent main positions for this base
       const mainPosIds = await client.smembers(`pseudo_positions:${this.connectionId}:main`)
@@ -340,17 +413,21 @@ export class PositionFlowCoordinator {
         (pos) => pos && pos.base_position_id === mainPosition.base_position_id,
       )
 
-      // Sort by created_at DESC and take last 20
+      // Sort newest-first and evaluate this exact lineage's configured Real
+      // window. The resulting Real row is subsequently mirrored directly.
       lastXPositions.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
-      const recentPositions = lastXPositions.slice(0, 20)
+      const recentPositions = lastXPositions.slice(0, stageSettings.realEvalPosCount)
 
-      if (recentPositions.length < 10) return
+      if (recentPositions.length < stageSettings.realEvalPosCount) return
 
       const avgDrawdownTime = this.calculateAverageDrawdownTime(recentPositions)
-      const recentProfitFactor = this.calculateProfitFactorFromPositions(recentPositions)
+      const recentProfitFactor = calculatePositionCostRelativeAverageRatio(
+        recentPositions,
+        stageSettings.positionCostPct,
+      )
 
-      if (recentProfitFactor < 0.6) return
-      if (avgDrawdownTime > 12) return
+      if (recentProfitFactor < stageSettings.realRatio) return
+      if (avgDrawdownTime > stageSettings.realMaxDrawdownHours) return
 
       // Check if REAL PSEUDO already exists
       const existingReal = await getSettings(`real_pseudo:${this.connectionId}:main:${mainPosition.id}`)
@@ -409,35 +486,6 @@ export class PositionFlowCoordinator {
       return sum + hoursOpen
     }, 0)
     return totalDrawdownHours / positions.length
-  }
-
-  private calculateProfitFactorFromPositions(positions: any[]): number {
-    const wins = positions.filter((p: any) => (p.profit_loss || 0) > 0)
-    const losses = positions.filter((p: any) => (p.profit_loss || 0) < 0)
-    if (losses.length === 0) return wins.length > 0 ? 999 : 0
-    const avgWin = wins.reduce((sum: number, p: any) => sum + (p.profit_loss || 0), 0) / (wins.length || 1)
-    const avgLoss = Math.abs(losses.reduce((sum: number, p: any) => sum + (p.profit_loss || 0), 0) / losses.length)
-    const winRate = wins.length / positions.length
-    return (avgWin * winRate) / (avgLoss * (1 - winRate))
-  }
-
-  private async getLastXPositionsProfitFactor(baseConfigId: string, count: number): Promise<number> {
-    try {
-      await initRedis()
-      const client = getRedisClient()
-      const mainPosIds = await client.smembers(`pseudo_positions:${this.connectionId}:main`)
-      const loadedPositions = await this.loadSettingsBatch(
-        mainPosIds.map((posId) => `pseudo_position:${posId}`),
-      )
-      const positions = loadedPositions.filter(
-        (pos) => pos && pos.base_position_id === baseConfigId && (pos.status || "").includes("closed"),
-      )
-
-      positions.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
-      return this.calculateProfitFactorFromPositions(positions.slice(0, count))
-    } catch {
-      return 0
-    }
   }
 
   async closeOrInvalidateRealPseudo(realId: string, reason: string = "processed_or_invalid"): Promise<void> {

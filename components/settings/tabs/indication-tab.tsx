@@ -46,14 +46,14 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
   return (
     <Tabs value={indicationSubTab} onValueChange={setIndicationSubTab}>
       <TabsList>
-        <TabsTrigger value="main">Main</TabsTrigger>
-        <TabsTrigger value="common">Common</TabsTrigger>
+        <TabsTrigger value="main">Default + Additional</TabsTrigger>
+        <TabsTrigger value="common">Common + Signal</TabsTrigger>
       </TabsList>
 
       <TabsContent value="main" className="space-y-4">
         <Tabs value={indicationMainSubTab} onValueChange={setIndicationMainSubTab}>
           <TabsList className="h-auto w-full flex-wrap justify-start">
-            <TabsTrigger value="main">Main (Direction/Move/Active)</TabsTrigger>
+            <TabsTrigger value="main">Default · Direction / Move / Active</TabsTrigger>
             <TabsTrigger value="optimal">Optimal</TabsTrigger>
             <TabsTrigger value="auto">Auto</TabsTrigger>
             <TabsTrigger value="trend">Trend</TabsTrigger>
@@ -190,7 +190,10 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                     <div className="space-y-1">
                       <Label className="text-xs">Sample ranges</Label>
                       <Input
-                        value={numericListValue(settings.indicationSampleRanges, [2, 5, 10, 20, 30])}
+                        value={numericListValue(
+                          settings.indicationSampleRanges,
+                          Array.from({ length: 29 }, (_, index) => index + 2),
+                        )}
                         onChange={(event) => handleSettingChange("indicationSampleRanges", event.target.value)}
                         placeholder="2, 5, 10, 20, 30"
                       />
@@ -214,7 +217,7 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                     <div className="space-y-1">
                       <Label className="text-xs">Score factor multipliers</Label>
                       <Input
-                        value={numericListValue(settings.indicationFactorMultipliers, [1])}
+                        value={numericListValue(settings.indicationFactorMultipliers, [0.9, 1, 1.1])}
                         onChange={(event) => handleSettingChange("indicationFactorMultipliers", event.target.value)}
                         placeholder="1"
                       />
@@ -222,7 +225,7 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                     <div className="space-y-1">
                       <Label className="text-xs">Active thresholds</Label>
                       <Input
-                        value={numericListValue(settings.activeThresholds, [0.5, 1.5, 2.5])}
+                        value={numericListValue(settings.activeThresholds, [0.5, 1, 1.5, 2, 2.5])}
                         onChange={(event) => handleSettingChange("activeThresholds", event.target.value)}
                         placeholder="0.5, 1.5, 2.5"
                       />
@@ -246,7 +249,7 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                         />
                       </div>
                       <Input
-                        value={numericListValue(settings.activeAdvancedActivityRatios, [0.5, 1.5, 3])}
+                        value={numericListValue(settings.activeAdvancedActivityRatios, [0.5, 1, 1.5, 2, 2.5, 3])}
                         onChange={(event) => handleSettingChange("activeAdvancedActivityRatios", event.target.value)}
                         placeholder="0.5, 1.5, 3"
                       />
@@ -581,7 +584,10 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                 <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
                   <Label>Optimal independent sample ranges</Label>
                   <Input
-                    value={numericListValue(settings.optimalSampleRanges, [2, 5, 10, 20, 30])}
+                    value={numericListValue(
+                      settings.optimalSampleRanges,
+                      Array.from({ length: 29 }, (_, index) => index + 2),
+                    )}
                     onChange={(event) => handleSettingChange("optimalSampleRanges", event.target.value)}
                     placeholder="2, 5, 10, 20, 30"
                   />
@@ -974,42 +980,40 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
           <TabsContent value="common-indicators" className="space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle>Common Indication Settings</CardTitle>
-                <CardDescription>Shared parameters across all indication types</CardDescription>
+                <CardTitle>Common processing and retention</CardTitle>
+                <CardDescription>
+                  Scheduling concurrency bounds resource use only; it never truncates the exhaustive configuration space.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
                 <div className="grid md:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Default Interval ({getMinIndicationInterval()}-1000ms, step 50ms)</Label>
+                <Label>Default / Additional exact-lane timeout (50-3000ms)</Label>
                 <Slider
-                  min={getMinIndicationInterval()}
-                  max={1000}
+                  min={50}
+                  max={3000}
                   step={50}
-                  value={[Math.max(settings.defaultIndicationInterval || 100, getMinIndicationInterval())]}
-                  onValueChange={([value]) => handleSettingChange("defaultIndicationInterval", value)}
+                  value={[settings.indicationTimeoutMs ?? 250]}
+                  onValueChange={([value]) => handleSettingChange("indicationTimeoutMs", value)}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Current: {settings.defaultIndicationInterval || 100}ms (Min: {getMinIndicationInterval()}ms based on
-                  Main Engine)
+                  Current: {settings.indicationTimeoutMs ?? 250}ms for each independent
+                  type × name × configuration × direction lane.
+                </p>
+              </div>
+
+              <div className="rounded-md border bg-muted/20 p-3">
+                <Label>Common exact-lane timeout</Label>
+                <p className="text-xs text-muted-foreground">
+                  3 seconds by default for every independent Common indicator,
+                  timeframe, configuration and Long/Short direction. Detailed
+                  per-indicator controls are available in Common settings and
+                  per-connection indication profiles.
                 </p>
               </div>
 
               <div className="space-y-2">
-                <Label>Default Timeout (0-10 sec, step 1 sec)</Label>
-                <Slider
-                  min={0}
-                  max={10}
-                  step={1}
-                  value={[settings.defaultIndicationTimeout || 0]}
-                  onValueChange={([value]) => handleSettingChange("defaultIndicationTimeout", value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Current: {settings.defaultIndicationTimeout || 0}s
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Max Concurrent Indications (1-100)</Label>
+                <Label>Async processing concurrency (1-100)</Label>
                 <Slider
                   min={1}
                   max={100}
@@ -1018,7 +1022,8 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                   onValueChange={([value]) => handleSettingChange("maxConcurrentIndications", value)}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Current: {settings.maxConcurrentIndications || 50}
+                  Current: {settings.maxConcurrentIndications || 50} workers. All
+                  configurations remain queued and are processed.
                 </p>
               </div>
 

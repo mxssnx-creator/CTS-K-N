@@ -45,14 +45,19 @@ limits duplicate work but does not make duplicate owners desirable.
 1. Back up Redis and record current commit/build/site identity.
 2. Confirm exchange positions/orders and engine intent.
 3. Run remote/local non-mutating preflight against the target revision.
-4. Ensure the checkout is clean and fast-forward it.
-5. Run canonical installer; do not manually replace `.next`.
-6. Require schema, health, scheduler, identity and restart checks to pass.
-7. Review progression/logs before re-enabling any paused operator intent.
+4. Ensure the existing checkout has no tracked local changes.
+5. Run `scripts/update.sh` or `scripts/bootstrap-install.sh`; do not manually
+   fast-forward the checkout or replace `.next`.
+6. The lifecycle stops the resolved CTS services, preserves CTS-owned durable
+   state outside the target, deletes the exact checkout, clones the requested
+   revision, and then runs the full installer.
+7. Require schema, health, scheduler, identity and restart checks to pass.
+8. Review progression/logs before re-enabling any paused operator intent.
 
-The installer stages the previous build before building. The EXIT trap restores
-and restarts it for any later error. On successful verification the old staged
-build is removed to prevent upgrade disk leaks.
+The clean-bootstrap transition deliberately does not restore a removed source
+checkout. If installation fails after deletion, the protected state archive
+remains outside the target for inspection or a safe retry; no partially built
+checkout is promoted to production.
 
 ## Failure playbooks
 

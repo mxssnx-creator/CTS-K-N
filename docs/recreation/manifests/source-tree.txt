@@ -58,6 +58,7 @@ __tests__/integration/main-engine-live-dispatch.test.ts
 __tests__/integration/preset-optimizer-store.test.ts
 __tests__/integration/progression-api.test.ts
 __tests__/unit/admin-auth.test.ts
+__tests__/unit/advanced-config-exhaustive.test.ts
 __tests__/unit/balanced-config-selection.test.ts
 __tests__/unit/base-position-batch-coordination.test.ts
 __tests__/unit/base-stage-concurrency.test.ts
@@ -88,11 +89,13 @@ __tests__/unit/exchange-force-simulated.test.ts
 __tests__/unit/historic-candle-window.test.ts
 __tests__/unit/indication-configuration-counts.test.ts
 __tests__/unit/indication-connection-selection.test.ts
+__tests__/unit/indication-lane-identity.test.ts
 __tests__/unit/inline-local-redis.test.ts
 __tests__/unit/install-deployment-contract.test.ts
 __tests__/unit/live-order-coordination.test.ts
 __tests__/unit/live-pos-count-target.test.ts
 __tests__/unit/live-position-actions.test.ts
+__tests__/unit/live-position-analytics-archive.test.ts
 __tests__/unit/live-position-lineage-index.test.ts
 __tests__/unit/live-position-read-model.test.ts
 __tests__/unit/live-position-stats-sources.test.ts
@@ -106,6 +109,7 @@ __tests__/unit/live-trading-dashboard-contract.test.ts
 __tests__/unit/logistics-workflow.test.ts
 __tests__/unit/main-indication-settings.test.ts
 __tests__/unit/main-live-trade-readiness.test.ts
+__tests__/unit/main-trade-profit-factor.test.ts
 __tests__/unit/multi-range-coordination.test.ts
 __tests__/unit/navigation-contract.test.ts
 __tests__/unit/no-fixed-sleeps-regression.test.ts
@@ -113,6 +117,7 @@ __tests__/unit/orders-market-notional.test.ts
 __tests__/unit/orders-route-concurrency.test.ts
 __tests__/unit/performance-profiler.test.ts
 __tests__/unit/pnl-stats-route.test.ts
+__tests__/unit/pos-count-volume-ratio.test.ts
 __tests__/unit/position-flow-calculations.test.ts
 __tests__/unit/prehistoric-runtime-stability.test.ts
 __tests__/unit/preset-optimizer.test.ts
@@ -139,6 +144,7 @@ __tests__/unit/settings-continuity.test.ts
 __tests__/unit/settings-hot-reload.test.ts
 __tests__/unit/settings-propagation.test.ts
 __tests__/unit/signal-analytics.test.ts
+__tests__/unit/signal-config-matrix.test.ts
 __tests__/unit/signal-indication.test.ts
 __tests__/unit/signal-position-policy.test.ts
 __tests__/unit/signal-source-registry.test.ts
@@ -361,6 +367,7 @@ app/api/settings/connections/[id]/preset-type/route.ts
 app/api/settings/connections/[id]/route.ts
 app/api/settings/connections/[id]/settings-presets/route.ts
 app/api/settings/connections/[id]/settings/route.ts
+app/api/settings/connections/[id]/signal-toggle/route.ts
 app/api/settings/connections/[id]/statistics/route.ts
 app/api/settings/connections/[id]/strategies/route.ts
 app/api/settings/connections/[id]/symbols/route.ts
@@ -947,6 +954,7 @@ lib/indication-calculator.ts
 lib/indication-config-manager.ts
 lib/indication-configuration-counts.ts
 lib/indication-evaluator.ts
+lib/indication-lane-identity.ts
 lib/indication-range-calculator.ts
 lib/indication-sets-processor.ts
 lib/indication-state-manager.ts
@@ -965,6 +973,7 @@ lib/live-order-safety.ts
 lib/live-order-service.ts
 lib/live-order-smoke.ts
 lib/live-position-alt-index.ts
+lib/live-position-analytics-archive.ts
 lib/live-position-lineage.ts
 lib/live-position-read-model.ts
 lib/live-position-status.ts
@@ -975,6 +984,7 @@ lib/local-redis.ts
 lib/logger.ts
 lib/logistics-workflow.ts
 lib/main-indication-settings.ts
+lib/main-trade-profit-factor.ts
 lib/market-data-fetcher.ts
 lib/market-data-loader.ts
 lib/memory-manager.ts
@@ -988,6 +998,7 @@ lib/performance-dashboard.ts
 lib/performance-profiler.ts
 lib/portfolio-analytics.ts
 lib/pos-count-live-target.ts
+lib/pos-count-volume-ratio.ts
 lib/pos-history.ts
 lib/position-calculator.ts
 lib/position-cost.ts
@@ -1004,6 +1015,7 @@ lib/prehistoric-calculator.ts
 lib/prehistoric-progress-tracker.ts
 lib/preset-config-generator.ts
 lib/preset-coordination-engine.ts
+lib/preset-crud-defaults.ts
 lib/preset-optimizer.ts
 lib/preset-pseudo-position-manager.ts
 lib/preset-set-evaluator.ts
@@ -1044,6 +1056,7 @@ lib/settings-coordinator.ts
 lib/settings-diff.ts
 lib/settings-storage.ts
 lib/signal-analytics.ts
+lib/signal-config-matrix.ts
 lib/signal-indication.ts
 lib/signal-position-policy.ts
 lib/signal-source-registry.ts

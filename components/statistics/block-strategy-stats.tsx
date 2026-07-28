@@ -14,7 +14,6 @@ interface BlockStrategyStatsProps {
 
 interface BlockPerformance {
   blockSize: number
-  isEnabled: boolean
   withBlockStrategy: {
     avgPnL: number
     positionCount: number
@@ -26,7 +25,7 @@ interface BlockPerformance {
     winRate: number
   }
   performanceDiff: number
-  shouldDisable: boolean
+  favorable: boolean
 }
 
 export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockStrategyStatsProps) {
@@ -37,19 +36,22 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
   useEffect(() => {
     fetch("/api/settings")
       .then((res) => res.json())
-      .then((data) => setSettings(data))
+      .then((data) => setSettings(data?.settings || data))
       .catch((err) => console.error("Failed to load settings:", err))
   }, [])
 
   // Calculate block strategy performance
   useEffect(() => {
-    if (positions.length === 0) return
+    if (positions.length === 0) {
+      setBlockPerformances([])
+      return
+    }
 
     const blockSizes = [2, 4, 6, 8]
     const performances: BlockPerformance[] = []
 
     // Get the last N positions for comparison
-    const recentPositions = positions
+    const recentPositions = [...positions]
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .slice(0, comparisonWindow)
 
@@ -111,15 +113,16 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
       }
 
       const performanceDiff = withStats.avgPnL - withoutStats.avgPnL
-      const shouldDisable = withStats.avgPnL < withoutStats.avgPnL && withStats.positionCount >= 5
+      const favorable =
+        withStats.positionCount >= 5 &&
+        withStats.avgPnL >= withoutStats.avgPnL
 
       performances.push({
         blockSize,
-        isEnabled: !shouldDisable, // Simplified - in real system this would come from strategy state
         withBlockStrategy: withStats,
         withoutBlockStrategy: withoutStats,
         performanceDiff,
-        shouldDisable,
+        favorable,
       })
     })
 
@@ -144,8 +147,10 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
 
   const totalWithBlock = blockPerformances.reduce((sum, p) => sum + p.withBlockStrategy.avgPnL, 0)
   const totalWithoutBlock = blockPerformances.reduce((sum, p) => sum + p.withoutBlockStrategy.avgPnL, 0)
-  const enabledCount = blockPerformances.filter((p) => p.isEnabled).length
-  const disabledCount = blockPerformances.filter((p) => !p.isEnabled).length
+  const favorableCount = blockPerformances.filter((p) => p.favorable).length
+  const belowBaselineCount = blockPerformances.filter(
+    (p) => p.withBlockStrategy.positionCount >= 5 && !p.favorable,
+  ).length
 
   return (
     <div className="space-y-6">
@@ -168,8 +173,8 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
             <div className="flex items-center gap-2">
               <CheckCircle2 className="h-5 w-5 text-green-500" />
               <div>
-                <div className="text-2xl font-bold">{enabledCount}</div>
-                <div className="text-sm text-muted-foreground">Enabled Blocks</div>
+                <div className="text-2xl font-bold">{favorableCount}</div>
+                <div className="text-sm text-muted-foreground">Favorable Windows</div>
               </div>
             </div>
           </CardContent>
@@ -180,8 +185,8 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
             <div className="flex items-center gap-2">
               <XCircle className="h-5 w-5 text-red-500" />
               <div>
-                <div className="text-2xl font-bold">{disabledCount}</div>
-                <div className="text-sm text-muted-foreground">Disabled Blocks</div>
+                <div className="text-2xl font-bold">{belowBaselineCount}</div>
+                <div className="text-sm text-muted-foreground">Below Baseline</div>
               </div>
             </div>
           </CardContent>
@@ -195,7 +200,7 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
                 <div className={`text-xl font-bold ${totalWithBlock >= 0 ? "text-green-600" : "text-red-600"}`}>
                   {formatCurrency(totalWithBlock)}
                 </div>
-                <div className="text-sm text-muted-foreground">Avg WITH Block</div>
+                <div className="text-sm text-muted-foreground">Avg Post-Loss Window</div>
               </div>
             </div>
           </CardContent>
@@ -209,7 +214,7 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
                 <div className={`text-xl font-bold ${totalWithoutBlock >= 0 ? "text-green-600" : "text-red-600"}`}>
                   {formatCurrency(totalWithoutBlock)}
                 </div>
-                <div className="text-sm text-muted-foreground">Avg WITHOUT Block</div>
+                <div className="text-sm text-muted-foreground">Avg Baseline Window</div>
               </div>
             </div>
           </CardContent>
@@ -219,20 +224,20 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
       {/* Block Strategy Status Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {blockPerformances.map((perf) => (
-          <Card key={perf.blockSize} className={perf.isEnabled ? "border-green-500" : "border-red-500"}>
+          <Card key={perf.blockSize} className={perf.favorable ? "border-green-500" : "border-border"}>
             <CardHeader>
               <div className="flex items-center justify-between">
                 <CardTitle className="text-lg">Block Size {perf.blockSize}</CardTitle>
-                <Badge variant={perf.isEnabled ? "default" : "destructive"}>
-                  {perf.isEnabled ? <CheckCircle2 className="h-3 w-3 mr-1" /> : <XCircle className="h-3 w-3 mr-1" />}
-                  {perf.isEnabled ? "Enabled" : "Disabled"}
+                <Badge variant={perf.favorable ? "default" : "secondary"}>
+                  {perf.favorable ? <CheckCircle2 className="h-3 w-3 mr-1" /> : <XCircle className="h-3 w-3 mr-1" />}
+                  {perf.favorable ? "Favorable" : "Below baseline"}
                 </Badge>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
               {/* WITH Block Strategy */}
               <div className="p-3 bg-green-50 dark:bg-green-950 rounded-lg">
-                <div className="text-xs text-muted-foreground mb-1">WITH Block Strategy</div>
+                <div className="text-xs text-muted-foreground mb-1">After a Negative Prior Block</div>
                 <div className="flex items-center justify-between">
                   <div className="text-lg font-bold text-green-600">
                     {formatCurrency(perf.withBlockStrategy.avgPnL)}
@@ -248,7 +253,7 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
 
               {/* WITHOUT Block Strategy */}
               <div className="p-3 bg-orange-50 dark:bg-orange-950 rounded-lg">
-                <div className="text-xs text-muted-foreground mb-1">WITHOUT Block Strategy</div>
+                <div className="text-xs text-muted-foreground mb-1">Other Baseline Windows</div>
                 <div className="flex items-center justify-between">
                   <div className="text-lg font-bold text-orange-600">
                     {formatCurrency(perf.withoutBlockStrategy.avgPnL)}
@@ -271,7 +276,9 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
                     {formatCurrency(perf.performanceDiff)}
                   </div>
                 </div>
-                {perf.shouldDisable && <div className="text-xs text-red-600 mt-1">⚠️ Performance below baseline</div>}
+                {!perf.favorable && perf.withBlockStrategy.positionCount >= 5 && (
+                  <div className="text-xs text-red-600 mt-1">Performance below baseline</div>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -281,7 +288,7 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
       {/* Performance Comparison Chart */}
       <Card>
         <CardHeader>
-          <CardTitle>Performance Comparison: WITH vs WITHOUT Block Strategy</CardTitle>
+          <CardTitle>Observed Post-Loss vs Baseline Windows</CardTitle>
         </CardHeader>
         <CardContent>
           <ResponsiveContainer width="100%" height={300}>
@@ -291,12 +298,12 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
               <YAxis tickFormatter={(value) => formatCurrency(value)} />
               <Tooltip
                 formatter={(value: number, name: string) => {
-                  const label = name === "with" ? "WITH Block" : name === "without" ? "WITHOUT Block" : "Difference"
+                  const label = name === "with" ? "Post-loss" : name === "without" ? "Baseline" : "Difference"
                   return [formatCurrency(value), label]
                 }}
               />
-              <Bar dataKey="with" fill="#10b981" name="WITH Block Strategy" />
-              <Bar dataKey="without" fill="#f59e0b" name="WITHOUT Block Strategy" />
+              <Bar dataKey="with" fill="#10b981" name="Post-loss windows" />
+              <Bar dataKey="without" fill="#f59e0b" name="Baseline windows" />
             </BarChart>
           </ResponsiveContainer>
         </CardContent>
@@ -305,7 +312,7 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
       {/* Performance Difference Chart */}
       <Card>
         <CardHeader>
-          <CardTitle>Performance Difference (WITH - WITHOUT)</CardTitle>
+          <CardTitle>Observed Difference (Post-Loss - Baseline)</CardTitle>
         </CardHeader>
         <CardContent>
           <ResponsiveContainer width="100%" height={250}>
@@ -333,22 +340,27 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
           <CardContent>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
-                <div className="text-sm text-muted-foreground">Adjustment Ratio</div>
-                <div className="text-2xl font-bold">{settings.blockAdjustmentRatio || 1}x</div>
-              </div>
-              <div>
-                <div className="text-sm text-muted-foreground">Auto-Disable</div>
-                <div className="text-2xl font-bold">
-                  {settings.blockAutoDisableEnabled ? (
-                    <Badge variant="default">Enabled</Badge>
-                  ) : (
-                    <Badge variant="secondary">Disabled</Badge>
-                  )}
+                <div className="text-sm text-muted-foreground">Execution Mode</div>
+                <div className="text-lg font-bold">
+                  {(settings.blockAdjustment ?? settings.variantBlockEnabled) !== false
+                    ? settings.blockOnly !== false
+                      ? "Block-only"
+                      : "Standard + Block"
+                    : "Standard only"}
                 </div>
               </div>
               <div>
-                <div className="text-sm text-muted-foreground">Comparison Window</div>
-                <div className="text-2xl font-bold">{settings.blockAutoDisableComparisonWindow || 50} positions</div>
+                <div className="text-sm text-muted-foreground">Volume / PF Ratios</div>
+                <div className="text-lg font-bold">
+                  {Number(settings.blockVolumeRatio ?? 1).toFixed(2)}× /{" "}
+                  {Number(settings.blockProfitFactorRatio ?? 0.8).toFixed(2)}×
+                </div>
+              </div>
+              <div>
+                <div className="text-sm text-muted-foreground">Max Stack / Analysis Window</div>
+                <div className="text-lg font-bold">
+                  {Number(settings.blockMaxStack ?? 10)} / {comparisonWindow} positions
+                </div>
               </div>
             </div>
           </CardContent>

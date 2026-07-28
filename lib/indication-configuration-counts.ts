@@ -1,6 +1,7 @@
 import {
   COMMON_INDICATOR_DEFINITIONS,
   DEFAULT_COMMON_INDICATION_SETTINGS,
+  commonIndicatorParameterConfigurations,
   enabledCommonIndicatorTypes,
   normalizeCommonIndicationSettings,
 } from "@/lib/common-indicator-config"
@@ -15,8 +16,9 @@ import {
   normalizeTrendTimeframesMinutes,
 } from "@/lib/trend-indication"
 import {
-  normalizeSignalIndicationSettings,
-} from "@/lib/signal-indication"
+  SIGNAL_SOURCE_DEFINITIONS,
+} from "@/lib/signal-source-registry"
+import { buildSignalTradeConfigurations } from "@/lib/signal-config-matrix"
 
 export type IndicationConfigurationType =
   | "direction"
@@ -105,9 +107,66 @@ function numericRange(
   const values: number[] = []
   for (let value = from; value <= to + Number.EPSILON; value += step) {
     values.push(Number(value.toFixed(8)))
-    if (values.length >= 500) break
   }
   return values.length > 0 ? values : [...fallback]
+}
+
+/**
+ * Browser-safe projection of the Signal settings needed solely for the
+ * topology calculator.  The complete Signal normalizer persists and reads
+ * Redis performance state, so importing it from a client-rendered demo would
+ * incorrectly pull the Node Redis client into the browser bundle.
+ *
+ * Keep this narrow projection aligned with the public defaults: it describes
+ * source enablement and the input matrix only; it never decides execution.
+ */
+type SignalConfigurationCountSettings = {
+  enabled: boolean
+  directExecutionEnabled: boolean
+  trailingEnabled: boolean
+  trailingOnly: boolean
+  maxSourcesPerCycle: number
+  minimumSourceSignals: number
+  sources: Record<string, { enabled: boolean }>
+}
+
+function normalizeSignalConfigurationCountSettings(
+  input: unknown,
+): SignalConfigurationCountSettings {
+  const raw = input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : {}
+  const rawSources = raw.sources && typeof raw.sources === "object" && !Array.isArray(raw.sources)
+    ? raw.sources as Record<string, unknown>
+    : {}
+  const sources = Object.fromEntries(SIGNAL_SOURCE_DEFINITIONS.map((source) => {
+    const candidate = rawSources[source.id]
+    const configured = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+      ? candidate as Record<string, unknown>
+      : {}
+    return [source.id, { enabled: bool(configured.enabled, source.enabledByDefault) }]
+  })) as Record<string, { enabled: boolean }>
+  const maxSourcesPerCycle = Math.round(Math.max(
+    3,
+    Math.min(
+      SIGNAL_SOURCE_DEFINITIONS.length,
+      positiveNumber(raw.maxSourcesPerCycle, SIGNAL_SOURCE_DEFINITIONS.length),
+    ),
+  ))
+  const minimumSourceSignals = Math.min(
+    maxSourcesPerCycle,
+    Math.round(Math.max(2, Math.min(20, positiveNumber(raw.minimumSourceSignals, 3)))),
+  )
+  const trailingOnly = bool(raw.trailingOnly, false)
+  return {
+    enabled: bool(raw.enabled, true),
+    directExecutionEnabled: bool(raw.directExecutionEnabled, true),
+    trailingEnabled: trailingOnly || bool(raw.trailingEnabled, true),
+    trailingOnly,
+    maxSourcesPerCycle,
+    minimumSourceSignals,
+    sources,
+  }
 }
 
 function activeAdvancedRatios(settings: Record<string, any>, fallback: readonly number[]): number[] {
@@ -133,13 +192,10 @@ export function calculateIndicationConfigurationCounts(
   const settings = rawSettings && typeof rawSettings === "object"
     ? rawSettings as Record<string, any>
     : {}
-  const fullGrid = process.env.INDICATION_FULL_CONFIG_GRID === "1"
-  const fallbackRanges = fullGrid
-    ? Array.from({ length: 29 }, (_, index) => index + 2)
-    : [2, 5, 10, 20, 30]
-  const fallbackFactors = fullGrid ? [0.9, 1, 1.1] : [1]
-  const fallbackThresholds = fullGrid ? [0.5, 1, 1.5, 2, 2.5] : [0.5, 1.5, 2.5]
-  const fallbackAdvanced = fullGrid ? [0.5, 1, 1.5, 2, 2.5, 3] : [0.5, 1.5, 3]
+  const fallbackRanges = Array.from({ length: 29 }, (_, index) => index + 2)
+  const fallbackFactors = [0.9, 1, 1.1]
+  const fallbackThresholds = [0.5, 1, 1.5, 2, 2.5]
+  const fallbackAdvanced = [0.5, 1, 1.5, 2, 2.5, 3]
 
   const ranges = settings.indicationSampleRanges !== undefined
     ? numericList(settings.indicationSampleRanges, fallbackRanges).filter((value) => value > 0)
@@ -208,16 +264,42 @@ export function calculateIndicationConfigurationCounts(
   )
   const enabledCommon = enabledCommonIndicatorTypes(commonSettings)
   const commonTimeframes = commonSettings.coordination.timeframesMinutes
-  const commonParameterVariants = 3
-  const commonEvaluations =
-    enabledCommon.length * commonTimeframes.length * commonParameterVariants
-  const signalSettings = normalizeSignalIndicationSettings(rawSignalSettings)
+  const commonVariantsByType = Object.fromEntries(
+    COMMON_INDICATOR_DEFINITIONS
+      .filter((definition) => enabledCommon.includes(definition.type))
+      .map((definition) => [
+        definition.type,
+        commonIndicatorParameterConfigurations(
+          definition,
+          commonSettings[definition.storageKey] as any,
+        ).length,
+      ]),
+  ) as Record<string, number>
+  const commonParameterVariants = Object.values(commonVariantsByType)
+    .reduce((sum, count) => sum + count, 0)
+  const commonEvaluations = commonTimeframes.length * commonParameterVariants
+  const signalSettings = normalizeSignalConfigurationCountSettings(rawSignalSettings)
   const enabledSignalSources = Object.values(signalSettings.sources)
     .filter((source) => source.enabled)
     .length
   const selectedSignalSources = signalSettings.enabled
     ? Math.min(enabledSignalSources, signalSettings.maxSourcesPerCycle)
     : 0
+  // Source rows always remain independent. `directExecutionEnabled` is the
+  // exact-config bootstrap bypass, not a switch that removes source rows.
+  const signalDirectInputs = selectedSignalSources
+  const signalConsensusInputs =
+    selectedSignalSources >= signalSettings.minimumSourceSignals ? 1 : 0
+  const signalEvaluationInputs = signalDirectInputs + signalConsensusInputs
+  const signalPossibleDirectInputs = enabledSignalSources
+  const signalPossibleConsensusInputs =
+    enabledSignalSources >= signalSettings.minimumSourceSignals ? 1 : 0
+  const signalPossibleInputs =
+    signalPossibleDirectInputs + signalPossibleConsensusInputs
+  const signalTradeConfigurations = buildSignalTradeConfigurations({
+    trailingEnabled: signalSettings.trailingEnabled,
+    trailingOnly: signalSettings.trailingOnly,
+  }).length
 
   const setCount = (grid: number, dynamicVariants = 0) => (grid + dynamicVariants) * 2
   const types: IndicationConfigurationCount[] = [
@@ -320,16 +402,28 @@ export function calculateIndicationConfigurationCounts(
       label: "Signal",
       group: "common",
       storage: "independent_set",
-      possibleSets: signalSettings.enabled ? 2 : 0,
-      evaluationConfigurations: selectedSignalSources > 0 ? selectedSignalSources + 1 : 0,
-      formula: `${selectedSignalSources} selected public sources → one Long/Short consensus`,
+      possibleSets:
+        signalSettings.enabled
+          ? signalPossibleInputs * signalTradeConfigurations * 2
+          : 0,
+      evaluationConfigurations: signalEvaluationInputs,
+      formula:
+        `${signalPossibleInputs} enabled source/consensus inputs × ` +
+        `${signalTradeConfigurations} TP/SL/trailing configs × 2 directions`,
       params: {
         enabledSources: enabledSignalSources,
         selectedSourcesPerCycle: selectedSignalSources,
+        directSourceInputs: signalDirectInputs,
+        consensusInputs: signalConsensusInputs,
+        possibleSourceInputs: signalPossibleInputs,
         registrySources: Object.keys(signalSettings.sources).length,
-        performanceLookback: signalSettings.performanceLookback,
+        tradeConfigurations: signalTradeConfigurations,
+        sourcePerformanceLookback: 12,
+        symbolDirectionPerformanceLookback: 10,
       },
-      description: "Multi-source short-time consensus with bounded low-stop risk and independent Last-15 PnL gates.",
+      description:
+        "Independent source × symbol × direction × TP/SL/trailing Sets; " +
+        "sources use the newest 12 closes and source/symbol/direction lanes the newest 10.",
     },
     {
       type: "trend",
@@ -352,17 +446,17 @@ export function calculateIndicationConfigurationCounts(
       type: "common",
       label: "Common",
       group: "common",
-      storage: "runtime",
-      possibleSets: 0,
+      storage: "independent_set",
+      possibleSets: commonEvaluations * 2,
       evaluationConfigurations: commonEvaluations,
-      formula: `${enabledCommon.length} indicators × ${commonTimeframes.length} timeframes × ${commonParameterVariants} parameter variants`,
+      formula: `${commonParameterVariants} complete indicator parameter tuples × ${commonTimeframes.length} timeframes`,
       params: {
         enabledIndicators: enabledCommon.length,
         availableIndicators: COMMON_INDICATOR_DEFINITIONS.length,
         timeframes: commonTimeframes.join("/"),
         parameterVariants: commonParameterVariants,
       },
-      description: "Official technical indicators on the configured minimum timeframes, capped at 15 minutes.",
+      description: "Official technical indicators with every valid configured parameter tuple and independent Long/Short Sets.",
     },
   ]
 

@@ -1,6 +1,7 @@
 import { getRedisClient } from "./redis-db"
 
 interface LogEntry {
+  id?: string
   timestamp: string
   level: "info" | "warn" | "error"
   category: string
@@ -218,9 +219,14 @@ export class SystemLogger {
         readPipeline.hgetall(logId)
       }
       const rows = await readPipeline.exec()
-      return rows.flatMap((logData) => {
-        if (logData instanceof Error) return []
-        if (!logData || Object.keys(logData).length === 0) return []
+      return rows.flatMap((result, index) => {
+        if (result instanceof Error) return []
+        const logData = (
+          Array.isArray(result) && result.length === 2
+            ? result[1]
+            : result
+        ) as Record<string, string> | null
+        if (!logData || typeof logData !== "object" || Object.keys(logData).length === 0) return []
         let metadata: Record<string, any> | undefined
         if (logData.metadata) {
           try {
@@ -230,6 +236,7 @@ export class SystemLogger {
           }
         }
         return [{
+          id: logData.id || logIds[index] || "",
           timestamp: logData.timestamp || "",
           level: (logData.level as any) || "info",
           category: logData.category || "",

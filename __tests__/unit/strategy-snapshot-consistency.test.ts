@@ -4,7 +4,7 @@ import path from "node:path"
 const root = process.cwd()
 const read = (file: string) => fs.readFileSync(path.join(root, file), "utf8")
 
-describe("coherent strategy snapshots and schema v78", () => {
+describe("coherent strategy snapshots and schema v89", () => {
   test("uses symbol-local active lineage under parallel symbol processing", () => {
     const source = read("lib/strategy-coordinator.ts")
     expect(source).toContain("private _activeKeysCache = new Map<string")
@@ -22,7 +22,8 @@ describe("coherent strategy snapshots and schema v78", () => {
     expect(source).not.toContain("dev fallback - injected synthetic qualifying set from MAIN")
 
     const stats = read("app/api/connections/progression/[id]/stats/route.ts")
-    expect(stats).toContain("if (stratCounts.live > stratCounts.real)")
+    expect(stats).toContain("Do not clamp stage snapshots against each other")
+    expect(stats).not.toContain("if (stratCounts.live > stratCounts.real)")
   })
 
   test("mirrors every strategy-stage progression mutation into the active engine scope", () => {
@@ -46,7 +47,7 @@ describe("coherent strategy snapshots and schema v78", () => {
   test("migrations are sequential through the coherent schema", () => {
     const source = read("lib/redis-migrations.ts")
     const versions = Array.from(source.matchAll(/version:\s*(\d+)/g), (match) => Number(match[1]))
-    expect(versions.at(-1)).toBe(84)
+    expect(versions.at(-1)).toBe(89)
     expect(versions.every((version, index) => version === index + 1)).toBe(true)
     expect(source).toContain('name: "075-bound-high-frequency-statistics-storage"')
     expect(source).toContain('name: "079-repair-hourly-statistics-rollups"')
@@ -55,6 +56,11 @@ describe("coherent strategy snapshots and schema v78", () => {
     expect(source).toContain('name: "082-normalize-live-minimum-ratio-and-position-cost"')
     expect(source).toContain('name: "083-enforce-identity-live-volume-ratios"')
     expect(source).toContain('name: "084-freeze-base-volume-coordination-at-identity"')
+    expect(source).toContain('name: "085-main-trade-position-cost-ratio-four-stage"')
+    expect(source).toContain('name: "086-exhaustive-indication-base-and-block-only-defaults"')
+    expect(source).toContain('name: "087-signal-bootstrap-direction-lanes-and-strategy-rows"')
+    expect(source).toContain('name: "088-repair-exhaustive-indications-signal-capacity-and-stage-caps"')
+    expect(source).toContain('name: "089-signal-full-source-cycle-and-base-pf-floor"')
     expect(source).toContain('strategy_set_listing_indexes: "lifetime-active-closed"')
     expect(source).toContain('inline_snapshot_interval_ms: "60000"')
     expect(source).toContain('independent_block_profit_factor: "default-pf-x-ratio-x-volume-increment-v1"')

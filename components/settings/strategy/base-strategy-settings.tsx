@@ -3,6 +3,12 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_MIN,
+  MAIN_TRADE_PF_RATIO_MAX,
+  MAIN_TRADE_PF_RATIO_STEP,
+  normalizeMainTradeStagePfRatio,
+} from "@/lib/main-trade-profit-factor"
 // `Switch` no longer imported — the obsolete `Base Trailing Enabled`
 // toggle has been replaced with an engine-decided statistical-trailing
 // note (see comment block below).
@@ -105,14 +111,17 @@ export default function BaseStrategySettings({
               <Label>Base Min Profit Factor</Label>
               <Input
                 type="number"
-                min="0"
-                max="2"
-                step="0.1"
-                value={settings.strategyBaseMinProfitFactor || 0.4}
-                onChange={(e) => handleSettingChange("strategyBaseMinProfitFactor", Number.parseFloat(e.target.value))}
+                min={MAIN_TRADE_BASE_PF_RATIO_MIN}
+                max={MAIN_TRADE_PF_RATIO_MAX}
+                step={MAIN_TRADE_PF_RATIO_STEP}
+                value={settings.baseProfitFactor ?? 0.8}
+                onChange={(e) => handleSettingChange(
+                  "baseProfitFactor",
+                  normalizeMainTradeStagePfRatio("base", Number.parseFloat(e.target.value)),
+                )}
               />
               <p className="text-xs text-muted-foreground">
-                Minimum profit factor required for base strategy execution (default: 0.4)
+                PositionCost-relative Base ratio (minimum/default 0.80; range 0.80–2.70).
               </p>
             </div>
           </div>
@@ -120,14 +129,8 @@ export default function BaseStrategySettings({
           {/*
            * P0-4: Max active pseudo positions per direction.
            *
-           * Hard cap enforced by `PseudoPositionManager.canCreatePosition`
-           * before a new pseudo position is created. Applies at Base level
-           * — stops Main/Real/Live from instantiating more than N positions
-           * per direction regardless of how many config Sets qualify.
-           *
-           * Spec default = 1 (Long and Short each capped at 1 concurrent
-           * pseudo across ALL Sets). Range 1–10 to give operators headroom
-           * for symbol-diverse portfolios without uncapping entirely.
+           * Exact-lane invariant: one open pseudo position for each complete
+           * connection/symbol/indication/config/direction/Base-Set identity.
            */}
           <div className="border-t pt-6 space-y-4">
             <h3 className="text-lg font-semibold border-b pb-2">
@@ -135,26 +138,19 @@ export default function BaseStrategySettings({
             </h3>
 
             <div className="space-y-2">
-              <Label>Max Active Pseudo Positions Per Direction</Label>
+              <Label>Open Positions Per Exact Base Lane</Label>
               <Input
                 type="number"
                 min="1"
-                max="10"
+                max="1"
                 step="1"
                 value={settings.maxActiveBasePseudoPositionsPerDirection ?? 1}
-                onChange={(e) =>
-                  handleSettingChange(
-                    "maxActiveBasePseudoPositionsPerDirection",
-                    Math.max(1, Math.floor(Number.parseFloat(e.target.value) || 1)),
-                  )
-                }
+                disabled
               />
               <p className="text-xs text-muted-foreground">
-                Hard cap on concurrent pseudo positions in each direction
-                (Long / Short) across all config Sets. Enforced at Base
-                level — prevents Main/Real/Live from instantiating more
-                than N positions per direction regardless of how many
-                Sets qualify. Spec default: 1.
+                Fixed at one per complete symbol × indication type/name ×
+                configuration × Long/Short × Base Set. This does not cap the
+                total number of independent Base configurations.
               </p>
             </div>
           </div>

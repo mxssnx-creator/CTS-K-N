@@ -57,6 +57,17 @@ describe("live volume coordination by strategy variant", () => {
     expect(invalid.finalVolume).toBeCloseTo(0.05, 8)
   })
 
+  test("permits an explicitly resolved combined Position-Count target to exceed the ordinary cap", () => {
+    const combined = VolumeCalculator.calculatePositionVolume({
+      ...base,
+      sizeMultiplier: 16,
+      allowUnboundedVariantMultiplier: true,
+    })
+
+    expect(combined.sizeMultiplier).toBe(16)
+    expect(combined.finalVolume).toBeCloseTo(0.8, 8)
+  })
+
   test.each([
     ["default", 1, 0.05, 0.05],
     ["trailing", 1, 0.05, 0.05],

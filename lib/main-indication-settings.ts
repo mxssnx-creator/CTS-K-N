@@ -13,11 +13,11 @@ export const DEFAULT_MAIN_INDICATION_SETTINGS = {
     positionCostRatioIndex: 2,
   },
   configuration: {
-    sample_ranges: [2, 5, 10, 20, 30],
+    sample_ranges: Array.from({ length: 29 }, (_, index) => index + 2),
     drawdown_ratios: [0.5, 1, 1.5],
     last_part_ratios: [0.25, 0.5],
-    factor_multipliers: [1],
-    active_thresholds: [0.5, 1.5, 2.5],
+    factor_multipliers: [0.9, 1, 1.1],
+    active_thresholds: [0.5, 1, 1.5, 2, 2.5],
     active_time_ratios: [0.5, 1],
   },
   coordination: {
@@ -34,44 +34,44 @@ export const DEFAULT_MAIN_INDICATION_SETTINGS = {
   direction: {
     enabled: true,
     range: { from: 2, to: 30, step: 1 },
-    sample_ranges: [2, 5, 10, 20, 30],
+    sample_ranges: Array.from({ length: 29 }, (_, index) => index + 2),
     drawdown_ratio: { from: 0.5, to: 1.5, step: 0.5 },
     market_change_range: { from: 1, to: 10, step: 2 },
     market_change_lastpart_base: 20,
     market_change_lastpart_ratios: { from: 0.25, to: 0.5, step: 0.25 },
     min_calculation_time: 3,
     interval: 1,
-    timeout: 3,
+    timeout: 0.25,
   },
   move: {
     enabled: true,
     range: { from: 2, to: 30, step: 1 },
-    sample_ranges: [2, 5, 10, 20, 30],
+    sample_ranges: Array.from({ length: 29 }, (_, index) => index + 2),
     drawdown_ratio: { from: 0.5, to: 1.5, step: 0.5 },
     market_change_range: { from: 1, to: 10, step: 2 },
     market_change_lastpart_base: 20,
     market_change_lastpart_ratios: { from: 0.25, to: 0.5, step: 0.25 },
     min_calculation_time: 3,
     interval: 1,
-    timeout: 3,
+    timeout: 0.25,
   },
   active: {
     enabled: true,
     range: { from: 1, to: 10, step: 1 },
     activity_calculated: { from: 10, to: 90, step: 10 },
     activity_lastpart: { from: 10, to: 90, step: 10 },
-    thresholds: [0.5, 1.5, 2.5],
+    thresholds: [0.5, 1, 1.5, 2, 2.5],
     time_ratios: [0.5, 1],
     market_change_range: { from: 1, to: 10, step: 1 },
     market_change_lastpart_base: 20,
     market_change_lastpart_ratios: { from: 0.25, to: 0.5, step: 0.25 },
     interval: 1,
-    timeout: 3,
+    timeout: 0.25,
     min_calculation_time: 3,
   },
   active_advanced: {
     enabled: true,
-    activity_values: [0.5, 1.5, 3],
+    activity_values: [0.5, 1, 1.5, 2, 2.5, 3],
     activity_ratios: { from: 0.5, to: 3, step: 0.5 },
     min_positions: 3,
     continuation_ratio: 0.6,
@@ -81,7 +81,7 @@ export const DEFAULT_MAIN_INDICATION_SETTINGS = {
   optimal: {
     enabled: true,
     range: { from: 2, to: 30, step: 1 },
-    sample_ranges: [2, 5, 10, 20, 30],
+    sample_ranges: Array.from({ length: 29 }, (_, index) => index + 2),
     drawdown_ratio: { from: 0.5, to: 1.5, step: 0.5 },
     market_change_range: { from: 1, to: 10, step: 2 },
     market_change_lastpart_base: 20,
@@ -89,7 +89,7 @@ export const DEFAULT_MAIN_INDICATION_SETTINGS = {
     min_calculation_time: 3,
     base_positions_limit: 250,
     interval: 2,
-    timeout: 10,
+    timeout: 0.25,
     trailing_optimal_ranges: true,
   },
 } as const
@@ -141,7 +141,7 @@ function expandRange(value: unknown, fallback: readonly number[]): number[] {
     return [...fallback]
   }
   const result: number[] = []
-  for (let current = from; current <= to + Number.EPSILON && result.length < 500; current += step) {
+  for (let current = from; current <= to + Number.EPSILON; current += step) {
     result.push(Number(current.toFixed(8)))
   }
   return result.length > 0 ? result : [...fallback]

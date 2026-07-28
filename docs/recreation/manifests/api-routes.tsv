@@ -181,6 +181,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/settings/connections/[id]/preset-type	GET,PATCH	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/preset-type/route.ts
 /api/settings/connections/[id]/settings	GET,PATCH,PUT	settings	force-dynamic	30	none-detected	app/api/settings/connections/[id]/settings/route.ts
 /api/settings/connections/[id]/settings-presets	DELETE,GET,POST	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/settings-presets/route.ts
+/api/settings/connections/[id]/signal-toggle	POST	settings	force-dynamic	15	none-detected	app/api/settings/connections/[id]/signal-toggle/route.ts
 /api/settings/connections/[id]/statistics	GET	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/statistics/route.ts
 /api/settings/connections/[id]/strategies	GET,PUT	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/strategies/route.ts
 /api/settings/connections/[id]/symbols	GET	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/symbols/route.ts
@@ -255,7 +256,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/trade-engine/fix-testnet	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/fix-testnet/route.ts
 /api/trade-engine/fix-testnet-database	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/fix-testnet-database/route.ts
 /api/trade-engine/functional-overview	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/functional-overview/route.ts
-/api/trade-engine/generate-indications	GET,POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/generate-indications/route.ts
+/api/trade-engine/generate-indications		trade-engine			none-detected	app/api/trade-engine/generate-indications/route.ts
 /api/trade-engine/health	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/health/route.ts
 /api/trade-engine/metrics	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/metrics/route.ts
 /api/trade-engine/metrics/[id]	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/metrics/[id]/route.ts

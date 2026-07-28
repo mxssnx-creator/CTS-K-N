@@ -4125,8 +4125,11 @@ export class TradeEngineManager {
           }
         }
 
-        // Determine prehistoric progression timeout (minutes) from app settings.
-        // Operator-configurable: 5–25 minutes, default 10. Clamp for safety.
+        // Determine the slow-cycle diagnostic threshold from app settings.
+        // This used to reject the waiter while the underlying workers kept
+        // running, which let `finally` schedule an overlapping replay. It is
+        // now telemetry only: every bounded worker finishes (or observes the
+        // generation/stop predicate) before the next cycle is scheduled.
         const rawTimeoutMinutes = Number(
           appSettings?.prehistoric_progression_timeout_minutes ??
             appSettings?.prehistoricProgressionTimeoutMinutes ??
@@ -4145,11 +4148,26 @@ export class TradeEngineManager {
         // Base→Main→Real graph for up to 30 candles. Large workers can opt into
         // two; the shared ordered pool still prevents unbounded fan-out.
         const replayConcurrency = getReplaySymbolConcurrency(symbols.length)
-        const results = await withCycleDeadline(
-          mapWithConcurrency(symbols, replayConcurrency, replayOneSymbol),
-          `Engine ${connId} prehistoric-progression`,
-          timeoutMs,
-        )
+        const slowReplayDiagnostic = setTimeout(() => {
+          console.warn(
+            `[v0] [PrehistoricProgression] ${connId} cycle is still processing after ` +
+              `${timeoutMinutes} minutes; waiting for all bounded workers to finish`,
+          )
+        }, timeoutMs)
+        slowReplayDiagnostic.unref?.()
+        let results: Awaited<ReturnType<typeof mapWithConcurrency<string, {
+          symbol: string
+          stepsReplayed: number
+          indications: number
+          strategies: number
+          durationMs: number
+          error?: string
+        }>>>
+        try {
+          results = await mapWithConcurrency(symbols, replayConcurrency, replayOneSymbol)
+        } finally {
+          clearTimeout(slowReplayDiagnostic)
+        }
 
         cycleCount++
         const duration = Date.now() - cycleStart

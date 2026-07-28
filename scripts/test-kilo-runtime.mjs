@@ -202,7 +202,7 @@ async function main() {
     const health = await waitForHealth(child)
     const init = await json("/api/system/init-status", 60_000)
     assert(init?.ready === true, "Kilo preview startup is not ready")
-    assert(init?.migrations?.current_version === 84 && init?.migrations?.latest_version === 84, "Kilo preview schema is not v84")
+    assert(init?.migrations?.current_version === 89 && init?.migrations?.latest_version === 89, "Kilo preview schema is not v89")
     assert(init?.system?.deployment_runtime === "kilo-deploy", "Kilo deployment runtime was not detected")
     assert(init?.system?.engine_owner === "scheduled-bounded-owner", "Kilo bounded scheduled owner was not detected")
 
@@ -321,7 +321,7 @@ async function main() {
     const originalSettings = originalSettingsPayload?.settings || {}
     const originalCoordination = originalSettings.coordination_settings || originalSettings.coordinationSettings || {}
     const originalBlockProfitFactor = blockProfitFactorOf(originalSettingsPayload)
-    const originalPosCountsVolumeRatio = Number(originalSettings.posCountsVolumeRatio ?? originalCoordination.posCountsVolumeRatio ?? 0.05)
+    const originalPosCountsVolumeRatio = Number(originalSettings.posCountsVolumeRatio ?? originalCoordination.posCountsVolumeRatio ?? 3)
     const nextPosCountsVolumeRatio = originalPosCountsVolumeRatio === 0.06 ? 0.07 : 0.06
     assert(
       Number.isFinite(originalBlockProfitFactor) && originalBlockProfitFactor >= 0.2 && originalBlockProfitFactor <= 5,

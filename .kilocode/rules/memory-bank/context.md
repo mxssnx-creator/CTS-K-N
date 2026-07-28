@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 31385)
-Total output lines: 455
-
 # Active Context: CTS-V-yd Trading System (main project)
 
 ## Current State
@@ -647,3 +644,98 @@ credentials are present.
   and hard server-side minimum. The normalized interval controls both source
   fetch and complete-cycle caches, hot-reloads through the existing Signal
   settings API, and safely migrates legacy millisecond cache values.
+
+## Session 2026-07-28 — exhaustive indication and stage-release hardening
+
+- [x] Released the complete, non-sampling indication topology: Direction,
+  Move, Active, Advanced, Optimal, Trend, Common and Signal now report every
+  valid configuration identity. Signal keeps independent
+  source × symbol × direction × TP/SL/trailing cells, while Common preserves
+  each indicator parameter tuple and 1/5/15/30-minute timeframe.
+- [x] Compact Signal storage now uses bounded source hashes instead of one
+  Redis list key per logical configuration, with backward-compatible reads and
+  incremental legacy cleanup. The full 12-symbol/35-source production soak
+  completed with a bounded keyspace, 4,199,040 evaluations, 532 ms API p95,
+  monotonic progress/restart recovery and zero real order requests.
+- [x] The legacy Indications fallback is exhaustive as well: it no longer
+  silently truncates configuration rows at 500, orders lanes deterministically
+  and bounds Redis reads to 32 concurrent pairs. Common coordination preserves
+  configured 30-minute timeframes (and accepts values through 60 minutes).
+- [x] Repaired Base → Main → Real → Live lineage and readiness semantics,
+  including Main-enabled Signal execution, exact identity history, independent
+  Pos-Count targets and the 10:0.03 Pos-Count volume ratio. The settings UI
+  exposes complete stage controls and keeps Trend as the final indication tab.
+- [x] New connections, legacy connection settings and Preset CRUD use the
+  same canonical Main/Preset four-stage PositionCost-relative defaults as the
+  runtime (Base 0.80; Main, Real and Live 1.12), with legacy aliases retained
+  for older readers. Preset creation, activation and testing retain the full
+  indication/range/stage matrix; bounded worker pools replace former 500/100
+  configuration persistence ceilings.
+- [x] The Structure dashboard and its metrics/module APIs now start from
+  verified zero/unknown state, render only measured Redis/workflow/module
+  health and derive pressure from real metrics; they no longer present
+  fabricated capacities, placeholder health or a global 500-position ceiling.
+  Connection state tabs consume those measured endpoints, and logistics reports
+  the actual maximum latency rather than a fabricated average-plus-offset.
+- [x] Realtime market-data, positions and monitoring-health surfaces now expose
+  only exchange/engine snapshots and measured processor/resource telemetry.
+  Missing, stale and synthetic data is explicitly labelled; random prices,
+  static base prices and fabricated health values are not represented as live
+  state. Open live-position indexes are read exhaustively in bounded batches.
+- [x] The Indications page reads exhaustive per-symbol current snapshots,
+  falls back through a repaired snapshot index, derives its filters from the
+  measured rows and exports the visible measured set. Runtime indication rows
+  are read-only; no demo connection or arbitrary default symbol/type list is
+  presented as live data.
+- [x] Monitoring system, comprehensive and log APIs now use canonical
+  connection/position/workflow ledgers and the bounded logger list index.
+  They report measured resource, Redis and engine data; connection-scoped
+  monitoring refreshes with the selected connection rather than stale globals.
+- [x] Strategies and positions views now consume complete canonical live
+  ledgers: the Strategies UI requires an explicit selected connection, refreshes
+  measured Base/Main/Real/Live snapshots without local toggle fabrication, and
+  exports the visible snapshot. Position and connection-statistics APIs scan all
+  canonical rows in bounded batches before applying filters or pagination; the
+  legacy/demo projections no longer discard valid configuration rows at 50/150/250.
+- [x] The QuickStart functional overview now aggregates fresh namespaced stage
+  ledgers across all enabled connections instead of fixed symbols, implied
+  fan-out, PF or storage-size estimates. Base/Main/Real evaluation stages leave
+  win-rate and Sharpe at unavailable zero; only Live reports closed-position
+  performance.
+- [x] Progress and dashboard windows now use exact rolling Redis `ZCOUNT`
+  measurements or explicitly report unavailable; historic counters are no
+  longer filled from realtime cycles. Live notional has an explicit USD field
+  instead of being presented as an average position count. New custom preset
+  types inherit the system Block/Block-Only default, while an explicit `false`
+  remains the operator override for parallel Standard+Block behavior.
+- [x] Preserved one physical Direction parent for source-scoped Signal Block
+  adjustments while allowing ordinary Block-only lanes to seed and recover
+  their own parent. Explicit Consensus and direct-source outcomes now update
+  only their exact lane; legacy outcomes retain source-plus-consensus
+  accounting.
+- [x] Schema v89 upgrades the former ten-source Signal default to the complete
+  35-source cycle while retaining explicit operator choices. It also repairs
+  legacy Base PF values to the enforced 0.80 floor across connection hashes and
+  nested stage documents without altering Main/Real/Live thresholds.
+- [x] Statistics now derive balances, drawdown, PF, trailing metadata and TP
+  movement from persisted values only; no synthetic starting balance, TP/SL,
+  trailing values or execution PF is displayed. Rolling dashboard windows use
+  exact Redis `ZCOUNT`, supported uniformly by Inline, node-redis and Upstash
+  adapters.
+- [x] Base PF validation is shared by the Settings surfaces, Preset defaults,
+  migration and runtime validity gate. Optimal indication settings explicitly
+  state that all configurations are evaluated and retain history per independent
+  Set rather than presenting a false evaluation cap.
+- [x] The Next recovery path atomically publishes the pages manifest and waits
+  for the full late-writer process group to exit before trace validation, so a
+  delayed worker cannot erase a briefly valid bundle after handoff.
+- [x] Host updates and remote SSH installs now use one explicit clean lifecycle:
+  stop the resolved CTS services, preserve only durable CTS state outside the
+  target, delete the exact checkout, clone the requested revision, restore that
+  state and run the canonical installer. In-place Git rewrites and silent
+  rollback of a partially upgraded checkout are no longer used.
+- [x] Final release checks: 121 Jest suites / 842 tests, TypeScript, ESLint,
+  Kilo preflight (37 checks, schema 89), secret scan (1,267 files, zero
+  findings), recreation-manifest verification (1,259 project files), and a
+  fresh production build with 41/41 pages, standalone assets and 339 complete
+  server traces.

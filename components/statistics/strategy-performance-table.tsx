@@ -134,7 +134,7 @@ export function StrategyPerformanceTable({ strategies, onStrategyClick }: Strate
                     onClick={() => handleSort("takeprofit_factor")}
                     className="h-auto p-0 font-semibold"
                   >
-                    TP Factor
+                    TP Move
                     <SortIcon field="takeprofit_factor" />
                   </Button>
                 </TableHead>
@@ -228,8 +228,8 @@ export function StrategyPerformanceTable({ strategies, onStrategyClick }: Strate
                   </TableCell>
                   <TableCell>{strategy.trades_per_day.toFixed(1)}</TableCell>
                   <TableCell>{strategy.drawdown_time.toFixed(1)}h</TableCell>
-                  <TableCell>{strategy.takeprofit_factor.toFixed(2)}x</TableCell>
-                  <TableCell>{strategy.tp_sl_ratio.toFixed(1)}:1</TableCell>
+                  <TableCell>{strategy.takeprofit_factor > 0 ? `${strategy.takeprofit_factor.toFixed(2)}%` : "—"}</TableCell>
+                  <TableCell>{strategy.tp_sl_ratio > 0 ? `${strategy.tp_sl_ratio.toFixed(1)}:1` : "—"}</TableCell>
                   <TableCell>{formatTime(strategy.average_hold_time)}</TableCell>
                   <TableCell>
                     <Badge variant="outline">{strategy.volume_factor}x</Badge>

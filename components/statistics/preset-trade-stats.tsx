@@ -60,9 +60,11 @@ export function PresetTradeStats({ filter, positions }: PresetTradeStatsProps) {
     const filteredPresets = presets
 
     for (const preset of filteredPresets) {
-      // Mock: In production, filter positions by preset_id from database
-      // For now, randomly assign positions to presets for demonstration
-      const presetPositions = positions.filter(() => Math.random() > 0.7)
+      // Attribution must be durable and exact. Never fabricate preset
+      // performance by randomly assigning unrelated Main/Signal positions.
+      const presetPositions = positions.filter((position) =>
+        String(position.preset_id || "") === String(preset.id),
+      )
 
       if (presetPositions.length === 0) continue
 

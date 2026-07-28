@@ -1,6 +1,13 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getAppSettings, getRedisClient } from "@/lib/redis-db"
 import { StrategyEngine } from "@/lib/strategies"
+import {
+  getCanonicalConnectionSettingsOverlay,
+  overlayNonEmpty,
+} from "@/lib/connection-settings-overlay"
+import {
+  normalizeMainTradeStagePfRatio,
+} from "@/lib/main-trade-profit-factor"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -15,7 +22,7 @@ export const dynamic = "force-dynamic"
  *
  * Now reads directly from the authoritative keys the engine writes:
  *   progression:{id}                — cumulative stage counters
- *   strategy_detail:{id}:base|main|real  — per-symbol breakdown
+ *   strategy_detail:{id}:base|main|real|live — per-symbol breakdown
  */
 export async function GET(request: NextRequest) {
   try {
@@ -61,12 +68,33 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Redis not available" }, { status: 503 })
     }
 
-    const [progHash, detailBase, detailMain, detailReal] = await Promise.all([
+    const [
+      progHash,
+      detailBase,
+      detailMain,
+      detailReal,
+      detailLive,
+      globalSettings,
+      connectionSettings,
+    ] = await Promise.all([
       client.hgetall(`progression:${connectionId}`).catch(() => null),
       client.hgetall(`strategy_detail:${connectionId}:base`).catch(() => null),
       client.hgetall(`strategy_detail:${connectionId}:main`).catch(() => null),
       client.hgetall(`strategy_detail:${connectionId}:real`).catch(() => null),
+      client.hgetall(`strategy_detail:${connectionId}:live`).catch(() => null),
+      getAppSettings().catch(() => ({})),
+      getCanonicalConnectionSettingsOverlay(connectionId).catch(() => ({})),
     ])
+    const effectiveSettings = overlayNonEmpty(
+      { ...(globalSettings as Record<string, unknown>) },
+      connectionSettings,
+    )
+    const stageThresholds = {
+      base: normalizeMainTradeStagePfRatio("base", effectiveSettings.baseProfitFactor),
+      main: normalizeMainTradeStagePfRatio("main", effectiveSettings.mainProfitFactor),
+      real: normalizeMainTradeStagePfRatio("real", effectiveSettings.realProfitFactor),
+      live: normalizeMainTradeStagePfRatio("live", effectiveSettings.liveProfitFactor),
+    }
 
     const prog = (progHash ?? {}) as Record<string, string>
     const n = (v: string | undefined) => Number(v ?? 0) || 0
@@ -74,7 +102,7 @@ export async function GET(request: NextRequest) {
     // Build a strategy summary array — one entry per symbol extracted from
     // strategy_detail:* hashes. Fields are `s:{symbol}:{metric}`.
     const symbols = new Set<string>()
-    for (const hash of [detailBase, detailMain, detailReal]) {
+    for (const hash of [detailBase, detailMain, detailReal, detailLive]) {
       if (!hash) continue
       for (const key of Object.keys(hash)) {
         // field format: s:{symbol}:created  →  extract symbol
@@ -88,27 +116,64 @@ export async function GET(request: NextRequest) {
       Number(hash?.[`s:${sym}:${field}`] ?? 0) || 0
 
     const strategies = Array.from(symbols).map((sym) => {
-      const avgPF =
-        getField(detailReal, sym, "apf") ||
-        getField(detailMain, sym, "apf") ||
-        getField(detailBase, sym, "apf")
-
       const baseCreated = getField(detailBase, sym, "created")
       const mainCreated = getField(detailMain, sym, "created")
       const realCreated = getField(detailReal, sym, "created")
-      const mainAvgDDT = getField(detailMain, sym, "addt")
+      const liveCreated = getField(detailLive, sym, "created")
+      const effectiveStage =
+        liveCreated > 0 ? "live"
+          : realCreated > 0 ? "real"
+          : mainCreated > 0 ? "main"
+            : "base"
+      const avgPF =
+        effectiveStage === "live"
+          ? getField(detailLive, sym, "apf")
+          : effectiveStage === "real"
+          ? getField(detailReal, sym, "apf")
+          : effectiveStage === "main"
+            ? getField(detailMain, sym, "apf")
+            : getField(detailBase, sym, "apf")
+      const minimumPfRatio = stageThresholds[effectiveStage]
+      const effectiveDetail =
+        effectiveStage === "live"
+          ? detailLive
+          : effectiveStage === "real"
+            ? detailReal
+            : effectiveStage === "main"
+              ? detailMain
+              : detailBase
+      const evaluated = getField(effectiveDetail, sym, "evaluated")
+      const passed = getField(effectiveDetail, sym, "passed")
+      const running = getField(effectiveDetail, sym, "running")
+      const updatedAt = Math.max(
+        getField(detailBase, sym, "ts"),
+        getField(detailMain, sym, "ts"),
+        getField(detailReal, sym, "ts"),
+        getField(detailLive, sym, "ts"),
+      )
+      const stale = updatedAt <= 0 || Date.now() - updatedAt > 5 * 60_000
+      const validationState =
+        evaluated <= 0
+          ? "pending"
+          : passed > 0
+            ? "valid"
+            : "invalid"
 
       // Shape each record as a StrategyResult so strategy-row-compact renders without crashes
       return {
         id: `${connectionId}-${sym}`,
-        name: sym,
+        name: `${effectiveStage[0].toUpperCase()}${effectiveStage.slice(1)} ${sym}`,
+        symbol: sym,
         connectionId,
-        mainType: "direction" as const,
+        mainType: (effectiveStage === "live" ? "real" : effectiveStage) as "base" | "main" | "real",
+        effectiveStage,
+        updatedAt,
+        stale,
         adjustments: [] as string[],
-        isActive: true,
-        validation_state: "valid" as const,
+        isActive: !stale && running > 0,
+        validation_state: validationState,
         last_positions: [],
-        should_open_position: avgPF >= 1.0,
+        should_open_position: !stale && running > 0 && avgPF >= minimumPfRatio,
         // Profit factor: prefer Real, then Main, then Base
         avg_profit_factor: avgPF,
         volume_factor: 1,
@@ -116,17 +181,22 @@ export async function GET(request: NextRequest) {
           takeprofit_factor: 8,
           stoploss_ratio: 1,
           last_positions_count: 20,
-          min_profit_factor: 1.0,
+          min_profit_factor: minimumPfRatio,
           trailing_stop: { enabled: false, start_percent: 0.3, stop_percent: 0.1 },
         },
         stats: {
           last_8_avg: avgPF,
           last_20_avg: avgPF,
           last_50_avg: avgPF,
-          positions_per_day: mainCreated > 0 ? mainCreated / Math.max(1, 1) : 0,
-          drawdown_hours: mainAvgDDT / 60,
-          total_trades: realCreated,
-          win_rate: avgPF > 1 ? Math.min(100, (avgPF - 1) * 50 + 50) : 30,
+          // The stage detail ledger contains current Set/entry snapshots, not
+          // a 24-hour closed-position series. Keep this honest instead of
+          // relabelling a current Set count as a per-day trading rate.
+          positions_per_day: 0,
+          drawdown_hours: getField(effectiveDetail, sym, "addt") / 60,
+          total_trades: getField(effectiveDetail, sym, "entries"),
+          // No realised W/L ledger is stored in strategy_detail. Zero is an
+          // honest "not available" value; deriving it from PF invents data.
+          win_rate: 0,
         },
         // Extended engine fields for the progression breakdown
         base: {
@@ -141,7 +211,7 @@ export async function GET(request: NextRequest) {
           passed: getField(detailMain, sym, "passed"),
           evaluated: getField(detailMain, sym, "evaluated"),
           avgPF: getField(detailMain, sym, "apf"),
-          avgDDT: mainAvgDDT,
+          avgDDT: getField(detailMain, sym, "addt"),
         },
         real: {
           created: realCreated,
@@ -149,6 +219,14 @@ export async function GET(request: NextRequest) {
           evaluated: getField(detailReal, sym, "evaluated"),
           avgPF: getField(detailReal, sym, "apf"),
           avgDDT: getField(detailReal, sym, "addt"),
+        },
+        live: {
+          created: liveCreated,
+          passed: getField(detailLive, sym, "passed"),
+          evaluated: getField(detailLive, sym, "evaluated"),
+          active: getField(detailLive, sym, "running"),
+          avgPF: getField(detailLive, sym, "apf"),
+          avgDDT: getField(detailLive, sym, "addt"),
         },
         totals: {
           base: n(prog.strategies_base_total),

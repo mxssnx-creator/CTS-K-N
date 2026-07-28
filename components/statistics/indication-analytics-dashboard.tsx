@@ -98,6 +98,7 @@ interface WindowMetric {
 interface SymbolRow {
   symbol: string
   disabled?: boolean
+  disabledDirections?: { long: boolean; short: boolean }
   openPositions: number
   windows: Record<WindowKey, WindowMetric>
 }
@@ -111,6 +112,7 @@ interface SignalSourceRow {
   enabled: boolean
   weight: number
   disabledSymbols: string[]
+  disabledLanes: string[]
   closedPositions: number
   openPositions: number
   health: {
@@ -342,14 +344,15 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "commo
     sourceId: string,
     symbol: string,
     enabled: boolean,
+    direction?: "long" | "short",
   ) => {
-    const mutationKey = `${sourceId}:${symbol}`
+    const mutationKey = `${sourceId}:${symbol}:${direction || "all"}`
     setMutatingSymbol(mutationKey)
     try {
       const response = await fetch("/api/statistics/indications", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceId, symbol, enabled }),
+        body: JSON.stringify({ sourceId, symbol, enabled, direction }),
       })
       const data = await response.json()
       if (!response.ok || !data.success) throw new Error(data.error || "Symbol update failed")
@@ -530,6 +533,11 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "commo
           <CardContent className="grid gap-2 p-3 sm:grid-cols-2 lg:grid-cols-3">
             {[
               ["Request interval", `${payload.signal.settings.requestIntervalSeconds}s`, "Hard minimum 30 seconds"],
+              [
+                "Direct bootstrap",
+                payload.signal.settings.directExecutionEnabled ? "Enabled" : "PF-gated",
+                "Source 12 · source/symbol/direction 10",
+              ],
               ["Website sources", String(payload.signal.settings.maxSourcesPerCycle), "Independent public feeds per symbol cycle"],
               ["Position capacity", `${payload.signal.settings.maxPositionsTotal} total`, "Long + Short physical Signal positions"],
               ["Selection", "Best first", "Quality · confidence · agreement · R/R"],
@@ -783,7 +791,7 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "commo
                           const symbolKey = `${groupId}:${symbolRow.symbol}`
                           const symbolOpen = expandedSymbols.has(symbolKey)
                           const symbolMetric = symbolRow.windows[windowKey]
-                          const mutating = mutatingSymbol === symbolKey
+                          const mutating = mutatingSymbol.startsWith(`${symbolKey}:`)
                           return (
                             <Collapsible key={symbolKey} open={symbolOpen}>
                               <div className={`overflow-hidden rounded-lg border bg-background ${
@@ -815,18 +823,32 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "commo
                                     </span>
                                   </div>
                                   {mode === "signal" && "id" in row ? (
-                                    <div className="flex items-center gap-1.5" title="Enable or disable this symbol for this source">
-                                      <span className="hidden text-[9px] text-muted-foreground sm:inline">
-                                        {symbolRow.disabled ? "Disabled" : "Enabled"}
-                                      </span>
-                                      <Switch
-                                        checked={!symbolRow.disabled}
-                                        disabled={mutating}
-                                        onCheckedChange={(enabled) =>
-                                          void toggleSignalSymbol(row.id, symbolRow.symbol, enabled)
-                                        }
-                                        onClick={(event) => event.stopPropagation()}
-                                      />
+                                    <div
+                                      className="flex items-center gap-2"
+                                      title="Enable this source symbol globally or independently for Long and Short"
+                                      onClick={(event) => event.stopPropagation()}
+                                    >
+                                      {([
+                                        ["All", undefined, !symbolRow.disabled],
+                                        ["L", "long", !symbolRow.disabledDirections?.long],
+                                        ["S", "short", !symbolRow.disabledDirections?.short],
+                                      ] as const).map(([label, laneDirection, checked]) => (
+                                        <label key={label} className="flex items-center gap-1 text-[9px] text-muted-foreground">
+                                          {label}
+                                          <Switch
+                                            checked={checked}
+                                            disabled={mutating}
+                                            onCheckedChange={(enabled) =>
+                                              void toggleSignalSymbol(
+                                                row.id,
+                                                symbolRow.symbol,
+                                                enabled,
+                                                laneDirection,
+                                              )
+                                            }
+                                          />
+                                        </label>
+                                      ))}
                                     </div>
                                   ) : <span />}
                                 </div>

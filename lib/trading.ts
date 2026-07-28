@@ -21,6 +21,7 @@ export interface TradingPosition extends RealPosition {
   base_volume?: number // Base volume before factor adjustment
   adjusted_volume?: number // Volume after applying volume_factor
   indication_type?: "direction" | "move" | "active" | "signal"
+  preset_id?: string
 }
 
 export interface TradingStats {

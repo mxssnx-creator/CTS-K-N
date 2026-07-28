@@ -3,6 +3,7 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
+import { calculateIndicationConfigurationCounts } from "@/lib/indication-configuration-counts"
 
 interface StatisticsOverviewProps {
   settings: any
@@ -24,23 +25,10 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
     )
   }
 
-  // Calculate comprehensive statistics from settings
-  const calculateRatios = () => {
-    const directionRanges = settings.direction?.range
-      ? Math.ceil((settings.direction.range.to - settings.direction.range.from) / settings.direction.range.step) + 1
-      : 0
-    const moveRanges = settings.move?.range
-      ? Math.ceil((settings.move.range.to - settings.move.range.from) / settings.move.range.step) + 1
-      : 0
-    const activeRanges = settings.active?.range
-      ? Math.ceil((settings.active.range.to - settings.active.range.from) / settings.active.range.step) + 1
-      : 0
-
-    return { directionRanges, moveRanges, activeRanges }
-  }
+  const indicationCounts = calculateIndicationConfigurationCounts(settings, undefined)
 
   const calculateProfitFactorDistribution = () => {
-    // ── Main Trade PF thresholds (spec defaults 0.9/1.0/1.0/1.0) ─────
+    // ── Main Trade PositionCost-ratio thresholds ───────────────────────
     // `live` was added alongside base/main/real per spec — the four
     // Main-Trade stages are gated independently from the Strategies
     // tab. Preset stays distinct (separate engine, separate threshold
@@ -48,33 +36,34 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
     // own fallbacks so the overview reflects exactly what the engine
     // gates with when settings haven't loaded yet.
     return {
-      base: settings.baseProfitFactor || 0.9,
-      main: settings.mainProfitFactor || 1.0,
-      real: settings.realProfitFactor || 1.0,
-      live: settings.liveProfitFactor || 1.0,
-      preset: settings.presetProfitFactor || 0.6,
+      base: Number(settings.baseProfitFactor ?? 0.8),
+      main: Number(settings.mainProfitFactor ?? 1.12),
+      real: Number(settings.realProfitFactor ?? 1.12),
+      live: Number(settings.liveProfitFactor ?? 1.12),
+      preset: Number(settings.profitFactorMinPreset ?? settings.presetProfitFactor ?? 0.7),
     }
   }
 
   const calculateIntervalStatistics = () => {
     return {
-      mainEngine: settings.mainEngineInterval || 200,
-      presetEngine: settings.presetEngineInterval || 200,
-      activeOrderHandling: settings.activeOrderHandlingInterval || 50,
-      tradeInterval: settings.trade_interval || 1,
+      mainEngineMs: Number(settings.mainEngineIntervalMs ?? 100),
+      presetEngineMs: Number(settings.presetEngineIntervalMs ?? 100),
+      activeOrderHandlingMs: Number(settings.activeOrderHandlingIntervalMs ?? 50),
+      indicationLaneMs: Number(settings.indicationTimeoutMs ?? 250),
+      commonLaneMs: 3_000,
+      baseReentryMs: Number(settings.positionCooldownMs ?? 3_000),
     }
   }
 
   const calculateDatabaseLimits = () => {
     return {
-      base: settings.baseDatabaseSize || 250,
-      main: settings.mainDatabaseSize || 250,
-      real: settings.realDatabaseSize || 250,
-      preset: settings.presetDatabaseSize || 250,
+      base: Number(settings.databaseSizeBase ?? 250),
+      main: Number(settings.databaseSizeMain ?? 250),
+      real: Number(settings.databaseSizeReal ?? 250),
+      preset: Number(settings.databaseSizePreset ?? 250),
     }
   }
 
-  const ratios = calculateRatios()
   const profitFactors = calculateProfitFactorDistribution()
   const intervals = calculateIntervalStatistics()
   const dbLimits = calculateDatabaseLimits()
@@ -84,28 +73,29 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
       {/* Indication Ratios & Ranges */}
       <Card>
         <CardHeader>
-          <CardTitle>Indication Ratios & Ranges</CardTitle>
-          <CardDescription>Configuration distribution across indication types</CardDescription>
+          <CardTitle>Indication Configuration Coverage</CardTitle>
+          <CardDescription>Exhaustive enabled configuration space; concurrency never truncates it</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <div className="text-sm font-medium mb-2">Direction</div>
-              <div className="text-2xl font-bold">{ratios.directionRanges}</div>
-              <div className="text-xs text-muted-foreground">Range variations</div>
-              <Progress value={(ratios.directionRanges / 10) * 100} className="mt-2" />
-            </div>
-            <div>
-              <div className="text-sm font-medium mb-2">Move</div>
-              <div className="text-2xl font-bold">{ratios.moveRanges}</div>
-              <div className="text-xs text-muted-foreground">Range variations</div>
-              <Progress value={(ratios.moveRanges / 10) * 100} className="mt-2" />
-            </div>
-            <div>
-              <div className="text-sm font-medium mb-2">Active</div>
-              <div className="text-2xl font-bold">{ratios.activeRanges}</div>
-              <div className="text-xs text-muted-foreground">Range variations</div>
-              <Progress value={(ratios.activeRanges / 20) * 100} className="mt-2" />
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            {indicationCounts.types.map((type) => (
+              <div key={type.type} className="rounded-lg border p-3">
+                <div className="text-sm font-medium capitalize">{type.type.replace("_", " ")}</div>
+                <div className="mt-1 text-2xl font-bold tabular-nums">
+                  {type.possibleSets.toLocaleString()}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {type.evaluationConfigurations.toLocaleString()} evaluation configs
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="rounded-lg bg-muted p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">Total independent Long/Short Sets</span>
+              <span className="text-xl font-bold tabular-nums">
+                {indicationCounts.totalPossibleSets.toLocaleString()}
+              </span>
             </div>
           </div>
         </CardContent>
@@ -114,8 +104,8 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
       {/* Profit Factor Requirements */}
       <Card>
         <CardHeader>
-          <CardTitle>Minimum Profit Factor Requirements</CardTitle>
-          <CardDescription>Performance thresholds for strategy types</CardDescription>
+          <CardTitle>PositionCost-relative PF Ratios</CardTitle>
+          <CardDescription>Ratio 0.10 equals one PositionCost; these are not classic gross-profit/gross-loss PF labels</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 gap-4">
@@ -125,18 +115,16 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
                   <div className="font-medium capitalize">{type} Strategy</div>
                   <div className="text-2xl font-bold mt-1">{value.toFixed(2)}</div>
                 </div>
-                <Badge variant={value >= 0.7 ? "default" : value >= 0.5 ? "secondary" : "destructive"}>
-                  {value >= 0.7 ? "Strong" : value >= 0.5 ? "Moderate" : "Weak"}
+                <Badge variant="outline">
+                  {(value / 0.1).toFixed(1)}× PositionCost
                 </Badge>
               </div>
             ))}
           </div>
           <div className="mt-4 p-3 bg-muted rounded-lg">
-            <div className="text-sm font-medium mb-2">Average Profit Factor</div>
+            <div className="text-sm font-medium mb-2">PositionCost</div>
             <div className="text-2xl font-bold">
-              {(Object.values(profitFactors).reduce((a, b) => a + b, 0) / Object.values(profitFactors).length).toFixed(
-                2,
-              )}
+              {Number(settings.positionCost ?? 0.1).toFixed(2)}%
             </div>
           </div>
         </CardContent>
@@ -154,9 +142,7 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
               <div key={key} className="flex items-center justify-between p-2 border rounded">
                 <div className="text-sm font-medium capitalize">{key.replace(/([A-Z])/g, " $1").trim()}</div>
                 <div className="flex items-center gap-2">
-                  <Badge variant="outline">
-                    {value} {typeof value === "number" && value >= 50 ? "ms" : "s"}
-                  </Badge>
+                  <Badge variant="outline">{value} ms</Badge>
                   <div className="text-xs text-muted-foreground">
                     {value >= 200 ? "Standard" : value >= 100 ? "Fast" : "Very Fast"}
                   </div>
@@ -167,11 +153,11 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
         </CardContent>
       </Card>
 
-      {/* Database Limits & Capacity */}
+      {/* Database retention */}
       <Card>
         <CardHeader>
-          <CardTitle>Database Size Limits</CardTitle>
-          <CardDescription>Maximum positions per strategy type</CardDescription>
+          <CardTitle>Per-Set History Retention</CardTitle>
+          <CardDescription>Bounded audit/history rows; never a configuration or active-position ceiling</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 gap-4">
@@ -182,16 +168,14 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
                   <Badge>{limit}</Badge>
                 </div>
                 <Progress value={(limit / 750) * 100} className="h-2" />
-                <div className="text-xs text-muted-foreground">
-                  {limit < 200 ? "Conservative" : limit < 400 ? "Balanced" : "Aggressive"}
-                </div>
+                <div className="text-xs text-muted-foreground">retained entries per exact Set</div>
               </div>
             ))}
           </div>
           <div className="mt-4 p-3 bg-muted rounded-lg">
             <div className="flex items-center justify-between">
-              <div className="text-sm font-medium">Total Database Capacity</div>
-              <div className="text-xl font-bold">{Object.values(dbLimits).reduce((a, b) => a + b, 0)} positions</div>
+              <div className="text-sm font-medium">Configured retention sum</div>
+              <div className="text-xl font-bold">{Object.values(dbLimits).reduce((a, b) => a + b, 0)} entries</div>
             </div>
           </div>
         </CardContent>
@@ -207,28 +191,28 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
           <div className="grid grid-cols-2 gap-3">
             <div className="p-3 border rounded-lg">
               <div className="text-xs text-muted-foreground mb-1">Trade Mode</div>
-              <div className="font-medium">{settings.trade_mode || "Both"}</div>
+              <div className="font-medium">{settings.trade_mode ?? "Main + Signal independently"}</div>
             </div>
             <div className="p-3 border rounded-lg">
               <div className="text-xs text-muted-foreground mb-1">Market Timeframe</div>
-              <div className="font-medium">{settings.marketDataTimeframe || "5m"}</div>
+              <div className="font-medium">{settings.marketTimeframe ?? 1}m</div>
             </div>
             <div className="p-3 border rounded-lg">
               <div className="text-xs text-muted-foreground mb-1">Position Cost</div>
-              <div className="font-medium">{settings.position_cost?.toFixed(2) || "0.05"}</div>
+              <div className="font-medium">{Number(settings.positionCost ?? 0.1).toFixed(2)}%</div>
             </div>
             <div className="p-3 border rounded-lg">
               <div className="text-xs text-muted-foreground mb-1">Prehistoric Data</div>
-              <div className="font-medium">{settings.days_of_prehistoric_data || 30} days</div>
+              <div className="font-medium">{settings.prehistoric_range_hours ?? 8} hours</div>
             </div>
             <div className="p-3 border rounded-lg">
-              <div className="text-xs text-muted-foreground mb-1">Risk Percentage</div>
-              <div className="font-medium">{settings.risk_percentage || 15}%</div>
+              <div className="text-xs text-muted-foreground mb-1">Main / Real Lookbacks</div>
+              <div className="font-medium">{settings.mainEvalPosCount ?? 25} / {settings.realEvalPosCount ?? 20}</div>
             </div>
             <div className="p-3 border rounded-lg">
               <div className="text-xs text-muted-foreground mb-1">Max Leverage</div>
               <div className="font-medium">
-                {settings.use_maximal_leverage ? "Max" : `${settings.leverage_percentage || 50}%`}
+                {settings.useMaximalLeverage ? "Exchange maximum" : `${settings.leveragePercentage ?? 100}%`}
               </div>
             </div>
           </div>
@@ -247,8 +231,7 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
               <div className="flex items-center justify-between mb-2">
                 <div className="text-sm font-medium">Base vs Main Profit Factor</div>
                 <Badge variant={profitFactors.main >= profitFactors.base ? "default" : "secondary"}>
-                  {((profitFactors.main - profitFactors.base) * 100).toFixed(1)}%
-                  {profitFactors.main >= profitFactors.base ? " higher" : " lower"}
+                  {(profitFactors.main - profitFactors.base).toFixed(2)} ratio
                 </Badge>
               </div>
             </div>
@@ -256,8 +239,7 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
               <div className="flex items-center justify-between mb-2">
                 <div className="text-sm font-medium">Main vs Real Profit Factor</div>
                 <Badge variant={profitFactors.real >= profitFactors.main ? "default" : "secondary"}>
-                  {((profitFactors.real - profitFactors.main) * 100).toFixed(1)}%
-                  {profitFactors.real >= profitFactors.main ? " higher" : " lower"}
+                  {(profitFactors.real - profitFactors.main).toFixed(2)} ratio
                 </Badge>
               </div>
             </div>
@@ -265,7 +247,7 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
               <div className="flex items-center justify-between mb-2">
                 <div className="text-sm font-medium">Database Size Distribution</div>
                 <Badge variant="outline">
-                  {Math.max(...Object.values(dbLimits)) - Math.min(...Object.values(dbLimits))} position variance
+                  {Math.max(...Object.values(dbLimits)) - Math.min(...Object.values(dbLimits))} entry variance
                 </Badge>
               </div>
             </div>

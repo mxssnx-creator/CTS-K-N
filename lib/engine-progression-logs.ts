@@ -359,6 +359,11 @@ export function formatLogsForDisplay(logs: ProgressionLogEntry[]): string {
 
 export const __progressionLogTestUtils = {
   reset(): void {
+    if (PG.flushTimer) {
+      clearInterval(PG.flushTimer)
+      PG.flushTimer = null
+    }
+    PG.flushTimerStarted = false
     logBuffer.clear()
     coalesced.clear()
   },

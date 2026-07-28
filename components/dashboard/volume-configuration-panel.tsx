@@ -1,13 +1,9 @@
 "use client"
 
-import { useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Slider } from "@/components/ui/slider"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
-import { Separator } from "@/components/ui/separator"
 import { DEFAULT_VOLUME_STEP_RATIO, MAX_VOLUME_STEP_RATIO, MIN_VOLUME_STEP_RATIO } from "@/lib/constants"
 import { Volume2 } from "lucide-react"
 
@@ -20,10 +16,6 @@ interface VolumeConfigurationPanelProps {
   onPresetVolumeChange: (value: number) => void
   onSignalVolumeChange: (value: number) => void
   onVolumeStepRatioChange: (value: number) => void
-  orderType: "market" | "limit"
-  onOrderTypeChange: (type: "market" | "limit") => void
-  volumeType: "usdt" | "contract"
-  onVolumeTypeChange: (type: "usdt" | "contract") => void
   enginePhase?: string
   globalEngineRunning?: boolean
 }
@@ -39,15 +31,9 @@ export function VolumeConfigurationPanel({
   onPresetVolumeChange,
   onSignalVolumeChange,
   onVolumeStepRatioChange,
-  orderType,
-  onOrderTypeChange,
-  volumeType,
-  onVolumeTypeChange,
   enginePhase,
   globalEngineRunning = false,
 }: VolumeConfigurationPanelProps) {
-  const [expandedSection, setExpandedSection] = useState<"live" | "preset" | "order" | null>(null)
-  
   const slidersDisabled = !globalEngineRunning || enginePhase === "idle" || enginePhase === "stopped" || enginePhase === "error"
 
   return (
@@ -55,7 +41,12 @@ export function VolumeConfigurationPanel({
       {/* Volume Configuration Header */}
       <div className="flex items-center gap-2 px-1">
         <Volume2 className="h-4 w-4 text-blue-500" />
-        <h3 className="text-sm font-semibold">Configuration</h3>
+        <div>
+          <h3 className="text-sm font-semibold">Persisted volume coordination</h3>
+          <p className="text-xs text-muted-foreground">
+            Every control below is saved to the connection and hot-applied to the running engine.
+          </p>
+        </div>
       </div>
 
       {/* Live Trade Volume Factor */}
@@ -181,38 +172,6 @@ export function VolumeConfigurationPanel({
         />
       </div>
 
-      <Separator className="my-2" />
-
-      {/* Order Settings */}
-      <div className="space-y-3 rounded-lg bg-slate-50 dark:bg-slate-900/30 p-4">
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-2">
-            <Label className="text-xs font-medium">Order Type</Label>
-            <Select value={orderType} onValueChange={(value: any) => onOrderTypeChange(value)}>
-              <SelectTrigger className="text-sm">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="market">Market</SelectItem>
-                <SelectItem value="limit">Limit</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-2">
-            <Label className="text-xs font-medium">Volume Type</Label>
-            <Select value={volumeType} onValueChange={(value: any) => onVolumeTypeChange(value)}>
-              <SelectTrigger className="text-sm">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="usdt">USDT</SelectItem>
-                <SelectItem value="contract">Contract</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-      </div>
     </div>
   )
 }

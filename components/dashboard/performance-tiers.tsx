@@ -37,6 +37,7 @@ export interface PerformanceTier {
   isExecution: boolean
   fillRate?: number
   volumeUsdTotal?: number
+  avgNotionalUsd?: number
   totalClosed?: number
   openScanned?: number
 }
@@ -198,6 +199,12 @@ function TierCard({ keyName, tier }: { keyName: string; tier: PerformanceTier })
             <div className="flex items-baseline justify-between">
               <span className="text-[10px] text-muted-foreground">Volume USD</span>
               <span className="text-sm text-muted-foreground">${(tier.volumeUsdTotal || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+            </div>
+            <div className="flex items-baseline justify-between">
+              <span className="text-[10px] text-muted-foreground">Avg Notional</span>
+              <span className="text-sm text-muted-foreground">
+                ${(tier.avgNotionalUsd || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              </span>
             </div>
           </>
         )}

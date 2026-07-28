@@ -71,8 +71,10 @@ export default function MonitoringPage() {
     setIsLoadingSystem(true)
     try {
       // Include connection ID in monitoring request for scoped data
-      const connectionParam = selectedConnectionId ? `?connectionId=${selectedConnectionId}` : ""
-      const response = await fetch(`/api/monitoring/system${connectionParam}`)
+      const connectionParam = selectedConnectionId
+        ? `?connectionId=${encodeURIComponent(selectedConnectionId)}`
+        : ""
+      const response = await fetch(`/api/monitoring/system${connectionParam}`, { cache: "no-store" })
       if (response.ok) {
         const data = await response.json()
         const states: SystemStatus[] = [
@@ -207,7 +209,7 @@ export default function MonitoringPage() {
     }, 30000)
 
     return () => clearInterval(interval)
-  }, [])
+  }, [selectedConnectionId])
 
   const filteredLogs = logs.filter((log) => {
     const matchesLevel = logFilter === "all" || log.level === logFilter

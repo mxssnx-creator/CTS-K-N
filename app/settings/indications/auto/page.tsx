@@ -19,7 +19,7 @@ export default function AutoIndicationPage() {
     min_positions: 3,
     continuation_ratio: 0.6,
     interval: 1,
-    timeout: 3,
+    timeout: 0.25,
   })
 
   const [saving, setSaving] = useState(false)

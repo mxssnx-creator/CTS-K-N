@@ -49,7 +49,7 @@ export function AdjustStrategyStats({
     const cutoffTime = new Date(now.getTime() - timeWindowMs)
 
     // Filter positions within time window and sort by time
-    const recentPositions = positions
+    const recentPositions = [...positions]
       .filter((p) => new Date(p.created_at) >= cutoffTime)
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
 
@@ -100,7 +100,7 @@ export function AdjustStrategyStats({
 
   // Calculate drawdown periods for last N positions
   const calculateDrawdownPeriods = (): DrawdownPeriod[] => {
-    const recentPositions = positions
+    const recentPositions = [...positions]
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .slice(0, drawdownPositionCount)
       .reverse()

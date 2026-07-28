@@ -13,6 +13,7 @@ import { StrategyPerformanceTable } from "@/components/statistics/strategy-perfo
 import { AnalyticsEngine } from "@/lib/analytics"
 import type { AnalyticsFilter, StrategyAnalytics, SymbolAnalytics, TimeSeriesData } from "@/lib/analytics"
 import type { TradingPosition } from "@/lib/trading"
+import type { PseudoPosition } from "@/lib/types"
 import {
   LineChart,
   Line,
@@ -86,6 +87,65 @@ interface OptimalStrategyMetrics {
   recommendations: string[]
 }
 
+function toStatisticsPseudoPosition(position: TradingPosition): PseudoPosition {
+  const entryPrice = Number(position.entry_price) || 0
+  const takeProfit = Number(position.takeprofit) || 0
+  const stopLoss = Number(position.stoploss) || 0
+  const tpDistance = entryPrice > 0 && takeProfit > 0
+    ? Math.abs(takeProfit - entryPrice)
+    : 0
+  const slDistance = entryPrice > 0 && stopLoss > 0
+    ? Math.abs(entryPrice - stopLoss)
+    : 0
+  const realizedPnl = Number(position.realized_pnl ?? position.profit_loss) || 0
+  const notional = Math.abs(entryPrice * (Number(position.volume) || 0))
+  // PseudoPosition's legacy `profit_factor` field is consumed as
+  // `(value - 1) × position_cost`. Choose an exact, measured denominator so
+  // that expression reconstructs realised P&L without a fabricated $100 base.
+  const positionCost = Number(position.margin_used) > 0
+    ? Number(position.margin_used)
+    : notional > 0
+      ? notional
+      : Math.max(Math.abs(realizedPnl), Number.EPSILON)
+  const rawStrategy = String(position.strategy_type || "").toLowerCase()
+  const strategyType: PseudoPosition["strategy_type"] =
+    rawStrategy.includes("block") ? "block"
+      : rawStrategy.includes("dca") ? "dca"
+        : rawStrategy.includes("real") ? "real"
+          : rawStrategy.includes("main") ? "main"
+            : "base"
+  const enriched = position as TradingPosition & {
+    trailing_enabled?: boolean
+    trail_start?: number
+    trail_stop?: number
+  }
+
+  return {
+    id: position.id,
+    connection_id: position.connection_id,
+    symbol: position.symbol,
+    direction: position.position_side,
+    indication_type: position.indication_type || "direction",
+    takeprofit_factor: entryPrice > 0 ? (tpDistance / entryPrice) * 100 : 0,
+    stoploss_ratio: tpDistance > 0 ? slDistance / tpDistance : 0,
+    trailing_enabled:
+      enriched.trailing_enabled === true ||
+      rawStrategy.includes("trail"),
+    ...(Number.isFinite(Number(enriched.trail_start)) && { trail_start: Number(enriched.trail_start) }),
+    ...(Number.isFinite(Number(enriched.trail_stop)) && { trail_stop: Number(enriched.trail_stop) }),
+    entry_price: entryPrice,
+    current_price: Number(position.current_price) || 0,
+    profit_factor: 1 + realizedPnl / positionCost,
+    signedResultR: realizedPnl / positionCost,
+    costNormalizedReturn: realizedPnl / positionCost,
+    position_cost: positionCost,
+    status: "closed",
+    created_at: position.opened_at,
+    updated_at: position.closed_at || position.opened_at,
+    strategy_type: strategyType,
+  }
+}
+
 interface CoordinationAnalysis {
   type: 'strategy_adjustment' | 'method_coordination' | 'temporal_coordination'
   primaryType: string
@@ -103,6 +163,13 @@ interface ComprehensiveAnalytics {
   marketConditionInsights: any
   temporalPatterns: any
   riskMetrics: any
+}
+
+interface CurrentStrategyRows {
+  base: { total: number; valid: number; totalOpen: number; validOpen: number; validRatio: number }
+  main: { valid: number; overall: number; validOpen: number; overallOpen: number; overallToValidRatio: number }
+  real: { valid: number; active: number; activeExactRows: number; activeRatio: number }
+  live: { total: number; mirrored: number; active: number; mirroredRatio: number }
 }
 
 export default function StatisticsPage() {
@@ -130,6 +197,7 @@ export default function StatisticsPage() {
   const [positions, setPositions] = useState<TradingPosition[]>([])
   const [tradeHistory, setTradeHistory] = useState<TradeHistoryRow[]>([])
   const [settings, setSettings] = useState<any>(null)
+  const [currentStrategyRows, setCurrentStrategyRows] = useState<CurrentStrategyRows | null>(null)
   const [reloadGeneration, setReloadGeneration] = useState(0)
 
   // Enhanced analytics state
@@ -175,6 +243,7 @@ export default function StatisticsPage() {
           const engine = new AnalyticsEngine([])
           setPositions([])
           setTradeHistory([])
+          setCurrentStrategyRows(null)
           setAnalyticsEngine(engine)
           updateAnalytics(engine, filter)
         } else {
@@ -191,17 +260,73 @@ export default function StatisticsPage() {
 
             const responses = await Promise.all(
               scopeIds.map(async (id: string) => {
-                const [open, history] = await Promise.all([
+                const [open, history, progression] = await Promise.all([
                   fetch(`/api/data/positions?connectionId=${encodeURIComponent(id)}`, { cache: "no-store" })
                     .then((r) => (r.ok ? r.json() : null))
                     .catch(() => null),
                   fetch(`/api/trading/trade-history?connection_id=${encodeURIComponent(id)}&limit=500`, { cache: "no-store" })
                     .then((r) => (r.ok ? r.json() : null))
                     .catch(() => null),
+                  fetch(`/api/connections/progression/${encodeURIComponent(id)}/stats`, { cache: "no-store" })
+                    .then((r) => (r.ok ? r.json() : null))
+                    .catch(() => null),
                 ])
-                return { id, open, history }
+                return { id, open, history, progression }
               }),
             )
+
+            const rowSnapshots = responses
+              .map((payload) => payload.progression?.strategyRows)
+              .filter(Boolean)
+            if (rowSnapshots.length > 0) {
+              const sum = (path: [string, string]) => rowSnapshots.reduce(
+                (total, snapshot) => total + (Number(snapshot?.[path[0]]?.[path[1]]) || 0),
+                0,
+              )
+              const percent = (numerator: number, denominator: number, cap = true) => {
+                if (denominator <= 0) return 0
+                const value = Math.round((numerator / denominator) * 1000) / 10
+                return cap ? Math.min(100, value) : value
+              }
+              const baseTotal = sum(["base", "total"])
+              const baseValid = sum(["base", "valid"])
+              const mainValid = sum(["main", "valid"])
+              const mainOverall = sum(["main", "overall"])
+              const realValid = sum(["real", "valid"])
+              const realActive = sum(["real", "active"])
+              const liveTotal = sum(["live", "total"])
+              const liveMirrored = sum(["live", "mirrored"])
+              setCurrentStrategyRows({
+                base: {
+                  total: baseTotal,
+                  valid: baseValid,
+                  totalOpen: sum(["base", "totalOpen"]),
+                  validOpen: sum(["base", "validOpen"]),
+                  validRatio: percent(baseValid, baseTotal),
+                },
+                main: {
+                  valid: mainValid,
+                  overall: mainOverall,
+                  validOpen: sum(["main", "validOpen"]),
+                  overallOpen: sum(["main", "overallOpen"]),
+                  overallToValidRatio: percent(mainOverall, mainValid, false),
+                },
+                real: {
+                  valid: realValid,
+                  active: realActive,
+                  activeExactRows: sum(["real", "activeExactRows"]),
+                  activeRatio: percent(realActive, realValid),
+                },
+                live: {
+                  total: liveTotal,
+                  mirrored: liveMirrored,
+                  active: sum(["live", "active"]),
+                  mirroredRatio: percent(liveMirrored, liveTotal),
+                },
+              })
+            } else {
+              setCurrentStrategyRows(null)
+            }
 
             const merged: TradingPosition[] = []
             const historyRows: TradeHistoryRow[] = []
@@ -278,6 +403,7 @@ export default function StatisticsPage() {
                     position_side: row.direction === "short" ? "short" : "long",
                     leverage: 1,
                     indication_type: "direction",
+                    preset_id: String((row as any).presetId || "") || undefined,
                     unrealized_pnl: 0,
                     realized_pnl: realizedPnl,
                     margin_used: volumeUsd,
@@ -744,6 +870,57 @@ export default function StatisticsPage() {
           </Card>
         ))}
       </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Current Strategy Row Snapshot</CardTitle>
+          <CardDescription>
+            Fresh open-ledger semantics shared with ConnectionCard, Logistics and info dialogs.
+            Main Overall includes valid Pos-Count, Block and DCA descendants and may exceed 100%.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {currentStrategyRows ? (
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              {[
+                {
+                  stage: "Base",
+                  primary: `${currentStrategyRows.base.total.toLocaleString()} Total`,
+                  secondary: `${currentStrategyRows.base.valid.toLocaleString()} Valid`,
+                  detail: `${currentStrategyRows.base.validRatio.toFixed(1)}% · ${currentStrategyRows.base.totalOpen.toLocaleString()} open`,
+                },
+                {
+                  stage: "Main",
+                  primary: `${currentStrategyRows.main.valid.toLocaleString()} Valid`,
+                  secondary: `${currentStrategyRows.main.overall.toLocaleString()} Overall`,
+                  detail: `${currentStrategyRows.main.overallToValidRatio.toFixed(1)}% · ${currentStrategyRows.main.overallOpen.toLocaleString()} open`,
+                },
+                {
+                  stage: "Real",
+                  primary: `${currentStrategyRows.real.valid.toLocaleString()} Valid`,
+                  secondary: `${currentStrategyRows.real.active.toLocaleString()} Active`,
+                  detail: `${currentStrategyRows.real.activeRatio.toFixed(1)}% · ${currentStrategyRows.real.activeExactRows.toLocaleString()} exact rows`,
+                },
+                {
+                  stage: "Live",
+                  primary: `${currentStrategyRows.live.total.toLocaleString()} Rows`,
+                  secondary: `${currentStrategyRows.live.mirrored.toLocaleString()} Mirrored`,
+                  detail: `${currentStrategyRows.live.mirroredRatio.toFixed(1)}% · ${currentStrategyRows.live.active.toLocaleString()} active`,
+                },
+              ].map((row) => (
+                <div key={row.stage} className="rounded-lg border bg-muted/10 p-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{row.stage}</div>
+                  <div className="mt-1 text-sm font-semibold">{row.primary}</div>
+                  <div className="text-sm text-primary">{row.secondary}</div>
+                  <div className="mt-1 text-[10px] text-muted-foreground">{row.detail}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground">No fresh stage-row snapshot is available for the selected connection scope.</div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         <div className="lg:col-span-1">
@@ -1297,7 +1474,7 @@ export default function StatisticsPage() {
                     Portfolio Performance Matrix
                   </CardTitle>
                   <CardDescription>
-                    Multi-dimensional performance analysis with balance, equity, and drawdown tracking
+                    Realized and unrealized P&amp;L relative to a zero baseline; no account-balance estimate
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -1322,7 +1499,7 @@ export default function StatisticsPage() {
                         stroke="#3b82f6"
                         fill="#3b82f6"
                         fillOpacity={0.3}
-                        name="Balance"
+                        name="Realized P&L"
                       />
                       <Area
                         yAxisId="price"
@@ -1332,7 +1509,7 @@ export default function StatisticsPage() {
                         stroke="#10b981"
                         fill="#10b981"
                         fillOpacity={0.3}
-                        name="Equity"
+                        name="P&L + Unrealized"
                       />
                       <Line
                         yAxisId="percentage"
@@ -1655,25 +1832,7 @@ export default function StatisticsPage() {
               <AdjustStrategyStats
                 positions={positions
                   .filter((p) => p.status === "closed")
-                  .map((p) => ({
-                    id: p.id,
-                    connection_id: p.connection_id,
-                    symbol: p.symbol,
-                    indication_type: (p.indication_type || "direction") as "direction" | "move" | "active",
-                    takeprofit_factor: 2.0, // Default value
-                    stoploss_ratio: 0.5, // Default value
-                    trailing_enabled: false,
-                    entry_price: p.entry_price,
-                    current_price: p.current_price,
-                    profit_factor:
-                      p.realized_pnl > 0
-                        ? 1 + Math.abs(p.realized_pnl) / (p.margin_used || 100)
-                        : 1 - Math.abs(p.realized_pnl) / (p.margin_used || 100),
-                    position_cost: p.margin_used || 100,
-                    status: "closed" as const,
-                    created_at: p.opened_at,
-                    updated_at: p.closed_at || p.opened_at,
-                  }))}
+                  .map(toStatisticsPseudoPosition)}
                 timeIntervals={[4, 12, 24, 48]}
                 drawdownPositionCount={80}
               />
@@ -1683,25 +1842,7 @@ export default function StatisticsPage() {
               <BlockStrategyStats
                 positions={positions
                   .filter((p) => p.status === "closed")
-                  .map((p) => ({
-                    id: p.id,
-                    connection_id: p.connection_id,
-                    symbol: p.symbol,
-                    indication_type: (p.indication_type || "direction") as "direction" | "move" | "active",
-                    takeprofit_factor: 2.0, // Default value
-                    stoploss_ratio: 0.5, // Default value
-                    trailing_enabled: false,
-                    entry_price: p.entry_price,
-                    current_price: p.current_price,
-                    profit_factor:
-                      p.realized_pnl > 0
-                        ? 1 + Math.abs(p.realized_pnl) / (p.margin_used || 100)
-                        : 1 - Math.abs(p.realized_pnl) / (p.margin_used || 100),
-                    position_cost: p.margin_used || 100,
-                    status: "closed" as const,
-                    created_at: p.opened_at,
-                    updated_at: p.closed_at || p.opened_at,
-                  }))}
+                  .map(toStatisticsPseudoPosition)}
                 comparisonWindow={50}
               />
             </TabsContent>

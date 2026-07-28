@@ -7,6 +7,14 @@ import { Slider } from "@/components/ui/slider"
 import { Tabs, TabsContent } from "@/components/ui/tabs"
 import { Info } from "lucide-react"
 import { StatisticsOverview } from "@/components/settings/statistics-overview"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_MIN,
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  MAIN_TRADE_PF_RATIO_MAX,
+  MAIN_TRADE_PF_RATIO_MIN,
+  MAIN_TRADE_PF_RATIO_STEP,
+} from "@/lib/main-trade-profit-factor"
 
 interface SystemTabProps {
   settings: any
@@ -108,7 +116,7 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                   duplicate state. */}
               <div className="space-y-2 pt-2 border-t border-dashed border-border/40">
                 <div className="flex items-center justify-between">
-                  <Label>Per-Direction Pos Limit (canonical)</Label>
+                  <Label>Open positions per exact Base lane</Label>
                   <span className="text-sm font-semibold">
                     {settings.maxActiveBasePseudoPositionsPerDirection ?? 1}
                   </span>
@@ -119,16 +127,16 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                     handleSettingChange("maxActiveBasePseudoPositionsPerDirection", v[0])
                   }
                   min={1}
-                  max={10}
+                  max={1}
                   step={1}
+                  disabled
                 />
                 <p className="text-xs text-muted-foreground">
-                  Caps the number of <strong>active Base-stage pseudo-positions per
-                  direction (long / short)</strong> across all symbols. This is the
-                  master gate the engine consults before creating a new pseudo
-                  position; the per-config sliders above are downstream guards.
-                  Default <strong>1</strong> matches the spec; raise to allow concurrent
-                  Base evaluations in the same direction.
+                  Fixed at <strong>one</strong> for each independent
+                  connection × symbol × indication type/name × complete config ×
+                  direction × Base Set identity. It is not a global Long/Short
+                  ceiling: sibling symbols, configurations and directions remain
+                  independently eligible.
                 </p>
                 <p className="text-[11px] text-muted-foreground italic">
                   Mirror of <code>Settings → Strategy → Base → Per Direction Pos Limit</code>.
@@ -176,21 +184,22 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
 
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label>Main Axis Sets per Symbol</Label>
+                      <Label>Main Axis Async Batch</Label>
                       <span className="text-sm font-semibold tabular-nums">
-                        {(settings.strategyMainAxisSetsCeiling ?? 20).toLocaleString()}
+                        {(settings.strategyMainAxisBatchSize ?? 8).toLocaleString()}
                       </span>
                     </div>
                     <Slider
-                      value={[settings.strategyMainAxisSetsCeiling ?? 20]}
-                      onValueChange={(v) => handleSettingChange("strategyMainAxisSetsCeiling", v[0])}
-                      min={10}
-                      max={5000}
-                      step={10}
+                      value={[settings.strategyMainAxisBatchSize ?? 8]}
+                      onValueChange={(v) => handleSettingChange("strategyMainAxisBatchSize", v[0])}
+                      min={1}
+                      max={32}
+                      step={1}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Per-symbol ceiling for Main-stage position-count axis fan-out.
-                      Default <strong>20</strong> for responsive multi-symbol cycles.
+                      Base Sets expanded per bounded async batch. Every configured
+                      position-count Set is still processed; this is not a ceiling.
+                      Default <strong>8</strong>.
                     </p>
                   </div>
 
@@ -198,14 +207,14 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                     <div className="flex items-center justify-between">
                       <Label>Real Sets Safety Ceiling</Label>
                       <span className="text-sm font-semibold tabular-nums">
-                        {(settings.strategyRealSetsSafetyCeiling ?? 25).toLocaleString()}
+                        {(settings.strategyRealSetsSafetyCeiling ?? 5000).toLocaleString()}
                       </span>
                     </div>
                     <Slider
-                      value={[settings.strategyRealSetsSafetyCeiling ?? 25]}
+                      value={[settings.strategyRealSetsSafetyCeiling ?? 5000]}
                       onValueChange={(v) => {
                         handleSettingChange("strategyRealSetsSafetyCeiling", v[0])
-                        if ((settings.maxRealSets ?? 25) > v[0]) handleSettingChange("maxRealSets", v[0])
+                        if ((settings.maxRealSets ?? 5000) > v[0]) handleSettingChange("maxRealSets", v[0])
                       }}
                       min={25}
                       max={25000}
@@ -221,14 +230,14 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                     <div className="flex items-center justify-between">
                       <Label>Max Real Sets per Cycle</Label>
                       <span className="text-sm font-semibold tabular-nums">
-                        {(settings.maxRealSets ?? 25).toLocaleString()}
+                        {(settings.maxRealSets ?? 5000).toLocaleString()}
                       </span>
                     </div>
                     <Slider
-                      value={[Math.min(settings.maxRealSets ?? 25, settings.strategyRealSetsSafetyCeiling ?? 25)]}
+                      value={[Math.min(settings.maxRealSets ?? 5000, settings.strategyRealSetsSafetyCeiling ?? 5000)]}
                       onValueChange={(v) => handleSettingChange("maxRealSets", v[0])}
                       min={25}
-                      max={settings.strategyRealSetsSafetyCeiling ?? 25}
+                      max={settings.strategyRealSetsSafetyCeiling ?? 5000}
                       step={25}
                     />
                     <p className="text-xs text-muted-foreground">
@@ -241,11 +250,11 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                     <div className="flex items-center justify-between">
                       <Label>Live Exchange Dispatch Sets</Label>
                       <span className="text-sm font-semibold tabular-nums">
-                        {(settings.strategyLiveSetsCeiling ?? 90).toLocaleString()}
+                        {(settings.strategyLiveSetsCeiling ?? 500).toLocaleString()}
                       </span>
                     </div>
                     <Slider
-                      value={[settings.strategyLiveSetsCeiling ?? 90]}
+                      value={[settings.strategyLiveSetsCeiling ?? 500]}
                       onValueChange={(v) => handleSettingChange("strategyLiveSetsCeiling", v[0])}
                       min={1}
                       max={500}
@@ -253,8 +262,9 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                     />
                     <p className="text-xs text-muted-foreground">
                       Maximum qualifying Sets considered for live exchange order
-                      dispatch per symbol. BingX default <strong>90</strong> leaves
-                      room under its open-order limits for SL/TP control orders.
+                      dispatch per symbol. The general default is <strong>500</strong>;
+                      BingX is reduced at runtime to 90 to leave room for SL/TP
+                      control orders under its venue-side open-order limits.
                     </p>
                   </div>
                 </div>
@@ -327,23 +337,25 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
 
              <div className="space-y-4 border-t pt-4">
                <h3 className="text-lg font-semibold">Indication Timeout</h3>
-               <p className="text-xs text-muted-foreground">Time to wait for valid indication evaluation (100ms - 3000ms)</p>
+               <p className="text-xs text-muted-foreground">Cooldown after a valid exact indication lane (50ms–3000ms)</p>
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label>Indication Timeout</Label>
-                  <span className="text-sm font-semibold">{settings.indicationTimeoutMs ?? 1000}ms</span>
+                  <span className="text-sm font-semibold">{settings.indicationTimeoutMs ?? 250}ms</span>
                 </div>
                 <Slider
-                  value={[settings.indicationTimeoutMs ?? 1000]}
+                  value={[settings.indicationTimeoutMs ?? 250]}
                   onValueChange={(v) => handleSettingChange("indicationTimeoutMs", v[0])}
-                  min={100}
+                  min={50}
                   max={3000}
-                  step={100}
+                  step={50}
                 />
                 <p className="text-xs text-muted-foreground">
-                  After a valid indication evaluation, wait this duration before processing next.
-                  Lower values = faster but more CPU. Higher values = more reliable but slower response.
+                  Default, Additional and Trend lanes default to 250 ms. The
+                  Redis key contains type, name, full configuration and Long/Short,
+                  so one lane never throttles another. Common technical indicators
+                  keep their independent per-name 3-second setting.
                 </p>
               </div>
             </div>
@@ -679,20 +691,42 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
 
                 <div className="grid md:grid-cols-4 gap-4">
                   {([
-                    { key: "baseProfitFactor", label: "Base PF", value: settings.baseProfitFactor ?? 0.9 },
-                    { key: "mainProfitFactor", label: "Main PF", value: settings.mainProfitFactor ?? 1.0 },
-                    { key: "realProfitFactor", label: "Real PF", value: settings.realProfitFactor ?? 1.0 },
-                    { key: "liveProfitFactor", label: "Live PF", value: settings.liveProfitFactor ?? 1.0 },
+                    { key: "baseProfitFactor", label: "Base Ratio", value: settings.baseProfitFactor ?? MAIN_TRADE_BASE_PF_RATIO_DEFAULT, min: MAIN_TRADE_BASE_PF_RATIO_MIN },
+                    { key: "mainProfitFactor", label: "Main Ratio", value: settings.mainProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT, min: MAIN_TRADE_PF_RATIO_MIN },
+                    { key: "realProfitFactor", label: "Real Ratio", value: settings.realProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT, min: MAIN_TRADE_PF_RATIO_MIN },
+                    { key: "liveProfitFactor", label: "Live Ratio", value: settings.liveProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT, min: MAIN_TRADE_PF_RATIO_MIN },
                   ] as const).map((row) => (
                     <div key={row.key} className="space-y-2">
                       <div className="flex items-center justify-between">
                         <Label>{row.label}</Label>
-                        <span className="text-sm font-semibold tabular-nums">{Number(row.value).toFixed(1)}</span>
+                        <span className="text-sm font-semibold tabular-nums">{Number(row.value).toFixed(2)}</span>
                       </div>
                       <Slider
-                        min={0}
-                        max={2}
-                        step={0.1}
+                        min={row.min}
+                        max={MAIN_TRADE_PF_RATIO_MAX}
+                        step={MAIN_TRADE_PF_RATIO_STEP}
+                        value={[row.value]}
+                        onValueChange={([value]) => handleSettingChange(row.key, value)}
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid md:grid-cols-3 gap-4">
+                  {([
+                    { key: "stageMinPosCountBase", label: "Base Minimum Closed Positions", value: settings.stageMinPosCountBase ?? 1 },
+                    { key: "stageMinPosCountMain", label: "Main Minimum Closed Positions", value: settings.stageMinPosCountMain ?? 1 },
+                    { key: "stageMinPosCountReal", label: "Real Minimum Closed Positions", value: settings.stageMinPosCountReal ?? 1 },
+                  ] as const).map((row) => (
+                    <div key={row.key} className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label>{row.label}</Label>
+                        <span className="text-sm font-semibold tabular-nums">{row.value}</span>
+                      </div>
+                      <Slider
+                        min={1}
+                        max={100}
+                        step={1}
                         value={[row.value]}
                         onValueChange={([value]) => handleSettingChange(row.key, value)}
                       />
@@ -722,21 +756,20 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                   ))}
                 </div>
 
-                <div className="grid md:grid-cols-3 gap-4">
+                <div className="grid md:grid-cols-2 gap-4">
                   {([
-                    { key: "stageMinPosCountBase", label: "Base → Main Min Positions", value: settings.stageMinPosCountBase ?? 0, defaultText: "Default 15" },
-                    { key: "stageMinPosCountMain", label: "Main → Real Min Positions", value: settings.stageMinPosCountMain ?? 0, defaultText: "Default 15" },
-                    { key: "stageMinPosCountReal", label: "Real → Live Min Positions", value: settings.stageMinPosCountReal ?? 0, defaultText: "Default 10" },
+                    { key: "mainEvalPosCount", label: "Main Row Lookback", value: settings.mainEvalPosCount ?? 25 },
+                    { key: "realEvalPosCount", label: "Real Row Lookback", value: settings.realEvalPosCount ?? 20 },
                   ] as const).map((row) => (
                     <div key={row.key} className="space-y-2">
                       <div className="flex items-center justify-between">
                         <Label>{row.label}</Label>
-                        <span className="text-sm font-semibold tabular-nums">{row.value === 0 ? row.defaultText : row.value}</span>
+                        <span className="text-sm font-semibold tabular-nums">{row.value}</span>
                       </div>
                       <Slider
-                        min={0}
-                        max={50}
-                        step={5}
+                        min={8}
+                        max={80}
+                        step={1}
                         value={[row.value]}
                         onValueChange={([value]) => handleSettingChange(row.key, value)}
                       />

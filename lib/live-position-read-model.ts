@@ -3,6 +3,11 @@ import {
   initRedis,
   type RedisClientLike,
 } from "@/lib/redis-db"
+import {
+  LIVE_POSITION_ANALYTICS_WINDOW_MS,
+  liveClosedAnalyticsDataKey,
+  liveClosedAnalyticsTimeKey,
+} from "@/lib/live-position-analytics-archive"
 
 /**
  * Read-only projection used by reporting routes.
@@ -126,27 +131,58 @@ async function readPositionIndex(
   indexKey: string,
   limit: number,
 ): Promise<LivePositionReadModel[]> {
-  const boundedLimit = Math.max(1, Math.min(1_000, Math.floor(limit)))
-  const ids = await client.lrange(indexKey, 0, boundedLimit - 1).catch(() => [])
+  const normalizedLimit = Number.isFinite(limit) ? Math.floor(limit) : 0
+  const ids = await client
+    .lrange(indexKey, 0, normalizedLimit > 0 ? normalizedLimit - 1 : -1)
+    .catch(() => [])
   const uniqueIds = Array.from(new Set(ids.filter(Boolean)))
   if (uniqueIds.length === 0) return []
 
-  const [legacySnapshots, hashes] = await Promise.all([
-    client.mget(...uniqueIds.map((id) => `live:position:${id}`)).catch(() =>
-      uniqueIds.map(() => null),
-    ),
-    Promise.all(uniqueIds.map((id) =>
-      client.hgetall(`live_positions:${connectionId}:${id}`).catch(() => ({})),
-    )),
-  ])
-
   const positions: LivePositionReadModel[] = []
-  for (let index = 0; index < uniqueIds.length; index++) {
-    const position = hydrateLivePositionReadModel(
-      legacySnapshots[index],
-      hashes[index],
-    )
-    if (position) positions.push(position)
+  const batchSize = 250
+  for (let offset = 0; offset < uniqueIds.length; offset += batchSize) {
+    const batch = uniqueIds.slice(offset, offset + batchSize)
+    const [legacySnapshots, hashes] = await Promise.all([
+      client.mget(...batch.map((id) => `live:position:${id}`)).catch(() =>
+        batch.map(() => null),
+      ),
+      Promise.all(batch.map((id) =>
+        client.hgetall(`live_positions:${connectionId}:${id}`).catch(() => ({})),
+      )),
+    ])
+    for (let index = 0; index < batch.length; index++) {
+      const position = hydrateLivePositionReadModel(
+        legacySnapshots[index],
+        hashes[index],
+      )
+      if (position) positions.push(position)
+    }
+  }
+  return positions
+}
+
+async function readClosedAnalyticsWindow(
+  client: RedisClientLike,
+  connectionId: string,
+  sinceMs: number,
+): Promise<LivePositionReadModel[]> {
+  const [ids, rawSnapshots]: [string[], Record<string, string>] = await Promise.all([
+    client
+      .zrangebyscore(
+        liveClosedAnalyticsTimeKey(connectionId),
+        Math.max(0, Math.floor(sinceMs)),
+        "+inf",
+      )
+      .catch(() => []),
+    client
+      .hgetall(liveClosedAnalyticsDataKey(connectionId))
+      .catch(() => ({} as Record<string, string>)),
+  ])
+  const positions: LivePositionReadModel[] = []
+  for (let index = ids.length - 1; index >= 0; index--) {
+    const raw = rawSnapshots[ids[index]]
+    const parsed = parseJsonRecord(raw)
+    if (parsed) positions.push(normalizeLivePositionReadModel(parsed))
   }
   return positions
 }
@@ -167,14 +203,43 @@ export async function getOpenLivePositionReadModels(
 
 export async function getClosedLivePositionReadModels(
   connectionId: string,
-  limit = 500,
+  options: number | {
+    recentLimit?: number
+    sinceMs?: number
+  } = 500,
 ): Promise<LivePositionReadModel[]> {
   await initRedis()
   const client = getRedisClient()
-  return readPositionIndex(
-    client,
-    connectionId,
-    `live:positions:${connectionId}:closed`,
-    limit,
-  ).catch(() => [])
+  if (typeof options === "number") {
+    return readPositionIndex(
+      client,
+      connectionId,
+      `live:positions:${connectionId}:closed`,
+      options,
+    ).catch(() => [])
+  }
+
+  const recentLimit = Math.max(50, Math.floor(options.recentLimit || 50))
+  const sinceMs = Number.isFinite(options.sinceMs)
+    ? Number(options.sinceMs)
+    : Date.now() - LIVE_POSITION_ANALYTICS_WINDOW_MS
+  const [recent, timed] = await Promise.all([
+    readPositionIndex(
+      client,
+      connectionId,
+      `live:positions:${connectionId}:closed`,
+      recentLimit,
+    ),
+    readClosedAnalyticsWindow(client, connectionId, sinceMs),
+  ]).catch(() => [[], []] as [LivePositionReadModel[], LivePositionReadModel[]])
+
+  const byId = new Map<string, LivePositionReadModel>()
+  for (const position of [...timed, ...recent]) {
+    const id = String(position.id || "")
+    if (id) byId.set(id, position)
+  }
+  return [...byId.values()].sort((left, right) =>
+    Number(right.closedAt || right.updatedAt || 0) -
+    Number(left.closedAt || left.updatedAt || 0),
+  )
 }

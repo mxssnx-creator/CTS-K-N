@@ -166,6 +166,11 @@ describe("system-wide Base volume identity", () => {
       posCountsTargetFlat: true,
       sizeMultiplier: 9,
     })).toBe(0)
+    expect(resolveRealStageSizeMultiplier({
+      combinedPosCounts: true,
+      posCountsVolumeRatio: 6,
+      sizeMultiplier: 0.25,
+    })).toBe(6)
   })
 
   test("risk-percentage sizing ignores stale Base fields but composes explicit channels once", () => {
@@ -254,6 +259,20 @@ describe("system-wide Base volume identity", () => {
       expectedCalculated: 0.75,
     },
     {
+      name: "main combined Position-Count aggregate above legacy ceiling",
+      tradeMode: "main" as const,
+      indicationType: "direction",
+      mainVolumeFactor: 1,
+      presetVolumeFactor: 1,
+      signalVolumeFactor: 1,
+      sizeMultiplier: 6,
+      allowUnboundedVariantMultiplier: true,
+      expectedEngine: 1,
+      expectedSignal: 1,
+      expectedVariant: 6,
+      expectedCalculated: 0.3,
+    },
+    {
       name: "preset ignores signal channel",
       tradeMode: "preset" as const,
       indicationType: "signal",
@@ -273,6 +292,7 @@ describe("system-wide Base volume identity", () => {
     presetVolumeFactor,
     signalVolumeFactor,
     sizeMultiplier,
+    allowUnboundedVariantMultiplier = false,
     expectedEngine,
     expectedSignal,
     expectedVariant,
@@ -291,6 +311,7 @@ describe("system-wide Base volume identity", () => {
       presetVolumeFactor,
       signalVolumeFactor,
       sizeMultiplier,
+      allowUnboundedVariantMultiplier,
     }
     const identity = VolumeCalculator.calculatePositionVolume({
       ...common,

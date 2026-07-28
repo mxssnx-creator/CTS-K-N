@@ -87,7 +87,7 @@ mockClient.multi = jest.fn(() => {
   const operations: Array<() => Promise<unknown>> = []
   const pipeline: any = {}
   for (const method of [
-    "set", "expire", "hset", "hdel", "hincrby", "sadd", "lpush", "rpush", "ltrim",
+    "set", "expire", "hgetall", "hset", "hdel", "hincrby", "sadd", "lpush", "rpush", "ltrim",
   ]) {
     pipeline[method] = (...args: unknown[]) => {
       operations.push(() => mockClient[method](...args))
@@ -106,10 +106,13 @@ jest.mock("@/lib/redis-db", () => ({
 import {
   __signalIndicationTestUtils,
   getSignalPerformanceDecision,
+  getSignalSourceLanePerformanceDecision,
   mergeSignalRisks,
   normalizeSignalIndicationSettings,
   processSignalIndications,
   recordSignalPerformanceOutcome,
+  signalConfigurationExecutionAllowed,
+  signalSourceLaneManuallyDisabled,
 } from "@/lib/signal-indication"
 import { initRedis } from "@/lib/redis-db"
 
@@ -128,7 +131,7 @@ function exchangeRows(direction: "long" | "short") {
   })
 }
 
-describe("Signal indication persistence and Last-15 gate", () => {
+describe("Signal indication persistence and independent performance gates", () => {
   beforeEach(() => {
     mockStrings.clear()
     mockHashes.clear()
@@ -138,7 +141,26 @@ describe("Signal indication persistence and Last-15 gate", () => {
     __signalIndicationTestUtils.clearCaches()
   })
 
-  test("persists one consensus Set and exact active/window counts from three sources", async () => {
+  test("direct mode bypasses mature config PF but never a permanent live disable", () => {
+    const matureNegative = {
+      allowed: false,
+      ratio: -0.2,
+      samples: 12,
+      permanentlyDisabled: false,
+    }
+    const permanentlyDisabled = {
+      ...matureNegative,
+      samples: 16,
+      permanentlyDisabled: true,
+    }
+
+    expect(signalConfigurationExecutionAllowed(true, matureNegative)).toBe(true)
+    expect(signalConfigurationExecutionAllowed(false, matureNegative)).toBe(false)
+    expect(signalConfigurationExecutionAllowed(true, permanentlyDisabled)).toBe(false)
+    expect(signalConfigurationExecutionAllowed(true, undefined)).toBe(true)
+  })
+
+  test("persists independent direct-source and consensus Sets with exact active/window counts", async () => {
     const rows = exchangeRows("long")
     const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
@@ -180,15 +202,28 @@ describe("Signal indication persistence and Last-15 gate", () => {
     })
 
     expect(fetchImpl).toHaveBeenCalledTimes(3)
-    expect(indications).toHaveLength(1)
-    expect(indications[0]).toEqual(expect.objectContaining({
+    // Direct bootstrap execution is enabled by default: every allowed source
+    // remains independent and the multi-source consensus is emitted beside it.
+    expect(indications).toHaveLength(4)
+    expect(indications.filter((item) => item.metadata?.mode === "direct_source")).toHaveLength(3)
+    expect(new Set(
+      indications
+        .filter((item) => item.metadata?.mode === "direct_source")
+        .map((item) => item.metadata.signal.sourceId),
+    )).toEqual(new Set(sourceIds))
+    const consensus = indications.find((item) => item.metadata?.mode === "multi_source_consensus")
+    expect(consensus).toEqual(expect.objectContaining({
       type: "signal",
       direction: "long",
     }))
-    expect(indications[0].metadata.signal.sourceIds).toEqual(expect.arrayContaining(sourceIds))
-    expect(mockLists.get("indication_set:conn-a:BTCUSDT:signal:long:consensus")).toHaveLength(1)
-    expect(mockHashes.get("indications_active:conn-a")?.["BTCUSDT:signal"]).toBe("1")
-    expect(mockHashes.get("indication_sets_active:conn-a")?.["BTCUSDT:signal"]).toBe("1")
+    expect(consensus.metadata.signal.sourceIds).toEqual(expect.arrayContaining(sourceIds))
+    for (const sourceId of [...sourceIds, "consensus"]) {
+      expect(
+        mockLists.get(`indication_set:conn-a:BTCUSDT:signal:long:source:${sourceId}`),
+      ).toHaveLength(1)
+    }
+    expect(mockHashes.get("indications_active:conn-a")?.["BTCUSDT:signal"]).toBe("4")
+    expect(mockHashes.get("indication_sets_active:conn-a")?.["BTCUSDT:signal"]).toBe("4")
     expect(JSON.parse(mockStrings.get("signal:cycle:conn-a:BTCUSDT") || "{}").sourceRegistrySize).toBe(35)
     const candidateRank = JSON.parse(
       mockHashes.get("signal:candidate_rank:conn-a")?.BTCUSDT || "{}",
@@ -201,6 +236,20 @@ describe("Signal indication persistence and Last-15 gate", () => {
       agreement: expect.any(Number),
     }))
     expect(candidateRank.score).toBeGreaterThan(0)
+
+    const pfGatedBootstrap = await processSignalIndications({
+      connectionId: "conn-pf-gated-bootstrap",
+      symbol: "BTCUSDT",
+      settings: { ...settings, directExecutionEnabled: false },
+      positionCostPct: 0.1,
+      now: 1_800_000_060_000,
+      sourceCursor: 0,
+      fetchImpl,
+      persist: false,
+    })
+    expect(
+      pfGatedBootstrap.filter((item) => item.metadata?.mode === "direct_source"),
+    ).toHaveLength(3)
   })
 
   test("merges mixed-position Signal sources without widening SL or TP protection", () => {
@@ -228,6 +277,8 @@ describe("Signal indication persistence and Last-15 gate", () => {
       takeProfitPct: 0.9,
       rewardRisk: 0.9 / 0.35,
       sourceIds: ["binance-usdm", "okx-swap", "bybit-linear"],
+      configIds: [],
+      signalLanes: [],
       agreement: 0.9,
       confidence: 0.88,
       generatedAt: 200,
@@ -305,6 +356,30 @@ describe("Signal indication persistence and Last-15 gate", () => {
     expect(solSources.some((source) => source.id === "bingx-swap")).toBe(true)
   })
 
+  test("normalizes manual source-symbol-direction lanes independently", () => {
+    const settings = normalizeSignalIndicationSettings({
+      sources: {
+        "bingx-swap": {
+          enabled: true,
+          weight: 1,
+          disabledLanes: [
+            "btc-usdt:LONG",
+            "BTCUSDT:long",
+            "eth/usdt:short",
+            "invalid",
+          ],
+        },
+      },
+    })
+    expect(settings.sources["bingx-swap"].disabledLanes).toEqual([
+      "BTCUSDT:long",
+      "ETHUSDT:short",
+    ])
+    expect(signalSourceLaneManuallyDisabled(settings, "bingx-swap", "BTCUSDT", "long")).toBe(true)
+    expect(signalSourceLaneManuallyDisabled(settings, "bingx-swap", "BTCUSDT", "short")).toBe(false)
+    expect(signalSourceLaneManuallyDisabled(settings, "bingx-swap", "ETHUSDT", "short")).toBe(true)
+  })
+
   test("uses deterministic local Signal sources in forced simulation without HTTP", async () => {
     const priorSimulated = process.env.FORCE_SIMULATED
     const priorLive = process.env.FORCE_LIVE
@@ -324,19 +399,21 @@ describe("Signal indication persistence and Last-15 gate", () => {
         now: 1_800_000_000_000,
       })
 
-      expect(indications).toHaveLength(1)
-      expect(indications[0]).toEqual(expect.objectContaining({
+      expect(indications).toHaveLength(11)
+      expect(indications.filter((item) => item.metadata?.mode === "direct_source")).toHaveLength(10)
+      const consensus = indications.find((item) => item.metadata?.mode === "multi_source_consensus")
+      expect(consensus).toEqual(expect.objectContaining({
         type: "signal",
         symbol: "BTCUSDT",
         direction: "long",
       }))
-      expect(indications[0].metadata.signal).toEqual(expect.objectContaining({
+      expect(consensus.metadata.signal).toEqual(expect.objectContaining({
         selectedSourceCount: 10,
         evaluatedSourceCount: 10,
         allowedSourceCount: 10,
       }))
-      expect(indications[0].metadata.signal.sourceIds).toHaveLength(10)
-      expect(indications[0].metadata.signal.sourceIds).toEqual(
+      expect(consensus.metadata.signal.sourceIds).toHaveLength(10)
+      expect(consensus.metadata.signal.sourceIds).toEqual(
         expect.arrayContaining(["bingx-swap", "binance-usdm", "bybit-linear", "okx-swap"]),
       )
       expect(mockHashes.get("signal:source_health:conn-simulated-signal")).toBeDefined()
@@ -386,8 +463,10 @@ describe("Signal indication persistence and Last-15 gate", () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
-  test("uses exactly the last 15 outcomes and isolates source, symbol and direction", async () => {
+  test("uses exactly the canonical last 12 outcomes and isolates source, symbol and direction", async () => {
     const settings = normalizeSignalIndicationSettings({
+      // Persisted legacy values cannot override the fixed 12-position
+      // source/config evaluation contract.
       performanceLookback: 15,
       performanceMinSamples: 15,
       performanceCooldownMinutes: 60,
@@ -426,10 +505,10 @@ describe("Signal indication persistence and Last-15 gate", () => {
     })
     expect(disabled.allowed).toBe(false)
     expect(disabled.reason).toBe("negative_pnl")
-    expect(disabled.state.count).toBe(15)
-    expect(disabled.state.totalPnl).toBe(-15)
+    expect(disabled.state.count).toBe(12)
+    expect(disabled.state.totalPnl).toBe(-12)
     expect(disabled.state.grossProfit).toBe(0)
-    expect(disabled.state.grossLoss).toBe(15)
+    expect(disabled.state.grossLoss).toBe(12)
     expect(disabled.state.profitFactor).toBe(0)
 
     for (const [sourceId, symbol, direction] of [
@@ -470,33 +549,205 @@ describe("Signal indication persistence and Last-15 gate", () => {
     expect(duplicateProbe.allowed).toBe(false)
   })
 
-  test("cannot override the fixed 15-position performance contract", () => {
+  test("cannot override the fixed 12-position legacy performance contract", () => {
     const settings = normalizeSignalIndicationSettings({
       performanceLookback: 100,
       performanceMinSamples: 1,
       performanceDisableBelowPnl: -1_000_000,
     })
-    expect(settings.performanceLookback).toBe(15)
-    expect(settings.performanceMinSamples).toBe(15)
+    expect(settings.performanceLookback).toBe(12)
+    expect(settings.performanceMinSamples).toBe(12)
     expect(settings.performanceDisableBelowPnl).toBe(0)
   })
 
-  test("defaults Signal physical capacity to 120 and fixes best-first admission", () => {
+  test("defaults all 35 sources, physical capacity 120 and best-first admission", () => {
     const defaults = normalizeSignalIndicationSettings({})
     const clamped = normalizeSignalIndicationSettings({
       maxPositionsTotal: 9_999,
       positionSelectionMode: "fifo",
     })
+    expect(defaults.maxSourcesPerCycle).toBe(35)
     expect(defaults.maxPositionsTotal).toBe(120)
     expect(defaults.positionSelectionMode).toBe("best_first")
-    expect(clamped.maxPositionsTotal).toBe(500)
+    expect(clamped.maxPositionsTotal).toBe(120)
     expect(clamped.positionSelectionMode).toBe("best_first")
   })
 
-  test("drops old losses when the newest rolling 15 outcomes are profitable", async () => {
+  test("gates a source after 12 closes and each source/symbol/direction lane after 10 independently", async () => {
+    const settings = normalizeSignalIndicationSettings({})
+    // BTC/Long loses its newest ten outcomes. Later ETH/Long wins keep the
+    // source-wide newest-12 window positive, so only the exact BTC/Long lane
+    // must be disabled.
+    for (let index = 0; index < 10; index++) {
+      await recordSignalPerformanceOutcome({
+        connectionId: "conn-v2-lanes",
+        positionId: `btc-loss-${index}`,
+        symbol: "BTCUSDT",
+        direction: "long",
+        pnl: -1,
+        sourceIds: ["source-lanes"],
+        settings,
+        closedAt: 1_800_000_000_000 + index,
+      })
+    }
+    for (let index = 0; index < 12; index++) {
+      await recordSignalPerformanceOutcome({
+        connectionId: "conn-v2-lanes",
+        positionId: `eth-win-${index}`,
+        symbol: "ETHUSDT",
+        direction: "long",
+        pnl: 2,
+        sourceIds: ["source-lanes"],
+        settings,
+        closedAt: 1_800_000_001_000 + index,
+      })
+    }
+
+    await expect(getSignalSourceLanePerformanceDecision(mockClient, {
+      connectionId: "conn-v2-lanes",
+      sourceId: "source-lanes",
+      symbol: "BTCUSDT",
+      direction: "long",
+    })).resolves.toEqual({
+      allowed: false,
+      sourceAllowed: true,
+      laneAllowed: false,
+    })
+    await expect(getSignalSourceLanePerformanceDecision(mockClient, {
+      connectionId: "conn-v2-lanes",
+      sourceId: "source-lanes",
+      symbol: "ETHUSDT",
+      direction: "long",
+    })).resolves.toEqual({
+      allowed: true,
+      sourceAllowed: true,
+      laneAllowed: true,
+    })
+    await expect(getSignalSourceLanePerformanceDecision(mockClient, {
+      connectionId: "conn-v2-lanes",
+      sourceId: "source-lanes",
+      symbol: "BTCUSDT",
+      direction: "short",
+    })).resolves.toEqual({
+      allowed: true,
+      sourceAllowed: true,
+      laneAllowed: true,
+    })
+
+    // A separate source with twelve negative closes is disabled source-wide,
+    // even for a fresh symbol/direction lane.
+    for (let index = 0; index < 12; index++) {
+      await recordSignalPerformanceOutcome({
+        connectionId: "conn-v2-lanes",
+        positionId: `source-loss-${index}`,
+        symbol: "SOLUSDT",
+        direction: "short",
+        pnl: -1,
+        sourceIds: ["source-negative"],
+        settings,
+        closedAt: 1_800_000_002_000 + index,
+      })
+    }
+    await expect(getSignalSourceLanePerformanceDecision(mockClient, {
+      connectionId: "conn-v2-lanes",
+      sourceId: "source-negative",
+      symbol: "XRPUSDT",
+      direction: "long",
+    })).resolves.toEqual({
+      allowed: false,
+      sourceAllowed: false,
+      laneAllowed: true,
+    })
+  })
+
+  test("attributes consensus outcomes to the consensus lane without contaminating contributors", async () => {
+    const settings = normalizeSignalIndicationSettings({})
+    for (let index = 0; index < 12; index++) {
+      await recordSignalPerformanceOutcome({
+        connectionId: "conn-consensus-isolation",
+        positionId: `consensus-loss-${index}`,
+        symbol: "BTCUSDT",
+        direction: "long",
+        pnl: -1,
+        sourceIds: ["binance-usdm", "okx-swap", "bybit-linear"],
+        signalLanes: [{
+          sourceId: "consensus",
+          configId: "tp1_00:slr0_50:standard",
+        }],
+        settings,
+        closedAt: 1_800_000_000_000 + index,
+      })
+    }
+
+    await expect(getSignalSourceLanePerformanceDecision(mockClient, {
+      connectionId: "conn-consensus-isolation",
+      sourceId: "consensus",
+      symbol: "BTCUSDT",
+      direction: "long",
+    })).resolves.toEqual({
+      allowed: false,
+      sourceAllowed: false,
+      laneAllowed: false,
+    })
+    await expect(getSignalSourceLanePerformanceDecision(mockClient, {
+      connectionId: "conn-consensus-isolation",
+      sourceId: "binance-usdm",
+      symbol: "BTCUSDT",
+      direction: "long",
+    })).resolves.toEqual({
+      allowed: true,
+      sourceAllowed: true,
+      laneAllowed: true,
+    })
+  })
+
+  test("attributes an exact direct-source lane without disabling contributors or consensus", async () => {
+    const settings = normalizeSignalIndicationSettings({})
+    for (let index = 0; index < 12; index++) {
+      await recordSignalPerformanceOutcome({
+        connectionId: "conn-direct-isolation",
+        positionId: `direct-loss-${index}`,
+        symbol: "ETHUSDT",
+        direction: "short",
+        pnl: -1,
+        sourceIds: ["binance-usdm", "okx-swap", "bybit-linear"],
+        signalLanes: [{
+          sourceId: "binance-usdm",
+          configId: "tp1_00:slr0_50:standard",
+        }],
+        settings,
+        closedAt: 1_810_000_000_000 + index,
+      })
+    }
+
+    await expect(getSignalSourceLanePerformanceDecision(mockClient, {
+      connectionId: "conn-direct-isolation",
+      sourceId: "binance-usdm",
+      symbol: "ETHUSDT",
+      direction: "short",
+    })).resolves.toEqual({
+      allowed: false,
+      sourceAllowed: false,
+      laneAllowed: false,
+    })
+    for (const sourceId of ["okx-swap", "consensus"]) {
+      await expect(getSignalSourceLanePerformanceDecision(mockClient, {
+        connectionId: "conn-direct-isolation",
+        sourceId,
+        symbol: "ETHUSDT",
+        direction: "short",
+      })).resolves.toEqual({
+        allowed: true,
+        sourceAllowed: true,
+        laneAllowed: true,
+      })
+    }
+  })
+
+  test("drops old losses when the newest rolling 12 outcomes are profitable", async () => {
     const settings = normalizeSignalIndicationSettings({
-      performanceLookback: 15,
-      performanceMinSamples: 15,
+      performanceLookback: 12,
+      performanceMinSamples: 12,
     })
     for (let index = 0; index < 20; index++) {
       await recordSignalPerformanceOutcome({
@@ -521,24 +772,24 @@ describe("Signal indication persistence and Last-15 gate", () => {
     expect(decision.allowed).toBe(true)
     expect(decision.reason).toBe("performing")
     expect(decision.state).toEqual(expect.objectContaining({
-      count: 15,
-      wins: 15,
-      grossProfit: 15,
+      count: 12,
+      wins: 12,
+      grossProfit: 12,
       grossLoss: 0,
       profitFactor: 999,
-      totalPnl: 15,
+      totalPnl: 12,
     }))
   })
 
-  test("calculates exact gross-profit/gross-loss PF for every independent last-15 lane", async () => {
+  test("calculates exact gross-profit/gross-loss PF for every independent last-12 lane", async () => {
     const settings = normalizeSignalIndicationSettings({})
-    for (let index = 0; index < 15; index++) {
+    for (let index = 0; index < 12; index++) {
       await recordSignalPerformanceOutcome({
         connectionId: "conn-pf",
         positionId: `position-${index}`,
         symbol: "ETHUSDT",
         direction: "short",
-        pnl: index < 10 ? 2 : -4,
+        pnl: index < 8 ? 2 : -4,
         sourceIds: ["source-pf"],
         settings,
         closedAt: 1_800_000_000_000 + index,
@@ -554,10 +805,10 @@ describe("Signal indication persistence and Last-15 gate", () => {
       now: 1_800_000_100_000,
     })
     expect(decision.state).toEqual(expect.objectContaining({
-      count: 15,
-      wins: 10,
-      grossProfit: 20,
-      grossLoss: 20,
+      count: 12,
+      wins: 8,
+      grossProfit: 16,
+      grossLoss: 16,
       profitFactor: 1,
       totalPnl: 0,
     }))

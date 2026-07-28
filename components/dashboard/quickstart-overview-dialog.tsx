@@ -39,6 +39,12 @@ interface StratDetail {
 }
 
 interface StatsResponse {
+  strategyRows?: {
+    base: { total: number; valid: number; totalOpen: number; validOpen: number }
+    main: { valid: number; overall: number; validOpen: number; overallOpen: number }
+    real: { valid: number; active: number; activeExactRows: number }
+    live: { total: number; mirrored: number; active: number }
+  }
   // The /stats endpoint actually returns a much richer historic block
   // than originally typed here. Adding the missing fields as optional
   // so the JSX below compiles and the older callers keep working.
@@ -80,7 +86,10 @@ interface StatsResponse {
                   baseEvaluated: number; mainEvaluated: number; realEvaluated: number }
   }
   strategyDetail: { base: StratDetail; main: StratDetail; real: StratDetail; live?: StratDetail }
-  windows: { indications: { last5m: number; last60m: number }; strategies: { last5m: number; last60m: number } }
+  windows: {
+    indications: { last5m: number; last60m: number; measured?: boolean; source?: string }
+    strategies: { last5m: number; last60m: number; measured?: boolean; source?: string }
+  }
   // ── Active Progressing — per-type / per-stage breakdown ────────────
   // Each row: { sets, trackings, positions } where:
   //   * sets       — distinct (symbol × type|stage) Sets producing
@@ -321,6 +330,7 @@ export function QuickstartOverviewDialog() {
   const totalIndByType = indTypes.reduce((s, r) => s + r.value, 0) || 1
   const evalMain5m  = win?.indications.last5m  || 0
   const evalMain60m = win?.indications.last60m || 0
+  const indicationWindowsMeasured = win?.indications.measured === true
   const totalIndAll = firstFiniteMetric(rt?.indicationsTotal, bd?.indications.total)
 
   return (
@@ -518,24 +528,26 @@ export function QuickstartOverviewDialog() {
             </div>
 
             {/* time windows */}
-            {(evalMain5m > 0 || evalMain60m > 0) && (
-              <div className="rounded-md border p-3 space-y-1.5">
-                <div className="text-xs font-semibold flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5 text-muted-foreground" />
-                  Activity Windows
+            <div className="rounded-md border p-3 space-y-1.5">
+              <div className="text-xs font-semibold flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-muted-foreground" />
+                Activity Windows
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Last 5 min</span>
+                  <span className="font-medium tabular-nums">
+                    {indicationWindowsMeasured ? `${fmt(evalMain5m)} ind` : "Unavailable"}
+                  </span>
                 </div>
-                <div className="grid grid-cols-2 gap-2 text-[11px]">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Last 5 min</span>
-                    <span className="font-medium tabular-nums">{fmt(evalMain5m)} ind</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Last 60 min</span>
-                    <span className="font-medium tabular-nums">{fmt(evalMain60m)} ind</span>
-                  </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Last 60 min</span>
+                  <span className="font-medium tabular-nums">
+                    {indicationWindowsMeasured ? `${fmt(evalMain60m)} ind` : "Unavailable"}
+                  </span>
                 </div>
               </div>
-            )}
+            </div>
 
             {/* strategies compact overview */}
             <div className="rounded-md border p-3 space-y-2">
@@ -729,8 +741,16 @@ export function QuickstartOverviewDialog() {
             {/* time window summary */}
             <div className="grid grid-cols-3 gap-2">
               <StatCell label="Total" value={fmt(totalIndAll)} accent="text-violet-600 dark:text-violet-400" />
-              <StatCell label="Last 5min"  value={fmt(evalMain5m)}  sub="rolling window" />
-              <StatCell label="Last 60min" value={fmt(evalMain60m)} sub="rolling window" />
+              <StatCell
+                label="Last 5min"
+                value={indicationWindowsMeasured ? fmt(evalMain5m) : "—"}
+                sub={indicationWindowsMeasured ? "rolling ledger" : "unavailable"}
+              />
+              <StatCell
+                label="Last 60min"
+                value={indicationWindowsMeasured ? fmt(evalMain60m) : "—"}
+                sub={indicationWindowsMeasured ? "rolling ledger" : "unavailable"}
+              />
             </div>
 
             {/* per-type bars */}
@@ -746,29 +766,6 @@ export function QuickstartOverviewDialog() {
                 {indTypes.map(({ label, value }) => (
                   <IndWindow key={label} label={label} count={value} total={totalIndByType} />
                 ))}
-              </div>
-            </div>
-
-            {/* last 5 evaluated (simulated from ratio if not available) */}
-            <div className="rounded-md border p-3 space-y-2">
-              <div className="text-xs font-semibold">Eval Counts — Last Periods</div>
-              <div className="grid grid-cols-2 gap-2 text-[11px]">
-                {indTypes.map(({ label, value }) => {
-                  const ratio5m  = totalIndAll > 0 && evalMain5m  > 0 ? (value / totalIndAll) * evalMain5m  : 0
-                  const ratio60m = totalIndAll > 0 && evalMain60m > 0 ? (value / totalIndAll) * evalMain60m : 0
-                  return (
-                    <React.Fragment key={label}>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">{label} 5m</span>
-                        <span className="font-medium tabular-nums">{fmt(Math.round(ratio5m))}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">{label} 60m</span>
-                        <span className="font-medium tabular-nums">{fmt(Math.round(ratio60m))}</span>
-                      </div>
-                    </React.Fragment>
-                  )
-                })}
               </div>
             </div>
 
@@ -851,6 +848,25 @@ export function QuickstartOverviewDialog() {
               continuous-count factors plus additional strategies — not always new sets but coordinated variable
               mappings for high-frequency evaluation. Real strategies filter Main by highest-confidence coordination.
             </p>
+
+            {stats?.strategyRows && (
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                {[
+                  ["Base", "Total", stats.strategyRows.base.total, "Valid", stats.strategyRows.base.valid],
+                  ["Main", "Valid", stats.strategyRows.main.valid, "Overall", stats.strategyRows.main.overall],
+                  ["Row-Real", "Valid", stats.strategyRows.real.valid, "Active", stats.strategyRows.real.active],
+                  ["Row-Live", "Rows", stats.strategyRows.live.total, "Mirrored", stats.strategyRows.live.mirrored],
+                ].map(([title, firstLabel, first, secondLabel, second]) => (
+                  <div key={String(title)} className="rounded-lg border bg-card p-2.5">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+                    <div className="mt-1 grid grid-cols-2 gap-2">
+                      <div><span className="text-[9px] text-muted-foreground">{firstLabel}</span><p className="font-mono text-base">{fmt(Number(first))}</p></div>
+                      <div><span className="text-[9px] text-muted-foreground">{secondLabel}</span><p className="font-mono text-base">{fmt(Number(second))}</p></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* ── Strategy stage counts ─────────────────────────────────────
                 The `count` prop is the ACTIVE-PROCESSING SETS count — how

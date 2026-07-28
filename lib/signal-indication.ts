@@ -23,9 +23,14 @@ import {
   signalCandidateRankKey,
   type SignalPositionSelectionMode,
 } from "@/lib/signal-position-policy"
+import { movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 
 export type SignalDirection = "long" | "short"
-export const SIGNAL_PERFORMANCE_LOOKBACK = 15
+export const SIGNAL_PERFORMANCE_LOOKBACK = 12
+export const SIGNAL_SOURCE_PERFORMANCE_LOOKBACK = 12
+export const SIGNAL_LANE_PERFORMANCE_LOOKBACK = 10
+export const SIGNAL_LIVE_DISABLE_LOOKBACK = 16
+export const SIGNAL_CONFIG_MINIMUM_PF_RATIO = 0.7
 export const SIGNAL_REQUEST_INTERVAL_MIN_SECONDS = 30
 export const SIGNAL_REQUEST_INTERVAL_MAX_SECONDS = 3600
 
@@ -33,10 +38,12 @@ export interface SignalSourceSettings {
   enabled: boolean
   weight: number
   disabledSymbols: string[]
+  disabledLanes: string[]
 }
 
 export interface SignalIndicationSettings {
   enabled: boolean
+  directExecutionEnabled: boolean
   trailingEnabled: boolean
   trailingOnly: boolean
   trailingStartPct: number
@@ -63,6 +70,7 @@ export interface SignalIndicationSettings {
   performanceLookback: number
   performanceMinSamples: number
   performanceDisableBelowPnl: number
+  configMinimumPfRatio: number
   performanceCooldownMinutes: number
   circuitFailureThreshold: number
   circuitCooldownSeconds: number
@@ -75,6 +83,12 @@ export interface SignalRisk {
   takeProfitPct: number
   rewardRisk: number
   sourceIds: string[]
+  sourceId?: string
+  configId?: string
+  configIds?: string[]
+  signalLanes?: Array<{ sourceId: string; configId: string }>
+  trailing?: boolean
+  trailingStopPct?: number
   agreement: number
   confidence: number
   generatedAt: number
@@ -110,6 +124,9 @@ export interface SignalPerformanceState {
   autoDisabled: boolean
   disabledUntil: number
   updatedAt: number
+  configId?: string
+  costRelativeRatio?: number
+  permanentlyDisabled?: boolean
 }
 
 export interface SignalPerformanceDecision {
@@ -225,12 +242,14 @@ const DEFAULT_SOURCE_SETTINGS = Object.fromEntries(
       enabled: source.enabledByDefault,
       weight: source.priority === 1 ? 1 : source.priority === 2 ? 0.9 : 0.75,
       disabledSymbols: [],
+      disabledLanes: [],
     },
   ]),
 ) as Record<string, SignalSourceSettings>
 
 export const DEFAULT_SIGNAL_INDICATION_SETTINGS: SignalIndicationSettings = {
   enabled: true,
+  directExecutionEnabled: true,
   trailingEnabled: true,
   trailingOnly: false,
   trailingStartPct: SIGNAL_TRAILING_DEFAULT_START_PCT,
@@ -239,7 +258,7 @@ export const DEFAULT_SIGNAL_INDICATION_SETTINGS: SignalIndicationSettings = {
   trailingUpdateStopRangeRatio: SIGNAL_TRAILING_DEFAULT_UPDATE_STOP_RANGE_RATIO,
   timeframeMinutes: 1,
   candleLimit: 60,
-  maxSourcesPerCycle: 10,
+  maxSourcesPerCycle: SIGNAL_SOURCE_DEFINITIONS.length,
   maxPositionsTotal: SIGNAL_MAX_POSITIONS_DEFAULT,
   positionSelectionMode: SIGNAL_POSITION_SELECTION_MODE,
   requestIntervalSeconds: SIGNAL_REQUEST_INTERVAL_MIN_SECONDS,
@@ -257,6 +276,7 @@ export const DEFAULT_SIGNAL_INDICATION_SETTINGS: SignalIndicationSettings = {
   performanceLookback: SIGNAL_PERFORMANCE_LOOKBACK,
   performanceMinSamples: SIGNAL_PERFORMANCE_LOOKBACK,
   performanceDisableBelowPnl: 0,
+  configMinimumPfRatio: SIGNAL_CONFIG_MINIMUM_PF_RATIO,
   performanceCooldownMinutes: 60,
   circuitFailureThreshold: 3,
   circuitCooldownSeconds: 120,
@@ -326,10 +346,18 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
             .map((value: string) => normalizeSymbol(value)),
         )).slice(0, 200)
       : []
+    const disabledLanes = Array.isArray(incoming.disabledLanes)
+      ? Array.from(new Set(
+          incoming.disabledLanes
+            .map(normalizeDisabledSignalLane)
+            .filter((value: string | null): value is string => Boolean(value)),
+        )).slice(0, 400)
+      : []
     return [source.id, {
       enabled: bool(incoming.enabled, fallback.enabled),
       weight: boundedNumber(incoming.weight, fallback.weight, 0.1, 2),
       disabledSymbols,
+      disabledLanes,
     }]
   })) as Record<string, SignalSourceSettings>
 
@@ -343,7 +371,7 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     stopLossMinPct,
     boundedNumber(raw.stopLossMaxPct, DEFAULT_SIGNAL_INDICATION_SETTINGS.stopLossMaxPct, 0.2, 5),
   )
-  // The performance gate is deliberately fixed to the newest 15 realised
+  // The source/config performance gate is fixed to the newest 12 realised
   // positions. Accepting a persisted/UI override here would make otherwise
   // identical source × symbol × direction lanes use different evidence
   // windows and violate the Signal contract. The PnL boundary is equally
@@ -355,7 +383,7 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     raw.maxSourcesPerCycle,
     DEFAULT_SIGNAL_INDICATION_SETTINGS.maxSourcesPerCycle,
     3,
-    35,
+    SIGNAL_SOURCE_DEFINITIONS.length,
   ))
   const minimumSourceSignals = Math.min(
     maxSourcesPerCycle,
@@ -381,6 +409,7 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
 
   return {
     enabled: bool(raw.enabled, true),
+    directExecutionEnabled: bool(raw.directExecutionEnabled, true),
     trailingEnabled,
     trailingOnly,
     trailingStartPct: boundedNumber(
@@ -431,6 +460,12 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     performanceLookback,
     performanceMinSamples,
     performanceDisableBelowPnl: 0,
+    configMinimumPfRatio: boundedNumber(
+      raw.configMinimumPfRatio,
+      SIGNAL_CONFIG_MINIMUM_PF_RATIO,
+      0.08,
+      2.7,
+    ),
     performanceCooldownMinutes: Math.round(boundedNumber(raw.performanceCooldownMinutes, 60, 1, 24 * 60)),
     circuitFailureThreshold: Math.round(boundedNumber(raw.circuitFailureThreshold, 3, 1, 20)),
     circuitCooldownSeconds: Math.round(boundedNumber(raw.circuitCooldownSeconds, 120, 10, 3600)),
@@ -479,6 +514,36 @@ function normalizeSymbol(symbol: string): string {
   return String(symbol || "unknown").toUpperCase().replace(/[^A-Z0-9]+/g, "")
 }
 
+export function signalSourceLaneIdentity(
+  symbol: string,
+  direction: SignalDirection,
+): string {
+  return `${normalizeSymbol(symbol)}:${direction}`
+}
+
+function normalizeDisabledSignalLane(value: unknown): string | null {
+  const match = String(value ?? "").trim().match(/^(.+):(long|short)$/i)
+  if (!match) return null
+  const symbol = normalizeSymbol(match[1])
+  if (!symbol) return null
+  return signalSourceLaneIdentity(symbol, match[2].toLowerCase() as SignalDirection)
+}
+
+export function signalSourceLaneManuallyDisabled(
+  settings: SignalIndicationSettings,
+  sourceId: string,
+  symbol: string,
+  direction: SignalDirection,
+): boolean {
+  const source = settings.sources[sourceId]
+  if (!source) return true
+  const normalizedSymbol = normalizeSymbol(symbol)
+  return (
+    source.disabledSymbols.includes(normalizedSymbol) ||
+    source.disabledLanes.includes(signalSourceLaneIdentity(normalizedSymbol, direction))
+  )
+}
+
 function performanceStateKey(
   connectionId: string,
   sourceId: string,
@@ -486,6 +551,200 @@ function performanceStateKey(
   direction: SignalDirection,
 ): string {
   return `signal:performance:${safePart(connectionId)}:${safePart(sourceId)}:${normalizeSymbol(symbol)}:${direction}`
+}
+
+function signalPerformanceV2SourceKey(connectionId: string, sourceId: string): string {
+  return `signal:performance:v2:${safePart(connectionId)}:source:${safePart(sourceId)}`
+}
+
+function signalPerformanceV2LaneKey(
+  connectionId: string,
+  sourceId: string,
+  symbol: string,
+  direction: SignalDirection,
+): string {
+  return (
+    `signal:performance:v2:${safePart(connectionId)}:lane:${safePart(sourceId)}:` +
+    `${normalizeSymbol(symbol)}:${direction}`
+  )
+}
+
+function signalPerformanceV2ConfigKey(
+  connectionId: string,
+  sourceId: string,
+  symbol: string,
+  direction: SignalDirection,
+  configId: string,
+  liveOnly = false,
+): string {
+  return (
+    `signal:performance:v2:${safePart(connectionId)}:` +
+    `${liveOnly ? "live_config" : "config"}:${safePart(sourceId)}:` +
+    `${normalizeSymbol(symbol)}:${direction}:${safePart(configId)}`
+  )
+}
+
+function performanceNumber(raw: Record<string, string> | null | undefined, field: string): number {
+  const value = Number(raw?.[field])
+  return Number.isFinite(value) ? value : 0
+}
+
+function signalPerformanceV2Allowed(
+  raw: Record<string, string> | null | undefined,
+  minimumSamples: number,
+  minimumAverage: number,
+): boolean {
+  if (raw?.permanentlyDisabled === "1" || raw?.permanentlyDisabled === "true") return false
+  const count = performanceNumber(raw, "count")
+  if (count < minimumSamples) return true
+  return performanceNumber(raw, "averagePnl") + Number.EPSILON >= minimumAverage
+}
+
+/**
+ * Source and source×symbol×direction admission. Fresh lanes bootstrap
+ * directly; mature negative lanes are independently disabled.
+ */
+export async function getSignalSourceLanePerformanceDecision(
+  client: RedisClientLike,
+  input: {
+    connectionId: string
+    sourceId: string
+    symbol: string
+    direction: SignalDirection
+  },
+): Promise<{ allowed: boolean; sourceAllowed: boolean; laneAllowed: boolean }> {
+  const sourceKey = signalPerformanceV2SourceKey(input.connectionId, input.sourceId)
+  const laneKey = signalPerformanceV2LaneKey(
+    input.connectionId,
+    input.sourceId,
+    input.symbol,
+    input.direction,
+  )
+  const pipeline = client.multi()
+  pipeline.hgetall(sourceKey)
+  pipeline.hgetall(laneKey)
+  const values = await pipeline.exec().catch(() => [])
+  const sourceRaw = (Array.isArray(values?.[0]) ? values[0]?.[1] : values?.[0]) as
+    | Record<string, string>
+    | undefined
+  const laneRaw = (Array.isArray(values?.[1]) ? values[1]?.[1] : values?.[1]) as
+    | Record<string, string>
+    | undefined
+  const sourceAllowed = signalPerformanceV2Allowed(
+    sourceRaw,
+    SIGNAL_SOURCE_PERFORMANCE_LOOKBACK,
+    0,
+  )
+  const laneAllowed = signalPerformanceV2Allowed(
+    laneRaw,
+    SIGNAL_LANE_PERFORMANCE_LOOKBACK,
+    0,
+  )
+  return { allowed: sourceAllowed && laneAllowed, sourceAllowed, laneAllowed }
+}
+
+export interface SignalConfigurationPerformanceRequest {
+  sourceId: string
+  symbol: string
+  direction: SignalDirection
+  configId: string
+}
+
+export interface SignalConfigurationPerformanceDecision {
+  allowed: boolean
+  ratio: number
+  samples: number
+  permanentlyDisabled: boolean
+}
+
+/**
+ * Direct execution deliberately bypasses the rolling 12-position config PF
+ * gate. Source-wide newest-12 and source×symbol×direction newest-10 negative
+ * PnL gates are evaluated before this point. A permanently disabled exact
+ * config (newest 16 real exchange closes negative) remains blocked in either
+ * mode.
+ */
+export function signalConfigurationExecutionAllowed(
+  directExecutionEnabled: boolean,
+  decision: SignalConfigurationPerformanceDecision | undefined,
+): boolean {
+  if (!decision) return true
+  if (decision.permanentlyDisabled) return false
+  return directExecutionEnabled ? true : decision.allowed
+}
+
+export function signalConfigurationPerformanceIdentity(
+  request: SignalConfigurationPerformanceRequest,
+): string {
+  return (
+    `${safePart(request.sourceId)}|${normalizeSymbol(request.symbol)}|` +
+    `${request.direction}|${request.configId}`
+  )
+}
+
+/**
+ * One bounded Redis pipeline resolves every exact Signal configuration before
+ * Base materialisation. The first 12 outcomes bootstrap; mature config lanes
+ * require the configured PositionCost-relative average and a 16-live-result
+ * permanent-disable lane must remain healthy.
+ */
+export async function getSignalConfigurationPerformanceBatch(
+  connectionId: string,
+  requests: readonly SignalConfigurationPerformanceRequest[],
+  minimumRatio = SIGNAL_CONFIG_MINIMUM_PF_RATIO,
+): Promise<Map<string, SignalConfigurationPerformanceDecision>> {
+  const unique = Array.from(new Map(requests.map((request) => [
+    signalConfigurationPerformanceIdentity(request),
+    request,
+  ])).entries())
+  const output = new Map<string, SignalConfigurationPerformanceDecision>()
+  if (unique.length === 0) return output
+  await initRedis()
+  const client = getRedisClient()
+  const pipeline = client.multi()
+  for (const [, request] of unique) {
+    pipeline.hgetall(signalPerformanceV2ConfigKey(
+      connectionId,
+      request.sourceId,
+      request.symbol,
+      request.direction,
+      request.configId,
+      false,
+    ))
+    pipeline.hgetall(signalPerformanceV2ConfigKey(
+      connectionId,
+      request.sourceId,
+      request.symbol,
+      request.direction,
+      request.configId,
+      true,
+    ))
+  }
+  const values = await pipeline.exec().catch(() => [])
+  unique.forEach(([identity], index) => {
+    const configValue = values?.[index * 2]
+    const liveValue = values?.[index * 2 + 1]
+    const configRaw = (Array.isArray(configValue) ? configValue?.[1] : configValue) as
+      | Record<string, string>
+      | undefined
+    const liveRaw = (Array.isArray(liveValue) ? liveValue?.[1] : liveValue) as
+      | Record<string, string>
+      | undefined
+    const samples = performanceNumber(configRaw, "count")
+    const ratio = performanceNumber(configRaw, "averagePnl")
+    const permanentlyDisabled =
+      liveRaw?.permanentlyDisabled === "1" ||
+      liveRaw?.permanentlyDisabled === "true"
+    output.set(identity, {
+      allowed:
+        !permanentlyDisabled &&
+        (samples < SIGNAL_PERFORMANCE_LOOKBACK || ratio + Number.EPSILON >= minimumRatio),
+      ratio,
+      samples,
+      permanentlyDisabled,
+    })
+  })
+  return output
 }
 
 function emptyPerformanceState(sourceId: string, symbol: string, direction: SignalDirection): SignalPerformanceState {
@@ -606,13 +865,135 @@ export async function getSignalPerformanceDecision(
   return { allowed: false, probe: false, state: { ...state, autoDisabled: true }, reason: "negative_pnl" }
 }
 
+async function recordSignalPerformanceLane(input: {
+  client: RedisClientLike
+  key: string
+  indexKey: string
+  markerId: string
+  sourceId: string
+  symbol: string
+  direction: SignalDirection
+  sampleValue: number
+  closedAt: number
+  lookback: number
+  minimumSamples: number
+  disableBelowTotal: number
+  cooldownMs: number
+  laneKind: "source" | "lane" | "config" | "live_config"
+  configId?: string
+  permanent?: boolean
+}): Promise<void> {
+  const sampleKey = `${input.key}:samples`
+  const marker = `${input.key}:position:${safePart(input.markerId)}`
+  const sample = JSON.stringify({
+    positionId: input.markerId,
+    pnl: input.sampleValue,
+    closedAt: input.closedAt,
+  })
+  let recorded = false
+  if (typeof input.client.eval === "function") {
+    try {
+      const result = await input.client.eval(RECORD_SIGNAL_OUTCOME_LUA, {
+        keys: [marker, sampleKey, input.key, input.indexKey],
+        arguments: [
+          String(input.closedAt),
+          String(PERFORMANCE_TTL_SECONDS),
+          sample,
+          String(input.lookback),
+          String(input.minimumSamples),
+          String(input.disableBelowTotal),
+          String(input.cooldownMs),
+          input.sourceId,
+          normalizeSymbol(input.symbol),
+          input.direction,
+        ],
+      })
+      recorded = Number(result) === 0 || Number(result) === 1
+    } catch {
+      recorded = false
+    }
+  }
+  if (!recorded) {
+    const claimed = await input.client.set(marker, String(input.closedAt), {
+      NX: true,
+      EX: PERFORMANCE_TTL_SECONDS,
+    }).catch(() => null)
+    if (claimed !== "OK") return
+    const write = input.client.multi()
+    write.lpush(sampleKey, sample)
+    write.ltrim(sampleKey, 0, input.lookback - 1)
+    write.expire(sampleKey, PERFORMANCE_TTL_SECONDS)
+    write.sadd(input.indexKey, input.key)
+    write.expire(input.indexKey, PERFORMANCE_TTL_SECONDS)
+    await write.exec()
+    const samples = await input.client.lrange(sampleKey, 0, input.lookback - 1)
+    const values = samples.map((raw) => {
+      try {
+        return Number(JSON.parse(raw)?.pnl)
+      } catch {
+        return Number.NaN
+      }
+    }).filter(Number.isFinite)
+    const count = values.length
+    const totalPnl = values.reduce((sum, value) => sum + value, 0)
+    const grossProfit = values.filter((value) => value > 0)
+      .reduce((sum, value) => sum + value, 0)
+    const grossLoss = Math.abs(values.filter((value) => value < 0)
+      .reduce((sum, value) => sum + value, 0))
+    const wins = values.filter((value) => value > 0).length
+    const autoDisabled =
+      count >= input.minimumSamples &&
+      totalPnl < input.disableBelowTotal
+    await input.client.hset(input.key, {
+      sourceId: input.sourceId,
+      symbol: normalizeSymbol(input.symbol),
+      direction: input.direction,
+      count: String(count),
+      wins: String(wins),
+      grossProfit: String(grossProfit),
+      grossLoss: String(grossLoss),
+      profitFactor: String(
+        grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0,
+      ),
+      totalPnl: String(totalPnl),
+      averagePnl: String(count > 0 ? totalPnl / count : 0),
+      winRate: String(count > 0 ? wins / count : 0),
+      autoDisabled: autoDisabled ? "1" : "0",
+      disabledUntil: String(
+        autoDisabled ? input.closedAt + input.cooldownMs : 0,
+      ),
+      updatedAt: String(input.closedAt),
+    })
+    await input.client.expire(input.key, PERFORMANCE_TTL_SECONDS)
+  }
+
+  const state = await input.client.hgetall(input.key).catch(() => ({}))
+  const metadata: Record<string, string> = {
+    laneKind: input.laneKind,
+    ...(input.configId && { configId: input.configId }),
+  }
+  if (
+    input.permanent &&
+    performanceNumber(state, "count") >= input.minimumSamples &&
+    performanceNumber(state, "averagePnl") < 0
+  ) {
+    metadata.permanentlyDisabled = "1"
+  }
+  await input.client.hset(input.key, metadata)
+  await input.client.expire(input.key, PERFORMANCE_TTL_SECONDS)
+}
+
 export async function recordSignalPerformanceOutcome(input: {
   connectionId: string
   positionId: string
   symbol: string
   direction: SignalDirection
   pnl: number
+  pnlPct?: number
+  positionCostPct?: number
   sourceIds: readonly string[]
+  signalLanes?: ReadonlyArray<{ sourceId: string; configId: string }>
+  liveExchange?: boolean
   settings?: unknown
   closedAt?: number
 }): Promise<void> {
@@ -629,7 +1010,21 @@ export async function recordSignalPerformanceOutcome(input: {
   const settings = input.settings === undefined
     ? await loadSignalIndicationSettings()
     : normalizeSignalIndicationSettings(input.settings)
-  const sourceIds = [...new Set([...input.sourceIds.map(safePart), "consensus"])]
+  // Exact execution lanes own their result exclusively. Contributor sourceIds
+  // remain diagnostic context and must not let a consensus (or any direct
+  // source) loss disable healthy sibling sources. Legacy positions without an
+  // exact lane retain the established source + consensus aggregation.
+  const laneSourceIds = (input.signalLanes || [])
+    .map((lane) => safePart(String(lane.sourceId || "")))
+    .filter(Boolean)
+  const sourceIds = [...new Set(
+    laneSourceIds.length > 0
+      ? laneSourceIds
+      : [
+          ...input.sourceIds.map(safePart).filter(Boolean),
+          "consensus",
+        ],
+  )]
   const closedAt = input.closedAt ?? Date.now()
 
   await Promise.all(sourceIds.map(async (sourceId) => {
@@ -728,6 +1123,120 @@ export async function recordSignalPerformanceOutcome(input: {
       await client.del(marker).catch(() => 0)
       throw error
     }
+  }))
+
+  const v2IndexKey = `signal:performance:v2:index:${safePart(input.connectionId)}`
+  const cooldownMs = settings.performanceCooldownMinutes * 60_000
+  const attributedSources = sourceIds
+  await Promise.all(attributedSources.flatMap((sourceId) => [
+    recordSignalPerformanceLane({
+      client,
+      key: signalPerformanceV2SourceKey(input.connectionId, sourceId),
+      indexKey: v2IndexKey,
+      markerId: input.positionId,
+      sourceId,
+      symbol: "_overall",
+      direction: input.direction,
+      sampleValue: input.pnl,
+      closedAt,
+      lookback: SIGNAL_SOURCE_PERFORMANCE_LOOKBACK,
+      minimumSamples: SIGNAL_SOURCE_PERFORMANCE_LOOKBACK,
+      disableBelowTotal: 0,
+      cooldownMs,
+      laneKind: "source",
+    }),
+    recordSignalPerformanceLane({
+      client,
+      key: signalPerformanceV2LaneKey(
+        input.connectionId,
+        sourceId,
+        input.symbol,
+        input.direction,
+      ),
+      indexKey: v2IndexKey,
+      markerId: input.positionId,
+      sourceId,
+      symbol: input.symbol,
+      direction: input.direction,
+      sampleValue: input.pnl,
+      closedAt,
+      lookback: SIGNAL_LANE_PERFORMANCE_LOOKBACK,
+      minimumSamples: SIGNAL_LANE_PERFORMANCE_LOOKBACK,
+      disableBelowTotal: 0,
+      cooldownMs,
+      laneKind: "lane",
+    }),
+  ]))
+
+  const costRelativeRatio = movePctToMainTradePfRatio(
+    Number.isFinite(Number(input.pnlPct)) ? Number(input.pnlPct) : input.pnl,
+    Number(input.positionCostPct) > 0 ? Number(input.positionCostPct) : 0.1,
+  )
+  const exactLanes = Array.from(new Map(
+    (input.signalLanes || []).map((lane) => {
+      const normalized = {
+        sourceId: safePart(String(lane.sourceId || "")),
+        configId: String(lane.configId || ""),
+      }
+      return [`${normalized.sourceId}|${normalized.configId}`, normalized]
+    }),
+  ).values()).filter((lane) => lane.sourceId && lane.configId)
+  await Promise.all(exactLanes.flatMap((lane) => {
+    const tasks: Promise<void>[] = [
+      recordSignalPerformanceLane({
+        client,
+        key: signalPerformanceV2ConfigKey(
+          input.connectionId,
+          lane.sourceId,
+          input.symbol,
+          input.direction,
+          lane.configId,
+          false,
+        ),
+        indexKey: v2IndexKey,
+        markerId: input.positionId,
+        sourceId: lane.sourceId,
+        symbol: input.symbol,
+        direction: input.direction,
+        sampleValue: costRelativeRatio,
+        closedAt,
+        lookback: SIGNAL_PERFORMANCE_LOOKBACK,
+        minimumSamples: SIGNAL_PERFORMANCE_LOOKBACK,
+        disableBelowTotal:
+          settings.configMinimumPfRatio * SIGNAL_PERFORMANCE_LOOKBACK,
+        cooldownMs,
+        laneKind: "config",
+        configId: lane.configId,
+      }),
+    ]
+    if (input.liveExchange) {
+      tasks.push(recordSignalPerformanceLane({
+        client,
+        key: signalPerformanceV2ConfigKey(
+          input.connectionId,
+          lane.sourceId,
+          input.symbol,
+          input.direction,
+          lane.configId,
+          true,
+        ),
+        indexKey: v2IndexKey,
+        markerId: input.positionId,
+        sourceId: lane.sourceId,
+        symbol: input.symbol,
+        direction: input.direction,
+        sampleValue: input.pnl,
+        closedAt,
+        lookback: SIGNAL_LIVE_DISABLE_LOOKBACK,
+        minimumSamples: SIGNAL_LIVE_DISABLE_LOOKBACK,
+        disableBelowTotal: 0,
+        cooldownMs,
+        laneKind: "live_config",
+        configId: lane.configId,
+        permanent: true,
+      }))
+    }
+    return tasks
   }))
 }
 
@@ -1281,6 +1790,33 @@ export function normalizeSignalRisk(value: unknown): SignalRisk | undefined {
     takeProfitPct,
     rewardRisk: Number(raw.rewardRisk) > 0 ? Number(raw.rewardRisk) : takeProfitPct / stopLossPct,
     sourceIds,
+    ...(raw.sourceId && { sourceId: safePart(String(raw.sourceId)) }),
+    ...(raw.configId && { configId: String(raw.configId) }),
+    ...(Array.isArray(raw.configIds) && {
+      configIds: [...new Set(raw.configIds.map((item: unknown) => String(item)).filter(Boolean))],
+    }),
+    ...(Array.isArray(raw.signalLanes) && {
+      signalLanes: Array.from(
+        new Map(
+          raw.signalLanes
+            .map((lane: any) => ({
+              sourceId: safePart(String(lane?.sourceId || "")),
+              configId: String(lane?.configId || ""),
+            }))
+            .filter((lane: { sourceId: string; configId: string }) =>
+              Boolean(lane.sourceId && lane.configId),
+            )
+            .map((lane: { sourceId: string; configId: string }) => [
+              `${lane.sourceId}|${lane.configId}`,
+              lane,
+            ]),
+        ).values(),
+      ),
+    }),
+    ...(raw.trailing !== undefined && { trailing: bool(raw.trailing, false) }),
+    ...(Number(raw.trailingStopPct) > 0 && {
+      trailingStopPct: Number(raw.trailingStopPct),
+    }),
     agreement: clamp(Number(raw.agreement) || 0, 0, 1),
     confidence: clamp(Number(raw.confidence) || 0, 0, 1),
     generatedAt: Math.max(0, Number(raw.generatedAt) || Date.now()),
@@ -1303,6 +1839,10 @@ export function mergeSignalRisks(...values: unknown[]): SignalRisk | undefined {
   if (risks.length === 1) return {
     ...risks[0],
     sourceIds: [...risks[0].sourceIds],
+    ...(risks[0].configIds && { configIds: [...risks[0].configIds] }),
+    ...(risks[0].signalLanes && {
+      signalLanes: risks[0].signalLanes.map((lane) => ({ ...lane })),
+    }),
   }
 
   const stopLossPct = Math.min(...risks.map((risk) => risk.stopLossPct))
@@ -1312,6 +1852,20 @@ export function mergeSignalRisks(...values: unknown[]): SignalRisk | undefined {
     takeProfitPct,
     rewardRisk: takeProfitPct / stopLossPct,
     sourceIds: [...new Set(risks.flatMap((risk) => risk.sourceIds))],
+    configIds: [...new Set(risks.flatMap((risk) =>
+      risk.configIds?.length
+        ? risk.configIds
+        : risk.configId
+          ? [risk.configId]
+          : [],
+    ))],
+    signalLanes: Array.from(
+      new Map(
+        risks
+          .flatMap((risk) => risk.signalLanes || [])
+          .map((lane) => [`${lane.sourceId}|${lane.configId}`, { ...lane }]),
+      ).values(),
+    ),
     agreement: Math.max(...risks.map((risk) => risk.agreement)),
     confidence: Math.max(...risks.map((risk) => risk.confidence)),
     generatedAt: Math.max(...risks.map((risk) => risk.generatedAt)),
@@ -1347,7 +1901,13 @@ async function persistSignalCycle(
   for (const indication of indications) {
     const direction = indication?.metadata?.direction
     if (direction !== "long" && direction !== "short") continue
-    const setKey = `indication_set:${connectionId}:${symbol}:signal:${direction}:consensus`
+    const sourceId = safePart(
+      indication?.metadata?.signal?.sourceId ||
+      indication?.metadata?.signal?.sourceIds?.[0] ||
+      "consensus",
+    )
+    const setKey =
+      `indication_set:${connectionId}:${symbol}:signal:${direction}:source:${sourceId}`
     const entry = {
       id: `signal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       timestamp: new Date(indication.timestamp || Date.now()).toISOString(),
@@ -1358,6 +1918,7 @@ async function persistSignalCycle(
       rawSignalStrength: indication.rawSignalStrength,
       confidence: indication.confidence,
       config: {
+        sourceId,
         sourceIds: indication.metadata?.signal?.sourceIds || [],
         timeframeMinutes: settings.timeframeMinutes,
       },
@@ -1500,19 +2061,69 @@ async function processSignalIndicationsUncached(
   const evaluated = fetched.filter((evaluation): evaluation is SignalSourceEvaluation => Boolean(evaluation))
 
   const allowedEvaluations = (await Promise.all(evaluated.map(async (evaluation) => {
-    const decision = await getSignalPerformanceDecision(client, {
+    if (signalSourceLaneManuallyDisabled(
+      settings,
+      evaluation.sourceId,
+      options.symbol,
+      evaluation.direction,
+    )) {
+      return null
+    }
+    const decision = await getSignalSourceLanePerformanceDecision(client, {
       connectionId: options.connectionId,
       sourceId: evaluation.sourceId,
       symbol: options.symbol,
       direction: evaluation.direction,
-      settings,
-      now,
     })
     return decision.allowed ? evaluation : null
   }))).filter((evaluation): evaluation is SignalSourceEvaluation => Boolean(evaluation))
 
   const consensus = lowStopConsensus(allowedEvaluations, settings)
-  let indications: any[] = []
+  const indications: any[] = []
+  // Every website source remains an independent Signal lane. The
+  // `directExecutionEnabled` setting controls only whether its exact
+  // configuration can bootstrap before the 12-result PF window; disabling
+  // it must not collapse all source lanes into the optional consensus row.
+  const directSources = [...allowedEvaluations].sort(
+    (left, right) =>
+      left.stopLossPct - right.stopLossPct ||
+      right.confidence - left.confidence ||
+      right.strength - left.strength ||
+      left.sourceId.localeCompare(right.sourceId),
+  )
+  for (const evaluation of directSources) {
+    indications.push({
+      type: "signal",
+      symbol: options.symbol,
+      value: evaluation.lastPrice,
+      profitFactor: evaluation.rewardRisk,
+      signalScore: evaluation.rewardRisk,
+      rawSignalStrength: evaluation.strength,
+      confidence: evaluation.confidence,
+      timestamp: now,
+      direction: evaluation.direction,
+      metadata: {
+        direction: evaluation.direction,
+        primary: indications.length === 0,
+        mode: "direct_source",
+        signal: {
+          sourceId: evaluation.sourceId,
+          sourceIds: [evaluation.sourceId],
+          stopLossPct: evaluation.stopLossPct,
+          takeProfitPct: evaluation.takeProfitPct,
+          rewardRisk: evaluation.rewardRisk,
+          agreement: 1,
+          confidence: evaluation.confidence,
+          generatedAt: now,
+          atrPct: evaluation.atrPct,
+          candleCount: evaluation.candleCount,
+          selectedSourceCount: sources.length,
+          evaluatedSourceCount: evaluated.length,
+          allowedSourceCount: allowedEvaluations.length,
+        },
+      },
+    })
+  }
   if (consensus) {
     const consensusDecision = await getSignalPerformanceDecision(client, {
       connectionId: options.connectionId,
@@ -1533,7 +2144,7 @@ async function processSignalIndicationsUncached(
         atrPct: evaluation.atrPct,
         candleCount: evaluation.candleCount,
       }))
-      indications = [{
+      indications.push({
         type: "signal",
         symbol: options.symbol,
         value: consensus.contributors.reduce(
@@ -1563,7 +2174,7 @@ async function processSignalIndicationsUncached(
             performanceProbe: consensusDecision.probe,
           },
         },
-      }]
+      })
     }
   }
 
@@ -1591,6 +2202,7 @@ export async function processSignalIndications(
   }
   const now = options.now ?? Date.now()
   const settingsFingerprint = JSON.stringify({
+    directExecutionEnabled: settings.directExecutionEnabled,
     timeframeMinutes: settings.timeframeMinutes,
     candleLimit: settings.candleLimit,
     maxSourcesPerCycle: settings.maxSourcesPerCycle,
@@ -1606,6 +2218,7 @@ export async function processSignalIndications(
     stopLossAtrMultiplier: settings.stopLossAtrMultiplier,
     takeProfitRewardRisk: settings.takeProfitRewardRisk,
     takeProfitMaxPct: settings.takeProfitMaxPct,
+    configMinimumPfRatio: settings.configMinimumPfRatio,
     sources: settings.sources,
   })
   const key = `${safePart(options.connectionId)}:${normalizeSymbol(options.symbol)}:${settingsFingerprint}`

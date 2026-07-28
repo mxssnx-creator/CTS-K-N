@@ -29,31 +29,74 @@ interface ConnectionState {
 export function ConnectionStateTabs({ connection, status, progress = 0 }: ConnectionStateTabsProps) {
   const [state, setState] = useState<ConnectionState>({
     queries: 0,
-    performance: { latency: 45, throughput: 120 },
-    activities: ["Engine started", "Loading market data", "Processing indications", "Monitoring live trades"],
-    indications: 20,
+    performance: { latency: 0, throughput: 0 },
+    activities: [],
+    indications: 0,
     strategies: 0,
     liveTrades: 0,
-    databaseSize: 2.5,
+    databaseSize: 0,
     effectiveIntervalMs: 5000,
     errors: [],
-    warnings: ["High latency detected", "Incomplete historical data for some symbols"],
+    warnings: [],
   })
 
   useEffect(() => {
-    // Simulate real-time state updates
-    const interval = setInterval(() => {
-      setState((prev) => ({
-        ...prev,
-        performance: {
-          latency: Math.random() * 100 + 30,
-          throughput: Math.random() * 150 + 100,
-        },
-      }))
-    }, 5000)
-
-    return () => clearInterval(interval)
-  }, [])
+    let disposed = false
+    const connectionId = encodeURIComponent(String(connection.id))
+    const refresh = async () => {
+      try {
+        const [metricsResponse, modulesResponse] = await Promise.all([
+          fetch(`/api/structure/metrics?connectionId=${connectionId}`, { cache: "no-store" }),
+          fetch(`/api/structure/modules?connectionId=${connectionId}`, { cache: "no-store" }),
+        ])
+        const [metricsPayload, modulesPayload] = await Promise.all([
+          metricsResponse.json(),
+          modulesResponse.json(),
+        ])
+        if (disposed) return
+        if (!metricsResponse.ok || !metricsPayload.success) {
+          throw new Error(metricsPayload.error || "Measured connection metrics unavailable")
+        }
+        const system = metricsPayload.data?.systemMetrics || {}
+        const logistics = metricsPayload.data?.tradingLogistics || {}
+        const raw = metricsPayload.data?.rawMetrics || {}
+        const modules = Array.isArray(modulesPayload.data) ? modulesPayload.data : []
+        setState({
+          queries: Number(system.redis_operations_per_minute) || 0,
+          performance: {
+            latency: Number(logistics.avg_response_time) || 0,
+            throughput: (Number(system.redis_operations_per_minute) || 0) / 60,
+          },
+          activities: modules.map((module: any) =>
+            `${String(module.name || "Module")}: ${String(module.status || "unknown")}`,
+          ),
+          indications: Number(raw.indicationsActive) || 0,
+          strategies: Number(logistics.active_strategies) || 0,
+          liveTrades: Number(raw.livePositions) || 0,
+          databaseSize: Number(system.database_size) || 0,
+          effectiveIntervalMs: 5000,
+          errors: modules
+            .filter((module: any) => module.status === "error")
+            .map((module: any) => `${module.name}: ${module.detail || "measured error"}`),
+          warnings: modules
+            .filter((module: any) => module.status === "inactive")
+            .map((module: any) => `${module.name}: ${module.detail || "inactive"}`),
+        })
+      } catch (error) {
+        if (disposed) return
+        setState((current) => ({
+          ...current,
+          errors: [error instanceof Error ? error.message : "Measured connection state unavailable"],
+        }))
+      }
+    }
+    void refresh()
+    const interval = setInterval(() => void refresh(), 5000)
+    return () => {
+      disposed = true
+      clearInterval(interval)
+    }
+  }, [connection.id])
 
   return (
     <Tabs defaultValue="main" className="w-full">
@@ -131,7 +174,7 @@ export function ConnectionStateTabs({ connection, status, progress = 0 }: Connec
                 <span className="font-semibold text-sm">{state.performance.throughput.toFixed(0)} req/s</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-xs text-muted-foreground">Queries Processed</span>
+                <span className="text-xs text-muted-foreground">Redis Operations/min</span>
                 <span className="font-semibold text-sm">{state.queries}</span>
               </div>
             </CardContent>
@@ -172,7 +215,7 @@ export function ConnectionStateTabs({ connection, status, progress = 0 }: Connec
               </div>
               <div className="flex justify-between">
                 <span className="text-xs text-muted-foreground">Storage Type</span>
-                <span className="font-semibold text-sm">File-based</span>
+                <span className="font-semibold text-sm">Redis</span>
               </div>
             </CardContent>
           </Card>
@@ -188,6 +231,9 @@ export function ConnectionStateTabs({ connection, status, progress = 0 }: Connec
                     • {activity}
                   </li>
                 ))}
+                {state.activities.length === 0 && (
+                  <li className="text-muted-foreground">No measured module activity yet.</li>
+                )}
               </ul>
             </CardContent>
           </Card>

@@ -23,19 +23,23 @@ export const dynamic = "force-dynamic"
 export const maxDuration = 30
 export const revalidate = 0
 
-// Rate-limit STATS-VALIDATION console.warn to once per 5 min per connection.
-// The stale real>main snapshot persists across many requests until the
-// coordinator writes a fresh cycle — spamming logs on every stats poll.
-const _statsValidationLastWarn: Map<string, number> = new Map()
-function throttledStatsWarn(key: string, msg: string): void {
-  const now = Date.now()
-  const last = _statsValidationLastWarn.get(key) ?? 0
-  if (now - last < 300_000) return
-  _statsValidationLastWarn.set(key, now)
-  console.warn(msg)
-}
-
 const SETTINGS_RECOORDINATION_STALE_MS = 45_000
+const STATS_SLOW_DIAGNOSTIC_MS = 15_000
+const STATS_SLOW_LOG_INTERVAL_MS = 60_000
+const statsSlowDiagnosticAt = new Map<string, number>()
+
+async function mapInBatches<T, R>(
+  values: readonly T[],
+  batchSize: number,
+  mapper: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const output: R[] = []
+  const size = Math.max(1, Math.floor(batchSize))
+  for (let offset = 0; offset < values.length; offset += size) {
+    output.push(...await Promise.all(values.slice(offset, offset + size).map(mapper)))
+  }
+  return output
+}
 
 function buildSettingsRecoordinationState(progHash: Record<string, string>, nowMs = Date.now()) {
   const startedAt = progHash.settings_recoordination_started_at || progHash.settings_changed_at || ""
@@ -496,20 +500,31 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  // Add request timeout: if this endpoint takes >15 seconds, abort.
-  // Keep the timer handle and clear it in `finally`; otherwise every successful
-  // poll leaves a pending 15s timer behind. During frequent dashboard refreshes
-  // those orphan timers create the exact hanging/stuck behavior Jest and the UI
-  // were reporting even though the endpoint had already returned.
-  let timeoutHandle: ReturnType<typeof setTimeout> | null = null
-  const timeoutPromise = new Promise<Response>((_, reject) => {
-    timeoutHandle = setTimeout(() => reject(new Error("Stats endpoint timeout (15s exceeded)")), 15000)
-  })
+  const { id: connectionId } = await params
+  const requestStartedAt = Date.now()
+  // Exhaustive stage snapshots can legitimately take longer while a large
+  // settings generation is being materialised. Fifteen seconds is therefore a
+  // slow-cycle diagnostic, never an abandonment boundary: returning early
+  // used to discard a valid completed snapshot and made cards look stale.
+  const slowDiagnostic = setTimeout(() => {
+    const now = Date.now()
+    const previous = statsSlowDiagnosticAt.get(connectionId) || 0
+    if (now - previous < STATS_SLOW_LOG_INTERVAL_MS) return
+    statsSlowDiagnosticAt.set(connectionId, now)
+    while (statsSlowDiagnosticAt.size > 256) {
+      const oldest = statsSlowDiagnosticAt.keys().next().value
+      if (oldest === undefined) break
+      statsSlowDiagnosticAt.delete(oldest)
+    }
+    console.warn(
+      `[v0] [/stats] Slow exhaustive snapshot for ${connectionId}: ` +
+      `still processing after ${now - requestStartedAt}ms`,
+    )
+  }, STATS_SLOW_DIAGNOSTIC_MS)
+  slowDiagnostic.unref?.()
 
   const mainLogic = async () => {
     try {
-      const { id: connectionId } = await params
-
       await initRedis()
       const client = getRedisClient()
       if (!client) {
@@ -753,7 +768,6 @@ export async function GET(
           rawHistoricSymbolsProcessed,
           prehistoricTotalIsActive ? n(prehistoricHash.symbols_total) : 0,
           symbolsFromArray,
-          1,
         )
     // The numerator belongs to the same current generation as the denominator.
     // Never expose stale work from an older symbol basket as current progress.
@@ -763,28 +777,16 @@ export async function GET(
       n(progHash.prehistoric_candles_processed),
       n(es.config_set_candles_processed)
     )
-    // `indicators_calculated` is written by the prehistoric calculator but
-    // is reset to "0" by the dev-boot migrations. Fall back to the realtime
-    // indication cycle count (every live indication cycle = processed a batch
-    // of market indications, equivalent to "indicators calculated") so this
-    // field is never falsely 0 when the engine is actively running.
+    // Historic indicators are reported only from historic/config-set writers.
+    // Realtime indication cycles are a different unit and must never be
+    // relabelled as historic calculations.
     const historicIndicatorsCalculated = pick(
       n(prehistoricHash.indicators_calculated) || 0,
       n(es.config_set_indication_results),
-      // Fall back: use live indication cycles as the "indicators processed" proxy
-      n(progHash.indication_live_cycle_count),
-      n(progHash.indication_cycle_count),
     )
     const historicCyclesCompleted = pick(
       n(progHash.prehistoric_cycles_completed),
       n(es.config_set_symbols_processed),
-      // Tertiary: use the number of symbols processed as a minimum
-      // non-zero cycle count — each symbol constitutes one prehistoric
-      // cycle even if the dedicated `prehistoric_cycles_completed`
-      // counter was never written (e.g. the increment call silently
-      // failed). This prevents P-Cycles from showing 0 when 4 symbols
-      // have clearly been processed (Frames and Indicators are non-zero).
-      historicSymbolsProcessed
     )
     // Completion is a value invariant of the current basket, not a phase/flag
     // shortcut. Old `:done`, is_complete, or live-phase markers can coexist
@@ -913,13 +915,14 @@ export async function GET(
       const posIds = (await client
         .smembers(`pseudo_positions:${connectionId}`)
         .catch(() => [] as string[])) || []
-      // Parallel hgetall for every id — matches the fan-out pattern in
-      // stages/real-stage.ts etc. A sequential loop here dominated
-      // /stats latency when pseudo positions accumulated.
-      const hashes = await Promise.all(
-        posIds.slice(0, 500).map((id) =>
-          client.hgetall(`pseudo_position:${connectionId}:${id}`).catch(() => null),
-        ),
+      // Read every current Base pseudo row. Batches bound Redis fan-out without
+      // turning 500 into an invisible statistics/admission ceiling.
+      const hashes = await mapInBatches(
+        posIds,
+        250,
+        (id) => client
+          .hgetall(`pseudo_position:${connectionId}:${id}`)
+          .catch(() => null),
       )
       for (const h of hashes) {
         if (!h) continue
@@ -990,8 +993,6 @@ export async function GET(
     // exchange orders. Count only — USD volume is NOT tracked here
     // either; Real is still a pipeline stage, not the exchange. The
     // only authoritative USD exposure is live.volumeUsd below.
-    // Bounded by a 500-key safety ceiling — anything beyond that
-    // is a data-hygiene issue the operator needs to fix independently.
     let realOpen = 0
     // ── Symbol+direction → candidate Real positions index ─────────
     // Populated alongside the Real scan so live-position resolution
@@ -1006,16 +1007,18 @@ export async function GET(
     try {
       // Use the connection-scoped position-id list instead of O(N) client.keys().
       // `real:positions:{connectionId}` is maintained by the Real stage (lpush on
-      // creation) and gives us a bounded, connection-filtered set in O(1) per id.
+      // creation) and gives us a connection-filtered set in O(1) per id.
       // client.keys("real:position:*") was a blocking O(keyspace) scan that stalled
       // the event loop and scanned ALL connections' positions just to then discard
       // the ones belonging to other connections.
       const realIds = ((await client
-        .lrange(`real:positions:${connectionId}`, 0, 499)
+        .lrange(`real:positions:${connectionId}`, 0, -1)
         .catch(() => [])) || []) as string[]
       if (realIds.length > 0) {
-        const raws = await Promise.all(
-          realIds.map((id: string) => client.get(`real:position:${id}`).catch(() => null)),
+        const raws = await mapInBatches(
+          [...new Set(realIds)],
+          250,
+          (id: string) => client.get(`real:position:${id}`).catch(() => null),
         )
         for (const raw of raws) {
           if (!raw) continue
@@ -1123,12 +1126,14 @@ export async function GET(
     }> = []
     try {
       const liveOpenIds = ((await client
-        .lrange(`live:positions:${connectionId}`, 0, 499)
+        .lrange(`live:positions:${connectionId}`, 0, -1)
         .catch(() => [])) || []) as string[]
 
       if (liveOpenIds.length > 0) {
-        const rawList = await Promise.all(
-          liveOpenIds.map((id) => readLivePosition(client, connectionId, id).catch(() => null)),
+        const rawList = await mapInBatches(
+          [...new Set(liveOpenIds)],
+          250,
+          (id) => readLivePosition(client, connectionId, id).catch(() => null),
         )
         for (const pos of rawList) {
           if (!pos) continue
@@ -1631,21 +1636,10 @@ export async function GET(
         stratEvaluated[type] = fromActiveEval > 0 ? fromActiveEval : 0
       })
     )
-    // Main and Real materialise related/adjusted Sets, so their output counts
-    // may legitimately exceed the prior stage's raw count. Live is different:
-    // it selects directly from the bounded Real output and must remain a subset.
-    // A stats read can still race the Real/Live writes, so clamp only that true
-    // subset invariant and expose the writer race through a throttled warning.
-    if (stratCounts.live > stratCounts.real) {
-      throttledStatsWarn(
-        `${connectionId}:live-gt-real`,
-        `[STATS-VALIDATION] ${connectionId}: live (${stratCounts.live}) > real (${stratCounts.real}). ` +
-        `Clamping live to real to preserve cascade invariants.`,
-      )
-      stratCounts.live = stratCounts.real
-      activeStratByStage.live = Math.min(activeStratByStage.live || 0, stratCounts.live)
-      activeStratTotal = activeStratByStage.real || stratCounts.real || strategiesTotal
-    }
+    // Do not clamp stage snapshots against each other. Main Overall can expand
+    // from one Base parent into many related Sets, while Real Active is
+    // intentionally collapsed to one count per Base lineage and Live tracks
+    // exact mirrored rows. Those are different denominators by contract.
     // ── Pipeline-aware "total strategies" ────────────────────────────────
     // Base → Main → Real → Live is a transformation pipeline. Main expands
     // parent Sets into position-axis/variant children; Real filters/adjusts
@@ -2152,7 +2146,14 @@ export async function GET(
           if (ageMs > PRUNE_MS) {
             // Collect every per-symbol field for HDEL. Cheap because
             // these are stale samples already excluded from aggregation.
-            for (const f of ["created","entries","running","progressing","passed","evaluated","apf","addt","apps","aper","dispatch_selected","dispatch_suppressed","ts"]) {
+            for (const f of [
+              "created", "entries", "running", "progressing", "passed", "evaluated",
+              "row_total", "row_valid", "row_overall", "row_active",
+              "row_active_exact", "row_mirrored", "row_total_open",
+              "row_valid_open", "row_overall_open",
+              "apf", "addt", "apps", "aper", "dispatch_selected",
+              "dispatch_suppressed", "ts",
+            ]) {
               if (`s:${symbol}:${f}` in dh) staleFields.push(`s:${symbol}:${f}`)
             }
             continue
@@ -2292,18 +2293,12 @@ export async function GET(
         // writes from — the detail hash `sets_running_now` field is only written
         // periodically and may lag on a fresh boot.
         const setsRunningNowRaw = n(dh.sets_running_now || dh.sets_with_open_positions)
-        const setsRunningNow = setsRunningNowRaw > 0
-          ? setsRunningNowRaw
-          : stage === "real"
-            ? pseudoRunningSets   // SCARD pseudo_positions:{conn}:active_config_keys
-            : stage === "base"
-              ? pseudoRunningSets
-              : 0
+        const setsRunningNow = setsRunningNowRaw
         // setsProgressing: how many sets have entries/positions building up.
         // Fall back to setsRunningNow (sets with open pseudo-positions) NOT
         // createdSets (lifetime total) — createdSets inflates to 9000+ and is
         // not meaningful as a "currently progressing" metric.
-        const setsProgressing = n(dh.sets_progressing) || setsRunningNow || stratCounts[stage] || 0
+        const setsProgressing = n(dh.sets_progressing) || setsRunningNow
 
         stratDetail[stage] = {
           avgPosPerSet:        isFinite(avgPosPerSet)    ? Math.round(avgPosPerSet * 100) / 100      : 0,
@@ -2599,13 +2594,80 @@ export async function GET(
       }
     }
 
+    // ── CANONICAL CURRENT STRATEGY ROWS ────────────────────────────────
+    // These counters are per-symbol snapshots written atomically by the
+    // coordinator. They deliberately do not fall back to lifetime HINCRBY
+    // totals or the global pseudo-position count: both would mix unrelated
+    // stages and inflate active percentages after long runs.
+    const aggregateFreshRowField = (
+      hash: Record<string, string>,
+      field: string,
+      legacyField: string,
+    ): number => {
+      const nowMs = Date.now()
+      let total = 0
+      let samples = 0
+      for (const key of Object.keys(hash)) {
+        if (!key.startsWith("s:") || !key.endsWith(":ts")) continue
+        const symbol = key.slice(2, -3)
+        if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol.toUpperCase())) continue
+        const timestamp = Number(hash[key] || 0)
+        if (!(timestamp > 0) || nowMs - timestamp > 5 * 60_000) continue
+        total += n(hash[`s:${symbol}:${field}`])
+        samples++
+      }
+      return samples > 0 ? total : n(hash[field] ?? hash[legacyField])
+    }
+    const ratio = (numerator: number, denominator: number, cap = true): number => {
+      if (!(denominator > 0)) return 0
+      const value = Math.round((numerator / denominator) * 1000) / 10
+      return cap ? Math.min(100, value) : value
+    }
+    const baseRowTotal = aggregateFreshRowField(strategyDetailBaseHash, "row_total", "created_sets")
+    const baseRowValid = aggregateFreshRowField(strategyDetailBaseHash, "row_valid", "passed_sets")
+    const mainRowValid = aggregateFreshRowField(strategyDetailMainHash, "row_valid", "parent_sets_passed")
+    const mainRowOverall = aggregateFreshRowField(strategyDetailMainHash, "row_overall", "created_sets")
+    const realRowValid = aggregateFreshRowField(strategyDetailRealHash, "row_valid", "created_sets")
+    const realRowActive = aggregateFreshRowField(strategyDetailRealHash, "row_active", "sets_running_now")
+    const liveRowTotal = aggregateFreshRowField(strategyDetailLiveHash, "row_total", "evaluated")
+    const liveRowMirrored = aggregateFreshRowField(strategyDetailLiveHash, "row_mirrored", "created_sets")
+    const strategyRows = {
+      base: {
+        total: baseRowTotal,
+        valid: baseRowValid,
+        totalOpen: aggregateFreshRowField(strategyDetailBaseHash, "row_total_open", "sets_running_now"),
+        validOpen: aggregateFreshRowField(strategyDetailBaseHash, "row_valid_open", "sets_running_now"),
+        validRatio: ratio(baseRowValid, baseRowTotal),
+      },
+      main: {
+        valid: mainRowValid,
+        overall: mainRowOverall,
+        validOpen: aggregateFreshRowField(strategyDetailMainHash, "row_valid_open", "sets_running_now"),
+        overallOpen: aggregateFreshRowField(strategyDetailMainHash, "row_overall_open", "sets_running_now"),
+        overallToValidRatio: ratio(mainRowOverall, mainRowValid, false),
+      },
+      real: {
+        valid: realRowValid,
+        active: realRowActive,
+        activeExactRows: aggregateFreshRowField(strategyDetailRealHash, "row_active_exact", "sets_running_now"),
+        activeRatio: ratio(realRowActive, realRowValid),
+      },
+      live: {
+        total: liveRowTotal,
+        mirrored: liveRowMirrored,
+        active: aggregateFreshRowField(strategyDetailLiveHash, "row_active", "sets_running_now"),
+        mirroredRatio: ratio(liveRowMirrored, liveRowTotal),
+      },
+      updatedAt: Date.now(),
+      semantics: "current-open-row-snapshot",
+    }
+
     // ── SPEC PERFORMANCE HISTORY ───────────────────────────────────────────────
     // Per-symbol per-stage performance snapshot derived from the Main and Real
     // strategy_detail hashes. Each hash carries `s:{symbol}:{apf|addt|apps|aper|ts}`
     // fields written by strategy-coordinator every cycle. We aggregate across all
     // fresh (≤5-min-old) symbols to give each (symbol × stage) a complete metrics
-    // row including win-rate proxy (sets-with-open-pos / created), PF, DDT, hold,
-    // and avg entry-score.
+    // row including current open membership, PF, DDT, and avg entry-score.
     //
     // "Detail" = per-symbol spec rows | "Aggregated" = cross-symbol tier averages.
     const buildSpecPerformance = (
@@ -2782,8 +2844,8 @@ export async function GET(
     // Per-stage (base / main / real / live) performance summary derived from
     // strategy_detail hashes (base/main/real from cross-symbol aggregation,
     // live from closed-archive realised P&L). Each tier holds the fields the
-    // dashboard PerformanceTiers card needs: avgPF, winRate, avgHoldMin,
-    // totalPnl, sharpe (estimate), drawdown (DDT proxy).
+    // dashboard PerformanceTiers card needs. Evaluation rows deliberately
+    // leave execution-only win-rate/P&L/Sharpe at zero; Live uses closed fills.
     const buildTierFromSpecPerf = (sp: { aggregated: Record<string, any> }, extra: Record<string, any> = {}) => ({
       symbolCount:       sp.aggregated.symbolCount       || 0,
       totalCreated:      sp.aggregated.totalCreated      || 0,
@@ -2796,12 +2858,6 @@ export async function GET(
       ...extra,
     })
 
-    // Win rate proxy for base/main/real: running-sets / created.
-    // Only meaningful when the sets are currently open; empty at end-of-run.
-    const baseWinRateProxy  = baseSpecPerf.aggregated.totalCreated  > 0 ? Math.min(100, Math.round((baseSpecPerf.aggregated.totalRunning  / baseSpecPerf.aggregated.totalCreated) * 1000) / 10) : 0
-    const mainWinRateProxy  = mainSpecPerf.aggregated.totalCreated  > 0 ? Math.min(100, Math.round((mainSpecPerf.aggregated.totalRunning  / mainSpecPerf.aggregated.totalCreated) * 1000) / 10) : 0
-    const realWinRateProxy  = realSpecPerf.aggregated.totalCreated  > 0 ? Math.min(100, Math.round((realSpecPerf.aggregated.totalRunning  / realSpecPerf.aggregated.totalCreated) * 1000) / 10) : 0
-
     const liveProfitFactor  = liveClosedSumGrossLoss > 0
       ? Math.round((liveClosedSumGrossProfit / liveClosedSumGrossLoss) * 1000) / 1000
       : liveClosedSumGrossProfit > 0 ? 999 : 0
@@ -2809,32 +2865,26 @@ export async function GET(
     const liveWinRate       = liveClosedCount > 0 ? Math.round((liveClosedWins / liveClosedCount) * 1000) / 10 : 0
     const liveAvgRoe        = liveClosedCount > 0 ? Math.round((liveClosedRoeAcc / liveClosedCount) * 10000) / 100 : 0
 
-    // Sharpe estimate for base/main/real — use DDT as a volatility proxy if no
-    // per-position returns are available at these pipeline stages (they're
-    // evaluation-only, not executed, so true returns are undefined at Base/Main).
-    // For Live we derive it from the closed-archive P&L sample.
-    const approxSharpe = (ddtHr: number) => ddtHr > 0 ? (1 / ddtHr) * 0.15 : 0 // heuristic: shorter DDT → less volatility
-
     const performanceTiers = {
       base: buildTierFromSpecPerf(baseSpecPerf, {
         avgHoldMin: 0, // Base has no execution hold-time
         totalPnl: 0, // Base is evaluation-only, no real P&L
-        winRate: baseWinRateProxy,
-        sharpe: approxSharpe(baseSpecPerf.aggregated.avgDrawdownTime || 0),
+        winRate: 0,
+        sharpe: 0,
         isExecution: false,
       }),
       main: buildTierFromSpecPerf(mainSpecPerf, {
         avgHoldMin: 0,
         totalPnl: 0,
-        winRate: mainWinRateProxy,
-        sharpe: approxSharpe(mainSpecPerf.aggregated.avgDrawdownTime || 0),
+        winRate: 0,
+        sharpe: 0,
         isExecution: false,
       }),
       real: buildTierFromSpecPerf(realSpecPerf, {
         avgHoldMin: 0,  // Real is promo-stage, not yet exchange execution
         totalPnl: 0,
-        winRate: realWinRateProxy,
-        sharpe: approxSharpe(realSpecPerf.aggregated.avgDrawdownTime || 0),
+        winRate: 0,
+        sharpe: 0,
         isExecution: false,
       }),
       live: {
@@ -2844,7 +2894,8 @@ export async function GET(
         totalRunning:    Math.max(0, n(progHash.live_positions_created_count) - n(progHash.live_positions_closed_count)),
         avgProfitFactor: liveProfitFactor,
         avgDrawdownMin:  liveAvgHoldMin,
-        avgPosPerSet:    n(progHash.live_positions_created_count) > 0
+        avgPosPerSet:    0,
+        avgNotionalUsd:  n(progHash.live_positions_created_count) > 0
           ? n(progHash.live_volume_usd_total) / n(progHash.live_positions_created_count)
           : 0,
         totalPnl:        Math.round(liveClosedSumPnl * 100) / 100,
@@ -2898,9 +2949,10 @@ export async function GET(
         n(strategyDetailRealHash.created_sets),
     }
 
-    // ── WINDOW DATA (last 5min / 60min) ────────────���─────────────────────────
-    // Stored in sorted sets: indications:{connId}:window  scored by unix ms timestamp
-    // If not present fall back to estimating from cycle counts using elapsed time
+    // ── WINDOW DATA (last 5min / 60min) ──────────────────────────────────────
+    // Stored in sorted sets scored by unix-ms timestamp. Counts are exact
+    // rolling-ledger measurements; unavailable ledgers are never estimated
+    // from lifetime counters.
     const nowMs = Date.now()
     const ago5m  = nowMs - 5  * 60 * 1000
     const ago60m = nowMs - 60 * 60 * 1000
@@ -2909,32 +2961,27 @@ export async function GET(
     let indWindow60m = 0
     let stratWindow5m  = 0
     let stratWindow60m = 0
+    let indicationWindowMeasured = false
+    let strategyWindowMeasured = false
 
     try {
-      // Issue all four ZRANGEBYSCORE reads in parallel — they are
-      // independent zsets and the previous serial chain added ~4 Redis
-      // round-trips of latency to every /stats poll for zero benefit.
-      // ZRANGEBYSCORE itself returns the matching members; we only need
-      // the count so `.length` is sufficient.
+      // ZCOUNT keeps payload size O(1) even when an exhaustive engine records
+      // a large number of window events.
       const [ind5m, ind60m, str5m, str60m] = await Promise.all([
-        client.zrangebyscore(`indications:${connectionId}:window`, ago5m,  "+inf").catch(() => [] as string[]),
-        client.zrangebyscore(`indications:${connectionId}:window`, ago60m, "+inf").catch(() => [] as string[]),
-        client.zrangebyscore(`strategies:${connectionId}:window`,  ago5m,  "+inf").catch(() => [] as string[]),
-        client.zrangebyscore(`strategies:${connectionId}:window`,  ago60m, "+inf").catch(() => [] as string[]),
+        client.zcount(`indications:${connectionId}:window`, ago5m,  "+inf"),
+        client.zcount(`indications:${connectionId}:window`, ago60m, "+inf"),
+        client.zcount(`strategies:${connectionId}:window`,  ago5m,  "+inf"),
+        client.zcount(`strategies:${connectionId}:window`,  ago60m, "+inf"),
       ])
-      indWindow5m    = ind5m.length
-      indWindow60m   = ind60m.length
-      stratWindow5m  = str5m.length
-      stratWindow60m = str60m.length
-    } catch { /* non-critical; fall back to zero */ }
-
-    // If window sets are empty, estimate from rate: total / elapsed_minutes * window
-    if (indWindow5m === 0 && indTotal > 0) {
-      const startedAtMs = n(progHash.started_at) || (nowMs - 3600_000)
-      const elapsedMin = (nowMs - startedAtMs) / 60_000 || 1
-      const ratePerMin = indTotal / elapsedMin
-      indWindow5m  = Math.round(ratePerMin * 5)
-      indWindow60m = Math.round(ratePerMin * Math.min(60, elapsedMin))
+      indWindow5m    = n(ind5m)
+      indWindow60m   = n(ind60m)
+      stratWindow5m  = n(str5m)
+      stratWindow60m = n(str60m)
+      indicationWindowMeasured = true
+      strategyWindowMeasured = true
+    } catch {
+      // Non-critical monitoring failure. The response marks the metric
+      // unavailable so zero cannot be mistaken for a measured quiet period.
     }
 
     // ── METADATA section ─────────────────────────────────────────────�����──────
@@ -2972,15 +3019,25 @@ export async function GET(
     const _liveDispatched = stratCounts.live || 0
     const _liveBase       = stratCounts.real  || 0
     const stageEvalPercent = {
-      base: _pct(_baseEvaluated, _baseOutput),
-      main: activeMainInput > 0
-        ? _pct(activeMainPassedParents, activeMainInput)
-        : _pct(_mainParentsPassed || Math.min(_mainOutput, _mainInput), _mainInput),
-      real: (activeRealInput + activeRealRelatedCreated) > 0
-        ? _pct(stratCounts.real || 0, activeRealInput + activeRealRelatedCreated)
-        : _pct(_realOutput, _realInput),
+      base: strategyRows.base.total > 0
+        ? _pct(strategyRows.base.valid, strategyRows.base.total)
+        : _pct(_baseEvaluated, _baseOutput),
+      main: strategyRows.base.total > 0
+        ? _pct(strategyRows.main.valid, strategyRows.base.total)
+        : activeMainInput > 0
+          ? _pct(activeMainPassedParents, activeMainInput)
+          : _pct(_mainParentsPassed || Math.min(_mainOutput, _mainInput), _mainInput),
+      real: strategyRows.main.overall > 0
+        ? _pct(strategyRows.real.valid, strategyRows.main.overall)
+        : (activeRealInput + activeRealRelatedCreated) > 0
+          ? _pct(stratCounts.real || 0, activeRealInput + activeRealRelatedCreated)
+          : _pct(_realOutput, _realInput),
       // Live: what fraction of Real-stage survivors were dispatched to exchange
-      live: _liveBase > 0 ? Math.min(100, Math.round((_liveDispatched / _liveBase) * 1000) / 10) : 0,
+      live: strategyRows.live.total > 0
+        ? _pct(strategyRows.live.mirrored, strategyRows.live.total)
+        : _liveBase > 0
+          ? Math.min(100, Math.round((_liveDispatched / _liveBase) * 1000) / 10)
+          : 0,
     }
 
     // ── REAL AVERAGES ────────────��───────────────────────────────────────────
@@ -3435,12 +3492,7 @@ export async function GET(
           const baseRun = n(stratDetail.base?.setsRunningNow) || activeSetsStratByStage.base || 0
           const mainRun = n(stratDetail.main?.setsRunningNow) || activeSetsStratByStage.main || 0
           const realRun = n(stratDetail.real?.setsRunningNow) || activeSetsStratByStage.real || 0
-          const liveRun = n(stratDetail.live?.setsRunningNow) || pseudoRunningSets || 0
-
-          // Cascade: each downstream stage is a subset — cap child ≤ parent.
-          const cappedMain = Math.min(mainRun, stratCounts.main || mainRun)
-          const cappedReal = Math.min(realRun, cappedMain)
-          const cappedLive = Math.min(liveRun, cappedReal)
+          const liveRun = n(stratDetail.live?.setsRunningNow)
 
           // Prefer key-scan (liveOpenScanned) as it survives server restarts.
           // Counter arithmetic (created-closed) drifts when InlineLocalRedis
@@ -3456,7 +3508,7 @@ export async function GET(
             : Math.max(0, counterOpen + pendingFills)
 
           // Pipeline-aware total — the deepest active stage is canonical.
-          const totalRun = Math.max(baseRun, cappedMain, cappedReal, cappedLive)
+          const totalRun = Math.max(baseRun, mainRun, realRun, liveRun)
 
           // positions semantics per stage:
           //   base/main: how many sets have open pseudo-positions (evaluation stage).
@@ -3477,10 +3529,10 @@ export async function GET(
           const realPos = realOpen || realDetailRunning || 0
           return {
             base: { sets: baseRun,    trackings: stratCounts.base || 0, positions: baseMainPos },
-            main: { sets: cappedMain, trackings: stratCounts.main || 0, positions: baseMainPos },
-            real: { sets: cappedReal, trackings: stratCounts.real || 0, positions: realPos },
+            main: { sets: mainRun, trackings: stratCounts.main || 0, positions: baseMainPos },
+            real: { sets: realRun, trackings: stratCounts.real || 0, positions: realPos },
             live: {
-              sets:      cappedLive,
+              sets:      liveRun,
               trackings: stratCounts.live || 0,
               positions: livePositions,
             },
@@ -3503,6 +3555,11 @@ export async function GET(
         // Mirrors Real's shape but reflects true exchange-side outcomes.
         live: stratDetail.live,
       },
+
+      // Current Base → Main → Row-Real → Row-Live snapshot. Main Overall may
+      // legitimately exceed Main Valid because Pos-Count, Block and DCA
+      // descendants are materialised after the parent filter.
+      strategyRows,
 
       // Per-variant strategy breakdown (Default / Trailing / Block / DCA).
       // Written by StrategyCoordinator.createMainSets based on each entry's
@@ -3909,16 +3966,16 @@ export async function GET(
       // Per-stage (base / main / real / live) performance summary. Fields are
       // sourced from strategy_detail hashes (base/main/real: cross-symbol
       // aggregations of avg PF, DDT, pos-eval) or from the live closed archive
-      // (live: realised P&L, win rate, Sharpe, fill-rate). Buffer-size proxy
-      // (`avgPosPerSet` for live) is derived from volume-usd / created count.
+      // (live: realised P&L, win rate, Sharpe, fill-rate). Live's average
+      // order notional is exposed under an explicit unit-bearing field.
       performanceTiers: {
         base: {
           avgProfitFactor: baseSpecPerf.aggregated.avgProfitFactor,
           avgDrawdownMin:  baseSpecPerf.aggregated.avgDrawdownTime,
           avgPosPerSet:    baseSpecPerf.aggregated.avgPosPerSet,
           avgPosEval:      baseSpecPerf.aggregated.avgPosEval,
-          winRate:         baseWinRateProxy,
-          sharpe:          approxSharpe(baseSpecPerf.aggregated.avgDrawdownTime || 0),
+          winRate:         0,
+          sharpe:          0,
           totalPnl:        0,
           totalCreated:    baseSpecPerf.aggregated.totalCreated,
           totalEntries:    baseSpecPerf.aggregated.totalEntries,
@@ -3931,8 +3988,8 @@ export async function GET(
           avgDrawdownMin:  mainSpecPerf.aggregated.avgDrawdownTime,
           avgPosPerSet:    mainSpecPerf.aggregated.avgPosPerSet,
           avgPosEval:      mainSpecPerf.aggregated.avgPosEval,
-          winRate:         mainWinRateProxy,
-          sharpe:          approxSharpe(mainSpecPerf.aggregated.avgDrawdownTime || 0),
+          winRate:         0,
+          sharpe:          0,
           totalPnl:        0,
           totalCreated:    mainSpecPerf.aggregated.totalCreated,
           totalEntries:    mainSpecPerf.aggregated.totalEntries,
@@ -3945,8 +4002,8 @@ export async function GET(
           avgDrawdownMin:  realSpecPerf.aggregated.avgDrawdownTime,
           avgPosPerSet:    realSpecPerf.aggregated.avgPosPerSet,
           avgPosEval:      realSpecPerf.aggregated.avgPosEval,
-          winRate:         realWinRateProxy,
-          sharpe:          approxSharpe(realSpecPerf.aggregated.avgDrawdownTime || 0),
+          winRate:         0,
+          sharpe:          0,
           totalPnl:        0,
           totalCreated:    realSpecPerf.aggregated.totalCreated,
           totalEntries:    realSpecPerf.aggregated.totalEntries,
@@ -3957,7 +4014,8 @@ export async function GET(
         live: {
           avgProfitFactor: liveProfitFactor,
           avgDrawdownMin:  liveAvgHoldMin,
-          avgPosPerSet:    n(progHash.live_positions_created_count) > 0
+          avgPosPerSet:    0,
+          avgNotionalUsd:  n(progHash.live_positions_created_count) > 0
             ? n(progHash.live_volume_usd_total) / n(progHash.live_positions_created_count)
             : 0,
           winRate:         liveWinRate,
@@ -4045,8 +4103,18 @@ export async function GET(
 
       // Rolling time-window indication and strategy counts
       windows: {
-        indications: { last5m: indWindow5m, last60m: indWindow60m },
-        strategies:  { last5m: stratWindow5m, last60m: stratWindow60m },
+        indications: {
+          last5m: indWindow5m,
+          last60m: indWindow60m,
+          measured: indicationWindowMeasured,
+          source: "rolling-event-ledger",
+        },
+        strategies: {
+          last5m: stratWindow5m,
+          last60m: stratWindow60m,
+          measured: strategyWindowMeasured,
+          source: "rolling-event-ledger",
+        },
       },
 
       metadata: {
@@ -4147,24 +4215,16 @@ export async function GET(
     })
     } catch (error) {
       console.error("[v0] [/stats] Error:", error)
-      const { id } = await params
       return NextResponse.json(
-        { error: error instanceof Error ? error.message : "Unknown error", connectionId: id },
+        { error: error instanceof Error ? error.message : "Unknown error", connectionId },
         { status: 500 }
       )
     }
   }
 
-  // Race the main logic against a 15-second timeout
   try {
-    return await Promise.race([mainLogic(), timeoutPromise])
-  } catch (error) {
-    console.error("[v0] [/stats] Request failed:", error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Stats request failed" },
-      { status: 500 }
-    )
+    return await mainLogic()
   } finally {
-    if (timeoutHandle) clearTimeout(timeoutHandle)
+    clearTimeout(slowDiagnostic)
   }
 }

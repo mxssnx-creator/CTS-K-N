@@ -12,7 +12,7 @@ describe("Signal position capacity and best-first policy", () => {
     expect(normalizeSignalMaxPositions(undefined)).toBe(120)
     expect(normalizeSignalMaxPositions(0)).toBe(1)
     expect(normalizeSignalMaxPositions(120)).toBe(120)
-    expect(normalizeSignalMaxPositions(50_000)).toBe(500)
+    expect(normalizeSignalMaxPositions(50_000)).toBe(120)
     expect(normalizeSignalPositionSelectionMode("fifo")).toBe("best_first")
   })
 

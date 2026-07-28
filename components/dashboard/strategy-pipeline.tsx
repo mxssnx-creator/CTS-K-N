@@ -13,6 +13,12 @@ import {
 } from "lucide-react"
 
 interface StrategyTracking {
+  rows?: {
+    base: { total: number; valid: number; totalOpen: number; validOpen: number; validRatio: number }
+    main: { valid: number; overall: number; validOpen: number; overallOpen: number; overallToValidRatio: number }
+    real: { valid: number; active: number; activeExactRows: number; activeRatio: number }
+    live: { total: number; mirrored: number; active: number; mirroredRatio: number }
+  }
   base: {
     setsActivelyProcessing: number
     setsRunningNow?: number
@@ -123,6 +129,7 @@ interface StrategyTracking {
     base: number
     main: number
     real: number
+    live?: number
   }
 }
 
@@ -159,7 +166,7 @@ export function StrategyPipeline({ connectionId }: { connectionId: string }) {
         <CardHeader className="pb-3">
           <CardTitle className="text-sm">Strategy Pipeline Cascade</CardTitle>
           <p className="text-xs text-muted-foreground">
-            Base (independent) → Main (variants per Base) → Real (accumulation) → Live (top 500)
+            Base Sets → Main fan-out → Row-Real validation → Row-Live mirror
           </p>
         </CardHeader>
         <CardContent>
@@ -183,13 +190,56 @@ export function StrategyPipeline({ connectionId }: { connectionId: string }) {
             />
           </div>
 
+          {data.rows && (
+            <div className="mt-3 grid gap-2 border-t border-border pt-3 sm:grid-cols-2 xl:grid-cols-4">
+              <RowSnapshot
+                title="Base"
+                primaryLabel="Total"
+                primary={data.rows.base.total}
+                secondaryLabel="Valid"
+                secondary={data.rows.base.valid}
+                detail={`${data.rows.base.totalOpen} / ${data.rows.base.validOpen} open`}
+                ratio={data.rows.base.validRatio}
+              />
+              <RowSnapshot
+                title="Main"
+                primaryLabel="Valid"
+                primary={data.rows.main.valid}
+                secondaryLabel="Overall"
+                secondary={data.rows.main.overall}
+                detail={`${data.rows.main.overallOpen} overall open`}
+                ratio={data.rows.main.overallToValidRatio}
+                allowExpansion
+              />
+              <RowSnapshot
+                title="Row-Real"
+                primaryLabel="Valid"
+                primary={data.rows.real.valid}
+                secondaryLabel="Active"
+                secondary={data.rows.real.active}
+                detail={`${data.rows.real.activeExactRows} exact active rows`}
+                ratio={data.rows.real.activeRatio}
+              />
+              <RowSnapshot
+                title="Row-Live"
+                primaryLabel="Rows"
+                primary={data.rows.live.total}
+                secondaryLabel="Mirrored"
+                secondary={data.rows.live.mirrored}
+                detail={`${data.rows.live.active} active`}
+                ratio={data.rows.live.mirroredRatio}
+              />
+            </div>
+          )}
+
           {/* Stage pass-through % — how much of each stage's input survives
               the filter into the next stage. Base is the 100% entry point. */}
           {data.stageEvalPercent && (
-            <div className="mt-3 grid grid-cols-3 gap-2 border-t border-border pt-3">
+            <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border pt-3 sm:grid-cols-4">
               <StageEvalPct label="Base evals" value={data.stageEvalPercent.base} />
               <StageEvalPct label="Main evals" value={data.stageEvalPercent.main} />
               <StageEvalPct label="Real evals" value={data.stageEvalPercent.real} accent />
+              <StageEvalPct label="Live mirror" value={data.stageEvalPercent.live ?? 0} />
             </div>
           )}
         </CardContent>
@@ -722,6 +772,58 @@ function PerspectiveTile({
 // ─────────────────────────────────────────────────────────────────────────
 // SUB-COMPONENTS
 // ─────────────────────────────────────────────────────────────────────────
+
+function RowSnapshot({
+  title,
+  primaryLabel,
+  primary,
+  secondaryLabel,
+  secondary,
+  detail,
+  ratio,
+  allowExpansion = false,
+}: {
+  title: string
+  primaryLabel: string
+  primary: number
+  secondaryLabel: string
+  secondary: number
+  detail: string
+  ratio: number
+  allowExpansion?: boolean
+}) {
+  return (
+    <div className="rounded-lg border bg-card/70 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          {title}
+        </span>
+        <Badge variant="outline" className="text-[9px] tabular-nums">
+          {ratio.toFixed(1)}%
+        </Badge>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <div>
+          <p className="text-[9px] uppercase text-muted-foreground">{primaryLabel}</p>
+          <p className="font-mono text-lg tabular-nums">{primary.toLocaleString()}</p>
+        </div>
+        <div>
+          <p className="text-[9px] uppercase text-muted-foreground">{secondaryLabel}</p>
+          <p className="font-mono text-lg tabular-nums">{secondary.toLocaleString()}</p>
+        </div>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
+        <div
+          className={`h-full rounded-full ${allowExpansion ? "bg-amber-500" : "bg-primary"}`}
+          style={{ width: `${Math.max(0, Math.min(100, ratio))}%` }}
+        />
+      </div>
+      <p className="mt-1 text-[9px] text-muted-foreground">
+        {detail}{allowExpansion && ratio > 100 ? " · expansion may exceed 100%" : ""}
+      </p>
+    </div>
+  )
+}
 
 function StageBadge({
   label,

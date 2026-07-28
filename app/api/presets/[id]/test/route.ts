@@ -3,6 +3,7 @@ import { PresetConfigGenerator } from "@/lib/preset-config-generator"
 import { PresetTester } from "@/lib/preset-tester"
 import { sql } from "@/lib/db"
 import type { Preset } from "@/lib/types"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 export const dynamic = "force-dynamic"
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -24,9 +25,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // Generate indicator configurations
     const indicatorConfigs = PresetConfigGenerator.generateIndicatorConfigs()
 
-    // Generate all test configurations (limit to 500)
+    // Generate every configured test combination. Throughput is bounded by
+    // worker pools in PresetTester; no top-K ceiling changes the topology.
     const testSymbols = symbols && symbols.length > 0 ? symbols : ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
-    const configurations = await PresetConfigGenerator.generateAllConfigurations(testSymbols, indicatorConfigs, 500)
+    const configurations = await PresetConfigGenerator.generateAllConfigurations(testSymbols, indicatorConfigs)
 
     // Initialize tester
     const tester = new PresetTester(connectionId)
@@ -46,10 +48,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     await tester.saveResults(id)
 
     // Save valid configurations as active
-    for (const config of validConfigs.slice(0, 100)) {
-      // Limit to top 100
+    await mapWithConcurrency(validConfigs, 8, async (config) => {
       const result = results.get(config.id)
-      if (!result) continue
+      if (!result) return
 
       await sql`
         INSERT INTO preset_active_configs (
@@ -71,7 +72,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           win_rate = EXCLUDED.win_rate,
           total_trades = EXCLUDED.total_trades
       `
-    }
+    })
 
     return NextResponse.json({
       success: true,

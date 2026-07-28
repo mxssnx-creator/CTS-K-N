@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Update one existing CTS-K-N installation while preserving its authoritative
-# environment, Redis data, runtime metadata, production artifact, and identity.
+# Update one existing CTS-K-N installation through the canonical clean server
+# lifecycle: stop services, remove the exact target directory, clone again,
+# restore persistent CTS state, and run the full installer.
 
 set -Eeuo pipefail
 umask 027
@@ -26,11 +27,6 @@ REPOSITORY_SET=0
 BRANCH_SET=0
 REINSTALL=0
 RESOLVE_ONLY=0
-SERVICES_STOPPED=0
-UPDATE_COMPLETE=0
-PREVIOUS_HEAD=""
-PREVIOUS_BRANCH=""
-ROLLBACK_DIR=""
 
 [[ -n "${CTS_INSTALL_DIR:-}" ]] && DIR_SET=1
 [[ -n "${CTS_PROJECT_NAME:-}" ]] && NAME_SET=1
@@ -52,12 +48,12 @@ Usage: scripts/update.sh [options]
   --service-user USER  Existing runtime user
   --env-file PATH      Existing production environment file
   --repository URL     Expected Git origin
-  --branch NAME        Branch to fast-forward from (default: saved branch/main)
+  --branch NAME        Branch to clone from (default: saved branch/main)
   --reinstall          Reinstall host runtimes and project dependencies
   --resolve-only       Print the resolved update target without changing it
 
-The saved .cts-runtime/install-values.env identity is authoritative. Use
-bootstrap-install.sh for service renames, runtime-user changes, or a new path.
+The saved .cts-runtime/install-values.env identity is authoritative. Every
+update delegates to bootstrap-install.sh and performs a complete clean install.
 EOF
 }
 
@@ -79,7 +75,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 log_info() { echo "[update] $*"; }
-log_ok() { echo "[update] OK: $*"; }
 log_fatal() { echo "[update] FATAL: $*" >&2; exit 1; }
 valid_name() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]; }
 valid_user() { [[ "$1" =~ ^[a-zA-Z_][a-zA-Z0-9._-]*$ ]]; }
@@ -87,13 +82,6 @@ valid_port() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 65535 )); }
 valid_absolute_path() {
   [[ "$1" =~ ^/[a-zA-Z0-9._/-]+$ && "$1" != "/" && "$1" != *"//"* \
     && "$1" != *"/./"* && "$1" != */. && "$1" != *"/../"* && "$1" != */.. ]]
-}
-
-as_root() {
-  if (( EUID == 0 )); then "$@"
-  elif command -v sudo >/dev/null 2>&1; then sudo "$@"
-  else log_fatal "sudo/root is required for this operation"
-  fi
 }
 
 discover_from_name() {
@@ -239,76 +227,23 @@ if (( RESOLVE_ONLY == 1 )); then
   exit 0
 fi
 
-restart_after_failure() {
-  local status=$?
-  trap - EXIT
-  if (( status != 0 && SERVICES_STOPPED == 1 && UPDATE_COMPLETE == 0 )); then
-    set +e
-    log_info "Update failed; restoring the previous source, environment, and install identity"
-    as_root bash "$PROJECT_ROOT/scripts/service-control.sh" stop >/dev/null 2>&1 || true
-    if [[ -n "$PREVIOUS_HEAD" ]]; then
-      if [[ -n "$PREVIOUS_BRANCH" ]]; then
-        as_root git -C "$PROJECT_ROOT" checkout -B "$PREVIOUS_BRANCH" "$PREVIOUS_HEAD" >/dev/null 2>&1 \
-          || as_root git -C "$PROJECT_ROOT" reset --hard "$PREVIOUS_HEAD"
-      else
-        as_root git -C "$PROJECT_ROOT" checkout --detach "$PREVIOUS_HEAD" >/dev/null 2>&1 \
-          || as_root git -C "$PROJECT_ROOT" reset --hard "$PREVIOUS_HEAD"
-      fi
-    fi
-    if [[ -n "$ROLLBACK_DIR" && -d "$ROLLBACK_DIR" ]]; then
-      [[ ! -e "$ROLLBACK_DIR/environment" ]] || as_root cp -a -- "$ROLLBACK_DIR/environment" "$ENV_FILE"
-      [[ ! -e "$ROLLBACK_DIR/install-values.env" ]] \
-        || as_root cp -a -- "$ROLLBACK_DIR/install-values.env" "$VALUES_FILE"
-    fi
-    as_root bash "$PROJECT_ROOT/scripts/service-control.sh" start || true
-  fi
-  if [[ -n "$ROLLBACK_DIR" && -d "$ROLLBACK_DIR" ]]; then
-    as_root rm -rf -- "$ROLLBACK_DIR"
-  fi
-  exit "$status"
-}
-trap restart_after_failure EXIT
-
 [[ -z "$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=no)" ]] \
   || log_fatal "Tracked local changes exist; refusing to overwrite them"
-PREVIOUS_HEAD="$(git -C "$PROJECT_ROOT" rev-parse --verify HEAD)"
-PREVIOUS_BRANCH="$(git -C "$PROJECT_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-ROLLBACK_DIR="$(mktemp -d "$RUNTIME_DIR/update-rollback.XXXXXX")"
-[[ ! -e "$ENV_FILE" ]] || as_root cp -a -- "$ENV_FILE" "$ROLLBACK_DIR/environment"
-as_root cp -a -- "$VALUES_FILE" "$ROLLBACK_DIR/install-values.env"
 
-log_info "Stopping $APP_NAME before replacing source files"
-as_root bash "$PROJECT_ROOT/scripts/service-control.sh" stop
-SERVICES_STOPPED=1
-
-log_info "Fetching $REPOSITORY branch $BRANCH"
-as_root git -C "$PROJECT_ROOT" fetch --prune origin "$BRANCH"
-as_root git -C "$PROJECT_ROOT" checkout -B "$BRANCH" FETCH_HEAD
-
-clean_args=(-fdx -e .cts-runtime/ -e .next/ -e .env.production.local -e data/ -e logs/)
-if [[ "$ENV_FILE" == "$PROJECT_ROOT"/* ]]; then
-  clean_args+=(-e "${ENV_FILE#"$PROJECT_ROOT"/}")
-fi
-as_root git -C "$PROJECT_ROOT" clean "${clean_args[@]}"
-log_ok "Source updated; environment, runtime metadata, data, logs, and rollback build preserved"
-
-installer_args=(
+bootstrap_args=(
+  --dir "$PROJECT_ROOT"
   --name "$APP_NAME"
   --port "$APP_PORT"
   --runtime "$RUNTIME"
   --service-user "$SERVICE_USER"
   --env-file "$ENV_FILE"
-  --create-service-user
-  --skip-system-packages
-  --non-interactive
+  --repository "$REPOSITORY"
+  --branch "$BRANCH"
 )
-(( REINSTALL == 0 )) || installer_args+=(--reinstall)
+bootstrap_args+=(--)
+(( REINSTALL == 0 )) || bootstrap_args+=(--reinstall)
 
-log_info "Running the canonical installer, migrations, build, restart, and continuity checks"
-bash "$PROJECT_ROOT/scripts/install.sh" "${installer_args[@]}"
-UPDATE_COMPLETE=1
-SERVICES_STOPPED=0
-as_root rm -rf -- "$ROLLBACK_DIR"
-ROLLBACK_DIR=""
-trap - EXIT
-log_ok "Update complete: $APP_NAME at $PROJECT_ROOT on port $APP_PORT"
+log_info "Delegating to clean stop → delete → install lifecycle for $PROJECT_ROOT"
+exec env CTS_BOOTSTRAP_CLEAN_INSTALL=1 CTS_INSTALL_SEARCH_ROOT="$INSTALL_SEARCH_ROOT" \
+  CTS_PRESERVE_ENV_MANAGED="${SAVED_ENV_MANAGED:-0}" \
+  bash "$PROJECT_ROOT/scripts/bootstrap-install.sh" "${bootstrap_args[@]}"

@@ -57,6 +57,39 @@ interface EngineStats {
   }
 }
 
+interface StrategyRows {
+  base: {
+    total: number
+    valid: number
+    totalOpen: number
+    validOpen: number
+    validRatio: number
+  }
+  main: {
+    valid: number
+    overall: number
+    validOpen: number
+    overallOpen: number
+    overallToValidRatio: number
+  }
+  real: {
+    valid: number
+    active: number
+    activeExactRows: number
+    activeRatio: number
+  }
+  live: {
+    total: number
+    mirrored: number
+    active: number
+    mirroredRatio: number
+  }
+  updatedAt?: number
+  semantics?: string
+}
+
+type SettingsSnapshot = Record<string, unknown>
+
 interface LivePosition {
   id: string
   symbol: string
@@ -208,12 +241,12 @@ function SectionHeader({ num, label, sub, color }: { num: number; label: string;
 
 // ─── Funnel ──────────────────────────────────────────────────────────────────
 
-function Funnel({ stats }: { stats: EngineStats | null }) {
+function Funnel({ stats, rows }: { stats: EngineStats | null; rows: StrategyRows | null }) {
   const stages = [
-    { label: "Base",  value: stats?.baseStrategyCount  || 0, max: 8,  color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
-    { label: "Main",  value: stats?.mainStrategyCount  || 0, max: 8,  color: "bg-purple-500/30 text-purple-300 border-purple-500/40" },
-    { label: "Real",  value: stats?.realStrategyCount  || 0, max: 8,  color: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" },
-    { label: "Live",  value: stats?.liveStrategyCount  || 0, max: 8,  color: "bg-emerald-500/30 text-emerald-300 border-emerald-500/40" },
+    { label: "Base Total", value: rows?.base.total ?? stats?.baseStrategyCount ?? 0, color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
+    { label: "Main Overall", value: rows?.main.overall ?? stats?.mainStrategyCount ?? 0, color: "bg-purple-500/30 text-purple-300 border-purple-500/40" },
+    { label: "Real Active", value: rows?.real.active ?? stats?.realStrategyCount ?? 0, color: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" },
+    { label: "Live Mirrored", value: rows?.live.mirrored ?? stats?.liveStrategyCount ?? 0, color: "bg-emerald-500/30 text-emerald-300 border-emerald-500/40" },
   ]
   return (
     <div className="flex items-center gap-1">
@@ -232,7 +265,15 @@ function Funnel({ stats }: { stats: EngineStats | null }) {
 
 // ─── Main System Tab ─────────────────────────────────────────────────────────
 
-function MainSystemTab({ stats }: { stats: EngineStats | null }) {
+function MainSystemTab({
+  stats,
+  settings,
+  rows,
+}: {
+  stats: EngineStats | null
+  settings: SettingsSnapshot
+  rows: StrategyRows | null
+}) {
   const s = stats
   const byType = s?.indicationsByType || {}
   const indCycles = s?.indicationCycleCount || 0
@@ -251,6 +292,42 @@ function MainSystemTab({ stats }: { stats: EngineStats | null }) {
     s?.realActivePosAvg,
     s?.openPositions?.real?.activeAvg,
   )
+  const settingNumber = (key: string, fallback: number): number => {
+    const value = Number(settings[key])
+    return Number.isFinite(value) ? value : fallback
+  }
+  const settingBool = (key: string, fallback: boolean): boolean => {
+    const value = settings[key]
+    if (value === true || value === 1 || value === "1" || value === "true") return true
+    if (value === false || value === 0 || value === "0" || value === "false") return false
+    return fallback
+  }
+  const positionCost = settingNumber("positionCost", 0.1)
+  const basePf = settingNumber("baseProfitFactor", 0.8)
+  const mainPf = settingNumber("mainProfitFactor", 1.12)
+  const realPf = settingNumber("realProfitFactor", 1.12)
+  const livePf = settingNumber("liveProfitFactor", 1.12)
+  const mainLookback = settingNumber("mainEvalPosCount", 25)
+  const realLookback = settingNumber("realEvalPosCount", 20)
+  const indicationTimeoutMs = settingNumber("indicationTimeoutMs", 250)
+  const commonTimeoutSeconds = 3
+  const baseCooldownMs = settingNumber("positionCooldownMs", 3_000)
+  const realCap = settingNumber("strategyRealSetsSafetyCeiling", settingNumber("maxRealSets", 5_000))
+  const liveCap = settingNumber("strategyLiveSetsCeiling", 500)
+  const posCountsRatio = settingNumber("posCountsVolumeRatio", 3)
+  const blockOnly = settingBool("blockOnly", settingBool("variantBlockOnly", true))
+  const blockEnabled = settingBool("variantBlockEnabled", settingBool("blockAdjustment", true))
+  const maxIndicationCount = Math.max(...Object.values(byType).map(Number), 1)
+  const indicationFamilies = [
+    { k: "direction", label: "Direction", desc: "Default · post-change direction · exhaustive 2–30" },
+    { k: "move", label: "Move", desc: "Default · movement combinations · exhaustive 2–30" },
+    { k: "active", label: "Active", desc: "Default · activity and drawdown ratio matrix" },
+    { k: "trend", label: "Trend", desc: "Additional · independent 1/5/15/30-minute situations" },
+    { k: "optimal", label: "Optimal", desc: "Additional · exhaustive multi-filter configurations" },
+    { k: "auto", label: "Auto", desc: "Additional · adaptive runtime coordination" },
+    { k: "common", label: "Common", desc: "17 official indicators · exact config lanes" },
+    { k: "signal", label: "Signal", desc: "Independent public-source and consensus lanes" },
+  ]
 
   return (
     <div className="space-y-3">
@@ -268,7 +345,7 @@ function MainSystemTab({ stats }: { stats: EngineStats | null }) {
       {/* Funnel */}
       <div className="flex items-center justify-between rounded-md border bg-muted/5 px-3 py-2">
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Strategy Funnel</span>
-        <Funnel stats={s} />
+        <Funnel stats={s} rows={rows} />
       </div>
 
       {/* Phase 1 */}
@@ -278,11 +355,12 @@ function MainSystemTab({ stats }: { stats: EngineStats | null }) {
         </div>
         <div className="px-3 py-1.5 space-y-0.5">
           <Block icon={Database} title="Load Settings" sub="Redis hash → trade interval, timeframe, risk params" accent="blue">
-            <Row label="Trade interval"        value="1.0 s (non-overlapping)" />
-            <Row label="Position monitor"       value="0.3 s" />
-            <Row label="Candle timeframe"       value="1 s OHLCV" />
-            <Row label="History range"          value="5 days" />
-            <Row label="Concurrency"            value="10 parallel loads" />
+            <Row label="Main cycle" value={`${settingNumber("mainEngineIntervalMs", 100)} ms (non-overlapping)`} />
+            <Row label="Position monitor" value={`${settingNumber("realPositionsIntervalSeconds", 0.3)} s`} />
+            <Row label="Indication exact-lane cooldown" value={`${indicationTimeoutMs} ms`} />
+            <Row label="Common exact-lane cooldown" value={`${commonTimeoutSeconds} s`} />
+            <Row label="Base exact-Set re-entry" value={`${(baseCooldownMs / 1000).toFixed(2)} s after close`} />
+            <Row label="History range" value={`${settingNumber("prehistoric_range_hours", 8)} hours`} />
             <Row label="Config key" mono value={`settings:trade_engine_state:{connId}`} />
           </Block>
           <Block icon={BarChart3} title="Load Symbols" sub="main symbol list or exchange top-N by volume" accent="blue">
@@ -314,24 +392,18 @@ function MainSystemTab({ stats }: { stats: EngineStats | null }) {
         </div>
         <div className="px-3 py-1.5 space-y-0.5">
 
-          <Block icon={Zap} title="Indication Processing" sub="4 types × 2 directions = 8 signals/symbol/cycle" accent="blue" open>
+          <Block icon={Zap} title="Indication Processing" sub="Default + Additional + Common/Signal · exact lanes" accent="blue" open>
             {/* per-type mini bars */}
             <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 py-1">
-              {[
-                { k: "direction", label: "Direction", desc: "Reversal — close vs open, 2–30 steps" },
-                { k: "move",      label: "Move",      desc: "Momentum — trend follow, 2–30 steps" },
-                { k: "active",    label: "Active",    desc: "Breakout — 0.5–2.5% vol threshold" },
-                { k: "optimal",   label: "Optimal",   desc: "High-precision multi-filter signal" },
-              ].map(t => {
+              {indicationFamilies.map(t => {
                 const cnt = byType[t.k] || 0
-                const maxCnt = Math.max(...Object.values(byType).map(Number), 1)
                 return (
                   <div key={t.k}>
                     <div className="flex items-center justify-between mb-0.5">
                       <span className="text-[10px] font-medium text-blue-400">{t.label}</span>
                       <span className="text-[10px] font-mono text-muted-foreground">{fmt(cnt)}</span>
                     </div>
-                    <Progress value={(cnt / maxCnt) * 100} className="h-0.5 rounded-none [&>div]:bg-blue-500" />
+                    <Progress value={(cnt / maxIndicationCount) * 100} className="h-0.5 rounded-none [&>div]:bg-blue-500" />
                     <span className="text-[9px] text-muted-foreground/60">{t.desc}</span>
                   </div>
                 )
@@ -339,50 +411,60 @@ function MainSystemTab({ stats }: { stats: EngineStats | null }) {
             </div>
             <Row label="Total session indications" value={<span className="text-blue-400 font-bold">{fmt(indTotal)}</span>} />
             <Row label="Avg per cycle" value={indCycles > 0 ? `${(indTotal / indCycles).toFixed(1)}` : "—"} />
+            <Row label="Configuration coverage" value="Every enabled Type × Name × Config × Long/Short lane" />
+            <Row label="Scheduling" value="Async bounded concurrency; no candidate ceiling" />
             <Row label="Storage" mono value={`progression:{connId} → indications_*_count`} />
           </Block>
 
-          <Block icon={GitBranch} title="Base Stage" sub="924 combos/set · PF ≥ 0.55 to pass" accent="purple">
-            <Row label="Sets per cycle" value={`${s?.baseStrategyCount || 0} / 8`} />
-            <Row label="TP levels" value="11 (0.5 % → 5.0 %, step 0.45 %)" />
-            <Row label="SL levels" value="21 (0.1 % → 2.0 %, step 0.095 %)" />
-            <Row label="Trailing modes" value="4 — OFF / Std / Aggr / Cons" />
-            <Row label="Combinations" value="11 × 21 × 4 = 924 per Set" />
+          <Block icon={GitBranch} title="Base Stage" sub="exhaustive exact Set ledger · one open slot per lane" accent="purple">
+            <Row label="Total / Valid" value={`${fmt(rows?.base.total ?? 0)} / ${fmt(rows?.base.valid ?? 0)}`} />
+            <Row label="Open Total / Valid" value={`${fmt(rows?.base.totalOpen ?? 0)} / ${fmt(rows?.base.validOpen ?? 0)}`} />
+            <Row label="Valid ratio" value={`${(rows?.base.validRatio ?? 0).toFixed(1)}%`} />
+            <Row label="Identity" value="symbol × type × name × complete config × direction × Base Set" />
+            <Row label="Admission" value="Exactly one open pseudo-position per exact identity" />
+            <Row label="Coverage" value="All enabled endpoints and steps; no Set-count ceiling" />
             <Row label="Avg profit factor" value={baseAvgProfitFactor !== null ? baseAvgProfitFactor.toFixed(2) : "—"} />
-            <Row label="Pass threshold" value="profit_factor ≥ 0.55" />
+            <Row label="PF ratio gate" value={`${basePf.toFixed(2)} × PositionCost (${positionCost.toFixed(2)}%)`} />
+            <Row label="Re-entry" value={`${(baseCooldownMs / 1000).toFixed(2)} s independently after exact Set close`} />
           </Block>
 
-          <Block icon={Filter} title="Main Stage" sub="consistency filter · PF ≥ 0.65 × 3 consecutive" accent="purple">
-            <Row label="Sets this cycle" value={`${s?.mainStrategyCount || 0}`} />
-            <Row label="Threshold" value="PF ≥ 0.65" />
-            <Row label="Consistency" value="Must pass ≥ 3 consecutive cycles" />
-            <Row label="Storage" mono value={`progression:{connId} → strategies_main_total`} />
+          <Block icon={Filter} title="Main Stage" sub="Base validation plus Pos-Count / Block / DCA descendants" accent="purple">
+            <Row label="Valid / Overall" value={`${fmt(rows?.main.valid ?? 0)} / ${fmt(rows?.main.overall ?? 0)}`} />
+            <Row label="Open Valid / Overall" value={`${fmt(rows?.main.validOpen ?? 0)} / ${fmt(rows?.main.overallOpen ?? 0)}`} />
+            <Row label="Overall ÷ Valid" value={`${(rows?.main.overallToValidRatio ?? 0).toFixed(1)}% (may exceed 100%)`} />
+            <Row label="PF ratio gate" value={`${mainPf.toFixed(2)} × PositionCost`} />
+            <Row label="Evaluation lookback" value={`Latest ${mainLookback} closed positions per Set`} />
+            <Row label="Pos-Count volume ratio" value={posCountsRatio.toFixed(1)} />
+            <Row label="Block mode" value={`${blockEnabled ? "enabled" : "disabled"} · Block-only ${blockOnly ? "enabled" : "disabled"}`} />
+            <Row label="Storage" mono value={`strategy_detail:{connId}:main`} />
           </Block>
 
-          <Block icon={Target} title="Real Stage" sub="high-confidence · PF ≥ 1.4 + conf ≥ 0.65" accent="purple">
-            <Row label="Sets this cycle" value={`${s?.realStrategyCount || 0}`} />
-            <Row label="PF threshold" value="≥ 1.4" />
-            <Row label="Confidence" value="≥ 0.65" />
+          <Block icon={Target} title="Row-Real" sub="continuous PF/DDT validation over Main Overall lineages" accent="purple">
+            <Row label="Valid / Active" value={`${fmt(rows?.real.valid ?? 0)} / ${fmt(rows?.real.active ?? 0)}`} />
+            <Row label="Exact active rows" value={fmt(rows?.real.activeExactRows ?? 0)} />
+            <Row label="Active ratio" value={`${(rows?.real.activeRatio ?? 0).toFixed(1)}%`} />
+            <Row label="PF ratio gate" value={`${realPf.toFixed(2)} × PositionCost`} />
+            <Row label="Evaluation lookback" value={`Latest ${realLookback} positions per independent Row-Real`} />
             <Row label="Avg positions" value={realAvgPositions !== null ? realAvgPositions.toFixed(2) : "—"} />
-            <Row label="Max drawdown time" value="≤ 960 min (16 h)" />
-            <Row label="Live gate" value="is_live_trade=1 + valid credentials" />
+            <Row label="Max drawdown time" value={`≤ ${settingNumber("maxDrawdownTimeRealHours", 4)} h`} />
+            <Row label="Safety ceiling" value={fmt(realCap)} />
           </Block>
 
-          <Block icon={TrendingUp} title="Live Stage" sub="exchange orders · PF ≥ 1.4 + conf ≥ 0.65 + DDT ≤ 2h" accent="green"
-            right={<Tag color={s && s.liveStrategyCount > 0 ? "green" : "default"}>{s?.liveStrategyCount || 0} sets</Tag>}>
-            <Row label="Sets this cycle" value={<span className={cn("font-bold", (s?.liveStrategyCount || 0) > 0 ? "text-emerald-400" : "text-muted-foreground")}>{s?.liveStrategyCount || 0}</span>} />
-            <Row label="PF threshold" value="≥ 1.4 (same as REAL)" />
-            <Row label="Confidence" value="≥ 0.65" />
-            <Row label="Max drawdown time" value="≤ 120 min (2 h)" />
-            <Row label="Max live sets" value="500 (ranked by PF)" />
-            <Row label="Execution" value="Market order via exchange connector" />
+          <Block icon={TrendingUp} title="Row-Live" sub="validated Row-Real mirror · no duplicate evaluation gate" accent="green"
+            right={<Tag color={(rows?.live.mirrored ?? 0) > 0 ? "green" : "default"}>{rows?.live.mirrored ?? 0} mirrored</Tag>}>
+            <Row label="Rows / Mirrored / Active" value={`${fmt(rows?.live.total ?? 0)} / ${fmt(rows?.live.mirrored ?? 0)} / ${fmt(rows?.live.active ?? 0)}`} />
+            <Row label="Mirror ratio" value={`${(rows?.live.mirroredRatio ?? 0).toFixed(1)}%`} />
+            <Row label="Configured PF ratio" value={`${livePf.toFixed(2)} × PositionCost`} />
+            <Row label="Max drawdown time" value={`≤ ${settingNumber("maxDrawdownTimeLiveHours", 4)} h`} />
+            <Row label="Row ceiling" value={fmt(liveCap)} />
+            <Row label="Execution" value="Mirrored to the Live exchange dispatcher" />
             <Row label="Guard" value="is_live_trade flag on connection" />
           </Block>
 
-          <Block icon={LineChart} title="Pseudo Positions" sub="virtual tracking — no real capital" accent="green">
+          <Block icon={LineChart} title="Pseudo Positions" sub="virtual exact-lane tracking — no real capital" accent="green">
             <Row label="Active positions" value={<span className="text-emerald-400 font-bold">{fmt(s?.positionsCount || 0)}</span>} />
-            <Row label="Creation filter" value="PF ≥ 0.6 at any stage" />
-            <Row label="Set DB capacity" value="250 positions / Set (tunable 50–750)" />
+            <Row label="Creation identity" value="Complete config and Long/Short are independent" />
+            <Row label="History retention" value="Bounded per Set; never a configuration limit" />
             <Row label="Storage" mono value={`pseudo_positions:{connId}`} />
           </Block>
 
@@ -400,8 +482,8 @@ function MainSystemTab({ stats }: { stats: EngineStats | null }) {
           <SectionHeader num={3} label="Position Management" sub="real orders · 0.3 s monitor · feedback loop" color="green" />
         </div>
         <div className="px-3 py-1.5 space-y-0.5">
-          <Block icon={TrendingUp} title="Promote to Real" sub="live-stage.ts → executeLivePosition() → exchange order" accent="green">
-            <Row label="Threshold" value="PF ≥ 0.8 over ≥ 5 cycles" />
+          <Block icon={TrendingUp} title="Promote to Live" sub="Row-Real → Row-Live → exchange dispatcher" accent="green">
+            <Row label="Thresholds" value={`Real PF ${realPf.toFixed(2)} × PositionCost · DDT ≤ ${settingNumber("maxDrawdownTimeRealHours", 4)} h`} />
             <Row label="Gate" value="is_live_trade=1 + credentials valid" />
             <Row label="Order type" value="Market order at fill price" />
             <Row label="Risk" value="Minimal qty + exchange-level TP/SL" />
@@ -409,13 +491,13 @@ function MainSystemTab({ stats }: { stats: EngineStats | null }) {
           <Block icon={Activity} title="Position Monitor (0.3 s)" sub="TP/SL hit · trailing adjust · P&L update" accent="green">
             <Row label="Price source" value="Market data stream (no REST call)" />
             <Row label="Trailing update" value="Re-priced on favorable tick" />
-            <Row label="Max real positions" value="Configurable (default 5)" />
+            <Row label="Live Row ceiling" value={fmt(liveCap)} />
             <Row label="Latency" value="&lt; 50 ms" />
           </Block>
           <Block icon={BarChart3} title="Feedback Loop" sub="closed positions update strategy rankings" accent="green">
-            <Row label="Metric" value="Realized PF of closed pseudo positions" />
-            <Row label="Ranking" value="EMA over last 20 closures" />
-            <Row label="Effect" value="Higher-ranked Sets promoted faster" />
+            <Row label="Metric" value="Gross-profit/gross-loss plus PositionCost-relative ratio" />
+            <Row label="Windows" value={`Main ${mainLookback} · Real ${realLookback} completed positions`} />
+            <Row label="Effect" value="Continuous independent Row state is refreshed without full-history rescans" />
           </Block>
         </div>
       </div>
@@ -469,7 +551,7 @@ function PresetModeTab() {
         <div className="px-3 py-1.5 space-y-0.5">
           <Block icon={Filter} title="Confluence Filter" sub="trend-strength indicators weighted higher" accent="purple" open>
             <Row label="Minimum agreement" value="2 of N indicators" />
-            <Row label="Signal threshold" value="PF ≥ 0.6 (backtested quality)" />
+            <Row label="Preset threshold" value="Classic PF ≥ 0.70 (separate Preset engine)" />
             <Row label="ADX / EMA weight" value="Higher (trend confirmation)" />
             <Row label="NEUTRAL suppression" value="No signal if no agreement" />
           </Block>
@@ -776,6 +858,8 @@ function LogisticsContent() {
 
   const [tab,          setTab]          = useState<Tab>("main")
   const [stats,        setStats]        = useState<EngineStats | null>(null)
+  const [settings,     setSettings]     = useState<SettingsSnapshot>({})
+  const [strategyRows, setStrategyRows] = useState<StrategyRows | null>(null)
   const [queueData,    setQueueData]    = useState<QueueData | null>(null)
   const [livePos,      setLivePos]      = useState<LivePosition[]>([])
   const [lastRefresh,  setLastRefresh]  = useState<Date | null>(null)
@@ -786,21 +870,31 @@ function LogisticsContent() {
     const sequence = ++loadSequenceRef.current
     if (!silent) setRefreshing(true)
     try {
-      const [statsRes, queueRes, livePosRes] = await Promise.allSettled([
+      const [statsRes, queueRes, livePosRes, settingsRes, progressionRes] = await Promise.allSettled([
         fetch(`/api/trading/engine-stats?connection_id=${connId}`, { cache: "no-store" }),
         // Forward the connectionId so the queue card focuses on the same
         // exchange connection the sidebar exchange selector has chosen.
         fetch(`/api/logistics/queue?connectionId=${encodeURIComponent(connId)}`, { cache: "no-store" }),
         fetch(`/api/trading/live-positions?connection_id=${connId}`, { cache: "no-store" }),
+        fetch("/api/settings", { cache: "no-store" }),
+        fetch(`/api/connections/progression/${encodeURIComponent(connId)}/stats`, { cache: "no-store" }),
       ])
-      const [nextStats, nextQueue, nextPositions] = await Promise.all([
+      const [nextStats, nextQueue, nextPositions, nextSettings, nextProgression] = await Promise.all([
         statsRes.status === "fulfilled" && statsRes.value.ok ? statsRes.value.json() : null,
         queueRes.status === "fulfilled" && queueRes.value.ok ? queueRes.value.json() : null,
         livePosRes.status === "fulfilled" && livePosRes.value.ok ? livePosRes.value.json() : null,
+        settingsRes.status === "fulfilled" && settingsRes.value.ok ? settingsRes.value.json() : null,
+        progressionRes.status === "fulfilled" && progressionRes.value.ok ? progressionRes.value.json() : null,
       ])
       if (sequence !== loadSequenceRef.current) return
       if (nextStats) setStats(nextStats)
       if (nextQueue) setQueueData(nextQueue)
+      if (nextSettings?.settings && typeof nextSettings.settings === "object") {
+        setSettings(nextSettings.settings)
+      }
+      if (nextProgression?.strategyRows) {
+        setStrategyRows(nextProgression.strategyRows)
+      }
       if (livePosRes.status === "fulfilled" && livePosRes.value.ok) {
         setLivePos(Array.isArray(nextPositions) ? nextPositions : (nextPositions?.positions || []))
       }
@@ -867,7 +961,7 @@ function LogisticsContent() {
         <LivePositionsSection positions={livePos} />
 
         {/* Tab content */}
-        {tab === "main"   && <MainSystemTab stats={stats} />}
+        {tab === "main"   && <MainSystemTab stats={stats} settings={settings} rows={strategyRows} />}
         {tab === "preset" && <PresetModeTab />}
         {tab === "bots"   && <BotsTab />}
       </div>

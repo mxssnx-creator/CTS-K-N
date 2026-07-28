@@ -184,7 +184,9 @@ export class IndicationEngine {
       }
     }
 
-    return positions.slice(0, 250)
+    // The Set history store may compact old results independently; creation
+    // must still materialize every TP × SL × trailing configuration.
+    return positions
   }
 
   private createPseudoPosition(

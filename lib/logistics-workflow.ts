@@ -78,7 +78,7 @@ export function buildLogisticsQueuePayload(snapshot: DashboardWorkflowSnapshot) 
     processingRate,
     successRate,
     avgLatency,
-    maxLatency: avgLatency ? avgLatency + 120 : 0,
+    maxLatency: latencySamples.length > 0 ? Math.max(...latencySamples) : 0,
     throughput: processingRate > 0 ? processingRate * 60 : 0,
     completedOrders,
     failedOrders,
