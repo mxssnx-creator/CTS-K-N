@@ -53,6 +53,11 @@ import {
 import { DEFAULT_DCA_PROFILE, type DcaTakeProfitMode } from "@/lib/dca-strategy"
 import { STRATEGY_AXIS_SPECS } from "@/lib/strategy-axis-settings"
 import {
+  DEFAULT_BASE_MIN_STEP,
+  MAX_BASE_STEP,
+  MIN_BASE_STEP,
+} from "@/lib/constants"
+import {
   POS_COUNT_VOLUME_RATIO_DEFAULT,
   POS_COUNT_VOLUME_RATIO_MAX,
   POS_COUNT_VOLUME_RATIO_MIN,
@@ -84,6 +89,7 @@ export interface CoordinationSettings {
   blockVolumeRatio: number // 0.25..3.0 per spec band (UI clamps; engine re-clamps)
   blockProfitFactorRatio: number // 0.2..5.0 × default PF × count volume increment
   blockMaxStack:    number // 1..10 block sizes processed independently
+  strategyBlockMaterializationBatchSize: number // 64..10000, rotating work batch
   blockPauseCountRatio: number // 1..4, step 0.5
   blockActiveRealEnabled: boolean // active real-position Block overlay, default true
   blockActiveLiveEnabled: boolean // active live-position Block overlay, default true
@@ -155,10 +161,7 @@ export interface CoordinationSettings {
    */
   realEvalPosCount: number
 
-  /**
-   * Legacy compatibility field. Exhaustive Base generation always evaluates
-   * every integer step from 2 through 30 and keeps this fixed at 2.
-   */
+  /** Inclusive lower bound of the exhaustive integer Base window grid. */
   minStep: number
 
   /**
@@ -170,9 +173,8 @@ export interface CoordinationSettings {
 
   /**
    * Minimum Base step-window size that is allowed to fan out into
-   * independent trailing Sets. Default 6 keeps very noisy 2–5 step Base
-   * windows on the non-trailing path while still allowing normal Base Sets
-   * to be evaluated. Backed by connection_settings:{conn}.trailingMinStep.
+   * independent trailing Sets. Backed by
+   * connection_settings:{conn}.trailingMinStep.
    */
   trailingMinStep: number
 }
@@ -180,9 +182,9 @@ export interface CoordinationSettings {
 /**
  * Operator-spec defaults.
  * - trailing: on, block: on, dca: off (per directive)
- * - minStep: 2 (fixed; exhaustive 2-30)
+ * - minStep: 4 (default; exhaustive configured minimum through 30)
  * - maxStopLossRatio: 2.5 (default=max; range 0.25-2.5, step 0.25)
- * - trailingMinStep: 6 (default; range 2-30)
+ * - trailingMinStep: 4 (default; range 2-30)
  * - PF defaults set in DEFAULT_STRATEGY_PROFILE (base=1.0, main/real=1.2)
  */
 export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
@@ -200,6 +202,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockVolumeRatio: 1.0,
   blockProfitFactorRatio: 0.8,
   blockMaxStack:    10,
+  strategyBlockMaterializationBatchSize: 1024,
   blockPauseCountRatio: 1.0,
   blockActiveRealEnabled: true,
   blockActiveLiveEnabled: true,
@@ -216,9 +219,9 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   prevPosWindow:    25,
   mainEvalPosCount: 25,
   realEvalPosCount: 20,
-  minStep:           2,
+  minStep:           DEFAULT_BASE_MIN_STEP,
   maxStopLossRatio:  2.5,
-  trailingMinStep:   6,
+  trailingMinStep:   DEFAULT_BASE_MIN_STEP,
 }
 
 interface StrategyCoordinationSectionProps {
@@ -1015,6 +1018,43 @@ export function StrategyCoordinationSection({
             </div>
           </div>
 
+          {/* Exhaustive logical calculation with bounded rotating materialization. */}
+          <div className="rounded-lg border border-border/60 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <Label className="text-sm font-semibold">Rotating Real/Live Work Batch</Label>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Materializes this many inactive Block rows per cycle. Every
+                  source × symbol × direction × config × count combination is
+                  still evaluated and counted; the cursor visits every valid
+                  row and active exposure always bypasses the batch.
+                </p>
+              </div>
+              <Badge variant="outline" className="text-[10px] tabular-nums">
+                64–10,000
+              </Badge>
+            </div>
+            <div className="flex items-center gap-3 pt-1">
+              <Slider
+                value={[value.strategyBlockMaterializationBatchSize]}
+                min={64}
+                max={10000}
+                step={64}
+                onValueChange={([next]) =>
+                  onChange({
+                    ...value,
+                    strategyBlockMaterializationBatchSize: next,
+                  })
+                }
+                disabled={!value.variants.block}
+                className="flex-1"
+              />
+              <span className="text-xs font-semibold tabular-nums w-14 text-right">
+                {value.strategyBlockMaterializationBatchSize.toLocaleString()}
+              </span>
+            </div>
+          </div>
+
           {/* Pause count ratio */}
           <div className="rounded-lg border border-border/60 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">
@@ -1315,7 +1355,7 @@ export function StrategyCoordinationSection({
         </CardContent>
       </Card>
 
-      {/* Legacy compatibility card. Generation is intentionally exhaustive. */}
+      {/* Configurable lower bound; generation remains exhaustive. */}
       <Card>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between gap-2">
@@ -1324,13 +1364,12 @@ export function StrategyCoordinationSection({
                 Minimal Base Pseudo-Position Range Step
               </CardTitle>
               <CardDescription className="text-xs">
-                Base always creates and evaluates every integer step from 2
-                through 30. This value is fixed so no saved legacy setting can
-                silently remove valid configurations.
+                Base creates and evaluates every integer step from this
+                configured lower bound through 30.
               </CardDescription>
             </div>
             <Badge variant="outline" className="text-[10px] tabular-nums">
-              2–30, step 1
+              {value.minStep}–30, step 1
             </Badge>
           </div>
         </CardHeader>
@@ -1346,25 +1385,32 @@ export function StrategyCoordinationSection({
             </div>
             <div className="flex items-center gap-3 pt-1">
               <Slider
-                value={[2]}
-                min={2}
-                max={2}
+                value={[value.minStep]}
+                min={MIN_BASE_STEP}
+                max={MAX_BASE_STEP}
                 step={1}
-                disabled
+                onValueChange={([next]) => onChange({
+                  ...value,
+                  minStep: next,
+                  trailingMinStep: Math.max(next, value.trailingMinStep),
+                })}
                 className="flex-1"
               />
               <span className="text-sm font-semibold tabular-nums w-8 text-right">
-                2
+                {value.minStep}
               </span>
             </div>
             <div className="flex justify-between text-[10px] text-muted-foreground pt-0.5">
-              <span>2 (all)</span>
-              <span className="text-muted-foreground/60">all 29 windows</span>
+              <span>{MIN_BASE_STEP}</span>
+              <span className="text-muted-foreground/60">
+                all {MAX_BASE_STEP - value.minStep + 1} windows
+              </span>
               <span>30 (included)</span>
             </div>
             <p className="text-[11px] text-muted-foreground leading-relaxed pt-1">
-              Generated steps: 2, 3, 4, …, 29, 30. Concurrency controls only
-              scheduling; it never reduces this configuration space.
+              Generated steps: {value.minStep}, {Math.min(30, value.minStep + 1)},
+              {Math.min(30, value.minStep + 2)}, …, 29, 30. Concurrency controls
+              only scheduling; it never reduces this configuration space.
             </p>
           </div>
         </CardContent>

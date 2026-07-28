@@ -421,7 +421,7 @@ async function main() {
         symbolCount: soakSymbols.length,
         liveTrade: false,
         is_live_trade: false,
-        baseProfitFactor: 0.75,
+        baseProfitFactor: 0.8,
         mainProfitFactor: 0.75,
         realProfitFactor: 0.75,
         prevPosMinCount: 1,

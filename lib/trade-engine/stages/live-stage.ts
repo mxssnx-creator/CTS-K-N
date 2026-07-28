@@ -22,7 +22,15 @@
  * pipeline records a simulated position without touching the exchange.
  */
 
-import { getAppSettings, getConnection, getRedisClient, initRedis, setSettings } from "@/lib/redis-db"
+import {
+  getAppSettings,
+  getConnection,
+  getRedisClient,
+  initRedis,
+  moveRedisListMembershipToHead,
+  setSettings,
+  upsertRedisListHead,
+} from "@/lib/redis-db"
 import { nanoid } from "@/lib/trade-engine/pseudo-position-manager"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
@@ -1683,8 +1691,6 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
   const openIndexKey = `live:positions:${position.connectionId}`
   const closedIndexKey = `live:positions:${position.connectionId}:closed`
   const terminalStatuses = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
-  let evictedClosedIds: string[] = []
-  
   try {
     const incomingTerminal = terminalStatuses.has(String(position.status || "").toLowerCase())
     if (!incomingTerminal) {
@@ -1744,13 +1750,12 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
     const liveSetIndexKey = `live_set_keys:${position.connectionId}`
     const liveSetLineageKeys = getLivePositionSetLineageKeys(position)
     if (terminalStatuses.has(String(position.status || "").toLowerCase())) {
-      await client.lrem(openIndexKey, 0, position.id).catch(() => 0)
-      const alreadyClosed = await client.lpos(closedIndexKey, position.id).catch(() => null)
-      if (alreadyClosed === null || alreadyClosed === undefined) {
-        await client.lpush(closedIndexKey, position.id).catch(() => 0)
-      }
-      evictedClosedIds = ((await client.lrange(closedIndexKey, 500, -1).catch(() => [])) || []).map(String)
-      await client.ltrim(closedIndexKey, 0, 499).catch(() => {})
+      await moveRedisListMembershipToHead(
+        client,
+        openIndexKey,
+        closedIndexKey,
+        position.id,
+      )
       await client.set(`live:positions:${position.connectionId}:moved:${position.id}`, String(Date.now())).catch(() => null)
       await client.expire(`live:positions:${position.connectionId}:moved:${position.id}`, 60 * 60).catch(() => 0)
       for (const setKey of liveSetLineageKeys) {
@@ -1798,8 +1803,7 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
           : undefined,
       )
     } else {
-      await client.lrem(openIndexKey, 0, position.id).catch(() => 0)
-      await client.lpush(openIndexKey, position.id).catch(() => 0)
+      await upsertRedisListHead(client, openIndexKey, position.id)
       for (const setKey of liveSetLineageKeys) {
         await client.sadd(liveSetIndexKey, setKey).catch(() => 0)
       }
@@ -1811,15 +1815,9 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
     await keepDurable(posKey)
     await keepDurable(jsonKey)
     await syncActiveBlockCountIndex(client, position)
-    // The closed index is a permanent bounded ring. Delete only records that
-    // were actually evicted from its 500-row retention window; active and
-    // retained terminal records never expire merely because time passed.
-    if (evictedClosedIds.length > 0) {
-      await client.del(...evictedClosedIds.flatMap((id) => [
-        `live_positions:${position.connectionId}:${id}`,
-        `live:position:${id}`,
-      ])).catch(() => 0)
-    }
+    // Closed snapshots and their connection index are durable. APIs page the
+    // index in bounded batches, so retaining the complete audit trail does not
+    // increase one request's memory footprint.
     // The full InlineLocalRedis checkpoint is intentionally minute-batched to
     // avoid multi-megabyte disk writes in hot engine cycles. Journal only
     // lifecycle/quantity changes here, so any position state already exposed
@@ -2103,13 +2101,29 @@ function liveExecutionLane(
 function liveExecutionSlot(
   position: Pick<
     LivePosition,
-    "executionLane" | "indicationType" | "trailingProfile" | "signalRisk" | "setKey" | "parentSetKey"
+    "executionLane" | "indicationType" | "trailingProfile" | "signalRisk" | "setKey" |
+    "parentSetKey" | "combinedPosCounts"
   > |
     Pick<
       RealPosition,
-      "executionLane" | "indicationType" | "trailingProfile" | "signalRisk" | "setKey" | "parentSetKey"
+      "executionLane" | "indicationType" | "trailingProfile" | "signalRisk" | "setKey" |
+      "parentSetKey" | "combinedPosCounts"
     >,
 ): string {
+  if (position.combinedPosCounts) {
+    const identity = String(
+      position.parentSetKey ||
+      position.setKey?.split("#poscounts:combined:")[0] ||
+      position.setKey ||
+      "unknown",
+    )
+    let hash = 0x811c9dc5
+    for (let index = 0; index < identity.length; index++) {
+      hash ^= identity.charCodeAt(index)
+      hash = Math.imul(hash, 0x01000193)
+    }
+    return `poscounts-${(hash >>> 0).toString(36).padStart(7, "0")}`
+  }
   return resolveSignalExecutionSlot(position)
 }
 
@@ -2117,12 +2131,12 @@ function liveLockDirection(
   position: Pick<
     LivePosition,
     "direction" | "setVariant" | "executionLane" | "indicationType" | "trailingProfile" |
-    "signalRisk" | "setKey" | "parentSetKey"
+    "signalRisk" | "setKey" | "parentSetKey" | "combinedPosCounts"
   > |
     Pick<
       RealPosition,
       "direction" | "setVariant" | "executionLane" | "indicationType" | "trailingProfile" |
-      "signalRisk" | "setKey" | "parentSetKey"
+      "signalRisk" | "setKey" | "parentSetKey" | "combinedPosCounts"
     >,
 ): string {
   const slot = liveExecutionSlot(position)
@@ -2800,19 +2814,9 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     }
 
     // Admission checks run only after a durable pending order was recovered
-    // or conclusively cleared. Otherwise a cap/dedup return could strand an
-    // exchange submission forever merely because its Set was already applied.
-    if (
-      !real?.combinedPosCounts &&
-      physicalAccumulationCount(existing.accumulatedSetKeys, existing.blockLegs) >= MAX_ACCUMULATIONS_PER_POSITION
-    ) {
-      pushStep(existing, "accumulate_skip", false, `cap reached (${MAX_ACCUMULATIONS_PER_POSITION} accumulations) — merge suppressed`)
-      await savePosition(existing)
-      if (hadPendingAccumulation) {
-        await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_cap_after_recovery")
-      }
-      return existing
-    }
+    // or conclusively cleared. Every exact Set membership remains eligible;
+    // exchange/API rate limits are enforced by the dispatch queue and position
+    // mutation lock, never by dropping later configurations.
     // Block/default overlays execute once per exact Set key. DCA is repeatable
     // by configured step and is deduped after resolveAccumulationPlan derives
     // its stable `#step:N` identity below.
@@ -3189,12 +3193,20 @@ function isActiveLiveStatus(position: LivePosition): boolean {
     .includes(String(position.status || ""))
 }
 
-async function findOpenCombinedPosCountPositions(connId: string, symbol: string): Promise<LivePosition[]> {
+async function findOpenCombinedPosCountPositions(
+  connId: string,
+  symbol: string,
+  parentSetKey: string | undefined,
+  direction: "long" | "short",
+): Promise<LivePosition[]> {
   const normalized = String(symbol || "").toUpperCase().replace(/[-_]/g, "")
+  const exactParent = String(parentSetKey || "")
   const positions = await getLivePositions(connId)
   return positions.filter((position) =>
     position.combinedPosCounts === true &&
     isActiveLiveStatus(position) &&
+    position.direction === direction &&
+    String(position.parentSetKey || "") === exactParent &&
     String(position.symbol || "").toUpperCase().replace(/[-_]/g, "") === normalized,
   )
 }
@@ -3607,7 +3619,7 @@ async function reduceCombinedPosCountPosition(
   }
 }
 
-/** Reconcile the single physical pos-count order to the newest hedged target.
+/** Reconcile one exact Base-parent × direction Pos-Count target.
  * Returns null only when no target position exists yet and the caller should
  * continue through the normal fresh-entry path. */
 async function reconcileCombinedPosCountTarget(
@@ -3617,7 +3629,12 @@ async function reconcileCombinedPosCountTarget(
   executionIntent: LiveExecutionIntent,
   liveExecutionEnabled: boolean,
 ): Promise<LivePosition | null> {
-  const existingPositions = await findOpenCombinedPosCountPositions(connectionId, realPosition.symbol)
+  const existingPositions = await findOpenCombinedPosCountPositions(
+    connectionId,
+    realPosition.symbol,
+    realPosition.parentSetKey,
+    realPosition.direction,
+  )
   let price = Number(realPosition.entryPrice || 0)
   if (!(price > 0)) price = await fetchCurrentPrice(realPosition.symbol)
 
@@ -3707,19 +3724,9 @@ async function reconcileCombinedPosCountTarget(
     }
   }
 
-  const opposite = existingPositions.filter((position) => position.direction !== realPosition.direction)
-  for (const position of opposite) {
-    const closed = await closeLivePosition(
-      connectionId,
-      position.id,
-      price,
-      position.status === "simulated" ? undefined : connector,
-      "poscounts_target_direction_flip",
-    )
-    if (!closed || closed.status !== "closed") return closed || position
-  }
-
-  const existing = existingPositions.find((position) => position.direction === realPosition.direction)
+  // Long and Short targets are independent. Never close the opposite side
+  // while reconciling this exact Base-parent lane.
+  const existing = existingPositions[0]
   if (!existing) return null
   const targetMemberKeys = [...new Set((realPosition.accumulatedSetKeys || []).map(String).filter(Boolean))]
   existing.combinedPosCounts = true
@@ -4092,23 +4099,6 @@ function resolveMaxHoldMs(connId: string): number {
     return 0
   }
 }
-
-/**
- * Hard cap on the number of accumulations per live position.
- *
- * Without a cap, unlimited merges inflate position size proportionally
- * without any drawdown gating — the operator has no visibility and the
- * exchange may reject the accumulated notional.
- *   - 300 gives generous DCA headroom (1 initial entry + 299 merges ≈ 32× the
- *     initial allocation at equal-weight increments) for high-frequency strategies.
- */
-// 35 Signal sources × {direction, overall} × 10 Block counts can create 700
-// independent physical memberships for one symbol/side, in addition to the
-// general Strategy, exact-Set and active Block families. Keep a hard bound,
-// but size it above the complete supported graph so valid lanes never starve.
-// Virtual `block_lane:*` aliases and zero-quantity covered Block memberships
-// are excluded by physicalAccumulationCount().
-const MAX_ACCUMULATIONS_PER_POSITION = 1200
 
 /**
  * Recognise exchange errors that CANNOT be fixed by retrying. For these
@@ -6428,11 +6418,10 @@ export async function executeLivePosition(
       return livePosition
     }
 
-    // Position-count Sets own one physical exchange target per symbol. Every
-    // cycle reconciles the existing quantity to the newest long/short hedge:
-    // increase only the positive delta, reduce only the negative delta, close
-    // on flat, and close-then-open on a direction flip. Ordinary dedup/merge
-    // logic is additive and therefore cannot implement this target contract.
+    // Position-count Sets own one physical target per exact Base parent and
+    // direction. Every cycle reconciles that lane's quantity to the sum of its
+    // independently validated member ratios. The opposite direction is a
+    // separate lane and is never hedged or closed here.
     if (realPosition.combinedPosCounts) {
       if (await abortSuperseded()) return livePosition
       const reconciled = await reconcileCombinedPosCountTarget(
@@ -8296,8 +8285,7 @@ export async function updateLivePositionFill(
     position.updatedAt = Date.now()
 
     await client.setex(key, 604800, JSON.stringify(position))
-    await client.lpush(`live:positions:${position.connectionId}`, position.id)
-    await client.ltrim(`live:positions:${position.connectionId}`, 0, 999)
+    await upsertRedisListHead(client, `live:positions:${position.connectionId}`, position.id)
     await client.expire(`live:positions:${position.connectionId}`, 604800)
     return position
   } catch (err) {
@@ -10462,7 +10450,6 @@ export async function reconcileLivePositions(
           })
           pos.updatedAt = Date.now()
 
-          const closedIndexKey = `live:positions:${connectionId}:closed`
           const movedMarker    = `live:positions:${connectionId}:moved:${pos.id}`
 
           // Read the dedupe marker BEFORE savePosition(). redis-db.savePosition()
@@ -10481,11 +10468,6 @@ export async function reconcileLivePositions(
           const progKey = `progression:${connectionId}`
           const writes: Promise<any>[] = [
             client.expire(progKey, 7 * 24 * 60 * 60).catch(() => {}),
-            // Bound the compatibility ring + refresh its TTL. Complete
-            // three-day PF/DDT analytics use the independent time index written
-            // by savePosition.
-            client.ltrim(closedIndexKey, 0, 499).catch(() => {}),
-            client.expire(closedIndexKey, 30 * 24 * 60 * 60).catch(() => {}),
           ]
           if (pos.liveLockToken) {
             writes.push(releaseLock(connectionId, pos.symbol, liveLockDirection(pos), pos.liveLockToken).catch(() => false))
@@ -10809,11 +10791,17 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         let newlyMoved = 0
         await Promise.all(
           stuckTerminal.map(async (p) => {
-            await client.lrem(openIndexKey, 0, p.id).catch(() => 0)
             const already = await client.lpos(closedIndexKey, p.id).catch(() => null)
             if (already === null || already === undefined) {
-              await client.lpush(closedIndexKey, p.id).catch(() => 0)
+              await moveRedisListMembershipToHead(
+                client,
+                openIndexKey,
+                closedIndexKey,
+                p.id,
+              )
               newlyMoved++
+            } else {
+              await client.lrem(openIndexKey, 0, p.id).catch(() => 0)
             }
           }),
         )
@@ -11698,8 +11686,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
           stage: "live",
           data: { positionId: position.id, status: position.status, action: "synced" },
         })
-        await client.lpush(`live:positions:${position.connectionId}`, position.id)
-        await client.ltrim(`live:positions:${position.connectionId}`, 0, 999)
+        await upsertRedisListHead(client, `live:positions:${position.connectionId}`, position.id)
         await client.expire(`live:positions:${position.connectionId}`, 604800)
       } catch (err) {
         console.warn(`${LOG_PREFIX} Error syncing ${position.id}:`, err)
@@ -12346,6 +12333,7 @@ export async function syncLiveFromPseudo(
 }
 
 export const __liveStageTest = {
+  liveExecutionSlot,
   async refreshLockTTLWithClient(client: any, key: string, token: string, ttlMs: number) {
     return (await evalLockLua(client, REFRESH_LOCK_TTL_LUA, key, [token, String(ttlMs)])) === 1
   },

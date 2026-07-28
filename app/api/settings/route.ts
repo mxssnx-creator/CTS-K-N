@@ -1,5 +1,7 @@
 import {
+  DEFAULT_BASE_MIN_STEP,
   DEFAULT_VOLUME_STEP_RATIO,
+  normalizeBaseMinStep,
   normalizeBaseVolumeFactor,
 } from "@/lib/constants"
 import { NextResponse } from "next/server"
@@ -27,6 +29,7 @@ import {
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
 } from "@/lib/main-trade-profit-factor"
 import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "@/lib/pos-count-volume-ratio"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 /**
  * Fan out a "settings_changed" progression log event AND a settings-
@@ -51,31 +54,28 @@ async function emitSettingsChanged(keyCount: number, changedKeys: string[]): Pro
       ),
     )
 
-    await Promise.all([
-      // Progression log fan-out (operator visibility)
-      ...activeConnections.map((conn: any) =>
+    const coordinator = await import("@/lib/trade-engine")
+      .then(({ getGlobalTradeEngineCoordinator }) => getGlobalTradeEngineCoordinator())
+      .catch(() => null)
+
+    // Complete fan-out with bounded work in flight. This preserves every
+    // active connection while preventing a large installation from opening
+    // an unbounded burst of Redis/log/reload promises on one API request.
+    await mapWithConcurrency(activeConnections, 4, async (conn: any) => {
+      await Promise.allSettled([
         logProgressionEvent(
           conn.id,
           "settings_changed",
           "info",
           `Operator saved ${keyCount} setting${keyCount === 1 ? "" : "s"} — recoordinating engine`,
-          { keyCount, fields: changedKeys.slice(0, 20) },
-        ).catch(() => { /* non-critical */ }),
-      ),
-      // Settings-coordinator reload signal — causes engine to immediately
-      // consume the new app-settings values (volume, leverage, TP/SL, etc.)
-      // without waiting for the periodic 3 s watcher.
-      ...activeConnections.map((conn: any) =>
-        notifySettingsChanged(conn.id, changedKeys.length > 0 ? changedKeys : ["app_settings"])
-          .then(async () => {
-            try {
-              const { getGlobalTradeEngineCoordinator } = await import("@/lib/trade-engine")
-              await getGlobalTradeEngineCoordinator().applyPendingChangesNow(conn.id)
-            } catch { /* coordinator may not be running in this process; watcher will pick it up */ }
-          })
-          .catch(() => { /* non-critical */ }),
-      ),
-    ])
+          { keyCount, fields: changedKeys },
+        ),
+        notifySettingsChanged(
+          conn.id,
+          changedKeys.length > 0 ? changedKeys : ["app_settings"],
+        ).then(() => coordinator?.applyPendingChangesNow(conn.id)),
+      ])
+    })
   } catch {
     /* non-critical */
   }
@@ -108,10 +108,8 @@ const CHANNEL_VOLUME_FACTOR_KEYS = [
 
 function normalizePositionCostSettings<T extends Record<string, any>>(settings: T): T {
   const normalized: Record<string, any> = { ...settings }
-  // Retained for compatibility with older clients only. Base indication
-  // generation is always exhaustive across every integer step 2..30.
   if (Object.prototype.hasOwnProperty.call(normalized, "minStep")) {
-    normalized.minStep = 2
+    normalized.minStep = normalizeBaseMinStep(normalized.minStep)
   }
 
   for (const key of POSITION_COST_KEYS) {
@@ -193,14 +191,15 @@ function getDefaultSettings(): Record<string, any> {
     // (Long / Short). Kept in the defaults so fresh installs boot with the
     // spec-mandated value instead of an undefined sentinel.
     maxActiveBasePseudoPositionsPerDirection: 1,
-    minStep: 2,
+    minStep: DEFAULT_BASE_MIN_STEP,
     // Strategy retention/scheduling controls. Main batching never truncates
     // the exhaustive position-count configuration space.
     strategyMaxEntriesPerSet: 250,
     strategyMainAxisBatchSize: 8,
-    strategyRealSetsSafetyCeiling: 5000,
-    maxRealSets: 5000,
-    strategyLiveSetsCeiling: 500,
+    strategyBlockMaterializationBatchSize: 1024,
+    strategyRealSetsSafetyCeiling: 0,
+    maxRealSets: 0,
+    strategyLiveSetsCeiling: 0,
     baseProfitFactor: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
     mainProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
     realProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,

@@ -13,6 +13,7 @@ function resetRedisGlobals(): void {
     "__redis_backend",
     "__migration_run_promise",
     "__migrations_run",
+    "__v0_devBootGuardDone",
   ]) delete (globalThis as any)[key]
 }
 
@@ -140,14 +141,21 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
           timeout: 10,
         },
       }))
+      await client.sadd("preset_types:all", "preset-legacy-limit")
+      await client.hset("preset_type:preset-legacy-limit", {
+        id: "preset-legacy-limit",
+        max_positions_per_indication: "5",
+        max_positions_per_direction: "3",
+        max_positions_per_range: "2",
+      })
       await client.set("_schema_version", "79")
       await client.set("_migrations_run", "true")
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 90 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 92 })
 
-      expect(await client.get("_schema_version")).toBe("90")
+      expect(await client.get("_schema_version")).toBe("92")
       expect(new Set(await client.smembers("strategy_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
       expect(await client.smembers("strategy_active_set_keys:conn-ledger")).toEqual(["set:a"])
       expect(new Set(await client.smembers("strategy_closed_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
@@ -185,16 +193,20 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(await client.hget("connection_settings:conn-ledger", "indicationTimeoutMs")).toBe("250")
       expect(await client.hget("connection_settings:conn-ledger", "positionCooldownMs")).toBe("3000")
       expect(await client.hget("connection_settings:conn-ledger", "maxActiveBasePseudoPositionsPerDirection")).toBe("1")
-      expect(await client.hget("connection_settings:conn-ledger", "strategyRealSetsSafetyCeiling")).toBe("5000")
-      expect(await client.hget("connection_settings:conn-ledger", "maxRealSets")).toBe("5000")
-      expect(await client.hget("connection_settings:conn-ledger", "strategyLiveSetsCeiling")).toBe("500")
-      expect(await client.hget("connection_settings:conn-ledger", "minStep")).toBe("2")
+      expect(await client.hget("connection_settings:conn-ledger", "strategyRealSetsSafetyCeiling")).toBe("0")
+      expect(await client.hget("connection_settings:conn-ledger", "maxRealSets")).toBe("0")
+      expect(await client.hget("connection_settings:conn-ledger", "strategyLiveSetsCeiling")).toBe("0")
+      expect(await client.hget(
+        "connection_settings:conn-ledger",
+        "strategyBlockMaterializationBatchSize",
+      )).toBe("1024")
+      expect(await client.hget("connection_settings:conn-ledger", "minStep")).toBe("4")
       expect(await client.hget("connection_settings:conn-ledger", "mainEvalPosCount")).toBe("25")
       expect(await client.hget("connection_settings:conn-ledger", "realEvalPosCount")).toBe("20")
       expect(JSON.parse(String(
         await client.hget("connection_settings:conn-ledger", "coordination_settings"),
       ))).toMatchObject({
-        minStep: 2,
+        minStep: 4,
         mainEvalPosCount: 25,
         realEvalPosCount: 20,
       })
@@ -214,7 +226,10 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(await client.hget("settings:active_indications:conn-ledger", "optimal")).toBe("true")
       expect(await client.hget("settings:active_indications:conn-ledger", "auto")).toBe("true")
       expect(await client.hget("settings:active_indications:conn-ledger", "common")).toBe("true")
-      expect(await client.hget("settings:active_indications:conn-ledger", "common_timeout")).toBe("3")
+      expect(await client.hget("settings:active_indications:conn-ledger", "trend_timeout")).toBe("0.5")
+      expect(await client.hget("settings:active_indications:conn-ledger", "trend_interval")).toBe("0.5")
+      expect(await client.hget("settings:active_indications:conn-ledger", "common_timeout")).toBe("1")
+      expect(await client.hget("settings:active_indications:conn-ledger", "common_interval")).toBe("1")
       const mainIndications = JSON.parse(String(await client.get("indications:main")))
       expect(mainIndications.configuration.sample_ranges).toEqual(
         Array.from({ length: 29 }, (_, index) => index + 2),
@@ -230,9 +245,14 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(mainIndications.optimal.timeout).toBe(0.25)
       const commonIndications = JSON.parse(String(await client.get("indications:common")))
       expect(commonIndications.coordination.timeframesMinutes).toEqual([1, 5, 15, 30])
-      expect(commonIndications.rsi).toMatchObject({ enabled: false, timeout: 3 })
-      expect(commonIndications.ma).toMatchObject({ enabled: true, timeout: 3 })
-      expect(commonIndications.parabolicSAR).toMatchObject({ enabled: true, timeout: 3 })
+      expect(commonIndications.rsi).toMatchObject({ enabled: false, timeout: 1, interval: 1 })
+      expect(commonIndications.ma).toMatchObject({ enabled: true, timeout: 1, interval: 1 })
+      expect(commonIndications.parabolicSAR).toMatchObject({ enabled: true, timeout: 1, interval: 1 })
+      expect(await client.hgetall("preset_type:preset-legacy-limit")).toMatchObject({
+        max_positions_per_indication: "0",
+        max_positions_per_direction: "0",
+        max_positions_per_range: "0",
+      })
       expect(JSON.parse(String(await client.get("indications:signal")))).toMatchObject({
         directExecutionEnabled: true,
         maxSourcesPerCycle: 35,
@@ -249,7 +269,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(await client.hget("system:database:coordination:performance", "independent_block_profit_factor"))
         .toBe("default-pf-x-ratio-x-volume-increment-v1")
       expect(await client.hget("system:database:coordination:performance", "schema_version"))
-        .toBe("90")
+        .toBe("92")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -313,7 +333,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 90 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 92 })
 
       expect(await client.hget("connection:conn-stage-floor", "baseProfitFactor")).toBe("0.4")
       expect(await client.hget("connection:conn-stage-floor", "base_min_profit_factor")).toBe("0.4")
@@ -415,7 +435,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 90,
+        version: 92,
       })
 
       expect(await client.hget("connection:conn-v90", "baseProfitFactor")).toBe("0.4")
@@ -449,6 +469,126 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         "system:database:coordination:performance",
         "strategy_stage_switches",
       )).toBe("compatibility-only-always-true")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("preserves an explicit QuickStart symbol basket across repeated boot initialization", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "migration-symbol-pin-"))
+    process.env = {
+      ...originalEnv,
+      NODE_ENV: "test",
+      V0_DEV_SYMBOL_COUNT: "3",
+      V0_REDIS_SNAPSHOT_PATH: join(dir, "snapshot.json"),
+    }
+    resetRedisGlobals()
+    jest.resetModules()
+
+    try {
+      const redisDb = await import("@/lib/redis-db")
+      await redisDb.ensureCoreRedis()
+      const client = redisDb.getRedisClient()
+      await client.flushDb()
+      const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+      const serialized = JSON.stringify(symbols)
+      await client.sadd("connections", "bingx-x01")
+      for (const key of [
+        "connection:bingx-x01",
+        "settings:trade_engine_state:bingx-x01",
+        "settings:connection_settings:bingx-x01",
+        "settings:connection:bingx-x01",
+      ]) {
+        await client.hset(key, {
+          id: "bingx-x01",
+          force_symbols: serialized,
+          symbols: serialized,
+          active_symbols: serialized,
+          symbol_count: "3",
+          dev_symbol_count_override: "3",
+        })
+      }
+      await client.set("_schema_version", "90")
+      await client.set("_migrations_run", "true")
+
+      const migrations = await import("@/lib/redis-migrations")
+      migrations.resetMigrationRunState()
+      await expect(migrations.runMigrations()).resolves.toMatchObject({
+        success: true,
+        version: 92,
+      })
+
+      for (const key of [
+        "connection:bingx-x01",
+        "settings:trade_engine_state:bingx-x01",
+        "settings:connection_settings:bingx-x01",
+        "settings:connection:bingx-x01",
+      ]) {
+        expect(await client.hget(key, "force_symbols")).toBe(serialized)
+        expect(await client.hget(key, "symbol_count")).toBe("3")
+        expect(await client.hget(key, "symbol_order")).toBe("")
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("normalizes legacy stage caps into unlimited rows and seeds the Block scheduler at schema 91", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "migration-091-stage-rows-"))
+    process.env = {
+      ...originalEnv,
+      NODE_ENV: "test",
+      V0_REDIS_SNAPSHOT_PATH: join(dir, "snapshot.json"),
+    }
+    resetRedisGlobals()
+    jest.resetModules()
+
+    try {
+      const redisDb = await import("@/lib/redis-db")
+      await redisDb.ensureCoreRedis()
+      const client = redisDb.getRedisClient()
+      await client.flushDb()
+      await client.sadd("connections", "conn-v91")
+      await client.hset("connection_settings:conn-v91", {
+        strategyRealSetsSafetyCeiling: "5000",
+        maxRealSets: "5000",
+        strategyLiveSetsCeiling: "500",
+        connection_settings: JSON.stringify({
+          strategies: {
+            main: {
+              base: { enabled: true, max_positions: 0 },
+              main: { enabled: true, max_positions: 0 },
+              real: { enabled: true, max_positions: 5000 },
+              live: { enabled: false, max_positions: 500 },
+            },
+          },
+          coordination_settings: {},
+        }),
+      })
+      await client.set("_schema_version", "90")
+      await client.set("_migrations_run", "true")
+
+      const migrations = await import("@/lib/redis-migrations")
+      migrations.resetMigrationRunState()
+      await expect(migrations.runMigrations()).resolves.toMatchObject({
+        success: true,
+        version: 92,
+      })
+
+      expect(await client.hget("connection_settings:conn-v91", "strategyRealSetsSafetyCeiling")).toBe("0")
+      expect(await client.hget("connection_settings:conn-v91", "maxRealSets")).toBe("0")
+      expect(await client.hget("connection_settings:conn-v91", "strategyLiveSetsCeiling")).toBe("0")
+      expect(await client.hget(
+        "connection_settings:conn-v91",
+        "strategyBlockMaterializationBatchSize",
+      )).toBe("1024")
+      const document = JSON.parse(String(
+        await client.hget("connection_settings:conn-v91", "connection_settings"),
+      ))
+      expect(document.strategies.main.real.max_positions).toBe(0)
+      expect(document.strategies.main.live.max_positions).toBe(0)
+      expect(document.strategies.main.live.enabled).toBe(false)
+      expect(document.coordination_settings.strategyBlockMaterializationBatchSize).toBe(1024)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

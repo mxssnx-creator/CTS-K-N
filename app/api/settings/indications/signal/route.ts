@@ -117,7 +117,7 @@ export async function POST(request: Request) {
       {
         enabled: settings.enabled,
         enabledWebsiteSources: Object.values(settings.sources).filter((source) => source.enabled).length,
-        websiteSourceLimit: settings.maxSourcesPerCycle,
+        websiteSourcesProcessed: "all-enabled",
         maxPositionsTotal: settings.maxPositionsTotal,
         positionSelectionMode: settings.positionSelectionMode,
         requestIntervalSeconds: settings.requestIntervalSeconds,

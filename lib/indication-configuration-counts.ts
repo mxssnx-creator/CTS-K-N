@@ -19,6 +19,7 @@ import {
   SIGNAL_SOURCE_DEFINITIONS,
 } from "@/lib/signal-source-registry"
 import { buildSignalTradeConfigurations } from "@/lib/signal-config-matrix"
+import { MAX_BASE_STEP, normalizeBaseMinStep } from "@/lib/constants"
 
 export type IndicationConfigurationType =
   | "direction"
@@ -146,13 +147,7 @@ function normalizeSignalConfigurationCountSettings(
       : {}
     return [source.id, { enabled: bool(configured.enabled, source.enabledByDefault) }]
   })) as Record<string, { enabled: boolean }>
-  const maxSourcesPerCycle = Math.round(Math.max(
-    3,
-    Math.min(
-      SIGNAL_SOURCE_DEFINITIONS.length,
-      positiveNumber(raw.maxSourcesPerCycle, SIGNAL_SOURCE_DEFINITIONS.length),
-    ),
-  ))
+  const maxSourcesPerCycle = SIGNAL_SOURCE_DEFINITIONS.length
   const minimumSourceSignals = Math.min(
     maxSourcesPerCycle,
     Math.round(Math.max(2, Math.min(20, positiveNumber(raw.minimumSourceSignals, 3)))),
@@ -192,27 +187,17 @@ export function calculateIndicationConfigurationCounts(
   const settings = rawSettings && typeof rawSettings === "object"
     ? rawSettings as Record<string, any>
     : {}
-  const fallbackRanges = Array.from({ length: 29 }, (_, index) => index + 2)
+  const minStep = normalizeBaseMinStep(settings.minStep)
+  const fallbackRanges = Array.from(
+    { length: MAX_BASE_STEP - minStep + 1 },
+    (_, index) => index + minStep,
+  )
   const fallbackFactors = [0.9, 1, 1.1]
   const fallbackThresholds = [0.5, 1, 1.5, 2, 2.5]
   const fallbackAdvanced = [0.5, 1, 1.5, 2, 2.5, 3]
 
-  const ranges = settings.indicationSampleRanges !== undefined
-    ? numericList(settings.indicationSampleRanges, fallbackRanges).filter((value) => value > 0)
-    : numericRange(
-        settings.directionRangeStart ?? settings.directionRangeFrom,
-        settings.directionRangeEnd ?? settings.directionRangeTo,
-        settings.directionRangeStep,
-        fallbackRanges,
-      )
-  const optimalRanges = settings.optimalSampleRanges !== undefined
-    ? numericList(settings.optimalSampleRanges, ranges).filter((value) => value > 0)
-    : numericRange(
-        settings.optimalRangeStart,
-        settings.optimalRangeEnd,
-        settings.optimalRangeStep,
-        ranges,
-      )
+  const ranges = fallbackRanges
+  const optimalRanges = [...ranges]
   const drawdowns = numericList(settings.indicationDrawdownRatios, [0.5, 1, 1.5])
   const lastParts = numericList(settings.indicationLastPartRatios, [0.25, 0.5])
   const factors = numericList(settings.indicationFactorMultipliers, fallbackFactors)
@@ -477,9 +462,9 @@ export function calculateIndicationConfigurationCounts(
     perSetDbCapacity,
     maxStorablePositions: totalPossibleSets * perSetDbCapacity,
     settings: {
-      indicationRangeMin: ranges[0] ?? 2,
-      indicationRangeMax: ranges[ranges.length - 1] ?? 30,
-      indicationRangeStep: positiveNumber(settings.directionRangeStep, 1),
+      indicationRangeMin: ranges[0] ?? minStep,
+      indicationRangeMax: ranges[ranges.length - 1] ?? MAX_BASE_STEP,
+      indicationRangeStep: 1,
       takeProfitRangeDivisor: positiveInteger(settings.takeProfitRangeDivisor, 3),
       validRangeCount: ranges.length,
       optimalBasePositionsLimit: perSetDbCapacity,

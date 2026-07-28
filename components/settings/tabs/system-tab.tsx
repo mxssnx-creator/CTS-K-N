@@ -76,31 +76,31 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <Label>Max Long Positions per Config</Label>
-                    <span className="text-sm font-semibold">{settings.maxPositionsLong ?? 1}</span>
+                    <span className="text-sm font-semibold">1</span>
                   </div>
                   <Slider
-                    value={[settings.maxPositionsLong ?? 1]}
-                    onValueChange={(v) => handleSettingChange("maxPositionsLong", v[0])}
+                    value={[1]}
                     min={1}
-                    max={5}
+                    max={1}
                     step={1}
+                    disabled
                   />
-                  <p className="text-xs text-muted-foreground">Max 1 recommended for independent config processing</p>
+                  <p className="text-xs text-muted-foreground">Exactly one per complete Long config lane; the number of lanes is unlimited.</p>
                 </div>
 
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <Label>Max Short Positions per Config</Label>
-                    <span className="text-sm font-semibold">{settings.maxPositionsShort ?? 1}</span>
+                    <span className="text-sm font-semibold">1</span>
                   </div>
                   <Slider
-                    value={[settings.maxPositionsShort ?? 1]}
-                    onValueChange={(v) => handleSettingChange("maxPositionsShort", v[0])}
+                    value={[1]}
                     min={1}
-                    max={5}
+                    max={1}
                     step={1}
+                    disabled
                   />
-                  <p className="text-xs text-muted-foreground">Max 1 recommended for independent config processing</p>
+                  <p className="text-xs text-muted-foreground">Exactly one per complete Short config lane; the number of lanes is unlimited.</p>
                 </div>
               </div>
 
@@ -144,27 +144,20 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                 </p>
               </div>
 
-              {/* ── Strategy pipeline ceilings ──────────────────────────
-                  These are the same safety rails consumed by
-                  `StrategyCoordinator`: per-Set entry count, Main axis
-                  fan-out, Real-stage safety ceiling, operator Real pass-
-                  through cap, and Live dispatch cap. Keep them together so
-                  an operator can tune the whole Strategies pipeline from
-                  Settings → System instead of editing env vars. */}
+              {/* Storage retention and bounded scheduling never cap calculations. */}
               <div className="space-y-4 pt-2 border-t border-dashed border-border/40">
                 <div className="space-y-1">
-                  <h4 className="text-sm font-semibold">Strategies Pipeline Ceilings</h4>
+                  <h4 className="text-sm font-semibold">Strategy Processing & Retention</h4>
                   <p className="text-xs text-muted-foreground">
-                    Resource ceilings for Strategy Set creation and live dispatch.
-                    Lower values improve production liveness; higher values widen
-                    the strategy funnel on larger workers.
+                    Base/Main/Real/Live process every qualifying Set. These
+                    controls affect stored history and work in flight only.
                   </p>
                 </div>
 
                 <div className="grid md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label>Entries per Strategy Set</Label>
+                      <Label>History retained per Strategy Set</Label>
                       <span className="text-sm font-semibold tabular-nums">
                         {(settings.strategyMaxEntriesPerSet ?? 250).toLocaleString()}
                       </span>
@@ -177,8 +170,8 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                       step={50}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Maximum config entries packed into each Strategy Set.
-                      Default <strong>250</strong>.
+                      Compacted historical rows retained after a complete
+                      calculation pass. It never removes current configs.
                     </p>
                   </div>
 
@@ -203,68 +196,39 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                     </p>
                   </div>
 
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label>Real Sets Safety Ceiling</Label>
-                      <span className="text-sm font-semibold tabular-nums">
-                        {(settings.strategyRealSetsSafetyCeiling ?? 5000).toLocaleString()}
-                      </span>
-                    </div>
-                    <Slider
-                      value={[settings.strategyRealSetsSafetyCeiling ?? 5000]}
-                      onValueChange={(v) => {
-                        handleSettingChange("strategyRealSetsSafetyCeiling", v[0])
-                        if ((settings.maxRealSets ?? 5000) > v[0]) handleSettingChange("maxRealSets", v[0])
-                      }}
-                      min={25}
-                      max={25000}
-                      step={25}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Hard memory-safety ceiling for Real-stage Sets.
-                      <code>maxRealSets</code> cannot exceed this value.
-                    </p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label>Max Real Sets per Cycle</Label>
-                      <span className="text-sm font-semibold tabular-nums">
-                        {(settings.maxRealSets ?? 5000).toLocaleString()}
-                      </span>
-                    </div>
-                    <Slider
-                      value={[Math.min(settings.maxRealSets ?? 5000, settings.strategyRealSetsSafetyCeiling ?? 5000)]}
-                      onValueChange={(v) => handleSettingChange("maxRealSets", v[0])}
-                      min={25}
-                      max={settings.strategyRealSetsSafetyCeiling ?? 5000}
-                      step={25}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Operator cap on Real Sets that propagate toward Live after
-                      PF/DDT filtering and variant-fair ranking.
-                    </p>
-                  </div>
-
                   <div className="space-y-2 md:col-span-2">
                     <div className="flex items-center justify-between">
-                      <Label>Live Exchange Dispatch Sets</Label>
+                      <Label>Block Real/Live Rotating Batch</Label>
                       <span className="text-sm font-semibold tabular-nums">
-                        {(settings.strategyLiveSetsCeiling ?? 500).toLocaleString()}
+                        {(settings.strategyBlockMaterializationBatchSize ?? 1024).toLocaleString()}
                       </span>
                     </div>
                     <Slider
-                      value={[settings.strategyLiveSetsCeiling ?? 500]}
-                      onValueChange={(v) => handleSettingChange("strategyLiveSetsCeiling", v[0])}
-                      min={1}
-                      max={500}
-                      step={1}
+                      value={[settings.strategyBlockMaterializationBatchSize ?? 1024]}
+                      onValueChange={(v) =>
+                        handleSettingChange("strategyBlockMaterializationBatchSize", v[0])
+                      }
+                      min={64}
+                      max={10000}
+                      step={64}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Maximum qualifying Sets considered for live exchange order
-                      dispatch per symbol. The general default is <strong>500</strong>;
-                      BingX is reduced at runtime to 90 to leave room for SL/TP
-                      control orders under its venue-side open-order limits.
+                      Inactive Block rows materialized in one rotating cycle.
+                      Every source × symbol × direction × config × count is
+                      still evaluated and visited; active rows bypass the batch.
+                      Default <strong>1,024</strong>.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2 md:col-span-2 rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-3">
+                    <div className="flex items-center justify-between">
+                      <Label>Base / Main / Real / Live Set Capacity</Label>
+                      <span className="text-sm font-semibold">Unlimited</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Persisted compatibility values are fixed at 0. Bounded
+                      worker batches protect responsiveness without sampling
+                      or truncating any configuration.
                     </p>
                   </div>
                 </div>
@@ -352,10 +316,11 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                   step={50}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Default, Additional and Trend lanes default to 250 ms. The
+                  Default and Additional exact lanes default to 250 ms. The
                   Redis key contains type, name, full configuration and Long/Short,
                   so one lane never throttles another. Common technical indicators
-                  keep their independent per-name 3-second setting.
+                  use an independent 3-second valid-result cooldown per exact
+                  name/configuration/direction lane.
                 </p>
               </div>
             </div>
@@ -778,7 +743,7 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                 </div>
 
                 <p className="text-xs text-muted-foreground">
-                  Also surfaced in this System tab: <code>maxRealSets</code>, <code>indicationTimeoutMs</code>,
+                  Also surfaced in this System tab: <code>indicationTimeoutMs</code>,
                   indication retention, global <code>setCompactionFloor</code>/<code>setCompactionThresholdPct</code>,
                   indication compaction overrides, and strategy compaction overrides above.
                 </p>

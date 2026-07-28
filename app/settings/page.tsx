@@ -137,6 +137,7 @@ interface Settings {
   cyclePauseMs?: number // 10-200ms, step 10, default 50ms — pause between engine cycles
   strategyMaxEntriesPerSet: number
   strategyMainAxisBatchSize: number
+  strategyBlockMaterializationBatchSize: number
   strategyRealSetsSafetyCeiling: number
   maxRealSets: number
   strategyLiveSetsCeiling: number
@@ -586,9 +587,10 @@ const initialSettings: Settings = {
   cyclePauseMs: 50, // 10-200ms, step 10, default 50ms — pause between engine cycles
   strategyMaxEntriesPerSet: 250,
   strategyMainAxisBatchSize: 8,
-  strategyRealSetsSafetyCeiling: 5000,
-  maxRealSets: 5000,
-  strategyLiveSetsCeiling: 500,
+  strategyBlockMaterializationBatchSize: 1024,
+  strategyRealSetsSafetyCeiling: 0,
+  maxRealSets: 0,
+  strategyLiveSetsCeiling: 0,
   // prehistoric_range_hours is already set at line 366 above (first occurrence wins)
 
   // System Configuration
@@ -1549,112 +1551,87 @@ export default function SettingsPage() {
   const saveAllSettings = async () => {
     setSaving(true)
     setReorganizing(false)
+    let enginePausedBySave = false
 
     try {
-      console.log("[v0] Starting settings save operation...")
       toast.info("Saving settings...", {
-        description: "Please wait while we save your configuration.",
+        description: "Applying the complete configuration snapshot.",
       })
 
-      // Step 1: Fetch previous settings to detect database size changes
       const previousSettingsResponse = await fetch("/api/settings")
       if (!previousSettingsResponse.ok) {
         throw new Error("Failed to fetch previous settings")
       }
       const previousSettingsData = await previousSettingsResponse.json()
-
       const previousSettings = previousSettingsData?.settings || {}
       const prevDatabaseSizeBase = previousSettings.databaseSizeBase ?? 250
       const prevDatabaseSizeMain = previousSettings.databaseSizeMain ?? 250
       const prevDatabaseSizeReal = previousSettings.databaseSizeReal ?? 250
       const prevDatabaseSizePreset = previousSettings.databaseSizePreset ?? 250
-      const prevMainEngineIntervalMs = previousSettings.mainEngineIntervalMs ?? 100
-      const prevPresetEngineIntervalMs = previousSettings.presetEngineIntervalMs ?? 100
-      const prevActiveOrderHandlingIntervalMs = previousSettings.activeOrderHandlingIntervalMs ?? 50
 
-      // Step 2: Check if database sizes changed (requires reorganization)
       const databaseSizesChanged =
         prevDatabaseSizeBase !== settings.databaseSizeBase ||
         prevDatabaseSizeMain !== settings.databaseSizeMain ||
         prevDatabaseSizeReal !== settings.databaseSizeReal ||
         prevDatabaseSizePreset !== settings.databaseSizePreset
 
-      // Step 3: Check if engine intervals changed (requires engine restart)
-      const engineIntervalsChanged =
-        prevMainEngineIntervalMs !== settings.mainEngineIntervalMs ||
-        prevPresetEngineIntervalMs !== settings.presetEngineIntervalMs ||
-        prevActiveOrderHandlingIntervalMs !== settings.activeOrderHandlingIntervalMs
-
-      if (databaseSizesChanged || engineIntervalsChanged) {
+      // Runtime settings hot-reload immediately. Only physical history
+      // reorganization needs a pause, and Save must preserve an intentionally
+      // stopped or already-paused operator state.
+      if (databaseSizesChanged) {
         setReorganizing(true)
-        console.log("[v0] Critical changes detected, pausing engine...")
-        toast.info("Pausing trade engine...", {
-          description: "Applying critical configuration changes requires pausing the engine.",
+        const statusResponse = await fetch("/api/trade-engine/status", {
+          cache: "no-store",
         })
-
-        // Step 3a: Pause trade engine
-        const pauseResponse = await fetch("/api/trade-engine/pause", { method: "POST" })
-        if (!pauseResponse.ok) {
-          console.warn("[v0] Failed to pause trade engine, continuing anyway...")
-        } else {
-          console.log("[v0] Trade engine paused successfully")
+        const statusData = statusResponse.ok
+          ? await statusResponse.json().catch(() => ({}))
+          : {}
+        const engineWasRunning =
+          statusData?.running === true ||
+          statusData?.operatorIntent === "running" ||
+          statusData?.operatorStatus === "running"
+        if (engineWasRunning) {
+          toast.info("Pausing trade engine...", {
+            description: "Reorganizing retained Set histories safely.",
+          })
+          const pauseResponse = await fetch("/api/trade-engine/pause", {
+            method: "POST",
+          })
+          const pauseData = await pauseResponse.json().catch(() => ({}))
+          if (!pauseResponse.ok || pauseData?.success !== true) {
+            throw new Error(
+              pauseData?.error ||
+              "Could not pause the running engine for database reorganization",
+            )
+          }
+          enginePausedBySave = true
         }
-
-        // Step 3b: Wait for engine to fully stop
-        await new Promise((resolve) => setTimeout(resolve, 2000))
       }
 
-      // Step 4: Save settings to database
-      console.log("[v0] Saving settings to database...")
       const settingsResponse = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ settings }),
       })
-
-      // Handle potential HTML responses (server errors, gateway timeouts, etc.)
-      const contentType = settingsResponse.headers.get("content-type") || ""
-      let settingsData = null
-      
-      try {
-        if (contentType.includes("application/json")) {
-          settingsData = await settingsResponse.json()
-        } else if (contentType.includes("text/html") || !settingsResponse.ok) {
-          // Server returned HTML or error - likely 500, 502, 503
-          const responseText = await settingsResponse.text()
-          if (responseText.includes("<!DOCTYPE") || responseText.includes("<html")) {
-            console.error("[v0] Server returned HTML error response. Status:", settingsResponse.status)
-            throw new Error(`Server Error (HTTP ${settingsResponse.status}): ${settingsResponse.statusText || "Unknown error"}. Try again in a moment.`)
-          }
-          // Try to extract error message from response
-          settingsData = { error: responseText.substring(0, 200) }
-        }
-      } catch (parseError) {
-        if (parseError instanceof Error && parseError.message.includes("Server Error")) {
-          throw parseError
-        }
-        console.error("[v0] Failed to parse settings response:", parseError)
-        throw new Error("Failed to parse server response. Server may be experiencing issues.")
+      const settingsContentType = settingsResponse.headers.get("content-type") || ""
+      const settingsData = settingsContentType.includes("application/json")
+        ? await settingsResponse.json().catch(() => ({}))
+        : { error: (await settingsResponse.text()).slice(0, 300) }
+      if (!settingsResponse.ok || settingsData?.success !== true) {
+        throw new Error(
+          settingsData?.error ||
+          settingsData?.message ||
+          `Settings save failed (HTTP ${settingsResponse.status})`,
+        )
+      }
+      if (settingsData.settings && typeof settingsData.settings === "object") {
+        setSettings((current) => ({ ...current, ...settingsData.settings }))
       }
 
-      if (!settingsResponse.ok) {
-        const errorMsg = settingsData?.error || settingsData?.message || "Failed to save settings to file"
-        throw new Error(errorMsg)
-      }
-      
-      console.log("[v0] Settings saved to file successfully")
-
-      toast.success("Settings saved!", {
-        description: "All changes have been applied successfully.",
-      })
-
-      // Step 5: If database sizes changed, reorganize database
       if (databaseSizesChanged) {
-        console.log("[v0] Database sizes changed, reorganizing...")
         toast.info("Reorganizing database with new size limits...", {
-          description: "Applying new database size configurations.",
+          description: "Applying the new retained-history sizes.",
         })
-
         const reorganizeResponse = await fetch("/api/database/reorganize", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1665,86 +1642,56 @@ export default function SettingsPage() {
             presetSize: settings.databaseSizePreset,
           }),
         })
-
-        // Handle potential HTML responses
         const reorganizeContentType = reorganizeResponse.headers.get("content-type") || ""
-        let reorganizeData = null
-        
-        try {
-          if (reorganizeContentType.includes("application/json")) {
-            reorganizeData = await reorganizeResponse.json()
-          } else if (reorganizeContentType.includes("text/html") || !reorganizeResponse.ok) {
-            const responseText = await reorganizeResponse.text()
-            if (responseText.includes("<!DOCTYPE") || responseText.includes("<html")) {
-              console.error("[v0] Database reorganize returned HTML error. Status:", reorganizeResponse.status)
-              throw new Error(`Database reorganize failed: Server error (HTTP ${reorganizeResponse.status})`)
-            }
-          }
-        } catch (parseError) {
-          if (parseError instanceof Error && parseError.message.includes("Database reorganize")) {
-            throw parseError
-          }
-          console.error("[v0] Failed to parse reorganize response:", parseError)
-        }
-
-        if (!reorganizeResponse.ok) {
-          const errorMsg = reorganizeData?.error || reorganizeData?.message || "Database reorganization failed"
-          console.error("[v0] Database reorganization failed:", errorMsg)
-          toast.error("Database reorganization failed", {
-            description: "Settings saved but limits not applied. Please check logs.",
-          })
-        } else {
-          console.log("[v0] Database reorganized successfully")
-          toast.success("Database reorganized successfully", {
-            description: "New size limits have been applied.",
-          })
+        const reorganizeData = reorganizeContentType.includes("application/json")
+          ? await reorganizeResponse.json().catch(() => ({}))
+          : { error: (await reorganizeResponse.text()).slice(0, 300) }
+        if (!reorganizeResponse.ok || reorganizeData?.success === false) {
+          throw new Error(
+            reorganizeData?.error ||
+            reorganizeData?.message ||
+            `Database reorganization failed (HTTP ${reorganizeResponse.status})`,
+          )
         }
       }
 
-      // Step 6: If critical settings changed, resume engine
-      if (databaseSizesChanged || engineIntervalsChanged) {
-        console.log("[v0] Resuming trade engine with new settings...")
-        toast.info("Resuming trade engine...", {
-          description: "Trade engine will restart with updated configuration.",
-        })
-
-        // Wait a moment before resuming
-        await new Promise((resolve) => setTimeout(resolve, 1000))
-
-        const resumeResponse = await fetch("/api/trade-engine/resume", { method: "POST" })
-        if (!resumeResponse.ok) {
-          console.error("[v0] Failed to resume trade engine")
-          toast.error("Failed to resume trade engine", {
-            description: "Please check System status to ensure it is running.",
-          })
-        } else {
-          console.log("[v0] Trade engine resumed successfully")
-          toast.success("Trade engine resumed", {
-            description: "Engine is now running with the new settings.",
-          })
-        }
-
-        // Step 7: Reload page to refresh all components with new settings
-        toast.info("Applying all changes...", {
-          description: "The page will reload to fully apply all updated settings.",
-        })
-        setTimeout(() => {
-          window.location.reload()
-        }, 2000)
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("settings-saved", {
+          detail: {
+            changedAt: new Date().toISOString(),
+            databaseReorganized: databaseSizesChanged,
+          },
+        }))
       }
+      toast.success("Settings saved", {
+        description: databaseSizesChanged
+          ? "Settings and retained histories were updated."
+          : "Running engines received the changes immediately.",
+      })
     } catch (error) {
       console.error("[v0] Error saving settings:", error)
       toast.error("Error saving settings", {
         description: error instanceof Error ? error.message : "An unknown error occurred",
       })
-
-      // Try to resume engine if it was paused
-      try {
-        await fetch("/api/trade-engine/resume", { method: "POST" })
-      } catch (resumeError) {
-        console.error("[v0] Failed to resume engine after error:", resumeError)
-      }
     } finally {
+      if (enginePausedBySave) {
+        try {
+          const resumeResponse = await fetch("/api/trade-engine/resume", {
+            method: "POST",
+          })
+          const resumeData = await resumeResponse.json().catch(() => ({}))
+          if (!resumeResponse.ok || resumeData?.success !== true) {
+            toast.error("Settings saved, but engine resume failed", {
+              description: resumeData?.error || "Check the System status.",
+            })
+          }
+        } catch (resumeError) {
+          console.error("[v0] Failed to resume engine after settings save:", resumeError)
+          toast.error("Settings saved, but engine resume failed", {
+            description: "Check the System status.",
+          })
+        }
+      }
       setSaving(false)
       setReorganizing(false)
     }

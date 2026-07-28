@@ -20,11 +20,10 @@ export type TradeHistoryRow = TradeHistoryRowType
 
 interface TradeHistoryTableProps {
   trades: TradeHistoryRow[]
-  /** Hard payload/render cap; the API and UI never retain more than 500. */
-  limit?: number
   /** Constant DOM window used by the virtual scroller. */
   visibleWindow?: number
   onRefresh?: () => void | Promise<void>
+  environmentLabel?: "Exchange (Live)" | "Simulated"
 }
 
 type SortField =
@@ -42,7 +41,6 @@ type SortDir = "asc" | "desc"
 
 const ROW_HEIGHT = 44
 const DEFAULT_WINDOW = 50
-const MAX_RECORDS = 500
 const GRID_COLUMNS = "140px 100px 70px 110px 110px 100px 80px 100px 80px 80px"
 
 function finite(value: unknown): number {
@@ -59,11 +57,10 @@ function money(value: number, digits = 2): string {
 
 export function TradeHistoryTable({
   trades,
-  limit = MAX_RECORDS,
   visibleWindow = DEFAULT_WINDOW,
   onRefresh,
+  environmentLabel = "Exchange (Live)",
 }: TradeHistoryTableProps) {
-  const hardLimit = Math.max(1, Math.min(MAX_RECORDS, Math.floor(limit) || MAX_RECORDS))
   const windowSize = Math.max(1, Math.min(DEFAULT_WINDOW, Math.floor(visibleWindow) || DEFAULT_WINDOW))
   const [sortField, setSortField] = useState<SortField>("closedAt")
   const [sortDir, setSortDir] = useState<SortDir>("desc")
@@ -98,9 +95,10 @@ export function TradeHistoryTable({
       : <ArrowDown className="ml-1 inline h-3 w-3" />
   }
 
-  // Dedupe before applying the 500-row bound. Exchange close-order id is the
-  // strongest identity; local id is the fallback. Keep the newest copy.
-  const cappedTrades = useMemo(() => {
+  // Dedupe the complete paged archive. Exchange close-order id is the strongest
+  // identity; local id is the fallback. DOM work remains bounded by the
+  // virtual window even when the durable history contains thousands of rows.
+  const completeTrades = useMemo(() => {
     const byId = new Map<string, TradeHistoryRow>()
     const anonymous: TradeHistoryRow[] = []
     for (const trade of trades) {
@@ -119,11 +117,10 @@ export function TradeHistoryTable({
     }
     return [...byId.values(), ...anonymous]
       .sort((a, b) => finite(b.closedAt) - finite(a.closedAt))
-      .slice(0, hardLimit)
-  }, [hardLimit, trades])
+  }, [trades])
 
   const filtered = useMemo(() => {
-    let list = [...cappedTrades]
+    let list = [...completeTrades]
     if (directionFilter !== "all") list = list.filter((trade) => trade.direction === directionFilter)
     const query = search.trim().toUpperCase()
     if (query) {
@@ -145,7 +142,7 @@ export function TradeHistoryTable({
       return sortDir === "asc" ? comparison : -comparison
     })
     return list
-  }, [cappedTrades, directionFilter, search, sortDir, sortField])
+  }, [completeTrades, directionFilter, search, sortDir, sortField])
 
   const summary = useMemo(() => {
     let wins = 0
@@ -154,7 +151,7 @@ export function TradeHistoryTable({
     let netPnl = 0
     let fees = 0
     let volume = 0
-    for (const trade of cappedTrades) {
+    for (const trade of completeTrades) {
       const pnl = finite(trade.realizedPnl)
       if (pnl > 0) wins++
       else if (pnl < 0) losses++
@@ -173,12 +170,12 @@ export function TradeHistoryTable({
       volume,
       winRate: decided > 0 ? (wins / decided) * 100 : 0,
     }
-  }, [cappedTrades])
+  }, [completeTrades])
 
   useEffect(() => {
     setWindowStart(0)
     if (viewportRef.current) viewportRef.current.scrollTop = 0
-  }, [directionFilter, search, sortDir, sortField, cappedTrades.length])
+  }, [directionFilter, search, sortDir, sortField, completeTrades.length])
 
   const maximumStart = Math.max(0, filtered.length - windowSize)
   const safeWindowStart = Math.min(windowStart, maximumStart)
@@ -211,7 +208,10 @@ export function TradeHistoryTable({
             <History className="h-4 w-4 text-muted-foreground" />
             <CardTitle className="text-sm font-semibold">Trade History</CardTitle>
             <Badge variant="outline" className="h-5 text-[10px] font-normal">
-              {cappedTrades.length}/{MAX_RECORDS}
+              {completeTrades.length.toLocaleString()} complete
+            </Badge>
+            <Badge variant="outline" className="h-5 text-[9px] font-normal">
+              {environmentLabel}
             </Badge>
             <Badge variant="secondary" className="h-5 text-[9px] font-normal">
               {windowSize}-row window
@@ -223,7 +223,7 @@ export function TradeHistoryTable({
             className="h-7 w-7 p-0"
             onClick={handleRefresh}
             disabled={!onRefresh || isRefreshing}
-            aria-label="Refresh exchange trade history"
+            aria-label={`Refresh ${environmentLabel.toLowerCase()} trade history`}
           >
             <RotateCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
           </Button>
@@ -294,7 +294,7 @@ export function TradeHistoryTable({
         {filtered.length === 0 ? (
           <div className="flex h-40 flex-col items-center justify-center text-muted-foreground">
             <History className="mb-2 h-6 w-6 opacity-30" />
-            <p className="text-xs">No closed exchange trades yet</p>
+            <p className="text-xs">No closed {environmentLabel.toLowerCase()} trades yet</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -353,8 +353,12 @@ export function TradeHistoryTable({
                         {finite(trade.pnlPct) > 0 ? "+" : ""}{finite(trade.pnlPct).toFixed(2)}%
                       </div>
                       <div className="text-right">
-                        <Badge variant={trade.source === "exchange" ? "default" : "outline"} className="h-4 px-1 text-[8px] uppercase">
-                          {trade.source === "exchange" ? "BingX" : "Local"}
+                        <Badge variant={trade.environment === "exchange" ? "default" : "outline"} className="h-4 px-1 text-[8px] uppercase">
+                          {trade.environment === "simulated"
+                            ? "Paper"
+                            : trade.source === "exchange"
+                              ? "Exchange"
+                              : "Live archive"}
                         </Badge>
                       </div>
                     </div>

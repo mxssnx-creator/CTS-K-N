@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { getConnection, initRedis } from "@/lib/redis-db"
 import {
   getPresetOverview,
+  getPresetChannelOverview,
   runPresetOptimization,
   savePresetOptimizerSettings,
   selectOptimizedPreset,
@@ -63,6 +64,10 @@ export async function GET(request: NextRequest) {
   }
   try {
     await requireConnection(connectionId)
+    if (request.nextUrl.searchParams.get("compact") === "1") {
+      const overview = await getPresetChannelOverview(connectionId)
+      return NextResponse.json({ success: true, data: overview })
+    }
     const overview = await getPresetOverview(connectionId, filtersFrom(request))
     return NextResponse.json({ success: true, data: overview })
   } catch (error) {

@@ -74,6 +74,26 @@ describe("Base position batch coordination", () => {
     expect(ids[0]).toBe(ids[1])
   })
 
+  test("keeps type, name, complete config and direction as independent Base lanes", async () => {
+    const manager = new BasePseudoPositionManager("connection")
+    const common = {
+      ...config("BTCUSDT", 6),
+      indicationType: "common" as const,
+      indicationName: "macd",
+      configSetKey: "tf=1|fast=8|slow=21",
+    }
+    const ids = await manager.getOrCreateEligibleBasePositions([
+      common,
+      { ...common, indicationName: "rsi" },
+      { ...common, configSetKey: "tf=5|fast=8|slow=21" },
+      { ...common, direction: "short" },
+    ])
+
+    expect(ids.every(Boolean)).toBe(true)
+    expect(new Set(ids).size).toBe(4)
+    expect(mockStore.get("base_positions:connection")).toHaveLength(4)
+  })
+
   test("reuses pre-Trend Base config keys without creating upgrade duplicates", async () => {
     const legacyConfigKey = "BTCUSDT:direction:2:long:2:0.25:false:null:null:0.3:2:1.5"
     mockStore.set("base_positions:connection", [{

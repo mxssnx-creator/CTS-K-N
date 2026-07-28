@@ -22,10 +22,12 @@ import { fetchBingXPublic } from "@/lib/bingx-public-api"
 export type SortKey = "volume" | "volatility" | "volatility_1h"
 export type Ticker = { symbol: string; priceChangePercent: number; volume: number; atr1h?: number }
 
-// In-memory cache — volatile symbols don't change rapidly, 60s TTL is fine.
-// Keyed by `${exchange}:${sort}` so volume-, volatility-, and 1h-sorted requests
-// don't clobber each other.
-const cache = new Map<string, { symbol: string; priceChangePercent: number; timestamp: number }>()
+// In-memory ranked-list cache plus in-flight coalescing. Settings dialogs,
+// save routes and overview cards often request the same public ranking at the
+// same time; one venue request serves all of them while every caller still
+// receives its requested complete top-N slice.
+const cache = new Map<string, { symbols: Ticker[]; timestamp: number }>()
+const inFlight = new Map<string, Promise<{ symbol: string; priceChangePercent: number; symbols: Ticker[] }>>()
 // 1h ATR cache is per-symbol and shorter-lived (90s) since 1h klines refresh every ~60s.
 const atrCache = new Map<string, { atr1h: number; timestamp: number }>()
 const CACHE_TTL = 60_000
@@ -156,7 +158,7 @@ async function enrich1hAtr(
   return results
 }
 
-export async function fetchTopSymbols(
+async function fetchTopSymbolsUncached(
   exchange: string,
   limit = 1,
   sort: SortKey = "volume",
@@ -185,17 +187,6 @@ export async function fetchTopSymbols(
     }
   }
   const safeLimit = Math.max(1, Math.min(50, Math.floor(limit) || 1))
-  const cacheKey = `${exchange}:${sort}`
-  if (safeLimit === 1) {
-    const cached = cache.get(cacheKey)
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-      return {
-        symbol: cached.symbol,
-        priceChangePercent: cached.priceChangePercent,
-        symbols: [{ symbol: cached.symbol, priceChangePercent: cached.priceChangePercent, volume: 0 }],
-      }
-    }
-  }
 
   let tickers: Ticker[] = []
 
@@ -333,7 +324,69 @@ export async function fetchTopSymbols(
 
   const topN = unique.slice(0, safeLimit)
   const top = topN[0]
-  cache.set(cacheKey, { symbol: top.symbol, priceChangePercent: top.priceChangePercent, timestamp: Date.now() })
 
   return { symbol: top.symbol, priceChangePercent: top.priceChangePercent, symbols: topN }
+}
+
+export async function fetchTopSymbols(
+  exchange: string,
+  limit = 1,
+  sort: SortKey = "volume",
+): Promise<{ symbol: string; priceChangePercent: number; symbols: Ticker[] }> {
+  const requested = Math.max(1, Math.min(50, Math.floor(limit) || 1))
+  const cacheKey = `${String(exchange || "").toLowerCase()}:${sort}`
+  const cached = cache.get(cacheKey)
+  if (
+    cached &&
+    Date.now() - cached.timestamp < CACHE_TTL &&
+    cached.symbols.length >= requested
+  ) {
+    const symbols = cached.symbols.slice(0, requested)
+    return {
+      symbol: symbols[0].symbol,
+      priceChangePercent: symbols[0].atr1h ?? symbols[0].priceChangePercent,
+      symbols,
+    }
+  }
+
+  const existing = inFlight.get(cacheKey)
+  if (existing) {
+    const shared = await existing
+    if (shared.symbols.length >= requested) {
+      const symbols = shared.symbols.slice(0, requested)
+      return {
+        symbol: symbols[0].symbol,
+        priceChangePercent: symbols[0].atr1h ?? symbols[0].priceChangePercent,
+        symbols,
+      }
+    }
+  }
+
+  const request = fetchTopSymbolsUncached(exchange, requested, sort)
+    .then((result) => {
+      const previous = cache.get(cacheKey)
+      const symbols =
+        previous &&
+        Date.now() - previous.timestamp < CACHE_TTL &&
+        previous.symbols.length > result.symbols.length
+          ? previous.symbols
+          : result.symbols
+      cache.set(cacheKey, { symbols, timestamp: Date.now() })
+      return {
+        symbol: symbols[0].symbol,
+        priceChangePercent: symbols[0].atr1h ?? symbols[0].priceChangePercent,
+        symbols,
+      }
+    })
+    .finally(() => {
+      if (inFlight.get(cacheKey) === request) inFlight.delete(cacheKey)
+    })
+  inFlight.set(cacheKey, request)
+  const result = await request
+  const symbols = result.symbols.slice(0, requested)
+  return {
+    symbol: symbols[0].symbol,
+    priceChangePercent: symbols[0].atr1h ?? symbols[0].priceChangePercent,
+    symbols,
+  }
 }

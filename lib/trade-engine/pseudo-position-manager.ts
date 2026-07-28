@@ -182,17 +182,17 @@ export class PseudoPositionManager {
   }
 
   /**
-   * Redis set key that indexes position ids that have been CLOSED.
+   * Redis list key that indexes position ids that have been CLOSED.
    * Separate from positionsSetKey() which only tracks open positions.
-   * Used by getPositionContext() to read the closed-only window for
-   * Main-stage variant gating (prevLosses, lastWins/Losses, prevPosCount).
-   * Capped to CLOSED_INDEX_CAP newest entries via ltrim so it never
-   * grows unboundedly. TTL reset on each write.
+   * Retained as a legacy/read-repair fallback; current consumers use the
+   * time-index below so every row in the requested time window is processed.
    */
   private closedPositionsIndexKey(): string {
     return `pseudo_positions:${this.connectionId}:closed_index`
   }
-  private static readonly CLOSED_INDEX_CAP = 200
+  private closedPositionsTimeIndexKey(): string {
+    return `pseudo_positions:${this.connectionId}:closed_time_index`
+  }
   private static readonly CLOSED_INDEX_TTL = 7 * 24 * 60 * 60 // 7 days
 
   /** Redis set of active v2 exact-lane identities (plus legacy members until
@@ -945,12 +945,21 @@ export class PseudoPositionManager {
       // for the Main-stage variant gates. These positions are removed from
       // positionsSetKey() above, so without this separate closed index the
       // context window is always empty and only the default variant runs.
-      // We store the positionId in a Redis list (LPUSH = newest first),
-      // capped to CLOSED_INDEX_CAP entries via LTRIM and with a 7-day TTL.
+      // The compatibility list is complete (no count cap). A sorted time index
+      // lets readers select the whole semantic window without scanning older
+      // rows and keeps runtime pressure independent from history size.
       const closedIndexKey = this.closedPositionsIndexKey()
+      const closedTimeIndexKey = this.closedPositionsTimeIndexKey()
+      const closedAtMs = new Date(closedAtIso).getTime()
       pipeline.lpush(closedIndexKey, positionId)
-      pipeline.ltrim(closedIndexKey, 0, PseudoPositionManager.CLOSED_INDEX_CAP - 1)
+      pipeline.zadd(closedTimeIndexKey, closedAtMs, positionId)
+      pipeline.zremrangebyscore(
+        closedTimeIndexKey,
+        "-inf",
+        closedAtMs - PseudoPositionManager.CLOSED_INDEX_TTL * 1000,
+      )
       pipeline.expire(closedIndexKey, PseudoPositionManager.CLOSED_INDEX_TTL)
+      pipeline.expire(closedTimeIndexKey, PseudoPositionManager.CLOSED_INDEX_TTL)
 
       // ── Continuous Set update (in same pipeline) ──────────────────
       // The realtime processor reads the HEAD of each strategy-config's

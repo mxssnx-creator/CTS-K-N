@@ -58,6 +58,30 @@ function connector(overrides: Record<string, unknown> = {}) {
 }
 
 describe("executing Live-stage control barriers", () => {
+  test("gives every Base-parent Pos-Count row its own direction-preserving slot", () => {
+    const longA = __liveStageTest.liveExecutionSlot({
+      combinedPosCounts: true,
+      parentSetKey: "BTCUSDT:common:macd:cfg-a",
+      setKey: "BTCUSDT:common:macd:cfg-a#poscounts:combined:long",
+    } as any)
+    const shortA = __liveStageTest.liveExecutionSlot({
+      combinedPosCounts: true,
+      parentSetKey: "BTCUSDT:common:macd:cfg-a",
+      setKey: "BTCUSDT:common:macd:cfg-a#poscounts:combined:short",
+    } as any)
+    const longB = __liveStageTest.liveExecutionSlot({
+      combinedPosCounts: true,
+      parentSetKey: "BTCUSDT:common:macd:cfg-b",
+      setKey: "BTCUSDT:common:macd:cfg-b#poscounts:combined:long",
+    } as any)
+
+    // Direction is encoded by the physical lock key outside the slot; the
+    // parent slot remains stable for both sides while another config differs.
+    expect(longA).toBe(shortA)
+    expect(longA).not.toBe(longB)
+    expect(longA).toMatch(/^poscounts-[a-z0-9]+$/)
+  })
+
   test("does not charge virtual or zero-fill Block lanes against the physical accumulation cap", () => {
     const coveredKeys = Array.from({ length: 1_500 }, (_, index) => `signal-covered-${index}`)
     const setKeys = [

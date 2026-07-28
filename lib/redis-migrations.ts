@@ -35,6 +35,7 @@ import {
   DEFAULT_PRESET_INDICATION_PROFILE,
   INDICATION_PROFILE_TYPES,
 } from "./active-indication-profile"
+import { DEFAULT_BASE_MIN_STEP } from "./constants"
 
 /**
  * Reset the in-process migration guards.
@@ -5780,6 +5781,361 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "89")
     },
   },
+  {
+    version: 91,
+    name: "091-unlimited-stage-rows-cadence-and-block-work-scheduler",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const connectionIds = new Set(
+        connections
+          .map((connection) => String(connection.id || ""))
+          .filter(Boolean),
+      )
+      for (const id of await client.smembers("connections").catch(() => [])) {
+        if (id) connectionIds.add(String(id))
+      }
+
+      let settingsHashesUpdated = 0
+      let structuredProfilesUpdated = 0
+      let indicationProfilesUpdated = 0
+      const normalizeSettingsHash = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as
+          Record<string, string>
+        if (Object.keys(values).length === 0) return
+        const patch: Record<string, string> = {}
+        for (const field of [
+          "strategyRealSetsSafetyCeiling",
+          "maxRealSets",
+          "strategyLiveSetsCeiling",
+        ]) {
+          if (values[field] !== "0") patch[field] = "0"
+        }
+        if (
+          values.strategyBlockMaterializationBatchSize == null ||
+          !(Number(values.strategyBlockMaterializationBatchSize) >= 64)
+        ) {
+          patch.strategyBlockMaterializationBatchSize = "1024"
+        }
+        if (values.minStep == null || Number(values.minStep) === 2) {
+          patch.minStep = String(DEFAULT_BASE_MIN_STEP)
+        }
+        if (values.trailingMinStep == null || Number(values.trailingMinStep) === 2) {
+          patch.trailingMinStep = String(DEFAULT_BASE_MIN_STEP)
+        }
+
+        for (const jsonField of ["connection_settings", "coordination_settings", "strategies"]) {
+          const raw = values[jsonField]
+          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+          try {
+            const document = JSON.parse(raw) as Record<string, any>
+            let changed = false
+            for (const field of [
+              "strategyRealSetsSafetyCeiling",
+              "maxRealSets",
+              "strategyLiveSetsCeiling",
+            ]) {
+              if (Number(document[field]) !== 0) {
+                document[field] = 0
+                changed = true
+              }
+            }
+            const coordination =
+              document.coordination_settings ??
+              document.coordinationSettings ??
+              (jsonField === "coordination_settings" ? document : undefined)
+            if (coordination && typeof coordination === "object") {
+              if (!(Number(coordination.strategyBlockMaterializationBatchSize) >= 64)) {
+                coordination.strategyBlockMaterializationBatchSize = 1024
+                changed = true
+              }
+              if (coordination.minStep == null || Number(coordination.minStep) === 2) {
+                coordination.minStep = DEFAULT_BASE_MIN_STEP
+                changed = true
+              }
+              if (
+                coordination.trailingMinStep == null ||
+                Number(coordination.trailingMinStep) === 2
+              ) {
+                coordination.trailingMinStep = DEFAULT_BASE_MIN_STEP
+                changed = true
+              }
+            }
+            if (document.minStep == null || Number(document.minStep) === 2) {
+              document.minStep = DEFAULT_BASE_MIN_STEP
+              changed = true
+            }
+            if (
+              document.trailingMinStep == null ||
+              Number(document.trailingMinStep) === 2
+            ) {
+              document.trailingMinStep = DEFAULT_BASE_MIN_STEP
+              changed = true
+            }
+            for (const container of [document?.strategies, document]) {
+              if (!container || typeof container !== "object") continue
+              for (const channelName of ["main", "preset"]) {
+                const channel = container[channelName]
+                if (!channel || typeof channel !== "object") continue
+                for (const stageName of ["base", "main", "real", "live"]) {
+                  const stage = channel[stageName]
+                  if (
+                    stage &&
+                    typeof stage === "object" &&
+                    Number(stage.max_positions) !== 0
+                  ) {
+                    stage.max_positions = 0
+                    changed = true
+                  }
+                }
+              }
+            }
+            if (changed) {
+              patch[jsonField] = JSON.stringify(document)
+              structuredProfilesUpdated++
+            }
+          } catch {
+            // Preserve malformed recovery payloads. Flat runtime fields remain
+            // authoritative and the next Settings save rewrites the document.
+          }
+        }
+
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, patch)
+          settingsHashesUpdated++
+        }
+      }
+
+      for (const key of [
+        "app_settings",
+        "all_settings",
+        "settings:app_settings",
+        "settings:all_settings",
+        "settings:system",
+      ]) {
+        await normalizeSettingsHash(key)
+      }
+      for (const id of connectionIds) {
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await normalizeSettingsHash(key)
+        }
+      }
+
+      const normalizeActiveIndicationProfile = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as
+          Record<string, string>
+        const patch: Record<string, string> = {}
+        for (const [profile, suffix] of [
+          [DEFAULT_MAIN_INDICATION_PROFILE, ""],
+          [DEFAULT_PRESET_INDICATION_PROFILE, "_preset"],
+        ] as const) {
+          for (const type of INDICATION_PROFILE_TYPES) {
+            const timeoutField = `${type}${suffix}_timeout`
+            const intervalField = `${type}${suffix}_interval`
+            const timeout = Number(values[timeoutField])
+            const interval = Number(values[intervalField])
+
+            if (
+              values[timeoutField] == null ||
+              (type === "trend" && timeout === 0.5) ||
+              (type === "common" && timeout === 1)
+            ) {
+              patch[timeoutField] = String(profile[type].timeout)
+            }
+            if (
+              values[intervalField] == null ||
+              (type === "trend" && interval === 0.5)
+            ) {
+              patch[intervalField] = String(profile[type].interval)
+            }
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, patch)
+          indicationProfilesUpdated++
+        }
+      }
+
+      for (const id of connectionIds) {
+        await normalizeActiveIndicationProfile(`settings:active_indications:${id}`)
+      }
+
+      const rawCommon = await client.get("indications:common").catch(() => null)
+      let parsedCommon: Record<string, any> = {}
+      if (typeof rawCommon === "string" && rawCommon.trim().startsWith("{")) {
+        try {
+          parsedCommon = JSON.parse(rawCommon) as Record<string, any>
+        } catch {
+          parsedCommon = {}
+        }
+      }
+      const common = normalizeCommonIndicationSettings(parsedCommon)
+      let commonChanged = rawCommon == null
+      for (const profileName of Object.keys(DEFAULT_COMMON_INDICATION_SETTINGS)) {
+        if (profileName === "coordination") continue
+        const profile = common[profileName] as Record<string, any>
+        if (profile.timeout == null || Number(profile.timeout) === 1) {
+          profile.timeout = 3
+          commonChanged = true
+        }
+        if (profile.interval == null) {
+          profile.interval = 1
+          commonChanged = true
+        }
+      }
+      if (commonChanged || rawCommon !== JSON.stringify(common)) {
+        await client.set("indications:common", JSON.stringify(common))
+        indicationProfilesUpdated++
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        strategy_stage_row_capacity: "unlimited",
+        strategy_stage_row_capacity_persisted_value: "0",
+        strategy_block_materialization_batch_default: "1024",
+        strategy_block_materialization_semantics:
+          "rotating-work-scheduler-not-configuration-cap",
+        strategy_settings_hashes_updated: String(settingsHashesUpdated),
+        strategy_structured_profiles_updated: String(structuredProfilesUpdated),
+        indication_profile_cadence:
+          "default-additional-signal=250ms;common-processing=1000ms;common-exact-lane=3000ms",
+        common_indication_exact_lane_timeout_ms: "3000",
+        base_min_step_default: String(DEFAULT_BASE_MIN_STEP),
+        indication_profiles_updated: String(indicationProfilesUpdated),
+        schema_version: "91",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      // Unlimited values remain valid during rollback; only the migration
+      // cursor moves back.
+      await client.set("_schema_version", "90")
+    },
+  },
+  {
+    version: 92,
+    name: "092-exact-indication-cadence-and-unlimited-preset-types",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const connectionIds = new Set(
+        connections
+          .map((connection) => String(connection.id || ""))
+          .filter(Boolean),
+      )
+      for (const id of await client.smembers("connections").catch(() => [])) {
+        if (id) connectionIds.add(String(id))
+      }
+
+      let indicationProfilesUpdated = 0
+      for (const id of connectionIds) {
+        const key = `settings:active_indications:${id}`
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as
+          Record<string, string>
+        const patch: Record<string, string> = {}
+        for (const suffix of ["", "_preset"] as const) {
+          const trendTimeout = `trend${suffix}_timeout`
+          const trendInterval = `trend${suffix}_interval`
+          const commonTimeout = `common${suffix}_timeout`
+          const commonInterval = `common${suffix}_interval`
+          if (values[trendTimeout] == null || Number(values[trendTimeout]) === 0.25) {
+            patch[trendTimeout] = "0.5"
+          }
+          if (values[trendInterval] == null || Number(values[trendInterval]) === 0.25) {
+            patch[trendInterval] = "0.5"
+          }
+          if (values[commonTimeout] == null || Number(values[commonTimeout]) === 3) {
+            patch[commonTimeout] = "1"
+          }
+          if (values[commonInterval] == null) {
+            patch[commonInterval] = "1"
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, patch)
+          indicationProfilesUpdated++
+        }
+      }
+
+      const rawCommon = await client.get("indications:common").catch(() => null)
+      let parsedCommon: Record<string, any> = {}
+      if (typeof rawCommon === "string" && rawCommon.trim().startsWith("{")) {
+        try {
+          parsedCommon = JSON.parse(rawCommon) as Record<string, any>
+        } catch {
+          parsedCommon = {}
+        }
+      }
+      const common = normalizeCommonIndicationSettings(parsedCommon)
+      let commonChanged = rawCommon == null
+      for (const profileName of Object.keys(DEFAULT_COMMON_INDICATION_SETTINGS)) {
+        if (profileName === "coordination") continue
+        const profile = common[profileName] as Record<string, any>
+        if (profile.timeout == null || Number(profile.timeout) === 3) {
+          profile.timeout = 1
+          commonChanged = true
+        }
+        if (profile.interval == null) {
+          profile.interval = 1
+          commonChanged = true
+        }
+      }
+      if (commonChanged || rawCommon !== JSON.stringify(common)) {
+        await client.set("indications:common", JSON.stringify(common))
+        indicationProfilesUpdated++
+      }
+
+      const indexedPresetIds = await client.smembers("preset_types:all").catch(() => [])
+      const presetKeys = await scanRedisKeys(client, "preset_type:*")
+      const presetTypeKeys = new Set<string>(
+        presetKeys.filter((key) => key !== "preset_types:all"),
+      )
+      for (const id of indexedPresetIds) {
+        if (id) presetTypeKeys.add(`preset_type:${id}`)
+      }
+      let presetTypesUpdated = 0
+      for (const key of presetTypeKeys) {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as
+          Record<string, string>
+        if (Object.keys(values).length === 0) continue
+        const patch = {
+          max_positions_per_indication: "0",
+          max_positions_per_direction: "0",
+          max_positions_per_range: "0",
+          updated_at: new Date().toISOString(),
+        }
+        if (
+          values.max_positions_per_indication !== "0" ||
+          values.max_positions_per_direction !== "0" ||
+          values.max_positions_per_range !== "0"
+        ) {
+          await client.hset(key, patch)
+          presetTypesUpdated++
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        indication_profile_cadence:
+          "default-signal=250ms;trend=500ms;common-processing-and-exact-lane=1000ms",
+        trend_indication_exact_lane_timeout_ms: "500",
+        common_indication_exact_lane_timeout_ms: "1000",
+        indication_profiles_updated: String(indicationProfilesUpdated),
+        preset_type_position_capacity: "unlimited",
+        preset_type_position_capacity_persisted_value: "0",
+        preset_types_updated: String(presetTypesUpdated),
+        schema_version: "92",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      // Correct cadence and unlimited compatibility values remain valid.
+      await client.set("_schema_version", "91")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {
@@ -6197,17 +6553,42 @@ if (!hasExisting) {
       `settings:connection:${DEV_CONN}`,
     ]
 
+    const parseBootSymbols = (value: unknown): string[] => {
+      if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean)
+      const raw = String(value || "").trim()
+      if (!raw) return []
+      try {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) {
+          return parsed.map(String).map((item) => item.trim()).filter(Boolean)
+        }
+      } catch {
+        // Legacy comma-separated values remain supported.
+      }
+      return raw.split(",").map((item) => item.trim()).filter(Boolean)
+    }
+    const existingBootHashes = await Promise.all(
+      devHashes.map((key) => client.hgetall(key).catch(() => ({}))),
+    )
+    const existingForcedSymbols = existingBootHashes
+      .map((values) => parseBootSymbols((values as Record<string, string>)?.force_symbols))
+      .find((symbols) => symbols.length > 0) || []
+    const pinnedSymbols = existingForcedSymbols.slice(0, devSymCount)
+
     let devSymPayload: Record<string, string>
-    if (devSymCount === 1) {
-      // Fast path: pin BTCUSDT — no API call needed, cheapest possible boot.
-      const DEV_SYM = "BTCUSDT"
+    if (pinnedSymbols.length > 0 || devSymCount === 1) {
+      // Preserve an explicit operator/QuickStart basket across subsequent
+      // initRedis calls and dev HMR module reloads. V0_DEV_SYMBOL_COUNT remains
+      // a ceiling; it must never turn a fixed basket back into a rotating
+      // volatility selection and materialize unrelated symbol keys.
+      const resolvedPinned = pinnedSymbols.length > 0 ? pinnedSymbols : ["BTCUSDT"]
       devSymPayload = {
-        force_symbols:            JSON.stringify([DEV_SYM]),
-        symbol_count:             "1",
+        force_symbols:            JSON.stringify(resolvedPinned),
+        symbol_count:             String(resolvedPinned.length),
         symbol_order:             "",   // disable dynamic fetch
-        symbols:                  JSON.stringify([DEV_SYM]),
-        active_symbols:           JSON.stringify([DEV_SYM]),
-        config_set_symbols_total: "1",
+        symbols:                  JSON.stringify(resolvedPinned),
+        active_symbols:           JSON.stringify(resolvedPinned),
+        config_set_symbols_total: String(resolvedPinned.length),
       }
     } else {
       // Multi-symbol path: clear force_symbols so getSymbols() resolves
@@ -6256,7 +6637,9 @@ if (!hasExisting) {
       await client.del(k).catch(() => 0)
     }
 
-    const symDesc = devSymCount === 1 ? "force_symbols=BTCUSDT" : `symbol_count=${devSymCount} (volatility_1h)`
+    const symDesc = devSymPayload.force_symbols
+      ? `force_symbols=${devSymPayload.force_symbols}`
+      : `symbol_count=${devSymCount} (volatility_1h)`
     console.log(
       `[v0] [Boot] Pinned ${symDesc} across all key namespaces` +
       (danglingIndexMembersPurged > 0 ? `, removed ${danglingIndexMembersPurged} dangling live-position index member(s)` : "") +

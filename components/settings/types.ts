@@ -30,8 +30,8 @@ export interface Settings {
   min_volume_enforcement: boolean
 
   /**
-   * Compatibility field fixed at 2. Every indication step-window size from
-   * 2 through 30 is always generated.
+   * Minimum exhaustive Base step. Default 4; every integer window from the
+   * selected minimum through 30 is generated without sampling.
    */
   minStep: number
   maxStopLossRatio: number
@@ -118,10 +118,9 @@ export interface Settings {
   maxPositionsPerConfigDirection: number
   maxConcurrentOperations: number
   /**
-   * P0-4 spec cap. Maximum concurrent active pseudo positions in EACH
-   * direction (Long / Short) across ALL config Sets. Hard-enforced by
-   * `PseudoPositionManager.canCreatePosition`. Default 1 per spec:
-   * *"Active Pseudo Position Limit for each direction Long,short maximal 1"*.
+   * Exact-lane occupancy fixed at one. The lane includes connection, symbol,
+   * indication type/name/full config, direction and Base Set, so it never
+   * limits sibling configs or the total Base inventory.
    */
   maxActiveBasePseudoPositionsPerDirection: number
 
@@ -129,6 +128,8 @@ export interface Settings {
   strategyMaxEntriesPerSet: number
   /** Number of Base Sets expanded in one async Main-axis work batch. */
   strategyMainAxisBatchSize: number
+  /** Inactive Block rows materialized per rotating Real/Live work cycle. */
+  strategyBlockMaterializationBatchSize: number
   strategyRealSetsSafetyCeiling: number
   maxRealSets: number
   strategyLiveSetsCeiling: number

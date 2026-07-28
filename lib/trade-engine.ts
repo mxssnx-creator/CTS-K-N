@@ -1865,7 +1865,16 @@ export class GlobalTradeEngineCoordinator {
         return
       }
       const now = Date.now()
-      const STALL_THRESHOLD_MS = 90_000
+      // One exhaustive 12-symbol indication+strategy pass can legitimately
+      // occupy the event loop for about a minute, followed by GC and a bounded
+      // Redis flush. A 90-second threshold produced false "stall" re-arms
+      // while all processor timers were still healthy. Keep the watchdog above
+      // the development cycle deadline; genuinely missing loops are still
+      // repaired in place without a destructive restart.
+      const configuredStallThresholdMs = Number(process.env.ENGINE_STALL_THRESHOLD_MS)
+      const STALL_THRESHOLD_MS = Number.isFinite(configuredStallThresholdMs)
+        ? Math.max(180_000, configuredStallThresholdMs)
+        : 180_000
       const managers = connectionId
         ? Array.from(this.engineManagers.entries()).filter(([id]) => id === connectionId)
         : Array.from(this.engineManagers.entries())

@@ -142,6 +142,18 @@ async function prewarmDevRoutes() {
     headers: { Authorization: `Bearer ${debugAdminSecret}` },
   })
 
+  // The lifecycle soak resolves a row by exact id when it leaves the bounded
+  // overview history between polls. Compile that detail route before the
+  // exhaustive engine allocation begins; a 404 for the synthetic id is the
+  // expected warmup response.
+  const detailWarmup = await fetch(
+    `${baseUrl}/api/positions/__dev_soak_warmup__?connection_id=${encoded}`,
+    { cache: "no-store", signal: AbortSignal.timeout(60_000) },
+  )
+  if (detailWarmup.status !== 404 && !detailWarmup.ok) {
+    throw new Error(`Dev position-detail warmup returned HTTP ${detailWarmup.status}`)
+  }
+
   // Compile the exact page changed by this release in development too. The
   // production verifier already checks its rendered output; this catches a
   // development-only module/style failure before the engine soak begins.

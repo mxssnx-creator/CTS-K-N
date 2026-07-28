@@ -7,7 +7,7 @@
  * per-Base-lane re-entry cooldown after close.
  */
 
-import { getSettings, setSettings, getAppSetting, getAppSettings, getRedisClient } from "@/lib/redis-db"
+import { getSettings, setSettings, getAppSettings, getRedisClient } from "@/lib/redis-db"
 import { BasePseudoPositionManager, type BasePositionConfig } from "./base-pseudo-position-manager"
 import { DataCleanupManager } from "./data-cleanup-manager"
 import { logProgressionEvent } from "./engine-progression-logs"
@@ -29,6 +29,8 @@ import {
 import {
   canonicalIndicationLaneIdentity,
 } from "@/lib/indication-lane-identity"
+import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
+import { MAX_BASE_STEP, normalizeBaseMinStep } from "@/lib/constants"
 
 export interface IndicationState {
   symbol: string
@@ -46,6 +48,7 @@ export class IndicationStateManager {
   private validationTimeout = 0.25 // seconds
   private positionCooldown = 3 // seconds
   private maxPositionsPerConfig = 1
+  private minBaseStep = normalizeBaseMinStep(undefined)
   private trendEnabled = true
   private trendTimeframesMinutes: number[] = [...DEFAULT_TREND_TIMEFRAMES_MINUTES]
   private trendDrawdownFactors: number[] = [...DEFAULT_TREND_DRAWDOWN_FACTORS]
@@ -93,9 +96,10 @@ export class IndicationStateManager {
   private async loadSettings(): Promise<void> {
     try {
       // Load settings from Redis instead of SQL
-      const [indicationSettings, appSettings] = await Promise.all([
+      const [indicationSettings, appSettings, connectionSettings] = await Promise.all([
         getSettings("indication_settings"),
         getAppSettings(),
+        getCanonicalConnectionSettingsOverlay(this.connectionId).catch(() => ({})),
       ])
       
       if (indicationSettings) {
@@ -129,7 +133,11 @@ export class IndicationStateManager {
         this.maxPositionsPerConfig = 1
       }
 
-      const settings = appSettings || {}
+      const settings = overlayNonEmpty(
+        appSettings && typeof appSettings === "object" ? appSettings : {},
+        connectionSettings,
+      )
+      this.minBaseStep = normalizeBaseMinStep(settings.minStep)
       this.trendEnabled = settings.trendEnabled !== false && settings.trendEnabled !== "false"
       this.trendTimeframesMinutes = normalizeTrendTimeframesMinutes(
         settings.trendTimeframesMinutes,
@@ -365,11 +373,8 @@ export class IndicationStateManager {
       return this.cachedRanges
     }
 
-    // Mirror-aware scalar read — falls back from the individual
-    // `settings:indicationRangeMin` hash (historical) to
-    // `app_settings.indicationRangeMin` (UI-saved) to the 2 default.
-    const minRange = await getAppSetting<number>("indicationRangeMin", 2)
-    const maxRange = 30
+    const minRange = this.minBaseStep
+    const maxRange = MAX_BASE_STEP
 
     this.cachedRanges = { minRange, maxRange, timestamp: now }
 

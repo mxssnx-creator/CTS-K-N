@@ -40,9 +40,6 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
   const [autoEvaluate, setAutoEvaluate] = useState(true)
   const [evaluationIntervalHours, setEvaluationIntervalHours] = useState(24)
 
-  const [maxPositionsPerIndication, setMaxPositionsPerIndication] = useState(10)
-  const [maxPositionsPerDirection, setMaxPositionsPerDirection] = useState(5)
-  const [maxPositionsPerRange, setMaxPositionsPerRange] = useState(3)
   const [timeoutPerIndication, setTimeoutPerIndication] = useState(60)
   const [timeoutAfterPosition, setTimeoutAfterPosition] = useState(300)
 
@@ -96,9 +93,6 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
       setIsActive(presetType.is_active ?? true)
       setAutoEvaluate(presetType.auto_evaluate ?? true)
       setEvaluationIntervalHours(presetType.evaluation_interval_hours || 24)
-      setMaxPositionsPerIndication(presetType.max_positions_per_indication || 10)
-      setMaxPositionsPerDirection(presetType.max_positions_per_direction || 5)
-      setMaxPositionsPerRange(presetType.max_positions_per_range || 3)
       setTimeoutPerIndication(presetType.timeout_per_indication || 60)
       setTimeoutAfterPosition(presetType.timeout_after_position || 300)
       // Matches the new-preset default: when an older record didn't
@@ -117,9 +111,6 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
       setIsActive(true)
       setAutoEvaluate(true)
       setEvaluationIntervalHours(24)
-      setMaxPositionsPerIndication(10)
-      setMaxPositionsPerDirection(5)
-      setMaxPositionsPerRange(3)
       setTimeoutPerIndication(60)
       setTimeoutAfterPosition(300)
       setTrailingEnabled(true)
@@ -138,9 +129,9 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
       is_active: isActive,
       auto_evaluate: autoEvaluate,
       evaluation_interval_hours: evaluationIntervalHours,
-      max_positions_per_indication: maxPositionsPerIndication,
-      max_positions_per_direction: maxPositionsPerDirection,
-      max_positions_per_range: maxPositionsPerRange,
+      max_positions_per_indication: 0,
+      max_positions_per_direction: 0,
+      max_positions_per_range: 0,
       timeout_per_indication: timeoutPerIndication,
       timeout_after_position: timeoutAfterPosition,
       trailing_enabled: trailingEnabled && baseSettings.trailingEnabled,
@@ -224,42 +215,16 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
           </div>
 
           <div className="border-t pt-4 space-y-4">
-            <h4 className="font-medium">Position Limits</h4>
-
-            <div className="space-y-2">
-              <Label>Max Positions Per Indication: {maxPositionsPerIndication}</Label>
-              <Slider
-                min={1}
-                max={50}
-                step={1}
-                value={[maxPositionsPerIndication]}
-                onValueChange={([value]) => setMaxPositionsPerIndication(value)}
-              />
-              <p className="text-xs text-muted-foreground">Maximum positions per indication type (1-50)</p>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Max Positions Per Direction: {maxPositionsPerDirection}</Label>
-              <Slider
-                min={1}
-                max={25}
-                step={1}
-                value={[maxPositionsPerDirection]}
-                onValueChange={([value]) => setMaxPositionsPerDirection(value)}
-              />
-              <p className="text-xs text-muted-foreground">Maximum positions per direction (long/short) (1-25)</p>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Max Positions Per Range: {maxPositionsPerRange}</Label>
-              <Slider
-                min={1}
-                max={10}
-                step={1}
-                value={[maxPositionsPerRange]}
-                onValueChange={([value]) => setMaxPositionsPerRange(value)}
-              />
-              <p className="text-xs text-muted-foreground">Maximum positions per TP/SL range (1-10)</p>
+            <h4 className="font-medium">Position Capacity</h4>
+            <div className="rounded-lg border bg-muted/30 p-3">
+              <div className="flex items-center justify-between gap-4">
+                <Label>Indication × config × direction lanes</Label>
+                <Badge variant="secondary">Unlimited</Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Every complete Preset configuration is processed. Worker concurrency and exchange
+                rate limits control in-flight work only and never truncate configurations.
+              </p>
             </div>
           </div>
 

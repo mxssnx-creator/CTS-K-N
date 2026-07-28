@@ -54,7 +54,7 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
       presetEngineMs: Number(settings.presetEngineIntervalMs ?? 100),
       activeOrderHandlingMs: Number(settings.activeOrderHandlingIntervalMs ?? 50),
       indicationLaneMs: Number(settings.indicationTimeoutMs ?? 250),
-      commonLaneMs: 3_000,
+      commonLaneMs: 1_000,
       baseReentryMs: Number(settings.positionCooldownMs ?? 3_000),
     }
   }

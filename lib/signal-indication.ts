@@ -170,7 +170,6 @@ export interface SignalSettingsResponse {
   sources: SignalSourceDescriptor[]
 }
 
-const CORE_SOURCE_IDS = ["bingx-swap", "binance-usdm", "bybit-linear", "okx-swap"]
 const PERFORMANCE_TTL_SECONDS = 90 * 24 * 60 * 60
 const HEALTH_TTL_SECONDS = 7 * 24 * 60 * 60
 export const SIGNAL_INDICATION_STORAGE_KEY = "indications:signal"
@@ -348,14 +347,14 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
             .map((value: unknown) => String(value ?? "").trim())
             .filter(Boolean)
             .map((value: string) => normalizeSymbol(value)),
-        )).slice(0, 200)
+        ))
       : []
     const disabledLanes = Array.isArray(incoming.disabledLanes)
       ? Array.from(new Set(
           incoming.disabledLanes
             .map(normalizeDisabledSignalLane)
             .filter((value: string | null): value is string => Boolean(value)),
-        )).slice(0, 400)
+        ))
       : []
     return [source.id, {
       enabled: bool(incoming.enabled, fallback.enabled),
@@ -380,12 +379,9 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
   // independent exact configuration.
   const performanceLookback = SIGNAL_PERFORMANCE_LOOKBACK
   const performanceMinSamples = SIGNAL_PERFORMANCE_LOOKBACK
-  const maxSourcesPerCycle = Math.round(boundedNumber(
-    raw.maxSourcesPerCycle,
-    DEFAULT_SIGNAL_INDICATION_SETTINGS.maxSourcesPerCycle,
-    3,
-    SIGNAL_SOURCE_DEFINITIONS.length,
-  ))
+  // Every enabled compatible adapter is processed. This retained field is
+  // fixed to the complete registry size for backward-compatible payloads.
+  const maxSourcesPerCycle = SIGNAL_SOURCE_DEFINITIONS.length
   const minimumSourceSignals = Math.min(
     maxSourcesPerCycle,
     Math.round(boundedNumber(
@@ -1643,36 +1639,13 @@ async function fetchSourceCandles(input: {
 function selectSources(
   settings: SignalIndicationSettings,
   symbol: string,
-  cursor: number,
+  _cursor: number,
 ): SignalSourceDefinition[] {
-  const enabled = SIGNAL_SOURCE_DEFINITIONS.filter((source) =>
+  return SIGNAL_SOURCE_DEFINITIONS.filter((source) =>
     settings.sources[source.id]?.enabled !== false &&
     !settings.sources[source.id]?.disabledSymbols.includes(normalizeSymbol(symbol)) &&
     signalSourceSupportsSymbol(source, symbol),
   )
-  const max = Math.min(settings.maxSourcesPerCycle, enabled.length)
-  if (enabled.length <= max) return [...enabled]
-
-  const core = CORE_SOURCE_IDS
-    .map((id) => enabled.find((source) => source.id === id))
-    .filter((source): source is SignalSourceDefinition => Boolean(source))
-    .slice(0, Math.min(4, max))
-  const coreIds = new Set(core.map((source) => source.id))
-  const rotating = enabled
-    .filter((source) => !coreIds.has(source.id))
-    .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id))
-  const slots = max - core.length
-  if (slots <= 0 || rotating.length === 0) return core
-  // Advance by a complete page, not by one source. This preserves the
-  // always-on liquid core while covering every enabled secondary source in
-  // ceil(rotating / slots) uncached cycles instead of repeatedly fetching
-  // almost the same overlapping page.
-  const start = (Math.abs(cursor) * slots) % rotating.length
-  const selected = [...core]
-  for (let offset = 0; offset < rotating.length && selected.length < max; offset++) {
-    selected.push(rotating[(start + offset) % rotating.length])
-  }
-  return selected
 }
 
 function lowStopConsensus(

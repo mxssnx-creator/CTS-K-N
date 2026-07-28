@@ -2631,6 +2631,29 @@ export async function GET(
     const realRowActive = aggregateFreshRowField(strategyDetailRealHash, "row_active", "sets_running_now")
     const liveRowTotal = aggregateFreshRowField(strategyDetailLiveHash, "row_total", "evaluated")
     const liveRowMirrored = aggregateFreshRowField(strategyDetailLiveHash, "row_mirrored", "created_sets")
+    const blockWork = {
+      logicalEmitted: 0,
+      materialized: 0,
+      batchSize: 0,
+      activeSymbols: 0,
+    }
+    const blockWorkSymbols = new Set<string>()
+    for (const [field, raw] of Object.entries(blockProfitFactorStatsHash)) {
+      const match = field.match(
+        /^s:([^:]+):(logical_emitted|materialized|materialization_batch_size)$/,
+      )
+      if (!match) continue
+      const symbol = match[1].toUpperCase()
+      if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
+      const updatedAt = n(blockProfitFactorStatsHash[`s:${match[1]}:updated_at`])
+      if (updatedAt > 0 && Date.now() - updatedAt > 5 * 60_000) continue
+      blockWorkSymbols.add(symbol)
+      const value = n(raw)
+      if (match[2] === "logical_emitted") blockWork.logicalEmitted += value
+      else if (match[2] === "materialized") blockWork.materialized += value
+      else blockWork.batchSize = Math.max(blockWork.batchSize, value)
+    }
+    blockWork.activeSymbols = blockWorkSymbols.size
     const strategyRows = {
       base: {
         total: baseRowTotal,
@@ -2651,6 +2674,7 @@ export async function GET(
         active: realRowActive,
         activeExactRows: aggregateFreshRowField(strategyDetailRealHash, "row_active_exact", "sets_running_now"),
         activeRatio: ratio(realRowActive, realRowValid),
+        blockWork,
       },
       live: {
         total: liveRowTotal,

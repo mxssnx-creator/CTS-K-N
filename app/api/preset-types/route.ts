@@ -22,6 +22,9 @@ export async function GET(request: NextRequest) {
         types.push({
           id,
           ...data,
+          max_positions_per_indication: 0,
+          max_positions_per_direction: 0,
+          max_positions_per_range: 0,
         })
       }
     }
@@ -63,9 +66,11 @@ export async function POST(request: NextRequest) {
       name: body.name,
       description: body.description || null,
       preset_trade_type: body.preset_trade_type || "automatic",
-      max_positions_per_indication: body.max_positions_per_indication || 1,
-      max_positions_per_direction: body.max_positions_per_direction || 1,
-      max_positions_per_range: body.max_positions_per_range || 1,
+      // Compatibility fields are persisted as zero: all exact Preset
+      // indication/config/direction lanes are unlimited.
+      max_positions_per_indication: 0,
+      max_positions_per_direction: 0,
+      max_positions_per_range: 0,
       timeout_per_indication: body.timeout_per_indication || 5,
       timeout_after_position: body.timeout_after_position || 10,
       // Block-adjust and Block-Only are system defaults. Explicit `false`

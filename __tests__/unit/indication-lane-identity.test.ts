@@ -3,6 +3,7 @@ import {
   indicationValidatedCooldownKey,
   type IndicationLaneIdentityInput,
 } from "@/lib/indication-lane-identity"
+import { strategyIndicationConfigurationIdentity } from "@/lib/strategy-coordinator"
 
 const lane: IndicationLaneIdentityInput = {
   connectionId: "conn-a",
@@ -51,5 +52,30 @@ describe("exact indication lane identity", () => {
     expect(indicationValidatedCooldownKey(lane)).toBe(
       `indication_validated_cooldown:${canonicalIndicationLaneIdentity(lane)}`,
     )
+  })
+
+  test("keeps Common names independent for direct indications without persisted Set keys", () => {
+    const macd = strategyIndicationConfigurationIdentity({
+      type: "common",
+      name: "macd",
+      config: { timeframeMinutes: 1 },
+    })
+    const rsi = strategyIndicationConfigurationIdentity({
+      type: "common",
+      name: "rsi",
+      config: { timeframeMinutes: 1 },
+    })
+
+    expect(macd).toContain("name=macd")
+    expect(rsi).toContain("name=rsi")
+    expect(macd).not.toBe(rsi)
+  })
+
+  test("preserves canonical persisted Set identities across upgrades", () => {
+    expect(strategyIndicationConfigurationIdentity({
+      type: "common",
+      name: "macd",
+      setKey: "indication_set:conn:BTCUSDT:common:long:macd:tf1",
+    })).toBe("indication_set:conn:BTCUSDT:common:long:macd:tf1")
   })
 })

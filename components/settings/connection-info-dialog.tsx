@@ -1144,9 +1144,9 @@ export function ConnectionInfoDialog({ open, onOpenChange, connectionId, connect
                           </div>
                           {asText(info.presetType.description) && <p className="mb-3 text-xs leading-relaxed text-muted-foreground">{asText(info.presetType.description)}</p>}
                           <div className="grid gap-x-5 sm:grid-cols-2">
-                            <DetailRow label="Positions / indication" value={formatNumber(info.presetType.max_positions_per_indication, 0)} />
-                            <DetailRow label="Positions / direction" value={formatNumber(info.presetType.max_positions_per_direction, 0)} />
-                            <DetailRow label="Positions / range" value={formatNumber(info.presetType.max_positions_per_range, 0)} />
+                            <DetailRow label="Positions / indication" value="Unlimited" />
+                            <DetailRow label="Positions / direction" value="Unlimited" />
+                            <DetailRow label="Positions / range" value="Unlimited" />
                             <DetailRow label="Evaluation interval" value={`${formatNumber(info.presetType.evaluation_interval_hours)} h`} />
                             <DetailRow label="Block" value={<BooleanBadge value={asBoolean(info.presetType.block_enabled)} />} />
                             <DetailRow label="DCA" value={<BooleanBadge value={asBoolean(info.presetType.dca_enabled)} />} />

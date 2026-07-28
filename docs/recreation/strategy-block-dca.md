@@ -106,9 +106,12 @@ activity, and result statistics. They publish `evaluated=0`, `disabled>0`, and
 reconciliation. A source disappearing from the current basket publishes a
 zero-valued current snapshot so stale counts cannot survive.
 
-The Real safety cap retains active exact counts. New Block candidates do not
-consume the non-default fairness reserve because up to ten counts per source
-could starve DCA/trailing; their own PF ranking competes for remaining capacity.
+Real retains every logical eligible row. To prevent exhaustive Block work from
+starving DCA/trailing or the event loop, inactive rows are materialized through
+a rotating bounded batch while active rows are always included. The cursor
+advances per symbol; the batch size is a scheduling control, not a configuration
+or row ceiling, and the published logical count always reflects the complete
+evaluated space.
 
 ## Block leg persistence
 

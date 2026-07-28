@@ -32,10 +32,10 @@ const INDICATION_INTERVALS: Array<{
   { type: "direction", label: "Direction", group: "Default", timeout: 0.25 },
   { type: "move", label: "Move", group: "Default", timeout: 0.25 },
   { type: "active", label: "Active", group: "Default", timeout: 0.25 },
-  { type: "trend", label: "Trend", group: "Additional", timeout: 0.25 },
+  { type: "trend", label: "Trend", group: "Additional", timeout: 0.5 },
   { type: "optimal", label: "Optimal", group: "Additional", timeout: 0.25 },
   { type: "auto", label: "Auto", group: "Additional", timeout: 0.25 },
-  { type: "common", label: "Common", group: "Common", timeout: 3 },
+  { type: "common", label: "Common", group: "Common", timeout: 1 },
   { type: "signal", label: "Signal", group: "Common", timeout: 0.25 },
 ]
 
@@ -84,7 +84,7 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
               enabled: indicationsRunning,
               isRunning: indicationsRunning,
               isProgressing: engineRunning,
-              intervalTime: 0.25,
+              intervalTime: type === "common" ? 1 : timeout,
               timeout,
             },
           ])) as IntervalsData)

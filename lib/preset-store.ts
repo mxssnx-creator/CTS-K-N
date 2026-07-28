@@ -73,6 +73,14 @@ export interface PresetOverview {
   engine: Record<string, string>
 }
 
+export interface PresetChannelOverview {
+  connectionId: string
+  generationId: string | null
+  summary: Omit<PresetOverview["summary"], "daily">
+  progress: PresetOptimizationProgress
+  engine: Record<string, string>
+}
+
 export interface PresetListFilters {
   symbol?: string | null
   indicatorType?: string | null
@@ -555,10 +563,31 @@ async function persistGeneration(
     pipeline.zadd(symbolRanking, scoreForPreset(preset), preset.id)
     pipeline.zadd(indicatorRanking, scoreForPreset(preset), preset.id)
   }
+  const symbols = new Set(presets.map((preset) => preset.symbol))
+  const indicatorTypes = new Set(presets.map((preset) => preset.indicator.type))
+  const eligible = presets.filter((preset) => preset.metrics.eligible).length
+  const average = (values: number[]): number =>
+    values.length > 0
+      ? Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 10_000) / 10_000
+      : 0
   pipeline.hset(metadata, {
     generationId,
     connectionId,
     presetCount: String(presets.length),
+    eligibleCount: String(eligible),
+    symbolCount: String(symbols.size),
+    indicatorTypeCount: String(indicatorTypes.size),
+    averageProfitFactor: String(average(
+      presets.map((preset) => Math.min(10, preset.metrics.averageProfitFactor)),
+    )),
+    averageWinRate: String(average(presets.map((preset) => preset.metrics.winRate))),
+    averageDrawdownHours: String(average(
+      presets.map((preset) => preset.metrics.drawdownTimeHours),
+    )),
+    netR: String(
+      Math.round(presets.reduce((sum, preset) => sum + preset.metrics.netR, 0) * 10_000) /
+      10_000,
+    ),
     generatedAt: new Date().toISOString(),
   })
   for (const key of generationKeys) pipeline.sadd(keyIndex, key)
@@ -931,6 +960,92 @@ export async function getPresetOverview(
       daily,
     },
     facets: { symbols, indicatorTypes },
+    progress,
+    engine,
+  }
+}
+
+/**
+ * Lightweight Connection-card projection. Generation aggregates are written
+ * atomically with the candidate ranking, so polling this view never reloads
+ * thousands of candidate payloads and never starts a second optimizer.
+ */
+export async function getPresetChannelOverview(
+  connectionId: string,
+): Promise<PresetChannelOverview> {
+  await initRedis()
+  const client = getRedisClient()
+  const generationId = await getActiveGeneration(connectionId)
+  const [progress, engine, selected] = await Promise.all([
+    getPresetOptimizationProgress(connectionId),
+    getPresetEngineState(connectionId),
+    client.hgetall(selectedKey(connectionId)).catch(() => ({})),
+  ])
+  if (!generationId) {
+    return {
+      connectionId,
+      generationId: null,
+      summary: {
+        total: 0,
+        eligible: 0,
+        selected: 0,
+        symbols: 0,
+        indicatorTypes: 0,
+        averageProfitFactor: 0,
+        averageWinRate: 0,
+        averageDrawdownHours: 0,
+        netR: 0,
+      },
+      progress,
+      engine,
+    }
+  }
+
+  const metadata = await client
+    .hgetall(`${generationPrefix(connectionId, generationId)}:metadata`)
+    .catch(() => ({})) as Record<string, string>
+  const hasAggregates =
+    metadata.presetCount !== undefined &&
+    metadata.eligibleCount !== undefined &&
+    metadata.averageProfitFactor !== undefined
+  if (!hasAggregates) {
+    // One-time compatibility path for generations created before aggregate
+    // metadata existed. New generations use the O(1) metadata path above.
+    const legacy = await getPresetOverview(connectionId, { limit: 5_000 })
+    return {
+      connectionId,
+      generationId,
+      summary: {
+        total: legacy.summary.total,
+        eligible: legacy.summary.eligible,
+        selected: legacy.summary.selected,
+        symbols: legacy.summary.symbols,
+        indicatorTypes: legacy.summary.indicatorTypes,
+        averageProfitFactor: legacy.summary.averageProfitFactor,
+        averageWinRate: legacy.summary.averageWinRate,
+        averageDrawdownHours: legacy.summary.averageDrawdownHours,
+        netR: legacy.summary.netR,
+      },
+      progress,
+      engine,
+    }
+  }
+
+  const selectedCount = new Set(Object.values(selected || {}).map(String).filter(Boolean)).size
+  return {
+    connectionId,
+    generationId,
+    summary: {
+      total: Number(metadata.presetCount || 0),
+      eligible: Number(metadata.eligibleCount || 0),
+      selected: selectedCount,
+      symbols: Number(metadata.symbolCount || 0),
+      indicatorTypes: Number(metadata.indicatorTypeCount || 0),
+      averageProfitFactor: Number(metadata.averageProfitFactor || 0),
+      averageWinRate: Number(metadata.averageWinRate || 0),
+      averageDrawdownHours: Number(metadata.averageDrawdownHours || 0),
+      netR: Number(metadata.netR || 0),
+    },
     progress,
     engine,
   }

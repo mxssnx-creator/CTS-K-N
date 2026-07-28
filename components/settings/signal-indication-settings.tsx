@@ -297,7 +297,6 @@ export function SignalIndicationSettings() {
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {([
-              ["maxSourcesPerCycle", "Website sources / symbol / cycle", 3, 35, 1],
               ["maxPositionsTotal", "Max open positions (Long + Short)", 1, 120, 1],
               ["candleLimit", "Candles per source", 20, 250, 1],
               ["requestIntervalSeconds", "Request interval (seconds)", 30, 3600, 30],
@@ -320,6 +319,16 @@ export function SignalIndicationSettings() {
                 />
               </div>
             ))}
+          </div>
+          <div className="flex items-center justify-between rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3">
+            <div>
+              <Label>Website source processing</Label>
+              <p className="text-xs text-muted-foreground">
+                Every enabled source compatible with the symbol is evaluated
+                each cycle. HTTP concurrency controls work in flight only.
+              </p>
+            </div>
+            <Badge variant="secondary">All enabled · Unlimited</Badge>
           </div>
           <div className="grid gap-2 rounded-md border border-primary/20 bg-primary/5 p-3 text-[11px] sm:grid-cols-2">
             <div>

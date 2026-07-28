@@ -20,6 +20,11 @@ import {
   normalizeIndicationProfile,
   readStoredIndicationProfile,
 } from "@/lib/active-indication-profile"
+import {
+  DEFAULT_BASE_MIN_STEP,
+  MAX_BASE_STEP,
+  normalizeBaseMinStep,
+} from "@/lib/constants"
 import { changedSettingKeys, settingsValuesEqual } from "@/lib/settings-diff"
 import { maskConnectionSecrets, maskConnectionSettings } from "@/lib/connection-secrets"
 import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
@@ -162,6 +167,7 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "blockVolumeRatio",
   "blockProfitFactorRatio",
   "blockMaxStack",
+  "strategyBlockMaterializationBatchSize",
   "blockPauseCountRatio",
   "posCountsVolumeRatio",
   "blockActiveRealEnabled",
@@ -216,6 +222,40 @@ function normalizeIdentityVolumeFactors<T extends Record<string, any>>(settings:
     if (mutable[key] === undefined || mutable[key] === null || mutable[key] === "") continue
     const value = Number(mutable[key])
     mutable[key] = Number.isFinite(value) ? Math.max(1, Math.min(10, value)) : 1
+  }
+  return settings
+}
+
+function normalizeUnlimitedPipeline<T extends Record<string, any>>(settings: T): T {
+  const mutable = settings as Record<string, any>
+  const minStep = normalizeBaseMinStep(mutable.minStep)
+  mutable.minStep = minStep
+  mutable.trailingMinStep = Math.max(
+    minStep,
+    Math.min(MAX_BASE_STEP, Math.round(Number(mutable.trailingMinStep) || DEFAULT_BASE_MIN_STEP)),
+  )
+  mutable.strategyRealSetsSafetyCeiling = 0
+  mutable.maxRealSets = 0
+  mutable.strategyLiveSetsCeiling = 0
+
+  const coordination = mutable.coordination_settings ?? mutable.coordinationSettings
+  if (coordination && typeof coordination === "object") {
+    coordination.minStep = minStep
+    coordination.trailingMinStep = mutable.trailingMinStep
+  }
+
+  const strategies = mutable.strategies
+  if (strategies && typeof strategies === "object") {
+    for (const channelName of ["main", "preset"]) {
+      const channel = strategies[channelName]
+      if (!channel || typeof channel !== "object") continue
+      for (const stageName of ["base", "main", "real", "live"]) {
+        const stage = channel[stageName]
+        if (!stage || typeof stage !== "object") continue
+        stage.enabled = true
+        stage.max_positions = 0
+      }
+    }
   }
   return settings
 }
@@ -298,7 +338,8 @@ export async function GET(
           // Axis max-window values
           "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
           // Block strategy tuning
-          "blockVolumeRatio", "blockProfitFactorRatio", "blockMaxStack", "blockPauseCountRatio",
+          "blockVolumeRatio", "blockProfitFactorRatio", "blockMaxStack",
+          "strategyBlockMaterializationBatchSize", "blockPauseCountRatio",
           "posCountsVolumeRatio", "dcaMaxSteps", "dcaBreakevenProfitPct", "dcaCooldownSeconds",
           // PF / DDT / stage thresholds
           "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
@@ -326,8 +367,10 @@ export async function GET(
           "strategyBaseTrailingVariants", "dcaStepVolumeMultipliers", "dcaStepDistancesPct",
           "strategies", "coordination_settings", "coordinationSettings",
         ].includes(k)) {
-          // Arrays and nested settings documents are stored as JSON strings in
-          // the flat hash and must be rehydrated before dialog normalization.
+          // Arrays and nested settings objects are JSON-encoded in the flat
+          // hash. Rehydrate them before the dialog reads strategies.main or
+          // coordination.variants; leaving `strategies` as a string made a
+          // successful save appear to reset after reopening the dialog.
           try { hashSettings[k] = JSON.parse(v) } catch { hashSettings[k] = v }
         } else {
           hashSettings[k] = v
@@ -338,13 +381,13 @@ export async function GET(
     // Merge: hash fields override JSON blob fields (hash is more recent).
     // Include defaults for newer coordination knobs so existing production
     // connections expose stable values before the first save after upgrade.
-    const settings: Record<string, any> = {
-      minStep: 2,
+    const settings: Record<string, any> = normalizeUnlimitedPipeline({
+      minStep: DEFAULT_BASE_MIN_STEP,
       maxStopLossRatio: 2.5,
-      trailingMinStep: 6,
+      trailingMinStep: DEFAULT_BASE_MIN_STEP,
       ...jsonSettings,
       ...hashSettings,
-    }
+    })
     enforceCombinedStrategyPipeline(settings)
 
     // Rehydrate the canonical nested coordination object from both storage
@@ -435,6 +478,15 @@ export async function GET(
         1,
         10,
       )),
+      strategyBlockMaterializationBatchSize: Math.floor(asBoundedNumber(
+        firstDefined(
+          storedCoord.strategyBlockMaterializationBatchSize,
+          settings.strategyBlockMaterializationBatchSize,
+        ),
+        1024,
+        64,
+        10_000,
+      )),
       blockPauseCountRatio: Math.round(asBoundedNumber(
         firstDefined(storedCoord.blockPauseCountRatio, settings.blockPauseCountRatio),
         1.0,
@@ -510,9 +562,9 @@ export async function PUT(
     // Merge settings with existing (like PATCH does)
     const currentSettings = parseStoredConnectionSettings(connection.connection_settings)
     const incomingSettings = body.settings && typeof body.settings === "object" ? body.settings : {}
-    const mergedSettings = normalizeIdentityVolumeFactors(
+    const mergedSettings = normalizeUnlimitedPipeline(normalizeIdentityVolumeFactors(
       mergeConnectionSettings(currentSettings, incomingSettings),
-    )
+    ))
     normalizeCoordinationAxesInSettings(mergedSettings)
     enforceCombinedStrategyPipeline(mergedSettings)
     const hasSymbols = Array.isArray(body.symbols)
@@ -659,9 +711,9 @@ export async function PATCH(
 
     const current = parseStoredConnectionSettings(connection.connection_settings)
 
-    const merged = normalizeIdentityVolumeFactors(
+    const merged = normalizeUnlimitedPipeline(normalizeIdentityVolumeFactors(
       mergeConnectionSettings(current, settings),
-    )
+    ))
     normalizeCoordinationAxesInSettings(merged)
     enforceCombinedStrategyPipeline(merged)
     // Keep the canonical nested coordination object in sync with the top-level
@@ -922,6 +974,7 @@ export async function PATCH(
     const knobKeys = [
       "prevPosMinCount", "prevPosWindow", "mainEvalPosCount", "realEvalPosCount",
       "minStep", "maxStopLossRatio", "trailingMinStep", "posCountsVolumeRatio",
+      "strategyBlockMaterializationBatchSize",
     ] as const
     for (const k of knobKeys) {
       const v = merged[k]
@@ -978,6 +1031,12 @@ export async function PATCH(
       if (Number.isFinite(bpfr) && bpfr > 0) flatKnobs.blockProfitFactorRatio = String(Math.max(0.2, Math.min(5.0, bpfr)))
       const bms = Number(coord.blockMaxStack)
       if (Number.isFinite(bms) && bms >= 1) flatKnobs.blockMaxStack = String(Math.min(10, Math.max(1, Math.floor(bms))))
+      const blockBatch = Number(coord.strategyBlockMaterializationBatchSize)
+      if (Number.isFinite(blockBatch) && blockBatch >= 64) {
+        flatKnobs.strategyBlockMaterializationBatchSize = String(
+          Math.min(10_000, Math.max(64, Math.floor(blockBatch))),
+        )
+      }
       const bpcr = Number(coord.blockPauseCountRatio)
       if (Number.isFinite(bpcr) && bpcr > 0) flatKnobs.blockPauseCountRatio = String(Math.max(1, Math.min(4, Math.round(bpcr * 2) / 2)))
       if (typeof coord.blockActiveRealEnabled === "boolean") flatKnobs.blockActiveRealEnabled = String(coord.blockActiveRealEnabled)
@@ -1066,12 +1125,6 @@ export async function PATCH(
         const n = Number(raw)
         return Number.isFinite(n) && n > 0 ? String(Math.max(1, Math.min(72, n / 60))) : null
       }
-      const stageCap = (raw: unknown): string | null => {
-        const n = Number(raw)
-        return Number.isFinite(n) && n >= 0
-          ? String(Math.max(0, Math.floor(n)))
-          : null
-      }
       for (const [k, v] of [
         ["baseProfitFactor", pf("base", chan.base?.min_profit_factor)],
         ["mainProfitFactor", pf("main", chan.main?.min_profit_factor)],
@@ -1080,9 +1133,9 @@ export async function PATCH(
         ["maxDrawdownTimeMainHours", ddtMinToHr(chan.main?.max_drawdown_time)],
         ["maxDrawdownTimeRealHours", ddtMinToHr(chan.real?.max_drawdown_time)],
         ["maxDrawdownTimeLiveHours", ddtMinToHr(chan.live?.max_drawdown_time)],
-        ["strategyRealSetsSafetyCeiling", stageCap(chan.real?.max_positions)],
-        ["maxRealSets", stageCap(chan.real?.max_positions)],
-        ["strategyLiveSetsCeiling", stageCap(chan.live?.max_positions)],
+        ["strategyRealSetsSafetyCeiling", "0"],
+        ["maxRealSets", "0"],
+        ["strategyLiveSetsCeiling", "0"],
       ] as Array<[string, string | null]>) if (v !== null) flatKnobs[k] = v
     }
 

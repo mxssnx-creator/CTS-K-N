@@ -77,6 +77,12 @@ interface StrategyRows {
     active: number
     activeExactRows: number
     activeRatio: number
+    blockWork?: {
+      logicalEmitted: number
+      materialized: number
+      batchSize: number
+      activeSymbols: number
+    }
   }
   live: {
     total: number
@@ -310,17 +316,16 @@ function MainSystemTab({
   const mainLookback = settingNumber("mainEvalPosCount", 25)
   const realLookback = settingNumber("realEvalPosCount", 20)
   const indicationTimeoutMs = settingNumber("indicationTimeoutMs", 250)
-  const commonTimeoutSeconds = 3
+  const commonTimeoutSeconds = settingNumber("common_indication_exact_lane_timeout_ms", 1_000) / 1_000
   const baseCooldownMs = settingNumber("positionCooldownMs", 3_000)
-  const realCap = settingNumber("strategyRealSetsSafetyCeiling", settingNumber("maxRealSets", 5_000))
-  const liveCap = settingNumber("strategyLiveSetsCeiling", 500)
+  const minBaseStep = settingNumber("minStep", 2)
   const posCountsRatio = settingNumber("posCountsVolumeRatio", 3)
   const blockOnly = settingBool("blockOnly", settingBool("variantBlockOnly", true))
   const blockEnabled = settingBool("variantBlockEnabled", settingBool("blockAdjustment", true))
   const maxIndicationCount = Math.max(...Object.values(byType).map(Number), 1)
   const indicationFamilies = [
-    { k: "direction", label: "Direction", desc: "Default · post-change direction · exhaustive 2–30" },
-    { k: "move", label: "Move", desc: "Default · movement combinations · exhaustive 2–30" },
+    { k: "direction", label: "Direction", desc: `Default · post-change direction · exhaustive ${minBaseStep}–30` },
+    { k: "move", label: "Move", desc: `Default · movement combinations · exhaustive ${minBaseStep}–30` },
     { k: "active", label: "Active", desc: "Default · activity and drawdown ratio matrix" },
     { k: "trend", label: "Trend", desc: "Additional · independent 1/5/15/30-minute situations" },
     { k: "optimal", label: "Optimal", desc: "Additional · exhaustive multi-filter configurations" },
@@ -447,7 +452,15 @@ function MainSystemTab({
             <Row label="Evaluation lookback" value={`Latest ${realLookback} positions per independent Row-Real`} />
             <Row label="Avg positions" value={realAvgPositions !== null ? realAvgPositions.toFixed(2) : "—"} />
             <Row label="Max drawdown time" value={`≤ ${settingNumber("maxDrawdownTimeRealHours", 4)} h`} />
-            <Row label="Safety ceiling" value={fmt(realCap)} />
+            <Row
+              label="Block logical / current work rows"
+              value={`${fmt(rows?.real.blockWork?.logicalEmitted ?? 0)} / ${fmt(rows?.real.blockWork?.materialized ?? 0)}`}
+            />
+            <Row
+              label="Block rotating work batch"
+              value={`${fmt(rows?.real.blockWork?.batchSize ?? settingNumber("strategyBlockMaterializationBatchSize", 1024))} · ${fmt(rows?.real.blockWork?.activeSymbols ?? 0)} symbols`}
+            />
+            <Row label="Set capacity" value="Unlimited" />
           </Block>
 
           <Block icon={TrendingUp} title="Row-Live" sub="validated Row-Real mirror · no duplicate evaluation gate" accent="green"
@@ -456,7 +469,7 @@ function MainSystemTab({
             <Row label="Mirror ratio" value={`${(rows?.live.mirroredRatio ?? 0).toFixed(1)}%`} />
             <Row label="Configured PF ratio" value={`${livePf.toFixed(2)} × PositionCost`} />
             <Row label="Max drawdown time" value={`≤ ${settingNumber("maxDrawdownTimeLiveHours", 4)} h`} />
-            <Row label="Row ceiling" value={fmt(liveCap)} />
+            <Row label="Row capacity" value="Unlimited" />
             <Row label="Execution" value="Mirrored to the Live exchange dispatcher" />
             <Row label="Guard" value="is_live_trade flag on connection" />
           </Block>
@@ -491,7 +504,7 @@ function MainSystemTab({
           <Block icon={Activity} title="Position Monitor (0.3 s)" sub="TP/SL hit · trailing adjust · P&L update" accent="green">
             <Row label="Price source" value="Market data stream (no REST call)" />
             <Row label="Trailing update" value="Re-priced on favorable tick" />
-            <Row label="Live Row ceiling" value={fmt(liveCap)} />
+            <Row label="Live Row capacity" value="Unlimited" />
             <Row label="Latency" value="&lt; 50 ms" />
           </Block>
           <Block icon={BarChart3} title="Feedback Loop" sub="closed positions update strategy rankings" accent="green">
@@ -673,8 +686,8 @@ function LivePositionsSection({ positions }: { positions: LivePosition[] }) {
 
   const statusColor = (s: LivePosition["status"]) => {
     if (s === "open" || s === "filled") return "green"
-    if (isLiveOpenStatus(s)) return "orange"
     if (s === "simulated") return "blue"
+    if (isLiveOpenStatus(s)) return "orange"
     if (s === "error") return "red"
     return "default"
   }

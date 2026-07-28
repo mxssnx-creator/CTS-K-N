@@ -118,7 +118,7 @@ export function PresetTypeManager({ presetTypes, onRefresh }: PresetTypeManagerP
                   </div>
                   <div>
                     <div className="text-muted-foreground">Max Positions</div>
-                    <div className="font-medium">{type.max_positions_per_indication}</div>
+                    <div className="font-medium">Unlimited</div>
                   </div>
                   <div>
                     <div className="text-muted-foreground">Evaluation Interval</div>

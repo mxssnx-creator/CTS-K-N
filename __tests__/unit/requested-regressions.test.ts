@@ -584,16 +584,20 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain("Engine start skipped - missing credentials")
   })
 
-  test("base pseudo-position step range includes the requested 2-step floor", () => {
+  test("base pseudo-position steps keep the 2-step floor and default to 4", () => {
     const manager = read("lib/indication-config-manager.ts")
+    const constants = read("lib/constants.ts")
     const settingsTab = read("components/settings/tabs/strategy-tab.tsx")
     const coordinationSection = read("components/settings/strategy-coordination-section.tsx")
 
-    expect(manager).toContain("const stepsOptions = Array.from({ length: 29 }, (_, index) => index + 2)")
-    expect(manager).toContain("Every integer window is materialized")
+    expect(constants).toContain("export const MIN_BASE_STEP = 2")
+    expect(constants).toContain("export const DEFAULT_BASE_MIN_STEP = 4")
+    expect(manager).toContain("MAX_BASE_STEP - minStep + 1")
+    expect(manager).toContain("(_, index) => index + minStep")
     expect(settingsTab).toContain("Steps generated: 2, 3, 4, …, 29, 30")
-    expect(coordinationSection).toContain("2–30, step 1")
-    expect(coordinationSection).toContain("Generated steps: 2, 3, 4, …, 29, 30")
+    expect(coordinationSection).toContain("min={MIN_BASE_STEP}")
+    expect(coordinationSection).toContain("max={MAX_BASE_STEP}")
+    expect(coordinationSection).toContain("all {MAX_BASE_STEP - value.minStep + 1} windows")
   })
 
   test("standard, axis and trailing sets are ordered before adjust variants", () => {
@@ -656,7 +660,10 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("collectActivePositionCountsBySymbol")
     expect(source).toContain("including individual/combined Pos-Count rows")
     expect(source).toContain("...(coordIndex ? [...coordIndex.base.byKey.values()] : [])")
-    expect(source).toContain("getStrategySetWindowBatch(this.connectionId, candidateKeys, resultWindow)")
+    expect(source).toContain("const exactWindows = await getStrategySetWindowBatch(")
+    expect(source).toContain("sourceOffset += sourceBatchSize")
+    expect(source).toContain("logical_emitted")
+    expect(source).toContain("materialization_next_cursor")
     expect(source).toContain("calculateBlockMinimumProfitFactor(")
     expect(source).toContain("blockProfitFactorRatio: profitFactorRatio")
     expect(source).toContain("const dispatchCandidates = qualifying")
@@ -720,18 +727,14 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain("Math.max(1, Math.min(4, Math.round(bpcr * 2) / 2))")
   })
 
-  test("production strategy fan-out is exhaustive while caches and explicit Real output remain bounded", () => {
+  test("production strategy fan-out is exhaustive while rotating work and caches remain bounded", () => {
     const source = read("lib/strategy-coordinator.ts")
 
     expect(source).not.toContain("STRATEGY_MAIN_AXIS_SETS_CEILING")
     expect(source).not.toContain("_boundedDynCeiling")
-    expect(source).toContain("STRATEGY_REAL_SETS_CEILING")
-    expect(source).toContain("const realSetsCap = Math.min(")
-    expect(source).not.toContain("before hedge netting; active=")
-    expect(source).toContain("Every Main-Overall candidate")
-    expect(source).toContain("const finalSelection = selectRealSetsWithActiveAndVariantPriority(")
-    expect(source).toContain("finalActiveRealKeys")
-    expect(source).not.toContain("reservedBlockSets")
+    expect(source).toContain("strategyBlockMaterializationBatchSize")
+    expect(source).toContain("_independentBlockMaterializationCursorBySymbol")
+    expect(source).toContain("Every unique qualifying row reaches Real")
     expect(source).toContain("private static readonly _AXIS_LRU_MAX = (() =>")
     expect(source).toContain("STRATEGY_VARIANT_BUILD_CONCURRENCY")
     expect(source).toContain("const buildTasks: Array<() => Promise<VariantBuildResult>>")
@@ -950,11 +953,12 @@ describe("requested regression guardrails", () => {
     expect(engineSystemStatus).toContain("production status pages do not report false")
   })
 
-  test("QuickStart prehistoric preload is dev-only by default to avoid duplicate production processors", () => {
+  test("QuickStart prehistoric preload cannot duplicate the in-process engine", () => {
     const source = read("app/api/trade-engine/quick-start/route.ts")
 
     expect(source).toContain("const quickstartPreloadAllowed =")
     expect(source).toContain('process.env.NODE_ENV === "development"')
+    expect(source).toContain('process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1"')
     expect(source).toContain('process.env.ENABLE_QUICKSTART_PREHISTORIC_PRELOAD === "1"')
     expect(source).toContain("const quickstartPreload = (async () =>")
     expect(source).toContain('if (process.env.NODE_ENV === "test")')
@@ -1081,12 +1085,13 @@ describe("requested regression guardrails", () => {
     expect(realtime).toContain("Standalone/tests without a progression owner")
   })
 
-  test("dense Real-stage cap warnings are throttled per symbol", () => {
+  test("dense Real-stage Block work yields between exhaustive source batches", () => {
     const strategy = read("lib/strategy-coordinator.ts")
 
-    expect(strategy).toContain("function shouldLogRealCap")
-    expect(strategy).not.toContain("shouldLogRealCap(`early:${this.connectionId}:${symbol}`)")
-    expect(strategy).toContain("shouldLogRealCap(`final:${this.connectionId}:${symbol}`)")
+    expect(strategy).toContain("sourceOffset += sourceBatchSize")
+    expect(strategy).toContain("sourceOffset + sourceBatchSize < sources.length")
+    expect(strategy).toContain("await new Promise<void>((resolve) => setImmediate(resolve))")
+    expect(strategy).toContain("materialization_batch_size")
   })
 
   test("position-count Real rows and Live targets preserve Long and Short independently", () => {
@@ -1095,8 +1100,24 @@ describe("requested regression guardrails", () => {
     expect(strategy).toContain("axisPassthrough.push(s)")
     expect(strategy).toContain("never subject to")
     expect(strategy).toContain("opposite-direction netting")
-    expect(strategy).toContain("`${symbol}:poscounts:combined:${direction}`")
+    expect(strategy).toContain("`${parentSetKey}#poscounts:combined:${direction}`")
     expect(strategy).not.toContain("hedgeStrategyVolumeParts(axisSets.map")
+  })
+
+  test("legacy Base, Preset, and Live paths do not impose configuration ceilings", () => {
+    const baseStage = read("lib/trade-engine/stages/base-stage.ts")
+    const presetPseudo = read("lib/preset-pseudo-position-manager.ts")
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+
+    expect(baseStage).toContain("baseIndicationConfigurationIdentity")
+    expect(baseStage).toContain("base:positions:lane:")
+    expect(baseStage).toContain("positionsPerExactLane = 1")
+    expect(baseStage).not.toContain("STAGE_1_MAX_LONG_POSITIONS")
+    expect(baseStage).not.toContain("STAGE_1_MAX_SHORT_POSITIONS")
+    expect(presetPseudo).not.toContain("MAX_POSITIONS_PER_CONFIG")
+    expect(presetPseudo).toContain("mapWithConcurrency")
+    expect(liveStage).not.toContain("MAX_ACCUMULATIONS_PER_POSITION")
+    expect(liveStage).not.toContain("accumulation_cap_after_recovery")
   })
 
   test("production status routes merge raw and settings-prefixed engine heartbeat state", () => {
@@ -1118,14 +1139,46 @@ describe("requested regression guardrails", () => {
     expect(engineSystemStatus).toContain("production status pages do not report false")
   })
 
-  test("QuickStart prehistoric preload is dev-only by default to avoid duplicate production processors", () => {
+  test("QuickStart prehistoric preload cannot duplicate the in-process engine", () => {
     const source = read("app/api/trade-engine/quick-start/route.ts")
 
     expect(source).toContain("const quickstartPreloadAllowed =")
     expect(source).toContain('process.env.NODE_ENV === "development"')
+    expect(source).toContain('process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1"')
     expect(source).toContain('process.env.ENABLE_QUICKSTART_PREHISTORIC_PRELOAD === "1"')
     expect(source).toContain("const quickstartPreload = (async () =>")
     expect(source).toContain('if (process.env.NODE_ENV === "test")')
+  })
+
+  test("Logistics snapshots remain bounded under exhaustive Redis load", () => {
+    const source = read("lib/dashboard-workflow.ts")
+
+    expect(source).toContain("const prehistoricDataSize = prehistoricSymbols")
+    expect(source).toContain("getProgressionLogs(connId, { flush: false })")
+    expect(source).toContain('getProgressionLogs("global", { flush: false })')
+    expect(source).not.toContain("async function scanKeys")
+    expect(source).not.toContain("client.scan(")
+  })
+
+  test("paper positions remain open and their index membership is atomic", () => {
+    const status = read("lib/live-position-status.ts")
+    const redis = read("lib/redis-db.ts")
+    const live = read("lib/trade-engine/stages/live-stage.ts")
+
+    expect(status).toContain('"simulated"')
+    expect(redis).toContain("export async function upsertRedisListHead")
+    expect(redis).toContain('redis.call("LREM", KEYS[1], 0, ARGV[1])')
+    expect(redis).toContain('redis.call("LPUSH", KEYS[1], ARGV[1])')
+    expect(live).toContain("await upsertRedisListHead(client, openIndexKey, position.id)")
+    expect(live).not.toContain("await client.lrem(openIndexKey, 0, position.id).catch(() => 0)\n      await client.lpush(openIndexKey, position.id)")
+  })
+
+  test("volatile startup cleanup is claimed once across route module runtimes", () => {
+    const source = read("lib/redis-db.ts")
+
+    expect(source).toContain('"runtime:volatile_cleanup:startup_claim"')
+    expect(source).toContain('reason === "initRedis" || reason === "completeStartup"')
+    expect(source).toContain("{ NX: true, EX: 30 * 60 }")
   })
 
 
@@ -1499,13 +1552,15 @@ describe("requested regression guardrails", () => {
     expect(activeManager).not.toContain("const newState = !currentState")
   })
 
-  test("strategy set top-k selection uses a bounded heap for large progression inputs", () => {
+  test("strategy set processing evaluates every current indication without top-k sampling", () => {
     const source = read("lib/strategy-sets-processor.ts")
-    expect(source).toContain("Memory-safe top-K selection")
-    expect(source).toContain("const heap: any[] = []")
-    expect(source).toContain("bubbleUp")
-    expect(source).toContain("sinkDown")
-    expect(source).not.toContain("top[minIdx] = indication")
+    expect(source).toContain("const selectedTotal = rawTotal")
+    expect(source).toContain("for (const indication of indications)")
+    expect(source).toContain('(["base", "main", "real", "live"] as const).map')
+    expect(source).toContain("Classify the complete indication inventory in one CPU pass")
+    expect(source).not.toContain("selectTopIndications")
+    expect(source).not.toContain("MAX_INPUT_MULTIPLIER")
+    expect(source).not.toContain("indications.slice(")
   })
 
 
@@ -1989,7 +2044,8 @@ describe("requested regression guardrails", () => {
     )
 
     expect(stageEditor).toContain("Pipeline step · always active")
-    expect(dialog).toContain("enabled:           true")
+    expect(dialog).toContain("function normalizeStrategyChannel")
+    expect(dialog).toContain("enabled: true")
     expect(stageEditor).not.toContain("onCheckedChange={(v) => update(type, { enabled: v })}")
     expect(settingsRoute).toContain("function enforceCombinedStrategyPipeline")
     expect(settingsRoute.match(/enforceCombinedStrategyPipeline\(/g)?.length).toBeGreaterThanOrEqual(4)
@@ -2193,7 +2249,7 @@ describe("requested regression guardrails", () => {
     expect(altIndex).toContain("indexAlternateLivePositionKey")
   })
 
-  test("hot-path performance guards cover stats, real overlays, strategy top-k, and heap telemetry", () => {
+  test("hot-path performance guards cover stats, rotating Real overlays, exhaustive strategy input, and heap telemetry", () => {
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
     const coordinator = read("lib/strategy-coordinator.ts")
     const setsProcessor = read("lib/strategy-sets-processor.ts")
@@ -2204,9 +2260,10 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain("PositionContext")
     expect(coordinator).toContain("perSymbolOpenByDir")
     expect(coordinator).toContain("posCtx?.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 }")
-    expect(setsProcessor).toContain("Memory-safe top-K selection")
-    expect(setsProcessor).toContain("const heap: any[] = []")
-    expect(setsProcessor).toContain("sinkDown")
+    expect(coordinator).toContain("strategyBlockMaterializationBatchSize")
+    expect(coordinator).toContain("materializationCursor")
+    expect(setsProcessor).toContain("const selectedTotal = rawTotal")
+    expect(setsProcessor).not.toContain("selectTopIndications")
     expect(engineManager).toContain("process.memoryUsage().heapTotal")
     expect(engineManager).not.toContain('require("v8")')
     expect(engineManager).not.toContain("JSON.stringify(effectiveForceSymbols)")
@@ -3110,9 +3167,11 @@ describe("requested regression guardrails", () => {
     expect(modules).not.toContain("health: activeConnections > 0 ? 98")
     expect(modules).not.toContain('last_update: "2 min ago"')
 
-    expect(workflow).toContain("while (cursor !== \"0\")")
-    expect(workflow).not.toContain("keys.length < limit")
-    expect(workflow).not.toContain("return keys.slice(0, limit)")
+    expect(workflow).toContain("const prehistoricDataSize = prehistoricSymbols")
+    expect(workflow).not.toContain("client.scan(")
+    expect(workflow).toContain("strategy_detail:${connId}:base")
+    expect(workflow).toContain("sumCurrentStageSets")
+    expect(workflow).not.toContain("settings:strategies:${connId}:*:sets")
     expect(logistics).toContain("Math.max(...latencySamples)")
     expect(logistics).not.toContain("avgLatency + 120")
     expect(page).toContain("Redis Operations/min")

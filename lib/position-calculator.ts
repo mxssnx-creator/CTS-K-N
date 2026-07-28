@@ -1,3 +1,9 @@
+import {
+  DEFAULT_BASE_MIN_STEP,
+  MAX_BASE_STEP,
+  MIN_BASE_STEP,
+} from "@/lib/constants"
+
 export interface PositionCalculation {
   category: string
   subcategory: string
@@ -185,23 +191,39 @@ export class PositionCalculator {
 
   private getConfigurableRanges(): number[] {
     const settings = this.settings || {
-      indicationRangeMin: 2,
-      indicationRangeMax: 30,
+      indicationRangeMin: DEFAULT_BASE_MIN_STEP,
+      indicationRangeMax: MAX_BASE_STEP,
       indicationRangeStep: 1,
       takeProfitRangeDivisor: 3,
     }
 
-    const ranges = []
-    for (let i = settings.indicationRangeMin; i <= settings.indicationRangeMax; i += settings.indicationRangeStep) {
-      ranges.push(i)
+    const clampRange = (value: unknown, fallback: number) => {
+      const parsed = Number(value)
+      return Math.max(
+        MIN_BASE_STEP,
+        Math.min(MAX_BASE_STEP, Math.round(Number.isFinite(parsed) ? parsed : fallback)),
+      )
     }
+    const first = clampRange(settings.indicationRangeMin, DEFAULT_BASE_MIN_STEP)
+    const second = clampRange(settings.indicationRangeMax, MAX_BASE_STEP)
+    const from = Math.min(first, second)
+    const to = Math.max(first, second)
+    const parsedStep = Math.abs(Math.round(Number(settings.indicationRangeStep)))
+    const step = Number.isFinite(parsedStep) && parsedStep > 0 ? parsedStep : 1
+    const ranges: number[] = []
+    for (let value = from; value <= to; value += step) {
+      ranges.push(value)
+    }
+    // Both configured endpoints are part of the contract even when the step
+    // does not divide the interval exactly.
+    if (ranges[ranges.length - 1] !== to) ranges.push(to)
     return ranges
   }
 
   private filterConfigsByTakeProfitCoordination(ranges: number[], type: string): number[] {
     const settings = this.settings || {
-      indicationRangeMin: 2,
-      indicationRangeMax: 30,
+      indicationRangeMin: DEFAULT_BASE_MIN_STEP,
+      indicationRangeMax: MAX_BASE_STEP,
       indicationRangeStep: 1,
       takeProfitRangeDivisor: 3,
     }
@@ -218,7 +240,9 @@ export class PositionCalculator {
     const slRatios = 5 // 0.5-2.5 (step 0.5)
     const trailingCombos = 3 // 3 trail_start × 3 trail_stop + 1 no-trailing = 3
 
-    const baseConfigs = Math.min(tpFactors * slRatios * trailingCombos, 25) // Limited to 25 as per code
+    // This calculator reports the full Cartesian topology. Retention and
+    // scheduler batch sizes are not configuration-space ceilings.
+    const baseConfigs = tpFactors * slRatios * trailingCombos
 
     switch (type) {
       case "base":

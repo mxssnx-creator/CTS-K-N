@@ -2,7 +2,11 @@ import { mkdtemp, readFile, readdir, rm, stat } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
 
-import { InlineLocalRedis } from "@/lib/redis-db"
+import {
+  InlineLocalRedis,
+  moveRedisListMembershipToHead,
+  upsertRedisListHead,
+} from "@/lib/redis-db"
 
 function resetInlineGlobals() {
   delete (globalThis as any).__redis_data
@@ -92,6 +96,39 @@ describe("InlineLocalRedis compatibility and persistence", () => {
       .exec()
 
     expect(pipelineResult).toEqual(["OK", "ok", 1, { field: "value" }])
+  })
+
+  it("moves an existing list member to the head without leaving duplicates", async () => {
+    const redis = new InlineLocalRedis()
+    await redis.rpush("open:index", "position-a", "position-b", "position-a")
+
+    await upsertRedisListHead(redis, "open:index", "position-a")
+
+    await expect(redis.lrange("open:index", 0, -1)).resolves.toEqual([
+      "position-a",
+      "position-b",
+    ])
+  })
+
+  it("atomically moves a position from the open index to the closed head", async () => {
+    const redis = new InlineLocalRedis()
+    await redis.rpush("open:index", "position-a", "position-b", "position-a")
+    await redis.rpush("closed:index", "position-c", "position-a")
+
+    await moveRedisListMembershipToHead(
+      redis,
+      "open:index",
+      "closed:index",
+      "position-a",
+    )
+
+    await expect(redis.lrange("open:index", 0, -1)).resolves.toEqual([
+      "position-b",
+    ])
+    await expect(redis.lrange("closed:index", 0, -1)).resolves.toEqual([
+      "position-a",
+      "position-c",
+    ])
   })
 
   it("preserves active-owner pipeline keys while deleting stale or unowned volatile keys", async () => {

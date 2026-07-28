@@ -3,8 +3,9 @@ import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { getConnection, getRedisClient, initRedis } from "@/lib/redis-db"
 import { withTimeout } from "@/lib/async-safety"
 import {
-  MAX_TRADE_HISTORY_RECORDS,
-  loadClosedPositionSnapshots,
+  MAX_TRADE_HISTORY_PAGE_SIZE,
+  TRADE_HISTORY_PAGE_SIZE,
+  loadClosedPositionSnapshotPage,
   mergeTradeHistory,
   normalizeBingXClosedOrder,
   normalizeLocalTradeHistoryRow,
@@ -93,7 +94,7 @@ async function readCachedExchangeHistory(client: any, connectionId: string): Pro
     if (!parsed || !Array.isArray(parsed.rows)) return null
     return {
       fetchedAt: Number(parsed.fetchedAt) || 0,
-      rows: parsed.rows.slice(0, MAX_TRADE_HISTORY_RECORDS),
+      rows: parsed.rows.slice(0, TRADE_HISTORY_PAGE_SIZE),
     }
   } catch {
     return null
@@ -146,7 +147,7 @@ async function fetchExchangeHistory(
     // the cheapest source (one signed call for all 12 symbols).
     let globalRequestTimedOut = false
     const globalSnapshot = await withTimeout(
-      fetchSnapshot(undefined, MAX_TRADE_HISTORY_RECORDS),
+      fetchSnapshot(undefined, TRADE_HISTORY_PAGE_SIZE),
       GLOBAL_HISTORY_TIMEOUT_MS,
       `trade-history global ${connectionId}`,
     ).catch(() => {
@@ -201,7 +202,7 @@ async function fetchExchangeHistory(
       .map((order) => normalizeBingXClosedOrder(order))
       .filter((row): row is TradeHistoryRow => !!row)
       .sort((a, b) => b.closedAt - a.closedAt)
-      .slice(0, MAX_TRADE_HISTORY_RECORDS)
+      .slice(0, TRADE_HISTORY_PAGE_SIZE)
     const snapshot = { fetchedAt: Date.now(), rows }
     const client = getRedisClient()
     await client
@@ -217,7 +218,12 @@ async function fetchExchangeHistory(
 }
 
 /**
- * GET /api/trading/trade-history?connection_id=...&limit=500&force=0
+ * GET /api/trading/trade-history
+ *   ?connection_id=...
+ *   &mode=exchange|simulated
+ *   &offset=0
+ *   &limit=500
+ *   &force=0
  *
  * Exchange closes/commission are authoritative; the local archive supplies
  * strategy lineage, entry/open timestamps, and a continuity fallback.
@@ -229,9 +235,14 @@ export async function GET(request: NextRequest) {
     if (!connectionId) {
       return NextResponse.json({ success: false, error: "connection_id required" }, { status: 400 })
     }
+    const mode = searchParams.get("mode") === "simulated" ? "simulated" : "exchange"
+    const offset = Math.max(0, Math.floor(Number(searchParams.get("offset")) || 0))
     const limit = Math.max(
       1,
-      Math.min(MAX_TRADE_HISTORY_RECORDS, Math.floor(Number(searchParams.get("limit")) || MAX_TRADE_HISTORY_RECORDS)),
+      Math.min(
+        MAX_TRADE_HISTORY_PAGE_SIZE,
+        Math.floor(Number(searchParams.get("limit")) || TRADE_HISTORY_PAGE_SIZE),
+      ),
     )
     const force = searchParams.get("force") === "1"
 
@@ -243,21 +254,28 @@ export async function GET(request: NextRequest) {
     }
 
     const analyticsNow = Date.now()
-    const [localSnapshots, analyticsSnapshots, cached] = await Promise.all([
-      loadClosedPositionSnapshots(client, connectionId, MAX_TRADE_HISTORY_RECORDS),
+    const [localPage, analyticsSnapshots, cached] = await Promise.all([
+      loadClosedPositionSnapshotPage(client, connectionId, { offset, limit }),
       getClosedLivePositionReadModels(connectionId, {
-        recentLimit: MAX_TRADE_HISTORY_RECORDS,
+        recentLimit: TRADE_HISTORY_PAGE_SIZE,
         sinceMs: analyticsNow - LIVE_POSITION_ANALYTICS_WINDOW_MS,
       }),
-      readCachedExchangeHistory(client, connectionId),
+      mode === "exchange" && offset === 0
+        ? readCachedExchangeHistory(client, connectionId)
+        : Promise.resolve(null),
     ])
-    const localRows = localSnapshots
+    const localRows = localPage.snapshots
       .map((position) => normalizeLocalTradeHistoryRow(position))
       .filter((row): row is TradeHistoryRow => !!row)
+      .filter((row) => row.environment === mode)
 
-    const cacheIsFresh = !!cached && Date.now() - cached.fetchedAt < EXCHANGE_CACHE_FRESH_MS
+    const cacheIsFresh =
+      mode === "exchange" &&
+      offset === 0 &&
+      !!cached &&
+      Date.now() - cached.fetchedAt < EXCHANGE_CACHE_FRESH_MS
     let exchangeSnapshot = cached
-    if (!cacheIsFresh) {
+    if (mode === "exchange" && offset === 0 && !cacheIsFresh) {
       const refresh = fetchExchangeHistory(connectionId, connection as Record<string, any>, cached)
       if (cached && !force) {
         // Stale-while-revalidate: the table remains instant and never blanks
@@ -271,15 +289,29 @@ export async function GET(request: NextRequest) {
         ).catch(() => cached)
       }
     }
-    const exchangeRows = exchangeSnapshot?.rows || []
-    const rows = mergeTradeHistory(exchangeRows, localRows, limit)
+    // Exchange history is requested only for page zero. Later pages are served
+    // entirely from the durable local archive, which prevents a recent venue
+    // snapshot from being duplicated on every page. Simulation mode never
+    // constructs a private exchange connector.
+    const exchangeRows =
+      mode === "exchange" && offset === 0
+        ? (exchangeSnapshot?.rows || []).filter((row) => row.environment === "exchange")
+        : []
+    const rows = mergeTradeHistory(exchangeRows, localRows)
     const summary = summarizeTradeHistory(rows)
-    // Table paging and analytics are deliberately independent. The visible
-    // compatibility ring remains bounded at 500 rows, while the compact
-    // time-indexed archive covers every close needed for PF 4/12/48h,
-    // PF last 12/25/75 and DDT 3d.
+    // Table paging and analytics are deliberately independent. The durable
+    // close index has no row ceiling; the compact time index supplies the
+    // complete PF 4/12/48h, PF last 12/25/75 and DDT 3d windows.
     const analyticsById = new Map<string, TradingAnalyticsRow>()
     for (const position of analyticsSnapshots) {
+      const analyticsEnvironment =
+        String(position.environment || "").toLowerCase() === "simulated" ||
+        String(position.executionMode || "").toLowerCase() === "simulation" ||
+        position.simulated === true ||
+        position.simulated === "1"
+          ? "simulated"
+          : "exchange"
+      if (analyticsEnvironment !== mode) continue
       const id = String(position.id || "").trim()
       const closedAt = Number(position.closedAt ?? position.updatedAt)
       const realizedPnl = Number(
@@ -295,7 +327,7 @@ export async function GET(request: NextRequest) {
         volumeUsd: Number(position.volumeUsd) || 0,
       })
     }
-    for (const row of rows) {
+    for (const row of rows.filter((row) => row.environment === mode)) {
       analyticsById.set(`id:${row.id}`, row)
     }
     const analyticsRows = [...analyticsById.values()]
@@ -304,16 +336,24 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       connectionId,
+      mode,
       rows,
       summary,
       analytics,
       paging: {
         returned: rows.length,
-        maximum: MAX_TRADE_HISTORY_RECORDS,
+        offset: localPage.offset,
+        nextOffset: localPage.nextOffset,
+        pageSize: limit,
+        totalIndexed: localPage.totalIndexed,
+        hasMore: localPage.hasMore,
+        durableUnlimited: true,
+        maximum: null,
         visibleWindow: 50,
         analyticsRows: analyticsRows.length,
       },
       source: {
+        mode,
         exchange: exchangeRows.length,
         local: localRows.length,
         fetchedAt: exchangeSnapshot?.fetchedAt || null,

@@ -69,6 +69,9 @@ describe("Common technical indicators", () => {
   })
 
   test("keeps Common timeframes independent from Trend through 30 minutes", () => {
+    expect(
+      (DEFAULT_COMMON_INDICATION_SETTINGS.ma as CommonIndicatorSettings).timeout,
+    ).toBe(3)
     const result = StepBasedIndicators.calculateAll(
       candles(Array.from({ length: 120 }, (_, index) => 100 + index * 0.01)),
       [1, 3, 5, 15, 30],

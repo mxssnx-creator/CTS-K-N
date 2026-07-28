@@ -125,15 +125,16 @@ jobs. Both share the same durable Redis state.
 - Base creates indication configurations and optional trailing-range variants.
 - Main validates Base configurations and materializes reached Previous, Last,
   Continuous, Pause, outcome, and direction axes.
-- Real applies position-count/PF/DDT gates, hedge coordination, safety caps,
-  and independent Block Count 1..10 Sets.
+- Real applies position-count/PF/DDT gates, hedge coordination, and independent
+  Block Count 1..10 Sets. Stage rows are exhaustive; bounded rotating work
+  batches control latency without becoming a row or configuration ceiling.
 - Signal is a default-enabled Common indication engine. It normalizes 35
   documented public one-minute OHLCV feeds, derives a low-stop consensus
   locally, and enters the same Main → Real → Live lineage as every other
-  indication. It has no separate connection switch; the Indications selection
-  is authoritative. A liquid four-source core stays present while bounded
-  priority pages rotate through every other enabled compatible source, so all
-  35 sources are exercised without issuing 35 requests per symbol on every tick.
+  indication. Each connection has an independent Signal switch alongside Main
+  Live Trade. Every enabled source compatible with a symbol is processed each
+  cycle; bounded HTTP concurrency controls in-flight work without sampling or
+  truncating the configured source space.
 - Regular Block ladders use normal Base-derived Sets only; Pos-Count Sets do
   not recursively create Blocks. The separate Real-active Block calculation
   still counts Pos-Count positions in its per-symbol, per-direction activity.
@@ -181,7 +182,7 @@ The complete recreation kit begins at
 
 - system architecture, ownership, and complete directory map;
 - stage, Block, DCA, exchange, and settings propagation contracts;
-- Redis data model, schema v90 migrations, recovery, and backup rules;
+- Redis data model, schema v91 migrations, recovery, and backup rules;
 - complete environment/deployment/install procedures;
 - acceptance tests and a clean-room rebuild runbook;
 - generated API, page, environment, migration, test, source-tree, and SHA-256

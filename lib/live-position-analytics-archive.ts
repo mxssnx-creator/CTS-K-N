@@ -1,11 +1,9 @@
 /**
  * Compact, time-indexed archive for operator-facing Live/Signal statistics.
  *
- * The normal closed-position list is intentionally a small compatibility ring.
- * It is sufficient for "latest N" views, but it cannot represent a complete
- * multi-day window when short-lived positions turn over quickly. This archive
- * retains every closed row required by the longest PF/DDT window while
- * storing only the fields used by reporting.
+ * The normal closed-position list is a durable, fully paged audit index. This
+ * compact archive remains the efficient time-window projection for PF/DDT
+ * analytics and stores only the fields used by reporting.
  */
 
 export const LIVE_POSITION_ANALYTICS_WINDOW_MS = 3 * 24 * 60 * 60 * 1000
@@ -98,6 +96,16 @@ export function buildLivePositionAnalyticsSnapshot(
           ),
         }
       : undefined
+  const executionMode = String(position.executionMode || "").trim().toLowerCase()
+  const environment =
+    executionMode === "simulation" ||
+    position.simulated === true ||
+    position.simulated === "1" ||
+    /paper|simulat|live_trade disabled/i.test(
+      String(position.statusReason || position.closeReason || ""),
+    )
+      ? "simulated"
+      : "exchange"
 
   return {
     id,
@@ -112,6 +120,9 @@ export function buildLivePositionAnalyticsSnapshot(
       position.executionLane ?? position.execution_lane ?? "",
     ),
     setVariant: String(position.setVariant || ""),
+    environment,
+    executionMode: executionMode || undefined,
+    executionIntent: String(position.executionIntent || "") || undefined,
     createdAt: finite(
       position.createdAt ??
       position.openedAt ??

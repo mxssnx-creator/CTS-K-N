@@ -2069,7 +2069,6 @@ export default function StatisticsPage() {
             <TabsContent value="history" className="space-y-4">
               <TradeHistoryTable
                 trades={tradeHistory}
-                limit={500}
                 visibleWindow={50}
                 onRefresh={() => setReloadGeneration((generation) => generation + 1)}
               />

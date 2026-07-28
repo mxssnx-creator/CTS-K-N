@@ -31,11 +31,12 @@ describe("live position status grouping", () => {
       "pending",
       "pending_fill",
       "placed_unconfirmed",
+      "simulated",
       "closing",
       "closing_partial",
     ])
 
-    expect(countLiveOpenPositions(regressionFixture)).toBe(9)
+    expect(countLiveOpenPositions(regressionFixture)).toBe(10)
     expect(regressionFixture.filter((position) => isLiveOpenStatus(position.status)).map((position) => position.status)).toEqual([
       "open",
       "filled",
@@ -46,6 +47,7 @@ describe("live position status grouping", () => {
       "placed_unconfirmed",
       "closing",
       "closing_partial",
+      "simulated",
     ])
   })
 
