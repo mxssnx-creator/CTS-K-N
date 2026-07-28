@@ -130,6 +130,7 @@ MIGRATION_BATCH_DEADLINE_MS	application-runtime	no	no	1	lib/redis-migrations.ts
 NEXT_BINGX_API_KEY	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
 NEXT_BINGX_API_SECRET	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
 NEXT_DIST_DIR	application-runtime	no	no	8	__tests__/unit/requested-regressions.test.ts,next.config.mjs,scripts/build-next-with-trace-retry.mjs,scripts/clean-next-dist.mjs,scripts/normalize-next-env.mjs,scripts/prepare-standalone-assets.mjs,scripts/run-prod-preview-check.mjs,scripts/start-production.mjs
+NEXT_MANIFEST_SETTLE_MS	test-or-operator-tool	no	no	1	scripts/normalize-next-env.mjs
 NEXT_PHASE	platform-provided	no	no	1	lib/redis-db.ts
 NEXT_PUBLIC_ALLOW_BROWSER_BOOTSTRAP	application-runtime	no	no	1	components/engine-auto-initializer.tsx
 NEXT_PUBLIC_API_URL	test-or-operator-tool	no	no	2	scripts/autotest-drift.mjs,scripts/production-deploy-init.mjs

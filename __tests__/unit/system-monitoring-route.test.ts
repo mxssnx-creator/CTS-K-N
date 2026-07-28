@@ -32,6 +32,7 @@ describe("system monitoring route", () => {
         indication_cycle_count: "11",
         strategy_cycle_count: "9",
         realtime_cycle_count: "13",
+        live_positions_cycle_count: "17",
       }),
       client.hset(`settings:trade_engine_state:${connectionId}:main`, {
         status: "running",
@@ -45,8 +46,9 @@ describe("system monitoring route", () => {
 
     expect(response.status).toBe(200)
     expect(body.services.tradeEngine).toBe(true)
-    expect(body.engines.indications.cycleCount).toBeGreaterThanOrEqual(13)
-    expect(body.engines.strategies.cycleCount).toBeGreaterThanOrEqual(13)
+    expect(body.engines.indications.cycleCount).toBeGreaterThanOrEqual(11)
+    expect(body.engines.strategies.cycleCount).toBeGreaterThanOrEqual(9)
+    expect(body.engines.realtime.cycleCount).toBeGreaterThanOrEqual(17)
     expect(body.database.requestsPerSecond).toBeGreaterThan(0)
   })
 })

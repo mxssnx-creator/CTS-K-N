@@ -128,8 +128,10 @@ function isRecoverableNextFilesystemRace(output) {
   // Next lifecycle signature without assuming which stream flushed first.
   const truncatedManifest =
     /(?=[\s\S]*Compiled successfully)(?=[\s\S]*Collecting page data)(?=[\s\S]*Unexpected end of JSON input)/i
+  const postbuildRoutesManifestRace =
+    /(?=[\s\S]*Compiled successfully)(?=[\s\S]*Collecting build traces)(?=[\s\S]*\[next-env\][\s\S]*routes-manifest\.json is missing or is not valid JSON)/i
   const sourceFailure = /Failed to compile|webpack errors|Merge conflict marker|Syntax Error|Type error/i
-  return (providerPath.test(output) || truncatedManifest.test(output)) && !sourceFailure.test(output)
+  return (providerPath.test(output) || truncatedManifest.test(output) || postbuildRoutesManifestRace.test(output)) && !sourceFailure.test(output)
 }
 
 function collectFiles(root, suffix) {
