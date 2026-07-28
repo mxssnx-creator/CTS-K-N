@@ -694,6 +694,12 @@ credentials are present.
   connection/position/workflow ledgers and the bounded logger list index.
   They report measured resource, Redis and engine data; connection-scoped
   monitoring refreshes with the selected connection rather than stale globals.
+- [x] Strategies and positions views now consume complete canonical live
+  ledgers: the Strategies UI requires an explicit selected connection, refreshes
+  measured Base/Main/Real/Live snapshots without local toggle fabrication, and
+  exports the visible snapshot. Position and connection-statistics APIs scan all
+  canonical rows in bounded batches before applying filters or pagination; the
+  legacy/demo projections no longer discard valid configuration rows at 50/150/250.
 - [x] Preserved one physical Direction parent for source-scoped Signal Block
   adjustments while allowing ordinary Block-only lanes to seed and recover
   their own parent. Explicit Consensus and direct-source outcomes now update
@@ -702,7 +708,7 @@ credentials are present.
 - [x] Added schema v88 compatibility/migration coverage, browser-safe
   indication-topology counting, deterministic bounded build tracing, and the
   missing `ts-node` test-runtime dependency; Vercel is pinned to 54.18.0.
-- [x] Final release checks: 121 Jest suites / 829 tests, TypeScript, ESLint,
+- [x] Final release checks: 121 Jest suites / 837 tests, TypeScript, ESLint,
   Kilo preflight (37 checks, schema 88), secret scan (1,266 files, zero
   findings), offline frozen pnpm install, recreation-manifest verification,
   and a production Next build with 41/41 pages and 339 complete server traces.
