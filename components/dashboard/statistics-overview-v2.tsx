@@ -178,6 +178,7 @@ type PerformanceTier = {
   isExecution:     boolean
   fillRate?:       number
   volumeUsdTotal?: number
+  avgNotionalUsd?: number
   totalClosed?:    number
   openScanned?:    number
 }

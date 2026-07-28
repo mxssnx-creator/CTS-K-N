@@ -68,8 +68,10 @@ export async function POST(request: NextRequest) {
       max_positions_per_range: body.max_positions_per_range || 1,
       timeout_per_indication: body.timeout_per_indication || 5,
       timeout_after_position: body.timeout_after_position || 10,
-      block_enabled: body.block_enabled || false,
-      block_only: body.block_only || false,
+      // Block-adjust and Block-Only are system defaults. Explicit `false`
+      // remains a supported operator choice for Standard+Block parallel mode.
+      block_enabled: body.block_enabled !== false,
+      block_only: body.block_only !== false,
       dca_enabled: body.dca_enabled || false,
       dca_only: body.dca_only || false,
       auto_evaluate: body.auto_evaluate !== false,

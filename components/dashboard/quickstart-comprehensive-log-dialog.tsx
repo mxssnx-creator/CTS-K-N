@@ -86,7 +86,10 @@ interface StatsResponse {
   }
   strategyDetail: { base: StratDetail; main: StratDetail; real: StratDetail; live?: StratDetail }
   liveExecution?: LiveExecution
-  windows: { indications: { last5m: number; last60m: number }; strategies: { last5m: number; last60m: number } }
+  windows: {
+    indications: { last5m: number; last60m: number; measured?: boolean; source?: string }
+    strategies: { last5m: number; last60m: number; measured?: boolean; source?: string }
+  }
   metadata: { engineRunning: boolean; phase: string; progress: number; message: string; lastUpdate: string }
 }
 
@@ -382,12 +385,14 @@ export function QuickstartComprehensiveLogDialog() {
                     {(rt?.avgCycleTimeMs || 0) > 0 && (
                       <Row label="Avg Cycle Time"  value={`${rt!.avgCycleTimeMs}ms`} />
                     )}
-                    {(win?.indications.last5m || 0) > 0 && (
-                      <Row label="Ind (last 5m)"   value={fmt(win!.indications.last5m)} />
-                    )}
-                    {(win?.indications.last60m || 0) > 0 && (
-                      <Row label="Ind (last 60m)"  value={fmt(win!.indications.last60m)} />
-                    )}
+                    <Row
+                      label="Ind (last 5m)"
+                      value={win?.indications.measured ? fmt(win.indications.last5m) : "Unavailable"}
+                    />
+                    <Row
+                      label="Ind (last 60m)"
+                      value={win?.indications.measured ? fmt(win.indications.last60m) : "Unavailable"}
+                    />
                   </div>
                 </SectionCard>
 
@@ -424,8 +429,8 @@ export function QuickstartComprehensiveLogDialog() {
                 <div className="grid grid-cols-3 gap-2">
                   {[
                     { label: "Total",    value: fmt(totalIndAll),                   color: "text-violet-600 dark:text-violet-400" },
-                    { label: "Last 5m",  value: fmt(win?.indications.last5m || 0),  color: "text-blue-600 dark:text-blue-400" },
-                    { label: "Last 60m", value: fmt(win?.indications.last60m || 0), color: "text-sky-600 dark:text-sky-400" },
+                    { label: "Last 5m",  value: win?.indications.measured ? fmt(win.indications.last5m) : "—",  color: "text-blue-600 dark:text-blue-400" },
+                    { label: "Last 60m", value: win?.indications.measured ? fmt(win.indications.last60m) : "—", color: "text-sky-600 dark:text-sky-400" },
                   ].map(({ label, value, color }) => (
                     <div key={label} className="rounded-md bg-muted/60 p-2 text-center">
                       <div className={`text-base font-bold tabular-nums ${color}`}>{value}</div>
@@ -447,10 +452,6 @@ export function QuickstartComprehensiveLogDialog() {
                     {indTypes.map(({ label, key }) => {
                       const val  = bd?.indications[key] ?? 0
                       const p    = Math.min(100, (val / totalIndByType) * 100)
-                      const pct5m  = totalIndAll > 0 && (win?.indications.last5m  || 0) > 0
-                        ? Math.round((val / totalIndAll) * (win!.indications.last5m))  : 0
-                      const pct60m = totalIndAll > 0 && (win?.indications.last60m || 0) > 0
-                        ? Math.round((val / totalIndAll) * (win!.indications.last60m)) : 0
 
                       return (
                         <div key={key} className="space-y-0.5">
@@ -461,12 +462,6 @@ export function QuickstartComprehensiveLogDialog() {
                             </div>
                             <span className="font-medium tabular-nums w-12 text-right">{fmt(val)}</span>
                           </div>
-                          {(pct5m > 0 || pct60m > 0) && (
-                            <div className="flex gap-3 text-[9px] text-muted-foreground pl-16">
-                              {pct5m  > 0 && <span>5m: {fmt(pct5m)}</span>}
-                              {pct60m > 0 && <span>60m: {fmt(pct60m)}</span>}
-                            </div>
-                          )}
                         </div>
                       )
                     })}
@@ -644,8 +639,14 @@ export function QuickstartComprehensiveLogDialog() {
                   <div className="grid grid-cols-2 gap-1">
                     <Row label="Strategy Cycles" value={fmt(rt?.strategyCycles || 0)} />
                     <Row label="Final (Real)"    value={fmt(bd?.strategies.total || 0)} />
-                    {(win?.strategies.last5m  || 0) > 0 && <Row label="Strat 5m"  value={fmt(win!.strategies.last5m)} />}
-                    {(win?.strategies.last60m || 0) > 0 && <Row label="Strat 60m" value={fmt(win!.strategies.last60m)} />}
+                    <Row
+                      label="Strat 5m"
+                      value={win?.strategies.measured ? fmt(win.strategies.last5m) : "Unavailable"}
+                    />
+                    <Row
+                      label="Strat 60m"
+                      value={win?.strategies.measured ? fmt(win.strategies.last60m) : "Unavailable"}
+                    />
                     {(bd?.strategies.live || 0) > 0 && (
                       <Row label="Live" value={fmt(bd!.strategies.live)} />
                     )}
