@@ -2842,7 +2842,9 @@ describe("requested regression guardrails", () => {
     const metrics = read("app/api/structure/metrics/route.ts")
     const modules = read("app/api/structure/modules/route.ts")
     const workflow = read("lib/dashboard-workflow.ts")
+    const logistics = read("lib/logistics-workflow.ts")
     const page = read("app/structure/page.tsx")
+    const connectionState = read("components/dashboard/connection-state-tabs.tsx")
 
     expect(metrics).toContain("getSystemResourceMetrics()")
     expect(metrics).toContain("getObservedRedisRequestsPerSecond()")
@@ -2862,10 +2864,15 @@ describe("requested regression guardrails", () => {
     expect(workflow).toContain("while (cursor !== \"0\")")
     expect(workflow).not.toContain("keys.length < limit")
     expect(workflow).not.toContain("return keys.slice(0, limit)")
+    expect(logistics).toContain("Math.max(...latencySamples)")
+    expect(logistics).not.toContain("avgLatency + 120")
     expect(page).toContain("Redis Operations/min")
     expect(page).toContain("Not instrumented")
     expect(page).not.toContain("<Badge variant=\"default\">Excellent</Badge>")
     expect(page).not.toContain("System Running Optimally")
+    expect(connectionState).toContain("/api/structure/metrics?connectionId=")
+    expect(connectionState).not.toContain("Math.random()")
+    expect(connectionState).not.toContain("High latency detected")
   })
 
   test("Preset Common processing preserves the configured 30-minute lane end to end", () => {
