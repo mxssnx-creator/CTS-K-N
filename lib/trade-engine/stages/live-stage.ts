@@ -97,6 +97,7 @@ import {
 import {
   evaluateSignalPositionCapacity,
   isActiveSignalPosition,
+  normalizeSignalMaxPositions,
   type SignalPositionCapacity,
 } from "@/lib/signal-position-policy"
 import {
@@ -1384,7 +1385,7 @@ function parseSignalCapacitySnapshot(
   const total = Math.max(0, Number(raw?.total) || 0)
   const long = Math.max(0, Number(raw?.long) || 0)
   const short = Math.max(0, Number(raw?.short) || 0)
-  const limit = Math.max(1, Number(raw?.limit) || fallbackLimit)
+  const limit = normalizeSignalMaxPositions(Number(raw?.limit) || fallbackLimit)
   return {
     allowed: total < limit,
     reason: total < limit ? "available" : "total_limit",

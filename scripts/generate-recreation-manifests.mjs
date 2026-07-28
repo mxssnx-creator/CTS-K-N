@@ -122,9 +122,18 @@ write(
 // Include new, non-ignored files as well as files already tracked by Git. The
 // recreation kit is generated before the release commit, so limiting this to
 // the index would silently omit exactly the new source/docs being handed off.
+// Build directories are intentionally excluded even when a caller has created
+// an unusual Next dist directory that is not yet covered by .gitignore. They
+// are host-local, reproducible artifacts rather than source handoff material.
+function isRootNextBuildOutput(source) {
+  const firstSegment = source.split("/")[0]
+  return firstSegment === ".next" || firstSegment.startsWith(".next-")
+}
+
 const trackedFiles = git(["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
   .split("\0")
   .filter(Boolean)
+  .filter((source) => !isRootNextBuildOutput(source))
   // A path staged/tracked in the index can simultaneously be deleted in the
   // handoff worktree. Deleted artifacts are intentionally absent from the
   // recreation source and must not be statted or listed.

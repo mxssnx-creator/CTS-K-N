@@ -24,6 +24,7 @@ describe("engine progression log coalescing", () => {
 
   afterEach(() => {
     Date.now = originalNow
+    __progressionLogTestUtils.reset()
   })
 
   test("retains one compact heartbeat instead of every healthy symbol cycle", async () => {

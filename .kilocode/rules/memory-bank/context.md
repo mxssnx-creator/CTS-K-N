@@ -716,10 +716,29 @@ credentials are present.
   their own parent. Explicit Consensus and direct-source outcomes now update
   only their exact lane; legacy outcomes retain source-plus-consensus
   accounting.
-- [x] Added schema v88 compatibility/migration coverage, browser-safe
-  indication-topology counting, deterministic bounded build tracing, and the
-  missing `ts-node` test-runtime dependency; Vercel is pinned to 54.18.0.
-- [x] Final release checks: 121 Jest suites / 839 tests, TypeScript, ESLint,
-  Kilo preflight (37 checks, schema 88), secret scan (1,266 files, zero
-  findings), offline frozen pnpm install, recreation-manifest verification,
-  and a production Next build with 41/41 pages and 339 complete server traces.
+- [x] Schema v89 upgrades the former ten-source Signal default to the complete
+  35-source cycle while retaining explicit operator choices. It also repairs
+  legacy Base PF values to the enforced 0.80 floor across connection hashes and
+  nested stage documents without altering Main/Real/Live thresholds.
+- [x] Statistics now derive balances, drawdown, PF, trailing metadata and TP
+  movement from persisted values only; no synthetic starting balance, TP/SL,
+  trailing values or execution PF is displayed. Rolling dashboard windows use
+  exact Redis `ZCOUNT`, supported uniformly by Inline, node-redis and Upstash
+  adapters.
+- [x] Base PF validation is shared by the Settings surfaces, Preset defaults,
+  migration and runtime validity gate. Optimal indication settings explicitly
+  state that all configurations are evaluated and retain history per independent
+  Set rather than presenting a false evaluation cap.
+- [x] The Next recovery path atomically publishes the pages manifest and waits
+  for the full late-writer process group to exit before trace validation, so a
+  delayed worker cannot erase a briefly valid bundle after handoff.
+- [x] Host updates and remote SSH installs now use one explicit clean lifecycle:
+  stop the resolved CTS services, preserve only durable CTS state outside the
+  target, delete the exact checkout, clone the requested revision, restore that
+  state and run the canonical installer. In-place Git rewrites and silent
+  rollback of a partially upgraded checkout are no longer used.
+- [x] Final release checks: 121 Jest suites / 842 tests, TypeScript, ESLint,
+  Kilo preflight (37 checks, schema 89), secret scan (1,267 files, zero
+  findings), recreation-manifest verification (1,259 project files), and a
+  fresh production build with 41/41 pages, standalone assets and 339 complete
+  server traces.

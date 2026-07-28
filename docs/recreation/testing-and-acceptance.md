@@ -25,7 +25,8 @@ pnpm docs:recreation:verify
 Also validate shell/JSON syntax:
 
 ```bash
-bash -n scripts/install.sh scripts/post-deploy-verify.sh \
+bash -n scripts/bootstrap-install.sh scripts/install.sh scripts/update.sh \
+  scripts/service-control.sh scripts/post-deploy-verify.sh \
   scripts/vercel-build-setup.sh scripts/verify-stability.sh
 node --check scripts/kilo-deploy.mjs
 node -e 'JSON.parse(require("fs").readFileSync("wrangler.jsonc","utf8"))'

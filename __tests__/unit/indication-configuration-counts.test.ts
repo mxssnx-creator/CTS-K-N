@@ -5,7 +5,7 @@ describe("indication configuration counts", () => {
     const result = calculateIndicationConfigurationCounts({}, undefined)
 
     expect(result.totalPossibleSets).toBe(41_298)
-    expect(result.totalEvaluationConfigurations).toBe(8_989)
+    expect(result.totalEvaluationConfigurations).toBe(9_014)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
     expect(result.settings.enabledCommonIndicators).toBe(17)
     expect(Object.fromEntries(result.types.map((type) => [type.type, type.possibleSets]))).toEqual({
@@ -89,9 +89,9 @@ describe("indication configuration counts", () => {
     expect(result.types.find((type) => type.type === "signal")).toMatchObject({
       storage: "independent_set",
       possibleSets: 23_328,
-      evaluationConfigurations: 11,
+      evaluationConfigurations: 36,
       params: {
-        directSourceInputs: 10,
+        directSourceInputs: 35,
         consensusInputs: 1,
         possibleSourceInputs: 36,
         tradeConfigurations: 324,

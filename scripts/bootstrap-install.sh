@@ -12,6 +12,7 @@ PORT="${CTS_PORT:-3002}"
 RUNTIME="${CTS_RUNTIME:-auto}"
 SERVICE_USER="${CTS_SERVICE_USER:-}"
 ENV_FILE="${CTS_ENV_FILE:-}"
+SEED_ENV_FILE=""
 PUBLIC_URL="${CTS_PUBLIC_URL:-${NEXT_PUBLIC_APP_URL:-}}"
 INSTALL_SEARCH_ROOT="${CTS_INSTALL_SEARCH_ROOT:-/opt}"
 INSTALL_DIR_SET=0
@@ -42,6 +43,7 @@ Options:
   --runtime MODE       auto, systemd, or pm2
   --service-user USER  Unprivileged runtime user (default: app name)
   --env-file PATH      Production environment file
+  --seed-env-file PATH Merge KEY=VALUE entries before installation
   --branch NAME        Git branch (default: main)
   --repository URL     Git repository URL
   --public-url URL     Public application URL
@@ -64,6 +66,7 @@ while [[ $# -gt 0 ]]; do
     --runtime) RUNTIME="${2:?--runtime requires a value}"; RUNTIME_SET=1; shift 2 ;;
     --service-user) SERVICE_USER="${2:?--service-user requires a value}"; SERVICE_USER_SET=1; shift 2 ;;
     --env-file) ENV_FILE="${2:?--env-file requires a value}"; ENV_FILE_SET=1; shift 2 ;;
+    --seed-env-file) SEED_ENV_FILE="${2:?--seed-env-file requires a value}"; shift 2 ;;
     --public-url) PUBLIC_URL="${2:?--public-url requires a value}"; shift 2 ;;
     --resolve-only) RESOLVE_ONLY=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
@@ -104,7 +107,7 @@ EXISTING_PROJECT_ROOT=""
 EXISTING_ENV_FILE=""
 EXISTING_ENV_MANAGED=""
 EXISTING_MANAGED_SERVICE_USER=0
-STAGED_CHECKOUT=""
+PRESERVED_STATE=""
 
 discover_install_dir_from_name() {
   (( INSTALL_DIR_SET == 0 )) || return 0
@@ -214,65 +217,99 @@ stop_existing_installation() {
     echo "Stopping saved CTS-K-N services for $INSTALL_DIR" >&2
     as_root bash "$INSTALL_DIR/scripts/service-control.sh" stop || true
   fi
-  if [[ -n "$EXISTING_APP_NAME" && "$EXISTING_RUNTIME" == "systemd" ]] && command -v systemctl >/dev/null 2>&1; then
-    as_root systemctl stop "$EXISTING_APP_NAME-scheduler" "$EXISTING_APP_NAME" "$EXISTING_APP_NAME-redis" 2>/dev/null || true
-  elif [[ -n "$EXISTING_APP_NAME" && "$EXISTING_RUNTIME" == "pm2" ]] \
-    && valid_user "$EXISTING_SERVICE_USER" && id "$EXISTING_SERVICE_USER" >/dev/null 2>&1 \
+  local name="${EXISTING_APP_NAME:-$PROJECT_NAME}"
+  local runtime="${EXISTING_RUNTIME:-$RUNTIME}"
+  local user="${EXISTING_SERVICE_USER:-$SERVICE_USER}"
+  if [[ "$runtime" == "systemd" || "$runtime" == "auto" ]] && command -v systemctl >/dev/null 2>&1; then
+    as_root systemctl stop "$name-scheduler" "$name" "$name-redis" 2>/dev/null || true
+    for unit in "$name-scheduler" "$name" "$name-redis"; do
+      if systemctl is-active --quiet "$unit" 2>/dev/null; then
+        echo "Refusing to remove $INSTALL_DIR while service $unit is still active" >&2
+        exit 1
+      fi
+    done
+  fi
+  if [[ "$runtime" == "pm2" || "$runtime" == "auto" ]] \
+    && valid_user "$user" && id "$user" >/dev/null 2>&1 \
     && command -v pm2 >/dev/null 2>&1; then
-    local home
-    home="$(awk -F: -v wanted="$EXISTING_SERVICE_USER" '$1 == wanted { print $6; exit }' /etc/passwd 2>/dev/null || true)"
-    [[ -n "$home" && "$home" != "/" ]] || home="/var/lib/$EXISTING_APP_NAME"
-    as_service_user "$EXISTING_SERVICE_USER" env HOME="$home" PM2_HOME="$home/.pm2" \
-      pm2 stop "$EXISTING_APP_NAME-scheduler" "$EXISTING_APP_NAME" "$EXISTING_APP_NAME-redis" >/dev/null 2>&1 || true
+    local home pm2_name pm2_pid
+    home="$(awk -F: -v wanted="$user" '$1 == wanted { print $6; exit }' /etc/passwd 2>/dev/null || true)"
+    [[ -n "$home" && "$home" != "/" ]] || home="/var/lib/$name"
+    as_service_user "$user" env HOME="$home" PM2_HOME="$home/.pm2" \
+      pm2 stop "$name-scheduler" "$name" "$name-redis" >/dev/null 2>&1 || true
+    for pm2_name in "$name-scheduler" "$name" "$name-redis"; do
+      pm2_pid="$(as_service_user "$user" env HOME="$home" PM2_HOME="$home/.pm2" \
+        pm2 pid "$pm2_name" 2>/dev/null || true)"
+      if [[ "$pm2_pid" =~ (^|[^0-9])[1-9][0-9]*($|[^0-9]) ]]; then
+        echo "Refusing to remove $INSTALL_DIR while PM2 process $pm2_name is still active" >&2
+        exit 1
+      fi
+    done
   fi
 }
 
-stage_existing_checkout() {
+preserve_existing_install_state() {
   [[ -e "$INSTALL_DIR" ]] || return 0
   assert_cts_checkout
   stop_existing_installation
   local parent base
   parent="$(dirname "$INSTALL_DIR")"
   base="$(basename "$INSTALL_DIR")"
-  STAGED_CHECKOUT="$parent/.${base}.cts-rollback.$(date -u +%Y%m%dT%H%M%SZ).$$"
-  [[ ! -e "$STAGED_CHECKOUT" ]] || { echo "Rollback path already exists: $STAGED_CHECKOUT" >&2; exit 1; }
-  as_root mv "$INSTALL_DIR" "$STAGED_CHECKOUT"
-  echo "Staged the stopped checkout at $STAGED_CHECKOUT until verification succeeds" >&2
+  PRESERVED_STATE="$parent/.${base}.cts-state.$(date -u +%Y%m%dT%H%M%SZ).$$"
+  [[ ! -e "$PRESERVED_STATE" ]] || { echo "State archive already exists: $PRESERVED_STATE" >&2; exit 1; }
+  as_root install -d -m 0700 "$PRESERVED_STATE"
+
+  if [[ "$ENV_FILE" == "$INSTALL_DIR"/* && -f "$ENV_FILE" ]]; then
+    as_root cp -a -- "$ENV_FILE" "$PRESERVED_STATE/environment"
+  fi
+  if [[ -n "$SEED_ENV_FILE" && "$SEED_ENV_FILE" == "$INSTALL_DIR"/* ]]; then
+    [[ -r "$SEED_ENV_FILE" ]] || { echo "Seed env file is not readable: $SEED_ENV_FILE" >&2; exit 1; }
+    as_root cp -a -- "$SEED_ENV_FILE" "$PRESERVED_STATE/seed-env"
+    SEED_ENV_FILE="$PRESERVED_STATE/seed-env"
+  fi
+  if [[ -d "$INSTALL_DIR/.cts-runtime/redis-data" ]]; then
+    as_root cp -a -- "$INSTALL_DIR/.cts-runtime/redis-data" "$PRESERVED_STATE/redis-data"
+  fi
+  if (( EXISTING_MANAGED_SERVICE_USER == 1 )) \
+    && [[ -f "$INSTALL_DIR/.cts-runtime/managed-service-user" ]]; then
+    as_root cp -a -- "$INSTALL_DIR/.cts-runtime/managed-service-user" "$PRESERVED_STATE/managed-service-user"
+  fi
+  for state_dir in data logs; do
+    if [[ -d "$INSTALL_DIR/$state_dir" ]]; then
+      as_root cp -a -- "$INSTALL_DIR/$state_dir" "$PRESERVED_STATE/$state_dir"
+    fi
+  done
+  echo "Saved persistent CTS state outside the target directory: $PRESERVED_STATE" >&2
+}
+
+remove_existing_install_target() {
+  [[ -e "$INSTALL_DIR" ]] || return 0
+  assert_cts_checkout
+  as_root rm -rf -- "$INSTALL_DIR"
+  [[ ! -e "$INSTALL_DIR" ]] || { echo "Target directory was not removed: $INSTALL_DIR" >&2; exit 1; }
+  echo "Removed stopped CTS-K-N target directory: $INSTALL_DIR" >&2
 }
 
 restore_install_state_into_clone() {
-  [[ -n "$STAGED_CHECKOUT" && -d "$STAGED_CHECKOUT" ]] || return 0
-  local source_env=""
-  if [[ "$ENV_FILE" == "$INSTALL_DIR"/* ]] \
-    && [[ -f "$STAGED_CHECKOUT/${ENV_FILE#"$INSTALL_DIR"/}" ]]; then
-    # Preserve any explicitly selected environment file that lived inside the
-    # checkout. The old absolute path now points at the fresh clone, so map it
-    # back to the staged checkout before the canonical installer runs.
-    source_env="$STAGED_CHECKOUT/${ENV_FILE#"$INSTALL_DIR"/}"
-  elif (( ENV_FILE_SET == 0 )) && [[ -z "$EXISTING_ENV_FILE" ]] && [[ -f "$STAGED_CHECKOUT/.env.production.local" ]]; then
-    ENV_FILE="$INSTALL_DIR/.env.production.local"
-    source_env="$STAGED_CHECKOUT/.env.production.local"
-  elif (( ENV_FILE_SET == 0 )) && [[ "$EXISTING_ENV_FILE" == "$INSTALL_DIR"/* ]]; then
-    source_env="$STAGED_CHECKOUT/${EXISTING_ENV_FILE#"$INSTALL_DIR"/}"
-  fi
-  if [[ -n "$source_env" && -f "$source_env" ]]; then
+  [[ -n "$PRESERVED_STATE" && -d "$PRESERVED_STATE" ]] || return 0
+  if [[ -f "$PRESERVED_STATE/environment" ]]; then
     as_root install -d -m 0750 "$(dirname "$ENV_FILE")"
-    as_root cp -a "$source_env" "$ENV_FILE"
+    as_root cp -a -- "$PRESERVED_STATE/environment" "$ENV_FILE"
   fi
-  if [[ -d "$STAGED_CHECKOUT/.cts-runtime/redis-data" ]]; then
+  if [[ -d "$PRESERVED_STATE/redis-data" ]]; then
     as_root install -d -m 0750 "$INSTALL_DIR/.cts-runtime"
-    as_root cp -a "$STAGED_CHECKOUT/.cts-runtime/redis-data" "$INSTALL_DIR/.cts-runtime/redis-data"
+    as_root cp -a -- "$PRESERVED_STATE/redis-data" "$INSTALL_DIR/.cts-runtime/redis-data"
   fi
   if (( EXISTING_MANAGED_SERVICE_USER == 1 )) \
-    && [[ -f "$STAGED_CHECKOUT/.cts-runtime/managed-service-user" ]]; then
+    && [[ -f "$PRESERVED_STATE/managed-service-user" ]]; then
     as_root install -d -m 0750 "$INSTALL_DIR/.cts-runtime"
-    as_root cp -a "$STAGED_CHECKOUT/.cts-runtime/managed-service-user" \
+    as_root cp -a -- "$PRESERVED_STATE/managed-service-user" \
       "$INSTALL_DIR/.cts-runtime/managed-service-user"
   fi
   for state_dir in data logs; do
-    if [[ -d "$STAGED_CHECKOUT/$state_dir" ]]; then
+    if [[ -d "$PRESERVED_STATE/$state_dir" ]]; then
       as_root rm -rf -- "$INSTALL_DIR/$state_dir"
-      as_root cp -a "$STAGED_CHECKOUT/$state_dir" "$INSTALL_DIR/$state_dir"
+      as_root cp -a -- "$PRESERVED_STATE/$state_dir" "$INSTALL_DIR/$state_dir"
     fi
   done
 }
@@ -296,24 +333,19 @@ remove_runtime_identity() {
   fi
 }
 
-rollback_on_exit() {
+clean_install_failure() {
   local status=$?
   trap - EXIT
-  if (( status != 0 )) && [[ -n "$STAGED_CHECKOUT" && -d "$STAGED_CHECKOUT" ]]; then
+  if (( status != 0 )) && [[ -n "$PRESERVED_STATE" && -d "$PRESERVED_STATE" ]]; then
     set +e
-    echo "Bootstrap failed; restoring the previous verified checkout" >&2
-    if [[ -n "$EXISTING_APP_NAME" && "$PROJECT_NAME" != "$EXISTING_APP_NAME" ]]; then
-      remove_runtime_identity "$PROJECT_NAME" "$RUNTIME" "$SERVICE_USER"
-    fi
-    if [[ -e "$INSTALL_DIR" ]]; then as_root rm -rf -- "$INSTALL_DIR"; fi
-    as_root mv "$STAGED_CHECKOUT" "$INSTALL_DIR"
+    echo "Clean installation failed after the target was removed; preserved state remains at $PRESERVED_STATE" >&2
     if [[ -x "$INSTALL_DIR/scripts/service-control.sh" ]]; then
-      as_root bash "$INSTALL_DIR/scripts/service-control.sh" start || true
+      as_root bash "$INSTALL_DIR/scripts/service-control.sh" stop || true
     fi
   fi
   exit "$status"
 }
-trap rollback_on_exit EXIT
+trap clean_install_failure EXIT
 
 valid_absolute_path "$INSTALL_SEARCH_ROOT" \
   || { echo "CTS_INSTALL_SEARCH_ROOT must be a safe absolute non-root path" >&2; exit 2; }
@@ -337,6 +369,8 @@ valid_user "$SERVICE_USER" || { echo "Invalid service user" >&2; exit 2; }
 valid_port "$PORT" || { echo "Invalid port" >&2; exit 2; }
 [[ "$RUNTIME" =~ ^(auto|systemd|pm2)$ ]] || { echo "Invalid runtime" >&2; exit 2; }
 valid_absolute_path "$ENV_FILE" || { echo "Environment file must be a safe absolute non-root path" >&2; exit 2; }
+[[ -z "$SEED_ENV_FILE" || -r "$SEED_ENV_FILE" ]] \
+  || { echo "Seed env file is not readable: $SEED_ENV_FILE" >&2; exit 2; }
 [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ && "$BRANCH" != *".."* && "$BRANCH" != *"//"* ]] || { echo "Invalid branch" >&2; exit 2; }
 [[ "$REPOSITORY" != *$'\n'* && "$REPOSITORY" != *$'\r'* && "$REPOSITORY" != *[[:space:]]* ]] || { echo "Invalid repository URL" >&2; exit 2; }
 if [[ -n "$EXISTING_PROJECT_ROOT" && "$EXISTING_PROJECT_ROOT" != "$INSTALL_DIR" ]]; then
@@ -375,7 +409,7 @@ fi
 
 for installer_arg in "${INSTALL_ARGS[@]}"; do
   case "$installer_arg" in
-    --name|--project-name|--project|--port|--runtime|--service-user|--env-file|--uninstall)
+    --name|--project-name|--project|--port|--runtime|--service-user|--env-file|--seed-env-file|--uninstall)
       echo "Pass $installer_arg before -- so bootstrap can resolve one authoritative target" >&2
       exit 2
       ;;
@@ -396,7 +430,8 @@ if ! command -v git >/dev/null 2>&1; then
   fi
 fi
 
-stage_existing_checkout
+preserve_existing_install_state
+remove_existing_install_target
 as_root mkdir -p "$(dirname "$INSTALL_DIR")"
 as_root git clone --branch "$BRANCH" --single-branch --depth=1 "$REPOSITORY" "$INSTALL_DIR"
 as_root chown -R "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || true
@@ -413,13 +448,17 @@ INSTALL_ARGS+=(
   --create-service-user
   --non-interactive
 )
+if [[ -n "$SEED_ENV_FILE" ]]; then
+  INSTALL_ARGS+=(--seed-env-file "$SEED_ENV_FILE")
+fi
 if [[ -n "$EXISTING_ENV_MANAGED" ]]; then
-  CTS_PRESERVE_ENV_MANAGED="$EXISTING_ENV_MANAGED" bash scripts/install.sh "${INSTALL_ARGS[@]}"
+  CTS_BOOTSTRAP_CLEAN_INSTALL=1 CTS_PRESERVE_ENV_MANAGED="$EXISTING_ENV_MANAGED" \
+    bash scripts/install.sh "${INSTALL_ARGS[@]}"
 else
-  bash scripts/install.sh "${INSTALL_ARGS[@]}"
+  CTS_BOOTSTRAP_CLEAN_INSTALL=1 bash scripts/install.sh "${INSTALL_ARGS[@]}"
 fi
 
-if [[ -n "$STAGED_CHECKOUT" && -d "$STAGED_CHECKOUT" ]]; then
+if [[ -n "$PRESERVED_STATE" && -d "$PRESERVED_STATE" ]]; then
   NEW_RUNTIME=""
   NEW_SERVICE_USER=""
   while IFS='=' read -r key value || [[ -n "$key" ]]; do
@@ -434,8 +473,8 @@ if [[ -n "$STAGED_CHECKOUT" && -d "$STAGED_CHECKOUT" ]]; then
       || [[ "$EXISTING_RUNTIME" == "pm2" && -n "$EXISTING_SERVICE_USER" && "$EXISTING_SERVICE_USER" != "$NEW_SERVICE_USER" ]]; }; then
     remove_runtime_identity "$EXISTING_APP_NAME" "$EXISTING_RUNTIME" "$EXISTING_SERVICE_USER"
   fi
-  as_root rm -rf -- "$STAGED_CHECKOUT"
-  STAGED_CHECKOUT=""
+  as_root rm -rf -- "$PRESERVED_STATE"
+  PRESERVED_STATE=""
   if (( EXISTING_MANAGED_SERVICE_USER == 1 )) && [[ -n "$EXISTING_SERVICE_USER" && "$EXISTING_SERVICE_USER" != "$SERVICE_USER" ]] \
     && id "$EXISTING_SERVICE_USER" >/dev/null 2>&1; then
     as_root userdel --remove "$EXISTING_SERVICE_USER" 2>/dev/null || as_root userdel "$EXISTING_SERVICE_USER" || true

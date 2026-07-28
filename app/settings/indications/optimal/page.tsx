@@ -546,7 +546,11 @@ export default function OptimalIndicationSettingsPage() {
                 </span>
               </div>
               <div className="flex justify-between text-muted-foreground">
-                <span>Selected for evaluation (max):</span>
+                <span>Configurations evaluated:</span>
+                <span className="font-mono">All · unlimited</span>
+              </div>
+              <div className="flex justify-between text-muted-foreground">
+                <span>History retained per independent Set:</span>
                 <span className="font-mono">{settings.optimal.base_positions_limit}</span>
               </div>
             </div>

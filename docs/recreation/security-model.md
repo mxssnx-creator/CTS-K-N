@@ -79,9 +79,10 @@ Ordinary test scripts must keep live order placement disabled.
 
 The administrative route rejects unauthorized requests before body parsing.
 It limits request/log size, validates and bounds every field, rejects embedded
-repository credentials and dangerous install directories, requires a clean
-fast-forward checkout, and uses the canonical fail-closed installer. On Kilo it
-cannot spawn SSH and will only proxy to the configured owner.
+repository credentials and dangerous install directories, stops the resolved
+CTS services before deleting only a verified CTS target, and uses the canonical
+fail-closed clean installer. On Kilo it cannot spawn SSH and will only proxy to
+the configured owner.
 
 Host service code is group-readable but not writable by the runtime user.
 Only `.next/cache`, logs/data and service-home runtime areas are writable. The

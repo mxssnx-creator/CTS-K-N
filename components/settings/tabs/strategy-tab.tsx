@@ -14,6 +14,7 @@ import { DEFAULT_DCA_PROFILE } from "@/lib/dca-strategy"
 import { PRESET_INDICATOR_TYPES } from "@/lib/preset-optimizer"
 import { parseStoredBoolean } from "@/lib/trailing-settings"
 import {
+  MAIN_TRADE_BASE_PF_RATIO_MIN,
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
   MAIN_TRADE_PF_RATIO_MAX,
@@ -135,7 +136,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       <Label>Base PF Threshold</Label>
                       <div className="flex items-center gap-4">
                         <Slider
-                          min={MAIN_TRADE_PF_RATIO_MIN}
+                          min={MAIN_TRADE_BASE_PF_RATIO_MIN}
                           max={MAIN_TRADE_PF_RATIO_MAX}
                           step={MAIN_TRADE_PF_RATIO_STEP}
                           value={[settings.baseProfitFactor ?? MAIN_TRADE_BASE_PF_RATIO_DEFAULT]}

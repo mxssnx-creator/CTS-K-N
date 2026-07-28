@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# CTS-K-N production installer for Ubuntu/Debian, RHEL/Fedora/Amazon Linux,
-# and compatible long-lived Linux servers.
+# CTS-K-N in-target production installer for Ubuntu/Debian, RHEL/Fedora/Amazon
+# Linux, and compatible long-lived Linux servers. Existing installations are
+# handed to bootstrap-install.sh, which stops services, deletes the target, and
+# clones a complete fresh checkout before this payload installer runs.
 #
 # The installer is intentionally deterministic:
 #   - production always uses a network Redis backend (local or external)
@@ -94,6 +96,9 @@ Sensitive values should be supplied in --seed-env-file or the existing env
 file, never as command-line arguments. The installer generates ADMIN_SECRET,
 CRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET when they are absent, but never
 enables FORCE_LIVE automatically.
+
+For a server install or upgrade, prefer scripts/bootstrap-install.sh. When an
+installed CTS runtime is detected, this command delegates to that clean flow.
 EOF
 }
 
@@ -345,6 +350,42 @@ uninstall_project() {
   info "Shared Bun/Node/Redis installations and externally managed Redis data were preserved."
 }
 
+handoff_existing_install_to_bootstrap() {
+  (( PREFLIGHT_ONLY == 0 && UNINSTALL == 0 )) || return 0
+  [[ "${CTS_BOOTSTRAP_CLEAN_INSTALL:-0}" == "1" ]] && return 0
+  [[ -r "$RUNTIME_DIR/install-values.env" ]] || return 0
+
+  local repository branch
+  repository="$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null || true)"
+  branch="$(git -C "$PROJECT_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  [[ -n "$branch" ]] || branch="main"
+  [[ -n "$repository" && "$repository" != *$'\n'* && "$repository" != *[[:space:]]* ]] \
+    || fatal "Existing CTS-K-N installation has no valid origin; use bootstrap-install.sh with --repository"
+  [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ && "$branch" != *".."* && "$branch" != *"//"* ]] \
+    || fatal "Existing CTS-K-N installation has no valid branch; use bootstrap-install.sh with --branch"
+
+  local -a bootstrap_args=(
+    --dir "$PROJECT_ROOT"
+    --name "$APP_NAME"
+    --port "$APP_PORT"
+    --runtime "$RUNTIME"
+    --service-user "$SERVICE_USER"
+    --env-file "$ENV_FILE"
+    --repository "$repository"
+    --branch "$branch"
+  )
+  [[ -z "$SEED_ENV_FILE" ]] || bootstrap_args+=(--seed-env-file "$SEED_ENV_FILE")
+  bootstrap_args+=(--)
+  (( REINSTALL == 0 )) || bootstrap_args+=(--reinstall)
+  (( SKIP_SYSTEM_PACKAGES == 0 )) || bootstrap_args+=(--skip-system-packages)
+  (( SKIP_TESTS == 0 )) || bootstrap_args+=(--skip-tests)
+  bootstrap_args+=(--redis-mode "$REDIS_MODE")
+
+  info "Existing CTS-K-N install detected; delegating to clean stop → delete → reinstall flow"
+  exec env CTS_BOOTSTRAP_CLEAN_INSTALL=1 CTS_INSTALL_SEARCH_ROOT="$(dirname "$PROJECT_ROOT")" \
+    bash "$SCRIPT_DIR/bootstrap-install.sh" "${bootstrap_args[@]}"
+}
+
 detect_package_manager() {
   if command -v apt-get >/dev/null 2>&1; then printf 'apt'; return; fi
   if command -v dnf >/dev/null 2>&1; then printf 'dnf'; return; fi
@@ -358,6 +399,8 @@ if (( UNINSTALL == 1 )); then
   uninstall_project
   exit 0
 fi
+
+handoff_existing_install_to_bootstrap
 
 free_port() {
   if command -v ss >/dev/null 2>&1; then

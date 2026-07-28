@@ -99,9 +99,9 @@ export class AnalyticsEngine {
 
       // Trailing filter
       if (filter.trailingEnabled !== undefined) {
-        // This would need to be stored in position data
-        // For now, we'll simulate based on strategy name
-        const hasTrailing = position.strategy_type.toLowerCase().includes("trail")
+        const hasTrailing =
+          (position as TradingPosition & { trailing_enabled?: boolean }).trailing_enabled === true ||
+          position.strategy_type.toLowerCase().includes("trail")
         if (filter.trailingEnabled !== hasTrailing) return false
       }
 
@@ -165,6 +165,19 @@ export class AnalyticsEngine {
           ? positionsWithVolumeFactor.reduce((sum, p) => sum + (p.adjusted_volume || 0), 0) /
             positionsWithVolumeFactor.length
           : undefined
+      const trailingPositions = positions.filter((position) =>
+        (position as TradingPosition & { trailing_enabled?: boolean }).trailing_enabled === true ||
+        position.strategy_type.toLowerCase().includes("trail"),
+      )
+      const averageOptional = (field: "trail_start" | "trail_stop"): number | undefined => {
+        const values = trailingPositions
+          .map((position) => Number((position as TradingPosition & Record<string, unknown>)[field]))
+          .filter(Number.isFinite)
+        return values.length > 0
+          ? values.reduce((sum, value) => sum + value, 0) / values.length
+          : undefined
+      }
+      const maxDrawdown = this.calculateMaximumDrawdown(closedPositions)
 
       analytics.push({
         strategy_name: strategyName,
@@ -178,9 +191,9 @@ export class AnalyticsEngine {
         tp_sl_ratio: this.calculateTPSLRatio(positions),
         average_hold_time: avgHoldTime,
         trailing_info: {
-          enabled: strategyName.toLowerCase().includes("trail"),
-          trail_start: 0.6, // Mock data
-          trail_stop: 0.2, // Mock data
+          enabled: trailingPositions.length > 0,
+          trail_start: averageOptional("trail_start"),
+          trail_stop: averageOptional("trail_stop"),
         },
         volume_factor: avgVolumeFactor,
         win_rate: closedPositions.length > 0 ? winningPositions.length / closedPositions.length : 0,
@@ -189,7 +202,7 @@ export class AnalyticsEngine {
         largest_loss: Math.min(...closedPositions.map((p) => p.profit_loss), 0),
         sharpe_ratio: this.calculateSharpeRatio(closedPositions),
         max_consecutive_losses: this.calculateMaxConsecutiveLosses(closedPositions),
-        recovery_factor: totalPnl / Math.abs(Math.min(...closedPositions.map((p) => p.profit_loss), -1)),
+        recovery_factor: maxDrawdown > 0 ? totalPnl / maxDrawdown : 0,
         avg_base_volume: avgBaseVolume,
         avg_adjusted_volume: avgAdjustedVolume,
         total_volume_traded: totalVolume,
@@ -249,7 +262,10 @@ export class AnalyticsEngine {
 
     const timeSeriesData: TimeSeriesData[] = []
     let cumulativePnl = 0
-    let balance = 10000 // Starting balance
+    // No account-balance snapshot is part of this position-only data source.
+    // Expose an exact relative P&L curve with a zero baseline instead of
+    // fabricating a 10,000 USD starting balance.
+    let balance = 0
 
     // Group positions by day
     const dailyGroups = new Map<string, TradingPosition[]>()
@@ -290,41 +306,64 @@ export class AnalyticsEngine {
   private calculateProfitFactor(positions: TradingPosition[]): number {
     const grossProfit = positions.filter((p) => p.profit_loss > 0).reduce((sum, p) => sum + p.profit_loss, 0)
     const grossLoss = Math.abs(positions.filter((p) => p.profit_loss < 0).reduce((sum, p) => sum + p.profit_loss, 0))
-    
-    // Cost-adjusted PF: totalWinPnL / (totalLossPnL + totalPositionCosts).
-    // Prefer entry_price × quantity when present; fall back to the stored
-    // notional volume. `stoploss_ratio` is TP-relative elsewhere and is not a
-    // quantity proxy.
-    const totalPositionCosts = positions.reduce((sum, p) => sum + resolvePositionCostNotional(p) * 0.001, 0)
-    
-    // Cap PF at 99 when den == 0 so "all wins" doesn't poison min-blend math.
-    const adjustedDenominator = grossLoss + totalPositionCosts
-    return adjustedDenominator > 0 ? grossProfit / adjustedDenominator : grossProfit > 0 ? 99 : 0
+
+    // Realised Profit Factor is always gross profit ÷ absolute gross loss.
+    // Main-stage PositionCost ratios are a separate gate and must never alter
+    // execution-history PF.
+    return grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99 : 0
   }
 
   private calculateDrawdownTime(positions: TradingPosition[]): number {
-    // Simplified drawdown calculation in hours
-    let maxEquity = 0
+    const chronological = [...positions].sort(
+      (left, right) =>
+        new Date(left.closed_at || left.opened_at).getTime() -
+        new Date(right.closed_at || right.opened_at).getTime(),
+    )
+    let equity = 0
+    let peakEquity = 0
     let drawdownHours = 0
-    let inDrawdown = false
-    let drawdownStart: Date | null = null
+    let drawdownStartMs: number | null = null
 
-    positions.forEach((position) => {
-      const equity = position.profit_loss
-      if (equity > maxEquity) {
-        maxEquity = equity
-        if (inDrawdown && drawdownStart) {
-          drawdownHours += (new Date(position.opened_at).getTime() - drawdownStart.getTime()) / (1000 * 60 * 60)
-          inDrawdown = false
-          drawdownStart = null
+    for (const position of chronological) {
+      const eventMs = new Date(position.closed_at || position.opened_at).getTime()
+      if (!Number.isFinite(eventMs)) continue
+      equity += Number(position.profit_loss) || 0
+      if (equity >= peakEquity) {
+        peakEquity = equity
+        if (drawdownStartMs !== null) {
+          drawdownHours += Math.max(0, eventMs - drawdownStartMs) / 3_600_000
+          drawdownStartMs = null
         }
-      } else if (equity < maxEquity && !inDrawdown) {
-        inDrawdown = true
-        drawdownStart = new Date(position.opened_at)
+      } else if (drawdownStartMs === null) {
+        drawdownStartMs = eventMs
       }
-    })
+    }
+    if (drawdownStartMs !== null && chronological.length > 0) {
+      const last = chronological[chronological.length - 1]
+      const lastMs = new Date(last.closed_at || last.opened_at).getTime()
+      if (Number.isFinite(lastMs)) {
+        drawdownHours += Math.max(0, lastMs - drawdownStartMs) / 3_600_000
+      }
+    }
 
     return drawdownHours
+  }
+
+  private calculateMaximumDrawdown(positions: TradingPosition[]): number {
+    const chronological = [...positions].sort(
+      (left, right) =>
+        new Date(left.closed_at || left.opened_at).getTime() -
+        new Date(right.closed_at || right.opened_at).getTime(),
+    )
+    let equity = 0
+    let peak = 0
+    let maximum = 0
+    for (const position of chronological) {
+      equity += Number(position.profit_loss) || 0
+      peak = Math.max(peak, equity)
+      maximum = Math.max(maximum, peak - equity)
+    }
+    return maximum
   }
 
   private calculateAverageHoldTime(positions: TradingPosition[]): number {
@@ -357,36 +396,42 @@ export class AnalyticsEngine {
   }
 
   private extractTakeProfitFactor(positions: TradingPosition[]): number {
-    if (positions.length === 0) return 1.05 // Default 5% TP
-    
-    // Extract from takeprofit field or estimate from strategy
-    const avgTP = positions.reduce((sum, p) => {
-      if (p.takeprofit && p.entry_price) {
-        return sum + p.takeprofit / p.entry_price
-      }
-      return sum + 1.05 // Default 5% TP
-    }, 0)
-    return avgTP / positions.length
+    const distances = positions
+      .filter((position) => Number(position.takeprofit) > 0 && Number(position.entry_price) > 0)
+      .map((position) =>
+        Math.abs(Number(position.takeprofit) - Number(position.entry_price)) /
+        Number(position.entry_price) * 100,
+      )
+    return distances.length > 0
+      ? distances.reduce((sum, distance) => sum + distance, 0) / distances.length
+      : 0
   }
 
   private calculateTPSLRatio(positions: TradingPosition[]): number {
-    if (positions.length === 0) return 2 // Default 2:1 ratio
-    
-    const avgRatio = positions.reduce((sum, p) => {
-      if (p.takeprofit && p.stoploss && p.entry_price) {
-        const tpDistance = Math.abs(p.takeprofit - p.entry_price)
-        const slDistance = Math.abs(p.entry_price - p.stoploss)
-        return sum + (slDistance > 0 ? tpDistance / slDistance : 2)
-      }
-      return sum + 2 // Default 2:1 ratio
-    }, 0)
-    return avgRatio / positions.length
+    const ratios = positions
+      .filter((position) =>
+        Number(position.takeprofit) > 0 &&
+        Number(position.stoploss) > 0 &&
+        Number(position.entry_price) > 0,
+      )
+      .map((position) => {
+        const tpDistance = Math.abs(Number(position.takeprofit) - Number(position.entry_price))
+        const slDistance = Math.abs(Number(position.entry_price) - Number(position.stoploss))
+        return slDistance > 0 ? tpDistance / slDistance : Number.NaN
+      })
+      .filter(Number.isFinite)
+    return ratios.length > 0
+      ? ratios.reduce((sum, ratio) => sum + ratio, 0) / ratios.length
+      : 0
   }
 
   private calculateSharpeRatio(positions: TradingPosition[]): number {
     if (positions.length < 2) return 0
 
-    const returns = positions.map((p) => p.profit_loss)
+    const returns = positions.map((position) => {
+      const notional = resolvePositionCostNotional(position)
+      return notional > 0 ? position.profit_loss / notional : 0
+    })
     const avgReturn = returns.reduce((sum, r) => sum + r, 0) / returns.length
     const variance = returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / returns.length
     const stdDev = Math.sqrt(variance)
@@ -411,9 +456,10 @@ export class AnalyticsEngine {
   }
 
   private calculateVolatility(positions: TradingPosition[]): number {
-    if (positions.length === 0) return 0
-
-    const returns = positions.map((p) => (p.current_price - p.entry_price) / p.entry_price)
+    const returns = positions
+      .filter((position) => Number(position.entry_price) > 0 && Number.isFinite(Number(position.current_price)))
+      .map((position) => (position.current_price - position.entry_price) / position.entry_price)
+    if (returns.length === 0) return 0
     const avgReturn = returns.reduce((sum, r) => sum + r, 0) / returns.length
     const variance = returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / returns.length
     return Math.sqrt(variance)

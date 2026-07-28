@@ -7,7 +7,7 @@ CTS-K-N is one logical system with two supported production topologies.
 ```mermaid
 flowchart TB
   U["Browser / operator"] --> W["Next.js control plane"]
-  W --> R["Shared Redis + schema v84"]
+  W --> R["Shared Redis + schema v89"]
   C["Minute continuity owner"] --> W
   E["Long-lived trade-engine owner"] --> R
   E --> X["Exchange APIs"]
@@ -49,7 +49,7 @@ permanent engine loop and can execute SSH installations.
 | Exchange integration | `lib/exchanges/`, connector/service modules | Market data, orders, leverage/margin, position/order reads |
 | Persistence | `lib/redis-db.ts`, `lib/redis-migrations.ts`, `lib/pos-history.ts` | Redis adapter, schema, exact lineage/results |
 | Runtime ownership | `instrumentation.ts`, continuity/auto-start modules, `custom-worker.ts` | Startup, owner detection, timers, scheduled events |
-| Deployment | `scripts/install.sh`, Kilo scripts/config, verification scripts | Precheck, build, install, migrate, restart, verify, rollback |
+| Deployment | `scripts/bootstrap-install.sh`, `scripts/install.sh`, `scripts/update.sh`, Kilo scripts/config, verification scripts | Stop services, preserve CTS state, replace target, then precheck, build, install, migrate, restart and verify |
 
 ## Ownership and concurrency invariants
 
