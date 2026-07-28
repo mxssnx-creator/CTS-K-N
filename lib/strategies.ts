@@ -291,7 +291,10 @@ export class StrategyEngine {
 
     })
 
-    return strategies.slice(0, 150)
+    // This compatibility/demo projection must preserve the same exhaustive
+    // configuration contract as production. Consumers may paginate the
+    // result, but generation itself never drops valid configuration rows.
+    return strategies
   }
 
   private calculateAverageProfitFactor(positions: PseudoPosition[]): number {
@@ -390,6 +393,6 @@ export class StrategyEngine {
       }
     }
 
-    return configs.slice(0, 50)
+    return configs
   }
 }

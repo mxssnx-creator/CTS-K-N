@@ -1,6 +1,10 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
+import {
+  getClosedLivePositionReadModels,
+  getOpenLivePositionReadModels,
+} from "@/lib/live-position-read-model"
 
 export const dynamic = "force-dynamic"
 
@@ -36,48 +40,53 @@ export async function GET(request: NextRequest) {
 
     const client = getRedisClient()
 
-    // Fetch live positions from the live-stage index (primary store).
-    // live-stage stores positions as JSON strings at live:position:{id}
-    // with an open-index LIST at live:positions:{connId}.
+    // Fetch complete, merged JSON+hash read models from the canonical live
+    // indexes. Pagination is applied after filtering, never by silently
+    // truncating closed history to the first 100 IDs.
     const positions: any[] = []
     let processed = 0
-
-    // --- Primary: live positions open index (LIST) ---
-    const liveOpenIds = await client.lrange(`live:positions:${connectionId}`, 0, -1).catch(() => [] as string[])
-    for (const posId of liveOpenIds) {
-      const raw = await client.get(`live:position:${posId}`).catch(() => null)
-      if (!raw) continue
-      let pos: any
-      try { pos = JSON.parse(raw) } catch { continue }
+    const [liveOpen, liveClosed] = await Promise.all([
+      getOpenLivePositionReadModels(connectionId, 0),
+      status === "all" || status === "closed"
+        ? getClosedLivePositionReadModels(connectionId, 0)
+        : Promise.resolve([]),
+    ])
+    const terminalStatuses = new Set(["closed", "rejected", "error", "cancelled", "canceled", "failed"])
+    for (const position of liveOpen) {
+      const pos = position as any
       processed++
+      const isOpen = !terminalStatuses.has(String(pos.status || "").toLowerCase())
+      if (status === "open" && !isOpen) continue
       if (status !== "all" && status !== "open" && pos.status !== status) continue
       if (symbol && pos.symbol !== symbol) continue
-      positions.push({ ...pos, id: posId, _source: "live_open" })
+      positions.push({ ...pos, id: String(pos.id || ""), _source: "live_open" })
     }
-
-    // --- Secondary: live positions closed index (LIST), only when status filter allows ---
-    if (status === "all" || status === "closed") {
-      const closedIds = await client.lrange(`live:positions:${connectionId}:closed`, 0, 99).catch(() => [] as string[])
-      for (const posId of closedIds) {
-        const raw = await client.get(`live:position:${posId}`).catch(() => null)
-        if (!raw) continue
-        let pos: any
-        try { pos = JSON.parse(raw) } catch { continue }
-        processed++
-        if (symbol && pos.symbol !== symbol) continue
-        positions.push({ ...pos, id: posId, _source: "live_closed" })
-      }
+    for (const position of liveClosed) {
+      const pos = position as any
+      processed++
+      if (symbol && pos.symbol !== symbol) continue
+      positions.push({ ...pos, id: String(pos.id || ""), _source: "live_closed" })
     }
 
     // --- Tertiary: legacy positions SET (non-live, manually created via POST) ---
     const legacyIds = await client.smembers(`positions:${connectionId}`).catch(() => [] as string[])
-    for (const posId of legacyIds) {
-      const pos = await client.hgetall(`position:${connectionId}:${posId}`).catch(() => null)
-      if (!pos || Object.keys(pos).length === 0) continue
-      processed++
-      if (status !== "all" && pos.status !== status) continue
-      if (symbol && pos.symbol !== symbol) continue
-      positions.push({ ...pos, id: posId, _source: "legacy" })
+    const LEGACY_READ_BATCH_SIZE = 32
+    for (let offset = 0; offset < legacyIds.length; offset += LEGACY_READ_BATCH_SIZE) {
+      const batch = legacyIds.slice(offset, offset + LEGACY_READ_BATCH_SIZE)
+      const values = await Promise.all(
+        batch.map((posId) =>
+          client.hgetall(`position:${connectionId}:${posId}`).catch(() => null),
+        ),
+      )
+      for (let index = 0; index < batch.length; index++) {
+        const posId = batch[index]
+        const pos = values[index]
+        if (!pos || Object.keys(pos).length === 0) continue
+        processed++
+        if (status !== "all" && pos.status !== status) continue
+        if (symbol && pos.symbol !== symbol) continue
+        positions.push({ ...pos, id: posId, _source: "legacy" })
+      }
     }
 
     // Deduplicate positions by ID (same position might appear from multiple sources)
