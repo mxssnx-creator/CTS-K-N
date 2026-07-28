@@ -217,10 +217,10 @@ export function ActiveConnectionCard({
     live: number
   } | null>(null)
   const [strategyRows, setStrategyRows] = useState<{
-    base: { total: number; valid: number }
-    main: { valid: number; overall: number }
-    real: { valid: number; active: number }
-    live: { total: number; mirrored: number; active: number }
+    base: { total: number; valid: number; totalOpen?: number; validOpen?: number; validRatio?: number }
+    main: { valid: number; overall: number; validOpen?: number; overallOpen?: number; overallToValidRatio?: number }
+    real: { valid: number; active: number; activeExactRows?: number; activeRatio?: number }
+    live: { total: number; mirrored: number; active: number; mirroredRatio?: number }
   } | null>(null)
   const [infoDialogOpen, setInfoDialogOpen] = useState(false)
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
@@ -811,19 +811,28 @@ export function ActiveConnectionCard({
             base: {
               total: nonNegativeMetric(tracking.rows.base?.total),
               valid: nonNegativeMetric(tracking.rows.base?.valid),
+              totalOpen: nonNegativeMetric(tracking.rows.base?.totalOpen),
+              validOpen: nonNegativeMetric(tracking.rows.base?.validOpen),
+              validRatio: boundedPercentage(tracking.rows.base?.validRatio),
             },
             main: {
               valid: nonNegativeMetric(tracking.rows.main?.valid),
               overall: nonNegativeMetric(tracking.rows.main?.overall),
+              validOpen: nonNegativeMetric(tracking.rows.main?.validOpen),
+              overallOpen: nonNegativeMetric(tracking.rows.main?.overallOpen),
+              overallToValidRatio: nonNegativeMetric(tracking.rows.main?.overallToValidRatio),
             },
             real: {
               valid: nonNegativeMetric(tracking.rows.real?.valid),
               active: nonNegativeMetric(tracking.rows.real?.active),
+              activeExactRows: nonNegativeMetric(tracking.rows.real?.activeExactRows),
+              activeRatio: boundedPercentage(tracking.rows.real?.activeRatio),
             },
             live: {
               total: nonNegativeMetric(tracking.rows.live?.total),
               mirrored: nonNegativeMetric(tracking.rows.live?.mirrored),
               active: nonNegativeMetric(tracking.rows.live?.active),
+              mirroredRatio: boundedPercentage(tracking.rows.live?.mirroredRatio),
             },
           })
         }
@@ -1624,7 +1633,7 @@ export function ActiveConnectionCard({
             ? { label: "Ready", className: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300" }
             : { label: "Off", className: "text-muted-foreground" }
 
-  const dedicatedChannelOnlyOverview = !liveTrade && (signalMode || presetMode)
+  const dedicatedChannelOnlyOverview = signalMode || (!liveTrade && presetMode)
 
   const renderOverviewTiles = () => {
     const symbolsProcessed = progression?.prehistoricProgress?.symbolsProcessed ?? 0
@@ -1703,7 +1712,7 @@ export function ActiveConnectionCard({
           },
         )
       }
-      if (presetMode) {
+      if (!signalMode && presetMode) {
         const presetProgress = presetOverview?.progress
         const presetSummary = presetOverview?.summary
         tiles.push(
@@ -1763,6 +1772,21 @@ export function ActiveConnectionCard({
           },
         )
       }
+      return tiles.map(({ label, value, title, tone }) => (
+        <div key={label} className="flex items-center gap-1 text-[10px]" title={title}>
+          <span className="text-muted-foreground">{label}</span>
+          <span className={`font-semibold tabular-nums ${tone ?? ""}`}>{value}</span>
+        </div>
+      ))
+    }
+
+    if (!liveTrade) {
+      tiles.push({
+        label: "Trade overview",
+        value: "Off",
+        title: "Main Trade is disabled; enable Main, Signal, or Preset to show that engine's overview stats.",
+        tone: "text-muted-foreground",
+      })
       return tiles.map(({ label, value, title, tone }) => (
         <div key={label} className="flex items-center gap-1 text-[10px]" title={title}>
           <span className="text-muted-foreground">{label}</span>
@@ -2518,7 +2542,7 @@ export function ActiveConnectionCard({
                           {strategyRows && (
                             <div
                               className="flex items-center gap-1"
-                              title="Current rows: Base Total/Valid · Main Valid/Overall · Real Valid/Active · Live Rows/Mirrored."
+                              title={`Current rows with ratios/open positions: Base Total/Valid ${strategyRows.base.validRatio?.toFixed(1) ?? "0.0"}% (${strategyRows.base.totalOpen ?? 0}/${strategyRows.base.validOpen ?? 0} open) · Main Valid/Overall ${(strategyRows.main.overallToValidRatio ?? 0).toFixed(1)}% (${strategyRows.main.validOpen ?? 0}/${strategyRows.main.overallOpen ?? 0} open) · Row-Real Valid/Active ${strategyRows.real.activeRatio?.toFixed(1) ?? "0.0"}% · Row-Live Mirrored ${strategyRows.live.mirroredRatio?.toFixed(1) ?? "0.0"}%.`}
                             >
                               <span className="text-muted-foreground">Rows B/M/R/L</span>
                               <span className="font-medium tabular-nums text-violet-700 dark:text-violet-400">

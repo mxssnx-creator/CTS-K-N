@@ -763,3 +763,9 @@ credentials are present.
 - [x] Signal source-base position capacity default/max increased from 120 to 350 overall, legacy 24/120 persisted values migrate to 350, and settings now expose the overall source-base cap plus a 10-symbols-per-source cap with 12h-volatility ordering metadata.
 - [x] Signal candidate ordering now prioritizes highest 12h volatility first, then lower stop-loss and drawdown when available, before consensus quality ties, keeping Signal admission independent from Main trade stage counts.
 - [x] Verified TypeScript, targeted Signal policy/settings Jest coverage, and remote installer boundary tests; the full deployment-contract suite still has the pre-existing Kilo schema v91 preflight failure outside this change.
+
+## Session 2026-07-28 — Signal-only connection overview and row-stage display follow-up
+- [x] Connection cards now treat Signal Trade as an exclusive overview lane: when Signal is enabled, the compact overview shows Signal-only cycles/sets/open/closed/PF/DDT/PnL and does not mix in Main Trade overview tiles.
+- [x] Connection cards no longer render Main Trade overview stats when Main Trade is off; they show an explicit off-state unless Signal or Preset has its own enabled overview.
+- [x] Strategy row tracking consumed by the main connection card now carries Base Total/Valid open counts and ratios, Main Valid/Overall open counts and expansion ratio, Row-Real Active ratio, and Row-Live mirrored ratio in the card tooltip.
+- [x] Revalidated strategy-stage correctness paths with targeted stage/stat/block/live-control tests plus dev and production server route navigation smoke checks.
