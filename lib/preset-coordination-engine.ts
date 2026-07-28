@@ -598,10 +598,9 @@ export class PresetCoordinationEngine {
 
     if (!limit) return false
 
-    // Check if under limit
-    if (limit.current_positions >= limit.max_positions) {
-      return false
-    }
+    // Position-count fields are retained for schema compatibility only.
+    // Preset types process every exact configuration lane without a numerical
+    // type/range/direction ceiling; 0 is the durable "Unlimited" value.
 
     // Check cooldown
     if (limit.cooldown_until && new Date(limit.cooldown_until) > new Date()) {
@@ -653,7 +652,7 @@ export class PresetCoordinationEngine {
   ): Promise<void> {
     if (!this.presetType) return
 
-    const maxPositions = this.presetType.max_positions_per_range || 250
+    const maxPositions = 0
 
     // Initialize for both long and short directions
     for (const direction of ["long", "short"]) {

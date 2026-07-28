@@ -105,4 +105,48 @@ describe("base-stage symbol admission concurrency", () => {
     })
     expect(retry).toEqual([])
   })
+
+  test("same-symbol configurations retain one independent slot per direction", async () => {
+    const { generateBasePositions } = await import("@/lib/trade-engine/stages/base-stage")
+    const connection = { id: "conn-configs", name: "Config test" } as any
+    const common = {
+      connectionId: connection.id,
+      connectionName: connection.name,
+      symbol: "BTC-USDT",
+      timestamp: 1_700_000_100_000,
+      indicators: {},
+      signal: "buy" as const,
+      strength: 0.8,
+      price: 60_000,
+      indicationType: "trend",
+      indicationName: "ema",
+    }
+    const indications = [
+      {
+        ...common,
+        timeframe: "500ms",
+        configurationId: "ema=9,21|interval=500ms",
+      },
+      {
+        ...common,
+        timestamp: common.timestamp + 1,
+        timeframe: "1s",
+        configurationId: "ema=9,21|interval=1s",
+      },
+    ]
+
+    const created = await generateBasePositions(connection, indications, {
+      // Legacy symbol-wide values must not collapse independent config lanes.
+      maxLongPositions: 1,
+      maxShortPositions: 1,
+    })
+
+    expect(created.filter((position) => position.direction === "long")).toHaveLength(2)
+    expect(created.filter((position) => position.direction === "short")).toHaveLength(2)
+    expect(new Set(created.map((position) => position.laneId)).size).toBe(2)
+    expect(new Set(created.map((position) => position.indicationConfigKey)).size).toBe(2)
+
+    const retry = await generateBasePositions(connection, indications)
+    expect(retry).toEqual([])
+  })
 })

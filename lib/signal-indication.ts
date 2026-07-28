@@ -347,14 +347,14 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
             .map((value: unknown) => String(value ?? "").trim())
             .filter(Boolean)
             .map((value: string) => normalizeSymbol(value)),
-        )).slice(0, 200)
+        ))
       : []
     const disabledLanes = Array.isArray(incoming.disabledLanes)
       ? Array.from(new Set(
           incoming.disabledLanes
             .map(normalizeDisabledSignalLane)
             .filter((value: string | null): value is string => Boolean(value)),
-        )).slice(0, 400)
+        ))
       : []
     return [source.id, {
       enabled: bool(incoming.enabled, fallback.enabled),

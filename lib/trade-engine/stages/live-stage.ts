@@ -2814,19 +2814,9 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
     }
 
     // Admission checks run only after a durable pending order was recovered
-    // or conclusively cleared. Otherwise a cap/dedup return could strand an
-    // exchange submission forever merely because its Set was already applied.
-    if (
-      !real?.combinedPosCounts &&
-      physicalAccumulationCount(existing.accumulatedSetKeys, existing.blockLegs) >= MAX_ACCUMULATIONS_PER_POSITION
-    ) {
-      pushStep(existing, "accumulate_skip", false, `cap reached (${MAX_ACCUMULATIONS_PER_POSITION} accumulations) — merge suppressed`)
-      await savePosition(existing)
-      if (hadPendingAccumulation) {
-        await reconcilePendingAccumulationAndRearm(connector, existing, "accumulation_cap_after_recovery")
-      }
-      return existing
-    }
+    // or conclusively cleared. Every exact Set membership remains eligible;
+    // exchange/API rate limits are enforced by the dispatch queue and position
+    // mutation lock, never by dropping later configurations.
     // Block/default overlays execute once per exact Set key. DCA is repeatable
     // by configured step and is deduped after resolveAccumulationPlan derives
     // its stable `#step:N` identity below.
@@ -4109,23 +4099,6 @@ function resolveMaxHoldMs(connId: string): number {
     return 0
   }
 }
-
-/**
- * Hard cap on the number of accumulations per live position.
- *
- * Without a cap, unlimited merges inflate position size proportionally
- * without any drawdown gating — the operator has no visibility and the
- * exchange may reject the accumulated notional.
- *   - 300 gives generous DCA headroom (1 initial entry + 299 merges ≈ 32× the
- *     initial allocation at equal-weight increments) for high-frequency strategies.
- */
-// 35 Signal sources × {direction, overall} × 10 Block counts can create 700
-// independent physical memberships for one symbol/side, in addition to the
-// general Strategy, exact-Set and active Block families. Keep a hard bound,
-// but size it above the complete supported graph so valid lanes never starve.
-// Virtual `block_lane:*` aliases and zero-quantity covered Block memberships
-// are excluded by physicalAccumulationCount().
-const MAX_ACCUMULATIONS_PER_POSITION = 1200
 
 /**
  * Recognise exchange errors that CANNOT be fixed by retrying. For these

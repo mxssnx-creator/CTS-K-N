@@ -6017,6 +6017,125 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "90")
     },
   },
+  {
+    version: 92,
+    name: "092-exact-indication-cadence-and-unlimited-preset-types",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const connectionIds = new Set(
+        connections
+          .map((connection) => String(connection.id || ""))
+          .filter(Boolean),
+      )
+      for (const id of await client.smembers("connections").catch(() => [])) {
+        if (id) connectionIds.add(String(id))
+      }
+
+      let indicationProfilesUpdated = 0
+      for (const id of connectionIds) {
+        const key = `settings:active_indications:${id}`
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as
+          Record<string, string>
+        const patch: Record<string, string> = {}
+        for (const suffix of ["", "_preset"] as const) {
+          const trendTimeout = `trend${suffix}_timeout`
+          const trendInterval = `trend${suffix}_interval`
+          const commonTimeout = `common${suffix}_timeout`
+          const commonInterval = `common${suffix}_interval`
+          if (values[trendTimeout] == null || Number(values[trendTimeout]) === 0.25) {
+            patch[trendTimeout] = "0.5"
+          }
+          if (values[trendInterval] == null || Number(values[trendInterval]) === 0.25) {
+            patch[trendInterval] = "0.5"
+          }
+          if (values[commonTimeout] == null || Number(values[commonTimeout]) === 3) {
+            patch[commonTimeout] = "1"
+          }
+          if (values[commonInterval] == null) {
+            patch[commonInterval] = "1"
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, patch)
+          indicationProfilesUpdated++
+        }
+      }
+
+      const rawCommon = await client.get("indications:common").catch(() => null)
+      let parsedCommon: Record<string, any> = {}
+      if (typeof rawCommon === "string" && rawCommon.trim().startsWith("{")) {
+        try {
+          parsedCommon = JSON.parse(rawCommon) as Record<string, any>
+        } catch {
+          parsedCommon = {}
+        }
+      }
+      const common = normalizeCommonIndicationSettings(parsedCommon)
+      let commonChanged = rawCommon == null
+      for (const profileName of Object.keys(DEFAULT_COMMON_INDICATION_SETTINGS)) {
+        if (profileName === "coordination") continue
+        const profile = common[profileName] as Record<string, any>
+        if (profile.timeout == null || Number(profile.timeout) === 3) {
+          profile.timeout = 1
+          commonChanged = true
+        }
+        if (profile.interval == null) {
+          profile.interval = 1
+          commonChanged = true
+        }
+      }
+      if (commonChanged || rawCommon !== JSON.stringify(common)) {
+        await client.set("indications:common", JSON.stringify(common))
+        indicationProfilesUpdated++
+      }
+
+      const indexedPresetIds = await client.smembers("preset_types:all").catch(() => [])
+      const presetKeys = await scanRedisKeys(client, "preset_type:*")
+      const presetTypeKeys = new Set<string>(
+        presetKeys.filter((key) => key !== "preset_types:all"),
+      )
+      for (const id of indexedPresetIds) {
+        if (id) presetTypeKeys.add(`preset_type:${id}`)
+      }
+      let presetTypesUpdated = 0
+      for (const key of presetTypeKeys) {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as
+          Record<string, string>
+        if (Object.keys(values).length === 0) continue
+        const patch = {
+          max_positions_per_indication: "0",
+          max_positions_per_direction: "0",
+          max_positions_per_range: "0",
+          updated_at: new Date().toISOString(),
+        }
+        if (
+          values.max_positions_per_indication !== "0" ||
+          values.max_positions_per_direction !== "0" ||
+          values.max_positions_per_range !== "0"
+        ) {
+          await client.hset(key, patch)
+          presetTypesUpdated++
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        indication_profile_cadence:
+          "default-signal=250ms;trend=500ms;common-processing-and-exact-lane=1000ms",
+        trend_indication_exact_lane_timeout_ms: "500",
+        common_indication_exact_lane_timeout_ms: "1000",
+        indication_profiles_updated: String(indicationProfilesUpdated),
+        preset_type_position_capacity: "unlimited",
+        preset_type_position_capacity_persisted_value: "0",
+        preset_types_updated: String(presetTypesUpdated),
+        schema_version: "92",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      // Correct cadence and unlimited compatibility values remain valid.
+      await client.set("_schema_version", "91")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {

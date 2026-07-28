@@ -18,7 +18,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: "Preset type not found" }, { status: 404 })
     }
 
-    return NextResponse.json(presetType)
+    return NextResponse.json({
+      ...presetType,
+      max_positions_per_indication: 0,
+      max_positions_per_direction: 0,
+      max_positions_per_range: 0,
+    })
   } catch (error) {
     console.error("[v0] Failed to fetch preset type:", error)
     return NextResponse.json({ error: "Failed to fetch preset type" }, { status: 500 })
@@ -34,9 +39,9 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       name: body.name,
       description: body.description || null,
       preset_trade_type: body.preset_trade_type || "automatic",
-      max_positions_per_indication: body.max_positions_per_indication || 1,
-      max_positions_per_direction: body.max_positions_per_direction || 1,
-      max_positions_per_range: body.max_positions_per_range || 1,
+      max_positions_per_indication: 0,
+      max_positions_per_direction: 0,
+      max_positions_per_range: 0,
       timeout_per_indication: body.timeout_per_indication || 5,
       timeout_after_position: body.timeout_after_position || 10,
       block_enabled: body.block_enabled !== false,
@@ -73,7 +78,12 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     )
     const presetType = results[0]
 
-    return NextResponse.json(presetType)
+    return NextResponse.json({
+      ...presetType,
+      max_positions_per_indication: 0,
+      max_positions_per_direction: 0,
+      max_positions_per_range: 0,
+    })
   } catch (error) {
     console.error("[v0] Failed to update preset type:", error)
     return NextResponse.json({ error: "Failed to update preset type" }, { status: 500 })

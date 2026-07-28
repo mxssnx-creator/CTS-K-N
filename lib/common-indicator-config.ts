@@ -301,7 +301,7 @@ export const DEFAULT_COMMON_INDICATION_SETTINGS: CommonIndicationSettingsDocumen
     {
       enabled: definition.enabled,
       interval: 1,
-      timeout: 3,
+      timeout: 1,
       ...Object.fromEntries(Object.entries(definition.parameters).map(([key, value]) => [key, value.default])),
     },
   ])),

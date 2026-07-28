@@ -7,6 +7,7 @@
 
 import { sql, query, getDatabaseType } from "@/lib/db"
 import type { PresetCoordinationResult } from "@/lib/types-preset-coordination"
+import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 export interface PseudoPositionConfig {
   id: string
@@ -41,7 +42,6 @@ export class PresetPseudoPositionManager {
   private updateInterval?: NodeJS.Timeout
   private isRunning = false
   private readonly UPDATE_INTERVAL_MS = 1000 // 1 second
-  private readonly MAX_POSITIONS_PER_CONFIG = 250
 
   private activePseudoPositions: Map<string, PseudoPositionConfig> = new Map()
   private positionsByConfig: Map<string, Set<string>> = new Map()
@@ -106,13 +106,6 @@ export class PresetPseudoPositionManager {
   ): Promise<string | null> {
     const configKey = this.getConfigKey(coordinationResult, signal.direction)
 
-    // Check position limit for this specific configuration
-    const currentCount = this.positionsByConfig.get(configKey)?.size || 0
-    if (currentCount >= this.MAX_POSITIONS_PER_CONFIG) {
-      console.log(`[v0] Position limit reached for config ${configKey}`)
-      return null
-    }
-
     // Create pseudo position
     const positionId = this.generateId()
     // Fixed quantity used for all Main positions - volume tracking is ratio-based
@@ -166,34 +159,34 @@ export class PresetPseudoPositionManager {
     const symbols = new Set(Array.from(this.activePseudoPositions.values()).map((p) => p.symbol))
     const priceMap = await this.getCurrentPrices(Array.from(symbols))
 
-    // Process positions in parallel batches
+    // Process every position through a bounded worker pool. Concurrency is a
+    // work-in-flight/rate guard only; it never truncates a configuration or
+    // imposes a per-config result ceiling.
     const positions = Array.from(this.activePseudoPositions.values())
-    const batchSize = 50
-    const batches = this.createBatches(positions, batchSize)
+    await mapWithConcurrency(
+      positions,
+      concurrencyFromEnv(
+        ["PRESET_PSEUDO_UPDATE_CONCURRENCY", "DB_WRITE_CONCURRENCY"],
+        32,
+        128,
+        positions.length,
+      ),
+      async (position) => {
+        const currentPrice = priceMap.get(position.symbol)
+        if (!currentPrice) return
 
-    await Promise.all(
-      batches.map(async (batch) => {
-        await Promise.all(
-          batch.map(async (position) => {
-            const currentPrice = priceMap.get(position.symbol)
-            if (!currentPrice) return
+        const update = this.calculatePositionUpdate(position, currentPrice)
 
-            const update = this.calculatePositionUpdate(position, currentPrice)
+        if (update.status === "closed") {
+          await this.closePseudoPosition(position.id, update)
+          this.activePseudoPositions.delete(position.id)
 
-            if (update.status === "closed") {
-              // Position closed - remove from active tracking
-              await this.closePseudoPosition(position.id, update)
-              this.activePseudoPositions.delete(position.id)
-
-              const configKey = this.getConfigKeyFromPosition(position)
-              this.positionsByConfig.get(configKey)?.delete(position.id)
-            } else {
-              // Update position
-              await this.updatePseudoPosition(position.id, update)
-            }
-          }),
-        )
-      }),
+          const configKey = this.getConfigKeyFromPosition(position)
+          this.positionsByConfig.get(configKey)?.delete(position.id)
+        } else {
+          await this.updatePseudoPosition(position.id, update)
+        }
+      },
     )
   }
 
@@ -430,26 +423,24 @@ export class PresetPseudoPositionManager {
    * Get configuration key for position limit tracking
    */
   private getConfigKey(result: PresetCoordinationResult, direction: string): string {
-    return `${result.symbol}-${result.indication_type}-${JSON.stringify(result.indication_params)}-${result.takeprofit_factor}-${result.stoploss_ratio}-${direction}-${result.trailing_enabled}-${result.trail_start}-${result.trail_stop}`
+    return `${result.symbol}-${result.indication_type}-${stableConfigValue(result.indication_params)}-${result.takeprofit_factor}-${result.stoploss_ratio}-${direction}-${result.trailing_enabled}-${result.trail_start}-${result.trail_stop}`
   }
 
   private getConfigKeyFromPosition(position: PseudoPositionConfig): string {
-    return `${position.symbol}-${position.indicationType}-${JSON.stringify(position.indicationParams)}-${position.takeprofitFactor}-${position.stoplossRatio}-${position.direction}-${position.trailingEnabled}-${position.trailStart}-${position.trailStop}`
-  }
-
-  private createBatches<T>(items: T[], batchSize: number): T[][] {
-    if (!items || items.length === 0 || batchSize <= 0) {
-      return []
-    }
-
-    const batches: T[][] = []
-    for (let i = 0; i < items.length; i += batchSize) {
-      batches.push(items.slice(i, Math.min(i + batchSize, items.length)))
-    }
-    return batches
+    return `${position.symbol}-${position.indicationType}-${stableConfigValue(position.indicationParams)}-${position.takeprofitFactor}-${position.stoplossRatio}-${position.direction}-${position.trailingEnabled}-${position.trailStart}-${position.trailStop}`
   }
 
   private generateId(): string {
     return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
   }
+}
+
+function stableConfigValue(value: unknown): string {
+  if (value === null || value === undefined) return ""
+  if (Array.isArray(value)) return `[${value.map(stableConfigValue).join(",")}]`
+  if (typeof value !== "object") return JSON.stringify(value)
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableConfigValue(item)}`)
+    .join(",")}}`
 }

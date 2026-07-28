@@ -141,14 +141,21 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
           timeout: 10,
         },
       }))
+      await client.sadd("preset_types:all", "preset-legacy-limit")
+      await client.hset("preset_type:preset-legacy-limit", {
+        id: "preset-legacy-limit",
+        max_positions_per_indication: "5",
+        max_positions_per_direction: "3",
+        max_positions_per_range: "2",
+      })
       await client.set("_schema_version", "79")
       await client.set("_migrations_run", "true")
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 91 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 92 })
 
-      expect(await client.get("_schema_version")).toBe("91")
+      expect(await client.get("_schema_version")).toBe("92")
       expect(new Set(await client.smembers("strategy_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
       expect(await client.smembers("strategy_active_set_keys:conn-ledger")).toEqual(["set:a"])
       expect(new Set(await client.smembers("strategy_closed_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
@@ -219,7 +226,10 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(await client.hget("settings:active_indications:conn-ledger", "optimal")).toBe("true")
       expect(await client.hget("settings:active_indications:conn-ledger", "auto")).toBe("true")
       expect(await client.hget("settings:active_indications:conn-ledger", "common")).toBe("true")
-      expect(await client.hget("settings:active_indications:conn-ledger", "common_timeout")).toBe("3")
+      expect(await client.hget("settings:active_indications:conn-ledger", "trend_timeout")).toBe("0.5")
+      expect(await client.hget("settings:active_indications:conn-ledger", "trend_interval")).toBe("0.5")
+      expect(await client.hget("settings:active_indications:conn-ledger", "common_timeout")).toBe("1")
+      expect(await client.hget("settings:active_indications:conn-ledger", "common_interval")).toBe("1")
       const mainIndications = JSON.parse(String(await client.get("indications:main")))
       expect(mainIndications.configuration.sample_ranges).toEqual(
         Array.from({ length: 29 }, (_, index) => index + 2),
@@ -235,9 +245,14 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(mainIndications.optimal.timeout).toBe(0.25)
       const commonIndications = JSON.parse(String(await client.get("indications:common")))
       expect(commonIndications.coordination.timeframesMinutes).toEqual([1, 5, 15, 30])
-      expect(commonIndications.rsi).toMatchObject({ enabled: false, timeout: 3 })
-      expect(commonIndications.ma).toMatchObject({ enabled: true, timeout: 3 })
-      expect(commonIndications.parabolicSAR).toMatchObject({ enabled: true, timeout: 3 })
+      expect(commonIndications.rsi).toMatchObject({ enabled: false, timeout: 1, interval: 1 })
+      expect(commonIndications.ma).toMatchObject({ enabled: true, timeout: 1, interval: 1 })
+      expect(commonIndications.parabolicSAR).toMatchObject({ enabled: true, timeout: 1, interval: 1 })
+      expect(await client.hgetall("preset_type:preset-legacy-limit")).toMatchObject({
+        max_positions_per_indication: "0",
+        max_positions_per_direction: "0",
+        max_positions_per_range: "0",
+      })
       expect(JSON.parse(String(await client.get("indications:signal")))).toMatchObject({
         directExecutionEnabled: true,
         maxSourcesPerCycle: 35,
@@ -254,7 +269,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(await client.hget("system:database:coordination:performance", "independent_block_profit_factor"))
         .toBe("default-pf-x-ratio-x-volume-increment-v1")
       expect(await client.hget("system:database:coordination:performance", "schema_version"))
-        .toBe("91")
+        .toBe("92")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -318,7 +333,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 91 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 92 })
 
       expect(await client.hget("connection:conn-stage-floor", "baseProfitFactor")).toBe("0.4")
       expect(await client.hget("connection:conn-stage-floor", "base_min_profit_factor")).toBe("0.4")
@@ -420,7 +435,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 91,
+        version: 92,
       })
 
       expect(await client.hget("connection:conn-v90", "baseProfitFactor")).toBe("0.4")
@@ -500,7 +515,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 91,
+        version: 92,
       })
 
       for (const key of [
@@ -557,7 +572,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 91,
+        version: 92,
       })
 
       expect(await client.hget("connection_settings:conn-v91", "strategyRealSetsSafetyCeiling")).toBe("0")

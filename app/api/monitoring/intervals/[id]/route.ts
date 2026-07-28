@@ -9,6 +9,12 @@ const INDICATION_INTERVAL_TYPES = [
   "common", "signal",
 ] as const
 
+function defaultCadenceSeconds(type: string): number {
+  if (type === "common") return 1
+  if (type === "trend") return 0.5
+  return 0.25
+}
+
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     await initRedis()
@@ -37,8 +43,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             enabled: false,
             isRunning: false,
             isProgressing: false,
-            intervalTime: 0.25,
-            timeout: type === "common" ? 3 : 0.25,
+            intervalTime: defaultCadenceSeconds(type),
+            timeout: defaultCadenceSeconds(type),
           },
         ])),
         error: error instanceof Error ? error.message : "Unknown error"
@@ -56,10 +62,11 @@ async function getIntervalData(client: any, connectionId: string, type: string) 
     if (!data || Object.keys(data).length === 0) {
       // Return default values based on type
       const known = (INDICATION_INTERVAL_TYPES as readonly string[]).includes(type)
+      const defaultCadence = defaultCadenceSeconds(type)
       const def = {
         enabled: known,
-        intervalTime: 0.25,
-        timeout: type === "common" ? 3 : 0.25,
+        intervalTime: defaultCadence,
+        timeout: defaultCadence,
       }
       return {
         enabled: def.enabled,
@@ -74,8 +81,8 @@ async function getIntervalData(client: any, connectionId: string, type: string) 
       enabled: data.enabled === "true" || data.enabled === "1",
       isRunning: data.isRunning === "true" || data.isRunning === "1",
       isProgressing: data.isProgressing === "true" || data.isProgressing === "1",
-      intervalTime: Number(data.intervalTime) || 0.25,
-      timeout: Number(data.timeout) || (type === "common" ? 3 : 0.25),
+      intervalTime: Number(data.intervalTime) || defaultCadenceSeconds(type),
+      timeout: Number(data.timeout) || defaultCadenceSeconds(type),
       lastStart: data.lastStart,
       lastEnd: data.lastEnd,
     }
@@ -85,8 +92,8 @@ async function getIntervalData(client: any, connectionId: string, type: string) 
       enabled: false,
       isRunning: false,
       isProgressing: false,
-      intervalTime: 0.25,
-      timeout: type === "common" ? 3 : 0.25,
+      intervalTime: defaultCadenceSeconds(type),
+      timeout: defaultCadenceSeconds(type),
     }
   }
 }

@@ -1104,6 +1104,22 @@ describe("requested regression guardrails", () => {
     expect(strategy).not.toContain("hedgeStrategyVolumeParts(axisSets.map")
   })
 
+  test("legacy Base, Preset, and Live paths do not impose configuration ceilings", () => {
+    const baseStage = read("lib/trade-engine/stages/base-stage.ts")
+    const presetPseudo = read("lib/preset-pseudo-position-manager.ts")
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+
+    expect(baseStage).toContain("baseIndicationConfigurationIdentity")
+    expect(baseStage).toContain("base:positions:lane:")
+    expect(baseStage).toContain("positionsPerExactLane = 1")
+    expect(baseStage).not.toContain("STAGE_1_MAX_LONG_POSITIONS")
+    expect(baseStage).not.toContain("STAGE_1_MAX_SHORT_POSITIONS")
+    expect(presetPseudo).not.toContain("MAX_POSITIONS_PER_CONFIG")
+    expect(presetPseudo).toContain("mapWithConcurrency")
+    expect(liveStage).not.toContain("MAX_ACCUMULATIONS_PER_POSITION")
+    expect(liveStage).not.toContain("accumulation_cap_after_recovery")
+  })
+
   test("production status routes merge raw and settings-prefixed engine heartbeat state", () => {
     const systemStatus = read("app/api/system/status/route.ts")
     const tradeStatus = read("app/api/trade-engine/status/route.ts")

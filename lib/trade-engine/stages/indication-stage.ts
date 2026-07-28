@@ -24,6 +24,11 @@ export interface IndicationSignal {
   signal: "buy" | "sell" | "neutral"
   strength: number // 0-1, confidence level
   price: number
+  /** Stable strategy identity fields. Runtime values never belong in this key. */
+  indicationType?: string
+  indicationName?: string
+  configurationId?: string
+  configuration?: Record<string, unknown>
 }
 
 /**
@@ -78,6 +83,16 @@ export async function processIndications(
         signal: signal.type,
         strength: signal.strength,
         price: lastPrice,
+        indicationType: "technical",
+        indicationName: "rsi-macd-ema-bollinger",
+        configurationId: `timeframe=${timeframe}|rsi=14|macd=12,26,9|ema=20,50,200|bb=20`,
+        configuration: {
+          timeframe,
+          rsiPeriod: 14,
+          macd: [12, 26, 9],
+          ema: [20, 50, 200],
+          bollingerPeriod: 20,
+        },
       }
       signals.push(indication)
       // Always persist indications to Redis for tracking and UI display

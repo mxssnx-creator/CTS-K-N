@@ -120,10 +120,10 @@ const DEFAULT_POSITION_LIMITS = {
 
 // Exact indication configuration/direction may recalculate after 250 ms.
 const DEFAULT_INDICATION_TIMEOUT_MS = 250
-// Common technical indicators process on a one-second cadence but each exact
-// type/name/config/direction lane waits three seconds after a valid result.
-// This is a lane cooldown, not a candidate/configuration cap.
-const DEFAULT_COMMON_INDICATION_TIMEOUT_MS = 3_000
+const DEFAULT_TREND_INDICATION_TIMEOUT_MS = 500
+// Common technical indicators and every exact Common configuration lane use
+// the same one-second cadence. This is a cooldown, not a candidate cap.
+const DEFAULT_COMMON_INDICATION_TIMEOUT_MS = 1_000
 
 const DEFAULT_OUTCOME_ATTACHMENT_CONCURRENCY = 20
 
@@ -290,7 +290,7 @@ export class IndicationSetsProcessor {
     active: DEFAULT_INDICATION_TIMEOUT_MS,
     active_advanced: DEFAULT_INDICATION_TIMEOUT_MS,
     optimal: DEFAULT_INDICATION_TIMEOUT_MS,
-    trend: DEFAULT_INDICATION_TIMEOUT_MS,
+    trend: DEFAULT_TREND_INDICATION_TIMEOUT_MS,
     signal: DEFAULT_INDICATION_TIMEOUT_MS,
   }
   private indicationIntervalMsByType: Record<string, number> = {
@@ -299,7 +299,7 @@ export class IndicationSetsProcessor {
     active: DEFAULT_INDICATION_TIMEOUT_MS,
     active_advanced: DEFAULT_INDICATION_TIMEOUT_MS,
     optimal: DEFAULT_INDICATION_TIMEOUT_MS,
-    trend: DEFAULT_INDICATION_TIMEOUT_MS,
+    trend: DEFAULT_TREND_INDICATION_TIMEOUT_MS,
     common: 1_000,
     signal: DEFAULT_INDICATION_TIMEOUT_MS,
   }
