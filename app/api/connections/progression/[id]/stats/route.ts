@@ -2872,12 +2872,6 @@ export async function GET(
       ...extra,
     })
 
-    // Win rate proxy for base/main/real: running-sets / created.
-    // Only meaningful when the sets are currently open; empty at end-of-run.
-    const baseWinRateProxy  = baseSpecPerf.aggregated.totalCreated  > 0 ? Math.min(100, Math.round((baseSpecPerf.aggregated.totalRunning  / baseSpecPerf.aggregated.totalCreated) * 1000) / 10) : 0
-    const mainWinRateProxy  = mainSpecPerf.aggregated.totalCreated  > 0 ? Math.min(100, Math.round((mainSpecPerf.aggregated.totalRunning  / mainSpecPerf.aggregated.totalCreated) * 1000) / 10) : 0
-    const realWinRateProxy  = realSpecPerf.aggregated.totalCreated  > 0 ? Math.min(100, Math.round((realSpecPerf.aggregated.totalRunning  / realSpecPerf.aggregated.totalCreated) * 1000) / 10) : 0
-
     const liveProfitFactor  = liveClosedSumGrossLoss > 0
       ? Math.round((liveClosedSumGrossProfit / liveClosedSumGrossLoss) * 1000) / 1000
       : liveClosedSumGrossProfit > 0 ? 999 : 0
@@ -2885,32 +2879,26 @@ export async function GET(
     const liveWinRate       = liveClosedCount > 0 ? Math.round((liveClosedWins / liveClosedCount) * 1000) / 10 : 0
     const liveAvgRoe        = liveClosedCount > 0 ? Math.round((liveClosedRoeAcc / liveClosedCount) * 10000) / 100 : 0
 
-    // Sharpe estimate for base/main/real — use DDT as a volatility proxy if no
-    // per-position returns are available at these pipeline stages (they're
-    // evaluation-only, not executed, so true returns are undefined at Base/Main).
-    // For Live we derive it from the closed-archive P&L sample.
-    const approxSharpe = (ddtHr: number) => ddtHr > 0 ? (1 / ddtHr) * 0.15 : 0 // heuristic: shorter DDT → less volatility
-
     const performanceTiers = {
       base: buildTierFromSpecPerf(baseSpecPerf, {
         avgHoldMin: 0, // Base has no execution hold-time
         totalPnl: 0, // Base is evaluation-only, no real P&L
-        winRate: baseWinRateProxy,
-        sharpe: approxSharpe(baseSpecPerf.aggregated.avgDrawdownTime || 0),
+        winRate: 0,
+        sharpe: 0,
         isExecution: false,
       }),
       main: buildTierFromSpecPerf(mainSpecPerf, {
         avgHoldMin: 0,
         totalPnl: 0,
-        winRate: mainWinRateProxy,
-        sharpe: approxSharpe(mainSpecPerf.aggregated.avgDrawdownTime || 0),
+        winRate: 0,
+        sharpe: 0,
         isExecution: false,
       }),
       real: buildTierFromSpecPerf(realSpecPerf, {
         avgHoldMin: 0,  // Real is promo-stage, not yet exchange execution
         totalPnl: 0,
-        winRate: realWinRateProxy,
-        sharpe: approxSharpe(realSpecPerf.aggregated.avgDrawdownTime || 0),
+        winRate: 0,
+        sharpe: 0,
         isExecution: false,
       }),
       live: {
@@ -4003,8 +3991,8 @@ export async function GET(
           avgDrawdownMin:  baseSpecPerf.aggregated.avgDrawdownTime,
           avgPosPerSet:    baseSpecPerf.aggregated.avgPosPerSet,
           avgPosEval:      baseSpecPerf.aggregated.avgPosEval,
-          winRate:         baseWinRateProxy,
-          sharpe:          approxSharpe(baseSpecPerf.aggregated.avgDrawdownTime || 0),
+          winRate:         0,
+          sharpe:          0,
           totalPnl:        0,
           totalCreated:    baseSpecPerf.aggregated.totalCreated,
           totalEntries:    baseSpecPerf.aggregated.totalEntries,
@@ -4017,8 +4005,8 @@ export async function GET(
           avgDrawdownMin:  mainSpecPerf.aggregated.avgDrawdownTime,
           avgPosPerSet:    mainSpecPerf.aggregated.avgPosPerSet,
           avgPosEval:      mainSpecPerf.aggregated.avgPosEval,
-          winRate:         mainWinRateProxy,
-          sharpe:          approxSharpe(mainSpecPerf.aggregated.avgDrawdownTime || 0),
+          winRate:         0,
+          sharpe:          0,
           totalPnl:        0,
           totalCreated:    mainSpecPerf.aggregated.totalCreated,
           totalEntries:    mainSpecPerf.aggregated.totalEntries,
@@ -4031,8 +4019,8 @@ export async function GET(
           avgDrawdownMin:  realSpecPerf.aggregated.avgDrawdownTime,
           avgPosPerSet:    realSpecPerf.aggregated.avgPosPerSet,
           avgPosEval:      realSpecPerf.aggregated.avgPosEval,
-          winRate:         realWinRateProxy,
-          sharpe:          approxSharpe(realSpecPerf.aggregated.avgDrawdownTime || 0),
+          winRate:         0,
+          sharpe:          0,
           totalPnl:        0,
           totalCreated:    realSpecPerf.aggregated.totalCreated,
           totalEntries:    realSpecPerf.aggregated.totalEntries,
