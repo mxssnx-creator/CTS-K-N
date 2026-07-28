@@ -1908,6 +1908,30 @@ describe("requested regression guardrails", () => {
     expect(overview).not.toContain("each item ~200 bytes")
     expect(progression).not.toContain("baseWinRateProxy")
     expect(progression).not.toContain("approxSharpe")
+    expect(progression).not.toContain("ratePerMin")
+    expect(progression).not.toContain("indication_live_cycle_count),\n      n(progHash.indication_cycle_count)")
+    expect(progression).toContain('client.zcount(`indications:${connectionId}:window`')
+    expect(progression).toContain("indicationWindowMeasured")
+    expect(progression).toContain("avgNotionalUsd")
+    expect(progression).toContain("avgPosPerSet:    0")
+    expect(read("components/dashboard/quickstart-overview-dialog.tsx")).not.toContain(
+      "(value / totalIndAll) * evalMain5m",
+    )
+  })
+
+  test("new custom preset types inherit the systemwide Block-Only default while explicit false remains valid", () => {
+    const dialog = read("components/presets/preset-type-dialog.tsx")
+    const createRoute = read("app/api/preset-types/route.ts")
+    const updateRoute = read("app/api/preset-types/[id]/route.ts")
+
+    expect(dialog).toContain("const [blockEnabled, setBlockEnabled] = useState(true)")
+    expect(dialog).toContain("const [blockOnly, setBlockOnly] = useState(true)")
+    expect(dialog).toContain("setBlockEnabled(presetType.block_enabled ?? true)")
+    expect(dialog).toContain("setBlockOnly(presetType.block_only ?? true)")
+    expect(createRoute).toContain("block_enabled: body.block_enabled !== false")
+    expect(createRoute).toContain("block_only: body.block_only !== false")
+    expect(updateRoute).toContain("block_enabled: body.block_enabled !== false")
+    expect(updateRoute).toContain("block_only: body.block_only !== false")
   })
 
   test("Main axes and Base profiles remain exhaustive without a candidate ceiling", () => {

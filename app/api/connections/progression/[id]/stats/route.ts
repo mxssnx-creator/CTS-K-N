@@ -768,7 +768,6 @@ export async function GET(
           rawHistoricSymbolsProcessed,
           prehistoricTotalIsActive ? n(prehistoricHash.symbols_total) : 0,
           symbolsFromArray,
-          1,
         )
     // The numerator belongs to the same current generation as the denominator.
     // Never expose stale work from an older symbol basket as current progress.
@@ -778,28 +777,16 @@ export async function GET(
       n(progHash.prehistoric_candles_processed),
       n(es.config_set_candles_processed)
     )
-    // `indicators_calculated` is written by the prehistoric calculator but
-    // is reset to "0" by the dev-boot migrations. Fall back to the realtime
-    // indication cycle count (every live indication cycle = processed a batch
-    // of market indications, equivalent to "indicators calculated") so this
-    // field is never falsely 0 when the engine is actively running.
+    // Historic indicators are reported only from historic/config-set writers.
+    // Realtime indication cycles are a different unit and must never be
+    // relabelled as historic calculations.
     const historicIndicatorsCalculated = pick(
       n(prehistoricHash.indicators_calculated) || 0,
       n(es.config_set_indication_results),
-      // Fall back: use live indication cycles as the "indicators processed" proxy
-      n(progHash.indication_live_cycle_count),
-      n(progHash.indication_cycle_count),
     )
     const historicCyclesCompleted = pick(
       n(progHash.prehistoric_cycles_completed),
       n(es.config_set_symbols_processed),
-      // Tertiary: use the number of symbols processed as a minimum
-      // non-zero cycle count — each symbol constitutes one prehistoric
-      // cycle even if the dedicated `prehistoric_cycles_completed`
-      // counter was never written (e.g. the increment call silently
-      // failed). This prevents P-Cycles from showing 0 when 4 symbols
-      // have clearly been processed (Frames and Indicators are non-zero).
-      historicSymbolsProcessed
     )
     // Completion is a value invariant of the current basket, not a phase/flag
     // shortcut. Old `:done`, is_complete, or live-phase markers can coexist
@@ -2680,8 +2667,7 @@ export async function GET(
     // strategy_detail hashes. Each hash carries `s:{symbol}:{apf|addt|apps|aper|ts}`
     // fields written by strategy-coordinator every cycle. We aggregate across all
     // fresh (≤5-min-old) symbols to give each (symbol × stage) a complete metrics
-    // row including win-rate proxy (sets-with-open-pos / created), PF, DDT, hold,
-    // and avg entry-score.
+    // row including current open membership, PF, DDT, and avg entry-score.
     //
     // "Detail" = per-symbol spec rows | "Aggregated" = cross-symbol tier averages.
     const buildSpecPerformance = (
@@ -2858,8 +2844,8 @@ export async function GET(
     // Per-stage (base / main / real / live) performance summary derived from
     // strategy_detail hashes (base/main/real from cross-symbol aggregation,
     // live from closed-archive realised P&L). Each tier holds the fields the
-    // dashboard PerformanceTiers card needs: avgPF, winRate, avgHoldMin,
-    // totalPnl, sharpe (estimate), drawdown (DDT proxy).
+    // dashboard PerformanceTiers card needs. Evaluation rows deliberately
+    // leave execution-only win-rate/P&L/Sharpe at zero; Live uses closed fills.
     const buildTierFromSpecPerf = (sp: { aggregated: Record<string, any> }, extra: Record<string, any> = {}) => ({
       symbolCount:       sp.aggregated.symbolCount       || 0,
       totalCreated:      sp.aggregated.totalCreated      || 0,
@@ -2908,7 +2894,8 @@ export async function GET(
         totalRunning:    Math.max(0, n(progHash.live_positions_created_count) - n(progHash.live_positions_closed_count)),
         avgProfitFactor: liveProfitFactor,
         avgDrawdownMin:  liveAvgHoldMin,
-        avgPosPerSet:    n(progHash.live_positions_created_count) > 0
+        avgPosPerSet:    0,
+        avgNotionalUsd:  n(progHash.live_positions_created_count) > 0
           ? n(progHash.live_volume_usd_total) / n(progHash.live_positions_created_count)
           : 0,
         totalPnl:        Math.round(liveClosedSumPnl * 100) / 100,
@@ -2962,9 +2949,10 @@ export async function GET(
         n(strategyDetailRealHash.created_sets),
     }
 
-    // ── WINDOW DATA (last 5min / 60min) ────────────���─────────────────────────
-    // Stored in sorted sets: indications:{connId}:window  scored by unix ms timestamp
-    // If not present fall back to estimating from cycle counts using elapsed time
+    // ── WINDOW DATA (last 5min / 60min) ──────────────────────────────────────
+    // Stored in sorted sets scored by unix-ms timestamp. Counts are exact
+    // rolling-ledger measurements; unavailable ledgers are never estimated
+    // from lifetime counters.
     const nowMs = Date.now()
     const ago5m  = nowMs - 5  * 60 * 1000
     const ago60m = nowMs - 60 * 60 * 1000
@@ -2973,32 +2961,27 @@ export async function GET(
     let indWindow60m = 0
     let stratWindow5m  = 0
     let stratWindow60m = 0
+    let indicationWindowMeasured = false
+    let strategyWindowMeasured = false
 
     try {
-      // Issue all four ZRANGEBYSCORE reads in parallel — they are
-      // independent zsets and the previous serial chain added ~4 Redis
-      // round-trips of latency to every /stats poll for zero benefit.
-      // ZRANGEBYSCORE itself returns the matching members; we only need
-      // the count so `.length` is sufficient.
+      // ZCOUNT keeps payload size O(1) even when an exhaustive engine records
+      // a large number of window events.
       const [ind5m, ind60m, str5m, str60m] = await Promise.all([
-        client.zrangebyscore(`indications:${connectionId}:window`, ago5m,  "+inf").catch(() => [] as string[]),
-        client.zrangebyscore(`indications:${connectionId}:window`, ago60m, "+inf").catch(() => [] as string[]),
-        client.zrangebyscore(`strategies:${connectionId}:window`,  ago5m,  "+inf").catch(() => [] as string[]),
-        client.zrangebyscore(`strategies:${connectionId}:window`,  ago60m, "+inf").catch(() => [] as string[]),
+        client.zcount(`indications:${connectionId}:window`, ago5m,  "+inf"),
+        client.zcount(`indications:${connectionId}:window`, ago60m, "+inf"),
+        client.zcount(`strategies:${connectionId}:window`,  ago5m,  "+inf"),
+        client.zcount(`strategies:${connectionId}:window`,  ago60m, "+inf"),
       ])
-      indWindow5m    = ind5m.length
-      indWindow60m   = ind60m.length
-      stratWindow5m  = str5m.length
-      stratWindow60m = str60m.length
-    } catch { /* non-critical; fall back to zero */ }
-
-    // If window sets are empty, estimate from rate: total / elapsed_minutes * window
-    if (indWindow5m === 0 && indTotal > 0) {
-      const startedAtMs = n(progHash.started_at) || (nowMs - 3600_000)
-      const elapsedMin = (nowMs - startedAtMs) / 60_000 || 1
-      const ratePerMin = indTotal / elapsedMin
-      indWindow5m  = Math.round(ratePerMin * 5)
-      indWindow60m = Math.round(ratePerMin * Math.min(60, elapsedMin))
+      indWindow5m    = n(ind5m)
+      indWindow60m   = n(ind60m)
+      stratWindow5m  = n(str5m)
+      stratWindow60m = n(str60m)
+      indicationWindowMeasured = true
+      strategyWindowMeasured = true
+    } catch {
+      // Non-critical monitoring failure. The response marks the metric
+      // unavailable so zero cannot be mistaken for a measured quiet period.
     }
 
     // ── METADATA section ─────────────────────────────────────────────�����──────
@@ -3983,8 +3966,8 @@ export async function GET(
       // Per-stage (base / main / real / live) performance summary. Fields are
       // sourced from strategy_detail hashes (base/main/real: cross-symbol
       // aggregations of avg PF, DDT, pos-eval) or from the live closed archive
-      // (live: realised P&L, win rate, Sharpe, fill-rate). Buffer-size proxy
-      // (`avgPosPerSet` for live) is derived from volume-usd / created count.
+      // (live: realised P&L, win rate, Sharpe, fill-rate). Live's average
+      // order notional is exposed under an explicit unit-bearing field.
       performanceTiers: {
         base: {
           avgProfitFactor: baseSpecPerf.aggregated.avgProfitFactor,
@@ -4031,7 +4014,8 @@ export async function GET(
         live: {
           avgProfitFactor: liveProfitFactor,
           avgDrawdownMin:  liveAvgHoldMin,
-          avgPosPerSet:    n(progHash.live_positions_created_count) > 0
+          avgPosPerSet:    0,
+          avgNotionalUsd:  n(progHash.live_positions_created_count) > 0
             ? n(progHash.live_volume_usd_total) / n(progHash.live_positions_created_count)
             : 0,
           winRate:         liveWinRate,
@@ -4119,8 +4103,18 @@ export async function GET(
 
       // Rolling time-window indication and strategy counts
       windows: {
-        indications: { last5m: indWindow5m, last60m: indWindow60m },
-        strategies:  { last5m: stratWindow5m, last60m: stratWindow60m },
+        indications: {
+          last5m: indWindow5m,
+          last60m: indWindow60m,
+          measured: indicationWindowMeasured,
+          source: "rolling-event-ledger",
+        },
+        strategies: {
+          last5m: stratWindow5m,
+          last60m: stratWindow60m,
+          measured: strategyWindowMeasured,
+          source: "rolling-event-ledger",
+        },
       },
 
       metadata: {

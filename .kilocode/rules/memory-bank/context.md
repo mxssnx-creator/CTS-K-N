@@ -705,6 +705,12 @@ credentials are present.
   fan-out, PF or storage-size estimates. Base/Main/Real evaluation stages leave
   win-rate and Sharpe at unavailable zero; only Live reports closed-position
   performance.
+- [x] Progress and dashboard windows now use exact rolling Redis `ZCOUNT`
+  measurements or explicitly report unavailable; historic counters are no
+  longer filled from realtime cycles. Live notional has an explicit USD field
+  instead of being presented as an average position count. New custom preset
+  types inherit the system Block/Block-Only default, while an explicit `false`
+  remains the operator override for parallel Standard+Block behavior.
 - [x] Preserved one physical Direction parent for source-scoped Signal Block
   adjustments while allowing ordinary Block-only lanes to seed and recover
   their own parent. Explicit Consensus and direct-source outcomes now update
@@ -713,7 +719,7 @@ credentials are present.
 - [x] Added schema v88 compatibility/migration coverage, browser-safe
   indication-topology counting, deterministic bounded build tracing, and the
   missing `ts-node` test-runtime dependency; Vercel is pinned to 54.18.0.
-- [x] Final release checks: 121 Jest suites / 838 tests, TypeScript, ESLint,
+- [x] Final release checks: 121 Jest suites / 839 tests, TypeScript, ESLint,
   Kilo preflight (37 checks, schema 88), secret scan (1,266 files, zero
   findings), offline frozen pnpm install, recreation-manifest verification,
   and a production Next build with 41/41 pages and 339 complete server traces.
