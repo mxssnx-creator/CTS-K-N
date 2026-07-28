@@ -1029,6 +1029,7 @@ describe("requested regression guardrails", () => {
     expect(soak).toContain("is_live_trade: false")
     expect(soak).toContain("realEvalPosCount: 1")
     expect(soak).toContain("Paper position lifecycle was not exercised")
+    expect(soak).toContain("Engine did not publish the exact")
     expect(soak).toContain("openPositions?.pseudo?.runningSets")
     expect(soak).toContain("strategyDetail?.real?.positionStats")
     expect(soak).toContain('RUNTIME_MODE === "development" ? 1024 * 1024 : 512 * 1024')
