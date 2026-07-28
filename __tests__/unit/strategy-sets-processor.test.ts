@@ -1,4 +1,4 @@
-import { StrategySetsProcessor, MAX_INPUT_MULTIPLIER } from "@/lib/strategy-sets-processor"
+import { StrategySetsProcessor } from "@/lib/strategy-sets-processor"
 import { loadCompactionConfig } from "@/lib/sets-compaction"
 import { setSettings } from "@/lib/redis-db"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
@@ -58,7 +58,7 @@ describe("StrategySetsProcessor", () => {
 
   test("uses resolved compaction floors when selecting top strategy candidates", async () => {
     const processor = new StrategySetsProcessor("conn-1")
-    const candidateCount = 5000 * MAX_INPUT_MULTIPLIER + 25
+    const candidateCount = 5_025
     const indications = Array.from({ length: candidateCount }, (_, i) => ({
       type: "mock",
       confidence: 0.9,
@@ -78,7 +78,7 @@ describe("StrategySetsProcessor", () => {
     const baseStatsCall = (setSettings as jest.Mock).mock.calls.find(
       ([key]) => key === "strategy_set:conn-1:BTCUSDT:base:stats",
     )
-    expect(baseStatsCall?.[1].totalCalculated).toBeGreaterThanOrEqual(5000 * MAX_INPUT_MULTIPLIER)
+    expect(baseStatsCall?.[1].totalCalculated).toBe(candidateCount)
   })
 
   test("awaits constructor-loaded non-default settings before processing candidates", async () => {
@@ -114,18 +114,6 @@ describe("StrategySetsProcessor", () => {
 
   test("aggregates each strategy stage qualified count exactly once", async () => {
     const processor = new StrategySetsProcessor("conn-aggregation")
-    const stageResults = {
-      base: { type: "base", rawTotal: 1, selectedTotal: 1, qualified: 1 },
-      main: { type: "main", rawTotal: 1, selectedTotal: 1, qualified: 2 },
-      real: { type: "real", rawTotal: 1, selectedTotal: 1, qualified: 3 },
-      live: { type: "live", rawTotal: 1, selectedTotal: 1, qualified: 4 },
-    }
-
-    jest.spyOn(processor as any, "processBaseStrategySet").mockResolvedValue(stageResults.base)
-    jest.spyOn(processor as any, "processMainStrategySet").mockResolvedValue(stageResults.main)
-    jest.spyOn(processor as any, "processRealStrategySet").mockResolvedValue(stageResults.real)
-    jest.spyOn(processor as any, "processLiveStrategySet").mockResolvedValue(stageResults.live)
-
     await processor.processAllStrategySets("ETHUSDT", [
       {
         type: "mock",
@@ -141,11 +129,11 @@ describe("StrategySetsProcessor", () => {
       "info",
       "All strategy types evaluated for ETHUSDT",
       expect.objectContaining({
-        totalQualified: 10,
-        base: stageResults.base,
-        main: stageResults.main,
-        real: stageResults.real,
-        live: stageResults.live,
+        totalQualified: 4,
+        base: expect.objectContaining({ rawTotal: 1, selectedTotal: 1, qualified: 1 }),
+        main: expect.objectContaining({ rawTotal: 1, selectedTotal: 1, qualified: 1 }),
+        real: expect.objectContaining({ rawTotal: 1, selectedTotal: 1, qualified: 1 }),
+        live: expect.objectContaining({ rawTotal: 1, selectedTotal: 1, qualified: 1 }),
       }),
     )
   })

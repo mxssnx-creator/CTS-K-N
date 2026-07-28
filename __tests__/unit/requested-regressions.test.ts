@@ -1513,10 +1513,12 @@ describe("requested regression guardrails", () => {
   test("strategy set processing evaluates every current indication without top-k sampling", () => {
     const source = read("lib/strategy-sets-processor.ts")
     expect(source).toContain("const selectedTotal = rawTotal")
-    expect(source).toContain("this.processBaseStrategySet(symbol, indications")
-    expect(source).toContain("this.processLiveStrategySet(symbol, indications")
+    expect(source).toContain("for (const indication of indications)")
+    expect(source).toContain('(["base", "main", "real", "live"] as const).map')
+    expect(source).toContain("Classify the complete indication inventory in one CPU pass")
     expect(source).not.toContain("selectTopIndications")
     expect(source).not.toContain("MAX_INPUT_MULTIPLIER")
+    expect(source).not.toContain("indications.slice(")
   })
 
 
