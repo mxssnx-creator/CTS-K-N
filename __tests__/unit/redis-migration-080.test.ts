@@ -13,6 +13,7 @@ function resetRedisGlobals(): void {
     "__redis_backend",
     "__migration_run_promise",
     "__migrations_run",
+    "__v0_devBootGuardDone",
   ]) delete (globalThis as any)[key]
 }
 
@@ -437,6 +438,65 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         "system:database:coordination:performance",
         "strategy_stages",
       )).toBe("combined-base-main-real-live-process")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("preserves an explicit QuickStart symbol basket across repeated boot initialization", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "migration-symbol-pin-"))
+    process.env = {
+      ...originalEnv,
+      NODE_ENV: "test",
+      V0_DEV_SYMBOL_COUNT: "3",
+      V0_REDIS_SNAPSHOT_PATH: join(dir, "snapshot.json"),
+    }
+    resetRedisGlobals()
+    jest.resetModules()
+
+    try {
+      const redisDb = await import("@/lib/redis-db")
+      await redisDb.ensureCoreRedis()
+      const client = redisDb.getRedisClient()
+      await client.flushDb()
+      const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+      const serialized = JSON.stringify(symbols)
+      await client.sadd("connections", "bingx-x01")
+      for (const key of [
+        "connection:bingx-x01",
+        "settings:trade_engine_state:bingx-x01",
+        "settings:connection_settings:bingx-x01",
+        "settings:connection:bingx-x01",
+      ]) {
+        await client.hset(key, {
+          id: "bingx-x01",
+          force_symbols: serialized,
+          symbols: serialized,
+          active_symbols: serialized,
+          symbol_count: "3",
+          dev_symbol_count_override: "3",
+        })
+      }
+      await client.set("_schema_version", "90")
+      await client.set("_migrations_run", "true")
+
+      const migrations = await import("@/lib/redis-migrations")
+      migrations.resetMigrationRunState()
+      await expect(migrations.runMigrations()).resolves.toMatchObject({
+        success: true,
+        version: 90,
+      })
+
+      for (const key of [
+        "connection:bingx-x01",
+        "settings:trade_engine_state:bingx-x01",
+        "settings:connection_settings:bingx-x01",
+        "settings:connection:bingx-x01",
+      ]) {
+        expect(await client.hget(key, "force_symbols")).toBe(serialized)
+        expect(await client.hget(key, "symbol_count")).toBe("3")
+        expect(await client.hget(key, "symbol_order")).toBe("")
+      }
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

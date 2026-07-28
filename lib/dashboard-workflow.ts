@@ -24,26 +24,22 @@ async function scanKeys(client: any, pattern: string): Promise<string[]> {
   return Array.from(new Set(keys))
 }
 
-async function readHashesInBatches(
-  client: any,
-  keys: readonly string[],
-  batchSize = 128,
-): Promise<Array<Record<string, string>>> {
-  const output: Array<Record<string, string>> = []
-  for (let offset = 0; offset < keys.length; offset += batchSize) {
-    const batch = keys.slice(offset, offset + batchSize)
-    const pipeline = client.multi()
-    for (const key of batch) pipeline.hgetall(key)
-    const values = await pipeline.exec().catch(() => [])
-    for (let index = 0; index < batch.length; index++) {
-      const value = values?.[index]
-      const row = (Array.isArray(value) ? value[1] : value) as
-        | Record<string, string>
-        | undefined
-      output.push(row && typeof row === "object" ? row : {})
-    }
+function sumCurrentStageSets(
+  detail: Record<string, string> | null | undefined,
+): number {
+  if (!detail) return 0
+  let perSymbolTotal = 0
+  let hasPerSymbolSnapshot = false
+  for (const [field, raw] of Object.entries(detail)) {
+    if (!field.startsWith("s:") || !field.endsWith(":created")) continue
+    const value = Number(raw)
+    if (!Number.isFinite(value) || value < 0) continue
+    hasPerSymbolSnapshot = true
+    perSymbolTotal += value
   }
-  return output
+  if (hasPerSymbolSnapshot) return perSymbolTotal
+  const fallback = Number(detail.created_sets || 0)
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : 0
 }
 
 type WorkflowConnection = {
@@ -197,20 +193,19 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
     const liveOrdersRejected = Math.max(0, parseInt(ph.live_orders_rejected_count || "0", 10) || 0)
     const maxOpenPositionsRaw = Number((appSettings as Record<string, unknown>).max_open_positions)
 
-    // Strategy set counts from settings:strategies:* hash keys
-    let baseSets = 0, mainSets = 0, realSets = 0
-    try {
-      const stratKeys = await scanKeys(client, `settings:strategies:${connId}:*:sets`)
-      const strategyRows = await readHashesInBatches(client, stratKeys)
-      for (let index = 0; index < stratKeys.length; index++) {
-        const k = stratKeys[index]
-        const h = strategyRows[index] || {}
-        const c = parseInt((h as Record<string, string>).count || "0", 10)
-        if (k.includes(":base:"))      baseSets += c
-        else if (k.includes(":main:")) mainSets += c
-        else if (k.includes(":real:")) realSets += c
-      }
-    } catch { /* non-critical */ }
+    // Strategy headline counts come from the canonical per-symbol stage
+    // snapshots. Scanning and HGETALL-ing every materialized Set key made the
+    // Logistics endpoint O(total exhaustive Sets) and took 30–45 seconds at
+    // 12 symbols. These three bounded hashes are written by the same flow and
+    // remain exact while keeping the operator dashboard responsive.
+    const [baseDetail, mainDetail, realDetail] = await Promise.all([
+      client.hgetall(`strategy_detail:${connId}:base`).catch(() => ({})),
+      client.hgetall(`strategy_detail:${connId}:main`).catch(() => ({})),
+      client.hgetall(`strategy_detail:${connId}:real`).catch(() => ({})),
+    ])
+    const baseSets = sumCurrentStageSets(baseDetail as Record<string, string>)
+    const mainSets = sumCurrentStageSets(mainDetail as Record<string, string>)
+    const realSets = sumCurrentStageSets(realDetail as Record<string, string>)
 
     // Prehistoric symbols from set (still uses sadd)
     const prehistoricSymbols = await client.scard(`prehistoric:${connId}:symbols`).catch(() => 0)

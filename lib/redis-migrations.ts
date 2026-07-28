@@ -6179,17 +6179,42 @@ if (!hasExisting) {
       `settings:connection:${DEV_CONN}`,
     ]
 
+    const parseBootSymbols = (value: unknown): string[] => {
+      if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean)
+      const raw = String(value || "").trim()
+      if (!raw) return []
+      try {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) {
+          return parsed.map(String).map((item) => item.trim()).filter(Boolean)
+        }
+      } catch {
+        // Legacy comma-separated values remain supported.
+      }
+      return raw.split(",").map((item) => item.trim()).filter(Boolean)
+    }
+    const existingBootHashes = await Promise.all(
+      devHashes.map((key) => client.hgetall(key).catch(() => ({}))),
+    )
+    const existingForcedSymbols = existingBootHashes
+      .map((values) => parseBootSymbols((values as Record<string, string>)?.force_symbols))
+      .find((symbols) => symbols.length > 0) || []
+    const pinnedSymbols = existingForcedSymbols.slice(0, devSymCount)
+
     let devSymPayload: Record<string, string>
-    if (devSymCount === 1) {
-      // Fast path: pin BTCUSDT — no API call needed, cheapest possible boot.
-      const DEV_SYM = "BTCUSDT"
+    if (pinnedSymbols.length > 0 || devSymCount === 1) {
+      // Preserve an explicit operator/QuickStart basket across subsequent
+      // initRedis calls and dev HMR module reloads. V0_DEV_SYMBOL_COUNT remains
+      // a ceiling; it must never turn a fixed basket back into a rotating
+      // volatility selection and materialize unrelated symbol keys.
+      const resolvedPinned = pinnedSymbols.length > 0 ? pinnedSymbols : ["BTCUSDT"]
       devSymPayload = {
-        force_symbols:            JSON.stringify([DEV_SYM]),
-        symbol_count:             "1",
+        force_symbols:            JSON.stringify(resolvedPinned),
+        symbol_count:             String(resolvedPinned.length),
         symbol_order:             "",   // disable dynamic fetch
-        symbols:                  JSON.stringify([DEV_SYM]),
-        active_symbols:           JSON.stringify([DEV_SYM]),
-        config_set_symbols_total: "1",
+        symbols:                  JSON.stringify(resolvedPinned),
+        active_symbols:           JSON.stringify(resolvedPinned),
+        config_set_symbols_total: String(resolvedPinned.length),
       }
     } else {
       // Multi-symbol path: clear force_symbols so getSymbols() resolves
@@ -6238,7 +6263,9 @@ if (!hasExisting) {
       await client.del(k).catch(() => 0)
     }
 
-    const symDesc = devSymCount === 1 ? "force_symbols=BTCUSDT" : `symbol_count=${devSymCount} (volatility_1h)`
+    const symDesc = devSymPayload.force_symbols
+      ? `force_symbols=${devSymPayload.force_symbols}`
+      : `symbol_count=${devSymCount} (volatility_1h)`
     console.log(
       `[v0] [Boot] Pinned ${symDesc} across all key namespaces` +
       (danglingIndexMembersPurged > 0 ? `, removed ${danglingIndexMembersPurged} dangling live-position index member(s)` : "") +

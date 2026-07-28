@@ -464,14 +464,11 @@ export class InlineLocalRedis implements RedisClientLike {
   private async applySnapshotV2File(file: string): Promise<boolean | null> {
     const getBuiltinModule = (process as any).getBuiltinModule as undefined | ((name: string) => any)
     let fsSync: typeof import("fs")
-    let readline: typeof import("readline")
     try {
       if (typeof getBuiltinModule === "function") {
         fsSync = getBuiltinModule("fs")
-        readline = getBuiltinModule("readline")
       } else {
         fsSync = await import("fs")
-        readline = await import("readline")
       }
     } catch {
       return false
@@ -486,17 +483,34 @@ export class InlineLocalRedis implements RedisClientLike {
     let header: { v: number; mutationVersion?: number } | null = null
     let lineNumber = 0
     const stream = fsSync.createReadStream(file, { encoding: "utf8" })
-    const reader = readline.createInterface({ input: stream, crlfDelay: Infinity })
+    // Avoid importing `node:readline` in this shared server module. Next's dev
+    // dependency scanner otherwise tries to resolve the builtin for browser
+    // route graphs and emits a warning on every API compilation. This bounded
+    // splitter preserves streaming restore semantics without loading the full
+    // snapshot into memory.
+    async function* lines(): AsyncGenerator<string> {
+      let pending = ""
+      for await (const chunk of stream) {
+        pending += String(chunk)
+        let newline = pending.indexOf("\n")
+        while (newline >= 0) {
+          const line = pending.slice(0, newline)
+          pending = pending.slice(newline + 1)
+          yield line.endsWith("\r") ? line.slice(0, -1) : line
+          newline = pending.indexOf("\n")
+        }
+      }
+      if (pending) yield pending.endsWith("\r") ? pending.slice(0, -1) : pending
+    }
 
     try {
-      for await (const rawLine of reader) {
+      for await (const rawLine of lines()) {
         const line = String(rawLine)
         if (!line.trim()) continue
         lineNumber++
         const parsed = JSON.parse(line)
         if (lineNumber === 1) {
           if (!parsed || parsed.v !== 2) {
-            reader.close()
             stream.destroy()
             return null
           }
@@ -540,7 +554,6 @@ export class InlineLocalRedis implements RedisClientLike {
         }
       }
     } finally {
-      reader.close()
       stream.destroy()
     }
 
