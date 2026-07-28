@@ -122,7 +122,7 @@ export function SeedSystemDialog() {
         system: {
           cpuUsage: monitoring.system?.cpuUsage || 0,
           memoryUsage: Math.round((monitoring.system?.memoryUsed || 0) / 1024 / 1024),
-          memoryTotal: Math.round((monitoring.system?.memoryTotal || 4194304) / 1024 / 1024),
+          memoryTotal: Math.round((monitoring.system?.memoryTotal || 0) / 1024 / 1024),
           uptime: Math.floor(monitoring.system?.uptime || 0),
           processCount: monitoring.system?.processCount || 0
         },

@@ -49,22 +49,33 @@ function normalizeSymbol(value: unknown): string {
 }
 
 function parseSymbols(connection: Record<string, any>): string[] {
-  const raw =
-    connection.symbols ??
-    connection.selected_symbols ??
-    connection.selectedSymbols ??
-    connection.trading_symbols ??
-    []
-  let values: unknown[] = []
-  if (Array.isArray(raw)) values = raw
-  else if (typeof raw === "string") {
-    try {
-      const parsed = JSON.parse(raw)
-      values = Array.isArray(parsed) ? parsed : raw.split(/[\s,|]+/)
-    } catch {
-      values = raw.split(/[\s,|]+/)
+  const values: unknown[] = []
+  const add = (raw: unknown) => {
+    if (Array.isArray(raw)) {
+      for (const value of raw) add(value)
+      return
+    }
+    if (typeof raw === "string") {
+      try {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) {
+          for (const value of parsed) add(value)
+          return
+        }
+      } catch {
+        // Delimited legacy value below.
+      }
+      values.push(...raw.split(/[\s,|]+/))
     }
   }
+  for (const raw of [
+    connection.active_symbols,
+    connection.selected_symbols,
+    connection.selectedSymbols,
+    connection.force_symbols,
+    connection.symbols,
+    connection.trading_symbols,
+  ]) add(raw)
   return Array.from(new Set(values.map(normalizeSymbol).filter(Boolean)))
 }
 

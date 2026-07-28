@@ -2389,6 +2389,47 @@ describe("requested regression guardrails", () => {
     expect(logistics).not.toContain("avgLatency + 120")
   })
 
+  test("Indications page reads every canonical exact snapshot and exposes measured filters", () => {
+    const route = read("app/api/data/indications/route.ts")
+    const page = read("app/indications/page.tsx")
+    const filters = read("components/indications/indication-filters-advanced.tsx")
+    const row = read("components/indications/indication-row-compact.tsx")
+
+    expect(route).toContain("indications_snapshot:index:${connectionId}")
+    expect(route).toContain("scanSnapshotKeys")
+    expect(route).toContain("mapWithConcurrency(snapshotKeys, 32")
+    expect(route).toContain("Common · ${commonName.toUpperCase()}")
+    expect(route).not.toContain("indications:${connectionId}:${t}:latest")
+    expect(page).not.toContain('resolvedConnectionId || "demo-mode"')
+    expect(page).toContain("availableSymbols={availableSymbols}")
+    expect(page).toContain("availableTypes={availableTypes}")
+    expect(page).toContain("Exported ${rows.length} measured indications")
+    expect(filters).not.toContain('const defaultSymbols = ["BTC"')
+    expect(filters).toContain("availableTypes.map")
+    expect(row).toContain("Runtime indication state (read only)")
+  })
+
+  test("monitoring pages use canonical ledgers and the current bounded log index", () => {
+    const system = read("app/api/monitoring/system/route.ts")
+    const comprehensive = read("app/api/monitoring/comprehensive/route.ts")
+    const logs = read("app/api/monitoring/logs/route.ts")
+    const logger = read("lib/system-logger.ts")
+    const monitoringPage = read("app/monitoring/page.tsx")
+
+    expect(system).toContain("getDashboardWorkflowSnapshot")
+    expect(system).toContain("getOpenLivePositionReadModels(connectionId, 0)")
+    expect(system).toContain("new PseudoPositionManager(connectionId).getActivePositions()")
+    expect(system).not.toContain("getPseudoPositions(undefined, 10)")
+    expect(system).not.toContain('status: "running"')
+    expect(comprehensive).toContain("getClosedLivePositionReadModels(connectionId, 0)")
+    expect(comprehensive).toContain("getSystemResourceMetrics")
+    expect(comprehensive).not.toContain("DatabaseManager")
+    expect(logs).toContain("SystemLogger.getLogs")
+    expect(logs).not.toContain('smembers("logs:all")')
+    expect(logger).toContain('pipeline.lpush("logs:all:list", logId)')
+    expect(monitoringPage).toContain("[selectedConnectionId]")
+  })
+
   test("queued refresh requests stay durable when drained by a non-owner process", () => {
     const source = read("lib/trade-engine.ts")
 
