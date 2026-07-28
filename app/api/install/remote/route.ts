@@ -307,13 +307,15 @@ REINSTALL_ARG=()
 if [[ "$REINSTALL" == "1" ]]; then REINSTALL_ARG+=(--reinstall); fi
 SEED_ENV_BASE64=${shellQuote(seedEnvBase64)}
 TMP_DIR=""
+SEED_FILE=""
 
 log() { printf '[remote-server] %s\\n' "$*"; }
 fatal() { printf '[remote-server] ERROR: %s\\n' "$*" >&2; exit 1; }
 cleanup() {
-  if [[ -n "$TMP_DIR" && "$TMP_DIR" == /tmp/cts-k-n-preflight.* && -d "$TMP_DIR" ]]; then
+  if [[ -n "$TMP_DIR" && "$TMP_DIR" == /tmp/cts-k-n-* && -d "$TMP_DIR" ]]; then
     rm -rf -- "$TMP_DIR"
   fi
+  [[ -z "$SEED_FILE" ]] || rm -f -- "$SEED_FILE"
 }
 trap cleanup EXIT
 
@@ -362,37 +364,19 @@ fi
 
 install_bootstrap_dependencies
 command -v base64 >/dev/null 2>&1 || fatal "base64 is required for secure environment transfer"
-parent_dir="$(dirname "$APP_DIR")"
-"\${ROOT[@]}" install -d -m 0755 "$parent_dir"
-if [[ -d "$APP_DIR/.git" ]]; then
-  [[ -z "$(git -C "$APP_DIR" status --porcelain)" ]] || fatal "Existing checkout has uncommitted changes"
-  [[ "$(git -C "$APP_DIR" remote get-url origin)" == "$REPO_URL" ]] || fatal "Existing checkout has a different origin"
-  log "Fast-forwarding the existing checkout"
-  git -C "$APP_DIR" fetch --prune origin "$BRANCH"
-  git -C "$APP_DIR" checkout "$BRANCH"
-  git -C "$APP_DIR" merge --ff-only FETCH_HEAD
-elif [[ -e "$APP_DIR" ]] && [[ -n "$(find "$APP_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
-  fatal "Install directory exists and is not an empty Git checkout"
-else
-  log "Cloning the production checkout"
-  "\${ROOT[@]}" install -d -m 0755 "$APP_DIR"
-  if [[ "$(id -u)" == "0" ]]; then
-    git clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
-  else
-    "\${ROOT[@]}" chown "$(id -un):$(id -gn)" "$APP_DIR"
-    git clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
-  fi
-fi
+TMP_DIR="$(mktemp -d /tmp/cts-k-n-bootstrap.XXXXXX)"
+log "Fetching the requested bootstrap revision before replacing the target"
+git clone --quiet --depth 1 --single-branch --branch "$BRANCH" "$REPO_URL" "$TMP_DIR/source"
 
-seed_file="$(mktemp /tmp/cts-k-n-seed.XXXXXX)"
-trap 'rm -f -- "$seed_file"' EXIT
-printf '%s' "$SEED_ENV_BASE64" | base64 --decode > "$seed_file"
-chmod 600 "$seed_file"
+SEED_FILE="$(mktemp /tmp/cts-k-n-seed.XXXXXX)"
+printf '%s' "$SEED_ENV_BASE64" | base64 --decode > "$SEED_FILE"
+chmod 600 "$SEED_FILE"
 
-log "Running the canonical production installer and complete deployment contract"
-bash "$APP_DIR/scripts/install.sh" --name "$PROJECT_NAME" --port "$APP_PORT" \
-  --runtime "$RUNTIME" --service-user "$SERVICE_USER" --create-service-user \
-  --seed-env-file "$seed_file" --non-interactive "\${REINSTALL_ARG[@]}"
+log "Running clean remote lifecycle: stop services, delete target, clone, install, migrate, build, and verify"
+CTS_BOOTSTRAP_CLEAN_INSTALL=1 bash "$TMP_DIR/source/scripts/bootstrap-install.sh" \
+  --dir "$APP_DIR" --name "$PROJECT_NAME" --port "$APP_PORT" \
+  --runtime "$RUNTIME" --service-user "$SERVICE_USER" --repository "$REPO_URL" \
+  --branch "$BRANCH" --seed-env-file "$SEED_FILE" -- "\${REINSTALL_ARG[@]}"
 log "Remote installation, scheduler ownership, restart recovery, and schema verification passed"
 `
 }

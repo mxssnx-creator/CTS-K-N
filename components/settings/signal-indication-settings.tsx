@@ -288,7 +288,8 @@ export function SignalIndicationSettings() {
                 Enabled by default. Exact config PF-history checks are bypassed; after 12 source results
                 or 10 source × symbol × direction results, a negative average disables only the affected
                 scope. A config whose newest 16 real exchange closes average negative remains permanently
-                disabled. Turning this off keeps every source lane active but requires its config PF window.
+                disabled. Turning this off keeps the same source/lane guards and additionally requires each
+                exact config to pass its 12-result PositionCost-relative PF window.
               </p>
             </div>
             <Switch

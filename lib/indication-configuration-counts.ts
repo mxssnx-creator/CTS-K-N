@@ -148,7 +148,10 @@ function normalizeSignalConfigurationCountSettings(
   })) as Record<string, { enabled: boolean }>
   const maxSourcesPerCycle = Math.round(Math.max(
     3,
-    Math.min(35, positiveNumber(raw.maxSourcesPerCycle, 10)),
+    Math.min(
+      SIGNAL_SOURCE_DEFINITIONS.length,
+      positiveNumber(raw.maxSourcesPerCycle, SIGNAL_SOURCE_DEFINITIONS.length),
+    ),
   ))
   const minimumSourceSignals = Math.min(
     maxSourcesPerCycle,

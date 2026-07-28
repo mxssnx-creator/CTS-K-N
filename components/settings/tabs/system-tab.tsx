@@ -8,6 +8,7 @@ import { Tabs, TabsContent } from "@/components/ui/tabs"
 import { Info } from "lucide-react"
 import { StatisticsOverview } from "@/components/settings/statistics-overview"
 import {
+  MAIN_TRADE_BASE_PF_RATIO_MIN,
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
   MAIN_TRADE_PF_RATIO_MAX,
@@ -690,10 +691,10 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
 
                 <div className="grid md:grid-cols-4 gap-4">
                   {([
-                    { key: "baseProfitFactor", label: "Base Ratio", value: settings.baseProfitFactor ?? MAIN_TRADE_BASE_PF_RATIO_DEFAULT },
-                    { key: "mainProfitFactor", label: "Main Ratio", value: settings.mainProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT },
-                    { key: "realProfitFactor", label: "Real Ratio", value: settings.realProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT },
-                    { key: "liveProfitFactor", label: "Live Ratio", value: settings.liveProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT },
+                    { key: "baseProfitFactor", label: "Base Ratio", value: settings.baseProfitFactor ?? MAIN_TRADE_BASE_PF_RATIO_DEFAULT, min: MAIN_TRADE_BASE_PF_RATIO_MIN },
+                    { key: "mainProfitFactor", label: "Main Ratio", value: settings.mainProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT, min: MAIN_TRADE_PF_RATIO_MIN },
+                    { key: "realProfitFactor", label: "Real Ratio", value: settings.realProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT, min: MAIN_TRADE_PF_RATIO_MIN },
+                    { key: "liveProfitFactor", label: "Live Ratio", value: settings.liveProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT, min: MAIN_TRADE_PF_RATIO_MIN },
                   ] as const).map((row) => (
                     <div key={row.key} className="space-y-2">
                       <div className="flex items-center justify-between">
@@ -701,7 +702,7 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                         <span className="text-sm font-semibold tabular-nums">{Number(row.value).toFixed(2)}</span>
                       </div>
                       <Slider
-                        min={MAIN_TRADE_PF_RATIO_MIN}
+                        min={row.min}
                         max={MAIN_TRADE_PF_RATIO_MAX}
                         step={MAIN_TRADE_PF_RATIO_STEP}
                         value={[row.value]}

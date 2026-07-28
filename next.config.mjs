@@ -1,6 +1,6 @@
 // Migration 028 — high-perf: axis 800×, real 5000×, rssHard 82%, BingX 5 concurrent, stopSem 6
 
-import { access, mkdir, readFile, writeFile } from "node:fs/promises"
+import { access, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises"
 import { resolve } from "node:path"
 
 class EnsurePagesManifestPlugin {
@@ -42,7 +42,16 @@ class EnsurePagesManifestPlugin {
       if (existingEntries.length !== Object.keys(builtInPages).length) return
 
       await mkdir(resolve(this.distDir, "server"), { recursive: true })
-      await writeFile(manifestPath, `${JSON.stringify(Object.fromEntries(existingEntries), null, 2)}\n`)
+      const temporaryPath = `${manifestPath}.${process.pid}.tmp`
+      try {
+        await writeFile(
+          temporaryPath,
+          `${JSON.stringify(Object.fromEntries(existingEntries), null, 2)}\n`,
+        )
+        await rename(temporaryPath, manifestPath)
+      } finally {
+        await unlink(temporaryPath).catch(() => {})
+      }
       console.warn(`[next-build] restored missing ${manifestPath} after server emit`)
     })
   }

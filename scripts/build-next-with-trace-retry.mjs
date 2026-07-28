@@ -17,6 +17,10 @@ const settleAfterSuccessMs = Math.max(
   0,
   Number(process.env.NEXT_TRACE_SUCCESS_SETTLE_MS || (requiresStandalone ? 8000 : 1500)),
 )
+const settleAfterChildExitMs = Math.max(
+  0,
+  Number(process.env.NEXT_TRACE_CHILD_SETTLE_MS || (requiresStandalone ? 15000 : 1500)),
+)
 const sleepArray = new Int32Array(new SharedArrayBuffer(4))
 
 function sleep(milliseconds) {
@@ -55,6 +59,26 @@ function signalProcessGroup(pid, signal) {
     if (error?.code === "ESRCH") return false
     throw error
   }
+}
+
+function processGroupIsAlive(pid) {
+  if (!pid || process.platform === "win32") return false
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch (error) {
+    if (error?.code === "ESRCH") return false
+    if (error?.code === "EPERM") return true
+    throw error
+  }
+}
+
+function waitForProcessGroupExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (processGroupIsAlive(pid) && Date.now() < deadline) {
+    sleep(250)
+  }
+  return !processGroupIsAlive(pid)
 }
 
 function stopLateBuildWriters(pid) {
@@ -99,8 +123,13 @@ function trackedSourceDrift(before, after) {
 
 function isRecoverableNextFilesystemRace(output) {
   const providerPath = /(?:ENOENT|ENOTEMPTY):[\s\S]{0,800}(?:\.next|pages-manifest|nft\.json|routes-manifest|prerender-manifest|\/export)/i
+  // stdout and stderr are captured independently and joined only after the
+  // child exits, so their textual order is not reliable. Require the complete
+  // Next lifecycle signature without assuming which stream flushed first.
+  const truncatedManifest =
+    /(?=[\s\S]*Compiled successfully)(?=[\s\S]*Collecting page data)(?=[\s\S]*Unexpected end of JSON input)/i
   const sourceFailure = /Failed to compile|webpack errors|Merge conflict marker|Syntax Error|Type error/i
-  return providerPath.test(output) && !sourceFailure.test(output)
+  return (providerPath.test(output) || truncatedManifest.test(output)) && !sourceFailure.test(output)
 }
 
 function collectFiles(root, suffix) {
@@ -212,7 +241,11 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   // validating or handing the directory to Vercel/OpenNext packaging.
   const writerSettleMs = result.status === 0 ? settleAfterSuccessMs : settleAfterFailureMs
   if (writerSettleMs > 0) sleep(writerSettleMs)
-  stopLateBuildWriters(result.pid)
+  if (!waitForProcessGroupExit(result.pid, settleAfterChildExitMs)) {
+    console.warn(`[next-trace-build] late writer group remained after ${writerSettleMs + settleAfterChildExitMs}ms; terminating it before validation`)
+    stopLateBuildWriters(result.pid)
+    waitForProcessGroupExit(result.pid, 3000)
+  }
 
   buildOutput = `${Buffer.concat(result.stdout).toString("utf8")}\n${Buffer.concat(result.stderr).toString("utf8")}`
   if (result.stdout.length > 0) process.stdout.write(Buffer.concat(result.stdout))

@@ -13,6 +13,7 @@ import { StrategyPerformanceTable } from "@/components/statistics/strategy-perfo
 import { AnalyticsEngine } from "@/lib/analytics"
 import type { AnalyticsFilter, StrategyAnalytics, SymbolAnalytics, TimeSeriesData } from "@/lib/analytics"
 import type { TradingPosition } from "@/lib/trading"
+import type { PseudoPosition } from "@/lib/types"
 import {
   LineChart,
   Line,
@@ -84,6 +85,65 @@ interface OptimalStrategyMetrics {
   sortinoRatio: number
   calmarRatio: number
   recommendations: string[]
+}
+
+function toStatisticsPseudoPosition(position: TradingPosition): PseudoPosition {
+  const entryPrice = Number(position.entry_price) || 0
+  const takeProfit = Number(position.takeprofit) || 0
+  const stopLoss = Number(position.stoploss) || 0
+  const tpDistance = entryPrice > 0 && takeProfit > 0
+    ? Math.abs(takeProfit - entryPrice)
+    : 0
+  const slDistance = entryPrice > 0 && stopLoss > 0
+    ? Math.abs(entryPrice - stopLoss)
+    : 0
+  const realizedPnl = Number(position.realized_pnl ?? position.profit_loss) || 0
+  const notional = Math.abs(entryPrice * (Number(position.volume) || 0))
+  // PseudoPosition's legacy `profit_factor` field is consumed as
+  // `(value - 1) × position_cost`. Choose an exact, measured denominator so
+  // that expression reconstructs realised P&L without a fabricated $100 base.
+  const positionCost = Number(position.margin_used) > 0
+    ? Number(position.margin_used)
+    : notional > 0
+      ? notional
+      : Math.max(Math.abs(realizedPnl), Number.EPSILON)
+  const rawStrategy = String(position.strategy_type || "").toLowerCase()
+  const strategyType: PseudoPosition["strategy_type"] =
+    rawStrategy.includes("block") ? "block"
+      : rawStrategy.includes("dca") ? "dca"
+        : rawStrategy.includes("real") ? "real"
+          : rawStrategy.includes("main") ? "main"
+            : "base"
+  const enriched = position as TradingPosition & {
+    trailing_enabled?: boolean
+    trail_start?: number
+    trail_stop?: number
+  }
+
+  return {
+    id: position.id,
+    connection_id: position.connection_id,
+    symbol: position.symbol,
+    direction: position.position_side,
+    indication_type: position.indication_type || "direction",
+    takeprofit_factor: entryPrice > 0 ? (tpDistance / entryPrice) * 100 : 0,
+    stoploss_ratio: tpDistance > 0 ? slDistance / tpDistance : 0,
+    trailing_enabled:
+      enriched.trailing_enabled === true ||
+      rawStrategy.includes("trail"),
+    ...(Number.isFinite(Number(enriched.trail_start)) && { trail_start: Number(enriched.trail_start) }),
+    ...(Number.isFinite(Number(enriched.trail_stop)) && { trail_stop: Number(enriched.trail_stop) }),
+    entry_price: entryPrice,
+    current_price: Number(position.current_price) || 0,
+    profit_factor: 1 + realizedPnl / positionCost,
+    signedResultR: realizedPnl / positionCost,
+    costNormalizedReturn: realizedPnl / positionCost,
+    position_cost: positionCost,
+    status: "closed",
+    created_at: position.opened_at,
+    updated_at: position.closed_at || position.opened_at,
+    strategy_type: strategyType,
+  }
 }
 
 interface CoordinationAnalysis {
@@ -1414,7 +1474,7 @@ export default function StatisticsPage() {
                     Portfolio Performance Matrix
                   </CardTitle>
                   <CardDescription>
-                    Multi-dimensional performance analysis with balance, equity, and drawdown tracking
+                    Realized and unrealized P&amp;L relative to a zero baseline; no account-balance estimate
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -1439,7 +1499,7 @@ export default function StatisticsPage() {
                         stroke="#3b82f6"
                         fill="#3b82f6"
                         fillOpacity={0.3}
-                        name="Balance"
+                        name="Realized P&L"
                       />
                       <Area
                         yAxisId="price"
@@ -1449,7 +1509,7 @@ export default function StatisticsPage() {
                         stroke="#10b981"
                         fill="#10b981"
                         fillOpacity={0.3}
-                        name="Equity"
+                        name="P&L + Unrealized"
                       />
                       <Line
                         yAxisId="percentage"
@@ -1772,25 +1832,7 @@ export default function StatisticsPage() {
               <AdjustStrategyStats
                 positions={positions
                   .filter((p) => p.status === "closed")
-                  .map((p) => ({
-                    id: p.id,
-                    connection_id: p.connection_id,
-                    symbol: p.symbol,
-                    indication_type: (p.indication_type || "direction") as "direction" | "move" | "active",
-                    takeprofit_factor: 2.0, // Default value
-                    stoploss_ratio: 0.5, // Default value
-                    trailing_enabled: false,
-                    entry_price: p.entry_price,
-                    current_price: p.current_price,
-                    profit_factor:
-                      p.realized_pnl > 0
-                        ? 1 + Math.abs(p.realized_pnl) / (p.margin_used || 100)
-                        : 1 - Math.abs(p.realized_pnl) / (p.margin_used || 100),
-                    position_cost: p.margin_used || 100,
-                    status: "closed" as const,
-                    created_at: p.opened_at,
-                    updated_at: p.closed_at || p.opened_at,
-                  }))}
+                  .map(toStatisticsPseudoPosition)}
                 timeIntervals={[4, 12, 24, 48]}
                 drawdownPositionCount={80}
               />
@@ -1800,25 +1842,7 @@ export default function StatisticsPage() {
               <BlockStrategyStats
                 positions={positions
                   .filter((p) => p.status === "closed")
-                  .map((p) => ({
-                    id: p.id,
-                    connection_id: p.connection_id,
-                    symbol: p.symbol,
-                    indication_type: (p.indication_type || "direction") as "direction" | "move" | "active",
-                    takeprofit_factor: 2.0, // Default value
-                    stoploss_ratio: 0.5, // Default value
-                    trailing_enabled: false,
-                    entry_price: p.entry_price,
-                    current_price: p.current_price,
-                    profit_factor:
-                      p.realized_pnl > 0
-                        ? 1 + Math.abs(p.realized_pnl) / (p.margin_used || 100)
-                        : 1 - Math.abs(p.realized_pnl) / (p.margin_used || 100),
-                    position_cost: p.margin_used || 100,
-                    status: "closed" as const,
-                    created_at: p.opened_at,
-                    updated_at: p.closed_at || p.opened_at,
-                  }))}
+                  .map(toStatisticsPseudoPosition)}
                 comparisonWindow={50}
               />
             </TabsContent>

@@ -87,3 +87,4 @@ version	name	source
 86	086-exhaustive-indication-base-and-block-only-defaults	lib/redis-migrations.ts
 87	087-signal-bootstrap-direction-lanes-and-strategy-rows	lib/redis-migrations.ts
 88	088-repair-exhaustive-indications-signal-capacity-and-stage-caps	lib/redis-migrations.ts
+89	089-signal-full-source-cycle-and-base-pf-floor	lib/redis-migrations.ts

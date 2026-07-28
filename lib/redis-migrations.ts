@@ -5396,6 +5396,10 @@ const migrations: Migration[] = [
             signal.maxPositionsTotal = 120
             changed = true
           }
+          if (signal.maxSourcesPerCycle == null || Number(signal.maxSourcesPerCycle) === 10) {
+            signal.maxSourcesPerCycle = 35
+            changed = true
+          }
           if (signal.sources && typeof signal.sources === "object") {
             for (const source of Object.values(signal.sources) as Array<Record<string, any>>) {
               if (!source || typeof source !== "object") continue
@@ -5429,6 +5433,7 @@ const migrations: Migration[] = [
         signal_source_window: "12",
         signal_symbol_direction_window: "10",
         signal_max_open_positions_long_short_total: "120",
+        signal_sources_per_symbol_cycle_default: "35",
         strategy_real_sets_default: "5000",
         strategy_live_sets_default: "500",
         strategy_main_eval_positions_default: "25",
@@ -5445,6 +5450,156 @@ const migrations: Migration[] = [
       // Exhaustive settings and operator-visible capacity values remain valid
       // during rollback; only the schema cursor moves back.
       await client.set("_schema_version", "87")
+    },
+  },
+  {
+    version: 89,
+    name: "089-signal-full-source-cycle-and-base-pf-floor",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const connectionIds = new Set(
+        connections
+          .map((connection) => String(connection.id || ""))
+          .filter(Boolean),
+      )
+      for (const id of await client.smembers("connections").catch(() => [])) {
+        if (id) connectionIds.add(String(id))
+      }
+      const rawSignal = await client.get("indications:signal").catch(() => null)
+      let signalSettingsUpdated = 0
+      let basePfFieldsRepaired = 0
+      let basePfDocumentsRepaired = 0
+      if (typeof rawSignal === "string" && rawSignal.trim().startsWith("{")) {
+        try {
+          const signal = JSON.parse(rawSignal) as Record<string, any>
+          let changed = false
+          if (signal.directExecutionEnabled == null) {
+            signal.directExecutionEnabled = true
+            changed = true
+          }
+          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24) {
+            signal.maxPositionsTotal = 120
+            changed = true
+          }
+          if (Number(signal.performanceLookback) !== 12) {
+            signal.performanceLookback = 12
+            changed = true
+          }
+          if (Number(signal.performanceMinSamples) !== 12) {
+            signal.performanceMinSamples = 12
+            changed = true
+          }
+          if (Number(signal.performanceDisableBelowPnl) !== 0) {
+            signal.performanceDisableBelowPnl = 0
+            changed = true
+          }
+          // Ten was the previous sampled/rotating default. Upgrade only that
+          // known default (or a missing value); any other explicit operator
+          // choice remains intact.
+          if (signal.maxSourcesPerCycle == null || Number(signal.maxSourcesPerCycle) === 10) {
+            signal.maxSourcesPerCycle = 35
+            changed = true
+          }
+          if (changed) {
+            await client.set("indications:signal", JSON.stringify(signal))
+            signalSettingsUpdated = 1
+          }
+        } catch {
+          // Canonical settings normalization repairs malformed JSON on load.
+        }
+      }
+
+      const repairBasePfObject = (document: Record<string, any>): boolean => {
+        let changed = false
+        for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
+          if (document[alias] == null) continue
+          const normalized = normalizeMainTradeStagePfRatio("base", document[alias])
+          if (Number(document[alias]) !== normalized) {
+            document[alias] = normalized
+            changed = true
+          }
+        }
+        for (const container of [
+          document?.strategies,
+          document,
+        ]) {
+          if (!container || typeof container !== "object") continue
+          for (const channelName of ["main", "preset"]) {
+            const row = container?.[channelName]?.base
+            if (!row || typeof row !== "object") continue
+            const normalized = normalizeMainTradeStagePfRatio("base", row.min_profit_factor)
+            if (Number(row.min_profit_factor) !== normalized) {
+              row.min_profit_factor = normalized
+              changed = true
+            }
+          }
+        }
+        return changed
+      }
+
+      const repairBasePfHash = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        if (Object.keys(values).length === 0) return
+        const current = values.baseProfitFactor ?? values.base_min_profit_factor
+        const normalized = normalizeMainTradeStagePfRatio("base", current)
+        const patch: Record<string, string> = {}
+        for (const alias of ["baseProfitFactor", "base_min_profit_factor"]) {
+          if (Number(values[alias]) !== normalized) {
+            patch[alias] = String(normalized)
+            basePfFieldsRepaired++
+          }
+        }
+        for (const jsonField of ["connection_settings", "strategies"]) {
+          const raw = values[jsonField]
+          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+          try {
+            const document = JSON.parse(raw) as Record<string, any>
+            if (repairBasePfObject(document)) {
+              patch[jsonField] = JSON.stringify(document)
+              basePfDocumentsRepaired++
+            }
+          } catch {
+            // Keep malformed recovery data untouched. Canonical flat fields
+            // still enforce the Base floor and a subsequent settings save
+            // rewrites the structured document.
+          }
+        }
+        if (Object.keys(patch).length > 0) await client.hset(key, patch)
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await repairBasePfHash(key)
+      }
+      for (const id of connectionIds) {
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await repairBasePfHash(key)
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        signal_direct_bootstrap_default: "true",
+        signal_source_window: "12",
+        signal_symbol_direction_window: "10",
+        signal_max_open_positions_long_short_total: "120",
+        signal_sources_per_symbol_cycle_default: "35",
+        signal_full_source_cycle: "true",
+        signal_settings_updated: String(signalSettingsUpdated),
+        main_trade_pf_base_minimum: String(MAIN_TRADE_STAGE_PF_DEFAULTS.base),
+        main_trade_pf_base_fields_repaired: String(basePfFieldsRepaired),
+        main_trade_pf_base_documents_repaired: String(basePfDocumentsRepaired),
+        schema_version: "89",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      await client.set("_schema_version", "88")
     },
   },
 ]

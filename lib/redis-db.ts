@@ -216,6 +216,7 @@ export interface RedisClientLike {
   scan?(cursor: string | number, ...args: any[]): Promise<{ cursor: string; keys: string[] } | [string, string[]]>
   zadd(key: string, score: number, member: string): Promise<number>
   zrangebyscore(key: string, min: number | string, max: number | string): Promise<string[]>
+  zcount(key: string, min: number | string, max: number | string): Promise<number>
   zremrangebyscore(key: string, min: number | string, max: number | string): Promise<number>
   zrange(key: string, start: number, stop: number): Promise<string[]>
   zrevrange(key: string, start: number, stop: number): Promise<string[]>
@@ -2352,6 +2353,15 @@ export class InlineLocalRedis implements RedisClientLike {
     return entries.slice(start, end).map((entry) => entry.member)
   }
 
+  /** Return the number of sorted-set members in the inclusive score range. */
+  async zcount(key: string, min: number | string, max: number | string): Promise<number> {
+    if (this.isExpired(key)) return 0
+    const entries = this.getSortedSet(key)?.entries || []
+    const minValue = this.parseSortedSetScore(min, Number.NEGATIVE_INFINITY)
+    const maxValue = this.parseSortedSetScore(max, Number.POSITIVE_INFINITY)
+    return this.upperBoundByScore(entries, maxValue) - this.lowerBoundByScore(entries, minValue)
+  }
+
   async zremrangebyscore(key: string, min: number | string, max: number | string): Promise<number> {
     const zset = this.getSortedSet(key)
     if (!zset) return 0
@@ -2658,6 +2668,7 @@ class NodeRedisClientAdapter implements RedisClientLike {
   }
   async zadd(key: string, score: number, member: string) { return await (await this.c()).zAdd(key, { score, value: member }) }
   async zrangebyscore(key: string, min: number | string, max: number | string) { return await (await this.c()).zRangeByScore(key, min as any, max as any) }
+  async zcount(key: string, min: number | string, max: number | string) { return await (await this.c()).zCount(key, min as any, max as any) }
   async zremrangebyscore(key: string, min: number | string, max: number | string) { return await (await this.c()).zRemRangeByScore(key, min as any, max as any) }
   async zrange(key: string, start: number, stop: number) { return await (await this.c()).zRange(key, start, stop) }
   async zrevrange(key: string, start: number, stop: number) { return await (await this.c()).zRange(key, start, stop, { REV: true } as any) }
@@ -2819,6 +2830,7 @@ class UpstashRestRedisClient implements RedisClientLike {
   }
   async zadd(key: string, score: number, member: string) { return await this.command<number>(["ZADD", key, score, member]) }
   async zrangebyscore(key: string, min: number | string, max: number | string) { return await this.command<string[]>(["ZRANGEBYSCORE", key, min, max]) }
+  async zcount(key: string, min: number | string, max: number | string) { return await this.command<number>(["ZCOUNT", key, min, max]) }
   async zremrangebyscore(key: string, min: number | string, max: number | string) { return await this.command<number>(["ZREMRANGEBYSCORE", key, min, max]) }
   async zrange(key: string, start: number, stop: number) { return await this.command<string[]>(["ZRANGE", key, start, stop]) }
   async zrevrange(key: string, start: number, stop: number) { return await this.command<string[]>(["ZREVRANGE", key, start, stop]) }

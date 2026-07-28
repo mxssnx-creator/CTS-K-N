@@ -76,6 +76,7 @@ describe("InlineLocalRedis compatibility and persistence", () => {
     await expect(redis.zrevrange("z:key", 0, -1)).resolves.toEqual(["two", "one"])
     await expect(redis.zscore("z:key", "two")).resolves.toBe("2")
     await expect(redis.zrangebyscore("z:key", 1, 2)).resolves.toEqual(["one", "two"])
+    await expect(redis.zcount("z:key", 1, 2)).resolves.toBe(2)
 
     await expect(redis.expire("string:key", 30)).resolves.toBe(1)
     await expect(redis.ttl("string:key")).resolves.toBeGreaterThan(0)

@@ -6,6 +6,7 @@ import { getFreshestProcessorHeartbeat } from "@/lib/engine-heartbeat"
 import { buildPrehistoricGateKeys, buildProgressionScope } from "@/lib/progression-scope"
 import { SystemLogger } from "@/lib/system-logger"
 import { mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { normalizeSignalMaxPositions } from "@/lib/signal-position-policy"
 
 function mapPhaseToType(phase: string, level = "info") {
   if (level === "error") return "error"
@@ -310,14 +311,14 @@ export async function GET(request: Request) {
       monitorDeadlineAt,
       "Signal settings",
     )
-    let configuredSignalPositionLimit = 120
+    let configuredSignalPositionLimit = normalizeSignalMaxPositions(undefined)
     try {
       const parsed = typeof rawSignalSettings === "string"
         ? JSON.parse(rawSignalSettings)
         : rawSignalSettings
       const configured = Number(parsed?.maxPositionsTotal)
       if (Number.isFinite(configured)) {
-        configuredSignalPositionLimit = Math.max(1, Math.min(500, Math.round(configured)))
+        configuredSignalPositionLimit = normalizeSignalMaxPositions(configured)
       }
     } catch {
       // The engine applies the same safe default when legacy JSON is malformed.
@@ -504,8 +505,7 @@ export async function GET(request: Request) {
         const progressAgeMs = lastProgressAt > 0 ? Math.max(0, now - lastProgressAt) : null
         const signalCapacityUpdatedAt = toEpochMs(signalCapacityRaw.updated_at)
         const signalCapacityTotal = toNumber(signalCapacityRaw.total)
-        const signalCapacityLimit = Math.max(
-          1,
+        const signalCapacityLimit = normalizeSignalMaxPositions(
           toNumber(signalCapacityRaw.limit) || configuredSignalPositionLimit,
         )
         const bootstrapActive = ["running", "queued", "superseding", "retry_wait"].includes(bootstrapStatus)

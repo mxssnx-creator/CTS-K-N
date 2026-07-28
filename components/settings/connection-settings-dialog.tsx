@@ -86,6 +86,7 @@ import {
   MAIN_TRADE_PF_RATIO_MAX,
   MAIN_TRADE_PF_RATIO_MIN,
   MAIN_TRADE_PF_RATIO_STEP,
+  mainTradeStagePfMin,
   normalizeMainTradeStagePfRatio,
 } from "@/lib/main-trade-profit-factor"
 import {
@@ -2121,14 +2122,14 @@ function StrategyProfileEditor({
                 </span>
               </div>
               <Slider
-                min={MAIN_TRADE_PF_RATIO_MIN} max={MAIN_TRADE_PF_RATIO_MAX} step={MAIN_TRADE_PF_RATIO_STEP}
+                min={mainTradeStagePfMin(type)} max={MAIN_TRADE_PF_RATIO_MAX} step={MAIN_TRADE_PF_RATIO_STEP}
                 value={[p.min_profit_factor]}
                 onValueChange={([v]) => update(type, { min_profit_factor: normalizeMainTradeStagePfRatio(type, v) })}
                 disabled={!p.enabled}
                 className="py-1"
               />
               <div className="flex justify-between text-[10px] text-muted-foreground">
-                <span>{MAIN_TRADE_PF_RATIO_MIN.toFixed(2)}</span>
+                <span>{mainTradeStagePfMin(type).toFixed(2)}</span>
                 <span className="text-muted-foreground/60">
                   default {(type === "base" ? MAIN_TRADE_BASE_PF_RATIO_DEFAULT : MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT).toFixed(2)}
                 </span>

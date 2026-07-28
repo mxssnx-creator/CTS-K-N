@@ -84,22 +84,30 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain("Site identity changed after restart")
     expect(installer).not.toContain("FORCE_LIVE=1")
     expect(installer).toContain("ADMIN_SECRET,\nCRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET")
+    expect(installer).toContain("handoff_existing_install_to_bootstrap")
+    expect(installer).toContain("clean stop → delete → reinstall flow")
     expect(bootstrap).toContain('INSTALL_DIR="$INSTALL_SEARCH_ROOT/$PROJECT_NAME"')
     expect(bootstrap).toContain("/opt/*/.cts-runtime/install-values.env")
     expect(bootstrap).toContain("discover_saved_install_from_name")
     expect(bootstrap).toContain('[[ "$runtime" == "systemd" || "$runtime" == "auto" ]]')
     expect(bootstrap).toContain('[[ "$runtime" == "pm2" || "$runtime" == "auto" ]]')
+    expect(bootstrap).toContain('pm2 pid "$pm2_name"')
+    expect(bootstrap).toContain("while PM2 process $pm2_name is still active")
     expect(bootstrap).toContain("--resolve-only")
-    expect(bootstrap).toContain("cts-rollback")
-    expect(bootstrap).toContain("restoring the previous verified checkout")
-    expect(bootstrap).toContain('[[ "$ENV_FILE" == "$INSTALL_DIR"/* ]]')
+    expect(bootstrap).toContain("cts-state")
+    expect(bootstrap).toContain("Saved persistent CTS state outside the target directory")
+    expect(bootstrap).toContain("remove_existing_install_target")
+    expect(bootstrap).toContain('as_root rm -rf -- "$INSTALL_DIR"')
+    expect(bootstrap).toContain("preserved state remains at $PRESERVED_STATE")
+    expect(bootstrap).toContain('[[ "$ENV_FILE" == "$INSTALL_DIR"/*')
     expect(bootstrap).toContain('"$INSTALL_DIR/.cts-runtime/managed-service-user"')
+    expect(bootstrap).toMatch(/preserve_existing_install_state\(\) \{[\s\S]*stop_existing_installation\n/)
+    expect(bootstrap).toMatch(/preserve_existing_install_state\nremove_existing_install_target[\s\S]*git clone --branch/)
     expect(updater).toContain("Tracked local changes exist; refusing to overwrite them")
     expect(updater).toContain("discover_saved_install_from_name")
-    expect(updater).toContain("-e .cts-runtime/ -e .next/ -e .env.production.local -e data/ -e logs/")
-    expect(updater).toContain("restoring the previous source, environment, and install identity")
-    expect(updater).toContain('git -C "$PROJECT_ROOT" checkout -B "$PREVIOUS_BRANCH" "$PREVIOUS_HEAD"')
-    expect(updater).toContain('bash "$PROJECT_ROOT/scripts/install.sh"')
+    expect(updater).toContain("Delegating to clean stop → delete → install lifecycle")
+    expect(updater).toContain('bash "$PROJECT_ROOT/scripts/bootstrap-install.sh"')
+    expect(updater).not.toContain('git -C "$PROJECT_ROOT" reset --hard')
     expect(serviceControl).toContain("Requested service '$APP_NAME' does not match installed service '$SAVED_APP_NAME'")
     expect(serviceControl).toContain("Missing authoritative install metadata")
     expect(serviceControl).toContain('runuser -u "$SERVICE_USER"')
@@ -108,6 +116,9 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain('run_root systemctl disable --now "$APP_NAME-redis"')
     expect(remoteRoute).toContain('command -v base64 >/dev/null 2>&1 || fatal "base64 is required')
     expect(remoteRoute).toContain('`UserKnownHostsFile=${knownHostsPath}`')
+    expect(remoteRoute).toContain("Running clean remote lifecycle: stop services, delete target")
+    expect(remoteRoute).toContain('bootstrap-install.sh')
+    expect(remoteRoute).not.toContain('Fast-forwarding the existing checkout')
     expect(envExample).not.toMatch(/^[A-Z_][A-Z0-9_]*=[^\r\n#]*[ \t]+#/m)
     expect(envExample).toContain("ENCRYPTION_KEY=replace_me_encryption_key")
     expect(envExample).toContain("NEXT_PUBLIC_APP_URL=http://localhost:3002\n")
@@ -357,7 +368,7 @@ describe("production installation and Kilo deployment contract", () => {
       encoding: "utf8",
     })
     expect(output).toContain('"success":true')
-    expect(output).toContain('"schemaVersion":88')
+    expect(output).toContain('"schemaVersion":89')
   })
 
   it("passes the complete Kilo runtime, owner, and deploy-credential preflight", () => {
@@ -635,6 +646,7 @@ describe("production installation and Kilo deployment contract", () => {
     const installDir = path.join(root, "target")
     const previousPath = process.env.PATH
     const previousFixture = process.env.CTS_TEST_INSTALLER
+    const previousBootstrap = process.env.CTS_TEST_BOOTSTRAP
     const previousCapture = process.env.CTS_TEST_CAPTURE
     const previousMode = process.env.CTS_TEST_EXPECT_MODE
 
@@ -649,7 +661,9 @@ if [[ "\${1:-}" == "clone" ]]; then
   destination="\${@: -1}"
   mkdir -p "$destination/scripts" "$destination/.git"
   cp "$CTS_TEST_INSTALLER" "$destination/scripts/install.sh"
+  cp "$CTS_TEST_BOOTSTRAP" "$destination/scripts/bootstrap-install.sh"
   chmod 755 "$destination/scripts/install.sh"
+  chmod 755 "$destination/scripts/bootstrap-install.sh"
   exit 0
 fi
 exit 0
@@ -684,6 +698,7 @@ printf '[fixture-installer] canonical contract passed\\n'
       ])
       process.env.PATH = `${binDir}:${previousPath || ""}`
       process.env.CTS_TEST_INSTALLER = installerFixture
+      process.env.CTS_TEST_BOOTSTRAP = path.join(process.cwd(), "scripts/bootstrap-install.sh")
       process.env.CTS_TEST_CAPTURE = capture
 
       process.env.CTS_TEST_EXPECT_MODE = "preflight"
@@ -729,6 +744,8 @@ printf '[fixture-installer] canonical contract passed\\n'
       process.env.PATH = previousPath
       if (previousFixture === undefined) delete process.env.CTS_TEST_INSTALLER
       else process.env.CTS_TEST_INSTALLER = previousFixture
+      if (previousBootstrap === undefined) delete process.env.CTS_TEST_BOOTSTRAP
+      else process.env.CTS_TEST_BOOTSTRAP = previousBootstrap
       if (previousCapture === undefined) delete process.env.CTS_TEST_CAPTURE
       else process.env.CTS_TEST_CAPTURE = previousCapture
       if (previousMode === undefined) delete process.env.CTS_TEST_EXPECT_MODE
