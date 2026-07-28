@@ -100,6 +100,7 @@ async function prewarmDevRoutes() {
     "/api/trade-engine/status-all",
     "/api/trade-engine/detailed-logs",
     "/api/settings",
+    "/api/indications/config-counts",
     `/api/connections/progression/${encoded}/stats`,
     `/api/settings/connections/${encoded}/settings`,
     `/api/trading/trade-history?connection_id=${encoded}&limit=500`,

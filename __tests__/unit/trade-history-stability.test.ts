@@ -403,6 +403,14 @@ describe("live-order stranded-position guards", () => {
     expect(asyncSafety).toContain("if (timeout) clearTimeout(timeout)")
   })
 
+  test("keeps complete PF/DDT analytics independent from the 500-row table window", () => {
+    expect(historyRoute).toContain("getClosedLivePositionReadModels")
+    expect(historyRoute).toContain("LIVE_POSITION_ANALYTICS_WINDOW_MS")
+    expect(historyRoute).toContain("const analyticsById = new Map")
+    expect(historyRoute).toContain("analyticsRows: analyticsRows.length")
+    expect(historyRoute).toContain("PF last 12/25/75 and DDT 3d")
+  })
+
   test("startup re-indexes tracked exposure without locally declaring it closed", () => {
     const start = startup.indexOf("async function reconcileStrandedPositions()")
     const end = startup.indexOf("export async function buildGlobalTradeEngineBootMetadata", start)

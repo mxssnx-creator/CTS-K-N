@@ -41,6 +41,12 @@ describe("time-complete live-position analytics archive", () => {
       closedAt: 200,
       updatedAt: undefined,
       realizedPnL: 1.5,
+      volumeUsd: undefined,
+      quantity: undefined,
+      entryPrice: undefined,
+      closePrice: undefined,
+      fees: undefined,
+      closeOrderId: undefined,
       assignedStopLoss: undefined,
       assignedTakeProfit: undefined,
       stopLoss: undefined,
@@ -55,7 +61,7 @@ describe("time-complete live-position analytics archive", () => {
     expect(JSON.stringify(snapshot)).not.toContain("exchangeData")
   })
 
-  test("indexes every 48-hour row and prunes expired compact snapshots", async () => {
+  test("indexes every three-day analytics row and prunes expired compact snapshots", async () => {
     const now = 2_000_000_000_000
     const client = {
       set: jest.fn().mockResolvedValue("OK"),

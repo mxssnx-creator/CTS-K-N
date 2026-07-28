@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   MAIN_TRADE_BASE_PF_RATIO_MIN,
   MAIN_TRADE_PF_RATIO_MAX,
   MAIN_TRADE_PF_RATIO_STEP,
@@ -114,14 +115,14 @@ export default function BaseStrategySettings({
                 min={MAIN_TRADE_BASE_PF_RATIO_MIN}
                 max={MAIN_TRADE_PF_RATIO_MAX}
                 step={MAIN_TRADE_PF_RATIO_STEP}
-                value={settings.baseProfitFactor ?? 0.8}
+                value={settings.baseProfitFactor ?? MAIN_TRADE_BASE_PF_RATIO_DEFAULT}
                 onChange={(e) => handleSettingChange(
                   "baseProfitFactor",
                   normalizeMainTradeStagePfRatio("base", Number.parseFloat(e.target.value)),
                 )}
               />
               <p className="text-xs text-muted-foreground">
-                PositionCost-relative Base ratio (minimum/default 0.80; range 0.80–2.70).
+                PositionCost-relative Base Valid ratio (minimum/default 0.80; range 0.80–2.70).
               </p>
             </div>
           </div>

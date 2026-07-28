@@ -24,6 +24,10 @@ import { toast } from "sonner"
 import { useDashboardEvents } from "@/lib/dashboard-events"
 import type { ExchangeConnection } from "@/lib/types"
 import { normalizeIdentityVolumeFactor } from "@/lib/constants"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+} from "@/lib/main-trade-profit-factor"
 import { Activity, AlertCircle, CheckCircle, Trash2, Settings, Info } from "lucide-react"
 import { ConnectionDetailedLogDialog } from "./connection-detailed-log-dialog"
 
@@ -113,9 +117,10 @@ export function ConnectionCard({
     baseVolumeFactor: 1,
     liveTradeVolumeFactor: 1,
     presetTradeVolumeFactor: 1,
-    profitFactorBase: 0.6,
-    profitFactorMain: 0.6,
-    profitFactorReal: 0.6,
+    profitFactorBase: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+    profitFactorMain: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+    profitFactorReal: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+    profitFactorLive: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
     maxDrawdownTime: 12,
     presetType: "momentum",
     strategyStates: {
@@ -241,24 +246,33 @@ export function ConnectionCard({
   useEffect(() => {
     const loadConnectionInfo = async () => {
       try {
-        const response = await fetch("/api/settings")
+        const response = await fetch(
+          `/api/settings/connections/${encodeURIComponent(connection.id)}/settings`,
+          { cache: "no-store" },
+        )
         if (response.ok) {
           const data = await response.json()
+          const settings = data?.settings || {}
           setConnectionInfo({
-            marginMode: data.marginMode || "cross",
-            positionType: data.hedgingMode || "single",
+            marginMode: settings.margin_mode || settings.marginMode || "cross",
+            positionType: settings.position_mode || settings.hedgingMode || "single",
             baseVolumeFactor: 1,
-            liveTradeVolumeFactor: normalizeIdentityVolumeFactor(data.settings?.mainTradeVolumeFactor),
-            presetTradeVolumeFactor: normalizeIdentityVolumeFactor(data.settings?.presetTradeVolumeFactor),
-            profitFactorBase: data.profitFactorBase || 0.7,
-            profitFactorMain: data.profitFactorMain || 0.8,
-            profitFactorReal: data.profitFactorReal || 0.9,
-            maxDrawdownTime: data.maxDrawdownTime || 12,
-            presetType: data.presetType || "momentum",
+            liveTradeVolumeFactor: normalizeIdentityVolumeFactor(
+              settings.live_volume_factor ?? settings.mainTradeVolumeFactor,
+            ),
+            presetTradeVolumeFactor: normalizeIdentityVolumeFactor(
+              settings.preset_volume_factor ?? settings.presetTradeVolumeFactor,
+            ),
+            profitFactorBase: Number(settings.baseProfitFactor ?? MAIN_TRADE_BASE_PF_RATIO_DEFAULT),
+            profitFactorMain: Number(settings.mainProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT),
+            profitFactorReal: Number(settings.realProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT),
+            profitFactorLive: Number(settings.liveProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT),
+            maxDrawdownTime: Number(settings.maxDrawdownTimeLiveHours ?? 4),
+            presetType: settings.presetType || "momentum",
             strategyStates: {
-              trailing: data.strategyTrailingEnabled !== "false",
-              block: data.strategyBlockEnabled !== "false",
-              dca: data.strategyDcaEnabled !== "false",
+              trailing: settings.variantTrailingEnabled !== false,
+              block: settings.variantBlockEnabled !== false,
+              dca: settings.variantDcaEnabled === true,
             },
           })
         }
@@ -856,8 +870,8 @@ export function ConnectionCard({
                   </div>
 
                   <div className="space-y-1.5">
-                    <div className="text-xs font-medium text-muted-foreground">Profit Factor Minimums</div>
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="text-xs font-medium text-muted-foreground">Combined processing thresholds</div>
+                    <div className="grid grid-cols-2 gap-2">
                       <div className="flex items-center justify-between p-1.5 bg-muted rounded">
                         <span className="text-xs">Base</span>
                         <span className="text-xs font-semibold">{connectionInfo.profitFactorBase.toFixed(2)}</span>
@@ -869,6 +883,10 @@ export function ConnectionCard({
                       <div className="flex items-center justify-between p-1.5 bg-muted rounded">
                         <span className="text-xs">Real</span>
                         <span className="text-xs font-semibold">{connectionInfo.profitFactorReal.toFixed(2)}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-1.5 bg-muted rounded">
+                        <span className="text-xs">Live</span>
+                        <span className="text-xs font-semibold">{connectionInfo.profitFactorLive.toFixed(2)}</span>
                       </div>
                     </div>
                   </div>

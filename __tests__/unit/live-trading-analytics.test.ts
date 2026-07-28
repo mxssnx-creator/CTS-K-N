@@ -63,9 +63,11 @@ describe("live trading analytics", () => {
     expect(analytics.timeWindows["12h"].trades).toBe(3)
     expect(analytics.timeWindows["48h"].trades).toBe(5)
     expect(analytics.orderWindows).toEqual({ "4h": 2, "24h": 4, "48h": 5 })
+    expect(analytics.positionWindows["12"].trades).toBe(6)
     expect(analytics.positionWindows["25"].trades).toBe(6)
     expect(analytics.positionWindows["75"].trades).toBe(6)
     expect(analytics.positionWindows["150"].trades).toBe(6)
+    expect(analytics.drawdown3d.lookbackDays).toBe(3)
   })
 
   test("reports recovered and current drawdown durations inside five days", () => {

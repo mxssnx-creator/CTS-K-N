@@ -319,6 +319,7 @@ function signalRuntimeSample(
 
   return {
     enabled: settings?.enabled === true,
+    directExecutionEnabled: settings?.directExecutionEnabled === true,
     requestIntervalSeconds: finiteNonNegative(
       settings?.requestIntervalSeconds,
       "signal.settings.requestIntervalSeconds",
@@ -408,6 +409,14 @@ function signalRuntimeSample(
       0,
     ),
     analyticsCommonTypeCount: commonTypes.length,
+    sourcePerformanceLookback: finiteNonNegative(
+      indicationAnalytics?.signal?.settings?.sourcePerformanceLookback,
+      "signal.analytics.sourcePerformanceLookback",
+    ),
+    lanePerformanceLookback: finiteNonNegative(
+      indicationAnalytics?.signal?.settings?.lanePerformanceLookback,
+      "signal.analytics.lanePerformanceLookback",
+    ),
     analyticsWindowTrades: Object.fromEntries(
       ["positions12", "positions50", "hours8", "hours48"].map((window) => [
         window,
@@ -600,6 +609,7 @@ async function main() {
           settings: {
             ...(current?.settings || {}),
             enabled: true,
+            directExecutionEnabled: true,
             requestIntervalSeconds: 30,
             maxPositionsTotal: 120,
             positionSelectionMode: "best_first",
@@ -618,6 +628,7 @@ async function main() {
       if (
         applied?.success !== true ||
         applied?.settings?.enabled !== true ||
+        applied?.settings?.directExecutionEnabled !== true ||
         Number(applied?.settings?.requestIntervalSeconds) !== 30 ||
         Number(applied?.settings?.maxPositionsTotal) !== 120 ||
         applied?.settings?.positionSelectionMode !== "best_first" ||
@@ -701,6 +712,7 @@ async function main() {
     () => "/api/system/status",
     () => "/api/system/monitoring",
     () => "/api/trade-engine/status-all",
+    () => "/api/indications/config-counts",
     () => `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`,
     () => `/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}&limit=500`,
     () => `/api/logistics/queue?connectionId=${encodeURIComponent(connectionId)}`,
@@ -1219,6 +1231,7 @@ async function main() {
       )
       if (
         !finalSignal?.enabled ||
+        !finalSignal.directExecutionEnabled ||
         finalSignal.requestIntervalSeconds < 30 ||
         finalSignal.maxSourcesPerCycle > 35 ||
         finalSignal.maxPositionsTotal !== 120 ||
@@ -1229,6 +1242,8 @@ async function main() {
         finalSignal.trailingMinStopPct < 0.8 ||
         finalSignal.trailingPositiveMoveRatio !== 0.4 ||
         finalSignal.trailingUpdateStopRangeRatio !== 0.5 ||
+        finalSignal.sourcePerformanceLookback !== 12 ||
+        finalSignal.lanePerformanceLookback !== 10 ||
         finalSignal.signalVolumeFactor < 1
       ) {
         throw new Error(`Signal settings contract failed: ${JSON.stringify(finalSignal)}`)
@@ -1270,7 +1285,25 @@ async function main() {
   const databaseStableGrowth = databaseStableSeries.length > 0
     ? Math.max(...databaseStableSeries) - Math.min(...databaseStableSeries)
     : 0
-  const databaseAbsoluteLimit = Math.max(5_000, SYMBOLS.length * 500)
+  // Exhaustive Default/Additional/Common/Signal grids deliberately replaced
+  // the old sampled topology. Size the absolute key budget from that canonical
+  // configuration count instead of reintroducing the retired 500-key/symbol
+  // assumption. The plateau check below remains the guard against per-cycle
+  // leakage; this absolute bound covers at most a data row plus an index/member
+  // row for each configured Set, plus bounded symbol runtime overhead.
+  const configurationCounts = lastByPath.get("/api/indications/config-counts") || {}
+  const totalPossibleSets = finiteNonNegative(
+    configurationCounts?.totalPossibleSets,
+    "indicationConfigurationCounts.totalPossibleSets",
+  )
+  if (totalPossibleSets < 1) {
+    throw new Error("Indication configuration topology is empty during soak")
+  }
+  const databaseAbsoluteLimit = Math.max(
+    5_000,
+    SYMBOLS.length * 500,
+    totalPossibleSets * 2 + SYMBOLS.length * 500,
+  )
   const databasePlateauWithinBudget = databaseStableGrowth <= databaseStableGrowthLimit
   if (!SIGNAL_FOCUSED_SOAK && !databasePlateauWithinBudget) {
     throw new Error(
@@ -1405,6 +1438,7 @@ async function main() {
     signalEngine: finalSignal ? {
       settings: {
         enabled: finalSignal.enabled,
+        directExecutionEnabled: finalSignal.directExecutionEnabled,
         requestIntervalSeconds: finalSignal.requestIntervalSeconds,
         maxSourcesPerCycle: finalSignal.maxSourcesPerCycle,
         maxPositionsTotal: finalSignal.maxPositionsTotal,
@@ -1416,6 +1450,8 @@ async function main() {
         trailingPositiveMoveRatio: finalSignal.trailingPositiveMoveRatio,
         trailingUpdateStopRangeRatio: finalSignal.trailingUpdateStopRangeRatio,
         signalVolumeFactor: finalSignal.signalVolumeFactor,
+        sourcePerformanceLookback: finalSignal.sourcePerformanceLookback,
+        lanePerformanceLookback: finalSignal.lanePerformanceLookback,
       },
       registeredSources: finalSignal.registeredSources,
       configuredSources: finalSignal.configuredSources,

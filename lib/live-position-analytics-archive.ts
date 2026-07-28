@@ -3,13 +3,13 @@
  *
  * The normal closed-position list is intentionally a small compatibility ring.
  * It is sufficient for "latest N" views, but it cannot represent a complete
- * 48-hour window when short-lived positions turn over quickly. This archive
- * retains every closed row required by the longest analytics time window while
+ * multi-day window when short-lived positions turn over quickly. This archive
+ * retains every closed row required by the longest PF/DDT window while
  * storing only the fields used by reporting.
  */
 
-export const LIVE_POSITION_ANALYTICS_WINDOW_MS = 48 * 60 * 60 * 1000
-export const LIVE_POSITION_ANALYTICS_RETENTION_MS = 49 * 60 * 60 * 1000
+export const LIVE_POSITION_ANALYTICS_WINDOW_MS = 3 * 24 * 60 * 60 * 1000
+export const LIVE_POSITION_ANALYTICS_RETENTION_MS = 73 * 60 * 60 * 1000
 const ANALYTICS_PRUNE_INTERVAL_SECONDS = 60
 
 type AnalyticsArchiveClient = {
@@ -125,6 +125,30 @@ export function buildLivePositionAnalyticsSnapshot(
       position.realized_pnl ??
       position.pnl,
     ) ?? 0,
+    volumeUsd: finite(position.volumeUsd),
+    quantity: finite(
+      position.executedQuantity ??
+      position.filledQuantity ??
+      position.quantity ??
+      position.size,
+    ),
+    entryPrice: finite(
+      position.averageExecutionPrice ??
+      position.entryPrice ??
+      position.entry_price,
+    ),
+    closePrice: finite(
+      position.closePrice ??
+      position.exitPrice ??
+      position.currentPrice ??
+      position.current_price,
+    ),
+    fees: finite(position.fees ?? position.totalFees),
+    closeOrderId: String(
+      position.closeOrderId ??
+      (position.exchangeData as Record<string, unknown> | undefined)?.closeOrderId ??
+      "",
+    ) || undefined,
     assignedStopLoss: finite(position.assignedStopLoss),
     assignedTakeProfit: finite(position.assignedTakeProfit),
     stopLoss: finite(position.stopLoss ?? position.stop_loss),
@@ -137,7 +161,8 @@ export function buildLivePositionAnalyticsSnapshot(
 /**
  * Persist one compact close row and periodically prune rows outside the longest
  * supported time window. Latest-position windows remain covered by the normal
- * 500-entry compatibility ring, so this archive only needs the 48-hour span.
+ * 500-entry compatibility ring. The time index covers the complete three-day
+ * DDT window; the PF 48-hour window is selected from the same archive.
  */
 export async function archiveClosedLivePositionAnalytics(
   client: AnalyticsArchiveClient,

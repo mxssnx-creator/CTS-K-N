@@ -110,7 +110,7 @@ export function LiveOverviewCompact({ account, positions, analytics }: LiveOverv
   const available = Math.max(0, equity - margin)
   const currency = account?.balance.currency || "USDT"
   const marginRatio = equity > 0 ? (margin / equity) * 100 : 0
-  const drawdown = analytics?.drawdown5d
+  const drawdown = analytics?.drawdown3d
   const longPositions = positions.filter((position) => String(position.direction ?? position.side).toLowerCase().includes("long")).length
   const shortPositions = positions.filter((position) => String(position.direction ?? position.side).toLowerCase().includes("short")).length
 
@@ -151,7 +151,7 @@ export function LiveOverviewCompact({ account, positions, analytics }: LiveOverv
         />
         <MetricCard
           icon={Clock3}
-          label="Drawdown time · 5d"
+          label="Drawdown time · 3d"
           value={formatDuration(drawdown?.currentDurationMs || drawdown?.maxDurationMs || 0)}
           detail={drawdown?.inDrawdown
             ? `Active · depth ${formatCompactMoney(drawdown.currentDepth)}`
@@ -183,7 +183,7 @@ export function LiveOverviewCompact({ account, positions, analytics }: LiveOverv
               <h2 className="text-xs font-semibold">Profit factor · last positions</h2>
             </div>
             <div className="grid grid-cols-3 gap-1.5">
-              {(["25", "75", "150"] as const).map((window) => {
+              {(["12", "25", "75"] as const).map((window) => {
                 const metric = analytics?.positionWindows[window]
                 return (
                   <div key={window} className="rounded-md border bg-muted/20 px-2 py-2 text-center">

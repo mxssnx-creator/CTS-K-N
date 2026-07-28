@@ -12,6 +12,9 @@ import {
   type TradeHistoryRow,
 } from "@/lib/trade-history"
 import { buildLiveTradingAnalytics } from "@/lib/live-trading-analytics"
+import type { TradingAnalyticsRow } from "@/lib/live-trading-analytics"
+import { LIVE_POSITION_ANALYTICS_WINDOW_MS } from "@/lib/live-position-analytics-archive"
+import { getClosedLivePositionReadModels } from "@/lib/live-position-read-model"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -239,8 +242,13 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Connection not found" }, { status: 404 })
     }
 
-    const [localSnapshots, cached] = await Promise.all([
+    const analyticsNow = Date.now()
+    const [localSnapshots, analyticsSnapshots, cached] = await Promise.all([
       loadClosedPositionSnapshots(client, connectionId, MAX_TRADE_HISTORY_RECORDS),
+      getClosedLivePositionReadModels(connectionId, {
+        recentLimit: MAX_TRADE_HISTORY_RECORDS,
+        sinceMs: analyticsNow - LIVE_POSITION_ANALYTICS_WINDOW_MS,
+      }),
       readCachedExchangeHistory(client, connectionId),
     ])
     const localRows = localSnapshots
@@ -266,7 +274,32 @@ export async function GET(request: NextRequest) {
     const exchangeRows = exchangeSnapshot?.rows || []
     const rows = mergeTradeHistory(exchangeRows, localRows, limit)
     const summary = summarizeTradeHistory(rows)
-    const analytics = buildLiveTradingAnalytics(rows)
+    // Table paging and analytics are deliberately independent. The visible
+    // compatibility ring remains bounded at 500 rows, while the compact
+    // time-indexed archive covers every close needed for PF 4/12/48h,
+    // PF last 12/25/75 and DDT 3d.
+    const analyticsById = new Map<string, TradingAnalyticsRow>()
+    for (const position of analyticsSnapshots) {
+      const id = String(position.id || "").trim()
+      const closedAt = Number(position.closedAt ?? position.updatedAt)
+      const realizedPnl = Number(
+        position.realizedPnL ??
+        position.realized_pnl ??
+        position.pnl,
+      )
+      if (!id || !Number.isFinite(closedAt) || !Number.isFinite(realizedPnl)) continue
+      analyticsById.set(`id:${id}`, {
+        id,
+        closedAt,
+        realizedPnl,
+        volumeUsd: Number(position.volumeUsd) || 0,
+      })
+    }
+    for (const row of rows) {
+      analyticsById.set(`id:${row.id}`, row)
+    }
+    const analyticsRows = [...analyticsById.values()]
+    const analytics = buildLiveTradingAnalytics(analyticsRows, analyticsNow)
 
     return NextResponse.json({
       success: true,
@@ -274,7 +307,12 @@ export async function GET(request: NextRequest) {
       rows,
       summary,
       analytics,
-      paging: { returned: rows.length, maximum: MAX_TRADE_HISTORY_RECORDS, visibleWindow: 50 },
+      paging: {
+        returned: rows.length,
+        maximum: MAX_TRADE_HISTORY_RECORDS,
+        visibleWindow: 50,
+        analyticsRows: analyticsRows.length,
+      },
       source: {
         exchange: exchangeRows.length,
         local: localRows.length,

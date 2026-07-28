@@ -133,7 +133,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                   </div>
                   <div className="grid md:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label>Base PF Threshold</Label>
+                      <Label>Base Valid PF Threshold</Label>
                       <div className="flex items-center gap-4">
                         <Slider
                           min={MAIN_TRADE_BASE_PF_RATIO_MIN}
@@ -148,7 +148,9 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                         </span>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Per-indication entry filter for Base Sets.
+                        Base Total keeps every complete configuration Set.
+                        This ratio independently determines Base Valid before
+                        Main applies its own evaluation rules.
                       </p>
                     </div>
 

@@ -1,5 +1,10 @@
 import type { TradeHistoryRow } from "@/lib/trade-history"
 
+export type TradingAnalyticsRow = Pick<
+  TradeHistoryRow,
+  "realizedPnl" | "closedAt"
+> & Partial<Pick<TradeHistoryRow, "id" | "volumeUsd">>
+
 export type ProfitFactorMetric = {
   trades: number
   wins: number
@@ -31,8 +36,8 @@ export type LiveTradingAnalytics = {
   generatedAt: number
   timeWindows: Record<"4h" | "12h" | "48h", ProfitFactorMetric>
   orderWindows: Record<"4h" | "24h" | "48h", number>
-  positionWindows: Record<"25" | "75" | "150", ProfitFactorMetric>
-  drawdown5d: DrawdownTimeMetric
+  positionWindows: Record<"12" | "25" | "75" | "150", ProfitFactorMetric>
+  drawdown3d: DrawdownTimeMetric
 }
 
 function finite(value: unknown): number {
@@ -45,7 +50,7 @@ function round(value: number, precision = 4): number {
   return Math.round((value + Number.EPSILON) * scale) / scale
 }
 
-export function calculateProfitFactorMetric(rows: TradeHistoryRow[]): ProfitFactorMetric {
+export function calculateProfitFactorMetric(rows: TradingAnalyticsRow[]): ProfitFactorMetric {
   let wins = 0
   let losses = 0
   let flat = 0
@@ -88,7 +93,7 @@ export function calculateProfitFactorMetric(rows: TradeHistoryRow[]): ProfitFact
 }
 
 export function calculateDrawdownTime(
-  rows: TradeHistoryRow[],
+  rows: TradingAnalyticsRow[],
   now = Date.now(),
   lookbackDays = 5,
 ): DrawdownTimeMetric {
@@ -150,7 +155,7 @@ export function calculateDrawdownTime(
 }
 
 export function buildLiveTradingAnalytics(
-  rows: TradeHistoryRow[],
+  rows: TradingAnalyticsRow[],
   now = Date.now(),
 ): LiveTradingAnalytics {
   const newestFirst = [...rows].sort((left, right) => finite(right.closedAt) - finite(left.closedAt))
@@ -176,10 +181,11 @@ export function buildLiveTradingAnalytics(
       "48h": rows48h.length,
     },
     positionWindows: {
+      "12": calculateProfitFactorMetric(newestFirst.slice(0, 12)),
       "25": calculateProfitFactorMetric(newestFirst.slice(0, 25)),
       "75": calculateProfitFactorMetric(newestFirst.slice(0, 75)),
       "150": calculateProfitFactorMetric(newestFirst.slice(0, 150)),
     },
-    drawdown5d: calculateDrawdownTime(newestFirst, now, 5),
+    drawdown3d: calculateDrawdownTime(newestFirst, now, 3),
   }
 }

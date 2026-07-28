@@ -6,7 +6,10 @@ import {
   normalizeIdentityVolumeFactor,
 } from "@/lib/constants"
 import { DEFAULT_DCA_PROFILE, type DcaTakeProfitMode } from "@/lib/dca-strategy"
-import { MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT } from "@/lib/main-trade-profit-factor"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+} from "@/lib/main-trade-profit-factor"
 import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "@/lib/pos-count-volume-ratio"
 export const dynamic = "force-dynamic"
 import { useState, useEffect } from "react"
@@ -95,7 +98,7 @@ interface Settings {
   quoteAsset: string
   // ── Main Trade PF thresholds per stage ───────────────────────────
   // Operator-tunable gates for Base → Main → Real → Live promotion.
-  // PositionCost-ratio defaults: Base 0.80; Main/Real/Live 1.12. Wired into
+  // PositionCost-ratio defaults: Base Valid 0.80; Main/Real/Live 1.12. Wired into
   // `lib/strategy-coordinator.ts` via `loadAppPFThresholds()` so a
   // slider change in the Strategies tab flows into the live engine
   // within 5s (TTL cap on the loader cache).
@@ -542,7 +545,7 @@ const initialSettings: Settings = {
   // Base 0.9 / Main 1.0 / Real 1.0 / Live 1.0 — operator-tunable via
   // Settings → Strategy → Main → Profit Factor Thresholds. Read by
   // `lib/strategy-coordinator.ts` on every flow cycle (5s TTL cache).
-  baseProfitFactor: 0.8,
+  baseProfitFactor: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   mainProfitFactor: 1.12,
   realProfitFactor: 1.12,
   liveProfitFactor: 1.12,

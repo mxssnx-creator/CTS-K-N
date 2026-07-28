@@ -204,7 +204,7 @@ export async function runSystemDiagnostics(
           `BASE stats mismatch: passed(${baseDetail.passed}) + failed(${baseDetail.failed}) = ${actual}, expected ${expected}`,
         )
         report.fixes.push(
-          `FIX: Recalculate BASE stats - passed should be sets with status='valid_base', failed = rest`,
+          `FIX: Recalculate BASE stats - passed should include every set that reached status='valid_base' or later, failed = rest`,
         )
       }
     }
@@ -277,7 +277,9 @@ export async function applyFixes(
       const parsed = JSON.parse(baseSetsData as string)
       const sets = parsed.sets || []
 
-      const validCount = sets.filter((s: any) => s.status === "valid_base").length
+      const validCount = sets.filter((s: any) =>
+        ["valid_base", "valid_main", "valid_real"].includes(String(s.status)),
+      ).length
       const invalidCount = sets.length - validCount
 
       const detailKey = `strategies:${connectionId}:${symbol}:detail`

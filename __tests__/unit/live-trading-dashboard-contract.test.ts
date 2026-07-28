@@ -40,12 +40,13 @@ describe("live trading dashboard release contract", () => {
   test("renders every requested compact overview window", () => {
     const overview = source("components/live-trading/live-overview-compact.tsx")
 
-    for (const label of ["Balance", "Equity", "Margin", "Open positions", "Drawdown time · 5d"]) {
+    for (const label of ["Balance", "Equity", "Margin", "Open positions", "Drawdown time · 3d"]) {
       expect(overview).toContain(label)
     }
-    for (const window of ["4h", "12h", "24h", "48h", "25", "75", "150"]) {
+    for (const window of ["4h", "12h", "24h", "48h", "12", "25", "75"]) {
       expect(overview).toContain(`\"${window}\"`)
     }
+    expect(overview).not.toContain('(["25", "75", "150"] as const)')
     expect(overview).toContain("1.00 = break-even")
   })
 

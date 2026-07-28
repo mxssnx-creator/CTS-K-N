@@ -145,9 +145,9 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 89 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 90 })
 
-      expect(await client.get("_schema_version")).toBe("89")
+      expect(await client.get("_schema_version")).toBe("90")
       expect(new Set(await client.smembers("strategy_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
       expect(await client.smembers("strategy_active_set_keys:conn-ledger")).toEqual(["set:a"])
       expect(new Set(await client.smembers("strategy_closed_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
@@ -249,14 +249,14 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(await client.hget("system:database:coordination:performance", "independent_block_profit_factor"))
         .toBe("default-pf-x-ratio-x-volume-increment-v1")
       expect(await client.hget("system:database:coordination:performance", "schema_version"))
-        .toBe("89")
+        .toBe("90")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
   })
 
-  test("repairs schema-88 Base PF values without changing downstream ratios or Signal capacity", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "migration-089-"))
+  test("repairs schema-88 Base PF values and preserves explicit Signal direct execution choices", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "migration-090-"))
     process.env = {
       ...originalEnv,
       NODE_ENV: "test",
@@ -313,7 +313,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 89 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 90 })
 
       expect(await client.hget("connection:conn-stage-floor", "baseProfitFactor")).toBe("0.8")
       expect(await client.hget("connection:conn-stage-floor", "base_min_profit_factor")).toBe("0.8")
@@ -345,19 +345,98 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         },
       })
       expect(JSON.parse(String(await client.get("indications:signal")))).toMatchObject({
-        // Explicitly disabling direct bootstrap is an operator choice and must
-        // survive the migration; only a missing value defaults to true.
         directExecutionEnabled: false,
         maxSourcesPerCycle: 35,
         maxPositionsTotal: 120,
         performanceLookback: 12,
         performanceMinSamples: 12,
         performanceDisableBelowPnl: 0,
+        configMinimumPfRatio: 0.7,
       })
       expect(await client.hget(
         "system:database:coordination:performance",
         "signal_max_open_positions_long_short_total",
       )).toBe("120")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("keeps the schema-89 Base 0.80 floor and preserves independent downstream settings", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "migration-090-default-"))
+    process.env = {
+      ...originalEnv,
+      NODE_ENV: "test",
+      V0_REDIS_SNAPSHOT_PATH: join(dir, "snapshot.json"),
+    }
+    resetRedisGlobals()
+    jest.resetModules()
+
+    try {
+      const redisDb = await import("@/lib/redis-db")
+      await redisDb.ensureCoreRedis()
+      const client = redisDb.getRedisClient()
+      await client.flushDb()
+      await client.sadd("connections", "conn-v90")
+      await client.hset("connection:conn-v90", {
+        id: "conn-v90",
+        baseProfitFactor: "0.8",
+        mainProfitFactor: "1.3",
+        connection_settings: JSON.stringify({
+          baseProfitFactor: 0.8,
+          mainProfitFactor: 1.3,
+        }),
+      })
+      await client.hset("connection_settings:conn-v90", {
+        baseProfitFactor: "0.8",
+        base_min_profit_factor: "0.8",
+        mainProfitFactor: "1.3",
+        strategies: JSON.stringify({
+          main: {
+            base: { min_profit_factor: 0.8 },
+            main: { min_profit_factor: 1.3 },
+          },
+        }),
+      })
+      await client.set("indications:signal", JSON.stringify({
+        directExecutionEnabled: false,
+        performanceLookback: 10,
+        performanceMinSamples: 10,
+        configMinimumPfRatio: 0.7,
+      }))
+      await client.set("_schema_version", "89")
+      await client.set("_migrations_run", "true")
+
+      const migrations = await import("@/lib/redis-migrations")
+      migrations.resetMigrationRunState()
+      await expect(migrations.runMigrations()).resolves.toMatchObject({
+        success: true,
+        version: 90,
+      })
+
+      expect(await client.hget("connection:conn-v90", "baseProfitFactor")).toBe("0.8")
+      expect(await client.hget("connection:conn-v90", "mainProfitFactor")).toBe("1.3")
+      expect(await client.hget("connection_settings:conn-v90", "baseProfitFactor")).toBe("0.8")
+      expect(await client.hget("connection_settings:conn-v90", "base_min_profit_factor")).toBe("0.8")
+      expect(await client.hget("connection_settings:conn-v90", "mainProfitFactor")).toBe("1.3")
+      expect(JSON.parse(String(
+        await client.hget("connection_settings:conn-v90", "strategies"),
+      ))).toMatchObject({
+        main: {
+          base: { min_profit_factor: 0.8 },
+          main: { min_profit_factor: 1.3 },
+        },
+      })
+      expect(JSON.parse(String(await client.get("indications:signal")))).toMatchObject({
+        directExecutionEnabled: false,
+        performanceLookback: 12,
+        performanceMinSamples: 12,
+        configMinimumPfRatio: 0.7,
+      })
+      expect(await client.hget(
+        "system:database:coordination:performance",
+        "strategy_stages",
+      )).toBe("combined-base-main-real-live-process")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

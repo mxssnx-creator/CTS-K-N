@@ -4,6 +4,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { calculateIndicationConfigurationCounts } from "@/lib/indication-configuration-counts"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+} from "@/lib/main-trade-profit-factor"
 
 interface StatisticsOverviewProps {
   settings: any
@@ -36,10 +40,10 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
     // own fallbacks so the overview reflects exactly what the engine
     // gates with when settings haven't loaded yet.
     return {
-      base: Number(settings.baseProfitFactor ?? 0.8),
-      main: Number(settings.mainProfitFactor ?? 1.12),
-      real: Number(settings.realProfitFactor ?? 1.12),
-      live: Number(settings.liveProfitFactor ?? 1.12),
+      base: Number(settings.baseProfitFactor ?? MAIN_TRADE_BASE_PF_RATIO_DEFAULT),
+      main: Number(settings.mainProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT),
+      real: Number(settings.realProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT),
+      live: Number(settings.liveProfitFactor ?? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT),
       preset: Number(settings.profitFactorMinPreset ?? settings.presetProfitFactor ?? 0.7),
     }
   }

@@ -77,6 +77,10 @@ describe("Main Trade PositionCost-relative PF ratios", () => {
     expect(source).toContain(
       "const mainMinPos = this._coordinationSettings.mainEvalPosCount",
     )
+    expect(source).toContain("const baseValidSetKeys = new Set<string>()")
+    expect(source).toContain("const metricsBase = this.METRICS.base")
+    expect(source).toContain("const metricsMain = this.METRICS.main")
+    expect(source).not.toContain("if (pf < this.PF_BASE_MIN) continue")
     expect(source).toContain(
       "const realMinPos = this._coordinationSettings.realEvalPosCount",
     )

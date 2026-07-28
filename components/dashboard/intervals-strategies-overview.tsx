@@ -234,18 +234,21 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
         </CardContent>
       </Card>
 
-      {/* Strategies Overview */}
+      {/* One coordinated Strategy processing flow */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Activity className="h-5 w-5 text-green-500" />
-            Strategies Overview
+            Strategy Processing Flow
           </CardTitle>
-          <CardDescription>Fresh Base → Main → Real → Live set and pass snapshots</CardDescription>
+          <CardDescription>
+            Fresh Base → Main → Real → Live row snapshots from one combined process.
+            Each row has independent evaluation settings; no row is independently switchable.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {strategies.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">No strategies configured</div>
+            <div className="text-center py-8 text-muted-foreground">No processing snapshots available</div>
           ) : (
             <div className="space-y-3">
               {strategies.map((strategy) => (
@@ -254,7 +257,7 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
                     <div className="flex items-center gap-2">
                       <span className="font-semibold capitalize">{strategy.type}</span>
                       <Badge variant={strategy.enabled ? "default" : "secondary"}>
-                        {strategy.enabled ? "Enabled" : "Disabled"}
+                        {strategy.enabled ? "Processing" : "Stopped"}
                       </Badge>
                     </div>
                     <Badge variant="outline" className="text-xs">

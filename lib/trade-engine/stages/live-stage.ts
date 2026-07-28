@@ -10481,8 +10481,9 @@ export async function reconcileLivePositions(
           const progKey = `progression:${connectionId}`
           const writes: Promise<any>[] = [
             client.expire(progKey, 7 * 24 * 60 * 60).catch(() => {}),
-            // Bound the compatibility ring + refresh its TTL. Complete 48-hour
-            // analytics use the independent time index written by savePosition.
+            // Bound the compatibility ring + refresh its TTL. Complete
+            // three-day PF/DDT analytics use the independent time index written
+            // by savePosition.
             client.ltrim(closedIndexKey, 0, 499).catch(() => {}),
             client.expire(closedIndexKey, 30 * 24 * 60 * 60).catch(() => {}),
           ]

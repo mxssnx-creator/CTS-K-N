@@ -69,6 +69,12 @@ import { useExchange } from "@/lib/exchange-context"
 import { PageHeader } from "@/components/page-header"
 import { TradeHistoryTable, type TradeHistoryRow } from "@/components/dashboard/trade-history-table"
 import { StatisticsSectionNav } from "@/components/statistics/statistics-section-nav"
+import {
+  buildLiveTradingAnalytics,
+  type DrawdownTimeMetric,
+  type LiveTradingAnalytics,
+  type ProfitFactorMetric,
+} from "@/lib/live-trading-analytics"
 
 // Enhanced types for comprehensive analytics
 interface OptimalStrategyMetrics {
@@ -172,6 +178,72 @@ interface CurrentStrategyRows {
   live: { total: number; mirrored: number; active: number; mirroredRatio: number }
 }
 
+function aggregateProfitFactorMetrics(metrics: ProfitFactorMetric[]): ProfitFactorMetric {
+  const totals = metrics.reduce((result, metric) => ({
+    trades: result.trades + metric.trades,
+    wins: result.wins + metric.wins,
+    losses: result.losses + metric.losses,
+    flat: result.flat + metric.flat,
+    grossProfit: result.grossProfit + metric.grossProfit,
+    grossLoss: result.grossLoss + metric.grossLoss,
+    volumeUsd: result.volumeUsd + metric.volumeUsd,
+  }), {
+    trades: 0,
+    wins: 0,
+    losses: 0,
+    flat: 0,
+    grossProfit: 0,
+    grossLoss: 0,
+    volumeUsd: 0,
+  })
+  const decided = totals.wins + totals.losses
+  return {
+    ...totals,
+    netPnl: totals.grossProfit - totals.grossLoss,
+    winRate: decided > 0 ? (totals.wins / decided) * 100 : 0,
+    profitFactor: totals.grossLoss > 0
+      ? totals.grossProfit / totals.grossLoss
+      : null,
+    infinite: totals.grossProfit > 0 && totals.grossLoss === 0,
+  }
+}
+
+function aggregateDrawdownMetrics(
+  metrics: DrawdownTimeMetric[],
+  lookbackDays: number,
+): DrawdownTimeMetric {
+  const episodes = metrics.reduce((sum, metric) => sum + metric.episodes, 0)
+  const totalDurationMs = metrics.reduce((sum, metric) => sum + metric.totalDurationMs, 0)
+  return {
+    lookbackDays,
+    samples: metrics.reduce((sum, metric) => sum + metric.samples, 0),
+    episodes,
+    maxDurationMs: Math.max(0, ...metrics.map((metric) => metric.maxDurationMs)),
+    averageDurationMs: episodes > 0 ? Math.round(totalDurationMs / episodes) : 0,
+    currentDurationMs: Math.max(0, ...metrics.map((metric) => metric.currentDurationMs)),
+    totalDurationMs,
+    maxDepth: Math.max(0, ...metrics.map((metric) => metric.maxDepth)),
+    currentDepth: Math.max(0, ...metrics.map((metric) => metric.currentDepth)),
+    inDrawdown: metrics.some((metric) => metric.inDrawdown),
+  }
+}
+
+function formatPerformancePf(metric: ProfitFactorMetric | undefined): string {
+  if (!metric || metric.trades === 0) return "—"
+  if (metric.infinite) return "∞"
+  return metric.profitFactor == null ? "—" : metric.profitFactor.toFixed(2)
+}
+
+function formatDurationMs(durationMs: number): string {
+  const minutes = Math.max(0, Math.floor(durationMs / 60_000))
+  const days = Math.floor(minutes / (24 * 60))
+  const hours = Math.floor((minutes % (24 * 60)) / 60)
+  const remainder = minutes % 60
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${remainder}m`
+  return `${remainder}m`
+}
+
 export default function StatisticsPage() {
   const { selectedExchange, selectedConnectionId } = useExchange()
   const [activeTab, setActiveTab] = useState("overview")
@@ -198,6 +270,8 @@ export default function StatisticsPage() {
   const [tradeHistory, setTradeHistory] = useState<TradeHistoryRow[]>([])
   const [settings, setSettings] = useState<any>(null)
   const [currentStrategyRows, setCurrentStrategyRows] = useState<CurrentStrategyRows | null>(null)
+  const [performanceAnalytics, setPerformanceAnalytics] = useState<LiveTradingAnalytics | null>(null)
+  const [performanceConnectionCount, setPerformanceConnectionCount] = useState(0)
   const [reloadGeneration, setReloadGeneration] = useState(0)
 
   // Enhanced analytics state
@@ -244,6 +318,8 @@ export default function StatisticsPage() {
           setPositions([])
           setTradeHistory([])
           setCurrentStrategyRows(null)
+          setPerformanceAnalytics(null)
+          setPerformanceConnectionCount(0)
           setAnalyticsEngine(engine)
           updateAnalytics(engine, filter)
         } else {
@@ -418,12 +494,64 @@ export default function StatisticsPage() {
 
             setPositions(merged)
             setTradeHistory(historyRows)
+            const connectionAnalytics = responses
+              .map((payload) => payload.history?.analytics)
+              .filter((value): value is LiveTradingAnalytics =>
+                Boolean(
+                  value?.timeWindows?.["4h"] &&
+                  value?.positionWindows?.["12"] &&
+                  value?.drawdown3d,
+                ),
+              )
+            if (connectionAnalytics.length === 1) {
+              setPerformanceAnalytics(connectionAnalytics[0])
+              setPerformanceConnectionCount(1)
+            } else if (connectionAnalytics.length > 1) {
+              // Position-count windows are selected from the merged newest
+              // 500 rows per connection. That is sufficient for an exact
+              // portfolio newest-75 selection. Time windows use additive
+              // per-connection archive metrics so high turnover is never
+              // truncated by the table ring.
+              const visibleAggregate = buildLiveTradingAnalytics(historyRows)
+              setPerformanceAnalytics({
+                ...visibleAggregate,
+                generatedAt: Math.max(...connectionAnalytics.map((item) => item.generatedAt)),
+                timeWindows: {
+                  "4h": aggregateProfitFactorMetrics(
+                    connectionAnalytics.map((item) => item.timeWindows["4h"]),
+                  ),
+                  "12h": aggregateProfitFactorMetrics(
+                    connectionAnalytics.map((item) => item.timeWindows["12h"]),
+                  ),
+                  "48h": aggregateProfitFactorMetrics(
+                    connectionAnalytics.map((item) => item.timeWindows["48h"]),
+                  ),
+                },
+                orderWindows: {
+                  "4h": connectionAnalytics.reduce((sum, item) => sum + item.orderWindows["4h"], 0),
+                  "24h": connectionAnalytics.reduce((sum, item) => sum + item.orderWindows["24h"], 0),
+                  "48h": connectionAnalytics.reduce((sum, item) => sum + item.orderWindows["48h"], 0),
+                },
+                drawdown3d: aggregateDrawdownMetrics(
+                  connectionAnalytics.map((item) => item.drawdown3d),
+                  3,
+                ),
+              })
+              setPerformanceConnectionCount(connectionAnalytics.length)
+            } else {
+              setPerformanceAnalytics(historyRows.length > 0
+                ? buildLiveTradingAnalytics(historyRows)
+                : null)
+              setPerformanceConnectionCount(historyRows.length > 0 ? scopeIds.length : 0)
+            }
             const engine = new AnalyticsEngine(merged)
             setAnalyticsEngine(engine)
             updateAnalytics(engine, filter)
           } catch (err) {
             console.error("[v0] [Statistics] Failed to load real positions:", err)
             setTradeHistory([])
+            setPerformanceAnalytics(null)
+            setPerformanceConnectionCount(0)
           }
         }
       } catch (error) {
@@ -870,6 +998,82 @@ export default function StatisticsPage() {
           </Card>
         ))}
       </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Measured Profit Factor &amp; Drawdown Time</CardTitle>
+          <CardDescription>
+            Gross-profit ÷ gross-loss PF from closed positions. Time windows use
+            the complete indexed archive; latest-position windows are globally
+            ordered across the selected scope.
+            {performanceConnectionCount > 1
+              ? " DDT shows the longest connection-level drawdown in the selected portfolio."
+              : ""}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {performanceAnalytics ? (
+            <>
+              <div className="grid gap-2 sm:grid-cols-3">
+                {(["12", "25", "75"] as const).map((window) => {
+                  const metric = performanceAnalytics.positionWindows[window]
+                  return (
+                    <div key={`positions-${window}`} className="rounded-lg border bg-muted/10 p-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Last {window} positions
+                      </div>
+                      <div className="mt-1 text-xl font-bold tabular-nums">
+                        PF {formatPerformancePf(metric)}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {metric.trades} closes · {metric.wins}W / {metric.losses}L
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-4">
+                {(["4h", "12h", "48h"] as const).map((window) => {
+                  const metric = performanceAnalytics.timeWindows[window]
+                  return (
+                    <div key={`hours-${window}`} className="rounded-lg border bg-muted/10 p-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Last {window}
+                      </div>
+                      <div className="mt-1 text-xl font-bold tabular-nums">
+                        PF {formatPerformancePf(metric)}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {metric.trades} closes · {metric.wins}W / {metric.losses}L
+                      </div>
+                    </div>
+                  )
+                })}
+                <div className="rounded-lg border bg-muted/10 p-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    DDT · last 3 days
+                  </div>
+                  <div className="mt-1 text-xl font-bold tabular-nums">
+                    {formatDurationMs(
+                      performanceAnalytics.drawdown3d.currentDurationMs ||
+                      performanceAnalytics.drawdown3d.maxDurationMs,
+                    )}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {performanceAnalytics.drawdown3d.inDrawdown ? "Active" : "Recovered"} ·{" "}
+                    {performanceAnalytics.drawdown3d.episodes} episodes ·{" "}
+                    max {formatDurationMs(performanceAnalytics.drawdown3d.maxDurationMs)}
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="text-sm text-muted-foreground">
+              No closed-position PF/DDT samples are available for the selected scope.
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="pb-2">

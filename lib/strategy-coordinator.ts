@@ -77,6 +77,7 @@ import {
   POS_COUNT_VOLUME_RATIO_DEFAULT,
   posCountVolumeRatioToSetMultiplier,
 } from "@/lib/pos-count-volume-ratio"
+import { resolveStrategyMemoryGuardLimits } from "@/lib/strategy-memory-guard"
 
 export function normalizeStrategyDirection(...values: unknown[]): "long" | "short" | null {
   for (const value of values) {
@@ -264,8 +265,8 @@ export interface StrategySet {
    * More performant than creating separate set copies for different stages.
    * 
    * Status values:
-   *   - "valid_base": Passes BASE→MAIN evaluation (minProfitFactor threshold)
-   *   - "valid_main": Passes MAIN→REAL evaluation (PositionCost-relative stage ratio)
+   *   - "valid_base": Passes the independent Base-valid threshold
+   *   - "valid_main": Also passes Main's independent PF/DDT/history gate
    *   - "valid_real": Passes REAL→LIVE evaluation (in top performers)
    *   - "invalid": Failed some evaluation gate
    *   - undefined: Not yet evaluated at this stage
@@ -279,8 +280,8 @@ export interface StrategySet {
    * ── Evaluation reason when status is "invalid" ──────────────────────
    * 
    * Explains why set was rejected in current cycle:
-   *   - "insufficient_history": prevPos.count < mainEvalPosCount threshold
-   *   - "low_profitfactor": avgProfitFactor < threshold
+   *   - "main_insufficient_history": prevPos.count < mainEvalPosCount
+   *   - "base_low_profitfactor" / "main_low_profitfactor": stage-specific gate
    *   - "hedge_netted": Hedged out by opposing direction
    *   - "low_performance": Real-stage performance filter
    *   - Other: specific reason for rejection
@@ -2017,15 +2018,9 @@ export class StrategyCoordinator {
   // defaults so a fresh install gates with 0.9/1.0/1.0/1.0 even
   // before the operator touches the sliders.
   //
-  // Why split `PF_BASE_MIN` (per-indication entry filter at line ~440)
-  // from `METRICS.base.minProfitFactor`? Historically `PF_BASE_MIN`
-  // gated INDIVIDUAL indication entries into Base, while the METRICS
-  // values gate the AVERAGE-PF of an already-built Set into the next
-  // stage. Conceptually the operator wants ONE Base PF knob — so we
-  // load the same `baseProfitFactor` into both fields.
-  // Operator spec defaults: base=1.0, main=1.2, real=1.2, live=1.2
-  // These are fallbacks used when no operator setting is found in Redis.
-  private PF_BASE_MIN = MAIN_TRADE_STAGE_PF_DEFAULTS.base
+  // Base Total represents every complete configuration Set. The Base PF
+  // setting therefore validates the completed Set after creation; it must
+  // never prune individual entries and silently reduce Total.
   private PF_MAIN_MIN = MAIN_TRADE_STAGE_PF_DEFAULTS.main
   private PF_REAL_MIN = MAIN_TRADE_STAGE_PF_DEFAULTS.real
   private PF_LIVE_MIN = MAIN_TRADE_STAGE_PF_DEFAULTS.live
@@ -2110,8 +2105,7 @@ export class StrategyCoordinator {
    *
    * Reads `baseProfitFactor`, `mainProfitFactor`, `realProfitFactor`,
    * `liveProfitFactor` from `getAppSettings()` and mirrors them into:
-   *   - `PF_*_MIN` (per-indication entry filter at base stage; advisory
-   *      promotion floor at later stages)
+   *   - `PF_*_MIN` (advisory promotion floors for downstream stages)
    *   - `METRICS.{base|main|real|live}.minProfitFactor` (Set-average
    *      gate consumed at lines 695/1117/1468)
    *
@@ -2151,7 +2145,6 @@ export class StrategyCoordinator {
       const realPF = normalizeMainTradeStagePfRatio("real", s.realProfitFactor)
       const livePF = normalizeMainTradeStagePfRatio("live", s.liveProfitFactor)
 
-      this.PF_BASE_MIN = basePF
       this.PF_MAIN_MIN = mainPF
       this.PF_REAL_MIN = realPF
       this.PF_LIVE_MIN = livePF
@@ -2419,11 +2412,12 @@ export class StrategyCoordinator {
       const gl = (globalThis as any).__redis_mem_limits as
         | { heapMB: number; rssSoftMB: number; rssHardMB: number }
         | undefined
-      const SOFT_RSS_MB = gl?.rssSoftMB ?? 2_000
-      const HARD_RSS_MB = gl?.rssHardMB ?? 3_000
+      const memoryLimits = resolveStrategyMemoryGuardLimits(gl)
+      const SOFT_RSS_MB = memoryLimits.rssSoftMb
+      const HARD_RSS_MB = memoryLimits.rssHardMb
       // Emergency must be below the hard ceiling so the longer pause happens
       // before critical eviction and kernel OOM pressure, not after it.
-      const EMERGENCY_RSS_MB = Math.round(HARD_RSS_MB * 0.95)
+      const EMERGENCY_RSS_MB = memoryLimits.rssEmergencyMb
 
       let rssMB = process.memoryUsage().rss / 1024 / 1024
       if (rssMB < SOFT_RSS_MB) return
@@ -3167,7 +3161,6 @@ export class StrategyCoordinator {
           const rawPF = parseFloat(String(ind.profitFactor ?? ind.profit_factor ?? 0))
           const pfFromPF = Number.isFinite(rawPF) && rawPF > 0 ? rawPF : conf * 2
           const pf = pfFromPF
-          if (pf < this.PF_BASE_MIN) continue
 
           const rawAdaptiveTpFactors =
             ind.config?.tpFactors ??
@@ -3523,6 +3516,7 @@ export class StrategyCoordinator {
       baseSets = stored?.sets || []
     }
 
+    const metricsBase = this.METRICS.base
     const metricsMain = this.METRICS.main
     const maxEntries = this.config.maxEntriesPerSet || 250
     const ctx = posCtx ?? this.neutralPositionContext()
@@ -3544,6 +3538,7 @@ export class StrategyCoordinator {
     // polluting the passed/failed buckets.
     const mainMinPos = this._coordinationSettings.mainEvalPosCount
     let skippedLowPos = 0
+    const baseValidSetKeys = new Set<string>()
 
     // ── 1. Fingerprint-cache lookup ───────────────���────────────────────────
     // Fetch last cycle's fingerprint map up-front. `fpCacheKey:v2` stores a
@@ -3602,33 +3597,46 @@ export class StrategyCoordinator {
       const histCount    = baseSet.prevPos?.count ?? 0
       const setPosCount  = Math.max(liveCount, histCount)
       
-      // Check if we have sufficient history.
+      // Base Valid is independent from Main Valid. Every complete Base Set is
+      // counted in Base Total; this first gate applies only the Base-specific
+      // PF/DDT contract and forms the input pool for Main.
+      if (
+        baseSet.avgProfitFactor < metricsBase.minProfitFactor ||
+        baseSet.avgDrawdownTime > metricsBase.maxDrawdownTime
+      ) {
+        baseSet.status = "invalid"
+        baseSet.rejectionReason = baseSet.avgProfitFactor < metricsBase.minProfitFactor
+          ? `base_low_profitfactor: ${baseSet.avgProfitFactor.toFixed(2)} < ${metricsBase.minProfitFactor}`
+          : `base_high_drawdowntime: ${baseSet.avgDrawdownTime} > ${metricsBase.maxDrawdownTime}`
+        continue
+      }
+      baseSet.status = "valid_base"
+      baseValidSetKeys.add(baseSet.setKey)
+
+      // Check if we have sufficient history for the independent Main gate.
       // mainMinPos comes from mainEvalPosCount (canonical default 25).
       // A Set with no history remains a bootstrapping candidate. Once history
       // exists, its own exact lane must complete the configured window before
       // it can be promoted.
       const hasHistoricData = histCount > 0
       if (hasHistoricData && histCount < mainMinPos) {
-        baseSet.status = "invalid"
-        baseSet.rejectionReason = `insufficient_history: ${histCount}/${mainMinPos}`
+        baseSet.rejectionReason = `main_insufficient_history: ${histCount}/${mainMinPos}`
         skippedLowPos++
         continue
       }
 
-      // Base-level validation - mark status based on pass/fail
+      // Main evaluates only the already-valid Base pool with Main's own
+      // threshold and DDT specification.
       if (baseSet.avgProfitFactor < metrics.minProfitFactor) {
-        baseSet.status = "invalid"
-        baseSet.rejectionReason = `low_profitfactor: ${baseSet.avgProfitFactor.toFixed(2)} < ${metrics.minProfitFactor}`
+        baseSet.rejectionReason = `main_low_profitfactor: ${baseSet.avgProfitFactor.toFixed(2)} < ${metrics.minProfitFactor}`
         continue
       }
       if (baseSet.avgDrawdownTime > metrics.maxDrawdownTime) {
-        baseSet.status = "invalid"
-        baseSet.rejectionReason = `high_drawdowntime: ${baseSet.avgDrawdownTime} > ${metrics.maxDrawdownTime}`
+        baseSet.rejectionReason = `main_high_drawdowntime: ${baseSet.avgDrawdownTime} > ${metrics.maxDrawdownTime}`
         continue
       }
 
-      // Mark as valid for BASE→MAIN evaluation
-      baseSet.status = "valid_base"
+      baseSet.status = "valid_main"
 
       // ── MAIN variant materialisation ────────────────────────────────────────
       // Block is an active-position overlay and is therefore materialised at
@@ -4034,13 +4042,18 @@ export class StrategyCoordinator {
     // BASE->MAIN pass rate = fraction of Base Sets that produced ≥1 variant.
     // Using mainSets.length/baseSets.length inflates the ratio by 320×
     // (full axis fan-out); uniqueBaseSetsProduced.size is the correct numerator.
-    const passRatioMain = baseSets.length > 0
-      ? Math.min(1, uniqueBaseSetsProduced.size / baseSets.length)
+    const passRatioMain = baseValidSetKeys.size > 0
+      ? Math.min(1, uniqueBaseSetsProduced.size / baseValidSetKeys.size)
       : 0
     // Main is both a filter and an expansion stage. Keep the parent funnel
     // separate from the materialised output so a valid axis/variant fan-out
     // (Main > Base) is never misreported as a >100% filter pass rate.
-    const mainInputCount = baseSets.length
+    const baseInputCount = baseSets.length
+    const baseValidCount = baseValidSetKeys.size
+    const basePassRatio = baseInputCount > 0
+      ? Math.min(1, baseValidCount / baseInputCount)
+      : 0
+    const mainInputCount = baseValidCount
     const mainPassedParentCount = uniqueBaseSetsProduced.size
     const mainRelatedSetCount = Math.max(0, mainSets.length - mainPassedParentCount)
 
@@ -4069,6 +4082,8 @@ export class StrategyCoordinator {
         if (activeKeys.has(s.setKey)) mainRunningNow++
       }
       const mainValidOpen = Array.from(uniqueBaseSetsProduced)
+        .filter((setKey) => activeKeys.has(setKey)).length
+      const baseValidOpen = Array.from(baseValidSetKeys)
         .filter((setKey) => activeKeys.has(setKey)).length
 
       const writes: Promise<any>[] = [
@@ -4119,23 +4134,23 @@ export class StrategyCoordinator {
         }),
         client.expire(`axis_windows:${this.connectionId}`, 7 * 24 * 60 * 60),
         client.hset(`strategy_detail:${this.connectionId}:base`, {
-          passed_sets: String(mainPassedParentCount),
-          pass_rate:   String(passRatioMain.toFixed(4)),
-          row_valid:   String(mainPassedParentCount),
-          row_valid_open: String(mainValidOpen),
-          [`s:${symbol}:passed`]: String(mainPassedParentCount),
-          [`s:${symbol}:row_valid`]: String(mainPassedParentCount),
-          [`s:${symbol}:row_valid_open`]: String(mainValidOpen),
+          passed_sets: String(baseValidCount),
+          pass_rate:   String(basePassRatio.toFixed(4)),
+          row_valid:   String(baseValidCount),
+          row_valid_open: String(baseValidOpen),
+          [`s:${symbol}:passed`]: String(baseValidCount),
+          [`s:${symbol}:row_valid`]: String(baseValidCount),
+          [`s:${symbol}:row_valid_open`]: String(baseValidOpen),
         }).catch(() => {}),
         client.set(`strategies:${this.connectionId}:main:count`, String(mainSets.length)),
         client.set(`strategies:${this.connectionId}:main:evaluated`, String(mainInputCount)),
-        client.set(`strategies:${this.connectionId}:base:passed`, String(mainPassedParentCount)),
+        client.set(`strategies:${this.connectionId}:base:passed`, String(baseValidCount)),
         client.expire(`strategies:${this.connectionId}:main:count`, 86400),
         client.expire(`strategies:${this.connectionId}:main:evaluated`, 86400),
         client.expire(`strategies:${this.connectionId}:base:passed`, 86400),
       ]
       if (mainSets.length > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_main_total", mainSets.length))
-      if (baseSets.length > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_main_evaluated", baseSets.length))
+      if (baseValidCount > 0) writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_main_evaluated", baseValidCount))
       if (mainPassedParentCount > 0) {
         writes.push(hincrbyStrategyProgression(client, this.connectionId, "strategies_main_parent_passed", mainPassedParentCount))
       }
@@ -4204,7 +4219,7 @@ export class StrategyCoordinator {
         // not baseSets.length - uniqueBaseSetsProduced.size (which undercounts when
         // all Base Set parents appear via axis fan-out but some were still rejected
         // at PF/DDT gate). Counting status=invalid directly is authoritative.
-        failedEvaluation: baseSets.filter((s) => s.status === "invalid").length,
+        failedEvaluation: Math.max(0, mainInputCount - mainPassedParentCount - skippedLowPos),
         avgProfitFactor: mainSets.length > 0 ? mainSets.reduce((s, set) => s + set.avgProfitFactor, 0) / mainSets.length : 0,
         avgDrawdownTime: mainSets.length > 0 ? mainSets.reduce((s, set) => s + set.avgDrawdownTime, 0) / mainSets.length : 0,
       },

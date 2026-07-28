@@ -202,7 +202,7 @@ async function main() {
     const health = await waitForHealth(child)
     const init = await json("/api/system/init-status", 60_000)
     assert(init?.ready === true, "Kilo preview startup is not ready")
-    assert(init?.migrations?.current_version === 89 && init?.migrations?.latest_version === 89, "Kilo preview schema is not v89")
+    assert(init?.migrations?.current_version === 90 && init?.migrations?.latest_version === 90, "Kilo preview schema is not v90")
     assert(init?.system?.deployment_runtime === "kilo-deploy", "Kilo deployment runtime was not detected")
     assert(init?.system?.engine_owner === "scheduled-bounded-owner", "Kilo bounded scheduled owner was not detected")
 

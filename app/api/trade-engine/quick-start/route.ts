@@ -29,7 +29,10 @@ import {
   collectQuickStartChangedFields,
   sameOrderedSymbols,
 } from "@/lib/quickstart-change-detection"
-import { normalizeMainTradeStagePfRatio } from "@/lib/main-trade-profit-factor"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  normalizeMainTradeStagePfRatio,
+} from "@/lib/main-trade-profit-factor"
 
 function toNumber(value: unknown): number {
   const n = Number(value)
@@ -770,7 +773,7 @@ async function handlePost(request: Request) {
        existingQuickStartSettings,
        ["baseProfitFactor", "base_min_profit_factor"],
        ["baseProfitFactor", "base_min_profit_factor"],
-       0.8,
+       MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
      )))
      const resolvedMainProfitFactor = String(normalizeMainTradeStagePfRatio("main", resolveQuickStartValue(
        body,
@@ -932,7 +935,7 @@ async function handlePost(request: Request) {
     // `config_set_symbols_total` so the /stats endpoint no longer defaults
     // to the hard-coded "3" when the historical phase reports progress.
     // Also reset the processed counter to 0 so progress starts correctly.
-    // Operator-spec defaults for quickstart: Base ratio 0.80 and
+    // Operator-spec defaults for quickstart: Base Valid ratio 0.80 and
     // Main/Real/Live ratios 1.12,
     // trailing on, block on, dca off, control orders on, minimum live volume, volatility_1h.
     // These are persisted to connection_settings so the engine reads them on the
