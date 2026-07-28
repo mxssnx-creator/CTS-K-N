@@ -158,6 +158,11 @@ describe("InlineLocalRedis compatibility and persistence", () => {
       await writer.expire("string:persist", 60)
 
       await expect(writer.saveToDisk()).resolves.toBe(true)
+      const snapshot = await readFile(snapshotPath, "utf8")
+      expect(JSON.parse(snapshot.slice(0, snapshot.indexOf("\n")))).toMatchObject({
+        v: 2,
+        mutationVersion: expect.any(Number),
+      })
 
       resetInlineGlobals()
       const reader = new InlineLocalRedis()
@@ -169,6 +174,34 @@ describe("InlineLocalRedis compatibility and persistence", () => {
       await expect(reader.lrange("list:persist", 0, -1)).resolves.toEqual(["first", "second"])
       await expect(reader.zscore("z:persist", "member")).resolves.toBe("10")
       await expect(reader.ttl("string:persist")).resolves.toBeGreaterThan(0)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("streams large snapshots without materialising one aggregate JSON payload", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "inline-redis-stream-"))
+    const snapshotPath = join(dir, "redis-snapshot.json")
+    process.env.V0_REDIS_SNAPSHOT_PATH = snapshotPath
+
+    try {
+      const writer = new InlineLocalRedis()
+      const payload = "x".repeat(32_768)
+      for (let index = 0; index < 160; index++) {
+        await writer.hset(`indication_set:stream:${index}`, {
+          id: String(index),
+          payload,
+        })
+      }
+      await expect(writer.saveToDisk()).resolves.toBe(true)
+      const snapshotStat = await stat(snapshotPath)
+      expect(snapshotStat.size).toBeGreaterThan(5_000_000)
+
+      resetInlineGlobals()
+      const reader = new InlineLocalRedis()
+      await expect(reader.loadFromDisk()).resolves.toBe(true)
+      await expect(reader.hget("indication_set:stream:159", "payload")).resolves.toHaveLength(payload.length)
+      await expect(reader.dbSize()).resolves.toBe(160)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -320,8 +353,16 @@ describe("InlineLocalRedis compatibility and persistence", () => {
       }
       await expect(Promise.all(barriers)).resolves.toEqual(Array(40).fill(true))
 
-      const parsed = JSON.parse(await readFile(snapshotPath, "utf8"))
-      expect(new Map(parsed.strings).get("concurrent:latest")).toBe("39")
+      const records = (await readFile(snapshotPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+      expect(records[0]).toMatchObject({ v: 2 })
+      expect(records.find((record) => record[0] === "s" && record[1] === "concurrent:latest")).toEqual([
+        "s",
+        "concurrent:latest",
+        "39",
+      ])
       expect((await readdir(dir)).filter((name) => name.endsWith(".tmp"))).toEqual([])
     } finally {
       await rm(dir, { recursive: true, force: true })

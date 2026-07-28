@@ -1022,6 +1022,8 @@ describe("requested regression guardrails", () => {
 
     expect(pkg.scripts["test:quickstart-12"]).toBe("node scripts/run-dev-preview-check.mjs")
     expect(devRunner).toContain('RUNTIME_MODE: "development"')
+    expect(devRunner).toContain('process.env.DEV_NODE_HEAP_MB || 12288')
+    expect(devRunner).toContain('WATCHPACK_POLLING: process.env.WATCHPACK_POLLING || "true"')
     expect(devRunner).toContain('BINGX_API_KEY: ""')
     expect(soak).toContain("liveTrade: false")
     expect(soak).toContain("is_live_trade: false")
