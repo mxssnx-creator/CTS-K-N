@@ -218,7 +218,7 @@ describe("preset optimizer", () => {
     expect(emaSignals).not.toEqual(smaSignals)
   })
 
-  test("coordinates OBV and Stochastic variants only on Common timeframes up to 15 minutes", () => {
+  test("coordinates OBV and Stochastic variants on every configured Common timeframe through 30 minutes", () => {
     const configurations = buildCommonIndicatorConfigurations({
       coordination: { timeframesMinutes: [1, 5, 15, 30] },
       obv: {
@@ -242,10 +242,10 @@ describe("preset optimizer", () => {
       .toEqual(new Set(["obv", "stochastic"]))
     expect(configurations.every((configuration) =>
       configuration.params.timeframeMinutes >= 1 &&
-      configuration.params.timeframeMinutes <= 15,
+      configuration.params.timeframeMinutes <= 30,
     )).toBe(true)
     expect(new Set(configurations.map((configuration) => configuration.params.timeframeMinutes)))
-      .toEqual(new Set([1, 5, 15]))
+      .toEqual(new Set([1, 5, 15, 30]))
   })
 
   test("spreads historical signals across a 14-day window and keeps daily totals exact", () => {
