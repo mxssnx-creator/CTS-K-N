@@ -927,9 +927,11 @@ async function main() {
       rssKb: finiteNonNegative(monitoring?.rss, "monitoring.rss"),
       heapUsedKb: finiteNonNegative(monitoring?.heapUsed, "monitoring.heapUsed"),
       databaseKeys: finiteNonNegative(monitoring?.database?.keys, "monitoring.database.keys"),
-      engineCycles:
-        finiteNonNegative(monitoring?.engines?.indications?.cycleCount, "monitoring.indicationCycles") +
+      engineCycles: Math.max(
+        finiteNonNegative(monitoring?.engines?.indications?.cycleCount, "monitoring.indicationCycles"),
         finiteNonNegative(monitoring?.engines?.strategies?.cycleCount, "monitoring.strategyCycles"),
+        finiteNonNegative(monitoring?.engines?.realtime?.cycleCount, "monitoring.realtimeCycles"),
+      ),
     })
 
     if (rounds === 1 || rounds % 10 === 0) {

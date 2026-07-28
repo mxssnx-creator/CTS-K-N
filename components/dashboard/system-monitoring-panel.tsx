@@ -39,8 +39,14 @@ export function SystemMonitoringPanel() {
       if (res.ok) {
         const mon = await res.json()
         setData({
-          // Primary: indication cycles (live hash); fallback: strategy cycles
-          engineCycles: mon.engines?.indications?.cycleCount || mon.engines?.strategies?.cycleCount || 0,
+          // The three phase counters advance independently. Use the largest
+          // canonical count instead of adding mirrored ticks or hiding active
+          // Live-position recovery while Historic/Base bootstrap is running.
+          engineCycles: Math.max(
+            Number(mon.engines?.indications?.cycleCount) || 0,
+            Number(mon.engines?.strategies?.cycleCount) || 0,
+            Number(mon.engines?.realtime?.cycleCount) || 0,
+          ),
           activePositions: mon.database?.positions1h || 0,
           cpu: mon.cpu || 0,
           memory: mon.memory || 0,

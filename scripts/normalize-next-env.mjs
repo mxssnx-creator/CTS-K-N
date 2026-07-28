@@ -61,21 +61,8 @@ if (resolve(distDir) !== resolve('.next') && existsSync('tsconfig.json')) {
 // into .next/ after each production build prevents the crash.
 const src = join(distDir, 'routes-manifest.json')
 const dest = join('.next', 'routes-manifest.json')
-
-// Compare canonical paths, not the raw NEXT_DIST_DIR text. Build controllers
-// may express the default directory as `.next/` or an absolute path; copying a
-// file onto itself truncates it to zero bytes on some filesystems and leaves
-// OpenNext with an unreadable manifest.
-if (resolve(src) !== resolve(dest) && existsSync(src)) {
-  try {
-    mkdirSync('.next', { recursive: true })
-    copyFileSync(src, dest)
-    console.log(`[next-env] copied routes-manifest.json from ${distDir}/ to .next/`)
-  } catch (err) {
-    // Non-fatal: dev server will regenerate on first request.
-    console.warn('[next-env] could not copy routes-manifest.json:', err.message)
-  }
-}
+const routeManifestSettleMs = Math.max(0, Number(process.env.NEXT_MANIFEST_SETTLE_MS || 15_000))
+const manifestSleepArray = new Int32Array(new SharedArrayBuffer(4))
 
 function isValidJson(filePath) {
   if (!existsSync(filePath)) return false
@@ -86,6 +73,39 @@ function isValidJson(filePath) {
     return false
   }
 }
+
+function sleep(milliseconds) {
+  if (milliseconds > 0) Atomics.wait(manifestSleepArray, 0, 0, milliseconds)
+}
+
+function waitForValidJson(filePath, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (!isValidJson(filePath) && Date.now() < deadline) sleep(100)
+  return isValidJson(filePath)
+}
+
+// Compare canonical paths, not the raw NEXT_DIST_DIR text. Build controllers
+// may express the default directory as `.next/` or an absolute path; copying a
+// file onto itself truncates it to zero bytes on some filesystems and leaves
+// OpenNext with an unreadable manifest.
+function copyRoutesManifestToCanonical() {
+  if (resolve(src) === resolve(dest) || !isValidJson(src)) return
+  try {
+    mkdirSync('.next', { recursive: true })
+    copyFileSync(src, dest)
+    console.log(`[next-env] copied routes-manifest.json from ${distDir}/ to .next/`)
+  } catch (err) {
+    // Non-fatal: dev server will regenerate on first request.
+    console.warn('[next-env] could not copy routes-manifest.json:', err.message)
+  }
+}
+
+// Next can finish the parent build before its route-manifest writer has
+// atomically replaced a transient zero-byte file. Postbuild runs immediately,
+// so wait only for that exact build-owned JSON contract instead of accepting a
+// partial bundle or sleeping after every later validation step.
+waitForValidJson(src, routeManifestSettleMs)
+copyRoutesManifestToCanonical()
 
 function isValidPrerenderManifest(filePath) {
   if (!isValidJson(filePath)) return false
@@ -292,6 +312,10 @@ if (!isStaticExport && existsSync(exportDetail)) {
 // Standalone builds keep a second complete manifest. Recover only from that
 // build-owned copy and then validate again; never let a successful Next build
 // hand an empty/partial routing contract to OpenNext or a production preview.
+if (!isValidJson(src)) {
+  waitForValidJson(src, routeManifestSettleMs)
+  copyRoutesManifestToCanonical()
+}
 if (!isValidJson(src)) {
   const standaloneManifest = join(standaloneDistDir, 'routes-manifest.json')
   if (resolve(standaloneManifest) !== resolve(src) && isValidJson(standaloneManifest)) {

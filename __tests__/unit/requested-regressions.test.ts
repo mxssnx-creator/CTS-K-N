@@ -1482,6 +1482,7 @@ describe("requested regression guardrails", () => {
     expect(route).toContain('const MONITORING_KEY_SAMPLE_TTL_MS = 5_000')
     expect(route).toContain('collectConnectionIds(client, allKeys)')
     expect(route).toContain('maxField(progressionHashes, "realtime_cycle_count")')
+    expect(route).toContain('maxField(progressionHashes, "live_positions_cycle_count")')
     expect(route).toContain('progression:${connectionId}:${type}')
     expect(route).toContain('client.hgetall(`realtime:${connectionId}`)')
     expect(route).toContain('const connectionMatch = /^(?:settings:)?connection:([^:]+)$/')
