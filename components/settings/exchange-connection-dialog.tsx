@@ -1,6 +1,10 @@
 "use client"
 
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+} from "@/lib/main-trade-profit-factor"
 import { useState, useEffect } from "react"
 import {
   Dialog,
@@ -459,20 +463,79 @@ export function ExchangeConnectionDialog({
           baseVolumeFactorSignal: MIN_VOLUME_FACTOR,
           
           // Use indication settings as defaults
-          indicationTimeInterval: indicationSettings?.direction?.interval || 1,
-          indicationTimeout: indicationSettings?.direction?.timeout || 3,
-          indicationMinProfitFactor: globalSettings?.indication_min_profit_factor || 0.7,
+          indicationTimeInterval: indicationSettings?.direction?.interval ?? 1,
+          indicationTimeout: indicationSettings?.direction?.timeout ?? 0.25,
+          indicationTimeoutMs: 250,
+          indicationMinProfitFactor: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
           
-          // Use strategy settings as defaults
-          strategyMinProfitFactor: globalSettings?.strategy_min_profit_factor || 0.5,
-          liveTradeProfitFactorMinBase: 0.6,
-          liveTradeProfitFactorMinMain: 0.6,
-          liveTradeProfitFactorMinReal: 0.6,
+          // Canonical PositionCost-relative four-stage defaults. The legacy
+          // aliases remain synchronized for older readers, while `strategies`
+          // is the authoritative shape consumed by the runtime.
+          strategyMinProfitFactor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+          liveTradeProfitFactorMinBase: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+          liveTradeProfitFactorMinMain: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+          liveTradeProfitFactorMinReal: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+          liveTradeProfitFactorMinLive: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
           liveTradeDrawdownTimeHours: 12,
-          presetTradeProfitFactorMinBase: 0.6,
-          presetTradeProfitFactorMinMain: 0.6,
-          presetTradeProfitFactorMinReal: 0.6,
+          presetTradeProfitFactorMinBase: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+          presetTradeProfitFactorMinMain: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+          presetTradeProfitFactorMinReal: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+          presetTradeProfitFactorMinLive: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
           presetTradeDrawdownTimeHours: 12,
+          strategies: {
+            main: {
+              base: {
+                enabled: true,
+                min_profit_factor: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+                max_drawdown_time: 160,
+                max_positions: 0,
+              },
+              main: {
+                enabled: true,
+                min_profit_factor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+                max_drawdown_time: 160,
+                max_positions: 0,
+              },
+              real: {
+                enabled: true,
+                min_profit_factor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+                max_drawdown_time: 240,
+                max_positions: 5_000,
+              },
+              live: {
+                enabled: true,
+                min_profit_factor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+                max_drawdown_time: 240,
+                max_positions: 500,
+              },
+            },
+            preset: {
+              base: {
+                enabled: true,
+                min_profit_factor: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+                max_drawdown_time: 160,
+                max_positions: 0,
+              },
+              main: {
+                enabled: true,
+                min_profit_factor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+                max_drawdown_time: 160,
+                max_positions: 0,
+              },
+              real: {
+                enabled: true,
+                min_profit_factor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+                max_drawdown_time: 240,
+                max_positions: 5_000,
+              },
+              live: {
+                enabled: true,
+                min_profit_factor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+                max_drawdown_time: 240,
+                max_positions: 500,
+              },
+            },
+          },
           
           // Strategy toggles from global settings
           trailingWithTrailing: strategySettings?.trailing_enabled ?? true,

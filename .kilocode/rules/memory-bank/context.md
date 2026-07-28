@@ -668,6 +668,16 @@ credentials are present.
   including Main-enabled Signal execution, exact identity history, independent
   Pos-Count targets and the 10:0.03 Pos-Count volume ratio. The settings UI
   exposes complete stage controls and keeps Trend as the final indication tab.
+- [x] New connections, legacy connection settings and Preset CRUD use the
+  same canonical Main/Preset four-stage PositionCost-relative defaults as the
+  runtime (Base 0.80; Main, Real and Live 1.12), with legacy aliases retained
+  for older readers. Preset creation, activation and testing retain the full
+  indication/range/stage matrix; bounded worker pools replace former 500/100
+  configuration persistence ceilings.
+- [x] The Structure dashboard and its metrics/module APIs now start from
+  verified zero/unknown state, render only measured Redis/workflow/module
+  health and derive pressure from real metrics; they no longer present
+  fabricated capacities, placeholder health or a global 500-position ceiling.
 - [x] Preserved one physical Direction parent for source-scoped Signal Block
   adjustments while allowing ordinary Block-only lanes to seed and recover
   their own parent. Explicit Consensus and direct-source outcomes now update

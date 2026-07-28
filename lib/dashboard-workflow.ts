@@ -11,7 +11,7 @@ import {
 } from "@/lib/connection-state-utils"
 
 
-async function scanKeys(client: any, pattern: string, limit = 500): Promise<string[]> {
+async function scanKeys(client: any, pattern: string): Promise<string[]> {
   const keys: string[] = []
   let cursor = "0"
   do {
@@ -20,8 +20,30 @@ async function scanKeys(client: any, pattern: string, limit = 500): Promise<stri
     cursor = String(Array.isArray(result) ? result[0] : result.cursor || "0")
     const batch = (Array.isArray(result) ? result[1] : result.keys || []) as string[]
     keys.push(...batch)
-  } while (cursor !== "0" && keys.length < limit)
-  return keys.slice(0, limit)
+  } while (cursor !== "0")
+  return Array.from(new Set(keys))
+}
+
+async function readHashesInBatches(
+  client: any,
+  keys: readonly string[],
+  batchSize = 128,
+): Promise<Array<Record<string, string>>> {
+  const output: Array<Record<string, string>> = []
+  for (let offset = 0; offset < keys.length; offset += batchSize) {
+    const batch = keys.slice(offset, offset + batchSize)
+    const pipeline = client.multi()
+    for (const key of batch) pipeline.hgetall(key)
+    const values = await pipeline.exec().catch(() => [])
+    for (let index = 0; index < batch.length; index++) {
+      const value = values?.[index]
+      const row = (Array.isArray(value) ? value[1] : value) as
+        | Record<string, string>
+        | undefined
+      output.push(row && typeof row === "object" ? row : {})
+    }
+  }
+  return output
 }
 
 type WorkflowConnection = {
@@ -178,9 +200,11 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
     // Strategy set counts from settings:strategies:* hash keys
     let baseSets = 0, mainSets = 0, realSets = 0
     try {
-      const stratKeys = await scanKeys(client, `settings:strategies:${connId}:*:sets`, 250)
-      for (const k of stratKeys) {
-        const h = await client.hgetall(k).catch(() => ({})) || {}
+      const stratKeys = await scanKeys(client, `settings:strategies:${connId}:*:sets`)
+      const strategyRows = await readHashesInBatches(client, stratKeys)
+      for (let index = 0; index < stratKeys.length; index++) {
+        const k = stratKeys[index]
+        const h = strategyRows[index] || {}
         const c = parseInt((h as Record<string, string>).count || "0", 10)
         if (k.includes(":base:"))      baseSets += c
         else if (k.includes(":main:")) mainSets += c
@@ -192,7 +216,7 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
     const prehistoricSymbols = await client.scard(`prehistoric:${connId}:symbols`).catch(() => 0)
     let prehistoricDataSize = 0
     try {
-      const keys = await scanKeys(client, `prehistoric:${connId}:*`, 1000)
+      const keys = await scanKeys(client, `prehistoric:${connId}:*`)
       prehistoricDataSize = keys.length
     } catch { /* ignore */ }
 
