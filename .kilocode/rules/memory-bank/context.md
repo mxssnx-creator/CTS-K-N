@@ -734,7 +734,13 @@ credentials are present.
   target, delete the exact checkout, clone the requested revision, restore that
   state and run the canonical installer. In-place Git rewrites and silent
   rollback of a partially upgraded checkout are no longer used.
-- [x] Final release checks: 121 Jest suites / 843 tests, TypeScript, ESLint,
+- [x] Signal Previous-position admission now bootstraps fresh exact
+  source × symbol × direction × config lanes through twelve closes, then
+  requires the canonical 0.30 PositionCost-relative ratio. Source and
+  source×symbol diagnostics cannot block sibling configs; only the newest
+  sixteen negative real-exchange closes permanently disable that same exact
+  lane.
+- [x] Final release checks: 121 Jest suites / 844 tests, TypeScript, ESLint,
   Kilo preflight (37 checks, schema 89), secret scan (1,267 files, zero
   findings), recreation-manifest verification (1,259 project files), and a
   fresh production build with 41/41 pages, standalone assets and 339 complete

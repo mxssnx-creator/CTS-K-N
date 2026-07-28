@@ -99,12 +99,12 @@ export function IntervalsStrategiesOverview({ connections }: { connections: any[
         const statsRes = await fetch("/api/main/system-stats-v3").catch(() => null)
         if (statsRes?.ok) {
           const statsData = await statsRes.json()
-          const phases = statsData.workflowPhases || []
+          const pipelineEnabled = Boolean(statsData.tradeEngines?.mainEnabled)
           const fallbackStrategies: StrategyStats[] = [
-            { type: "base", enabled: true, rangeCount: 0, activePositions: statsData.activeConnections?.total || 0, totalIndications: 0, successRate: 0 },
-            { type: "main", enabled: statsData.tradeEngines?.mainEnabled || false, rangeCount: 0, activePositions: statsData.activeConnections?.active || 0, totalIndications: 0, successRate: 0 },
-            { type: "real", enabled: statsData.tradeEngines?.liveTradeEnabled || false, rangeCount: 0, activePositions: statsData.activeConnections?.liveTrade || 0, totalIndications: 0, successRate: 0 },
-            { type: "live", enabled: statsData.tradeEngines?.liveTradeEnabled || false, rangeCount: 0, activePositions: statsData.activeConnections?.liveTrade || 0, totalIndications: 0, successRate: 0 },
+            { type: "base", enabled: pipelineEnabled, rangeCount: 0, activePositions: statsData.activeConnections?.total || 0, totalIndications: 0, successRate: 0 },
+            { type: "main", enabled: pipelineEnabled, rangeCount: 0, activePositions: statsData.activeConnections?.active || 0, totalIndications: 0, successRate: 0 },
+            { type: "real", enabled: pipelineEnabled, rangeCount: 0, activePositions: statsData.activeConnections?.liveTrade || 0, totalIndications: 0, successRate: 0 },
+            { type: "live", enabled: pipelineEnabled, rangeCount: 0, activePositions: statsData.activeConnections?.liveTrade || 0, totalIndications: 0, successRate: 0 },
           ]
           setStrategies(fallbackStrategies)
         }

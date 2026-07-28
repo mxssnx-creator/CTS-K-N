@@ -872,7 +872,16 @@ async function main() {
       : null
     const activeSymbols = Array.isArray(engine?.engineStatus?.symbols) ? engine.engineStatus.symbols.map(String) : []
     if (!engine || activeSymbols.length !== SYMBOLS.length || activeSymbols.some((symbol, index) => symbol !== SYMBOLS[index])) {
-      throw new Error(`Engine is not coordinating the exact ${SYMBOLS.length}-symbol set`)
+      throw new Error(
+        `Engine is not coordinating the exact ${SYMBOLS.length}-symbol set: ` +
+        JSON.stringify({
+          foundEngine: Boolean(engine),
+          activeSymbols,
+          expectedSymbols: SYMBOLS,
+          status: engine?.engineStatus?.status,
+          running: engine?.isEngineRunning,
+        }),
+      )
     }
     if (engine?.isLiveTrading !== false) throw new Error("Engine status reports live trading during safe paper soak")
 

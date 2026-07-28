@@ -82,6 +82,7 @@ interface SignalSettings {
   performanceLookback: number
   performanceMinSamples: number
   performanceDisableBelowPnl: number
+  configMinimumPfRatio: number
   performanceCooldownMinutes: number
   circuitFailureThreshold: number
   circuitCooldownSeconds: number
@@ -281,21 +282,17 @@ export function SignalIndicationSettings() {
             </div>
             <Switch checked={settings.enabled} onCheckedChange={(checked) => update("enabled", checked)} />
           </div>
-          <div className="flex items-center justify-between rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3">
+          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3">
             <div>
-              <Label>Direct bootstrap execution</Label>
+              <Label>Automatic Previous-position bootstrap</Label>
               <p className="text-xs text-muted-foreground">
-                Enabled by default. Exact config PF-history checks are bypassed; after 12 source results
-                or 10 source × symbol × direction results, a negative average disables only the affected
-                scope. A config whose newest 16 real exchange closes average negative remains permanently
-                disabled. Turning this off keeps the same source/lane guards and additionally requires each
-                exact config to pass its 12-result PositionCost-relative PF window.
+                A fresh exact source × symbol × direction × config lane is admitted until it has 12 closed
+                results. Then it must keep a PositionCost-relative ratio of at least
+                {` ${settings.configMinimumPfRatio.toFixed(2)} `}; source and source × symbol diagnostics
+                never suppress another exact config. The newest 16 real-exchange closes below zero still
+                permanently disable that exact lane.
               </p>
             </div>
-            <Switch
-              checked={settings.directExecutionEnabled}
-              onCheckedChange={(checked) => update("directExecutionEnabled", checked)}
-            />
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -354,9 +351,9 @@ export function SignalIndicationSettings() {
                 ["Timeframe", `${settings.timeframeMinutes} minute`],
                 ["Registry", `${sources.length} websites`],
                 ["Selection", settings.positionSelectionMode === "best_first" ? "Best first" : settings.positionSelectionMode],
-                ["PnL lookback", `${settings.performanceLookback} closed`],
-                ["Minimum evidence", `${settings.performanceMinSamples} closed`],
-                ["Disable boundary", `PnL < ${settings.performanceDisableBelowPnl}`],
+                ["Previous-position gate", `${settings.performanceLookback} closed · ratio ≥ ${settings.configMinimumPfRatio.toFixed(2)}`],
+                ["Exact scope", "Source × symbol × direction × config"],
+                ["Permanent disable", "16-result avg < 0"],
               ].map(([label, value]) => (
                 <div key={label} className="bg-background px-2.5 py-2">
                   <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{label}</div>
@@ -547,28 +544,29 @@ export function SignalIndicationSettings() {
               Realized performance guard
             </CardTitle>
             <CardDescription className="text-xs">
-              Source health uses the newest 12 realized positions; each source × symbol × direction
-              lane uses its own newest 10. These windows never cap open positions.
+              The newest 12 realized positions are evaluated only for their exact source × symbol ×
+              direction × config lane. Aggregate source rows remain diagnostic.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-md border bg-muted/20 p-3 sm:col-span-2">
               <div className="flex items-center justify-between gap-2">
                 <Label className="text-xs">Fixed evidence window</Label>
-                <Badge variant="outline">Source 12 · lane 10</Badge>
+                <Badge variant="outline">12 exact closes</Badge>
               </div>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                Fresh lanes bootstrap directly. Mature negative source averages stop that source;
-                mature negative Long or Short averages stop only that exact lane.
+                Automatic Previous-position bootstrap applies until twelve closes exist. Mature lanes
+                must meet the canonical PositionCost-relative ratio.
               </p>
             </div>
             <div className="rounded-md border bg-muted/20 p-3 sm:col-span-2">
               <div className="flex items-center justify-between gap-2">
-                <Label className="text-xs">Fixed performance boundary</Label>
-                <Badge variant="outline">Disable when total PnL &lt; 0</Badge>
+                <Label className="text-xs">Exact performance boundary</Label>
+                <Badge variant="outline">Ratio ≥ {settings.configMinimumPfRatio.toFixed(2)}</Badge>
               </div>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                A persisted legacy threshold cannot keep a negative source × symbol × direction lane enabled.
+                Aggregate source diagnostics never disable sibling configs. Only the same exact lane can be
+                permanently disabled after sixteen negative real-exchange closes.
               </p>
             </div>
             {([
