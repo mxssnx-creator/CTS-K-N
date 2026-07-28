@@ -600,7 +600,7 @@ describe("production installation and Kilo deployment contract", () => {
     expect(response.status).toBe(400)
     await expect(response.json()).resolves.toMatchObject({
       success: false,
-      error: "Install directory must be a normalized, dedicated absolute directory",
+      error: "Install directory must be a normalized, dedicated absolute /opt directory",
     })
   })
 
@@ -640,7 +640,7 @@ describe("production installation and Kilo deployment contract", () => {
   })
 
   it("runs preflight and install through the SSH/bootstrap boundary with the canonical installer", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "cts-remote-route-e2e-"))
+    const root = await mkdtemp(path.join("/opt", "cts-remote-route-e2e-"))
     const binDir = path.join(root, "bin")
     const installerFixture = path.join(root, "canonical-installer.sh")
     const capture = path.join(root, "installer-args.txt")

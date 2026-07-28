@@ -1,6 +1,6 @@
-export const SIGNAL_MAX_POSITIONS_DEFAULT = 120
+export const SIGNAL_MAX_POSITIONS_DEFAULT = 350
 export const SIGNAL_MAX_POSITIONS_MIN = 1
-export const SIGNAL_MAX_POSITIONS_MAX = 120
+export const SIGNAL_MAX_POSITIONS_MAX = 350
 export const SIGNAL_POSITION_SELECTION_MODE = "best_first" as const
 
 export type SignalPositionDirection = "long" | "short"
@@ -14,6 +14,9 @@ export interface SignalCandidateRank {
   agreement: number
   strength: number
   rewardRisk: number
+  stopLossPct: number
+  drawdownPct: number
+  volatility12hPct: number
   generatedAt: number
   expiresAt: number
 }
@@ -122,6 +125,9 @@ export function parseSignalCandidateRanks(
         agreement: clamp(row.agreement, 0, 1),
         strength: clamp(row.strength, 0, 1),
         rewardRisk: clamp(row.rewardRisk, 0, 5),
+        stopLossPct: clamp(row.stopLossPct, 0, 100),
+        drawdownPct: clamp(row.drawdownPct, 0, 100),
+        volatility12hPct: clamp(row.volatility12hPct, 0, 10_000),
         generatedAt,
         expiresAt,
       })
@@ -149,6 +155,9 @@ export function rankSignalSymbolsBestFirst(
     const rightRank = ranks.get(right)
     if (leftRank && rightRank) {
       return (
+        rightRank.volatility12hPct - leftRank.volatility12hPct ||
+        leftRank.stopLossPct - rightRank.stopLossPct ||
+        leftRank.drawdownPct - rightRank.drawdownPct ||
         rightRank.score - leftRank.score ||
         rightRank.confidence - leftRank.confidence ||
         rightRank.generatedAt - leftRank.generatedAt ||

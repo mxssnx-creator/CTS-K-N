@@ -756,3 +756,10 @@ credentials are present.
   simulated lifecycles at 2.301 s warm p95; stop/restart, bounded key growth
   and post-warm memory stability passed with zero real positions or exchange
   order requests.
+
+## Session 2026-07-28 — Signal capacity and /opt installer stabilization
+- [x] Remote SSH install now requires dedicated `/opt/*` install targets and uses `/opt/cts-k-n-install-work` for local SSH key material, remote preflight/bootstrap clones, and seed env staging instead of `/tmp` work roots.
+- [x] Remote install UI/API gained a `skipTests` option that forwards `--skip-tests` to both preflight and clean bootstrap install flows while leaving typecheck, lint, and build enabled.
+- [x] Signal source-base position capacity default/max increased from 120 to 350 overall, legacy 24/120 persisted values migrate to 350, and settings now expose the overall source-base cap plus a 10-symbols-per-source cap with 12h-volatility ordering metadata.
+- [x] Signal candidate ordering now prioritizes highest 12h volatility first, then lower stop-loss and drawdown when available, before consensus quality ties, keeping Signal admission independent from Main trade stage counts.
+- [x] Verified TypeScript, targeted Signal policy/settings Jest coverage, and remote installer boundary tests; the full deployment-contract suite still has the pre-existing Kilo schema v91 preflight failure outside this change.
