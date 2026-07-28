@@ -454,13 +454,13 @@ function normalizedCommonTimeframes(commonSettings: Record<string, unknown>): nu
   const coordination = indicatorRecord(commonSettings, "coordination")
   const source = Array.isArray(coordination.timeframesMinutes)
     ? coordination.timeframesMinutes
-    : [1, 3, 5, 15]
+    : [1, 5, 15, 30]
   const values = [...new Set(source
     .map(Number)
     .filter(Number.isFinite)
-    .map((value) => Math.max(1, Math.min(15, Math.round(value)))))]
+    .map((value) => Math.max(1, Math.min(60, Math.round(value)))))]
     .sort((left, right) => left - right)
-  return values.length > 0 ? values : [1, 3, 5, 15]
+  return values.length > 0 ? values : [1, 5, 15, 30]
 }
 
 export function buildCommonIndicatorConfigurations(

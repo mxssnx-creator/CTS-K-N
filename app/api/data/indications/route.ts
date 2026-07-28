@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -130,26 +131,32 @@ async function getRealIndications(connectionId: string): Promise<Indication[]> {
     // ── Fallback: legacy indication:config:* keys ────────────────────────────
     const configPattern = `indication:${connectionId}:config:*`
     const allKeys: string[] = await (client.keys(configPattern) as Promise<string[]>).catch(() => [])
-    const configKeys = allKeys.filter((k) => !k.endsWith(":results")).slice(0, 500)
+    // This fallback is also used by configuration-inspection screens during
+    // upgrades. Never turn its response into a hidden top-500 view: every
+    // exact type/name/config/direction lane must remain visible. Bound only
+    // Redis concurrency so a large exhaustive grid cannot create an
+    // unbounded Promise.all fan-out.
+    const configKeys = allKeys
+      .filter((k) => !k.endsWith(":results"))
+      .sort((left, right) => left.localeCompare(right))
     if (configKeys.length === 0) return []
 
-    const [configs, latestResults] = await Promise.all([
-      Promise.all(configKeys.map((k) => client.get(k).catch(() => null))),
-      Promise.all(
-        configKeys.map((k) =>
-          // lrange(0,0) is emulator-safe; lindex returns null on InlineLocalRedis
-          (client.lrange(`${k}:results`, 0, 0) as Promise<string[]>)
-            .then((arr) => (Array.isArray(arr) ? arr[0] ?? null : null))
-            .catch(() => null)
-        )
-      ),
-    ])
+    const rows = await mapWithConcurrency(configKeys, 32, async (key) => {
+      const [config, result] = await Promise.all([
+        client.get(key).catch(() => null),
+        // lrange(0,0) is emulator-safe; lindex returns null on InlineLocalRedis
+        (client.lrange(`${key}:results`, 0, 0) as Promise<string[]>)
+          .then((arr) => (Array.isArray(arr) ? arr[0] ?? null : null))
+          .catch(() => null),
+      ])
+      return { config, result }
+    })
 
     const legacyIndications: Indication[] = []
     for (let i = 0; i < configKeys.length; i++) {
       let config: any = null
       try {
-        const raw = configs[i]
+        const raw = rows[i]?.config
         config = raw ? JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw)) : null
       } catch { continue }
       if (!config) continue
@@ -157,7 +164,7 @@ async function getRealIndications(connectionId: string): Promise<Indication[]> {
       const configId = config.id || configKeys[i].split(":").pop() || `config-${i}`
       const indType: string = config.type || "Unknown"
       const enabled: boolean = config.enabled !== false
-      const resultRaw = latestResults[i]
+      const resultRaw = rows[i]?.result
       if (!resultRaw || typeof resultRaw !== "string") continue
 
       const parts = resultRaw.split("|")
