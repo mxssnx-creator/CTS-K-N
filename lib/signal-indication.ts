@@ -58,6 +58,9 @@ export interface SignalIndicationSettings {
   candleLimit: number
   maxSourcesPerCycle: number
   maxPositionsTotal: number
+  sourceBasePositionsLimit: number
+  symbolsPerSourceLimit: number
+  sourceSymbolOrder: "volatility_12h"
   positionSelectionMode: SignalPositionSelectionMode
   requestIntervalSeconds: number
   requestTimeoutMs: number
@@ -263,6 +266,9 @@ export const DEFAULT_SIGNAL_INDICATION_SETTINGS: SignalIndicationSettings = {
   candleLimit: 60,
   maxSourcesPerCycle: SIGNAL_SOURCE_DEFINITIONS.length,
   maxPositionsTotal: SIGNAL_MAX_POSITIONS_DEFAULT,
+  sourceBasePositionsLimit: SIGNAL_MAX_POSITIONS_DEFAULT,
+  symbolsPerSourceLimit: 10,
+  sourceSymbolOrder: "volatility_12h",
   positionSelectionMode: SIGNAL_POSITION_SELECTION_MODE,
   requestIntervalSeconds: SIGNAL_REQUEST_INTERVAL_MIN_SECONDS,
   requestTimeoutMs: 2500,
@@ -444,6 +450,9 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     candleLimit: Math.round(boundedNumber(raw.candleLimit, 60, 20, 250)),
     maxSourcesPerCycle,
     maxPositionsTotal: normalizeSignalMaxPositions(raw.maxPositionsTotal),
+    sourceBasePositionsLimit: normalizeSignalMaxPositions(raw.sourceBasePositionsLimit ?? raw.maxPositionsTotal),
+    symbolsPerSourceLimit: Math.round(boundedNumber(raw.symbolsPerSourceLimit, 10, 1, 100)),
+    sourceSymbolOrder: "volatility_12h",
     positionSelectionMode: normalizeSignalPositionSelectionMode(raw.positionSelectionMode),
     requestIntervalSeconds,
     requestTimeoutMs: Math.round(boundedNumber(raw.requestTimeoutMs, 2500, 500, 10_000)),
@@ -1901,6 +1910,9 @@ async function persistSignalCycle(
     const agreement = clamp(Number(primary.metadata?.signal?.agreement) || 0, 0, 1)
     const strength = clamp(Number(primary.rawSignalStrength) || 0, 0, 1)
     const rewardRisk = clamp(Number(primary.metadata?.signal?.rewardRisk) || 0, 0, 5)
+    const stopLossPct = clamp(Number(primary.metadata?.signal?.stopLossPct ?? primary.stopLoss ?? primary.stopLossPct) || 0, 0, 100)
+    const drawdownPct = clamp(Number(primary.metadata?.signal?.drawdownPct ?? primary.maxDrawdownPct) || stopLossPct, 0, 100)
+    const volatility12hPct = clamp(Number(primary.metadata?.signal?.volatility12hPct ?? primary.metadata?.volatility ?? primary.volatility) || 0, 0, 10_000)
     pipeline.hset(rankKey, normalizeSymbol(symbol), JSON.stringify({
       symbol: normalizeSymbol(symbol),
       direction: primary.direction,
@@ -1914,6 +1926,9 @@ async function persistSignalCycle(
       agreement,
       strength,
       rewardRisk,
+      stopLossPct,
+      drawdownPct,
+      volatility12hPct,
       generatedAt: Number(primary.timestamp) || Date.now(),
       expiresAt: Date.now() + Math.max(120_000, settings.requestIntervalSeconds * 3_000),
     }))

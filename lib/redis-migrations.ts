@@ -4850,8 +4850,8 @@ const migrations: Migration[] = [
         try {
           const signal = JSON.parse(signalRaw) as Record<string, any>
           if (signal.directExecutionEnabled == null) signal.directExecutionEnabled = true
-          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24) {
-            signal.maxPositionsTotal = 120
+          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24 || Number(signal.maxPositionsTotal) === 120) {
+            signal.maxPositionsTotal = 350
           }
           if (signal.sources && typeof signal.sources === "object") {
             for (const source of Object.values(signal.sources) as Array<Record<string, any>>) {
@@ -5393,8 +5393,8 @@ const migrations: Migration[] = [
             signal.directExecutionEnabled = true
             changed = true
           }
-          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24) {
-            signal.maxPositionsTotal = 120
+          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24 || Number(signal.maxPositionsTotal) === 120) {
+            signal.maxPositionsTotal = 350
             changed = true
           }
           if (signal.maxSourcesPerCycle == null || Number(signal.maxSourcesPerCycle) === 10) {
@@ -5478,8 +5478,8 @@ const migrations: Migration[] = [
             signal.directExecutionEnabled = true
             changed = true
           }
-          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24) {
-            signal.maxPositionsTotal = 120
+          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24 || Number(signal.maxPositionsTotal) === 120) {
+            signal.maxPositionsTotal = 350
             changed = true
           }
           if (Number(signal.performanceLookback) !== 12) {
@@ -5735,8 +5735,8 @@ const migrations: Migration[] = [
             signal.configMinimumPfRatio = 0.3
             changed = true
           }
-          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24) {
-            signal.maxPositionsTotal = 120
+          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24 || Number(signal.maxPositionsTotal) === 120) {
+            signal.maxPositionsTotal = 350
             changed = true
           }
           if (signal.maxSourcesPerCycle == null || Number(signal.maxSourcesPerCycle) === 10) {

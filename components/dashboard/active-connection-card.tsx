@@ -1664,7 +1664,7 @@ export function ActiveConnectionCard({
             label: "Signal open",
             value:
               `${signalOverview?.openPositions ?? 0}` +
-              `/${signalOverview?.maxPositionsTotal || 120}`,
+              `/${signalOverview?.maxPositionsTotal || 350}`,
             title: "Open physical Signal positions across Long + Short.",
           },
           {
@@ -1837,7 +1837,7 @@ export function ActiveConnectionCard({
       tiles.push(
         {
           label: "Signal open",
-          value: `${signalOverview.openPositions}/${signalOverview.maxPositionsTotal || 120}`,
+          value: `${signalOverview.openPositions}/${signalOverview.maxPositionsTotal || 350}`,
           title: "Signal-attributed positions open / Signal Long + Short capacity.",
           tone: "text-cyan-700 dark:text-cyan-400",
         },

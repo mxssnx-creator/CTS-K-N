@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
 import { spawn } from "node:child_process"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { authorizeAdminBearer } from "@/lib/admin-auth"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
@@ -72,6 +71,7 @@ interface RemoteInstallRequest {
   runtime?: RemoteInstallRuntime
   projectName?: string
   reinstall?: boolean
+  skipTests?: boolean
   appPort?: number | string
   serviceUser?: string
   redisUrl?: string
@@ -91,6 +91,7 @@ interface ValidatedRemoteInstall {
   runtime: RemoteInstallRuntime
   projectName: string
   reinstall: boolean
+  skipTests: boolean
   appPort: number
   serviceUser: string
   seedEnv: string
@@ -160,9 +161,10 @@ function validateInstallDir(value: unknown, projectName: string): string {
     installDir.includes("//") ||
     normalized !== installDir ||
     DANGEROUS_INSTALL_DIRS.has(installDir) ||
+    !installDir.startsWith("/opt/") ||
     installDir.split("/").filter(Boolean).length < 2
   ) {
-    throw new Error("Install directory must be a normalized, dedicated absolute directory")
+    throw new Error("Install directory must be a normalized, dedicated absolute /opt directory")
   }
   return installDir
 }
@@ -235,6 +237,7 @@ function validateRequest(input: RemoteInstallRequest): ValidatedRemoteInstall {
     runtime: validateRuntime(input.runtime),
     projectName,
     reinstall: input.reinstall === true,
+    skipTests: input.skipTests === true,
     appPort: parsePort(input.appPort, 3002, "Application port"),
     serviceUser: validateUnixName(input.serviceUser || projectName || DEFAULT_SERVICE_USER, "Service user"),
     seedEnv: buildSeedEnvironment(input),
@@ -305,14 +308,17 @@ PROJECT_NAME=${shellQuote(input.projectName)}
 REINSTALL=${input.reinstall ? "1" : "0"}
 REINSTALL_ARG=()
 if [[ "$REINSTALL" == "1" ]]; then REINSTALL_ARG+=(--reinstall); fi
+SKIP_TESTS_ARG=()
+if [[ "${input.skipTests ? "1" : "0"}" == "1" ]]; then SKIP_TESTS_ARG+=(--skip-tests); fi
 SEED_ENV_BASE64=${shellQuote(seedEnvBase64)}
+WORK_ROOT="/opt/cts-k-n-install-work"
 TMP_DIR=""
 SEED_FILE=""
 
 log() { printf '[remote-server] %s\\n' "$*"; }
 fatal() { printf '[remote-server] ERROR: %s\\n' "$*" >&2; exit 1; }
 cleanup() {
-  if [[ -n "$TMP_DIR" && "$TMP_DIR" == /tmp/cts-k-n-* && -d "$TMP_DIR" ]]; then
+  if [[ -n "$TMP_DIR" && "$TMP_DIR" == "$WORK_ROOT"/cts-k-n-* && -d "$TMP_DIR" ]]; then
     rm -rf -- "$TMP_DIR"
   fi
   [[ -z "$SEED_FILE" ]] || rm -f -- "$SEED_FILE"
@@ -325,7 +331,7 @@ if [[ "$(id -u)" != "0" ]]; then sudo -n true >/dev/null 2>&1 || fatal "Password
 ROOT=()
 [[ "$(id -u)" == "0" ]] || ROOT=(sudo -n)
 
-disk_probe=${shellQuote(input.mode === "preflight" ? "/tmp" : path.posix.dirname(input.installDir))}
+disk_probe=${shellQuote(path.posix.dirname(input.installDir))}
 while [[ ! -e "$disk_probe" && "$disk_probe" != "/" ]]; do
   disk_probe="$(dirname "$disk_probe")"
 done
@@ -353,22 +359,26 @@ install_bootstrap_dependencies() {
 if [[ "$MODE" == "preflight" ]]; then
   command -v git >/dev/null 2>&1 || fatal "git is required for a non-mutating preflight"
   command -v base64 >/dev/null 2>&1 || fatal "base64 is required for secure environment transfer"
-  TMP_DIR="$(mktemp -d /tmp/cts-k-n-preflight.XXXXXX)"
+  "\${ROOT[@]}" install -d -m 0700 "$WORK_ROOT"
+  "\${ROOT[@]}" chown "$(id -u):$(id -g)" "$WORK_ROOT"
+  TMP_DIR="$(mktemp -d "$WORK_ROOT/cts-k-n-preflight.XXXXXX")"
   log "Fetching the requested revision into a disposable preflight checkout"
   git clone --quiet --depth 1 --single-branch --branch "$BRANCH" "$REPO_URL" "$TMP_DIR/source"
   bash "$TMP_DIR/source/scripts/install.sh" --name "$PROJECT_NAME" --port "$APP_PORT" \
-    --runtime "$RUNTIME" --service-user "$SERVICE_USER" ${installerMode}
+    --runtime "$RUNTIME" --service-user "$SERVICE_USER" ${installerMode} "\${SKIP_TESTS_ARG[@]}"
   log "Remote preflight passed without persistent host changes"
   exit 0
 fi
 
 install_bootstrap_dependencies
 command -v base64 >/dev/null 2>&1 || fatal "base64 is required for secure environment transfer"
-TMP_DIR="$(mktemp -d /tmp/cts-k-n-bootstrap.XXXXXX)"
+"\${ROOT[@]}" install -d -m 0700 "$WORK_ROOT"
+"\${ROOT[@]}" chown "$(id -u):$(id -g)" "$WORK_ROOT"
+TMP_DIR="$(mktemp -d "$WORK_ROOT/cts-k-n-bootstrap.XXXXXX")"
 log "Fetching the requested bootstrap revision before replacing the target"
 git clone --quiet --depth 1 --single-branch --branch "$BRANCH" "$REPO_URL" "$TMP_DIR/source"
 
-SEED_FILE="$(mktemp /tmp/cts-k-n-seed.XXXXXX)"
+SEED_FILE="$(mktemp "$WORK_ROOT/cts-k-n-seed.XXXXXX")"
 printf '%s' "$SEED_ENV_BASE64" | base64 --decode > "$SEED_FILE"
 chmod 600 "$SEED_FILE"
 
@@ -464,7 +474,9 @@ export async function POST(request: Request) {
     const input = validateRequest(body)
     const script = buildRemoteScript(input)
 
-    tempDir = await mkdtemp(path.join(tmpdir(), "cts-remote-install-"))
+    const localWorkRoot = "/opt/cts-k-n-install-work"
+    await mkdir(localWorkRoot, { recursive: true, mode: 0o700 })
+    tempDir = await mkdtemp(path.join(localWorkRoot, "cts-remote-install-"))
     const knownHostsPath = path.join(tempDir, "known_hosts")
     const sshArgs = [
       "-p",

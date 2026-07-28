@@ -9,10 +9,10 @@ import {
 
 describe("Signal position capacity and best-first policy", () => {
   test("normalizes the total Long + Short capacity independently from sources and symbols", () => {
-    expect(normalizeSignalMaxPositions(undefined)).toBe(120)
+    expect(normalizeSignalMaxPositions(undefined)).toBe(350)
     expect(normalizeSignalMaxPositions(0)).toBe(1)
-    expect(normalizeSignalMaxPositions(120)).toBe(120)
-    expect(normalizeSignalMaxPositions(50_000)).toBe(120)
+    expect(normalizeSignalMaxPositions(350)).toBe(350)
+    expect(normalizeSignalMaxPositions(50_000)).toBe(350)
     expect(normalizeSignalPositionSelectionMode("fifo")).toBe("best_first")
   })
 
@@ -76,14 +76,14 @@ describe("Signal position capacity and best-first policy", () => {
 
   test("counts standard, trailing, and pending Signal positions across both directions", () => {
     const positions: Array<Record<string, unknown>> = [
-      ...Array.from({ length: 60 }, (_, index) => ({
+      ...Array.from({ length: 175 }, (_, index) => ({
         id: `long-${index}`,
         status: index === 0 ? "pending" : "simulated",
         direction: "long",
         indicationType: "signal",
         executionLane: "default",
       })),
-      ...Array.from({ length: 60 }, (_, index) => ({
+      ...Array.from({ length: 175 }, (_, index) => ({
         id: `short-${index}`,
         status: "open",
         direction: "short",
@@ -105,21 +105,21 @@ describe("Signal position capacity and best-first policy", () => {
       },
     ]
 
-    expect(evaluateSignalPositionCapacity(positions, "long", 120)).toEqual({
+    expect(evaluateSignalPositionCapacity(positions, "long", 350)).toEqual({
       allowed: false,
       reason: "total_limit",
-      total: 120,
-      long: 60,
-      short: 60,
-      limit: 120,
+      total: 350,
+      long: 175,
+      short: 175,
+      limit: 350,
     })
-    expect(evaluateSignalPositionCapacity(positions.slice(1), "short", 120)).toEqual({
+    expect(evaluateSignalPositionCapacity(positions.slice(1), "short", 350)).toEqual({
       allowed: true,
       reason: "available",
-      total: 119,
-      long: 59,
-      short: 60,
-      limit: 120,
+      total: 349,
+      long: 174,
+      short: 175,
+      limit: 350,
     })
   })
 })
