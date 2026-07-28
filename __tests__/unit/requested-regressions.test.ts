@@ -1892,6 +1892,24 @@ describe("requested regression guardrails", () => {
     expect(legacyIndications).not.toContain("return positions.slice(0, 250)")
   })
 
+  test("QuickStart functional overview aggregates fresh canonical stage rows without fabricated PF", () => {
+    const overview = read("app/api/trade-engine/functional-overview/route.ts")
+    const progression = read("app/api/connections/progression/[id]/stats/route.ts")
+
+    expect(overview).toContain("aggregateStage")
+    expect(overview).toContain('field.match(/^s:([^:]+):(created|evaluated|passed|running|apf|ts)$/)')
+    expect(overview).toContain("now - timestamp > 5 * 60_000")
+    expect(overview).toContain("mapInBatches")
+    expect(overview).toContain("client.dbSize()")
+    expect(overview).toContain('dataSource: "canonical-stage-and-position-ledgers"')
+    expect(overview).not.toContain('const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]')
+    expect(overview).not.toContain("avgProfitFactorBase = 1.2")
+    expect(overview).not.toContain("mainSetsCount * 4")
+    expect(overview).not.toContain("each item ~200 bytes")
+    expect(progression).not.toContain("baseWinRateProxy")
+    expect(progression).not.toContain("approxSharpe")
+  })
+
   test("Main axes and Base profiles remain exhaustive without a candidate ceiling", () => {
     const coordinator = read("lib/strategy-coordinator.ts")
     const configManager = read("lib/indication-config-manager.ts")
