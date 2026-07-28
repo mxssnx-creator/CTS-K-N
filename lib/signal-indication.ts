@@ -167,7 +167,6 @@ export interface SignalSettingsResponse {
   sources: SignalSourceDescriptor[]
 }
 
-const CORE_SOURCE_IDS = ["bingx-swap", "binance-usdm", "bybit-linear", "okx-swap"]
 const PERFORMANCE_TTL_SECONDS = 90 * 24 * 60 * 60
 const HEALTH_TTL_SECONDS = 7 * 24 * 60 * 60
 export const SIGNAL_INDICATION_STORAGE_KEY = "indications:signal"
@@ -373,16 +372,13 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     boundedNumber(raw.stopLossMaxPct, DEFAULT_SIGNAL_INDICATION_SETTINGS.stopLossMaxPct, 0.2, 5),
   )
   // Exact-config and source evaluation use fixed windows so equal lanes always
-  // use equal evidence. The independent source-wide newest-12 and
-  // source×symbol×direction newest-10 gates are enforced below.
+  // use equal evidence. Source-wide newest-12 and source×symbol×direction
+  // newest-10 negative-average gates remain independent.
   const performanceLookback = SIGNAL_PERFORMANCE_LOOKBACK
   const performanceMinSamples = SIGNAL_PERFORMANCE_LOOKBACK
-  const maxSourcesPerCycle = Math.round(boundedNumber(
-    raw.maxSourcesPerCycle,
-    DEFAULT_SIGNAL_INDICATION_SETTINGS.maxSourcesPerCycle,
-    3,
-    SIGNAL_SOURCE_DEFINITIONS.length,
-  ))
+  // Every enabled compatible adapter is processed. This retained field is
+  // fixed to the complete registry size for backward-compatible payloads.
+  const maxSourcesPerCycle = SIGNAL_SOURCE_DEFINITIONS.length
   const minimumSourceSignals = Math.min(
     maxSourcesPerCycle,
     Math.round(boundedNumber(
@@ -407,9 +403,9 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
 
   return {
     enabled: bool(raw.enabled, true),
-    // Direct execution is enabled by default but remains an operator choice:
-    // when enabled it bypasses only the exact-config 12-result PF gate. The
-    // source-wide and source×symbol×direction negative-average gates still run.
+    // Enabled by default and operator-selectable. It bypasses only the exact
+    // config's 12-result PF gate; source-12, lane-10 and permanent live-config
+    // protection remain mandatory.
     directExecutionEnabled: bool(raw.directExecutionEnabled, true),
     trailingEnabled,
     trailingOnly,
@@ -661,11 +657,9 @@ export interface SignalConfigurationPerformanceDecision {
 }
 
 /**
- * Direct execution deliberately bypasses the rolling 12-position exact-config
- * PF gate. Source-wide newest-12 and source×symbol×direction newest-10
- * negative-average gates are evaluated before this point. A permanently
- * disabled exact config (newest 16 real exchange closes negative) remains
- * blocked in either mode.
+ * Direct execution bypasses the rolling 12-position exact-config PF gate.
+ * Source-wide newest-12 and source×symbol×direction newest-10 negative-average
+ * gates run before this point. A 16-result live-config disable remains binding.
  */
 export function signalConfigurationExecutionAllowed(
   directExecutionEnabled: boolean,
@@ -1683,36 +1677,13 @@ async function fetchSourceCandles(input: {
 function selectSources(
   settings: SignalIndicationSettings,
   symbol: string,
-  cursor: number,
+  _cursor: number,
 ): SignalSourceDefinition[] {
-  const enabled = SIGNAL_SOURCE_DEFINITIONS.filter((source) =>
+  return SIGNAL_SOURCE_DEFINITIONS.filter((source) =>
     settings.sources[source.id]?.enabled !== false &&
     !settings.sources[source.id]?.disabledSymbols.includes(normalizeSymbol(symbol)) &&
     signalSourceSupportsSymbol(source, symbol),
   )
-  const max = Math.min(settings.maxSourcesPerCycle, enabled.length)
-  if (enabled.length <= max) return [...enabled]
-
-  const core = CORE_SOURCE_IDS
-    .map((id) => enabled.find((source) => source.id === id))
-    .filter((source): source is SignalSourceDefinition => Boolean(source))
-    .slice(0, Math.min(4, max))
-  const coreIds = new Set(core.map((source) => source.id))
-  const rotating = enabled
-    .filter((source) => !coreIds.has(source.id))
-    .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id))
-  const slots = max - core.length
-  if (slots <= 0 || rotating.length === 0) return core
-  // Advance by a complete page, not by one source. This preserves the
-  // always-on liquid core while covering every enabled secondary source in
-  // ceil(rotating / slots) uncached cycles instead of repeatedly fetching
-  // almost the same overlapping page.
-  const start = (Math.abs(cursor) * slots) % rotating.length
-  const selected = [...core]
-  for (let offset = 0; offset < rotating.length && selected.length < max; offset++) {
-    selected.push(rotating[(start + offset) % rotating.length])
-  }
-  return selected
 }
 
 function lowStopConsensus(

@@ -79,6 +79,11 @@ import {
   DEFAULT_MAIN_INDICATION_PROFILE,
   readStoredIndicationProfile,
 } from "@/lib/active-indication-profile"
+import { MAX_BASE_STEP, normalizeBaseMinStep } from "@/lib/constants"
+import {
+  getCanonicalConnectionSettingsOverlay,
+  overlayNonEmpty,
+} from "@/lib/connection-settings-overlay"
 
 // Default limits per indication type (independently configurable)
 const DEFAULT_LIMITS = {
@@ -115,8 +120,9 @@ const DEFAULT_POSITION_LIMITS = {
 
 // Exact indication configuration/direction may recalculate after 250 ms.
 const DEFAULT_INDICATION_TIMEOUT_MS = 250
-// Common technical indicators intentionally run on a slower exact-lane
-// cadence. This is a validation cooldown, not a candidate/configuration cap.
+// Common technical indicators process on a one-second cadence but each exact
+// type/name/config/direction lane waits three seconds after a valid result.
+// This is a lane cooldown, not a candidate/configuration cap.
 const DEFAULT_COMMON_INDICATION_TIMEOUT_MS = 3_000
 
 const DEFAULT_OUTCOME_ATTACHMENT_CONCURRENCY = 20
@@ -287,6 +293,16 @@ export class IndicationSetsProcessor {
     trend: DEFAULT_INDICATION_TIMEOUT_MS,
     signal: DEFAULT_INDICATION_TIMEOUT_MS,
   }
+  private indicationIntervalMsByType: Record<string, number> = {
+    direction: DEFAULT_INDICATION_TIMEOUT_MS,
+    move: DEFAULT_INDICATION_TIMEOUT_MS,
+    active: DEFAULT_INDICATION_TIMEOUT_MS,
+    active_advanced: DEFAULT_INDICATION_TIMEOUT_MS,
+    optimal: DEFAULT_INDICATION_TIMEOUT_MS,
+    trend: DEFAULT_INDICATION_TIMEOUT_MS,
+    common: 1_000,
+    signal: DEFAULT_INDICATION_TIMEOUT_MS,
+  }
   /**
    * Per-type compaction config, resolved once per ~5s via the cached
    * `loadCompactionConfig` helper. Keeping a per-processor copy lets the
@@ -401,11 +417,16 @@ export class IndicationSetsProcessor {
       // Mirror-aware read so operator values saved via the UI
       // (`app_settings`) apply even if the legacy `all_settings` hash
       // is empty on a fresh install.
-      const [settings, rawCommonSettings, rawActiveProfile] = await Promise.all([
+      const [appSettings, connectionSettings, rawCommonSettings, rawActiveProfile] = await Promise.all([
         getAppSettings(),
+        getCanonicalConnectionSettingsOverlay(this.connectionId).catch(() => ({})),
         client.get("indications:common").catch(() => null),
         getSettings(`active_indications:${this.connectionId}`).catch(() => null),
       ])
+      const settings = overlayNonEmpty(
+        appSettings && typeof appSettings === "object" ? appSettings : {},
+        connectionSettings,
+      )
       let parsedCommonSettings: unknown = rawCommonSettings
       if (typeof rawCommonSettings === "string") {
         try {
@@ -432,6 +453,16 @@ export class IndicationSetsProcessor {
         optimal: Math.round(activeProfile.optimal.timeout * 1_000),
         trend: Math.round(activeProfile.trend.timeout * 1_000),
         signal: Math.round(activeProfile.signal.timeout * 1_000),
+      }
+      this.indicationIntervalMsByType = {
+        direction: Math.round(activeProfile.direction.interval * 1_000),
+        move: Math.round(activeProfile.move.interval * 1_000),
+        active: Math.round(activeProfile.active.interval * 1_000),
+        active_advanced: Math.round(activeProfile.active.interval * 1_000),
+        optimal: Math.round(activeProfile.optimal.interval * 1_000),
+        trend: Math.round(activeProfile.trend.interval * 1_000),
+        common: Math.round(activeProfile.common.interval * 1_000),
+        signal: Math.round(activeProfile.signal.interval * 1_000),
       }
       this.directionEnabled = activeProfile.direction.enabled
       this.moveEnabled = activeProfile.move.enabled
@@ -488,9 +519,12 @@ export class IndicationSetsProcessor {
         if (settings.databaseSizeSignal) this.limits.signal = Number(settings.databaseSizeSignal)
         if (settings.databaseSizeTrend) this.limits.trend = Number(settings.databaseSizeTrend)
         
-        // Load position limits per direction
-        if (settings.maxPositionsLong) this.positionLimits.maxLong = Number(settings.maxPositionsLong)
-        if (settings.maxPositionsShort) this.positionLimits.maxShort = Number(settings.maxPositionsShort)
+        // Exactly one open pseudo position is allowed per complete Set lane.
+        // The lane identity already contains connection, symbol, indication
+        // type/name, full configuration and direction, so this never limits
+        // how many independent configurations may run in parallel.
+        this.positionLimits.maxLong = 1
+        this.positionLimits.maxShort = 1
         
         // Load indication timeout
         if (settings.indicationTimeoutMs) {
@@ -519,25 +553,14 @@ export class IndicationSetsProcessor {
           activeProfile.optimal.enabled
         this.commonEnabled = activeProfile.common.enabled
 
-        // Config-grid controls. Explicit sample lists retain sparse
-        // short/medium/long coverage; legacy from/to/step values remain
-        // supported when no list is configured.
-        this.directionMoveRanges = settings.indicationSampleRanges !== undefined
-          ? this.parsePositiveNumericList(settings.indicationSampleRanges, this.directionMoveRanges)
-          : this.parseRangeSettings(
-              settings.directionRangeStart ?? settings.directionRangeFrom,
-              settings.directionRangeEnd ?? settings.directionRangeTo,
-              settings.directionRangeStep,
-              this.directionMoveRanges,
-            )
-        this.optimalRanges = settings.optimalSampleRanges !== undefined
-          ? this.parsePositiveNumericList(settings.optimalSampleRanges, this.directionMoveRanges)
-          : this.parseRangeSettings(
-              settings.optimalRangeStart,
-              settings.optimalRangeEnd,
-              settings.optimalRangeStep,
-              this.directionMoveRanges,
-            )
+        // minStep is only the inclusive lower bound. Every integer through 30
+        // is evaluated; legacy sparse sample arrays cannot drop configurations.
+        const minStep = normalizeBaseMinStep(settings.minStep)
+        this.directionMoveRanges = Array.from(
+          { length: MAX_BASE_STEP - minStep + 1 },
+          (_, index) => index + minStep,
+        )
+        this.optimalRanges = [...this.directionMoveRanges]
         this.drawdownRatios = this.parseNumericList(settings.indicationDrawdownRatios, this.drawdownRatios)
         this.lastPartRatios = this.parseNumericList(settings.indicationLastPartRatios, this.lastPartRatios)
         this.factorMultipliers = this.parseNumericList(settings.indicationFactorMultipliers, this.factorMultipliers)
@@ -1137,18 +1160,28 @@ export class IndicationSetsProcessor {
       const configuredCommonTimeoutSeconds = Number(
         (this.commonSettings?.[commonType] as any)?.timeout,
       )
+      const configuredCommonIntervalSeconds = Number(
+        (this.commonSettings?.[commonType] as any)?.interval,
+      )
       const timeoutMs = type === "common"
         ? Math.max(
             0,
+            this.indicationIntervalMsByType.common,
             Math.round(
-              (Number.isFinite(configuredCommonTimeoutSeconds)
-                ? configuredCommonTimeoutSeconds
-                : DEFAULT_COMMON_INDICATION_TIMEOUT_MS / 1_000) * 1_000,
+              Math.max(
+                Number.isFinite(configuredCommonTimeoutSeconds)
+                  ? configuredCommonTimeoutSeconds
+                  : DEFAULT_COMMON_INDICATION_TIMEOUT_MS / 1_000,
+                Number.isFinite(configuredCommonIntervalSeconds)
+                  ? configuredCommonIntervalSeconds
+                  : DEFAULT_COMMON_INDICATION_TIMEOUT_MS / 1_000,
+              ) * 1_000,
             ),
           )
         : Math.max(
             0,
             this.indicationTimeoutMsByType[type] ?? this.indicationTimeoutMs,
+            this.indicationIntervalMsByType[type] ?? this.indicationTimeoutMs,
           )
       if (timeoutMs <= 0) return candidate
       const admitted = await client.set(

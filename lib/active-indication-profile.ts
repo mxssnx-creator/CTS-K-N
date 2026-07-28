@@ -20,25 +20,25 @@ export interface IndicationProfileParams {
 export type IndicationChannelProfile = Record<IndicationProfileType, IndicationProfileParams>
 
 export const DEFAULT_MAIN_INDICATION_PROFILE: IndicationChannelProfile = {
-  direction: { enabled: true, range: 5,  timeout: 0.25, interval: 1 },
-  move:      { enabled: true, range: 10, timeout: 0.25, interval: 1 },
-  active:    { enabled: true, range: 15, timeout: 0.25, interval: 1 },
-  trend:     { enabled: true, range: 30, timeout: 0.25, interval: 1 },
-  optimal:   { enabled: true, range: 20, timeout: 0.25, interval: 1 },
-  auto:      { enabled: true, range: 25, timeout: 0.25, interval: 1 },
+  direction: { enabled: true, range: 5,  timeout: 0.25, interval: 0.25 },
+  move:      { enabled: true, range: 10, timeout: 0.25, interval: 0.25 },
+  active:    { enabled: true, range: 15, timeout: 0.25, interval: 0.25 },
+  trend:     { enabled: true, range: 30, timeout: 0.25, interval: 0.25 },
+  optimal:   { enabled: true, range: 20, timeout: 0.25, interval: 0.25 },
+  auto:      { enabled: true, range: 25, timeout: 0.25, interval: 0.25 },
   common:    { enabled: true, range: 30, timeout: 3,    interval: 1 },
-  signal:    { enabled: true, range: 15, timeout: 0.25, interval: 1 },
+  signal:    { enabled: true, range: 15, timeout: 0.25, interval: 0.25 },
 }
 
 export const DEFAULT_PRESET_INDICATION_PROFILE: IndicationChannelProfile = {
-  direction: { enabled: true, range: 8,  timeout: 0.25, interval: 1 },
-  move:      { enabled: true, range: 12, timeout: 0.25, interval: 1 },
-  active:    { enabled: true, range: 20, timeout: 0.25, interval: 1 },
-  trend:     { enabled: true, range: 30, timeout: 0.25, interval: 1 },
-  optimal:   { enabled: true, range: 25, timeout: 0.25, interval: 1 },
-  auto:      { enabled: true, range: 30, timeout: 0.25, interval: 1 },
+  direction: { enabled: true, range: 8,  timeout: 0.25, interval: 0.25 },
+  move:      { enabled: true, range: 12, timeout: 0.25, interval: 0.25 },
+  active:    { enabled: true, range: 20, timeout: 0.25, interval: 0.25 },
+  trend:     { enabled: true, range: 30, timeout: 0.25, interval: 0.25 },
+  optimal:   { enabled: true, range: 25, timeout: 0.25, interval: 0.25 },
+  auto:      { enabled: true, range: 30, timeout: 0.25, interval: 0.25 },
   common:    { enabled: true, range: 30, timeout: 3,    interval: 1 },
-  signal:    { enabled: true, range: 15, timeout: 0.25, interval: 1 },
+  signal:    { enabled: true, range: 15, timeout: 0.25, interval: 0.25 },
 }
 
 function bool(value: unknown, fallback: boolean): boolean {

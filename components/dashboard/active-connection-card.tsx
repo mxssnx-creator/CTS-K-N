@@ -20,6 +20,7 @@ import {
   WifiOff,
   Clock,
   Activity,
+  PlugZap,
 } from "lucide-react"
 import {
   AlertDialog,
@@ -224,6 +225,13 @@ export function ActiveConnectionCard({
   const [infoDialogOpen, setInfoDialogOpen] = useState(false)
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const [logsDialogOpen, setLogsDialogOpen] = useState(false)
+  const [testingConnection, setTestingConnection] = useState(false)
+  const [connectionTestStatus, setConnectionTestStatus] = useState<string | undefined>(
+    () => connection.details?.last_test_status,
+  )
+  const [connectionTestAt, setConnectionTestAt] = useState<string | undefined>(
+    () => (connection.details as any)?.last_test_at || (connection.details as any)?.last_test_time,
+  )
   // Seed live-trade / preset / signal switches from the connection prop so they
   // render correctly on first mount before the engine-states poll fires.
   // The poll (every 3–8 s) then corrects any drift against the DB flag.
@@ -282,6 +290,31 @@ export function ActiveConnectionCard({
       infiniteProfitFactor: boolean
       netPnl: number
       drawdownHours: number
+    }
+  } | null>(null)
+  const [presetOverview, setPresetOverview] = useState<{
+    generationId: string | null
+    summary: {
+      total: number
+      eligible: number
+      selected: number
+      symbols: number
+      indicatorTypes: number
+      averageProfitFactor: number
+      averageWinRate: number
+      averageDrawdownHours: number
+      netR: number
+    }
+    progress: {
+      status: "idle" | "running" | "completed" | "failed"
+      currentSymbol?: string
+      symbolsCompleted: number
+      symbolsTotal: number
+      evaluatedConfigurations: number
+      presetsGenerated: number
+      sourceCandles: number
+      sampledCandles: number
+      error?: string
     }
   } | null>(null)
   const [prehistoricStats, setPrehistoricStats] = useState<{
@@ -437,6 +470,8 @@ export function ActiveConnectionCard({
   // Sync local toggle states and volume factors from connection details
   useEffect(() => {
     if (details) {
+      setConnectionTestStatus(details.last_test_status)
+      setConnectionTestAt((details as any).last_test_at || (details as any).last_test_time)
       setLiveTrade(liveTradeUiFlag(details))
       setPresetMode(toBoolean(details.preset_trade_requested) || toBoolean(details.is_preset_trade))
       setSignalMode(signalTradeUiFlag(details))
@@ -912,6 +947,14 @@ export function ActiveConnectionCard({
         fetchProgression()
       }
     }
+    const handleConnectionTestCompleted = (event: Event) => {
+      const detail = (event as CustomEvent).detail || {}
+      if (detail.connectionId !== connection.connectionId) return
+      setConnectionTestStatus(String(detail.status || "unknown"))
+      setConnectionTestAt(String(detail.testedAt || new Date().toISOString()))
+      setDashboardEventRefreshKey((key) => key + 1)
+      void fetchProgression()
+    }
 
     // Subscribe to cross-component events so this card re-fetches when
     // the operator toggles a connection, enables live trading, changes
@@ -924,6 +967,7 @@ export function ActiveConnectionCard({
       window.addEventListener("live-trade-toggled", handleLiveTradeToggled)
       window.addEventListener("engine-state-changed", handleConnectionToggled)
       window.addEventListener("connection-settings-updated", handleSettingsUpdated)
+      window.addEventListener("connection-test-completed", handleConnectionTestCompleted)
     }
 
     return () => {
@@ -933,6 +977,7 @@ export function ActiveConnectionCard({
         window.removeEventListener("live-trade-toggled", handleLiveTradeToggled)
         window.removeEventListener("engine-state-changed", handleConnectionToggled)
         window.removeEventListener("connection-settings-updated", handleSettingsUpdated)
+        window.removeEventListener("connection-test-completed", handleConnectionTestCompleted)
       }
     }
   }, [fetchProgression, connection.connectionId])
@@ -949,7 +994,7 @@ export function ActiveConnectionCard({
       const requestSeq = ++liveStatsFetchSeqRef.current
       try {
         // Use canonical stats endpoint — same source as progression info, per-connection
-        const [res, signalRes] = await Promise.all([
+        const [res, signalRes, presetRes] = await Promise.all([
           fetch(
             `/api/connections/progression/${connection.connectionId}/stats`,
             { cache: "no-store" },
@@ -960,11 +1005,18 @@ export function ActiveConnectionCard({
                 { cache: "no-store" },
               )
             : Promise.resolve(null),
+          presetMode
+            ? fetch(
+                `/api/preset-optimizer?connectionId=${encodeURIComponent(connection.connectionId)}&compact=1`,
+                { cache: "no-store" },
+              )
+            : Promise.resolve(null),
         ])
         if (!res.ok) return
-        const [data, signalData] = await Promise.all([
+        const [data, signalData, presetData] = await Promise.all([
           res.json(),
           signalRes?.ok ? signalRes.json() : Promise.resolve(null),
+          presetRes?.ok ? presetRes.json() : Promise.resolve(null),
         ])
         if (requestSeq !== liveStatsFetchSeqRef.current) return
         if (signalData?.success && signalData?.signal) {
@@ -993,6 +1045,55 @@ export function ActiveConnectionCard({
           })
         } else if (signalMode) {
           setSignalOverview(null)
+        }
+        if (presetData?.success && presetData?.data) {
+          setPresetOverview({
+            generationId: presetData.data.generationId || null,
+            summary: {
+              total: nonNegativeMetric(presetData.data.summary?.total),
+              eligible: nonNegativeMetric(presetData.data.summary?.eligible),
+              selected: nonNegativeMetric(presetData.data.summary?.selected),
+              symbols: nonNegativeMetric(presetData.data.summary?.symbols),
+              indicatorTypes: nonNegativeMetric(presetData.data.summary?.indicatorTypes),
+              averageProfitFactor: nonNegativeMetric(
+                presetData.data.summary?.averageProfitFactor,
+              ),
+              averageWinRate: boundedPercentage(
+                presetData.data.summary?.averageWinRate,
+              ),
+              averageDrawdownHours: nonNegativeMetric(
+                presetData.data.summary?.averageDrawdownHours,
+              ),
+              netR: finiteMetric(presetData.data.summary?.netR),
+            },
+            progress: {
+              status: ["idle", "running", "completed", "failed"].includes(
+                String(presetData.data.progress?.status),
+              )
+                ? presetData.data.progress.status
+                : "idle",
+              currentSymbol: presetData.data.progress?.currentSymbol,
+              symbolsCompleted: nonNegativeMetric(
+                presetData.data.progress?.symbolsCompleted,
+              ),
+              symbolsTotal: nonNegativeMetric(presetData.data.progress?.symbolsTotal),
+              evaluatedConfigurations: nonNegativeMetric(
+                presetData.data.progress?.evaluatedConfigurations,
+              ),
+              presetsGenerated: nonNegativeMetric(
+                presetData.data.progress?.presetsGenerated,
+              ),
+              sourceCandles: nonNegativeMetric(
+                presetData.data.progress?.sourceCandles,
+              ),
+              sampledCandles: nonNegativeMetric(
+                presetData.data.progress?.sampledCandles,
+              ),
+              error: presetData.data.progress?.error,
+            },
+          })
+        } else if (presetMode) {
+          setPresetOverview(null)
         }
         // Cycles label in the header should report the real interval-
         // frame count — every loop tick the indication processor fired
@@ -1205,6 +1306,7 @@ export function ActiveConnectionCard({
     connection.isActive,
     dashboardEventRefreshKey,
     signalMode,
+    presetMode,
   ])
 
   // Handle Live Trade toggle ��� no longer gated on connection.isActive:
@@ -1291,6 +1393,34 @@ export function ActiveConnectionCard({
           toast.warning(`Preset Mode blocked: ${data.preset_trade_blocked_reason || "production exchange requirements are not satisfied"}`)
         } else {
           toast.success(requestedState ? "Preset Mode engine starting..." : "Preset Mode engine stopped")
+        }
+        dispatchConnectionMutationEvents(buildConnectionMutationEventDetail(data, {
+          connectionId: connection.connectionId,
+          connection: { id: connection.connectionId, name: connection.exchangeName },
+          engine: {
+            action: requestedState ? "start" : "stop",
+            status: data.engineStatus,
+          },
+          source: "active-connection-card.presetTrade",
+        }))
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("preset-trade-toggled", {
+            detail: {
+              connectionId: connection.connectionId,
+              newState: requestedState,
+              effectiveState,
+            },
+          }))
+          window.dispatchEvent(new CustomEvent("connection-settings-updated", {
+            detail: {
+              connectionId: connection.connectionId,
+              settings: {
+                is_preset_trade: effectiveState,
+                preset_trade_requested: requestedState,
+                is_enabled_dashboard: effectiveState ? true : undefined,
+              },
+            },
+          }))
         }
       } else {
         setPresetMode(previousState)
@@ -1383,6 +1513,63 @@ export function ActiveConnectionCard({
     }
   }
 
+  const handleTestConnection = async () => {
+    if (testingConnection) return
+    setTestingConnection(true)
+    const connectionLabel = details?.name || connection.connectionId
+    try {
+      const response = await fetch(
+        `/api/settings/connections/${connection.connectionId}/test`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+          cache: "no-store",
+        },
+      )
+      const result = await response.json().catch(() => ({}))
+      const testedAt = new Date().toISOString()
+      if (!response.ok || result.success !== true) {
+        const failedStatus = response.status === 400 ? "warning" : "failed"
+        setConnectionTestStatus(failedStatus)
+        setConnectionTestAt(testedAt)
+        window.dispatchEvent(new CustomEvent("connection-test-completed", {
+          detail: {
+            connectionId: connection.connectionId,
+            status: failedStatus,
+            testedAt,
+          },
+        }))
+        throw new Error(result.details || result.error || "Connection test failed")
+      }
+      setConnectionTestStatus("success")
+      setConnectionTestAt(testedAt)
+      const balance = Number(result.balance)
+      toast.success("Connection test passed", {
+        description: Number.isFinite(balance)
+          ? `${connectionLabel}: ${balance.toFixed(4)} USDT`
+          : connectionLabel,
+      })
+      setDashboardEventRefreshKey((key) => key + 1)
+      window.dispatchEvent(new CustomEvent("connection-test-completed", {
+        detail: {
+          connectionId: connection.connectionId,
+          status: "success",
+          testedAt,
+        },
+      }))
+      window.dispatchEvent(new CustomEvent("connection-settings-updated", {
+        detail: { connectionId: connection.connectionId, testedAt },
+      }))
+    } catch (error) {
+      toast.error("Connection test failed", {
+        description: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setTestingConnection(false)
+    }
+  }
+
   const phase = progression?.phase || "idle"
   // Override the engine's coarse phase progress with the live prehistoric
   // symbols-processed percent while we're in `prehistoric_data`. The
@@ -1437,7 +1624,7 @@ export function ActiveConnectionCard({
             ? { label: "Ready", className: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300" }
             : { label: "Off", className: "text-muted-foreground" }
 
-  const signalOnlyOverview = signalMode && !liveTrade && !presetMode
+  const dedicatedChannelOnlyOverview = !liveTrade && (signalMode || presetMode)
 
   const renderOverviewTiles = () => {
     const symbolsProcessed = progression?.prehistoricProgress?.symbolsProcessed ?? 0
@@ -1452,68 +1639,130 @@ export function ActiveConnectionCard({
       finiteMetric(prehistoricStats?.liveTotalPnl)
     const tiles: Array<{ label: string; value: string | number; title?: string; tone?: string }> = []
 
-    if (signalOnlyOverview) {
-      const metric = signalOverview?.positions12
-      const pf = metric?.trades
-        ? metric.infiniteProfitFactor
-          ? "∞"
-          : metric.profitFactor === null
-            ? "—"
-            : metric.profitFactor.toFixed(2)
-        : "—"
-      tiles.push(
-        {
-          label: "Signal cycles",
-          value: liveStats?.indicationCycles ?? 0,
-          title: "Realtime indication cycles that drive the independent Signal engine.",
-        },
-        {
-          label: "Signals",
-          value: prehistoricStats?.indicationsSignal ?? 0,
-          title: "Current Signal indication rows only; Main indication types are excluded.",
-        },
-        {
-          label: "Open",
-          value:
-            `${signalOverview?.openPositions ?? 0}` +
-            `/${signalOverview?.maxPositionsTotal || 120}`,
-          title: "Open physical Signal positions across Long + Short / independent Signal capacity.",
-        },
-        {
-          label: "Closed",
-          value: signalOverview?.closedPositions ?? 0,
-          title: "Closed Signal positions with Signal source/config attribution.",
-        },
-        {
-          label: "PF12",
-          value: pf,
-          title: "Profit factor over the newest 12 closed Signal positions.",
-          tone:
-            metric?.trades && !metric.infiniteProfitFactor && Number(metric.profitFactor) < 1
-              ? "text-red-600 dark:text-red-400"
-              : metric?.trades
-                ? "text-green-600 dark:text-green-400"
+    if (dedicatedChannelOnlyOverview) {
+      if (signalMode) {
+        const metric = signalOverview?.positions12
+        const pf = metric?.trades
+          ? metric.infiniteProfitFactor
+            ? "∞"
+            : metric.profitFactor === null
+              ? "—"
+              : metric.profitFactor.toFixed(2)
+          : "—"
+        tiles.push(
+          {
+            label: "Signal cycles",
+            value: liveStats?.indicationCycles ?? 0,
+            title: "Shared realtime cycles attributed to Signal; no second processor is started.",
+          },
+          {
+            label: "Signal sets",
+            value: prehistoricStats?.indicationsSignal ?? 0,
+            title: "Current Signal indication rows only; other Main indication types are excluded.",
+          },
+          {
+            label: "Signal open",
+            value:
+              `${signalOverview?.openPositions ?? 0}` +
+              `/${signalOverview?.maxPositionsTotal || 120}`,
+            title: "Open physical Signal positions across Long + Short.",
+          },
+          {
+            label: "Signal closed",
+            value: signalOverview?.closedPositions ?? 0,
+            title: "Closed positions with durable Signal source/config attribution.",
+          },
+          {
+            label: "Signal PF12",
+            value: pf,
+            title: "Profit factor over the newest 12 closed Signal positions.",
+            tone:
+              metric?.trades && !metric.infiniteProfitFactor && Number(metric.profitFactor) < 1
+                ? "text-red-600 dark:text-red-400"
+                : metric?.trades
+                  ? "text-green-600 dark:text-green-400"
+                  : undefined,
+          },
+          {
+            label: "Signal DDT12",
+            value: metric?.trades ? `${metric.drawdownHours.toFixed(2)}h` : "—",
+            title: "Maximum drawdown duration over the newest 12 closed Signal positions.",
+          },
+          {
+            label: "Signal PnL12",
+            value: metric?.trades
+              ? `${metric.netPnl >= 0 ? "+" : ""}${metric.netPnl.toFixed(2)}`
+              : "—",
+            title: "Net result over the newest 12 closed Signal positions.",
+            tone:
+              metric?.trades
+                ? metric.netPnl >= 0
+                  ? "text-green-600 dark:text-green-400"
+                  : "text-red-600 dark:text-red-400"
                 : undefined,
-        },
-        {
-          label: "DDT12",
-          value: metric?.trades ? `${metric.drawdownHours.toFixed(2)}h` : "—",
-          title: "Maximum drawdown duration over the newest 12 closed Signal positions.",
-        },
-        {
-          label: "PnL12",
-          value: metric?.trades
-            ? `${metric.netPnl >= 0 ? "+" : ""}${metric.netPnl.toFixed(2)}`
-            : "—",
-          title: "Net result over the newest 12 closed Signal positions.",
-          tone:
-            metric?.trades
-              ? metric.netPnl >= 0
-                ? "text-green-600 dark:text-green-400"
-                : "text-red-600 dark:text-red-400"
-              : undefined,
-        },
-      )
+          },
+        )
+      }
+      if (presetMode) {
+        const presetProgress = presetOverview?.progress
+        const presetSummary = presetOverview?.summary
+        tiles.push(
+          {
+            label: "Preset progress",
+            value: presetProgress?.symbolsTotal
+              ? `${presetProgress.symbolsCompleted}/${presetProgress.symbolsTotal}`
+              : presetProgress?.status || "idle",
+            title: "Independent Preset optimizer progress on the shared connection runtime.",
+          },
+          {
+            label: "Preset configs",
+            value: presetProgress?.evaluatedConfigurations ?? 0,
+            title: "Complete Preset configurations evaluated in the active generation.",
+          },
+          {
+            label: "Presets",
+            value: presetSummary?.total ?? 0,
+            title: "Generated Preset rows in the active generation.",
+          },
+          {
+            label: "Preset valid",
+            value: `${presetSummary?.eligible ?? 0}/${presetSummary?.total ?? 0}`,
+            title: "Eligible Preset rows / all generated Preset rows.",
+          },
+          {
+            label: "Preset selected",
+            value: presetSummary?.selected ?? 0,
+            title: "Uniquely selected Preset rows.",
+          },
+          {
+            label: "Preset PF",
+            value: presetSummary?.total
+              ? presetSummary.averageProfitFactor.toFixed(2)
+              : "—",
+            title: "Average PositionCost-normalized Preset profit factor.",
+          },
+          {
+            label: "Preset DDT",
+            value: presetSummary?.total
+              ? `${presetSummary.averageDrawdownHours.toFixed(2)}h`
+              : "—",
+            title: "Average Preset drawdown time.",
+          },
+          {
+            label: "Preset NetR",
+            value: presetSummary?.total
+              ? `${presetSummary.netR >= 0 ? "+" : ""}${presetSummary.netR.toFixed(2)}R`
+              : "—",
+            title: "Net R across the active Preset generation.",
+            tone:
+              presetSummary?.total
+                ? presetSummary.netR >= 0
+                  ? "text-green-600 dark:text-green-400"
+                  : "text-red-600 dark:text-red-400"
+                : undefined,
+          },
+        )
+      }
       return tiles.map(({ label, value, title, tone }) => (
         <div key={label} className="flex items-center gap-1 text-[10px]" title={title}>
           <span className="text-muted-foreground">{label}</span>
@@ -1584,12 +1833,68 @@ export function ActiveConnectionCard({
     }
 
     if (signalMode && signalOverview) {
-      tiles.push({
-        label: "Signal",
-        value: `${signalOverview.openPositions}/${signalOverview.maxPositionsTotal || 120}`,
-        title: "Independent Signal positions open / Signal Long + Short capacity.",
-        tone: "text-cyan-700 dark:text-cyan-400",
-      })
+      const metric = signalOverview.positions12
+      tiles.push(
+        {
+          label: "Signal open",
+          value: `${signalOverview.openPositions}/${signalOverview.maxPositionsTotal || 120}`,
+          title: "Signal-attributed positions open / Signal Long + Short capacity.",
+          tone: "text-cyan-700 dark:text-cyan-400",
+        },
+        {
+          label: "Signal closed",
+          value: signalOverview.closedPositions,
+          title: "Closed Signal-attributed positions.",
+          tone: "text-cyan-700 dark:text-cyan-400",
+        },
+        {
+          label: "Signal PF12",
+          value: metric.trades
+            ? metric.infiniteProfitFactor
+              ? "∞"
+              : metric.profitFactor?.toFixed(2) ?? "—"
+            : "—",
+          title: "Signal-only ProfitFactor over the newest 12 closed positions.",
+          tone: "text-cyan-700 dark:text-cyan-400",
+        },
+        {
+          label: "Signal PnL12",
+          value: metric.trades
+            ? `${metric.netPnl >= 0 ? "+" : ""}${metric.netPnl.toFixed(2)}`
+            : "—",
+          title: "Signal-only net PnL over the newest 12 closed positions.",
+          tone: metric.netPnl >= 0
+            ? "text-green-600 dark:text-green-400"
+            : "text-red-600 dark:text-red-400",
+        },
+      )
+    }
+
+    if (presetMode && presetOverview) {
+      const presetProgress = presetOverview.progress
+      const presetSummary = presetOverview.summary
+      tiles.push(
+        {
+          label: "Preset progress",
+          value: presetProgress.symbolsTotal
+            ? `${presetProgress.symbolsCompleted}/${presetProgress.symbolsTotal}`
+            : presetProgress.status,
+          title: "Preset optimizer progress; it reuses the shared connection runtime.",
+          tone: "text-purple-700 dark:text-purple-400",
+        },
+        {
+          label: "Preset valid",
+          value: `${presetSummary.eligible}/${presetSummary.total}`,
+          title: "Eligible Preset rows / all active-generation rows.",
+          tone: "text-purple-700 dark:text-purple-400",
+        },
+        {
+          label: "Preset PF",
+          value: presetSummary.total ? presetSummary.averageProfitFactor.toFixed(2) : "—",
+          title: "Preset-only average PositionCost-normalized ProfitFactor.",
+          tone: "text-purple-700 dark:text-purple-400",
+        },
+      )
     }
 
     return tiles.map(({ label, value, title, tone }) => (
@@ -1605,7 +1910,7 @@ export function ActiveConnectionCard({
   }
 
   const connName = details?.name || connection.connectionId
-  const testStatus = details?.last_test_status
+  const testStatus = connectionTestStatus
 
   return (
     <>
@@ -1648,6 +1953,20 @@ export function ActiveConnectionCard({
               </div>
 
               <div className="flex items-center gap-1 shrink-0">
+                {/* Stored-credentials connection test */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0"
+                  onClick={() => void handleTestConnection()}
+                  disabled={testingConnection}
+                  title="Test Connection"
+                  aria-label={`Test ${connName} connection`}
+                >
+                  {testingConnection
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <PlugZap className="h-3.5 w-3.5" />}
+                </Button>
                 {/* Info button */}
                 <Button
                   variant="ghost"
@@ -1710,12 +2029,12 @@ export function ActiveConnectionCard({
                   <span className="text-green-600 dark:text-green-400 font-medium">Mainnet</span>
                 </>
               )}
-              {details?.last_test_time && (
+              {connectionTestAt && (
                 <>
                   <span className="text-muted-foreground/50">|</span>
                   <span className="flex items-center gap-0.5">
                     <Clock className="h-3 w-3" />
-                    {new Date(details.last_test_time).toLocaleTimeString()}
+                    {new Date(connectionTestAt).toLocaleTimeString()}
                   </span>
                 </>
               )}
@@ -1997,7 +2316,7 @@ export function ActiveConnectionCard({
                     is the exchange itself (count + real USD volume).
                     Do NOT sum across stages — they mirror the same
                     signal. */}
-                {!signalOnlyOverview && prehistoricStats && (
+                {!dedicatedChannelOnlyOverview && prehistoricStats && (
                   prehistoricStats.pseudoOpen > 0 ||
                   prehistoricStats.realOpen > 0 ||
                   prehistoricStats.liveOpenPositions > 0 ||
@@ -2067,7 +2386,7 @@ export function ActiveConnectionCard({
                 )}
 
                 {/* Rich prehistoric progress display */}
-                {!signalOnlyOverview && (phase === "prehistoric_data" || (prehistoricStats && (prehistoricStats.indicationsTotal > 0 || prehistoricStats.stratBase > 0))) && (
+                {!dedicatedChannelOnlyOverview && (phase === "prehistoric_data" || (prehistoricStats && (prehistoricStats.indicationsTotal > 0 || prehistoricStats.stratBase > 0))) && (
                   <div className="mt-2 p-2 bg-amber-50/50 dark:bg-amber-950/20 rounded border border-amber-200/50 dark:border-amber-800/30 space-y-2">
                     {/* Header row */}
                     <div className="flex items-center justify-between">

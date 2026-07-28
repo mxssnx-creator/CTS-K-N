@@ -93,7 +93,7 @@ export const DEFAULT_ADVANCED_CONFIG: AdvancedEngineConfig = {
 
   indicationEvaluation: {
     // Default/Additional indication lanes recalculate independently after
-    // exactly 250 ms. Common lanes use their separate 3-second contract.
+    // their configured cadence. Common lanes default to a separate 1-second contract.
     timeoutSeconds: { min: 0.25, max: 0.25, default: 0.25, step: 0.25 },
     // One active Base pseudo position per exact
     // symbol+type+name+config+direction identity.
@@ -101,7 +101,7 @@ export const DEFAULT_ADVANCED_CONFIG: AdvancedEngineConfig = {
   },
 
   pseudoPosition: {
-    timeoutSeconds: { min: 3, max: 3, default: 3, step: 3 },
+    timeoutSeconds: { min: 1, max: 1, default: 1, step: 1 },
     takeProfitSteps: { min: 2, max: 20, default: 5, step: 1 },
     stopLossRatio: { min: 0.25, max: 2.5, default: 0.5, step: 0.25 },
     trailingStart: { min: 0.2, max: 1.0, default: 0.5, step: 0.2 },

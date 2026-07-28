@@ -8,7 +8,7 @@
 
 import { IndicationConfigManager, IndicationResult, IndicationConfig } from "@/lib/indication-config-manager"
 import { StrategyConfigManager, PseudoPosition, StrategyConfig } from "@/lib/strategy-config-manager"
-import { getRedisClient, initRedis, getSettings, setSettings, getAppSettings } from "@/lib/redis-db"
+import { getRedisClient, initRedis, setSettings, getAppSettings } from "@/lib/redis-db"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSelection, ownsCanonicalSymbolSelectionEpoch } from "@/lib/trade-engine/symbol-selection-ownership"
@@ -70,45 +70,11 @@ export class ConfigSetProcessor {
   private indicationManager: IndicationConfigManager
   private strategyManager: StrategyConfigManager
 
-  // Per-Set DB capacity used to clip the per-config indication-result and
-  // strategy-position arrays returned from each calculation pass. This
-  // value MUST track the operator-controlled `setCompactionFloor`
-  // setting (Settings → System → Set Compaction → Compaction Floor) so
-  // the per-pass slice does not artificially mask actual processed
-  // counts in the dashboard.
-  //
-  // Read once at the start of each `processPrehistoricData` run (cheap,
-  // already async) into `runtimeSetEntryCap`. Default 250 matches the
-  // historical hard-coded value, so behaviour is unchanged for fresh
-  // installs that haven't tuned the setting.
-  private runtimeSetEntryCap: number = 250
-
   constructor(connectionId: string, epoch: number) {
     this.connectionId = connectionId
     this.epoch = epoch
     this.indicationManager = new IndicationConfigManager(connectionId)
     this.strategyManager = new StrategyConfigManager(connectionId)
-  }
-
-  /**
-   * Resolve the per-Set entry cap from settings (`setCompactionFloor`).
-   * Honours the same value the operator configured in Settings → System
-   * → Set Compaction. Returns 250 (the legacy default) when the
-   * setting is missing or invalid so behaviour is preserved.
-   *
-   * NOTE: this is called once per `processPrehistoricData` run. Per-call
-   * lookup avoids stale closures on long-lived process instances.
-   */
-  private async resolveSetEntryCap(): Promise<number> {
-    try {
-      const settingsRaw = await getSettings("global_settings").catch(() => null)
-      const settings: any = settingsRaw && typeof settingsRaw === "object" ? settingsRaw : {}
-      const fromSettings = Number(settings.setCompactionFloor)
-      if (Number.isFinite(fromSettings) && fromSettings >= 50 && fromSettings <= 100_000) {
-        return Math.floor(fromSettings)
-      }
-    } catch { /* non-critical */ }
-    return 250
   }
 
   /**
@@ -266,17 +232,7 @@ export class ConfigSetProcessor {
       ])
     }
 
-    // Resolve the per-Set entry cap once for this whole run. Honours the
-    // operator-controlled `setCompactionFloor` setting so the dashboard
-    // counts (`indications_count`, `strategies_base_total`, the per-Set
-    // DB lengths) reflect the actual configured ceiling instead of the
-    // historical hard-coded 250.
-    this.runtimeSetEntryCap = await this.resolveSetEntryCap()
     await assertCurrentSelection()
-    console.log(
-      `[v0] [ConfigSetProcessor] per-Set entry cap = ${this.runtimeSetEntryCap} ` +
-      `(from setCompactionFloor)`
-    )
 
     // Mutable aggregates updated from parallel workers — guard with a lightweight
     // local function since JS is single-threaded inside the event loop there's
@@ -771,18 +727,18 @@ export class ConfigSetProcessor {
       // strategy config counts we don't want to fan out an unbounded
       // number of LRANGE commands at once.
       const PF_SCAN_CONCURRENCY = 16
-      const queue = strategyConfigs.slice()
-      const workers: Promise<void>[] = []
-      for (let w = 0; w < Math.min(PF_SCAN_CONCURRENCY, queue.length); w++) {
-        workers.push((async () => {
-          while (true) {
-            assertRunActive()
-            const cfg = queue.shift()
-            if (!cfg) return
-            try {
-              const setKey = `strategy:${this.connectionId}:config:${cfg.id}:positions`
-              const entries = (await client.lrange(setKey, 0, StrategyConfigManager.MAX_POSITIONS - 1)) || []
-              for (const entry of entries) {
+      const configAggregates = await mapWithConcurrency(
+        strategyConfigs,
+        PF_SCAN_CONCURRENCY,
+        async (cfg) => {
+          assertRunActive()
+          let configPosSum = 0
+          let configNegAbsSum = 0
+          let configResultCount = 0
+          try {
+            const setKey = `strategy:${this.connectionId}:config:${cfg.id}:positions`
+            const entries = (await client.lrange(setKey, 0, StrategyConfigManager.MAX_POSITIONS - 1)) || []
+            for (const entry of entries) {
                 if (!entry) continue
                 // ── Closed-only gate (spec: "Main Sets / Pos Coord ones must
                 //    evaluate previous CLOSED pseudo positions, not opened ones") ──
@@ -817,21 +773,29 @@ export class ConfigSetProcessor {
                 if (parsed.status !== "closed") continue
                 const resultPct = Number(parsed.result)
                 if (!Number.isFinite(resultPct)) continue
-                if (resultPct > 0) posSum += resultPct
-                else if (resultPct < 0) negAbsSum += Math.abs(resultPct)
-                resultCount++
-              }
-            } catch (err) {
-              if (err instanceof PrehistoricProcessingCancelledError) throw err
-              console.warn(
-                `[v0] [ConfigSetProcessor] PF scan failed for ${cfg.id}:`,
-                err instanceof Error ? err.message : String(err),
-              )
+                if (resultPct > 0) configPosSum += resultPct
+                else if (resultPct < 0) configNegAbsSum += Math.abs(resultPct)
+                configResultCount++
             }
+          } catch (err) {
+            if (err instanceof PrehistoricProcessingCancelledError) throw err
+            console.warn(
+              `[v0] [ConfigSetProcessor] PF scan failed for ${cfg.id}:`,
+              err instanceof Error ? err.message : String(err),
+            )
           }
-        })())
+          return {
+            posSum: configPosSum,
+            negAbsSum: configNegAbsSum,
+            resultCount: configResultCount,
+          }
+        },
+      )
+      for (const aggregate of configAggregates) {
+        posSum += aggregate.posSum
+        negAbsSum += aggregate.negAbsSum
+        resultCount += aggregate.resultCount
       }
-      await Promise.all(workers)
       await assertCurrentSelection()
 
       // Always write the PF field so the dashboard's "Historic PF" tile
@@ -1145,11 +1109,10 @@ export class ConfigSetProcessor {
       }
     }
 
-    // Honour the operator-configured per-Set entry cap (default 250 to
-    // preserve legacy behaviour). Slicing per-config keeps Set size bounded
-    // and the displayed totals in the dashboard now reflect the configured
-    // ceiling rather than a hard-coded magic number.
-    return results.slice(0, this.runtimeSetEntryCap)
+    // Every result belonging to this exact configuration is returned.
+    // Persistence compaction may retain a bounded history, but it must never
+    // truncate the current calculation pass or skip a configuration.
+    return results
   }
 
   /**
@@ -1426,11 +1389,9 @@ export class ConfigSetProcessor {
       })
     }
 
-    // Honour the operator-configured per-Set entry cap (see
-    // `resolveSetEntryCap`). Default 250 — bumping the Set Compaction
-    // Floor in Settings → System raises this ceiling for every prehistoric
-    // strategy pass without code changes.
-    return positions.slice(0, this.runtimeSetEntryCap)
+    // Keep the complete current pass. History retention is applied only when
+    // persisted and is independent from calculation completeness.
+    return positions
   }
 
   /**

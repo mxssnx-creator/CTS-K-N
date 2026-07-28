@@ -493,8 +493,9 @@ export class StrategyProcessor {
   //      This matches the spec: "Trailing, No Trailing handled System
   //      Internally and Statistically".
   //   2. Creates positions exclusively through `PseudoPositionManager.createPosition`,
-  //      which gates on (a) the per-Set uniqueness key and (b) the
-  //      `maxActiveBasePseudoPositionsPerDirection` cap (default 1). The
+  //      which gates on the exact complete Base-lane uniqueness key. The
+  //      configured value 1 is per symbol/type/name/config/direction/Set, not
+  //      a total Long/Short ceiling. The
   //      legacy direct `createPosition` path bypassed BOTH gates and could
   //      have multiplied positions per direction in a way that violated
   //      the cap.

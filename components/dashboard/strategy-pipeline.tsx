@@ -596,7 +596,7 @@ export function StrategyPipeline({ connectionId }: { connectionId: string }) {
                 <PerspectiveTile
                   label="General"
                   value={data.real.fourPerspective.general}
-                  hint="This cycle's Real-stage snapshot (post-PF/DDT filter, post-cap)."
+                  hint="This cycle's complete Real-stage snapshot after PF/DDT evaluation."
                 />
                 <PerspectiveTile
                   label="Combined"
@@ -695,7 +695,7 @@ export function StrategyPipeline({ connectionId }: { connectionId: string }) {
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-sm">
             <Zap className="h-4 w-4" />
-            Live — Top {data.live.cap} on Exchange
+            Live — Unlimited qualifying Sets
             <Badge variant="default" className="ml-auto font-mono">
               {data.live.setsActive} active
             </Badge>
@@ -707,7 +707,7 @@ export function StrategyPipeline({ connectionId }: { connectionId: string }) {
         <CardContent>
           <div className="grid gap-3 sm:grid-cols-3">
             <Metric label="Active now" value={data.live.setsActive} />
-            <Metric label="Cap" value={data.live.cap} />
+            <Metric label="Capacity" value="Unlimited" />
             <Metric label="Avg PF" value={data.live.avgProfitFactor.toFixed(3)} />
           </div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -721,7 +721,7 @@ export function StrategyPipeline({ connectionId }: { connectionId: string }) {
               label="Progressing Sets"
               value={data.live.setsProgressing}
               accent="primary"
-              hint="Real-stage Sets being ranked & capped for live execution this cycle."
+              hint="Every qualifying Real-stage Set considered for live execution this cycle."
             />
           </div>
         </CardContent>

@@ -13,6 +13,7 @@ import {
   withSharedPersistenceLease,
 } from "@/lib/redis-db"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 const STORAGE_KEY = "indications:main"
 
@@ -78,10 +79,8 @@ export async function POST(request: Request) {
 
     const changedKeys = Object.keys(canonicalPatch)
     const connections = await getAllConnections().catch(() => [])
-    await Promise.allSettled(
-      connections.map((connection: any) =>
-        notifySettingsChanged(String(connection.id), changedKeys),
-      ),
+    await mapWithConcurrency(connections, 4, (connection: any) =>
+      notifySettingsChanged(String(connection.id), changedKeys).catch(() => undefined),
     )
 
     return NextResponse.json({

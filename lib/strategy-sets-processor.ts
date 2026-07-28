@@ -1,7 +1,8 @@
 /**
  * Independent Strategy Sets Processor
- * Maintains separate 500-entry pools for each strategy calculation type
- * Each type evaluates independently with own set configurations
+ * Evaluates every indication for every strategy calculation type.
+ * Stored histories remain compactable, but current-cycle candidates are
+ * never sampled or capped.
  */
 
 import { getRedisClient, initRedis, getSettings, setSettings } from "@/lib/redis-db"
@@ -42,9 +43,7 @@ async function withSetKeyLock(setKey: string, fn: () => Promise<void>): Promise<
   await next
 }
 
-// Default limits per strategy type (independently configurable)
-export const MAX_INPUT_MULTIPLIER = 2
-
+// These are storage-retention floors only. They do not limit calculations.
 const DEFAULT_LIMITS = {
   base: 900,
   main: 300,
@@ -157,59 +156,6 @@ export class StrategySetsProcessor {
   }
 
 
-  private selectTopIndications(indications: any[], limit: number): any[] {
-    if (indications.length <= limit * 4) {
-      return [...indications]
-        .sort((a, b) => (b.profitFactor ?? 0) - (a.profitFactor ?? 0))
-        .slice(0, limit)
-    }
-
-    // Memory-safe top-K selection for full progression runs. Use a bounded
-    // min-heap so we keep only K references and avoid sorting/copying the full
-    // indication array. This is O(N log K) instead of the previous O(N*K)
-    // replacement scan and avoids large transient arrays during complete runs.
-    const heap: any[] = []
-    const pf = (item: any) => Number(item?.profitFactor ?? 0)
-    const swap = (i: number, j: number) => {
-      const tmp = heap[i]
-      heap[i] = heap[j]
-      heap[j] = tmp
-    }
-    const bubbleUp = (idx: number) => {
-      while (idx > 0) {
-        const parent = Math.floor((idx - 1) / 2)
-        if (pf(heap[parent]) <= pf(heap[idx])) break
-        swap(parent, idx)
-        idx = parent
-      }
-    }
-    const sinkDown = (idx: number) => {
-      while (true) {
-        const left = idx * 2 + 1
-        const right = left + 1
-        let smallest = idx
-        if (left < heap.length && pf(heap[left]) < pf(heap[smallest])) smallest = left
-        if (right < heap.length && pf(heap[right]) < pf(heap[smallest])) smallest = right
-        if (smallest === idx) break
-        swap(idx, smallest)
-        idx = smallest
-      }
-    }
-
-    for (const indication of indications) {
-      if (heap.length < limit) {
-        heap.push(indication)
-        bubbleUp(heap.length - 1)
-        continue
-      }
-      if (pf(indication) <= pf(heap[0])) continue
-      heap[0] = indication
-      sinkDown(0)
-    }
-
-    return heap.sort((a, b) => (b.profitFactor ?? 0) - (a.profitFactor ?? 0))
-  }
-
   /**
    * Process all strategy types independently for a symbol
    */
@@ -218,28 +164,79 @@ export class StrategySetsProcessor {
       const startTime = Date.now()
       await this.settingsReady
 
-      const [baseCfg, mainCfg, realCfg, liveCfg] = await Promise.all([
-        this.resolveCompaction("base"),
-        this.resolveCompaction("main"),
-        this.resolveCompaction("real"),
-        this.resolveCompaction("live"),
-      ])
-      const maxLimit = Math.max(baseCfg.floor, mainCfg.floor, realCfg.floor, liveCfg.floor)
-      const candidateLimit = Math.max(100, maxLimit * MAX_INPUT_MULTIPLIER)
-
-      // Sort indications by profitFactor descending so that the best-performing
-      // signals are processed first across all strategy type pools.
       const rawTotal = indications.length
-      const selectedIndications = this.selectTopIndications(indications, candidateLimit)
-      const selectedTotal = selectedIndications.length
+      const selectedTotal = rawTotal
 
-      // Process all 4 strategy types in parallel with independent logic
-      const [baseResults, mainResults, realResults, liveResults] = await Promise.all([
-        this.processBaseStrategySet(symbol, selectedIndications, rawTotal, selectedTotal),
-        this.processMainStrategySet(symbol, selectedIndications, rawTotal, selectedTotal),
-        this.processRealStrategySet(symbol, selectedIndications, rawTotal, selectedTotal),
-        this.processLiveStrategySet(symbol, selectedIndications, rawTotal, selectedTotal),
-      ])
+      type BatchEntry = { strategy: any; indicationType: string }
+      const batches: Record<"base" | "main" | "real" | "live", BatchEntry[]> = {
+        base: [],
+        main: [],
+        real: [],
+        live: [],
+      }
+
+      // Classify the complete indication inventory in one CPU pass. The four
+      // result rows remain independently configured/stored, while Redis writes
+      // run concurrently after classification. No candidate is sampled.
+      for (const indication of indications) {
+        const confidence = Number(indication.confidence) || 0
+        const profitFactor = Number(indication.profitFactor) || 0
+        const indicationType = String(indication.type || "unknown")
+        if (confidence > 0.45 && profitFactor > 0.9 && profitFactor * 0.95 >= 1) {
+          batches.base.push({
+            strategy: {
+              profitFactor: profitFactor * 0.95,
+              confidence,
+              metadata: { ...indication.metadata, strategyType: "base", riskLevel: "low" },
+            },
+            indicationType,
+          })
+        }
+        if (confidence > 0.62 && profitFactor > 1.2) {
+          batches.main.push({
+            strategy: {
+              profitFactor,
+              confidence,
+              metadata: { ...indication.metadata, strategyType: "main", riskLevel: "medium" },
+            },
+            indicationType,
+          })
+        }
+        if (confidence > 0.78 && profitFactor > 1.45) {
+          batches.real.push({
+            strategy: {
+              profitFactor: profitFactor * 1.1,
+              confidence,
+              metadata: { ...indication.metadata, strategyType: "real", riskLevel: "high" },
+            },
+            indicationType,
+          })
+        }
+        if (profitFactor >= 1) {
+          batches.live.push({
+            strategy: {
+              profitFactor,
+              confidence,
+              metadata: { ...indication.metadata, strategyType: "live", riskLevel: "variable" },
+            },
+            indicationType,
+          })
+        }
+      }
+
+      await Promise.all(
+        (["base", "main", "real", "live"] as const).map((type) =>
+          this.saveBatchToSet(
+            `strategy_set:${this.connectionId}:${symbol}:${type}`,
+            batches[type],
+            type,
+          ),
+        ),
+      )
+      const baseResults = this.toStageResult("base", rawTotal, selectedTotal, batches.base.length)
+      const mainResults = this.toStageResult("main", rawTotal, selectedTotal, batches.main.length)
+      const realResults = this.toStageResult("real", rawTotal, selectedTotal, batches.real.length)
+      const liveResults = this.toStageResult("live", rawTotal, selectedTotal, batches.live.length)
 
       const duration = Date.now() - startTime
       const totalQualified =
@@ -250,7 +247,7 @@ export class StrategySetsProcessor {
 
       if (totalQualified > 0) {
         console.log(
-          `[v0] [StrategySets] ${symbol}: All types evaluated in ${duration}ms | Raw=${rawTotal} Selected=${selectedTotal} | Total qualified=${totalQualified} | Base qualified=${baseResults?.qualified} Main qualified=${mainResults?.qualified} Real qualified=${realResults?.qualified} Live qualified=${liveResults?.qualified}`
+          `[v0] [StrategySets] ${symbol}: All ${rawTotal} indications evaluated in ${duration}ms | Total qualified=${totalQualified} | Base qualified=${baseResults?.qualified} Main qualified=${mainResults?.qualified} Real qualified=${realResults?.qualified} Live qualified=${liveResults?.qualified}`
         )
 
         await logProgressionEvent(this.connectionId, "strategies_sets", "info", `All strategy types evaluated for ${symbol}`, {

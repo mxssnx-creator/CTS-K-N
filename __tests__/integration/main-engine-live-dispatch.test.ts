@@ -187,6 +187,22 @@ jest.mock("@/lib/redis-db", () => ({
   persistNow: jest.fn(async () => true),
   persistLivePositionCheckpoint: jest.fn(async () => true),
   getRedisClient: jest.fn(() => fakeRedis),
+  upsertRedisListHead: jest.fn(async (_client: unknown, key: string, value: string) => {
+    const current = (lists.get(key) || []).filter((item) => item !== value)
+    lists.set(key, [value, ...current])
+  }),
+  moveRedisListMembershipToHead: jest.fn(async (
+    _client: unknown,
+    sourceKey: string,
+    targetKey: string,
+    value: string,
+  ) => {
+    lists.set(sourceKey, (lists.get(sourceKey) || []).filter((item) => item !== value))
+    lists.set(targetKey, [
+      value,
+      ...(lists.get(targetKey) || []).filter((item) => item !== value),
+    ])
+  }),
   getConnection: jest.fn(async () => ({ ...connection })),
   getAppSettings: jest.fn(async () => ({})),
   setSettings: jest.fn(async () => undefined),

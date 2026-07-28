@@ -300,7 +300,7 @@ export const DEFAULT_COMMON_INDICATION_SETTINGS: CommonIndicationSettingsDocumen
     definition.storageKey,
     {
       enabled: definition.enabled,
-      interval: 60,
+      interval: 1,
       timeout: 3,
       ...Object.fromEntries(Object.entries(definition.parameters).map(([key, value]) => [key, value.default])),
     },
@@ -453,7 +453,7 @@ export function normalizeCommonIndicationSettings(raw: unknown): CommonIndicatio
       : {}
     const settings: CommonIndicatorSettings = {
       enabled: bool(candidate.enabled, definition.enabled),
-      interval: clamp(finite(candidate.interval, 60), 0.1, 3_600),
+      interval: clamp(finite(candidate.interval, 1), 0.1, 3_600),
       timeout: clamp(finite(candidate.timeout, 3), 0, 3_600),
     }
     for (const [key, parameter] of Object.entries(definition.parameters)) {

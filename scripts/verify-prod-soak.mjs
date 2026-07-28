@@ -515,7 +515,7 @@ async function main() {
         // position-history warmup than this bounded smoke. Mirror the fresh
         // live-QuickStart bootstrap thresholds inside the isolated snapshot so
         // Base -> Main -> Real -> Live/paper is exercised within one minute.
-        baseProfitFactor: 0.75,
+        baseProfitFactor: 0.8,
         mainProfitFactor: 0.75,
         realProfitFactor: 0.75,
         prevPosMinCount: 1,
@@ -706,6 +706,8 @@ async function main() {
     }
   }
 
+  const livePositionsPath =
+    `/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}&closedLimit=500`
   const endpointBuilders = [
     () => "/api/health",
     () => "/api/system/init-status",
@@ -716,7 +718,7 @@ async function main() {
     () => `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`,
     () => `/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}&limit=500`,
     () => `/api/logistics/queue?connectionId=${encodeURIComponent(connectionId)}`,
-    () => `/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}`,
+    () => livePositionsPath,
     () => `/api/preset-optimizer?connectionId=${encodeURIComponent(connectionId)}`,
     () => `/api/connections/${encodeURIComponent(connectionId)}/engine-states`,
   ]
@@ -748,6 +750,14 @@ async function main() {
   const signalRuntime = []
   const detailedMonitorRuntime = []
   const positionLifecycle = new Map()
+  const lifecycleTerminalStatuses = new Set([
+    "closed",
+    "rejected",
+    "error",
+    "cancelled",
+    "canceled",
+    "failed",
+  ])
   const executionProgress = new Map()
   let simulatedPositionsPeak = 0
   let realPositionsPeak = 0
@@ -897,7 +907,7 @@ async function main() {
     }
     if (engine?.isLiveTrading !== false) throw new Error("Engine status reports live trading during safe paper soak")
 
-    const positions = byPath.get(`/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}`)
+    const positions = byPath.get(livePositionsPath)
     if (!Array.isArray(positions?.realPositions) || !Array.isArray(positions?.simulatedPositions)) {
       throw new Error("Live-position API schema failed during soak")
     }
@@ -911,15 +921,41 @@ async function main() {
       currentPositionIds.add(id)
       assertPositionQuantityIntegrity(position, executionProgress)
       const previous = positionLifecycle.get(id)
-      if (previous?.status === "closed" && position.status !== "closed") {
+      if (
+        previous &&
+        lifecycleTerminalStatuses.has(String(previous.status || "").toLowerCase()) &&
+        !lifecycleTerminalStatuses.has(String(position.status || "").toLowerCase())
+      ) {
         throw new Error(`Terminal position ${id} reopened (${previous.status} -> ${position.status})`)
       }
       positionLifecycle.set(id, { status: position.status, lastSeenRound: rounds })
     }
+    const disappearedActivePositionIds = []
     for (const [id, previous] of positionLifecycle) {
-      if (previous.status !== "closed" && previous.lastSeenRound < rounds && !currentPositionIds.has(id)) {
-        throw new Error(`Active position ${id} disappeared without a terminal record`)
+      if (
+        !lifecycleTerminalStatuses.has(String(previous.status || "").toLowerCase()) &&
+        previous.lastSeenRound < rounds &&
+        !currentPositionIds.has(id)
+      ) {
+        disappearedActivePositionIds.push(id)
       }
+    }
+    // The overview intentionally exposes a bounded terminal-history ring.
+    // Under exhaustive high-load processing a row can close and leave that
+    // page between polls. Resolve the exact durable record before treating
+    // its absence from the overview as lifecycle loss.
+    for (const id of disappearedActivePositionIds) {
+      const detail = (await request(
+        `/api/positions/${encodeURIComponent(id)}?connection_id=${encodeURIComponent(connectionId)}`,
+      )).json
+      const terminalStatus = String(detail?.data?.status || "").toLowerCase()
+      if (!lifecycleTerminalStatuses.has(terminalStatus)) {
+        throw new Error(
+          `Active position ${id} disappeared without a terminal record ` +
+          `(detail status=${terminalStatus || "missing"})`,
+        )
+      }
+      positionLifecycle.set(id, { status: terminalStatus, lastSeenRound: rounds })
     }
     realPositionsPeak = Math.max(realPositionsPeak, positions.realPositions.length)
     simulatedPositionsPeak = Math.max(simulatedPositionsPeak, positions.simulatedPositions.length)
@@ -1054,7 +1090,7 @@ async function main() {
       lastByPath.get(`/api/connections/progression/${encodeURIComponent(connectionId)}/stats`),
       lastByPath.get(`/api/settings/indications/signal?connectionId=${encodeURIComponent(connectionId)}`),
       lastByPath.get(`/api/indications/signals/status?connectionId=${encodeURIComponent(connectionId)}`),
-      lastByPath.get(`/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}`),
+      lastByPath.get(livePositionsPath),
       lastByPath.get(`/api/statistics/indications?connectionId=${encodeURIComponent(connectionId)}`),
     )
     const previousFinalSignal = signalRuntime.at(-1)
@@ -1168,7 +1204,12 @@ async function main() {
     }
   }
 
-  const databaseStableGrowthLimit = Math.max(500, SYMBOLS.length * 50)
+  // The bounded lifecycle can still be filling its 500-row terminal ring
+  // during the final third of a short soak. Each retained row owns a hash and
+  // JSON mirror, while up to 120 Signal rows remain open. Allow that fixed
+  // retention envelope here; the topology-derived absolute limit below still
+  // fails unbounded per-cycle/configuration growth.
+  const databaseStableGrowthLimit = Math.max(1_500, SYMBOLS.length * 50)
 
   if (siteIds.size !== 1 || siteIds.has(null) || siteIds.has(undefined)) throw new Error("Site identity changed during soak")
   if (bootIds.size !== 1) throw new Error("Runtime boot identity changed without a process restart")

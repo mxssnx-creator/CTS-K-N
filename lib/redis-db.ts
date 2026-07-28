@@ -673,7 +673,7 @@ export class InlineLocalRedis implements RedisClientLike {
       const closedIds = (this.data.lists.get(closedIndexKey) || []).filter((id) => id !== positionId)
       if (terminalStatuses.has(String(position.status || "").toLowerCase())) {
         this.data.lists.set(openIndexKey, openIds)
-        this.data.lists.set(closedIndexKey, [positionId, ...closedIds].slice(0, 500))
+        this.data.lists.set(closedIndexKey, [positionId, ...closedIds])
         const analytics = buildLivePositionAnalyticsSnapshot(position)
         if (analytics) {
           const analyticsDataKey = liveClosedAnalyticsDataKey(connectionId)
@@ -3197,6 +3197,21 @@ export async function cleanupVolatileRuntimeState({
   reason = "startup",
 }: { mode?: "activeOwnerSafe" | string; reason?: string } = {}): Promise<{ deleted: number; preserved: number }> {
   const client = getRedisClient()
+  // Next dev and standalone route bundles can evaluate redis-db.ts in
+  // independent module runtimes while sharing one network Redis. Module/global
+  // flags therefore cannot prevent every route's first init from deleting
+  // rebuildable pipeline keys. Claim one distributed startup-cleanup lease;
+  // later module instances and completeStartup reuse the already-clean store.
+  if (reason === "initRedis" || reason === "completeStartup") {
+    const claimed = await client.set(
+      "runtime:volatile_cleanup:startup_claim",
+      `${process.pid}:${reason}:${Date.now()}`,
+      { NX: true, EX: 30 * 60 },
+    ).catch(() => null)
+    if (claimed !== "OK" && (claimed as unknown) !== true) {
+      return { deleted: 0, preserved: 0 }
+    }
+  }
   if (typeof (client as any).cleanupVolatileRuntimeState === "function") {
     return (client as any).cleanupVolatileRuntimeState({ mode, reason })
   }
@@ -4475,6 +4490,79 @@ export async function setMarketData(symbol: string, interval: string, data: any,
 
 // ========== Position Operations ==========
 
+/**
+ * Keep exactly one list membership at the head without exposing the transient
+ * gap produced by separate LREM + LPUSH commands. Runtime readers can
+ * otherwise observe a durable active position missing from its open index.
+ */
+export async function upsertRedisListHead(
+  client: RedisClientLike,
+  key: string,
+  value: string,
+): Promise<void> {
+  if (typeof client.eval === "function") {
+    try {
+      await client.eval(
+        `
+          redis.call("LREM", KEYS[1], 0, ARGV[1])
+          redis.call("LPUSH", KEYS[1], ARGV[1])
+          return 1
+        `,
+        { keys: [key], arguments: [value] },
+      )
+      return
+    } catch {
+      // Minimal/test adapters fall through to gap-free membership insertion.
+    }
+  }
+  // Every supported adapter exposes a chainable MULTI implementation. Network
+  // Redis executes this atomically; the inline adapter executes both in the
+  // same queued operation and therefore cannot leave a completed save with a
+  // stale duplicate or a non-head membership.
+  const transaction = client.multi()
+  transaction.lrem(key, 0, value)
+  transaction.lpush(key, value)
+  await transaction.exec()
+}
+
+/**
+ * Atomically move a value from one Redis list to the head of another.
+ *
+ * Live-position readers use the open and closed lists as lifecycle indexes.
+ * Separate LREM and LPUSH commands expose a short interval where a durable
+ * position belongs to neither index and allow concurrent terminal writers to
+ * add duplicates. Redis executes the Lua path atomically; supported inline and
+ * test adapters receive the same completed-operation contract through MULTI.
+ */
+export async function moveRedisListMembershipToHead(
+  client: RedisClientLike,
+  sourceKey: string,
+  targetKey: string,
+  value: string,
+): Promise<void> {
+  if (typeof client.eval === "function") {
+    try {
+      await client.eval(
+        `
+          redis.call("LREM", KEYS[1], 0, ARGV[1])
+          redis.call("LREM", KEYS[2], 0, ARGV[1])
+          redis.call("LPUSH", KEYS[2], ARGV[1])
+          return 1
+        `,
+        { keys: [sourceKey, targetKey], arguments: [value] },
+      )
+      return
+    } catch {
+      // Minimal/test adapters fall through to transactional commands.
+    }
+  }
+  const transaction = client.multi()
+  transaction.lrem(sourceKey, 0, value)
+  transaction.lrem(targetKey, 0, value)
+  transaction.lpush(targetKey, value)
+  await transaction.exec()
+}
+
 export async function getPosition(id: string): Promise<any | null> {
   await initRedis()
   const client = getClient()
@@ -4562,22 +4650,16 @@ export async function savePosition(position: any): Promise<void> {
     const TERMINAL_LIVE_STATUSES = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
     if (TERMINAL_LIVE_STATUSES.has(String(position.status))) {
       try {
-        // Remove any existing entries from open list
-        await client.lrem(`live:positions:${connId}`, 0, id).catch(() => 0)
-        // Check if already in closed list to avoid duplicates.
-        // IMPORTANT: lpos returns 0 (integer) when found at index 0 — truthy check
-        // `!alreadyClosed` treats 0 as falsy and incorrectly re-adds the entry.
-        // Use explicit null/undefined check instead.
-        const alreadyClosed = await client.lpos(`live:positions:${connId}:closed`, id).catch(() => null)
-        if (alreadyClosed === null || alreadyClosed === undefined) {
-          // Only add if not already present
-          await client.lpush(`live:positions:${connId}:closed`, id).catch(() => 0)
-        }
+        await moveRedisListMembershipToHead(
+          client,
+          `live:positions:${connId}`,
+          `live:positions:${connId}:closed`,
+          id,
+        )
         await archiveClosedLivePositionAnalytics(client, {
           ...position,
           connectionId: connId,
         }).catch(() => {})
-        await client.ltrim(`live:positions:${connId}:closed`, 0, 499).catch(() => {})
         // Mark moved so closeLivePosition can detect duplicate increments
         await client.set(`live:positions:${connId}:moved:${id}`, String(Date.now())).catch(() => null)
         await client.expire(`live:positions:${connId}:moved:${id}`, 60 * 60).catch(() => 0)
@@ -4598,10 +4680,10 @@ export async function savePosition(position: any): Promise<void> {
         // best-effort
       }
     } else {
-      // Ensure id appears once in the open index (dedupe via lrem -> lpush)
+      // Ensure id appears once in the open index atomically. A separate
+      // LREM→LPUSH pair exposed active rows as missing to concurrent APIs.
       try {
-        await client.lrem(`live:positions:${connId}`, 0, id).catch(() => 0)
-        await client.lpush(`live:positions:${connId}`, id).catch(() => 0)
+        await upsertRedisListHead(client, `live:positions:${connId}`, id)
         
         // Perf: Add setKey/parentSetKey to live_set_keys index when position opens so
         // coordinator's getOpenLiveSetKeys can retrieve all active set keys via O(1) SMEMBERS

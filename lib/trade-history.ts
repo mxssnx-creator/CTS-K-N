@@ -1,4 +1,8 @@
-export const MAX_TRADE_HISTORY_RECORDS = 500
+/** Bounded transport page; the durable history itself is never truncated. */
+export const TRADE_HISTORY_PAGE_SIZE = 500
+export const MAX_TRADE_HISTORY_PAGE_SIZE = 1_000
+/** Compatibility alias for callers that request one transport page. */
+export const MAX_TRADE_HISTORY_RECORDS = TRADE_HISTORY_PAGE_SIZE
 
 export interface TradeHistoryRow {
   id: string
@@ -16,6 +20,8 @@ export interface TradeHistoryRow {
   closedAt: number
   holdMinutes: number
   source: "exchange" | "local"
+  environment: "exchange" | "simulated"
+  executionIntent?: "main" | "preset" | "signal"
   orderId?: string
   closeOrderId?: string
   positionId?: string
@@ -139,6 +145,7 @@ export function normalizeBingXClosedOrder(order: Record<string, any>): TradeHist
     closedAt,
     holdMinutes: openedAt > 0 && closedAt >= openedAt ? (closedAt - openedAt) / 60_000 : 0,
     source: "exchange",
+    environment: "exchange",
     orderId: String(order.openOrderId ?? "") || undefined,
     closeOrderId: orderId || undefined,
     positionId: positionId || undefined,
@@ -204,6 +211,21 @@ export function normalizeLocalTradeHistoryRow(raw: Record<string, any>): TradeHi
   const positionId = String(
     exchangeData.exchangePositionId ?? exchangeData.positionId ?? position.exchangePositionId ?? "",
   ).trim()
+  const executionMode = String(position.executionMode || "").trim().toLowerCase()
+  const environment: "exchange" | "simulated" =
+    executionMode === "simulation" ||
+    position.simulated === true ||
+    position.simulated === "1" ||
+    /paper|simulat|live_trade disabled/i.test(
+      String(position.statusReason || position.closeReason || ""),
+    )
+      ? "simulated"
+      : "exchange"
+  const rawIntent = String(position.executionIntent || "").trim().toLowerCase()
+  const executionIntent =
+    rawIntent === "main" || rawIntent === "preset" || rawIntent === "signal"
+      ? rawIntent
+      : undefined
 
   return {
     id: String(position.id),
@@ -221,6 +243,8 @@ export function normalizeLocalTradeHistoryRow(raw: Record<string, any>): TradeHi
     closedAt,
     holdMinutes: openedAt > 0 && closedAt >= openedAt ? (closedAt - openedAt) / 60_000 : 0,
     source: "local",
+    environment,
+    executionIntent,
     orderId: String(position.orderId ?? exchangeData.orderId ?? "") || undefined,
     closeOrderId: String(position.closeOrderId ?? exchangeData.closeOrderId ?? "") || undefined,
     positionId: positionId || undefined,
@@ -274,7 +298,7 @@ function rowMatchScore(exchange: TradeHistoryRow, local: TradeHistoryRow): numbe
 export function mergeTradeHistory(
   exchangeRows: TradeHistoryRow[],
   localRows: TradeHistoryRow[],
-  limit = MAX_TRADE_HISTORY_RECORDS,
+  limit = 0,
 ): TradeHistoryRow[] {
   const remainingLocal = [...localRows]
   const merged: TradeHistoryRow[] = []
@@ -304,6 +328,7 @@ export function mergeTradeHistory(
       closeOrderId: exchange.closeOrderId || local.closeOrderId,
       positionId: exchange.positionId || local.positionId,
       source: "exchange",
+      environment: "exchange",
     })
   }
   merged.push(...remainingLocal)
@@ -314,9 +339,10 @@ export function mergeTradeHistory(
     const previous = deduped.get(key)
     if (!previous || row.closedAt >= previous.closedAt) deduped.set(key, row)
   }
-  return [...deduped.values()]
+  const ordered = [...deduped.values()]
     .sort((left, right) => right.closedAt - left.closedAt)
-    .slice(0, Math.max(1, Math.min(MAX_TRADE_HISTORY_RECORDS, Math.floor(limit) || MAX_TRADE_HISTORY_RECORDS)))
+  const requested = Math.floor(Number(limit) || 0)
+  return requested > 0 ? ordered.slice(0, requested) : ordered
 }
 
 export function summarizeTradeHistory(rows: TradeHistoryRow[]) {
@@ -345,25 +371,73 @@ export function summarizeTradeHistory(rows: TradeHistoryRow[]) {
 export async function loadClosedPositionSnapshots(
   client: any,
   connectionId: string,
-  limit = MAX_TRADE_HISTORY_RECORDS,
+  limit = TRADE_HISTORY_PAGE_SIZE,
 ): Promise<Record<string, any>[]> {
-  const bounded = Math.max(1, Math.min(MAX_TRADE_HISTORY_RECORDS, Math.floor(limit) || MAX_TRADE_HISTORY_RECORDS))
-  const indexed = ((await client.lrange(`live:positions:${connectionId}:closed`, 0, bounded - 1).catch(() => [])) || []) as string[]
-  const ids = [...new Set(indexed.map(String).filter(Boolean))].slice(0, bounded)
-  if (ids.length === 0) return []
-  const jsonValues: Array<string | null> = await client.mget(...ids.map((id) => `live:position:${id}`)).catch(() => ids.map(() => null))
+  return (await loadClosedPositionSnapshotPage(client, connectionId, {
+    offset: 0,
+    limit,
+  })).snapshots
+}
+
+export async function loadClosedPositionSnapshotPage(
+  client: any,
+  connectionId: string,
+  options: { offset?: number; limit?: number } = {},
+): Promise<{
+  snapshots: Record<string, any>[]
+  indexed: number
+  offset: number
+  nextOffset: number
+  totalIndexed: number
+  hasMore: boolean
+}> {
+  const offset = Math.max(0, Math.floor(Number(options.offset) || 0))
+  const limit = Math.max(
+    1,
+    Math.min(
+      MAX_TRADE_HISTORY_PAGE_SIZE,
+      Math.floor(Number(options.limit) || TRADE_HISTORY_PAGE_SIZE),
+    ),
+  )
+  const indexKey = `live:positions:${connectionId}:closed`
+  const [indexedRows, totalRaw] = await Promise.all([
+    client.lrange(indexKey, offset, offset + limit - 1).catch(() => []),
+    client.llen(indexKey).catch(() => 0),
+  ])
+  const indexed = (indexedRows || []) as string[]
+  const totalIndexed = Number(totalRaw) || 0
+  const ids = [...new Set(indexed.map(String).filter(Boolean))]
   const snapshots: Record<string, any>[] = []
-  for (let index = 0; index < ids.length; index++) {
-    let parsed: Record<string, any> | null = null
-    const raw = jsonValues[index]
-    if (raw) {
-      try { parsed = JSON.parse(raw) } catch { /* hash fallback */ }
+  for (let batchOffset = 0; batchOffset < ids.length; batchOffset += 250) {
+    const batch = ids.slice(batchOffset, batchOffset + 250)
+    const [jsonValues, hashes] = await Promise.all([
+      client.mget(...batch.map((id) => `live:position:${id}`)).catch(() =>
+        batch.map(() => null),
+      ),
+      Promise.all(batch.map((id) =>
+        client.hgetall(`live_positions:${connectionId}:${id}`).catch(() => null),
+      )),
+    ]) as [Array<string | null>, Array<Record<string, any> | null>]
+    for (let index = 0; index < batch.length; index++) {
+      let parsed: Record<string, any> | null = null
+      const raw = jsonValues[index]
+      if (raw) {
+        try { parsed = JSON.parse(raw) } catch { /* hash fallback */ }
+      }
+      if (!parsed) {
+        const hash = hashes[index]
+        if (hash && Object.keys(hash).length > 0) parsed = normalizeSnapshot(hash)
+      }
+      if (parsed) snapshots.push(parsed)
     }
-    if (!parsed) {
-      const hash = await client.hgetall(`live_positions:${connectionId}:${ids[index]}`).catch(() => null)
-      if (hash && Object.keys(hash).length > 0) parsed = normalizeSnapshot(hash)
-    }
-    if (parsed) snapshots.push(parsed)
   }
-  return snapshots
+  const nextOffset = offset + indexed.length
+  return {
+    snapshots,
+    indexed: indexed.length,
+    offset,
+    nextOffset,
+    totalIndexed,
+    hasMore: nextOffset < totalIndexed,
+  }
 }

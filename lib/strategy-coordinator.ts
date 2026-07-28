@@ -45,7 +45,6 @@ import {
   type StrategySetLedgerSnapshot,
 } from "@/lib/pos-history"
 import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
-import { hedgeStrategyVolumeParts } from "@/lib/strategy-volume-coordination"
 import { buildProgressionScope } from "@/lib/progression-scope"
 import {
   getSignalConfigurationPerformanceBatch,
@@ -78,6 +77,11 @@ import {
   posCountVolumeRatioToSetMultiplier,
 } from "@/lib/pos-count-volume-ratio"
 import { resolveStrategyMemoryGuardLimits } from "@/lib/strategy-memory-guard"
+import {
+  DEFAULT_BASE_MIN_STEP,
+  MAX_BASE_STEP,
+  MIN_BASE_STEP,
+} from "@/lib/constants"
 
 export function normalizeStrategyDirection(...values: unknown[]): "long" | "short" | null {
   for (const value of values) {
@@ -125,25 +129,38 @@ function stableIndicationConfig(value: unknown): string {
  * same deterministic identity from their complete configuration payload.
  */
 export function strategyIndicationConfigurationIdentity(indication: any): string {
+  const name = String(
+    indication?.name ??
+    indication?.indicationName ??
+    indication?.indication_name ??
+    indication?.config?.indicatorType ??
+    indication?.metadata?.name ??
+    indication?.type ??
+    "unknown",
+  ).trim().toLowerCase()
   const explicit =
     indication?.setKey ??
     indication?.set_key ??
     indication?.configurationId ??
     indication?.configId ??
     indication?.configSet
+  // Persisted indication Set keys already encode type, name, complete config,
+  // symbol and direction. Preserve them byte-for-byte so an upgrade does not
+  // rename historical Strategy/Base lineage or create duplicate lanes.
   if (explicit) return String(explicit)
   const signal = indication?.metadata?.signal
   if (signal) {
     return [
+      `name=${name}`,
       `source=${signal.sourceId || signal.sourceIds?.join?.(",") || "consensus"}`,
       `config=${signal.configId || "dynamic"}`,
       `tp=${Number(signal.takeProfitPct) || 0}`,
       `sl=${Number(signal.stopLossPct) || 0}`,
     ].join("|")
   }
-  return stableIndicationConfig(
+  return `name=${name}|config=${stableIndicationConfig(
     indication?.config ?? indication?.metadata?.configuration ?? indication?.metadata ?? {},
-  )
+  )}`
 }
 
 export function resolveIndicationTradeDirection(indication: any): "long" | "short" | null {
@@ -730,7 +747,6 @@ export function selectLiveDispatchCandidates(
   for (const candidate of candidates) {
     const direction = normalizeStrategyDirection(candidate?.direction)
     if (!direction || !candidate?.setKey || seenKeys.has(candidate.setKey)) continue
-    if (blockOnly && candidate.variant !== "block") continue
     const isBlock = candidate.variant === "block"
     const isDca = candidate.variant === "dca"
     const isSignal =
@@ -738,11 +754,18 @@ export function selectLiveDispatchCandidates(
       Boolean(candidate.signalRisk?.sourceId || candidate.signalRisk?.sourceIds?.length)
     const isAxis = Boolean(candidate.axisWindows?.direction && (candidate.posCountsVolumeRatio ?? 0) > 0)
 
+    // Position-count rows are an independent execution family. Block-only
+    // controls Standard-vs-Block adjustment processing; it must not erase the
+    // already evaluated per-Base Pos-Count target from the Real/Live row.
     if (isAxis) {
       selected.push(candidate)
       seenKeys.add(candidate.setKey)
       continue
     }
+    // Signal is an independently enabled engine with its own direct-execution,
+    // source/lane performance, and 120-position admission contracts. Main
+    // Block-only must not suppress its normal and trailing execution slots.
+    if (blockOnly && !isBlock && !isSignal) continue
     if (isBlock) {
       if ((candidate as any)._hasLivePositions === true) continue
       if (isSignal) {
@@ -1030,15 +1053,14 @@ export function buildPositionContextFingerprint(ctx: PositionContext): string {
 }
 
 /**
- * Reserve exact active Set lineages before admitting newly-ranked Live
- * candidates. Active exposure is never evicted by a transient PF/DDT change
- * or by the candidate cap; sibling Sets sharing only a parent are not active.
+ * Preserve exact active Set lineages and append every newly-qualified Live
+ * candidate. Sibling Sets sharing only a parent are not treated as active.
  */
 export function selectLiveSetsWithActivePriority(
   realSets: StrategySet[],
   activeSetKeys: ReadonlySet<string>,
   metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime">,
-  maxLive: number,
+  _legacyMaximum?: number,
 ): { selected: StrategySet[]; active: StrategySet[] } {
   const active: StrategySet[] = []
   const candidates: StrategySet[] = []
@@ -1057,26 +1079,21 @@ export function selectLiveSetsWithActivePriority(
   }
   active.sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
   candidates.sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
-  const capacity = Math.max(0, Math.floor(maxLive) - active.length)
   return {
     active,
-    selected: active.concat(candidates.slice(0, capacity)),
+    selected: active.concat(candidates),
   }
 }
 
 /**
- * Apply the Real-stage memory ceiling without orphaning active exposure or
- * letting the much larger Default axis fan-out erase enabled Adjust variants.
- * Active exact Sets are retained even above the nominal ceiling. Remaining
- * capacity reserves a fair floor for every present non-default variant (most
- * importantly DCA) and is then filled by the global PF ranking.
+ * Compatibility selector retained for callers/tests. It deduplicates and
+ * orders every Real row without applying its former maximum argument.
  */
 export function selectRealSetsWithActiveAndVariantPriority(
   inputSets: StrategySet[],
   activeSetKeys: ReadonlySet<string>,
-  maximum: number,
+  _legacyMaximum?: number,
 ): { selected: StrategySet[]; active: StrategySet[]; reservedByVariant: Record<string, number> } {
-  const cap = Math.max(0, Math.floor(maximum))
   const ordered = Array.from(new Map(
     inputSets
       .slice()
@@ -1084,41 +1101,17 @@ export function selectRealSetsWithActiveAndVariantPriority(
       .map((set) => [set.setKey, set]),
   ).values())
   const active = ordered.filter((set) => activeSetKeys.has(set.setKey))
-  const candidates = ordered.filter((set) => !activeSetKeys.has(set.setKey))
-  const capacity = Math.max(0, cap - active.length)
-  if (capacity === 0) return { selected: active, active, reservedByVariant: {} }
-
-  const variantNames = Array.from(new Set(
-    candidates
-      .map((set) => String(set.variant || "default"))
-      .filter((variant) => variant !== "default" && variant !== "block"),
-  ))
-  const floorPerVariant = variantNames.length > 0
-    ? Math.max(1, Math.floor((capacity * 0.3) / variantNames.length))
-    : 0
-  const reserved: StrategySet[] = []
-  const reservedKeys = new Set<string>()
   const reservedByVariant: Record<string, number> = {}
-  for (const variant of variantNames) {
-    for (const set of candidates) {
-      if (reserved.length >= capacity) break
-      if (String(set.variant || "default") !== variant || reservedKeys.has(set.setKey)) continue
-      const kept = reservedByVariant[variant] || 0
-      if (kept >= floorPerVariant) break
-      reserved.push(set)
-      reservedKeys.add(set.setKey)
-      reservedByVariant[variant] = kept + 1
+  for (const set of ordered) {
+    const variant = String(set.variant || "default")
+    if (variant !== "default") {
+      reservedByVariant[variant] = (reservedByVariant[variant] || 0) + 1
     }
   }
-
-  const fill = candidates
-    .filter((set) => !reservedKeys.has(set.setKey))
-    .slice(0, Math.max(0, capacity - reserved.length))
   return {
     active,
     reservedByVariant,
-    selected: active.concat(reserved, fill)
-      .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor),
+    selected: ordered,
   }
 }
 
@@ -1543,27 +1536,12 @@ function axisKeyOf(prev: number, last: number, cont: number, outcome: AxisOutcom
 }
 
 export interface StrategyCoordinatorConfig {
-  maxEntriesPerSet?: number   // Default 250 (entries inside one Set)
-  maxLiveSets?: number        // Default: max per exchange type (e.g. 500 for bybit, 150 for okx)
-  /**
-   * Maximum number of REAL Sets that propagate to Live each cycle.
-   * Set to Infinity (unlimited) to lift the strategy ceiling — all
-   * qualifying Real Sets flow through without a funnel cap. Operator
-   * can still prune via preset gates, profit-factor mins, and coordination
-   * toggles; this just removes the hard ceiling.
-   * Default: Infinity (unlimited).
-   */
+  /** Per-Set retained/evaluated history; never a configuration-space cap. */
+  maxEntriesPerSet?: number
+  /** Legacy compatibility fields. Runtime normalizes them to zero/unlimited. */
+  maxLiveSets?: number
   maxRealSets?: number
   pruneStrategy?: "fifo" | "performance" | "hybrid"
-}
-
-const _realCapLoggedAt: Record<string, number> = {}
-
-function shouldLogRealCap(key: string, intervalMs = 30_000): boolean {
-  const now = Date.now()
-  if (_realCapLoggedAt[key] && now - _realCapLoggedAt[key] < intervalMs) return false
-  _realCapLoggedAt[key] = now
-  return true
 }
 
 /**
@@ -1622,8 +1600,6 @@ export class StrategyCoordinator {
     this._prevPosWindowValue = -1
     this._prevPosWindowAt = 0
 
-    this._cachedExchangeMaxLive = null
-    this._cachedExchangeMaxLiveAt = 0
     this._cachedLivePositionCost = null
     this._cachedLivePositionCostAt = 0
     this._strategyFlowSymbolConcurrencyCache = null
@@ -1640,6 +1616,8 @@ export class StrategyCoordinator {
     ;(this as any)._lastIndicationFingerprint = {}
     ;(this as any)._lastRealSets = {}
     ;(this as any)._lastCoordIndex = {}
+    this._independentBlockLogicalEmittedBySymbol.clear()
+    this._independentBlockMaterializationCursorBySymbol.clear()
 
     // These LRUs contain Sets produced with settings-dependent thresholds,
     // axes and variant profiles. Settings changes are rare; clearing the
@@ -1649,28 +1627,24 @@ export class StrategyCoordinator {
     StrategyCoordinator._axisLruMap.clear()
   }
   private config: StrategyCoordinatorConfig = {
-    maxEntriesPerSet: 500,
-    // Live Sets default is now per-exchange (see setExchangeMaxLive).
-    // This is a placeholder; the real value is set during init.
-    // 400 per symbol × 20 symbols = 8000 max live stage entries total;
-    // calibrated to prevent InlineLocalRedis growth past the 1200 MB
-    // eviction trigger between 4s cleanup cycles.
-    maxLiveSets: 500,
-    // A bounded per-symbol Real core keeps 12-symbol cycles sub-minute while
-    // variant-fair ranking preserves the best Default/Trailing/Block/DCA Sets.
-    // Operators can raise this through Settings on workers with more capacity.
-    maxRealSets: 5000,
+    // Set history may be compacted; stage row counts are always unlimited.
+    maxEntriesPerSet: 250,
+    maxLiveSets: 0,
+    maxRealSets: 0,
     pruneStrategy: "hybrid",
   }
 
   // Main position-count generation is exhaustive. This value controls only
   // how many Base Sets are expanded in one bounded async work batch.
   private strategyMainAxisBatchSize = 8
-  // Explicit, operator-visible stage ceilings. Base/Main enumeration is
-  // exhaustive; these apply only after Real validation and at Live dispatch.
-  private strategyRealSetsSafetyCeiling = 5000
-  private strategyLiveSetsCeiling = 500
-
+  /**
+   * Block rows are logically exhaustive. This controls only how many inactive
+   * rows become full Real/Live objects in one cycle; a rotating cursor visits
+   * every eligible row and active rows are always retained.
+   */
+  private strategyBlockMaterializationBatchSize = 1_024
+  private _independentBlockLogicalEmittedBySymbol = new Map<string, number>()
+  private _independentBlockMaterializationCursorBySymbol = new Map<string, number>()
   /**
    * Per-cycle cached coordination settings (axes + variants toggles).
    * The coordinator loads this from connection settings on each flow and
@@ -1999,8 +1973,6 @@ export class StrategyCoordinator {
   // Live dispatch settings cache — exchange and position cost rarely change
   // within a session, so caching them for 5 minutes reduces Redis I/O by 97%
   // (from ~67 hgetall/min to ~2 at 10 symbols).
-  private _cachedExchangeMaxLive: number | null = null
-  private _cachedExchangeMaxLiveAt = 0
   private _cachedLivePositionCost: number | null = null
   private _cachedLivePositionCostAt = 0
 
@@ -2202,32 +2174,34 @@ export class StrategyCoordinator {
       this._coordinationSettings.mainEvalPosCount = evalCount((s as any).mainEvalPosCount) ?? 25
       this._coordinationSettings.realEvalPosCount = evalCount((s as any).realEvalPosCount) ?? 20
 
-      // ── Strategy pipeline ceilings (Settings → System) ────────────────
-      // These used to be production-only env constants, so the UI could show
-      // `maxRealSets=12000` while the runtime hard-clamped to 100. Load all
-      // strategy ceilings from app/connection settings in the same 5s refresh
-      // path as the PF/DDT gates so production tuning does not require a
-      // redeploy and the System tab reflects the actual enforced limits.
+      // ── Strategy work scheduling ────────────────────────────────────────
+      // Batch sizes limit only concurrent work. Legacy stage-cap fields are
+      // normalized to zero and never truncate qualifying rows.
       const intSetting = (raw: unknown, fallback: number, min: number, max: number): number => {
         const n = Number(raw)
         if (!Number.isFinite(n) || n <= 0) return fallback
         return Math.max(min, Math.min(max, Math.floor(n)))
       }
-      this.config.maxEntriesPerSet = intSetting((s as any).strategyMaxEntriesPerSet, 500, 100, 1500)
+      this.config.maxEntriesPerSet = intSetting(
+        (s as any).strategyMaxEntriesPerSet,
+        250,
+        50,
+        1_500,
+      )
       this.strategyMainAxisBatchSize = intSetting(
         (s as any).strategyMainAxisBatchSize,
         8,
         1,
         32,
       )
-    const _rawRealCeil = (s as any).strategyRealSetsSafetyCeiling
-    this.strategyRealSetsSafetyCeiling = intSetting(_rawRealCeil, 5000, 1, 50_000)
-    this.config.maxRealSets = Math.min(
-      intSetting((s as any).maxRealSets, this.strategyRealSetsSafetyCeiling, 1, 50_000),
-      this.strategyRealSetsSafetyCeiling,
-    )
-      this.strategyLiveSetsCeiling = intSetting((s as any).strategyLiveSetsCeiling, 500, 1, 2000)
-      this.config.maxLiveSets = this.strategyLiveSetsCeiling
+      this.strategyBlockMaterializationBatchSize = intSetting(
+        (s as any).strategyBlockMaterializationBatchSize,
+        1_024,
+        64,
+        10_000,
+      )
+      this.config.maxRealSets = 0
+      this.config.maxLiveSets = 0
     } catch (err) {
       // Don't fail the whole flow on a settings read miss — the
       // already-loaded values (either the defaults or the last
@@ -2494,9 +2468,10 @@ export class StrategyCoordinator {
       if (!isCurrent()) return results
 
       // Fetch the per-cycle position coordination context once. Prehistoric
-      // runs use a neutral context (no open positions, no prior outcomes) so
-      // only the always-on `default` variant is produced — that matches the
-      // original behaviour for backtests.
+      // runs use a neutral context (no open positions, no prior outcomes).
+      // The configured axis matrix is still calculated completely; only rows
+      // requiring unavailable realised history are withheld by their own
+      // evaluation rule.
       const posCtx: PositionContext = sharedContext
         ?? (isPrehistoric
           ? this.neutralPositionContext()
@@ -2565,7 +2540,12 @@ export class StrategyCoordinator {
       // STAGE 2: MAIN — validate Base Sets AND create additional related
       // variant Sets (Default / Trailing / Block / DCA) gated by posCtx.
       // CoordIndex receives a SetCoordRecord per built set (O(1) per set).
-      const { result: mainResult, sets: mainSets } = await this.createMainSets(symbol, baseSets, posCtx, coordIndex, isPrehistoric)
+      const { result: mainResult, sets: mainSets } = await this.createMainSets(
+        symbol,
+        baseSets,
+        posCtx,
+        coordIndex,
+      )
       if (!isCurrent()) return []
       results.push(mainResult)
       emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "main", data: mainResult })
@@ -2598,7 +2578,8 @@ export class StrategyCoordinator {
       ;(this as any)._lastPosFingerprint[symbol] = posFingerprint
       ;(this as any)._lastIndicationFingerprint[symbol] = indicationFingerprint
 
-      // STAGE 4: LIVE — best 500 Sets for execution (skip in prehistoric mode).
+      // STAGE 4: LIVE — every qualifying Real Set is mirrored (skip exchange
+      // execution in prehistoric mode).
       // Axis-entry hydration uses coordIndex.base.byKey.get(parentKey) — O(1)
       // instead of the prior O(N) realSets.find() scan.
       if (!isPrehistoric) {
@@ -2762,9 +2743,18 @@ export class StrategyCoordinator {
       // Progress Sets view and live control-order SL anchoring on the exact
       // range matrix the operator just saved.
       const settings = { ...(appSettings as Record<string, unknown>), ...connSettings } as Record<string, unknown>
-      let trailingMinStep = 6
-      const rawMin = Number(settings.trailingMinStep ?? settings.trailing_min_step ?? 6)
-      if (Number.isFinite(rawMin)) trailingMinStep = Math.min(30, Math.max(2, Math.round(rawMin)))
+      let trailingMinStep = DEFAULT_BASE_MIN_STEP
+      const rawMin = Number(
+        settings.trailingMinStep ??
+        settings.trailing_min_step ??
+        DEFAULT_BASE_MIN_STEP,
+      )
+      if (Number.isFinite(rawMin)) {
+        trailingMinStep = Math.min(
+          MAX_BASE_STEP,
+          Math.max(MIN_BASE_STEP, Math.round(rawMin)),
+        )
+      }
       const enabledMaster = settings.strategyBaseTrailingEnabled !== false
       if (!enabledMaster) {
         ;(this as any)._trailingVariantsCache = []
@@ -3044,10 +3034,9 @@ export class StrategyCoordinator {
       console.warn(`[v0] [StrategyFlow] ${symbol} prev-pos prefetch failed:`, posErr)
     }
 
-    // Multi-step trailing range matrix — `[]` (= no fan-out) collapses to legacy
-    // single-Set-per-(type,direction) behaviour. We use `[null]` as a
-    // sentinel "untrailed" pass so the body of the loop is shared between
-    // both paths.
+    // Multi-step trailing range matrix. The untrailed Standard row is always
+    // present; every selected trailing profile is an additional independent
+    // Base row. Enabling trailing must never replace Standard.
     const trailingVariants = await this.getEnabledTrailingVariants()
     type BaseTrailingVariant = TrailingProfile & {
       tag: string
@@ -3062,10 +3051,13 @@ export class StrategyCoordinator {
       minStep: 0,
       signalOnly: true,
     }
-    const generalVariantPasses: Array<BaseTrailingVariant | null> =
-      trailingVariants.length > 0
-        ? trailingVariants.map((variant) => ({ ...variant, mode: "fixed" as const }))
-        : [null]
+    const generalVariantPasses: Array<BaseTrailingVariant | null> = [
+      null,
+      ...trailingVariants.map((variant) => ({
+        ...variant,
+        mode: "fixed" as const,
+      })),
+    ]
     // Signal has already been expanded into its complete TP × SL × trailing
     // matrix above. One sentinel pass emits every exact configuration once;
     // ordinary Base trailing profiles never multiply Signal rows again.
@@ -3503,7 +3495,6 @@ export class StrategyCoordinator {
     inputSets?: StrategySet[],
     posCtx?: PositionContext,
     coordIndex?: CoordIndex,
-    skipAxisFanout: boolean = false,
   ): Promise<{ result: StrategyEvaluation; sets: StrategySet[] }> {
     // Prefer in-memory input (hot-path pipelined from createBaseSets). Fall
     // back to Redis only when called standalone (tests / diagnostics).
@@ -3518,7 +3509,6 @@ export class StrategyCoordinator {
 
     const metricsBase = this.METRICS.base
     const metricsMain = this.METRICS.main
-    const maxEntries = this.config.maxEntriesPerSet || 250
     const ctx = posCtx ?? this.neutralPositionContext()
     const mainSets: StrategySet[] = []
 
@@ -3526,7 +3516,6 @@ export class StrategyCoordinator {
     // positions use their explicit direct-execution policy; Main always
     // enforces the configured PositionCost-relative PF/history gates.
     const metrics: EvaluationMetrics = { ...metricsMain }
-
     // ── Stage-validation min-position threshold (operator spec) ────
     // "Main has to evaluate from stage Base with profitfactor for X
     //  pre pseudo positions for specific config … if less pos exist
@@ -3571,19 +3560,26 @@ export class StrategyCoordinator {
     // cache-miss paths populate this map so reuses still trigger fan-out.
     const defaultByBaseKey = new Map<string, StrategySet>()
 
-    // ── 2. Base/variant async processing ─��──────────────────────������───────────
-    // Process all baseSet × variant combinations in parallel for faster throughput.
-    // Each combination calls the async buildVariantSet, which previously ran
-    // sequentially. Now they all start together and resolve concurrently.
-    const buildTasks: Promise<{
+    // ── 2. Base/variant async processing ────────────────────────────────────
+    // Every Base × variant combination is retained, but work is started in
+    // bounded batches. Creating thousands of immediately-executing async IIFEs
+    // was effectively one long synchronous burst because buildVariantSet is
+    // arithmetic-only; it starved health/Logistics requests under exhaustive
+    // grids. Batching is scheduling only and never truncates the job list.
+    const buildTasks: Array<() => Promise<{
       baseSet: StrategySet
       profile: any
       built: StrategySet | null
       fingerprint: string
       cachedSet: StrategySet | null
-    }>[] = []
+    }>> = []
 
+    let scannedBaseSets = 0
     for (const baseSet of baseSets) {
+      if (scannedBaseSets > 0 && scannedBaseSets % 256 === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      scannedBaseSets++
       // ── Min-positions gate + Status tracking (operator spec) ────────────────────
       // Evaluation requires minimum historical data. Instead of skipping,
       // mark with status="invalid" + rejectionReason so sets persist but
@@ -3649,8 +3645,7 @@ export class StrategyCoordinator {
       const variantsForThisBase = activeVariants.filter((p) => p.name !== "block")
 
       for (const profile of variantsForThisBase) {
-        // Spawn async build task for this variant
-        buildTasks.push((async () => {
+        buildTasks.push(async () => {
           // ── IMPORTANT: fingerprint must use symbolCtx (per-symbol continuousCount)
           // not the global ctx so position-count axis Sets do not collide across
           // symbols with different active counts. Block is excluded from Main
@@ -3678,7 +3673,12 @@ export class StrategyCoordinator {
                 const delta = JSON.parse(fpCache[fingerprint]) as Partial<StrategySet> & { _slim?: boolean }
                 if (delta?._slim && delta.setKey) {
                   // Rebuild full Set from Base + slim delta via buildVariantSet.
-                  const rebuilt = await this.buildVariantSet(baseSet, profile, metrics, maxEntries, symbolCtx)
+                  const rebuilt = await this.buildVariantSet(
+                    baseSet,
+                    profile,
+                    metrics,
+                    symbolCtx,
+                  )
                   if (rebuilt) {
                     cached = rebuilt
                     StrategyCoordinator._fpLruSet(fingerprint, rebuilt)
@@ -3718,7 +3718,12 @@ export class StrategyCoordinator {
           // If not cached, build fresh
           let built: StrategySet | null = null
           if (!cachedSet) {
-            built = await this.buildVariantSet(baseSet, profile, metrics, maxEntries, symbolCtx)
+            built = await this.buildVariantSet(
+              baseSet,
+              profile,
+              metrics,
+              symbolCtx,
+            )
             if (built) {
               if (baseSet.trailingProfile) built.trailingProfile = baseSet.trailingProfile
               // Store SLIM coord-delta in Redis (no entries[] serialised).
@@ -3743,15 +3748,28 @@ export class StrategyCoordinator {
           }
 
           return { baseSet, profile, built, fingerprint, cachedSet }
-        })())
+        })
       }
     }
 
-    // ── Await all async builds to complete ────���──────────────────────────
-    const results = await Promise.all(buildTasks)
+    const buildBatchSize = Math.max(
+      1,
+      Math.min(512, Number(process.env.STRATEGY_VARIANT_BUILD_BATCH_SIZE) || 128),
+    )
+    const results: Array<Awaited<ReturnType<(typeof buildTasks)[number]>>> = []
+    for (let offset = 0; offset < buildTasks.length; offset += buildBatchSize) {
+      const batch = buildTasks.slice(offset, offset + buildBatchSize)
+      results.push(...await Promise.all(batch.map((task) => task())))
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
     
     // ── Process results and populate mainSets ──���────────�����────────────────
+    let processedBuildResults = 0
     for (const result of results) {
+      if (processedBuildResults > 0 && processedBuildResults % 512 === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      processedBuildResults++
       const { baseSet, profile, built, cachedSet } = result
       const set = cachedSet || built
       if (!set) continue
@@ -3821,7 +3839,7 @@ export class StrategyCoordinator {
     // takes care of accumulating continuous-count positions and
     // adjusting exchange exposure as new entries land.
     let axisSetsAdded = 0
-    if (!skipAxisFanout && defaultByBaseKey.size > 0) {
+    if (defaultByBaseKey.size > 0) {
       // Previous/Last axes have one system-wide realised-result boundary
       // (0.30 = 3 × PositionCost). Stage promotion remains governed by its
       // independent Base/Main/Real/Live threshold later in the pipeline.
@@ -3973,7 +3991,12 @@ export class StrategyCoordinator {
       }
     }
     const uniqueBaseSetsProduced = new Set<string>()
+    let aggregatedMainSets = 0
     for (const set of mainSets) {
+      if (aggregatedMainSets > 0 && aggregatedMainSets % 512 === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      aggregatedMainSets++
       // Variant tag — sets always carry an authoritative .variant field;
       // the per-entry classifier fallback is never needed in the slim path.
       const sv = (set.variant as keyof typeof variantAgg) ?? "default"
@@ -4241,16 +4264,8 @@ export class StrategyCoordinator {
     try {
       if (!realSets || realSets.length === 0) return
 
-      // DEV-MODE CAP (was a blanket early-return): pseudo_position hashes are
-      // the single largest heap allocator in the 20-symbol dev run (up to 3000
-      // sets/symbol × 3 writes = 9000 ops/symbol/cycle → OOM at ~30s). But
-      // returning entirely starved getPositionContext() of position data and
-      // left dca/trailing/progression dashboards permanently at 0 in dev.
-      //
-      // Compromise: in dev, write only the TOP-N Real Sets by profit factor.
-      // That gives the gates real sampled positions + populates the dashboard tile
-      // while keeping the write volume bounded (N×3 ops, not 3000×3). Prod is
-      // uncapped. Sorting is cheap relative to the avoided write amplification.
+      // Every Real Set gets an idempotent mapping. Redis pipelines bound writes
+      // in flight without sampling the current-stage result.
       const workingSets = realSets
 
       const client = getRedisClient()
@@ -4262,7 +4277,7 @@ export class StrategyCoordinator {
       // follow-up position write fails so a later cycle can retry.
 
       // Pre-compute every set's deterministic identifiers once.
-      // (workingSets == realSets in prod; capped top-N by PF in dev.)
+      // workingSets intentionally equals the complete Real snapshot.
       const setMeta = workingSets.map((set) => {
         const direction = normalizeStrategyDirection(set.direction)
         if (!direction) return null
@@ -4880,6 +4895,7 @@ export class StrategyCoordinator {
     const blockProfile = this.variantProfiles().find((profile) => profile.name === "block")
     const blockConfig = blockProfile?.configs.slice().sort((left, right) => right.pfBias - left.pfBias)[0]
     if (!blockConfig) {
+      this._independentBlockLogicalEmittedBySymbol.set(symbol, 0)
       await this.clearBlockProfitFactorStats(symbol, metrics)
       return []
     }
@@ -4895,6 +4911,7 @@ export class StrategyCoordinator {
         .map((set) => [set.setKey, set]),
     ).values())
     if (sources.length === 0) {
+      this._independentBlockLogicalEmittedBySymbol.set(symbol, 0)
       await this.clearBlockProfitFactorStats(symbol, metrics)
       return []
     }
@@ -4908,17 +4925,26 @@ export class StrategyCoordinator {
       1,
       Math.min(resultWindow, this._prevPosMinCountValue > 0 ? this._prevPosMinCountValue : 5),
     )
-    const candidateKeys = sources.flatMap((source) =>
-      Array.from({ length: maxStack }, (_, index) => `${source.setKey}#block:${index + 1}`),
-    )
     const client = getRedisClient()
-    const [exactWindows, unavailableKeys, indexedActiveKeys] = await Promise.all([
-      getStrategySetWindowBatch(this.connectionId, candidateKeys, resultWindow),
+    const [unavailableKeys, indexedActiveKeys] = await Promise.all([
       this.getUnavailableBlockKeys(symbol),
       getActiveBlockSetKeys(client, this.connectionId, symbol),
     ])
     const activeKeys = new Set<string>([...activeSetKeys, ...indexedActiveKeys])
     const overlays: StrategySet[] = []
+    const materializationBatchSize = Math.max(
+      64,
+      Math.min(10_000, this.strategyBlockMaterializationBatchSize),
+    )
+    const materializationCursor = Math.max(
+      0,
+      this._independentBlockMaterializationCursorBySymbol.get(symbol) || 0,
+    )
+    let logicalEmitted = 0
+    const sourceBatchSize = Math.max(
+      8,
+      Math.min(128, Math.floor(1_024 / Math.max(1, maxStack))),
+    )
     const countStats = Array.from({ length: 10 }, (_, index) => ({
       count: index + 1,
       calculated: 0,
@@ -4943,8 +4969,19 @@ export class StrategyCoordinator {
       sampleCount: 0,
     }))
 
-    for (const source of sources) {
-      for (let blockCount = 1; blockCount <= maxStack; blockCount++) {
+    for (let sourceOffset = 0; sourceOffset < sources.length; sourceOffset += sourceBatchSize) {
+      const sourceBatch = sources.slice(sourceOffset, sourceOffset + sourceBatchSize)
+      const candidateKeys = sourceBatch.flatMap((source) =>
+        Array.from({ length: maxStack }, (_, index) => `${source.setKey}#block:${index + 1}`),
+      )
+      const exactWindows = await getStrategySetWindowBatch(
+        this.connectionId,
+        candidateKeys,
+        resultWindow,
+      )
+
+      for (const source of sourceBatch) {
+        for (let blockCount = 1; blockCount <= maxStack; blockCount++) {
         const setKey = `${source.setKey}#block:${blockCount}`
         const ownWindow = exactWindows.get(setKey)
         const blockVolumeIncrementRatio = calculateBlockVolumeIncrementRatio(
@@ -5016,6 +5053,12 @@ export class StrategyCoordinator {
         if (!emit) continue
         stats.emitted++
 
+        const logicalIndex = logicalEmitted++
+        const isInMaterializationWindow =
+          logicalIndex >= materializationCursor &&
+          logicalIndex < materializationCursor + materializationBatchSize
+        if (!isActive && !isInMaterializationWindow) continue
+
         const pauseWindow = Math.max(1, Math.min(32, Math.round(blockCount * pauseRatio)))
         const parentSetKey = source.parentSetKey || source.setKey
         const axisWindows = {
@@ -5074,9 +5117,24 @@ export class StrategyCoordinator {
             _setView: overlay,
             _hasLivePositions: isActive,
           })
+          }
         }
       }
+
+      if (sourceOffset + sourceBatchSize < sources.length) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
     }
+
+    this._independentBlockLogicalEmittedBySymbol.set(symbol, logicalEmitted)
+    const nextMaterializationCursor =
+      logicalEmitted > materializationCursor + materializationBatchSize
+        ? materializationCursor + materializationBatchSize
+        : 0
+    this._independentBlockMaterializationCursorBySymbol.set(
+      symbol,
+      nextMaterializationCursor,
+    )
 
     const snapshot: Record<string, string> = {
       [`s:${symbol}:max_stack`]: String(maxStack),
@@ -5085,6 +5143,11 @@ export class StrategyCoordinator {
       [`s:${symbol}:default_min_pf`]: String(metrics.minProfitFactor),
       [`s:${symbol}:window`]: String(resultWindow),
       [`s:${symbol}:minimum_sample_count`]: String(minimumSampleCount),
+      [`s:${symbol}:logical_emitted`]: String(logicalEmitted),
+      [`s:${symbol}:materialized`]: String(overlays.length),
+      [`s:${symbol}:materialization_batch_size`]: String(materializationBatchSize),
+      [`s:${symbol}:materialization_cursor`]: String(materializationCursor),
+      [`s:${symbol}:materialization_next_cursor`]: String(nextMaterializationCursor),
       [`s:${symbol}:updated_at`]: String(Date.now()),
       // This method runs before active-overlay construction every cycle. Clear
       // its current snapshot first; the active method overwrites these fields
@@ -5708,7 +5771,12 @@ export class StrategyCoordinator {
     // (without this, a transient dip orphans the live position from its owner).
     const realQualifying: StrategySet[] = []
     let skippedRealLowPos = 0
+    let realGateIndex = 0
     for (const s of mainSets) {
+      if (realGateIndex > 0 && realGateIndex % 512 === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      realGateIndex++
       const posCount = Math.max(s.entryCount ?? 0, s.prevPos?.count ?? 0)
       const isAxisSet = !!(s.axisWindows?.direction)
       // Axis Sets always have a synthetic entry (entries.length === 1) so
@@ -5773,45 +5841,16 @@ export class StrategyCoordinator {
       ).catch(() => {})
     }
 
-    // ── PRIORITY SORT in-place ────────────────────────────────────────────
-    // Sort the collected qualifying refs by avgProfitFactor descending so
-    // downstream stages (hedge-net, Real cap, Live dispatch) always see the
-    // highest-quality Sets first. In-place sort avoids the spread-copy.
+    // Sort the collected qualifying refs by avgProfitFactor descending for
+    // deterministic evaluation and dispatch order.
     realQualifying.sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
-    
-    // ── EARLY CAP: Apply before hedge netting to prevent memory accumulation ──
-    // The old cap applied AFTER hedge netting, wasting memory on thousands of sets
-    // that would be discarded. Cap the top-PF sets here so hedge netting works with
-    // a bounded input. This prevents 3244→60 set reduction happening after memory
-    // is already allocated. Constant defined inline since we need it before hedge-net.
-    const _defaultRealCap = 5000
-    const rawRealCeiling = Number(process.env.STRATEGY_REAL_SETS_CEILING ?? "")
-    const _realOutputCap =
-      (Number.isFinite(rawRealCeiling) && rawRealCeiling > 0 ? Math.floor(rawRealCeiling) : null) ??
-      this.strategyRealSetsSafetyCeiling
-    const realSetsCap = Math.min(this.config.maxRealSets ?? _realOutputCap, _realOutputCap)
-    
-    if (realQualifying.length > realSetsCap) {
-      const capActiveKeys = new Set(realActiveKeysForVP)
-      for (const set of realQualifying) {
-        if ((set as any)._hasLivePositions === true) capActiveKeys.add(set.setKey)
-      }
-      const capped = selectRealSetsWithActiveAndVariantPriority(
-        realQualifying,
-        capActiveKeys,
-        realSetsCap,
-      )
-      if (shouldLogRealCap(`early:${this.connectionId}:${symbol}`)) {
-        console.warn(
-          `[v0] [RealStage] ${this.connectionId}/${symbol}: Capping ${realQualifying.length} → ` +
-          `${capped.selected.length} before hedge netting; active=${capped.active.length}, ` +
-          `variantReserve=${JSON.stringify(capped.reservedByVariant)}`,
-        )
-      }
-      realQualifying.splice(0, realQualifying.length, ...capped.selected)
-    }
-    
-    const realSorted = realQualifying   // alias — hedge-net reads realSorted
+
+    // Position-count members are independently validated above. At the Real
+    // row they become one directional target per exact Base parent, with every
+    // member's configured volume ratio summed. This reduces memory without
+    // dropping calculations and deliberately keeps Long and Short separate.
+    const realSorted = this.combinePosCountAxisSets(realQualifying, symbol)
+      .sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
 
     // ── HEDGE NETTING (operator spec: Real stage only) ─────────────────────
     //
@@ -5820,12 +5859,9 @@ export class StrategyCoordinator {
     // the NET direction per bucket so Live only opens positions where the
     // realised signal is asymmetric.
     //
-    // EXCEPTION: Axis Sets (position-count fan-out projections) are NOT
-    // subject to netting. Each axis Set represents a valid position-count
-    // configuration and both long/short should flow to Live independently.
-    // Netting axis Sets would eliminate the entire position-count range
-    // being tested (e.g., if cont=3 long and short both exist, netting
-    // them cancels the intent to test cont=3 in both directions).
+    // EXCEPTION: Real-row Pos-Count targets are NOT subject to netting. Every
+    // exact Base parent can therefore expose both one combined Long row and
+    // one combined Short row when both directions have valid members.
     // Profile-variant Sets (default, trailing, block, DCA) still participate
     // in netting since their long/short pairs represent hedging signal.
     //
@@ -5849,30 +5885,20 @@ export class StrategyCoordinator {
     const passthrough: StrategySet[] = []
     const axisPassthrough: StrategySet[] = []
     let axisSetsCounted = 0
-    const bucketAxisFlag = new Map<string, boolean>() // true = axis bucket
     for (const s of realSorted) {
       const dir = s.axisWindows?.direction
-      if (!dir || !s.axisWindows) { 
-        passthrough.push(s)
-        continue 
+      if (s.combinedPosCounts || (dir && isPositionCountStrategySet(s))) {
+        axisPassthrough.push(s)
+        axisSetsCounted += Number(s.posCountsNetSetCount || s.accumulatedSetKeys?.length || 1)
+        continue
       }
-      // ── Position-Count (Pis) axis Sets now participate in hedge netting ──
-      // Operator spec: the additional pos-count Sets are netted long vs short
-      // within each (prev × last × cont × outcome) tuple so the LIVE dispatch
-      // only opens the |L − S| dominant-direction remainder — a single combined
-      // order. Previously axis Sets bypassed netting so both directions flowed
-      // to Live independently, multiplying orders/exposure. We bucket them by
-      // the SAME axis identity WITHOUT direction so long/short collapse. The
-      // `axis:` prefix keeps them separate from profile-variant buckets; the
-      // netted survivors are later combined into one live order per symbol+dir.
-      const aw = s.axisWindows
-      const outcome = aw?.outcome ?? "pos"
-      const parentKey = s.parentSetKey ?? s.setKey.split("#")[0]
-      const bucketKey = `axis:${parentKey}|${symbol}|${s.indicationType}|p${aw?.prev ?? 0}|l${aw?.last ?? 0}|c${aw?.cont ?? 0}|o${outcome}`
-      let b = hedgeBuckets.get(bucketKey)
-      if (!b) { b = { long: [], short: [] }; hedgeBuckets.set(bucketKey, b); bucketAxisFlag.set(bucketKey, true) }
-      if (dir === "short") b.short.push(s); else b.long.push(s)
-      axisSetsCounted++
+      if (!dir || !s.axisWindows) {
+        passthrough.push(s)
+        continue
+      }
+      // Defensive compatibility: a directional legacy row without explicit
+      // Pos-Count metadata remains a normal profile row.
+      passthrough.push(s)
     }
     const netted: StrategySet[] = []
     const netTargetWrites: Record<string, string> = {}
@@ -5909,7 +5935,7 @@ export class StrategyCoordinator {
       if (dir === "short") b.short.push(s); else b.long.push(s)
     }
 
-    // Apply hedge netting to BOTH profile-variant Sets and axis (pos-count) Sets
+    // Apply hedge netting only to normal profile-variant Sets.
     for (const [bucketKey, b] of hedgeBuckets) {
       const L = b.long.length
       const S = b.short.length
@@ -5928,8 +5954,6 @@ export class StrategyCoordinator {
       //   survivors = remainder = |L − S|
       //   cancelled = (L + S) − |L − S| = 2 × min(L, S)
       netCancelled += L + S - remainder
-      // Axis buckets record the net dominant-direction remainder so the live
-      // combine step can aggregate the |L − S| survivors into one order.
       netTargetWrites[bucketKey] = `${winnerDir}:${remainder}`
     }
     const axisSetsAfterHedge = netted.filter((s) => !!(s.axisWindows?.direction)).length
@@ -5940,10 +5964,8 @@ export class StrategyCoordinator {
         [`axis_sets_after_hedge`]: String(axisSetsAfterHedge),
       }).catch(() => {})
     } catch { /* non-critical */ }
-    // `netted` contains hedge-bucket survivors (winnerPool.slice(0, remainder))
-    // All profile-variant AND axis (pos-count) Sets now participate in hedge
-    // netting: netted[] holds the |L − S| dominant-direction survivors of both.
-    // `axisPassthrough` is retained as an empty placeholder for compatibility.
+    // `netted` contains profile-variant survivors. `axisPassthrough` contains
+    // the independently combined per-parent/per-direction Pos-Count rows.
     //
     // Bootstrap fallback: when ALL profile-variant Sets are in OPPOSING direction
     // pairs that cancel each other AND there are no axis sets, the netting
@@ -5997,8 +6019,11 @@ export class StrategyCoordinator {
         coordIndex,
         realActiveKeysForVP,
       )
+      realStageRelatedCreated += (
+        this._independentBlockLogicalEmittedBySymbol.get(symbol) ??
+        independentBlockCounts.length
+      )
       if (independentBlockCounts.length > 0) {
-        realStageRelatedCreated += independentBlockCounts.length
         realPostHedge = realPostHedge
           .concat(independentBlockCounts)
           .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
@@ -6076,110 +6101,17 @@ export class StrategyCoordinator {
       ).catch(() => {})
     }
 
-    // Resolve the cap with this precedence:
-    //   1. Operator-set `maxRealSets` in Settings → System (Redis app_settings)
-    //   2. Per-instance config override (if any caller passed one)
-    // ── Real Sets cap ─────────────────────────────────────────────���──
-    // Per-spec: Strategies (Real Sets) are unlimited. Previously we
-    // clamped to `maxRealSets` (default 12000); now we pass all
-    // qualifying Real Sets to the Live stage. The operator still gates
-    // via preset inclusion, profit-factor minimums, and coordination
-    // toggles ���� removing this funnel cap lifts the ceiling without
-    // sacrificing control.
-    // For future use: if we need to re-cap (e.g. for perf), read the
-    // operator's `maxRealSets` setting and apply it here.
-    //
-    // ── MEMORY-SAFETY CEILING (not a funnel cap) ─────────────���───────────
-    // Real Sets remain "unlimited" by product spec, but slicing to a literal
-    // Infinity let `realPostHedge` carry every qualifying Set — and each Set
-    // is a full object with an `entries[]` array. On a dense symbol the Real
-    // stage produced ~2400 Sets/cycle; held alongside their Main parents and
-    // the per-Set detail hashes in the in-process Redis emulator, a burst of
-    // concurrent cycles drove next-server RSS to ~7.3GB and triggered an OOM
-    // SIGKILL (verified via dmesg: anon-rss 7334448kB). The Sets are already
-    // sorted best-first (winnerPool ordering above), so an operator who sets
-    // no explicit `maxRealSets` still keeps the highest-quality Sets; only a
-    // pathological long tail is dropped.
-    //
-    // OOM calibration (2026-06-16): 20000 was calibrated for 5 symbols; at
-    // 20 symbols the cumulative coord-record Map hit 4058 MB LIVE objects.
-    // Production repro (2026-06-29): 3000 Real Sets after a large axis warmup
-    // was still too aggressive for small workers with a warm active engine.
-    // Keep the best-ranked subset and allow explicit env overrides for load
-    // tests instead of risking SIGKILL in production mode.
-    // In dev: 600 ceiling × SYMBOL_CONCURRENCY(3) = 1800 Real sets peak vs
-    // 9000 at 3000 ceiling — cuts per-cycle V8 heap pressure by 5x while
-    // keeping the full Real-stage pipeline exercised.
-    // Dev lowered 600→200 per symbol for OOM-protection on the 4.39 GB VM.
-    // 200 × SYMBOL_CONCURRENCY(3) = 600 Real sets peak — still enough Real-stage
-    // ── REAL OUTPUT CAP (moved to earlier point in evaluateRealSets) ─────────
-    // Cap is now applied BEFORE hedge netting at line ~3400 to prevent memory
-    // bloat from thousands of sets that would later be discarded.
-    // ── Variant-fair cap (operator spec: each activated variant independent) ──
-    // `realPostHedge` is PF-desc sorted. A pure top-N slice lets the large
-    // exhaustive `default` axis fan-out (all tagged "default") can crowd out
-    // the comparatively few NON-default variant Sets
-    // (trailing/block/dca/pause), so they never reached Real — their Real
-    // aggregate AND their live dispatch were therefore always 0 even when the
-    // variant was activated and correctly built at Main. Guarantee independent
-    // representation: first reserve a bounded per-variant floor for each
-    // non-default variant (taken in PF order), then fill the remaining budget
-    // with the global PF ranking (mostly `default`). Non-default variants get
-    // NO axis fan-out, so their counts are small and reserving for them is
-    // cheap while keeping the total within the real output cap (OOM ceiling intact).
-    const reservedBlockSets = realPostHedge.filter((set) => set.variant === "block")
-    const capCandidates = realPostHedge.filter((set) => set.variant !== "block")
-    let cappedNonBlockSets: StrategySet[]
-    if (capCandidates.length <= realSetsCap) {
-      cappedNonBlockSets = capCandidates
-    } else {
-      // Up to ~30% of the cap is split across the 4 non-default variant types;
-      // the remaining ~70% goes to the global PF ranking. Floor of 1 ensures
-      // every present variant survives even at a tiny cap.
-      const floorPerVariant = Math.max(1, Math.floor((realSetsCap * 0.3) / 4))
-      const reserved: StrategySet[] = []
-      const reservedKeys = new Set<string>()
-      const keptPerVariant: Record<string, number> = {}
-      for (const s of capCandidates) {
-        if (reserved.length >= realSetsCap) break
-        const v = (s.variant as string) ?? "default"
-        if (v === "default") continue
-        const kept = keptPerVariant[v] ?? 0
-        if (kept >= floorPerVariant) continue
-        reserved.push(s)
-        reservedKeys.add(s.setKey)
-        keptPerVariant[v] = kept + 1
-      }
-      const remaining = Math.max(0, realSetsCap - reserved.length)
-      const fill: StrategySet[] = []
-      for (const s of capCandidates) {
-        if (fill.length >= remaining) break
-        if (reservedKeys.has(s.setKey)) continue
-        fill.push(s)
-      }
-      // Restore global PF-desc ordering for the downstream hedge/dispatch path.
-      cappedNonBlockSets = reserved.concat(fill).sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
-      if (shouldLogRealCap(`fair:${this.connectionId}:${symbol}`)) {
-        console.warn(
-          `[v0] [RealStage] ${this.connectionId}/${symbol}: ${capCandidates.length} non-Block Real Sets exceeds ` +
-          `safety ceiling ${realSetsCap}; kept top ${realSetsCap} plus ${reservedBlockSets.length} ` +
-          `independently evaluated Block count Sets, with per-variant ` +
-          `reserve (floor ${floorPerVariant}/variant: ${JSON.stringify(keptPerVariant)}). ` +
-          `Set maxRealSets in Settings to override.`,
-        )
-      }
-    }
-    // Block counts are bounded by `realSetsCap × blockMaxStack` and must never
-    // be silently collapsed by the generic Real funnel cap; doing so would make
-    // Count N's calculations depend on which unrelated Set ranked above it.
+    // Every unique qualifying row reaches Real. Ordering improves deterministic
+    // observability only; it never removes a configuration.
     const realSets = Array.from(new Map(
-      cappedNonBlockSets.concat(reservedBlockSets).map((set) => [set.setKey, set]),
+      realPostHedge.map((set) => [set.setKey, set]),
     ).values()).sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
 
     // ── Populate CoordIndex.validRealKeys — O(N) single pass ───────────────
     // Stamp every surviving real set's coord record as `valid_real` and
     // populate the fast Set<string> for O(1) membership checks downstream.
-    // Sets that were dropped by the cap or hedge-net are left at `valid_main`.
+    // Normal opposite-direction profile rows cancelled by their strategy hedge
+    // remain `valid_main`.
     if (coordIndex) {
       for (const s of realSets) {
         coordIndex.validRealKeys.add(s.setKey)
@@ -6715,99 +6647,115 @@ export class StrategyCoordinator {
   // ──�� STAGE 4: LIVE ─────────����─���────────��─────�����───��─────��─────��──────���───────��
 
   /**
-   * Keep every exact actively-backed REAL Set selected, then fill remaining
-   * capacity with the highest-quality candidates. Position materialisation is
-   * mode-specific and happens only after this selection step.
+   * Keep every exact actively-backed and newly-qualified REAL Set.
+   * Position materialisation is mode-specific and follows this selection.
    */
 
-  /** Hedge all qualified pos-count Sets across both directions and emit at
-   *  most one dominant-direction exchange target. */
+  /**
+   * Combine independently validated Pos-Count members into one Real row per
+   * exact Base parent and direction. Long and Short are deliberately never
+   * hedged against each other: a Base config with both sides produces two
+   * Real rows. Each row sums every member's exact configured volume ratio.
+   */
   private combinePosCountAxisSets(sets: StrategySet[], symbol: string): StrategySet[] {
-    const axisSets = sets.filter((s) =>
-      !!(s.axisWindows?.direction) &&
-      (s.posCountsVolumeRatio ?? 0) > 0 &&
-      normalizeStrategyDirection(s.direction) !== null,
-    )
-    if (axisSets.length === 0) return sets
-    const nonAxis = sets.filter((s) => !(s.axisWindows?.direction) || (s.posCountsVolumeRatio ?? 0) <= 0)
-    const byDir: Record<"long" | "short", StrategySet[]> = { long: [], short: [] }
-    for (const s of axisSets) {
-      const direction = normalizeStrategyDirection(s.direction)
-      if (direction) byDir[direction].push(s)
+    const passthrough: StrategySet[] = []
+    const groups = new Map<string, {
+      parentSetKey: string
+      direction: "long" | "short"
+      members: StrategySet[]
+    }>()
+
+    for (const set of sets) {
+      if (set.combinedPosCounts) {
+        passthrough.push(set)
+        continue
+      }
+      const direction = normalizeStrategyDirection(set.direction)
+      const ratio = Number(set.posCountsVolumeRatio)
+      if (!set.axisWindows?.direction || !direction || !(ratio > 0)) {
+        passthrough.push(set)
+        continue
+      }
+      const parentSetKey = String(
+        set.parentSetKey || set.setKey.split("#axis:")[0] || `${symbol}:${direction}`,
+      )
+      const groupKey = `${parentSetKey}\u0000${direction}`
+      const group = groups.get(groupKey) || { parentSetKey, direction, members: [] }
+      group.members.push(set)
+      groups.set(groupKey, group)
     }
-    const hedge = hedgeStrategyVolumeParts(axisSets.map((set) => ({
-      setKey: set.setKey,
-      direction: set.direction,
-      ratio:
-        set.posCountsVolumeRatio ??
-        posCountVolumeRatioToSetMultiplier(POS_COUNT_VOLUME_RATIO_DEFAULT),
-      quality: set.avgProfitFactor,
-    })))
-    const longCount = hedge.longSetCount
-    const shortCount = hedge.shortSetCount
-    if (hedge.direction === "flat") {
-      const representative = (byDir.long[0] || byDir.short[0])!
-      return [...nonAxis, {
+
+    const combined: StrategySet[] = []
+    for (const { parentSetKey, direction, members: rawMembers } of groups.values()) {
+      const members = Array.from(new Map(
+        rawMembers.map((member) => [member.setKey, member]),
+      ).values()).sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+      if (members.length === 0) continue
+
+      const memberRatios: Record<string, number> = {}
+      let totalRatio = 0
+      for (const member of members) {
+        const rawRatio = Number(member.posCountsVolumeRatio)
+        const exactRatio = Number.isFinite(rawRatio) && rawRatio > 0
+          ? rawRatio
+          : posCountVolumeRatioToSetMultiplier(POS_COUNT_VOLUME_RATIO_DEFAULT)
+        memberRatios[member.setKey] = exactRatio
+        totalRatio += exactRatio
+      }
+      if (!(totalRatio > 0)) continue
+
+      const weighted = (
+        selector: (member: StrategySet) => number,
+        fallback: number,
+      ): number => {
+        const sum = members.reduce(
+          (value, member) => value + selector(member) * memberRatios[member.setKey],
+          0,
+        )
+        return Number.isFinite(sum) ? sum / totalRatio : fallback
+      }
+      const representative = members[0]
+      combined.push({
         ...representative,
-        setKey: `${symbol}:poscounts:combined`,
-        direction: representative.direction,
-        axisWindows: { ...representative.axisWindows!, axisKey: "combined:flat" },
-        posCountsVolumeRatio: 0,
-        sizeMultiplier: 0,
+        setKey: `${parentSetKey}#poscounts:combined:${direction}`,
+        parentSetKey,
+        direction,
+        variant: "default",
+        avgProfitFactor: weighted(
+          (member) => Number(member.avgProfitFactor ?? 1),
+          Number(representative.avgProfitFactor ?? 1),
+        ),
+        avgConfidence: weighted(
+          (member) => Number(member.avgConfidence ?? 0),
+          Number(representative.avgConfidence ?? 0),
+        ),
+        avgDrawdownTime: weighted(
+          (member) => Number(member.avgDrawdownTime ?? 0),
+          Number(representative.avgDrawdownTime ?? 0),
+        ),
+        entryCount: members.reduce(
+          (sum, member) => sum + Math.max(0, Number(member.entryCount || 0)),
+          0,
+        ),
+        entries: representative.entries,
+        axisWindows: {
+          ...representative.axisWindows!,
+          direction,
+          axisKey: `combined:${direction}`,
+        },
+        posCountsVolumeRatio: totalRatio,
+        sizeMultiplier: totalRatio,
         combinedPosCounts: true,
-        accumulatedSetKeys: [],
-        posCountsSetRatios: {},
-        posCountsLongSetCount: longCount,
-        posCountsShortSetCount: shortCount,
-        posCountsNetSetCount: 0,
-        posCountsTargetFlat: true,
-      }]
+        accumulatedSetKeys: members.map((member) => member.setKey),
+        posCountsSetRatios: memberRatios,
+        posCountsLongSetCount: direction === "long" ? members.length : 0,
+        posCountsShortSetCount: direction === "short" ? members.length : 0,
+        posCountsNetSetCount: members.length,
+        posCountsTargetFlat: false,
+      })
     }
 
-    const direction: "long" | "short" = hedge.direction
-    const dominant = [...byDir[direction]].sort(
-      (a, b) => (b.avgProfitFactor ?? 0) - (a.avgProfitFactor ?? 0),
-    )
-    // Only unmatched dominant ratio parts own physical fill. A Set may survive
-    // partially when its ratio straddles the final hedge boundary.
-    const members = dominant.filter((member) => (hedge.memberRatios[member.setKey] || 0) > 0)
-    const netRatio = hedge.netRatio
-    if (!(netRatio > 0)) return nonAxis
-
-    const weightedSum = members.reduce(
-      (sum, set) => sum + (set.avgProfitFactor ?? 1) * hedge.memberRatios[set.setKey],
-      0,
-    )
-    const weightedDenominator = members.reduce(
-      (sum, set) => sum + hedge.memberRatios[set.setKey],
-      0,
-    )
-    const representative = members[0]!
-    const combinedSet: StrategySet = {
-      ...representative,
-      setKey: `${symbol}:poscounts:combined`,
-      parentSetKey: representative.parentSetKey,
-      direction,
-      variant: "default",
-      avgProfitFactor: weightedDenominator > 0
-        ? weightedSum / weightedDenominator
-        : (representative.avgProfitFactor ?? 1),
-      avgConfidence: members.reduce((sum, set) => sum + (set.avgConfidence ?? 0) * hedge.memberRatios[set.setKey], 0) / netRatio,
-      avgDrawdownTime: members.reduce((sum, set) => sum + (set.avgDrawdownTime ?? 0) * hedge.memberRatios[set.setKey], 0) / netRatio,
-      entryCount: members.reduce((sum, set) => sum + (set.entryCount ?? 0), 0),
-      entries: representative.entries,
-      axisWindows: { ...representative.axisWindows!, direction, axisKey: "combined:net" },
-      posCountsVolumeRatio: netRatio,
-      sizeMultiplier: netRatio,
-      combinedPosCounts: true,
-      accumulatedSetKeys: members.map((member) => member.setKey),
-      posCountsSetRatios: hedge.memberRatios,
-      posCountsLongSetCount: longCount,
-      posCountsShortSetCount: shortCount,
-      posCountsNetSetCount: hedge.netSetCount,
-      indicationType: representative.indicationType,
-    }
-    return [...nonAxis, combinedSet]
+    return passthrough.concat(combined)
   }
 
 
@@ -6876,25 +6824,11 @@ export class StrategyCoordinator {
     if (!isCurrent()) return cancelled()
 
     const metrics = this.METRICS.live
-    let maxLive = this.config.maxLiveSets || 500
     let livePositionCostPct = 0.1
     try {
-      // Perf: Cache these values in the coordinator instance with a 5-minute TTL
-      // instead of re-reading per symbol per cycle. Most test/prod sessions keep
-      // exchange and position cost constant for hours.
+      // Cache position cost with a 5-minute TTL instead of re-reading it per
+      // symbol per cycle.
       const now = Date.now()
-      if (!this._cachedExchangeMaxLive || now - this._cachedExchangeMaxLiveAt > 5 * 60 * 1000) {
-        // Candidate selection follows the configured Live-row ceiling. Signal
-        // execution applies its independent, atomic 120-position Long+Short
-        // admission limit later; a hidden exchange-name-specific cap here made
-        // that operator setting impossible to reach and confused the 12-result
-        // performance lookback with position capacity.
-        const configuredLiveCap = this.config.maxLiveSets || this.strategyLiveSetsCeiling || 90
-        this._cachedExchangeMaxLive = configuredLiveCap
-        this._cachedExchangeMaxLiveAt = now
-      }
-      maxLive = this._cachedExchangeMaxLive || 500
-
       if (!this._cachedLivePositionCost || now - this._cachedLivePositionCostAt > 5 * 60 * 1000) {
         const connSettings = await getCanonicalConnectionSettingsOverlay(this.connectionId).catch(() => ({} as Record<string, string>))
         const rawCost = Number((connSettings as any)?.exchangePositionCost ?? (connSettings as any)?.positionCost ?? "")
@@ -6922,20 +6856,14 @@ export class StrategyCoordinator {
     for (const key of await this.getOpenLiveSetKeys().catch(() => new Set<string>())) {
       activeStrategyKeys.add(key)
     }
-    // P0-2: Non-active Live candidates use the PF-min + DDT-max axes and rank
-    // by profit factor. A Set that owns an active position bypasses transient
-    // PF/DDT drift and is reserved ahead of candidates until that position is
-    // terminal; this prevents cap/ranking changes from orphaning exposure.
-    //
-    // LIVE ROW CEILING: retain active exposure first, then take the configured
-    // number of PF/DDT-qualified rows. This is not a Signal position limit:
-    // exact Signal source/config slots pass through independently and are
-    // admitted later under the atomic 120-position Long+Short policy.
+    // Non-active Live candidates use the PF-min + DDT-max axes and rank by
+    // profit factor. Active exact Sets bypass transient PF/DDT drift until
+    // terminal. Signal's independent atomic physical-capacity contract remains
+    // a separate execution-boundary gate.
     const liveSelection = selectLiveSetsWithActivePriority(
       realSets,
       activeStrategyKeys,
       metrics,
-      maxLive,
     )
     const allQualifying = liveSelection.selected
     const coherentActiveCounts = coordinateActiveRealLiveCounts(
@@ -6944,9 +6872,9 @@ export class StrategyCoordinator {
       activeStrategyKeys,
     )
 
-    // Keep all qualifying Sets. The dispatch selector preserves every exact
-    // Signal source/config slot while rate-limiting ordinary adjustment
-    // variants per direction and cycle.
+    // These are the active-first, quality-ranked Live rows. The dispatch
+    // selector independently deduplicates Signal source/config slots and
+    // ordinary adjustment variants per direction and cycle.
     const qualifying = allQualifying
 
     const liveKey = `strategies:${this.connectionId}:${symbol}:live:sets`
@@ -7203,15 +7131,10 @@ export class StrategyCoordinator {
             // per direction per cycle. Confirmed counts are skipped, so the
             // next cycle selects the next eligible count instead of starving
             // behind the same already-accumulated top-ranked Set.
-            let dispatchSets = selectLiveDispatchCandidates(dispatchCandidates, {
+            const dispatchSets = selectLiveDispatchCandidates(dispatchCandidates, {
               blockEnabled: this._coordinationSettings.variants.block,
               blockOnly: this._coordinationSettings.blockOnly,
             })
-
-            // Combine hedge-netted pos-count (axis) Sets per symbol+direction into
-            // ONE live dispatch Set with summed volume so the live pipeline opens
-            // a SINGLE exchange order for all surviving pos-count Sets.
-            dispatchSets = this.combinePosCountAxisSets(dispatchSets, symbol)
 
             const dispatchOrder = (set: StrategySet): number => {
               if (set.variant === "block") return 1
@@ -7828,38 +7751,46 @@ export class StrategyCoordinator {
       // ── P-CTX-1: Read from dedicated closed-positions index ──────────
       // `closePosition()` in PseudoPositionManager removes the position id
       // from the open-positions set (positionsSetKey) AND appends it to a
-      // dedicated Redis list `pseudo_positions:{id}:closed_index` (newest
-      // first, capped at CLOSED_INDEX_CAP). Reading that list here gives us
-      // a bounded, already-closed-only window without filtering active ids or
-      // issuing a full smembers on the global (open) set — which previously
-      // always returned 0 closed positions because closePosition() removes ids
-      // from the global set, starving all Main variant gates.
+      // time-indexed closed archive. Every position in the requested 24-hour
+      // window is read; Redis fetches remain bounded in 250-row batches.
       const client = getRedisClient()
       const closedIndexKey = `pseudo_positions:${this.connectionId}:closed_index`
+      const closedTimeIndexKey = `pseudo_positions:${this.connectionId}:closed_time_index`
       const lookbackMs = 24 * 60 * 60 * 1000
       const cutoff = now - lookbackMs
-      const WINDOW_CAP = 100 // read up to 100 newest closed ids from the list
 
       let prevPosCount = 0
       let prevLosses = 0
       const lastN: Array<{ closedAt: number; pnl: number }> = []
       try {
-        // LRANGE 0 WINDOW_CAP-1 fetches the newest WINDOW_CAP closed ids
-        // (LPUSH + LTRIM in closePosition keeps the list newest-first).
-        const closedIds: string[] = ((await client.lrange(closedIndexKey, 0, WINDOW_CAP - 1).catch(() => [])) || []) as string[]
+        let closedIds: string[] = (
+          await client.zrangebyscore(closedTimeIndexKey, cutoff, "+inf").catch(() => [])
+        ) as string[]
+        // Read-repair fallback for installations whose closed rows predate the
+        // time index. The legacy list is complete and newest-first.
+        if (closedIds.length === 0) {
+          closedIds = (
+            await client.lrange(closedIndexKey, 0, -1).catch(() => [])
+          ) as string[]
+        }
+        closedIds = Array.from(new Set(closedIds.filter(Boolean)))
 
-        // Pipelined HGETALL for all sampled ids — single round-trip.
-        const hashes = await (async () => {
-          if (closedIds.length === 0) return []
+        const hashes: Array<Record<string, any> | null> = []
+        for (let offset = 0; offset < closedIds.length; offset += 250) {
+          const batch = closedIds.slice(offset, offset + 250)
           const pipeline = client.multi()
-          for (const id of closedIds) pipeline.hgetall(`pseudo_position:${this.connectionId}:${id}`)
+          for (const id of batch) {
+            pipeline.hgetall(`pseudo_position:${this.connectionId}:${id}`)
+          }
           const results = await pipeline.exec().catch(() => null)
-          if (!results) return []
-          return results.map((r: any) => {
-            const data = Array.isArray(r) ? r[1] : r
-            return data && typeof data === "object" && Object.keys(data).length > 0 ? data : null
-          })
-        })()
+          if (!results) continue
+          hashes.push(...results.map((result: any) => {
+            const data = Array.isArray(result) ? result[1] : result
+            return data && typeof data === "object" && Object.keys(data).length > 0
+              ? data
+              : null
+          }))
+        }
 
         for (const h of hashes) {
           if (!h) continue
@@ -8216,10 +8147,9 @@ export class StrategyCoordinator {
     liveCont = 0,
     liveContByDir?: { long: number; short: number },
     pauseCount = 0,
-    maxOutput = Number.POSITIVE_INFINITY,
+    _legacyMaxOutput = Number.POSITIVE_INFINITY,
   ): StrategySet[] {
     const axisSets: StrategySet[] = []
-    if (maxOutput <= 0) return axisSets
 
     const axes = this._coordinationSettings.axes
     if (!axes.prev.enabled && !axes.last.enabled && !axes.cont.enabled && !axes.pause.enabled) {
@@ -8296,7 +8226,6 @@ export class StrategyCoordinator {
       : [0]
     if (contValues.length === 0) return axisSets
 
-    axisLoop:
     for (const prev of prevValues) {
       // ── prev FILTER (PF gate on last `prev` completed entries) ─────
       // Spec: prev "acts as a PF filter on the parent's last N completed
@@ -8328,7 +8257,6 @@ export class StrategyCoordinator {
             const dirLiveCont = dir === "short" ? shortOpen : longOpen
             if (axes.cont.enabled && cont > dirLiveCont) continue
             for (const outcome of outcomes) {
-              if (axisSets.length >= maxOutput) break axisLoop
               const axisKey = `${axisKeyOf(prev, last, cont, outcome, dir)}_u${pause}`
 
               // ── Live continuous-count cap (operator spec) ──────────
@@ -8549,7 +8477,6 @@ export class StrategyCoordinator {
     baseSet: StrategySet,
     profile: ReturnType<StrategyCoordinator["variantProfiles"]>[number],
     metrics: EvaluationMetrics,
-    maxEntries: number,
     ctx?: PositionContext,
   ): Promise<StrategySet | null> {
     // ── SLIM PATH (Base-Anchored Coordination Model) ────────��─────────────
@@ -8573,9 +8500,10 @@ export class StrategyCoordinator {
     // size with the exact total multiplier `1 + count × volume ratio`.
     let repConfig: { size: number; leverage: number; pfBias: number } | null = null
 
-    outer: for (const baseEntry of baseSet.entries) {
+    // Exhaustively evaluate every Base entry × profile configuration. History
+    // compaction is a persistence concern and never truncates this calculation.
+    for (const baseEntry of baseSet.entries) {
       for (const cfg of profile.configs) {
-        if (count >= maxEntries) break outer
         const pf      = Math.max(metrics.minProfitFactor, baseEntry.profitFactor * cfg.pfBias)
         const baseDDT = baseEntry.drawdownTime > 0 ? baseEntry.drawdownTime : baseDDTFallback
         const ddt     = baseDDT + cfg.ddtBias

@@ -63,6 +63,8 @@ describe("settings continuity", () => {
 
   test("flat indication storage round-trips booleans and numeric values", () => {
     const flat = indicationProfilesToFlat(DEFAULT_MAIN_INDICATION_PROFILE, DEFAULT_PRESET_INDICATION_PROFILE)
+    expect(DEFAULT_MAIN_INDICATION_PROFILE.common.timeout).toBe(3)
+    expect(DEFAULT_PRESET_INDICATION_PROFILE.common.timeout).toBe(3)
     expect(flat.signal).toBe("true")
     expect(flat.signal_preset).toBe("true")
     expect(readStoredIndicationProfile(flat, "", DEFAULT_MAIN_INDICATION_PROFILE)).toEqual(DEFAULT_MAIN_INDICATION_PROFILE)

@@ -54,6 +54,20 @@ export const DEFAULT_VOLUME_STEP_RATIO = 1.0  // System internal default ratio
 export const MIN_VOLUME_STEP_RATIO = 0.2
 export const MAX_VOLUME_STEP_RATIO = 1.8
 
+// Base indication windows are exhaustive from the configured minimum through
+// 30. Four is the operator-requested fresh-install default; values 2 and 3
+// remain selectable and changing the lower bound never samples the remaining
+// integer windows.
+export const MIN_BASE_STEP = 2
+export const MAX_BASE_STEP = 30
+export const DEFAULT_BASE_MIN_STEP = 4
+
+export function normalizeBaseMinStep(raw: unknown): number {
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return DEFAULT_BASE_MIN_STEP
+  return Math.max(MIN_BASE_STEP, Math.min(MAX_BASE_STEP, Math.round(parsed)))
+}
+
 /** Independent balance-recalculation ratio; unlike shared channel factors,
  * this control is intentionally allowed below one. */
 export function normalizeVolumeStepRatio(
@@ -103,14 +117,13 @@ export const STAGE_2_MAX_LONG_POSITIONS = 0
 export const STAGE_2_MAX_SHORT_POSITIONS = 0
 export const STAGE_2_MAX_TOTAL_POSITIONS = 0
 
-// Real and Live retain independent, operator-visible output safety ceilings.
-export const STAGE_2_2_MAX_LONG_POSITIONS = 5_000
-export const STAGE_2_2_MAX_SHORT_POSITIONS = 5_000
-export const STAGE_2_2_MAX_TOTAL_POSITIONS = 5_000
+export const STAGE_2_2_MAX_LONG_POSITIONS = 0
+export const STAGE_2_2_MAX_SHORT_POSITIONS = 0
+export const STAGE_2_2_MAX_TOTAL_POSITIONS = 0
 
-export const STAGE_3_MAX_LONG_POSITIONS = 500
-export const STAGE_3_MAX_SHORT_POSITIONS = 500
-export const STAGE_3_MAX_TOTAL_POSITIONS = 500
+export const STAGE_3_MAX_LONG_POSITIONS = 0
+export const STAGE_3_MAX_SHORT_POSITIONS = 0
+export const STAGE_3_MAX_TOTAL_POSITIONS = 0
 
 // Risk Management Parameters (Applied to All Stages)
 export const MAX_PORTFOLIO_DRAWDOWN_PCT = 25    // Max 25% portfolio drawdown (increased from 15%)

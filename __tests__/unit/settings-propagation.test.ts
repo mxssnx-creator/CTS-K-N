@@ -336,7 +336,7 @@ describe("System tab capacity controls", () => {
       "strategy.live",
       "indicationTimeoutMs",
       "indication_state_retention_hours",
-      "maxRealSets",
+      "strategyBlockMaterializationBatchSize",
       "stageMinPosCountBase",
       "stageMinPosCountMain",
       "stageMinPosCountReal",
@@ -351,6 +351,8 @@ describe("System tab capacity controls", () => {
       expect(source).toContain(key)
     }
 
+    expect(source).toContain("Base / Main / Real / Live Set Capacity")
+    expect(source).toContain("Unlimited")
     expect(source).not.toContain('handleSettingChange("symbolCount"')
     expect(source).not.toContain('handleSettingChange("capacity')
   })

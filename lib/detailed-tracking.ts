@@ -155,7 +155,7 @@ export interface StrategyStageTracking {
     // Multi-dimensional axis expansion accumulates HERE.
     // Real CLONES Main's already-cloned positions and strategically
     // adjusts them across the position-count axis windows.
-    setsCurrent: number               // current cycle Real Sets (post filter+sort+cap)
+    setsCurrent: number               // complete current-cycle Real Set snapshot
     setsTotal: number                 // cumulative Real Sets across cycles
     setsRunningNow: number           // ★ parent ∈ active_config_keys (alive right now)
     setsWithOpenPositions: number    // alias of setsRunningNow (operator-friendly label)
@@ -220,7 +220,7 @@ export interface StrategyStageTracking {
     dispatchSelectedCount: number     // latest cycle selected active Live sets
     dispatchSuppressedCount: number   // latest cycle candidates not selected for dispatch
     avgProfitFactor: number
-    cap: number                       // maxLiveSets, default 500
+    cap: number                       // compatibility value; 0 means Unlimited
   }
   /**
    * ── Valid Positions Counts (operator spec) ─────────────────────────
@@ -722,7 +722,7 @@ export async function getStrategyTracking(
       dispatchSelectedCount: Number(liveDetail.dispatch_selected_count || liveDetail.sets_running_now || liveActive),
       dispatchSuppressedCount: Number(liveDetail.dispatch_suppressed_count || "0"),
       avgProfitFactor: Number(prog.live_avg_profit_factor || "0"),
-      cap: Number(settings.maxLiveSets || "500"),
+      cap: 0,
     },
     validPositions,
     prevPos: {

@@ -29,10 +29,15 @@ export type BaseIndicationType =
   | "active_advanced"
   | "signal"
   | "trend"
+  | "common"
 
 export interface BasePositionConfig {
   symbol: string
   indicationType: BaseIndicationType
+  /** Exact indicator/source name inside a broad type such as Common. */
+  indicationName?: string
+  /** Canonical full upstream configuration/Set identity when available. */
+  configSetKey?: string
   range: number
   direction: "long" | "short"
   tpFactor: number
@@ -51,6 +56,7 @@ type BasePositionRecord = {
   connection_id: string
   symbol: string
   indication_type: BaseIndicationType
+  indication_name?: string
   indication_range: number
   direction: "long" | "short"
   takeprofit_factor: number
@@ -283,6 +289,7 @@ export class BasePseudoPositionManager {
       connection_id: this.connectionId,
       symbol: config.symbol,
       indication_type: config.indicationType,
+      ...(config.indicationName && { indication_name: config.indicationName }),
       indication_range: config.range,
       direction: config.direction,
       takeprofit_factor: config.tpFactor,
@@ -541,8 +548,19 @@ export class BasePseudoPositionManager {
       `${config.tpFactor}:${config.slRatio}:${config.trailingEnabled}:${config.trailStart}:` +
       `${config.trailStop}:${config.drawdownRatio}:${config.marketChangeRange}:${config.lastPartRatio}`
 
-    // Preserve pre-v74 keys for non-Trend Sets. Trend appends the independent
-    // active-situation dimension.
+    // Preserve pre-v74 keys when no exact upstream name/Set identity exists.
+    // New Common/Signal-style callers use v2 so two names or complete configs
+    // can never share the same one-open-position Base lane.
+    if (config.indicationName || config.configSetKey) {
+      return `v2:${JSON.stringify([
+        config.symbol,
+        config.indicationType,
+        config.indicationName || config.indicationType,
+        config.configSetKey || legacyKey,
+        config.direction,
+      ])}`
+    }
+    // Trend appends the independent active-situation dimension.
     return config.activeSituationRatio === undefined || config.activeSituationRatio === null
       ? legacyKey
       : `${legacyKey}:${config.activeSituationRatio}`

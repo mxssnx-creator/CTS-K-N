@@ -134,6 +134,18 @@ async function prewarmDevRoutes() {
     headers: { Authorization: `Bearer ${debugAdminSecret}` },
   })
 
+  // The lifecycle soak resolves a row by exact id when it leaves the bounded
+  // overview history between polls. Compile that detail route before the
+  // exhaustive engine allocation begins; a 404 for the synthetic id is the
+  // expected warmup response.
+  const detailWarmup = await fetch(
+    `${baseUrl}/api/positions/__dev_soak_warmup__?connection_id=${encoded}`,
+    { cache: "no-store", signal: AbortSignal.timeout(60_000) },
+  )
+  if (detailWarmup.status !== 404 && !detailWarmup.ok) {
+    throw new Error(`Dev position-detail warmup returned HTTP ${detailWarmup.status}`)
+  }
+
   // Compile the exact page changed by this release in development too. The
   // production verifier already checks its rendered output; this catches a
   // development-only module/style failure before the engine soak begins.
@@ -191,7 +203,12 @@ function runSoakVerifier() {
         PORT: String(port),
         START_SIMULATED_ENGINE: "1",
         SYMBOL_COUNT: String(devSoakSymbolCount),
-        SOAK_DURATION_MS: process.env.DEV_SOAK_DURATION_MS || "60000",
+        // Exhaustive Default/Additional/Common grids are intentionally not
+        // sampled or capped. Twelve symbols can therefore spend several
+        // minutes in their first Historic materialization under simultaneous
+        // API pressure; keep the default acceptance window long enough to
+        // observe all 12/12 rather than ending mid-symbol.
+        SOAK_DURATION_MS: process.env.DEV_SOAK_DURATION_MS || "240000",
         RUNTIME_MODE: "development",
         SOAK_ADMIN_SECRET: debugAdminSecret,
       },

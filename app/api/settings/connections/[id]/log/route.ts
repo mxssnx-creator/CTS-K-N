@@ -152,7 +152,12 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
             is_enabled_dashboard: connection.is_enabled_dashboard,
             is_active_inserted: connection.is_active_inserted,
             last_test_status: connection.last_test_status || connection.test_status || "untested",
-            last_test_timestamp: connection.last_test_timestamp || connection.updated_at || null,
+            last_test_timestamp:
+              connection.last_test_at ||
+              connection.last_test_time ||
+              connection.last_test_timestamp ||
+              connection.updated_at ||
+              null,
           }
         : null,
       logs: logs || [],

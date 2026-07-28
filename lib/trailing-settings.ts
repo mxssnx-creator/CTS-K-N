@@ -58,8 +58,17 @@ export interface TrailingProfile {
   minStep: number
 }
 
-export function buildTrailingProfiles(raw: unknown, minimumStep = 6): TrailingProfile[] {
-  const minStep = Math.max(2, Math.min(30, Math.round(Number(minimumStep) || 6)))
+export function buildTrailingProfiles(
+  raw: unknown,
+  minimumStep = DEFAULT_BASE_MIN_STEP,
+): TrailingProfile[] {
+  const minStep = Math.max(
+    MIN_BASE_STEP,
+    Math.min(
+      MAX_BASE_STEP,
+      Math.round(Number(minimumStep) || DEFAULT_BASE_MIN_STEP),
+    ),
+  )
   return normalizeTrailingVariants(raw).map((token) => {
     const [startRatio, stopRatio] = token.split(":").map(Number)
     return {
@@ -71,3 +80,4 @@ export function buildTrailingProfiles(raw: unknown, minimumStep = 6): TrailingPr
     }
   })
 }
+import { DEFAULT_BASE_MIN_STEP, MAX_BASE_STEP, MIN_BASE_STEP } from "@/lib/constants"

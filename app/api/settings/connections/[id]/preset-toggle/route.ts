@@ -58,7 +58,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       preset_trade_requested: toRedisFlag(presetTradeRequested),
       preset_trade_blocked_reason: presetTradeBlockedReason,
       preset_trade_block_code: presetTradeBlockedReason ? String(presetReadiness.blockCode || "unknown") : "",
-      ...(presetTradeEffective
+      // Preset is an independently attributed channel of the same processor.
+      // Even when exchange execution is blocked, requesting the channel must
+      // keep optimizer/progression and paper statistics alive.
+      ...(presetTradeRequested
         ? {
             is_assigned: "1",
             is_active_inserted: "1",
@@ -112,7 +115,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       coordinator.isEngineRunning(connectionId) ? "running" : "stopped"
     let engineStartedNow = false
 
-    if (presetTradeEffective && !coordinator.isEngineRunning(connectionId)) {
+    if (presetTradeRequested && !coordinator.isEngineRunning(connectionId)) {
       const client = getRedisClient()
       await client.hset("trade_engine:global", {
         status: "running",
@@ -122,7 +125,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         operator_stopped: "0",
         operator_stopped_at: "",
         stopped_at: "",
-        mode: "preset",
+        mode: presetTradeEffective ? "preset" : "preset_requested",
         updated_at: changedAt,
       })
 

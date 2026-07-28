@@ -8,7 +8,7 @@ import {
 } from "@/lib/engine-refresh-queue"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
-import { getConnection, initRedis } from "@/lib/redis-db"
+import { getConnection, getRedisClient, initRedis } from "@/lib/redis-db"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { SystemLogger } from "@/lib/system-logger"
@@ -63,7 +63,11 @@ export async function POST(
       signal_trade_requested: toRedisFlag(requested),
       signal_trade_blocked_reason: blockedReason,
       signal_trade_block_code: blockedReason ? String(readiness.blockCode || "unknown") : "",
-      ...(effective
+      // The Signal switch owns channel intent and visibility, not a second
+      // processor. A requested-but-exchange-blocked channel must still wake the
+      // one shared Main engine so Signal indications, paper state, attribution,
+      // and overview statistics keep progressing.
+      ...(requested
         ? {
             is_assigned: "1",
             is_active_inserted: "1",
@@ -107,7 +111,20 @@ export async function POST(
     let engineStatus: "running" | "queued" | "stopped" | "error" =
       coordinator.isEngineRunning(connectionId) ? "running" : "stopped"
     let engineStartedNow = false
-    if (effective && !coordinator.isEngineRunning(connectionId)) {
+    if (requested) {
+      await getRedisClient().hset("trade_engine:global", {
+        status: "running",
+        desired_status: "running",
+        operator_intent: "running",
+        coordinator_ready: "true",
+        operator_stopped: "0",
+        operator_stopped_at: "",
+        stopped_at: "",
+        mode: effective ? "signal" : "signal_requested",
+        updated_at: changedAt,
+      }).catch(() => undefined)
+    }
+    if (requested && !coordinator.isEngineRunning(connectionId)) {
       const localStartAllowed =
         process.env.DISABLE_TRADE_ENGINE_IN_PROCESS !== "1" &&
         process.env.NEXT_RUNTIME !== "edge" &&

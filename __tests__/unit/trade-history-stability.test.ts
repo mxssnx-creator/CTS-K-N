@@ -292,6 +292,7 @@ describe("BingX-backed trade history", () => {
   test("loads the closed LIST index with one MGET and hash fallback", async () => {
     const client = {
       lrange: jest.fn().mockResolvedValue(["live:a", "live:b", "live:a"]),
+      llen: jest.fn().mockResolvedValue(3),
       mget: jest.fn().mockResolvedValue([
         JSON.stringify({ id: "live:a", status: "closed" }),
         null,
@@ -304,17 +305,21 @@ describe("BingX-backed trade history", () => {
       { id: "live:b", status: "closed", fills: [] },
     ])
     expect(client.lrange).toHaveBeenCalledWith("live:positions:conn:closed", 0, 499)
+    expect(client.llen).toHaveBeenCalledWith("live:positions:conn:closed")
     expect(client.mget).toHaveBeenCalledTimes(1)
-    expect(client.hgetall).toHaveBeenCalledTimes(1)
+    expect(client.hgetall).toHaveBeenCalledTimes(2)
   })
 
-  test("terminal position indexes retain the same 500-record ceiling as the UI", () => {
+  test("terminal position indexes remain durable and are paged by consumers", () => {
     const liveStage = readFileSync(join(process.cwd(), "lib/trade-engine/stages/live-stage.ts"), "utf8")
     const redisDb = readFileSync(join(process.cwd(), "lib/redis-db.ts"), "utf8")
-    expect(liveStage).toContain("ltrim(closedIndexKey, 0, 499)")
-    expect(redisDb).toContain("ltrim(`live:positions:${connId}:closed`, 0, 499)")
-    expect(liveStage).not.toContain("ltrim(closedIndexKey, 0, 4999)")
-    expect(redisDb).not.toContain("ltrim(`live:positions:${connId}:closed`, 0, 4999)")
+    const tradeHistory = readFileSync(join(process.cwd(), "lib/trade-history.ts"), "utf8")
+    expect(liveStage).toContain("await keepDurable(closedIndexKey)")
+    expect(liveStage).not.toContain("client.expire(closedIndexKey")
+    expect(liveStage).not.toContain("ltrim(closedIndexKey")
+    expect(redisDb).not.toContain("ltrim(`live:positions:${connId}:closed`")
+    expect(tradeHistory).toContain("loadClosedPositionSnapshotPage")
+    expect(tradeHistory).toContain("client.llen(indexKey)")
   })
 
   test("does not count duplicate-slot bookkeeping as an executed trade", () => {

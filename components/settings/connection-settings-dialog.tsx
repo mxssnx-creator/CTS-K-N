@@ -1,11 +1,15 @@
 "use client"
 
 import {
+  DEFAULT_BASE_MIN_STEP,
   DEFAULT_VOLUME_STEP_RATIO,
+  MAX_BASE_STEP,
   MAX_VOLUME_FACTOR,
   MAX_VOLUME_STEP_RATIO,
   MIN_VOLUME_FACTOR,
   MIN_VOLUME_STEP_RATIO,
+  MIN_BASE_STEP,
+  normalizeBaseMinStep,
   normalizeIdentityVolumeFactor,
   normalizeVolumeStepRatio,
 } from "@/lib/constants"
@@ -58,6 +62,7 @@ import {
   CheckSquare,
   Square,
   AlertTriangle,
+  PlugZap,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -149,7 +154,7 @@ const INDICATION_GROUPS: ReadonlyArray<{
   },
   {
     label: "Common",
-    description: "Common technical indicators use per-name 3s lanes; Signal has its own source and risk settings.",
+    description: "Common technical indicators use independent per-name/config 3s lanes; Signal has its own source and risk settings.",
     types: ["common", "signal"],
   },
 ]
@@ -245,8 +250,42 @@ const DEFAULT_SYMBOLS_SETTINGS: SymbolsSettings = {
 const DEFAULT_STRATEGY_PROFILE: StrategyChannel = {
   base: { enabled: true, min_profit_factor: MAIN_TRADE_BASE_PF_RATIO_DEFAULT, max_drawdown_time: 160, max_positions: 0 },
   main: { enabled: true, min_profit_factor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT, max_drawdown_time: 160, max_positions: 0 },
-  real: { enabled: true, min_profit_factor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT, max_drawdown_time: 240, max_positions: 5000 },
-  live: { enabled: true, min_profit_factor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT, max_drawdown_time: 240, max_positions: 500 },
+  real: { enabled: true, min_profit_factor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT, max_drawdown_time: 240, max_positions: 0 },
+  live: { enabled: true, min_profit_factor: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT, max_drawdown_time: 240, max_positions: 0 },
+}
+
+function normalizeStrategyChannel(
+  saved: unknown,
+  defaults: StrategyChannel = DEFAULT_STRATEGY_PROFILE,
+): StrategyChannel {
+  const source = saved && typeof saved === "object"
+    ? saved as Record<string, unknown>
+    : {}
+  const stage = (type: StrategyType): StrategyParams => {
+    const candidate = source[type] && typeof source[type] === "object"
+      ? source[type] as Record<string, unknown>
+      : {}
+    const fallback = defaults[type]
+    return {
+      enabled: true,
+      min_profit_factor: normalizeMainTradeStagePfRatio(
+        type,
+        candidate.min_profit_factor ?? fallback.min_profit_factor,
+      ),
+      max_drawdown_time:
+        Number.isFinite(Number(candidate.max_drawdown_time)) &&
+        Number(candidate.max_drawdown_time) >= 20
+          ? Number(candidate.max_drawdown_time)
+          : fallback.max_drawdown_time,
+      max_positions: 0,
+    }
+  }
+  return {
+    base: stage("base"),
+    main: stage("main"),
+    real: stage("real"),
+    live: stage("live"),
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -264,6 +303,7 @@ export function ConnectionSettingsDialog({
 
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [testingConnection, setTestingConnection] = useState(false)
   const [exchangeKey, setExchangeKey] = useState<string>(exchange)
 
   // ── Overview state ──────────────────────────────────────────────
@@ -350,7 +390,7 @@ export function ConnectionSettingsDialog({
         mainEvalPosCount:     coordination.mainEvalPosCount,
         realEvalPosCount:     coordination.realEvalPosCount,
         prevPosWindow:        coordination.prevPosWindow,
-        minStep:              2,
+        minStep:              coordination.minStep,
         control_orders:       true,
         variant_trailing:     coordination.variants.trailing !== false,
         variant_block:        coordination.variants.block    !== false,
@@ -408,8 +448,8 @@ export function ConnectionSettingsDialog({
 
       // Apply strategy channel settings
       const strats = p.strategies as Record<string, unknown> | undefined
-      if (strats?.main) setStratMain(prev => ({ ...prev, ...(strats.main as object) }))
-      if (strats?.preset) setStratPreset(prev => ({ ...prev, ...(strats.preset as object) }))
+      if (strats?.main) setStratMain(normalizeStrategyChannel(strats.main))
+      if (strats?.preset) setStratPreset(normalizeStrategyChannel(strats.preset))
 
       const indicationChannels = p.indication_channels as Record<string, unknown> | undefined
       if (indicationChannels) {
@@ -438,6 +478,11 @@ export function ConnectionSettingsDialog({
           dcaTakeProfitMode: dca.takeProfitMode,
           dcaBreakevenProfitPct: dca.breakevenProfitPct,
           dcaCooldownSeconds: dca.cooldownSeconds,
+          minStep: normalizeBaseMinStep(coord.minStep ?? p.minStep),
+          trailingMinStep: Math.max(
+            normalizeBaseMinStep(coord.minStep ?? p.minStep),
+            normalizeBaseMinStep(coord.trailingMinStep ?? p.trailingMinStep),
+          ),
         })
       }
 
@@ -551,33 +596,8 @@ export function ConnectionSettingsDialog({
         setActiveSymbols(parsedActive)
         setSaveWarning(null)
 
-        const mergeStratChannel = (saved: unknown, defaults: StrategyChannel): StrategyChannel => {
-          if (!saved || typeof saved !== "object") return defaults
-          const s = saved as Record<string, unknown>
-          const mergeStage = (stage: StrategyType): StrategyParams => {
-            const rawVal = s[stage]
-            const raw = (rawVal && typeof rawVal === "object" ? rawVal : {}) as Record<string, unknown>
-            const def = defaults[stage]
-            return {
-              enabled:           typeof raw.enabled === "boolean" ? raw.enabled : def.enabled,
-              min_profit_factor: normalizeMainTradeStagePfRatio(stage, raw.min_profit_factor ?? def.min_profit_factor),
-              max_drawdown_time: Number.isFinite(Number(raw.max_drawdown_time)) && Number(raw.max_drawdown_time) >= 20  ? Number(raw.max_drawdown_time)  : def.max_drawdown_time,
-              max_positions:     stage === "base" || stage === "main"
-                ? 0
-                : Number.isFinite(Number(raw.max_positions)) && Number(raw.max_positions) >= 1
-                  ? Number(raw.max_positions)
-                  : def.max_positions,
-            }
-          }
-          return {
-            base: mergeStage("base"),
-            main: mergeStage("main"),
-            real: mergeStage("real"),
-            live: mergeStage("live"),
-          }
-        }
-        setStratMain(mergeStratChannel(settings.strategies?.main, DEFAULT_STRATEGY_PROFILE))
-        setStratPreset(mergeStratChannel(settings.strategies?.preset, DEFAULT_STRATEGY_PROFILE))
+        setStratMain(normalizeStrategyChannel(settings.strategies?.main))
+        setStratPreset(normalizeStrategyChannel(settings.strategies?.preset))
 
         const coord = settings.coordination_settings || settings.coordinationSettings || {}
         {
@@ -592,6 +612,19 @@ export function ConnectionSettingsDialog({
             blockVolumeRatio: typeof coord.blockVolumeRatio === "number" ? coord.blockVolumeRatio : DEFAULT_COORDINATION_SETTINGS.blockVolumeRatio,
             blockProfitFactorRatio: typeof coord.blockProfitFactorRatio === "number" ? coord.blockProfitFactorRatio : DEFAULT_COORDINATION_SETTINGS.blockProfitFactorRatio,
             blockMaxStack:    typeof coord.blockMaxStack    === "number" ? coord.blockMaxStack    : DEFAULT_COORDINATION_SETTINGS.blockMaxStack,
+            strategyBlockMaterializationBatchSize: (() => {
+              const nested = Number(coord.strategyBlockMaterializationBatchSize)
+              if (Number.isFinite(nested) && nested >= 64) {
+                return Math.min(10_000, Math.max(64, Math.floor(nested)))
+              }
+              const flat = Number(
+                (settings as Record<string, unknown>).strategyBlockMaterializationBatchSize,
+              )
+              if (Number.isFinite(flat) && flat >= 64) {
+                return Math.min(10_000, Math.max(64, Math.floor(flat)))
+              }
+              return DEFAULT_COORDINATION_SETTINGS.strategyBlockMaterializationBatchSize
+            })(),
             blockPauseCountRatio: typeof coord.blockPauseCountRatio === "number" ? coord.blockPauseCountRatio : DEFAULT_COORDINATION_SETTINGS.blockPauseCountRatio,
             blockActiveRealEnabled: typeof coord.blockActiveRealEnabled === "boolean" ? coord.blockActiveRealEnabled : DEFAULT_COORDINATION_SETTINGS.blockActiveRealEnabled,
             blockActiveLiveEnabled: typeof coord.blockActiveLiveEnabled === "boolean" ? coord.blockActiveLiveEnabled : DEFAULT_COORDINATION_SETTINGS.blockActiveLiveEnabled,
@@ -633,7 +666,10 @@ export function ConnectionSettingsDialog({
               if (Number.isFinite(nested) && nested >= 1) return Math.min(50, Math.max(1, nested))
               return DEFAULT_COORDINATION_SETTINGS.realEvalPosCount
             })(),
-            minStep: 2,
+            minStep: normalizeBaseMinStep(
+              (settings as Record<string, unknown>).minStep ??
+              (coord as Record<string, unknown>).minStep,
+            ),
             maxStopLossRatio: (() => {
               const snap = (n: number) => Math.min(2.5, Math.max(0.25, Math.round(n / 0.25) * 0.25))
               const flat = Number((settings as Record<string, unknown>).maxStopLossRatio ?? (settings as Record<string, unknown>).max_stoploss_ratio)
@@ -647,7 +683,7 @@ export function ConnectionSettingsDialog({
               if (Number.isFinite(flat) && flat >= 2) return Math.min(30, Math.max(2, Math.round(flat)))
               const nested = Number((coord as Record<string, unknown>).trailingMinStep)
               if (Number.isFinite(nested) && nested >= 2) return Math.min(30, Math.max(2, Math.round(nested)))
-              return DEFAULT_COORDINATION_SETTINGS.trailingMinStep ?? 6
+              return DEFAULT_COORDINATION_SETTINGS.trailingMinStep
             })(),
           })
         }
@@ -731,8 +767,10 @@ export function ConnectionSettingsDialog({
         mainEvalPosCount: coordination.mainEvalPosCount,
         realEvalPosCount: coordination.realEvalPosCount,
         prevPosWindow:    coordination.prevPosWindow,
-        minStep:          2,
-        trailingMinStep:  coordination.trailingMinStep ?? 6,
+        strategyBlockMaterializationBatchSize:
+          coordination.strategyBlockMaterializationBatchSize,
+        minStep:          coordination.minStep,
+        trailingMinStep:  coordination.trailingMinStep,
         // Control orders (SL/TP placement toggle) — operator spec: on by default
         control_orders:   true,
         // Flat variant toggles for backwards compat with old hash readers
@@ -753,8 +791,12 @@ export function ConnectionSettingsDialog({
         body:    JSON.stringify(payload),
       })
       if (saveSequence !== saveSequenceRef.current) return
-      if (!settingsRes.ok) throw new Error("Settings save failed")
-      const savedEvent = await settingsRes.clone().json().catch(() => ({})) as Record<string, unknown>
+      const savedEvent = await settingsRes.json().catch(() => ({})) as Record<string, unknown>
+      if (!settingsRes.ok || savedEvent.success !== true) {
+        throw new Error(
+          String(savedEvent.details || savedEvent.error || "Settings save failed"),
+        )
+      }
       if (saveSequence !== saveSequenceRef.current) return
       const warning = typeof savedEvent.warning === "string" ? savedEvent.warning : undefined
       setSaveWarning(warning ?? null)
@@ -819,6 +861,49 @@ export function ConnectionSettingsDialog({
       if (saveSequence === saveSequenceRef.current) setSaving(false)
     }
   }, [connectionId, connectionName, overview, symbolsCfg, symbolResolutionSource, stratMain, stratPreset, indMain, indPreset, coordination, onOpenChange])
+
+  const testStoredConnection = useCallback(async () => {
+    if (testingConnection) return
+    setTestingConnection(true)
+    try {
+      const response = await fetch(`/api/settings/connections/${connectionId}/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+        cache: "no-store",
+      })
+      const result = await response.json().catch(() => ({})) as Record<string, unknown>
+      if (!response.ok || result.success !== true) {
+        throw new Error(String(result.details || result.error || "Connection test failed"))
+      }
+      const balance = Number(result.balance)
+      toast.success("Connection test passed", {
+        description: Number.isFinite(balance)
+          ? `${connectionName}: ${balance.toFixed(4)} USDT`
+          : connectionName,
+      })
+      window.dispatchEvent(new CustomEvent("connection-test-completed", {
+        detail: {
+          connectionId,
+          status: "success",
+          testedAt: new Date().toISOString(),
+        },
+      }))
+    } catch (error) {
+      toast.error("Connection test failed", {
+        description: error instanceof Error ? error.message : String(error),
+      })
+      window.dispatchEvent(new CustomEvent("connection-test-completed", {
+        detail: {
+          connectionId,
+          status: "failed",
+          testedAt: new Date().toISOString(),
+        },
+      }))
+    } finally {
+      setTestingConnection(false)
+    }
+  }, [connectionId, connectionName, testingConnection])
 
   // ─────────────────────────────────────────────────────────────────
   // SYMBOL HELPERS
@@ -976,7 +1061,7 @@ export function ConnectionSettingsDialog({
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
-        if (!nextOpen && (saving || presetSaving || presetDeleting !== null)) return
+        if (!nextOpen && (saving || testingConnection || presetSaving || presetDeleting !== null)) return
         onOpenChange(nextOpen)
       }}
     >
@@ -1174,21 +1259,28 @@ export function ConnectionSettingsDialog({
 
                   <Separator className="my-1" />
 
-                  {/* Compatibility control: exhaustive generation cannot be reduced. */}
-                  <SectionHeading icon={Sparkles} title="Base Pseudo-Position Step Coverage" subtitle="Every integer window from 2 through 30 is processed independently. No saved setting may reduce this matrix." />
+                  <SectionHeading icon={Sparkles} title="Base Pseudo-Position Step Coverage" subtitle="The minimum selects the lower bound; every integer window through 30 is processed independently." />
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <Label className="text-xs">First Step (fixed)</Label>
-                      <span className="text-xs font-mono tabular-nums font-semibold">2</span>
+                      <Label className="text-xs">Minimum Base Step</Label>
+                      <span className="text-xs font-mono tabular-nums font-semibold">{coordination.minStep}</span>
                     </div>
                     <Slider
-                      min={2} max={2} step={1}
-                      value={[2]}
-                      disabled
+                      min={MIN_BASE_STEP} max={MAX_BASE_STEP} step={1}
+                      value={[coordination.minStep]}
+                      onValueChange={([value]) => setCoordination((previous) => ({
+                        ...previous,
+                        minStep: value,
+                        trailingMinStep: Math.max(value, previous.trailingMinStep),
+                      }))}
                       className="py-2"
                     />
                     <div className="flex justify-between text-[10px] text-muted-foreground">
-                      <span>2 — included</span><span className="text-muted-foreground/60">29 windows</span><span>30 — included</span>
+                      <span>{MIN_BASE_STEP}</span>
+                      <span className="text-muted-foreground/60">
+                        default {DEFAULT_BASE_MIN_STEP} · {MAX_BASE_STEP - coordination.minStep + 1} complete windows
+                      </span>
+                      <span>{MAX_BASE_STEP}</span>
                     </div>
                   </div>
 
@@ -1211,16 +1303,16 @@ export function ConnectionSettingsDialog({
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
                       <Label className="text-xs">Trailing Min Step (2–30)</Label>
-                      <span className="text-xs font-mono tabular-nums font-semibold">{coordination.trailingMinStep ?? 6}</span>
+                      <span className="text-xs font-mono tabular-nums font-semibold">{coordination.trailingMinStep}</span>
                     </div>
                     <Slider
-                      min={2} max={30} step={1}
-                      value={[coordination.trailingMinStep ?? 6]}
+                      min={coordination.minStep} max={MAX_BASE_STEP} step={1}
+                      value={[coordination.trailingMinStep]}
                       onValueChange={([v]) => setCoordination(p => ({ ...p, trailingMinStep: v }))}
                       className="py-2"
                     />
                     <div className="flex justify-between text-[10px] text-muted-foreground">
-                      <span>2 — include fast trailing</span><span className="text-muted-foreground/60">default 6</span><span>30 — only slow trailing</span>
+                      <span>{coordination.minStep} — include all Base windows</span><span className="text-muted-foreground/60">default {DEFAULT_BASE_MIN_STEP}</span><span>30 — only slow trailing</span>
                     </div>
                   </div>
 
@@ -1255,22 +1347,22 @@ export function ConnectionSettingsDialog({
 
                   <SectionHeading icon={ArrowDownUp} title="Volume Factors" subtitle="Overall per-connection multipliers for Main Live, Preset, and Signal channels. Base stays system-managed at identity 1." />
                   <VolumeSlider
-                    label="Live"
-                    description="Applied while a Live position is open."
+                    label="Main Trade Volume"
+                    description="Applied while a Main pipeline position is mirrored to Live."
                     value={overview.volumeFactorLive}
                     onChange={(v) => setOverview(p => ({ ...p, volumeFactorLive: v }))}
+                  />
+                  <VolumeSlider
+                    label="Signal Volume Factor"
+                    description="Signal-specific multiplier composed once with Main Live sizing; coordination base stays 1."
+                    value={overview.volumeFactorSignal}
+                    onChange={(v) => setOverview(p => ({ ...p, volumeFactorSignal: v }))}
                   />
                   <VolumeSlider
                     label="Preset"
                     description="Applied to the preset profile when active."
                     value={overview.volumeFactorPreset}
                     onChange={(v) => setOverview(p => ({ ...p, volumeFactorPreset: v }))}
-                  />
-                  <VolumeSlider
-                    label="Signal"
-                    description="Signal-specific multiplier composed once with Main Live sizing; coordination base stays 1."
-                    value={overview.volumeFactorSignal}
-                    onChange={(v) => setOverview(p => ({ ...p, volumeFactorSignal: v }))}
                   />
                   <VolumeStepSlider
                     value={overview.volumeStepRatio}
@@ -1434,10 +1526,10 @@ export function ConnectionSettingsDialog({
 
                   <div className="grid gap-3 md:grid-cols-2">
                     <div className="rounded-xl border bg-card p-4 space-y-4">
-                      <SectionHeading icon={ArrowDownUp} title="Sizing & Balance Caps" subtitle="Live notional and balance-step recalculation controls." />
+                      <SectionHeading icon={ArrowDownUp} title="Sizing & Balance" subtitle="Live notional and balance-step recalculation controls." />
                       <VolumeSlider
-                        label="Live Volume Factor"
-                        description="Multiplier used only for exchange live orders."
+                        label="Main Trade Volume"
+                        description="Multiplier used when Main rows are mirrored to exchange Live orders."
                         value={overview.volumeFactorLive}
                         onChange={(v) => setOverview(p => ({ ...p, volumeFactorLive: v }))}
                       />
@@ -1454,8 +1546,11 @@ export function ConnectionSettingsDialog({
                       <div className="space-y-1.5 rounded-lg border border-dashed p-3">
                         <div className="flex items-center justify-between">
                           <div>
-                            <Label className="text-xs">Live Symbol Cap</Label>
-                            <div className="text-[10px] text-muted-foreground">Maximum exchange symbols this connection can run after save.</div>
+                            <Label className="text-xs">Live Symbol Basket</Label>
+                            <div className="text-[10px] text-muted-foreground">
+                              Selected exchange symbols; every complete config
+                              lane for each symbol is processed.
+                            </div>
                           </div>
                           <span className="text-xs font-mono tabular-nums">{symbolsCfg.symbolCount}</span>
                         </div>
@@ -1553,7 +1648,7 @@ export function ConnectionSettingsDialog({
                     </div>
 
                     <div className="rounded-xl border bg-card p-4 space-y-4">
-                      <SectionHeading icon={TrendingUp} title="Real → Live Limits" subtitle="Exchange promotion gates used by the live pipeline." />
+                      <SectionHeading icon={TrendingUp} title="Real → Live Evaluation" subtitle="Quality gates remain configurable; Set processing is unlimited." />
                       <div className="space-y-3">
                         <div className="space-y-1.5">
                           <div className="flex items-center justify-between">
@@ -1579,17 +1674,14 @@ export function ConnectionSettingsDialog({
                             className="py-1"
                           />
                         </div>
-                        <div className="space-y-1.5">
-                          <div className="flex items-center justify-between">
-                            <Label className="text-xs">Live Position Cap</Label>
-                            <span className="text-xs font-mono">{stratMain.live.max_positions}</span>
+                        <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <Label className="text-xs">Strategy Set Capacity</Label>
+                              <div className="text-[10px] text-muted-foreground">Every qualifying Real row is mirrored to Live; batching controls work in flight only.</div>
+                            </div>
+                            <Badge variant="secondary">Unlimited</Badge>
                           </div>
-                          <Slider
-                            min={1} max={10000} step={100}
-                            value={[stratMain.live.max_positions]}
-                            onValueChange={([v]) => setStratMain(p => ({ ...p, live: { ...p.live, max_positions: v } }))}
-                            className="py-1"
-                          />
                         </div>
                       </div>
                     </div>
@@ -1904,10 +1996,32 @@ export function ConnectionSettingsDialog({
         </Tabs>
 
         <DialogFooter className="px-5 py-3 border-t bg-muted/30 shrink-0">
-          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)} disabled={saving}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void testStoredConnection()}
+            disabled={saving || loading || testingConnection}
+            className="mr-auto gap-1.5"
+          >
+            {testingConnection
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <PlugZap className="h-3.5 w-3.5" />}
+            {testingConnection ? "Testing…" : "Test Connection"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onOpenChange(false)}
+            disabled={saving || testingConnection}
+          >
             Cancel
           </Button>
-          <Button size="sm" onClick={saveAll} disabled={saving || loading} className="gap-1.5">
+          <Button
+            size="sm"
+            onClick={saveAll}
+            disabled={saving || loading || testingConnection}
+            className="gap-1.5"
+          >
             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
             {saving ? "Saving…" : "Save Changes"}
           </Button>
@@ -2015,31 +2129,36 @@ function IndicationProfileEditor({
                     />
                     <Label className="text-sm font-medium capitalize">{type}</Label>
                   </div>
-                  <Badge variant={p.enabled ? "default" : "outline"} className="text-[9px]">
-                    {p.enabled ? "Enabled" : "Disabled"}
-                  </Badge>
+                  <div className="flex items-center gap-1.5">
+                    <Badge variant="secondary" className="text-[9px]">Unlimited configs</Badge>
+                    <Badge variant={p.enabled ? "default" : "outline"} className="text-[9px]">
+                      {p.enabled ? "Enabled" : "Disabled"}
+                    </Badge>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-3 gap-3">
-                  <NumberField
-                    label="Info range" suffix="" min={1} max={100} step={1}
+                  <IndicationSliderField
+                    label="Evaluation range" suffix="" min={1} max={500} step={1}
                     value={p.range} onChange={(v) => update(type, { range: v })} disabled={!p.enabled}
                   />
-                  <NumberField
-                    label="Exact timeout" suffix="s" min={0.05} max={600} step={0.05}
-                    value={p.timeout} onChange={(v) => update(type, { timeout: v })} disabled={!p.enabled || type === "common"}
+                  <IndicationSliderField
+                    label="Exact-lane cooldown" suffix="s" min={0.05} max={10} step={0.05}
+                    value={p.timeout} onChange={(v) => update(type, { timeout: v })} disabled={!p.enabled}
                   />
-                  <NumberField
-                    label="Interval" suffix="m" min={0.1} max={120} step={0.1}
+                  <IndicationSliderField
+                    label="Processing interval" suffix="s" min={0.05} max={10} step={0.05}
                     value={p.interval} onChange={(v) => update(type, { interval: v })} disabled={!p.enabled}
                   />
                 </div>
-                {type === "common" && (
-                  <p className="mt-2 text-[10px] text-muted-foreground">
-                    Each Common indicator name keeps its own 3-second timeout and every full
-                    parameter configuration plus Long/Short has an independent cooldown key.
-                  </p>
-                )}
+                <p className="mt-2 text-[10px] text-muted-foreground">
+                  Exact lane: symbol × type × name × complete config × direction.
+                  One open Base pseudo position per lane; lane count and current-cycle
+                  configurations are unlimited.
+                  {type === "common"
+                    ? " Common processing defaults to 1 second; its exact valid-result lane cooldown is 3 seconds."
+                    : " Default and Additional processing plus exact-lane admission default to 250 ms."}
+                </p>
               </div>
             )
           })}
@@ -2081,7 +2200,10 @@ function StrategyProfileEditor({
   profile, onChange,
 }: { profile: StrategyChannel; onChange: (p: StrategyChannel) => void }) {
   const update = (type: StrategyType, patch: Partial<StrategyParams>) => {
-    onChange({ ...profile, [type]: { ...profile[type], ...patch } })
+    onChange({
+      ...profile,
+      [type]: { ...profile[type], ...patch, enabled: true, max_positions: 0 },
+    })
   }
   return (
     <div className="space-y-2.5">
@@ -2091,7 +2213,7 @@ function StrategyProfileEditor({
         return (
           <div
             key={type}
-            className={`rounded-lg border ${ac.border} ${ac.bg} p-3.5 transition-opacity ${p.enabled ? "" : "opacity-50"}`}
+            className={`rounded-lg border ${ac.border} ${ac.bg} p-3.5`}
           >
             {/* Header row */}
             <div className="flex items-center justify-between mb-3.5">
@@ -2099,15 +2221,7 @@ function StrategyProfileEditor({
                 <span className={`h-2 w-2 rounded-full ${ac.dot} shrink-0`} />
                 <span className="text-sm font-semibold tracking-tight">{ac.label} Stage</span>
               </div>
-              <div className="flex items-center gap-2">
-                <span className={`text-[10px] font-medium ${p.enabled ? "text-foreground" : "text-muted-foreground"}`}>
-                  {p.enabled ? "Active" : "Disabled"}
-                </span>
-                <Switch
-                  checked={p.enabled}
-                  onCheckedChange={(v) => update(type, { enabled: v })}
-                />
-              </div>
+              <Badge variant="secondary" className="text-[9px]">Pipeline active</Badge>
             </div>
 
             {/* Min PF slider */}
@@ -2125,7 +2239,6 @@ function StrategyProfileEditor({
                 min={mainTradeStagePfMin(type)} max={MAIN_TRADE_PF_RATIO_MAX} step={MAIN_TRADE_PF_RATIO_STEP}
                 value={[p.min_profit_factor]}
                 onValueChange={([v]) => update(type, { min_profit_factor: normalizeMainTradeStagePfRatio(type, v) })}
-                disabled={!p.enabled}
                 className="py-1"
               />
               <div className="flex justify-between text-[10px] text-muted-foreground">
@@ -2152,7 +2265,6 @@ function StrategyProfileEditor({
                 min={20} max={800} step={2}
                 value={[p.max_drawdown_time]}
                 onValueChange={([v]) => update(type, { max_drawdown_time: v })}
-                disabled={!p.enabled}
                 className="py-1"
               />
               <div className="flex justify-between text-[10px] text-muted-foreground">
@@ -2162,37 +2274,19 @@ function StrategyProfileEditor({
               </div>
             </div>
 
-            {/* Base/Main enumerate exhaustively; only Real/Live expose safety caps. */}
+            {/* Every stage evaluates all qualifying rows; batching is not a cap. */}
             <div className="space-y-2 pt-1 border-t border-border/40">
               <div className="flex items-center justify-between">
                 <div>
-                  <Label className="text-xs font-medium">{type === "base" || type === "main" ? "Configuration Limit" : "Max Positions"}</Label>
+                  <Label className="text-xs font-medium">Configuration Capacity</Label>
                   <div className="text-[10px] text-muted-foreground">
-                    {type === "base" || type === "main"
-                      ? "Unlimited: every complete configured combination is processed"
-                      : "Independent safety ceiling for this stage"}
+                    Every complete qualifying combination is processed.
                   </div>
                 </div>
                 <span className="font-mono text-sm tabular-nums font-semibold min-w-[4rem] text-right">
-                  {type === "base" || type === "main" ? "Unlimited" : p.max_positions.toLocaleString()}
+                  Unlimited
                 </span>
               </div>
-              {type === "real" || type === "live" ? (
-                <>
-                  <Slider
-                    min={100} max={50000} step={100}
-                    value={[p.max_positions]}
-                    onValueChange={([v]) => update(type, { max_positions: v })}
-                    disabled={!p.enabled}
-                    className="py-1"
-                  />
-                  <div className="flex justify-between text-[10px] text-muted-foreground">
-                    <span>100</span>
-                    <span className="text-muted-foreground/60">default {type === "real" ? "5,000" : "500"}</span>
-                    <span>50,000</span>
-                  </div>
-                </>
-              ) : null}
             </div>
           </div>
         )
@@ -2321,6 +2415,44 @@ function NumberField({
             {suffix}
           </span>
         )}
+      </div>
+    </div>
+  )
+}
+
+function IndicationSliderField({
+  label, value, onChange, suffix, min, max, step, disabled,
+}: {
+  label: string
+  value: number
+  onChange: (v: number) => void
+  suffix: string
+  min: number
+  max: number
+  step: number
+  disabled?: boolean
+}) {
+  const digits = step < 0.1 ? 2 : step < 1 ? 1 : 0
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-[10px] text-muted-foreground uppercase tracking-wide">{label}</Label>
+        <span className="text-[10px] font-mono tabular-nums">
+          {value.toFixed(digits)}{suffix}
+        </span>
+      </div>
+      <Slider
+        min={min}
+        max={max}
+        step={step}
+        value={[Math.max(min, Math.min(max, value))]}
+        onValueChange={([next]) => onChange(next)}
+        disabled={disabled}
+        className="py-1"
+      />
+      <div className="flex justify-between text-[9px] text-muted-foreground">
+        <span>{min}{suffix}</span>
+        <span>{max}{suffix}</span>
       </div>
     </div>
   )

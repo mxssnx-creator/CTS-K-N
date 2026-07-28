@@ -23,8 +23,8 @@ import {
  *   min_profit_factor → baseProfitFactor / mainProfitFactor /
  *                       realProfitFactor / liveProfitFactor
  *   max_drawdown_time (MINUTES) → maxDrawdownTime{Main,Real,Live}Hours (÷60)
- *   max_positions → independent stage output caps. It never mutates the
- *                   stageMinPosCount* history-evidence gates.
+ *   max_positions → retained compatibility field, always normalized to
+ *                   0 (= Unlimited).
  */
 
 type StratRow = {
@@ -53,13 +53,13 @@ const DEFAULTS: Record<StratRow["strategy_type"], Omit<StratRow, "strategy_type"
     is_enabled: true,
     min_profit_factor: MAIN_TRADE_STAGE_PF_DEFAULTS.real,
     max_drawdown_time: 240,
-    max_positions: 5_000,
+    max_positions: 0,
   },
   live: {
     is_enabled: true,
     min_profit_factor: MAIN_TRADE_STAGE_PF_DEFAULTS.live,
     max_drawdown_time: 240,
-    max_positions: 500,
+    max_positions: 0,
   },
 }
 
@@ -82,18 +82,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       const d = DEFAULTS[type]
       return {
         strategy_type: type,
-        is_enabled:
-          typeof saved.is_enabled === "boolean"
-            ? saved.is_enabled
-            : typeof saved.enabled === "boolean"
-              ? saved.enabled
-              : d.is_enabled,
+        is_enabled: true,
         min_profit_factor: normalizeMainTradeStagePfRatio(
           type,
           saved.min_profit_factor,
         ),
         max_drawdown_time: Number(saved.max_drawdown_time ?? d.max_drawdown_time),
-        max_positions: Number(saved.max_positions ?? d.max_positions),
+        max_positions: 0,
       }
     })
 
@@ -130,14 +125,13 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       const d = DEFAULTS[type]
       const pf = normalizeMainTradeStagePfRatio(type, strat.min_profit_factor)
       const ddtMin = Number(strat.max_drawdown_time ?? d.max_drawdown_time)
-      const maxPos = Number(strat.max_positions ?? d.max_positions)
 
       channel[type] = {
-        is_enabled: !!strat.is_enabled,
-        enabled: !!strat.is_enabled,
+        is_enabled: true,
+        enabled: true,
         min_profit_factor: pf,
         max_drawdown_time: ddtMin,
-        max_positions: maxPos,
+        max_positions: 0,
       }
 
       // Flatten into the coordinator-readable hash fields (same mapping as
@@ -153,14 +147,11 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         if (type === "real") flat.maxDrawdownTimeRealHours = hrs
         if (type === "live") flat.maxDrawdownTimeLiveHours = hrs
       }
-      if (Number.isFinite(maxPos) && maxPos >= 0) {
-        const posStr = String(Math.max(0, Math.floor(maxPos)))
-        if (type === "real") {
-          flat.strategyRealSetsSafetyCeiling = posStr
-          flat.maxRealSets = posStr
-        }
-        if (type === "live") flat.strategyLiveSetsCeiling = posStr
+      if (type === "real") {
+        flat.strategyRealSetsSafetyCeiling = "0"
+        flat.maxRealSets = "0"
       }
+      if (type === "live") flat.strategyLiveSetsCeiling = "0"
     }
 
     await applyMainConnectionSettingsChange(id, conn, {

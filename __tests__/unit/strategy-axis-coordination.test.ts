@@ -207,7 +207,7 @@ describe("strategy position-count axis coordination", () => {
     expect(sets.every((set) => [0, 1].includes(set.axisWindows?.cont))).toBe(true)
   })
 
-  test("enforces the output budget while Continuous runs independently", () => {
+  test("ignores the legacy output budget and emits every Continuous combination", () => {
     const coordinator = new StrategyCoordinator("axis-budget") as any
     coordinator._coordinationSettings.axes = {
       prev: { enabled: false, maxWindow: 0 },
@@ -216,8 +216,8 @@ describe("strategy position-count axis coordination", () => {
       pause: { enabled: false, maxWindow: 0 },
     }
     const sets = coordinator.expandAxisSets(baseSet([]), 1.2, 4, { long: 4, short: 4 }, 0, 3)
-    expect(sets).toHaveLength(3)
-    expect(new Set(sets.map((set: StrategySet) => set.setKey)).size).toBe(3)
+    expect(sets).toHaveLength(10)
+    expect(new Set(sets.map((set: StrategySet) => set.setKey)).size).toBe(10)
   })
 
   test("reserves exact active Live Sets without activating sibling axes", () => {
@@ -256,7 +256,29 @@ describe("strategy position-count axis coordination", () => {
     expect(new Set(result.selected.map((set) => set.setKey))).toEqual(new Set([first.setKey, second.setKey]))
   })
 
-  test("keeps exact active Real Sets and reserves enabled adjustment variants before the safety cap", () => {
+  test("ignores the legacy Live row ceiling after complete candidate evaluation", () => {
+    const candidates = Array.from({ length: 5 }, (_, index) => ({
+      ...baseSet([]),
+      setKey: `candidate:${index}`,
+      avgProfitFactor: 10 - index,
+    }))
+    const result = selectLiveSetsWithActivePriority(
+      candidates,
+      new Set(),
+      { minProfitFactor: 1.2, maxDrawdownTime: 60 },
+      3,
+    )
+
+    expect(result.selected.map((set) => set.setKey)).toEqual([
+      "candidate:0",
+      "candidate:1",
+      "candidate:2",
+      "candidate:3",
+      "candidate:4",
+    ])
+  })
+
+  test("keeps every exact active and adjustment Real Set despite a legacy safety-cap argument", () => {
     const defaults = Array.from({ length: 8 }, (_, index) => ({
       ...baseSet([]),
       setKey: `default:${index}`,
@@ -288,7 +310,7 @@ describe("strategy position-count axis coordination", () => {
       4,
     )
 
-    expect(result.selected).toHaveLength(4)
+    expect(result.selected).toHaveLength(11)
     expect(result.selected.map((set) => set.setKey)).toEqual(expect.arrayContaining([
       active.setKey,
       dca.setKey,
@@ -345,7 +367,7 @@ describe("strategy position-count axis coordination", () => {
     expect(counts).toEqual({ real: 1, live: 1, liveEvaluated: 2 })
   })
 
-  test("hedges all pos-count axis Sets into one dominant-direction live order", () => {
+  test("combines pos-count Sets per exact Base and direction without hedging", () => {
     const coordinator = new StrategyCoordinator("combine-pos") as any
     const longA = {
       setKey: "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dlong",
@@ -353,7 +375,7 @@ describe("strategy position-count axis coordination", () => {
       direction: "long" as const,
       variant: "default" as const,
       axisWindows: { prev: 4, last: 1, cont: 1, pause: 0, direction: "long", outcome: "pos", axisKey: "p4_l1_c1_opos_dlong" },
-      posCountsVolumeRatio: 0.05,
+      posCountsVolumeRatio: 0.02,
       avgProfitFactor: 2.0,
       avgConfidence: 0.9,
       avgDrawdownTime: 10,
@@ -364,7 +386,7 @@ describe("strategy position-count axis coordination", () => {
     const longB = {
       ...longA,
       setKey: "BTCUSDT:direction:long#axis:p4_l2_c2_opos_dlong",
-      posCountsVolumeRatio: 0.05,
+      posCountsVolumeRatio: 0.02,
       entryCount: 2,
       avgProfitFactor: 1.5,
       entries: [{ id: "e2", sizeMultiplier: 0.06, leverage: 1, positionState: "new", profitFactor: 1.5, drawdownTime: 12, confidence: 0.85 }],
@@ -373,7 +395,7 @@ describe("strategy position-count axis coordination", () => {
       ...longA,
       setKey: "BTCUSDT:direction:long#axis:p4_l1_c1_opos_dshort",
       direction: "short" as const,
-      posCountsVolumeRatio: 0.05,
+      posCountsVolumeRatio: 0.02,
       avgProfitFactor: 1.8,
       entries: [{ id: "e3", sizeMultiplier: 0.04, leverage: 1, positionState: "new", profitFactor: 1.8, drawdownTime: 11, confidence: 0.88 }],
     }
@@ -385,31 +407,43 @@ describe("strategy position-count axis coordination", () => {
     // Non-axis set passes through unchanged
     expect(result).toContainEqual(nonAxis)
 
-    // Axis sets collapse after the final hedge: 2 long - 1 short = 1 long.
+    // The same Base parent owns one combined row for each direction.
     const axisResults = result.filter((s: any) => !!(s.axisWindows?.direction))
-    expect(axisResults).toHaveLength(1)
+    expect(axisResults).toHaveLength(2)
 
     const combinedLong = axisResults.find((s: any) => s.direction === "long")
+    const combinedShort = axisResults.find((s: any) => s.direction === "short")
     expect(combinedLong).toBeDefined()
-    expect(combinedLong.setKey).toBe("BTCUSDT:poscounts:combined")
+    expect(combinedLong.setKey).toBe("BTCUSDT:direction:long#poscounts:combined:long")
     expect(combinedLong.combinedPosCounts).toBe(true)
-    expect(combinedLong.accumulatedSetKeys).toEqual([longA.setKey])
-    expect(combinedLong.posCountsVolumeRatio).toBeCloseTo(0.05, 4)
-    expect(combinedLong.sizeMultiplier).toBeCloseTo(0.05, 4)
+    expect(combinedLong.accumulatedSetKeys).toEqual([longA.setKey, longB.setKey])
+    expect(combinedLong.posCountsVolumeRatio).toBeCloseTo(0.04, 4)
+    expect(combinedLong.sizeMultiplier).toBeCloseTo(0.04, 4)
     expect(combinedLong.posCountsLongSetCount).toBe(2)
-    expect(combinedLong.posCountsShortSetCount).toBe(1)
-    expect(combinedLong.posCountsNetSetCount).toBe(1)
+    expect(combinedLong.posCountsShortSetCount).toBe(0)
+    expect(combinedLong.posCountsNetSetCount).toBe(2)
+    expect(combinedShort).toMatchObject({
+      setKey: "BTCUSDT:direction:long#poscounts:combined:short",
+      parentSetKey: "BTCUSDT:direction:long",
+      combinedPosCounts: true,
+      posCountsLongSetCount: 0,
+      posCountsShortSetCount: 1,
+      posCountsNetSetCount: 1,
+      posCountsTargetFlat: false,
+      posCountsVolumeRatio: 0.02,
+      sizeMultiplier: 0.02,
+    })
   })
 
-  test("does not dispatch a pos-count exchange order when long and short Sets hedge flat", () => {
+  test("keeps equal long and short pos-count rows independently", () => {
     const coordinator = new StrategyCoordinator("combine-flat") as any
     const axis = (direction: "long" | "short") => ({
       setKey: `BTCUSDT:direction:${direction}#axis:p4_l1_c1_opos_d${direction}`,
-      parentSetKey: `BTCUSDT:direction:${direction}`,
+      parentSetKey: "BTCUSDT:direction:shared",
       direction,
       variant: "default" as const,
       axisWindows: { prev: 4, last: 1, cont: 1, pause: 0, direction, outcome: "pos", axisKey: `p4_l1_c1_opos_d${direction}` },
-      posCountsVolumeRatio: 0.05,
+      posCountsVolumeRatio: 0.02,
       avgProfitFactor: 2,
       avgConfidence: 0.9,
       avgDrawdownTime: 10,
@@ -418,14 +452,14 @@ describe("strategy position-count axis coordination", () => {
       indicationType: "direction",
     })
     const result = coordinator.combinePosCountAxisSets([axis("long"), axis("short")], "BTCUSDT")
-    expect(result).toHaveLength(1)
-    expect(result[0]).toMatchObject({
-      setKey: "BTCUSDT:poscounts:combined",
-      combinedPosCounts: true,
-      posCountsTargetFlat: true,
-      posCountsNetSetCount: 0,
-      posCountsVolumeRatio: 0,
-      accumulatedSetKeys: [],
-    })
+    expect(result).toHaveLength(2)
+    expect(result.map((set: StrategySet) => set.direction).sort()).toEqual(["long", "short"])
+    expect(result.every((set: StrategySet) =>
+      set.combinedPosCounts === true &&
+      set.posCountsTargetFlat === false &&
+      set.posCountsNetSetCount === 1 &&
+      set.posCountsVolumeRatio === 0.02 &&
+      set.accumulatedSetKeys?.length === 1
+    )).toBe(true)
   })
 })

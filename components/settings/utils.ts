@@ -1,4 +1,4 @@
-import { DEFAULT_VOLUME_STEP_RATIO } from "@/lib/constants"
+import { DEFAULT_BASE_MIN_STEP, DEFAULT_VOLUME_STEP_RATIO } from "@/lib/constants"
 import { DEFAULT_MAX_STOP_LOSS_RATIO } from "@/lib/stoploss-ratio-range"
 import { Settings } from "./types"
 import { toast } from "@/lib/simple-toast"
@@ -41,9 +41,9 @@ export const initialSettings: Settings = {
   positionCost: 0.1, // Canonical default: 0.1%
   useMaximalLeverage: true,
   min_volume_enforcement: true, // Added missing min_volume_enforcement property
-  minStep: 2, // fixed compatibility value; exhaustive windows are always 2..30
+  minStep: DEFAULT_BASE_MIN_STEP,
   maxStopLossRatio: DEFAULT_MAX_STOP_LOSS_RATIO, // 0.25-2.5 step 0.25 — max SL ratio for Base pseudo-position Sets
-  trailingMinStep: 6, // 2-30 step 1 — minimum Base step allowed to fan out into trailing Sets
+  trailingMinStep: DEFAULT_BASE_MIN_STEP,
 
   // Base Strategy
   baseValueRangeMin: 0.5,
@@ -124,9 +124,10 @@ export const initialSettings: Settings = {
   // Strategy retention/scheduling controls — batching never truncates Sets.
   strategyMaxEntriesPerSet: 250,
   strategyMainAxisBatchSize: 8,
-  strategyRealSetsSafetyCeiling: 5000,
-  maxRealSets: 5000,
-  strategyLiveSetsCeiling: 500,
+  strategyBlockMaterializationBatchSize: 1024,
+  strategyRealSetsSafetyCeiling: 0,
+  maxRealSets: 0,
+  strategyLiveSetsCeiling: 0,
 
   // System Configuration
   autoRestartOnErrors: true,

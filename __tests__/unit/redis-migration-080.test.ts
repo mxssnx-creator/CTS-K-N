@@ -146,9 +146,9 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 90 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 91 })
 
-      expect(await client.get("_schema_version")).toBe("90")
+      expect(await client.get("_schema_version")).toBe("91")
       expect(new Set(await client.smembers("strategy_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
       expect(await client.smembers("strategy_active_set_keys:conn-ledger")).toEqual(["set:a"])
       expect(new Set(await client.smembers("strategy_closed_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
@@ -186,9 +186,13 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(await client.hget("connection_settings:conn-ledger", "indicationTimeoutMs")).toBe("250")
       expect(await client.hget("connection_settings:conn-ledger", "positionCooldownMs")).toBe("3000")
       expect(await client.hget("connection_settings:conn-ledger", "maxActiveBasePseudoPositionsPerDirection")).toBe("1")
-      expect(await client.hget("connection_settings:conn-ledger", "strategyRealSetsSafetyCeiling")).toBe("5000")
-      expect(await client.hget("connection_settings:conn-ledger", "maxRealSets")).toBe("5000")
-      expect(await client.hget("connection_settings:conn-ledger", "strategyLiveSetsCeiling")).toBe("500")
+      expect(await client.hget("connection_settings:conn-ledger", "strategyRealSetsSafetyCeiling")).toBe("0")
+      expect(await client.hget("connection_settings:conn-ledger", "maxRealSets")).toBe("0")
+      expect(await client.hget("connection_settings:conn-ledger", "strategyLiveSetsCeiling")).toBe("0")
+      expect(await client.hget(
+        "connection_settings:conn-ledger",
+        "strategyBlockMaterializationBatchSize",
+      )).toBe("1024")
       expect(await client.hget("connection_settings:conn-ledger", "minStep")).toBe("2")
       expect(await client.hget("connection_settings:conn-ledger", "mainEvalPosCount")).toBe("25")
       expect(await client.hget("connection_settings:conn-ledger", "realEvalPosCount")).toBe("20")
@@ -250,7 +254,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(await client.hget("system:database:coordination:performance", "independent_block_profit_factor"))
         .toBe("default-pf-x-ratio-x-volume-increment-v1")
       expect(await client.hget("system:database:coordination:performance", "schema_version"))
-        .toBe("90")
+        .toBe("91")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -314,7 +318,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 90 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 91 })
 
       expect(await client.hget("connection:conn-stage-floor", "baseProfitFactor")).toBe("0.8")
       expect(await client.hget("connection:conn-stage-floor", "base_min_profit_factor")).toBe("0.8")
@@ -412,7 +416,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 90,
+        version: 91,
       })
 
       expect(await client.hget("connection:conn-v90", "baseProfitFactor")).toBe("0.8")
@@ -484,7 +488,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 90,
+        version: 91,
       })
 
       for (const key of [
@@ -497,6 +501,67 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         expect(await client.hget(key, "symbol_count")).toBe("3")
         expect(await client.hget(key, "symbol_order")).toBe("")
       }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("normalizes legacy stage caps into unlimited rows and seeds the Block scheduler at schema 91", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "migration-091-stage-rows-"))
+    process.env = {
+      ...originalEnv,
+      NODE_ENV: "test",
+      V0_REDIS_SNAPSHOT_PATH: join(dir, "snapshot.json"),
+    }
+    resetRedisGlobals()
+    jest.resetModules()
+
+    try {
+      const redisDb = await import("@/lib/redis-db")
+      await redisDb.ensureCoreRedis()
+      const client = redisDb.getRedisClient()
+      await client.flushDb()
+      await client.sadd("connections", "conn-v91")
+      await client.hset("connection_settings:conn-v91", {
+        strategyRealSetsSafetyCeiling: "5000",
+        maxRealSets: "5000",
+        strategyLiveSetsCeiling: "500",
+        connection_settings: JSON.stringify({
+          strategies: {
+            main: {
+              base: { enabled: true, max_positions: 0 },
+              main: { enabled: true, max_positions: 0 },
+              real: { enabled: true, max_positions: 5000 },
+              live: { enabled: false, max_positions: 500 },
+            },
+          },
+          coordination_settings: {},
+        }),
+      })
+      await client.set("_schema_version", "90")
+      await client.set("_migrations_run", "true")
+
+      const migrations = await import("@/lib/redis-migrations")
+      migrations.resetMigrationRunState()
+      await expect(migrations.runMigrations()).resolves.toMatchObject({
+        success: true,
+        version: 91,
+      })
+
+      expect(await client.hget("connection_settings:conn-v91", "strategyRealSetsSafetyCeiling")).toBe("0")
+      expect(await client.hget("connection_settings:conn-v91", "maxRealSets")).toBe("0")
+      expect(await client.hget("connection_settings:conn-v91", "strategyLiveSetsCeiling")).toBe("0")
+      expect(await client.hget(
+        "connection_settings:conn-v91",
+        "strategyBlockMaterializationBatchSize",
+      )).toBe("1024")
+      const document = JSON.parse(String(
+        await client.hget("connection_settings:conn-v91", "connection_settings"),
+      ))
+      expect(document.strategies.main.real.max_positions).toBe(0)
+      expect(document.strategies.main.live.max_positions).toBe(0)
+      expect(document.strategies.main.live.enabled).toBe(false)
+      expect(document.coordination_settings.strategyBlockMaterializationBatchSize).toBe(1024)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

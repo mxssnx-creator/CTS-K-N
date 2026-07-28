@@ -10,20 +10,6 @@ import {
   isConnectionPresetTradeEnabled,
 } from "@/lib/connection-state-utils"
 
-
-async function scanKeys(client: any, pattern: string): Promise<string[]> {
-  const keys: string[] = []
-  let cursor = "0"
-  do {
-    const result = await client.scan(cursor, "MATCH", pattern, "COUNT", 100).catch(() => null)
-    if (!result) break
-    cursor = String(Array.isArray(result) ? result[0] : result.cursor || "0")
-    const batch = (Array.isArray(result) ? result[1] : result.keys || []) as string[]
-    keys.push(...batch)
-  } while (cursor !== "0")
-  return Array.from(new Set(keys))
-}
-
 function sumCurrentStageSets(
   detail: Record<string, string> | null | undefined,
 ): number {
@@ -159,7 +145,10 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
       ProgressionStateManager.getProgressionState(connId),
       getConnectionPositions(connId),
       getConnectionTrades(connId),
-      getProgressionLogs(connId),
+      // Dashboard polling must never force the shared buffered log queue to
+      // Redis. The periodic flusher owns durability while this request reads
+      // the latest persisted snapshot without blocking current engine work.
+      getProgressionLogs(connId, { flush: false }),
       getSettings(`trade_engine_state:${connId}`),
       // progression:{connId} is a raw hash updated EVERY cycle — primary source for live counts
       client.hgetall(`progression:${connId}`).catch(() => ({})),
@@ -207,13 +196,13 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
     const mainSets = sumCurrentStageSets(mainDetail as Record<string, string>)
     const realSets = sumCurrentStageSets(realDetail as Record<string, string>)
 
-    // Prehistoric symbols from set (still uses sadd)
+    // The exhaustive processor stores several interval/configuration keys per
+    // symbol. Scanning those keys made every Logistics poll O(total Redis
+    // keys), which could starve the server under a full configuration matrix.
+    // The canonical symbol membership set is bounded and is also what
+    // QuickStart uses for this current-coverage metric.
     const prehistoricSymbols = await client.scard(`prehistoric:${connId}:symbols`).catch(() => 0)
-    let prehistoricDataSize = 0
-    try {
-      const keys = await scanKeys(client, `prehistoric:${connId}:*`)
-      prehistoricDataSize = keys.length
-    } catch { /* ignore */ }
+    const prehistoricDataSize = prehistoricSymbols
 
     // Intervals processed: stored as string counter
     const intervalsProcessed =
@@ -278,7 +267,7 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
   }
 
   const [recentGlobalLogs, quickstartStateRaw] = await Promise.all([
-    getProgressionLogs("global"),
+    getProgressionLogs("global", { flush: false }),
     client.get("quickstart:last_run").catch(() => null),
   ])
   let quickstartState: null | {

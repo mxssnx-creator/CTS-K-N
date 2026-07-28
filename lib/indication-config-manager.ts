@@ -1,12 +1,15 @@
 /**
  * Indication Config Manager
  * Manages independent indication configuration sets
- * Each combination of parameters = independent Redis set with max 250 results
+ * Each combination of parameters = an independent Redis Set. Stored history
+ * retention never limits which configurations calculate.
  */
 
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { appendUniqueListEntries } from "@/lib/redis-idempotent-list"
 import { COMMON_INDICATOR_DEFINITIONS } from "@/lib/common-indicator-config"
+import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
+import { MAX_BASE_STEP, normalizeBaseMinStep } from "@/lib/constants"
 
 export interface IndicationConfig {
   id: string
@@ -252,9 +255,14 @@ export class IndicationConfigManager {
 
   async generateDefaultConfigs(): Promise<IndicationConfig[]> {
     const types = COMMON_INDICATOR_DEFINITIONS.map((definition) => definition.label)
-    // Exhaustive by contract: a legacy `minStep` value must never filter
-    // valid indication lanes. Every integer window is materialized.
-    const stepsOptions = Array.from({ length: 29 }, (_, index) => index + 2)
+    await initRedis()
+    const connectionSettings = await getCanonicalConnectionSettingsOverlay(this.connectionId)
+      .catch(() => ({} as Record<string, string>))
+    const minStep = normalizeBaseMinStep(connectionSettings.minStep)
+    const stepsOptions = Array.from(
+      { length: MAX_BASE_STEP - minStep + 1 },
+      (_, index) => index + minStep,
+    )
     const drawdownOptions = [0.05, 0.1, 0.15]
     const activeRatioOptions = [0.6, 0.7, 0.8]
     const lastPartRatioOptions = [0.2, 0.3, 0.4]
@@ -288,7 +296,6 @@ export class IndicationConfigManager {
     }
 
     const now = new Date().toISOString()
-    await initRedis()
     const client = getRedisClient()
     const configs: IndicationConfig[] = pending.map((cfg) => {
       return { ...cfg, connectionId: this.connectionId, createdAt: now }

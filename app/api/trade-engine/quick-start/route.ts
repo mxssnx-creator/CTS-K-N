@@ -1,4 +1,5 @@
 import {
+  DEFAULT_BASE_MIN_STEP,
   DEFAULT_VOLUME_STEP_RATIO,
   MAX_VOLUME_STEP_RATIO,
   MIN_VOLUME_STEP_RATIO,
@@ -401,8 +402,7 @@ async function handlePost(request: Request) {
     const effectiveVariantBlock = firstExistingSetting(existingConnectionSettings, ["variant_block"], "true")
     const effectiveVariantDca = firstExistingSetting(existingConnectionSettings, ["variant_dca"], "false")
     const effectiveControlOrders = firstExistingSetting(existingConnectionSettings, ["control_orders"], "true")
-    // Compatibility mirror only: generation is always exhaustive 2..30.
-    const effectiveMinStep = "2"
+    const effectiveMinStep = String(DEFAULT_BASE_MIN_STEP)
     
     // DISABLE ACTION
     if (action === "disable") {
@@ -1203,17 +1203,13 @@ async function handlePost(request: Request) {
     }
     console.log(`${LOG_PREFIX}: [3/4] Stored symbols in trade_engine_state: ${symbols.join(", ")}`)
 
-    // === DEV MODE COMPLETENESS FIX ===
-    // Immediately kick off prehistoric load for the exact quickstart symbols
-    // so that the full pipeline (prehistoric → indications → strategies base/main/real → real/live)
-    // is ready faster for Dev Mode testing (3-symbol minimal volume etc.).
-    // This makes "ReRun Dev Mode Test" show loaded data and non-zero counts much sooner.
-    // Keep this dev-only by default: production starts the real engine below,
-    // and a second detached SymbolDataProcessor can duplicate the same
-    // prehistoric/progression writes, causing coordinator lock noise, stalled
-    // counters, and lower-quality prod results that do not reproduce in dev.
+    // An API-only development process may explicitly request a best-effort
+    // prehistoric preload. A normal development server starts the real engine
+    // below, so launching a second detached SymbolDataProcessor would duplicate
+    // the same prehistoric/progression writes and contend with exhaustive work.
     const quickstartPreloadAllowed =
-      process.env.NODE_ENV === "development" || process.env.ENABLE_QUICKSTART_PREHISTORIC_PRELOAD === "1"
+      process.env.ENABLE_QUICKSTART_PREHISTORIC_PRELOAD === "1" ||
+      (process.env.NODE_ENV === "development" && process.env.DISABLE_TRADE_ENGINE_IN_PROCESS === "1")
     if (quickstartPreloadAllowed && !quickstartEngineAlreadyRunning && symbols.length > 0) {
       const quickstartPreload = (async () => {
         try {

@@ -63,9 +63,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const testLog: string[] = []
   const startTime = Date.now()
   const { id } = await params
-  const body = await request.json()
 
   try {
+    const body = await request.json().catch(() => ({})) as Record<string, any>
     // Check rate limit using systemwide limiter (includes timeout config)
     const limitResult = await testConnectionLimiter.checkLimit(id)
     
@@ -146,6 +146,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         last_test_status: "warning",
         last_test_log: JSON.stringify(testLog),
         last_test_at: new Date().toISOString(),
+        last_test_time: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
 
@@ -238,6 +239,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       last_test_balance: String(result.balance),
       last_test_log: JSON.stringify(testLog),
       last_test_at: new Date().toISOString(),
+      last_test_time: new Date().toISOString(),
       api_type: testedApiType,
       connection_method: testedConnectionMethod,
       connection_library: testedConnectionLibrary,
@@ -317,6 +319,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           last_test_status: "failed",
           last_test_log: JSON.stringify(testLog),
           last_test_at: new Date().toISOString(),
+          last_test_time: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
 

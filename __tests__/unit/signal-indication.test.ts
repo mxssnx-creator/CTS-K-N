@@ -116,6 +116,7 @@ import {
   signalSourceLaneManuallyDisabled,
 } from "@/lib/signal-indication"
 import { initRedis } from "@/lib/redis-db"
+import { SIGNAL_SOURCE_DEFINITIONS } from "@/lib/signal-source-registry"
 
 function recordSyntheticSignalOutcome(
   input: Parameters<typeof recordSignalPerformanceOutcome>[0],
@@ -490,8 +491,10 @@ describe("Signal indication persistence and independent performance gates", () =
         now: 1_800_000_000_000,
       })
 
-      expect(indications).toHaveLength(11)
-      expect(indications.filter((item) => item.metadata?.mode === "direct_source")).toHaveLength(10)
+      expect(indications).toHaveLength(SIGNAL_SOURCE_DEFINITIONS.length + 1)
+      expect(indications.filter((item) => item.metadata?.mode === "direct_source")).toHaveLength(
+        SIGNAL_SOURCE_DEFINITIONS.length,
+      )
       const consensus = indications.find((item) => item.metadata?.mode === "multi_source_consensus")
       expect(consensus).toEqual(expect.objectContaining({
         type: "signal",
@@ -499,11 +502,11 @@ describe("Signal indication persistence and independent performance gates", () =
         direction: "long",
       }))
       expect(consensus.metadata.signal).toEqual(expect.objectContaining({
-        selectedSourceCount: 10,
-        evaluatedSourceCount: 10,
-        allowedSourceCount: 10,
+        selectedSourceCount: SIGNAL_SOURCE_DEFINITIONS.length,
+        evaluatedSourceCount: SIGNAL_SOURCE_DEFINITIONS.length,
+        allowedSourceCount: SIGNAL_SOURCE_DEFINITIONS.length,
       }))
-      expect(consensus.metadata.signal.sourceIds).toHaveLength(10)
+      expect(consensus.metadata.signal.sourceIds).toHaveLength(SIGNAL_SOURCE_DEFINITIONS.length)
       expect(consensus.metadata.signal.sourceIds).toEqual(
         expect.arrayContaining(["bingx-swap", "binance-usdm", "bybit-linear", "okx-swap"]),
       )

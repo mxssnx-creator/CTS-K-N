@@ -6,6 +6,9 @@ export const LIVE_OPEN_STATUSES = [
   "pending",
   "pending_fill",
   "placed_unconfirmed",
+  // Paper execution is a fully-filled open position. It remains active until
+  // the simulated SL/TP/max-hold lifecycle archives it as closed.
+  "simulated",
   // A close/control-order mutation is still active exposure until the venue
   // and durable ledger both confirm a terminal state.
   "closing",

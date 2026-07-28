@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { Card, CardContent } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 import { useExchange } from "@/lib/exchange-context"
 import { TradeHistoryTable, type TradeHistoryRow } from "@/components/dashboard/trade-history-table"
 import { PerformanceTiers } from "@/components/dashboard/performance-tiers"
@@ -152,7 +153,7 @@ interface CompactStats {
     live:  PerformanceTier
   }
   // ── TRADE HISTORY ───────────────────────────────────────────────
-  // Up to 500 most-recently-closed live exchange positions.
+  // Complete paged history; only the DOM window is bounded.
   tradeHistory: TradeHistoryRow[]
   // ── SPEC PERFORMANCE HISTORY ─────────────────────────────────────
   // Per-symbol performance breakdown per pipeline stage.
@@ -588,7 +589,8 @@ export function StatisticsOverviewV2() {
   const { selectedConnectionId } = useExchange()
   const connectionId = selectedConnectionId || "default-bingx-001"
   const [stats, setStats] = useState<CompactStats>(EMPTY)
-  const [exchangeTradeHistory, setExchangeTradeHistory] = useState<TradeHistoryRow[]>([])
+  const [tradeHistoryMode, setTradeHistoryMode] = useState<"exchange" | "simulated">("exchange")
+  const [tradeHistoryRows, setTradeHistoryRows] = useState<TradeHistoryRow[]>([])
   const [tradeHistoryLoaded, setTradeHistoryLoaded] = useState(false)
   const [eventRefreshKey, setEventRefreshKey] = useState(0)
   // Event-triggered refreshes can overlap with the 3s poll. Only the newest
@@ -598,35 +600,84 @@ export function StatisticsOverviewV2() {
   const historyFetchSeqRef = useRef(0)
   const lastHistoryClosedCountRef = useRef(0)
 
-  const loadTradeHistory = useCallback(async (force = false) => {
+  const mergeHistoryRows = useCallback((previous: TradeHistoryRow[], incoming: TradeHistoryRow[]) => {
+    const byId = new Map<string, TradeHistoryRow>()
+    for (const row of [...previous, ...incoming]) {
+      if (!row) continue
+      const key = row.closeOrderId ? `close:${row.closeOrderId}` : `id:${row.id}`
+      const current = byId.get(key)
+      if (!current || Number(row.closedAt) >= Number(current.closedAt)) byId.set(key, row)
+    }
+    return [...byId.values()].sort((left, right) => Number(right.closedAt) - Number(left.closedAt))
+  }, [])
+
+  const loadTradeHistory = useCallback(async (force = false, complete = false) => {
     const requestSequence = ++historyFetchSeqRef.current
     try {
-      const response = await fetch(
-        `/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}&limit=500${force ? "&force=1" : ""}`,
-        { cache: "no-store" },
-      )
-      if (!response.ok || requestSequence !== historyFetchSeqRef.current) return
-      const data = await response.json()
-      if (requestSequence !== historyFetchSeqRef.current || !Array.isArray(data?.rows)) return
-      setExchangeTradeHistory(data.rows.slice(0, 500) as TradeHistoryRow[])
+      const fetchPage = async (offset: number, refresh: boolean) => {
+        const response = await fetch(
+          `/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}` +
+          `&mode=${tradeHistoryMode}&offset=${offset}&limit=500${refresh ? "&force=1" : ""}`,
+          { cache: "no-store" },
+        )
+        if (!response.ok) return null
+        return response.json()
+      }
+      const first = await fetchPage(0, force)
+      if (
+        requestSequence !== historyFetchSeqRef.current ||
+        !first ||
+        !Array.isArray(first.rows)
+      ) return
+
+      let collected = first.rows as TradeHistoryRow[]
+      if (complete) {
+        const totalIndexed = Math.max(0, Number(first.paging?.totalIndexed) || 0)
+        const pageSize = Math.max(1, Number(first.paging?.pageSize) || 500)
+        const offsets: number[] = []
+        const firstNextOffset = Math.max(
+          1,
+          Number(first.paging?.nextOffset) || pageSize,
+        )
+        for (
+          let offset = firstNextOffset;
+          offset < totalIndexed;
+          offset += pageSize
+        ) offsets.push(offset)
+        // Four bounded HTTP workers minimize initial history load latency while
+        // preserving every archive page and respecting the server's Redis
+        // batching. Venue history is fetched only by page zero.
+        for (let index = 0; index < offsets.length; index += 4) {
+          const pages = await Promise.all(
+            offsets.slice(index, index + 4).map((offset) => fetchPage(offset, false)),
+          )
+          if (requestSequence !== historyFetchSeqRef.current) return
+          for (const page of pages) {
+            if (Array.isArray(page?.rows)) collected = mergeHistoryRows(collected, page.rows)
+          }
+        }
+        setTradeHistoryRows(collected)
+      } else {
+        setTradeHistoryRows((previous) => mergeHistoryRows(previous, collected))
+      }
       setTradeHistoryLoaded(true)
     } catch {
       // Keep the last successful exchange snapshot/local stats fallback. A
       // transient venue error must not blank history or reset W/L counters.
     }
-  }, [connectionId])
+  }, [connectionId, mergeHistoryRows, tradeHistoryMode])
 
   useEffect(() => {
-    setExchangeTradeHistory([])
+    setTradeHistoryRows([])
     setTradeHistoryLoaded(false)
     lastHistoryClosedCountRef.current = 0
-    void loadTradeHistory(false)
+    void loadTradeHistory(false, true)
     const interval = window.setInterval(() => { void loadTradeHistory(false) }, 30_000)
     return () => {
       window.clearInterval(interval)
       historyFetchSeqRef.current++
     }
-  }, [connectionId, loadTradeHistory])
+  }, [connectionId, tradeHistoryMode, loadTradeHistory])
 
   // A confirmed local close should surface immediately; otherwise the bounded
   // 30 s refresh is enough and avoids exchange-history polling on every stats
@@ -1572,11 +1623,36 @@ export function StatisticsOverviewV2() {
 
         {/* ── TRADE HISTORY ─────────────────────────────────────────────── */}
         <div className="mt-3 pt-3 border-t border-border/40">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant={tradeHistoryMode === "exchange" ? "default" : "outline"}
+              onClick={() => setTradeHistoryMode("exchange")}
+            >
+              Exchange (Live)
+            </Button>
+            <Button
+              size="sm"
+              variant={tradeHistoryMode === "simulated" ? "default" : "outline"}
+              onClick={() => setTradeHistoryMode("simulated")}
+            >
+              Simulated
+            </Button>
+            <span className="text-[10px] text-muted-foreground">
+              Durable order/position archive · complete paging · live refresh
+            </span>
+          </div>
           <TradeHistoryTable
-            trades={tradeHistoryLoaded ? exchangeTradeHistory : stats.tradeHistory}
-            limit={500}
+            trades={
+              tradeHistoryLoaded
+                ? tradeHistoryRows
+                : tradeHistoryMode === "exchange"
+                  ? stats.tradeHistory
+                  : []
+            }
             visibleWindow={50}
-            onRefresh={() => loadTradeHistory(true)}
+            environmentLabel={tradeHistoryMode === "exchange" ? "Exchange (Live)" : "Simulated"}
+            onRefresh={() => loadTradeHistory(true, true)}
           />
         </div>
 

@@ -331,6 +331,32 @@ describe("Real-stage Block overlays", () => {
     })
   })
 
+  test("keeps the Standard Base row beside every configured general trailing row", async () => {
+    const coordinator = new StrategyCoordinator(`${connectionId}-general-trailing`) as any
+    coordinator.getEnabledTrailingVariants = jest.fn(async () => [
+      { startRatio: 0.3, stopRatio: 0.1, stepRatio: 0.05, tag: "t30-10", minStep: 2 },
+      { startRatio: 0.6, stopRatio: 0.2, stepRatio: 0.1, tag: "t60-20", minStep: 2 },
+    ])
+
+    const result = await coordinator.createBaseSets("BTCUSDT", [{
+      id: "direction-config-1",
+      setKey: "indications:test:BTCUSDT:direction:cfg-1:long",
+      type: "direction",
+      direction: "long",
+      range: 8,
+      profitFactor: 1.4,
+      confidence: 0.8,
+      timestamp: Date.now(),
+      config: { range: 8, drawdownRatio: 1, factor: 1 },
+      metadata: { direction: "long" },
+    }])
+
+    expect(result.sets).toHaveLength(3)
+    expect(result.sets.filter((set: StrategySet) => !set.trailingProfile)).toHaveLength(1)
+    expect(result.sets.filter((set: StrategySet) => set.trailingProfile)).toHaveLength(2)
+    expect(new Set(result.sets.map((set: StrategySet) => set.setKey)).size).toBe(3)
+  })
+
   test("applies Signal trailing-only and disabled settings at Base creation", async () => {
     const client = getRedisClient()
     const indication = {
@@ -663,6 +689,14 @@ describe("Real-stage Block overlays", () => {
       standard.setKey,
       trailing.setKey,
     ])
+
+    expect(selectLiveDispatchCandidates(
+      [standard, trailing],
+      { blockEnabled: true, blockOnly: true },
+    ).map((set) => set.setKey)).toEqual([
+      standard.setKey,
+      trailing.setKey,
+    ])
   })
 
   test("dispatches independent Signal source and TP/SL configuration slots up to shared capacity", () => {
@@ -874,6 +908,71 @@ describe("Real-stage Block overlays", () => {
     expect(stats["s:BTCUSDT:c:10:evaluated"]).toBe("1")
     expect(stats["s:BTCUSDT:c:1:cold_start"]).toBe("1")
     await client.del(`strategy_block_pf_stats:${connectionId}`)
+  })
+
+  test("evaluates the complete Block matrix while rotating a bounded materialization batch", async () => {
+    const rotatingConnectionId = `${connectionId}-rotating-block-batch`
+    const client = getRedisClient()
+    const coordinator = new StrategyCoordinator(rotatingConnectionId) as any
+    coordinator._coordinationSettings.variants.block = true
+    coordinator._coordinationSettings.blockMaxStack = 2
+    coordinator._coordinationSettings.blockVolumeRatio = 1
+    coordinator._coordinationSettings.blockProfitFactorRatio = 0.8
+    coordinator._coordinationSettings.blockPauseCountRatio = 1
+    coordinator.strategyBlockMaterializationBatchSize = 64
+    const exhaustiveSources = Array.from({ length: 80 }, (_, index) => ({
+      ...source(
+        `BTCUSDT:direction:${index % 2 === 0 ? "long" : "short"}#config:${index}`,
+        index % 2 === 0 ? "long" : "short",
+      ),
+      avgProfitFactor: 100,
+    }))
+    const metrics = {
+      minProfitFactor: 1.2,
+      maxDrawdownTime: 240,
+      confidence: 0.5,
+      description: "test",
+    }
+
+    try {
+      const first = await coordinator.buildIndependentBlockCountOverlaysForReal(
+        "BTCUSDT",
+        exhaustiveSources,
+        metrics,
+        undefined,
+        new Set(),
+      ) as StrategySet[]
+      const firstStats = await client.hgetall(
+        `strategy_block_pf_stats:${rotatingConnectionId}`,
+      )
+      expect(first).toHaveLength(64)
+      expect(firstStats["s:BTCUSDT:c:1:calculated"]).toBe("80")
+      expect(firstStats["s:BTCUSDT:c:2:calculated"]).toBe("80")
+      expect(firstStats["s:BTCUSDT:logical_emitted"]).toBe("160")
+      expect(firstStats["s:BTCUSDT:materialized"]).toBe("64")
+      expect(firstStats["s:BTCUSDT:materialization_cursor"]).toBe("0")
+      expect(firstStats["s:BTCUSDT:materialization_next_cursor"]).toBe("64")
+
+      const second = await coordinator.buildIndependentBlockCountOverlaysForReal(
+        "BTCUSDT",
+        exhaustiveSources,
+        metrics,
+        undefined,
+        new Set(),
+      ) as StrategySet[]
+      const secondStats = await client.hgetall(
+        `strategy_block_pf_stats:${rotatingConnectionId}`,
+      )
+      expect(second).toHaveLength(64)
+      expect(new Set(second.map((set) => set.setKey))).not.toEqual(
+        new Set(first.map((set) => set.setKey)),
+      )
+      expect(secondStats["s:BTCUSDT:logical_emitted"]).toBe("160")
+      expect(secondStats["s:BTCUSDT:materialization_cursor"]).toBe("64")
+      expect(secondStats["s:BTCUSDT:materialization_next_cursor"]).toBe("128")
+    } finally {
+      await client.del(`strategy_block_pf_stats:${rotatingConnectionId}`)
+    }
   })
 
   test("recalculates every count immediately from changed PF and volume settings", async () => {

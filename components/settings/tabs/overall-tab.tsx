@@ -198,7 +198,7 @@ export function OverallTab({
                     </p>
                   </div>
 
-                  <div className="space-y-2">
+                  <div className="space-y-2 md:col-start-1">
                     <div className="flex items-center justify-between">
                       <Label>Signal Volume Factor</Label>
                       <span className="text-sm font-medium">
