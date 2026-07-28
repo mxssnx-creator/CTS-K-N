@@ -27,7 +27,7 @@ interface Indication {
 
 interface IndicationRowCompactProps {
   indication: Indication
-  onToggle: (id: string, enabled: boolean) => void
+  onToggle?: (id: string, enabled: boolean) => void
   index: number
 }
 
@@ -102,7 +102,9 @@ export function IndicationRowCompact({ indication, onToggle, index }: Indication
         {/* Active toggle */}
         <Switch
           checked={indication.enabled}
-          onCheckedChange={(checked) => onToggle(indication.id, checked)}
+          disabled={!onToggle}
+          aria-label={onToggle ? "Toggle indication" : "Runtime indication state (read only)"}
+          onCheckedChange={(checked) => onToggle?.(indication.id, checked)}
           className="scale-75 origin-left"
         />
 

@@ -25,13 +25,18 @@ interface IndicationFiltersAdvanced {
 interface IndicationFiltersAdvancedProps {
   filters: IndicationFiltersAdvanced
   onFiltersChange: (filters: IndicationFiltersAdvanced) => void
+  availableSymbols?: string[]
+  availableTypes?: string[]
 }
 
-const defaultSymbols = ["BTC", "ETH", "SOL", "AAPL", "EURUSD", "XAUUSD", "GBPUSD", "NZDUSD"]
-const indicationTypeOptions = ["Momentum", "Volatility", "Trend", "Mean Reversion", "Volume"]
 const directionOptions = ["UP", "DOWN", "NEUTRAL"]
 
-export function IndicationFiltersAdvanced({ filters, onFiltersChange }: IndicationFiltersAdvancedProps) {
+export function IndicationFiltersAdvanced({
+  filters,
+  onFiltersChange,
+  availableSymbols = [],
+  availableTypes = [],
+}: IndicationFiltersAdvancedProps) {
   const [expandedSections, setExpandedSections] = useState({
     symbols: true,
     types: true,
@@ -127,7 +132,7 @@ export function IndicationFiltersAdvanced({ filters, onFiltersChange }: Indicati
                 ))}
               </div>
               <div className="flex flex-wrap gap-1">
-                {defaultSymbols.map((sym) => (
+                {availableSymbols.map((sym) => (
                   <Badge
                     key={sym}
                     variant="outline"
@@ -158,7 +163,7 @@ export function IndicationFiltersAdvanced({ filters, onFiltersChange }: Indicati
           {expandedSections.types && (
             <div className="px-3 py-2 space-y-2 border-t border-slate-700/50">
               <div className="grid grid-cols-1 gap-1 mb-2">
-                {indicationTypeOptions.map((type) => (
+                {availableTypes.map((type) => (
                   <Badge
                     key={type}
                     variant={filters.indicationTypes.includes(type) ? "default" : "outline"}
@@ -173,6 +178,11 @@ export function IndicationFiltersAdvanced({ filters, onFiltersChange }: Indicati
                     {type}
                   </Badge>
                 ))}
+                {availableTypes.length === 0 && (
+                  <span className="text-[11px] text-muted-foreground">
+                    No measured indication types yet.
+                  </span>
+                )}
               </div>
 
               <div className="border-t border-slate-700/50 pt-2">

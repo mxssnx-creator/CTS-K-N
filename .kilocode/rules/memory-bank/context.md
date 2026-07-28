@@ -685,6 +685,15 @@ credentials are present.
   Missing, stale and synthetic data is explicitly labelled; random prices,
   static base prices and fabricated health values are not represented as live
   state. Open live-position indexes are read exhaustively in bounded batches.
+- [x] The Indications page reads exhaustive per-symbol current snapshots,
+  falls back through a repaired snapshot index, derives its filters from the
+  measured rows and exports the visible measured set. Runtime indication rows
+  are read-only; no demo connection or arbitrary default symbol/type list is
+  presented as live data.
+- [x] Monitoring system, comprehensive and log APIs now use canonical
+  connection/position/workflow ledgers and the bounded logger list index.
+  They report measured resource, Redis and engine data; connection-scoped
+  monitoring refreshes with the selected connection rather than stale globals.
 - [x] Preserved one physical Direction parent for source-scoped Signal Block
   adjustments while allowing ordinary Block-only lanes to seed and recover
   their own parent. Explicit Consensus and direct-source outcomes now update

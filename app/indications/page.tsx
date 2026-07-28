@@ -65,20 +65,28 @@ export default function IndicationsPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [filters, setFilters] = useState<AdvancedFiltersInd>(initialFilters)
 
-  // Load indications on mount and when connection changes
+  // Load the complete canonical current snapshot and keep it fresh. SSE gives
+  // low-latency deltas; polling repairs missed events and process restarts.
   useEffect(() => {
+    let disposed = false
     const loadIndications = async () => {
-      setIsLoading(true)
+      if (!resolvedConnectionId) {
+        setIndications([])
+        setIsDemo(false)
+        setIsLoading(false)
+        return
+      }
       try {
-        // Determine which connection to use (fallback to demo if none selected)
-        const connectionToUse = resolvedConnectionId || "demo-mode"
-
-        const response = await fetch(`/api/data/indications?connectionId=${encodeURIComponent(connectionToUse)}`)
+        const response = await fetch(
+          `/api/data/indications?connectionId=${encodeURIComponent(resolvedConnectionId)}`,
+          { cache: "no-store" },
+        )
         if (!response.ok) {
           throw new Error(`Failed to fetch indications: ${response.statusText}`)
         }
 
         const data = await response.json()
+        if (disposed) return
         if (data.success) {
           setIndications(data.data || [])
           setIsDemo(data.isDemo)
@@ -87,14 +95,26 @@ export default function IndicationsPage() {
         }
       } catch (error) {
         console.error("[Indications] Failed to load:", error)
-        toast.error("Failed to load indications")
-        setIndications([])
+        if (!disposed) setIndications([])
       } finally {
-        setIsLoading(false)
+        if (!disposed) setIsLoading(false)
       }
     }
 
-    loadIndications()
+    setIsLoading(true)
+    void loadIndications()
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") void loadIndications()
+    }, 3000)
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void loadIndications()
+    }
+    document.addEventListener("visibilitychange", onVisibility)
+    return () => {
+      disposed = true
+      clearInterval(interval)
+      document.removeEventListener("visibilitychange", onVisibility)
+    }
   }, [resolvedConnectionId])
 
   // Handle real-time indication updates via SSE
@@ -107,10 +127,10 @@ export default function IndicationsPage() {
         const updated = [...prev]
         updated[existingIndex] = {
           ...updated[existingIndex],
-          direction: update.direction || updated[existingIndex].direction,
-          confidence: update.confidence || updated[existingIndex].confidence,
-          strength: update.strength || updated[existingIndex].strength,
-          timestamp: update.timestamp || new Date().toISOString(),
+          direction: update.direction ?? updated[existingIndex].direction,
+          confidence: update.confidence ?? updated[existingIndex].confidence,
+          strength: update.strength ?? updated[existingIndex].strength,
+          timestamp: update.timestamp ?? new Date().toISOString(),
         }
         return updated
       } else {
@@ -119,7 +139,7 @@ export default function IndicationsPage() {
           const newIndication: Indication = {
             id: update.id,
             symbol: update.symbol,
-            indicationType: 'auto',
+            indicationType: String(update.indicationType || update.type || "Auto"),
             direction: update.direction || 'NEUTRAL',
             confidence: update.confidence || 0,
             strength: update.strength || 0,
@@ -196,6 +216,41 @@ export default function IndicationsPage() {
 
     return { total, enabled, upSignals, highConfidence, avgConfidence }
   }, [indications])
+  const availableSymbols = useMemo(
+    () => [...new Set(indications.map((indication) => indication.symbol))].sort(),
+    [indications],
+  )
+  const availableTypes = useMemo(
+    () => [...new Set(indications.map((indication) => indication.indicationType))].sort(),
+    [indications],
+  )
+  const exportIndications = useCallback(() => {
+    if (filteredAndSortedIndications.length === 0) {
+      toast.error("No measured indications to export")
+      return
+    }
+    const escape = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`
+    const rows = filteredAndSortedIndications.map((indication) => [
+      indication.id,
+      indication.symbol,
+      indication.indicationType,
+      indication.direction,
+      indication.confidence,
+      indication.strength,
+      indication.timestamp,
+    ].map(escape).join(","))
+    const csv = [
+      "id,symbol,type,direction,confidence,strength,timestamp",
+      ...rows,
+    ].join("\n")
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }))
+    const anchor = document.createElement("a")
+    anchor.href = url
+    anchor.download = `indications-${resolvedConnectionId || "unselected"}-${new Date().toISOString()}.csv`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    toast.success(`Exported ${rows.length} measured indications`)
+  }, [filteredAndSortedIndications, resolvedConnectionId])
 
   if (isLoading) {
     return (
@@ -223,7 +278,7 @@ export default function IndicationsPage() {
             <RefreshCw className="h-3 w-3 mr-1" />
             Refresh
           </Button>
-          <Button variant="outline" size="sm" className="h-8 text-xs">
+          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={exportIndications}>
             <Download className="h-3 w-3 mr-1" />
             Export
           </Button>
@@ -256,7 +311,12 @@ export default function IndicationsPage() {
       {/* Main content - filters sidebar + results */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
         <div className="lg:col-span-1">
-          <IndicationFiltersAdvanced filters={filters} onFiltersChange={setFilters} />
+          <IndicationFiltersAdvanced
+            filters={filters}
+            onFiltersChange={setFilters}
+            availableSymbols={availableSymbols}
+            availableTypes={availableTypes}
+          />
         </div>
 
         <div className="lg:col-span-4 space-y-3">
@@ -281,12 +341,6 @@ export default function IndicationsPage() {
                 <IndicationRowCompact
                   key={indication.id}
                   indication={indication}
-                  onToggle={(id, enabled) => {
-                    setIndications((prev) =>
-                      prev.map((ind) => (ind.id === id ? { ...ind, enabled } : ind))
-                    )
-                    toast.success(`Indication ${enabled ? "enabled" : "disabled"}`)
-                  }}
                   index={index}
                 />
               ))
