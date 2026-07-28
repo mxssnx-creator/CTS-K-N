@@ -8,13 +8,15 @@ export const dynamic = "force-dynamic"
 
 export default function RealtimePage() {
   const { selectedConnectionId } = useExchange()
-  const connectionId = selectedConnectionId || "default-connection"
+  const connectionId = selectedConnectionId || ""
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold">Real-time Monitoring</h1>
-        <p className="text-muted-foreground">Live market data and position tracking</p>
+        <p className="text-muted-foreground">
+          Measured exchange/engine market data and position tracking
+        </p>
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">

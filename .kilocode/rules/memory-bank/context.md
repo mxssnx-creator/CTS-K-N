@@ -680,6 +680,11 @@ credentials are present.
   fabricated capacities, placeholder health or a global 500-position ceiling.
   Connection state tabs consume those measured endpoints, and logistics reports
   the actual maximum latency rather than a fabricated average-plus-offset.
+- [x] Realtime market-data, positions and monitoring-health surfaces now expose
+  only exchange/engine snapshots and measured processor/resource telemetry.
+  Missing, stale and synthetic data is explicitly labelled; random prices,
+  static base prices and fabricated health values are not represented as live
+  state. Open live-position indexes are read exhaustively in bounded batches.
 - [x] Preserved one physical Direction parent for source-scoped Signal Block
   adjustments while allowing ordinary Block-only lanes to seed and recover
   their own parent. Explicit Consensus and direct-source outcomes now update

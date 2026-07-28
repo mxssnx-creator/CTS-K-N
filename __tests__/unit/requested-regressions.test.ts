@@ -2357,6 +2357,38 @@ describe("requested regression guardrails", () => {
     expect(migrations).toContain('connection_library: "sdk"')
   })
 
+  test("realtime and monitoring surfaces never present random telemetry as live", () => {
+    const marketMonitor = read("components/realtime/market-data-monitor.tsx")
+    const marketRoute = read("app/api/market-data/route.ts")
+    const healthRoute = read("app/api/monitoring/health/route.ts")
+    const positionMonitor = read("components/realtime/position-monitor.tsx")
+    const positionRoute = read("app/api/data/positions/route.ts")
+    const connectionState = read("components/dashboard/connection-state-tabs.tsx")
+    const logistics = read("lib/logistics-workflow.ts")
+
+    for (const source of [marketMonitor, marketRoute, healthRoute, connectionState, logistics]) {
+      expect(source).not.toContain("Math.random()")
+    }
+
+    expect(marketMonitor).toContain("Paper/synthetic engine snapshots (never presented as live)")
+    expect(marketMonitor).toContain('setStatus("simulated")')
+    expect(marketRoute).toContain("Synthetic engine data is explicitly labelled")
+    expect(marketRoute).toContain("no configured symbol is sliced or dropped")
+    expect(marketRoute).toContain("MARKET_READ_CONCURRENCY = 8")
+    expect(marketRoute).not.toContain("getBasePrice")
+    expect(healthRoute).toContain("getSystemResourceMetrics")
+    expect(healthRoute).toContain("getDashboardWorkflowSnapshot")
+    expect(healthRoute).not.toContain("System Operational")
+    expect(positionMonitor).toContain("/api/data/positions?connectionId=")
+    expect(positionMonitor).toContain("payload.data")
+    expect(positionMonitor).not.toContain("/api/positions/${connectionId}")
+    expect(positionRoute).toContain("lrange(`live:positions:${connectionId}`, 0, -1)")
+    expect(positionRoute).not.toContain("lrange(`live:positions:${connectionId}`, 0, 500)")
+    expect(connectionState).toContain("/api/structure/metrics?connectionId=")
+    expect(logistics).toContain("Math.max(...latencySamples)")
+    expect(logistics).not.toContain("avgLatency + 120")
+  })
+
   test("queued refresh requests stay durable when drained by a non-owner process", () => {
     const source = read("lib/trade-engine.ts")
 
