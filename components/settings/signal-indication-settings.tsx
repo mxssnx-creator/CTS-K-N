@@ -66,6 +66,9 @@ interface SignalSettings {
   candleLimit: number
   maxSourcesPerCycle: number
   maxPositionsTotal: number
+  sourceBasePositionsLimit: number
+  symbolsPerSourceLimit: number
+  sourceSymbolOrder: "volatility_12h"
   positionSelectionMode: "best_first"
   requestIntervalSeconds: number
   requestTimeoutMs: number
@@ -297,7 +300,9 @@ export function SignalIndicationSettings() {
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {([
-              ["maxPositionsTotal", "Max open positions (Long + Short)", 1, 120, 1],
+              ["maxPositionsTotal", "Signal Sources base positions limit (overall)", 1, 350, 1],
+              ["sourceBasePositionsLimit", "Source base positions limit (overall)", 1, 350, 1],
+              ["symbolsPerSourceLimit", "Symbols per source", 1, 100, 1],
               ["candleLimit", "Candles per source", 20, 250, 1],
               ["requestIntervalSeconds", "Request interval (seconds)", 30, 3600, 30],
               ["concurrency", "HTTP concurrency", 1, 10, 1],
@@ -334,7 +339,7 @@ export function SignalIndicationSettings() {
             <div>
               <div className="font-medium">Source coverage is independent</div>
               <p className="mt-0.5 text-muted-foreground">
-                The 35-source registry counts different public websites only. It never limits symbols or positions.
+                The 35-source registry counts different public websites only. Each source uses the configured symbols-per-source cap, ordered by 12h volatility, while Signal Config/Sets orders remain unlimited.
               </p>
             </div>
             <div>
@@ -343,8 +348,8 @@ export function SignalIndicationSettings() {
                 <Badge variant="outline" className="text-[10px]">Best quality first</Badge>
               </div>
               <p className="mt-0.5 text-muted-foreground">
-                Up to {settings.maxPositionsTotal} active physical Signal positions across Long and Short.
-                Consensus quality, confidence, agreement, strength, and reward/risk determine processing order.
+                Up to {settings.maxPositionsTotal} active physical Signal source-base positions across Long and Short; Signal Configs/Sets orders are not capped by this setting.
+                Most volatile 12h symbols are processed first, then lower SL/drawdown (when available), consensus quality, confidence, agreement, strength, and reward/risk determine admission order.
               </p>
             </div>
           </div>

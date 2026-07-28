@@ -39,7 +39,7 @@ export default function InstallManager() {
   const [installing, setInstalling] = useState(false)
   const [installLog, setInstallLog] = useState<string[]>([])
   const [activeTab, setActiveTab] = useState("status")
-  const [remoteForm, setRemoteForm] = useState({ adminSecret: "", host: "", port: "22", username: "root", password: "", sshKey: "", repoUrl: "https://github.com/mxssnx-creator/CTS-K-N.git", branch: "main", runtime: "auto", projectName: "cts-kn", installDir: "/opt/cts-kn", appPort: "3002", serviceUser: "cts-kn", redisUrl: "", reinstall: false })
+  const [remoteForm, setRemoteForm] = useState({ adminSecret: "", host: "", port: "22", username: "root", password: "", sshKey: "", repoUrl: "https://github.com/mxssnx-creator/CTS-K-N.git", branch: "main", runtime: "auto", projectName: "cts-kn", installDir: "/opt/cts-kn", appPort: "3002", serviceUser: "cts-kn", redisUrl: "", reinstall: false, skipTests: false })
   const [remoteInstalling, setRemoteInstalling] = useState(false)
   const [remoteMode, setRemoteMode] = useState<"preflight" | "install" | null>(null)
   const [remotePreflightPassed, setRemotePreflightPassed] = useState(false)
@@ -749,6 +749,10 @@ export default function InstallManager() {
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={remoteForm.reinstall} onChange={(e) => updateRemoteForm("reinstall", e.target.checked)} />
                 Reinstall operating-system apps, runtimes, global tools, and dependencies
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={remoteForm.skipTests} onChange={(e) => updateRemoteForm("skipTests", e.target.checked)} />
+                Skip Jest tests during install (typecheck, lint, and build still run)
               </label>
 
               <div className="grid gap-2 md:grid-cols-2">
