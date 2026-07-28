@@ -5,6 +5,11 @@
   "sourceRevisionTimestamp": "2026-07-28T15:40:08+02:00",
   "workingTreeChangesIncluded": true,
   "workingTreeStatusEntryCount": 9,
+  "sourceRevisionBeforeHandoffCommit": "fb2afb606789e33849bb7907ba9fd8b06aafd3af",
+  "sourceTreeBeforeHandoffCommit": "1a7e9b54fb1ae11dbc78a61666219bc657ee01b8",
+  "sourceRevisionTimestamp": "2026-07-28T15:47:05+02:00",
+  "workingTreeChangesIncluded": true,
+  "workingTreeStatusEntryCount": 6,
   "nodeRequirement": ">=20.16",
   "packageManager": "pnpm@10.28.1",
   "framework": {
@@ -18,6 +23,7 @@
     "apiMethods": 370,
     "uiPages": 46,
     "environmentVariables": 238,
+    "environmentVariables": 239,
     "redisMigrations": 89,
     "testsAndVerifiers": 145
   },

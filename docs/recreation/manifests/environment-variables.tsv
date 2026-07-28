@@ -62,7 +62,7 @@ DEPLOY_VERIFY_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-deployment
 DEPLOYMENT_CRON_MODE	application-runtime	no	no	2	__tests__/unit/progression-scope.test.ts,lib/progression-scope.ts
 DEPLOYMENT_URL	application-runtime	no	yes	8	.env.example,lib/deployment-runtime.ts,lib/production-readiness.ts,lib/startup-validation.ts,scripts/kilo-deploy-preflight.mjs,scripts/kilo-deploy.mjs,scripts/production-deploy-init.mjs,scripts/verify-deployment-contract.mjs
 DEV_ENGINE_SYMBOL_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
-DEV_NODE_HEAP_MB	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
+DEV_NODE_HEAP_MB	test-or-operator-tool	no	no	2	__tests__/unit/requested-regressions.test.ts,scripts/run-dev-preview-check.mjs
 DEV_PREHISTORIC_SYMBOL_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
 DEV_SOAK_DURATION_MS	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
 DEV_SOAK_SYMBOL_COUNT	test-or-operator-tool	no	no	1	scripts/run-dev-preview-check.mjs
@@ -236,4 +236,5 @@ VERIFY_CONNECTION_TOGGLE	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.
 VERIFY_SIGNAL_ENGINE	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 VOLATILE_STATE_OWNER_FRESH_MS	application-runtime	no	no	1	lib/redis-db.ts
 VOLATILE_STATE_STALE_MS	application-runtime	no	no	1	lib/redis-db.ts
+WATCHPACK_POLLING	test-or-operator-tool	no	no	2	__tests__/unit/requested-regressions.test.ts,scripts/run-dev-preview-check.mjs
 WORKERS_CI	application-runtime	no	no	1	lib/deployment-runtime.ts

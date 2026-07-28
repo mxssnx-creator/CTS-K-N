@@ -28,7 +28,7 @@ const devSoakSymbolCount = maxSymbolsRequested
 // same larger heap class as scripts/dev-debug.js without changing production.
 const devNodeHeapMb = Math.max(
   4096,
-  Math.min(12288, Number(process.env.DEV_NODE_HEAP_MB || 4096)),
+  Math.min(12288, Number(process.env.DEV_NODE_HEAP_MB || 12288)),
 )
 let outputTail = ""
 
@@ -259,6 +259,10 @@ async function main() {
       ORANGEX_API_KEY: "",
       ORANGEX_API_SECRET: "",
       V0_REDIS_SNAPSHOT_PATH: snapshotPath,
+      // Constrained CI/dev hosts commonly expose fewer inotify watches than
+      // exhaustive engine datasets create files/modules. Polling keeps the
+      // long debug soak deterministic without changing application behavior.
+      WATCHPACK_POLLING: process.env.WATCHPACK_POLLING || "true",
       NODE_OPTIONS: `--max-old-space-size=${devNodeHeapMb} --max-semi-space-size=192 --expose-gc`,
       PORT: String(port),
     },
