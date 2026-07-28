@@ -184,8 +184,10 @@ export async function GET() {
     
     let totalIndicationCycles = 0
     let totalStrategyCycles = 0
+    let totalRealtimeCycles = 0
     let indicationsRunning = false
     let strategiesRunning = false
+    let realtimeRunning = false
     let redisActiveEngineCount = 0
     
     // PRIMARY: read live progression hashes through connection indexes. Cycle
@@ -217,27 +219,29 @@ export async function GET() {
           if (hasCycleSource) {
             const realtimeCycles = Math.max(
               maxField(progressionHashes, "realtime_cycle_count"),
+              maxField(progressionHashes, "live_positions_cycle_count"),
               maxField(engineStateHashes, "realtime_cycle_count"),
+              maxField(engineStateHashes, "live_positions_cycle_count"),
               Number((realtimeState as any)?.cycle_count) || 0,
             )
             const indCycles = Math.max(
               maxField(progressionHashes, "indication_cycle_count"),
               maxField(progressionHashes, "indication_live_cycle_count"),
               maxField(engineStateHashes, "indication_cycle_count"),
-              realtimeCycles,
             )
             const stratCycles = Math.max(
               maxField(progressionHashes, "strategy_cycle_count"),
               maxField(progressionHashes, "strategy_live_cycle_count"),
               maxField(engineStateHashes, "strategy_cycle_count"),
-              realtimeCycles,
             )
             const stateRunning = engineStateHashes.some((state) => state?.status === "running")
-            if (indCycles > 0 || stratCycles > 0 || stateRunning) {
+            if (indCycles > 0 || stratCycles > 0 || realtimeCycles > 0 || stateRunning) {
               totalIndicationCycles += indCycles
               totalStrategyCycles   += stratCycles
+              totalRealtimeCycles   += realtimeCycles
               indicationsRunning     = indCycles > 0 || stateRunning
               strategiesRunning      = stratCycles > 0 || stateRunning
+              realtimeRunning        = realtimeCycles > 0 || stateRunning
               redisActiveEngineCount++
             }
           }
@@ -258,9 +262,14 @@ export async function GET() {
               const state = JSON.parse(stateStr)
               totalIndicationCycles += Number(state.indication_cycle_count) || 0
               totalStrategyCycles   += Number(state.strategy_cycle_count)   || 0
+              totalRealtimeCycles   += Math.max(
+                Number(state.realtime_cycle_count) || 0,
+                Number(state.live_positions_cycle_count) || 0,
+              )
               if (state.status === "running") {
                 indicationsRunning     = true
                 strategiesRunning      = true
+                realtimeRunning        = true
                 redisActiveEngineCount++
               }
             }
@@ -277,7 +286,7 @@ export async function GET() {
       }
     } catch {}
     
-    const engineRunning = redisEngineRunning || indicationsRunning || strategiesRunning || coordinatorEngineCount > 0
+    const engineRunning = redisEngineRunning || indicationsRunning || strategiesRunning || realtimeRunning || coordinatorEngineCount > 0
     const activeEngineCount = Math.max(coordinatorEngineCount, redisActiveEngineCount)
     const indicationsEngineRunning = indicationsRunning || (engineRunning && activeEngineCount > 0)
     const strategiesEngineRunning = strategiesRunning || (engineRunning && activeEngineCount > 0)
@@ -329,6 +338,11 @@ export async function GET() {
           cycleCount: totalStrategyCycles,
           resultsCount: strategyKeys,
         },
+        realtime: {
+          running: realtimeRunning || (engineRunning && activeEngineCount > 0),
+          cycleCount: totalRealtimeCycles,
+          resultsCount: positionKeys,
+        },
       },
       timestamp: new Date().toISOString(),
     })
@@ -350,6 +364,7 @@ export async function GET() {
         engines: {
           indications: { running: false, cycleCount: 0, resultsCount: 0 },
           strategies: { running: false, cycleCount: 0, resultsCount: 0 },
+          realtime: { running: false, cycleCount: 0, resultsCount: 0 },
         },
         error: "Failed to fetch metrics", 
         details: error instanceof Error ? error.message : "Unknown" 
