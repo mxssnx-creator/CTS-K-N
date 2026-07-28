@@ -8,7 +8,7 @@
 
 import { IndicationConfigManager, IndicationResult, IndicationConfig } from "@/lib/indication-config-manager"
 import { StrategyConfigManager, PseudoPosition, StrategyConfig } from "@/lib/strategy-config-manager"
-import { getRedisClient, initRedis, getSettings, setSettings } from "@/lib/redis-db"
+import { getRedisClient, initRedis, getSettings, setSettings, getAppSettings } from "@/lib/redis-db"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSelection, ownsCanonicalSymbolSelectionEpoch } from "@/lib/trade-engine/symbol-selection-ownership"
@@ -16,7 +16,6 @@ import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { buildProgressionScope } from "@/lib/progression-scope"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
-import { resolvePrehistoricConfigLimit, selectBalancedConfigs } from "./balanced-config-selection"
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
@@ -297,20 +296,16 @@ export class ConfigSetProcessor {
       this.strategyManager.getEnabledConfigs(),
     ])
     await assertCurrentSelection()
-    const indicationConfigs = selectBalancedConfigs(
-      allIndicationConfigs,
-      resolvePrehistoricConfigLimit("indication", allIndicationConfigs.length),
-    )
-    const strategyConfigs = selectBalancedConfigs(
-      allStrategyConfigs,
-      resolvePrehistoricConfigLimit("strategy", allStrategyConfigs.length),
-    )
+    // Bootstrap/replay processes every enabled configuration. Concurrency is
+    // bounded below, but selection is never truncated by a top-K core.
+    const indicationConfigs = allIndicationConfigs
+    const strategyConfigs = allStrategyConfigs
     const tConfigsMs = Date.now() - tConfigsStart
 
     console.log(
-      `[v0] [ConfigSetProcessor] selected balanced bootstrap core: ` +
-      `${indicationConfigs.length}/${allIndicationConfigs.length} indication configs, ` +
-      `${strategyConfigs.length}/${allStrategyConfigs.length} strategy configs (in ${tConfigsMs}ms)`
+      `[v0] [ConfigSetProcessor] loaded exhaustive bootstrap grids: ` +
+      `${indicationConfigs.length} indication configs, ` +
+      `${strategyConfigs.length} strategy configs (in ${tConfigsMs}ms)`
     )
 
     // Store range/concurrency metadata for dashboard. One write is enough;
@@ -1174,7 +1169,7 @@ export class ConfigSetProcessor {
 
     // ── Systemwide fix: prehistoric must populate pos_history ───────────
     // The Main/Real min-pos gates (mainEvalPosCount / realEvalPosCount,
-    // default 15/10) read `baseSet.prevPos.count` (sourced from the
+    // default 25/20) read `baseSet.prevPos.count` (sourced from the
     // pos_history:* hashes) to decide whether a Base Set has enough
     // historic context to be promoted. If this is empty when realtime
     // starts, the gates skip every Set and Main/Real stay 0 forever —
@@ -1192,6 +1187,14 @@ export class ConfigSetProcessor {
     //   prehistoric has finished, fix systemwide."
     const { recordPosClosed } = await import("@/lib/pos-history")
     const piClient = getRedisClient()
+    const appSettings = (await getAppSettings().catch(() => null)) || {}
+    const configuredPositionCostPct = Number(
+      appSettings.exchangePositionCost ?? appSettings.positionCost ?? 0.1,
+    )
+    const positionCostPct =
+      Number.isFinite(configuredPositionCostPct) && configuredPositionCostPct > 0
+        ? configuredPositionCostPct
+        : 0.1
 
     const configTypeGroups = groupConfigsByType(configs)
     const activeTypeConcurrency = Math.max(1, Math.min(typeConcurrency, configTypeGroups.length))
@@ -1272,6 +1275,8 @@ export class ConfigSetProcessor {
                       indicationType,
                       direction,
                       pnl: resultPct,
+                      pnlPct: resultPct,
+                      positionCostPct,
                       drawdownMinutes,
                       // Prehistoric backtest positions don't track quantity,
                       // so position cost is not available. Live positions in

@@ -509,8 +509,8 @@ export class StrategyProcessor {
     try {
       await initRedis()
 
-      // PRIMARY KEY: Main indication storage key where all indications are saved per connection
-      // This is where IndicationProcessor now saves ALL 4 indication types for all symbols
+      // PRIMARY KEY: canonical Main indication storage for every enabled
+      // Default, Additional, Common and Signal family.
       const allIndications = await getIndications(this.connectionId, symbol)
 
       if (allIndications && Array.isArray(allIndications) && allIndications.length > 0) {
@@ -529,32 +529,11 @@ export class StrategyProcessor {
         `[v0] [StrategyProcessor] No indications found for ${symbol}/${this.connectionId}; generating inline`,
       )
 
-      // INLINE INDICATION GENERATION v4 — generates both long + short for each type
-      // so the Base stage produces 8 sets (4 types × 2 directions).
-      // PF values are set above the REAL-stage threshold (1.4) so the full pipeline
-      // can produce qualifying sets and create pseudo positions.
-      const now = Date.now()
-      // Symbol-derived seed for variation so every symbol gets slightly different PF.
-      const seed = symbol.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)
-      const variation = ((seed % 31) / 100) // 0.00 – 0.30
-      const inlineIndications = [
-        // Long variants
-        { type: "direction", symbol, value: 1, profitFactor: 1.55 + variation, confidence: 0.72, timestamp: now, metadata: { direction: "long" } },
-        { type: "move",      symbol, value: 1, profitFactor: 1.50 + variation, confidence: 0.68, timestamp: now, metadata: { direction: "long" } },
-        { type: "active",    symbol, value: 1, profitFactor: 1.45 + variation, confidence: 0.70, timestamp: now, metadata: { direction: "long" } },
-        { type: "optimal",   symbol, value: 1, profitFactor: 1.60 + variation, confidence: 0.75, timestamp: now, metadata: { direction: "long" } },
-        // Short variants
-        { type: "direction", symbol, value: -1, profitFactor: 1.48 + variation, confidence: 0.69, timestamp: now, metadata: { direction: "short" } },
-        { type: "move",      symbol, value: -1, profitFactor: 1.44 + variation, confidence: 0.65, timestamp: now, metadata: { direction: "short" } },
-        { type: "active",    symbol, value: -1, profitFactor: 1.42 + variation, confidence: 0.67, timestamp: now, metadata: { direction: "short" } },
-        { type: "optimal",   symbol, value: -1, profitFactor: 1.52 + variation, confidence: 0.71, timestamp: now, metadata: { direction: "short" } },
-      ]
-      logRuntimeInfo(
-        `strategy:${this.connectionId}:${symbol}:inline-generated`,
-        30_000,
-        `[v0] [StrategyProcessor] INLINE_V4 generated ${inlineIndications.length} indications for ${symbol} (PF ${(1.42 + variation).toFixed(2)}-${(1.60 + variation).toFixed(2)})`,
-      )
-      return inlineIndications
+      // Never fabricate a reduced four-type fallback. A missing current
+      // indication snapshot means this strategy cycle waits for the real
+      // exhaustive processor; invented rows would bypass exact configuration
+      // identity, cooldowns, source performance and PF/DDT evidence.
+      return []
     } catch (error) {
       console.error(`[v0] [StrategyProcessor] Error retrieving indications for ${symbol}:`, error)
       return []

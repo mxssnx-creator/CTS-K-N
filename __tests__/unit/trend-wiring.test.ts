@@ -28,14 +28,15 @@ describe("Trend indication project wiring", () => {
   test("keeps each Trend window independent through Strategy and applies adaptive TP", () => {
     const strategy = source("lib/strategy-coordinator.ts")
 
-    expect(strategy).toContain("trendConfigSuffix")
-    expect(strategy).toContain("configuredDrawdownFactor")
-    expect(strategy).toContain("configuredLastSituationRatio")
-    expect(strategy).toContain("configuredActiveSituationRatio")
+    // The complete persisted indication configuration is the Strategy identity;
+    // this is stronger than reassembling a parallel Trend-only suffix.
+    expect(strategy).toContain("configurationIdentity")
+    expect(strategy).toContain('encodeURIComponent(configurationIdentity || "default")')
+    expect(strategy).toContain("ind.config?.tpFactors")
     expect(strategy).toContain("adaptiveTpFactors")
     expect(strategy).toContain("const adaptiveTrendTp")
     expect(strategy).toContain("adaptiveTrendTp ??")
-    expect(strategy).toContain("set.axisWindows && parentEntries.length > 0")
+    expect(strategy).toContain('group.indicationType === "trend" && adaptiveTpFactors.length > 0')
     const stateManager = source("lib/indication-state-manager.ts")
     expect(stateManager).toContain('type === "active_advanced"')
     expect(stateManager).toContain("positions_advanced:${this.connectionId}:${symbol}")
@@ -73,7 +74,7 @@ describe("Trend indication project wiring", () => {
     expect(migrations).toContain('"settings:all_settings"')
     expect(stats).toContain('"auto", "signal", "trend"] as const')
     expect(stats).toContain('trend:          indCounts.trend')
-    expect(base).toContain('"active_advanced" | "signal" | "trend"')
+    expect(base).toMatch(/"active_advanced"\s*\|\s*"signal"\s*\|\s*"trend"/)
     expect(base).toContain("active_situation_ratio")
     expect(base).toContain("getOrCreateEligibleBasePositions")
     expect(base).toContain("BASE_POSITION_MUTATION_QUEUES")

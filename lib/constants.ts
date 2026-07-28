@@ -1,3 +1,13 @@
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+} from "./main-trade-profit-factor"
+import {
+  POS_COUNT_VOLUME_RATIO_DEFAULT,
+  POS_COUNT_VOLUME_RATIO_MAX,
+  POS_COUNT_VOLUME_RATIO_MIN,
+} from "./pos-count-volume-ratio"
+
 // Volume factor for live exchange positions (scaling multiplier)
 export const MIN_VOLUME_FACTOR = 1
 export const MAX_VOLUME_FACTOR = 10
@@ -66,38 +76,41 @@ export function normalizeVolumeStepRatio(
 // - Ratio < 1.0: Reserved for explicit Position-Count/DCA variants only;
 //   shared Base/channel factors normalize to identity 1.0
 // Pos-count axis Set volume ratio (independent from Base volume)
-export const DEFAULT_POS_COUNT_VOLUME_RATIO = 0.05
-export const MIN_POS_COUNT_VOLUME_RATIO = 0.01
-export const MAX_POS_COUNT_VOLUME_RATIO = 0.25
+export const DEFAULT_POS_COUNT_VOLUME_RATIO = POS_COUNT_VOLUME_RATIO_DEFAULT
+export const MIN_POS_COUNT_VOLUME_RATIO = POS_COUNT_VOLUME_RATIO_MIN
+export const MAX_POS_COUNT_VOLUME_RATIO = POS_COUNT_VOLUME_RATIO_MAX
 
 // ────────────────────────────────────────────────────────────────────────────
 // STRATEGY STAGE CONFIGURATION (Base, Main, Real)
 // ────────────────────────────────────────────────────────────────────────────
 
-// Global Stage Parameters (Applied to All Stages)
-export const MIN_PROFIT_FACTOR = 2.2         // Min PF requirement (stage 2.2)
-export const MAX_DRAWDOWN_TIME_MINUTES = 40  // Max drawdown time: 40 minutes
+// Legacy named exports now mirror the canonical Main-Trade settings instead
+// of exposing a second, obsolete PF/cap contract. PF is the PositionCost-
+// relative stage ratio, not classic gross-profit / gross-loss.
+export const MIN_PROFIT_FACTOR = MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT
+export const MAX_DRAWDOWN_TIME_MINUTES = 240
 export const MAX_DRAWDOWN_TIME_MS = MAX_DRAWDOWN_TIME_MINUTES * 60 * 1000
 
-// Stage 1 (Entry) - Base Position Generation
-export const STAGE_1_MAX_LONG_POSITIONS = 12    // Max long positions
-export const STAGE_1_MAX_SHORT_POSITIONS = 12   // Max short positions
-export const STAGE_1_MAX_TOTAL_POSITIONS = 24   // Total concurrent (12L + 12S)
+// A zero stage cap is the canonical persisted representation of Unlimited.
+// Base and Main enumerate the complete configured Cartesian space; their only
+// admission bound is one open Base pseudo-position per exact
+// symbol × type/name × config × direction lane.
+export const STAGE_1_MAX_LONG_POSITIONS = 0
+export const STAGE_1_MAX_SHORT_POSITIONS = 0
+export const STAGE_1_MAX_TOTAL_POSITIONS = 0
 
-// Stage 2 (Main) - Primary Profit Stage
-export const STAGE_2_MAX_LONG_POSITIONS = 25    // Primary profit-taking stage
-export const STAGE_2_MAX_SHORT_POSITIONS = 25   // Near-full symbol coverage
-export const STAGE_2_MAX_TOTAL_POSITIONS = 50   // Total concurrent (25L + 25S)
+export const STAGE_2_MAX_LONG_POSITIONS = 0
+export const STAGE_2_MAX_SHORT_POSITIONS = 0
+export const STAGE_2_MAX_TOTAL_POSITIONS = 0
 
-// Stage 2.2 (Quality Filter) - Min PF >= 2.2
-export const STAGE_2_2_MAX_LONG_POSITIONS = 20  // Quality filter (PF >= 2.2)
-export const STAGE_2_2_MAX_SHORT_POSITIONS = 20 // Conservative positions only
-export const STAGE_2_2_MAX_TOTAL_POSITIONS = 40 // Total concurrent (20L + 20S)
+// Real and Live retain independent, operator-visible output safety ceilings.
+export const STAGE_2_2_MAX_LONG_POSITIONS = 5_000
+export const STAGE_2_2_MAX_SHORT_POSITIONS = 5_000
+export const STAGE_2_2_MAX_TOTAL_POSITIONS = 5_000
 
-// Stage 3 (Exit) - Full Exit Capacity
-export const STAGE_3_MAX_LONG_POSITIONS = 30    // Full exit capacity for all symbols
-export const STAGE_3_MAX_SHORT_POSITIONS = 30   // All 30 symbols + buffer
-export const STAGE_3_MAX_TOTAL_POSITIONS = 60   // Total concurrent (30L + 30S)
+export const STAGE_3_MAX_LONG_POSITIONS = 500
+export const STAGE_3_MAX_SHORT_POSITIONS = 500
+export const STAGE_3_MAX_TOTAL_POSITIONS = 500
 
 // Risk Management Parameters (Applied to All Stages)
 export const MAX_PORTFOLIO_DRAWDOWN_PCT = 25    // Max 25% portfolio drawdown (increased from 15%)
@@ -105,11 +118,11 @@ export const DAILY_LOSS_LIMIT_PCT = 20          // Max 20% daily loss (increased
 export const MIN_WIN_RATE_PCT = 40              // Min 40% win rate for entry (decreased from 50%)
 export const MIN_SHARPE_RATIO = 1.0             // Min Sharpe ratio for main stage
 
-// Stage-Specific Profit Factor Requirements (All Stages: Min 2.2)
-export const STAGE_BASE_MIN_PF = 2.2            // Base stage: Min PF 2.2
-export const STAGE_MAIN_MIN_PF = 2.2            // Main stage: Min PF 2.2
-export const STAGE_REAL_MIN_PF = 2.2            // Real stage: Min PF 2.2
-export const STAGE_LIVE_MIN_PF = 2.2            // Live stage: Min PF 2.2
+// Main-Trade PositionCost-relative stage ratios. These are not realised PF.
+export const STAGE_BASE_MIN_PF = MAIN_TRADE_BASE_PF_RATIO_DEFAULT
+export const STAGE_MAIN_MIN_PF = MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT
+export const STAGE_REAL_MIN_PF = MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT
+export const STAGE_LIVE_MIN_PF = MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT
 
 // Stage Configuration Object (Convenient Reference)
 export const STAGE_CONFIG = {
@@ -130,12 +143,12 @@ export const STAGE_CONFIG = {
     purpose: "Primary profit-taking stage, near-full coverage",
   },
   stage2_2_real: {
-    name: "Real (Min PF 2.2)",
+    name: "Real",
     maxLong: STAGE_2_2_MAX_LONG_POSITIONS,
     maxShort: STAGE_2_2_MAX_SHORT_POSITIONS,
     total: STAGE_2_2_MAX_TOTAL_POSITIONS,
     minProfitFactor: STAGE_REAL_MIN_PF,
-    purpose: "Real positions with PF >= 2.2",
+    purpose: "Real rows that pass the configured cost-relative result and DDT gates",
   },
   stage3_live: {
     name: "Live (Exchange Orders)",

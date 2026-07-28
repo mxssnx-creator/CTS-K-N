@@ -74,6 +74,7 @@ function getTrackedSourceState() {
 
   const conflicts = []
   const hash = createHash("sha256")
+  const files = new Map()
   for (const file of listed.stdout.split("\0").filter(Boolean).sort()) {
     // Next intentionally normalizes these two files for custom dist dirs.
     if (file === "next-env.d.ts" || file === "tsconfig.json" || !existsSync(file)) continue
@@ -83,9 +84,17 @@ function getTrackedSourceState() {
       ? Buffer.from(readlinkSync(file))
       : readFileSync(file)
     hash.update(file).update("\0").update(contents).update("\0")
+    files.set(file, createHash("sha256").update(contents).digest("hex"))
     if (/^(?:<<<<<<<|=======|>>>>>>>)(?: .*)?$/m.test(contents.toString("utf8"))) conflicts.push(file)
   }
-  return { fingerprint: hash.digest("hex"), conflicts }
+  return { fingerprint: hash.digest("hex"), conflicts, files }
+}
+
+function trackedSourceDrift(before, after) {
+  const names = new Set([...before.files.keys(), ...after.files.keys()])
+  return [...names]
+    .filter((file) => before.files.get(file) !== after.files.get(file))
+    .sort()
 }
 
 function isRecoverableNextFilesystemRace(output) {
@@ -211,7 +220,9 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
 
   const sourceAfter = getTrackedSourceState()
   if (sourceBefore.fingerprint !== sourceAfter.fingerprint || sourceAfter.conflicts.length > 0) {
-    console.error("[next-trace-build] tracked source changed while Next was compiling; refusing a mixed-revision artifact")
+    const drift = trackedSourceDrift(sourceBefore, sourceAfter)
+    const detail = drift.length > 0 ? `: ${drift.slice(0, 20).join(", ")}` : ""
+    console.error(`[next-trace-build] tracked source changed while Next was compiling; refusing a mixed-revision artifact${detail}`)
     process.exit(1)
   }
 

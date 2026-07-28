@@ -19,6 +19,8 @@ const ACTIVE_FIELDS = [
   "is_live_trade",
   "live_trade_requested",
   "is_preset_trade",
+  "is_signal_trade",
+  "signal_trade_requested",
   "state_switch_version",
 ]
 
@@ -74,6 +76,9 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
           is_live_trade: "0",
           live_trade_requested: "0",
           is_preset_trade: "0",
+          is_signal_trade: "0",
+          signal_trade_enabled: "0",
+          signal_trade_requested: "0",
           state_switch_version: stateSwitchVersion,
           updated_at: updatedAt,
         }
@@ -151,6 +156,9 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
           is_live_trade: "0",
           live_trade_requested: "0",
           is_preset_trade: "0",
+          is_signal_trade: "0",
+          signal_trade_enabled: "0",
+          signal_trade_requested: "0",
           state_switch_version: stateSwitchVersion,
           updated_at: updatedAt,
         },
@@ -164,6 +172,9 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
           is_live_trade: "0",
           live_trade_requested: "0",
           is_preset_trade: "0",
+          is_signal_trade: "0",
+          signal_trade_enabled: "0",
+          signal_trade_requested: "0",
           state_switch_version: stateSwitchVersion,
           updated_at: updatedAt,
         }),

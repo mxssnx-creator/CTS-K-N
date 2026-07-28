@@ -16,7 +16,7 @@ function resetRedisGlobals(): void {
   ]) delete (globalThis as any)[key]
 }
 
-describe("migrations 080/081/082/083/084 exact Set indexes and sizing defaults", () => {
+describe("migrations 080–088 exact Set indexes and current engine defaults", () => {
   const originalEnv = { ...process.env }
 
   afterEach(() => {
@@ -57,6 +57,23 @@ describe("migrations 080/081/082/083/084 exact Set indexes and sizing defaults",
         signal_volume_factor: "0.2",
         volume_factor: "7",
         baseVolumeFactor: "9",
+        indicationSampleRanges: JSON.stringify([2, 5, 10, 20, 30]),
+        optimalSampleRanges: JSON.stringify([2, 5, 10, 20, 30]),
+        indicationFactorMultipliers: JSON.stringify([1]),
+        activeThresholds: JSON.stringify([0.5, 1.5, 2.5]),
+        activeAdvancedActivityRatios: JSON.stringify([0.5, 1.5, 3]),
+        trendTimeframesMinutes: JSON.stringify([1, 3, 5, 10, 15, 30]),
+        strategyRealSetsSafetyCeiling: "25",
+        maxRealSets: "25",
+        strategyLiveSetsCeiling: "90",
+        minStep: "5",
+        mainEvalPosCount: "15",
+        realEvalPosCount: "10",
+        coordination_settings: JSON.stringify({
+          minStep: 5,
+          mainEvalPosCount: 15,
+          realEvalPosCount: 10,
+        }),
       })
       await client.hset("connection:conn-ledger", {
         volume_factor: "8",
@@ -67,14 +84,70 @@ describe("migrations 080/081/082/083/084 exact Set indexes and sizing defaults",
         }),
       })
       await client.hset("settings:connection_settings:conn-ledger", { axisPrevMaxWindow: "11" })
+      await client.hset("settings:active_indications:conn-ledger", {
+        direction: "true",
+        direction_timeout: "30",
+        optimal: "false",
+        optimal_timeout: "60",
+        auto: "false",
+        auto_timeout: "90",
+        trend: "true",
+        trend_timeout: "60",
+      })
+      await client.set("indications:signal", JSON.stringify({
+        enabled: true,
+        maxPositionsTotal: 24,
+        sources: {
+          "bingx-swap": { enabled: true, weight: 1 },
+        },
+      }))
+      await client.set("indications:main", JSON.stringify({
+        configuration: {
+          sample_ranges: [2, 5, 10, 20, 30],
+          factor_multipliers: [1],
+          active_thresholds: [0.5, 1.5, 2.5],
+        },
+        direction: {
+          range: { from: 3, to: 30, step: 1 },
+          sample_ranges: [2, 5, 10, 20, 30],
+          timeout: 3,
+        },
+        move: {
+          range: { from: 3, to: 30, step: 1 },
+          sample_ranges: [2, 5, 10, 20, 30],
+          timeout: 3,
+        },
+        active: {
+          thresholds: [0.5, 1.5, 2.5],
+          timeout: 3,
+        },
+        active_advanced: {
+          activity_values: [0.5, 1.5, 3],
+        },
+        optimal: {
+          range: { from: 3, to: 30, step: 1 },
+          sample_ranges: [2, 5, 10, 20, 30],
+          timeout: 10,
+        },
+      }))
+      await client.set("indications:common", JSON.stringify({
+        coordination: {
+          timeframesMinutes: [1, 3, 5, 15],
+        },
+        rsi: {
+          enabled: false,
+          period: { from: 8, to: 20, step: 1 },
+          timeout: 10,
+        },
+      }))
       await client.set("_schema_version", "79")
       await client.set("_migrations_run", "true")
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 84 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 88 })
 
-      expect(await client.get("_schema_version")).toBe("84")
+      expect(await client.get("_schema_version")).toBe("88")
       expect(new Set(await client.smembers("strategy_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
       expect(await client.smembers("strategy_active_set_keys:conn-ledger")).toEqual(["set:a"])
       expect(new Set(await client.smembers("strategy_closed_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
@@ -102,11 +175,80 @@ describe("migrations 080/081/082/083/084 exact Set indexes and sizing defaults",
         baseVolumeFactor: 1,
         live_volume_factor: 2.5,
       })
-      expect(await client.hget("connection_settings:conn-ledger", "posCountsVolumeRatio")).toBe("0.05")
+      expect(await client.hget("connection_settings:conn-ledger", "posCountsVolumeRatio")).toBe("3")
+      expect(await client.hget("connection_settings:conn-ledger", "baseProfitFactor")).toBe("0.8")
+      expect(await client.hget("connection_settings:conn-ledger", "mainProfitFactor")).toBe("1.12")
+      expect(await client.hget("connection_settings:conn-ledger", "realProfitFactor")).toBe("1.12")
+      expect(await client.hget("connection_settings:conn-ledger", "liveProfitFactor")).toBe("1.12")
+      expect(await client.hget("connection_settings:conn-ledger", "blockOnly")).toBe("true")
+      expect(await client.hget("connection_settings:conn-ledger", "variantBlockOnly")).toBe("true")
+      expect(await client.hget("connection_settings:conn-ledger", "indicationTimeoutMs")).toBe("250")
+      expect(await client.hget("connection_settings:conn-ledger", "positionCooldownMs")).toBe("3000")
+      expect(await client.hget("connection_settings:conn-ledger", "maxActiveBasePseudoPositionsPerDirection")).toBe("1")
+      expect(await client.hget("connection_settings:conn-ledger", "strategyRealSetsSafetyCeiling")).toBe("5000")
+      expect(await client.hget("connection_settings:conn-ledger", "maxRealSets")).toBe("5000")
+      expect(await client.hget("connection_settings:conn-ledger", "strategyLiveSetsCeiling")).toBe("500")
+      expect(await client.hget("connection_settings:conn-ledger", "minStep")).toBe("2")
+      expect(await client.hget("connection_settings:conn-ledger", "mainEvalPosCount")).toBe("25")
+      expect(await client.hget("connection_settings:conn-ledger", "realEvalPosCount")).toBe("20")
+      expect(JSON.parse(String(
+        await client.hget("connection_settings:conn-ledger", "coordination_settings"),
+      ))).toMatchObject({
+        minStep: 2,
+        mainEvalPosCount: 25,
+        realEvalPosCount: 20,
+      })
+      expect(JSON.parse(String(
+        await client.hget("connection_settings:conn-ledger", "indicationSampleRanges"),
+      ))).toEqual(Array.from({ length: 29 }, (_, index) => index + 2))
+      expect(JSON.parse(String(
+        await client.hget("connection_settings:conn-ledger", "indicationFactorMultipliers"),
+      ))).toEqual([0.9, 1, 1.1])
+      expect(JSON.parse(String(
+        await client.hget("connection_settings:conn-ledger", "activeThresholds"),
+      ))).toEqual([0.5, 1, 1.5, 2, 2.5])
+      expect(JSON.parse(String(
+        await client.hget("connection_settings:conn-ledger", "trendTimeframesMinutes"),
+      ))).toEqual([1, 5, 15, 30])
+      expect(await client.hget("settings:active_indications:conn-ledger", "direction_timeout")).toBe("0.25")
+      expect(await client.hget("settings:active_indications:conn-ledger", "optimal")).toBe("true")
+      expect(await client.hget("settings:active_indications:conn-ledger", "auto")).toBe("true")
+      expect(await client.hget("settings:active_indications:conn-ledger", "common")).toBe("true")
+      expect(await client.hget("settings:active_indications:conn-ledger", "common_timeout")).toBe("3")
+      const mainIndications = JSON.parse(String(await client.get("indications:main")))
+      expect(mainIndications.configuration.sample_ranges).toEqual(
+        Array.from({ length: 29 }, (_, index) => index + 2),
+      )
+      expect(mainIndications.configuration.factor_multipliers).toEqual([0.9, 1, 1.1])
+      expect(mainIndications.active.thresholds).toEqual([0.5, 1, 1.5, 2, 2.5])
+      expect(mainIndications.active_advanced.activity_values).toEqual([0.5, 1, 1.5, 2, 2.5, 3])
+      expect(mainIndications.direction).toMatchObject({
+        range: { from: 2, to: 30, step: 1 },
+        timeout: 0.25,
+      })
+      expect(mainIndications.move.timeout).toBe(0.25)
+      expect(mainIndications.optimal.timeout).toBe(0.25)
+      const commonIndications = JSON.parse(String(await client.get("indications:common")))
+      expect(commonIndications.coordination.timeframesMinutes).toEqual([1, 5, 15, 30])
+      expect(commonIndications.rsi).toMatchObject({ enabled: false, timeout: 3 })
+      expect(commonIndications.ma).toMatchObject({ enabled: true, timeout: 3 })
+      expect(commonIndications.parabolicSAR).toMatchObject({ enabled: true, timeout: 3 })
+      expect(JSON.parse(String(await client.get("indications:signal")))).toMatchObject({
+        directExecutionEnabled: true,
+        maxPositionsTotal: 120,
+        sources: {
+          "bingx-swap": {
+            disabledSymbols: [],
+            disabledLanes: [],
+          },
+        },
+      })
       expect(await client.hget("app_settings", "signalTradeVolumeFactor")).toBe("1")
       expect(await client.hget("system:database:coordination:performance", "inline_snapshot_interval_ms")).toBe("60000")
       expect(await client.hget("system:database:coordination:performance", "independent_block_profit_factor"))
         .toBe("default-pf-x-ratio-x-volume-increment-v1")
+      expect(await client.hget("system:database:coordination:performance", "schema_version"))
+        .toBe("88")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

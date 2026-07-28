@@ -55,6 +55,7 @@ interface PerformanceState {
 
 interface SignalSettings {
   enabled: boolean
+  directExecutionEnabled: boolean
   trailingEnabled: boolean
   trailingOnly: boolean
   trailingStartPct: number
@@ -85,7 +86,12 @@ interface SignalSettings {
   circuitFailureThreshold: number
   circuitCooldownSeconds: number
   databaseSize: number
-  sources: Record<string, { enabled: boolean; weight: number; disabledSymbols: string[] }>
+  sources: Record<string, {
+    enabled: boolean
+    weight: number
+    disabledSymbols: string[]
+    disabledLanes: string[]
+  }>
 }
 
 function numeric(value: string, fallback: number): number {
@@ -159,7 +165,12 @@ export function SignalIndicationSettings() {
 
   const updateSource = (
     sourceId: string,
-    patch: Partial<{ enabled: boolean; weight: number; disabledSymbols: string[] }>,
+    patch: Partial<{
+      enabled: boolean
+      weight: number
+      disabledSymbols: string[]
+      disabledLanes: string[]
+    }>,
   ) => {
     if (!settings) return
     update("sources", {
@@ -168,6 +179,7 @@ export function SignalIndicationSettings() {
         enabled: settings.sources[sourceId]?.enabled !== false,
         weight: settings.sources[sourceId]?.weight ?? 1,
         disabledSymbols: settings.sources[sourceId]?.disabledSymbols ?? [],
+        disabledLanes: settings.sources[sourceId]?.disabledLanes ?? [],
         ...patch,
       },
     })
@@ -233,7 +245,7 @@ export function SignalIndicationSettings() {
               </CardTitle>
               <CardDescription className="mt-1 max-w-3xl text-xs">
                 Read-only public OHLCV feeds are normalized locally. Consensus, ATR/cost-aware short stops,
-                source health, and the last-15 realized PnL guard are independent per symbol and Long/Short.
+                source health, and the realized PnL guards are independent by source, symbol, and Long/Short.
               </CardDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -269,11 +281,26 @@ export function SignalIndicationSettings() {
             </div>
             <Switch checked={settings.enabled} onCheckedChange={(checked) => update("enabled", checked)} />
           </div>
+          <div className="flex items-center justify-between rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3">
+            <div>
+              <Label>Direct bootstrap execution</Label>
+              <p className="text-xs text-muted-foreground">
+                Enabled by default. Exact config PF-history checks are bypassed; after 12 source results
+                or 10 source × symbol × direction results, a negative average disables only the affected
+                scope. A config whose newest 16 real exchange closes average negative remains permanently
+                disabled. Turning this off keeps every source lane active but requires its config PF window.
+              </p>
+            </div>
+            <Switch
+              checked={settings.directExecutionEnabled}
+              onCheckedChange={(checked) => update("directExecutionEnabled", checked)}
+            />
+          </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {([
               ["maxSourcesPerCycle", "Website sources / symbol / cycle", 3, 35, 1],
-              ["maxPositionsTotal", "Max open positions (Long + Short)", 1, 500, 1],
+              ["maxPositionsTotal", "Max open positions (Long + Short)", 1, 120, 1],
               ["candleLimit", "Candles per source", 20, 250, 1],
               ["requestIntervalSeconds", "Request interval (seconds)", 30, 3600, 30],
               ["concurrency", "HTTP concurrency", 1, 10, 1],
@@ -519,17 +546,19 @@ export function SignalIndicationSettings() {
               Realized performance guard
             </CardTitle>
             <CardDescription className="text-xs">
-              Exactly the newest 15 realized closed positions per source × symbol × direction.
+              Source health uses the newest 12 realized positions; each source × symbol × direction
+              lane uses its own newest 10. These windows never cap open positions.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-md border bg-muted/20 p-3 sm:col-span-2">
               <div className="flex items-center justify-between gap-2">
                 <Label className="text-xs">Fixed evidence window</Label>
-                <Badge variant="outline">15 closed positions</Badge>
+                <Badge variant="outline">Source 12 · lane 10</Badge>
               </div>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                The window and minimum sample count are fixed so every independent lane is comparable.
+                Fresh lanes bootstrap directly. Mature negative source averages stop that source;
+                mature negative Long or Short averages stop only that exact lane.
               </p>
             </div>
             <div className="rounded-md border bg-muted/20 p-3 sm:col-span-2">
@@ -603,7 +632,7 @@ export function SignalIndicationSettings() {
                       <td className="px-3 py-2">
                         <Badge variant="outline" className="capitalize">{item.direction}</Badge>
                       </td>
-                      <td className="px-3 py-2 text-right tabular-nums">{item.count}/15</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{item.count}/10</td>
                       <td className={`px-3 py-2 text-right tabular-nums ${item.totalPnl < 0 ? "text-destructive" : "text-emerald-600"}`}>
                         {Number(item.totalPnl || 0).toFixed(4)}
                       </td>
@@ -618,7 +647,7 @@ export function SignalIndicationSettings() {
                       </td>
                       <td className="px-3 py-2">
                         <Badge variant={item.autoDisabled ? "destructive" : "secondary"}>
-                          {item.autoDisabled ? "disabled" : item.count < 15 ? "warming" : "enabled"}
+                          {item.autoDisabled ? "disabled" : item.count < 10 ? "warming" : "enabled"}
                         </Badge>
                       </td>
                     </tr>
@@ -645,6 +674,7 @@ export function SignalIndicationSettings() {
               enabled: true,
               weight: 1,
               disabledSymbols: [],
+              disabledLanes: [],
             }
             const sourceHealth = health[source.id]
             const circuitOpen = Number(sourceHealth?.circuitOpenUntil || 0) > Date.now()

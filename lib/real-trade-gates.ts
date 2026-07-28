@@ -1,6 +1,7 @@
 import {
   isConnectionLiveTradeEnabled,
   isConnectionPresetTradeEnabled,
+  isConnectionSignalTradeEnabled,
 } from "@/lib/connection-state-utils"
 import {
   isKiloDeploymentRuntime,
@@ -15,7 +16,7 @@ export type RealTradeBlockCode =
   | "shared_redis_required"
 
 export interface RealTradeReadiness {
-  intent: "main" | "preset"
+  intent: "main" | "preset" | "signal"
   requested: boolean
   enabled: boolean
   credentialsValid: boolean
@@ -139,20 +140,36 @@ export function hasRealTradeBlock(settings: Record<string, any>): boolean {
  */
 export function evaluateRealTradeReadiness(
   settings: Record<string, any>,
-  intent: "main" | "preset" = "main",
+  intent: "main" | "preset" | "signal" = "main",
 ): RealTradeReadiness {
   const isPreset = intent === "preset"
+  const isSignal = intent === "signal"
   const enabled = isPreset
     ? isConnectionPresetTradeEnabled(settings)
-    : isConnectionLiveTradeEnabled(settings)
-  const requested = enabled || truthy(isPreset ? settings.preset_trade_requested : settings.live_trade_requested)
+    : isSignal
+      ? isConnectionSignalTradeEnabled(settings)
+      : isConnectionLiveTradeEnabled(settings)
+  const requestedField = isPreset
+    ? settings.preset_trade_requested
+    : isSignal
+      ? settings.signal_trade_requested
+      : settings.live_trade_requested
+  const requested = enabled || truthy(requestedField)
   const credentialsValid = hasUsableLiveCredentials(settings)
   const explicitReason = String(
-    isPreset ? settings.preset_trade_blocked_reason || "" : settings.live_trade_blocked_reason || "",
+    isPreset
+      ? settings.preset_trade_blocked_reason || ""
+      : isSignal
+        ? settings.signal_trade_blocked_reason || ""
+        : settings.live_trade_blocked_reason || "",
   ).trim()
   const infrastructureReason = getRealTradeInfrastructureBlockReason()
   const durableCoordinationReady = infrastructureReason.length === 0
-  const label = isPreset ? "Preset exchange trading" : "Live exchange trading"
+  const label = isPreset
+    ? "Preset exchange trading"
+    : isSignal
+      ? "Signal exchange trading"
+      : "Live exchange trading"
 
   let blockCode: RealTradeBlockCode | null = null
   let blockReason = ""

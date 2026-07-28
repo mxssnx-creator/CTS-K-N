@@ -105,6 +105,13 @@ interface ComprehensiveAnalytics {
   riskMetrics: any
 }
 
+interface CurrentStrategyRows {
+  base: { total: number; valid: number; totalOpen: number; validOpen: number; validRatio: number }
+  main: { valid: number; overall: number; validOpen: number; overallOpen: number; overallToValidRatio: number }
+  real: { valid: number; active: number; activeExactRows: number; activeRatio: number }
+  live: { total: number; mirrored: number; active: number; mirroredRatio: number }
+}
+
 export default function StatisticsPage() {
   const { selectedExchange, selectedConnectionId } = useExchange()
   const [activeTab, setActiveTab] = useState("overview")
@@ -130,6 +137,7 @@ export default function StatisticsPage() {
   const [positions, setPositions] = useState<TradingPosition[]>([])
   const [tradeHistory, setTradeHistory] = useState<TradeHistoryRow[]>([])
   const [settings, setSettings] = useState<any>(null)
+  const [currentStrategyRows, setCurrentStrategyRows] = useState<CurrentStrategyRows | null>(null)
   const [reloadGeneration, setReloadGeneration] = useState(0)
 
   // Enhanced analytics state
@@ -175,6 +183,7 @@ export default function StatisticsPage() {
           const engine = new AnalyticsEngine([])
           setPositions([])
           setTradeHistory([])
+          setCurrentStrategyRows(null)
           setAnalyticsEngine(engine)
           updateAnalytics(engine, filter)
         } else {
@@ -191,17 +200,73 @@ export default function StatisticsPage() {
 
             const responses = await Promise.all(
               scopeIds.map(async (id: string) => {
-                const [open, history] = await Promise.all([
+                const [open, history, progression] = await Promise.all([
                   fetch(`/api/data/positions?connectionId=${encodeURIComponent(id)}`, { cache: "no-store" })
                     .then((r) => (r.ok ? r.json() : null))
                     .catch(() => null),
                   fetch(`/api/trading/trade-history?connection_id=${encodeURIComponent(id)}&limit=500`, { cache: "no-store" })
                     .then((r) => (r.ok ? r.json() : null))
                     .catch(() => null),
+                  fetch(`/api/connections/progression/${encodeURIComponent(id)}/stats`, { cache: "no-store" })
+                    .then((r) => (r.ok ? r.json() : null))
+                    .catch(() => null),
                 ])
-                return { id, open, history }
+                return { id, open, history, progression }
               }),
             )
+
+            const rowSnapshots = responses
+              .map((payload) => payload.progression?.strategyRows)
+              .filter(Boolean)
+            if (rowSnapshots.length > 0) {
+              const sum = (path: [string, string]) => rowSnapshots.reduce(
+                (total, snapshot) => total + (Number(snapshot?.[path[0]]?.[path[1]]) || 0),
+                0,
+              )
+              const percent = (numerator: number, denominator: number, cap = true) => {
+                if (denominator <= 0) return 0
+                const value = Math.round((numerator / denominator) * 1000) / 10
+                return cap ? Math.min(100, value) : value
+              }
+              const baseTotal = sum(["base", "total"])
+              const baseValid = sum(["base", "valid"])
+              const mainValid = sum(["main", "valid"])
+              const mainOverall = sum(["main", "overall"])
+              const realValid = sum(["real", "valid"])
+              const realActive = sum(["real", "active"])
+              const liveTotal = sum(["live", "total"])
+              const liveMirrored = sum(["live", "mirrored"])
+              setCurrentStrategyRows({
+                base: {
+                  total: baseTotal,
+                  valid: baseValid,
+                  totalOpen: sum(["base", "totalOpen"]),
+                  validOpen: sum(["base", "validOpen"]),
+                  validRatio: percent(baseValid, baseTotal),
+                },
+                main: {
+                  valid: mainValid,
+                  overall: mainOverall,
+                  validOpen: sum(["main", "validOpen"]),
+                  overallOpen: sum(["main", "overallOpen"]),
+                  overallToValidRatio: percent(mainOverall, mainValid, false),
+                },
+                real: {
+                  valid: realValid,
+                  active: realActive,
+                  activeExactRows: sum(["real", "activeExactRows"]),
+                  activeRatio: percent(realActive, realValid),
+                },
+                live: {
+                  total: liveTotal,
+                  mirrored: liveMirrored,
+                  active: sum(["live", "active"]),
+                  mirroredRatio: percent(liveMirrored, liveTotal),
+                },
+              })
+            } else {
+              setCurrentStrategyRows(null)
+            }
 
             const merged: TradingPosition[] = []
             const historyRows: TradeHistoryRow[] = []
@@ -278,6 +343,7 @@ export default function StatisticsPage() {
                     position_side: row.direction === "short" ? "short" : "long",
                     leverage: 1,
                     indication_type: "direction",
+                    preset_id: String((row as any).presetId || "") || undefined,
                     unrealized_pnl: 0,
                     realized_pnl: realizedPnl,
                     margin_used: volumeUsd,
@@ -744,6 +810,57 @@ export default function StatisticsPage() {
           </Card>
         ))}
       </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Current Strategy Row Snapshot</CardTitle>
+          <CardDescription>
+            Fresh open-ledger semantics shared with ConnectionCard, Logistics and info dialogs.
+            Main Overall includes valid Pos-Count, Block and DCA descendants and may exceed 100%.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {currentStrategyRows ? (
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              {[
+                {
+                  stage: "Base",
+                  primary: `${currentStrategyRows.base.total.toLocaleString()} Total`,
+                  secondary: `${currentStrategyRows.base.valid.toLocaleString()} Valid`,
+                  detail: `${currentStrategyRows.base.validRatio.toFixed(1)}% · ${currentStrategyRows.base.totalOpen.toLocaleString()} open`,
+                },
+                {
+                  stage: "Main",
+                  primary: `${currentStrategyRows.main.valid.toLocaleString()} Valid`,
+                  secondary: `${currentStrategyRows.main.overall.toLocaleString()} Overall`,
+                  detail: `${currentStrategyRows.main.overallToValidRatio.toFixed(1)}% · ${currentStrategyRows.main.overallOpen.toLocaleString()} open`,
+                },
+                {
+                  stage: "Real",
+                  primary: `${currentStrategyRows.real.valid.toLocaleString()} Valid`,
+                  secondary: `${currentStrategyRows.real.active.toLocaleString()} Active`,
+                  detail: `${currentStrategyRows.real.activeRatio.toFixed(1)}% · ${currentStrategyRows.real.activeExactRows.toLocaleString()} exact rows`,
+                },
+                {
+                  stage: "Live",
+                  primary: `${currentStrategyRows.live.total.toLocaleString()} Rows`,
+                  secondary: `${currentStrategyRows.live.mirrored.toLocaleString()} Mirrored`,
+                  detail: `${currentStrategyRows.live.mirroredRatio.toFixed(1)}% · ${currentStrategyRows.live.active.toLocaleString()} active`,
+                },
+              ].map((row) => (
+                <div key={row.stage} className="rounded-lg border bg-muted/10 p-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{row.stage}</div>
+                  <div className="mt-1 text-sm font-semibold">{row.primary}</div>
+                  <div className="text-sm text-primary">{row.secondary}</div>
+                  <div className="mt-1 text-[10px] text-muted-foreground">{row.detail}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground">No fresh stage-row snapshot is available for the selected connection scope.</div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         <div className="lg:col-span-1">

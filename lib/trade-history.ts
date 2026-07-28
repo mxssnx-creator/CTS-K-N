@@ -23,6 +23,7 @@ export interface TradeHistoryRow {
   parentSetKey?: string
   setVariant?: string
   indicationType?: string
+  presetId?: string
   leverage?: number
   marginType?: string
   stopLossPrice?: number
@@ -227,6 +228,7 @@ export function normalizeLocalTradeHistoryRow(raw: Record<string, any>): TradeHi
     parentSetKey: position.parentSetKey,
     setVariant: position.setVariant,
     indicationType: position.indicationType,
+    presetId: position.presetId,
     leverage: firstPositive(position.leverage) || undefined,
     marginType: String(position.marginType || "") || undefined,
     stopLossPrice: (manualHasStop

@@ -79,7 +79,7 @@ export function ExchangeConnectionSettingsDialog({
     trailingWithTrailing: true,
     trailingOnly: false,
     blockEnabled: true,
-    blockOnly: false,
+    blockOnly: true,
     dcaEnabled: false,
     dcaOnly: false,
     useMainSymbols: false,

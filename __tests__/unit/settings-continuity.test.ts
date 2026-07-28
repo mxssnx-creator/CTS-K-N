@@ -57,7 +57,7 @@ describe("settings continuity", () => {
     const channels = normalizeIndicationChannels({
       main: { direction: { enabled: "false", range: 9999, timeout: 0, interval: 0 } },
     })
-    expect(channels.main.direction).toEqual({ enabled: false, range: 500, timeout: 1, interval: 0.1 })
+    expect(channels.main.direction).toEqual({ enabled: false, range: 500, timeout: 0.05, interval: 0.1 })
     expect(channels.preset).toEqual(DEFAULT_PRESET_INDICATION_PROFILE)
   })
 
@@ -225,7 +225,7 @@ describe("settings continuity", () => {
       dca: true,
     })
     expect(stored.connection_settings.blockVolumeRatio).toBe(0.5)
-    expect(stored.connection_settings.posCountsVolumeRatio).toBe(0.05)
+    expect(stored.connection_settings.posCountsVolumeRatio).toBe(0.1)
   })
 
   test("settings races and pseudo creation leases retain token ownership", () => {

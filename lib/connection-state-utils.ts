@@ -81,6 +81,12 @@ export function isConnectionPresetTradeEnabled(connection: any): boolean {
     : isTruthyFlag(connection?.preset_trade_enabled)
 }
 
+export function isConnectionSignalTradeEnabled(connection: any): boolean {
+  return isDefinedFlag(connection?.is_signal_trade)
+    ? isTruthyFlag(connection?.is_signal_trade)
+    : isTruthyFlag(connection?.signal_trade_enabled)
+}
+
 export function isConnectionWorking(connection: any): boolean {
   const status = connection?.last_test_status || connection?.test_status || connection?.connection_status
   return status === "success" || status === "ok" || status === "connected"

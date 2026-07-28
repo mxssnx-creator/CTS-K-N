@@ -11,7 +11,7 @@ export const progressionFingerprintFields = [
   "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor", "profitFactorMin",
   "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
   "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
-  "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
+  "variantTrailingEnabled", "variantBlockEnabled", "variantBlockOnly", "blockOnly", "variantDcaEnabled",
   "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep",
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",

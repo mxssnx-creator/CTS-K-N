@@ -30,9 +30,8 @@ export interface Settings {
   min_volume_enforcement: boolean
 
   /**
-   * Minimal Step — pseudo-position window floor.
-   * Only indication step-window sizes >= minStep are generated.
-   * Range 2–30 step 1, default 5.
+   * Compatibility field fixed at 2. Every indication step-window size from
+   * 2 through 30 is always generated.
    */
   minStep: number
   maxStopLossRatio: number
@@ -87,8 +86,9 @@ export interface Settings {
 
   // ── Main Trade PF thresholds per stage (Base/Main/Real/Live) ─────
   // Operator-tunable via Settings → Strategy → Main → Profit Factor
-  // Thresholds. Spec defaults 0.9/1.0/1.0/1.0 — wired into the engine
-  // by `lib/strategy-coordinator.ts:loadAppPFThresholds()`.
+  // PositionCost-relative thresholds on the canonical 0.08..2.70/0.02
+  // grid. Defaults: Base 0.80; Main/Real/Live 1.12. These are deliberately
+  // distinct from realised PF (gross profit / gross loss).
   baseProfitFactor: number
   mainProfitFactor: number
   realProfitFactor: number
@@ -125,9 +125,10 @@ export interface Settings {
    */
   maxActiveBasePseudoPositionsPerDirection: number
 
-  /** Strategy pipeline ceilings surfaced in Settings → System. */
+  /** Strategy retention/scheduling controls surfaced in Settings → System. */
   strategyMaxEntriesPerSet: number
-  strategyMainAxisSetsCeiling: number
+  /** Number of Base Sets expanded in one async Main-axis work batch. */
+  strategyMainAxisBatchSize: number
   strategyRealSetsSafetyCeiling: number
   maxRealSets: number
   strategyLiveSetsCeiling: number

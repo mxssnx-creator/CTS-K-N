@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState } from "react"
 import { ChevronDown, ChevronRight, TrendingUp, TrendingDown, Activity, Target, BarChart3, ZapOff } from 'lucide-react'
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
@@ -19,7 +19,13 @@ interface StrategyRowCompactProps {
 function MiniBarChart({ factor, min = -2, max = 2 }: { factor: number; min?: number; max?: number }) {
   const normalized = ((factor - min) / (max - min)) * 100
   const isPositive = factor >= 0
-  const color = isPositive ? (factor >= 0.8 ? "bg-green-500" : factor >= 0.4 ? "bg-yellow-500" : "bg-orange-500") : "bg-red-500"
+  const color = isPositive
+    ? factor >= 1.12
+      ? "bg-green-500"
+      : factor >= 0.8
+        ? "bg-yellow-500"
+        : "bg-orange-500"
+    : "bg-red-500"
   
   return (
     <div className="flex items-center gap-1 min-w-[60px]">
@@ -62,13 +68,10 @@ export function StrategyRowCompact({ strategy, onToggle, minimalProfitFactor, in
     }
   }
 
-  // Summary stats that should load on demand
-  const summaryStats = useMemo(() => ({
-    totalTrades: Math.floor(Math.random() * 1000) + 50,
-    winRate: Math.floor(Math.random() * 100),
-    avgReturn: (Math.random() - 0.3) * 5,
-    maxDD: Math.random() * 20,
-  }), [])
+  const winRatePercent =
+    strategy.stats.win_rate <= 1
+      ? strategy.stats.win_rate * 100
+      : strategy.stats.win_rate
 
   return (
     <div className="group border border-slate-700/50 hover:border-slate-600 rounded bg-slate-900/30 hover:bg-slate-900/50 transition-all">
@@ -156,9 +159,9 @@ export function StrategyRowCompact({ strategy, onToggle, minimalProfitFactor, in
             <div className="bg-slate-900/50 rounded p-2 border border-slate-700/50">
               <div className="text-slate-400 font-semibold mb-1">Performance</div>
               <div className="space-y-0.5 text-slate-300 font-mono text-xs">
-                <div>Trades: <span className="text-blue-400">{summaryStats.totalTrades}</span></div>
-                <div>Win Rate: <span className="text-green-400">{summaryStats.winRate}%</span></div>
-                <div>Max DD: <span className="text-red-400">{summaryStats.maxDD.toFixed(1)}%</span></div>
+                <div>Trades: <span className="text-blue-400">{strategy.stats.total_trades}</span></div>
+                <div>Win Rate: <span className="text-green-400">{winRatePercent.toFixed(1)}%</span></div>
+                <div>DDT: <span className="text-red-400">{strategy.stats.drawdown_hours.toFixed(1)}h</span></div>
               </div>
             </div>
           </div>

@@ -9,6 +9,12 @@ import {
 } from "./database-indexes"
 import { createKiloDatabaseQuery, hasKiloDatabaseBackend, resolveKiloDatabaseConfig, type KiloDatabaseMethod } from "./kilo-database-client"
 import { scanRedisKeys } from "./redis-scan"
+import {
+  archiveClosedLivePositionAnalytics,
+  buildLivePositionAnalyticsSnapshot,
+  liveClosedAnalyticsDataKey,
+  liveClosedAnalyticsTimeKey,
+} from "./live-position-analytics-archive"
 
 /**
  * Redis Database Layer - High Performance Edition v3.0
@@ -485,6 +491,29 @@ export class InlineLocalRedis implements RedisClientLike {
       if (terminalStatuses.has(String(position.status || "").toLowerCase())) {
         this.data.lists.set(openIndexKey, openIds)
         this.data.lists.set(closedIndexKey, [positionId, ...closedIds].slice(0, 500))
+        const analytics = buildLivePositionAnalyticsSnapshot(position)
+        if (analytics) {
+          const analyticsDataKey = liveClosedAnalyticsDataKey(connectionId)
+          const analyticsTimeKey = liveClosedAnalyticsTimeKey(connectionId)
+          const analyticsRows = this.data.hashes.get(analyticsDataKey) || {}
+          analyticsRows[positionId] = JSON.stringify(analytics)
+          this.data.hashes.set(analyticsDataKey, analyticsRows)
+          const zset = this.getSortedSet(analyticsTimeKey) || this.createSortedSet()
+          const existing = zset.memberIndex.get(positionId)
+          if (existing) {
+            const existingIndex = this.insertionIndex(zset.entries, existing)
+            if (zset.entries[existingIndex]?.member === positionId) {
+              zset.entries.splice(existingIndex, 1)
+            }
+          }
+          const entry = {
+            score: Number(analytics.closedAt),
+            member: positionId,
+          }
+          zset.memberIndex.set(positionId, entry)
+          zset.entries.splice(this.insertionIndex(zset.entries, entry), 0, entry)
+          this.data.sorted_sets.set(analyticsTimeKey, zset)
+        }
       } else {
         this.data.lists.set(openIndexKey, [positionId, ...openIds])
         this.data.lists.set(closedIndexKey, closedIds)
@@ -4343,6 +4372,10 @@ export async function savePosition(position: any): Promise<void> {
           // Only add if not already present
           await client.lpush(`live:positions:${connId}:closed`, id).catch(() => 0)
         }
+        await archiveClosedLivePositionAnalytics(client, {
+          ...position,
+          connectionId: connId,
+        }).catch(() => {})
         await client.ltrim(`live:positions:${connId}:closed`, 0, 499).catch(() => {})
         // Mark moved so closeLivePosition can detect duplicate increments
         await client.set(`live:positions:${connId}:moved:${id}`, String(Date.now())).catch(() => null)
@@ -5075,11 +5108,25 @@ export async function getIndications(connectionId?: string, symbol?: string): Pr
   const indications: any[] = []
   
   try {
-    // Indications are stored as Redis lists at: indications:{connectionId}:{symbol}
-    // If symbol is provided, fetch directly from that list
+    // Canonical storage is one complete, current JSON snapshot per symbol.
+    // Historical per-configuration rings live under `indication_set:*` and
+    // may be compacted independently; the current snapshot is never top-N
+    // sliced because Strategy/Base must observe every qualified tuple.
     if (connectionId && symbol) {
+      const snapshot = await client.get(`indications_snapshot:${connectionId}:${symbol}`)
+      if (snapshot) {
+        try {
+          const parsed = typeof snapshot === "string" ? JSON.parse(snapshot) : snapshot
+          if (Array.isArray(parsed)) return parsed
+        } catch {
+          // Continue into the legacy repair path.
+        }
+      }
+
+      // Legacy symbol LIST fallback. Read the complete value once; the
+      // previous 500-row LRANGE was an unintended current-processing ceiling.
       const listKey = `indications:${connectionId}:${symbol}`
-      const listData = await client.lrange(listKey, 0, 499) // Get last 500
+      const listData = await client.lrange(listKey, 0, -1).catch(() => [])
       if (listData && listData.length > 0) {
         for (const item of listData) {
           try {
@@ -5093,8 +5140,31 @@ export async function getIndications(connectionId?: string, symbol?: string): Pr
       }
     }
     
-    // If no symbol specified, collect from all symbol lists for this connection
+    // If no symbol is specified, use the maintained snapshot index rather
+    // than a hot-path KEYS scan.
     if (connectionId) {
+      const indexedSymbols = await client
+        .smembers(`indications_snapshot:index:${connectionId}`)
+        .catch(() => [])
+      if (indexedSymbols.length > 0) {
+        const snapshots = await Promise.all(
+          indexedSymbols.map((indexedSymbol) =>
+            client.get(`indications_snapshot:${connectionId}:${indexedSymbol}`).catch(() => null),
+          ),
+        )
+        for (const snapshot of snapshots) {
+          if (!snapshot) continue
+          try {
+            const parsed = typeof snapshot === "string" ? JSON.parse(snapshot) : snapshot
+            if (Array.isArray(parsed)) indications.push(...parsed)
+          } catch {
+            // Ignore one malformed/stale symbol without dropping siblings.
+          }
+        }
+        if (indications.length > 0) return indications
+      }
+
+      // Upgrade fallback for pre-snapshot installations.
       const pattern = `indications:${connectionId}:*`
       const keys = await client.keys(pattern)
       
@@ -5107,7 +5177,7 @@ export async function getIndications(connectionId?: string, symbol?: string): Pr
         
         if (isSymbolKey) {
           // This is a symbol-specific list, fetch with LRANGE
-          const listData = await client.lrange(key, 0, 499)
+          const listData = await client.lrange(key, 0, -1).catch(() => [])
           if (listData && listData.length > 0) {
             for (const item of listData) {
               try {
@@ -5155,7 +5225,14 @@ export async function storeIndications(connectionId: string, symbol: string, ind
       configSet: getConfigurationSet(ind.type, ind.value),
     }))
 
-    // ── Main key: read → append → trim → write ───────────────────────────
+    // ── Canonical complete current snapshot ───────────────────────────────
+    // This is intentionally separate from bounded historical rings. It is
+    // overwritten atomically each cycle and therefore has no growth problem
+    // and no configuration-count ceiling.
+    const snapshotKey = `indications_snapshot:${connectionId}:${symbol}`
+    const snapshotIndexKey = `indications_snapshot:index:${connectionId}`
+
+    // ── Legacy aggregate compatibility ────────────────────────────────────
     const existingRaw = await client.get(mainKey)
     let existing: any[] = []
     if (existingRaw) {
@@ -5183,6 +5260,9 @@ export async function storeIndications(connectionId: string, symbol: string, ind
 
     // Fan out all writes in parallel — single await instead of sequential loop.
     await Promise.all([
+      client.set(snapshotKey, JSON.stringify(newIndications), { EX: 3600 } as any),
+      client.sadd(snapshotIndexKey, symbol),
+      client.expire(snapshotIndexKey, 24 * 60 * 60),
       client.set(mainKey, JSON.stringify(existing), { EX: 3600 } as any),
       ...Array.from(byType.entries()).map(([type, typeInds]) =>
         client.set(`indications:${connectionId}:${type}`, JSON.stringify(typeInds), { EX: 3600 } as any)

@@ -4,7 +4,7 @@
  * NOW: 100% Redis-backed, no SQL
  */
 
-import { getRedisClient, getAppSettings, getSettings, getSettingsVersionCachedSync, createPosition as redisCreatePosition } from "@/lib/redis-db"
+import { getRedisClient, getAppSettings, getSettings, createPosition as redisCreatePosition } from "@/lib/redis-db"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import { resolveStopLossPercent } from "@/lib/tp-sl-ratio"
 import { emitPositionUpdate } from "@/lib/broadcast-helpers"
@@ -20,6 +20,7 @@ import {
 
 const DIRECTION_CREATION_LOCK_TTL_MS = 15_000
 const POSITION_CLOSE_LOCK_TTL_MS = 60_000
+const BASE_LANE_REENTRY_COOLDOWN_MS = 3_000
 const REFRESH_DIRECTION_CREATION_LOCK_LUA = `
   if redis.call("GET", KEYS[1]) == ARGV[1] then
     return redis.call("PEXPIRE", KEYS[1], ARGV[2])
@@ -79,6 +80,12 @@ async function syncPseudoStrategyEntryLedger(
       const pnl = Number(
         position.realized_pnl ?? position.realizedPnL ?? position.pnl ?? position.result ?? 0,
       )
+      const pnlPct = Number(
+        position.realized_pnl_pct ?? position.realizedPnlPct ?? position.result_pct,
+      )
+      const positionCostPct = Number(
+        position.position_cost_pct ?? position.positionCostPct,
+      )
       const openedAt = Date.parse(String(
         position.opened_at ?? position.entry_time ?? position.created_at ?? "",
       ))
@@ -90,6 +97,8 @@ async function syncPseudoStrategyEntryLedger(
         : 0
       await markStrategyPositionInactive(connectionId, positionId, {
         pnl: Number.isFinite(pnl) ? pnl : 0,
+        ...(Number.isFinite(pnlPct) && { pnlPct }),
+        ...(Number.isFinite(positionCostPct) && positionCostPct > 0 && { positionCostPct }),
         drawdownMinutes,
       })
     }
@@ -148,6 +157,7 @@ export class PseudoPositionManager {
   private activePositionsCache: any[] | null = null
   private cacheTimestamp = 0
   private readonly CACHE_TTL_MS = 1000 // 1 second cache
+  private exactIdentityIndexReady: Promise<void> | null = null
 
   // ── Hot-path write elision ─────────────────────────────────────────
   // Per-position last-written price. The realtime tick compares the
@@ -185,12 +195,72 @@ export class PseudoPositionManager {
   private static readonly CLOSED_INDEX_CAP = 200
   private static readonly CLOSED_INDEX_TTL = 7 * 24 * 60 * 60 // 7 days
 
-  /**
-   * Redis set key that indexes all currently-active configSetKeys for O(1) duplicate detection.
-   * Each active position's configSetKey is added on creation and removed on close.
-   */
+  /** Redis set of active v2 exact-lane identities (plus legacy members until
+   * their positions close). Exact identity includes symbol, complete
+   * configuration, direction and the normal/trailing execution lane. */
   private activeConfigKeysSetKey(): string {
     return `pseudo_positions:${this.connectionId}:active_config_keys`
+  }
+
+  private exactConfigIdentity(
+    symbol: string,
+    configSetKey: string,
+    side: "long" | "short",
+    executionLane: SignalExecutionLane,
+  ): string {
+    return `v2:${JSON.stringify([
+      String(symbol).toUpperCase(),
+      String(configSetKey),
+      side,
+      executionLane,
+    ])}`
+  }
+
+  private baseLaneCooldownKey(identity: string): string {
+    return `pseudo:base_lane_cooldown:${this.connectionId}:${encodeURIComponent(identity)}`
+  }
+
+  /**
+   * Lazy upgrade for open positions created before exact identities were
+   * persisted. This is bounded to one pipelined scan per manager lifecycle;
+   * subsequent admissions remain O(1).
+   */
+  private async ensureExactIdentityIndex(): Promise<void> {
+    if (this.exactIdentityIndexReady) return this.exactIdentityIndexReady
+    this.exactIdentityIndexReady = (async () => {
+      const positions = await this.listPositions({ status: "open" })
+      if (positions.length === 0) return
+      const client = getRedisClient()
+      const pipeline = client.multi()
+      for (const position of positions) {
+        const side = String(position.side || "").toLowerCase()
+        if (side !== "long" && side !== "short") continue
+        const configSetKey = String(position.config_set_key || position.configSetKey || "")
+        const symbol = String(position.symbol || "")
+        if (!configSetKey || !symbol) continue
+        const executionLane = resolveSignalExecutionLane({
+          executionLane: position.execution_lane,
+          indicationType: position.indication_type,
+          trailingProfile: position.trailing_mode === "signal_dynamic"
+            ? {
+                mode: "signal_dynamic",
+                startRatio: Number(position.trailing_start_ratio || 0),
+                stopRatio: Number(position.trailing_stop_ratio || 0),
+                stepRatio: Number(position.trailing_step_ratio || 0),
+              }
+            : undefined,
+        })
+        pipeline.sadd(
+          this.activeConfigKeysSetKey(),
+          this.exactConfigIdentity(symbol, configSetKey, side, executionLane),
+        )
+      }
+      await pipeline.exec()
+    })().catch((error) => {
+      this.exactIdentityIndexReady = null
+      throw error
+    })
+    return this.exactIdentityIndexReady
   }
 
   /** Exact Base/Main/Real Set lineage for running-now coordination. */
@@ -210,53 +280,6 @@ export class PseudoPositionManager {
   ): string {
     const laneSuffix = executionLane === "signal_trailing" ? ":signal_trailing" : ""
     return `pseudo_positions:${this.connectionId}:active_by_direction:${side}${laneSuffix}`
-  }
-
-  // ── Per-direction cap cache (P0-4) ──────────────────────────────────
-  // The operator-tunable cap (Settings → Strategy → Base →
-  // `maxActiveBasePseudoPositionsPerDirection`) is cached in-process so
-  // `createPosition` doesn't round-trip to Redis on every call, but the
-  // cache is version-aware: it invalidates whenever the global
-  // `settings_version` counter advances (which happens on every save
-  // via `setAppSettings` / `bumpSettingsVersion`). This guarantees a
-  // settings change takes effect on the next `createPosition` call
-  // within ~250 ms (the version-snapshot TTL) without an engine restart.
-  //
-  // Default value of 1 matches the spec default. A 30 s hard-refresh
-  // deadline covers the edge case where a bump signal is lost.
-  private static directionCapCache: { value: number; ts: number; version: number } | null = null
-  private static readonly DIRECTION_CAP_HARD_REFRESH_MS = 30_000
-  private static readonly DEFAULT_DIRECTION_CAP = 1
-
-  private async getMaxActivePerDirection(): Promise<number> {
-    const now = Date.now()
-    const liveVersion = getSettingsVersionCachedSync()
-    const cached = PseudoPositionManager.directionCapCache
-    if (
-      cached &&
-      cached.version === liveVersion &&
-      now - cached.ts < PseudoPositionManager.DIRECTION_CAP_HARD_REFRESH_MS
-    ) {
-      return cached.value
-    }
-    try {
-      // Use the mirror-aware app-settings reader so the operator's saved
-      // value applies whether it was written to the canonical
-      // (`app_settings`) or legacy (`all_settings`) hash.
-      const s = await getAppSettings()
-      const raw = s.maxActiveBasePseudoPositionsPerDirection
-      const parsed = Number(raw)
-      const value =
-        Number.isFinite(parsed) && parsed >= 1
-          ? Math.floor(parsed)
-          : PseudoPositionManager.DEFAULT_DIRECTION_CAP
-      PseudoPositionManager.directionCapCache = { value, ts: now, version: liveVersion }
-      return value
-    } catch {
-      // Fail-safe — cap to the spec default so we never exceed 1 on a
-      // transient Redis error rather than silently uncapping.
-      return PseudoPositionManager.DEFAULT_DIRECTION_CAP
-    }
   }
 
   /** Redis hash key for one position */
@@ -422,8 +445,14 @@ export class PseudoPositionManager {
             ]
           : []),
       ].join(":")
+      const exactConfigIdentity = this.exactConfigIdentity(
+        params.symbol,
+        configSetKey,
+        params.side,
+        executionLane,
+      )
 
-      // P0-4: Gate on both Set-uniqueness AND the per-direction cap.
+      // Exactly one open position per complete symbol/config/direction lane.
       creationLock = await this.canCreatePosition(
         params.symbol,
         configSetKey,
@@ -462,7 +491,7 @@ export class PseudoPositionManager {
         const exchangeMinVolume = tradingPair?.min_order_size
           ? parseFloat(tradingPair.min_order_size)
           : undefined
-        return VolumeCalculator.calculatePositionVolume({
+        const calculated = VolumeCalculator.calculatePositionVolume({
           positionCost,
           positionsAverage,
           accountBalance,
@@ -470,6 +499,13 @@ export class PseudoPositionManager {
           leverage: maxLeverage,
           exchangeMinVolume,
         })
+        return {
+          ...calculated,
+          positionCostPercent:
+            Number.isFinite(positionCostPercent) && positionCostPercent > 0
+              ? Math.max(0.02, Math.min(1.0, positionCostPercent))
+              : 0.02,
+        }
       })()
 
       if (!volumeCalc.finalVolume || volumeCalc.finalVolume <= 0) {
@@ -511,6 +547,7 @@ export class PseudoPositionManager {
         indication_type: params.indicationType,
         side: params.side,
         config_set_key: configSetKey,
+        active_config_identity: exactConfigIdentity,
         strategy_set_key: params.strategySetKey || "",
         parent_set_key: params.parentSetKey || params.strategySetKey?.split("#")[0] || "",
         execution_lane: executionLane,
@@ -526,6 +563,7 @@ export class PseudoPositionManager {
         current_price: String(params.entryPrice),
         quantity: String(volumeCalc.finalVolume),
         position_cost: String(positionCost),
+        position_cost_pct: String(volumeCalc.positionCostPercent),
         takeprofit_factor: String(params.takeprofitFactor),
         takeprofit_price: String(takeProfitPrice),
         stoploss_ratio: String(params.stoplossRatio),
@@ -606,16 +644,14 @@ export class PseudoPositionManager {
       createPipeline.hset(this.positionKey(id), positionData)
       createPipeline.sadd(this.positionsSetKey(), id)
       // Register this configSetKey as active for O(1) duplicate detection on next creation
-      createPipeline.sadd(this.activeConfigKeysSetKey(), configSetKey)
+      createPipeline.sadd(this.activeConfigKeysSetKey(), exactConfigIdentity)
       if (params.strategySetKey) {
         createPipeline.sadd(this.activeStrategySetKeysSetKey(), params.strategySetKey)
         const parentSetKey = params.parentSetKey || params.strategySetKey.split("#")[0]
         if (parentSetKey) createPipeline.sadd(this.activeStrategySetKeysSetKey(), parentSetKey)
       }
-      // P0-4: Register this position id into the per-direction set so
-      // `canCreatePosition` can enforce the spec cap
-      // (`maxActiveBasePseudoPositionsPerDirection`, default 1) via O(1)
-      // SCARD on the very next call. Removed on close.
+      // Direction indexes are observational/statistical only. They never cap
+      // sibling symbols or configuration lanes.
       createPipeline.sadd(this.activeByDirectionKey(params.side, executionLane), id)
       await createPipeline.exec()
 
@@ -824,6 +860,24 @@ export class PseudoPositionManager {
       const client = getRedisClient()
       const closedAtIso = new Date().toISOString()
       const configSetKey = position.config_set_key || ""
+      const exactConfigIdentity = String(position.active_config_identity || "") ||
+        this.exactConfigIdentity(
+          String(position.symbol || ""),
+          String(configSetKey),
+          side === "short" ? "short" : "long",
+          resolveSignalExecutionLane({
+            executionLane: position.execution_lane,
+            indicationType: position.indication_type,
+            trailingProfile: position.trailing_mode === "signal_dynamic"
+              ? {
+                  mode: "signal_dynamic",
+                  startRatio: Number(position.trailing_start_ratio || 0),
+                  stopRatio: Number(position.trailing_stop_ratio || 0),
+                  stepRatio: Number(position.trailing_step_ratio || 0),
+                }
+              : undefined,
+          }),
+        )
       // Prefer the explicit `strategy_config_id` field when present — it's
       // the authoritative StrategyConfig.id (DB primary key) that the
       // historic prehistoric processor keyed its Set writes with. Fall
@@ -850,11 +904,15 @@ export class PseudoPositionManager {
       })
       pipeline.srem(this.positionsSetKey(), positionId)
       if (configSetKey) {
+        pipeline.srem(this.activeConfigKeysSetKey(), exactConfigIdentity)
+        // Remove the pre-v2 member if this position was created before the
+        // exact-lane migration.
         pipeline.srem(this.activeConfigKeysSetKey(), configSetKey)
-        // Clean up the atomic gate on close so a future position with the
-        // same config set key can be created immediately.
-        const gateKey = `pseudo:gate:${this.connectionId}:${configSetKey}`
-        pipeline.del(gateKey)
+        pipeline.set(
+          this.baseLaneCooldownKey(exactConfigIdentity),
+          "1",
+          { PX: BASE_LANE_REENTRY_COOLDOWN_MS },
+        )
       }
       const strategySetKey = String(position.strategy_set_key || "").trim()
       const parentSetKey = String(position.parent_set_key || "").trim()
@@ -938,6 +996,8 @@ export class PseudoPositionManager {
           indicationType,
           direction: directionRaw,
           pnl,
+          pnlPct: netPnlPct,
+          positionCostPct: Number(position.position_cost_pct || 0.1),
           drawdownMinutes,
           entryPrice,  // For cost-adjusted PF calculation
           quantity,    // For cost-adjusted PF calculation
@@ -996,7 +1056,14 @@ export class PseudoPositionManager {
       await syncPseudoStrategyEntryLedger(
         this.connectionId,
         positionId,
-        position,
+        {
+          ...position,
+          status: "closed",
+          closed_at: closedAtIso,
+          realized_pnl: String(pnl),
+          realized_pnl_pct: String(netPnlPct),
+          position_cost_pct: String(position.position_cost_pct || 0.1),
+        },
         false,
       )
 
@@ -1294,32 +1361,10 @@ export class PseudoPositionManager {
   /**
    * Check if a new position can be created for the given config set key + side.
    *
-   * Two gates (both must pass):
-   *   1. **Per-Set uniqueness** (pre-existing): exactly 1 active pseudo
-   *      position per unique config combination (indType:dir:tp:sl:…).
-   *      O(1) via SISMEMBER on `activeConfigKeysSetKey` — backed by a
-   *      5 s `SET NX EX` mutex gate (`gateKey`) so two concurrent
-   *      `createPosition` callers for the same configSetKey can't both
-   *      pass the gate simultaneously.
-   *   2. **Per-direction cap** (P0-4): hard cap on concurrent pseudo
-   *      positions PER DIRECTION (Long/Short) across ALL config Sets.
-   *      Cap comes from the operator-tunable setting
-   *      `maxActiveBasePseudoPositionsPerDirection` (default 1, spec).
-   *      O(1) via SCARD on `activeByDirectionKey(side)`.
-   *
-   * STALE-LOCK FIX: The SET NX mutex TTL is only 5 s. If a process that
-   * acquired the gate and inserted into `activeConfigKeysSetKey` crashes
-   * without cleaning up, the gateKey expires but the SISMEMBER entry
-   * remains stale — permanently blocking future retries. Gate 1 defends
-   * against this SINK: when `isMember=true` AND the gate mutex is NOT
-   * held (our SET NX already succeeded), we remove the stale entry with
-   * Redis `SREM` before returning false. The next caller (a fresh tick)
-   * will see a clean set and proceed normally.
-   *
-   * Gate 2 is the new piece — previously only gate 1 existed, which
-   * meant N distinct Sets could each hold 1 active long → N×1 longs
-   * (unbounded). Spec: *"Active Pseudo Position Limit for each
-   * direction Long,short maximal 1"*.
+   * The mutex, membership and cooldown all use the same exact identity:
+   * connection + symbol + complete config + direction + execution lane.
+   * This rejects a duplicate lane atomically while allowing every sibling
+   * symbol/configuration and the opposite direction independently.
    */
   private async refreshDirectionCreationLock(lock: DirectionCreationLock): Promise<boolean> {
     return (await evalDirectionCreationLock(
@@ -1355,14 +1400,16 @@ export class PseudoPositionManager {
     let lock: DirectionCreationLock | null = null
     try {
       const client = getRedisClient()
-      // One token-owned lease per connection+direction serializes both the
-      // config uniqueness check and the direction-wide cap across symbols.
+      await this.ensureExactIdentityIndex()
+      const exactIdentity = this.exactConfigIdentity(
+        symbol,
+        configSetKey,
+        side || "long",
+        executionLane,
+      )
+      // One token-owned lease per exact lane serializes only true duplicates.
       lock = {
-        key: `pseudo:creation_lock:${this.connectionId}:${
-          side
-            ? `${side}${executionLane === "signal_trailing" ? ":signal_trailing" : ""}`
-            : symbol || "legacy"
-        }`,
+        key: `pseudo:creation_lock:${this.connectionId}:${encodeURIComponent(exactIdentity)}`,
         token: nanoid(24),
       }
       const acquired = await client.set(lock.key, lock.token, {
@@ -1371,23 +1418,14 @@ export class PseudoPositionManager {
       } as any)
       if (!acquired) return null
 
-      const isMember = await client.sismember(this.activeConfigKeysSetKey(), configSetKey)
+      const isMember = await client.sismember(this.activeConfigKeysSetKey(), exactIdentity)
       if (isMember) {
         await this.releaseDirectionCreationLock(lock).catch(() => false)
         return null
       }
-
-      // Gate 2: per-direction cap (SCARD). When `side` is not supplied
-      // (legacy callers), skip the per-direction gate to preserve
-      // backwards compatibility — the setting is enforced at
-      // `createPosition` which always passes `side`.
-      if (side) {
-        const cap = await this.getMaxActivePerDirection()
-        const count = await client.scard(this.activeByDirectionKey(side, executionLane))
-        if (Number(count) >= cap) {
-          await this.releaseDirectionCreationLock(lock).catch(() => false)
-          return null
-        }
+      if (await client.get(this.baseLaneCooldownKey(exactIdentity)).catch(() => null)) {
+        await this.releaseDirectionCreationLock(lock).catch(() => false)
+        return null
       }
       return lock
     } catch (error) {
@@ -1448,6 +1486,17 @@ export class PseudoPositionManager {
           })
           pipeline.srem(this.positionsSetKey(), id)
           if (key) {
+            const exactIdentity = String(hash?.active_config_identity || "") ||
+              this.exactConfigIdentity(
+                String(hash?.symbol || ""),
+                String(key),
+                hash?.side === "short" ? "short" : "long",
+                resolveSignalExecutionLane({
+                  executionLane: hash?.execution_lane,
+                  indicationType: hash?.indication_type,
+                }),
+              )
+            pipeline.srem(this.activeConfigKeysSetKey(), exactIdentity)
             pipeline.srem(this.activeConfigKeysSetKey(), key)
           }
           const side = hash?.side

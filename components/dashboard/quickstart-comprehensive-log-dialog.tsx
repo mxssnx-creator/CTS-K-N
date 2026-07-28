@@ -42,6 +42,12 @@ interface LiveExecution {
 }
 
 interface StatsResponse {
+  strategyRows?: {
+    base: { total: number; valid: number }
+    main: { valid: number; overall: number }
+    real: { valid: number; active: number }
+    live: { total: number; mirrored: number; active: number }
+  }
   historic: {
     symbolsProcessed: number; symbolsTotal: number; candlesLoaded: number
     indicatorsCalculated: number; cyclesCompleted: number; isComplete: boolean; progressPercent: number
@@ -516,6 +522,26 @@ export function QuickstartComprehensiveLogDialog() {
                   coordination — not necessarily new sets, but variable-mapped coordinations for high-frequency
                   processing. Real strategies are the highest-confidence subset of Main.
                 </p>
+
+                {stats.strategyRows && (
+                  <SectionCard>
+                    <div className="text-xs font-semibold">Current strategy rows</div>
+                    <div className="grid grid-cols-2 gap-1.5 md:grid-cols-4">
+                      {[
+                        ["Base", stats.strategyRows.base.total, stats.strategyRows.base.valid, "Total / Valid"],
+                        ["Main", stats.strategyRows.main.valid, stats.strategyRows.main.overall, "Valid / Overall"],
+                        ["Row-Real", stats.strategyRows.real.valid, stats.strategyRows.real.active, "Valid / Active"],
+                        ["Row-Live", stats.strategyRows.live.total, stats.strategyRows.live.mirrored, "Rows / Mirrored"],
+                      ].map(([label, first, second, detail]) => (
+                        <div key={String(label)} className="rounded-md border bg-muted/20 p-2">
+                          <p className="text-[9px] uppercase tracking-wide text-muted-foreground">{label}</p>
+                          <p className="font-mono text-base">{fmt(Number(first))} / {fmt(Number(second))}</p>
+                          <p className="text-[9px] text-muted-foreground">{detail}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </SectionCard>
+                )}
 
                 <StratCard
                   label="Base"

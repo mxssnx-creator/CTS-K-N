@@ -21,7 +21,7 @@ describe("requested regression guardrails", () => {
     expect(source.indexOf("authorizeAdminBearer")).toBeLessThan(source.indexOf("await initRedis()"))
   })
 
-  test("progression stats preserve valid strategy fan-out and clamp only Live to Real", () => {
+  test("progression stats preserve canonical row fan-out without cross-stage clamping", () => {
     const coordinator = read("lib/strategy-coordinator.ts")
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
 
@@ -33,11 +33,12 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain('`${symbol}:real:relatedCreated`')
     expect(coordinator).toContain('`${symbol}:real:evaluated`]: String(realTotalEvaluated)')
 
-    expect(statsRoute).toContain("[STATS-VALIDATION]")
-    expect(statsRoute).toContain("Main and Real materialise related/adjusted Sets")
+    expect(statsRoute).toContain("const strategyRows = {")
+    expect(statsRoute).toContain("overallToValidRatio: ratio(mainRowOverall, mainRowValid, false)")
+    expect(statsRoute).toContain('semantics: "current-open-row-snapshot"')
     expect(statsRoute).not.toContain("stratCounts.real = stratCounts.main")
-    expect(statsRoute).toContain("if (stratCounts.live > stratCounts.real)")
-    expect(statsRoute).toContain("stratCounts.live = stratCounts.real")
+    expect(statsRoute).toContain("Do not clamp stage snapshots against each other")
+    expect(statsRoute).not.toContain("stratCounts.live = stratCounts.real")
     expect(coordinator).not.toContain("dev fallback - injected synthetic qualifying set from MAIN")
 
     const snapshot = { main: 10, real: 12, live: 14 }
@@ -351,7 +352,7 @@ describe("requested regression guardrails", () => {
     expect(presetToggle).toContain('engine_type: "main"')
     expect(presetToggle).toContain("one shared Main progression")
     expect(mainToggle).toContain('engine_type: "main"')
-    expect(liveStage).toContain('executionIntent: "main" | "preset"')
+    expect(liveStage).toContain('type LiveExecutionIntent = "main" | "preset" | "signal"')
     expect(liveStage).toContain("applySelectedPresetToRealPosition")
   })
 
@@ -429,14 +430,14 @@ describe("requested regression guardrails", () => {
   })
 
 
-  test("live requested mode bootstraps Main and Real evaluation gates", () => {
+  test("live requested mode never bypasses configured Main and Real evaluation gates", () => {
     const source = read("lib/strategy-coordinator.ts")
 
-    expect(source).toContain("isTruthyFlag(conn?.live_trade_requested)")
-    expect(source).toContain("const mainMinPos = liveQuickstartOn")
-    expect(source).toContain("? 1")
-    expect(source).toContain("realMinPos = 1")
-    expect(source).toContain("const relaxed = Math.min(realMinPF, 0.75)")
+    expect(source).toContain("const mainMinPos = this._coordinationSettings.mainEvalPosCount")
+    expect(source).toContain("const realMinPos = this._coordinationSettings.realEvalPosCount")
+    expect(source).toContain("Live enablement never changes Strategy validation")
+    expect(source).not.toContain("const mainMinPos = liveQuickstartOn")
+    expect(source).not.toContain("const relaxed = Math.min(realMinPF")
   })
 
 
@@ -548,12 +549,11 @@ describe("requested regression guardrails", () => {
     const settingsTab = read("components/settings/tabs/strategy-tab.tsx")
     const coordinationSection = read("components/settings/strategy-coordination-section.tsx")
 
-    expect(manager).toContain("parsed >= 2 && parsed <= 30")
-    expect(manager).toContain("const ALL_STEPS = [2, 3, 5, 10, 15, 20, 25, 30]")
-    expect(settingsTab).toContain("Minimum pseudo-position step-window size (Steps 2–30).")
-    expect(settingsTab).toContain("min={2}")
+    expect(manager).toContain("const stepsOptions = Array.from({ length: 29 }, (_, index) => index + 2)")
+    expect(manager).toContain("Every integer window is materialized")
+    expect(settingsTab).toContain("Steps generated: 2, 3, 4, …, 29, 30")
     expect(coordinationSection).toContain("2–30, step 1")
-    expect(coordinationSection).toContain("Setting to 2 adds the fastest 2 and 3 step windows")
+    expect(coordinationSection).toContain("Generated steps: 2, 3, 4, …, 29, 30")
   })
 
   test("standard, axis and trailing sets are ordered before adjust variants", () => {
@@ -680,13 +680,13 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain("Math.max(1, Math.min(4, Math.round(bpcr * 2) / 2))")
   })
 
-  test("production strategy fan-out has env-overridable liveness ceilings", () => {
+  test("production strategy fan-out is exhaustive while caches and explicit Real output remain bounded", () => {
     const source = read("lib/strategy-coordinator.ts")
 
-    expect(source).toContain("STRATEGY_MAIN_AXIS_SETS_CEILING")
-    expect(source).toContain("_boundedDynCeiling")
-    expect(source).toContain("STRATEGY_REAL_SETS_SAFETY_CEILING")
-    expect(source).toContain("_realCapForBound")
+    expect(source).not.toContain("STRATEGY_MAIN_AXIS_SETS_CEILING")
+    expect(source).not.toContain("_boundedDynCeiling")
+    expect(source).toContain("STRATEGY_REAL_SETS_CEILING")
+    expect(source).toContain("const realSetsCap = Math.min(")
     expect(source).toContain("private static readonly _AXIS_LRU_MAX = (() =>")
   })
 
@@ -1725,6 +1725,18 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("schedulePrehistoricProgressionAfterRealtimeWarmup")
   })
 
+  test("continuous historic replay reports slow cycles without detaching live workers", () => {
+    const source = read("lib/trade-engine/engine-manager.ts")
+    const start = source.indexOf("Determine the slow-cycle diagnostic threshold")
+    const end = source.indexOf("cycleCount++", start)
+    const block = source.slice(start, end)
+
+    expect(block).toContain("slowReplayDiagnostic")
+    expect(block).toContain("await mapWithConcurrency(symbols, replayConcurrency, replayOneSymbol)")
+    expect(block).toContain("clearTimeout(slowReplayDiagnostic)")
+    expect(block).not.toContain("withCycleDeadline(")
+  })
+
   test("production cron route uses canonical ind-strat pipeline for all configured symbols", () => {
     const cron = read("app/api/cron/generate-indications/route.ts")
     const pipeline = read("lib/trade-engine/shared-ind-strat-pipeline.ts")
@@ -1737,7 +1749,9 @@ describe("requested regression guardrails", () => {
     expect(cron).toContain("new IndicationSetsProcessor(connection.id)")
     expect(cron).toContain("ensureCurrentMarketDataCandle(symbol, client)")
     expect(cron).toContain("const symbolConcurrency = parsePositiveInteger(process.env.CRON_SYMBOL_CONCURRENCY, 4)")
-    expect(cron).toContain("const symbolLimit = parsePositiveInteger(process.env.CRON_SYMBOL_LIMIT, 20)")
+    expect(cron).toContain("const symbolsToProcess = allSymbols")
+    expect(cron).not.toContain("allSymbols.slice(0, symbolLimit)")
+    expect(cron).toContain("const legacyHistoricBatchHint = parsePositiveInteger(")
     expect(cron).toContain("symbolsToProcess,")
     expect(cron).not.toContain("executeStrategyFlowBatch(strategyItems.slice(0, 2)")
     expect(cron).not.toContain("strategyItems.slice(0, 2)")
@@ -1758,6 +1772,44 @@ describe("requested regression guardrails", () => {
     expect(strategy).toContain("skipLiveDispatch,")
     expect(strategy).toContain("isCurrent,")
     expect(pipeline).toContain("shouldContinue?: () => boolean")
+  })
+
+  test("current statistics and indication entrypoints never substitute samples or random values", () => {
+    const progression = read("app/api/connections/progression/[id]/stats/route.ts")
+    const strategyRow = read("components/strategies/strategy-row-compact.tsx")
+    const presetStats = read("components/statistics/preset-trade-stats.tsx")
+    const legacyEntrypoint = read("app/api/trade-engine/generate-indications/route.ts")
+
+    expect(progression).toContain("mapInBatches")
+    expect(progression).not.toContain("pseudoRaw.slice(0, 500)")
+    expect(progression).not.toMatch(/lrange\([^)]*,\s*0,\s*499\)/)
+    expect(strategyRow).not.toContain("Math.random")
+    expect(presetStats).not.toContain("Math.random")
+    expect(presetStats).toContain('String(position.preset_id || "") === String(preset.id)')
+    expect(legacyEntrypoint).toContain('from "@/app/api/cron/generate-indications/route"')
+    expect(legacyEntrypoint).not.toContain("generateDirectionIndication")
+  })
+
+  test("Signal's 120-position lease counts the complete mixed Main/Signal open book", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const admissionStart = liveStage.indexOf("async function readPositionsForSignalAdmission")
+    const admissionEnd = liveStage.indexOf("async function persistSignalCapacitySnapshot", admissionStart)
+    const admission = liveStage.slice(admissionStart, admissionEnd)
+
+    expect(admission).toContain('lrange(`live:positions:${connectionId}`, 0, -1)')
+    expect(admission).toContain("const READ_BATCH_SIZE = 250")
+    expect(admission).not.toContain("lrange(`live:positions:${connectionId}`, 0, 500)")
+    expect(admission).not.toContain("for (const id of ids) {\n      pipeline")
+  })
+
+  test("Main axes and Base profiles remain exhaustive without a candidate ceiling", () => {
+    const coordinator = read("lib/strategy-coordinator.ts")
+    const configManager = read("lib/indication-config-manager.ts")
+
+    expect(coordinator).toContain("complete, uncapped axis Cartesian product")
+    expect(coordinator).not.toContain("cap at 1619")
+    expect(coordinator).not.toContain("axis ceiling was")
+    expect(configManager).not.toMatch(/\.slice\(\s*0\s*,\s*500\s*\)/)
   })
 
 
@@ -1928,8 +1980,8 @@ describe("requested regression guardrails", () => {
     const setsProcessor = read("lib/strategy-sets-processor.ts")
     const engineManager = read("lib/trade-engine/engine-manager.ts")
 
-    expect(statsRoute).toContain("let timeoutHandle: ReturnType<typeof setTimeout> | null = null")
-    expect(statsRoute).toContain("if (timeoutHandle) clearTimeout(timeoutHandle)")
+    expect(statsRoute).toContain("const slowDiagnostic = setTimeout")
+    expect(statsRoute).toContain("clearTimeout(slowDiagnostic)")
     expect(coordinator).toContain("PositionContext")
     expect(coordinator).toContain("perSymbolOpenByDir")
     expect(coordinator).toContain("posCtx?.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 }")
@@ -2039,10 +2091,10 @@ describe("requested regression guardrails", () => {
   test("progression stats timeout timer is cleared after successful polls", () => {
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
 
-    expect(statsRoute).toContain("let timeoutHandle: ReturnType<typeof setTimeout> | null = null")
-    expect(statsRoute).toContain("timeoutHandle = setTimeout")
+    expect(statsRoute).toContain("const slowDiagnostic = setTimeout")
+    expect(statsRoute).toContain("slowDiagnostic.unref?.()")
     expect(statsRoute).toContain("finally {")
-    expect(statsRoute).toContain("if (timeoutHandle) clearTimeout(timeoutHandle)")
+    expect(statsRoute).toContain("clearTimeout(slowDiagnostic)")
   })
 
   test("real-stage active block overlays reuse per-cycle direction indexes", () => {
@@ -2159,8 +2211,10 @@ describe("requested regression guardrails", () => {
     expect(gates).toContain("ALLOW_INLINE_REDIS_LIVE_TRADING")
     expect(gates).toContain("ALLOW_KILO_SQLITE_LIVE_TRADING")
     expect(gates).toContain("shared Redis is not configured")
-    expect(liveStage).toContain("evaluateRealTradeReadiness(connSettings, executionIntent)")
-    expect(liveStage).toContain("evaluateRealTradeReadiness(freshSettings, freshExecutionIntent)")
+    expect(liveStage).toContain("readinessIntentForExecution(connSettings, executionIntent)")
+    expect(liveStage).toContain("evaluateRealTradeReadiness(connSettings, readinessIntent)")
+    expect(liveStage).toContain("readinessIntentForExecution(freshSettings, freshExecutionIntent)")
+    expect(liveStage).toContain("evaluateRealTradeReadiness(freshSettings, freshReadinessIntent)")
     expect(liveStage).toContain("A requested live run must fail visibly")
     expect(liveStage).toContain('livePosition.executionMode = "blocked"')
   })
@@ -2232,7 +2286,7 @@ describe("requested regression guardrails", () => {
     expect(slRange).toContain("STOP_LOSS_RATIO_MIN = 0.25")
     expect(slRange).toContain("STOP_LOSS_RATIO_MAX = 2.5")
     expect(slRange).toContain("STOP_LOSS_RATIO_STEP = 0.25")
-    expect(basePseudo).toContain("if (Number(slRatio) > maxStopLossRatio)")
+    expect(basePseudo).toContain("if (Number(config.slRatio) > maxStopLossRatio)")
     expect(indicationState).toContain("const slRatios = await this.getStopLossRatios()")
     expect(calculator).toContain("Math.floor((2.5 - 0.25) / 0.25) + 1")
   })

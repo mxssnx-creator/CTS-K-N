@@ -3,10 +3,11 @@
  * Manages step-based indication calculations for Main System Trade mode
  * Implements: direction (2-30), move (2-30), active (0.5-2.5%),
  * optimal (advanced), active-advanced, and Trend (kept last) types
- * With validation timeout (15s) and position cooldown (20s)
+ * With a 250 ms per-config/direction validation interval and a 3 s
+ * per-Base-lane re-entry cooldown after close.
  */
 
-import { getSettings, setSettings, getAppSetting, getAppSettings } from "@/lib/redis-db"
+import { getSettings, setSettings, getAppSetting, getAppSettings, getRedisClient } from "@/lib/redis-db"
 import { BasePseudoPositionManager, type BasePositionConfig } from "./base-pseudo-position-manager"
 import { DataCleanupManager } from "./data-cleanup-manager"
 import { logProgressionEvent } from "./engine-progression-logs"
@@ -25,6 +26,9 @@ import {
   normalizeTrendTimeframesMinutes,
   type TrendSignal,
 } from "@/lib/trend-indication"
+import {
+  canonicalIndicationLaneIdentity,
+} from "@/lib/indication-lane-identity"
 
 export interface IndicationState {
   symbol: string
@@ -39,8 +43,8 @@ export class IndicationStateManager {
   private connectionId: string
   private states: Map<string, IndicationState> = new Map()
 
-  private validationTimeout = 15 // seconds
-  private positionCooldown = 20 // seconds
+  private validationTimeout = 0.25 // seconds
+  private positionCooldown = 3 // seconds
   private maxPositionsPerConfig = 1
   private trendEnabled = true
   private trendTimeframesMinutes: number[] = [...DEFAULT_TREND_TIMEFRAMES_MINUTES]
@@ -95,21 +99,34 @@ export class IndicationStateManager {
       ])
       
       if (indicationSettings) {
-        this.validationTimeout = Number.parseInt(String(indicationSettings.validationTimeout || "15"))
+        const configuredValidationMs = Number(
+          indicationSettings.validationTimeoutMs ??
+          indicationSettings.validation_timeout_ms,
+        )
+        const configuredValidationSeconds = Number(
+          indicationSettings.validationTimeoutSeconds ??
+          indicationSettings.validationTimeout,
+        )
+        this.validationTimeout = Number.isFinite(configuredValidationMs) && configuredValidationMs >= 0
+          ? configuredValidationMs / 1_000
+          : Number.isFinite(configuredValidationSeconds) && configuredValidationSeconds >= 0
+            ? configuredValidationSeconds
+            : 0.25
         const cooldownMs = indicationSettings.positionCooldownMs
         const cooldownSeconds = indicationSettings.positionCooldownTimeout
         
         if (cooldownMs) {
-          this.positionCooldown = Number.parseInt(String(cooldownMs)) / 1000 // Convert ms to seconds
+          this.positionCooldown = Number(cooldownMs) / 1000 // Convert ms to seconds
         } else if (cooldownSeconds) {
-          this.positionCooldown = Number.parseInt(String(cooldownSeconds))
+          this.positionCooldown = Number(cooldownSeconds)
         } else {
-          this.positionCooldown = 0.1 // 100ms default in seconds
+          this.positionCooldown = 3
         }
-        
-        this.maxPositionsPerConfig = Number.parseInt(
-          String(indicationSettings.maxPositionsPerConfigDirection || indicationSettings.maxPositionsPerConfigSet || "1"),
-        )
+
+        // The Base contract is fixed: one open position for every exact
+        // symbol+type+configuration+direction lane. Legacy wider settings
+        // must not turn this into either a direction-wide cap or >1 per lane.
+        this.maxPositionsPerConfig = 1
       }
 
       const settings = appSettings || {}
@@ -151,8 +168,8 @@ export class IndicationStateManager {
     } catch (error) {
       console.error("[v0] Failed to load indication settings:", error)
       // Use defaults if loading fails
-      this.validationTimeout = 15
-      this.positionCooldown = 0.1
+      this.validationTimeout = 0.25
+      this.positionCooldown = 3
       this.maxPositionsPerConfig = 1
       this.settingsLoadedAt = Date.now()
     }
@@ -362,22 +379,40 @@ export class IndicationStateManager {
   /**
    * Check if an indication can be created (validation timeout)
    */
-  private async canCreateIndication(stateKey: string): Promise<boolean> {
+  private async canCreateIndication(
+    stateKey: string,
+    timeoutSeconds = this.validationTimeout,
+  ): Promise<boolean> {
     try {
-      // Get state from Redis
-      const stateData = await getSettings(`indication_state:${stateKey}`)
-
-      if (!stateData?.validated_at) return true
-
-      const validatedAt = new Date(stateData.validated_at).getTime()
-      const now = Date.now()
-      const elapsedSeconds = (now - validatedAt) / 1000
-
-      return elapsedSeconds >= this.validationTimeout
+      const timeoutMs = Math.max(0, Math.round(timeoutSeconds * 1_000))
+      if (timeoutMs === 0) return true
+      const client = getRedisClient()
+      return Boolean(await client.set(
+        `indication_validated_cooldown:${stateKey}`,
+        String(Date.now()),
+        { NX: true, PX: timeoutMs },
+      ))
     } catch (error) {
       console.error(`[v0] Error checking indication state for ${stateKey}:`, error)
       return false // Fail safe
     }
+  }
+
+  private exactStateKey(
+    symbol: string,
+    type: string,
+    name: string,
+    direction: "long" | "short",
+    config: unknown,
+  ): string {
+    return canonicalIndicationLaneIdentity({
+      connectionId: this.connectionId,
+      symbol,
+      type,
+      name,
+      direction,
+      config,
+    })
   }
 
   /**
@@ -463,16 +498,28 @@ export class IndicationStateManager {
 
       await Promise.allSettled(
         batch.map(async (range) => {
-          const stateKey = `${symbol}-direction-${range}`
-
-          // Early return checks
           if (prices.length < range + 1) return
-          if (!(await this.canCreateIndication(stateKey))) return
-          if (!(await this.canCreatePosition(symbol, "direction", range, null, null, null))) return
 
           const directionChange = this.detectDirectionChange(prices, range)
 
           if (directionChange) {
+            const stateKey = this.exactStateKey(
+              symbol,
+              "default",
+              "direction",
+              directionChange,
+              { range },
+            )
+            if (!(await this.canCreateIndication(stateKey))) return
+            if (!(await this.canCreatePosition(
+              symbol,
+              "direction",
+              range,
+              null,
+              null,
+              null,
+              directionChange,
+            ))) return
             await this.createPseudoPositions(symbol, "direction", range, currentPrice, directionChange, null, null)
             await this.updateIndicationState(stateKey)
           }
@@ -517,15 +564,28 @@ export class IndicationStateManager {
 
       await Promise.allSettled(
         batch.map(async (range) => {
-          const stateKey = `${symbol}-move-${range}`
-
           if (prices.length < range + 1) return
-          if (!(await this.canCreateIndication(stateKey))) return
-          if (!(await this.canCreatePosition(symbol, "move", range, null, null, null))) return
 
           const moveDetected = this.detectPriceMove(prices, range)
 
           if (moveDetected) {
+            const stateKey = this.exactStateKey(
+              symbol,
+              "default",
+              "move",
+              moveDetected,
+              { range },
+            )
+            if (!(await this.canCreateIndication(stateKey))) return
+            if (!(await this.canCreatePosition(
+              symbol,
+              "move",
+              range,
+              null,
+              null,
+              null,
+              moveDetected,
+            ))) return
             await this.createPseudoPositions(symbol, "move", range, currentPrice, moveDetected, null, null)
             await this.updateIndicationState(stateKey)
           }
@@ -549,11 +609,6 @@ export class IndicationStateManager {
 
     await Promise.allSettled(
       thresholds.map(async (threshold) => {
-        const stateKey = `${symbol}-active-${threshold}`
-
-        if (!(await this.canCreateIndication(stateKey))) return
-        if (!(await this.canCreatePosition(symbol, "active", null, threshold, null, null))) return
-
         // Get oldest price in recent window
         const oldestPrice = recentPrices[recentPrices.length - 1]
         if (!oldestPrice) return
@@ -563,6 +618,23 @@ export class IndicationStateManager {
 
         if (Math.abs(priceChange) >= threshold) {
           const direction = priceChange > 0 ? "long" : "short"
+          const stateKey = this.exactStateKey(
+            symbol,
+            "default",
+            "active",
+            direction,
+            { threshold },
+          )
+          if (!(await this.canCreateIndication(stateKey))) return
+          if (!(await this.canCreatePosition(
+            symbol,
+            "active",
+            null,
+            threshold,
+            null,
+            null,
+            direction,
+          ))) return
           await this.createPseudoPositions(symbol, "active", null, currentPrice, direction, threshold, null)
           await this.updateIndicationState(stateKey)
         }
@@ -606,15 +678,20 @@ export class IndicationStateManager {
 
       await Promise.allSettled(
         batch.map(async (range) => {
-          const stateKey = `${symbol}-optimal-${range}`
-
           if (prices.length < range + 1) return
-          if (!(await this.canCreateIndication(stateKey))) return
 
           // Use correct consecutive step detection (not averages)
           const directionChange = this.detectConsecutiveDirectionSteps(prices, range)
 
           if (directionChange) {
+            const stateKey = this.exactStateKey(
+              symbol,
+              "additional",
+              "optimal",
+              directionChange,
+              { range },
+            )
+            if (!(await this.canCreateIndication(stateKey))) return
             // Start market change tracking for this indication
             await this.trackMarketChangeAndCreateOptimalPositions(
               symbol,
@@ -703,16 +780,8 @@ export class IndicationStateManager {
       averageWindowMinutes: largestWindow,
     })
 
-    let indicationCount = 0
-    let positionCount = 0
+    const tasks: Array<Promise<{ indications: number; positions: number }>> = []
     for (const timeframeMinutes of this.trendTimeframesMinutes) {
-      let best: {
-        signal: TrendSignal
-        drawdownFactor: number
-        lastSituationRatio: number
-        activeSituationRatio: number
-      } | null = null
-
       for (const drawdownFactor of this.trendDrawdownFactors) {
         for (const lastSituationRatio of this.trendLastSituationRatios) {
           for (const activeSituationRatio of this.trendActiveSituationRatios) {
@@ -724,40 +793,68 @@ export class IndicationStateManager {
               positionCostPct: this.trendPositionCostPct,
               minAgreement: this.trendMinAgreement,
             })
-            if (!signal || (best && signal.signalScore <= best.signal.signalScore)) continue
-            best = { signal, drawdownFactor, lastSituationRatio, activeSituationRatio }
+            if (!signal) continue
+            const config = {
+              signal,
+              drawdownFactor,
+              lastSituationRatio,
+              activeSituationRatio,
+            }
+            tasks.push((async () => {
+              const stateKey = this.exactStateKey(
+                symbol,
+                "additional",
+                "trend",
+                signal.direction,
+                {
+                  timeframeMinutes,
+                  drawdownFactor,
+                  lastSituationRatio,
+                  activeSituationRatio,
+                },
+              )
+              if (!(await this.canCreateIndication(stateKey))) {
+                return { indications: 0, positions: 0 }
+              }
+              if (!(await this.canCreatePosition(
+                symbol,
+                "trend",
+                timeframeMinutes,
+                Math.abs(drawdownFactor),
+                timeframeMinutes,
+                lastSituationRatio,
+                signal.direction,
+                activeSituationRatio,
+              ))) {
+                return { indications: 0, positions: 0 }
+              }
+
+              const positions = await this.createTrendBasePseudoPositions(
+                symbol,
+                currentPrice,
+                timeframeMinutes,
+                config,
+                adaptiveTpRange,
+              )
+              await this.updateIndicationState(stateKey)
+              return { indications: 1, positions }
+            })())
           }
         }
       }
-
-      if (!best) continue
-      const stateKey =
-        `${symbol}-trend-${timeframeMinutes}-${best.drawdownFactor}` +
-        `-${best.lastSituationRatio}-${best.activeSituationRatio}-${best.signal.direction}`
-      if (!(await this.canCreateIndication(stateKey))) continue
-      if (!(await this.canCreatePosition(
-        symbol,
-        "trend",
-        timeframeMinutes,
-        Math.abs(best.drawdownFactor),
-        timeframeMinutes,
-        best.lastSituationRatio,
-        best.signal.direction,
-        best.activeSituationRatio,
-      ))) continue
-
-      indicationCount++
-      positionCount += await this.createTrendBasePseudoPositions(
-        symbol,
-        currentPrice,
-        timeframeMinutes,
-        best,
-        adaptiveTpRange,
-      )
-      await this.updateIndicationState(stateKey)
     }
 
-    return { indications: indicationCount, positions: positionCount }
+    const settled = await Promise.allSettled(tasks)
+    return settled.reduce(
+      (totals, result) => {
+        if (result.status === "fulfilled") {
+          totals.indications += result.value.indications
+          totals.positions += result.value.positions
+        }
+        return totals
+      },
+      { indications: 0, positions: 0 },
+    )
   }
 
   private normalizeTrendPricesOldestFirst(historicalPrices: any[], currentPrice: number): number[] {
@@ -900,11 +997,6 @@ export class IndicationStateManager {
     activityRatio: number,
     timeWindow: number, // in minutes
   ): Promise<void> {
-    const stateKey = `${symbol}-active_advanced-${activityRatio}-${timeWindow}`
-
-    if (!(await this.canCreateIndication(stateKey))) return
-    if (!(await this.canCreatePosition(symbol, "active_advanced", null, activityRatio, timeWindow, null))) return
-
     // Calculate time window in milliseconds
     const timeWindowMs = timeWindow * 60 * 1000
     const now = timestamps[0]
@@ -972,6 +1064,30 @@ export class IndicationStateManager {
             // Check drawdown is acceptable
             if (drawdown <= 5.0) {
               const direction = priceChangeFromAvg > 0 ? "long" : "short"
+              const stateKey = this.exactStateKey(
+                symbol,
+                "default",
+                "active",
+                direction,
+                {
+                  mode: "advanced",
+                  activityRatio,
+                  timeWindow,
+                  continuationRatioMinimum: 0.6,
+                  volatilityMinimumPct: 0.1,
+                  drawdownMaximumPct: 5,
+                },
+              )
+              if (!(await this.canCreateIndication(stateKey))) return
+              if (!(await this.canCreatePosition(
+                symbol,
+                "active_advanced",
+                null,
+                activityRatio,
+                timeWindow,
+                null,
+                direction,
+              ))) return
 
               // Create base pseudo positions with activity parameters
               await this.createActiveAdvancedPositions(symbol, currentPrice, direction, activityRatio, timeWindow, {

@@ -55,7 +55,7 @@ export interface CommonIndicationSettingsDocument {
   [indicator: string]: CommonCoordinationSettings | CommonIndicatorSettings
 }
 
-interface ParameterDefinition {
+export interface ParameterDefinition {
   label: string
   default: CommonNumericRange
   min: number
@@ -208,7 +208,7 @@ export const COMMON_INDICATOR_DEFINITIONS: readonly CommonIndicatorDefinition[] 
     storageKey: "cci",
     label: "CCI / CCX",
     description: "Commodity Channel Index deviations from the typical-price mean.",
-    enabled: false,
+    enabled: true,
     parameters: {
       period: range("Period", 10, 30, 5, 3, 200, 1),
       threshold: range("Absolute threshold", 80, 160, 20, 20, 400, 5),
@@ -219,7 +219,7 @@ export const COMMON_INDICATOR_DEFINITIONS: readonly CommonIndicatorDefinition[] 
     storageKey: "adl",
     label: "ADL",
     description: "Accumulation/distribution flow using close location and volume.",
-    enabled: false,
+    enabled: true,
     parameters: {
       shortPeriod: range("Short smoothing", 3, 10, 1, 2, 100, 1),
       longPeriod: range("Long smoothing", 15, 40, 5, 3, 300, 1),
@@ -230,7 +230,7 @@ export const COMMON_INDICATOR_DEFINITIONS: readonly CommonIndicatorDefinition[] 
     storageKey: "fibonacci",
     label: "Fibonacci",
     description: "Retracement proximity over configurable lookback and tolerance ranges.",
-    enabled: false,
+    enabled: true,
     parameters: {
       lookback: range("Lookback", 13, 55, 7, 3, 500, 1),
       tolerancePct: range("Tolerance %", 0.1, 0.5, 0.1, 0.01, 5, 0.01),
@@ -241,7 +241,7 @@ export const COMMON_INDICATOR_DEFINITIONS: readonly CommonIndicatorDefinition[] 
     storageKey: "roc",
     label: "ROC",
     description: "Rate-of-change momentum with short-difference thresholds.",
-    enabled: false,
+    enabled: true,
     parameters: {
       period: range("Period", 3, 20, 1, 1, 200, 1),
       thresholdPct: range("Threshold %", 0.1, 1, 0.1, 0.01, 20, 0.01),
@@ -252,7 +252,7 @@ export const COMMON_INDICATOR_DEFINITIONS: readonly CommonIndicatorDefinition[] 
     storageKey: "williamsR",
     label: "Williams %R",
     description: "Fast overbought/oversold location across recent high/low ranges.",
-    enabled: false,
+    enabled: true,
     parameters: {
       period: range("Period", 7, 21, 2, 3, 100, 1),
       oversold: range("Oversold", -90, -70, 5, -100, -50, 1),
@@ -275,7 +275,7 @@ export const COMMON_INDICATOR_DEFINITIONS: readonly CommonIndicatorDefinition[] 
     storageKey: "vwap",
     label: "VWAP",
     description: "Volume-weighted price deviation across short and wide windows.",
-    enabled: false,
+    enabled: true,
     parameters: {
       period: range("Period", 5, 30, 5, 2, 300, 1),
       deviationPct: range("Deviation %", 0.1, 1, 0.1, 0.01, 20, 0.01),
@@ -285,7 +285,7 @@ export const COMMON_INDICATOR_DEFINITIONS: readonly CommonIndicatorDefinition[] 
 
 export const DEFAULT_COMMON_COORDINATION_SETTINGS: CommonCoordinationSettings = {
   enabled: true,
-  timeframesMinutes: [1, 3, 5, 15],
+  timeframesMinutes: [1, 5, 15, 30],
   rangeSteps: [2, 2.5, 3],
   drawdownRatios: [1, 1.5, 2],
   higherRangeDrawdownScale: 0.5,
@@ -327,7 +327,6 @@ function numericList(
   fallback: readonly number[],
   min: number,
   max: number,
-  maximumItems = 16,
 ): number[] {
   const raw = Array.isArray(value)
     ? value
@@ -338,8 +337,62 @@ function numericList(
     .map(Number)
     .filter(Number.isFinite)
     .map((item) => clamp(item, min, max)))]
-    .slice(0, maximumItems)
   return result.length > 0 ? result : [...fallback]
+}
+
+export function expandCommonNumericRange(range: CommonNumericRange): number[] {
+  const from = Number(range.from)
+  const to = Number(range.to)
+  const step = Number(range.step)
+  if (!Number.isFinite(from) || !Number.isFinite(to) || !Number.isFinite(step) || step <= 0) {
+    return []
+  }
+  const lower = Math.min(from, to)
+  const upper = Math.max(from, to)
+  const values: number[] = []
+  for (let value = lower; value <= upper + Number.EPSILON; value += step) {
+    values.push(Number(value.toFixed(8)))
+  }
+  return values
+}
+
+/**
+ * Full parameter Cartesian product for one Common indicator. Invalid logical
+ * tuples (for example short >= long or oversold >= overbought) are excluded;
+ * no representative sampling or top-K ceiling is applied.
+ */
+export function commonIndicatorParameterConfigurations(
+  definition: CommonIndicatorDefinition,
+  settings: CommonIndicatorSettings,
+): Array<Record<string, number>> {
+  const entries = Object.keys(definition.parameters).map((key) => {
+    const configured = settings?.[key] as CommonNumericRange | undefined
+    const values = expandCommonNumericRange(
+      configured || definition.parameters[key].default,
+    )
+    return [key, values] as const
+  })
+  let combinations: Array<Record<string, number>> = [{}]
+  for (const [key, values] of entries) {
+    combinations = combinations.flatMap((combination) =>
+      values.map((value) => ({ ...combination, [key]: value })),
+    )
+  }
+  return combinations.filter((parameters) => {
+    const short = parameters.shortPeriod
+    const long = parameters.longPeriod
+    if (Number.isFinite(short) && Number.isFinite(long) && short >= long) return false
+    const fast = parameters.fastPeriod
+    const slow = parameters.slowPeriod
+    if (Number.isFinite(fast) && Number.isFinite(slow) && fast >= slow) return false
+    const oversold = parameters.oversold
+    const overbought = parameters.overbought
+    if (Number.isFinite(oversold) && Number.isFinite(overbought) && oversold >= overbought) return false
+    const acceleration = parameters.acceleration
+    const maximum = parameters.maximum
+    if (Number.isFinite(acceleration) && Number.isFinite(maximum) && acceleration > maximum) return false
+    return true
+  })
 }
 
 export function normalizeCommonIndicationSettings(raw: unknown): CommonIndicationSettingsDocument {
@@ -354,22 +407,19 @@ export function normalizeCommonIndicationSettings(raw: unknown): CommonIndicatio
         coordinationRaw.timeframesMinutes,
         DEFAULT_COMMON_COORDINATION_SETTINGS.timeframesMinutes,
         1,
-        15,
-        8,
+        60,
       ).map((value) => Math.round(value)).sort((left, right) => left - right),
       rangeSteps: numericList(
         coordinationRaw.rangeSteps,
         DEFAULT_COMMON_COORDINATION_SETTINGS.rangeSteps,
         0.5,
         10,
-        12,
       ).sort((left, right) => left - right),
       drawdownRatios: numericList(
         coordinationRaw.drawdownRatios,
         DEFAULT_COMMON_COORDINATION_SETTINGS.drawdownRatios,
         0.1,
         20,
-        12,
       ).sort((left, right) => left - right),
       higherRangeDrawdownScale: clamp(
         finite(

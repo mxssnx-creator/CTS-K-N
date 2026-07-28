@@ -353,7 +353,7 @@ export function aggregateCandles(candles: PresetCandle[], maxPoints: number): Pr
   return result
 }
 
-function selectRangeValues(raw: unknown, fallback: NumericPresetRange, maximum: number): number[] {
+function selectRangeValues(raw: unknown, fallback: NumericPresetRange, _batchSize: number): number[] {
   const record = (raw || {}) as Record<string, unknown>
   const requested = {
     min: finite(record.from ?? record.min, fallback.min),
@@ -362,40 +362,87 @@ function selectRangeValues(raw: unknown, fallback: NumericPresetRange, maximum: 
   }
   const lowerBound = Math.min(fallback.min, requested.min, requested.max)
   const upperBound = Math.max(fallback.max, requested.min, requested.max)
-  const values = rangeValues(normalizeRange(requested, fallback, {
+  return rangeValues(normalizeRange(requested, fallback, {
     min: lowerBound,
     max: upperBound,
     step: requested.step,
   }))
-  if (values.length <= maximum) return values
-  const picked = new Set<number>()
-  for (let index = 0; index < maximum; index++) {
-    picked.add(values[Math.round((index * (values.length - 1)) / Math.max(1, maximum - 1))])
-  }
-  return [...picked]
 }
 
 function latinVariants(
   type: PresetIndicatorType,
   parameters: Record<string, number[]>,
-  limit: number,
+  batchSize: number,
 ): PresetIndicatorConfiguration[] {
   const entries = Object.entries(parameters).filter(([, values]) => values.length > 0)
-  const variants: PresetIndicatorConfiguration[] = []
-  const seen = new Set<string>()
-  for (let variant = 0; variant < limit; variant++) {
-    const params: Record<string, number> = {}
-    entries.forEach(([key, values], parameterIndex) => {
-      const index = (variant + parameterIndex * 2) % values.length
-      params[key] = values[index]
-    })
-    const fingerprint = JSON.stringify(params)
-    if (!seen.has(fingerprint)) {
-      seen.add(fingerprint)
-      variants.push({ type, params })
+  let variants: PresetIndicatorConfiguration[] = [{ type, params: {} }]
+  for (const [key, values] of entries) {
+    variants = variants.flatMap((variant) =>
+      values.map((value) => ({
+        type,
+        params: { ...variant.params, [key]: value },
+      })),
+    )
+  }
+  const valid = variants.filter(({ params }) => {
+    const short = params.short
+    const long = params.long
+    if (Number.isFinite(short) && Number.isFinite(long) && short >= long) return false
+    const fast = params.fast
+    const slow = params.slow
+    if (Number.isFinite(fast) && Number.isFinite(slow) && fast >= slow) return false
+    const oversold = params.oversold
+    const overbought = params.overbought
+    if (Number.isFinite(oversold) && Number.isFinite(overbought) && oversold >= overbought) return false
+    const acceleration = params.acceleration
+    const maximum = params.maximum
+    if (Number.isFinite(acceleration) && Number.isFinite(maximum) && acceleration > maximum) return false
+    return true
+  })
+  const limit = Math.max(1, Math.floor(batchSize))
+  if (valid.length <= limit) return valid
+
+  // Keep the optimizer bounded without biasing every run toward the first
+  // parameter values. Preserve each configured Common timeframe first when
+  // the operator's limit permits it; otherwise an even Cartesian sample can
+  // accidentally omit a valid 5m/15m lane despite the timeframe being enabled.
+  // The remaining sample is deterministic, keeping presets reproducible while
+  // honoring the per-indicator limit.
+  if (limit === 1) return [valid[0]]
+  const selected: PresetIndicatorConfiguration[] = []
+  const selectedIndexes = new Set<number>()
+  const configuredTimeframes = Array.from(new Set(
+    (parameters.timeframeMinutes || [])
+      .map(Number)
+      .filter((value) => Number.isFinite(value) && value > 0),
+  ))
+  if (configuredTimeframes.length > 0 && limit >= configuredTimeframes.length) {
+    for (const timeframeMinutes of configuredTimeframes) {
+      const sourceIndex = valid.findIndex(
+        (variant) => Number(variant.params.timeframeMinutes) === timeframeMinutes,
+      )
+      if (sourceIndex < 0 || selectedIndexes.has(sourceIndex)) continue
+      selectedIndexes.add(sourceIndex)
+      selected.push(valid[sourceIndex])
     }
   }
-  return variants
+  for (let index = 0; index < limit; index++) {
+    if (selected.length >= limit) break
+    const sourceIndex = Math.round(
+      (index * (valid.length - 1)) / Math.max(1, limit - 1),
+    )
+    if (selectedIndexes.has(sourceIndex)) continue
+    selectedIndexes.add(sourceIndex)
+    selected.push(valid[sourceIndex])
+  }
+  // A coverage reservation can overlap the evenly-spaced indexes above. Fill
+  // any resulting gap in stable Cartesian order so the exact limit still holds.
+  for (let sourceIndex = 0; selected.length < limit && sourceIndex < valid.length; sourceIndex++) {
+    if (selectedIndexes.has(sourceIndex)) continue
+    selectedIndexes.add(sourceIndex)
+    selected.push(valid[sourceIndex])
+  }
+  return selected
 }
 
 function indicatorRecord(commonSettings: Record<string, unknown>, key: string): Record<string, unknown> {

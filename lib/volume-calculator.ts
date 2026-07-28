@@ -79,10 +79,17 @@ interface VolumeCalculationParams {
   indicationType?: string
   // Adjust-type variant multiplier: block=1.5-2.0, dca=0.5, others=1.0.
   // Applied after liveEngineFactor; absent/undefined → 1.0 (no scaling).
-  // Clamped to [0.01, 5]. Unlike channel/base ratios, this explicitly
+  // Clamped to [0.01, 5] unless an explicitly combined Position-Count target
+  // is being materialized. Unlike channel/base ratios, this explicitly
   // supports independent low-volume Position-Count/DCA variants.
   // RATIO-based: 1.0 = no variant scaling, >1 = larger, <1 = smaller
   sizeMultiplier?: number
+  /**
+   * Combined Position-Count rows represent the sum of every valid Set and may
+   * legitimately exceed the ordinary variant cap. Callers must opt in only
+   * after resolving that physical aggregate target.
+   */
+  allowUnboundedVariantMultiplier?: boolean
 }
 
 interface VolumeCalculationResult {
@@ -231,6 +238,7 @@ export class VolumeCalculator {
       signalVolumeFactor,
       indicationType,
       sizeMultiplier,
+      allowUnboundedVariantMultiplier = false,
     } = params
 
     // ── Resolve the engine-specific volume factor (Live-only) ──────
@@ -331,17 +339,18 @@ export class VolumeCalculator {
       // — which is exactly the spec: pseudo positions are ratio-only,
       // live positions calculate "indeed volume" (real notional) using
       // the per-engine ratio.
-      // ── Adjust-type variant multiplier (Block / DCA) ──────────────────
-      // Clamped to [0.01, 5]; absent/invalid → 1.0 (identity).
+      // ── Adjust-type / Position-Count variant multiplier ───────────────
+      // Ordinary Block/DCA variants stay bounded. Only a caller that has
+      // resolved one physical combined Position-Count target may opt in to a
+      // larger aggregate; that preserves every valid Set without allowing a
+      // malformed standalone configuration to inflate an exchange order.
       // Applied after liveEngineFactor so both multipliers compose:
       //   notional = balance × positionCost × liveEngineFactor × variantMult / posAvg
       const clampVariant = (raw: number | undefined): number => {
         const n = Number(raw)
         if (!Number.isFinite(n) || n <= 0) return 1
-        // Floor lowered to 0.01 to honour the Position-Count (Pis) Sets
-        // volume ratio (default 0.05) — a deliberate, operator-configured
-        // low-volume ratio for the additional Main-stage axis Sets.
-        return Math.max(0.01, Math.min(5, n))
+        const normalized = Math.max(0.01, n)
+        return allowUnboundedVariantMultiplier ? normalized : Math.min(5, normalized)
       }
       const variantMult = clampVariant(sizeMultiplier)
 
@@ -407,7 +416,9 @@ export class VolumeCalculator {
     const riskPerPosition = totalRiskAmount / positionsAverage
     const rawVariant = Number(sizeMultiplier)
     const riskVariantMultiplier = Number.isFinite(rawVariant) && rawVariant > 0
-      ? Math.max(0.01, Math.min(5, rawVariant))
+      ? (allowUnboundedVariantMultiplier
+          ? Math.max(0.01, rawVariant)
+          : Math.min(5, Math.max(0.01, rawVariant)))
       : 1
     // The Base→Main→Real coordination basis is immutable identity.
     // Low-volume variants are represented exclusively by `sizeMultiplier`
@@ -640,6 +651,8 @@ export class VolumeCalculator {
       // Block/DCA variant multiplier from RealPosition.sizeMultiplier.
       // Absent / undefined → treated as 1.0 (no Block/DCA scaling).
       sizeMultiplier?: number
+      /** See VolumeCalculationParams; reserved for a physical combined target. */
+      allowUnboundedVariantMultiplier?: boolean
       // Live-stage margin retries can ask for a concrete leverage target
       // after an exchange-side leverage reduction. This keeps quantity
       // sizing coupled to the new margin target instead of blindly
@@ -784,6 +797,7 @@ export class VolumeCalculator {
         indicationType: options.indicationType,
         // Variant multiplier forwarded from the callsite (Block/DCA sizing).
         sizeMultiplier: options.sizeMultiplier,
+        allowUnboundedVariantMultiplier: options.allowUnboundedVariantMultiplier === true,
       })
 
       result.accountBalance = steppedBalance.sizingBalance

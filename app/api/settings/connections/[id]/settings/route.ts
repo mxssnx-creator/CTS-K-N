@@ -23,6 +23,16 @@ import {
 import { changedSettingKeys, settingsValuesEqual } from "@/lib/settings-diff"
 import { maskConnectionSecrets, maskConnectionSettings } from "@/lib/connection-secrets"
 import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
+import {
+  normalizeMainTradeStagePfRatio,
+  type MainTradeStage,
+} from "@/lib/main-trade-profit-factor"
+import {
+  normalizePosCountVolumeRatio,
+  POS_COUNT_VOLUME_RATIO_DEFAULT,
+  POS_COUNT_VOLUME_RATIO_MAX,
+  POS_COUNT_VOLUME_RATIO_MIN,
+} from "@/lib/pos-count-volume-ratio"
 
 const FALLBACK_SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -44,8 +54,8 @@ function serializeConnectionSettingsHash(settings: Record<string, unknown>): Rec
     else if (typeof value === "number" || typeof value === "boolean") out[key] = String(value)
     else out[key] = JSON.stringify(value)
   }
-  // The pos-count axis Sets volume ratio must stay within [0.01, 0.25]
-  // (default 0.05) wherever it is persisted. `serializeConnectionSettingsHash`
+  // The pos-count coordination ratio must stay on [0.1, 10], step 0.1,
+  // wherever it is persisted. `serializeConnectionSettingsHash`
   // is the single chokepoint that writes the flat connection-settings hash the
   // GET handler reads back, so clamp it here as a final guarantee — the
   // deep-merge and route-level clamps may leave an unclamped top-level value
@@ -54,7 +64,7 @@ function serializeConnectionSettingsHash(settings: Record<string, unknown>): Rec
     if (out[ratioKey] === undefined) continue
     const n = Number(out[ratioKey])
     if (Number.isFinite(n) && n > 0) {
-      out[ratioKey] = String(Math.max(0.01, Math.min(0.25, n)))
+      out[ratioKey] = String(normalizePosCountVolumeRatio(n))
     }
   }
   return out
@@ -101,6 +111,9 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "is_live_trade",
   "is_testnet",
   "is_preset_trade",
+  "is_signal_trade",
+  "signal_trade_enabled",
+  "signal_trade_requested",
   "connection_method",
   "position_mode",
   "margin_mode",
@@ -115,6 +128,8 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "control_orders",
   "variantTrailingEnabled",
   "variantBlockEnabled",
+  "blockOnly",
+  "variantBlockOnly",
   "variantDcaEnabled",
   "axisPrevEnabled",
   "axisLastEnabled",
@@ -277,6 +292,7 @@ export async function GET(
           "useSystemCloseOnly", "use_system_close_only",
           // Coordination variant toggles
           "variantTrailingEnabled", "variantBlockEnabled",
+          "blockOnly", "variantBlockOnly",
           "variantDcaEnabled",
           "blockActiveRealEnabled", "blockActiveLiveEnabled",
           "strategyBaseTrailingEnabled",
@@ -301,7 +317,7 @@ export async function GET(
     // Include defaults for newer coordination knobs so existing production
     // connections expose stable values before the first save after upgrade.
     const settings: Record<string, any> = {
-      minStep: 5,
+      minStep: 2,
       maxStopLossRatio: 2.5,
       trailingMinStep: 6,
       ...jsonSettings,
@@ -410,11 +426,17 @@ export async function GET(
         storedCoord.blockActiveLiveEnabled,
         settings.blockActiveLiveEnabled,
       ), true),
+      blockOnly: asBoolean(firstDefined(
+        storedCoord.blockOnly,
+        settings.blockOnly,
+        settings.variantBlockOnly,
+        settings.block_only,
+      ), true),
       posCountsVolumeRatio: asBoundedNumber(
         firstDefined(storedCoord.posCountsVolumeRatio, settings.posCountsVolumeRatio),
-        0.05,
-        0.01,
-        0.25,
+        POS_COUNT_VOLUME_RATIO_DEFAULT,
+        POS_COUNT_VOLUME_RATIO_MIN,
+        POS_COUNT_VOLUME_RATIO_MAX,
       ),
       trailingVariants,
       dcaMaxSteps: dca.maxSteps,
@@ -626,7 +648,7 @@ export async function PATCH(
     // snapshot.
     const rawPcvr = Number(merged.posCountsVolumeRatio)
     if (Number.isFinite(rawPcvr) && rawPcvr > 0) {
-      const clampedPcvr = Math.max(0.01, Math.min(0.25, rawPcvr))
+      const clampedPcvr = normalizePosCountVolumeRatio(rawPcvr)
       merged.posCountsVolumeRatio = clampedPcvr
       const coord = (merged.coordination_settings && typeof merged.coordination_settings === "object"
         ? merged.coordination_settings
@@ -689,6 +711,10 @@ export async function PATCH(
       ...(settings.is_live_trade !== undefined ? { is_live_trade: toRedisFlag(settings.is_live_trade) } : {}),
       ...(settings.is_testnet !== undefined ? { is_testnet: toRedisFlag(settings.is_testnet) } : {}),
       ...(settings.is_preset_trade !== undefined ? { is_preset_trade: toRedisFlag(settings.is_preset_trade) } : {}),
+      ...(settings.is_signal_trade !== undefined ? {
+        is_signal_trade: toRedisFlag(settings.is_signal_trade),
+        signal_trade_enabled: toRedisFlag(settings.is_signal_trade),
+      } : {}),
       // Mirror symbol_count and force_symbols onto the connection hash so
       // getAllConnections() (and the UI card) always shows the current count.
       ...(settings.symbol_count !== undefined ? { symbol_count: String(Number(settings.symbol_count)) } : {}),
@@ -847,6 +873,10 @@ export async function PATCH(
       ...(settings.is_live_trade !== undefined ? { is_live_trade: toRedisFlag(settings.is_live_trade) } : {}),
       ...(settings.is_testnet !== undefined ? { is_testnet: toRedisFlag(settings.is_testnet) } : {}),
       ...(settings.is_preset_trade !== undefined ? { is_preset_trade: toRedisFlag(settings.is_preset_trade) } : {}),
+      ...(settings.is_signal_trade !== undefined ? {
+        is_signal_trade: toRedisFlag(settings.is_signal_trade),
+        signal_trade_enabled: toRedisFlag(settings.is_signal_trade),
+      } : {}),
     }
 
     if (resolvedSymbolsForSettings && resolvedSymbolsForSettings.length > 0) {
@@ -927,8 +957,14 @@ export async function PATCH(
       if (Number.isFinite(bpcr) && bpcr > 0) flatKnobs.blockPauseCountRatio = String(Math.max(1, Math.min(4, Math.round(bpcr * 2) / 2)))
       if (typeof coord.blockActiveRealEnabled === "boolean") flatKnobs.blockActiveRealEnabled = String(coord.blockActiveRealEnabled)
       if (typeof coord.blockActiveLiveEnabled === "boolean") flatKnobs.blockActiveLiveEnabled = String(coord.blockActiveLiveEnabled)
+      if (typeof coord.blockOnly === "boolean") {
+        flatKnobs.blockOnly = String(coord.blockOnly)
+        flatKnobs.variantBlockOnly = String(coord.blockOnly)
+      }
       const pvr = Number(coord.posCountsVolumeRatio)
-      if (Number.isFinite(pvr) && pvr > 0) flatKnobs.posCountsVolumeRatio = String(Math.max(0.01, Math.min(0.25, pvr)))
+      if (Number.isFinite(pvr) && pvr > 0) {
+        flatKnobs.posCountsVolumeRatio = String(normalizePosCountVolumeRatio(pvr))
+      }
 
       const normalizedTrailing = normalizeTrailingVariants(
         coord.trailingVariants ?? merged.strategyBaseTrailingVariants ?? DEFAULT_TRAILING_VARIANTS,
@@ -991,30 +1027,37 @@ export async function PATCH(
     if (Number.isFinite(lev) && lev > 0) flatKnobs.leveragePercentage = String(Math.max(1, Math.min(100, lev)))
     if (typeof merged.useMaximalLeverage === "boolean") flatKnobs.useMaximalLeverage = merged.useMaximalLeverage ? "true" : "false"
 
-    const strat = merged.strategies as Record<string, Record<string, { min_profit_factor?: number; max_drawdown_time?: number; max_positions?: number }>> | undefined
+    const strat = merged.strategies as Record<string, Record<MainTradeStage, {
+      min_profit_factor?: number
+      max_drawdown_time?: number
+      max_positions?: number
+    }>> | undefined
     const chan = strat?.main
     if (chan) {
-      const pf = (raw: unknown): string | null => {
-        const n = Number(raw)
-        return Number.isFinite(n) && n > 0 ? String(Math.max(0, Math.min(5, n))) : null
+      const pf = (stage: MainTradeStage, raw: unknown): string => {
+        return String(normalizeMainTradeStagePfRatio(stage, raw))
       }
       const ddtMinToHr = (raw: unknown): string | null => {
         const n = Number(raw)
         return Number.isFinite(n) && n > 0 ? String(Math.max(1, Math.min(72, n / 60))) : null
       }
-      const posCount = (raw: unknown): string | null => {
+      const stageCap = (raw: unknown): string | null => {
         const n = Number(raw)
-        return Number.isFinite(n) && n > 0 ? String(Math.floor(n)) : null
+        return Number.isFinite(n) && n >= 0
+          ? String(Math.max(0, Math.floor(n)))
+          : null
       }
       for (const [k, v] of [
-        ["baseProfitFactor", pf(chan.base?.min_profit_factor)],
-        ["mainProfitFactor", pf(chan.main?.min_profit_factor)],
-        ["realProfitFactor", pf(chan.real?.min_profit_factor)],
+        ["baseProfitFactor", pf("base", chan.base?.min_profit_factor)],
+        ["mainProfitFactor", pf("main", chan.main?.min_profit_factor)],
+        ["realProfitFactor", pf("real", chan.real?.min_profit_factor)],
+        ["liveProfitFactor", pf("live", chan.live?.min_profit_factor)],
         ["maxDrawdownTimeMainHours", ddtMinToHr(chan.main?.max_drawdown_time)],
         ["maxDrawdownTimeRealHours", ddtMinToHr(chan.real?.max_drawdown_time)],
-        ["stageMinPosCountBase", posCount(chan.base?.max_positions)],
-        ["stageMinPosCountMain", posCount(chan.main?.max_positions)],
-        ["stageMinPosCountReal", posCount(chan.real?.max_positions)],
+        ["maxDrawdownTimeLiveHours", ddtMinToHr(chan.live?.max_drawdown_time)],
+        ["strategyRealSetsSafetyCeiling", stageCap(chan.real?.max_positions)],
+        ["maxRealSets", stageCap(chan.real?.max_positions)],
+        ["strategyLiveSetsCeiling", stageCap(chan.live?.max_positions)],
       ] as Array<[string, string | null]>) if (v !== null) flatKnobs[k] = v
     }
 

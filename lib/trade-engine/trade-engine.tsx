@@ -17,6 +17,10 @@ import { IndicationStateManager } from "@/lib/indication-state-manager"
 import { PositionFlowCoordinator } from "@/lib/position-flow-coordinator"
 import { getDataCleanupManager } from "@/lib/data-cleanup-manager"
 import { clampConcurrency, mapSettledWithConcurrency, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+} from "@/lib/main-trade-profit-factor"
 
 export const TRADE_SERVICE_NAME = "TradeEngine-PerConnection"
 
@@ -817,13 +821,15 @@ export class TradeEngine {
 
   private async managePseudoPositionsWithValidation(symbol: string, mode: "preset" | "main"): Promise<void> {
     try {
+      const baseThreshold = mode === "main" ? MAIN_TRADE_BASE_PF_RATIO_DEFAULT : 0.7
+      const downstreamThreshold = mode === "main" ? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT : 0.7
       const baseIndications = await sql`
         SELECT * FROM indications
         WHERE connection_id = ${this.connectionId}
           AND symbol = ${symbol}
           AND mode = ${mode}
           AND calculated_at > NOW() - INTERVAL '5 minutes'
-          AND profit_factor >= 0.7
+          AND profit_factor >= ${baseThreshold}
         ORDER BY calculated_at DESC
         LIMIT 5
       `
@@ -836,12 +842,12 @@ export class TradeEngine {
           AND symbol = ${symbol}
           AND mode = ${mode}
           AND status = 'active'
-          AND profit_factor >= 0.6
+          AND profit_factor >= ${downstreamThreshold}
           AND created_at > NOW() - INTERVAL '1 hour'
       `
 
       for (const signal of mainSignals) {
-        if (await this.isValidatedForReal(signal)) {
+        if (await this.isValidatedForReal(signal, mode)) {
           await this.createRealPseudoPosition(symbol, signal, mode)
         }
       }
@@ -850,14 +856,16 @@ export class TradeEngine {
     }
   }
 
-  private async isValidatedForReal(mainPosition: any): Promise<boolean> {
+  private async isValidatedForReal(mainPosition: any, mode: "preset" | "main"): Promise<boolean> {
     try {
       const profitFactor = Number.parseFloat(mainPosition.profit_factor)
       const createdAt = new Date(mainPosition.created_at)
       const now = new Date()
       const hoursSinceCreation = (now.getTime() - createdAt.getTime()) / (1000 * 60 * 60)
 
-      const meetsMinProfitFactor = profitFactor >= 0.6
+      const meetsMinProfitFactor = profitFactor >= (
+        mode === "main" ? MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT : 0.7
+      )
       const withinDrawdownTime = hoursSinceCreation <= 12
 
       const [existing] = await sql`
