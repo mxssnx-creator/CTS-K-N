@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient, getSettings } from "@/lib/redis-db"
-// Aliases so the rest of the file continues to compile without changes.
-const redisGetSettings = getSettings
-const redisSetSettings = async (_key: string, _val: unknown) => { /* no-op: use setSettings if write is needed */ }
 
 /**
  * GET /api/settings/connections/[id]/statistics
@@ -54,25 +51,35 @@ export async function GET(
     // Get symbol statistics
     const symbolsKey = `symbols:${connectionId}`
     const symbolsSet = await client.smembers(symbolsKey)
-    const symbolStats = []
-    for (const symbol of symbolsSet.slice(0, 50)) {
-      const symbolData = await client.hgetall(`symbol:${connectionId}:${symbol}`)
-      if (symbolData && Object.keys(symbolData).length > 0) {
-        symbolStats.push({
-          symbol,
-          volatility: parseFloat(symbolData.volatility || "0"),
-          volume_24h: parseFloat(symbolData.volume_24h || "0"),
-          price_change_percent: parseFloat(symbolData.price_change_percent || "0"),
-          indications_count: parseInt(symbolData.indications_count || "0"),
-          winning_indications: parseInt(symbolData.winning_indications || "0"),
-          last_price: parseFloat(symbolData.last_price || "0"),
-        })
+    const symbols = [...new Set(symbolsSet.map(String).filter(Boolean))]
+    const symbolStats: Array<Record<string, string | number>> = []
+    const READ_BATCH_SIZE = 32
+    for (let offset = 0; offset < symbols.length; offset += READ_BATCH_SIZE) {
+      const batch = symbols.slice(offset, offset + READ_BATCH_SIZE)
+      const values = await Promise.all(
+        batch.map((symbol) =>
+          client.hgetall(`symbol:${connectionId}:${symbol}`).catch(() => null),
+        ),
+      )
+      for (let index = 0; index < batch.length; index++) {
+        const symbolData = values[index]
+        if (symbolData && Object.keys(symbolData).length > 0) {
+          symbolStats.push({
+            symbol: batch[index],
+            volatility: parseFloat(symbolData.volatility || "0"),
+            volume_24h: parseFloat(symbolData.volume_24h || "0"),
+            price_change_percent: parseFloat(symbolData.price_change_percent || "0"),
+            indications_count: parseInt(symbolData.indications_count || "0"),
+            winning_indications: parseInt(symbolData.winning_indications || "0"),
+            last_price: parseFloat(symbolData.last_price || "0"),
+          })
+        }
       }
     }
 
     // Get progression data
     const progressionKey = `settings:engine_progression:${connectionId}`
-    const progression = await redisGetSettings(progressionKey) || {}
+    const progression = await getSettings(progressionKey) || {}
 
     // Get trading metrics
     const metricsKey = `trading_metrics:${connectionId}`

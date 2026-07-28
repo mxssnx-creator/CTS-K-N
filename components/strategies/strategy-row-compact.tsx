@@ -10,7 +10,7 @@ import type { StrategyResult } from "@/lib/strategies"
 
 interface StrategyRowCompactProps {
   strategy: StrategyResult
-  onToggle: (id: string, active: boolean) => void
+  onToggle?: (id: string, active: boolean) => void
   minimalProfitFactor: number
   index: number
 }
@@ -45,6 +45,7 @@ export function StrategyRowCompact({ strategy, onToggle, minimalProfitFactor, in
     if (name.includes("Base")) return <Target className="h-3 w-3" />
     if (name.includes("Main")) return <Activity className="h-3 w-3" />
     if (name.includes("Real")) return <BarChart3 className="h-3 w-3" />
+    if (name.includes("Live")) return <ZapOff className="h-3 w-3" />
     if (name.includes("Block")) return <TrendingUp className="h-3 w-3" />
     if (name.includes("DCA")) return <TrendingDown className="h-3 w-3" />
     return <Activity className="h-3 w-3" />
@@ -54,6 +55,7 @@ export function StrategyRowCompact({ strategy, onToggle, minimalProfitFactor, in
     if (name.includes("Base")) return "bg-blue-500/20 text-blue-300 border-blue-500/30"
     if (name.includes("Main")) return "bg-green-500/20 text-green-300 border-green-500/30"
     if (name.includes("Real")) return "bg-purple-500/20 text-purple-300 border-purple-500/30"
+    if (name.includes("Live")) return "bg-cyan-500/20 text-cyan-300 border-cyan-500/30"
     if (name.includes("Block")) return "bg-orange-500/20 text-orange-300 border-orange-500/30"
     if (name.includes("DCA")) return "bg-red-500/20 text-red-300 border-red-500/30"
     return "bg-gray-500/20 text-gray-300 border-gray-500/30"
@@ -90,7 +92,10 @@ export function StrategyRowCompact({ strategy, onToggle, minimalProfitFactor, in
         {/* Active toggle */}
         <Switch
           checked={strategy.isActive}
-          onCheckedChange={(checked) => onToggle(strategy.id, checked)}
+          onCheckedChange={(checked) => onToggle?.(strategy.id, checked)}
+          disabled={!onToggle}
+          aria-label={onToggle ? "Toggle strategy" : "Engine-controlled active state"}
+          title={onToggle ? "Toggle strategy" : "Activity is derived from the live Set ledger"}
           className="scale-75 origin-left"
         />
 

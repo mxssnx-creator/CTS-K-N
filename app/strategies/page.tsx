@@ -9,10 +9,8 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { StrategyRowCompact } from "@/components/strategies/strategy-row-compact"
 import { StrategyFiltersAdvanced } from "@/components/strategies/strategy-filters-advanced"
-import { StrategyEngine } from "@/lib/strategies"
 import type { StrategyResult } from "@/lib/strategies"
-import { Activity, TrendingUp, BarChart3, Settings, RefreshCw, Target, Download } from "lucide-react"
-import { toast } from "@/lib/simple-toast"
+import { Activity, TrendingUp, BarChart3, Settings, RefreshCw, Target, Download, DatabaseZap } from "lucide-react"
 import { useExchange } from "@/lib/exchange-context"
 import { PageHeader } from "@/components/page-header"
 import { useStrategyUpdates } from "@/lib/use-websocket"
@@ -60,37 +58,65 @@ export default function StrategiesPage() {
   const [filters, setFilters] = useState<AdvancedFilters>(initialAdvancedFilters)
   const [sortBy, setSortBy] = useState<"profit" | "trades" | "active">("profit")
   const [isLoading, setIsLoading] = useState(true)
+  const [loadError, setLoadError] = useState("")
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(0)
 
-  // Load strategies on component mount and when connection changes
+  // Load the selected connection only. An absent selection is an honest empty
+  // state; it must never silently become synthetic production telemetry.
   useEffect(() => {
-    const loadStrategies = async () => {
-      setIsLoading(true)
-      try {
-        // Determine which connection to use (fallback to demo if none selected)
-        const connectionToUse = selectedConnectionId || "demo-mode"
+    let cancelled = false
+    let inFlight = false
+    if (!selectedConnectionId) {
+      setStrategies([])
+      setIsDemo(false)
+      setLoadError("")
+      setLastUpdatedAt(0)
+      setIsLoading(false)
+      return
+    }
 
-        const response = await fetch(`/api/data/strategies?connectionId=${encodeURIComponent(connectionToUse)}`)
+    const loadStrategies = async (initial = false) => {
+      if (inFlight) return
+      inFlight = true
+      if (initial) setIsLoading(true)
+      try {
+        const response = await fetch(
+          `/api/data/strategies?connectionId=${encodeURIComponent(selectedConnectionId)}`,
+          { cache: "no-store" },
+        )
         if (!response.ok) {
           throw new Error(`Failed to fetch strategies: ${response.statusText}`)
         }
 
         const data = await response.json()
-        if (data.success) {
+        if (data.success && !cancelled) {
           setStrategies(data.data || [])
-          setIsDemo(data.isDemo)
+          setIsDemo(Boolean(data.isDemo))
+          setLoadError("")
+          setLastUpdatedAt(Date.now())
         } else {
           throw new Error(data.error || "Unknown error")
         }
       } catch (error) {
         console.error("[Strategies] Failed to load:", error)
-        toast.error("Failed to load strategies")
-        setStrategies([])
+        if (!cancelled) {
+          setLoadError(error instanceof Error ? error.message : "Failed to load strategies")
+          if (initial) setStrategies([])
+        }
       } finally {
-        setIsLoading(false)
+        inFlight = false
+        if (!cancelled && initial) setIsLoading(false)
       }
     }
 
-    loadStrategies()
+    void loadStrategies(true)
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadStrategies(false)
+    }, 3_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(poll)
+    }
   }, [selectedConnectionId])
 
   // Handle real-time strategy updates via SSE
@@ -99,13 +125,14 @@ export default function StrategiesPage() {
       // Update strategies that match the symbol
       return prev.map((s) => {
         // Check if this is the strategy being updated
-        if (s.name === update.symbol) {
+        const symbol = String((s as StrategyResult & { symbol?: string }).symbol || s.name)
+        if (symbol === update.symbol || s.name === update.symbol) {
           return {
             ...s,
-            avg_profit_factor: update.profit_factor || s.avg_profit_factor,
+            avg_profit_factor: update.profit_factor ?? s.avg_profit_factor,
             stats: {
               ...s.stats,
-              win_rate: update.win_rate || s.stats.win_rate,
+              win_rate: update.win_rate ?? s.stats.win_rate,
             },
           }
         }
@@ -128,6 +155,13 @@ export default function StrategiesPage() {
     result = result.filter((strategy) => {
       // Profit factor filter
       if (strategy.avg_profit_factor < filters.profitFactorMin) return false
+      const symbol = String((strategy as StrategyResult & { symbol?: string }).symbol || strategy.name)
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, "")
+      if (
+        filters.symbols.length > 0 &&
+        !filters.symbols.some((candidate) => symbol.includes(candidate.replace(/[^A-Z0-9]+/g, "")))
+      ) return false
 
       // TP/SL coordinate range filters
       if (strategy.config.takeprofit_factor < filters.tpRange[0] || strategy.config.takeprofit_factor > filters.tpRange[1]) return false
@@ -136,9 +170,10 @@ export default function StrategiesPage() {
       // Volume range filter
       if (strategy.volume_factor < filters.volRange[0] || strategy.volume_factor > filters.volRange[1]) return false
 
-      // Win rate filter (simulated from profit factor)
-      const simulatedWinRate = Math.max(0, Math.min(100, (strategy.avg_profit_factor + 2) * 25))
-      if (simulatedWinRate < filters.winRateMin) return false
+      const measuredWinRate = strategy.stats.win_rate <= 1
+        ? strategy.stats.win_rate * 100
+        : strategy.stats.win_rate
+      if (measuredWinRate < filters.winRateMin) return false
 
       // Toggle filters
       if (filters.trailingOnly && !strategy.config.trailing_enabled) return false
@@ -147,8 +182,10 @@ export default function StrategiesPage() {
 
       // Strategy type filter
       if (filters.strategyTypes.length > 0) {
-        const strategyTypeName = strategy.name.split(" ")[0]
-        if (!filters.strategyTypes.some((t) => strategyTypeName.includes(t))) return false
+        const strategyTypeName = String(
+          (strategy as StrategyResult & { effectiveStage?: string }).effectiveStage || strategy.mainType,
+        ).toLowerCase()
+        if (!filters.strategyTypes.some((type) => strategyTypeName === type.toLowerCase())) return false
       }
 
       return true
@@ -184,6 +221,33 @@ export default function StrategiesPage() {
 
     return { total, active, valid, profitable, avgProfitFactor }
   }, [strategies])
+
+  const exportStrategies = useCallback(() => {
+    if (filteredAndSortedStrategies.length === 0) return
+    const rows = filteredAndSortedStrategies.map((strategy) => ({
+      id: strategy.id,
+      symbol: (strategy as StrategyResult & { symbol?: string }).symbol || strategy.name,
+      stage: (strategy as StrategyResult & { effectiveStage?: string }).effectiveStage || strategy.mainType,
+      active: strategy.isActive,
+      validation: strategy.validation_state,
+      pfRatio: strategy.avg_profit_factor,
+      drawdownHours: strategy.stats.drawdown_hours,
+      entries: strategy.stats.total_trades,
+      updatedAt: (strategy as StrategyResult & { updatedAt?: number }).updatedAt || 0,
+    }))
+    const fields = Object.keys(rows[0]) as Array<keyof typeof rows[number]>
+    const quote = (value: unknown) => `"${String(value ?? "").replace(/"/g, "\"\"")}"`
+    const csv = [
+      fields.map(quote).join(","),
+      ...rows.map((row) => fields.map((field) => quote(row[field])).join(",")),
+    ].join("\n")
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }))
+    const anchor = document.createElement("a")
+    anchor.href = url
+    anchor.download = `strategies-${selectedConnectionId || "none"}-${new Date().toISOString()}.csv`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }, [filteredAndSortedStrategies, selectedConnectionId])
 
    if (isLoading) {
      return (
@@ -229,14 +293,42 @@ export default function StrategiesPage() {
             <RefreshCw className="h-3 w-3 mr-1" />
             Refresh
           </Button>
-          <Button variant="outline" size="sm" className="h-8 text-xs">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={exportStrategies}
+            disabled={filteredAndSortedStrategies.length === 0}
+          >
             <Download className="h-3 w-3 mr-1" />
             Export
           </Button>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+      {!selectedConnectionId && (
+        <div className="rounded-md border border-dashed p-8 text-center">
+          <DatabaseZap className="mx-auto mb-3 h-6 w-6 text-muted-foreground" />
+          <div className="text-sm font-medium">Select a connection</div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Strategy rows are loaded only from the selected connection&apos;s live Set ledger.
+          </p>
+        </div>
+      )}
+
+      {selectedConnectionId && loadError && (
+        <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">
+          Last refresh failed: {loadError}
+        </div>
+      )}
+
+      {selectedConnectionId && lastUpdatedAt > 0 && (
+        <div className="text-right text-[10px] text-muted-foreground">
+          Snapshot refreshed {new Date(lastUpdatedAt).toLocaleTimeString()}
+        </div>
+      )}
+
+      {selectedConnectionId && <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
         {[
           { icon: BarChart3,  label: "Total",      value: stats.total, tint: "text-primary" },
           { icon: Activity,   label: "Active",     value: stats.active, tint: "text-green-500" },
@@ -256,9 +348,9 @@ export default function StrategiesPage() {
             </CardContent>
           </Card>
         ))}
-      </div>
+      </div>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+      {selectedConnectionId && <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
         <div className="lg:col-span-1">
           <StrategyFiltersAdvanced filters={filters} onFiltersChange={setFilters} />
         </div>
@@ -297,12 +389,6 @@ export default function StrategiesPage() {
                 <StrategyRowCompact
                   key={strategy.id}
                   strategy={strategy}
-                  onToggle={(id, active) => {
-                    setStrategies((prev) =>
-                      prev.map((s) => (s.id === id ? { ...s, isActive: active } : s))
-                    )
-                    toast.success(`Strategy ${active ? "activated" : "deactivated"}`)
-                  }}
                   minimalProfitFactor={
                     Number(strategy.config.min_profit_factor) ||
                     MAIN_TRADE_BASE_PF_RATIO_DEFAULT
@@ -325,7 +411,7 @@ export default function StrategiesPage() {
             )}
           </div>
         </div>
-      </div>
+      </div>}
     </div>
   )
 }

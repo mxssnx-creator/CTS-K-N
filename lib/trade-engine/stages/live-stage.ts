@@ -9390,7 +9390,7 @@ export async function getLivePositions(connectionId: string): Promise<LivePositi
   await initRedis()
   const client = getRedisClient()
   try {
-    const ids = ((await client.lrange(`live:positions:${connectionId}`, 0, 500).catch(() => [])) || []) as string[]
+    const ids = ((await client.lrange(`live:positions:${connectionId}`, 0, -1).catch(() => [])) || []) as string[]
 
     // Deduplicate while preserving order — the open index may contain stale
     // duplicates from retried writes.
@@ -9402,13 +9402,16 @@ export async function getLivePositions(connectionId: string): Promise<LivePositi
       uniqueIds.push(id)
     }
 
-    // Batch all GETs into a single concurrent fan-out. Previously each id
-    // paid a full Redis round-trip; with 500 open positions that was ~500
-    // sequential awaits. Promise.all collapses them into one RTT window.
+    // Read the complete authoritative open index. Batches bound concurrency,
+    // not cardinality: a Main book larger than 501 rows must still reconcile,
+    // close, and appear in current statistics after a restart.
     const positions: LivePosition[] = []
-    if (uniqueIds.length > 0) {
+    const READ_BATCH_SIZE = 32
+    for (let offset = 0; offset < uniqueIds.length; offset += READ_BATCH_SIZE) {
       const values = await Promise.all(
-        uniqueIds.map((id) => readLivePositionSnapshot(client, connectionId, id).catch(() => null)),
+        uniqueIds
+          .slice(offset, offset + READ_BATCH_SIZE)
+          .map((id) => readLivePositionSnapshot(client, connectionId, id).catch(() => null)),
       )
       for (const pos of values) if (pos) positions.push(pos)
     }
@@ -9455,10 +9458,15 @@ export async function getClosedLivePositions(
     const positions: LivePosition[] = []
     if (uniqueIds.length === 0) return positions
 
-    const values = await Promise.all(
-      uniqueIds.map((id) => readLivePositionSnapshot(client, connectionId, id).catch(() => null)),
-    )
-    for (const pos of values) if (pos) positions.push(pos)
+    const READ_BATCH_SIZE = 32
+    for (let offset = 0; offset < uniqueIds.length; offset += READ_BATCH_SIZE) {
+      const values = await Promise.all(
+        uniqueIds
+          .slice(offset, offset + READ_BATCH_SIZE)
+          .map((id) => readLivePositionSnapshot(client, connectionId, id).catch(() => null)),
+      )
+      for (const pos of values) if (pos) positions.push(pos)
+    }
     return positions
   } catch (err) {
     console.warn(`${LOG_PREFIX} getClosedLivePositions error:`, err)
