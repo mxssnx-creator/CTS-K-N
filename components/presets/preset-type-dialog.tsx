@@ -51,8 +51,8 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
   // exits, so the operator opts OUT rather than in.
   const [trailingEnabled, setTrailingEnabled] = useState(true)
 
-  const [blockEnabled, setBlockEnabled] = useState(false)
-  const [blockOnly, setBlockOnly] = useState(false)
+  const [blockEnabled, setBlockEnabled] = useState(true)
+  const [blockOnly, setBlockOnly] = useState(true)
   const [dcaEnabled, setDcaEnabled] = useState(false)
   const [dcaOnly, setDcaOnly] = useState(false)
 
@@ -105,8 +105,8 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
       // persist `trailing_enabled`, treat it as ON rather than OFF so
       // the dialog UI agrees with the engine-side default.
       setTrailingEnabled(presetType.trailing_enabled ?? true)
-      setBlockEnabled(presetType.block_enabled ?? false)
-      setBlockOnly(presetType.block_only ?? false)
+      setBlockEnabled(presetType.block_enabled ?? true)
+      setBlockOnly(presetType.block_only ?? true)
       setDcaEnabled(presetType.dca_enabled ?? false)
       setDcaOnly(presetType.dca_only ?? false)
     } else {
@@ -122,9 +122,9 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
       setMaxPositionsPerRange(3)
       setTimeoutPerIndication(60)
       setTimeoutAfterPosition(300)
-      setTrailingEnabled(false)
-      setBlockEnabled(false)
-      setBlockOnly(false)
+      setTrailingEnabled(true)
+      setBlockEnabled(true)
+      setBlockOnly(true)
       setDcaEnabled(false)
       setDcaOnly(false)
     }
