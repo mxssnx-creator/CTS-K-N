@@ -20,6 +20,19 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import type { Preset } from "@/lib/types"
+import {
+  PRESET_DEFAULT_INDICATION_RANGES,
+  PRESET_DEFAULT_INDICATION_TYPES,
+  PRESET_DEFAULT_MIN_PF_RATIO,
+  PRESET_DEFAULT_STRATEGY_TYPES,
+  PRESET_INDICATION_GROUPS,
+} from "@/lib/preset-crud-defaults"
+import {
+  MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  MAIN_TRADE_PF_RATIO_MAX,
+  MAIN_TRADE_PF_RATIO_STEP,
+  normalizeMainTradeStagePfRatio,
+} from "@/lib/main-trade-profit-factor"
 
 interface PresetDialogProps {
   open: boolean
@@ -32,14 +45,14 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
   const [formData, setFormData] = useState<Partial<Preset>>({
     name: "",
     description: "",
-    indication_types: ["direction", "move", "active"],
-    indication_ranges: [3, 5, 8, 12, 15, 20, 25, 30],
+    indication_types: [...PRESET_DEFAULT_INDICATION_TYPES],
+    indication_ranges: [...PRESET_DEFAULT_INDICATION_RANGES],
     takeprofit_steps: [2, 3, 4, 6, 8, 12],
     stoploss_ratios: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
     trailing_enabled: true,
     trail_starts: [0.3, 0.6, 1.0],
     trail_stops: [0.1, 0.2, 0.3],
-    strategy_types: ["base", "main", "real"],
+    strategy_types: [...PRESET_DEFAULT_STRATEGY_TYPES],
     last_positions_counts: [3, 4, 5, 6, 8, 12, 25],
     main_positions_count: [1, 2, 3, 4, 5],
     block_adjustment_enabled: true,
@@ -48,7 +61,7 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
     dca_adjustment_enabled: false,
     dca_levels: [3, 5, 7],
     volume_factors: [1, 1.5, 2, 3],
-    min_profit_factor: 0.4,
+    min_profit_factor: PRESET_DEFAULT_MIN_PF_RATIO,
     min_win_rate: 0.0,
     max_drawdown: 50.0,
     backtest_period_days: 30,
@@ -63,14 +76,14 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
       setFormData({
         name: "",
         description: "",
-        indication_types: ["direction", "move", "active"],
-        indication_ranges: [3, 5, 8, 12, 15, 20, 25, 30],
+        indication_types: [...PRESET_DEFAULT_INDICATION_TYPES],
+        indication_ranges: [...PRESET_DEFAULT_INDICATION_RANGES],
         takeprofit_steps: [2, 3, 4, 6, 8, 12],
         stoploss_ratios: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
         trailing_enabled: true,
         trail_starts: [0.3, 0.6, 1.0],
         trail_stops: [0.1, 0.2, 0.3],
-        strategy_types: ["base", "main", "real"],
+        strategy_types: [...PRESET_DEFAULT_STRATEGY_TYPES],
         last_positions_counts: [3, 4, 5, 6, 8, 12, 25],
         main_positions_count: [1, 2, 3, 4, 5],
         block_adjustment_enabled: true,
@@ -79,7 +92,7 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
         dca_adjustment_enabled: false,
         dca_levels: [3, 5, 7],
         volume_factors: [1, 1.5, 2, 3],
-        min_profit_factor: 0.4,
+        min_profit_factor: PRESET_DEFAULT_MIN_PF_RATIO,
         min_win_rate: 0.0,
         max_drawdown: 50.0,
         backtest_period_days: 30,
@@ -136,13 +149,62 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
           </div>
 
           <Tabs defaultValue="takeprofit" className="w-full">
-            <TabsList className="grid w-full grid-cols-5">
+            <TabsList className="grid h-auto w-full grid-cols-3 sm:grid-cols-6">
+              <TabsTrigger value="indications">Indicators</TabsTrigger>
               <TabsTrigger value="takeprofit">TP/SL</TabsTrigger>
               <TabsTrigger value="trailing">Trailing</TabsTrigger>
               <TabsTrigger value="strategies">Strategies</TabsTrigger>
               <TabsTrigger value="adjustments">Adjustments</TabsTrigger>
               <TabsTrigger value="validation">Validation</TabsTrigger>
             </TabsList>
+
+            <TabsContent value="indications" className="space-y-4">
+              {PRESET_INDICATION_GROUPS.map((group) => (
+                <Card key={group.label}>
+                  <CardHeader>
+                    <CardTitle>{group.label}</CardTitle>
+                    <CardDescription>
+                      Every selected type, complete configuration and Long/Short direction is processed independently.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex flex-wrap gap-2">
+                    {group.types.map((type) => (
+                      <Badge
+                        key={type}
+                        variant={formData.indication_types?.includes(type) ? "default" : "outline"}
+                        className="cursor-pointer"
+                        onClick={() => toggleArrayValue("indication_types", type)}
+                      >
+                        {type === "williamsR"
+                          ? "Williams %R"
+                          : type.charAt(0).toUpperCase() + type.slice(1)}
+                      </Badge>
+                    ))}
+                  </CardContent>
+                </Card>
+              ))}
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Default Range Matrix</CardTitle>
+                  <CardDescription>
+                    Inclusive 2–30 sample grid; every selected value is a separate configuration lane.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-wrap gap-1.5">
+                  {PRESET_DEFAULT_INDICATION_RANGES.map((range) => (
+                    <Badge
+                      key={range}
+                      variant={formData.indication_ranges?.includes(range) ? "default" : "outline"}
+                      className="cursor-pointer"
+                      onClick={() => toggleArrayValue("indication_ranges", range)}
+                    >
+                      {range}
+                    </Badge>
+                  ))}
+                </CardContent>
+              </Card>
+            </TabsContent>
 
             <TabsContent value="takeprofit" className="space-y-4">
               <Card>
@@ -251,7 +313,7 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
                 </CardHeader>
                 <CardContent>
                   <div className="flex flex-wrap gap-2">
-                    {["base", "main", "real"].map((type) => (
+                    {PRESET_DEFAULT_STRATEGY_TYPES.map((type) => (
                       <Badge
                         key={type}
                         variant={formData.strategy_types?.includes(type) ? "default" : "outline"}
@@ -385,16 +447,27 @@ export function PresetDialog({ open, onOpenChange, preset, onSave }: PresetDialo
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
-                    <Label htmlFor="min_profit_factor">Minimum Profit Factor</Label>
+                    <Label htmlFor="min_profit_factor">Base minimum PositionCost ratio</Label>
                     <Input
                       id="min_profit_factor"
                       type="number"
-                      step="0.1"
+                      step={MAIN_TRADE_PF_RATIO_STEP}
+                      min={MAIN_TRADE_BASE_PF_RATIO_DEFAULT}
+                      max={MAIN_TRADE_PF_RATIO_MAX}
                       value={formData.min_profit_factor}
                       onChange={(e) =>
-                        setFormData({ ...formData, min_profit_factor: Number.parseFloat(e.target.value) })
+                        setFormData({
+                          ...formData,
+                          min_profit_factor: normalizeMainTradeStagePfRatio(
+                            "base",
+                            Number.parseFloat(e.target.value),
+                          ),
+                        })
                       }
                     />
+                    <p className="text-xs text-muted-foreground">
+                      Grid 0.80–2.70, step 0.02. Downstream Main/Real/Live defaults remain independently set to 1.12.
+                    </p>
                   </div>
 
                   <div className="space-y-2">

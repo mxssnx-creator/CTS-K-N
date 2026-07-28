@@ -1,5 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { sql } from "@/lib/db"
+import {
+  PRESET_DEFAULT_INDICATION_RANGES,
+  PRESET_DEFAULT_INDICATION_TYPES,
+  PRESET_DEFAULT_MIN_PF_RATIO,
+  PRESET_DEFAULT_STRATEGY_TYPES,
+} from "@/lib/preset-crud-defaults"
 
 const PREDEFINED_PRESETS = [
   {
@@ -137,7 +143,15 @@ const PREDEFINED_PRESETS = [
     backtest_enabled: true,
     is_active: true,
   },
-]
+].map((preset) => ({
+  ...preset,
+  // Predefined risk profiles may vary TP/SL, trailing and Block behavior, but
+  // they must never silently sample the indication topology or omit Live.
+  indication_types: [...PRESET_DEFAULT_INDICATION_TYPES],
+  indication_ranges: [...PRESET_DEFAULT_INDICATION_RANGES],
+  strategy_types: [...PRESET_DEFAULT_STRATEGY_TYPES],
+  min_profit_factor: PRESET_DEFAULT_MIN_PF_RATIO,
+}))
 
 export const dynamic = "force-dynamic"
 export async function POST(request: NextRequest) {
@@ -152,8 +166,16 @@ export async function POST(request: NextRequest) {
         `
 
         if (existing.length > 0) {
-          console.log(`[v0] Preset ${preset.id} already exists, skipping...`)
-          results.push({ id: preset.id, status: "exists" })
+          await sql`
+            UPDATE presets
+            SET indication_types = ${JSON.stringify(preset.indication_types)},
+                indication_ranges = ${JSON.stringify(preset.indication_ranges)},
+                strategy_types = ${JSON.stringify(preset.strategy_types)},
+                min_profit_factor = ${preset.min_profit_factor}
+            WHERE id = ${preset.id}
+          `
+          console.log(`[v0] Preset ${preset.id} already exists; exhaustive indication/stage defaults repaired`)
+          results.push({ id: preset.id, status: "updated" })
           continue
         }
 
@@ -212,7 +234,8 @@ export async function POST(request: NextRequest) {
       results,
       total: PREDEFINED_PRESETS.length,
       created: results.filter((r) => r.status === "created").length,
-      existing: results.filter((r) => r.status === "exists").length,
+      updated: results.filter((r) => r.status === "updated").length,
+      existing: results.filter((r) => r.status === "updated").length,
       errors: results.filter((r) => r.status === "error").length,
     })
   } catch (error) {

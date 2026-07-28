@@ -1,101 +1,138 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { query } from "@/lib/db"
-import { getActiveIndications, getActiveStrategies, getAllPositions } from "@/lib/db-helpers"
+import { getDashboardWorkflowSnapshot } from "@/lib/dashboard-workflow"
+import { getRedisClient, initRedis } from "@/lib/redis-db"
 
 export const dynamic = "force-dynamic"
+
+type ModuleStatus = "active" | "inactive" | "error"
+
+function clampPercent(value: unknown): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed))) : 0
+}
+
+function processingHealth(input: {
+  active: boolean
+  cycles: number
+  successRate: number
+  lastUpdateAt: number
+}): number {
+  if (!input.active) return 0
+  if (input.cycles <= 0) return 25
+  const freshnessMs = input.lastUpdateAt > 0 ? Date.now() - input.lastUpdateAt : Number.POSITIVE_INFINITY
+  const freshnessFactor = freshnessMs <= 30_000 ? 1 : freshnessMs <= 120_000 ? 0.75 : 0.35
+  return clampPercent(input.successRate * freshnessFactor)
+}
+
 export async function GET(request: NextRequest) {
   try {
-    // When the Structure page has a connection selected, derive module health
-    // from that connection's live Redis state (indications / strategies /
-    // positions). Otherwise fall back to global SQL-shim counts.
-    const connectionId = request.nextUrl.searchParams.get("connectionId")
-    const isScoped = !!connectionId && connectionId !== "demo-mode" && !connectionId.startsWith("demo")
+    const requestedConnectionId = request.nextUrl.searchParams.get("connectionId")?.trim()
+    const preferredConnectionId =
+      requestedConnectionId &&
+      requestedConnectionId !== "demo-mode" &&
+      !requestedConnectionId.startsWith("demo")
+        ? requestedConnectionId
+        : undefined
 
-    let activeConnections: number
-    let recentIndications: number
-    let activePositions: number
-    let activeStrategiesCount = 0
+    const snapshot = await getDashboardWorkflowSnapshot({ preferredConnectionId })
+    const progression = snapshot.connectionMetrics.progression
+    const cycles = snapshot.connectionMetrics.engineCycles
+    const eligible = preferredConnectionId
+      ? Boolean(
+          snapshot.focusConnection?.id === preferredConnectionId &&
+          snapshot.focusConnection.isDashboardEnabled &&
+          snapshot.focusConnection.isActivePanel,
+        )
+      : snapshot.overview.eligibleEngineConnections > 0
+    const engineRunning = snapshot.globalStatus === "running"
+    const processorsActive = engineRunning && eligible
+    const lastUpdateAt = progression?.lastUpdate
+      ? new Date(progression.lastUpdate).getTime()
+      : 0
+    const lastUpdate =
+      lastUpdateAt > 0 && Number.isFinite(lastUpdateAt)
+        ? new Date(lastUpdateAt).toISOString()
+        : snapshot.timestamp
+    const cycleSuccessRate = clampPercent(progression?.cycleSuccessRate)
 
-    if (isScoped) {
-      const [inds, strats, positions] = await Promise.all([
-        getActiveIndications(connectionId!).catch(() => []),
-        getActiveStrategies(connectionId!).catch(() => []),
-        getAllPositions(connectionId!).catch(() => []),
-      ])
-      activeConnections = 1
-      recentIndications = inds.length
-      activeStrategiesCount = strats.length
-      activePositions = (positions as any[]).filter(
-        (p: any) => p?.status === "open",
-      ).length
-    } else {
-      const connectionCheck = await query(`SELECT COUNT(*) as count FROM exchange_connections WHERE is_enabled = 1`)
-      const indicationCheck = await query(`
-        SELECT COUNT(*) as count FROM indications 
-        WHERE datetime(created_at) > datetime('now', '-5 minutes')
-      `)
-      const positionCheck = await query(`SELECT COUNT(*) as count FROM pseudo_positions WHERE status = 'open'`)
-      activeConnections = Number.parseInt(connectionCheck[0]?.count || "0") || 0
-      recentIndications = Number.parseInt(indicationCheck[0]?.count || "0") || 0
-      activePositions = Number.parseInt(positionCheck[0]?.count || "0") || 0
+    let persistenceStatus: ModuleStatus = "active"
+    let persistenceHealth = 100
+    let persistenceDetail = "Redis ping succeeded"
+    let persistenceUpdatedAt = new Date().toISOString()
+    try {
+      await initRedis()
+      const pingStartedAt = Date.now()
+      await getRedisClient().ping()
+      const pingMs = Date.now() - pingStartedAt
+      persistenceHealth = pingMs <= 25 ? 100 : pingMs <= 100 ? 90 : pingMs <= 250 ? 75 : 50
+      persistenceDetail = `Redis ping ${pingMs} ms`
+      persistenceUpdatedAt = new Date().toISOString()
+    } catch (error) {
+      persistenceStatus = "error"
+      persistenceHealth = 0
+      persistenceDetail = error instanceof Error ? error.message : "Redis ping failed"
     }
 
     const modules = [
       {
-        name: "Live Trading Engine",
-        status: activeConnections > 0 ? "active" : "inactive",
-        health: activeConnections > 0 ? 98 : 0,
-        last_update: "2 min ago",
+        name: "Global Coordinator",
+        status: (engineRunning ? "active" : "inactive") as ModuleStatus,
+        health: engineRunning ? 100 : snapshot.globalStatus === "paused" ? 50 : 0,
+        last_update: snapshot.timestamp,
+        detail: `State: ${snapshot.globalStatus}`,
       },
       {
-        name: "Indication Generator",
-        status: recentIndications > 0 ? "active" : "inactive",
-        health: recentIndications > 0 ? 95 : 0,
-        last_update: "1 min ago",
+        name: "Indication Processor",
+        status: (processorsActive ? "active" : "inactive") as ModuleStatus,
+        health: processingHealth({
+          active: processorsActive,
+          cycles: cycles.indication,
+          successRate: cycleSuccessRate,
+          lastUpdateAt,
+        }),
+        last_update: lastUpdate,
+        detail: `${cycles.indication} measured cycles`,
       },
       {
-        name: "Strategy Optimizer",
-        // When scoped, reflect whether this connection actually has strategies.
-        status: isScoped ? (activeStrategiesCount > 0 ? "active" : "inactive") : "active",
-        health: isScoped ? (activeStrategiesCount > 0 ? 92 : 0) : 92,
-        last_update: "3 min ago",
+        name: "Strategy Processor",
+        status: (processorsActive ? "active" : "inactive") as ModuleStatus,
+        health: processingHealth({
+          active: processorsActive,
+          cycles: cycles.strategy,
+          successRate: cycleSuccessRate,
+          lastUpdateAt,
+        }),
+        last_update: lastUpdate,
+        detail: `${cycles.strategy} measured cycles`,
       },
       {
-        name: "Position Manager",
-        status: activePositions > 0 ? "active" : "inactive",
-        health: activePositions > 0 ? 97 : 0,
-        last_update: "1 min ago",
+        name: "Realtime / Live Processor",
+        status: (processorsActive ? "active" : "inactive") as ModuleStatus,
+        health: processingHealth({
+          active: processorsActive,
+          cycles: cycles.realtime,
+          successRate: cycleSuccessRate,
+          lastUpdateAt,
+        }),
+        last_update: lastUpdate,
+        detail:
+          `${cycles.realtime} cycles · ${snapshot.connectionMetrics.liveOrders.filled} filled · ` +
+          `${snapshot.connectionMetrics.liveOrders.failed} failed`,
       },
       {
-        name: "Analytics Engine",
-        status: "active",
-        health: 89,
-        last_update: "5 min ago",
-      },
-      {
-        name: "Database Sync",
-        status: "active",
-        health: 94,
-        last_update: "2 min ago",
-      },
-      {
-        name: "API Gateway",
-        status: "active",
-        health: 96,
-        last_update: "1 min ago",
-      },
-      {
-        name: "WebSocket Server",
-        status: "active",
-        health: 93,
-        last_update: "2 min ago",
+        name: "Redis Persistence",
+        status: persistenceStatus,
+        health: persistenceHealth,
+        last_update: persistenceUpdatedAt,
+        detail: persistenceDetail,
       },
     ]
 
     return NextResponse.json({
       success: true,
-      scope: isScoped ? "connection" : "global",
-      connectionId: isScoped ? connectionId : null,
+      scope: preferredConnectionId ? "connection" : "global",
+      connectionId: preferredConnectionId || null,
+      measuredAt: snapshot.timestamp,
       data: modules,
     })
   } catch (error) {

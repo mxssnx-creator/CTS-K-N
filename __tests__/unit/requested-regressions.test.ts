@@ -356,6 +356,46 @@ describe("requested regression guardrails", () => {
     expect(liveStage).toContain("applySelectedPresetToRealPosition")
   })
 
+  test("legacy Preset CRUD and test paths cannot reintroduce sampled indication or stage grids", () => {
+    const defaults = read("lib/preset-crud-defaults.ts")
+    const dialog = read("components/presets/preset-dialog.tsx")
+    const generator = read("lib/preset-config-generator.ts")
+    const tester = read("lib/preset-tester.ts")
+    const testRoute = read("app/api/presets/[id]/test/route.ts")
+
+    expect(defaults).toContain("...COMMON_INDICATOR_TYPES")
+    expect(defaults).toContain('\"signal\"')
+    expect(defaults).toContain('\"live\"')
+    expect(defaults).toContain("Array.from({ length: 29 }")
+    expect(dialog).toContain("PRESET_INDICATION_GROUPS")
+    expect(dialog).toContain("PRESET_DEFAULT_INDICATION_RANGES")
+    expect(generator).not.toContain("maxConfigs")
+    expect(generator).not.toContain("configurations.slice")
+    expect(testRoute).not.toContain("generateAllConfigurations(testSymbols, indicatorConfigs, 500)")
+    expect(testRoute).not.toContain("validConfigs.slice(0, 100)")
+    expect(testRoute).toContain("mapWithConcurrency(validConfigs, 8")
+    expect(tester).toContain("mapWithConcurrency(configurations, 8")
+  })
+
+  test("every connection creation and legacy settings dialog persists the canonical four-stage ratio contract", () => {
+    const createDialog = read("components/settings/exchange-connection-dialog.tsx")
+    const legacySettingsDialog = read("components/settings/exchange-connection-settings-dialog.tsx")
+
+    for (const source of [createDialog, legacySettingsDialog]) {
+      expect(source).toContain("MAIN_TRADE_BASE_PF_RATIO_DEFAULT")
+      expect(source).toContain("MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT")
+      expect(source).toContain("liveTradeProfitFactorMinLive")
+      expect(source).toContain("presetTradeProfitFactorMinLive")
+      expect(source).toContain("min_profit_factor")
+      expect(source).not.toContain("liveTradeProfitFactorMinBase: 0.6")
+      expect(source).not.toContain("presetTradeProfitFactorMinBase: 0.6")
+    }
+    expect(createDialog).toContain("indicationTimeoutMs: 250")
+    expect(createDialog).toContain("indicationSettings?.direction?.timeout ?? 0.25")
+    expect(legacySettingsDialog).toContain('normalizeMainTradeStagePfRatio("live"')
+    expect(legacySettingsDialog).toContain("MAIN_TRADE_PF_RATIO_STEP")
+  })
+
   test("disabling one connection does not stop the global coordinator", () => {
     const source = read("app/api/settings/connections/[id]/toggle-dashboard/route.ts")
     const disableBranch = source.slice(
@@ -1779,6 +1819,7 @@ describe("requested regression guardrails", () => {
     const strategyRow = read("components/strategies/strategy-row-compact.tsx")
     const presetStats = read("components/statistics/preset-trade-stats.tsx")
     const legacyEntrypoint = read("app/api/trade-engine/generate-indications/route.ts")
+    const indicationData = read("app/api/data/indications/route.ts")
 
     expect(progression).toContain("mapInBatches")
     expect(progression).not.toContain("pseudoRaw.slice(0, 500)")
@@ -1788,6 +1829,8 @@ describe("requested regression guardrails", () => {
     expect(presetStats).toContain('String(position.preset_id || "") === String(preset.id)')
     expect(legacyEntrypoint).toContain('from "@/app/api/cron/generate-indications/route"')
     expect(legacyEntrypoint).not.toContain("generateDirectionIndication")
+    expect(indicationData).toContain("mapWithConcurrency(configKeys, 32")
+    expect(indicationData).not.toContain(".slice(0, 500)")
   })
 
   test("Signal's 120-position lease counts the complete mixed Main/Signal open book", () => {
@@ -2795,5 +2838,44 @@ describe("requested regression guardrails", () => {
     expect(read("scripts/verify-prod-soak.mjs")).toContain('RUNTIME_MODE === "production" ? 1_000 : 3_000')
   })
 
+  test("Structure and Logistics surfaces publish measured runtime data without placeholder health", () => {
+    const metrics = read("app/api/structure/metrics/route.ts")
+    const modules = read("app/api/structure/modules/route.ts")
+    const workflow = read("lib/dashboard-workflow.ts")
+    const page = read("app/structure/page.tsx")
+
+    expect(metrics).toContain("getSystemResourceMetrics()")
+    expect(metrics).toContain("getObservedRedisRequestsPerSecond()")
+    expect(metrics).toContain("client.dbSize()")
+    expect(metrics).toContain("database_keys: databaseKeys")
+    expect(metrics).toContain("uptime_hours: Math.round((process.uptime() / 3600)")
+    expect(metrics).not.toContain("database_size: 45")
+    expect(metrics).not.toContain("const cpuUsage = (memoryUsage.heapUsed")
+    expect(metrics).not.toContain("AVG(profit_loss_percent)")
+
+    expect(modules).toContain("getDashboardWorkflowSnapshot({ preferredConnectionId })")
+    expect(modules).toContain("await getRedisClient().ping()")
+    expect(modules).toContain("progression?.cycleSuccessRate")
+    expect(modules).not.toContain("health: activeConnections > 0 ? 98")
+    expect(modules).not.toContain('last_update: "2 min ago"')
+
+    expect(workflow).toContain("while (cursor !== \"0\")")
+    expect(workflow).not.toContain("keys.length < limit")
+    expect(workflow).not.toContain("return keys.slice(0, limit)")
+    expect(page).toContain("Redis Operations/min")
+    expect(page).toContain("Not instrumented")
+    expect(page).not.toContain("<Badge variant=\"default\">Excellent</Badge>")
+    expect(page).not.toContain("System Running Optimally")
+  })
+
+  test("Preset Common processing preserves the configured 30-minute lane end to end", () => {
+    const optimizer = read("lib/preset-optimizer.ts")
+
+    expect(optimizer).toContain(": [1, 5, 15, 30]")
+    expect(optimizer).toContain("Math.min(60, Math.round(timeframeMinutesInput || 1))")
+    expect(optimizer).toContain("Math.min(60, Math.round(config.params.timeframeMinutes || 1))")
+    expect(optimizer).not.toContain("Math.min(15, Math.round(timeframeMinutesInput || 1))")
+    expect(optimizer).not.toContain("Math.min(15, Math.round(config.params.timeframeMinutes || 1))")
+  })
 
 })

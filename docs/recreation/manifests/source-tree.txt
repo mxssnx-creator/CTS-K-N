@@ -1015,6 +1015,7 @@ lib/prehistoric-calculator.ts
 lib/prehistoric-progress-tracker.ts
 lib/preset-config-generator.ts
 lib/preset-coordination-engine.ts
+lib/preset-crud-defaults.ts
 lib/preset-optimizer.ts
 lib/preset-pseudo-position-manager.ts
 lib/preset-set-evaluator.ts
