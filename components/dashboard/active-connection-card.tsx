@@ -1858,6 +1858,164 @@ export function ActiveConnectionCard({
 
     if (signalMode && signalOverview) {
       const metric = signalOverview.positions12
+      const signalStandardClosed = signalOverview.standardClosedPositions ?? 0
+      const signalTrailingClosed = signalOverview.trailingClosedPositions ?? 0
+      const signalWinRate =
+        signalStandardClosed + signalTrailingClosed > 0
+          ? boundedPercentage(signalStandardClosed / (signalStandardClosed + signalTrailingClosed))
+          : null
+      tiles.push(
+        {
+          label: "Signal cycles",
+          value: liveStats?.indicationCycles ?? 0,
+          title: "Shared realtime cycles attributed to Signal; no second processor is started.",
+          tone: "text-cyan-700 dark:text-cyan-400",
+        },
+        {
+          label: "Signal sets",
+          value: prehistoricStats?.indicationsSignal ?? 0,
+          title: "Current Signal indication rows only; other Main indication types are excluded.",
+          tone: "text-cyan-700 dark:text-cyan-400",
+        },
+        {
+          label: "Signal open",
+          value:
+            `${signalOverview.openPositions ?? 0}` +
+            `/${signalOverview.maxPositionsTotal || 350}`,
+          title: "Open physical Signal positions across Long + Short.",
+          tone: "text-cyan-700 dark:text-cyan-400",
+        },
+        {
+          label: "Signal closed",
+          value: signalOverview.closedPositions ?? 0,
+          title: "Closed positions with durable Signal source/config attribution.",
+          tone: "text-cyan-700 dark:text-cyan-400",
+        },
+        {
+          label: "Signal WinRate",
+          value: signalWinRate === null ? "—" : `${(signalWinRate * 100).toFixed(1)}%`,
+          title: "Closed Signal positions win rate = standard / (standard + trailing).",
+          tone: signalWinRate === null ? undefined : signalWinRate >= 0.5 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400",
+        },
+        {
+          label: "Signal PF12",
+          value: metric?.trades
+            ? metric.infiniteProfitFactor
+              ? "∞"
+              : metric.profitFactor === null
+                ? "—"
+                : metric.profitFactor.toFixed(2)
+            : "—",
+          title: "Profit factor over the newest 12 closed Signal positions.",
+          tone:
+            metric?.trades && !metric.infiniteProfitFactor && Number(metric.profitFactor) < 1
+              ? "text-red-600 dark:text-red-400"
+              : metric?.trades
+                ? "text-green-600 dark:text-green-400"
+                : undefined,
+        },
+        {
+          label: "Signal DDT12",
+          value: metric?.trades ? `${metric.drawdownHours.toFixed(2)}h` : "—",
+          title: "Maximum drawdown duration over the newest 12 closed Signal positions.",
+          tone: "text-cyan-700 dark:text-cyan-400",
+        },
+        {
+          label: "Signal PnL12",
+          value: metric?.trades
+            ? `${metric.netPnl >= 0 ? "+" : ""}${metric.netPnl.toFixed(2)}`
+            : "—",
+          title: "Net result over the newest 12 closed Signal positions.",
+          tone:
+            metric?.trades
+              ? metric.netPnl >= 0
+                ? "text-green-600 dark:text-green-400"
+                : "text-red-600 dark:text-red-400"
+              : undefined,
+        },
+      )
+    }
+
+    if (!liveTrade) {
+      if (!signalMode && !presetMode) {
+        tiles.push({
+          label: "Trade overview",
+          value: "Off",
+          title: "Enable Main, Signal, or Preset to show that engine's overview stats.",
+          tone: "text-muted-foreground",
+        })
+      }
+      return tiles.map(({ label, value, title, tone }) => (
+        <div key={label} className="flex items-center gap-1 text-[10px]" title={title}>
+          <span className="text-muted-foreground">{label}</span>
+          <span className={`font-semibold tabular-nums ${tone ?? ""}`}>{value}</span>
+        </div>
+      ))
+    }
+
+    if (symbolsProcessed > 0 || symbolsTotal > 0) {
+      tiles.push({
+        label: "Symbols",
+        value: symbolsTotal > 0 ? `${symbolsProcessed}/${symbolsTotal}` : symbolsProcessed,
+        title: "Prehistoric backfill coverage — symbols processed vs total.",
+      })
+    }
+
+    tiles.push(
+      {
+        label: "Cycles",
+        value: liveStats?.indicationCycles ?? 0,
+        title: "Realtime indication processor ticks since engine start.",
+      },
+      {
+        label: "Ind",
+        value: liveStats?.indications ?? prehistoricStats?.indicationsTotal ?? 0,
+        title: "Current or cumulative indication sets from the canonical progression stats endpoint.",
+      },
+      {
+        label: "Strat",
+        value: liveStats?.strategies ?? firstFiniteMetric(
+          prehistoricStats?.stratReal,
+          prehistoricStats?.stratMain,
+          prehistoricStats?.stratBase,
+        ),
+        title: "Current or cumulative strategy sets from the canonical progression stats endpoint.",
+      },
+      {
+        label: (prehistoricStats?.liveOpenPositions ?? 0) > 0 ? "Live" : "Pseudo",
+        value: liveStats?.positions ?? 0,
+        title: (prehistoricStats?.liveOpenPositions ?? 0) > 0
+          ? "Open exchange positions (live)."
+          : "Open pseudo positions (evaluation stage).",
+      },
+      {
+        label: "Orders",
+        value: ordersFilled > 0 ? `${ordersPlaced}/${ordersFilled}` : ordersPlaced,
+        title: "Live exchange orders placed / filled.",
+        tone: ordersPlaced > 0 ? "text-amber-700 dark:text-amber-400" : undefined,
+      },
+    )
+
+    if (ordersFailed > 0) {
+      tiles.push({
+        label: "Failed",
+        value: ordersFailed,
+        title: "Live exchange orders failed or rejected.",
+        tone: "text-red-600 dark:text-red-400",
+      })
+    }
+
+    if (livePnl !== 0) {
+      tiles.push({
+        label: "PnL",
+        value: `${livePnl > 0 ? "+" : ""}$${Math.abs(livePnl).toFixed(2)}`,
+        title: "Live exchange unrealized/realized PnL.",
+        tone: livePnl > 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400",
+      })
+    }
+
+    if (signalMode && signalOverview) {
+      const metric = signalOverview.positions12
       tiles.push(
         {
           label: "Signal open",
@@ -1879,17 +2037,23 @@ export function ActiveConnectionCard({
               : metric.profitFactor?.toFixed(2) ?? "—"
             : "—",
           title: "Signal-only ProfitFactor over the newest 12 closed positions.",
-          tone: "text-cyan-700 dark:text-cyan-400",
+          tone: metric.trades && !metric.infiniteProfitFactor && Number(metric.profitFactor) < 1
+            ? "text-red-600 dark:text-red-400"
+            : metric.trades
+              ? "text-green-600 dark:text-green-400"
+              : undefined,
         },
         {
           label: "Signal PnL12",
           value: metric.trades
             ? `${metric.netPnl >= 0 ? "+" : ""}${metric.netPnl.toFixed(2)}`
             : "—",
-          title: "Signal-only net PnL over the newest 12 closed positions.",
-          tone: metric.netPnl >= 0
-            ? "text-green-600 dark:text-green-400"
-            : "text-red-600 dark:text-red-400",
+          title: "Signal-only net PnL over the newest 12 closed Signal positions.",
+          tone: metric.trades
+            ? metric.netPnl >= 0
+              ? "text-green-600 dark:text-green-400"
+              : "text-red-600 dark:text-red-400"
+            : undefined,
         },
       )
     }
