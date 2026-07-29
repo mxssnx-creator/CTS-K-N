@@ -65,6 +65,7 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Fixed remote install script in `app/api/install/remote/route.ts` to forward skip-tests in install mode
 - [x] Updated test assertions to expect `SIGNAL_MAX_POSITIONS_DEFAULT = 350`
 - [x] Fixed test assertion to use correct settings label ("Signal Sources base positions limit (overall)")
+- [x] Updated integration test in `main-engine-live-dispatch.test.ts` to expect limit 350
 
 ## Current Structure
 
