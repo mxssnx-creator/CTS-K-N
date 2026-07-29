@@ -6186,6 +6186,79 @@ export class StrategyCoordinator {
       ).catch(() => {})
     }
 
+    // ── Continuous Real-stage evaluation ─────────────────────────────────────
+    //
+    // Operator spec: after the main Real filter, derive additional Row-Real /
+    // Row-Live calculative Sets from the last N positions for every qualifying
+    // Real parent. These are independent from the existing Real filter and use
+    // the same PF/DDT thresholds. They do not affect Base/Main and do not
+    // replace any existing Real Set. Tagging distinguishes them from normal
+    // Real rows so downstream consumers can treat them as continuous eval.
+    const CONTINUOUS_REAL_EVAL_LOOKBACK = Number(
+      process.env.CONTINUOUS_REAL_EVAL_LOOKBACK ?? 25,
+    )
+    let continuousRealCreated = 0
+    try {
+      const continuousCandidates: StrategySet[] = []
+      for (const parent of realPostHedge) {
+        const positions = (parent.entries ?? []).slice(-CONTINUOUS_REAL_EVAL_LOOKBACK)
+        if (positions.length === 0) continue
+        const pf = parent.avgProfitFactor ?? 0
+        const ddt = parent.avgDrawdownTime ?? 0
+        if (pf < metrics.minProfitFactor || ddt > metrics.maxDrawdownTime) continue
+        const continuousSet: StrategySet = {
+          setKey: `${parent.setKey}#continuous_real`,
+          indicationType: parent.indicationType,
+          direction: parent.direction,
+          avgProfitFactor: pf,
+          avgConfidence: parent.avgConfidence,
+          avgDrawdownTime: ddt,
+          entryCount: positions.length,
+          confirmedActiveCount: parent.confirmedActiveCount,
+          confirmedClosedCount: parent.confirmedClosedCount,
+          entries: positions,
+          createdAt: new Date().toISOString(),
+          status: "valid_real",
+          parentSetKey: parent.setKey,
+          variant: parent.variant,
+          signalRisk: parent.signalRisk,
+          variantSizeMultiplier: parent.variantSizeMultiplier,
+          variantLeverage: parent.variantLeverage,
+          blockBaseVolumeMultiplier: parent.blockBaseVolumeMultiplier,
+          blockVolumeRatio: parent.blockVolumeRatio,
+          blockProfitFactorRatio: parent.blockProfitFactorRatio,
+          blockDefaultMinimumProfitFactor: parent.blockDefaultMinimumProfitFactor,
+          blockConfiguredMinimumProfitFactor: parent.blockConfiguredMinimumProfitFactor,
+          blockNormalProfitFactor: parent.blockNormalProfitFactor,
+          blockMinimumProfitFactor: parent.blockMinimumProfitFactor,
+          blockObservedProfitFactor: parent.blockObservedProfitFactor,
+          blockProfitFactorDifference: parent.blockProfitFactorDifference,
+          blockComparisonAvailable: parent.blockComparisonAvailable,
+          blockProfitFactorWindow: parent.blockProfitFactorWindow,
+          blockProfitFactorSampleCount: parent.blockProfitFactorSampleCount,
+          blockCount: parent.blockCount,
+          blockScope: parent.blockScope,
+          blockLaneKind: parent.blockLaneKind,
+          blockLaneKey: parent.blockLaneKey,
+          blockSourceId: parent.blockSourceId,
+          blockVolumeIncrementRatio: parent.blockVolumeIncrementRatio,
+          blockCalculatedVolumeMultiplier: parent.blockCalculatedVolumeMultiplier,
+        }
+        continuousCandidates.push(continuousSet)
+      }
+      continuousRealCreated = continuousCandidates.length
+      if (continuousCandidates.length > 0) {
+        realPostHedge = realPostHedge
+          .concat(continuousCandidates)
+          .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+      }
+    } catch (err) {
+      console.warn(
+        `[v0] [StrategyFlow] ${symbol} continuous Real evaluation failed:`,
+        err instanceof Error ? err.message : String(err),
+      )
+    }
+
     // Every unique qualifying row reaches Real. Ordering improves deterministic
     // observability only; it never removes a configuration.
     const realSets = Array.from(new Map(
@@ -6313,7 +6386,7 @@ export class StrategyCoordinator {
     // Real-created Block/scope rows are part of the evaluated graph even when
     // the later retention boundary does not mirror every row to Live.
     const realRelatedCreated = realStageRelatedCreated
-    const realTotalEvaluated = mainPFEligible + realRelatedCreated
+    const realTotalEvaluated = mainPFEligible + realRelatedCreated + continuousRealCreated
     const realEvaluatedAfterFanOut = realTotalEvaluated
 
     // Write Real counts to progression hash — CUMULATIVE via hincrby so the dashboard
@@ -6433,13 +6506,14 @@ export class StrategyCoordinator {
           sets_progressing:         String(
             realSets.filter((s) => (s.entryCount || 0) > 0).length,
           ),
-          // ── 4-perspective Real stats ───────────────────────��──────
+          // ── 4-perspective Real stats ───────────────────────────────
           // These are connection-wide (not per-symbol) so writing them
           // once per (symbol, cycle) is fine — every symbol computes the
           // same `realAccumulatedSum` and the same `strategies_real_total`.
           stat_general:      String(realSets.length),         // this cycle
           stat_combined:     String(realRunningNow),          // running now
           stat_accumulated:  String(realAccumulatedSum),      // axis sum
+          continuous_real_created: String(continuousRealCreated),
           // (Overall is pulled from `strategies_real_total` on read.)
           updated_at:         String(Date.now()),
           // Per-symbol fields — see createBaseSets for rationale.

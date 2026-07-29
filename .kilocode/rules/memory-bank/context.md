@@ -66,6 +66,12 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Updated test assertions to expect `SIGNAL_MAX_POSITIONS_DEFAULT = 350`
 - [x] Fixed test assertion to use correct settings label ("Signal Sources base positions limit (overall)")
 - [x] Updated integration test in `main-engine-live-dispatch.test.ts` to expect limit 350
+- [x] Added continuous Real-stage evaluation in `lib/strategy-coordinator.ts`: derives Row-Real/Row-Live calculative sets from last N positions using existing PF/DDT gates, tagged as `#continuous_real`, independent from Base/Main
+- [x] Updated Real-stage stats in `lib/strategy-coordinator.ts` to include `continuousRealCreated` count in progression hash and detail stats
+- [x] Updated `app/api/connections/progression/[id]/stats/route.ts` to expose `continuousRealCreated` in Real stage stats response
+- [x] Updated `components/dashboard/active-connection-card.tsx` to display continuous evaluation count on Real stage row
+- [x] Verified Block strategy configs for Real/Live stages: `blockActiveRealEnabled` and `blockActiveLiveEnabled` both default to `true` in `_coordinationSettings`
+- [x] Verified Block-Only mode: `blockOnly` defaults to `true` in `_coordinationSettings` and settings loader
 
 ## Current Structure
 

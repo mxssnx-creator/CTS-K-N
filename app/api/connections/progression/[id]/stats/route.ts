@@ -2394,6 +2394,7 @@ export async function GET(
                   statAccumulated: n(dh.stat_accumulated),
                   statGeneral:     n(dh.stat_general) || stageEvaluated || stratCounts.real || 0,
                   statCombined:    n(dh.stat_combined) || setsRunningNow || stratCounts.real || 0,
+                  continuousRealCreated: n(dh.continuous_real_created),
                   // Canonical Real-position view: full Overall Set/position/order
                   // ledgers, a separate related-Base hedge ledger, Standard vs
                   // Trailing and Adjust comparisons, plus the current open

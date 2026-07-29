@@ -340,6 +340,7 @@ export function ActiveConnectionCard({
     mainOverall: number
     realValid: number
     realActive: number
+    continuousRealCreated: number
     // Stage ratios and metrics
     basePassRatio: number
     mainPassRatio: number
@@ -1203,6 +1204,7 @@ export function ActiveConnectionCard({
           mainOverall: nonNegativeMetric(sd.main?.row_overall),
           realValid:  nonNegativeMetric(sd.real?.row_valid),
           realActive: nonNegativeMetric(sd.real?.row_active),
+          continuousRealCreated: nonNegativeMetric(sd.real?.continuousRealCreated),
           basePassRatio:       boundedPercentage(sd.base?.passRatio),
           mainPassRatio:       boundedPercentage(sd.main?.passRatio),
           realPassRatio:       boundedPercentage(sd.real?.passRatio),
@@ -2832,21 +2834,22 @@ export function ActiveConnectionCard({
                             color: "text-purple-600 dark:text-purple-400",
                             isLive: false,
                           },
-                          {
-                            label: "Real",
-                            count:     prehistoricStats.stratReal,
-                            valid:     prehistoricStats.realValid,
-                            active:    prehistoricStats.realActive,
-                            evaluated: prehistoricStats.realEvaluated,
-                            passed:    prehistoricStats.realPassed,
-                            passRatio: prehistoricStats.realPassRatio,
-                            avgPF:     prehistoricStats.avgProfitFactorReal,
-                            avgDDT:    prehistoricStats.avgDrawdownTimeReal,
-                            avgPosEval: prehistoricStats.avgPosEvalReal,
-                            countPosEval: prehistoricStats.countPosEvalReal,
-                            color: "text-green-600 dark:text-green-400",
-                            isLive: false,
-                          },
+                           {
+                             label: "Real",
+                             count:     prehistoricStats.stratReal,
+                             valid:     prehistoricStats.realValid,
+                             active:    prehistoricStats.realActive,
+                             continuousRealCreated: prehistoricStats.continuousRealCreated,
+                             evaluated: prehistoricStats.realEvaluated,
+                             passed:    prehistoricStats.realPassed,
+                             passRatio: prehistoricStats.realPassRatio,
+                             avgPF:     prehistoricStats.avgProfitFactorReal,
+                             avgDDT:    prehistoricStats.avgDrawdownTimeReal,
+                             avgPosEval: prehistoricStats.avgPosEvalReal,
+                             countPosEval: prehistoricStats.countPosEvalReal,
+                             color: "text-green-600 dark:text-green-400",
+                             isLive: false,
+                           },
                           {
                             // Live tier — real exchange positions history, sourced from
                             // local Redis archive (no exchange history calls).
@@ -2862,7 +2865,7 @@ export function ActiveConnectionCard({
                             color: "text-amber-600 dark:text-amber-400",
                             isLive: true,
                           },
-                        ].map(({ label, count, total = 0, validOpen = 0, valid = 0, overall = 0, active = 0, axisNetted = 0, evaluated, passed, passRatio, avgPF, avgDDT, avgPosEval, countPosEval, color, isLive }) => (
+                        ].map(({ label, count, total = 0, validOpen = 0, valid = 0, overall = 0, active = 0, continuousRealCreated = 0, axisNetted = 0, evaluated, passed, passRatio, avgPF, avgDDT, avgPosEval, countPosEval, color, isLive }) => (
                           // Render the row whenever ANY metric for the stage
                           // has data — count, evaluated/passed, OR an avg
                           // profit factor. Previously this was gated on
@@ -2905,11 +2908,16 @@ export function ActiveConnectionCard({
                                      valid <span className="text-foreground font-medium tabular-nums">{valid >= 1000 ? `${(valid / 1000).toFixed(1)}K` : valid}</span>
                                    </span>
                                  )}
-                                 {label === "Real" && active > 0 && (
-                                   <span className="text-muted-foreground">
-                                     active <span className="text-foreground font-medium tabular-nums">{active >= 1000 ? `${(active / 1000).toFixed(1)}K` : active}</span>
-                                   </span>
-                                 )}
+                                  {label === "Real" && active > 0 && (
+                                    <span className="text-muted-foreground">
+                                      active <span className="text-foreground font-medium tabular-nums">{active >= 1000 ? `${(active / 1000).toFixed(1)}K` : active}</span>
+                                    </span>
+                                  )}
+                                  {label === "Real" && continuousRealCreated > 0 && (
+                                    <span className="text-muted-foreground">
+                                      cont-eval <span className="text-foreground font-medium tabular-nums">{continuousRealCreated >= 1000 ? `${(continuousRealCreated / 1000).toFixed(1)}K` : continuousRealCreated}</span>
+                                    </span>
+                                  )}
                                  {label === "Main" && axisNetted > 0 && (
                                    <span className="text-muted-foreground">
                                      <span className="text-purple-700 dark:text-purple-300 font-semibold tabular-nums">
