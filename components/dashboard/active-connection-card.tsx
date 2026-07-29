@@ -334,6 +334,12 @@ export function ActiveConnectionCard({
     stratMainAxisNetted: number
     stratReal: number
     stratLive: number
+    baseTotal: number
+    baseValidOpen: number
+    mainValid: number
+    mainOverall: number
+    realValid: number
+    realActive: number
     // Stage ratios and metrics
     basePassRatio: number
     mainPassRatio: number
@@ -1191,6 +1197,12 @@ export function ActiveConnectionCard({
           stratMainAxisNetted: strat.mainAxisNetted || 0,
           stratReal:  strat.real || 0,
           stratLive:  strat.live || 0,
+          baseTotal:  nonNegativeMetric(sd.base?.row_total) || nonNegativeMetric(strat.base),
+          baseValidOpen: nonNegativeMetric(sd.base?.row_valid_open),
+          mainValid:  nonNegativeMetric(sd.main?.row_valid),
+          mainOverall: nonNegativeMetric(sd.main?.row_overall),
+          realValid:  nonNegativeMetric(sd.real?.row_valid),
+          realActive: nonNegativeMetric(sd.real?.row_active),
           basePassRatio:       boundedPercentage(sd.base?.passRatio),
           mainPassRatio:       boundedPercentage(sd.main?.passRatio),
           realPassRatio:       boundedPercentage(sd.real?.passRatio),
@@ -2792,6 +2804,8 @@ export function ActiveConnectionCard({
                           {
                             label: "Base",
                             count:     prehistoricStats.stratBase,
+                            total:     prehistoricStats.baseTotal,
+                            validOpen: prehistoricStats.baseValidOpen,
                             evaluated: prehistoricStats.baseEvaluated,
                             passed:    prehistoricStats.basePassed,
                             passRatio: prehistoricStats.basePassRatio,
@@ -2805,6 +2819,8 @@ export function ActiveConnectionCard({
                           {
                             label: "Main",
                             count:     prehistoricStats.stratMain,
+                            valid:     prehistoricStats.mainValid,
+                            overall:   prehistoricStats.mainOverall,
                             axisNetted: prehistoricStats.stratMainAxisNetted || 0,
                             evaluated: prehistoricStats.mainEvaluated,
                             passed:    prehistoricStats.mainPassed,
@@ -2819,6 +2835,8 @@ export function ActiveConnectionCard({
                           {
                             label: "Real",
                             count:     prehistoricStats.stratReal,
+                            valid:     prehistoricStats.realValid,
+                            active:    prehistoricStats.realActive,
                             evaluated: prehistoricStats.realEvaluated,
                             passed:    prehistoricStats.realPassed,
                             passRatio: prehistoricStats.realPassRatio,
@@ -2844,7 +2862,7 @@ export function ActiveConnectionCard({
                             color: "text-amber-600 dark:text-amber-400",
                             isLive: true,
                           },
-                        ].map(({ label, count, axisNetted = 0, evaluated, passed, passRatio, avgPF, avgDDT, avgPosEval, countPosEval, color, isLive }) => (
+                        ].map(({ label, count, total = 0, validOpen = 0, valid = 0, overall = 0, active = 0, axisNetted = 0, evaluated, passed, passRatio, avgPF, avgDDT, avgPosEval, countPosEval, color, isLive }) => (
                           // Render the row whenever ANY metric for the stage
                           // has data — count, evaluated/passed, OR an avg
                           // profit factor. Previously this was gated on
@@ -2854,7 +2872,7 @@ export function ActiveConnectionCard({
                           // but the PF aggregate is now also written by the
                           // prehistoric path — see config-set-processor's
                           // historic PF aggregation block).
-                          (count > 0 || evaluated > 0 || avgPF > 0 || (label === "Real" && (prehistoricStats.realOpen > 0 || prehistoricStats.liveOpenPositions > 0))) && (
+                          (count > 0 || evaluated > 0 || avgPF > 0 || (label === "Real" && (prehistoricStats.realOpen > 0 || prehistoricStats.liveOpenPositions > 0)) || (label === "Base" && total > 0) || (label === "Main" && (valid > 0 || overall > 0)) || (label === "Real" && (valid > 0 || active > 0))) && (
                             <div key={label} className="space-y-0.5">
                               {/* Main row: label, sets/positions count, pass/fill ratio, PF */}
                               <div className="flex items-center gap-2 text-[10px]">
@@ -2862,6 +2880,36 @@ export function ActiveConnectionCard({
                                  <span className="font-semibold tabular-nums">
                                    {count >= 1000 ? `${(count / 1000).toFixed(1)}K` : count} {isLive ? "pos" : "sets"}
                                  </span>
+                                 {label === "Base" && total > 0 && (
+                                   <span className="text-muted-foreground">
+                                     tot <span className="text-foreground font-medium tabular-nums">{total >= 1000 ? `${(total / 1000).toFixed(1)}K` : total}</span>
+                                   </span>
+                                 )}
+                                 {label === "Base" && validOpen > 0 && (
+                                   <span className="text-muted-foreground">
+                                     valid-open <span className="text-foreground font-medium tabular-nums">{validOpen >= 1000 ? `${(validOpen / 1000).toFixed(1)}K` : validOpen}</span>
+                                   </span>
+                                 )}
+                                 {label === "Main" && valid > 0 && (
+                                   <span className="text-muted-foreground">
+                                     valid <span className="text-foreground font-medium tabular-nums">{valid >= 1000 ? `${(valid / 1000).toFixed(1)}K` : valid}</span>
+                                   </span>
+                                 )}
+                                 {label === "Main" && overall > 0 && (
+                                   <span className="text-muted-foreground">
+                                     overall <span className="text-foreground font-medium tabular-nums">{overall >= 1000 ? `${(overall / 1000).toFixed(1)}K` : overall}</span>
+                                   </span>
+                                 )}
+                                 {label === "Real" && valid > 0 && (
+                                   <span className="text-muted-foreground">
+                                     valid <span className="text-foreground font-medium tabular-nums">{valid >= 1000 ? `${(valid / 1000).toFixed(1)}K` : valid}</span>
+                                   </span>
+                                 )}
+                                 {label === "Real" && active > 0 && (
+                                   <span className="text-muted-foreground">
+                                     active <span className="text-foreground font-medium tabular-nums">{active >= 1000 ? `${(active / 1000).toFixed(1)}K` : active}</span>
+                                   </span>
+                                 )}
                                  {label === "Main" && axisNetted > 0 && (
                                    <span className="text-muted-foreground">
                                      <span className="text-purple-700 dark:text-purple-300 font-semibold tabular-nums">
