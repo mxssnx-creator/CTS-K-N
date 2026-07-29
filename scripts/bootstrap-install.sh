@@ -47,6 +47,7 @@ Options:
   --branch NAME        Git branch (default: main)
   --repository URL     Git repository URL
   --public-url URL     Public application URL
+  --skip-tests         Skip Jest tests (typecheck, lint, build still run)
   --resolve-only       Print the exact resolved target without changing it
   --uninstall          Remove the exact resolved installation
 
@@ -56,6 +57,7 @@ must not conflict with the saved identity during uninstall.
 EOF
 }
 
+SKIP_TESTS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir) INSTALL_DIR="${2:?--dir requires a value}"; INSTALL_DIR_SET=1; shift 2 ;;
@@ -68,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --env-file) ENV_FILE="${2:?--env-file requires a value}"; ENV_FILE_SET=1; shift 2 ;;
     --seed-env-file) SEED_ENV_FILE="${2:?--seed-env-file requires a value}"; shift 2 ;;
     --public-url) PUBLIC_URL="${2:?--public-url requires a value}"; shift 2 ;;
+    --skip-tests) SKIP_TESTS=1; shift ;;
     --resolve-only) RESOLVE_ONLY=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --) shift; INSTALL_ARGS+=("$@"); break ;;
@@ -450,6 +453,9 @@ INSTALL_ARGS+=(
 )
 if [[ -n "$SEED_ENV_FILE" ]]; then
   INSTALL_ARGS+=(--seed-env-file "$SEED_ENV_FILE")
+fi
+if (( SKIP_TESTS == 1 )); then
+  INSTALL_ARGS+=(--skip-tests)
 fi
 if [[ -n "$EXISTING_ENV_MANAGED" ]]; then
   CTS_BOOTSTRAP_CLEAN_INSTALL=1 CTS_PRESERVE_ENV_MANAGED="$EXISTING_ENV_MANAGED" \

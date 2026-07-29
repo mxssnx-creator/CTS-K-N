@@ -84,7 +84,8 @@ function workerBindings() {
 }
 
 async function main() {
-  const tempRoot = await mkdtemp(path.join(tmpdir(), "cts-kilo-deploy-"))
+  await rm(deployWorkRoot, { recursive: true, force: true })
+  const tempRoot = await mkdtemp(path.join(deployWorkRoot, "cts-kilo-deploy-"))
   const secretsFile = path.join(tempRoot, "worker-bindings.json")
   try {
     await run(process.execPath, ["scripts/kilo-deploy-preflight.mjs"], {

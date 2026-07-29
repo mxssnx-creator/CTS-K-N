@@ -407,11 +407,13 @@ printf '%s' "$SEED_ENV_BASE64" | base64 --decode > "$SEED_FILE"
 chmod 600 "$SEED_FILE"
 
 log "Running clean remote lifecycle: stop services, delete target, clone, install, migrate, build, and verify"
-CTS_BOOTSTRAP_CLEAN_INSTALL=1 bash "$TMP_DIR/source/scripts/bootstrap-install.sh" \
-  --dir "$APP_DIR" --name "$PROJECT_NAME" --port "$APP_PORT" \
-  --runtime "$RUNTIME" --service-user "$SERVICE_USER" --repository "$REPO_URL" \
-  --branch "$BRANCH" --seed-env-file "$SEED_FILE" -- "\${REINSTALL_ARG[@]}"
-log "Remote installation, scheduler ownership, restart recovery, and schema verification passed"
+  SKIP_TESTS_FLAG=""
+  if [[ "${input.skipTests ? "1" : "0"}" == "1" ]]; then SKIP_TESTS_FLAG="--skip-tests"; fi
+  CTS_BOOTSTRAP_CLEAN_INSTALL=1 bash "$TMP_DIR/source/scripts/bootstrap-install.sh" \
+    --dir "$APP_DIR" --name "$PROJECT_NAME" --port "$APP_PORT" \
+    --runtime "$RUNTIME" --service-user "$SERVICE_USER" --repository "$REPO_URL" \
+    --branch "$BRANCH" --seed-env-file "$SEED_FILE" $SKIP_TESTS_FLAG -- "\${REINSTALL_ARG[@]}"
+  log "Remote installation, scheduler ownership, restart recovery, and schema verification passed"
 `
 }
 

@@ -256,7 +256,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(JSON.parse(String(await client.get("indications:signal")))).toMatchObject({
         directExecutionEnabled: true,
         maxSourcesPerCycle: 35,
-        maxPositionsTotal: 120,
+        maxPositionsTotal: 350,
         sources: {
           "bingx-swap": {
             disabledSymbols: [],
@@ -367,7 +367,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(JSON.parse(String(await client.get("indications:signal")))).toMatchObject({
         directExecutionEnabled: true,
         maxSourcesPerCycle: 35,
-        maxPositionsTotal: 120,
+        maxPositionsTotal: 350,
         performanceLookback: 12,
         performanceMinSamples: 12,
         performanceDisableBelowPnl: 0,
@@ -376,7 +376,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(await client.hget(
         "system:database:coordination:performance",
         "signal_max_open_positions_long_short_total",
-      )).toBe("120")
+      )).toBe("350")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
