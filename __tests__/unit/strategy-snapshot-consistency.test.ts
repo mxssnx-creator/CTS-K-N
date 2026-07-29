@@ -4,7 +4,7 @@ import path from "node:path"
 const root = process.cwd()
 const read = (file: string) => fs.readFileSync(path.join(root, file), "utf8")
 
-describe("coherent strategy snapshots and schema v91", () => {
+describe("coherent strategy snapshots and schema v92", () => {
   test("uses symbol-local active lineage under parallel symbol processing", () => {
     const source = read("lib/strategy-coordinator.ts")
     expect(source).toContain("private _activeKeysCache = new Map<string")
@@ -47,7 +47,7 @@ describe("coherent strategy snapshots and schema v91", () => {
   test("migrations are sequential through the coherent schema", () => {
     const source = read("lib/redis-migrations.ts")
     const versions = Array.from(source.matchAll(/version:\s*(\d+)/g), (match) => Number(match[1]))
-    expect(versions.at(-1)).toBe(91)
+    expect(versions.at(-1)).toBe(92)
     expect(versions.every((version, index) => version === index + 1)).toBe(true)
     expect(source).toContain('name: "075-bound-high-frequency-statistics-storage"')
     expect(source).toContain('name: "079-repair-hourly-statistics-rollups"')
@@ -62,7 +62,8 @@ describe("coherent strategy snapshots and schema v91", () => {
     expect(source).toContain('name: "088-repair-exhaustive-indications-signal-capacity-and-stage-caps"')
     expect(source).toContain('name: "089-signal-full-source-cycle-and-base-pf-floor"')
     expect(source).toContain('name: "090-base-valid-and-signal-admission-contract"')
-    expect(source).toContain('name: "091-unlimited-stage-rows-and-block-work-scheduler"')
+    expect(source).toContain('name: "091-unlimited-stage-rows-cadence-and-block-work-scheduler"')
+    expect(source).toContain('name: "092-exact-indication-cadence-and-unlimited-preset-types"')
     expect(source).toContain('strategy_set_listing_indexes: "lifetime-active-closed"')
     expect(source).toContain('inline_snapshot_interval_ms: "60000"')
     expect(source).toContain('independent_block_profit_factor: "default-pf-x-ratio-x-volume-increment-v1"')

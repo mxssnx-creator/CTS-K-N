@@ -1591,11 +1591,21 @@ export class BingXConnector extends BaseExchangeConnector {
         rawStatus === "NEW"              ? "pending" :
         rawStatus === "PENDING"          ? "pending" : "pending"
 
+      const rawType = String(raw.type ?? raw.orderType ?? "market")
+      const normalizedType =
+        rawType === "LIMIT"            ? "limit" :
+        rawType === "MARKET"           ? "market" :
+        rawType === "STOP_MARKET"      ? "stop_market" :
+        rawType === "TAKE_PROFIT_MARKET" ? "take_profit_market" :
+        rawType === "STOP"             ? "stop" :
+        rawType === "TAKE_PROFIT"      ? "take_profit" :
+        rawType.toLowerCase()
+
       return {
         orderId:     String(raw.orderId   ?? raw.clientOrderId ?? ""),
         symbol:      String(raw.symbol    ?? ""),
         side:        String(raw.side      ?? "").toLowerCase() as "buy" | "sell",
-        type:        "market",
+        type:        normalizedType as ExchangeOrder["type"],
         quantity:    parseFloat(String(raw.origQty   ?? raw.quantity    ?? "0")),
         price:       parseFloat(String(raw.price     ?? raw.avgPrice    ?? "0")),
         status:      normalizedStatus as ExchangeOrder["status"],
