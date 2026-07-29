@@ -3,6 +3,7 @@ import { flushAll, getRedisClient, initRedis } from "@/lib/redis-db"
 import { runMigrations, resetMigrationRunState } from "@/lib/redis-migrations"
 import { SystemLogger } from "@/lib/system-logger"
 import { stopAllProgressionsBeforeReset } from "@/lib/db-reset-helper"
+import { authorizeAdminBearer } from "@/lib/admin-auth"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -16,12 +17,11 @@ export async function POST(request: NextRequest) {
   const logs: string[] = []
 
   try {
-    // Get authorization token if available (optional basic protection)
-    const authHeader = request.headers.get("authorization")
-    if (authHeader !== `Bearer ${process.env.ADMIN_SECRET || ""}` && process.env.ADMIN_SECRET) {
+    const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+    if (!authorization.ok) {
       return NextResponse.json(
-        { success: false, error: "Unauthorized" },
-        { status: 401 }
+        { success: false, error: authorization.error },
+        { status: authorization.status },
       )
     }
 

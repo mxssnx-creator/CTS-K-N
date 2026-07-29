@@ -1,8 +1,8 @@
-import { NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
 import { getRedisClient, getConnection, initRedis } from "@/lib/redis-db"
 
 export const dynamic = "force-dynamic"
-export async function GET(req: Request) {
+export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url)
     const connectionId = searchParams.get("connection_id")

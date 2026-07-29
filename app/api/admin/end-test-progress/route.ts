@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { execute, query } from "@/lib/db"
+import { authorizeAdminBearer } from "@/lib/admin-auth"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -35,7 +36,15 @@ export const dynamic = "force-dynamic"
  *
  * Returns a JSON report of every action taken.
  */
-export async function POST() {
+export async function POST(request: Request) {
+  const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+  if (!authorization.ok) {
+    return NextResponse.json(
+      { success: false, error: authorization.error },
+      { status: authorization.status },
+    )
+  }
+
   await initRedis()
   const client = getRedisClient()
   const now = Date.now()
@@ -206,7 +215,15 @@ export async function POST() {
  * GET /api/admin/end-test-progress
  * Dry-run — reports what would be ended without making any changes.
  */
-export async function GET() {
+export async function GET(request: Request) {
+  const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+  if (!authorization.ok) {
+    return NextResponse.json(
+      { success: false, error: authorization.error },
+      { status: authorization.status },
+    )
+  }
+
   await initRedis()
   const client = getRedisClient()
 

@@ -1,9 +1,18 @@
 import { NextResponse } from "next/server"
+import { authorizeAdminBearer } from "@/lib/admin-auth"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-export async function POST() {
+export async function POST(request: Request) {
+  const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+  if (!authorization.ok) {
+    return NextResponse.json(
+      { success: false, error: authorization.error },
+      { status: authorization.status },
+    )
+  }
+
   try {
     console.log("[v0] Manual migration run requested...")
 

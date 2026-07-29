@@ -1,8 +1,17 @@
 import { NextResponse } from "next/server"
 import { getRedisClient } from "@/lib/redis-db"
+import { authorizeAdminBearer } from "@/lib/admin-auth"
 
 export const dynamic = "force-dynamic"
-export async function GET() {
+export async function GET(request: Request) {
+  const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+  if (!authorization.ok) {
+    return NextResponse.json(
+      { success: false, error: authorization.error },
+      { status: authorization.status },
+    )
+  }
+
   try {
     const client = getRedisClient()
     

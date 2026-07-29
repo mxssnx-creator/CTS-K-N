@@ -1,5 +1,6 @@
-import { NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
 import { getAllConnections, updateConnection, initRedis } from "@/lib/redis-db"
+import { authorizeAdminBearer } from "@/lib/admin-auth"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
@@ -9,19 +10,16 @@ export const maxDuration = 60
  * Enable live trading on all connections system-wide
  * Sets is_live_trade=1 on all configured connections
  */
-export async function POST(req: Request) {
-  try {
-    const authHeader = req.headers.get("authorization")
-    const secret = process.env.CRON_SECRET || process.env.API_SECRET
-    
-    // Validate authorization if secret is configured
-    if (secret && authHeader !== `Bearer ${secret}`) {
-      return NextResponse.json(
-        { success: false, error: "Unauthorized" },
-        { status: 401 }
-      )
-    }
+export async function POST(request: NextRequest) {
+  const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+  if (!authorization.ok) {
+    return NextResponse.json(
+      { success: false, error: authorization.error },
+      { status: authorization.status },
+    )
+  }
 
+  try {
     await initRedis()
     const connections = await getAllConnections()
     
@@ -91,7 +89,15 @@ export async function POST(req: Request) {
  * GET /api/admin/enable-live-trading
  * Check current live trading status across all connections
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+  if (!authorization.ok) {
+    return NextResponse.json(
+      { success: false, error: authorization.error },
+      { status: authorization.status },
+    )
+  }
+
   try {
     await initRedis()
     const connections = await getAllConnections()

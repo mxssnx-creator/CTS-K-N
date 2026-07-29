@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
 import { getSettings } from "@/lib/redis-db"
 
 /**
@@ -6,7 +6,7 @@ import { getSettings } from "@/lib/redis-db"
  * Shows phase, cycles, and all relevant metrics
  */
 export const dynamic = "force-dynamic"
-export async function GET(req: Request) {
+export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url)
     const connectionId = searchParams.get("connection_id")

@@ -34,6 +34,30 @@ const BLOCKED_ENV_KEYS = new Set([
   "SCHEDULER_BASE_URL",
   "SHELL",
 ])
+
+const ALLOWED_ENV_KEYS = new Set([
+  "CI",
+  "DEBUG",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+  "SSH_AUTH_SOCK",
+  "SSH_AGENT_PID",
+  "TERM",
+  "TMPDIR",
+])
+
+function buildSshProcessEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { NODE_ENV: process.env.NODE_ENV || "development" }
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value !== "string") continue
+    if (BLOCKED_ENV_KEYS.has(key)) continue
+    if (ALLOWED_ENV_KEYS.has(key)) {
+      env[key] = value
+    }
+  }
+  return env
+}
 const DANGEROUS_INSTALL_DIRS = new Set([
   "/",
   "/bin",
@@ -509,7 +533,7 @@ export async function POST(request: Request) {
       : [...sshArgs, `${input.username}@${sshHost}`, "bash -s"]
     const result = await runRemoteCommand(command, args, script, {
       timeout: input.mode === "preflight" ? 10 * 60 * 1000 : 60 * 60 * 1000,
-      env: { ...process.env, SSHPASS: input.password || "" },
+      env: { ...buildSshProcessEnv(), SSHPASS: input.password || "" },
     })
 
     return NextResponse.json({

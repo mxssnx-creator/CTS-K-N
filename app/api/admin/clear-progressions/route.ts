@@ -3,6 +3,7 @@ import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
 import { allocateStateSwitchVersion } from "@/lib/engine-refresh-queue"
+import { authorizeAdminBearer } from "@/lib/admin-auth"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -129,7 +130,15 @@ function bucketOf(key: string): string {
   return idx > 0 ? key.slice(0, idx) + ":*" : key
 }
 
-export async function POST() {
+export async function POST(request: Request) {
+  const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+  if (!authorization.ok) {
+    return NextResponse.json(
+      { success: false, error: authorization.error },
+      { status: authorization.status },
+    )
+  }
+
   const startedAt = Date.now()
   try {
     console.log("[v0] [ClearProgressions] === starting targeted runtime clear ===")
