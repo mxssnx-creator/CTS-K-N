@@ -57,6 +57,15 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Completed race-condition and stats/count coordination review across live-stage fill/close/adjustment paths, progression snapshots, Long/Short counters, client event coalescing, and crash recovery
 - [x] Security hardening: removed hardcoded JWT fallback secret (now fails closed), fixed user ID mismatch in registration (nanoid preserved as string), added `authorizeAdminBearer` to all unprotected admin routes, fixed auth bypass when `ADMIN_SECRET` unset, fixed `process.env` leak in SSH child process, added `maxDuration=300` to quick-start route, fixed duplicate type declarations in `bingx-api.d.ts`, standardized `Request` → `NextRequest` in trading routes
 
+## Recently Completed (2026-07-29)
+
+- [x] Fixed signal position limits: Changed `signal_max_open_positions_long_short_total` from 120 to 350 in migrations 087, 088, 089, 090 in `lib/redis-migrations.ts`
+- [x] Fixed `scripts/kilo-deploy.mjs` to use stable `/opt/cts-kilo-deploy-*` directory instead of unstable `/tmp` from `tmpdir()`
+- [x] Added `--skip-tests` option to `scripts/bootstrap-install.sh` and forward it to `install.sh`
+- [x] Fixed remote install script in `app/api/install/remote/route.ts` to forward skip-tests in install mode
+- [x] Updated test assertions to expect `SIGNAL_MAX_POSITIONS_DEFAULT = 350`
+- [x] Fixed test assertion to use correct settings label ("Signal Sources base positions limit (overall)")
+
 ## Current Structure
 
 | File/Directory | Purpose | Status |
