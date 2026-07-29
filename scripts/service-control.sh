@@ -158,7 +158,7 @@ run_as_service() {
 update_value() {
   local file="$1" key="$2" value="$3" tmp
   [[ -f "$file" ]] || { echo "Required install file is missing: $file" >&2; exit 1; }
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$RUNTIME_DIR/tmp.XXXXXX")"
   run_root awk -v wanted="$key" -v replacement="$value" '
     BEGIN { found = 0 }
     index($0, wanted "=") == 1 { print wanted "=" replacement; found = 1; next }

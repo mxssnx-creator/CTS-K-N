@@ -11,13 +11,13 @@
 
 import { spawn } from "node:child_process"
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import path from "node:path"
 import process from "node:process"
 
 const root = process.cwd()
 const binSuffix = process.platform === "win32" ? ".cmd" : ""
 const openNext = path.join(root, "node_modules", ".bin", `opennextjs-cloudflare${binSuffix}`)
+const deployWorkRoot = path.join(root, ".cts-deploy-work")
 
 // Only values intentionally consumed by CTS-K-N may cross the deployment
 // boundary. In particular CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are

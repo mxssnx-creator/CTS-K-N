@@ -15,6 +15,7 @@ set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_DIR"
+mkdir -p "$PROJECT_DIR/logs"
 
 # Configuration
 PROD_URL="http://localhost:3002"
@@ -60,7 +61,7 @@ start_server() {
   NODE_ENV="production" \
   CRON_SECRET="${CRON_SECRET}" \
   ALLOW_INLINE_REDIS_LIVE_TRADING="1" \
-  pnpm run start > /tmp/prod-20sym-8h.log 2>&1 &
+  pnpm run start > "$PROJECT_DIR/logs/prod-20sym-8h.log" 2>&1 &
   
   SERVER_PID=$!
   log_info "Server started with PID $SERVER_PID"

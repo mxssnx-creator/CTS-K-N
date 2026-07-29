@@ -7,7 +7,9 @@
 set -e
 
 PROD_URL="http://localhost:3002"
-RESTART_LOG="/tmp/prod-restart-manager.log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+RESTART_LOG="$PROJECT_DIR/logs/prod-restart-manager.log"
 MAX_RESTART_DELAY=60
 CHECK_INTERVAL=30
 
@@ -43,7 +45,7 @@ restart_server() {
   NODE_ENV="production" \
   CRON_SECRET="${CRON_SECRET}" \
   ALLOW_INLINE_REDIS_LIVE_TRADING="1" \
-  pnpm run start > /tmp/prod-20sym-8h.log 2>&1 &
+  pnpm run start > "$PROJECT_DIR/logs/prod-20sym-8h.log" 2>&1 &
   
   sleep 15
   log_to_file "Server restarted"
