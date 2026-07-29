@@ -72,6 +72,9 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Updated `components/dashboard/active-connection-card.tsx` to display continuous evaluation count on Real stage row
 - [x] Verified Block strategy configs for Real/Live stages: `blockActiveRealEnabled` and `blockActiveLiveEnabled` both default to `true` in `_coordinationSettings`
 - [x] Verified Block-Only mode: `blockOnly` defaults to `true` in `_coordinationSettings` and settings loader
+- [x] Fixed BingX connector `getOrder()` to preserve exchange-returned order type instead of hardcoding `"market"` — fixes protection-order recognition in `live-stage.ts`
+- [x] Updated schema version references from v91 to v92 across preflight scripts, tests, and build setup to match migration 092
+- [x] Updated `strategy-snapshot-consistency.test.ts` and `install-deployment-contract.test.ts` to expect schema v92
 
 ## Current Structure
 
