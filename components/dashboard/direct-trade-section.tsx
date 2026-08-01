@@ -1,0 +1,746 @@
+"use client"
+/**
+ * Direct-Trade Section
+ *
+ * Placed after Quickstart on the main dashboard. Provides:
+ * - Live/Simulated toggle switch
+ * - Config options: Volume Factor, Pos Count, Symbol Count, Symbol Order,
+ *   PF Minimum, Max DDT, SL Max Ratio, Trailing on/off, Block on/off
+ * - Start/Stop button
+ * - Stats overview: last 12/25/50 positions, last 4/12/48 hours with PF and DDT
+ * - Active configs and positions overview
+ */
+import { useCallback, useEffect, useRef, useState } from "react"
+import { Card } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
+import { Slider } from "@/components/ui/slider"
+import { Badge } from "@/components/ui/badge"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Play,
+  StopCircle,
+  Zap,
+  TrendingUp,
+  Activity,
+  BarChart3,
+  Clock,
+  Loader2,
+  RefreshCw,
+  Boxes,
+  Target,
+  Shield,
+  ChevronDown,
+  ChevronUp,
+} from "lucide-react"
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface DirectTradeState {
+  enabled: boolean
+  liveMode: boolean
+  startedAt: string | null
+  symbolCount: number
+  symbolOrder: "volatility_1h" | "volume" | "volatility"
+  minVolFactor: number
+  maxSlRatio: number
+  slRatioStep: number
+  timeframes: ("1m" | "5m" | "10m")[]
+  blockRange: [number, number]
+  maxPositionsPerSymbol: number
+  maxPositionsPerDirection: number
+}
+
+interface DirectTradeStats {
+  totalOrders: number
+  totalFilled: number
+  totalPnl: number
+  winCount: number
+  lossCount: number
+  profitFactor: number
+  maxDrawdownTimeMin: number
+  currentDrawdownTimeMin: number
+  lastPositionAt: string | null
+  last12Pos: { pf: number; ddt: number; pnl: number }
+  last25Pos: { pf: number; ddt: number; pnl: number }
+  last50Pos: { pf: number; ddt: number; pnl: number }
+  last4h: { pf: number; ddt: number; pnl: number }
+  last12h: { pf: number; ddt: number; pnl: number }
+  last48h: { pf: number; ddt: number; pnl: number }
+}
+
+// ─── Defaults ─────────────────────────────────────────────────────────────────
+
+const DEFAULT_STATE: DirectTradeState = {
+  enabled: false,
+  liveMode: false,
+  startedAt: null,
+  symbolCount: 8,
+  symbolOrder: "volatility_1h",
+  minVolFactor: 1,
+  maxSlRatio: 1,
+  slRatioStep: 0.25,
+  timeframes: ["1m", "5m", "10m"],
+  blockRange: [1, 12],
+  maxPositionsPerSymbol: 3,
+  maxPositionsPerDirection: 2,
+}
+
+const DEFAULT_STATS: DirectTradeStats = {
+  totalOrders: 0,
+  totalFilled: 0,
+  totalPnl: 0,
+  winCount: 0,
+  lossCount: 0,
+  profitFactor: 0,
+  maxDrawdownTimeMin: 0,
+  currentDrawdownTimeMin: 0,
+  lastPositionAt: null,
+  last12Pos: { pf: 0, ddt: 0, pnl: 0 },
+  last25Pos: { pf: 0, ddt: 0, pnl: 0 },
+  last50Pos: { pf: 0, ddt: 0, pnl: 0 },
+  last4h: { pf: 0, ddt: 0, pnl: 0 },
+  last12h: { pf: 0, ddt: 0, pnl: 0 },
+  last48h: { pf: 0, ddt: 0, pnl: 0 },
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+export function DirectTradeSection() {
+  const [state, setState] = useState<DirectTradeState>(DEFAULT_STATE)
+  const [stats, setStats] = useState<DirectTradeStats>(DEFAULT_STATS)
+  const [activeConfigs, setActiveConfigs] = useState(0)
+  const [openPositions, setOpenPositions] = useState(0)
+  const [closedPositions, setClosedPositions] = useState(0)
+  const [processorHealthy, setProcessorHealthy] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [calculating, setCalculating] = useState(false)
+  const [expanded, setExpanded] = useState(true)
+  const [optionsExpanded, setOptionsExpanded] = useState(false)
+
+  // Local config state for sliders (debounced save)
+  const [localVolFactor, setLocalVolFactor] = useState(1)
+  const [localMaxSl, setLocalMaxSl] = useState(1)
+  const [localMinPF, setLocalMinPF] = useState(1.1)
+  const [localMaxDDT, setLocalMaxDDT] = useState(10)
+  const [localSymbolCount, setLocalSymbolCount] = useState(8)
+  const [localMaxPosPerSymbol, setLocalMaxPosPerSymbol] = useState(3)
+  const [localMaxPosPerDir, setLocalMaxPosPerDir] = useState(2)
+  const [localTrailing, setLocalTrailing] = useState(true)
+  const [localBlock, setLocalBlock] = useState(true)
+  const [localBlockMax, setLocalBlockMax] = useState(12)
+  const [localTimeframes, setLocalTimeframes] = useState<string[]>(["1m", "5m", "10m"])
+  const [localSymbolOrder, setLocalSymbolOrder] = useState<string>("volatility_1h")
+  // Pos Count evaluation windows (for PF/DDT historic coordination calculations)
+  const [localPrevPosWindow, setLocalPrevPosWindow] = useState(25)
+  const [localPrevPosMinCount, setLocalPrevPosMinCount] = useState(5)
+  const [localEvalPosCount, setLocalEvalPosCount] = useState(12)
+  // Keep-enabled check: per symbol/direction/config independent evaluation
+  const [localKeepEnabledPosCount, setLocalKeepEnabledPosCount] = useState(8)
+
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ─── Data Fetching ────────────────────────────────────────────────────────
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/trade-engine/direct-trade/status", { cache: "no-store" })
+      if (!res.ok) return
+      const data = await res.json()
+      if (data.state) {
+        setState(data.state)
+        setLocalVolFactor(data.state.minVolFactor || 1)
+        setLocalMaxSl(data.state.maxSlRatio || 1)
+        setLocalSymbolCount(data.state.symbolCount || 8)
+        setLocalMaxPosPerSymbol(data.state.maxPositionsPerSymbol || 3)
+        setLocalMaxPosPerDir(data.state.maxPositionsPerDirection || 2)
+        setLocalTimeframes(data.state.timeframes || ["1m", "5m", "10m"])
+        setLocalSymbolOrder(data.state.symbolOrder || "volatility_1h")
+        setLocalBlock(data.state.blockRange?.[1] > 0)
+        setLocalBlockMax(data.state.blockRange?.[1] || 12)
+      }
+      if (data.stats) setStats({ ...DEFAULT_STATS, ...data.stats })
+      if (data.activeConfigs !== undefined) setActiveConfigs(data.activeConfigs)
+      if (data.openPositions !== undefined) setOpenPositions(data.openPositions)
+      if (data.closedPositions !== undefined) setClosedPositions(data.closedPositions)
+      if (data.processor) setProcessorHealthy(data.processor.isHealthy || false)
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    fetchStatus()
+    const interval = setInterval(fetchStatus, 3000)
+    return () => clearInterval(interval)
+  }, [fetchStatus])
+
+  // ─── Actions ──────────────────────────────────────────────────────────────
+
+  const handleStartStop = async () => {
+    setLoading(true)
+    try {
+      const action = state.enabled ? "stop" : "start"
+      const res = await fetch("/api/trade-engine/direct-trade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          liveMode: state.liveMode,
+          symbolCount: localSymbolCount,
+          symbolOrder: localSymbolOrder,
+          minVolFactor: localVolFactor,
+          maxSlRatio: localMaxSl,
+          timeframes: localTimeframes,
+          blockRange: localBlock ? [1, localBlockMax] : [0, 0],
+          maxPositionsPerSymbol: localMaxPosPerSymbol,
+          maxPositionsPerDirection: localMaxPosPerDir,
+        }),
+      })
+      const data = await res.json()
+      if (data.state) setState(data.state)
+    } catch {}
+    setLoading(false)
+  }
+
+  const handleToggleLive = async () => {
+    try {
+      const res = await fetch("/api/trade-engine/direct-trade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "toggle-live", liveMode: !state.liveMode }),
+      })
+      const data = await res.json()
+      if (data.state) setState(data.state)
+    } catch {}
+  }
+
+  const handleRecalculate = async () => {
+    setCalculating(true)
+    try {
+      await fetch("/api/trade-engine/direct-trade/calculate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbolCount: localSymbolCount,
+          symbolOrder: localSymbolOrder,
+          minVolFactor: localVolFactor,
+          maxSlRatio: localMaxSl,
+          timeframes: localTimeframes,
+          blockRange: localBlock ? [1, localBlockMax] : [0, 0],
+        }),
+      })
+      await fetchStatus()
+    } catch {}
+    setCalculating(false)
+  }
+
+  // ─── Debounced Config Save ────────────────────────────────────────────────
+
+  const saveConfig = useCallback(async (updates: Record<string, any>) => {
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+    saveTimeoutRef.current = setTimeout(async () => {
+      try {
+        await fetch("/api/trade-engine/direct-trade", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "update-config", ...updates }),
+        })
+      } catch {}
+    }, 350)
+  }, [])
+
+  // ─── Render Helpers ───────────────────────────────────────────────────────
+
+  const formatPF = (pf: number) => pf > 0 ? pf.toFixed(2) : "—"
+  const formatDDT = (ddt: number) => ddt > 0 ? `${ddt.toFixed(1)}m` : "—"
+  const formatPnl = (pnl: number) => {
+    if (pnl === 0) return "0.00%"
+    return `${pnl > 0 ? "+" : ""}${pnl.toFixed(3)}%`
+  }
+
+  const pnlColor = (pnl: number) =>
+    pnl > 0 ? "text-green-500" : pnl < 0 ? "text-red-500" : "text-muted-foreground"
+
+  // ─── Render ───────────────────────────────────────────────────────────────
+
+  return (
+    <Card className="p-4 space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Target className="h-5 w-5 text-primary" />
+          <h3 className="font-semibold text-base">Direct-Trade</h3>
+          <Badge variant={state.enabled ? "default" : "secondary"} className="text-xs">
+            {state.enabled ? "Active" : "Inactive"}
+          </Badge>
+          {state.enabled && (
+            <Badge variant={state.liveMode ? "destructive" : "outline"} className="text-xs">
+              {state.liveMode ? "LIVE" : "Simulated"}
+            </Badge>
+          )}
+          {processorHealthy && (
+            <Badge variant="outline" className="text-xs text-green-600 border-green-300">
+              <Activity className="h-3 w-3 mr-1" /> Processor OK
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setExpanded(!expanded)}>
+            {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </Button>
+        </div>
+      </div>
+
+      {expanded && (
+        <>
+          {/* Controls Row */}
+          <div className="flex flex-wrap items-center gap-3 border-b pb-3">
+            {/* Live Switch */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Live Trade</span>
+              <Switch
+                checked={state.liveMode}
+                onCheckedChange={handleToggleLive}
+                className="data-[state=checked]:bg-red-500"
+              />
+            </div>
+
+            {/* Start/Stop */}
+            <Button
+              size="sm"
+              variant={state.enabled ? "destructive" : "default"}
+              onClick={handleStartStop}
+              disabled={loading}
+            >
+              {loading ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-1" />
+              ) : state.enabled ? (
+                <StopCircle className="h-4 w-4 mr-1" />
+              ) : (
+                <Play className="h-4 w-4 mr-1" />
+              )}
+              {state.enabled ? "Stop" : "Start"}
+            </Button>
+
+            {/* Recalculate */}
+            <Button size="sm" variant="outline" onClick={handleRecalculate} disabled={calculating}>
+              {calculating ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}
+              Recalc
+            </Button>
+
+            {/* Quick Stats */}
+            <div className="flex items-center gap-3 ml-auto text-xs">
+              <span className="text-muted-foreground">Configs: <strong>{activeConfigs}</strong></span>
+              <span className="text-muted-foreground">Open: <strong>{openPositions}</strong></span>
+              <span className="text-muted-foreground">Closed: <strong>{closedPositions}</strong></span>
+              <span className={pnlColor(stats.totalPnl)}>PnL: <strong>{formatPnl(stats.totalPnl)}</strong></span>
+            </div>
+          </div>
+
+          {/* Options Toggle */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-between text-xs"
+            onClick={() => setOptionsExpanded(!optionsExpanded)}
+          >
+            <span className="flex items-center gap-1">
+              <Boxes className="h-3 w-3" /> Options & Configuration
+            </span>
+            {optionsExpanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          </Button>
+
+          {optionsExpanded && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-3 bg-muted/30 rounded-lg">
+              {/* Volume Factor */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Volume Factor</span>
+                  <span className="font-mono font-medium">{localVolFactor.toFixed(1)}</span>
+                </div>
+                <Slider
+                  value={[localVolFactor]}
+                  min={0.1}
+                  max={10}
+                  step={0.1}
+                  onValueChange={([v]) => {
+                    setLocalVolFactor(v)
+                    saveConfig({ minVolFactor: v })
+                  }}
+                />
+              </div>
+
+              {/* Symbol Count */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Symbol Count</span>
+                  <span className="font-mono font-medium">{localSymbolCount}</span>
+                </div>
+                <Slider
+                  value={[localSymbolCount]}
+                  min={1}
+                  max={20}
+                  step={1}
+                  onValueChange={([v]) => {
+                    setLocalSymbolCount(v)
+                    saveConfig({ symbolCount: v })
+                  }}
+                />
+              </div>
+
+              {/* Symbol Order */}
+              <div className="space-y-1">
+                <span className="text-xs text-muted-foreground">Symbol Order</span>
+                <Select
+                  value={localSymbolOrder}
+                  onValueChange={(v) => {
+                    setLocalSymbolOrder(v)
+                    saveConfig({ symbolOrder: v })
+                  }}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="volatility_1h">Most Volatile 1h</SelectItem>
+                    <SelectItem value="volatility">Volatility 24h</SelectItem>
+                    <SelectItem value="volume">Volume 24h</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Max Positions per Symbol */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Max Pos / Symbol</span>
+                  <span className="font-mono font-medium">{localMaxPosPerSymbol}</span>
+                </div>
+                <Slider
+                  value={[localMaxPosPerSymbol]}
+                  min={1}
+                  max={10}
+                  step={1}
+                  onValueChange={([v]) => {
+                    setLocalMaxPosPerSymbol(v)
+                    saveConfig({ maxPositionsPerSymbol: v })
+                  }}
+                />
+              </div>
+
+              {/* Max Positions per Direction */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Max Pos / Direction</span>
+                  <span className="font-mono font-medium">{localMaxPosPerDir}</span>
+                </div>
+                <Slider
+                  value={[localMaxPosPerDir]}
+                  min={1}
+                  max={5}
+                  step={1}
+                  onValueChange={([v]) => {
+                    setLocalMaxPosPerDir(v)
+                    saveConfig({ maxPositionsPerDirection: v })
+                  }}
+                />
+              </div>
+
+              {/* SL Max Ratio */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">StopLoss Max Ratio</span>
+                  <span className="font-mono font-medium">{localMaxSl.toFixed(2)}</span>
+                </div>
+                <Slider
+                  value={[localMaxSl]}
+                  min={0.5}
+                  max={2}
+                  step={0.25}
+                  onValueChange={([v]) => {
+                    setLocalMaxSl(v)
+                    saveConfig({ maxSlRatio: v })
+                  }}
+                />
+              </div>
+
+              {/* Min Profit Factor */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Min Profit Factor</span>
+                  <span className="font-mono font-medium">{localMinPF.toFixed(1)}</span>
+                </div>
+                <Slider
+                  value={[localMinPF]}
+                  min={0.5}
+                  max={3.5}
+                  step={0.1}
+                  onValueChange={([v]) => {
+                    setLocalMinPF(v)
+                    saveConfig({ minProfitFactor: v })
+                  }}
+                />
+              </div>
+
+              {/* Max Drawdown Time */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Max DDT (min)</span>
+                  <span className="font-mono font-medium">{localMaxDDT}</span>
+                </div>
+                <Slider
+                  value={[localMaxDDT]}
+                  min={1}
+                  max={30}
+                  step={1}
+                  onValueChange={([v]) => {
+                    setLocalMaxDDT(v)
+                    saveConfig({ maxDrawdownTimeMin: v })
+                  }}
+                />
+              </div>
+
+              {/* Block Max Count */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Block Max Count</span>
+                  <span className="font-mono font-medium">{localBlockMax}</span>
+                </div>
+                <Slider
+                  value={[localBlockMax]}
+                  min={1}
+                  max={12}
+                  step={1}
+                  disabled={!localBlock}
+                  onValueChange={([v]) => {
+                    setLocalBlockMax(v)
+                    saveConfig({ blockRange: [1, v] })
+                  }}
+                />
+              </div>
+
+              {/* Timeframes */}
+              <div className="space-y-2">
+                <span className="text-xs text-muted-foreground">Timeframes</span>
+                <div className="flex gap-2">
+                  {(["1m", "5m", "10m"] as const).map((tf) => (
+                    <Button
+                      key={tf}
+                      size="sm"
+                      variant={localTimeframes.includes(tf) ? "default" : "outline"}
+                      className="h-7 text-xs px-2"
+                      onClick={() => {
+                        const next = localTimeframes.includes(tf)
+                          ? localTimeframes.filter((t) => t !== tf)
+                          : [...localTimeframes, tf]
+                        if (next.length === 0) return
+                        setLocalTimeframes(next)
+                        saveConfig({ timeframes: next })
+                      }}
+                    >
+                      {tf}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Pos Count Window (Last N for PF/DDT evaluation) */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Eval Window (Last N Pos)</span>
+                  <span className="font-mono font-medium">{localPrevPosWindow}</span>
+                </div>
+                <Slider
+                  value={[localPrevPosWindow]}
+                  min={5}
+                  max={100}
+                  step={5}
+                  onValueChange={([v]) => {
+                    setLocalPrevPosWindow(v)
+                    saveConfig({ prevPosWindow: v })
+                  }}
+                />
+              </div>
+
+              {/* Pos Count Min (minimum positions before PF eval activates) */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Min Pos for Eval</span>
+                  <span className="font-mono font-medium">{localPrevPosMinCount}</span>
+                </div>
+                <Slider
+                  value={[localPrevPosMinCount]}
+                  min={1}
+                  max={25}
+                  step={1}
+                  onValueChange={([v]) => {
+                    setLocalPrevPosMinCount(v)
+                    saveConfig({ prevPosMinCount: v })
+                  }}
+                />
+              </div>
+
+              {/* Eval Pos Count (positions used for coordination checks) */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Coord. Eval Count</span>
+                  <span className="font-mono font-medium">{localEvalPosCount}</span>
+                </div>
+                <Slider
+                  value={[localEvalPosCount]}
+                  min={3}
+                  max={50}
+                  step={1}
+                  onValueChange={([v]) => {
+                    setLocalEvalPosCount(v)
+                    saveConfig({ evalPosCount: v })
+                  }}
+                />
+              </div>
+
+              {/* Keep-Enabled Pos Count (per symbol/direction/config independent check) */}
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Keep-Enabled Check (N Pos)</span>
+                  <span className="font-mono font-medium">{localKeepEnabledPosCount}</span>
+                </div>
+                <Slider
+                  value={[localKeepEnabledPosCount]}
+                  min={3}
+                  max={30}
+                  step={1}
+                  onValueChange={([v]) => {
+                    setLocalKeepEnabledPosCount(v)
+                    saveConfig({ keepEnabledPosCount: v })
+                  }}
+                />
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">
+                  Per symbol/direction/config: disables config if last N pos PF &lt; min or DDT &gt; max
+                </p>
+              </div>
+
+              {/* Trailing Switch */}
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Trailing Stop</span>
+                <Switch
+                  checked={localTrailing}
+                  onCheckedChange={(v) => {
+                    setLocalTrailing(v)
+                    saveConfig({ trailingEnabled: v })
+                  }}
+                />
+              </div>
+
+              {/* Block Strategy Switch */}
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Block Strategy</span>
+                <Switch
+                  checked={localBlock}
+                  onCheckedChange={(v) => {
+                    setLocalBlock(v)
+                    saveConfig({ blockRange: v ? [1, localBlockMax] : [0, 0] })
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Stats Grid */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm font-medium">Performance Stats</span>
+            </div>
+
+            {/* Overall Stats */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+              <div className="bg-muted/40 rounded p-2">
+                <div className="text-muted-foreground">Total PnL</div>
+                <div className={`font-mono font-bold ${pnlColor(stats.totalPnl)}`}>
+                  {formatPnl(stats.totalPnl)}
+                </div>
+              </div>
+              <div className="bg-muted/40 rounded p-2">
+                <div className="text-muted-foreground">Profit Factor</div>
+                <div className="font-mono font-bold">{formatPF(stats.profitFactor)}</div>
+              </div>
+              <div className="bg-muted/40 rounded p-2">
+                <div className="text-muted-foreground">Win/Loss</div>
+                <div className="font-mono font-bold">{stats.winCount}/{stats.lossCount}</div>
+              </div>
+              <div className="bg-muted/40 rounded p-2">
+                <div className="text-muted-foreground">Max DDT</div>
+                <div className="font-mono font-bold">{formatDDT(stats.maxDrawdownTimeMin)}</div>
+              </div>
+            </div>
+
+            {/* Rolling Position Stats */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b text-muted-foreground">
+                    <th className="text-left py-1 pr-3">Window</th>
+                    <th className="text-right py-1 px-2">PF</th>
+                    <th className="text-right py-1 px-2">DDT</th>
+                    <th className="text-right py-1 px-2">PnL</th>
+                  </tr>
+                </thead>
+                <tbody className="font-mono">
+                  <tr className="border-b border-dashed">
+                    <td className="py-1 pr-3">Last 12 Pos</td>
+                    <td className="text-right px-2">{formatPF(stats.last12Pos.pf)}</td>
+                    <td className="text-right px-2">{formatDDT(stats.last12Pos.ddt)}</td>
+                    <td className={`text-right px-2 ${pnlColor(stats.last12Pos.pnl)}`}>{formatPnl(stats.last12Pos.pnl)}</td>
+                  </tr>
+                  <tr className="border-b border-dashed">
+                    <td className="py-1 pr-3">Last 25 Pos</td>
+                    <td className="text-right px-2">{formatPF(stats.last25Pos.pf)}</td>
+                    <td className="text-right px-2">{formatDDT(stats.last25Pos.ddt)}</td>
+                    <td className={`text-right px-2 ${pnlColor(stats.last25Pos.pnl)}`}>{formatPnl(stats.last25Pos.pnl)}</td>
+                  </tr>
+                  <tr className="border-b border-dashed">
+                    <td className="py-1 pr-3">Last 50 Pos</td>
+                    <td className="text-right px-2">{formatPF(stats.last50Pos.pf)}</td>
+                    <td className="text-right px-2">{formatDDT(stats.last50Pos.ddt)}</td>
+                    <td className={`text-right px-2 ${pnlColor(stats.last50Pos.pnl)}`}>{formatPnl(stats.last50Pos.pnl)}</td>
+                  </tr>
+                  <tr className="border-b border-dashed">
+                    <td className="py-1 pr-3 flex items-center gap-1"><Clock className="h-3 w-3" /> Last 4h</td>
+                    <td className="text-right px-2">{formatPF(stats.last4h.pf)}</td>
+                    <td className="text-right px-2">{formatDDT(stats.last4h.ddt)}</td>
+                    <td className={`text-right px-2 ${pnlColor(stats.last4h.pnl)}`}>{formatPnl(stats.last4h.pnl)}</td>
+                  </tr>
+                  <tr className="border-b border-dashed">
+                    <td className="py-1 pr-3 flex items-center gap-1"><Clock className="h-3 w-3" /> Last 12h</td>
+                    <td className="text-right px-2">{formatPF(stats.last12h.pf)}</td>
+                    <td className="text-right px-2">{formatDDT(stats.last12h.ddt)}</td>
+                    <td className={`text-right px-2 ${pnlColor(stats.last12h.pnl)}`}>{formatPnl(stats.last12h.pnl)}</td>
+                  </tr>
+                  <tr>
+                    <td className="py-1 pr-3 flex items-center gap-1"><Clock className="h-3 w-3" /> Last 48h</td>
+                    <td className="text-right px-2">{formatPF(stats.last48h.pf)}</td>
+                    <td className="text-right px-2">{formatDDT(stats.last48h.ddt)}</td>
+                    <td className={`text-right px-2 ${pnlColor(stats.last48h.pnl)}`}>{formatPnl(stats.last48h.pnl)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {/* Active Configs Summary */}
+            {activeConfigs > 0 && (
+              <div className="text-xs text-muted-foreground flex items-center gap-2 pt-1">
+                <Zap className="h-3 w-3" />
+                <span>{activeConfigs} active configs across {localTimeframes.length} timeframes</span>
+                {state.enabled && <span>| Processing every {state.processingIntervalMs || 500}ms</span>}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </Card>
+  )
+}

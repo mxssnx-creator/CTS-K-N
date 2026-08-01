@@ -24,10 +24,7 @@ installs the executable scripts and dependencies, then waits for the complete
 build, migration, scheduler, health, persistence, and restart verification:
 
 ```bash
-tmp="$(mktemp -d)" && git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git "$tmp/cts-k-n" \
-  && cd "$tmp/cts-k-n" \
-  && chmod 750 scripts/bootstrap-install.sh \
-  && sudo bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn --port 3002
+sudo bash -c 'git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git /opt/cts-kn 2>/dev/null || true && cd /opt/cts-kn && bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn --port 3002'
 ```
 
 When the server is behind a domain or reverse proxy, pass its complete public
@@ -35,10 +32,7 @@ origin so generated links and deployment verification do not point at a local
 address (which commonly appears as a provider 404):
 
 ```bash
-tmp="$(mktemp -d)" && git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git "$tmp/cts-k-n" \
-  && cd "$tmp/cts-k-n" \
-  && chmod 750 scripts/bootstrap-install.sh \
-  && sudo bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn --port 3002 --public-url https://example.com
+sudo bash -c 'git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git /opt/cts-kn 2>/dev/null || true && cd /opt/cts-kn && bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn --port 3002 --public-url https://your-domain.com'
 ```
 
 Bootstrap, update, and uninstall resolve one authoritative installation from an

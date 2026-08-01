@@ -9,6 +9,9 @@ export { StrategiesConfigCard } from './strategies-config-card'
 export { MainTradeCard } from './main-trade-card'
 export { PresetTradeCard } from './preset-trade-card'
 
+// Direct-Trade
+export { DirectTradeSection } from './direct-trade-section'
+
 // Existing Components
 export { ActiveConnectionCard } from './active-connection-card'
 export { Dashboard } from './dashboard'

@@ -38,22 +38,27 @@ pnpm kilo:preflight
 
 ### Independent long-lived Linux server
 
-For a clean or repeatable Git-based server install (Ubuntu/Debian/RHEL/Fedora),
-run this one command. A repeat run stops the exact saved CTS services, preserves
-its protected environment/local CTS Redis state outside the target, deletes only
-the resolved `/opt/<name>` checkout, then clones and verifies a fresh revision:
+For a clean or repeatable server install (Ubuntu/Debian/RHEL/Fedora/Amazon
+Linux), run this single command. It clones directly into `/opt/cts-kn`, installs
+all dependencies, builds, migrates, verifies, and starts the production service.
+A repeat run stops the existing CTS services, preserves protected state, deletes
+only the resolved `/opt/<name>` checkout, then clones and verifies a fresh
+revision — no temporary directories are used:
 
 ```bash
-tmp="$(mktemp -d)" && git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git "$tmp/cts-kn" && cd "$tmp/cts-kn" && sudo bash scripts/bootstrap-install.sh --name cts-kn --port 3002
+sudo bash -c 'git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git /opt/cts-kn 2>/dev/null || true && cd /opt/cts-kn && bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn --port 3002'
 ```
 
+With a public URL (reverse proxy / domain):
+
 ```bash
-tmp="$(mktemp -d)" && git clone https://github.com/mxssnx-creator/CTS-K-N.git "$tmp/cts-kn"
-cd "$tmp/cts-kn"
-bash scripts/install.sh --preflight-only --skip-system-packages \
-  --runtime auto --service-user cts-kn --create-service-user --non-interactive
-sudo bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn \
-  --runtime auto --service-user cts-kn
+sudo bash -c 'git clone --branch main --single-branch --depth=1 https://github.com/mxssnx-creator/CTS-K-N.git /opt/cts-kn 2>/dev/null || true && cd /opt/cts-kn && bash scripts/bootstrap-install.sh --dir /opt/cts-kn --name cts-kn --port 3002 --public-url https://your-domain.com'
+```
+
+Preflight check (dry-run without mutations):
+
+```bash
+sudo bash -c 'cd /opt/cts-kn && bash scripts/install.sh --preflight-only --skip-system-packages --runtime auto --service-user cts-kn --create-service-user --non-interactive'
 ```
 
 The installer supports Debian/Ubuntu and RHEL/Fedora/Amazon Linux families,
