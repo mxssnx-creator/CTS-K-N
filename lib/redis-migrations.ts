@@ -6136,6 +6136,173 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "91")
     },
   },
+  {
+    version: 93,
+    name: "093-pf-floor-and-continuous-row-live-defaults",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const connectionIds = new Set(
+        connections.map((connection) => String(connection.id || "")).filter(Boolean),
+      )
+      for (const id of await client.smembers("connections").catch(() => [])) {
+        if (id) connectionIds.add(String(id))
+      }
+
+      const stageAliases = {
+        base: ["baseProfitFactor", "base_min_profit_factor"],
+        main: ["mainProfitFactor", "main_min_profit_factor"],
+        real: ["realProfitFactor", "real_min_profit_factor"],
+        live: ["liveProfitFactor", "live_min_profit_factor"],
+      } as const
+      let stagePfValuesUpdated = 0
+      let rowDefaultsUpdated = 0
+
+      const normalizeLiveWindow = (value: unknown): number => {
+        const parsed = Number(value)
+        if (!Number.isFinite(parsed) || parsed <= 0) return 15
+        return Math.min(55, Math.max(5, Math.round(parsed / 5) * 5))
+      }
+      const normalizeDocument = (document: Record<string, any>): boolean => {
+        let changed = false
+        const normalizeStages = (target: Record<string, any>) => {
+          for (const [stage, aliases] of Object.entries(stageAliases) as Array<
+            [keyof typeof stageAliases, readonly string[]]
+          >) {
+            for (const alias of aliases) {
+              if (target[alias] == null) continue
+              const next = normalizeMainTradeStagePfRatio(stage, target[alias])
+              if (Number(target[alias]) !== next) {
+                target[alias] = next
+                stagePfValuesUpdated++
+                changed = true
+              }
+            }
+          }
+        }
+        normalizeStages(document)
+        for (const container of [document, document.strategies]) {
+          if (!container || typeof container !== "object") continue
+          for (const channelName of ["main", "preset"]) {
+            const channel = container[channelName]
+            if (!channel || typeof channel !== "object") continue
+            for (const stage of ["base", "main", "real", "live"] as const) {
+              const row = channel[stage]
+              if (!row || typeof row !== "object" || row.min_profit_factor == null) continue
+              const next = normalizeMainTradeStagePfRatio(stage, row.min_profit_factor)
+              if (Number(row.min_profit_factor) !== next) {
+                row.min_profit_factor = next
+                stagePfValuesUpdated++
+                changed = true
+              }
+            }
+          }
+        }
+
+        const coordination = document.coordination_settings && typeof document.coordination_settings === "object"
+          ? document.coordination_settings
+          : document.coordinationSettings && typeof document.coordinationSettings === "object"
+            ? document.coordinationSettings
+            : document
+        const rowDefaults: Record<string, unknown> = {
+          liveEvalPosCount: normalizeLiveWindow(coordination.liveEvalPosCount),
+          blockRowLiveEnabled: coordination.blockRowLiveEnabled ?? true,
+          blockRowLiveVolumeRatio: coordination.blockRowLiveVolumeRatio ?? coordination.blockVolumeRatio ?? 1,
+          blockRowLiveProfitFactorRatio: coordination.blockRowLiveProfitFactorRatio ?? coordination.blockProfitFactorRatio ?? 0.8,
+          blockRowLiveMaxStack: coordination.blockRowLiveMaxStack ?? coordination.blockMaxStack ?? 10,
+          blockRowLivePauseCountRatio: coordination.blockRowLivePauseCountRatio ?? coordination.blockPauseCountRatio ?? 1,
+          blockOnly: coordination.blockOnly ?? true,
+        }
+        for (const [key, value] of Object.entries(rowDefaults)) {
+          if (coordination[key] !== value) {
+            coordination[key] = value
+            rowDefaultsUpdated++
+            changed = true
+          }
+        }
+        return changed
+      }
+
+      const normalizeHash = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        if (Object.keys(values).length === 0) return
+        const patch: Record<string, string> = {}
+        for (const [stage, aliases] of Object.entries(stageAliases) as Array<
+          [keyof typeof stageAliases, readonly string[]]
+        >) {
+          const current = aliases.map((alias) => values[alias]).find((value) => value != null && value !== "")
+          if (current == null) continue
+          const next = normalizeMainTradeStagePfRatio(stage, current)
+          for (const alias of aliases) {
+            if (Number(values[alias]) !== next) {
+              patch[alias] = String(next)
+              stagePfValuesUpdated++
+            }
+          }
+        }
+        const flatRowDefaults: Record<string, string> = {
+          liveEvalPosCount: String(normalizeLiveWindow(values.liveEvalPosCount)),
+          blockRowLiveEnabled: values.blockRowLiveEnabled === "false" || values.blockRowLiveEnabled === "0" ? "false" : "true",
+          blockRowLiveVolumeRatio: String(Math.max(0.25, Math.min(3, Number(values.blockRowLiveVolumeRatio) || Number(values.blockVolumeRatio) || 1))),
+          blockRowLiveProfitFactorRatio: String(Math.max(0.2, Math.min(5, Number(values.blockRowLiveProfitFactorRatio) || Number(values.blockProfitFactorRatio) || 0.8))),
+          blockRowLiveMaxStack: String(Math.max(1, Math.min(10, Math.floor(Number(values.blockRowLiveMaxStack) || Number(values.blockMaxStack) || 10)))),
+          blockRowLivePauseCountRatio: String(Math.max(1, Math.min(4, Number(values.blockRowLivePauseCountRatio) || Number(values.blockPauseCountRatio) || 1))),
+          blockOnly: values.blockOnly === "false" || values.blockOnly === "0" ? "false" : "true",
+        }
+        for (const [field, value] of Object.entries(flatRowDefaults)) {
+          if (values[field] !== value) {
+            patch[field] = value
+            rowDefaultsUpdated++
+          }
+        }
+        for (const field of ["connection_settings", "coordination_settings", "coordinationSettings", "strategies"]) {
+          const raw = values[field]
+          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+          try {
+            const document = JSON.parse(raw) as Record<string, any>
+            if (normalizeDocument(document)) patch[field] = JSON.stringify(document)
+          } catch {
+            // Preserve malformed legacy recovery blobs; canonical flat values
+            // remain the runtime source and a future settings save repairs it.
+          }
+        }
+        if (Object.keys(patch).length > 0) await client.hset(key, patch)
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeHash(key)
+      }
+      for (const id of connectionIds) {
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await normalizeHash(key)
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        main_trade_pf_range: "0.80-2.70",
+        main_trade_pf_minimum: "0.80",
+        strategy_live_row_window_default: "15",
+        strategy_live_row_window_range: "5-55-step-5",
+        strategy_row_live_block_default: "true",
+        strategy_block_only_default: "true",
+        main_trade_pf_values_updated: String(stagePfValuesUpdated),
+        strategy_row_defaults_updated: String(rowDefaultsUpdated),
+        schema_version: "93",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      // The raised PF floor and Row-Live defaults are safe to retain on a
+      // rollback; only the migration cursor moves back.
+      await client.set("_schema_version", "92")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {

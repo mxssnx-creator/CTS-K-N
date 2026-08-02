@@ -2394,7 +2394,11 @@ export async function GET(
                   statAccumulated: n(dh.stat_accumulated),
                   statGeneral:     n(dh.stat_general) || stageEvaluated || stratCounts.real || 0,
                   statCombined:    n(dh.stat_combined) || setsRunningNow || stratCounts.real || 0,
-                  continuousRealCreated: n(dh.continuous_real_created),
+                  // Row-Real is the explicit continuous result now. Keep the
+                  // historical field as a read fallback for older workers.
+                  continuousRealCreated: n(dh.row_real_created ?? dh.continuous_real_created),
+                  rowRealEvaluated: n(dh.row_real_evaluated),
+                  rowRealRejected: n(dh.row_real_rejected),
                   // Canonical Real-position view: full Overall Set/position/order
                   // ledgers, a separate related-Base hedge ledger, Standard vs
                   // Trailing and Adjust comparisons, plus the current open
@@ -2630,8 +2634,13 @@ export async function GET(
     const mainRowOverall = aggregateFreshRowField(strategyDetailMainHash, "row_overall", "created_sets")
     const realRowValid = aggregateFreshRowField(strategyDetailRealHash, "row_valid", "created_sets")
     const realRowActive = aggregateFreshRowField(strategyDetailRealHash, "row_active", "sets_running_now")
+    const realRowEvaluated = aggregateFreshRowField(strategyDetailRealHash, "row_real_evaluated", "evaluated")
+    const realRowRejected = aggregateFreshRowField(strategyDetailRealHash, "row_real_rejected", "row_real_rejected")
     const liveRowTotal = aggregateFreshRowField(strategyDetailLiveHash, "row_total", "evaluated")
     const liveRowMirrored = aggregateFreshRowField(strategyDetailLiveHash, "row_mirrored", "created_sets")
+    const liveRowBlockCreated = aggregateFreshRowField(strategyDetailLiveHash, "row_live_block_created", "row_live_block_created")
+    const liveRowBlockValid = aggregateFreshRowField(strategyDetailLiveHash, "row_live_block_valid", "row_live_block_valid")
+    const liveRowExecutable = aggregateFreshRowField(strategyDetailLiveHash, "row_live_executable", "created_sets")
     const blockWork = {
       logicalEmitted: 0,
       materialized: 0,
@@ -2672,6 +2681,9 @@ export async function GET(
       },
       real: {
         valid: realRowValid,
+        evaluated: realRowEvaluated,
+        rejected: realRowRejected,
+        validRatio: ratio(realRowValid, realRowEvaluated),
         active: realRowActive,
         activeExactRows: aggregateFreshRowField(strategyDetailRealHash, "row_active_exact", "sets_running_now"),
         activeRatio: ratio(realRowActive, realRowValid),
@@ -2681,7 +2693,11 @@ export async function GET(
         total: liveRowTotal,
         mirrored: liveRowMirrored,
         active: aggregateFreshRowField(strategyDetailLiveHash, "row_active", "sets_running_now"),
+        blockCreated: liveRowBlockCreated,
+        blockValid: liveRowBlockValid,
+        executable: liveRowExecutable,
         mirroredRatio: ratio(liveRowMirrored, liveRowTotal),
+        executablePerRow: ratio(liveRowExecutable, liveRowTotal, false),
       },
       updatedAt: Date.now(),
       semantics: "current-open-row-snapshot",

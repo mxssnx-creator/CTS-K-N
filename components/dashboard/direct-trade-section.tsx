@@ -15,6 +15,7 @@ import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Slider } from "@/components/ui/slider"
+import { DIRECT_TRADE_MAX_SYMBOLS } from "@/lib/direct-trade-limits"
 import { Badge } from "@/components/ui/badge"
 import {
   Select,
@@ -46,15 +47,35 @@ interface DirectTradeState {
   enabled: boolean
   liveMode: boolean
   startedAt: string | null
+  processingIntervalMs: number
   symbolCount: number
   symbolOrder: "volatility_1h" | "volume" | "volatility"
   minVolFactor: number
+  positionCostPercent: number
   maxSlRatio: number
   slRatioStep: number
-  timeframes: ("1m" | "5m" | "10m")[]
+  inverseMaxSlRatio: number
+  timeframes: ("1m" | "10m" | "15m")[]
+  strategyTypes: ("standard" | "trailing_fixed" | "trailing_auto" | "combination" | "inverse" | "high_protection")[]
+  historyHours: number
+  entryTactics: ("momentum" | "mean_reversion" | "breakout" | "relative")[]
+  exitTactics: ("bracket" | "momentum_reversal" | "relative" | "time")[]
+  entryTiming: "current" | "last_confirmed"
+  activityVolumeRatio: number
+  maxHoldMinutes: number
   blockRange: [number, number]
   maxPositionsPerSymbol: number
   maxPositionsPerDirection: number
+  keepEnabledPosCount: number
+  deactivatePosCount: number
+  minProfitFactor: number
+  minRecentProfitFactor: number
+  recentEvaluationPositions: number
+  maxDrawdownTimeMin: number
+  prevPosWindow: number
+  prevPosMinCount: number
+  evalPosCount: number
+  trailingEnabled: boolean
 }
 
 interface DirectTradeStats {
@@ -63,16 +84,17 @@ interface DirectTradeStats {
   totalPnl: number
   winCount: number
   lossCount: number
-  profitFactor: number
+  profitFactor: number | null
+  profitFactorInfinite?: boolean
   maxDrawdownTimeMin: number
   currentDrawdownTimeMin: number
   lastPositionAt: string | null
-  last12Pos: { pf: number; ddt: number; pnl: number }
-  last25Pos: { pf: number; ddt: number; pnl: number }
-  last50Pos: { pf: number; ddt: number; pnl: number }
-  last4h: { pf: number; ddt: number; pnl: number }
-  last12h: { pf: number; ddt: number; pnl: number }
-  last48h: { pf: number; ddt: number; pnl: number }
+  last12Pos: { pf: number | null; pfInfinite?: boolean; ddt: number; pnl: number }
+  last25Pos: { pf: number | null; pfInfinite?: boolean; ddt: number; pnl: number }
+  last50Pos: { pf: number | null; pfInfinite?: boolean; ddt: number; pnl: number }
+  last4h: { pf: number | null; pfInfinite?: boolean; ddt: number; pnl: number }
+  last12h: { pf: number | null; pfInfinite?: boolean; ddt: number; pnl: number }
+  last48h: { pf: number | null; pfInfinite?: boolean; ddt: number; pnl: number }
 }
 
 // ─── Defaults ─────────────────────────────────────────────────────────────────
@@ -81,15 +103,35 @@ const DEFAULT_STATE: DirectTradeState = {
   enabled: false,
   liveMode: false,
   startedAt: null,
+  processingIntervalMs: 280,
   symbolCount: 8,
   symbolOrder: "volatility_1h",
-  minVolFactor: 1,
-  maxSlRatio: 1,
+  minVolFactor: 0.1,
+  positionCostPercent: 0.1,
+  maxSlRatio: 0.75,
   slRatioStep: 0.25,
-  timeframes: ["1m", "5m", "10m"],
+  inverseMaxSlRatio: 1.25,
+  timeframes: ["1m", "10m", "15m"],
+  strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
+  historyHours: 60,
+  entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
+  exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
+  entryTiming: "current",
+  activityVolumeRatio: 1,
+  maxHoldMinutes: 120,
   blockRange: [1, 12],
   maxPositionsPerSymbol: 3,
   maxPositionsPerDirection: 2,
+  keepEnabledPosCount: 12,
+  deactivatePosCount: 16,
+  minProfitFactor: 0.8,
+  minRecentProfitFactor: 10,
+  recentEvaluationPositions: 12,
+  maxDrawdownTimeMin: 10,
+  prevPosWindow: 25,
+  prevPosMinCount: 5,
+  evalPosCount: 12,
+  trailingEnabled: true,
 }
 
 const DEFAULT_STATS: DirectTradeStats = {
@@ -98,7 +140,8 @@ const DEFAULT_STATS: DirectTradeStats = {
   totalPnl: 0,
   winCount: 0,
   lossCount: 0,
-  profitFactor: 0,
+  profitFactor: null,
+  profitFactorInfinite: false,
   maxDrawdownTimeMin: 0,
   currentDrawdownTimeMin: 0,
   lastPositionAt: null,
@@ -118,6 +161,8 @@ export function DirectTradeSection() {
   const [activeConfigs, setActiveConfigs] = useState(0)
   const [openPositions, setOpenPositions] = useState(0)
   const [closedPositions, setClosedPositions] = useState(0)
+  const [disabledConfigs, setDisabledConfigs] = useState(0)
+  const [calculationProgress, setCalculationProgress] = useState<{ status?: string; completedSymbols?: number; totalSymbols?: number; evaluatedSets?: number } | null>(null)
   const [processorHealthy, setProcessorHealthy] = useState(false)
   const [loading, setLoading] = useState(false)
   const [calculating, setCalculating] = useState(false)
@@ -125,9 +170,13 @@ export function DirectTradeSection() {
   const [optionsExpanded, setOptionsExpanded] = useState(false)
 
   // Local config state for sliders (debounced save)
-  const [localVolFactor, setLocalVolFactor] = useState(1)
-  const [localMaxSl, setLocalMaxSl] = useState(1)
-  const [localMinPF, setLocalMinPF] = useState(1.1)
+  const [localVolFactor, setLocalVolFactor] = useState(0.1)
+  const [localPositionCost, setLocalPositionCost] = useState(0.1)
+  const [localMaxSl, setLocalMaxSl] = useState(0.75)
+  const [localInverseMaxSl, setLocalInverseMaxSl] = useState(1.25)
+  const [localMinPF, setLocalMinPF] = useState(0.8)
+  const [localMinRecentPF, setLocalMinRecentPF] = useState(10)
+  const [localRecentEvaluationPositions, setLocalRecentEvaluationPositions] = useState(12)
   const [localMaxDDT, setLocalMaxDDT] = useState(10)
   const [localSymbolCount, setLocalSymbolCount] = useState(8)
   const [localMaxPosPerSymbol, setLocalMaxPosPerSymbol] = useState(3)
@@ -135,14 +184,22 @@ export function DirectTradeSection() {
   const [localTrailing, setLocalTrailing] = useState(true)
   const [localBlock, setLocalBlock] = useState(true)
   const [localBlockMax, setLocalBlockMax] = useState(12)
-  const [localTimeframes, setLocalTimeframes] = useState<string[]>(["1m", "5m", "10m"])
+  const [localTimeframes, setLocalTimeframes] = useState<string[]>(["1m", "10m", "15m"])
+  const [localStrategyTypes, setLocalStrategyTypes] = useState<string[]>(["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"])
+  const [localHistoryHours, setLocalHistoryHours] = useState(60)
+  const [localEntryTactics, setLocalEntryTactics] = useState<string[]>(["momentum", "mean_reversion", "breakout", "relative"])
+  const [localExitTactics, setLocalExitTactics] = useState<string[]>(["bracket", "momentum_reversal", "relative", "time"])
+  const [localEntryTiming, setLocalEntryTiming] = useState<"current" | "last_confirmed">("current")
+  const [localActivityVolumeRatio, setLocalActivityVolumeRatio] = useState(1)
+  const [localMaxHoldMinutes, setLocalMaxHoldMinutes] = useState(120)
   const [localSymbolOrder, setLocalSymbolOrder] = useState<string>("volatility_1h")
   // Pos Count evaluation windows (for PF/DDT historic coordination calculations)
   const [localPrevPosWindow, setLocalPrevPosWindow] = useState(25)
   const [localPrevPosMinCount, setLocalPrevPosMinCount] = useState(5)
   const [localEvalPosCount, setLocalEvalPosCount] = useState(12)
   // Keep-enabled check: per symbol/direction/config independent evaluation
-  const [localKeepEnabledPosCount, setLocalKeepEnabledPosCount] = useState(8)
+  const [localKeepEnabledPosCount, setLocalKeepEnabledPosCount] = useState(12)
+  const [localDeactivatePosCount, setLocalDeactivatePosCount] = useState(16)
 
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -155,20 +212,41 @@ export function DirectTradeSection() {
       const data = await res.json()
       if (data.state) {
         setState(data.state)
-        setLocalVolFactor(data.state.minVolFactor || 1)
-        setLocalMaxSl(data.state.maxSlRatio || 1)
+        setLocalVolFactor(data.state.minVolFactor ?? 0.1)
+        setLocalPositionCost(data.state.positionCostPercent ?? 0.1)
+        setLocalMaxSl(data.state.maxSlRatio ?? 0.75)
+        setLocalInverseMaxSl(data.state.inverseMaxSlRatio ?? 1.25)
         setLocalSymbolCount(data.state.symbolCount || 8)
         setLocalMaxPosPerSymbol(data.state.maxPositionsPerSymbol || 3)
         setLocalMaxPosPerDir(data.state.maxPositionsPerDirection || 2)
-        setLocalTimeframes(data.state.timeframes || ["1m", "5m", "10m"])
+        setLocalTimeframes(data.state.timeframes || ["1m", "10m", "15m"])
+        setLocalStrategyTypes(data.state.strategyTypes || ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"])
+        setLocalHistoryHours(data.state.historyHours ?? 60)
+        setLocalEntryTactics(data.state.entryTactics || ["momentum", "mean_reversion", "breakout", "relative"])
+        setLocalExitTactics(data.state.exitTactics || ["bracket", "momentum_reversal", "relative", "time"])
+        setLocalEntryTiming(data.state.entryTiming === "last_confirmed" ? "last_confirmed" : "current")
+        setLocalActivityVolumeRatio(data.state.activityVolumeRatio ?? 1)
+        setLocalMaxHoldMinutes(data.state.maxHoldMinutes ?? 120)
         setLocalSymbolOrder(data.state.symbolOrder || "volatility_1h")
         setLocalBlock(data.state.blockRange?.[1] > 0)
         setLocalBlockMax(data.state.blockRange?.[1] || 12)
+        setLocalMinPF(data.state.minProfitFactor ?? 0.8)
+        setLocalMinRecentPF(data.state.minRecentProfitFactor ?? 10)
+        setLocalRecentEvaluationPositions(data.state.recentEvaluationPositions ?? 12)
+        setLocalMaxDDT(data.state.maxDrawdownTimeMin ?? 10)
+        setLocalPrevPosWindow(data.state.prevPosWindow ?? 25)
+        setLocalPrevPosMinCount(data.state.prevPosMinCount ?? 5)
+        setLocalEvalPosCount(data.state.evalPosCount ?? 12)
+        setLocalKeepEnabledPosCount(data.state.keepEnabledPosCount ?? 12)
+        setLocalDeactivatePosCount(data.state.deactivatePosCount ?? 16)
+        setLocalTrailing(data.state.trailingEnabled !== false)
       }
       if (data.stats) setStats({ ...DEFAULT_STATS, ...data.stats })
       if (data.activeConfigs !== undefined) setActiveConfigs(data.activeConfigs)
       if (data.openPositions !== undefined) setOpenPositions(data.openPositions)
       if (data.closedPositions !== undefined) setClosedPositions(data.closedPositions)
+      if (data.disabledConfigs !== undefined) setDisabledConfigs(data.disabledConfigs)
+      if (data.calculationProgress && typeof data.calculationProgress === "object") setCalculationProgress(data.calculationProgress)
       if (data.processor) setProcessorHealthy(data.processor.isHealthy || false)
     } catch {}
   }, [])
@@ -194,11 +272,30 @@ export function DirectTradeSection() {
           symbolCount: localSymbolCount,
           symbolOrder: localSymbolOrder,
           minVolFactor: localVolFactor,
+          positionCostPercent: localPositionCost,
           maxSlRatio: localMaxSl,
+          inverseMaxSlRatio: localInverseMaxSl,
           timeframes: localTimeframes,
+          strategyTypes: localStrategyTypes,
+          historyHours: localHistoryHours,
+          entryTactics: localEntryTactics,
+          exitTactics: localExitTactics,
+          entryTiming: localEntryTiming,
+          activityVolumeRatio: localActivityVolumeRatio,
+          maxHoldMinutes: localMaxHoldMinutes,
           blockRange: localBlock ? [1, localBlockMax] : [0, 0],
           maxPositionsPerSymbol: localMaxPosPerSymbol,
           maxPositionsPerDirection: localMaxPosPerDir,
+          keepEnabledPosCount: localKeepEnabledPosCount,
+          deactivatePosCount: localDeactivatePosCount,
+          minProfitFactor: localMinPF,
+          minRecentProfitFactor: localMinRecentPF,
+          recentEvaluationPositions: localRecentEvaluationPositions,
+          maxDrawdownTimeMin: localMaxDDT,
+          prevPosWindow: localPrevPosWindow,
+          prevPosMinCount: localPrevPosMinCount,
+          evalPosCount: localEvalPosCount,
+          trailingEnabled: localTrailing,
         }),
       })
       const data = await res.json()
@@ -229,9 +326,24 @@ export function DirectTradeSection() {
           symbolCount: localSymbolCount,
           symbolOrder: localSymbolOrder,
           minVolFactor: localVolFactor,
+          positionCostPercent: localPositionCost,
           maxSlRatio: localMaxSl,
+          inverseMaxSlRatio: localInverseMaxSl,
           timeframes: localTimeframes,
+          strategyTypes: localStrategyTypes,
+          historyHours: localHistoryHours,
+          entryTactics: localEntryTactics,
+          exitTactics: localExitTactics,
+          entryTiming: localEntryTiming,
+          activityVolumeRatio: localActivityVolumeRatio,
+          maxHoldMinutes: localMaxHoldMinutes,
           blockRange: localBlock ? [1, localBlockMax] : [0, 0],
+          minProfitFactor: localMinPF,
+          minRecentProfitFactor: localMinRecentPF,
+          recentEvaluationPositions: localRecentEvaluationPositions,
+          maxDrawdownTimeMin: localMaxDDT,
+          deactivatePosCount: localDeactivatePosCount,
+          trailingEnabled: localTrailing,
         }),
       })
       await fetchStatus()
@@ -256,7 +368,7 @@ export function DirectTradeSection() {
 
   // ─── Render Helpers ───────────────────────────────────────────────────────
 
-  const formatPF = (pf: number) => pf > 0 ? pf.toFixed(2) : "—"
+  const formatPF = (pf: number | null, infinite = false) => infinite ? "∞" : (pf ?? 0) > 0 ? (pf ?? 0).toFixed(2) : "—"
   const formatDDT = (ddt: number) => ddt > 0 ? `${ddt.toFixed(1)}m` : "—"
   const formatPnl = (pnl: number) => {
     if (pnl === 0) return "0.00%"
@@ -338,9 +450,16 @@ export function DirectTradeSection() {
               <span className="text-muted-foreground">Configs: <strong>{activeConfigs}</strong></span>
               <span className="text-muted-foreground">Open: <strong>{openPositions}</strong></span>
               <span className="text-muted-foreground">Closed: <strong>{closedPositions}</strong></span>
+              <span className="text-muted-foreground">Disabled: <strong>{disabledConfigs}</strong></span>
               <span className={pnlColor(stats.totalPnl)}>PnL: <strong>{formatPnl(stats.totalPnl)}</strong></span>
             </div>
           </div>
+
+          {calculationProgress?.status === "running" && (
+            <div className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+              Calculating independently: <span className="font-mono text-foreground">{calculationProgress.completedSymbols || 0}/{calculationProgress.totalSymbols || 0}</span> symbols · <span className="font-mono text-foreground">{(calculationProgress.evaluatedSets || 0).toLocaleString()}</span> sets indexed
+            </div>
+          )}
 
           {/* Options Toggle */}
           <Button
@@ -360,19 +479,40 @@ export function DirectTradeSection() {
               {/* Volume Factor */}
               <div className="space-y-1">
                 <div className="flex justify-between text-xs">
-                  <span className="text-muted-foreground">Volume Factor</span>
+                  <span className="text-muted-foreground">Volume Factor (minimum)</span>
                   <span className="font-mono font-medium">{localVolFactor.toFixed(1)}</span>
                 </div>
-                <Slider
-                  value={[localVolFactor]}
+                <input
+                  aria-label="Direct-Trade volume factor"
+                  className="h-8 w-full rounded border bg-background px-2 font-mono text-xs"
+                  type="number"
                   min={0.1}
-                  max={10}
                   step={0.1}
-                  onValueChange={([v]) => {
+                  value={localVolFactor}
+                  onChange={(event) => {
+                    const v = Math.max(0.1, Number(event.target.value) || 0.1)
                     setLocalVolFactor(v)
                     saveConfig({ minVolFactor: v })
                   }}
                 />
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Position Cost (net close)</span>
+                  <span className="font-mono font-medium">{localPositionCost.toFixed(2)}%</span>
+                </div>
+                <Slider
+                  value={[localPositionCost]}
+                  min={0.02}
+                  max={1}
+                  step={0.01}
+                  onValueChange={([v]) => {
+                    setLocalPositionCost(v)
+                    saveConfig({ positionCostPercent: v })
+                  }}
+                />
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">Deducted once from every closed historical, simulated, and live Direct-Trade result; never added to open-position PF/DDT.</p>
               </div>
 
               {/* Symbol Count */}
@@ -384,7 +524,7 @@ export function DirectTradeSection() {
                 <Slider
                   value={[localSymbolCount]}
                   min={1}
-                  max={20}
+                  max={DIRECT_TRADE_MAX_SYMBOLS}
                   step={1}
                   onValueChange={([v]) => {
                     setLocalSymbolCount(v)
@@ -423,7 +563,7 @@ export function DirectTradeSection() {
                 <Slider
                   value={[localMaxPosPerSymbol]}
                   min={1}
-                  max={10}
+                  max={20}
                   step={1}
                   onValueChange={([v]) => {
                     setLocalMaxPosPerSymbol(v)
@@ -458,14 +598,32 @@ export function DirectTradeSection() {
                 </div>
                 <Slider
                   value={[localMaxSl]}
-                  min={0.5}
-                  max={2}
+                  min={0.25}
+                  max={0.75}
                   step={0.25}
                   onValueChange={([v]) => {
                     setLocalMaxSl(v)
                     saveConfig({ maxSlRatio: v })
                   }}
                 />
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Inverse SL Max / TP</span>
+                  <span className="font-mono font-medium">{localInverseMaxSl.toFixed(2)}</span>
+                </div>
+                <Slider
+                  value={[localInverseMaxSl]}
+                  min={0.25}
+                  max={1.25}
+                  step={0.25}
+                  onValueChange={([v]) => {
+                    setLocalInverseMaxSl(v)
+                    saveConfig({ inverseMaxSlRatio: v })
+                  }}
+                />
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">Independent inverse Long/Short orders; capped at 1.25× TP.</p>
               </div>
 
               {/* Min Profit Factor */}
@@ -476,7 +634,7 @@ export function DirectTradeSection() {
                 </div>
                 <Slider
                   value={[localMinPF]}
-                  min={0.5}
+                  min={0.8}
                   max={3.5}
                   step={0.1}
                   onValueChange={([v]) => {
@@ -484,6 +642,34 @@ export function DirectTradeSection() {
                     saveConfig({ minProfitFactor: v })
                   }}
                 />
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Recent PF Gate</span>
+                  <span className="font-mono font-medium">{localMinRecentPF.toFixed(1)} / {localRecentEvaluationPositions} closed</span>
+                </div>
+                <Slider
+                  value={[localMinRecentPF]}
+                  min={0.8}
+                  max={20}
+                  step={0.1}
+                  onValueChange={([v]) => {
+                    setLocalMinRecentPF(v)
+                    saveConfig({ minRecentProfitFactor: v })
+                  }}
+                />
+                <Slider
+                  value={[localRecentEvaluationPositions]}
+                  min={3}
+                  max={50}
+                  step={1}
+                  onValueChange={([v]) => {
+                    setLocalRecentEvaluationPositions(v)
+                    saveConfig({ recentEvaluationPositions: v })
+                  }}
+                />
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">Historical last-position PF gate for new entries; open positions keep their own TP/SL/trailing/time exit until closed.</p>
               </div>
 
               {/* Max Drawdown Time */}
@@ -527,7 +713,7 @@ export function DirectTradeSection() {
               <div className="space-y-2">
                 <span className="text-xs text-muted-foreground">Timeframes</span>
                 <div className="flex gap-2">
-                  {(["1m", "5m", "10m"] as const).map((tf) => (
+                  {(["1m", "10m", "15m"] as const).map((tf) => (
                     <Button
                       key={tf}
                       size="sm"
@@ -546,6 +732,118 @@ export function DirectTradeSection() {
                     </Button>
                   ))}
                 </div>
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">
+                  Every selected timeframe and every non-empty combination are evaluated as independent sets.
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Historic range (hours)</span>
+                  <span className="font-mono font-medium">{localHistoryHours}h</span>
+                </div>
+                <input
+                  aria-label="Direct-Trade historical range in hours"
+                  className="h-8 w-full rounded border bg-background px-2 font-mono text-xs"
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={localHistoryHours}
+                  onChange={(event) => {
+                    const value = Math.max(1, Math.floor(Number(event.target.value) || 1))
+                    setLocalHistoryHours(value)
+                    saveConfig({ historyHours: value })
+                  }}
+                />
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">Default 60h; the public kline transport is paged until this range is fully covered.</p>
+              </div>
+
+              <div className="space-y-2">
+                <span className="text-xs text-muted-foreground">Independent entry tactics</span>
+                <div className="flex flex-wrap gap-1">
+                  {(["momentum", "mean_reversion", "breakout", "relative"] as const).map((tactic) => (
+                    <Button key={tactic} size="sm" variant={localEntryTactics.includes(tactic) ? "default" : "outline"} className="h-7 px-2 text-[10px]" onClick={() => {
+                      const next = localEntryTactics.includes(tactic)
+                        ? localEntryTactics.filter((value) => value !== tactic)
+                        : [...localEntryTactics, tactic]
+                      if (next.length === 0) return
+                      setLocalEntryTactics(next)
+                      saveConfig({ entryTactics: next })
+                    }}>{tactic.replace("_", " ")}</Button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <span className="text-xs text-muted-foreground">Independent exit tactics</span>
+                <div className="flex flex-wrap gap-1">
+                  {(["bracket", "momentum_reversal", "relative", "time"] as const).map((tactic) => (
+                    <Button key={tactic} size="sm" variant={localExitTactics.includes(tactic) ? "default" : "outline"} className="h-7 px-2 text-[10px]" onClick={() => {
+                      const next = localExitTactics.includes(tactic)
+                        ? localExitTactics.filter((value) => value !== tactic)
+                        : [...localExitTactics, tactic]
+                      if (next.length === 0) return
+                      setLocalExitTactics(next)
+                      saveConfig({ exitTactics: next })
+                    }}>{tactic.replace("_", " ")}</Button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-2 md:col-span-2">
+                <span className="text-xs text-muted-foreground">Independent coordination types</span>
+                <div className="flex flex-wrap gap-1">
+                  {([
+                    ["standard", "Standard"],
+                    ["trailing_fixed", "Trailing Fixed"],
+                    ["trailing_auto", "Trailing Auto"],
+                    ["combination", "Combination"],
+                    ["inverse", "Inverse Long/Short"],
+                    ["high_protection", "High TP / SL 0.75"],
+                  ] as const).map(([type, label]) => (
+                    <Button key={type} size="sm" variant={localStrategyTypes.includes(type) ? "default" : "outline"} className="h-7 px-2 text-[10px]" onClick={() => {
+                      const next = localStrategyTypes.includes(type)
+                        ? localStrategyTypes.filter((value) => value !== type)
+                        : [...localStrategyTypes, type]
+                      if (next.length === 0) return
+                      setLocalStrategyTypes(next)
+                      saveConfig({ strategyTypes: next })
+                    }}>{label}</Button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">Each type has a separate signal lineage, set key, position evaluation and deactivation record.</p>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-xs text-muted-foreground">Entry confirmation</span>
+                <Select value={localEntryTiming} onValueChange={(value: "current" | "last_confirmed") => {
+                  setLocalEntryTiming(value)
+                  saveConfig({ entryTiming: value })
+                }}>
+                  <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="current">Current active candle</SelectItem>
+                    <SelectItem value="last_confirmed">Last confirmed candle</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs"><span className="text-muted-foreground">Activity volume ratio</span><span className="font-mono font-medium">{localActivityVolumeRatio.toFixed(2)}×</span></div>
+                <input aria-label="Direct-Trade activity volume ratio" className="h-8 w-full rounded border bg-background px-2 font-mono text-xs" type="number" min={0} step={0.05} value={localActivityVolumeRatio} onChange={(event) => {
+                  const value = Math.max(0, Number(event.target.value) || 0)
+                  setLocalActivityVolumeRatio(value)
+                  saveConfig({ activityVolumeRatio: value })
+                }} />
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs"><span className="text-muted-foreground">Maximum hold (minutes)</span><span className="font-mono font-medium">{localMaxHoldMinutes}</span></div>
+                <input aria-label="Direct-Trade maximum hold in minutes" className="h-8 w-full rounded border bg-background px-2 font-mono text-xs" type="number" min={1} step={1} value={localMaxHoldMinutes} onChange={(event) => {
+                  const value = Math.max(1, Math.floor(Number(event.target.value) || 1))
+                  setLocalMaxHoldMinutes(value)
+                  saveConfig({ maxHoldMinutes: value })
+                }} />
               </div>
 
               {/* Pos Count Window (Last N for PF/DDT evaluation) */}
@@ -623,6 +921,24 @@ export function DirectTradeSection() {
                 </p>
               </div>
 
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Permanent Deactivation (N Pos)</span>
+                  <span className="font-mono font-medium">{localDeactivatePosCount}</span>
+                </div>
+                <Slider
+                  value={[localDeactivatePosCount]}
+                  min={3}
+                  max={50}
+                  step={1}
+                  onValueChange={([v]) => {
+                    setLocalDeactivatePosCount(v)
+                    saveConfig({ deactivatePosCount: v })
+                  }}
+                />
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">A negative average over this exact config's latest window stays disabled after restart. Default: 16.</p>
+              </div>
+
               {/* Trailing Switch */}
               <div className="flex items-center justify-between">
                 <span className="text-xs text-muted-foreground">Trailing Stop</span>
@@ -666,7 +982,7 @@ export function DirectTradeSection() {
               </div>
               <div className="bg-muted/40 rounded p-2">
                 <div className="text-muted-foreground">Profit Factor</div>
-                <div className="font-mono font-bold">{formatPF(stats.profitFactor)}</div>
+                  <div className="font-mono font-bold">{formatPF(stats.profitFactor, stats.profitFactorInfinite)}</div>
               </div>
               <div className="bg-muted/40 rounded p-2">
                 <div className="text-muted-foreground">Win/Loss</div>
@@ -692,37 +1008,37 @@ export function DirectTradeSection() {
                 <tbody className="font-mono">
                   <tr className="border-b border-dashed">
                     <td className="py-1 pr-3">Last 12 Pos</td>
-                    <td className="text-right px-2">{formatPF(stats.last12Pos.pf)}</td>
+                    <td className="text-right px-2">{formatPF(stats.last12Pos.pf, stats.last12Pos.pfInfinite)}</td>
                     <td className="text-right px-2">{formatDDT(stats.last12Pos.ddt)}</td>
                     <td className={`text-right px-2 ${pnlColor(stats.last12Pos.pnl)}`}>{formatPnl(stats.last12Pos.pnl)}</td>
                   </tr>
                   <tr className="border-b border-dashed">
                     <td className="py-1 pr-3">Last 25 Pos</td>
-                    <td className="text-right px-2">{formatPF(stats.last25Pos.pf)}</td>
+                    <td className="text-right px-2">{formatPF(stats.last25Pos.pf, stats.last25Pos.pfInfinite)}</td>
                     <td className="text-right px-2">{formatDDT(stats.last25Pos.ddt)}</td>
                     <td className={`text-right px-2 ${pnlColor(stats.last25Pos.pnl)}`}>{formatPnl(stats.last25Pos.pnl)}</td>
                   </tr>
                   <tr className="border-b border-dashed">
                     <td className="py-1 pr-3">Last 50 Pos</td>
-                    <td className="text-right px-2">{formatPF(stats.last50Pos.pf)}</td>
+                    <td className="text-right px-2">{formatPF(stats.last50Pos.pf, stats.last50Pos.pfInfinite)}</td>
                     <td className="text-right px-2">{formatDDT(stats.last50Pos.ddt)}</td>
                     <td className={`text-right px-2 ${pnlColor(stats.last50Pos.pnl)}`}>{formatPnl(stats.last50Pos.pnl)}</td>
                   </tr>
                   <tr className="border-b border-dashed">
                     <td className="py-1 pr-3 flex items-center gap-1"><Clock className="h-3 w-3" /> Last 4h</td>
-                    <td className="text-right px-2">{formatPF(stats.last4h.pf)}</td>
+                    <td className="text-right px-2">{formatPF(stats.last4h.pf, stats.last4h.pfInfinite)}</td>
                     <td className="text-right px-2">{formatDDT(stats.last4h.ddt)}</td>
                     <td className={`text-right px-2 ${pnlColor(stats.last4h.pnl)}`}>{formatPnl(stats.last4h.pnl)}</td>
                   </tr>
                   <tr className="border-b border-dashed">
                     <td className="py-1 pr-3 flex items-center gap-1"><Clock className="h-3 w-3" /> Last 12h</td>
-                    <td className="text-right px-2">{formatPF(stats.last12h.pf)}</td>
+                    <td className="text-right px-2">{formatPF(stats.last12h.pf, stats.last12h.pfInfinite)}</td>
                     <td className="text-right px-2">{formatDDT(stats.last12h.ddt)}</td>
                     <td className={`text-right px-2 ${pnlColor(stats.last12h.pnl)}`}>{formatPnl(stats.last12h.pnl)}</td>
                   </tr>
                   <tr>
                     <td className="py-1 pr-3 flex items-center gap-1"><Clock className="h-3 w-3" /> Last 48h</td>
-                    <td className="text-right px-2">{formatPF(stats.last48h.pf)}</td>
+                    <td className="text-right px-2">{formatPF(stats.last48h.pf, stats.last48h.pfInfinite)}</td>
                     <td className="text-right px-2">{formatDDT(stats.last48h.ddt)}</td>
                     <td className={`text-right px-2 ${pnlColor(stats.last48h.pnl)}`}>{formatPnl(stats.last48h.pnl)}</td>
                   </tr>
@@ -735,7 +1051,7 @@ export function DirectTradeSection() {
               <div className="text-xs text-muted-foreground flex items-center gap-2 pt-1">
                 <Zap className="h-3 w-3" />
                 <span>{activeConfigs} active configs across {localTimeframes.length} timeframes</span>
-                {state.enabled && <span>| Processing every {state.processingIntervalMs || 500}ms</span>}
+                {state.enabled && <span>| Processing every {state.processingIntervalMs || 280}ms</span>}
               </div>
             )}
           </div>

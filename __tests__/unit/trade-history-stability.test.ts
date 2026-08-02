@@ -75,6 +75,13 @@ describe("connection settings persistence", () => {
 })
 
 describe("BingX-backed trade history", () => {
+  test("applies the requested page limit after merging exchange and local rows", () => {
+    const route = readFileSync(join(process.cwd(), "app/api/trading/trade-history/route.ts"), "utf8")
+
+    expect(route).toContain("mergeTradeHistory(exchangeRows, localRows, limit)")
+    expect(route).toContain("maximum: MAX_TRADE_HISTORY_PAGE_SIZE")
+  })
+
   test("keeps only filled closing orders and reports fee-adjusted net PnL", () => {
     const close = normalizeBingXClosedOrder({
       symbol: "BTC-USDT",
@@ -219,6 +226,35 @@ describe("BingX-backed trade history", () => {
       winRate: 50,
       netPnl: 17.6,
     })
+  })
+
+  test("caps the combined exchange and local transport page after de-duplication", () => {
+    const exchange = normalizeBingXClosedOrder({
+      symbol: "BTCUSDT",
+      orderId: "exchange-newest",
+      side: "SELL",
+      positionSide: "LONG",
+      status: "FILLED",
+      executedQty: "1",
+      avgPrice: "110",
+      profit: "10",
+      updateTime: 1_700_000_200_000,
+    })!
+    const local = normalizeLocalTradeHistoryRow({
+      id: "local-older",
+      status: "closed",
+      symbol: "ETHUSDT",
+      direction: "long",
+      executedQuantity: 1,
+      averageExecutionPrice: 100,
+      closePrice: 105,
+      realizedPnL: 5,
+      closedAt: 1_700_000_100_000,
+    })!
+
+    expect(mergeTradeHistory([exchange], [local], 1)).toEqual([
+      expect.objectContaining({ id: exchange.id }),
+    ])
   })
 
   test("does not attach venue PnL to a different same-symbol slot closed nearby", () => {

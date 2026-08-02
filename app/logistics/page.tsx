@@ -74,6 +74,9 @@ interface StrategyRows {
   }
   real: {
     valid: number
+    evaluated?: number
+    rejected?: number
+    validRatio?: number
     active: number
     activeExactRows: number
     activeRatio: number
@@ -88,7 +91,11 @@ interface StrategyRows {
     total: number
     mirrored: number
     active: number
+    blockCreated?: number
+    blockValid?: number
+    executable?: number
     mirroredRatio: number
+    executablePerRow?: number
   }
   updatedAt?: number
   semantics?: string
@@ -446,6 +453,7 @@ function MainSystemTab({
 
           <Block icon={Target} title="Row-Real" sub="continuous PF/DDT validation over Main Overall lineages" accent="purple">
             <Row label="Valid / Active" value={`${fmt(rows?.real.valid ?? 0)} / ${fmt(rows?.real.active ?? 0)}`} />
+            <Row label="Evaluated / rejected" value={`${fmt(rows?.real.evaluated ?? 0)} / ${fmt(rows?.real.rejected ?? 0)} · ${(rows?.real.validRatio ?? 0).toFixed(1)}% valid`} />
             <Row label="Exact active rows" value={fmt(rows?.real.activeExactRows ?? 0)} />
             <Row label="Active ratio" value={`${(rows?.real.activeRatio ?? 0).toFixed(1)}%`} />
             <Row label="PF ratio gate" value={`${realPf.toFixed(2)} × PositionCost`} />
@@ -465,8 +473,10 @@ function MainSystemTab({
 
           <Block icon={TrendingUp} title="Row-Live" sub="validated Row-Real mirror · no duplicate evaluation gate" accent="green"
             right={<Tag color={(rows?.live.mirrored ?? 0) > 0 ? "green" : "default"}>{rows?.live.mirrored ?? 0} mirrored</Tag>}>
-            <Row label="Rows / Mirrored / Active" value={`${fmt(rows?.live.total ?? 0)} / ${fmt(rows?.live.mirrored ?? 0)} / ${fmt(rows?.live.active ?? 0)}`} />
+            <Row label="Rows / Mirrored / Executable / Active" value={`${fmt(rows?.live.total ?? 0)} / ${fmt(rows?.live.mirrored ?? 0)} / ${fmt(rows?.live.executable ?? rows?.live.mirrored ?? 0)} / ${fmt(rows?.live.active ?? 0)}`} />
             <Row label="Mirror ratio" value={`${(rows?.live.mirroredRatio ?? 0).toFixed(1)}%`} />
+            <Row label="Independent Block rows (materialized / PF-DDT valid)" value={`${fmt(rows?.live.blockCreated ?? 0)} / ${fmt(rows?.live.blockValid ?? 0)}`} />
+            <Row label="Executables per evaluated Row-Live" value={`${(rows?.live.executablePerRow ?? 0).toFixed(1)}% (normal + valid Block)`} />
             <Row label="Configured PF ratio" value={`${livePf.toFixed(2)} × PositionCost`} />
             <Row label="Max drawdown time" value={`≤ ${settingNumber("maxDrawdownTimeLiveHours", 4)} h`} />
             <Row label="Row capacity" value="Unlimited" />

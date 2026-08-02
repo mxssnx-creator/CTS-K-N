@@ -49,7 +49,7 @@ export interface PseudoPositionConfig {
 }
 
 export interface StrategyEvaluationConfig {
-  // Main strategy: PositionCost-relative PF ratio (0.08-2.70, default: 1.12)
+  // Main strategy: PositionCost-relative PF ratio (0.80-2.70, default: 1.12)
   mainMinProfitFactor: { min: number; max: number; default: number; step: number }
   // Real strategy: PositionCost-relative PF ratio (default: 1.12)
   realMinProfitFactor: number
@@ -111,7 +111,7 @@ export const DEFAULT_ADVANCED_CONFIG: AdvancedEngineConfig = {
   },
 
   strategyEvaluation: {
-    mainMinProfitFactor: { min: 0.08, max: 2.7, default: 1.12, step: 0.02 },
+    mainMinProfitFactor: { min: 0.8, max: 2.7, default: 1.12, step: 0.02 },
     realMinProfitFactor: 1.12,
     realMaxDrawdownTimeSeconds: 43200, // 12 hours
     positionCountsToEvaluate: Array.from({ length: 30 }, (_, index) => index + 1),

@@ -219,8 +219,8 @@ export function ActiveConnectionCard({
   const [strategyRows, setStrategyRows] = useState<{
     base: { total: number; valid: number; totalOpen?: number; validOpen?: number; validRatio?: number }
     main: { valid: number; overall: number; validOpen?: number; overallOpen?: number; overallToValidRatio?: number }
-    real: { valid: number; active: number; activeExactRows?: number; activeRatio?: number }
-    live: { total: number; mirrored: number; active: number; mirroredRatio?: number }
+    real: { valid: number; evaluated?: number; rejected?: number; validRatio?: number; active: number; activeExactRows?: number; activeRatio?: number }
+    live: { total: number; mirrored: number; active: number; blockCreated?: number; blockValid?: number; executable?: number; mirroredRatio?: number; executablePerRow?: number }
   } | null>(null)
   const [infoDialogOpen, setInfoDialogOpen] = useState(false)
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
@@ -2720,14 +2720,14 @@ export function ActiveConnectionCard({
                           {strategyRows && (
                             <div
                               className="flex items-center gap-1"
-                              title={`Current rows with ratios/open positions: Base Total/Valid ${strategyRows.base.validRatio?.toFixed(1) ?? "0.0"}% (${strategyRows.base.totalOpen ?? 0}/${strategyRows.base.validOpen ?? 0} open) · Main Valid/Overall ${(strategyRows.main.overallToValidRatio ?? 0).toFixed(1)}% (${strategyRows.main.validOpen ?? 0}/${strategyRows.main.overallOpen ?? 0} open) · Row-Real Valid/Active ${strategyRows.real.activeRatio?.toFixed(1) ?? "0.0"}% · Row-Live Mirrored ${strategyRows.live.mirroredRatio?.toFixed(1) ?? "0.0"}%.`}
+                              title={`Current rows with ratios/open positions: Base Total/Valid ${strategyRows.base.validRatio?.toFixed(1) ?? "0.0"}% (${strategyRows.base.totalOpen ?? 0}/${strategyRows.base.validOpen ?? 0} open) · Main Valid/Overall ${(strategyRows.main.overallToValidRatio ?? 0).toFixed(1)}% (${strategyRows.main.validOpen ?? 0}/${strategyRows.main.overallOpen ?? 0} open) · Row-Real Valid/Evaluated ${(strategyRows.real.validRatio ?? 0).toFixed(1)}%, Active ${strategyRows.real.active}/${strategyRows.real.valid} · Row-Live Mirrored ${strategyRows.live.mirroredRatio?.toFixed(1) ?? "0.0"}%, Block materialized/valid ${strategyRows.live.blockCreated ?? 0}/${strategyRows.live.blockValid ?? 0}, executable ${strategyRows.live.executable ?? strategyRows.live.mirrored} (${(strategyRows.live.executablePerRow ?? strategyRows.live.mirroredRatio ?? 0).toFixed(1)}% per evaluated row).`}
                             >
-                              <span className="text-muted-foreground">Rows B/M/R/L</span>
+                              <span className="text-muted-foreground">Rows B/M/R/L/Exec</span>
                               <span className="font-medium tabular-nums text-violet-700 dark:text-violet-400">
                                 {strategyRows.base.total}/{strategyRows.base.valid} ·{" "}
                                 {strategyRows.main.valid}/{strategyRows.main.overall} ·{" "}
                                 {strategyRows.real.valid}/{strategyRows.real.active} ·{" "}
-                                {strategyRows.live.total}/{strategyRows.live.mirrored}
+                                {strategyRows.live.total}/{strategyRows.live.mirrored}/{strategyRows.live.executable ?? strategyRows.live.mirrored}
                               </span>
                             </div>
                           )}

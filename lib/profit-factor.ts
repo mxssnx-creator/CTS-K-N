@@ -42,7 +42,10 @@ export function calculateSignedResultR(
 ): number {
   const costPct = finiteNumber(positionCostPct, POSITION_COST_PCT_DEFAULT)
   if (costPct <= 0) return 0
-  return calculatePriceMovePct(entryPrice, exitPrice, direction) / costPct
+  // A result is admitted to PF/DDT only after the position is closed.  The
+  // position-cost percentage is a realised close cost, not merely a unit used
+  // to scale the move: deduct it once before expressing the net result in R.
+  return (calculatePriceMovePct(entryPrice, exitPrice, direction) - costPct) / costPct
 }
 
 function resultToSignedR(result: unknown): number {

@@ -143,8 +143,8 @@ describe("DCA profile and progression", () => {
   })
 
   test("sizes every step from the immutable initial quantity", () => {
-    expect(calculateDcaAddQuantity(2, 1.5)).toBe(3)
-    expect(calculateDcaAddQuantity(2, 2.5)).toBe(5)
+    expect(calculateDcaAddQuantity(2, 1.5)).toBe(1.5)
+    expect(calculateDcaAddQuantity(2, 2.5)).toBe(2.5)
     expect(calculateDcaAddQuantity(0, 2.5)).toBe(0)
   })
 

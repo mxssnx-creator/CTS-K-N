@@ -8,6 +8,7 @@ const PAGES = [
   "/main",
   "/settings",
   "/statistics",
+  "/statistics/direct-trade",
   "/monitoring",
   "/strategies",
   "/logistics",
@@ -176,6 +177,33 @@ async function main() {
   }
   if (!settingsPayload || typeof settingsPayload !== "object") throw new Error("Settings API schema invalid")
 
+  const directTrade = await request("/api/trade-engine/direct-trade/status", { json: true, timeoutMs: 30_000 })
+  if (!directTrade?.success || !directTrade?.stats) {
+    throw new Error("Direct-Trade status API schema invalid")
+  }
+  if (directTrade.state && (
+    !Array.isArray(directTrade.state.timeframes) ||
+    !["1m", "10m", "15m"].every((timeframe) => directTrade.state.timeframes.includes(timeframe)) ||
+    Number(directTrade.state.historyHours) < 60 ||
+    Number(directTrade.state.minVolFactor) < 0.1
+  )) {
+    throw new Error(`Direct-Trade default coordination settings invalid: ${JSON.stringify(directTrade.state)}`)
+  }
+  const [directTradeStatistics, directTradePulse] = await Promise.all([
+    request("/api/trade-engine/direct-trade?view=statistics&timeframe=all&direction=all&state=all", { json: true, timeoutMs: 30_000 }),
+    request("/api/trade-engine/direct-trade/pulse", { json: true, timeoutMs: 30_000 }),
+  ])
+  if (
+    !directTradeStatistics?.success ||
+    !Array.isArray(directTradeStatistics.rows) ||
+    !Number.isFinite(Number(directTradeStatistics.matched ?? 0)) ||
+    !directTradePulse?.success ||
+    !Array.isArray(directTradePulse.activeSignalKeys) ||
+    !Number.isFinite(Number(directTradePulse.signalsEvaluated ?? 0))
+  ) {
+    throw new Error("Direct-Trade Statistics/Pulse API schema invalid")
+  }
+
   const connectionId = String(connectionsPayload.connections[0]?.id || "")
   let history = null
   const progressionReads = []
@@ -188,7 +216,13 @@ async function main() {
       { json: true, timeoutMs: 30_000 },
     )
     if (!history?.success || !Array.isArray(history.rows)) throw new Error("Trade-history API schema invalid")
-    if (history.rows.length > 500 || history?.paging?.maximum !== 500 || history?.paging?.visibleWindow !== 50) {
+    if (
+      history.rows.length > 500 ||
+      history?.paging?.pageSize !== 500 ||
+      history?.paging?.maximum !== 1_000 ||
+      history?.paging?.visibleWindow !== 50 ||
+      history?.paging?.durableUnlimited !== true
+    ) {
       throw new Error("Trade-history 500/50 bounds invalid")
     }
     for (const key of ["wins", "losses", "netPnl", "winRate"]) {
@@ -260,6 +294,10 @@ async function main() {
     cronProtectionMode,
     continuityFresh: continuity.last_tick_fresh === true,
     continuitySource: continuity.last_tick_source || null,
+    directTradeHistoryHours: directTrade.state?.historyHours || 60,
+    directTradeTimeframes: directTrade.state?.timeframes || ["1m", "10m", "15m"],
+    directTradeStatisticRows: directTradeStatistics.rows.length,
+    directTradePulseSignals: directTradePulse.signalsEvaluated,
     durationMs: Date.now() - startedAt,
   }, null, 2))
 }

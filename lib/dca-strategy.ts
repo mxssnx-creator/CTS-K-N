@@ -1,3 +1,5 @@
+import { applySystemVolumeFactor } from "./constants"
+
 export type DcaTakeProfitMode = "average" | "first_entry" | "breakeven_plus"
 
 export interface DcaProfile {
@@ -251,18 +253,18 @@ export function resolveNextDcaStep(args: {
  * Higher ratios (>1.0) = larger volumes for aggregation
  * Lower ratios (<1.0) = smaller volumes for conservative testing
  * 
- * Live exchange volumes = baseQuantity * ratio
+ * Final quantities = baseQuantity * ratio * shared system safety scalar
  * Strategy internal calculations can use higher ratios for optimization
  * 
  * @param baseQuantity - Base quantity at ratio 1.0 (system default)
  * @param volumeMultiplier - Ratio multiplier (default 1.0 for system baseline)
- * @returns quantity = baseQuantity * volumeMultiplier
+ * @returns quantity = baseQuantity * volumeMultiplier * system safety scalar
  */
 export function calculateDcaAddQuantity(baseQuantity: number, volumeMultiplier: number): number {
   if (!Number.isFinite(baseQuantity) || baseQuantity <= 0) return 0
-  // Default ratio 1.0 means no multiplier applied (identity)
+  // Default ratio 1.0 keeps the DCA lane at identity before the shared scalar.
   const ratio = Number.isFinite(volumeMultiplier) && volumeMultiplier > 0 ? volumeMultiplier : 1.0
-  return baseQuantity * ratio
+  return applySystemVolumeFactor(baseQuantity * ratio)
 }
 
 export function upsertDcaLeg(legs: DcaLegState[] | undefined, next: DcaLegState): DcaLegState[] {

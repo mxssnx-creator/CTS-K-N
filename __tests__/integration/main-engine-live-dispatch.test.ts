@@ -1083,13 +1083,13 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       setVariant: "dca",
       dcaProfile,
     } as any, recordingConnector)
-    expect(placeOrder.mock.calls[2]?.[2]).toBeCloseTo(0.015, 10)
+    expect(placeOrder.mock.calls[2]?.[2]).toBeCloseTo(0.0075, 10)
     expect(afterDcaOne.dcaLegs).toEqual([
       expect.objectContaining({
         setKey: `${dcaSetKey}#step:1`,
         step: 1,
         baseQuantity: 0.01,
-        requestedQuantity: 0.015,
+        requestedQuantity: 0.0075,
       }),
     ])
 
@@ -1101,7 +1101,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       setVariant: "dca",
       dcaProfile,
     } as any, recordingConnector)
-    expect(placeOrder.mock.calls[3]?.[2]).toBeCloseTo(0.02, 10)
+    expect(placeOrder.mock.calls[3]?.[2]).toBeCloseTo(0.01, 10)
     expect(afterDcaTwo.dcaLegs?.map((leg: any) => leg.setKey)).toEqual([
       `${dcaSetKey}#step:1`,
       `${dcaSetKey}#step:2`,
@@ -2230,12 +2230,12 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       setKey: dcaSetKey,
       setVariant: "dca",
     } as any, recordingConnector)
-    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.004, 10)
+    expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.002, 10)
     expect(afterStepOne.dcaLegs).toEqual([
       expect.objectContaining({
         setKey: `${dcaSetKey}#step:1`,
         step: 1,
-        requestedQuantity: 0.004,
+        requestedQuantity: 0.002,
         volumeMultiplier: 0.4,
       }),
     ])
@@ -2255,13 +2255,13 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       setKey: dcaSetKey,
       setVariant: "dca",
     } as any, recordingConnector)
-    expect(placeOrder.mock.calls[2]?.[2]).toBeCloseTo(0.011, 10)
+    expect(placeOrder.mock.calls[2]?.[2]).toBeCloseTo(0.0055, 10)
     expect(afterStepTwo.dcaLegs?.map((leg: any) => leg.setKey)).toEqual([
       `${dcaSetKey}#step:1`,
       `${dcaSetKey}#step:2`,
     ])
     expect(afterStepTwo.dcaLegs?.[1]).toEqual(expect.objectContaining({ volumeMultiplier: 1.1 }))
-    expect(afterStepTwo.dcaLegs?.[1]?.requestedQuantity).toBeCloseTo(0.011, 10)
+    expect(afterStepTwo.dcaLegs?.[1]?.requestedQuantity).toBeCloseTo(0.0055, 10)
   })
 
   test("drains more than six simultaneous control-order legs without overlap or stranding", async () => {

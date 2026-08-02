@@ -2,11 +2,12 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { BarChart3, Layers3, RadioTower } from "lucide-react"
+import { BarChart3, Layers3, RadioTower, Target } from "lucide-react"
 import { Button } from "@/components/ui/button"
 
 const SECTIONS = [
   { href: "/statistics", label: "Overall", icon: BarChart3 },
+  { href: "/statistics/direct-trade", label: "Direct Trade", icon: Target },
   { href: "/statistics/indications/common", label: "Common Indications", icon: Layers3 },
   { href: "/statistics/indications/signal", label: "Signal Engine", icon: RadioTower },
 ] as const

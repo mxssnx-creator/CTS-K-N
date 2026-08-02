@@ -43,6 +43,7 @@ import {
   getStrategyLedgerTotals,
   getStrategySetWindowBatch,
   type StrategySetLedgerSnapshot,
+  type PosWindowStats,
 } from "@/lib/pos-history"
 import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
 import { buildProgressionScope } from "@/lib/progression-scope"
@@ -286,6 +287,22 @@ export interface StrategySet {
   confirmedClosedCount?: number
   entries: StrategySetEntry[]
   createdAt?: string
+  /**
+   * Explicit continuous stage rows. Row-Real is derived after active-Real
+   * Block work; Row-Live is the final, already validated exchange candidate.
+   * This makes the two rolling evaluations observable without confusing them
+   * with their normal/axis/adjustment parent Sets.
+   */
+  rowStage?: "real" | "live"
+  rowSourceSetKey?: string
+  /**
+   * Stable exact-result ledger key shared by the Real and Live row for this
+   * Base/configuration lineage.  Live fills are recorded under this key, so
+   * the next Real cycle evaluates the positions actually dispatched by the
+   * previous Row-Live instead of falling back to a projection aggregate.
+   */
+  rowEvaluationKey?: string
+  rowEvaluationWindow?: number
   
   /**
    * ── Set validity status across stages ──────────────────────────────────
@@ -378,9 +395,9 @@ export interface StrategySet {
    * The executable Set direction remains explicitly `long` or `short`, so
    * exchange orders and protection can never become side-ambiguous.
    */
-  blockScope?: "long" | "short" | "overall"
+  blockScope?: "long" | "short" | "overall" | "live_row"
   /** General Strategy lane or Signal source-specific lane. */
-  blockLaneKind?: "direction" | "signal_source"
+  blockLaneKind?: "direction" | "signal_source" | "row-live"
   /** Canonical result-ring identity shared by every physical Set in the lane. */
   blockLaneKey?: string
   /** Signal source id when blockLaneKind is `signal_source`. */
@@ -948,6 +965,12 @@ export interface CoordIndex {
   base: BaseRegistry
   /** Snapshot of the qualifying Real Set keys this cycle (populated by evaluateRealSets). */
   validRealKeys: Set<string>
+  /**
+   * O(1) source-set → exact rolling-result key map for the explicit Row
+   * pipeline.  It is deliberately per-cycle: Base Sets remain authoritative
+   * while Row objects stay scalar views rather than a second object graph.
+   */
+  rowEvaluationKeyBySource: Map<string, string>
 }
 
 /** Allocate an empty CoordIndex from a freshly-built BaseRegistry. */
@@ -959,6 +982,7 @@ function makeCoordIndex(base: BaseRegistry): CoordIndex {
     liveSetsByVariant: new Map(),
     base,
     validRealKeys: new Set(),
+    rowEvaluationKeyBySource: new Map(),
   }
 }
 
@@ -991,6 +1015,9 @@ function snapshotCoordIndexForLive(idx: CoordIndex, realSets: StrategySet[]): Co
     const record = idx.byCoordKey.get(set.setKey)
     if (record) registerCoordRecord(snapshot, { ...record, _setView: undefined })
     snapshot.validRealKeys.add(set.setKey)
+    const sourceKey = set.rowSourceSetKey || set.setKey
+    const evaluationKey = set.rowEvaluationKey || idx.rowEvaluationKeyBySource.get(sourceKey)
+    if (sourceKey && evaluationKey) snapshot.rowEvaluationKeyBySource.set(sourceKey, evaluationKey)
   }
   return snapshot
 }
@@ -1093,6 +1120,230 @@ export function selectLiveSetsWithActivePriority(
     active,
     selected: active.concat(candidates),
   }
+}
+
+/**
+ * Materialise an explicit continuous strategy row from the latest Set window.
+ *
+ * Rows are intentionally scalar/lightweight: their lineage points back to the
+ * existing Base/variant graph, while their PF and DDT are recalculated from
+ * the newest exact closed-position window. This avoids cloning full graphs on
+ * every cycle and gives Real and Live independently inspectable row identities.
+ *
+ * A slim derived Set may not carry historical entries itself. In that case we
+ * retain its already-canonical aggregate instead of fabricating a result; the
+ * parent remains available through `rowSourceSetKey` for live dispatch.
+ */
+export function materializeContinuousStageRows(
+  sourceSets: readonly StrategySet[],
+  options: {
+    stage: "real" | "live"
+    lookback: number
+    metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime">
+    activeSetKeys?: ReadonlySet<string>
+    /**
+     * Batched exact position-result windows.  Callers build this once per
+     * stage from the row evaluation keys; no per-row Redis reads are allowed.
+     */
+    windowBySetKey?: ReadonlyMap<string, PosWindowStats>
+  },
+): {
+  rows: StrategySet[]
+  evaluated: number
+  rejected: number
+} {
+  const lookback = Math.max(1, Math.min(200, Math.floor(Number(options.lookback) || 1)))
+  const rows: StrategySet[] = []
+  let evaluated = 0
+  let rejected = 0
+  const seen = new Set<string>()
+
+  for (const source of sourceSets) {
+    if (!source?.setKey) continue
+    const key = `${source.setKey}#row_${options.stage}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    evaluated++
+
+    const allEntries = Array.isArray(source.entries) ? source.entries : []
+    const fallbackEntries = allEntries.slice(-lookback)
+    const parentKey = source.parentSetKey || source.setKey.split("#")[0]
+    // A Live fill keeps its stable exact-result ledger key between cycles.
+    // Prefer it first, then accept legacy/source-key history during rollout.
+    const evaluationKey = source.rowEvaluationKey ||
+      (options.stage === "real"
+        ? `${source.setKey}#row_real#row_live`
+        : `${source.setKey}#row_live`)
+    const windowKeys = [evaluationKey, source.setKey, source.rowSourceSetKey]
+      .filter((key, index, list): key is string => Boolean(key) && list.indexOf(key) === index)
+    const exactWindow = windowKeys
+      .map((key) => options.windowBySetKey?.get(key))
+      .find((window): window is PosWindowStats => Boolean(window && window.count > 0))
+
+    let sampleCount = 0
+    let profitFactor = Number(source.avgProfitFactor) || 0
+    let drawdownTime = Number(source.avgDrawdownTime) || 0
+    let entries = fallbackEntries.length > 0 ? fallbackEntries : allEntries
+
+    if (exactWindow) {
+      // PositionCost-relative PF and DDT are calculated from the exact same
+      // newest-first close window by pos-history.  This is the canonical
+      // "last N positions" contract used by Base/Main/Real, not an average
+      // of synthetic indication entries.
+      sampleCount = Math.min(lookback, exactWindow.count)
+      profitFactor = exactWindow.positionCostRatioCount > 0
+        ? exactWindow.positionCostRatio
+        : exactWindow.profitFactor
+      drawdownTime = exactWindow.avgDDT
+      entries = []
+    } else {
+      // Bootstrap / backwards-compatible fallback: a Base-derived `prevPos`
+      // snapshot is already a bounded position window.  Only when neither
+      // exact nor Base history exists do we use static entry aggregates.
+      const prev = source.prevPos
+      const pnls = (prev?.recentPnlPcts || []).map(Number)
+      const costs = (prev?.recentPositionCostPcts || []).map(Number)
+      const count = Math.min(pnls.length, costs.length, lookback)
+      if (count > 0) {
+        let ratioSum = 0
+        for (let index = 0; index < count; index++) {
+          ratioSum += movePctToMainTradePfRatio(pnls[index], costs[index])
+        }
+        sampleCount = count
+        profitFactor = ratioSum / count
+        drawdownTime = Number(prev?.avgDDT) || drawdownTime
+        entries = []
+      } else {
+        const finiteEntries = fallbackEntries
+          .map((entry) => ({
+            profitFactor: Number(entry.profitFactor),
+            drawdownTime: Number(entry.drawdownTime),
+          }))
+          .filter((entry) => Number.isFinite(entry.profitFactor))
+        if (finiteEntries.length > 0) {
+          sampleCount = finiteEntries.length
+          profitFactor = finiteEntries.reduce((sum, entry) => sum + entry.profitFactor, 0) /
+            finiteEntries.length
+          const ddtSamples = finiteEntries
+            .map((entry) => entry.drawdownTime)
+            .filter(Number.isFinite)
+          if (ddtSamples.length > 0) {
+            drawdownTime = ddtSamples.reduce((sum, value) => sum + value, 0) / ddtSamples.length
+          }
+        }
+      }
+    }
+
+    // Never present an invented full N-position window.  When a fresh or
+    // active lineage has fewer closes, the public row reports exactly the
+    // available sample count and is re-evaluated as new closes arrive.
+    const rowEntryCount = sampleCount > 0
+      ? Math.min(lookback, sampleCount)
+      : Math.min(lookback, Math.max(0, Number(source.entryCount) || 0))
+    // A parent Base key is intentionally *not* a wildcard for derived rows:
+    // siblings from a different position-count / DCA / Block configuration
+    // share that parent but must not inherit each other's active position.
+    // The narrow parent fallback is only for legacy, unmaterialised Base keys
+    // that predate rowSourceSetKey / rowEvaluationKey persistence.
+    const isLegacyBaseSource = !source.rowSourceSetKey &&
+      !source.rowEvaluationKey &&
+      !source.setKey.includes("#")
+    const sourceIsActive = Boolean(
+      options.activeSetKeys?.has(source.setKey) ||
+      (source.rowSourceSetKey && options.activeSetKeys?.has(source.rowSourceSetKey)) ||
+      (source.rowEvaluationKey && options.activeSetKeys?.has(source.rowEvaluationKey)) ||
+      (isLegacyBaseSource && options.activeSetKeys?.has(parentKey)) ||
+      (source as unknown as Record<string, unknown>)._hasLivePositions === true,
+    )
+    const passes = sourceIsActive || (
+      profitFactor >= options.metrics.minProfitFactor &&
+      drawdownTime <= options.metrics.maxDrawdownTime
+    )
+    if (!passes) {
+      rejected++
+      continue
+    }
+
+    rows.push({
+      ...source,
+      setKey: key,
+      parentSetKey: parentKey,
+      rowStage: options.stage,
+      rowSourceSetKey: source.setKey,
+      rowEvaluationKey: evaluationKey,
+      rowEvaluationWindow: rowEntryCount,
+      avgProfitFactor: profitFactor,
+      avgDrawdownTime: drawdownTime,
+      entryCount: rowEntryCount,
+      entries,
+      status: options.stage === "real" ? "valid_real" : source.status,
+      ...(sourceIsActive ? { _hasLivePositions: true } : {}),
+    } as StrategySet)
+  }
+
+  rows.sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+  return { rows, evaluated, rejected }
+}
+
+/**
+ * Re-evaluate the independent Block rows that are appended after Row-Live.
+ *
+ * A Row-Live Block has a distinct executable Set key (the count is part of
+ * that key), so its closed positions must be read from that exact ring.  The
+ * normal Row-Live metrics remain a separate comparison baseline.  Keeping this
+ * tiny scalar pass after block materialisation avoids an extra Set graph while
+ * preserving a one-to-one relation between order/position ID, result ring,
+ * Block PF/DDT and displayed row.
+ */
+export function applyExactBlockRowWindows(
+  rows: readonly StrategySet[],
+  windows: ReadonlyMap<string, PosWindowStats>,
+  metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime">,
+  activeSetKeys?: ReadonlySet<string>,
+): StrategySet[] {
+  const evaluated: StrategySet[] = []
+  for (const row of rows) {
+    const evaluationKey = row.rowEvaluationKey || row.setKey
+    const window = windows.get(evaluationKey)
+    const isActive = Boolean(
+      activeSetKeys?.has(row.setKey) ||
+      activeSetKeys?.has(evaluationKey) ||
+      (row.rowSourceSetKey && activeSetKeys?.has(row.rowSourceSetKey)),
+    )
+    if (!window || window.count <= 0) {
+      evaluated.push(row)
+      continue
+    }
+    const profitFactor = window.positionCostRatioCount > 0
+      ? window.positionCostRatio
+      : window.profitFactor
+    const drawdownTime = window.avgDDT
+    const minimumProfitFactor = Math.max(
+      metrics.minProfitFactor,
+      Number.isFinite(Number(row.blockMinimumProfitFactor))
+        ? Number(row.blockMinimumProfitFactor)
+        : metrics.minProfitFactor,
+    )
+    if (!isActive && (
+      profitFactor < minimumProfitFactor ||
+      drawdownTime > metrics.maxDrawdownTime
+    )) {
+      continue
+    }
+    evaluated.push({
+      ...row,
+      rowEvaluationKey: evaluationKey,
+      rowEvaluationWindow: window.count,
+      entryCount: window.count,
+      avgProfitFactor: profitFactor,
+      avgDrawdownTime: drawdownTime,
+      blockObservedProfitFactor: profitFactor,
+      blockProfitFactorSampleCount: window.count,
+      blockProfitFactorWindow: window.count,
+      blockProfitFactorDifference: profitFactor - Number(row.blockNormalProfitFactor || 0),
+    })
+  }
+  return evaluated
 }
 
 /**
@@ -1199,9 +1450,17 @@ export function coordinateActiveRealLiveCounts(
   activeSetKeys: ReadonlySet<string>,
   realEvaluatedCount: number = realSets.length,
 ): { real: number; live: number; liveEvaluated: number } {
+  // A Row-Real has a different visible setKey than the Row-Live position it
+  // spawned.  Link only its exact source/evaluation keys; matching a broad
+  // parent Base key would incorrectly mark unrelated axis/adjust siblings as
+  // active and inflate the Real Active statistic.
+  const isActive = (set: StrategySet): boolean =>
+    activeSetKeys.has(set.setKey) ||
+    Boolean(set.rowSourceSetKey && activeSetKeys.has(set.rowSourceSetKey)) ||
+    Boolean(set.rowEvaluationKey && activeSetKeys.has(set.rowEvaluationKey))
   return {
-    real: realSets.reduce((count, set) => count + (activeSetKeys.has(set.setKey) ? 1 : 0), 0),
-    live: liveSets.reduce((count, set) => count + (activeSetKeys.has(set.setKey) ? 1 : 0), 0),
+    real: realSets.reduce((count, set) => count + (isActive(set) ? 1 : 0), 0),
+    live: liveSets.reduce((count, set) => count + (isActive(set) ? 1 : 0), 0),
     liveEvaluated: Math.max(realSets.length, realEvaluatedCount),
   }
 }
@@ -1728,6 +1987,11 @@ export class StrategyCoordinator {
     blockPauseCountRatio: number
     blockActiveRealEnabled: boolean
     blockActiveLiveEnabled: boolean
+    blockRowLiveEnabled: boolean
+    blockRowLiveVolumeRatio: number
+    blockRowLiveProfitFactorRatio: number
+    blockRowLiveMaxStack: number
+    blockRowLivePauseCountRatio: number
     blockOnly: boolean
     /**
      * Position-Count coordination ratio — normalized on the 0.1..10 operator
@@ -1736,6 +2000,7 @@ export class StrategyCoordinator {
     posCountsVolumeRatio: number
     mainEvalPosCount: number
     realEvalPosCount: number
+    liveEvalPosCount: number
   } = {
     axes: {
       prev:  { enabled: true,  maxWindow: 12 },
@@ -1757,6 +2022,11 @@ export class StrategyCoordinator {
     blockPauseCountRatio: 1.0,
     blockActiveRealEnabled: true,
     blockActiveLiveEnabled: true,
+    blockRowLiveEnabled: true,
+    blockRowLiveVolumeRatio: 1.0,
+    blockRowLiveProfitFactorRatio: 0.8,
+    blockRowLiveMaxStack: 10,
+    blockRowLivePauseCountRatio: 1.0,
     blockOnly: true,
     /**
      * Operator coordination ratio. Default 3.0; conversion to direct physical
@@ -1765,6 +2035,7 @@ export class StrategyCoordinator {
     posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
     mainEvalPosCount: 25,
     realEvalPosCount: 20,
+    liveEvalPosCount: 15,
   }
   private _coordinationLoadedAt = 0
   private readonly _coordinationTtlMs = 5_000
@@ -2110,7 +2381,7 @@ export class StrategyCoordinator {
    *   - `METRICS.{base|main|real|live}.minProfitFactor` (Set-average
    *      gate consumed at lines 695/1117/1468)
    *
-   * Every value is normalized to the canonical 0.08..2.70 grid (step 0.02).
+   * Every value is normalized to the canonical 0.80..2.70 grid (step 0.02).
    * Defaults are Base 0.80 and Main/Real/Live 1.12. NaN, negative and
    * out-of-range legacy values are repaired by the same helper used by the
    * settings APIs and migrations.
@@ -2202,6 +2473,10 @@ export class StrategyCoordinator {
       }
       this._coordinationSettings.mainEvalPosCount = evalCount((s as any).mainEvalPosCount) ?? 25
       this._coordinationSettings.realEvalPosCount = evalCount((s as any).realEvalPosCount) ?? 20
+      const liveEvalRaw = Number((s as any).liveEvalPosCount)
+      this._coordinationSettings.liveEvalPosCount = Number.isFinite(liveEvalRaw) && liveEvalRaw > 0
+        ? Math.min(55, Math.max(5, Math.round(liveEvalRaw / 5) * 5))
+        : 15
 
       // ── Strategy work scheduling ────────────────────────────────────────
       // Batch sizes limit only concurrent work. Legacy stage-cap fields are
@@ -2346,6 +2621,26 @@ export class StrategyCoordinator {
       }
       this._coordinationSettings.blockActiveRealEnabled = bool(s.blockActiveRealEnabled, true)
       this._coordinationSettings.blockActiveLiveEnabled = bool(s.blockActiveLiveEnabled, true)
+      // Final Row-Live Block settings are deliberately independent from the
+      // active-position overlays. Omitted values inherit the active Block
+      // defaults, so upgrading never changes an operator's risk envelope.
+      this._coordinationSettings.blockRowLiveEnabled = bool(s.blockRowLiveEnabled, true)
+      const rowBvr = Number(s.blockRowLiveVolumeRatio)
+      this._coordinationSettings.blockRowLiveVolumeRatio = Number.isFinite(rowBvr) && rowBvr > 0
+        ? Math.max(0.25, Math.min(3.0, rowBvr))
+        : this._coordinationSettings.blockVolumeRatio
+      const rowBpfr = Number(s.blockRowLiveProfitFactorRatio)
+      this._coordinationSettings.blockRowLiveProfitFactorRatio = Number.isFinite(rowBpfr) && rowBpfr > 0
+        ? Math.max(0.2, Math.min(5, rowBpfr))
+        : this._coordinationSettings.blockProfitFactorRatio
+      const rowBms = Number(s.blockRowLiveMaxStack)
+      this._coordinationSettings.blockRowLiveMaxStack = Number.isFinite(rowBms) && rowBms >= 1
+        ? Math.min(10, Math.max(1, Math.floor(rowBms)))
+        : this._coordinationSettings.blockMaxStack
+      const rowBpcr = Number(s.blockRowLivePauseCountRatio)
+      this._coordinationSettings.blockRowLivePauseCountRatio = Number.isFinite(rowBpcr) && rowBpcr > 0
+        ? Math.max(1, Math.min(4, Math.round(rowBpcr * 2) / 2))
+        : this._coordinationSettings.blockPauseCountRatio
 
       // ── Position-Count (Pis) Sets volume ratio ───────────────
       // Applied only to Main's additional Pos-Count Sets. This is the
@@ -2664,6 +2959,7 @@ export class StrategyCoordinator {
         coordIndex.byParentKey.clear()
         coordIndex.liveSetsByVariant.clear()
         coordIndex.validRealKeys.clear()
+        coordIndex.rowEvaluationKeyBySource.clear()
       }
 
       return results
@@ -6186,70 +6482,73 @@ export class StrategyCoordinator {
       ).catch(() => {})
     }
 
-    // ── Continuous Real-stage evaluation ─────────────────────────────────────
-    //
-    // Operator spec: after the main Real filter, derive additional Row-Real /
-    // Row-Live calculative Sets from the last N positions for every qualifying
-    // Real parent. These are independent from the existing Real filter and use
-    // the same PF/DDT thresholds. They do not affect Base/Main and do not
-    // replace any existing Real Set. Tagging distinguishes them from normal
-    // Real rows so downstream consumers can treat them as continuous eval.
-    const CONTINUOUS_REAL_EVAL_LOOKBACK = Number(
-      process.env.CONTINUOUS_REAL_EVAL_LOOKBACK ?? 25,
-    )
+    // ── Row-Real: final continuous Real evaluation ──────────────────────────
+    // This runs after the active-position Block overlay. The former path used
+    // a process-environment 25-position constant but only copied its parent's
+    // aggregate PF/DDT; it was neither operator-configurable nor a true rolling
+    // row. Row-Real now owns a stable key and recalculates the configured latest
+    // Real window before Row-Live is allowed to exist.
+    let rowRealSets: StrategySet[] = []
     let continuousRealCreated = 0
+    let continuousRealRejected = 0
     try {
-      const continuousCandidates: StrategySet[] = []
-      for (const parent of realPostHedge) {
-        const positions = (parent.entries ?? []).slice(-CONTINUOUS_REAL_EVAL_LOOKBACK)
-        if (positions.length === 0) continue
-        const pf = parent.avgProfitFactor ?? 0
-        const ddt = parent.avgDrawdownTime ?? 0
-        if (pf < metrics.minProfitFactor || ddt > metrics.maxDrawdownTime) continue
-        const continuousSet: StrategySet = {
-          setKey: `${parent.setKey}#continuous_real`,
-          indicationType: parent.indicationType,
-          direction: parent.direction,
-          avgProfitFactor: pf,
-          avgConfidence: parent.avgConfidence,
-          avgDrawdownTime: ddt,
-          entryCount: positions.length,
-          confirmedActiveCount: parent.confirmedActiveCount,
-          confirmedClosedCount: parent.confirmedClosedCount,
-          entries: positions,
-          createdAt: new Date().toISOString(),
-          status: "valid_real",
-          parentSetKey: parent.setKey,
-          variant: parent.variant,
-          signalRisk: parent.signalRisk,
-          variantSizeMultiplier: parent.variantSizeMultiplier,
-          variantLeverage: parent.variantLeverage,
-          blockBaseVolumeMultiplier: parent.blockBaseVolumeMultiplier,
-          blockVolumeRatio: parent.blockVolumeRatio,
-          blockProfitFactorRatio: parent.blockProfitFactorRatio,
-          blockDefaultMinimumProfitFactor: parent.blockDefaultMinimumProfitFactor,
-          blockConfiguredMinimumProfitFactor: parent.blockConfiguredMinimumProfitFactor,
-          blockNormalProfitFactor: parent.blockNormalProfitFactor,
-          blockMinimumProfitFactor: parent.blockMinimumProfitFactor,
-          blockObservedProfitFactor: parent.blockObservedProfitFactor,
-          blockProfitFactorDifference: parent.blockProfitFactorDifference,
-          blockComparisonAvailable: parent.blockComparisonAvailable,
-          blockProfitFactorWindow: parent.blockProfitFactorWindow,
-          blockProfitFactorSampleCount: parent.blockProfitFactorSampleCount,
-          blockCount: parent.blockCount,
-          blockScope: parent.blockScope,
-          blockLaneKind: parent.blockLaneKind,
-          blockLaneKey: parent.blockLaneKey,
-          blockSourceId: parent.blockSourceId,
-          blockVolumeIncrementRatio: parent.blockVolumeIncrementRatio,
-          blockCalculatedVolumeMultiplier: parent.blockCalculatedVolumeMultiplier,
+      // One bounded batch resolves the exact closed positions for every
+      // Base-anchored configuration lineage.  The row's future Live ledger
+      // key is read first; source keys remain a compatibility fallback for
+      // pre-row positions.  This is O(unique keys) with 500-key pipelines,
+      // never O(rows × Redis round trips).
+      const rowHistoryKeys = Array.from(new Set(
+        realPostHedge.flatMap((set) => {
+          const evaluationKey = set.rowEvaluationKey ||
+            `${set.rowSourceSetKey || set.setKey}#row_real#row_live`
+          return [evaluationKey, set.setKey, set.rowSourceSetKey].filter(Boolean) as string[]
+        }),
+      ))
+      const rowWindows = await getStrategySetWindowBatch(
+        this.connectionId,
+        rowHistoryKeys,
+        this._coordinationSettings.realEvalPosCount,
+      )
+      const continuous = materializeContinuousStageRows(realPostHedge, {
+        stage: "real",
+        lookback: this._coordinationSettings.realEvalPosCount,
+        metrics,
+        activeSetKeys: realActiveKeysForVP,
+        windowBySetKey: rowWindows,
+      })
+      rowRealSets = continuous.rows
+      continuousRealCreated = rowRealSets.length
+      continuousRealRejected = continuous.rejected
+      if (coordIndex) {
+        for (const row of rowRealSets) {
+          const sourceKey = row.rowSourceSetKey || row.setKey
+          if (row.rowEvaluationKey) {
+            coordIndex.rowEvaluationKeyBySource.set(sourceKey, row.rowEvaluationKey)
+          }
+          // Register only a scalar alias.  The Base Registry remains the sole
+          // owner of entries; Live dispatch can therefore resolve the parent
+          // in O(1) without copying a Base Set for each continuous row.
+          const source = coordIndex.byCoordKey.get(sourceKey)
+          if (source && !coordIndex.byCoordKey.has(row.setKey)) {
+            registerCoordRecord(coordIndex, {
+              ...source,
+              coordKey: row.setKey,
+              parentKey: row.parentSetKey || source.parentKey,
+              status: "valid_real",
+              avgProfitFactor: row.avgProfitFactor,
+              avgDrawdownTime: row.avgDrawdownTime,
+              avgConfidence: row.avgConfidence,
+              entryCount: row.entryCount,
+              direction: row.direction,
+              variant: (row.variant || source.variant) as SetCoordRecord["variant"],
+              _setView: undefined,
+            })
+          }
         }
-        continuousCandidates.push(continuousSet)
       }
-      continuousRealCreated = continuousCandidates.length
-      if (continuousCandidates.length > 0) {
+      if (rowRealSets.length > 0) {
         realPostHedge = realPostHedge
-          .concat(continuousCandidates)
+          .concat(rowRealSets)
           .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
       }
     } catch (err) {
@@ -6386,7 +6685,8 @@ export class StrategyCoordinator {
     // Real-created Block/scope rows are part of the evaluated graph even when
     // the later retention boundary does not mirror every row to Live.
     const realRelatedCreated = realStageRelatedCreated
-    const realTotalEvaluated = mainPFEligible + realRelatedCreated + continuousRealCreated
+    const continuousRealEvaluated = continuousRealCreated + continuousRealRejected
+    const realTotalEvaluated = mainPFEligible + realRelatedCreated + continuousRealEvaluated
     const realEvaluatedAfterFanOut = realTotalEvaluated
 
     // Write Real counts to progression hash — CUMULATIVE via hincrby so the dashboard
@@ -6414,7 +6714,12 @@ export class StrategyCoordinator {
       // Denominator includes both PF-eligible Main inputs and Real related/axis
       // fan-out outputs, keeping the ratio bounded when fan-out creates more
       // Real Sets than the original Main input count.
-      const passRatioReal = realTotalEvaluated > 0 ? n / realTotalEvaluated : 0
+      // Row-Real's percentage is only its own continuous rolling decision.
+      // The raw Main/Block fan-out graph can be wider than the final row and
+      // must not make a single-stage percentage exceed 100%.
+      const passRatioReal = continuousRealEvaluated > 0
+        ? rowRealSets.length / continuousRealEvaluated
+        : realTotalEvaluated > 0 ? Math.min(1, n / realTotalEvaluated) : 0
       // Average entryCount per Real Set ��� identical to realAvgPosPerSet.
       // The previous formula used Math.max(1, entryCount||1) which biased
       // Sets with entryCount=0 upward. Reuse the already-correct value.
@@ -6439,6 +6744,22 @@ export class StrategyCoordinator {
         activeRealSets.map((set) => set.parentSetKey || set.setKey.split("#")[0]),
       )
       const realRunningNow = realActiveBaseLineages.size
+      const rowRealActiveLineages = new Set(
+        rowRealSets
+          .filter((set) =>
+            realActiveBaseKeys.has(set.setKey) ||
+            realActiveBaseKeys.has(set.rowSourceSetKey || "") ||
+            realActiveBaseKeys.has(set.rowEvaluationKey || "") ||
+            // Only old, direct Base snapshots may fall back to parentKey.
+            // Derived siblings must match an exact set/evaluation identity.
+            (!set.rowSourceSetKey &&
+              !set.rowEvaluationKey &&
+              !set.setKey.includes("#") &&
+              realActiveBaseKeys.has(set.parentSetKey || "")),
+          )
+          .map((set) => set.parentSetKey || set.setKey.split("#")[0]),
+      )
+      const rowRealRunningNow = rowRealActiveLineages.size
 
       // Open positions = sum of entryCount across the Real Sets that are
       // actively running now (each entry is one open position the Set holds).
@@ -6490,8 +6811,11 @@ export class StrategyCoordinator {
           // separate upstream input remains in strategies_active as {symbol}:real:input.
           evaluated:          String(realEvaluatedAfterFanOut),
           passed_sets:        String(realSets.length),
-          row_valid:          String(realSets.length),
-          row_active:         String(realRunningNow),
+          // Public Row-Real = the final rolling Real candidates. Keep the raw
+          // post-hedge/Block graph in created_sets for diagnostics, while this
+          // row is the exact denominator that flows into Row-Live.
+          row_valid:          String(rowRealSets.length),
+          row_active:         String(rowRealRunningNow),
           row_active_exact:   String(activeRealSets.length),
           pass_rate:          String(passRatioReal.toFixed(4)),
           count_pos_eval:     String(realSets.length),
@@ -6514,6 +6838,9 @@ export class StrategyCoordinator {
           stat_combined:     String(realRunningNow),          // running now
           stat_accumulated:  String(realAccumulatedSum),      // axis sum
           continuous_real_created: String(continuousRealCreated),
+          row_real_created: String(continuousRealCreated),
+          row_real_evaluated: String(continuousRealEvaluated),
+          row_real_rejected: String(continuousRealRejected),
           // (Overall is pulled from `strategies_real_total` on read.)
           updated_at:         String(Date.now()),
           // Per-symbol fields — see createBaseSets for rationale.
@@ -6525,8 +6852,11 @@ export class StrategyCoordinator {
           ),
           [`s:${symbol}:passed`]:     String(realSets.length),
           [`s:${symbol}:evaluated`]:  String(realTotalEvaluated),
-          [`s:${symbol}:row_valid`]:        String(realSets.length),
-          [`s:${symbol}:row_active`]:       String(realRunningNow),
+          [`s:${symbol}:row_valid`]:        String(rowRealSets.length),
+          [`s:${symbol}:row_real_created`]: String(continuousRealCreated),
+          [`s:${symbol}:row_real_evaluated`]: String(continuousRealEvaluated),
+          [`s:${symbol}:row_real_rejected`]: String(continuousRealRejected),
+          [`s:${symbol}:row_active`]:       String(rowRealRunningNow),
           [`s:${symbol}:row_active_exact`]: String(activeRealSets.length),
           [`s:${symbol}:apf`]:        String(realAvgPF.toFixed(4)),
           [`s:${symbol}:addt`]:       String(Math.round(realAvgDDT)),
@@ -6915,6 +7245,94 @@ export class StrategyCoordinator {
     return passthrough.concat(combined)
   }
 
+  /**
+   * Add the independent final Row-Live Block ladder after Row-Live has passed
+   * its own PF/DDT window. This is deliberately separate from the active
+   * Real/Live exposure overlay: changing a row-block ratio cannot alter an
+   * already-open position's adjustment target.
+   */
+  private buildRowLiveBlockOverlays(
+    rowLiveSets: readonly StrategySet[],
+    metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime">,
+  ): StrategySet[] {
+    if (!this._coordinationSettings.variants.block || !this._coordinationSettings.blockRowLiveEnabled) {
+      return []
+    }
+    const profile = this.variantProfiles().find((candidate) => candidate.name === "block")
+    const config = profile?.configs.slice().sort((left, right) => right.pfBias - left.pfBias)[0]
+    if (!config) return []
+
+    const maxStack = this._coordinationSettings.blockRowLiveMaxStack
+    const ratio = this._coordinationSettings.blockRowLiveVolumeRatio
+    const pfRatio = this._coordinationSettings.blockRowLiveProfitFactorRatio
+    const pauseRatio = this._coordinationSettings.blockRowLivePauseCountRatio
+    const rows: StrategySet[] = []
+    const seen = new Set<string>()
+
+    for (const source of rowLiveSets) {
+      // Row-Live Block rows do not recursively fan out from an existing Block
+      // or DCA overlay. Position-count rows remain their own target family.
+      if (source.variant === "block" || source.variant === "dca" || isPositionCountStrategySet(source)) continue
+      for (let count = 1; count <= maxStack; count++) {
+        const increment = calculateBlockVolumeIncrementRatio(count, ratio)
+        const minimumProfitFactor = calculateBlockMinimumProfitFactor(
+          metrics.minProfitFactor,
+          pfRatio,
+          increment,
+        )
+        if (
+          source.avgProfitFactor < minimumProfitFactor ||
+          source.avgDrawdownTime > metrics.maxDrawdownTime
+        ) continue
+        const key = `${source.setKey}#block:row_live:${count}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        const pause = Math.max(1, Math.min(32, Math.round(count * pauseRatio)))
+        rows.push({
+          ...source,
+          setKey: key,
+          rowStage: "live",
+          rowSourceSetKey: source.setKey,
+          // Unlike the normal Row-Live, an independent Block is a distinct
+          // executable configuration.  Its position/order key must therefore
+          // also be its result-ring key; otherwise a later Block PF/DDT pass
+          // would accidentally reuse the normal Row-Live history.
+          rowEvaluationKey: key,
+          parentSetKey: source.parentSetKey || source.setKey.split("#")[0],
+          variant: "block",
+          axisWindows: {
+            ...(source.axisWindows || { prev: 0, last: 0, cont: 0, pause: 0 }),
+            cont: count,
+            pause,
+            axisKey: `block:row-live:${count}:pause${pause}`,
+          },
+          variantSizeMultiplier: calculateBlockVolumeMultiplier(count, ratio),
+          variantLeverage: config.leverage,
+          blockBaseVolumeMultiplier: 1,
+          blockVolumeRatio: ratio,
+          blockProfitFactorRatio: pfRatio,
+          blockDefaultMinimumProfitFactor: metrics.minProfitFactor,
+          blockConfiguredMinimumProfitFactor: minimumProfitFactor,
+          blockNormalProfitFactor: source.avgProfitFactor,
+          blockMinimumProfitFactor: minimumProfitFactor,
+          blockObservedProfitFactor: source.avgProfitFactor,
+          blockProfitFactorDifference: source.avgProfitFactor - minimumProfitFactor,
+          blockComparisonAvailable: true,
+          blockProfitFactorWindow: source.rowEvaluationWindow,
+          blockProfitFactorSampleCount: source.entryCount,
+          blockCount: count,
+          blockScope: "live_row",
+          blockLaneKind: "row-live",
+          blockLaneKey: key,
+          blockVolumeIncrementRatio: increment,
+          blockCalculatedVolumeMultiplier: calculateBlockVolumeMultiplier(count, ratio),
+        })
+      }
+    }
+
+    return rows.sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+  }
+
 
     private async createLiveSets(
     symbol: string,
@@ -7014,23 +7432,104 @@ export class StrategyCoordinator {
     for (const key of await this.getOpenLiveSetKeys().catch(() => new Set<string>())) {
       activeStrategyKeys.add(key)
     }
-    // Non-active Live candidates use the PF-min + DDT-max axes and rank by
-    // profit factor. Active exact Sets bypass transient PF/DDT drift until
-    // terminal. Signal's independent atomic physical-capacity contract remains
-    // a separate execution-boundary gate.
-    const liveSelection = selectLiveSetsWithActivePriority(
-      realSets,
-      activeStrategyKeys,
-      metrics,
+    // ── Row-Live: final, explicit continuous live evaluation ─────────────
+    // The source is Row-Real whenever the normal pipeline is active. The
+    // compatibility fallback only serves diagnostics/tests that call this
+    // private stage directly without first materialising Row-Real.
+    const rowRealSets = realSets.filter((set) => set.rowStage === "real")
+    const rowLiveSource = rowRealSets.length > 0 ? rowRealSets : realSets
+    // Row-Live evaluates the exact results of its own stable evaluation key.
+    // Read all lineages in one bounded batch so a symbol with a wide axis
+    // matrix does not turn a 500 ms processing tick into an N+1 Redis stall.
+    const rowHistoryKeys = Array.from(new Set(
+      rowLiveSource.flatMap((set) => {
+        const sourceKey = set.rowSourceSetKey || set.setKey
+        const evaluationKey = set.rowEvaluationKey ||
+          coordIndex?.rowEvaluationKeyBySource.get(sourceKey) ||
+          `${set.setKey}#row_live`
+        return [
+          evaluationKey,
+          // Compatibility path for a stored Real source without the row field.
+          `${sourceKey}#row_real#row_live`,
+          set.setKey,
+          sourceKey,
+        ].filter(Boolean) as string[]
+      }),
+    ))
+    const rowWindows = await getStrategySetWindowBatch(
+      this.connectionId,
+      rowHistoryKeys,
+      this._coordinationSettings.liveEvalPosCount,
     )
-    const allQualifying = liveSelection.selected
+    const rowLive = materializeContinuousStageRows(rowLiveSource, {
+      stage: "live",
+      lookback: this._coordinationSettings.liveEvalPosCount,
+      metrics,
+      activeSetKeys: activeStrategyKeys,
+      windowBySetKey: rowWindows,
+    })
+    // Row-Live is already PF/DDT validated. Do not feed it into the generic
+    // selector below, which would apply the Live gate a second time and make
+    // a saved 15-position row behave differently at dispatch.
+    const builtRowLiveBlock = this.buildRowLiveBlockOverlays(rowLive.rows, metrics)
+    // Independent Row-Live Blocks are executable configurations in their own
+    // right.  Read their exact result rings in one batch and retain a row only
+    // when its own rolling PF/DDT passes (or it is already actively protected).
+    // This keeps Block volume/count calculation independent while making its
+    // order IDs, position IDs, history, stats and next-cycle decision agree.
+    const blockWindows = await getStrategySetWindowBatch(
+      this.connectionId,
+      builtRowLiveBlock.map((set) => set.rowEvaluationKey || set.setKey),
+      this._coordinationSettings.liveEvalPosCount,
+    )
+    const rowLiveBlock = applyExactBlockRowWindows(
+      builtRowLiveBlock,
+      blockWindows,
+      metrics,
+      activeStrategyKeys,
+    )
+    const allQualifying = Array.from(new Map(
+      rowLive.rows.concat(rowLiveBlock).map((set) => [set.setKey, set]),
+    ).values()).sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+    if (coordIndex) {
+      for (const row of allQualifying) {
+        const sourceKey = row.rowSourceSetKey || row.setKey
+        const evaluationKey = row.rowEvaluationKey ||
+          coordIndex.rowEvaluationKeyBySource.get(sourceKey)
+        if (evaluationKey) {
+          // A Block row is an additional executable child of Row-Live.  Do
+          // not overwrite the normal row's source mapping with the Block
+          // result key; retain both exact index entries independently.
+          if (row.variant !== "block") {
+            coordIndex.rowEvaluationKeyBySource.set(sourceKey, evaluationKey)
+          }
+          coordIndex.rowEvaluationKeyBySource.set(row.setKey, evaluationKey)
+        }
+        if (coordIndex.byCoordKey.has(row.setKey)) continue
+        const source = coordIndex.byCoordKey.get(sourceKey)
+        if (!source) continue
+        registerCoordRecord(coordIndex, {
+          ...source,
+          coordKey: row.setKey,
+          parentKey: row.parentSetKey || source.parentKey,
+          status: "valid_real",
+          avgProfitFactor: row.avgProfitFactor,
+          avgDrawdownTime: row.avgDrawdownTime,
+          avgConfidence: row.avgConfidence,
+          entryCount: row.entryCount,
+          direction: row.direction,
+          variant: (row.variant || source.variant) as SetCoordRecord["variant"],
+          _setView: undefined,
+        })
+      }
+    }
     const coherentActiveCounts = coordinateActiveRealLiveCounts(
-      realSets,
+      rowRealSets.length > 0 ? rowRealSets : realSets,
       allQualifying,
       activeStrategyKeys,
-      realEvaluatedCount,
+      rowRealSets.length || realEvaluatedCount,
     )
-    const realRowCount = Math.max(realSets.length, realEvaluatedCount ?? realSets.length)
+    const realRowCount = rowRealSets.length || realSets.length
 
     // These are the active-first, quality-ranked Live rows. The dispatch
     // selector independently deduplicates Signal source/config slots and
@@ -7065,7 +7564,12 @@ export class StrategyCoordinator {
 
       const liveAvgPF  = qualifying.length > 0 ? qualifying.reduce((s, st) => s + st.avgProfitFactor, 0) / qualifying.length : 0
       const liveAvgDDT = qualifying.length > 0 ? qualifying.reduce((s, st) => s + (st.avgDrawdownTime || 0), 0) / qualifying.length : 0
-      const passRatioLive = realRowCount > 0 ? qualifying.length / realRowCount : 0
+      // Keep the row pass percentage on the exact Row-Live decision. Block
+      // descendants are additional executable Sets, not extra successful
+      // evaluations, so they must not inflate this ratio beyond 100%.
+      const passRatioLive = rowLive.evaluated > 0
+        ? rowLive.rows.length / rowLive.evaluated
+        : 0
       const liveRunningNow = coherentActiveCounts.live
 
       // ── P1-1: Live-stage per-variant aggregation ──────────────────────
@@ -7151,10 +7655,18 @@ export class StrategyCoordinator {
           created_sets:      String(qualifying.length),
           avg_profit_factor: String(liveAvgPF.toFixed(4)),
           avg_drawdown_time: String(Math.round(liveAvgDDT)),
-          evaluated:         String(realRowCount),
-          passed_sets:       String(qualifying.length),
-          row_total:         String(realRowCount),
-          row_mirrored:      String(qualifying.length),
+          evaluated:         String(rowLive.evaluated),
+          passed_sets:       String(rowLive.rows.length),
+          row_total:         String(rowLive.evaluated),
+          row_mirrored:      String(rowLive.rows.length),
+          row_live_created:  String(rowLive.rows.length),
+          row_live_rejected: String(rowLive.rejected),
+          // Keep Block materialisation and its independent PF/DDT result
+          // separate: an executable total contains normal Row-Live plus only
+          // those Block rows that passed their own exact result window.
+          row_live_block_created: String(builtRowLiveBlock.length),
+          row_live_block_valid: String(rowLiveBlock.length),
+          row_live_executable: String(qualifying.length),
           row_active:        String(liveRunningNow),
           pass_rate:         String(passRatioLive.toFixed(4)),
           // ── ACTIVELY-RUNNING metrics (operator spec) ──────────������──
@@ -7172,10 +7684,15 @@ export class StrategyCoordinator {
           [`s:${symbol}:entries`]:    String(qualifying.reduce((s, st) => s + (st.entryCount || 0), 0)),
           [`s:${symbol}:running`]:    String(liveRunningNow),
           [`s:${symbol}:progressing`]: String(realRowCount),
-          [`s:${symbol}:passed`]:     String(qualifying.length),
-          [`s:${symbol}:evaluated`]:  String(realRowCount),
-          [`s:${symbol}:row_total`]:    String(realRowCount),
-          [`s:${symbol}:row_mirrored`]: String(qualifying.length),
+          [`s:${symbol}:passed`]:     String(rowLive.rows.length),
+          [`s:${symbol}:evaluated`]:  String(rowLive.evaluated),
+          [`s:${symbol}:row_total`]:    String(rowLive.evaluated),
+          [`s:${symbol}:row_mirrored`]: String(rowLive.rows.length),
+          [`s:${symbol}:row_live_created`]: String(rowLive.rows.length),
+          [`s:${symbol}:row_live_rejected`]: String(rowLive.rejected),
+          [`s:${symbol}:row_live_block_created`]: String(builtRowLiveBlock.length),
+          [`s:${symbol}:row_live_block_valid`]: String(rowLiveBlock.length),
+          [`s:${symbol}:row_live_executable`]: String(qualifying.length),
           [`s:${symbol}:row_active`]:   String(liveRunningNow),
           [`s:${symbol}:apf`]:        String(liveAvgPF.toFixed(4)),
           [`s:${symbol}:addt`]:       String(Math.round(liveAvgDDT)),
@@ -7798,11 +8315,11 @@ export class StrategyCoordinator {
         type: "live",
         symbol,
         timestamp: new Date(),
-        totalCreated: realRowCount,
-        passedEvaluation: qualifying.length,
-        failedEvaluation: Math.max(0, realRowCount - qualifying.length),
-        avgProfitFactor: qualifying.length > 0 ? qualifying.reduce((s, set) => s + set.avgProfitFactor, 0) / qualifying.length : 0,
-        avgDrawdownTime: qualifying.length > 0 ? qualifying.reduce((s, set) => s + set.avgDrawdownTime, 0) / qualifying.length : 0,
+        totalCreated: rowLive.evaluated,
+        passedEvaluation: rowLive.rows.length,
+        failedEvaluation: rowLive.rejected,
+        avgProfitFactor: rowLive.rows.length > 0 ? rowLive.rows.reduce((s, set) => s + set.avgProfitFactor, 0) / rowLive.rows.length : 0,
+        avgDrawdownTime: rowLive.rows.length > 0 ? rowLive.rows.reduce((s, set) => s + set.avgDrawdownTime, 0) / rowLive.rows.length : 0,
       },
       sets: qualifying,
     }

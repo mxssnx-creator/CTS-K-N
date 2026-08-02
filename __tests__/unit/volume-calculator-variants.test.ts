@@ -4,6 +4,7 @@ import { hedgeStrategyVolumeParts } from "@/lib/strategy-volume-coordination"
 import {
   normalizeIdentityVolumeFactor,
   normalizeVolumeStepRatio,
+  SYSTEM_VOLUME_FACTOR_MULTIPLIER,
 } from "@/lib/constants"
 
 describe("live volume coordination by strategy variant", () => {
@@ -33,18 +34,20 @@ describe("live volume coordination by strategy variant", () => {
     expect(normalizeVolumeStepRatio("invalid", 0.6)).toBe(0.6)
   })
 
-  test("ratio 1 equals the venue minimum while ordinary sub-minimum variants clamp", () => {
+  test("the 50% scalar is applied before the venue-minimum floor", () => {
     const standard = VolumeCalculator.calculatePositionVolume({ ...base, sizeMultiplier: 1 })
     const block = VolumeCalculator.calculatePositionVolume({ ...base, sizeMultiplier: 2 })
     const dca = VolumeCalculator.calculatePositionVolume({ ...base, sizeMultiplier: 0.5 })
 
     expect(standard.finalVolume).toBeCloseTo(0.05, 8)
-    expect(block.finalVolume).toBeCloseTo(0.1, 8)
-    expect(dca.calculatedVolume).toBeCloseTo(0.025, 8)
+    expect(standard.calculatedVolume).toBeCloseTo(0.025, 8)
+    expect(block.finalVolume).toBeCloseTo(0.05, 8)
+    expect(dca.calculatedVolume).toBeCloseTo(0.0125, 8)
     expect(dca.finalVolume).toBeCloseTo(0.05, 8)
-    expect(block.finalVolume! / standard.finalVolume!).toBeCloseTo(2, 8)
-    expect(block.intendedNotionalUsd).toBeCloseTo(10, 8)
-    expect(dca.intendedNotionalUsd).toBeCloseTo(2.5, 8)
+    expect(block.finalVolume! / standard.finalVolume!).toBeCloseTo(1, 8)
+    expect(block.intendedNotionalUsd).toBeCloseTo(5, 8)
+    expect(dca.intendedNotionalUsd).toBeCloseTo(1.25, 8)
+    expect(standard.systemVolumeFactor).toBe(SYSTEM_VOLUME_FACTOR_MULTIPLIER)
   })
 
   test("automated variant multipliers remain bounded", () => {
@@ -52,7 +55,7 @@ describe("live volume coordination by strategy variant", () => {
     const invalid = VolumeCalculator.calculatePositionVolume({ ...base, sizeMultiplier: -4 })
 
     expect(tooLarge.sizeMultiplier).toBe(5)
-    expect(tooLarge.finalVolume).toBeCloseTo(0.25, 8)
+    expect(tooLarge.finalVolume).toBeCloseTo(0.125, 8)
     expect(invalid.sizeMultiplier).toBe(1)
     expect(invalid.finalVolume).toBeCloseTo(0.05, 8)
   })
@@ -65,16 +68,16 @@ describe("live volume coordination by strategy variant", () => {
     })
 
     expect(combined.sizeMultiplier).toBe(16)
-    expect(combined.finalVolume).toBeCloseTo(0.8, 8)
+    expect(combined.finalVolume).toBeCloseTo(0.4, 8)
   })
 
   test.each([
-    ["default", 1, 0.05, 0.05],
-    ["trailing", 1, 0.05, 0.05],
-    ["pause-resume", 1, 0.05, 0.05],
-    ["block", 1.8, 0.09, 0.09],
-    ["dca", 0.5, 0.025, 0.05],
-    ["pos-count-part", 0.05, 0.0025, 0.05],
+    ["default", 1, 0.025, 0.05],
+    ["trailing", 1, 0.025, 0.05],
+    ["pause-resume", 1, 0.025, 0.05],
+    ["block", 1.8, 0.045, 0.05],
+    ["dca", 0.5, 0.0125, 0.05],
+    ["pos-count-part", 0.05, 0.00125, 0.05],
   ])("calculates the %s strategy independently", (_variant, multiplier, calculated, executable) => {
     const result = VolumeCalculator.calculatePositionVolume({ ...base, sizeMultiplier: multiplier })
     expect(result.calculatedVolume).toBeCloseTo(calculated as number, 10)
@@ -87,8 +90,8 @@ describe("live volume coordination by strategy variant", () => {
     const result = VolumeCalculator.calculatePositionVolume(input)
     expect(result.liveEngineFactor).toBe(1.2)
     expect(result.sizeMultiplier).toBe(1.5)
-    expect(result.calculatedVolume).toBeCloseTo(0.09, 10)
-    expect(result.finalVolume).toBeCloseTo(0.09, 10)
+    expect(result.calculatedVolume).toBeCloseTo(0.045, 10)
+    expect(result.finalVolume).toBeCloseTo(0.05, 10)
     expect(input.mainVolumeFactor).toBe(1.2)
     expect(input.sizeMultiplier).toBe(1.5)
   })
@@ -119,13 +122,13 @@ describe("live volume coordination by strategy variant", () => {
 
     expect(mainSignal.liveEngineFactor).toBe(3)
     expect(mainSignal.signalVolumeFactor).toBe(1.5)
-    expect(mainSignal.finalVolume).toBeCloseTo(0.15, 10)
+    expect(mainSignal.finalVolume).toBeCloseTo(0.075, 10)
     expect(ordinaryMain.liveEngineFactor).toBe(2)
     expect(ordinaryMain.signalVolumeFactor).toBe(1)
-    expect(ordinaryMain.finalVolume).toBeCloseTo(0.1, 10)
+    expect(ordinaryMain.finalVolume).toBeCloseTo(0.05, 10)
     expect(presetSignal.liveEngineFactor).toBe(2)
     expect(presetSignal.signalVolumeFactor).toBe(1)
-    expect(presetSignal.finalVolume).toBeCloseTo(0.1, 10)
+    expect(presetSignal.finalVolume).toBeCloseTo(0.05, 10)
   })
 
   test("keeps channel basis at one while preserving independent sub-unit strategy ratios", () => {
@@ -153,10 +156,10 @@ describe("live volume coordination by strategy variant", () => {
     expect(clampedChannel.liveEngineFactor).toBe(1)
     expect(clampedChannel.finalVolume).toBeCloseTo(0.05, 10)
     expect(subUnitPosCount.sizeMultiplier).toBe(0.05)
-    expect(subUnitPosCount.calculatedVolume).toBeCloseTo(0.0025, 10)
+    expect(subUnitPosCount.calculatedVolume).toBeCloseTo(0.00125, 10)
     expect(pseudo.liveEngineFactor).toBe(1)
     expect(pseudo.signalVolumeFactor).toBe(1)
-    expect(pseudo.calculatedVolume).toBeCloseTo(1, 10)
+    expect(pseudo.calculatedVolume).toBeCloseTo(0.5, 10)
   })
 
   test("resolves connection overrides before global identity-based channel factors", () => {
@@ -196,11 +199,13 @@ describe("live volume coordination by strategy variant", () => {
     expect(Object.values(hedge.memberRatios).reduce((sum, ratio) => sum + ratio, 0)).toBeCloseTo(1, 12)
 
     const result = VolumeCalculator.calculatePositionVolume({ ...base, sizeMultiplier: hedge.netRatio })
-    expect(result.calculatedVolume).toBeCloseTo(0.05, 12)
-    expect(resolveCombinedPosCountTargetQuantity(result)).toBeCloseTo(0.05, 12)
+    expect(result.calculatedVolume).toBeCloseTo(0.025, 12)
+    // The post-scalar quantity is below one venue-minimum order, so the
+    // combined coordinator intentionally keeps the physical target flat.
+    expect(resolveCombinedPosCountTargetQuantity(result)).toBe(0)
 
     const subMinimum = VolumeCalculator.calculatePositionVolume({ ...base, sizeMultiplier: 0.95 })
-    expect(subMinimum.calculatedVolume).toBeCloseTo(0.0475, 12)
+    expect(subMinimum.calculatedVolume).toBeCloseTo(0.02375, 12)
     expect(resolveCombinedPosCountTargetQuantity(subMinimum)).toBe(0)
   })
 })

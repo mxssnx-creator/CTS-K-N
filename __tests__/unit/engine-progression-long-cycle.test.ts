@@ -13,6 +13,7 @@ import {
 } from "@/lib/pos-count-live-target"
 import { hedgeStrategyVolumeParts } from "@/lib/strategy-volume-coordination"
 import { VolumeCalculator } from "@/lib/volume-calculator"
+import { SYSTEM_VOLUME_FACTOR_MULTIPLIER } from "@/lib/constants"
 import { getRedisClient } from "@/lib/redis-db"
 
 describe("engine progression values over long multi-cycle development", () => {
@@ -77,7 +78,7 @@ describe("engine progression values over long multi-cycle development", () => {
         })
         expect(Number.isFinite(value.calculatedVolume)).toBe(true)
         expect(Number.isFinite(value.finalVolume)).toBe(true)
-        expect(value.calculatedVolume).toBeCloseTo(0.05 * engineFactor * strategy.multiplier, 11)
+        expect(value.calculatedVolume).toBeCloseTo(0.05 * engineFactor * strategy.multiplier * SYSTEM_VOLUME_FACTOR_MULTIPLIER, 11)
         expect(value.finalVolume).toBeGreaterThanOrEqual(0.05)
       }
 

@@ -210,8 +210,8 @@ export function StatisticsOverview({ settings }: StatisticsOverviewProps) {
               <div className="font-medium">{settings.prehistoric_range_hours ?? 8} hours</div>
             </div>
             <div className="p-3 border rounded-lg">
-              <div className="text-xs text-muted-foreground mb-1">Main / Real Lookbacks</div>
-              <div className="font-medium">{settings.mainEvalPosCount ?? 25} / {settings.realEvalPosCount ?? 20}</div>
+              <div className="text-xs text-muted-foreground mb-1">Main / Real / Live Lookbacks</div>
+              <div className="font-medium">{settings.mainEvalPosCount ?? 25} / {settings.realEvalPosCount ?? 20} / {settings.liveEvalPosCount ?? 15}</div>
             </div>
             <div className="p-3 border rounded-lg">
               <div className="text-xs text-muted-foreground mb-1">Max Leverage</div>

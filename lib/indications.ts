@@ -230,12 +230,13 @@ export class IndicationEngine {
   updatePseudoPositions(positions: PseudoPosition[], currentPrice: number): PseudoPosition[] {
     return positions.map((position) => {
       const direction = position.direction === "short" ? "short" : "long"
-      const signedPricePercent =
-        direction === "long"
-          ? ((currentPrice - position.entry_price) / position.entry_price) * 100
-          : ((position.entry_price - currentPrice) / position.entry_price) * 100
       const positionCostPct = Number.isFinite(position.position_cost) && position.position_cost > 0 ? position.position_cost : 0.1
-      const signedResultR = signedPricePercent / positionCostPct
+      const signedResultR = calculateSignedResultR(
+        position.entry_price,
+        currentPrice,
+        direction,
+        positionCostPct,
+      )
 
       return {
         ...position,

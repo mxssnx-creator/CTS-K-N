@@ -1338,9 +1338,11 @@ async function main() {
   // Exhaustive Default/Additional/Common/Signal grids deliberately replaced
   // the old sampled topology. Size the absolute key budget from that canonical
   // configuration count instead of reintroducing the retired 500-key/symbol
-  // assumption. The plateau check below remains the guard against per-cycle
-  // leakage; this absolute bound covers at most a data row plus an index/member
-  // row for each configured Set, plus bounded symbol runtime overhead.
+  // assumption. Each logical configuration owns at most four materialized
+  // rows across the coordinated indication/Base/Main/Real/Live representation;
+  // the rows are fixed identity views, not per-cycle records. The plateau
+  // check below remains the guard against leakage, while this absolute bound
+  // covers that four-row topology plus bounded symbol runtime overhead.
   const configurationCounts = lastByPath.get("/api/indications/config-counts") || {}
   const totalPossibleSets = finiteNonNegative(
     configurationCounts?.totalPossibleSets,
@@ -1352,7 +1354,7 @@ async function main() {
   const databaseAbsoluteLimit = Math.max(
     5_000,
     SYMBOLS.length * 500,
-    totalPossibleSets * 2 + SYMBOLS.length * 500,
+    totalPossibleSets * 4 + SYMBOLS.length * 500,
   )
   const databasePlateauWithinBudget = databaseStableGrowth <= databaseStableGrowthLimit
   if (!SIGNAL_FOCUSED_SOAK && !databasePlateauWithinBudget) {

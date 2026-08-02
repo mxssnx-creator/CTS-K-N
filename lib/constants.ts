@@ -12,6 +12,19 @@ import {
 export const MIN_VOLUME_FACTOR = 1
 export const MAX_VOLUME_FACTOR = 10
 export const BASE_VOLUME_RATIO = 1.0
+// A global execution-safety scalar applied after every configured factor and
+// adjustment lane. It halves calculated quantities without mutating stored
+// operator settings, so a factor of 1.0 now produces 50% of the former size.
+// Venue minimum-order floors remain authoritative and can prevent a further
+// reduction for already-minimum orders.
+export const SYSTEM_VOLUME_FACTOR_MULTIPLIER = 0.5
+
+export function applySystemVolumeFactor(value: unknown): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed * SYSTEM_VOLUME_FACTOR_MULTIPLIER
+    : 0
+}
 
 /**
  * Base is the immutable coordination identity.
