@@ -1,7 +1,7 @@
 From d093913d0d418501ff400825f065f607c88ecec4 Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
 Date: Sat, 1 Aug 2026 20:24:28 -0700
-Subject: [PATCH 1/4] feat: materialize continuous real and live strategy rows
+Subject: [PATCH 1/5] feat: materialize continuous real and live strategy rows
 
 ---
  .../connections/[id]/settings/route.ts        |  22 +-
@@ -1240,7 +1240,7 @@ index ff2a387..d58c4a5 100644
 From c2944a214450cb193f2b46a34ba95192bf419283 Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
 Date: Sat, 1 Aug 2026 20:26:50 -0700
-Subject: [PATCH 2/4] fix: persist direct trade processor snapshots
+Subject: [PATCH 2/5] fix: persist direct trade processor snapshots
 
 ---
  .../direct-trade/calculate/route.ts           |  47 +++++--
@@ -1629,7 +1629,7 @@ index 5133a17..3206ee0 100644
 From 1e6fb0362e23ebb4e54aedefde9b0b339b9a6f99 Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
 Date: Sat, 1 Aug 2026 20:30:58 -0700
-Subject: [PATCH 3/4] fix: coordinate direct trade processor execution
+Subject: [PATCH 3/5] fix: coordinate direct trade processor execution
 
 ---
  components/dashboard/direct-trade-section.tsx |  48 +++-
@@ -2196,7 +2196,7 @@ index f27a62a..2706e9e 100644
 From 5aae529be7772d15cbb2956a68b1b0c62594ad64 Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
 Date: Sat, 1 Aug 2026 20:38:01 -0700
-Subject: [PATCH 4/4] feat: enforce pf floor and row-live defaults
+Subject: [PATCH 4/5] feat: enforce pf floor and row-live defaults
 
 ---
  .../unit/advanced-config-exhaustive.test.ts   |   4 +-
@@ -2750,6 +2750,1344 @@ index 9238a98..2dd6c91 100644
  const failures = []
  const checks = []
  
+-- 
+2.51.1
+
+
+From c8a86859573e303427da0c8219d97d1773e5cdcd Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 1 Aug 2026 21:12:30 -0700
+Subject: [PATCH 5/5] fix: coordinate exact strategy row statistics
+
+---
+ .../direct-trade-route-concurrency.test.ts    | 132 +++++++
+ .../indication-configuration-counts.test.ts   |  22 +-
+ .../live-position-analytics-archive.test.ts   |   3 +
+ .../unit/live-position-stats-sources.test.ts  |   5 +-
+ __tests__/unit/requested-regressions.test.ts  |   8 +-
+ __tests__/unit/signal-source-registry.test.ts |   6 +-
+ .../unit/strategy-axis-coordination.test.ts   | 275 ++++++++++++++
+ .../unit/strategy-block-real-overlays.test.ts |  17 +-
+ .../strategy-snapshot-consistency.test.ts     |   5 +-
+ __tests__/unit/technical-indicators.test.ts   |   2 +-
+ .../progression/[id]/stats/route.ts           |  12 +
+ app/api/trade-engine/direct-trade/route.ts    |  10 +
+ app/logistics/page.tsx                        |  12 +-
+ .../dashboard/active-connection-card.tsx      |  10 +-
+ lib/redis-db.ts                               |   6 +
+ lib/strategy-coordinator.ts                   | 352 ++++++++++++++++--
+ 16 files changed, 819 insertions(+), 58 deletions(-)
+ create mode 100644 __tests__/unit/direct-trade-route-concurrency.test.ts
+
+diff --git a/__tests__/unit/direct-trade-route-concurrency.test.ts b/__tests__/unit/direct-trade-route-concurrency.test.ts
+new file mode 100644
+index 0000000..087c057
+--- /dev/null
++++ b/__tests__/unit/direct-trade-route-concurrency.test.ts
+@@ -0,0 +1,132 @@
++function resetInlineRedisGlobals() {
++  delete (globalThis as any).__redis_data
++  delete (globalThis as any).__redis_load_promise
++  delete (globalThis as any).__redis_core_promise
++  delete (globalThis as any).__redis_init_promise
++  delete (globalThis as any).__redis_snapshot_loaded
++  delete (globalThis as any).__redis_fully_connected
++  delete (globalThis as any).__redis_backend
++}
++
++const DIRECT_KEYS = [
++  "direct_trade:state",
++  "direct_trade:configs",
++  "direct_trade:stats",
++  "direct_trade:positions",
++  "direct_trade:processor",
++  "direct_trade:processor:lease",
++  "direct_trade:config-status",
++  "direct_trade:config-performance",
++]
++
++function post(body: Record<string, unknown>): Request {
++  return new Request("http://localhost/api/trade-engine/direct-trade", {
++    method: "POST",
++    headers: { "content-type": "application/json" },
++    body: JSON.stringify(body),
++  })
++}
++
++describe("Direct-Trade API state and processor lease", () => {
++  beforeEach(() => {
++    jest.resetModules()
++    resetInlineRedisGlobals()
++    process.env.NODE_ENV = "test"
++  })
++
++  afterEach(() => {
++    resetInlineRedisGlobals()
++  })
++
++  test("start atomically applies safe PF/SL/trailing limits", async () => {
++    const [{ POST, GET }, { getRedisClient }] = await Promise.all([
++      import("@/app/api/trade-engine/direct-trade/route"),
++      import("@/lib/redis-db"),
++    ])
++    const redis = getRedisClient()
++    await redis.del(...DIRECT_KEYS)
++
++    try {
++      const response = await POST(post({
++        action: "start",
++        liveMode: false,
++        maxSlRatio: 0.08,
++        minProfitFactor: 0.08,
++        maxDrawdownTimeMin: 99,
++        trailingEnabled: false,
++        keepEnabledPosCount: 99,
++      }) as any)
++      const payload = await response.json()
++
++      expect(payload.success).toBe(true)
++      expect(payload.state).toMatchObject({
++        enabled: true,
++        liveMode: false,
++        maxSlRatio: 0.25,
++        minProfitFactor: 0.8,
++        maxDrawdownTimeMin: 30,
++        trailingEnabled: false,
++        keepEnabledPosCount: 30,
++      })
++
++      const persisted = await (await GET()).json()
++      expect(persisted.state).toMatchObject(payload.state)
++    } finally {
++      await redis.del(...DIRECT_KEYS)
++    }
++  })
++
++  test("highly concurrent processors elect one writer and retain its complete snapshot", async () => {
++    const [{ POST, GET }, { getRedisClient }] = await Promise.all([
++      import("@/app/api/trade-engine/direct-trade/route"),
++      import("@/lib/redis-db"),
++    ])
++    const redis = getRedisClient()
++    await redis.del(...DIRECT_KEYS)
++
++    try {
++      const contenders = await Promise.all(
++        Array.from({ length: 96 }, async (_, index) => {
++          const response = await POST(post({
++            action: "processor-sync",
++            instanceId: `direct-concurrent-${index}`,
++            tickCount: index,
++          }) as any)
++          return response.json()
++        }),
++      )
++      const owners = contenders.filter((result) => result.leaseHeld === true)
++      expect(owners).toHaveLength(1)
++      const ownerId = owners[0].processor.instanceId
++
++      const authoritative = await POST(post({
++        action: "processor-sync",
++        instanceId: ownerId,
++        tickCount: 97,
++        configs: [{ key: "BTCUSDT|long|1m|tp1|sl0.25|trail1", symbol: "BTCUSDT" }],
++        positions: [{ id: "paper-1", status: "open", configKey: "BTCUSDT|long|1m|tp1|sl0.25|trail1" }],
++        stats: { totalOrders: 1, totalFilled: 1, totalPnl: 2.5 },
++        configStatus: { "BTCUSDT|long|1m|tp1|sl0.25|trail1": { enabled: true } },
++        configPerformance: { "BTCUSDT|long|1m|tp1|sl0.25|trail1": { pf: 1.4, ddt: 4 } },
++      }) as any)
++      expect((await authoritative.json()).leaseHeld).toBe(true)
++
++      const standby = await POST(post({
++        action: "processor-sync",
++        instanceId: "direct-standby",
++        configs: [{ key: "must-not-write" }],
++      }) as any)
++      expect((await standby.json()).leaseHeld).toBe(false)
++
++      const state = await (await GET()).json()
++      expect(state.activeConfigs).toBe(1)
++      expect(state.configs).toEqual([{ key: "BTCUSDT|long|1m|tp1|sl0.25|trail1", symbol: "BTCUSDT" }])
++      expect(state.positions).toEqual([{ id: "paper-1", status: "open", configKey: "BTCUSDT|long|1m|tp1|sl0.25|trail1" }])
++      expect(state.stats).toMatchObject({ totalOrders: 1, totalFilled: 1, totalPnl: 2.5 })
++      expect(state.configStatus).toEqual({ "BTCUSDT|long|1m|tp1|sl0.25|trail1": { enabled: true } })
++      expect(state.configPerformance).toEqual({ "BTCUSDT|long|1m|tp1|sl0.25|trail1": { pf: 1.4, ddt: 4 } })
++    } finally {
++      await redis.del(...DIRECT_KEYS)
++    }
++  })
++})
+diff --git a/__tests__/unit/indication-configuration-counts.test.ts b/__tests__/unit/indication-configuration-counts.test.ts
+index 76204b3..0d14dc5 100644
+--- a/__tests__/unit/indication-configuration-counts.test.ts
++++ b/__tests__/unit/indication-configuration-counts.test.ts
+@@ -4,16 +4,18 @@ describe("indication configuration counts", () => {
+   it("matches the processor's exhaustive default, Common and Signal grids", () => {
+     const result = calculateIndicationConfigurationCounts({}, undefined)
+ 
+-    expect(result.totalPossibleSets).toBe(41_298)
+-    expect(result.totalEvaluationConfigurations).toBe(9_014)
++    // Fresh installations start the exhaustive Base window at the configured
++    // default of 4 (then evaluate every integer through 30).
++    expect(result.totalPossibleSets).toBe(41_142)
++    expect(result.totalEvaluationConfigurations).toBe(8_936)
+     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
+     expect(result.settings.enabledCommonIndicators).toBe(17)
+     expect(Object.fromEntries(result.types.map((type) => [type.type, type.possibleSets]))).toEqual({
+-      direction: 1_050,
+-      move: 1_050,
++      direction: 978,
++      move: 978,
+       active: 366,
+       active_advanced: 36,
+-      optimal: 174,
++      optimal: 162,
+       auto: 0,
+       signal: 23_328,
+       trend: 102,
+@@ -115,17 +117,17 @@ describe("indication configuration counts", () => {
+     expect(advanced?.possibleSets).toBe(16)
+   })
+ 
+-  it("does not let the legacy minStep setting truncate the exhaustive 2..30 grid", () => {
++  it("honours the configured Base minimum while retaining every window through 30", () => {
+     const baseline = calculateIndicationConfigurationCounts({}, undefined)
+     const legacyCeiling = calculateIndicationConfigurationCounts({ minStep: 30 }, undefined)
+ 
+-    expect(legacyCeiling.settings.indicationRangeMin).toBe(2)
++    expect(legacyCeiling.settings.indicationRangeMin).toBe(30)
+     expect(legacyCeiling.settings.indicationRangeMax).toBe(30)
+-    expect(legacyCeiling.settings.validRangeCount).toBe(29)
+-    expect(legacyCeiling.totalEvaluationConfigurations).toBe(
++    expect(legacyCeiling.settings.validRangeCount).toBe(1)
++    expect(legacyCeiling.totalEvaluationConfigurations).toBeLessThan(
+       baseline.totalEvaluationConfigurations,
+     )
+-    expect(legacyCeiling.totalPossibleSets).toBe(baseline.totalPossibleSets)
++    expect(legacyCeiling.totalPossibleSets).toBeLessThan(baseline.totalPossibleSets)
+   })
+ 
+   it("keeps every Signal source Set when PF bootstrap bypass is disabled", () => {
+diff --git a/__tests__/unit/live-position-analytics-archive.test.ts b/__tests__/unit/live-position-analytics-archive.test.ts
+index 4499c98..8739b82 100644
+--- a/__tests__/unit/live-position-analytics-archive.test.ts
++++ b/__tests__/unit/live-position-analytics-archive.test.ts
+@@ -36,6 +36,9 @@ describe("time-complete live-position analytics archive", () => {
+       direction: "long",
+       indicationType: "signal",
+       executionLane: "signal_trailing",
++      environment: "exchange",
++      executionIntent: undefined,
++      executionMode: undefined,
+       setVariant: "",
+       createdAt: 100,
+       closedAt: 200,
+diff --git a/__tests__/unit/live-position-stats-sources.test.ts b/__tests__/unit/live-position-stats-sources.test.ts
+index 1bae0d9..f8dcec4 100644
+--- a/__tests__/unit/live-position-stats-sources.test.ts
++++ b/__tests__/unit/live-position-stats-sources.test.ts
+@@ -15,9 +15,8 @@ describe("live position stats and trade-history data sources", () => {
+     expect(saveBlock).toContain("const posKey = `live_positions:${position.connectionId}:${position.id}`")
+     expect(saveBlock).toContain("const jsonKey = `live:position:${position.id}`")
+     expect(saveBlock).toContain("await client.set(jsonKey, JSON.stringify(position)")
+-    expect(saveBlock).toContain("await client.lrem(openIndexKey, 0, position.id)")
+-    expect(saveBlock).toContain("await client.lpush(closedIndexKey, position.id)")
+-    expect(saveBlock).toContain("await client.lpush(openIndexKey, position.id)")
++    expect(saveBlock).toContain("await moveRedisListMembershipToHead(")
++    expect(saveBlock).toContain("await upsertRedisListHead(client, openIndexKey, position.id)")
+   })
+ 
+   test("progression stats and trade history read Redis hash fallbacks and derive effective PnL", () => {
+diff --git a/__tests__/unit/requested-regressions.test.ts b/__tests__/unit/requested-regressions.test.ts
+index 3b7e73f..4b52f3a 100644
+--- a/__tests__/unit/requested-regressions.test.ts
++++ b/__tests__/unit/requested-regressions.test.ts
+@@ -1770,8 +1770,12 @@ describe("requested regression guardrails", () => {
+     const source = read("lib/strategy-coordinator.ts")
+ 
+     expect(source).toContain("const realRelatedCreated = realStageRelatedCreated")
+-    expect(source).toContain("const realTotalEvaluated = mainPFEligible + realRelatedCreated")
+-    expect(source).toContain("const passRatioReal = realTotalEvaluated > 0 ? n / realTotalEvaluated : 0")
++    expect(source).toContain("const realTotalEvaluated = mainPFEligible + realRelatedCreated + continuousRealEvaluated")
++    // The public Real percentage is the final Row-Real rolling decision
++    // whenever that evaluation ran. Raw/related fan-out can exceed its input,
++    // so using it as this percentage's denominator would exceed 100%.
++    expect(source).toContain("const passRatioReal = continuousRealEvaluated > 0")
++    expect(source).toContain("? rowRealSets.length / continuousRealEvaluated")
+     expect(source).toContain("evaluated:          String(realEvaluatedAfterFanOut)")
+     expect(source).toContain("[`s:${symbol}:evaluated`]:  String(realTotalEvaluated)")
+     expect(source).toContain('client.set(`strategies:${this.connectionId}:real:evaluated`, String(realTotalEvaluated))')
+diff --git a/__tests__/unit/signal-source-registry.test.ts b/__tests__/unit/signal-source-registry.test.ts
+index 70c0dce..2091e33 100644
+--- a/__tests__/unit/signal-source-registry.test.ts
++++ b/__tests__/unit/signal-source-registry.test.ts
+@@ -287,7 +287,7 @@ describe("Signal source registry and low-stop calculation", () => {
+     })).toBeNull()
+   })
+ 
+-  test("rejects an impossible TP ceiling instead of violating reward/risk", () => {
++  test("keeps the complete Source registry while rejecting an impossible TP ceiling", () => {
+     const settings = normalizeSignalIndicationSettings({
+       minimumStrength: 0.05,
+       minimumConfidence: 0.5,
+@@ -298,7 +298,9 @@ describe("Signal source registry and low-stop calculation", () => {
+       maxSourcesPerCycle: 3,
+       minimumSourceSignals: 20,
+     })
+-    expect(settings.minimumSourceSignals).toBe(3)
++    // Source scheduling is no longer user-capped: the configured consensus
++    // floor is bounded by the complete registry, not an obsolete 3-source cap.
++    expect(settings.minimumSourceSignals).toBe(20)
+     expect(evaluateSignalCandles({
+       source: getSignalSource("binance-usdm")!,
+       candles: candles("long"),
+diff --git a/__tests__/unit/strategy-axis-coordination.test.ts b/__tests__/unit/strategy-axis-coordination.test.ts
+index 0c37c0a..c163a01 100644
+--- a/__tests__/unit/strategy-axis-coordination.test.ts
++++ b/__tests__/unit/strategy-axis-coordination.test.ts
+@@ -1,13 +1,16 @@
+ import {
++  applyExactBlockRowWindows,
+   compactStrategySetForStorage,
+   coordinateActiveRealLiveCounts,
+   hydrateStrategySetSnapshots,
++  materializeContinuousStageRows,
+   selectLiveSetsWithActivePriority,
+   selectRealEvaluationWorkingSet,
+   selectRealSetsWithActiveAndVariantPriority,
+   StrategyCoordinator,
+   type StrategySet,
+ } from "@/lib/strategy-coordinator"
++import type { PosWindowStats } from "@/lib/pos-history"
+ import {
+   normalizeStrategyAxes,
+   normalizeStrategyAxisMaxWindow,
+@@ -50,6 +53,278 @@ function baseSet(recentPnls: number[]): StrategySet {
+ }
+ 
+ describe("strategy position-count axis coordination", () => {
++  test("materializes one explicit Row-Real from the exact latest PF/DDT position window", () => {
++    const source = baseSet([1, -1, 1])
++    source.entries = [
++      { ...source.entries[0], id: "old", profitFactor: 0.6, drawdownTime: 30 },
++      { ...source.entries[0], id: "one", profitFactor: 0.7, drawdownTime: 20 },
++      { ...source.entries[0], id: "two", profitFactor: 1.2, drawdownTime: 8 },
++      { ...source.entries[0], id: "three", profitFactor: 2, drawdownTime: 6 },
++    ]
++    source.entryCount = 4
++    const exactWindow: PosWindowStats = {
++      count: 3,
++      successRate: 2 / 3,
++      profitFactor: 1.3,
++      positionCostRatio: 1.3,
++      positionCostRatioCount: 3,
++      averagePnlPct: 0.13,
++      avgDDT: 34 / 3,
++      hasSignal: true,
++      recentPnls: [2, 1.2, 0.7],
++      recentPnlPcts: [0.2, 0.12, 0.07],
++      recentPositionCostPcts: [0.1, 0.1, 0.1],
++    }
++
++    const result = materializeContinuousStageRows([source], {
++      stage: "real",
++      lookback: 3,
++      metrics: { minProfitFactor: 1.2, maxDrawdownTime: 12 },
++      windowBySetKey: new Map([["BTCUSDT:direction:long#row_real#row_live", exactWindow]]),
++    })
++
++    expect(result).toMatchObject({ evaluated: 1, rejected: 0 })
++    expect(result.rows).toHaveLength(1)
++    expect(result.rows[0]).toMatchObject({
++      setKey: "BTCUSDT:direction:long#row_real",
++      rowStage: "real",
++      rowSourceSetKey: "BTCUSDT:direction:long",
++      rowEvaluationKey: "BTCUSDT:direction:long#row_real#row_live",
++      rowEvaluationWindow: 3,
++      entryCount: 3,
++      avgProfitFactor: 1.3,
++    })
++    expect(result.rows[0].avgDrawdownTime).toBeCloseTo(34 / 3, 12)
++  })
++
++  test("keeps an open lineage visible while rejecting a failing closed Row-Live", () => {
++    const source = baseSet([-1, -1, -1])
++    source.entries = [{ ...source.entries[0], profitFactor: 0.7, drawdownTime: 40 }]
++    // Exercise the no-history bootstrap fallback in isolation.  In production
++    // a populated Base/exact position ring always wins over this static path.
++    source.prevPos = undefined
++
++    const rejected = materializeContinuousStageRows([source], {
++      stage: "live",
++      lookback: 15,
++      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 30 },
++    })
++    expect(rejected).toMatchObject({ evaluated: 1, rejected: 1, rows: [] })
++
++    const active = materializeContinuousStageRows([source], {
++      stage: "live",
++      lookback: 15,
++      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 30 },
++      activeSetKeys: new Set([source.setKey]),
++    })
++    expect(active.rows).toHaveLength(1)
++    expect(active.rows[0]).toMatchObject({
++      setKey: "BTCUSDT:direction:long#row_live",
++      rowStage: "live",
++      rowEvaluationWindow: 1,
++    })
++  })
++
++  test("does not mark a derived sibling active through its shared Base parent", () => {
++    const derived = baseSet([-1, -1, -1])
++    derived.setKey = "BTCUSDT:direction:long#axis:continuous:4"
++    derived.parentSetKey = "BTCUSDT:direction:long"
++    derived.prevPos = undefined
++    derived.entries = [{ ...derived.entries[0], profitFactor: 0.5, drawdownTime: 50 }]
++
++    const parentOnly = materializeContinuousStageRows([derived], {
++      stage: "real",
++      lookback: 20,
++      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 20 },
++      activeSetKeys: new Set(["BTCUSDT:direction:long"]),
++    })
++    expect(parentOnly).toMatchObject({ evaluated: 1, rejected: 1, rows: [] })
++
++    const exactChild = materializeContinuousStageRows([derived], {
++      stage: "real",
++      lookback: 20,
++      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 20 },
++      activeSetKeys: new Set([derived.setKey]),
++    })
++    expect(exactChild.rows).toHaveLength(1)
++  })
++
++  test("keeps the same Base/configuration evaluation key from Row-Real through Row-Live", () => {
++    const source = baseSet([1, 1, 1])
++    const real = materializeContinuousStageRows([source], {
++      stage: "real",
++      lookback: 3,
++      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 30 },
++    })
++    expect(real.rows).toHaveLength(1)
++
++    const evaluationKey = real.rows[0].rowEvaluationKey!
++    const live = materializeContinuousStageRows(real.rows, {
++      stage: "live",
++      lookback: 3,
++      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 30 },
++      windowBySetKey: new Map([[evaluationKey, {
++        count: 3,
++        successRate: 2 / 3,
++        profitFactor: 1.4,
++        positionCostRatio: 1.4,
++        positionCostRatioCount: 3,
++        averagePnlPct: 0.14,
++        avgDDT: 6,
++        hasSignal: true,
++        recentPnls: [1.4, 1, -1],
++        recentPnlPcts: [0.14, 0.1, -0.1],
++        recentPositionCostPcts: [0.1, 0.1, 0.1],
++      } satisfies PosWindowStats]]),
++    })
++
++    expect(live.rows).toHaveLength(1)
++    expect(live.rows[0]).toMatchObject({
++      setKey: "BTCUSDT:direction:long#row_real#row_live",
++      rowEvaluationKey: evaluationKey,
++      rowEvaluationWindow: 3,
++      avgProfitFactor: 1.4,
++      avgDrawdownTime: 6,
++    })
++  })
++
++  test("counts an open Row-Live against only its matching Row-Real lineage", () => {
++    const real = baseSet([1, 1, 1])
++    real.setKey = "BTCUSDT:direction:long#row_real"
++    real.rowStage = "real"
++    real.rowSourceSetKey = "BTCUSDT:direction:long#axis:one"
++    real.rowEvaluationKey = "BTCUSDT:direction:long#axis:one#row_real#row_live"
++    const sibling = {
++      ...real,
++      setKey: "BTCUSDT:direction:long#axis:two#row_real",
++      rowSourceSetKey: "BTCUSDT:direction:long#axis:two",
++      rowEvaluationKey: "BTCUSDT:direction:long#axis:two#row_real#row_live",
++    }
++    const live = {
++      ...real,
++      setKey: real.rowEvaluationKey,
++      rowStage: "live" as const,
++    }
++
++    expect(coordinateActiveRealLiveCounts(
++      [real, sibling],
++      [live],
++      new Set([live.setKey]),
++      2,
++    )).toEqual({ real: 1, live: 1, liveEvaluated: 2 })
++  })
++
++  test("keeps thousands of Base-anchored continuous rows unique and scalar under load", () => {
++    const sourceSets = Array.from({ length: 2_048 }, (_, index): StrategySet => ({
++      ...baseSet([1, 1, 1]),
++      setKey: `LOADUSDT:direction:long#axis:${index}`,
++      parentSetKey: `LOADUSDT:direction:long:${index}`,
++      // Production rows resolve full entries through the BaseRegistry.  This
++      // load fixture deliberately carries no entry arrays to prove the exact
++      // result-window path does not allocate or duplicate them per Row.
++      entries: [],
++      entryCount: 20,
++      prevPos: undefined,
++    }))
++    const windows = new Map(sourceSets.map((set) => [
++      `${set.setKey}#row_real#row_live`,
++      {
++        count: 20,
++        successRate: 0.75,
++        profitFactor: 1.25,
++        positionCostRatio: 1.25,
++        positionCostRatioCount: 20,
++        averagePnlPct: 0.125,
++        avgDDT: 7,
++        hasSignal: true,
++        recentPnls: [],
++        recentPnlPcts: [],
++        recentPositionCostPcts: [],
++      } satisfies PosWindowStats,
++    ]))
++
++    const rows = materializeContinuousStageRows(sourceSets, {
++      stage: "real",
++      lookback: 20,
++      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 10 },
++      windowBySetKey: windows,
++    })
++
++    expect(rows).toMatchObject({ evaluated: 2_048, rejected: 0 })
++    expect(rows.rows).toHaveLength(2_048)
++    expect(new Set(rows.rows.map((row) => row.setKey)).size).toBe(2_048)
++    expect(rows.rows.every((row) =>
++      row.entryCount === 20 &&
++      row.rowEvaluationWindow === 20 &&
++      row.avgProfitFactor === 1.25 &&
++      row.avgDrawdownTime === 7 &&
++      row.entries.length === 0,
++    )).toBe(true)
++  })
++
++  test("keeps Row-Live Block history on its own executable order/position key", () => {
++    const key = "BTCUSDT:direction:long#row_real#row_live#block:row_live:2"
++    const block: StrategySet = {
++      ...baseSet([1, 1, 1]),
++      setKey: key,
++      parentSetKey: "BTCUSDT:direction:long",
++      rowStage: "live",
++      rowSourceSetKey: "BTCUSDT:direction:long#row_real#row_live",
++      rowEvaluationKey: key,
++      variant: "block",
++      blockMinimumProfitFactor: 1.1,
++      blockNormalProfitFactor: 1.2,
++    }
++    const ownHistory: PosWindowStats = {
++      count: 15,
++      successRate: 0.6,
++      profitFactor: 1.25,
++      positionCostRatio: 1.25,
++      positionCostRatioCount: 15,
++      averagePnlPct: 0.125,
++      avgDDT: 8,
++      hasSignal: true,
++      recentPnls: [],
++      recentPnlPcts: [],
++      recentPositionCostPcts: [],
++    }
++    const evaluated = applyExactBlockRowWindows(
++      [block],
++      new Map([[key, ownHistory]]),
++      { minProfitFactor: 0.8, maxDrawdownTime: 10 },
++    )
++
++    expect(evaluated).toHaveLength(1)
++    expect(evaluated[0]).toMatchObject({
++      setKey: key,
++      rowEvaluationKey: key,
++      rowEvaluationWindow: 15,
++      entryCount: 15,
++      avgProfitFactor: 1.25,
++      avgDrawdownTime: 8,
++      blockObservedProfitFactor: 1.25,
++    })
++    expect(evaluated[0].blockProfitFactorDifference).toBeCloseTo(0.05, 12)
++
++    const rejected = applyExactBlockRowWindows(
++      [block],
++      new Map([[key, { ...ownHistory, positionCostRatio: 1, avgDDT: 12 }]]),
++      { minProfitFactor: 0.8, maxDrawdownTime: 10 },
++    )
++    expect(rejected).toEqual([])
++
++    // An already-open Block order must stay reconciled even during a
++    // transient failing window; it keeps its own key and updated stats.
++    const active = applyExactBlockRowWindows(
++      [block],
++      new Map([[key, { ...ownHistory, positionCostRatio: 1, avgDDT: 12 }]]),
++      { minProfitFactor: 0.8, maxDrawdownTime: 10 },
++      new Set([key]),
++    )
++    expect(active).toHaveLength(1)
++    expect(active[0]).toMatchObject({ rowEvaluationKey: key, avgProfitFactor: 1, avgDrawdownTime: 12 })
++  })
++
+   test("explicit flat axis disable flag overrides inherited nested enabled state", () => {
+     // Regression: an operator toggle that sends only the top-level
+     // `axisContEnabled: false` (no nested `axes`) must disable the cont axis
+diff --git a/__tests__/unit/strategy-block-real-overlays.test.ts b/__tests__/unit/strategy-block-real-overlays.test.ts
+index 54cc3ee..d472287 100644
+--- a/__tests__/unit/strategy-block-real-overlays.test.ts
++++ b/__tests__/unit/strategy-block-real-overlays.test.ts
+@@ -270,10 +270,19 @@ describe("Real-stage Block overlays", () => {
+       },
+     )
+ 
+-    expect(evaluated.sets.map((set: StrategySet) => set.direction).sort()).toEqual([
++    const rawSets = evaluated.sets.filter((set: StrategySet) => set.rowStage !== "real")
++    const rowSets = evaluated.sets.filter((set: StrategySet) => set.rowStage === "real")
++    expect(rawSets.map((set: StrategySet) => set.direction).sort()).toEqual([
+       "long",
+       "short",
+     ])
++    expect(rowSets.map((set: StrategySet) => set.direction).sort()).toEqual([
++      "long",
++      "short",
++    ])
++    expect(rowSets.every((set: StrategySet) =>
++      set.rowEvaluationKey === `${set.rowSourceSetKey}#row_real#row_live`,
++    )).toBe(true)
+   })
+ 
+   test("evaluates and retains every Real candidate despite legacy cap fields", async () => {
+@@ -314,7 +323,11 @@ describe("Real-stage Block overlays", () => {
+     expect(candidates.every((candidate) => candidate.status === "valid_real")).toBe(true)
+     expect(coordinator.buildIndependentBlockCountOverlaysForReal.mock.calls[0][1])
+       .toHaveLength(3)
+-    expect(evaluated.sets).toHaveLength(3)
++    // Real retains its complete validated Main graph for diagnostics/stats and
++    // materializes exactly one lightweight Row-Real per valid lineage.  The
++    // rows are not a hidden cap or a second variant fan-out.
++    expect(evaluated.sets.filter((set: StrategySet) => set.rowStage !== "real")).toHaveLength(3)
++    expect(evaluated.sets.filter((set: StrategySet) => set.rowStage === "real")).toHaveLength(3)
+   })
+ 
+   test("creates independent exact-Set overlays plus direction-wide active Real overlays", async () => {
+diff --git a/__tests__/unit/strategy-snapshot-consistency.test.ts b/__tests__/unit/strategy-snapshot-consistency.test.ts
+index f80872e..efb4747 100644
+--- a/__tests__/unit/strategy-snapshot-consistency.test.ts
++++ b/__tests__/unit/strategy-snapshot-consistency.test.ts
+@@ -4,7 +4,7 @@ import path from "node:path"
+ const root = process.cwd()
+ const read = (file: string) => fs.readFileSync(path.join(root, file), "utf8")
+ 
+-describe("coherent strategy snapshots and schema v92", () => {
++describe("coherent strategy snapshots and schema v93", () => {
+   test("uses symbol-local active lineage under parallel symbol processing", () => {
+     const source = read("lib/strategy-coordinator.ts")
+     expect(source).toContain("private _activeKeysCache = new Map<string")
+@@ -47,7 +47,7 @@ describe("coherent strategy snapshots and schema v92", () => {
+   test("migrations are sequential through the coherent schema", () => {
+     const source = read("lib/redis-migrations.ts")
+     const versions = Array.from(source.matchAll(/version:\s*(\d+)/g), (match) => Number(match[1]))
+-    expect(versions.at(-1)).toBe(92)
++    expect(versions.at(-1)).toBe(93)
+     expect(versions.every((version, index) => version === index + 1)).toBe(true)
+     expect(source).toContain('name: "075-bound-high-frequency-statistics-storage"')
+     expect(source).toContain('name: "079-repair-hourly-statistics-rollups"')
+@@ -64,6 +64,7 @@ describe("coherent strategy snapshots and schema v92", () => {
+     expect(source).toContain('name: "090-base-valid-and-signal-admission-contract"')
+     expect(source).toContain('name: "091-unlimited-stage-rows-cadence-and-block-work-scheduler"')
+     expect(source).toContain('name: "092-exact-indication-cadence-and-unlimited-preset-types"')
++    expect(source).toContain('name: "093-pf-floor-and-continuous-row-live-defaults"')
+     expect(source).toContain('strategy_set_listing_indexes: "lifetime-active-closed"')
+     expect(source).toContain('inline_snapshot_interval_ms: "60000"')
+     expect(source).toContain('independent_block_profit_factor: "default-pf-x-ratio-x-volume-increment-v1"')
+diff --git a/__tests__/unit/technical-indicators.test.ts b/__tests__/unit/technical-indicators.test.ts
+index dd9ed51..d0d7adf 100644
+--- a/__tests__/unit/technical-indicators.test.ts
++++ b/__tests__/unit/technical-indicators.test.ts
+@@ -71,7 +71,7 @@ describe("Common technical indicators", () => {
+   test("keeps Common timeframes independent from Trend through 30 minutes", () => {
+     expect(
+       (DEFAULT_COMMON_INDICATION_SETTINGS.ma as CommonIndicatorSettings).timeout,
+-    ).toBe(3)
++    ).toBe(1)
+     const result = StepBasedIndicators.calculateAll(
+       candles(Array.from({ length: 120 }, (_, index) => 100 + index * 0.01)),
+       [1, 3, 5, 15, 30],
+diff --git a/app/api/connections/progression/[id]/stats/route.ts b/app/api/connections/progression/[id]/stats/route.ts
+index 7ec40db..ff25478 100644
+--- a/app/api/connections/progression/[id]/stats/route.ts
++++ b/app/api/connections/progression/[id]/stats/route.ts
+@@ -2634,8 +2634,13 @@ export async function GET(
+     const mainRowOverall = aggregateFreshRowField(strategyDetailMainHash, "row_overall", "created_sets")
+     const realRowValid = aggregateFreshRowField(strategyDetailRealHash, "row_valid", "created_sets")
+     const realRowActive = aggregateFreshRowField(strategyDetailRealHash, "row_active", "sets_running_now")
++    const realRowEvaluated = aggregateFreshRowField(strategyDetailRealHash, "row_real_evaluated", "evaluated")
++    const realRowRejected = aggregateFreshRowField(strategyDetailRealHash, "row_real_rejected", "row_real_rejected")
+     const liveRowTotal = aggregateFreshRowField(strategyDetailLiveHash, "row_total", "evaluated")
+     const liveRowMirrored = aggregateFreshRowField(strategyDetailLiveHash, "row_mirrored", "created_sets")
++    const liveRowBlockCreated = aggregateFreshRowField(strategyDetailLiveHash, "row_live_block_created", "row_live_block_created")
++    const liveRowBlockValid = aggregateFreshRowField(strategyDetailLiveHash, "row_live_block_valid", "row_live_block_valid")
++    const liveRowExecutable = aggregateFreshRowField(strategyDetailLiveHash, "row_live_executable", "created_sets")
+     const blockWork = {
+       logicalEmitted: 0,
+       materialized: 0,
+@@ -2676,6 +2681,9 @@ export async function GET(
+       },
+       real: {
+         valid: realRowValid,
++        evaluated: realRowEvaluated,
++        rejected: realRowRejected,
++        validRatio: ratio(realRowValid, realRowEvaluated),
+         active: realRowActive,
+         activeExactRows: aggregateFreshRowField(strategyDetailRealHash, "row_active_exact", "sets_running_now"),
+         activeRatio: ratio(realRowActive, realRowValid),
+@@ -2685,7 +2693,11 @@ export async function GET(
+         total: liveRowTotal,
+         mirrored: liveRowMirrored,
+         active: aggregateFreshRowField(strategyDetailLiveHash, "row_active", "sets_running_now"),
++        blockCreated: liveRowBlockCreated,
++        blockValid: liveRowBlockValid,
++        executable: liveRowExecutable,
+         mirroredRatio: ratio(liveRowMirrored, liveRowTotal),
++        executablePerRow: ratio(liveRowExecutable, liveRowTotal, false),
+       },
+       updatedAt: Date.now(),
+       semantics: "current-open-row-snapshot",
+diff --git a/app/api/trade-engine/direct-trade/route.ts b/app/api/trade-engine/direct-trade/route.ts
+index f9e57b7..817091c 100644
+--- a/app/api/trade-engine/direct-trade/route.ts
++++ b/app/api/trade-engine/direct-trade/route.ts
+@@ -246,6 +246,16 @@ export async function POST(request: NextRequest) {
+         ...(body.blockRange ? { blockRange: body.blockRange } : {}),
+         ...(body.maxPositionsPerSymbol ? { maxPositionsPerSymbol: body.maxPositionsPerSymbol } : {}),
+         ...(body.maxPositionsPerDirection ? { maxPositionsPerDirection: body.maxPositionsPerDirection } : {}),
++        // Start is allowed to carry the complete current UI configuration.
++        // Without these fields a just-started processor could briefly run on
++        // stale PF/DDT/trailing limits until a later debounced config update.
++        ...(body.keepEnabledPosCount !== undefined ? { keepEnabledPosCount: Math.min(30, Math.max(3, body.keepEnabledPosCount)) } : {}),
++        ...(body.minProfitFactor !== undefined ? { minProfitFactor: Math.max(0.8, Math.min(3.5, body.minProfitFactor)) } : {}),
++        ...(body.maxDrawdownTimeMin !== undefined ? { maxDrawdownTimeMin: Math.max(1, Math.min(30, body.maxDrawdownTimeMin)) } : {}),
++        ...(body.prevPosWindow !== undefined ? { prevPosWindow: Math.min(100, Math.max(5, body.prevPosWindow)) } : {}),
++        ...(body.prevPosMinCount !== undefined ? { prevPosMinCount: Math.min(25, Math.max(1, body.prevPosMinCount)) } : {}),
++        ...(body.evalPosCount !== undefined ? { evalPosCount: Math.min(50, Math.max(3, body.evalPosCount)) } : {}),
++        ...(body.trailingEnabled !== undefined ? { trailingEnabled: body.trailingEnabled } : {}),
+       }
+       await setState(newState)
+       return NextResponse.json({ success: true, state: newState, message: "Direct-Trade started" })
+diff --git a/app/logistics/page.tsx b/app/logistics/page.tsx
+index fa893b9..faa899a 100644
+--- a/app/logistics/page.tsx
++++ b/app/logistics/page.tsx
+@@ -74,6 +74,9 @@ interface StrategyRows {
+   }
+   real: {
+     valid: number
++    evaluated?: number
++    rejected?: number
++    validRatio?: number
+     active: number
+     activeExactRows: number
+     activeRatio: number
+@@ -88,7 +91,11 @@ interface StrategyRows {
+     total: number
+     mirrored: number
+     active: number
++    blockCreated?: number
++    blockValid?: number
++    executable?: number
+     mirroredRatio: number
++    executablePerRow?: number
+   }
+   updatedAt?: number
+   semantics?: string
+@@ -446,6 +453,7 @@ function MainSystemTab({
+ 
+           <Block icon={Target} title="Row-Real" sub="continuous PF/DDT validation over Main Overall lineages" accent="purple">
+             <Row label="Valid / Active" value={`${fmt(rows?.real.valid ?? 0)} / ${fmt(rows?.real.active ?? 0)}`} />
++            <Row label="Evaluated / rejected" value={`${fmt(rows?.real.evaluated ?? 0)} / ${fmt(rows?.real.rejected ?? 0)} · ${(rows?.real.validRatio ?? 0).toFixed(1)}% valid`} />
+             <Row label="Exact active rows" value={fmt(rows?.real.activeExactRows ?? 0)} />
+             <Row label="Active ratio" value={`${(rows?.real.activeRatio ?? 0).toFixed(1)}%`} />
+             <Row label="PF ratio gate" value={`${realPf.toFixed(2)} × PositionCost`} />
+@@ -465,8 +473,10 @@ function MainSystemTab({
+ 
+           <Block icon={TrendingUp} title="Row-Live" sub="validated Row-Real mirror · no duplicate evaluation gate" accent="green"
+             right={<Tag color={(rows?.live.mirrored ?? 0) > 0 ? "green" : "default"}>{rows?.live.mirrored ?? 0} mirrored</Tag>}>
+-            <Row label="Rows / Mirrored / Active" value={`${fmt(rows?.live.total ?? 0)} / ${fmt(rows?.live.mirrored ?? 0)} / ${fmt(rows?.live.active ?? 0)}`} />
++            <Row label="Rows / Mirrored / Executable / Active" value={`${fmt(rows?.live.total ?? 0)} / ${fmt(rows?.live.mirrored ?? 0)} / ${fmt(rows?.live.executable ?? rows?.live.mirrored ?? 0)} / ${fmt(rows?.live.active ?? 0)}`} />
+             <Row label="Mirror ratio" value={`${(rows?.live.mirroredRatio ?? 0).toFixed(1)}%`} />
++            <Row label="Independent Block rows (materialized / PF-DDT valid)" value={`${fmt(rows?.live.blockCreated ?? 0)} / ${fmt(rows?.live.blockValid ?? 0)}`} />
++            <Row label="Executables per evaluated Row-Live" value={`${(rows?.live.executablePerRow ?? 0).toFixed(1)}% (normal + valid Block)`} />
+             <Row label="Configured PF ratio" value={`${livePf.toFixed(2)} × PositionCost`} />
+             <Row label="Max drawdown time" value={`≤ ${settingNumber("maxDrawdownTimeLiveHours", 4)} h`} />
+             <Row label="Row capacity" value="Unlimited" />
+diff --git a/components/dashboard/active-connection-card.tsx b/components/dashboard/active-connection-card.tsx
+index ccad7bf..b4d380a 100644
+--- a/components/dashboard/active-connection-card.tsx
++++ b/components/dashboard/active-connection-card.tsx
+@@ -219,8 +219,8 @@ export function ActiveConnectionCard({
+   const [strategyRows, setStrategyRows] = useState<{
+     base: { total: number; valid: number; totalOpen?: number; validOpen?: number; validRatio?: number }
+     main: { valid: number; overall: number; validOpen?: number; overallOpen?: number; overallToValidRatio?: number }
+-    real: { valid: number; active: number; activeExactRows?: number; activeRatio?: number }
+-    live: { total: number; mirrored: number; active: number; mirroredRatio?: number }
++    real: { valid: number; evaluated?: number; rejected?: number; validRatio?: number; active: number; activeExactRows?: number; activeRatio?: number }
++    live: { total: number; mirrored: number; active: number; blockCreated?: number; blockValid?: number; executable?: number; mirroredRatio?: number; executablePerRow?: number }
+   } | null>(null)
+   const [infoDialogOpen, setInfoDialogOpen] = useState(false)
+   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
+@@ -2720,14 +2720,14 @@ export function ActiveConnectionCard({
+                           {strategyRows && (
+                             <div
+                               className="flex items-center gap-1"
+-                              title={`Current rows with ratios/open positions: Base Total/Valid ${strategyRows.base.validRatio?.toFixed(1) ?? "0.0"}% (${strategyRows.base.totalOpen ?? 0}/${strategyRows.base.validOpen ?? 0} open) · Main Valid/Overall ${(strategyRows.main.overallToValidRatio ?? 0).toFixed(1)}% (${strategyRows.main.validOpen ?? 0}/${strategyRows.main.overallOpen ?? 0} open) · Row-Real Valid/Active ${strategyRows.real.activeRatio?.toFixed(1) ?? "0.0"}% · Row-Live Mirrored ${strategyRows.live.mirroredRatio?.toFixed(1) ?? "0.0"}%.`}
++                              title={`Current rows with ratios/open positions: Base Total/Valid ${strategyRows.base.validRatio?.toFixed(1) ?? "0.0"}% (${strategyRows.base.totalOpen ?? 0}/${strategyRows.base.validOpen ?? 0} open) · Main Valid/Overall ${(strategyRows.main.overallToValidRatio ?? 0).toFixed(1)}% (${strategyRows.main.validOpen ?? 0}/${strategyRows.main.overallOpen ?? 0} open) · Row-Real Valid/Evaluated ${(strategyRows.real.validRatio ?? 0).toFixed(1)}%, Active ${strategyRows.real.active}/${strategyRows.real.valid} · Row-Live Mirrored ${strategyRows.live.mirroredRatio?.toFixed(1) ?? "0.0"}%, Block materialized/valid ${strategyRows.live.blockCreated ?? 0}/${strategyRows.live.blockValid ?? 0}, executable ${strategyRows.live.executable ?? strategyRows.live.mirrored} (${(strategyRows.live.executablePerRow ?? strategyRows.live.mirroredRatio ?? 0).toFixed(1)}% per evaluated row).`}
+                             >
+-                              <span className="text-muted-foreground">Rows B/M/R/L</span>
++                              <span className="text-muted-foreground">Rows B/M/R/L/Exec</span>
+                               <span className="font-medium tabular-nums text-violet-700 dark:text-violet-400">
+                                 {strategyRows.base.total}/{strategyRows.base.valid} ·{" "}
+                                 {strategyRows.main.valid}/{strategyRows.main.overall} ·{" "}
+                                 {strategyRows.real.valid}/{strategyRows.real.active} ·{" "}
+-                                {strategyRows.live.total}/{strategyRows.live.mirrored}
++                                {strategyRows.live.total}/{strategyRows.live.mirrored}/{strategyRows.live.executable ?? strategyRows.live.mirrored}
+                               </span>
+                             </div>
+                           )}
+diff --git a/lib/redis-db.ts b/lib/redis-db.ts
+index ec6a1b5..65e4dc2 100644
+--- a/lib/redis-db.ts
++++ b/lib/redis-db.ts
+@@ -1357,6 +1357,12 @@ export class InlineLocalRedis implements RedisClientLike {
+       __redis_mem_limits?: { heapMB: number; rssSoftMB: number; rssHardMB: number; maxKeys: number }
+     }
+ 
++    // Unit tests construct short-lived isolated emulators and invoke cleanup
++    // explicitly when that behaviour is under test.  A global periodic timer
++    // there has no production value and can wake after Jest has torn down its
++    // console, producing nondeterministic post-test work/logging.
++    if (process.env.NODE_ENV === "test") return
++
+     // ── Dynamic memory limits ────────────────────────────────────────────────
+     // Computed BEFORE the startup guard so the thresholds update on every
+     // HMR reload (the guard below only prevents the timer from being
+diff --git a/lib/strategy-coordinator.ts b/lib/strategy-coordinator.ts
+index 9d375f1..6834b47 100644
+--- a/lib/strategy-coordinator.ts
++++ b/lib/strategy-coordinator.ts
+@@ -43,6 +43,7 @@ import {
+   getStrategyLedgerTotals,
+   getStrategySetWindowBatch,
+   type StrategySetLedgerSnapshot,
++  type PosWindowStats,
+ } from "@/lib/pos-history"
+ import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
+ import { buildProgressionScope } from "@/lib/progression-scope"
+@@ -294,6 +295,13 @@ export interface StrategySet {
+    */
+   rowStage?: "real" | "live"
+   rowSourceSetKey?: string
++  /**
++   * Stable exact-result ledger key shared by the Real and Live row for this
++   * Base/configuration lineage.  Live fills are recorded under this key, so
++   * the next Real cycle evaluates the positions actually dispatched by the
++   * previous Row-Live instead of falling back to a projection aggregate.
++   */
++  rowEvaluationKey?: string
+   rowEvaluationWindow?: number
+   
+   /**
+@@ -957,6 +965,12 @@ export interface CoordIndex {
+   base: BaseRegistry
+   /** Snapshot of the qualifying Real Set keys this cycle (populated by evaluateRealSets). */
+   validRealKeys: Set<string>
++  /**
++   * O(1) source-set → exact rolling-result key map for the explicit Row
++   * pipeline.  It is deliberately per-cycle: Base Sets remain authoritative
++   * while Row objects stay scalar views rather than a second object graph.
++   */
++  rowEvaluationKeyBySource: Map<string, string>
+ }
+ 
+ /** Allocate an empty CoordIndex from a freshly-built BaseRegistry. */
+@@ -968,6 +982,7 @@ function makeCoordIndex(base: BaseRegistry): CoordIndex {
+     liveSetsByVariant: new Map(),
+     base,
+     validRealKeys: new Set(),
++    rowEvaluationKeyBySource: new Map(),
+   }
+ }
+ 
+@@ -1000,6 +1015,9 @@ function snapshotCoordIndexForLive(idx: CoordIndex, realSets: StrategySet[]): Co
+     const record = idx.byCoordKey.get(set.setKey)
+     if (record) registerCoordRecord(snapshot, { ...record, _setView: undefined })
+     snapshot.validRealKeys.add(set.setKey)
++    const sourceKey = set.rowSourceSetKey || set.setKey
++    const evaluationKey = set.rowEvaluationKey || idx.rowEvaluationKeyBySource.get(sourceKey)
++    if (sourceKey && evaluationKey) snapshot.rowEvaluationKeyBySource.set(sourceKey, evaluationKey)
+   }
+   return snapshot
+ }
+@@ -1109,8 +1127,8 @@ export function selectLiveSetsWithActivePriority(
+  *
+  * Rows are intentionally scalar/lightweight: their lineage points back to the
+  * existing Base/variant graph, while their PF and DDT are recalculated from
+- * the newest available entry window. This avoids cloning full graphs on every
+- * cycle and gives Real and Live independently inspectable row identities.
++ * the newest exact closed-position window. This avoids cloning full graphs on
++ * every cycle and gives Real and Live independently inspectable row identities.
+  *
+  * A slim derived Set may not carry historical entries itself. In that case we
+  * retain its already-canonical aggregate instead of fabricating a result; the
+@@ -1123,6 +1141,11 @@ export function materializeContinuousStageRows(
+     lookback: number
+     metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime">
+     activeSetKeys?: ReadonlySet<string>
++    /**
++     * Batched exact position-result windows.  Callers build this once per
++     * stage from the row evaluation keys; no per-row Redis reads are allowed.
++     */
++    windowBySetKey?: ReadonlyMap<string, PosWindowStats>
+   },
+ ): {
+   rows: StrategySet[]
+@@ -1143,22 +1166,93 @@ export function materializeContinuousStageRows(
+     evaluated++
+ 
+     const allEntries = Array.isArray(source.entries) ? source.entries : []
+-    const sampledEntries = allEntries.slice(-lookback)
+-    const sampleCount = sampledEntries.length
+-    const avg = (field: "profitFactor" | "drawdownTime", fallback: number) => {
+-      if (sampleCount === 0) return fallback
+-      const values = sampledEntries
+-        .map((entry) => Number(entry[field]))
+-        .filter(Number.isFinite)
+-      if (values.length === 0) return fallback
+-      return values.reduce((sum, value) => sum + value, 0) / values.length
+-    }
+-    const profitFactor = avg("profitFactor", Number(source.avgProfitFactor) || 0)
+-    const drawdownTime = avg("drawdownTime", Number(source.avgDrawdownTime) || 0)
++    const fallbackEntries = allEntries.slice(-lookback)
+     const parentKey = source.parentSetKey || source.setKey.split("#")[0]
++    // A Live fill keeps its stable exact-result ledger key between cycles.
++    // Prefer it first, then accept legacy/source-key history during rollout.
++    const evaluationKey = source.rowEvaluationKey ||
++      (options.stage === "real"
++        ? `${source.setKey}#row_real#row_live`
++        : `${source.setKey}#row_live`)
++    const windowKeys = [evaluationKey, source.setKey, source.rowSourceSetKey]
++      .filter((key, index, list): key is string => Boolean(key) && list.indexOf(key) === index)
++    const exactWindow = windowKeys
++      .map((key) => options.windowBySetKey?.get(key))
++      .find((window): window is PosWindowStats => Boolean(window && window.count > 0))
++
++    let sampleCount = 0
++    let profitFactor = Number(source.avgProfitFactor) || 0
++    let drawdownTime = Number(source.avgDrawdownTime) || 0
++    let entries = fallbackEntries.length > 0 ? fallbackEntries : allEntries
++
++    if (exactWindow) {
++      // PositionCost-relative PF and DDT are calculated from the exact same
++      // newest-first close window by pos-history.  This is the canonical
++      // "last N positions" contract used by Base/Main/Real, not an average
++      // of synthetic indication entries.
++      sampleCount = Math.min(lookback, exactWindow.count)
++      profitFactor = exactWindow.positionCostRatioCount > 0
++        ? exactWindow.positionCostRatio
++        : exactWindow.profitFactor
++      drawdownTime = exactWindow.avgDDT
++      entries = []
++    } else {
++      // Bootstrap / backwards-compatible fallback: a Base-derived `prevPos`
++      // snapshot is already a bounded position window.  Only when neither
++      // exact nor Base history exists do we use static entry aggregates.
++      const prev = source.prevPos
++      const pnls = (prev?.recentPnlPcts || []).map(Number)
++      const costs = (prev?.recentPositionCostPcts || []).map(Number)
++      const count = Math.min(pnls.length, costs.length, lookback)
++      if (count > 0) {
++        let ratioSum = 0
++        for (let index = 0; index < count; index++) {
++          ratioSum += movePctToMainTradePfRatio(pnls[index], costs[index])
++        }
++        sampleCount = count
++        profitFactor = ratioSum / count
++        drawdownTime = Number(prev?.avgDDT) || drawdownTime
++        entries = []
++      } else {
++        const finiteEntries = fallbackEntries
++          .map((entry) => ({
++            profitFactor: Number(entry.profitFactor),
++            drawdownTime: Number(entry.drawdownTime),
++          }))
++          .filter((entry) => Number.isFinite(entry.profitFactor))
++        if (finiteEntries.length > 0) {
++          sampleCount = finiteEntries.length
++          profitFactor = finiteEntries.reduce((sum, entry) => sum + entry.profitFactor, 0) /
++            finiteEntries.length
++          const ddtSamples = finiteEntries
++            .map((entry) => entry.drawdownTime)
++            .filter(Number.isFinite)
++          if (ddtSamples.length > 0) {
++            drawdownTime = ddtSamples.reduce((sum, value) => sum + value, 0) / ddtSamples.length
++          }
++        }
++      }
++    }
++
++    // Never present an invented full N-position window.  When a fresh or
++    // active lineage has fewer closes, the public row reports exactly the
++    // available sample count and is re-evaluated as new closes arrive.
++    const rowEntryCount = sampleCount > 0
++      ? Math.min(lookback, sampleCount)
++      : Math.min(lookback, Math.max(0, Number(source.entryCount) || 0))
++    // A parent Base key is intentionally *not* a wildcard for derived rows:
++    // siblings from a different position-count / DCA / Block configuration
++    // share that parent but must not inherit each other's active position.
++    // The narrow parent fallback is only for legacy, unmaterialised Base keys
++    // that predate rowSourceSetKey / rowEvaluationKey persistence.
++    const isLegacyBaseSource = !source.rowSourceSetKey &&
++      !source.rowEvaluationKey &&
++      !source.setKey.includes("#")
+     const sourceIsActive = Boolean(
+       options.activeSetKeys?.has(source.setKey) ||
+-      options.activeSetKeys?.has(parentKey) ||
++      (source.rowSourceSetKey && options.activeSetKeys?.has(source.rowSourceSetKey)) ||
++      (source.rowEvaluationKey && options.activeSetKeys?.has(source.rowEvaluationKey)) ||
++      (isLegacyBaseSource && options.activeSetKeys?.has(parentKey)) ||
+       (source as unknown as Record<string, unknown>)._hasLivePositions === true,
+     )
+     const passes = sourceIsActive || (
+@@ -1176,17 +1270,12 @@ export function materializeContinuousStageRows(
+       parentSetKey: parentKey,
+       rowStage: options.stage,
+       rowSourceSetKey: source.setKey,
+-      rowEvaluationWindow: Math.min(
+-        lookback,
+-        Math.max(sampleCount, Number(source.entryCount) || 0),
+-      ),
++      rowEvaluationKey: evaluationKey,
++      rowEvaluationWindow: rowEntryCount,
+       avgProfitFactor: profitFactor,
+       avgDrawdownTime: drawdownTime,
+-      entryCount: Math.min(
+-        lookback,
+-        Math.max(sampleCount, Number(source.entryCount) || 0),
+-      ),
+-      entries: sampledEntries.length > 0 ? sampledEntries : allEntries,
++      entryCount: rowEntryCount,
++      entries,
+       status: options.stage === "real" ? "valid_real" : source.status,
+       ...(sourceIsActive ? { _hasLivePositions: true } : {}),
+     } as StrategySet)
+@@ -1196,6 +1285,67 @@ export function materializeContinuousStageRows(
+   return { rows, evaluated, rejected }
+ }
+ 
++/**
++ * Re-evaluate the independent Block rows that are appended after Row-Live.
++ *
++ * A Row-Live Block has a distinct executable Set key (the count is part of
++ * that key), so its closed positions must be read from that exact ring.  The
++ * normal Row-Live metrics remain a separate comparison baseline.  Keeping this
++ * tiny scalar pass after block materialisation avoids an extra Set graph while
++ * preserving a one-to-one relation between order/position ID, result ring,
++ * Block PF/DDT and displayed row.
++ */
++export function applyExactBlockRowWindows(
++  rows: readonly StrategySet[],
++  windows: ReadonlyMap<string, PosWindowStats>,
++  metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime">,
++  activeSetKeys?: ReadonlySet<string>,
++): StrategySet[] {
++  const evaluated: StrategySet[] = []
++  for (const row of rows) {
++    const evaluationKey = row.rowEvaluationKey || row.setKey
++    const window = windows.get(evaluationKey)
++    const isActive = Boolean(
++      activeSetKeys?.has(row.setKey) ||
++      activeSetKeys?.has(evaluationKey) ||
++      (row.rowSourceSetKey && activeSetKeys?.has(row.rowSourceSetKey)),
++    )
++    if (!window || window.count <= 0) {
++      evaluated.push(row)
++      continue
++    }
++    const profitFactor = window.positionCostRatioCount > 0
++      ? window.positionCostRatio
++      : window.profitFactor
++    const drawdownTime = window.avgDDT
++    const minimumProfitFactor = Math.max(
++      metrics.minProfitFactor,
++      Number.isFinite(Number(row.blockMinimumProfitFactor))
++        ? Number(row.blockMinimumProfitFactor)
++        : metrics.minProfitFactor,
++    )
++    if (!isActive && (
++      profitFactor < minimumProfitFactor ||
++      drawdownTime > metrics.maxDrawdownTime
++    )) {
++      continue
++    }
++    evaluated.push({
++      ...row,
++      rowEvaluationKey: evaluationKey,
++      rowEvaluationWindow: window.count,
++      entryCount: window.count,
++      avgProfitFactor: profitFactor,
++      avgDrawdownTime: drawdownTime,
++      blockObservedProfitFactor: profitFactor,
++      blockProfitFactorSampleCount: window.count,
++      blockProfitFactorWindow: window.count,
++      blockProfitFactorDifference: profitFactor - Number(row.blockNormalProfitFactor || 0),
++    })
++  }
++  return evaluated
++}
++
+ /**
+  * Compatibility selector retained for callers/tests. It deduplicates and
+  * orders every Real row without applying its former maximum argument.
+@@ -1300,9 +1450,17 @@ export function coordinateActiveRealLiveCounts(
+   activeSetKeys: ReadonlySet<string>,
+   realEvaluatedCount: number = realSets.length,
+ ): { real: number; live: number; liveEvaluated: number } {
++  // A Row-Real has a different visible setKey than the Row-Live position it
++  // spawned.  Link only its exact source/evaluation keys; matching a broad
++  // parent Base key would incorrectly mark unrelated axis/adjust siblings as
++  // active and inflate the Real Active statistic.
++  const isActive = (set: StrategySet): boolean =>
++    activeSetKeys.has(set.setKey) ||
++    Boolean(set.rowSourceSetKey && activeSetKeys.has(set.rowSourceSetKey)) ||
++    Boolean(set.rowEvaluationKey && activeSetKeys.has(set.rowEvaluationKey))
+   return {
+-    real: realSets.reduce((count, set) => count + (activeSetKeys.has(set.setKey) ? 1 : 0), 0),
+-    live: liveSets.reduce((count, set) => count + (activeSetKeys.has(set.setKey) ? 1 : 0), 0),
++    real: realSets.reduce((count, set) => count + (isActive(set) ? 1 : 0), 0),
++    live: liveSets.reduce((count, set) => count + (isActive(set) ? 1 : 0), 0),
+     liveEvaluated: Math.max(realSets.length, realEvaluatedCount),
+   }
+ }
+@@ -2801,6 +2959,7 @@ export class StrategyCoordinator {
+         coordIndex.byParentKey.clear()
+         coordIndex.liveSetsByVariant.clear()
+         coordIndex.validRealKeys.clear()
++        coordIndex.rowEvaluationKeyBySource.clear()
+       }
+ 
+       return results
+@@ -6333,15 +6492,60 @@ export class StrategyCoordinator {
+     let continuousRealCreated = 0
+     let continuousRealRejected = 0
+     try {
++      // One bounded batch resolves the exact closed positions for every
++      // Base-anchored configuration lineage.  The row's future Live ledger
++      // key is read first; source keys remain a compatibility fallback for
++      // pre-row positions.  This is O(unique keys) with 500-key pipelines,
++      // never O(rows × Redis round trips).
++      const rowHistoryKeys = Array.from(new Set(
++        realPostHedge.flatMap((set) => {
++          const evaluationKey = set.rowEvaluationKey ||
++            `${set.rowSourceSetKey || set.setKey}#row_real#row_live`
++          return [evaluationKey, set.setKey, set.rowSourceSetKey].filter(Boolean) as string[]
++        }),
++      ))
++      const rowWindows = await getStrategySetWindowBatch(
++        this.connectionId,
++        rowHistoryKeys,
++        this._coordinationSettings.realEvalPosCount,
++      )
+       const continuous = materializeContinuousStageRows(realPostHedge, {
+         stage: "real",
+         lookback: this._coordinationSettings.realEvalPosCount,
+         metrics,
+         activeSetKeys: realActiveKeysForVP,
++        windowBySetKey: rowWindows,
+       })
+       rowRealSets = continuous.rows
+       continuousRealCreated = rowRealSets.length
+       continuousRealRejected = continuous.rejected
++      if (coordIndex) {
++        for (const row of rowRealSets) {
++          const sourceKey = row.rowSourceSetKey || row.setKey
++          if (row.rowEvaluationKey) {
++            coordIndex.rowEvaluationKeyBySource.set(sourceKey, row.rowEvaluationKey)
++          }
++          // Register only a scalar alias.  The Base Registry remains the sole
++          // owner of entries; Live dispatch can therefore resolve the parent
++          // in O(1) without copying a Base Set for each continuous row.
++          const source = coordIndex.byCoordKey.get(sourceKey)
++          if (source && !coordIndex.byCoordKey.has(row.setKey)) {
++            registerCoordRecord(coordIndex, {
++              ...source,
++              coordKey: row.setKey,
++              parentKey: row.parentSetKey || source.parentKey,
++              status: "valid_real",
++              avgProfitFactor: row.avgProfitFactor,
++              avgDrawdownTime: row.avgDrawdownTime,
++              avgConfidence: row.avgConfidence,
++              entryCount: row.entryCount,
++              direction: row.direction,
++              variant: (row.variant || source.variant) as SetCoordRecord["variant"],
++              _setView: undefined,
++            })
++          }
++        }
++      }
+       if (rowRealSets.length > 0) {
+         realPostHedge = realPostHedge
+           .concat(rowRealSets)
+@@ -6545,7 +6749,13 @@ export class StrategyCoordinator {
+           .filter((set) =>
+             realActiveBaseKeys.has(set.setKey) ||
+             realActiveBaseKeys.has(set.rowSourceSetKey || "") ||
+-            realActiveBaseKeys.has(set.parentSetKey || ""),
++            realActiveBaseKeys.has(set.rowEvaluationKey || "") ||
++            // Only old, direct Base snapshots may fall back to parentKey.
++            // Derived siblings must match an exact set/evaluation identity.
++            (!set.rowSourceSetKey &&
++              !set.rowEvaluationKey &&
++              !set.setKey.includes("#") &&
++              realActiveBaseKeys.has(set.parentSetKey || "")),
+           )
+           .map((set) => set.parentSetKey || set.setKey.split("#")[0]),
+       )
+@@ -7083,6 +7293,11 @@ export class StrategyCoordinator {
+           setKey: key,
+           rowStage: "live",
+           rowSourceSetKey: source.setKey,
++          // Unlike the normal Row-Live, an independent Block is a distinct
++          // executable configuration.  Its position/order key must therefore
++          // also be its result-ring key; otherwise a later Block PF/DDT pass
++          // would accidentally reuse the normal Row-Live history.
++          rowEvaluationKey: key,
+           parentSetKey: source.parentSetKey || source.setKey.split("#")[0],
+           variant: "block",
+           axisWindows: {
+@@ -7223,19 +7438,91 @@ export class StrategyCoordinator {
+     // private stage directly without first materialising Row-Real.
+     const rowRealSets = realSets.filter((set) => set.rowStage === "real")
+     const rowLiveSource = rowRealSets.length > 0 ? rowRealSets : realSets
++    // Row-Live evaluates the exact results of its own stable evaluation key.
++    // Read all lineages in one bounded batch so a symbol with a wide axis
++    // matrix does not turn a 500 ms processing tick into an N+1 Redis stall.
++    const rowHistoryKeys = Array.from(new Set(
++      rowLiveSource.flatMap((set) => {
++        const sourceKey = set.rowSourceSetKey || set.setKey
++        const evaluationKey = set.rowEvaluationKey ||
++          coordIndex?.rowEvaluationKeyBySource.get(sourceKey) ||
++          `${set.setKey}#row_live`
++        return [
++          evaluationKey,
++          // Compatibility path for a stored Real source without the row field.
++          `${sourceKey}#row_real#row_live`,
++          set.setKey,
++          sourceKey,
++        ].filter(Boolean) as string[]
++      }),
++    ))
++    const rowWindows = await getStrategySetWindowBatch(
++      this.connectionId,
++      rowHistoryKeys,
++      this._coordinationSettings.liveEvalPosCount,
++    )
+     const rowLive = materializeContinuousStageRows(rowLiveSource, {
+       stage: "live",
+       lookback: this._coordinationSettings.liveEvalPosCount,
+       metrics,
+       activeSetKeys: activeStrategyKeys,
++      windowBySetKey: rowWindows,
+     })
+     // Row-Live is already PF/DDT validated. Do not feed it into the generic
+     // selector below, which would apply the Live gate a second time and make
+     // a saved 15-position row behave differently at dispatch.
+-    const rowLiveBlock = this.buildRowLiveBlockOverlays(rowLive.rows, metrics)
++    const builtRowLiveBlock = this.buildRowLiveBlockOverlays(rowLive.rows, metrics)
++    // Independent Row-Live Blocks are executable configurations in their own
++    // right.  Read their exact result rings in one batch and retain a row only
++    // when its own rolling PF/DDT passes (or it is already actively protected).
++    // This keeps Block volume/count calculation independent while making its
++    // order IDs, position IDs, history, stats and next-cycle decision agree.
++    const blockWindows = await getStrategySetWindowBatch(
++      this.connectionId,
++      builtRowLiveBlock.map((set) => set.rowEvaluationKey || set.setKey),
++      this._coordinationSettings.liveEvalPosCount,
++    )
++    const rowLiveBlock = applyExactBlockRowWindows(
++      builtRowLiveBlock,
++      blockWindows,
++      metrics,
++      activeStrategyKeys,
++    )
+     const allQualifying = Array.from(new Map(
+       rowLive.rows.concat(rowLiveBlock).map((set) => [set.setKey, set]),
+     ).values()).sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
++    if (coordIndex) {
++      for (const row of allQualifying) {
++        const sourceKey = row.rowSourceSetKey || row.setKey
++        const evaluationKey = row.rowEvaluationKey ||
++          coordIndex.rowEvaluationKeyBySource.get(sourceKey)
++        if (evaluationKey) {
++          // A Block row is an additional executable child of Row-Live.  Do
++          // not overwrite the normal row's source mapping with the Block
++          // result key; retain both exact index entries independently.
++          if (row.variant !== "block") {
++            coordIndex.rowEvaluationKeyBySource.set(sourceKey, evaluationKey)
++          }
++          coordIndex.rowEvaluationKeyBySource.set(row.setKey, evaluationKey)
++        }
++        if (coordIndex.byCoordKey.has(row.setKey)) continue
++        const source = coordIndex.byCoordKey.get(sourceKey)
++        if (!source) continue
++        registerCoordRecord(coordIndex, {
++          ...source,
++          coordKey: row.setKey,
++          parentKey: row.parentSetKey || source.parentKey,
++          status: "valid_real",
++          avgProfitFactor: row.avgProfitFactor,
++          avgDrawdownTime: row.avgDrawdownTime,
++          avgConfidence: row.avgConfidence,
++          entryCount: row.entryCount,
++          direction: row.direction,
++          variant: (row.variant || source.variant) as SetCoordRecord["variant"],
++          _setView: undefined,
++        })
++      }
++    }
+     const coherentActiveCounts = coordinateActiveRealLiveCounts(
+       rowRealSets.length > 0 ? rowRealSets : realSets,
+       allQualifying,
+@@ -7374,7 +7661,11 @@ export class StrategyCoordinator {
+           row_mirrored:      String(rowLive.rows.length),
+           row_live_created:  String(rowLive.rows.length),
+           row_live_rejected: String(rowLive.rejected),
+-          row_live_block_created: String(rowLiveBlock.length),
++          // Keep Block materialisation and its independent PF/DDT result
++          // separate: an executable total contains normal Row-Live plus only
++          // those Block rows that passed their own exact result window.
++          row_live_block_created: String(builtRowLiveBlock.length),
++          row_live_block_valid: String(rowLiveBlock.length),
+           row_live_executable: String(qualifying.length),
+           row_active:        String(liveRunningNow),
+           pass_rate:         String(passRatioLive.toFixed(4)),
+@@ -7399,7 +7690,8 @@ export class StrategyCoordinator {
+           [`s:${symbol}:row_mirrored`]: String(rowLive.rows.length),
+           [`s:${symbol}:row_live_created`]: String(rowLive.rows.length),
+           [`s:${symbol}:row_live_rejected`]: String(rowLive.rejected),
+-          [`s:${symbol}:row_live_block_created`]: String(rowLiveBlock.length),
++          [`s:${symbol}:row_live_block_created`]: String(builtRowLiveBlock.length),
++          [`s:${symbol}:row_live_block_valid`]: String(rowLiveBlock.length),
+           [`s:${symbol}:row_live_executable`]: String(qualifying.length),
+           [`s:${symbol}:row_active`]:   String(liveRunningNow),
+           [`s:${symbol}:apf`]:        String(liveAvgPF.toFixed(4)),
 -- 
 2.51.1
 
