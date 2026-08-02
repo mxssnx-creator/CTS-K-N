@@ -87,6 +87,16 @@ describe("InlineLocalRedis compatibility and persistence", () => {
     await expect(redis.keys("*:key")).resolves.toEqual(expect.arrayContaining(["string:key", "hash:key", "set:key", "z:key"]))
     await expect(redis.dbSize()).resolves.toBeGreaterThanOrEqual(4)
 
+    // Monitoring must be able to inspect a large local keyspace without first
+    // building a full KEYS("*") array. The bounded sample is round-robin over
+    // Redis data types, so the dashboard retains representative metrics.
+    await expect(redis.sampleKeys(3)).resolves.toEqual(expect.arrayContaining([
+      "string:key",
+      "hash:key",
+      "set:key",
+    ]))
+    await expect(redis.sampleKeys(3)).resolves.toHaveLength(3)
+
     const pipelineResult = await redis
       .multi()
       .set("pipe:key", "ok")

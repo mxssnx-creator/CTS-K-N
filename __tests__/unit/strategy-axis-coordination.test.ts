@@ -1,13 +1,16 @@
 import {
+  applyExactBlockRowWindows,
   compactStrategySetForStorage,
   coordinateActiveRealLiveCounts,
   hydrateStrategySetSnapshots,
+  materializeContinuousStageRows,
   selectLiveSetsWithActivePriority,
   selectRealEvaluationWorkingSet,
   selectRealSetsWithActiveAndVariantPriority,
   StrategyCoordinator,
   type StrategySet,
 } from "@/lib/strategy-coordinator"
+import type { PosWindowStats } from "@/lib/pos-history"
 import {
   normalizeStrategyAxes,
   normalizeStrategyAxisMaxWindow,
@@ -50,6 +53,278 @@ function baseSet(recentPnls: number[]): StrategySet {
 }
 
 describe("strategy position-count axis coordination", () => {
+  test("materializes one explicit Row-Real from the exact latest PF/DDT position window", () => {
+    const source = baseSet([1, -1, 1])
+    source.entries = [
+      { ...source.entries[0], id: "old", profitFactor: 0.6, drawdownTime: 30 },
+      { ...source.entries[0], id: "one", profitFactor: 0.7, drawdownTime: 20 },
+      { ...source.entries[0], id: "two", profitFactor: 1.2, drawdownTime: 8 },
+      { ...source.entries[0], id: "three", profitFactor: 2, drawdownTime: 6 },
+    ]
+    source.entryCount = 4
+    const exactWindow: PosWindowStats = {
+      count: 3,
+      successRate: 2 / 3,
+      profitFactor: 1.3,
+      positionCostRatio: 1.3,
+      positionCostRatioCount: 3,
+      averagePnlPct: 0.13,
+      avgDDT: 34 / 3,
+      hasSignal: true,
+      recentPnls: [2, 1.2, 0.7],
+      recentPnlPcts: [0.2, 0.12, 0.07],
+      recentPositionCostPcts: [0.1, 0.1, 0.1],
+    }
+
+    const result = materializeContinuousStageRows([source], {
+      stage: "real",
+      lookback: 3,
+      metrics: { minProfitFactor: 1.2, maxDrawdownTime: 12 },
+      windowBySetKey: new Map([["BTCUSDT:direction:long#row_real#row_live", exactWindow]]),
+    })
+
+    expect(result).toMatchObject({ evaluated: 1, rejected: 0 })
+    expect(result.rows).toHaveLength(1)
+    expect(result.rows[0]).toMatchObject({
+      setKey: "BTCUSDT:direction:long#row_real",
+      rowStage: "real",
+      rowSourceSetKey: "BTCUSDT:direction:long",
+      rowEvaluationKey: "BTCUSDT:direction:long#row_real#row_live",
+      rowEvaluationWindow: 3,
+      entryCount: 3,
+      avgProfitFactor: 1.3,
+    })
+    expect(result.rows[0].avgDrawdownTime).toBeCloseTo(34 / 3, 12)
+  })
+
+  test("keeps an open lineage visible while rejecting a failing closed Row-Live", () => {
+    const source = baseSet([-1, -1, -1])
+    source.entries = [{ ...source.entries[0], profitFactor: 0.7, drawdownTime: 40 }]
+    // Exercise the no-history bootstrap fallback in isolation.  In production
+    // a populated Base/exact position ring always wins over this static path.
+    source.prevPos = undefined
+
+    const rejected = materializeContinuousStageRows([source], {
+      stage: "live",
+      lookback: 15,
+      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 30 },
+    })
+    expect(rejected).toMatchObject({ evaluated: 1, rejected: 1, rows: [] })
+
+    const active = materializeContinuousStageRows([source], {
+      stage: "live",
+      lookback: 15,
+      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 30 },
+      activeSetKeys: new Set([source.setKey]),
+    })
+    expect(active.rows).toHaveLength(1)
+    expect(active.rows[0]).toMatchObject({
+      setKey: "BTCUSDT:direction:long#row_live",
+      rowStage: "live",
+      rowEvaluationWindow: 1,
+    })
+  })
+
+  test("does not mark a derived sibling active through its shared Base parent", () => {
+    const derived = baseSet([-1, -1, -1])
+    derived.setKey = "BTCUSDT:direction:long#axis:continuous:4"
+    derived.parentSetKey = "BTCUSDT:direction:long"
+    derived.prevPos = undefined
+    derived.entries = [{ ...derived.entries[0], profitFactor: 0.5, drawdownTime: 50 }]
+
+    const parentOnly = materializeContinuousStageRows([derived], {
+      stage: "real",
+      lookback: 20,
+      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 20 },
+      activeSetKeys: new Set(["BTCUSDT:direction:long"]),
+    })
+    expect(parentOnly).toMatchObject({ evaluated: 1, rejected: 1, rows: [] })
+
+    const exactChild = materializeContinuousStageRows([derived], {
+      stage: "real",
+      lookback: 20,
+      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 20 },
+      activeSetKeys: new Set([derived.setKey]),
+    })
+    expect(exactChild.rows).toHaveLength(1)
+  })
+
+  test("keeps the same Base/configuration evaluation key from Row-Real through Row-Live", () => {
+    const source = baseSet([1, 1, 1])
+    const real = materializeContinuousStageRows([source], {
+      stage: "real",
+      lookback: 3,
+      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 30 },
+    })
+    expect(real.rows).toHaveLength(1)
+
+    const evaluationKey = real.rows[0].rowEvaluationKey!
+    const live = materializeContinuousStageRows(real.rows, {
+      stage: "live",
+      lookback: 3,
+      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 30 },
+      windowBySetKey: new Map([[evaluationKey, {
+        count: 3,
+        successRate: 2 / 3,
+        profitFactor: 1.4,
+        positionCostRatio: 1.4,
+        positionCostRatioCount: 3,
+        averagePnlPct: 0.14,
+        avgDDT: 6,
+        hasSignal: true,
+        recentPnls: [1.4, 1, -1],
+        recentPnlPcts: [0.14, 0.1, -0.1],
+        recentPositionCostPcts: [0.1, 0.1, 0.1],
+      } satisfies PosWindowStats]]),
+    })
+
+    expect(live.rows).toHaveLength(1)
+    expect(live.rows[0]).toMatchObject({
+      setKey: "BTCUSDT:direction:long#row_real#row_live",
+      rowEvaluationKey: evaluationKey,
+      rowEvaluationWindow: 3,
+      avgProfitFactor: 1.4,
+      avgDrawdownTime: 6,
+    })
+  })
+
+  test("counts an open Row-Live against only its matching Row-Real lineage", () => {
+    const real = baseSet([1, 1, 1])
+    real.setKey = "BTCUSDT:direction:long#row_real"
+    real.rowStage = "real"
+    real.rowSourceSetKey = "BTCUSDT:direction:long#axis:one"
+    real.rowEvaluationKey = "BTCUSDT:direction:long#axis:one#row_real#row_live"
+    const sibling = {
+      ...real,
+      setKey: "BTCUSDT:direction:long#axis:two#row_real",
+      rowSourceSetKey: "BTCUSDT:direction:long#axis:two",
+      rowEvaluationKey: "BTCUSDT:direction:long#axis:two#row_real#row_live",
+    }
+    const live = {
+      ...real,
+      setKey: real.rowEvaluationKey,
+      rowStage: "live" as const,
+    }
+
+    expect(coordinateActiveRealLiveCounts(
+      [real, sibling],
+      [live],
+      new Set([live.setKey]),
+      2,
+    )).toEqual({ real: 1, live: 1, liveEvaluated: 2 })
+  })
+
+  test("keeps thousands of Base-anchored continuous rows unique and scalar under load", () => {
+    const sourceSets = Array.from({ length: 2_048 }, (_, index): StrategySet => ({
+      ...baseSet([1, 1, 1]),
+      setKey: `LOADUSDT:direction:long#axis:${index}`,
+      parentSetKey: `LOADUSDT:direction:long:${index}`,
+      // Production rows resolve full entries through the BaseRegistry.  This
+      // load fixture deliberately carries no entry arrays to prove the exact
+      // result-window path does not allocate or duplicate them per Row.
+      entries: [],
+      entryCount: 20,
+      prevPos: undefined,
+    }))
+    const windows = new Map(sourceSets.map((set) => [
+      `${set.setKey}#row_real#row_live`,
+      {
+        count: 20,
+        successRate: 0.75,
+        profitFactor: 1.25,
+        positionCostRatio: 1.25,
+        positionCostRatioCount: 20,
+        averagePnlPct: 0.125,
+        avgDDT: 7,
+        hasSignal: true,
+        recentPnls: [],
+        recentPnlPcts: [],
+        recentPositionCostPcts: [],
+      } satisfies PosWindowStats,
+    ]))
+
+    const rows = materializeContinuousStageRows(sourceSets, {
+      stage: "real",
+      lookback: 20,
+      metrics: { minProfitFactor: 0.8, maxDrawdownTime: 10 },
+      windowBySetKey: windows,
+    })
+
+    expect(rows).toMatchObject({ evaluated: 2_048, rejected: 0 })
+    expect(rows.rows).toHaveLength(2_048)
+    expect(new Set(rows.rows.map((row) => row.setKey)).size).toBe(2_048)
+    expect(rows.rows.every((row) =>
+      row.entryCount === 20 &&
+      row.rowEvaluationWindow === 20 &&
+      row.avgProfitFactor === 1.25 &&
+      row.avgDrawdownTime === 7 &&
+      row.entries.length === 0,
+    )).toBe(true)
+  })
+
+  test("keeps Row-Live Block history on its own executable order/position key", () => {
+    const key = "BTCUSDT:direction:long#row_real#row_live#block:row_live:2"
+    const block: StrategySet = {
+      ...baseSet([1, 1, 1]),
+      setKey: key,
+      parentSetKey: "BTCUSDT:direction:long",
+      rowStage: "live",
+      rowSourceSetKey: "BTCUSDT:direction:long#row_real#row_live",
+      rowEvaluationKey: key,
+      variant: "block",
+      blockMinimumProfitFactor: 1.1,
+      blockNormalProfitFactor: 1.2,
+    }
+    const ownHistory: PosWindowStats = {
+      count: 15,
+      successRate: 0.6,
+      profitFactor: 1.25,
+      positionCostRatio: 1.25,
+      positionCostRatioCount: 15,
+      averagePnlPct: 0.125,
+      avgDDT: 8,
+      hasSignal: true,
+      recentPnls: [],
+      recentPnlPcts: [],
+      recentPositionCostPcts: [],
+    }
+    const evaluated = applyExactBlockRowWindows(
+      [block],
+      new Map([[key, ownHistory]]),
+      { minProfitFactor: 0.8, maxDrawdownTime: 10 },
+    )
+
+    expect(evaluated).toHaveLength(1)
+    expect(evaluated[0]).toMatchObject({
+      setKey: key,
+      rowEvaluationKey: key,
+      rowEvaluationWindow: 15,
+      entryCount: 15,
+      avgProfitFactor: 1.25,
+      avgDrawdownTime: 8,
+      blockObservedProfitFactor: 1.25,
+    })
+    expect(evaluated[0].blockProfitFactorDifference).toBeCloseTo(0.05, 12)
+
+    const rejected = applyExactBlockRowWindows(
+      [block],
+      new Map([[key, { ...ownHistory, positionCostRatio: 1, avgDDT: 12 }]]),
+      { minProfitFactor: 0.8, maxDrawdownTime: 10 },
+    )
+    expect(rejected).toEqual([])
+
+    // An already-open Block order must stay reconciled even during a
+    // transient failing window; it keeps its own key and updated stats.
+    const active = applyExactBlockRowWindows(
+      [block],
+      new Map([[key, { ...ownHistory, positionCostRatio: 1, avgDDT: 12 }]]),
+      { minProfitFactor: 0.8, maxDrawdownTime: 10 },
+      new Set([key]),
+    )
+    expect(active).toHaveLength(1)
+    expect(active[0]).toMatchObject({ rowEvaluationKey: key, avgProfitFactor: 1, avgDrawdownTime: 12 })
+  })
+
   test("explicit flat axis disable flag overrides inherited nested enabled state", () => {
     // Regression: an operator toggle that sends only the top-level
     // `axisContEnabled: false` (no nested `axes`) must disable the cont axis

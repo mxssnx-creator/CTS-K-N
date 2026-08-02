@@ -63,6 +63,12 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain("--preflight-only")
     expect(installer).toContain("ALLOW_PROD_INLINE_REDIS 0")
     expect(installer).toContain("ALLOW_INLINE_REDIS_LIVE_TRADING 1")
+    expect(installer).toContain("effective_memory_limits_kb")
+    expect(installer).toContain("configure_memory_watchdog")
+    expect(installer).toContain("CTS_RUNTIME_MEMORY_HIGH_MB")
+    expect(installer).toContain("MemoryHigh=${runtime_high_mb}M")
+    expect(installer).toContain("MemoryMax=${runtime_max_mb}M")
+    expect(installer).toContain("--max-memory-restart \"${runtime_max_mb}M\"")
     expect(installer).toContain('upsert_env ENCRYPTION_KEY "$(openssl rand -hex 32)"')
     expect(installer).toContain('upsert_env JWT_SECRET "$(openssl rand -hex 32)"')
     expect(installer).toContain("$APP_NAME-scheduler.service")
@@ -129,6 +135,10 @@ describe("production installation and Kilo deployment contract", () => {
     expect(vercel.buildCommand).not.toContain("vercel-build-setup")
     const packageJson = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8"))
     expect(packageJson.scripts["vercel-build"]).toBe("node scripts/build-next-with-trace-retry.mjs")
+    expect(packageJson.scripts.build).toBe("node scripts/build-next-with-trace-retry.mjs")
+    expect(packageJson.scripts["build:next"]).toContain("next/dist/bin/next build")
+    expect(await readFile(path.join(process.cwd(), "scripts", "build-next-with-trace-retry.mjs"), "utf8"))
+      .toContain('"run", "build:next"')
     expect(execFileSync("git", ["ls-files", "--stage"], { cwd: process.cwd(), encoding: "utf8" }))
       .not.toMatch(/^160000 /m)
     execFileSync("bash", ["-n", "scripts/install.sh"], { cwd: process.cwd() })
@@ -368,7 +378,7 @@ describe("production installation and Kilo deployment contract", () => {
       encoding: "utf8",
     })
     expect(output).toContain('"success":true')
-    expect(output).toContain('"schemaVersion":92')
+    expect(output).toContain('"schemaVersion":93')
   })
 
   it("passes the complete Kilo runtime, owner, and deploy-credential preflight", () => {
@@ -412,7 +422,7 @@ describe("production installation and Kilo deployment contract", () => {
       path.join(process.cwd(), "scripts/build-next-with-trace-retry.mjs"),
       "utf8",
     )
-    expect(nextBuildWrapper).toContain('["pnpm@10.28.1", "run", "build"]')
+    expect(nextBuildWrapper).toContain('["pnpm@10.28.1", "run", "build:next"]')
     expect(nextBuildWrapper).toContain("const requiresStandalone = !isVercelBuild")
     expect(nextBuildWrapper).toContain('detached: process.platform !== "win32"')
     expect(nextBuildWrapper).toContain('process.kill(-pid, signal)')

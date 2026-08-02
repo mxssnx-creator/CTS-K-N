@@ -427,6 +427,49 @@ existing_runtime_active() {
   return 1
 }
 
+# The host total is misleading inside a constrained container.  Resolve a
+# conservative installation budget from the lower of the host/cgroup limits
+# and then from memory that is actually available at install time.  This
+# budget drives the Node heap and the systemd/PM2 restart watchdogs below.
+read_positive_file_kb() {
+  local file="$1" raw
+  [[ -r "$file" ]] || return 1
+  raw="$(tr -d '[:space:]' < "$file" 2>/dev/null || true)"
+  [[ "$raw" =~ ^[0-9]+$ ]] || return 1
+  (( raw > 0 )) || return 1
+  # cgroup v1 commonly exposes a near-infinite sentinel when unconstrained.
+  (( raw < 1152921504606846976 )) || return 1
+  printf '%s' "$(( raw / 1024 ))"
+}
+
+effective_memory_limits_kb() {
+  local host_total_kb host_available_kb cgroup_limit_kb=0 cgroup_used_kb=0
+  host_total_kb="$(awk '/MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || printf '0')"
+  host_available_kb="$(awk '/MemAvailable:/ {print $2; exit}' /proc/meminfo 2>/dev/null || printf '0')"
+  [[ "$host_total_kb" =~ ^[0-9]+$ ]] || host_total_kb=0
+  [[ "$host_available_kb" =~ ^[0-9]+$ ]] || host_available_kb=0
+
+  cgroup_limit_kb="$(read_positive_file_kb /sys/fs/cgroup/memory.max 2>/dev/null \
+    || read_positive_file_kb /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || printf '0')"
+  cgroup_used_kb="$(read_positive_file_kb /sys/fs/cgroup/memory.current 2>/dev/null \
+    || read_positive_file_kb /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null || printf '0')"
+
+  local total_kb="$host_total_kb" available_kb="$host_available_kb"
+  if [[ "$cgroup_limit_kb" =~ ^[0-9]+$ ]] && (( cgroup_limit_kb > 0 )) \
+    && (( host_total_kb == 0 || cgroup_limit_kb < host_total_kb )); then
+    total_kb="$cgroup_limit_kb"
+    if [[ "$cgroup_used_kb" =~ ^[0-9]+$ ]] && (( cgroup_used_kb < cgroup_limit_kb )); then
+      available_kb="$(( cgroup_limit_kb - cgroup_used_kb ))"
+    else
+      available_kb="$cgroup_limit_kb"
+    fi
+  fi
+  (( total_kb > 0 )) || total_kb=0
+  (( available_kb > 0 )) || available_kb="$total_kb"
+  (( available_kb <= total_kb )) || available_kb="$total_kb"
+  printf '%s %s\n' "$total_kb" "$available_kb"
+}
+
 run_preflight() {
   section "Production preflight"
   [[ "$(uname -s)" == "Linux" ]] || fatal "Only long-lived Linux servers are supported by this installer"
@@ -435,12 +478,12 @@ run_preflight() {
     || fatal "No supported package manager found (apt, dnf, or yum)"
   ok "Package manager: $PACKAGE_MANAGER"
 
-  local disk_kb memory_kb
+  local disk_kb memory_total_kb memory_available_kb
   disk_kb="$(df -Pk "$PROJECT_ROOT" | awk 'NR==2 {print $4}')"
-  memory_kb="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || printf '0')"
+  read -r memory_total_kb memory_available_kb < <(effective_memory_limits_kb)
   (( disk_kb >= 4 * 1024 * 1024 )) || fatal "At least 4 GiB free disk is required"
-  (( memory_kb >= 1536 * 1024 )) || fatal "At least 1.5 GiB RAM is required"
-  ok "Capacity: $((disk_kb / 1024 / 1024)) GiB free disk, $((memory_kb / 1024 / 1024)) GiB RAM"
+  (( memory_available_kb >= 1536 * 1024 )) || fatal "At least 1.5 GiB effective available memory is required"
+  ok "Capacity: $((disk_kb / 1024 / 1024)) GiB free disk, $((memory_total_kb / 1024 / 1024)) GiB effective limit, $((memory_available_kb / 1024 / 1024)) GiB available"
 
   local port_status=0
   free_port || port_status=$?
@@ -699,6 +742,37 @@ configure_cpu_parallelism() {
   ok "CPU parallelism: ${cpu_count} cores, ${symbol_pool} symbol workers, libuv pool ${io_pool}"
 }
 
+configure_memory_watchdog() {
+  # Reserve memory for the kernel, Redis, the scheduler and ordinary system
+  # work. The remaining budget is intentionally based on *available* memory,
+  # so a server that is already busy never receives the old fixed 5.6 GiB Node
+  # heap or a restart threshold it cannot sustain.
+  local total_kb available_kb total_mb available_mb reserve_mb runtime_max_mb runtime_high_mb app_heap_mb scheduler_heap_mb
+  read -r total_kb available_kb < <(effective_memory_limits_kb)
+  total_mb=$(( total_kb / 1024 ))
+  available_mb=$(( available_kb / 1024 ))
+  reserve_mb=$(( total_mb / 10 ))
+  (( reserve_mb < 256 )) && reserve_mb=256
+  (( reserve_mb > 1536 )) && reserve_mb=1536
+  runtime_max_mb=$(( (available_mb - reserve_mb) * 80 / 100 ))
+  (( runtime_max_mb >= 768 )) || fatal "Effective available memory is too low after the CTS runtime reserve"
+  runtime_high_mb=$(( runtime_max_mb * 88 / 100 ))
+  app_heap_mb=$(( runtime_max_mb * 70 / 100 ))
+  (( app_heap_mb < 512 )) && app_heap_mb=512
+  (( app_heap_mb > 12288 )) && app_heap_mb=12288
+  scheduler_heap_mb=$(( app_heap_mb / 4 ))
+  (( scheduler_heap_mb < 256 )) && scheduler_heap_mb=256
+  (( scheduler_heap_mb > 768 )) && scheduler_heap_mb=768
+
+  upsert_env CTS_EFFECTIVE_MEMORY_MB "$total_mb"
+  upsert_env CTS_AVAILABLE_MEMORY_MB "$available_mb"
+  upsert_env CTS_NODE_HEAP_MB "$app_heap_mb"
+  upsert_env CTS_SCHEDULER_NODE_HEAP_MB "$scheduler_heap_mb"
+  upsert_env CTS_RUNTIME_MEMORY_HIGH_MB "$runtime_high_mb"
+  upsert_env CTS_RUNTIME_MEMORY_MAX_MB "$runtime_max_mb"
+  ok "Memory watchdog: ${available_mb} MiB available → Node heap ${app_heap_mb} MiB, soft ${runtime_high_mb} MiB, restart ${runtime_max_mb} MiB"
+}
+
 merge_seed_env() {
   [[ -n "$SEED_ENV_FILE" ]] || return 0
   local line key value
@@ -817,6 +891,7 @@ configure_environment_and_redis() {
   fi
   upsert_env ALLOW_INLINE_REDIS_LIVE_TRADING 1
   configure_cpu_parallelism
+  configure_memory_watchdog
   upsert_env ENABLE_PRODUCTION_MIGRATIONS 1
   upsert_env AUTO_MIGRATE_ON_STARTUP 1
   [[ "$inline_snapshot" == "1" ]] || upsert_env DISABLE_IN_PROCESS_CONTINUITY 1
@@ -969,19 +1044,23 @@ EOF
 }
 
 write_runtime_wrappers() {
-  local bun_bin node_bin
+  local bun_bin node_bin app_heap_mb scheduler_heap_mb
   bun_bin="/usr/local/bin/bun"
   [[ -x "$bun_bin" ]] || bun_bin="$(command -v bun)"
   node_bin="$(command -v node)"
+  app_heap_mb="$(env_value CTS_NODE_HEAP_MB)"
+  scheduler_heap_mb="$(env_value CTS_SCHEDULER_NODE_HEAP_MB)"
+  [[ "$app_heap_mb" =~ ^[0-9]+$ ]] || app_heap_mb=1024
+  [[ "$scheduler_heap_mb" =~ ^[0-9]+$ ]] || scheduler_heap_mb=256
   cat > "$RUNTIME_DIR/start-app.sh" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
-exec ${bun_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/start-production.mjs
+exec env NODE_OPTIONS="--max-old-space-size=$app_heap_mb --max-semi-space-size=128 --expose-gc" ${bun_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/start-production.mjs
 EOF
   cat > "$RUNTIME_DIR/start-scheduler.sh" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
-exec ${node_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/run-minute-scheduler.mjs
+exec env NODE_OPTIONS="--max-old-space-size=$scheduler_heap_mb --max-semi-space-size=64" ${node_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/run-minute-scheduler.mjs
 EOF
   chmod 750 "$RUNTIME_DIR/start-app.sh" "$RUNTIME_DIR/start-scheduler.sh"
   if [[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "npm" ]]; then
@@ -1033,6 +1112,14 @@ install_systemd_runtime() {
   local app_unit="/etc/systemd/system/$APP_NAME.service"
   local scheduler_unit="/etc/systemd/system/$APP_NAME-scheduler.service"
   local redis_unit="/etc/systemd/system/$APP_NAME-redis.service"
+  local runtime_high_mb runtime_max_mb scheduler_max_mb
+  runtime_high_mb="$(env_value CTS_RUNTIME_MEMORY_HIGH_MB)"
+  runtime_max_mb="$(env_value CTS_RUNTIME_MEMORY_MAX_MB)"
+  [[ "$runtime_high_mb" =~ ^[0-9]+$ ]] || runtime_high_mb=768
+  [[ "$runtime_max_mb" =~ ^[0-9]+$ ]] || runtime_max_mb=1024
+  (( runtime_max_mb > runtime_high_mb )) || runtime_max_mb=$(( runtime_high_mb + 128 ))
+  scheduler_max_mb=$(( runtime_max_mb / 3 ))
+  (( scheduler_max_mb < 384 )) && scheduler_max_mb=384
 
   if [[ -f "$RUNTIME_DIR/redis.pid" ]]; then
     local bootstrap_pid
@@ -1098,6 +1185,8 @@ KillSignal=SIGTERM
 NoNewPrivileges=true
 PrivateTmp=true
 LimitNOFILE=65536
+MemoryHigh=${runtime_high_mb}M
+MemoryMax=${runtime_max_mb}M
 
 [Install]
 WantedBy=multi-user.target
@@ -1119,6 +1208,7 @@ RestartSec=5
 TimeoutStopSec=20
 NoNewPrivileges=true
 PrivateTmp=true
+MemoryMax=${scheduler_max_mb}M
 
 [Install]
 WantedBy=multi-user.target
@@ -1140,8 +1230,12 @@ install_pm2_runtime() {
   if (( REINSTALL == 1 )) || ! command -v pm2 >/dev/null 2>&1; then
     run_root npm install -g pm2 --no-audit --no-fund --loglevel=error
   fi
-  local home
+  local home runtime_max_mb scheduler_max_mb
   home="$(service_home)"
+  runtime_max_mb="$(env_value CTS_RUNTIME_MEMORY_MAX_MB)"
+  [[ "$runtime_max_mb" =~ ^[0-9]+$ ]] || runtime_max_mb=1024
+  scheduler_max_mb=$(( runtime_max_mb / 3 ))
+  (( scheduler_max_mb < 384 )) && scheduler_max_mb=384
   if [[ -f "$RUNTIME_DIR/redis.pid" ]]; then
     local bootstrap_pid
     bootstrap_pid="$(cat "$RUNTIME_DIR/redis.pid" 2>/dev/null || true)"
@@ -1156,8 +1250,8 @@ install_pm2_runtime() {
   if [[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "npm" ]]; then
     run_as_service pm2 start "$RUNTIME_DIR/start-redis.sh" --name "$APP_NAME-redis" --time --restart-delay 3000
   fi
-  run_as_service pm2 start "$RUNTIME_DIR/start-app.sh" --name "$APP_NAME" --time --restart-delay 5000
-  run_as_service pm2 start "$RUNTIME_DIR/start-scheduler.sh" --name "$APP_NAME-scheduler" --time --restart-delay 5000
+  run_as_service pm2 start "$RUNTIME_DIR/start-app.sh" --name "$APP_NAME" --time --restart-delay 5000 --max-memory-restart "${runtime_max_mb}M"
+  run_as_service pm2 start "$RUNTIME_DIR/start-scheduler.sh" --name "$APP_NAME-scheduler" --time --restart-delay 5000 --max-memory-restart "${scheduler_max_mb}M"
   run_as_service pm2 save --force
   run_root env PATH="$PATH" PM2_HOME="$home/.pm2" pm2 startup -u "$SERVICE_USER" --hp "$home"
   ok "PM2 processes and init-system reboot startup are configured"

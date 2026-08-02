@@ -72,8 +72,8 @@ export interface RealPosition {
   blockProfitFactorWindow?: number
   blockProfitFactorSampleCount?: number
   blockCount?: number
-  blockScope?: "long" | "short" | "overall"
-  blockLaneKind?: "direction" | "signal_source"
+  blockScope?: "long" | "short" | "overall" | "live_row"
+  blockLaneKind?: "direction" | "signal_source" | "row-live"
   blockLaneKey?: string
   blockSourceId?: string
   blockVolumeIncrementRatio?: number

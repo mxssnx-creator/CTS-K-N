@@ -1,0 +1,219 @@
+import {
+  buildTimeframeCombinations,
+  evaluateDirectTradeSets,
+  normaliseDirectTradeStrategyTypes,
+  normaliseDirectTradeTimeframes,
+  resampleCandles,
+  type DirectTradeCandle,
+} from "@/lib/direct-trade-coordination"
+
+function upwardMinuteSeries(size = 80): DirectTradeCandle[] {
+  return Array.from({ length: size }, (_, index) => {
+    const close = 100 + index * 0.35
+    return {
+      time: index * 60_000,
+      open: close - 0.1,
+      high: close + 0.15,
+      low: close - 0.2,
+      close,
+      volume: 100 + index,
+    }
+  })
+}
+
+describe("Direct-Trade independent historical coordination", () => {
+  test("migrates 5m without pretending it is a 15m candle and creates every selected combination", () => {
+    expect(normaliseDirectTradeTimeframes(["1m", "5m", "15m"]).sort()).toEqual(["10m", "15m", "1m"].sort())
+    expect(buildTimeframeCombinations(["1m", "10m", "15m"])).toHaveLength(7)
+
+    const candles = upwardMinuteSeries(20)
+    const tenMinute = resampleCandles(candles, 10)
+    expect(tenMinute).toHaveLength(2)
+    expect(tenMinute[0]).toMatchObject({ open: candles[0].open, close: candles[9].close })
+    expect(tenMinute[0].high).toBe(candles[9].high)
+    // Persisted temporary and former names retain their intended independent
+    // lineage after the operator-facing rename.
+    expect(normaliseDirectTradeStrategyTypes(["trailing_auto_combination", "complex"]))
+      .toEqual(["trailing_auto", "combination"])
+  })
+
+  test("materialises independent TP/SL/trailing keys and keeps hindsight best exits analytical only", () => {
+    const candles = upwardMinuteSeries()
+    const sets = evaluateDirectTradeSets({
+      symbol: "BTCUSDT",
+      direction: "long",
+      candlesByTimeframe: { "1m": candles, "10m": resampleCandles(candles, 10), "15m": resampleCandles(candles, 15) },
+      timeframeSet: ["1m"],
+      historyHours: 60,
+      volumeRatio: 0.1,
+      tpRange: [0.3, 0.5],
+      slRatios: [0.25],
+      trailOptions: [
+        { trailing: false, trailStart: 0, trailStop: 0 },
+        { trailing: true, trailStart: 0.3, trailStop: 0.2 },
+      ],
+      entryTactics: ["breakout"],
+      exitTactics: ["bracket"],
+      entryTiming: "current",
+      activityVolumeRatio: 0,
+      maxHoldMinutes: 20,
+      blockRange: [1, 12],
+      minProfitFactor: 0.8,
+      maxDrawdownTimeMin: 60,
+    })
+
+    expect(sets).toHaveLength(4)
+    expect(new Set(sets.map((set) => set.setKey)).size).toBe(4)
+    expect(sets.every((set) => set.timeframe === "1m" && set.historyHours === 60)).toBe(true)
+    expect(sets.every((set) => set.bestMarketExitAnalysisOnly)).toBe(true)
+    expect(sets.every((set) => typeof set.activeEntry === "boolean")).toBe(true)
+    expect(sets.some((set) => set.bestMarketExitPnl > set.totalPnl)).toBe(true)
+    expect(sets.every((set) => set.recentPositionCount >= 0 && set.recentPositionCount <= 12)).toBe(true)
+    expect(sets.every((set) => set.recentPositionCount === 0 || set.lastPositionExitReason !== null)).toBe(true)
+    expect(sets.every((set) =>
+      set.recentProfitFactorInfinite || typeof set.recentProfitFactor === "number",
+    )).toBe(true)
+    expect(sets.every((set) => set.valid || set.deactivationReason !== null)).toBe(true)
+  })
+
+  test("keeps Auto Trailing, Combination, inverse and high-protection as independent order lineages", () => {
+    const candles = upwardMinuteSeries(180)
+    const common = {
+      symbol: "BTCUSDT",
+      direction: "long" as const,
+      candlesByTimeframe: { "1m": candles, "10m": resampleCandles(candles, 10), "15m": resampleCandles(candles, 15) },
+      timeframeSet: ["1m"] as const,
+      historyHours: 60,
+      volumeRatio: 0.1,
+      entryTactics: ["breakout"] as const,
+      exitTactics: ["bracket"] as const,
+      entryTiming: "current" as const,
+      activityVolumeRatio: 0,
+      maxHoldMinutes: 20,
+      blockRange: [1, 12] as [number, number],
+      minProfitFactor: 0.8,
+      maxDrawdownTimeMin: 60,
+    }
+    const auto = evaluateDirectTradeSets({
+      ...common,
+      strategyType: "trailing_auto",
+      tpRange: [1],
+      slRatios: [0.75],
+      trailOptions: [{ trailing: true, trailStart: 0.5, trailStop: 0.3, mode: "auto", autoTrailSensitivity: 1 }],
+    })
+    const combination = evaluateDirectTradeSets({
+      ...common,
+      strategyType: "combination",
+      tpRange: [1],
+      slRatios: [0.75],
+      trailOptions: [
+        { trailing: false, trailStart: 0, trailStop: 0, mode: "none" },
+        { trailing: true, trailStart: 0.5, trailStop: 0.3, mode: "fixed" },
+        { trailing: true, trailStart: 0.5, trailStop: 0.3, mode: "auto", autoTrailSensitivity: 1 },
+      ],
+    })
+    const inverse = evaluateDirectTradeSets({
+      ...common,
+      strategyType: "inverse",
+      signalDirection: "short",
+      tpRange: [1],
+      slRatios: [1.25],
+      trailOptions: [{ trailing: false, trailStart: 0, trailStop: 0, mode: "none" }],
+    })
+    const highProtection = evaluateDirectTradeSets({
+      ...common,
+      strategyType: "high_protection",
+      tpRange: [4],
+      slRatios: [0.75],
+      trailOptions: [{ trailing: false, trailStart: 0, trailStop: 0, mode: "none" }],
+    })
+    const relativeCombination = evaluateDirectTradeSets({
+      ...common,
+      strategyType: "combination",
+      entryTactics: ["relative"],
+      exitTactics: ["relative"],
+      tpRange: [1],
+      slRatios: [0.75],
+      trailOptions: [{ trailing: false, trailStart: 0, trailStop: 0, mode: "none" }],
+    })
+
+    expect(auto).toHaveLength(1)
+    expect(auto[0]).toMatchObject({ strategyType: "trailing_auto", trailingMode: "auto", autoTrailSensitivity: 1 })
+    expect(combination).toHaveLength(3)
+    expect(new Set(combination.map((set) => set.trailingMode))).toEqual(new Set(["none", "fixed", "auto"]))
+    expect(inverse).toHaveLength(1)
+    expect(inverse[0]).toMatchObject({ direction: "long", signalDirection: "short", strategyType: "inverse", stoploss: 1.25 })
+    expect(inverse[0].stoploss).toBeLessThanOrEqual(inverse[0].takeprofit * 1.25)
+    expect(highProtection).toHaveLength(1)
+    expect(highProtection[0]).toMatchObject({ strategyType: "high_protection", takeprofit: 4, stoploss: 3 })
+    expect(relativeCombination).toHaveLength(1)
+    expect(relativeCombination[0]).toMatchObject({ strategyType: "combination", entryTactic: "relative", exitTactic: "relative" })
+    expect(new Set([...auto, ...combination, ...inverse, ...highProtection, ...relativeCombination].map((set) => set.setKey)).size).toBe(7)
+  })
+
+  test("requires a finite high-PF recent closed-position window for a new eligible config", () => {
+    const candles = upwardMinuteSeries(220)
+    const sets = evaluateDirectTradeSets({
+      symbol: "BTCUSDT",
+      direction: "long",
+      candlesByTimeframe: { "1m": candles },
+      timeframeSet: ["1m"],
+      historyHours: 90,
+      volumeRatio: 0.1,
+      tpRange: [0.3],
+      slRatios: [0.25],
+      trailOptions: [{ trailing: false, trailStart: 0, trailStop: 0, mode: "none" }],
+      entryTactics: ["breakout"],
+      exitTactics: ["bracket"],
+      entryTiming: "current",
+      activityVolumeRatio: 0,
+      maxHoldMinutes: 20,
+      blockRange: [1, 12],
+      minProfitFactor: 0.8,
+      minRecentProfitFactor: 10,
+      recentPositionWindow: 12,
+      minRecentPositions: 12,
+      maxDrawdownTimeMin: 60,
+    })
+
+    expect(sets).toHaveLength(1)
+    expect(sets[0]).toMatchObject({
+      recentPositionCount: 12,
+      recentProfitFactorInfinite: true,
+      valid: false,
+      deactivationReason: "recent_pf",
+    })
+  })
+
+  test("deducts the configured position cost once from each closed historical result", () => {
+    const candles = upwardMinuteSeries(180)
+    const common = {
+      symbol: "BTCUSDT",
+      direction: "long" as const,
+      candlesByTimeframe: { "1m": candles },
+      timeframeSet: ["1m"] as const,
+      historyHours: 90,
+      volumeRatio: 0.1,
+      tpRange: [0.3],
+      slRatios: [0.25],
+      trailOptions: [{ trailing: false, trailStart: 0, trailStop: 0, mode: "none" }],
+      entryTactics: ["breakout"] as const,
+      exitTactics: ["bracket"] as const,
+      entryTiming: "current" as const,
+      activityVolumeRatio: 0,
+      maxHoldMinutes: 20,
+      blockRange: [1, 12] as [number, number],
+      minProfitFactor: 0.8,
+      minRecentProfitFactor: 0.8,
+      recentPositionWindow: 3,
+      minRecentPositions: 3,
+      maxDrawdownTimeMin: 60,
+    }
+    const lowCost = evaluateDirectTradeSets({ ...common, positionCostPercent: 0.02 })[0]
+    const defaultCost = evaluateDirectTradeSets({ ...common, positionCostPercent: 0.1 })[0]
+
+    expect(defaultCost.positionCostPercent).toBe(0.1)
+    expect(defaultCost.totalPnl).toBeCloseTo(lowCost.totalPnl - lowCost.totalTrades * 0.08, 3)
+    expect(defaultCost.recentTotalPnl).toBeCloseTo(lowCost.recentTotalPnl - lowCost.recentPositionCount * 0.08, 3)
+  })
+})

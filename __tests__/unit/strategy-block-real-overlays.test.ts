@@ -270,10 +270,19 @@ describe("Real-stage Block overlays", () => {
       },
     )
 
-    expect(evaluated.sets.map((set: StrategySet) => set.direction).sort()).toEqual([
+    const rawSets = evaluated.sets.filter((set: StrategySet) => set.rowStage !== "real")
+    const rowSets = evaluated.sets.filter((set: StrategySet) => set.rowStage === "real")
+    expect(rawSets.map((set: StrategySet) => set.direction).sort()).toEqual([
       "long",
       "short",
     ])
+    expect(rowSets.map((set: StrategySet) => set.direction).sort()).toEqual([
+      "long",
+      "short",
+    ])
+    expect(rowSets.every((set: StrategySet) =>
+      set.rowEvaluationKey === `${set.rowSourceSetKey}#row_real#row_live`,
+    )).toBe(true)
   })
 
   test("evaluates and retains every Real candidate despite legacy cap fields", async () => {
@@ -314,7 +323,11 @@ describe("Real-stage Block overlays", () => {
     expect(candidates.every((candidate) => candidate.status === "valid_real")).toBe(true)
     expect(coordinator.buildIndependentBlockCountOverlaysForReal.mock.calls[0][1])
       .toHaveLength(3)
-    expect(evaluated.sets).toHaveLength(3)
+    // Real retains its complete validated Main graph for diagnostics/stats and
+    // materializes exactly one lightweight Row-Real per valid lineage.  The
+    // rows are not a hidden cap or a second variant fan-out.
+    expect(evaluated.sets.filter((set: StrategySet) => set.rowStage !== "real")).toHaveLength(3)
+    expect(evaluated.sets.filter((set: StrategySet) => set.rowStage === "real")).toHaveLength(3)
   })
 
   test("creates independent exact-Set overlays plus direction-wide active Real overlays", async () => {

@@ -86,7 +86,10 @@ export async function GET(request: NextRequest) {
       }
     }
     
-    // Get actual key count directly (most reliable)
+    // Get the exact key cardinality without materializing every key. This
+    // endpoint is polled during historic/max-symbol processing, where
+    // `KEYS("*")` can allocate a second full in-memory key list and stall the
+    // server precisely while the operator is checking progress.
     const { getRedisClient } = await import("@/lib/redis-db")
     const client = getRedisClient()
     const [startupHash, startupCompletedAtKey, durableSiteId, siteHash, continuityHash, liveRecoveryHash] = await Promise.all([
@@ -116,8 +119,7 @@ export async function GET(request: NextRequest) {
     const tickAge = (value: number) => value > 0 && Number.isFinite(value) ? Math.max(0, nowMs - value) : null
     const continuityAgeMs = tickAge(continuityLastTickMs)
     const liveRecoveryAgeMs = tickAge(liveRecoveryLastTickMs)
-    const allKeys = await client.keys("*").catch(() => [])
-    const actualKeyCount = Array.isArray(allKeys) ? allKeys.length : 0
+    const actualKeyCount = await client.dbSize().catch(() => 0)
 
     // Get connection count
     let connectionsCount = 0

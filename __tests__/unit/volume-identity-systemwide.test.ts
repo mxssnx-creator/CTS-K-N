@@ -2,7 +2,7 @@ import { StrategyEngine } from "@/lib/strategies"
 import { TradingEngine } from "@/lib/trading"
 import { resolveRealStageSizeMultiplier } from "@/lib/trade-engine/stages/real-stage"
 import { VolumeCalculator } from "@/lib/volume-calculator"
-import { normalizeBaseVolumeFactor } from "@/lib/constants"
+import { normalizeBaseVolumeFactor, SYSTEM_VOLUME_FACTOR_MULTIPLIER } from "@/lib/constants"
 import { normalizeFileConnectionBaseIdentity } from "@/lib/file-storage"
 import type { StrategyConfig } from "@/lib/types"
 
@@ -82,18 +82,18 @@ describe("system-wide Base volume identity", () => {
     })
   })
 
-  test("legacy TradingEngine cannot mutate the shared Base basis", () => {
+  test("legacy TradingEngine retains Base identity and applies the global 50% execution scalar", () => {
     const engine = new TradingEngine()
     engine.setBaseVolumeFactor(7)
     expect(engine.calculateVolume(2)).toEqual({
       base: 2,
-      adjusted: 2,
-      factor: 1,
+      adjusted: 1,
+      factor: 0.5,
     })
     expect(engine.calculateVolume(2, 1.5)).toEqual({
       base: 2,
-      adjusted: 3,
-      factor: 1.5,
+      adjusted: 1.5,
+      factor: 0.75,
     })
   })
 
@@ -322,10 +322,11 @@ describe("system-wide Base volume identity", () => {
       baseVolumeFactor: 9,
     })
 
-    expect(stale.calculatedVolume).toBeCloseTo(expectedCalculated, 12)
+    expect(stale.calculatedVolume).toBeCloseTo(expectedCalculated * SYSTEM_VOLUME_FACTOR_MULTIPLIER, 12)
     expect(stale.calculatedVolume).toBeCloseTo(identity.calculatedVolume!, 12)
     expect(stale.liveEngineFactor).toBe(expectedEngine)
     expect(stale.signalVolumeFactor).toBe(expectedSignal)
     expect(stale.sizeMultiplier).toBe(expectedVariant)
+    expect(stale.systemVolumeFactor).toBe(SYSTEM_VOLUME_FACTOR_MULTIPLIER)
   })
 })

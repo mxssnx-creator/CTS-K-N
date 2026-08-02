@@ -223,8 +223,8 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     : null
   const command = inheritedPnpm ? process.execPath : "corepack"
   const args = inheritedPnpm
-    ? [inheritedPnpm, "run", "build"]
-    : ["pnpm@10.28.1", "run", "build"]
+    ? [inheritedPnpm, "run", "build:next"]
+    : ["pnpm@10.28.1", "run", "build:next"]
   const result = await runBuild(
     command,
     args,

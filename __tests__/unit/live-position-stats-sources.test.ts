@@ -15,9 +15,8 @@ describe("live position stats and trade-history data sources", () => {
     expect(saveBlock).toContain("const posKey = `live_positions:${position.connectionId}:${position.id}`")
     expect(saveBlock).toContain("const jsonKey = `live:position:${position.id}`")
     expect(saveBlock).toContain("await client.set(jsonKey, JSON.stringify(position)")
-    expect(saveBlock).toContain("await client.lrem(openIndexKey, 0, position.id)")
-    expect(saveBlock).toContain("await client.lpush(closedIndexKey, position.id)")
-    expect(saveBlock).toContain("await client.lpush(openIndexKey, position.id)")
+    expect(saveBlock).toContain("await moveRedisListMembershipToHead(")
+    expect(saveBlock).toContain("await upsertRedisListHead(client, openIndexKey, position.id)")
   })
 
   test("progression stats and trade history read Redis hash fallbacks and derive effective PnL", () => {

@@ -213,6 +213,11 @@ export interface RedisClientLike {
   eval?(script: string, options: { keys: string[]; arguments: string[] }): Promise<any>
   dbSize(): Promise<number>
   keys(pattern: string): Promise<string[]>
+  /**
+   * Bounded diagnostic inventory. InlineLocalRedis implements this without
+   * allocating a complete KEYS("*") result; network clients can omit it.
+   */
+  sampleKeys?(limit: number): Promise<string[]>
   scan?(cursor: string | number, ...args: any[]): Promise<{ cursor: string; keys: string[] } | [string, string[]]>
   zadd(key: string, score: number, member: string): Promise<number>
   zrangebyscore(key: string, min: number | string, max: number | string): Promise<string[]>
@@ -1357,6 +1362,12 @@ export class InlineLocalRedis implements RedisClientLike {
       __redis_mem_limits?: { heapMB: number; rssSoftMB: number; rssHardMB: number; maxKeys: number }
     }
 
+    // Unit tests construct short-lived isolated emulators and invoke cleanup
+    // explicitly when that behaviour is under test.  A global periodic timer
+    // there has no production value and can wake after Jest has torn down its
+    // console, producing nondeterministic post-test work/logging.
+    if (process.env.NODE_ENV === "test") return
+
     // ── Dynamic memory limits ────────────────────────────────────────────────
     // Computed BEFORE the startup guard so the thresholds update on every
     // HMR reload (the guard below only prevents the timer from being
@@ -2498,6 +2509,45 @@ export class InlineLocalRedis implements RedisClientLike {
     return this.matchKeys(pattern)
   }
 
+  /**
+   * Return a bounded, type-balanced key inventory for diagnostics.  Calling
+   * KEYS("*") and slicing afterwards still materialises every key and made
+   * the monitoring route allocate a second large key array during max-symbol
+   * processing. This method walks the five backing Maps round-robin and stops
+   * at the requested limit, so its allocations remain strictly bounded.
+   */
+  async sampleKeys(limit: number): Promise<string[]> {
+    const maximum = Math.max(0, Math.floor(Number(limit) || 0))
+    if (maximum === 0) return []
+
+    const keys: string[] = []
+    const seen = new Set<string>()
+    const iterators = [
+      this.data.strings.keys(),
+      this.data.hashes.keys(),
+      this.data.sets.keys(),
+      this.data.lists.keys(),
+      this.data.sorted_sets.keys(),
+    ]
+    const active = new Set(iterators)
+
+    while (keys.length < maximum && active.size > 0) {
+      for (const iterator of Array.from(active)) {
+        const next = iterator.next()
+        if (next.done) {
+          active.delete(iterator)
+          continue
+        }
+        const key = String(next.value)
+        if (this.isExpired(key) || seen.has(key)) continue
+        seen.add(key)
+        keys.push(key)
+        if (keys.length >= maximum) break
+      }
+    }
+    return keys
+  }
+
   async scan(cursor: string | number, ...args: any[]): Promise<[string, string[]]> {
     const options = normalizeScanOptions(args)
     const offset = Math.max(0, Number(cursor) || 0)
@@ -3604,6 +3654,11 @@ const NUMERIC_HASH_FIELDS = new Set([
   "prev_pos_window", "prevPosWindow",
   "main_eval_pos_count", "mainEvalPosCount",
   "real_eval_pos_count", "realEvalPosCount",
+  "live_eval_pos_count", "liveEvalPosCount",
+  "block_row_live_volume_ratio", "blockRowLiveVolumeRatio",
+  "block_row_live_profit_factor_ratio", "blockRowLiveProfitFactorRatio",
+  "block_row_live_max_stack", "blockRowLiveMaxStack",
+  "block_row_live_pause_count_ratio", "blockRowLivePauseCountRatio",
   "min_step", "minStep",
   "trailing_min_step", "trailingMinStep",
   "leverage_percentage", "leveragePercentage",

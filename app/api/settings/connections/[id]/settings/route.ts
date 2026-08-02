@@ -172,6 +172,12 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "posCountsVolumeRatio",
   "blockActiveRealEnabled",
   "blockActiveLiveEnabled",
+  "blockRowLiveEnabled",
+  "blockRowLiveVolumeRatio",
+  "blockRowLiveProfitFactorRatio",
+  "blockRowLiveMaxStack",
+  "blockRowLivePauseCountRatio",
+  "liveEvalPosCount",
   "strategyBaseTrailingEnabled",
   "strategyBaseTrailingVariants",
   "dcaMaxSteps",
@@ -330,7 +336,7 @@ export async function GET(
         if ([
           "symbol_count", "symbolCount", "leveragePercentage",
           "prevPosMinCount", "prevPosWindow", "mainEvalPosCount",
-          "realEvalPosCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio", "trailingMinStep",
+          "realEvalPosCount", "liveEvalPosCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio", "trailingMinStep",
           // Volume / live trading factors
           "live_volume_factor", "volume_factor_live", "preset_volume_factor",
           "signal_volume_factor", "volume_factor_signal",
@@ -340,6 +346,7 @@ export async function GET(
           // Block strategy tuning
           "blockVolumeRatio", "blockProfitFactorRatio", "blockMaxStack",
           "strategyBlockMaterializationBatchSize", "blockPauseCountRatio",
+          "blockRowLiveVolumeRatio", "blockRowLiveProfitFactorRatio", "blockRowLiveMaxStack", "blockRowLivePauseCountRatio",
           "posCountsVolumeRatio", "dcaMaxSteps", "dcaBreakevenProfitPct", "dcaCooldownSeconds",
           // PF / DDT / stage thresholds
           "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
@@ -355,7 +362,7 @@ export async function GET(
           "variantTrailingEnabled", "variantBlockEnabled",
           "blockOnly", "variantBlockOnly",
           "variantDcaEnabled",
-          "blockActiveRealEnabled", "blockActiveLiveEnabled",
+          "blockActiveRealEnabled", "blockActiveLiveEnabled", "blockRowLiveEnabled",
           "strategyBaseTrailingEnabled",
           // Axis enable flags
           "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
@@ -972,7 +979,7 @@ export async function PATCH(
 
     const flatKnobs: Record<string, string> = {}
     const knobKeys = [
-      "prevPosMinCount", "prevPosWindow", "mainEvalPosCount", "realEvalPosCount",
+      "prevPosMinCount", "prevPosWindow", "mainEvalPosCount", "realEvalPosCount", "liveEvalPosCount",
       "minStep", "maxStopLossRatio", "trailingMinStep", "posCountsVolumeRatio",
       "strategyBlockMaterializationBatchSize",
     ] as const
@@ -1041,6 +1048,15 @@ export async function PATCH(
       if (Number.isFinite(bpcr) && bpcr > 0) flatKnobs.blockPauseCountRatio = String(Math.max(1, Math.min(4, Math.round(bpcr * 2) / 2)))
       if (typeof coord.blockActiveRealEnabled === "boolean") flatKnobs.blockActiveRealEnabled = String(coord.blockActiveRealEnabled)
       if (typeof coord.blockActiveLiveEnabled === "boolean") flatKnobs.blockActiveLiveEnabled = String(coord.blockActiveLiveEnabled)
+      if (typeof coord.blockRowLiveEnabled === "boolean") flatKnobs.blockRowLiveEnabled = String(coord.blockRowLiveEnabled)
+      const rowLiveVolume = Number(coord.blockRowLiveVolumeRatio)
+      if (Number.isFinite(rowLiveVolume) && rowLiveVolume > 0) flatKnobs.blockRowLiveVolumeRatio = String(Math.max(0.25, Math.min(3, rowLiveVolume)))
+      const rowLivePf = Number(coord.blockRowLiveProfitFactorRatio)
+      if (Number.isFinite(rowLivePf) && rowLivePf > 0) flatKnobs.blockRowLiveProfitFactorRatio = String(Math.max(0.2, Math.min(5, rowLivePf)))
+      const rowLiveStack = Number(coord.blockRowLiveMaxStack)
+      if (Number.isFinite(rowLiveStack) && rowLiveStack >= 1) flatKnobs.blockRowLiveMaxStack = String(Math.max(1, Math.min(10, Math.floor(rowLiveStack))))
+      const rowLivePause = Number(coord.blockRowLivePauseCountRatio)
+      if (Number.isFinite(rowLivePause) && rowLivePause > 0) flatKnobs.blockRowLivePauseCountRatio = String(Math.max(1, Math.min(4, Math.round(rowLivePause * 2) / 2)))
       if (typeof coord.blockOnly === "boolean") {
         flatKnobs.blockOnly = String(coord.blockOnly)
         flatKnobs.variantBlockOnly = String(coord.blockOnly)

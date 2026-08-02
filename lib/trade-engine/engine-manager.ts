@@ -1232,17 +1232,37 @@ export class TradeEngineManager {
       const startupVerificationTimer = setTimeout(async () => {
         unregisterEngineTimer(startupVerificationTimer)
         if (!this.isCurrentGeneration(startupVerificationEpoch)) return
-        if (this.prehistoricTimer || this.prehistoricBootstrapInFlight) {
+        // A symbol/settings recoordination deliberately invalidates the old
+        // bootstrap before its successor is armed. That hand-off is healthy,
+        // not a missing worker. Likewise a very fast bootstrap may already
+        // have armed live progressions before the delayed verification runs.
+        if (
+          this.prehistoricTimer ||
+          this.prehistoricBootstrapInFlight ||
+          this.prehistoricReloadQueued ||
+          this.prehistoricRetryTimer ||
+          this.liveProgressionsArmed
+        ) {
           await logProgressionEvent(
             this.connectionId,
             "engine_started",
             "info",
-            this.indicationTimer && this.realtimeTimer
+            this.liveProgressionsArmed && this.indicationTimer && this.realtimeTimer
               ? "All engine processors started"
-              : "Prehistoric bootstrap running — entry processors gated until completion",
+              : this.prehistoricReloadQueued
+                ? "Prehistoric bootstrap generation hand-off in progress — entry processors remain gated"
+                : "Prehistoric bootstrap running — entry processors gated until completion",
           )
         } else {
-          console.error(`[v0] [Engine] Startup failed — no prehistoric worker armed`)
+          // Do not publish a terminal startup error for a transient race. A
+          // fresh, coalesced bootstrap is safer than allowing entries through
+          // an unproven historic gate, and keeps the exit-only loop available.
+          console.warn(`[v0] [Engine] Bootstrap worker absent at verification; re-arming historic self-heal`)
+          this.loadPrehistoricDataInBackground(
+            prehistoricCacheKey,
+            redisClient,
+            "startup verification self-heal",
+          )
         }
       }, 2000)
       registerEngineTimer(startupVerificationTimer)
@@ -2228,7 +2248,12 @@ export class TradeEngineManager {
         `errors=${processingResult.errors}`,
       )
     } catch (error) {
-      if (error instanceof PrehistoricRunSupersededError) throw error
+      // A cancelled ConfigSetProcessor may surface its private cancellation
+      // error here. Once our generation is no longer current it is a normal
+      // hand-off, never a failed historic calculation or an error-state write.
+      if (error instanceof PrehistoricRunSupersededError || !run.shouldContinue()) {
+        throw new PrehistoricRunSupersededError(this.connectionId, run.bootstrapGeneration)
+      }
       console.error("[v0] [Engine] Prehistoric loading failed:", error instanceof Error ? error.message : String(error))
       // A supporting write or one half of the mirrored gate publication can
       // fail after the calculation. While this generation still owns the

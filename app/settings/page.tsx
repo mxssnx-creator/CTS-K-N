@@ -113,6 +113,7 @@ interface Settings {
 
   mainEvalPosCount: number
   realEvalPosCount: number
+  liveEvalPosCount: number
 
   // Position-Count coordination ratio for additional Main axis Sets.
   // Range 0.1–10 step 0.1, default 3; ratio 10 = 0.02× Base per valid Set.
@@ -399,6 +400,11 @@ interface Settings {
   blockPauseCountRatio?: number
   blockActiveRealEnabled?: boolean
   blockActiveLiveEnabled?: boolean
+  blockRowLiveEnabled?: boolean
+  blockRowLiveVolumeRatio?: number
+  blockRowLiveProfitFactorRatio?: number
+  blockRowLiveMaxStack?: number
+  blockRowLivePauseCountRatio?: number
   presetDcaEnabled?: boolean
   presetDirectionEnabled?: boolean
   presetMoveEnabled?: boolean
@@ -559,6 +565,7 @@ const initialSettings: Settings = {
 
   mainEvalPosCount: 25,
   realEvalPosCount: 20,
+  liveEvalPosCount: 15,
 
   // Position-Count (Pis) Sets volume ratio (Main-stage axis Sets only).
   posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
@@ -696,6 +703,11 @@ const initialSettings: Settings = {
   blockPauseCountRatio: 1,
   blockActiveRealEnabled: true,
   blockActiveLiveEnabled: true,
+  blockRowLiveEnabled: true,
+  blockRowLiveVolumeRatio: 1,
+  blockRowLiveProfitFactorRatio: 0.8,
+  blockRowLiveMaxStack: 10,
+  blockRowLivePauseCountRatio: 1,
   presetDcaEnabled: false,
   presetDirectionEnabled: true,
   presetMoveEnabled: true,

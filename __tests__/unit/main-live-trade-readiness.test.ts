@@ -18,6 +18,8 @@ describe("Main Trade Engine live execution readiness", () => {
     KV_REST_API_URL: process.env.KV_REST_API_URL,
     KV_REST_API_TOKEN: process.env.KV_REST_API_TOKEN,
     ALLOW_INLINE_REDIS_LIVE_TRADING: process.env.ALLOW_INLINE_REDIS_LIVE_TRADING,
+    FORCE_SIMULATED: process.env.FORCE_SIMULATED,
+    FORCE_LIVE: process.env.FORCE_LIVE,
   }
 
   beforeEach(() => {
@@ -28,6 +30,8 @@ describe("Main Trade Engine live execution readiness", () => {
     delete process.env.KV_REST_API_URL
     delete process.env.KV_REST_API_TOKEN
     delete process.env.ALLOW_INLINE_REDIS_LIVE_TRADING
+    delete process.env.FORCE_SIMULATED
+    delete process.env.FORCE_LIVE
   })
 
   afterAll(() => {
@@ -102,6 +106,25 @@ describe("Main Trade Engine live execution readiness", () => {
       canPlaceRealOrders: false,
       executionMode: "simulation",
       blockCode: "disabled",
+    })
+  })
+
+  test("FORCE_SIMULATED overrides a persisted Live request without a rejected-order loop", () => {
+    process.env.REDIS_URL = "redis://shared-test"
+    process.env.FORCE_SIMULATED = "1"
+    process.env.FORCE_LIVE = "0"
+    const result = evaluateRealTradeReadiness({
+      ...credentialed,
+      is_live_trade: "1",
+      live_trade_requested: "1",
+    })
+
+    expect(result).toMatchObject({
+      requested: true,
+      enabled: true,
+      canPlaceRealOrders: false,
+      executionMode: "simulation",
+      blockCode: "forced_simulation",
     })
   })
 

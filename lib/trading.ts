@@ -1,4 +1,5 @@
 import type { RealPosition } from "./types"
+import { applySystemVolumeFactor, SYSTEM_VOLUME_FACTOR_MULTIPLIER } from "./constants"
 
 function tradingPositionId(): string {
   return globalThis.crypto?.randomUUID?.() ??
@@ -71,11 +72,12 @@ export class TradingEngine {
     const factor = Number.isFinite(parsedFactor)
       ? Math.max(1, Math.min(10, parsedFactor))
       : 1
-    const adjusted = base * factor
+    const effectiveFactor = factor * SYSTEM_VOLUME_FACTOR_MULTIPLIER
+    const adjusted = applySystemVolumeFactor(base * factor)
     return {
       base,
       adjusted,
-      factor,
+      factor: effectiveFactor,
     }
   }
 

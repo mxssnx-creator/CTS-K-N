@@ -287,7 +287,7 @@ describe("Signal source registry and low-stop calculation", () => {
     })).toBeNull()
   })
 
-  test("rejects an impossible TP ceiling instead of violating reward/risk", () => {
+  test("keeps the complete Source registry while rejecting an impossible TP ceiling", () => {
     const settings = normalizeSignalIndicationSettings({
       minimumStrength: 0.05,
       minimumConfidence: 0.5,
@@ -298,7 +298,9 @@ describe("Signal source registry and low-stop calculation", () => {
       maxSourcesPerCycle: 3,
       minimumSourceSignals: 20,
     })
-    expect(settings.minimumSourceSignals).toBe(3)
+    // Source scheduling is no longer user-capped: the configured consensus
+    // floor is bounded by the complete registry, not an obsolete 3-source cap.
+    expect(settings.minimumSourceSignals).toBe(20)
     expect(evaluateSignalCandles({
       source: getSignalSource("binance-usdm")!,
       candles: candles("long"),

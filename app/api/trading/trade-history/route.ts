@@ -297,7 +297,12 @@ export async function GET(request: NextRequest) {
       mode === "exchange" && offset === 0
         ? (exchangeSnapshot?.rows || []).filter((row) => row.environment === "exchange")
         : []
-    const rows = mergeTradeHistory(exchangeRows, localRows)
+    // The exchange cache and durable archive can both contribute to page zero.
+    // Merge first, then apply the caller's transport limit to the *combined*
+    // result so a 500-row request can never expand to 500 local rows plus the
+    // exchange cache. The archive itself remains unbounded; only this response
+    // page is capped.
+    const rows = mergeTradeHistory(exchangeRows, localRows, limit)
     const summary = summarizeTradeHistory(rows)
     // Table paging and analytics are deliberately independent. The durable
     // close index has no row ceiling; the compact time index supplies the
@@ -348,7 +353,7 @@ export async function GET(request: NextRequest) {
         totalIndexed: localPage.totalIndexed,
         hasMore: localPage.hasMore,
         durableUnlimited: true,
-        maximum: null,
+        maximum: MAX_TRADE_HISTORY_PAGE_SIZE,
         visibleWindow: 50,
         analyticsRows: analyticsRows.length,
       },

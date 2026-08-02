@@ -30,6 +30,7 @@ import {
   collectQuickStartChangedFields,
   sameOrderedSymbols,
 } from "@/lib/quickstart-change-detection"
+import { canRetainQuickStartPrehistoricCoverage } from "@/lib/quickstart-bootstrap-state"
 import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   normalizeMainTradeStagePfRatio,
@@ -353,11 +354,12 @@ async function handlePost(request: Request) {
     const exchangeName = normalizeQuickstartExchange(connection)
     const connectionId = connection.id
 
-    const [latestConnectionHash, rawConnectionSettings, prefixedConnectionSettings, currentEngineState] = await Promise.all([
+    const [latestConnectionHash, rawConnectionSettings, prefixedConnectionSettings, currentEngineState, currentPrehistoricState] = await Promise.all([
       client.hgetall(`connection:${connectionId}`).catch(() => null),
       client.hgetall(`connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
       client.hgetall(`settings:connection_settings:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
       getSettings(`trade_engine_state:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
+      client.hgetall(`prehistoric:${connectionId}`).catch(() => ({} as Record<string, unknown>)),
     ])
     const existingQuickStartSettings: Record<string, unknown> = {
       ...(latestConnectionHash || connection || {}),
@@ -1156,6 +1158,13 @@ async function handlePost(request: Request) {
     const quickstartNeedsFreshProcessing =
       quickstartRecoordination.progressionChanged === true ||
       quickstartRecoordination.progressRecoordinationRequired === true
+    const quickstartRetainsPrehistoricCoverage = canRetainQuickStartPrehistoricCoverage({
+      engineRunning: quickstartEngineAlreadyRunning,
+      needsFreshProcessing: quickstartNeedsFreshProcessing,
+      expectedSelectionEpoch: symbolSelectionEpoch,
+      engineState: currentEngineState as Record<string, unknown>,
+      prehistoricState: currentPrehistoricState as Record<string, unknown>,
+    })
 
     await setSettings(`trade_engine_state:${connectionId}`, {
       connection_id: connectionId,
@@ -1176,10 +1185,8 @@ async function handlePost(request: Request) {
       // the new symbol basket complete just because the previous basket was
       // already running; that makes stats/UI show false 100% progress and can
       // suppress the operator-visible reprocessing state.
-      config_set_symbols_processed:
-        quickstartEngineAlreadyRunning && !quickstartNeedsFreshProcessing ? symbols.length : 0,
-      prehistoric_data_loaded:
-        quickstartEngineAlreadyRunning && !quickstartNeedsFreshProcessing ? true : false,
+      config_set_symbols_processed: quickstartRetainsPrehistoricCoverage ? symbols.length : 0,
+      prehistoric_data_loaded: quickstartRetainsPrehistoricCoverage,
       updated_at: new Date().toISOString(),
     })
 
@@ -1187,7 +1194,7 @@ async function handlePost(request: Request) {
     // reads the canonical user-selected count from either source. The
     // processor will overwrite this once it starts processing, but the
     // initial value must already match what the user picked.
-    if (!quickstartEngineAlreadyRunning || quickstartNeedsFreshProcessing) {
+    if (!quickstartRetainsPrehistoricCoverage) {
       try {
         await client.hset(`prehistoric:${connectionId}`, {
           symbol_selection_epoch: String(symbolSelectionEpoch),
@@ -1253,16 +1260,18 @@ async function handlePost(request: Request) {
       emitEngineStageAck(connectionId, "market_data", "ack", "QuickStart market-data symbol selection complete", { symbols })
       console.log(`${LOG_PREFIX}: [4/4] Starting Global Trade Engine Coordinator first...`)
       await setSettings(`engine_progression:${connectionId}`, {
-        phase: quickstartEngineAlreadyRunning ? "live_trading" : "initializing",
-        progress: quickstartEngineAlreadyRunning ? 100 : 5,
+        phase: quickstartRetainsPrehistoricCoverage ? "live_trading" : "initializing",
+        progress: quickstartRetainsPrehistoricCoverage ? 100 : 5,
         connectionId,
         connectionName: connection.name,
         exchange: exchangeName,
         symbols,
         testPassed,
-        detail: quickstartEngineAlreadyRunning
-          ? "Engine already running — QuickStart settings applied without restart"
-          : "Starting Global Trade Engine Coordinator...",
+        detail: quickstartRetainsPrehistoricCoverage
+          ? "Engine already running — verified historic coverage retained."
+          : quickstartEngineAlreadyRunning
+            ? "Engine already running — historic bootstrap remains gated until complete."
+            : "Starting Global Trade Engine Coordinator...",
         updated_at: new Date().toISOString(),
       })
 

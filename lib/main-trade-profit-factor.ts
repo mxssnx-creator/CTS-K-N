@@ -12,7 +12,9 @@
  * `lib/profit-factor.ts`.
  */
 
-export const MAIN_TRADE_PF_RATIO_MIN = 0.08
+// 0.08 was a historical decimal-point typo. Every externally configurable
+// stage gate is on the 0.80+ PositionCost-relative PF scale.
+export const MAIN_TRADE_PF_RATIO_MIN = 0.8
 export const MAIN_TRADE_PF_RATIO_MAX = 2.7
 export const MAIN_TRADE_PF_RATIO_STEP = 0.02
 export const MAIN_TRADE_PF_RATIO_BASE = 0.1
@@ -25,8 +27,12 @@ export const MAIN_TRADE_PF_RATIO_BASE = 0.1
  */
 export const PREVIOUS_POSITION_MIN_PF_RATIO = 0.3
 
-export const MAIN_TRADE_BASE_PF_RATIO_MIN = 0.4
-export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 0.4
+// Base is exhaustive, but the separate Base Valid row is intentionally
+// meaningful: a complete Set must clear at least 0.80 before it can enter the
+// Main funnel. Keeping the coded minimum equal to the default prevents an old
+// 0.40 value from silently weakening the stage on a hot reload.
+export const MAIN_TRADE_BASE_PF_RATIO_MIN = 0.8
+export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 0.8
 export const MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT = 1.12
 
 export type MainTradeStage = "base" | "main" | "real" | "live"
@@ -49,7 +55,7 @@ function round(value: number, decimals = 8): number {
 }
 
 /**
- * Clamp and snap a stage ratio onto the exact 0.08 + n×0.02 grid.
+ * Clamp and snap a stage ratio onto the exact 0.80 + n×0.02 grid.
  */
 export function normalizeMainTradePfRatio(
   value: unknown,

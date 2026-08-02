@@ -489,7 +489,7 @@ export function ExchangeConnectionSettingsDialog({
                 <h4 className="font-semibold text-base">Live Trade Limits</h4>
                 <p className="text-xs text-muted-foreground">
                   PositionCost-relative stage ratios. Base Valid starts at 0.40; Main, Real and Live default to 1.12.
-                  Downstream values use the canonical 0.08–2.70 grid with 0.02 steps.
+                  Downstream values use the canonical 0.80–2.70 grid with 0.02 steps.
                 </p>
 
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

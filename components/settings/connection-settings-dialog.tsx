@@ -401,6 +401,7 @@ export function ConnectionSettingsDialog({
         prevPosMinCount:      coordination.prevPosMinCount,
         mainEvalPosCount:     coordination.mainEvalPosCount,
         realEvalPosCount:     coordination.realEvalPosCount,
+        liveEvalPosCount:     coordination.liveEvalPosCount,
         prevPosWindow:        coordination.prevPosWindow,
         minStep:              coordination.minStep,
         control_orders:       true,
@@ -640,6 +641,11 @@ export function ConnectionSettingsDialog({
             blockPauseCountRatio: typeof coord.blockPauseCountRatio === "number" ? coord.blockPauseCountRatio : DEFAULT_COORDINATION_SETTINGS.blockPauseCountRatio,
             blockActiveRealEnabled: typeof coord.blockActiveRealEnabled === "boolean" ? coord.blockActiveRealEnabled : DEFAULT_COORDINATION_SETTINGS.blockActiveRealEnabled,
             blockActiveLiveEnabled: typeof coord.blockActiveLiveEnabled === "boolean" ? coord.blockActiveLiveEnabled : DEFAULT_COORDINATION_SETTINGS.blockActiveLiveEnabled,
+            blockRowLiveEnabled: typeof coord.blockRowLiveEnabled === "boolean" ? coord.blockRowLiveEnabled : DEFAULT_COORDINATION_SETTINGS.blockRowLiveEnabled,
+            blockRowLiveVolumeRatio: typeof coord.blockRowLiveVolumeRatio === "number" ? coord.blockRowLiveVolumeRatio : DEFAULT_COORDINATION_SETTINGS.blockRowLiveVolumeRatio,
+            blockRowLiveProfitFactorRatio: typeof coord.blockRowLiveProfitFactorRatio === "number" ? coord.blockRowLiveProfitFactorRatio : DEFAULT_COORDINATION_SETTINGS.blockRowLiveProfitFactorRatio,
+            blockRowLiveMaxStack: typeof coord.blockRowLiveMaxStack === "number" ? coord.blockRowLiveMaxStack : DEFAULT_COORDINATION_SETTINGS.blockRowLiveMaxStack,
+            blockRowLivePauseCountRatio: typeof coord.blockRowLivePauseCountRatio === "number" ? coord.blockRowLivePauseCountRatio : DEFAULT_COORDINATION_SETTINGS.blockRowLivePauseCountRatio,
             blockOnly: typeof coord.blockOnly === "boolean"
               ? coord.blockOnly
               : typeof settings.blockOnly === "boolean"
@@ -677,6 +683,14 @@ export function ConnectionSettingsDialog({
               const nested = Number((coord as Record<string, unknown>).realEvalPosCount)
               if (Number.isFinite(nested) && nested >= 1) return Math.min(50, Math.max(1, nested))
               return DEFAULT_COORDINATION_SETTINGS.realEvalPosCount
+            })(),
+            liveEvalPosCount: (() => {
+              const snap = (n: number) => Math.min(55, Math.max(5, Math.round(n / 5) * 5))
+              const flat = Number((settings as Record<string, unknown>).liveEvalPosCount)
+              if (Number.isFinite(flat) && flat >= 1) return snap(flat)
+              const nested = Number((coord as Record<string, unknown>).liveEvalPosCount)
+              if (Number.isFinite(nested) && nested >= 1) return snap(nested)
+              return DEFAULT_COORDINATION_SETTINGS.liveEvalPosCount
             })(),
             minStep: normalizeBaseMinStep(
               (settings as Record<string, unknown>).minStep ??
@@ -778,6 +792,7 @@ export function ConnectionSettingsDialog({
         prevPosMinCount:  coordination.prevPosMinCount,
         mainEvalPosCount: coordination.mainEvalPosCount,
         realEvalPosCount: coordination.realEvalPosCount,
+        liveEvalPosCount: coordination.liveEvalPosCount,
         prevPosWindow:    coordination.prevPosWindow,
         strategyBlockMaterializationBatchSize:
           coordination.strategyBlockMaterializationBatchSize,

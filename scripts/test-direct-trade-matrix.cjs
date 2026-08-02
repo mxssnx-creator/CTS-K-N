@@ -1,0 +1,365 @@
+#!/usr/bin/env node
+/*
+ * Deterministic max-symbol Direct-Trade evaluator load and reporting test.
+ *
+ * It uses a configurable synthetic 1m market path (60h by default), then evaluates the complete
+ * 1m/10m/15m combination matrix and every default-enabled Direct-Trade
+ * strategy lineage for every requested symbol. No network, Redis,
+ * credentials, or order endpoint is touched.
+ */
+const {
+  buildTimeframeCombinations,
+  evaluateDirectTradeSets,
+  resampleCandles,
+} = require("../lib/direct-trade-coordination.ts")
+
+const symbolCount = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_SYMBOLS) || 32))
+const historyHours = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_HOURS) || 60))
+const minProfitFactor = Math.max(0.8, Number(process.env.DIRECT_TRADE_MATRIX_MIN_PF) || 0.8)
+const minRecentProfitFactor = Math.max(0.8, Number(process.env.DIRECT_TRADE_MATRIX_MIN_RECENT_PF) || 10)
+const recentEvaluationPositions = Math.max(3, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_RECENT_POSITIONS) || 12))
+const positionCostPercent = Math.max(0.02, Math.min(1, Number(process.env.DIRECT_TRADE_MATRIX_POSITION_COST_PERCENT) || 0.1))
+const calibrationRecentPfThresholds = [...new Set(
+  String(process.env.DIRECT_TRADE_MATRIX_RECENT_PF_THRESHOLDS || "10,12,15,20,25,30,40,50")
+    .split(",")
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isFinite(value) && value >= 0.8),
+)].sort((left, right) => left - right)
+// Paper-test-only capacity: this does not change the engine's configured
+// production limits or create orders. It models best-first selection across
+// otherwise independent, valid historical candidates.
+const maxSimulatedPositions = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_POSITIONS) || 300))
+
+function minuteSeries(symbolIndex) {
+  return Array.from({ length: historyHours * 60 }, (_, index) => {
+    const close = 100
+      + Math.sin((index + symbolIndex * 31) / (13 + symbolIndex % 7)) * (1.4 + (symbolIndex % 5) * 0.23)
+      + Math.cos((index + symbolIndex * 11) / (41 + symbolIndex % 9)) * 0.8
+      + index * (0.0012 + (symbolIndex % 4) * 0.00035)
+    return {
+      time: index * 60_000,
+      open: close - 0.03,
+      high: close + 0.1,
+      low: close - 0.1,
+      close,
+      volume: 100 + ((index * (symbolIndex + 3)) % 29),
+    }
+  })
+}
+const start = Date.now()
+let evaluatedSets = 0
+let validSets = 0
+const recentPfCalibration = Object.fromEntries(calibrationRecentPfThresholds.map((threshold) => [threshold, 0]))
+const uniqueKeys = new Set()
+const byStrategyType = Object.create(null)
+const bySymbol = []
+const bestFirstPositionHeap = []
+
+function createMetrics() {
+  return {
+    evaluated: 0,
+    valid: 0,
+    finitePfTotal: 0,
+    finitePfCount: 0,
+    infinitePfCount: 0,
+    ddtTotal: 0,
+    pnlTotal: 0,
+    recentFinitePfTotal: 0,
+    recentFinitePfCount: 0,
+    recentInfinitePfCount: 0,
+      recentPfBands: {
+      insufficient: 0,
+      below_0_8: 0,
+      from_0_8_to_1: 0,
+      from_1_to_1_5: 0,
+      from_1_5_to_2: 0,
+      at_least_2: 0,
+        infinite: 0,
+      },
+      deactivationReasons: {},
+  }
+}
+
+function recordRecentPf(metrics, set) {
+  if (set.recentPositionCount < recentEvaluationPositions) {
+    metrics.recentPfBands.insufficient++
+    return
+  }
+  if (set.recentProfitFactorInfinite) {
+    metrics.recentInfinitePfCount++
+    metrics.recentPfBands.infinite++
+    return
+  }
+  const pf = Number(set.recentProfitFactor)
+  if (!Number.isFinite(pf)) {
+    metrics.recentPfBands.insufficient++
+    return
+  }
+  metrics.recentFinitePfCount++
+  metrics.recentFinitePfTotal += pf
+  if (pf < 0.8) metrics.recentPfBands.below_0_8++
+  else if (pf < 1) metrics.recentPfBands.from_0_8_to_1++
+  else if (pf < 1.5) metrics.recentPfBands.from_1_to_1_5++
+  else if (pf < 2) metrics.recentPfBands.from_1_5_to_2++
+  else metrics.recentPfBands.at_least_2++
+}
+
+function candidateCompare(left, right) {
+  if (left.score !== right.score) return left.score - right.score
+  return left.setKey.localeCompare(right.setKey)
+}
+
+// A min-heap holds only the requested best-first paper candidates, so the
+// load test does not retain a multi-million-row config grid merely to report
+// a 300-position capacity check.
+function addBestFirstCandidate(candidate) {
+  if (bestFirstPositionHeap.length < maxSimulatedPositions) {
+    bestFirstPositionHeap.push(candidate)
+    let index = bestFirstPositionHeap.length - 1
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2)
+      if (candidateCompare(bestFirstPositionHeap[parent], bestFirstPositionHeap[index]) <= 0) break
+      ;[bestFirstPositionHeap[parent], bestFirstPositionHeap[index]] = [bestFirstPositionHeap[index], bestFirstPositionHeap[parent]]
+      index = parent
+    }
+    return
+  }
+  if (candidateCompare(candidate, bestFirstPositionHeap[0]) <= 0) return
+  bestFirstPositionHeap[0] = candidate
+  let index = 0
+  while (true) {
+    const left = index * 2 + 1
+    const right = left + 1
+    let smallest = index
+    if (left < bestFirstPositionHeap.length && candidateCompare(bestFirstPositionHeap[left], bestFirstPositionHeap[smallest]) < 0) smallest = left
+    if (right < bestFirstPositionHeap.length && candidateCompare(bestFirstPositionHeap[right], bestFirstPositionHeap[smallest]) < 0) smallest = right
+    if (smallest === index) break
+    ;[bestFirstPositionHeap[smallest], bestFirstPositionHeap[index]] = [bestFirstPositionHeap[index], bestFirstPositionHeap[smallest]]
+    index = smallest
+  }
+}
+
+const fixedTrailOptions = [
+  { trailing: true, trailStart: 0.3, trailStop: 0.2, mode: "fixed" },
+  { trailing: true, trailStart: 0.5, trailStop: 0.3, mode: "fixed" },
+  { trailing: true, trailStart: 1, trailStop: 0.5, mode: "fixed" },
+]
+const autoTrailOptions = [0.75, 1, 1.25].map((autoTrailSensitivity) => ({
+  trailing: true,
+  trailStart: 0.5,
+  trailStop: 0.3,
+  mode: "auto",
+  autoTrailSensitivity,
+}))
+const noTrailingOption = { trailing: false, trailStart: 0, trailStop: 0, mode: "none" }
+
+for (let symbolIndex = 0; symbolIndex < symbolCount; symbolIndex++) {
+  const minuteCandles = minuteSeries(symbolIndex)
+  const candlesByTimeframe = {
+    "1m": minuteCandles,
+    "10m": resampleCandles(minuteCandles, 10),
+    "15m": resampleCandles(minuteCandles, 15),
+  }
+  const symbolMetrics = Object.create(null)
+  for (const timeframeSet of buildTimeframeCombinations(["1m", "10m", "15m"])) {
+    for (const direction of ["long", "short"]) {
+      const plans = [
+        { strategyType: "standard", signalDirection: direction, tpRange: [0.3, 0.5, 0.8, 1, 1.5, 2, 2.5, 3], slRatios: [0.25, 0.5, 0.75], trailOptions: [noTrailingOption] },
+        { strategyType: "trailing_fixed", signalDirection: direction, tpRange: [0.3, 0.5, 0.8, 1, 1.5, 2, 2.5, 3], slRatios: [0.25, 0.5, 0.75], trailOptions: fixedTrailOptions },
+        { strategyType: "trailing_auto", signalDirection: direction, tpRange: [0.3, 0.5, 0.8, 1, 1.5, 2, 2.5, 3], slRatios: [0.25, 0.5, 0.75], trailOptions: autoTrailOptions },
+        { strategyType: "combination", signalDirection: direction, tpRange: [0.3, 0.5, 0.8, 1, 1.5, 2, 2.5, 3], slRatios: [0.25, 0.5, 0.75], trailOptions: [noTrailingOption, ...fixedTrailOptions, ...autoTrailOptions] },
+        { strategyType: "inverse", signalDirection: direction === "long" ? "short" : "long", tpRange: [0.3, 0.5, 0.8, 1, 1.5, 2, 2.5, 3], slRatios: [0.25, 0.5, 0.75, 1, 1.25], trailOptions: [noTrailingOption, ...fixedTrailOptions] },
+        { strategyType: "high_protection", signalDirection: direction, tpRange: [4, 5, 6, 8], slRatios: [0.75], trailOptions: [noTrailingOption, ...autoTrailOptions] },
+      ]
+      for (const plan of plans) {
+        const sets = evaluateDirectTradeSets({
+          symbol: `LOAD${symbolIndex}USDT`,
+          direction,
+          signalDirection: plan.signalDirection,
+          strategyType: plan.strategyType,
+          candlesByTimeframe,
+          timeframeSet,
+          historyHours,
+          volumeRatio: 0.1,
+          tpRange: plan.tpRange,
+          slRatios: plan.slRatios,
+          trailOptions: plan.trailOptions,
+          entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
+          exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
+          entryTiming: "current",
+          activityVolumeRatio: 1,
+          maxHoldMinutes: 120,
+          positionCostPercent,
+          blockRange: [1, 12],
+          minProfitFactor,
+          minRecentProfitFactor,
+          recentPositionWindow: recentEvaluationPositions,
+          minRecentPositions: recentEvaluationPositions,
+          maxDrawdownTimeMin: 10,
+        })
+        evaluatedSets += sets.length
+        validSets += sets.filter((set) => set.valid).length
+        const allTypeMetrics = byStrategyType[plan.strategyType] || (byStrategyType[plan.strategyType] = createMetrics())
+        const symbolTypeMetrics = symbolMetrics[plan.strategyType] || (symbolMetrics[plan.strategyType] = createMetrics())
+        for (const set of sets) {
+          // Re-evaluate only the final finite recent-PF gate against each
+          // threshold. This keeps a single full matrix run sufficient to
+          // calibrate the default without retaining the complete grid.
+          const hasFiniteRecentPf = set.recentPositionCount >= recentEvaluationPositions
+            && set.recentProfitFactor != null
+            && !set.recentProfitFactorInfinite
+          const passesOtherEligibility = set.totalTrades >= 3
+            && (set.profitFactorInfinite || (set.profitFactor ?? 0) >= minProfitFactor)
+            && set.winRate >= 0.4
+            && set.maxDrawdownTimeMin <= 10
+          if (hasFiniteRecentPf && passesOtherEligibility) {
+            for (const threshold of calibrationRecentPfThresholds) {
+              if (set.recentProfitFactor >= threshold) recentPfCalibration[threshold]++
+            }
+          }
+          for (const metrics of [allTypeMetrics, symbolTypeMetrics]) {
+            metrics.evaluated++
+            if (set.valid) metrics.valid++
+            else metrics.deactivationReasons[set.deactivationReason || "unknown"] = (metrics.deactivationReasons[set.deactivationReason || "unknown"] || 0) + 1
+            metrics.ddtTotal += set.avgDrawdownTimeMin
+            metrics.pnlTotal += set.totalPnl
+            if (set.profitFactorInfinite) metrics.infinitePfCount++
+            else if (typeof set.profitFactor === "number") {
+              metrics.finitePfCount++
+              metrics.finitePfTotal += set.profitFactor
+            }
+            recordRecentPf(metrics, set)
+          }
+          if (set.valid) {
+            addBestFirstCandidate({
+              symbol: set.symbol,
+              direction: set.direction,
+              strategyType: set.strategyType,
+              setKey: set.setKey,
+              score: set.score,
+              historicalOrders: set.totalTrades,
+              profitFactor: set.profitFactor,
+              profitFactorInfinite: set.profitFactorInfinite,
+              avgDrawdownTimeMin: set.avgDrawdownTimeMin,
+              recentPositionCount: set.recentPositionCount,
+              recentProfitFactor: set.recentProfitFactor,
+              recentProfitFactorInfinite: set.recentProfitFactorInfinite,
+              recentAvgDrawdownTimeMin: set.recentAvgDrawdownTimeMin,
+            })
+          }
+        }
+        for (const set of sets) uniqueKeys.add(set.setKey)
+      }
+    }
+  }
+  bySymbol.push({ symbol: `LOAD${symbolIndex}USDT`, metrics: symbolMetrics })
+}
+
+if (evaluatedSets === 0 || uniqueKeys.size !== evaluatedSets) {
+  throw new Error(`Independent set integrity failed: ${uniqueKeys.size}/${evaluatedSets} unique keys`)
+}
+
+function compactMetrics(metrics) {
+  return {
+    evaluated: metrics.evaluated,
+    valid: metrics.valid,
+    meanFinitePF: metrics.finitePfCount > 0 ? Number((metrics.finitePfTotal / metrics.finitePfCount).toFixed(3)) : null,
+    infinitePF: metrics.infinitePfCount,
+    recentPositionPF: {
+      meanFinite: metrics.recentFinitePfCount > 0 ? Number((metrics.recentFinitePfTotal / metrics.recentFinitePfCount).toFixed(3)) : null,
+      infinite: metrics.recentInfinitePfCount,
+      bands: metrics.recentPfBands,
+    },
+    deactivationReasons: metrics.deactivationReasons,
+    meanDDTMinutes: metrics.evaluated > 0 ? Number((metrics.ddtTotal / metrics.evaluated).toFixed(3)) : 0,
+    totalSimulatedPnl: Number(metrics.pnlTotal.toFixed(3)),
+  }
+}
+
+const strategyReport = Object.fromEntries(Object.entries(byStrategyType).map(([type, metrics]) => [type, compactMetrics(metrics)]))
+const sampleIndices = [...new Set([0, Math.floor(symbolCount / 3), Math.floor(symbolCount * 2 / 3), symbolCount - 1])]
+const symbolReport = sampleIndices.map((index) => ({
+  symbol: bySymbol[index].symbol,
+  strategyTypes: Object.fromEntries(Object.entries(bySymbol[index].metrics).map(([type, metrics]) => [type, compactMetrics(metrics)])),
+}))
+
+const bestFirstPositions = [...bestFirstPositionHeap].sort((left, right) => candidateCompare(right, left))
+const positionReport = {
+  requestedMax: maxSimulatedPositions,
+  selected: bestFirstPositions.length,
+  byDirection: {},
+  bySymbol: {},
+}
+for (const position of bestFirstPositions) {
+  const direction = positionReport.byDirection[position.direction] || (positionReport.byDirection[position.direction] = {
+    positions: 0,
+    historicalOrders: 0,
+    finitePF: 0,
+    finitePFCount: 0,
+    infinitePF: 0,
+    totalDDTMinutes: 0,
+    recentFinitePF: 0,
+    recentFinitePFCount: 0,
+    recentInfinitePF: 0,
+  })
+  const symbol = positionReport.bySymbol[position.symbol] || (positionReport.bySymbol[position.symbol] = {
+    longPositions: 0,
+    shortPositions: 0,
+    historicalOrders: 0,
+  })
+  direction.positions++
+  direction.historicalOrders += position.historicalOrders
+  direction.totalDDTMinutes += position.avgDrawdownTimeMin
+  if (position.profitFactorInfinite) direction.infinitePF++
+  else if (typeof position.profitFactor === "number") {
+    direction.finitePF += position.profitFactor
+    direction.finitePFCount++
+  }
+  if (position.recentPositionCount >= recentEvaluationPositions) {
+    if (position.recentProfitFactorInfinite) direction.recentInfinitePF++
+    else if (typeof position.recentProfitFactor === "number") {
+      direction.recentFinitePF += position.recentProfitFactor
+      direction.recentFinitePFCount++
+    }
+  }
+  if (position.direction === "long") symbol.longPositions++
+  else symbol.shortPositions++
+  symbol.historicalOrders += position.historicalOrders
+}
+for (const direction of Object.values(positionReport.byDirection)) {
+  direction.averageHistoricalOrdersPerPosition = Number((direction.historicalOrders / direction.positions).toFixed(3))
+  direction.meanFinitePF = direction.finitePFCount > 0 ? Number((direction.finitePF / direction.finitePFCount).toFixed(3)) : null
+  direction.recentPositionPF = {
+    meanFinite: direction.recentFinitePFCount > 0 ? Number((direction.recentFinitePF / direction.recentFinitePFCount).toFixed(3)) : null,
+    infinite: direction.recentInfinitePF,
+  }
+  direction.meanDDTMinutes = Number((direction.totalDDTMinutes / direction.positions).toFixed(3))
+  delete direction.finitePF
+  delete direction.finitePFCount
+  delete direction.totalDDTMinutes
+  delete direction.recentFinitePF
+  delete direction.recentFinitePFCount
+  delete direction.recentInfinitePF
+}
+
+console.log(JSON.stringify({
+  test: "direct-trade-matrix",
+  symbols: symbolCount,
+  historicHours: historyHours,
+  historicalPFMinimum: minProfitFactor,
+  recentPositionPFMinimum: minRecentProfitFactor,
+  recentEvaluationPositions,
+  positionCostPercent,
+  evaluatedSets,
+  validSets,
+  validRatePercent: Number(((validSets / evaluatedSets) * 100).toFixed(3)),
+  recentPfCalibration: Object.fromEntries(calibrationRecentPfThresholds.map((threshold) => [threshold, {
+    validSets: recentPfCalibration[threshold],
+    validRatePercent: Number(((recentPfCalibration[threshold] / evaluatedSets) * 100).toFixed(3)),
+  }])),
+  byStrategyType: strategyReport,
+  sampleSymbols: symbolReport,
+  bestFirstPaperPositions: positionReport,
+  elapsedMs: Date.now() - start,
+  heapMiB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+}))

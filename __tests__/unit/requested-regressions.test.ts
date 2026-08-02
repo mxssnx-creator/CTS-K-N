@@ -515,6 +515,13 @@ describe("requested regression guardrails", () => {
     expect(source).not.toContain("if (hasRealConnections) {")
   })
 
+  test("init-status reports exact key cardinality without allocating a full key inventory", () => {
+    const source = read("app/api/system/init-status/route.ts")
+
+    expect(source).toContain("await client.dbSize()")
+    expect(source).not.toContain('client.keys("*")')
+  })
+
   test("pseudo position close PnL and PF inputs are net of 0.1% position cost", () => {
     const helper = read("lib/pseudo-position-costs.ts")
     const pseudoManager = read("lib/trade-engine/pseudo-position-manager.ts")
@@ -1056,7 +1063,7 @@ describe("requested regression guardrails", () => {
     expect(soak).toContain("finalSignal.sourcePerformanceLookback !== 12")
     expect(soak).toContain("finalSignal.lanePerformanceLookback !== 10")
     expect(soak).toContain('lastByPath.get("/api/indications/config-counts")')
-    expect(soak).toContain("totalPossibleSets * 2 + SYMBOLS.length * 500")
+    expect(soak).toContain("totalPossibleSets * 4 + SYMBOLS.length * 500")
     expect(soak).toContain("openPositions?.pseudo?.runningSets")
     expect(soak).toContain("strategyDetail?.real?.positionStats")
     expect(soak).toContain('RUNTIME_MODE === "development" ? 1024 * 1024 : 512 * 1024')
@@ -1576,6 +1583,7 @@ describe("requested regression guardrails", () => {
     expect(route).toContain('memory: resourceMetrics.memoryPercent')
     expect(route).toContain('const MONITORING_KEY_SAMPLE_LIMIT = 20_000')
     expect(route).toContain('const MONITORING_KEY_SAMPLE_TTL_MS = 5_000')
+    expect(route).toContain('sampleKeys(MONITORING_KEY_SAMPLE_LIMIT)')
     expect(route).toContain('collectConnectionIds(client, allKeys)')
     expect(route).toContain('maxField(progressionHashes, "realtime_cycle_count")')
     expect(route).toContain('maxField(progressionHashes, "live_positions_cycle_count")')
@@ -1721,11 +1729,12 @@ describe("requested regression guardrails", () => {
     expect(quickStart).toContain("quickstartEngineAlreadyRunning")
     expect(quickStart).toContain("quickstart_engine_reused")
     expect(quickStart).toContain("Running engine reused; QuickStart symbols/settings applied without stop/restart")
-    expect(quickStart).toContain("Engine already running — QuickStart settings applied without restart")
     expect(quickStart).toContain("const quickstartNeedsFreshProcessing =")
     expect(quickStart).toContain("quickstartRecoordination.progressionChanged === true")
-    expect(quickStart).toContain("quickstartEngineAlreadyRunning && !quickstartNeedsFreshProcessing ? symbols.length : 0")
-    expect(quickStart).toContain("!quickstartEngineAlreadyRunning || quickstartNeedsFreshProcessing")
+    expect(quickStart).toContain("canRetainQuickStartPrehistoricCoverage")
+    expect(quickStart).toContain("const quickstartRetainsPrehistoricCoverage =")
+    expect(quickStart).toContain("config_set_symbols_processed: quickstartRetainsPrehistoricCoverage ? symbols.length : 0")
+    expect(quickStart).toContain("if (!quickstartRetainsPrehistoricCoverage)")
     expect(quickStart).toContain("coordinator.invalidateSymbolsCacheForConnection(connectionId)")
     expect(quickStart).not.toContain("quickstart_engine_restart")
 
@@ -1770,8 +1779,12 @@ describe("requested regression guardrails", () => {
     const source = read("lib/strategy-coordinator.ts")
 
     expect(source).toContain("const realRelatedCreated = realStageRelatedCreated")
-    expect(source).toContain("const realTotalEvaluated = mainPFEligible + realRelatedCreated")
-    expect(source).toContain("const passRatioReal = realTotalEvaluated > 0 ? n / realTotalEvaluated : 0")
+    expect(source).toContain("const realTotalEvaluated = mainPFEligible + realRelatedCreated + continuousRealEvaluated")
+    // The public Real percentage is the final Row-Real rolling decision
+    // whenever that evaluation ran. Raw/related fan-out can exceed its input,
+    // so using it as this percentage's denominator would exceed 100%.
+    expect(source).toContain("const passRatioReal = continuousRealEvaluated > 0")
+    expect(source).toContain("? rowRealSets.length / continuousRealEvaluated")
     expect(source).toContain("evaluated:          String(realEvaluatedAfterFanOut)")
     expect(source).toContain("[`s:${symbol}:evaluated`]:  String(realTotalEvaluated)")
     expect(source).toContain('client.set(`strategies:${this.connectionId}:real:evaluated`, String(realTotalEvaluated))')

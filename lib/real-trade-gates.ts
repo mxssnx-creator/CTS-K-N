@@ -11,6 +11,7 @@ import { hasKiloDatabaseBackend } from "@/lib/kilo-database-client"
 
 export type RealTradeBlockCode =
   | "disabled"
+  | "forced_simulation"
   | "credentials_missing"
   | "explicit_block"
   | "shared_redis_required"
@@ -156,6 +157,24 @@ export function evaluateRealTradeReadiness(
       : settings.live_trade_requested
   const requested = enabled || truthy(requestedField)
   const credentialsValid = hasUsableLiveCredentials(settings)
+  // An explicit process-level paper override wins over every persisted live
+  // toggle. This is used by dev/soak/preview runners and prevents a stale
+  // snapshot's live request from creating one rejected record and warning per
+  // candidate instead of exercising the intended simulated lifecycle.
+  const forceSimulated = process.env.FORCE_SIMULATED === "1" && process.env.FORCE_LIVE !== "1"
+  if (forceSimulated) {
+    return {
+      intent,
+      requested,
+      enabled,
+      credentialsValid,
+      durableCoordinationReady: hasDurableLiveCoordination() || isInlineRedisLiveTradingAllowed(),
+      canPlaceRealOrders: false,
+      executionMode: "simulation",
+      blockCode: "forced_simulation",
+      blockReason: "Real exchange orders are disabled by FORCE_SIMULATED=1",
+    }
+  }
   const explicitReason = String(
     isPreset
       ? settings.preset_trade_blocked_reason || ""

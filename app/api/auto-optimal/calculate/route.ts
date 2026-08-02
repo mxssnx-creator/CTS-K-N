@@ -4,6 +4,7 @@ import DatabaseManager from "@/lib/database"
 import { EntityTypes, ConfigSubTypes } from "@/lib/core/entity-types"
 import { getSettings, setSettings, getMarketData } from "@/lib/redis-db"
 import { aggregateCostNormalizedResults } from "@/lib/profit-factor"
+import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
 
 interface SimulationResult {
   takeprofit: number
@@ -33,12 +34,17 @@ interface Trade {
   entry_time: Date
   exit_time: Date
   profit_loss: number
+  gross_profit_loss: number
+  position_cost_percent: number
 }
 
 export const dynamic = "force-dynamic"
 export async function POST(request: NextRequest) {
   try {
     const config = await request.json()
+    const positionCostPercent = normalizePositionCostPercent(
+      config.positionCostPercent ?? config.position_cost_pct ?? POSITION_COST_PERCENT_DEFAULT,
+    )
     
     const dbManager = DatabaseManager.getInstance()
 
@@ -67,6 +73,7 @@ export async function POST(request: NextRequest) {
       calculation_days: config.calculation_days,
       max_positions_per_direction: config.max_positions_per_direction,
       max_positions_per_symbol: config.max_positions_per_symbol,
+      position_cost_pct: positionCostPercent,
     })
 
     console.log(`[v0] Auto-optimal config created: ${configId}`)
@@ -74,7 +81,7 @@ export async function POST(request: NextRequest) {
     const symbols = await getSymbolsForCalculation(config)
     const historicalData = await fetchHistoricalData(symbols, config.calculation_days || 30)
     
-    const paramCombinations = generateParameterCombinations(config)
+    const paramCombinations = generateParameterCombinations({ ...config, positionCostPercent })
     console.log(`[v0] Testing ${paramCombinations.length} parameter combinations`)
     
     const results: SimulationResult[] = []
@@ -165,6 +172,9 @@ function generateParameterCombinations(config: any): any[] {
   const tpMax = config.takeprofit_max || 3.0
   const slMin = config.stoploss_min || 0.5
   const slMax = config.stoploss_max || 2.0
+  const positionCostPercent = normalizePositionCostPercent(
+    config.positionCostPercent ?? config.position_cost_pct ?? POSITION_COST_PERCENT_DEFAULT,
+  )
   
   const tpSteps = [tpMin, (tpMin + tpMax) / 2, tpMax]
   const slSteps = [slMin, (slMin + slMax) / 2, slMax]
@@ -175,6 +185,7 @@ function generateParameterCombinations(config: any): any[] {
         takeprofit: tp,
         stoploss: sl,
         trailing_enabled: false,
+        positionCostPercent,
       })
       
       if (config.trailing_enabled && !config.trailing_only) {
@@ -182,6 +193,7 @@ function generateParameterCombinations(config: any): any[] {
           takeprofit: tp,
           stoploss: sl,
           trailing_enabled: true,
+          positionCostPercent,
         })
       }
     }
@@ -300,9 +312,13 @@ function simulateTrade(symbol: string, candles: any[], entryIndex: number, param
     }
   }
   
-  const profitLoss = side === "long"
+  const grossProfitLoss = side === "long"
     ? ((exitPrice - entryPrice) / entryPrice) * 100
     : ((entryPrice - exitPrice) / entryPrice) * 100
+  const positionCostPercent = normalizePositionCostPercent(params.positionCostPercent ?? POSITION_COST_PERCENT_DEFAULT)
+  // Auto-Optimal ranks only closed simulated trades. Deduct the configured
+  // position cost once, so zero-gross moves cannot look profitable in PF.
+  const profitLoss = grossProfitLoss - positionCostPercent
   
   return {
     symbol,
@@ -312,6 +328,8 @@ function simulateTrade(symbol: string, candles: any[], entryIndex: number, param
     entry_time: entryTime,
     exit_time: exitTime,
     profit_loss: profitLoss,
+    gross_profit_loss: grossProfitLoss,
+    position_cost_percent: positionCostPercent,
   }
 }
 

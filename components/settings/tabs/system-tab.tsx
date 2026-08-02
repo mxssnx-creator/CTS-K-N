@@ -721,10 +721,11 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                   ))}
                 </div>
 
-                <div className="grid md:grid-cols-2 gap-4">
+                <div className="grid md:grid-cols-3 gap-4">
                   {([
                     { key: "mainEvalPosCount", label: "Main Row Lookback", value: settings.mainEvalPosCount ?? 25 },
                     { key: "realEvalPosCount", label: "Real Row Lookback", value: settings.realEvalPosCount ?? 20 },
+                    { key: "liveEvalPosCount", label: "Live Row Lookback", value: settings.liveEvalPosCount ?? 15 },
                   ] as const).map((row) => (
                     <div key={row.key} className="space-y-2">
                       <div className="flex items-center justify-between">
@@ -732,9 +733,9 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                         <span className="text-sm font-semibold tabular-nums">{row.value}</span>
                       </div>
                       <Slider
-                        min={8}
-                        max={80}
-                        step={1}
+                        min={row.key === "liveEvalPosCount" ? 5 : 8}
+                        max={row.key === "liveEvalPosCount" ? 55 : 80}
+                        step={row.key === "liveEvalPosCount" ? 5 : 1}
                         value={[row.value]}
                         onValueChange={([value]) => handleSettingChange(row.key, value)}
                       />

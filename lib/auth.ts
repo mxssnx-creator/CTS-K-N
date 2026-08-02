@@ -3,11 +3,18 @@ import { SignJWT, jwtVerify } from "jose"
 import { cookies } from "next/headers"
 import bcrypt from "bcryptjs"
 
-if (!process.env.JWT_SECRET) {
-  throw new Error("JWT_SECRET is not configured")
+/**
+ * Resolve the signing key only when an authentication operation executes.
+ * Next imports route modules while building its route manifest, before the
+ * deployment runtime has injected its required secrets. Import-time rejection
+ * made a valid production build fail at `/api/auth/login`; runtime requests
+ * still fail closed when the secret is genuinely absent.
+ */
+function getJwtSecret(): Uint8Array {
+  const configured = String(process.env.JWT_SECRET || "").trim()
+  if (!configured) throw new Error("JWT_SECRET is not configured")
+  return new TextEncoder().encode(configured)
 }
-
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET)
 
 export interface User {
   id: string
@@ -34,12 +41,12 @@ export async function createToken(user: User): Promise<string> {
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime("7d")
-    .sign(JWT_SECRET)
+    .sign(getJwtSecret())
 }
 
 export async function verifyToken(token: string): Promise<User | null> {
   try {
-    const verified = await jwtVerify(token, JWT_SECRET)
+    const verified = await jwtVerify(token, getJwtSecret())
     return verified.payload as unknown as User
   } catch (error) {
     return null

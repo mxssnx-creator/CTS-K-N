@@ -93,6 +93,12 @@ export interface CoordinationSettings {
   blockPauseCountRatio: number // 1..4, step 0.5
   blockActiveRealEnabled: boolean // active real-position Block overlay, default true
   blockActiveLiveEnabled: boolean // active live-position Block overlay, default true
+  /** Independent Block ladder attached to the final Row-Live, default true. */
+  blockRowLiveEnabled: boolean
+  blockRowLiveVolumeRatio: number
+  blockRowLiveProfitFactorRatio: number
+  blockRowLiveMaxStack: number
+  blockRowLivePauseCountRatio: number
   blockOnly: boolean // dispatch only Block rows while Block is enabled
 
   // Per-connection trailing matrix. Values use the canonical "start:stop"
@@ -161,6 +167,14 @@ export interface CoordinationSettings {
    */
   realEvalPosCount: number
 
+  /**
+   * Row-Live is the final, materialised live candidate. It evaluates the
+   * latest Row-Real result window exactly once; Exchange dispatch consumes
+   * that validated row without re-running a hidden PF/DDT gate.
+   * Range 5..55, step 5, default 15.
+   */
+  liveEvalPosCount: number
+
   /** Inclusive lower bound of the exhaustive integer Base window grid. */
   minStep: number
 
@@ -206,6 +220,11 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockPauseCountRatio: 1.0,
   blockActiveRealEnabled: true,
   blockActiveLiveEnabled: true,
+  blockRowLiveEnabled: true,
+  blockRowLiveVolumeRatio: 1.0,
+  blockRowLiveProfitFactorRatio: 0.8,
+  blockRowLiveMaxStack: 10,
+  blockRowLivePauseCountRatio: 1.0,
   blockOnly: true,
   trailingVariants: [...DEFAULT_TRAILING_VARIANTS],
   posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
@@ -219,6 +238,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   prevPosWindow:    25,
   mainEvalPosCount: 25,
   realEvalPosCount: 20,
+  liveEvalPosCount: 15,
   minStep:           DEFAULT_BASE_MIN_STEP,
   maxStopLossRatio:  2.5,
   trailingMinStep:   DEFAULT_BASE_MIN_STEP,
@@ -966,6 +986,64 @@ export function StrategyCoordinationSection({
             </div>
           </div>
 
+          <div className="rounded-lg border border-border/60 p-3 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="space-y-1">
+                <Label className="text-sm font-semibold">Row-Live Block</Label>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  A separate Block strategy applied after Row-Real is evaluated into
+                  Row-Live. These values are independent from Active Real/Live Block
+                  overlays and are evaluated before dispatch.
+                </p>
+              </div>
+              <Switch
+                checked={value.blockRowLiveEnabled}
+                onCheckedChange={(checked) =>
+                  onChange({ ...value, blockRowLiveEnabled: checked })
+                }
+                disabled={!value.variants.block}
+              />
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="space-y-1.5">
+                <Label className="text-[11px]">Volume ratio</Label>
+                <Slider
+                  value={[value.blockRowLiveVolumeRatio]}
+                  min={0.25}
+                  max={3}
+                  step={0.05}
+                  onValueChange={([next]) => onChange({ ...value, blockRowLiveVolumeRatio: Number(next.toFixed(2)) })}
+                  disabled={!value.variants.block || !value.blockRowLiveEnabled}
+                />
+                <p className="text-right font-mono text-[11px]">{value.blockRowLiveVolumeRatio.toFixed(2)}×</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-[11px]">PF ratio</Label>
+                <Slider
+                  value={[value.blockRowLiveProfitFactorRatio]}
+                  min={0.2}
+                  max={5}
+                  step={0.1}
+                  onValueChange={([next]) => onChange({ ...value, blockRowLiveProfitFactorRatio: Number(next.toFixed(1)) })}
+                  disabled={!value.variants.block || !value.blockRowLiveEnabled}
+                />
+                <p className="text-right font-mono text-[11px]">{value.blockRowLiveProfitFactorRatio.toFixed(1)}×</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-[11px]">Max stack</Label>
+                <Slider
+                  value={[value.blockRowLiveMaxStack]}
+                  min={1}
+                  max={10}
+                  step={1}
+                  onValueChange={([next]) => onChange({ ...value, blockRowLiveMaxStack: next })}
+                  disabled={!value.variants.block || !value.blockRowLiveEnabled}
+                />
+                <p className="text-right font-mono text-[11px]">{value.blockRowLiveMaxStack}</p>
+              </div>
+            </div>
+          </div>
+
           {/* Active live position overlay */}
           <div className="rounded-lg border border-border/60 p-3">
             <div className="flex items-center justify-between gap-3">
@@ -1348,6 +1426,37 @@ export function StrategyCoordinationSection({
               />
               <span className="text-xs font-semibold tabular-nums w-8 text-right">
                 {value.realEvalPosCount}
+              </span>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border/60 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <Label className="text-sm font-semibold">
+                  Live — Row-Real to Row-Live window
+                </Label>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Each accepted Row-Real is re-evaluated on this final window. The
+                  resulting Row-Live is mirrored directly to exchange execution; no
+                  hidden third PF/DDT gate is applied afterwards.
+                </p>
+              </div>
+              <Badge variant="secondary" className="text-[10px] tabular-nums">
+                default 15
+              </Badge>
+            </div>
+            <div className="flex items-center gap-3 pt-1">
+              <Slider
+                value={[value.liveEvalPosCount]}
+                min={5}
+                max={55}
+                step={5}
+                onValueChange={([next]) => onChange({ ...value, liveEvalPosCount: next })}
+                className="flex-1"
+              />
+              <span className="text-xs font-semibold tabular-nums w-8 text-right">
+                {value.liveEvalPosCount}
               </span>
             </div>
           </div>

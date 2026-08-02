@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import AutoIndicationSettings from "@/components/settings/auto-indication-settings"
 import MultiTrailingSettings from "@/components/settings/strategy/multi-trailing-settings"
+import { DirectTradeSettings } from "@/components/settings/direct-trade-settings"
 import { useState } from "react"
 import { DEFAULT_DCA_PROFILE } from "@/lib/dca-strategy"
 import { PRESET_INDICATOR_TYPES } from "@/lib/preset-optimizer"
@@ -102,11 +103,12 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
   return (
     <TabsContent value="strategy" className="space-y-4">
       <Tabs value={strategySubTab} onValueChange={setStrategySubTab}>
-        <TabsList>
-          <TabsTrigger value="main">Main</TabsTrigger>
-          <TabsTrigger value="preset">Preset</TabsTrigger>
-          <TabsTrigger value="auto">Auto</TabsTrigger>
-        </TabsList>
+          <TabsList>
+            <TabsTrigger value="main">Main</TabsTrigger>
+            <TabsTrigger value="preset">Preset</TabsTrigger>
+            <TabsTrigger value="auto">Auto</TabsTrigger>
+            <TabsTrigger value="direct">Direct</TabsTrigger>
+          </TabsList>
 
         <TabsContent value="main" className="space-y-4">
           <Tabs value={strategyMainSubTab} onValueChange={setStrategyMainSubTab}>
@@ -527,6 +529,10 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
           </Tabs>
         </TabsContent>
 
+        <TabsContent value="direct" className="space-y-4">
+          <DirectTradeSettings />
+        </TabsContent>
+
         <TabsContent value="preset" className="space-y-4">
           <Card>
             <CardHeader>
@@ -828,6 +834,26 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       </div>
                       <p className="text-xs text-muted-foreground">
                         Default 20 positions; successful rows are mirrored to Live.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Live Row Lookback</Label>
+                      <div className="flex items-center gap-3">
+                        <Slider
+                          min={5}
+                          max={55}
+                          step={5}
+                          value={[settings.liveEvalPosCount ?? 15]}
+                          onValueChange={([v]) => handleSettingChange("liveEvalPosCount", v)}
+                          className="flex-1"
+                        />
+                        <span className="text-sm font-semibold w-10 text-right">
+                          {settings.liveEvalPosCount ?? 15}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Final Row-Real → Row-Live PF/DDT window; dispatch uses this result directly.
                       </p>
                     </div>
 

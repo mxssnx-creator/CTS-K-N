@@ -2164,7 +2164,7 @@ export class IndicationSetsProcessor {
     const safeCount = Math.max(0, Number(count) || 0)
     // Outcome samples are stored as decimal market returns (0.01 = 1%).
     // Convert their rolling signed average to percentage points before
-    // mapping onto the operator's PositionCost-relative 0.08…2.70 scale.
+    // mapping onto the operator's PositionCost-relative 0.80…2.70 scale.
     const averageMovePct = safeCount > 0
       ? ((grossProfit - grossLoss) / safeCount) * 100
       : 0

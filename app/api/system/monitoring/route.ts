@@ -37,16 +37,17 @@ async function collectRedisKeys(client: ReturnType<typeof getRedisClient>): Prom
   }
 
   // InlineLocalRedis implements SCAN by rebuilding the complete matching-key
-  // array for every cursor page. One KEYS pass is therefore both faster and
-  // lower-allocation locally. Network Redis providers use incremental SCAN so
-  // their event loop is never blocked by KEYS on a large production database.
+  // array for every cursor page. Use its dedicated bounded inventory instead
+  // of KEYS("*"): slicing a KEYS result after it is built still allocates the
+  // complete keyspace and can starve a max-symbol engine. Network Redis
+  // providers continue to use incremental SCAN below.
   const isInlineLocal = client?.constructor?.name === "InlineLocalRedis"
-  if (isInlineLocal) {
+  if (isInlineLocal && typeof (client as any).sampleKeys === "function") {
     try {
-      const keysResult = await client.keys("*")
+      const keysResult = await (client as any).sampleKeys(MONITORING_KEY_SAMPLE_LIMIT)
       if (Array.isArray(keysResult)) {
         const keys = keysResult.slice(0, MONITORING_KEY_SAMPLE_LIMIT)
-        return remember(keys, Math.max(exactKeyCount, keysResult.length))
+        return remember(keys, Math.max(exactKeyCount, keys.length))
       }
     } catch { /* fall through to the bounded scanner */ }
   }

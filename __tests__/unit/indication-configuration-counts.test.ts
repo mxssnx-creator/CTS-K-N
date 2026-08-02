@@ -4,16 +4,18 @@ describe("indication configuration counts", () => {
   it("matches the processor's exhaustive default, Common and Signal grids", () => {
     const result = calculateIndicationConfigurationCounts({}, undefined)
 
-    expect(result.totalPossibleSets).toBe(41_298)
-    expect(result.totalEvaluationConfigurations).toBe(9_014)
+    // Fresh installations start the exhaustive Base window at the configured
+    // default of 4 (then evaluate every integer through 30).
+    expect(result.totalPossibleSets).toBe(41_142)
+    expect(result.totalEvaluationConfigurations).toBe(8_936)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
     expect(result.settings.enabledCommonIndicators).toBe(17)
     expect(Object.fromEntries(result.types.map((type) => [type.type, type.possibleSets]))).toEqual({
-      direction: 1_050,
-      move: 1_050,
+      direction: 978,
+      move: 978,
       active: 366,
       active_advanced: 36,
-      optimal: 174,
+      optimal: 162,
       auto: 0,
       signal: 23_328,
       trend: 102,
@@ -115,17 +117,17 @@ describe("indication configuration counts", () => {
     expect(advanced?.possibleSets).toBe(16)
   })
 
-  it("does not let the legacy minStep setting truncate the exhaustive 2..30 grid", () => {
+  it("honours the configured Base minimum while retaining every window through 30", () => {
     const baseline = calculateIndicationConfigurationCounts({}, undefined)
     const legacyCeiling = calculateIndicationConfigurationCounts({ minStep: 30 }, undefined)
 
-    expect(legacyCeiling.settings.indicationRangeMin).toBe(2)
+    expect(legacyCeiling.settings.indicationRangeMin).toBe(30)
     expect(legacyCeiling.settings.indicationRangeMax).toBe(30)
-    expect(legacyCeiling.settings.validRangeCount).toBe(29)
-    expect(legacyCeiling.totalEvaluationConfigurations).toBe(
+    expect(legacyCeiling.settings.validRangeCount).toBe(1)
+    expect(legacyCeiling.totalEvaluationConfigurations).toBeLessThan(
       baseline.totalEvaluationConfigurations,
     )
-    expect(legacyCeiling.totalPossibleSets).toBe(baseline.totalPossibleSets)
+    expect(legacyCeiling.totalPossibleSets).toBeLessThan(baseline.totalPossibleSets)
   })
 
   it("keeps every Signal source Set when PF bootstrap bypass is disabled", () => {

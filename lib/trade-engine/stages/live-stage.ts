@@ -481,8 +481,8 @@ interface LivePosition {
     blockVolumeRatio?: number
     blockVolumeIncrementRatio?: number
     blockCalculatedVolumeMultiplier?: number
-    blockScope?: "long" | "short" | "overall"
-    blockLaneKind?: "direction" | "signal_source"
+    blockScope?: "long" | "short" | "overall" | "live_row"
+    blockLaneKind?: "direction" | "signal_source" | "row-live"
     blockLaneKey?: string
     blockSourceId?: string
     signalRisk?: SignalRisk
@@ -556,8 +556,8 @@ interface LivePosition {
   blockProfitFactorWindow?: number
   blockProfitFactorSampleCount?: number
   blockCount?: number
-  blockScope?: "long" | "short" | "overall"
-  blockLaneKind?: "direction" | "signal_source"
+  blockScope?: "long" | "short" | "overall" | "live_row"
+  blockLaneKind?: "direction" | "signal_source" | "row-live"
   blockLaneKey?: string
   blockSourceId?: string
   blockVolumeIncrementRatio?: number
@@ -6392,7 +6392,7 @@ export async function executeLivePosition(
     // not met. Falling back to paper here made the Main engine look healthy
     // while no venue order was ever attempted. Paper simulation remains active
     // only when the operator has actually left Live Trade disabled.
-    if (!isLiveTradeEnabled && liveReadiness.requested) {
+    if (!isLiveTradeEnabled && liveReadiness.requested && liveReadiness.executionMode !== "simulation") {
       livePosition.status = "rejected"
       livePosition.statusReason =
         `Live exchange order blocked (${liveReadiness.blockCode || "unknown"}): ${liveReadiness.blockReason}`
