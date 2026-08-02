@@ -382,14 +382,14 @@ import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
  * Main realtime symbol work overlaps Redis/market-data waits with a small,
  * ordered worker pool. Base→Main→Real creates a large in-memory graph and is
  * CPU-heavy in single-threaded Node, so wider fan-out increases RSS and tail
- * latency instead of throughput. Default two gives useful I/O overlap; memory
- * pressure automatically contracts it to one. Operators with larger workers
- * can tune ENGINE_SYMBOL_CONCURRENCY/REALTIME_SYMBOL_CONCURRENCY up to eight.
+ * latency instead of throughput. Default one keeps the single authoritative
+ * Node owner responsive; operators that have measured safe I/O overlap can
+ * raise ENGINE_SYMBOL_CONCURRENCY/REALTIME_SYMBOL_CONCURRENCY up to eight.
  */
 function getSymbolConcurrency(symbolCount: number): number {
   const configured = concurrencyFromEnv(
     ["ENGINE_SYMBOL_CONCURRENCY", "REALTIME_SYMBOL_CONCURRENCY"],
-    2,
+    1,
     8,
     symbolCount,
   )
@@ -1929,12 +1929,21 @@ export class TradeEngineManager {
           return
         }
 
-        if (succeeded && !this.prehistoricTimer) {
-          this.schedulePrehistoricProgressionAfterRealtimeWarmup()
+        if (succeeded) {
+          // A cancelled older generation can have armed a retry while a newer
+          // selection was bootstrapping. Once this generation has published a
+          // verified historic gate, that older retry must never wake up later
+          // and start a second full matrix beside the live processor.
+          if (this.prehistoricRetryTimer) {
+            clearTimeout(this.prehistoricRetryTimer)
+            unregisterEngineTimer(this.prehistoricRetryTimer)
+            this.prehistoricRetryTimer = undefined
+          }
+          if (!this.prehistoricTimer) this.schedulePrehistoricProgressionAfterRealtimeWarmup()
           return
         }
 
-        if (!succeeded && !this.prehistoricRetryTimer) {
+        if (!this.prehistoricRetryTimer) {
           const retryDelays = [2_000, 5_000, 15_000, 30_000, 60_000]
           const retryDelay = retryDelays[Math.min(this.prehistoricRetryAttempt, retryDelays.length - 1)]
           this.prehistoricRetryAttempt++
@@ -2248,10 +2257,21 @@ export class TradeEngineManager {
         `errors=${processingResult.errors}`,
       )
     } catch (error) {
-      // A cancelled ConfigSetProcessor may surface its private cancellation
-      // error here. Once our generation is no longer current it is a normal
-      // hand-off, never a failed historic calculation or an error-state write.
-      if (error instanceof PrehistoricRunSupersededError || !run.shouldContinue()) {
+      // A ConfigSetProcessor owns an additional canonical-symbol-selection
+      // token. Its private cancellation error can arrive while this engine
+      // generation is still technically current (for example when a second
+      // instance just wrote a newer selection). Treat that as a hand-off,
+      // queue one replacement generation, and never turn it into a failing
+      // bootstrap retry. A retry here used to wake up much later beside an
+      // already-live processor and could monopolise the event loop.
+      const selectionSuperseded = (error as { name?: unknown } | null)?.name === "PrehistoricProcessingCancelledError"
+      if (selectionSuperseded && run.shouldContinue()) {
+        await this.requestPrehistoricRecoordination("canonical symbol selection changed during historic bootstrap")
+          .catch(() => undefined)
+      }
+      // Once our generation is no longer current it is a normal hand-off,
+      // never a failed historic calculation or an error-state write.
+      if (selectionSuperseded || error instanceof PrehistoricRunSupersededError || !run.shouldContinue()) {
         throw new PrehistoricRunSupersededError(this.connectionId, run.bootstrapGeneration)
       }
       console.error("[v0] [Engine] Prehistoric loading failed:", error instanceof Error ? error.message : String(error))
@@ -2365,6 +2385,13 @@ export class TradeEngineManager {
     let errorCount = 0
     let lastRealtimeStartedAt = 0
     let lastRealtimeCompletedAt = 0
+    // The full Base→Main→Real pipeline is CPU-heavy.  Processing a wide
+    // basket all at once on the Node event loop made a productive 12-symbol
+    // pass block health/control requests for tens of seconds.  Keep the
+    // complete configured basket, but rotate a small fair slice through it
+    // on each realtime tick. No Set/result is capped or discarded; this only
+    // bounds simultaneous work and gives every symbol a deterministic turn.
+    let realtimeSymbolCursor = 0
 
     // Adaptive idle backoff. When prehistoric calc is complete and the cycle
     // produces zero indications we progressively increase the pause from the
@@ -2491,11 +2518,21 @@ export class TradeEngineManager {
       // at the top of this `tick`.
 
       try {
-        const symbols = await this.prioritizeSignalSymbols(await this.getSymbols())
-        if (!symbols || symbols.length === 0) {
+        const configuredSymbols = await this.prioritizeSignalSymbols(await this.getSymbols())
+        if (!configuredSymbols || configuredSymbols.length === 0) {
           // No symbols yet — fall through; finally will schedule the next attempt.
           return
         }
+
+        const configuredSymbolsPerTick = Number(process.env.REALTIME_PIPELINE_SYMBOLS_PER_TICK)
+        const symbolsPerTick = Number.isFinite(configuredSymbolsPerTick)
+          ? Math.max(1, Math.min(8, Math.floor(configuredSymbolsPerTick)))
+          : 1
+        const symbols = Array.from(
+          { length: Math.min(symbolsPerTick, configuredSymbols.length) },
+          (_, offset) => configuredSymbols[(realtimeSymbolCursor + offset) % configuredSymbols.length],
+        )
+        realtimeSymbolCursor = (realtimeSymbolCursor + symbols.length) % configuredSymbols.length
 
         // ── CHECK: Settings dirty flag and reload if needed ─��────────────���─────────
         // When user updates connection settings via UI, a dirty flag is set.
@@ -2780,7 +2817,7 @@ export class TradeEngineManager {
           `engine:${this.connectionId}:indication-cycle`,
           30_000,
           () =>
-            `[v0] [IndicationProcessor] cycle=${cycleCount} symbols=${symbols.length} ` +
+            `[v0] [IndicationProcessor] cycle=${cycleCount} symbols=${symbols.length}/${configuredSymbols.length} ` +
             `indications=${totalIndications} duration=${duration}ms ` +
             `perType=${JSON.stringify(indicationTypeCounts)} perSymbol=${JSON.stringify(symbolIndicationCounts)}`,
         )
@@ -2932,7 +2969,7 @@ export class TradeEngineManager {
               started_at: (existingState as any)?.started_at || this.startTime?.toISOString() || new Date().toISOString(),
               last_indication_run: new Date().toISOString(),
               indication_avg_duration_ms: totalDuration > 0 ? Math.round(totalDuration / cycleCount) : 0,
-              symbols_in_scope: symbols.length,
+              symbols_in_scope: configuredSymbols.length,
             })
           } catch { /* silently fail */ }
         }
@@ -3409,6 +3446,15 @@ export class TradeEngineManager {
     let liveSyncInFlight = false
     let lastSyncStartedAt = 0
     let lastSyncCompletedAt = 0
+    // The configured 200 ms cadence is appropriate for a small live book and
+    // native exchange protection. Rehydrating hundreds of Paper positions at
+    // that cadence, however, spends the whole event loop decoding the same
+    // book before the previous marks can materially change. Track only a
+    // bounded prefix of the open-ID index once per second and apply a local
+    // backpressure floor for dense books. Direct Trade has its own 280 ms
+    // worker and is deliberately not governed by this Main-engine pacing.
+    let observedOpenBookDepth = 0
+    let observedOpenBookDepthAt = 0
     // ── Connector reuse (memory-pressure fix) ───────────────────────────
     // The previous code constructed a BRAND-NEW exchange connector on EVERY
     // 200ms tick (~5/sec, ~18k/hour). Each instance allocates headers,
@@ -3476,6 +3522,15 @@ export class TradeEngineManager {
         try {
           const connection = await _getConnectionLazy(this.connectionId)
           if (connection) {
+            const now = Date.now()
+            if (now - observedOpenBookDepthAt >= 1_000) {
+              const client = getRedisClient()
+              const ids = await client
+                .lrange(`live:positions:${this.connectionId}`, 0, 256)
+                .catch(() => [] as string[])
+              observedOpenBookDepth = new Set(ids.map(String).filter(Boolean)).size
+              observedOpenBookDepthAt = now
+            }
             // Build connector only when not paused — exchange calls are
             // meaningless during a global pause, and we avoid the REST round
             // trips so paused-state cycles stay fast.
@@ -3571,7 +3626,18 @@ export class TradeEngineManager {
       // Start-to-start cadence = liveSyncIntervalMs (default 200 ms), with
       // an independent post-completion breath. Scheduling by the remaining
       // gate time avoids accidentally adding the whole interval after work.
-      const intervalMs = timings.liveSyncIntervalMs ?? 200
+      const configuredIntervalMs = timings.liveSyncIntervalMs ?? 200
+      // Exchange-backed positions retain venue-side TP/SL control orders, so
+      // this is a reconciliation cadence, not the sole protection mechanism.
+      // The cap is intentionally modest: a 350-position Paper book remains
+      // checked at least once per second while small books keep the operator's
+      // configured 200 ms responsiveness.
+      const backpressureIntervalMs =
+        observedOpenBookDepth > 256 ? 1_000 :
+        observedOpenBookDepth > 128 ? 750 :
+        observedOpenBookDepth > 32 ? 400 :
+        configuredIntervalMs
+      const intervalMs = Math.max(configuredIntervalMs, backpressureIntervalMs)
       const cyclePauseMs = timings.livePositionsCyclePauseMs ?? 50
       const now = Date.now()
       const intervalRemaining = lastSyncStartedAt > 0
@@ -3818,7 +3884,7 @@ export class TradeEngineManager {
    * Each cycle:
    *   1. Compute the look-back window from `prehistoric_range_hours`
    *      (default 8 h; bounds 1–50 h).
-   *   2. For each symbol (bounded, ordered worker pool):
+   *   2. For the next fair slice of symbols (bounded, rotating worker pool):
    *        runIndStratCycle(symbol, "historical", { window })
    *   3. Record a heartbeat after each productive pass. Completion gates remain
    *      owned exclusively by the verified one-time bootstrap.
@@ -3897,6 +3963,7 @@ export class TradeEngineManager {
     // Adaptive pause tracking — see scheduleNext above.
     let _ppLastSteps = 0
     let _ppConsecutiveIdle = 0
+    let replaySymbolCursor = 0
 
     const scheduleNext = () => {
       if (
@@ -3917,14 +3984,20 @@ export class TradeEngineManager {
       // "Low Activity / no realtime progressions" despite the engine
       // appearing to run.
       //
-      // Adaptive pause: when the last cycle found work (steps > 0),
-      // continue at full speed (0 ms delay). When work was zero, back
-      // off: first idle gets 3 s, then climbs by 3 s per consecutive
-      // idle up to 30 s. Productive work immediately resets to instant.
+      // Adaptive pause: when the last cycle found work (steps > 0), retain a
+      // small hand-off interval before the next symbol slice. The previous
+      // zero-delay loop could run twelve complete historic Base→Main→Real
+      // graphs back-to-back and starve the 280 ms Direct-Trade/control plane.
+      // An idle slice backs off: first idle gets 3 s, then climbs by 3 s per
+      // consecutive idle up to 30 s. No candle is skipped: cursor + durable
+      // checkpoint decide which symbol/candle is processed next.
       const pause = (() => {
         if (_ppLastSteps > 0) {
           _ppConsecutiveIdle = 0
-          return 0
+          const configured = Number(process.env.PREHISTORIC_REPLAY_MIN_PAUSE_MS)
+          return Number.isFinite(configured)
+            ? Math.max(100, Math.min(5_000, Math.floor(configured)))
+            : 280
         }
         _ppConsecutiveIdle++
         // 3s, 6s, 9s, ... capped at 30s
@@ -4000,12 +4073,14 @@ export class TradeEngineManager {
         //
         // Per-cycle safety cap: MAX_REPLAY_STEPS_PER_SYMBOL bounds the
         // number of replay steps per symbol per cycle to prevent CPU starvation.
-        // Both dev and prod default to five so LivePositions gets frequent
-        // event-loop turns; operators can raise it to 30 on dedicated workers.
+        // Each step runs a complete Base→Main→Real pass, so one is the safe
+        // default for the single authoritative Node owner. It still advances
+        // every historical candle exactly once via the durable checkpoint;
+        // dedicated workers can explicitly raise it to 30.
         const configuredReplaySteps = Number(process.env.PREHISTORIC_REPLAY_STEPS_PER_SYMBOL)
         const MAX_REPLAY_STEPS_PER_SYMBOL = Number.isFinite(configuredReplaySteps)
           ? Math.max(1, Math.min(30, Math.floor(configuredReplaySteps)))
-          : 5
+          : 1
         const client = getRedisClient()
         const cycleSettingsVersion = this.settingsVersion
         const shouldContinue = () =>
@@ -4172,7 +4247,19 @@ export class TradeEngineManager {
         // Replay defaults to one because every task runs the full CPU-heavy
         // Base→Main→Real graph for up to 30 candles. Large workers can opt into
         // two; the shared ordered pool still prevents unbounded fan-out.
-        const replayConcurrency = getReplaySymbolConcurrency(symbols.length)
+        const configuredSymbolsPerTick = Number(process.env.PREHISTORIC_REPLAY_SYMBOLS_PER_TICK)
+        const symbolsPerTick = Number.isFinite(configuredSymbolsPerTick)
+          ? Math.max(1, Math.min(8, Math.floor(configuredSymbolsPerTick)))
+          : 1
+        const scheduledSymbols = Array.from(
+          { length: Math.min(symbolsPerTick, symbols.length) },
+          (_, offset) => symbols[(replaySymbolCursor + offset) % symbols.length],
+        )
+        replaySymbolCursor = (replaySymbolCursor + scheduledSymbols.length) % symbols.length
+        // Historic calculation is CPU-heavy, so fairness takes precedence
+        // over a larger worker pool for the default single-process owner. A
+        // dedicated worker may opt into more symbols per tick/concurrency.
+        const replayConcurrency = getReplaySymbolConcurrency(scheduledSymbols.length)
         const slowReplayDiagnostic = setTimeout(() => {
           console.warn(
             `[v0] [PrehistoricProgression] ${connId} cycle is still processing after ` +
@@ -4189,7 +4276,7 @@ export class TradeEngineManager {
           error?: string
         }>>>
         try {
-          results = await mapWithConcurrency(symbols, replayConcurrency, replayOneSymbol)
+          results = await mapWithConcurrency(scheduledSymbols, replayConcurrency, replayOneSymbol, { yieldEvery: 1 })
         } finally {
           clearTimeout(slowReplayDiagnostic)
         }
@@ -4214,8 +4301,8 @@ export class TradeEngineManager {
             connId,
             "prehistoric_progression",
             "info",
-            `Prehistoric Progression first-pass complete (${symbols.length} symbols, ${duration} ms)`,
-            { cycle: cycleCount, symbols: symbols.length, durationMs: duration },
+            `Prehistoric Progression first-pass complete (${scheduledSymbols.length}/${symbols.length} symbols, ${duration} ms)`,
+            { cycle: cycleCount, scheduledSymbols: scheduledSymbols.length, totalSymbols: symbols.length, durationMs: duration },
           ).catch(() => {})
         }
 
@@ -4262,7 +4349,7 @@ export class TradeEngineManager {
         logRuntimeInfo(
           `engine:${this.connectionId}:prehistoric-cycle`,
           30_000,
-          `[v0] [PrehistoricProgression] cycle=${cycleCount} symbols=${symbols.length} ` +
+          `[v0] [PrehistoricProgression] cycle=${cycleCount} symbols=${scheduledSymbols.length}/${symbols.length} ` +
             `steps=${stepsTotal} indications=${indTotal} strategies=${stratTotal} ` +
             `duration=${duration}ms range=${rangeHours}h`,
         )

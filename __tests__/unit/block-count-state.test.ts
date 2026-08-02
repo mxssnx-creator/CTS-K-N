@@ -126,6 +126,10 @@ describe("independent Block count lifecycle", () => {
     expect(deltas).toEqual([1.5, 1.5, 1.5])
     expect(base + confirmedAdd).toBe(5.5)
     expect(calculateBlockRemainingAddQuantity(base, 2, ratio, confirmedAdd)).toBe(0)
+
+    // Direct user formula: Base 5 plus three validated Blocks at ratio 1
+    // equals 5 + (3 × 5 × 1) = 20, never a compounded 40 or 80.
+    expect(calculateBlockTargetQuantity(5, 3, 1)).toBe(20)
   })
 
   test("calculates a separate proportional minimum PF for every Block count", () => {

@@ -29,7 +29,19 @@ try {
   assert.equal(MINUTE_INTERVAL_MS, 60_000)
   assert.deepEqual(received.map((entry) => entry.path).sort(), [...CRON_PATHS].sort())
   assert.ok(received.every((entry) => entry.authorization === `Bearer ${secret}`))
-  console.log(JSON.stringify({ success: true, paths: received.length, intervalMs: MINUTE_INTERVAL_MS }))
+
+  const degraded = await runSchedulerTick({
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    secret,
+    timeoutMs: 2_000,
+    fetchImpl: async () => new Response(JSON.stringify({ success: true, degraded: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  })
+  assert.equal(degraded.ok, false, "semantic cron degradation must be visible to recovery")
+  assert.ok(degraded.results.every((result) => result.ok === false && result.status === 200))
+  console.log(JSON.stringify({ success: true, paths: received.length, intervalMs: MINUTE_INTERVAL_MS, detectsDegradedCron: true }))
 } finally {
   server.close()
   await once(server, "close")

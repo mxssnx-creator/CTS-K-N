@@ -26,6 +26,10 @@ import {
   normaliseEntryTactics,
   normaliseExitTactics,
   resampleCandles,
+  buildDirectTradeTakeProfitPositionCostRatios,
+  directTradeTakeProfitPercent,
+  normaliseDirectTradeTakeProfitRatioRange,
+  DIRECT_TRADE_RECENT_PF_DEFAULT,
   type DirectTradeEntryTiming,
   type DirectTradeStrategyType,
   type DirectTradeTrailOption,
@@ -46,8 +50,6 @@ const DIRECT_STOP_LOSS_RATIO_MIN = 0.25
 const DIRECT_STOP_LOSS_RATIO_MAX = 0.75
 const DIRECT_INVERSE_STOP_LOSS_RATIO_MAX = 1.25
 const DIRECT_STOP_LOSS_RATIO_STEP = 0.25
-const HIGH_PROTECTION_TAKE_PROFITS = [4, 5, 6, 8]
-const STANDARD_TAKE_PROFITS = [0.3, 0.5, 0.8, 1, 1.5, 2, 2.5, 3]
 
 interface CalculationRequest {
   symbolCount?: number
@@ -71,6 +73,8 @@ interface CalculationRequest {
   activityVolumeRatio?: number
   maxHoldMinutes?: number
   positionCostPercent?: number
+  takeProfitRatioRange?: [number, number]
+  blockVolumeRatio?: number
   recalculate?: boolean
 }
 
@@ -253,9 +257,9 @@ export async function POST(request: NextRequest) {
     const trailingEnabled = body.trailingEnabled !== false
     const minProfitFactor = Math.max(0.8, numberOr(body.minProfitFactor, 0.8))
     // A 12-position recent window avoids accepting a historical PF that is
-    // already contradicted by the latest closed positions. Ten is a strict
-    // quality floor; the matrix load test reports the realised pass rate.
-    const minRecentProfitFactor = Math.max(0.8, numberOr(body.minRecentProfitFactor, 10))
+    // already contradicted by the latest closed positions. The shared strict
+    // default is checked by the deterministic full-matrix paper test.
+    const minRecentProfitFactor = Math.max(0.8, numberOr(body.minRecentProfitFactor, DIRECT_TRADE_RECENT_PF_DEFAULT))
     const recentEvaluationPositions = Math.max(3, Math.floor(numberOr(body.recentEvaluationPositions, 12)))
     const maxDrawdownTimeMin = Math.max(1, numberOr(body.maxDrawdownTimeMin, 10))
     const historyHours = Math.max(1, numberOr(body.historyHours, 60))
@@ -265,6 +269,13 @@ export async function POST(request: NextRequest) {
     const activityVolumeRatio = Math.max(0, numberOr(body.activityVolumeRatio, 1))
     const maxHoldMinutes = Math.max(1, numberOr(body.maxHoldMinutes, 120))
     const positionCostPercent = normalizePositionCostPercent(body.positionCostPercent ?? POSITION_COST_PERCENT_DEFAULT)
+    const takeProfitPositionCostRatios = buildDirectTradeTakeProfitPositionCostRatios(
+      normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange),
+    )
+    const takeProfitRange = takeProfitPositionCostRatios.map((ratio) =>
+      directTradeTakeProfitPercent(positionCostPercent, ratio),
+    )
+    const blockVolumeRatio = Math.max(0.1, Math.min(10, numberOr(body.blockVolumeRatio, 1)))
 
     // A manual dashboard refresh and the long-running processor can arrive at
     // the same time. The complete grid is an atomic snapshot, so only one
@@ -401,13 +412,13 @@ export async function POST(request: NextRequest) {
             trailOptions: DirectTradeTrailOption[]
           }> = []
           if (strategyTypes.includes("standard")) {
-            plans.push({ strategyType: "standard", signalDirection: direction, tpRange: STANDARD_TAKE_PROFITS, slRatios, trailOptions: [noTrailingOption] })
+            plans.push({ strategyType: "standard", signalDirection: direction, tpRange: takeProfitRange, slRatios, trailOptions: [noTrailingOption] })
           }
           if (strategyTypes.includes("trailing_fixed") && fixedTrailOptions.length > 0) {
-            plans.push({ strategyType: "trailing_fixed", signalDirection: direction, tpRange: STANDARD_TAKE_PROFITS, slRatios, trailOptions: fixedTrailOptions })
+            plans.push({ strategyType: "trailing_fixed", signalDirection: direction, tpRange: takeProfitRange, slRatios, trailOptions: fixedTrailOptions })
           }
           if (strategyTypes.includes("trailing_auto") && autoTrailOptions.length > 0) {
-            plans.push({ strategyType: "trailing_auto", signalDirection: direction, tpRange: STANDARD_TAKE_PROFITS, slRatios, trailOptions: autoTrailOptions })
+            plans.push({ strategyType: "trailing_auto", signalDirection: direction, tpRange: takeProfitRange, slRatios, trailOptions: autoTrailOptions })
           }
           if (strategyTypes.includes("combination")) {
             // Formerly named Complex: retain independent config identities for
@@ -416,7 +427,7 @@ export async function POST(request: NextRequest) {
             plans.push({
               strategyType: "combination",
               signalDirection: direction,
-              tpRange: STANDARD_TAKE_PROFITS,
+              tpRange: takeProfitRange,
               slRatios,
               trailOptions: trailingEnabled
                 ? [noTrailingOption, ...fixedTrailOptions, ...autoTrailOptions]
@@ -427,7 +438,7 @@ export async function POST(request: NextRequest) {
             plans.push({
               strategyType: "inverse",
               signalDirection: direction === "long" ? "short" : "long",
-              tpRange: STANDARD_TAKE_PROFITS,
+              tpRange: takeProfitRange,
               slRatios: inverseSlRatios,
               // Inverse orders have both non-trailing and independently
               // trailed variants. With trailing disabled the normal leg still
@@ -443,7 +454,7 @@ export async function POST(request: NextRequest) {
             plans.push({
               strategyType: "high_protection",
               signalDirection: direction,
-              tpRange: HIGH_PROTECTION_TAKE_PROFITS,
+              tpRange: takeProfitRange,
               slRatios: [0.75],
               trailOptions: trailingEnabled
                 ? [noTrailingOption, ...autoTrailOptions]
@@ -459,8 +470,9 @@ export async function POST(request: NextRequest) {
                   candlesByTimeframe,
                   timeframeSet,
                   historyHours,
-                  volumeRatio: minVolFactor,
+                  volumeRatio: blockVolumeRatio,
                   tpRange: plan.tpRange,
+                  takeProfitPositionCostRatios,
                   slRatios: plan.slRatios,
                   trailOptions: plan.trailOptions,
                   entryTactics,

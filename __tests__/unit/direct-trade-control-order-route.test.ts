@@ -1,0 +1,107 @@
+const placeLiveOrderMock = jest.fn()
+
+jest.mock("@/lib/live-order-service", () => ({
+  placeLiveOrder: (...args: unknown[]) => placeLiveOrderMock(...args),
+}))
+
+function resetInlineRedisGlobals() {
+  delete (globalThis as any).__redis_data
+  delete (globalThis as any).__redis_load_promise
+  delete (globalThis as any).__redis_core_promise
+  delete (globalThis as any).__redis_init_promise
+  delete (globalThis as any).__redis_snapshot_loaded
+  delete (globalThis as any).__redis_fully_connected
+  delete (globalThis as any).__redis_backend
+}
+
+const token = "direct-trade-processor-token-0123456789"
+const instanceId = "direct-worker-test"
+
+function request(body: Record<string, unknown>, suppliedToken = token) {
+  return new Request("http://localhost/api/trade-engine/direct-trade/order", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-direct-trade-processor-token": suppliedToken,
+    },
+    body: JSON.stringify(body),
+  })
+}
+
+describe("Direct-Trade leased control-order route", () => {
+  const priorToken = process.env.DIRECT_TRADE_PROCESSOR_TOKEN
+
+  beforeEach(() => {
+    jest.resetModules()
+    jest.clearAllMocks()
+    resetInlineRedisGlobals()
+    process.env.DIRECT_TRADE_PROCESSOR_TOKEN = token
+    placeLiveOrderMock.mockResolvedValue({
+      success: true,
+      mode: "simulated",
+      orderId: "paper-order-1",
+      quantity: 0.25,
+      fill: { filled: true, filledQty: 0.25, filledPrice: 100, status: "filled" },
+      details: { status: "filled" },
+    })
+  })
+
+  afterAll(() => {
+    if (priorToken === undefined) delete process.env.DIRECT_TRADE_PROCESSOR_TOKEN
+    else process.env.DIRECT_TRADE_PROCESSOR_TOKEN = priorToken
+  })
+
+  test("requires the installed worker token and current lease owner", async () => {
+    const { POST } = await import("@/app/api/trade-engine/direct-trade/order/route")
+    const denied = await POST(request({ kind: "open" }, "wrong-token") as any)
+    expect(denied.status).toBe(401)
+    expect(placeLiveOrderMock).not.toHaveBeenCalled()
+  })
+
+  test("opens only for the selected live connection and closes with reduce-only position side", async () => {
+    const [{ POST }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/order/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    await redis.set("direct_trade:processor:lease", instanceId)
+    await redis.set("direct_trade:state", JSON.stringify({ enabled: true, liveMode: true, connectionId: "bingx-x01" }))
+
+    const opened = await POST(request({
+      kind: "open",
+      instanceId,
+      positionId: "dt_BTCUSDT_long_1m_1",
+      connectionId: "bingx-x01",
+      symbol: "BTCUSDT",
+      positionDirection: "long",
+      quantity: 0.25,
+      price: 100,
+    }) as any)
+    expect(opened.status).toBe(200)
+    expect(placeLiveOrderMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      connectionId: "bingx-x01",
+      side: "long",
+      positionDirection: "long",
+      reduceOnly: false,
+      persistPosition: false,
+      safetyPayload: expect.objectContaining({ confirmLiveOrderPlacement: true }),
+    }))
+
+    const closed = await POST(request({
+      kind: "close",
+      instanceId,
+      positionId: "dt_BTCUSDT_long_1",
+      connectionId: "bingx-x01",
+      symbol: "BTCUSDT",
+      positionDirection: "long",
+      quantity: 0.25,
+    }) as any)
+    expect(closed.status).toBe(200)
+    expect(placeLiveOrderMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      side: "short",
+      positionDirection: "long",
+      reduceOnly: true,
+      clientOrderId: expect.stringMatching(/^dt-close-/),
+    }))
+  })
+})

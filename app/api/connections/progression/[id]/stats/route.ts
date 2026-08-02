@@ -27,6 +27,34 @@ const SETTINGS_RECOORDINATION_STALE_MS = 45_000
 const STATS_SLOW_DIAGNOSTIC_MS = 15_000
 const STATS_SLOW_LOG_INTERVAL_MS = 60_000
 const statsSlowDiagnosticAt = new Map<string, number>()
+// This response assembles the complete canonical ledgers (including active
+// and closed positions). A short server-side snapshot prevents several UI
+// cards or health tooling from independently rebuilding the same expensive
+// read model in the same engine pulse. It is deliberately much shorter than
+// any strategy/signal cadence, and cache keys retain the requested engine
+// type so scopes never bleed into one another.
+const STATS_RESPONSE_CACHE_TTL_MS = 3_000
+const STATS_RESPONSE_CACHE_MAX_ENTRIES = 64
+const statsResponseCache = new Map<string, { expiresAt: number; response: Response }>()
+const statsResponseInFlight = new Map<string, Promise<Response>>()
+
+function statsResponseCacheKey(request: NextRequest, connectionId: string): string {
+  const params = request.nextUrl?.searchParams || new URL(request.url || "http://localhost").searchParams
+  return `${connectionId}:${params.get("engineType") || params.get("engine_type") || "main"}`
+}
+
+function cacheStatsResponse(key: string, response: Response): void {
+  if (!response.ok) return
+  while (statsResponseCache.size >= STATS_RESPONSE_CACHE_MAX_ENTRIES && !statsResponseCache.has(key)) {
+    const oldest = statsResponseCache.keys().next().value
+    if (oldest === undefined) break
+    statsResponseCache.delete(oldest)
+  }
+  statsResponseCache.set(key, {
+    expiresAt: Date.now() + STATS_RESPONSE_CACHE_TTL_MS,
+    response: response.clone(),
+  })
+}
 
 async function mapInBatches<T, R>(
   values: readonly T[],
@@ -501,6 +529,14 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id: connectionId } = await params
+  const responseCacheKey = statsResponseCacheKey(request, connectionId)
+  const cached = statsResponseCache.get(responseCacheKey)
+  if (cached && cached.expiresAt > Date.now()) return cached.response.clone()
+  if (cached) statsResponseCache.delete(responseCacheKey)
+
+  const inFlight = statsResponseInFlight.get(responseCacheKey)
+  if (inFlight) return (await inFlight).clone()
+
   const requestStartedAt = Date.now()
   // Exhaustive stage snapshots can legitimately take longer while a large
   // settings generation is being materialised. Fifteen seconds is therefore a
@@ -4263,9 +4299,16 @@ export async function GET(
     }
   }
 
+  const responsePromise = mainLogic()
+  statsResponseInFlight.set(responseCacheKey, responsePromise)
   try {
-    return await mainLogic()
+    const response = await responsePromise
+    cacheStatsResponse(responseCacheKey, response)
+    return response
   } finally {
+    if (statsResponseInFlight.get(responseCacheKey) === responsePromise) {
+      statsResponseInFlight.delete(responseCacheKey)
+    }
     clearTimeout(slowDiagnostic)
   }
 }

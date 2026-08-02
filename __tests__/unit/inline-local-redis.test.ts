@@ -20,6 +20,8 @@ function resetInlineGlobals() {
   delete (globalThis as any).__redis_persistence_signals_attached
   delete (globalThis as any).__redis_snapshot_last_error_warn
   delete (globalThis as any).__redis_live_position_wal_promise
+  delete (globalThis as any).__redis_live_position_wal_batch_scheduled
+  delete (globalThis as any).__redis_live_position_wal_pending
   delete (globalThis as any).__redis_live_position_wal_write_counter
   delete (globalThis as any).__redis_cleanup_started
   delete (globalThis as any).__db_ops_tracker
@@ -106,6 +108,27 @@ describe("InlineLocalRedis compatibility and persistence", () => {
       .exec()
 
     expect(pipelineResult).toEqual(["OK", "ok", 1, { field: "value" }])
+  })
+
+  it("keeps Redis LPUSH ordering for a dense historic batch", async () => {
+    const redis = new InlineLocalRedis()
+    const batch = Array.from({ length: 30_000 }, (_, index) => `historic-${index}`)
+
+    await redis.rpush("historic:batch", "older")
+    await expect(redis.lpush("historic:batch", ...batch)).resolves.toBe(30_001)
+
+    // Redis evaluates LPUSH arguments left-to-right, making the last supplied
+    // value the new head. This guards the linear batch implementation used by
+    // long historical fills without relying on brittle wall-clock timings.
+    await expect(redis.lrange("historic:batch", 0, 2)).resolves.toEqual([
+      "historic-29999",
+      "historic-29998",
+      "historic-29997",
+    ])
+    await expect(redis.lrange("historic:batch", -2, -1)).resolves.toEqual([
+      "historic-0",
+      "older",
+    ])
   })
 
   it("moves an existing list member to the head without leaving duplicates", async () => {
@@ -221,6 +244,48 @@ describe("InlineLocalRedis compatibility and persistence", () => {
       await expect(reader.lrange("list:persist", 0, -1)).resolves.toEqual(["first", "second"])
       await expect(reader.zscore("z:persist", "member")).resolves.toBe("10")
       await expect(reader.ttl("string:persist")).resolves.toBeGreaterThan(0)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("treats an acquired engine lease as active before the first heartbeat", async () => {
+    const redis = new InlineLocalRedis()
+    expect((redis as any).hasActiveInlineEngineOwner()).toBe(false)
+
+    await redis.set("engine_lock:paper-coordination", "engine-manager:paper-coordination:1700000000000")
+    expect((redis as any).hasActiveInlineEngineOwner()).toBe(true)
+
+    await redis.del("engine_lock:paper-coordination")
+    await redis.hset("trade_engine:global", { actual_status: "starting" })
+    expect((redis as any).hasActiveInlineEngineOwner()).toBe(true)
+  })
+
+  it("coalesces concurrent live-position checkpoints without losing recovery rows", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "inline-redis-live-wal-"))
+    const snapshotPath = join(dir, "redis-snapshot.json")
+    process.env.V0_REDIS_SNAPSHOT_PATH = snapshotPath
+
+    try {
+      const writer = new InlineLocalRedis()
+      const count = 96
+      await expect(Promise.all(Array.from({ length: count }, (_, index) =>
+        writer.persistLivePositionCheckpoint({
+          id: `paper-${index}`,
+          connectionId: "paper-coordination",
+          status: "simulated",
+          version: 1,
+          updatedAt: 1_700_000_000_000 + index,
+        }),
+      ))).resolves.toEqual(Array(count).fill(true))
+
+      const lines = (await readFile(`${snapshotPath}.live-wal`, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+      expect(lines).toHaveLength(count)
+      expect(new Set(lines.map((line) => line.positionId)).size).toBe(count)
+      expect((globalThis as any).__redis_live_position_wal_write_counter).toBe(count)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

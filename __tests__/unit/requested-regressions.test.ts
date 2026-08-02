@@ -852,7 +852,9 @@ describe("requested regression guardrails", () => {
     const setProcessor = read("lib/indication-sets-processor.ts")
     const rawProcessor = read("lib/trade-engine/indication-processor-fixed.ts")
 
-    expect(setProcessor).toContain('runType("active_advanced", () => this.processActiveAdvancedSet(symbol, marketData))')
+    expect(setProcessor).toContain('type: "active_advanced", enabled: this.activeAdvancedEnabled')
+    expect(setProcessor).toContain('run: () => this.processActiveAdvancedSet(symbol, marketData)')
+    expect(setProcessor).toContain('INDICATION_SET_TYPE_CONCURRENCY')
     expect(setProcessor).toContain("private async processActiveAdvancedSet")
     expect(setProcessor).toContain('await this.batchSaveIndications(pendingWrites, "active_advanced")')
     expect(setProcessor).toContain('active_advanced: activeAdvancedResults')
@@ -1883,7 +1885,7 @@ describe("requested regression guardrails", () => {
     const block = source.slice(start, end)
 
     expect(block).toContain("slowReplayDiagnostic")
-    expect(block).toContain("await mapWithConcurrency(symbols, replayConcurrency, replayOneSymbol)")
+    expect(block).toContain("await mapWithConcurrency(scheduledSymbols, replayConcurrency, replayOneSymbol, { yieldEvery: 1 })")
     expect(block).toContain("clearTimeout(slowReplayDiagnostic)")
     expect(block).not.toContain("withCycleDeadline(")
   })
@@ -1944,7 +1946,7 @@ describe("requested regression guardrails", () => {
     expect(indicationData).not.toContain(".slice(0, 500)")
   })
 
-  test("Signal's 120-position lease counts the complete mixed Main/Signal open book", () => {
+  test("Signal's 120-position lease rebuilds from the complete mixed book then uses durable O(1) capacity indexes", () => {
     const signal = read("lib/signal-indication.ts")
     const policy = read("lib/signal-position-policy.ts")
     const settings = read("components/settings/signal-indication-settings.tsx")
@@ -1965,6 +1967,10 @@ describe("requested regression guardrails", () => {
     expect(admission).toContain("const READ_BATCH_SIZE = 250")
     expect(admission).not.toContain("lrange(`live:positions:${connectionId}`, 0, 500)")
     expect(admission).not.toContain("for (const id of ids) {\n      pipeline")
+    expect(liveStage).toContain("SIGNAL_POSITION_ADMISSION_INDEX_VERSION")
+    expect(liveStage).toContain("readSignalAdmissionCapacity")
+    expect(liveStage).toContain("signal:positions:${connectionId}")
+    expect(liveStage).toContain("findOpenLivePositionByDir(")
   })
 
   test("active strategy and position views use complete canonical ledgers without implicit demo state", () => {
@@ -2153,6 +2159,29 @@ describe("requested regression guardrails", () => {
     expect(liveStage).toContain("parseSystemCloseFlag((pos as any)?.use_system_close_only)")
   })
 
+  test("large paper books use a fair bounded position Stage instead of starving recovery requests", () => {
+    const liveStage = read("lib/trade-engine/stages/live-stage.ts")
+    const simulatedSweep = liveStage.slice(
+      liveStage.indexOf("export async function processSimulatedPositions"),
+      liveStage.indexOf("export async function syncWithExchange"),
+    )
+
+    expect(liveStage).toContain("SIMULATED_POSITION_STAGE_BATCH_SIZE = 96")
+    expect(liveStage).toContain("getSimulatedPositionStageRows")
+    expect(liveStage).toContain("selectSimulatedPositionStageRows")
+    expect(liveStage).toContain("updateSimulatedPositionStageRow(position)")
+    expect(simulatedSweep).toContain("const allSimulated")
+    expect(simulatedSweep).toContain("selectSimulatedPositionStageRows(connectionId, allSimulated)")
+    expect(simulatedSweep).toContain("TP/SL, trailing and max-hold handling")
+
+    const exchangeSync = liveStage.slice(liveStage.indexOf("export async function syncWithExchange"))
+    expect(exchangeSync.indexOf("const liveTradeOn = await isLiveTradeEnabledForConnection(connectionId)")).toBeGreaterThan(-1)
+    expect(exchangeSync.indexOf("const liveTradeOn = await isLiveTradeEnabledForConnection(connectionId)")).toBeLessThan(
+      exchangeSync.indexOf("const allOpenRaw = await getLivePositions(connectionId)"),
+    )
+    expect(exchangeSync).toContain("const simSummary = await processSimulatedPositions(connectionId)")
+  })
+
 
   test("inline Redis memory cleanup protects durable engine state and evicts volatile progression data", () => {
     const source = read("lib/redis-db.ts")
@@ -2165,10 +2194,22 @@ describe("requested regression guardrails", () => {
 
     expect(cleanupBlock).toContain("process.memoryUsage?.()")
     expect(cleanupBlock).toContain("const isCritical = rssMB > CMEM.rssHardMB")
-    expect(cleanupBlock).toContain("const isWarm")
+    expect(cleanupBlock).toContain("const isMemoryWarm")
+    expect(cleanupBlock).toContain("const hasKeyPressure")
     expect(cleanupBlock).toContain("FULL_CLEANUP_INTERVAL_MS")
+    expect(cleanupBlock).toContain("WARM_EVICTION_MIN_INTERVAL_MS")
+    expect(cleanupBlock).toContain("Key count is not heap pressure")
     expect(cleanupBlock).toContain('cleanupVolatileRuntimeState({ mode: "activeOwnerSafe", reason: "critical-rss" })')
     expect(cleanupBlock).toContain("ttlCleanupTimer.unref?.()")
+    expect(evictionBlock).toContain("Do not force a V8 collection here")
+    expect(evictionBlock).not.toContain(";(globalThis as any).gc?.()")
+    expect(source).toContain("const maxChunkBytes = 64 * 1024")
+    expect(source).toContain("const cooperativeYieldEveryRows = 1")
+    expect(source).toContain("const stringKeys = Array.from(d.strings.keys())")
+    expect(source).toContain("Map iterators include entries inserted after iteration began")
+    expect(source).toContain("private hasActiveInlineEngineOwner")
+    expect(source).toContain("INLINE_REDIS_SNAPSHOT_WHILE_ENGINE_RUNNING !== \"1\"")
+    expect(source).toContain("full inline snapshot is intentionally a quiescent checkpoint")
 
     for (const durablePrefix of [
       'k.startsWith("live:position:")',
@@ -2280,6 +2321,30 @@ describe("requested regression guardrails", () => {
     expect(engineManager).toContain("process.memoryUsage().heapTotal")
     expect(engineManager).not.toContain('require("v8")')
     expect(engineManager).not.toContain("JSON.stringify(effectiveForceSymbols)")
+  })
+
+  test("unchanged 280ms Direct-Trade pulses reuse an exact snapshot without hiding closed outcomes", () => {
+    const setProcessor = read("lib/indication-sets-processor.ts")
+
+    expect(setProcessor).toContain("EXACT_SNAPSHOT_CACHE_MAX_AGE_MS")
+    expect(setProcessor).toContain('if (mode !== "historical") return `${connectionId}:${symbol}:realtime`')
+    expect(setProcessor).toContain("exactSnapshotCacheKey(this.connectionId, symbol, marketData)")
+    expect(setProcessor).toContain("const closedForwardOutcomes = await this.closePendingRealtimeOutcomes")
+    expect(setProcessor).toContain("if (!closedForwardOutcomes) {")
+    expect(setProcessor).toContain("if (!closedForwardOutcomes) writeExactSnapshotCache(snapshotKey, completed)")
+    expect(setProcessor).toContain("private async closePendingRealtimeOutcomes(symbol: string, marketData: any): Promise<boolean>")
+    const indicationProcessor = read("lib/trade-engine/indication-processor-fixed.ts")
+    expect(indicationProcessor).toContain('__indicationSnapshotMode: typeof asOfMs === "number" ? "historical" : "realtime"')
+  })
+
+  test("historic replay is fair to the 280ms Direct-Trade control plane", () => {
+    const engineManager = read("lib/trade-engine/engine-manager.ts")
+
+    expect(engineManager).toContain("PREHISTORIC_REPLAY_SYMBOLS_PER_TICK")
+    expect(engineManager).toContain("PREHISTORIC_REPLAY_MIN_PAUSE_MS")
+    expect(engineManager).toContain("const scheduledSymbols = Array.from(")
+    expect(engineManager).toContain("mapWithConcurrency(scheduledSymbols, replayConcurrency, replayOneSymbol, { yieldEvery: 1 })")
+    expect(engineManager).toContain("replaySymbolCursor = (replaySymbolCursor + scheduledSymbols.length) % symbols.length")
   })
 
 
@@ -3058,6 +3123,34 @@ describe("requested regression guardrails", () => {
     expect(initStatus).toContain("cross_instance_durable: sharedRedis")
     expect(initStatus).toContain("last_tick_fresh: continuityAgeMs !== null && continuityAgeMs <= 90_000")
     expect(initStatus).toContain("last_tick_fresh: liveRecoveryAgeMs !== null && liveRecoveryAgeMs <= 90_000")
+  })
+
+  test("realtime pipeline rotates a bounded fair symbol slice instead of blocking a wide basket", () => {
+    const engine = read("lib/trade-engine/engine-manager.ts")
+    const env = read(".env.example")
+
+    expect(engine).toContain("REALTIME_PIPELINE_SYMBOLS_PER_TICK")
+    expect(engine).toContain("let realtimeSymbolCursor = 0")
+    expect(engine).toContain("configuredSymbols[(realtimeSymbolCursor + offset) % configuredSymbols.length]")
+    expect(engine).toContain("realtimeSymbolCursor = (realtimeSymbolCursor + symbols.length) % configuredSymbols.length")
+    expect(env).toContain("REALTIME_PIPELINE_SYMBOLS_PER_TICK=")
+  })
+
+  test("a successful historic generation cancels an older deferred retry", () => {
+    const engine = read("lib/trade-engine/engine-manager.ts")
+
+    expect(engine).toContain("A cancelled older generation can have armed a retry")
+    expect(engine).toContain("clearTimeout(this.prehistoricRetryTimer)")
+    expect(engine).toContain("unregisterEngineTimer(this.prehistoricRetryTimer)")
+    expect(engine).toContain("if (!this.prehistoricTimer) this.schedulePrehistoricProgressionAfterRealtimeWarmup()")
+  })
+
+  test("a canonical-selection cancellation hands off instead of retrying a second historic matrix", () => {
+    const engine = read("lib/trade-engine/engine-manager.ts")
+
+    expect(engine).toContain('"PrehistoricProcessingCancelledError"')
+    expect(engine).toContain('requestPrehistoricRecoordination("canonical symbol selection changed during historic bootstrap")')
+    expect(engine).toContain("if (selectionSuperseded || error instanceof PrehistoricRunSupersededError || !run.shouldContinue())")
   })
 
   test("Kilo managed persistence is installable and serializes every dashboard control path", () => {

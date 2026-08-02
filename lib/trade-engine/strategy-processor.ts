@@ -49,6 +49,13 @@ const STRATEGY_FLOW_MAX_INTERVAL_MS = 15_000 // heartbeat re-run
 interface FlowThrottleEntry {
   lastRunAt: number          // wall-clock ms of last successful run
   lastFingerprint: string
+  /**
+   * A Strategy flow may take longer than its regular cadence.  This is an
+   * ownership lease inside the process, not a duration throttle: while it is
+   * set, no timer/HMR/cron callback may start a second full Base→Main→Real
+   * graph for the same connection and symbol.
+   */
+  inFlight?: boolean
 }
 
 // Map<`${connectionId}:${symbol}`, FlowThrottleEntry>
@@ -113,6 +120,7 @@ export class StrategyProcessor {
   ): Promise<{ strategiesEvaluated: number; liveReady: number }> {
     let reservedThrottleKey: string | undefined
     let reservedAt = 0
+    let reservedFingerprint = ""
     const isCurrent = (): boolean => {
       try {
         return shouldContinue?.() !== false
@@ -123,7 +131,22 @@ export class StrategyProcessor {
     const releaseReservation = (): void => {
       if (!reservedThrottleKey) return
       const reserved = flowThrottle.get(reservedThrottleKey)
-      if (reserved?.lastRunAt === reservedAt) flowThrottle.delete(reservedThrottleKey)
+      if (reserved?.lastRunAt === reservedAt && reserved.inFlight) {
+        flowThrottle.delete(reservedThrottleKey)
+      }
+    }
+    const completeReservation = (): void => {
+      if (!reservedThrottleKey) return
+      const reserved = flowThrottle.get(reservedThrottleKey)
+      if (reserved?.lastRunAt !== reservedAt || !reserved.inFlight) return
+      // Pace future work from completion. A heavy pass therefore cannot be
+      // immediately followed by another full matrix simply because its start
+      // time is already outside the hard-throttle window.
+      flowThrottle.set(reservedThrottleKey, {
+        lastRunAt: Date.now(),
+        lastFingerprint: reservedFingerprint || reserved.lastFingerprint,
+        inFlight: false,
+      })
     }
     try {
       if (!isCurrent()) return { strategiesEvaluated: 0, liveReady: 0 }
@@ -260,6 +283,13 @@ export class StrategyProcessor {
       const indicationFingerprint = buildStrategyIndicationFingerprint(validIndications)
       const prev = flowThrottle.get(throttleKey)
       if (prev) {
+        // A full strategy pass is CPU/heap intensive. The duration throttle
+        // below is insufficient by itself: a pass can legitimately exceed
+        // 750ms, at which point a timer used to admit a duplicate concurrent
+        // pass. Preserve one authoritative owner until it completes/cancels.
+        if (prev.inFlight) {
+          return { strategiesEvaluated: 0, liveReady: 0 }
+        }
         const elapsed = now - prev.lastRunAt
         // Read live throttle values from settings:system at gate-eval
         // time (cheap in-memory cache hit). Settings updates from the
@@ -297,6 +327,7 @@ export class StrategyProcessor {
       flowThrottle.set(throttleKey, {
         lastRunAt: now,
         lastFingerprint: indicationFingerprint,
+        inFlight: true,
       })
       while (flowThrottle.size > MAX_FLOW_THROTTLE_ENTRIES) {
         const oldest = flowThrottle.keys().next().value
@@ -305,6 +336,7 @@ export class StrategyProcessor {
       }
       reservedThrottleKey = throttleKey
       reservedAt = now
+      reservedFingerprint = indicationFingerprint
       if (!isCurrent()) {
         releaseReservation()
         return { strategiesEvaluated: 0, liveReady: 0 }
@@ -419,6 +451,7 @@ export class StrategyProcessor {
       // stages. Callers (engine-manager, stats routes) aggregate this value
       // across SYMBOLS per cycle, which is correct — cross-symbol sums of
       // the final-stage count are meaningful totals.
+      completeReservation()
       return { strategiesEvaluated: realEvaluated, liveReady: realLiveReady }
     } catch (error) {
       // A provisional reservation prevents duplicate concurrent flows. If the

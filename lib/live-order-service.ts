@@ -33,6 +33,12 @@ export interface PlaceLiveOrderInput {
   persistPosition?: boolean
   updateCounters?: boolean
   source?: string
+  // Closing a long is a sell order and closing a short is a buy order. Keep
+  // the *position* side explicit so hedge-mode connectors never infer the
+  // opposite side from the closing order itself.
+  positionDirection?: LiveOrderDirection
+  reduceOnly?: boolean
+  clientOrderId?: string
 }
 
 export interface ParsedFill {
@@ -279,13 +285,30 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
   const connection = input.connection || await loadLiveOrderConnection(input.connectionId)
   const symbol = normalizeOrderSymbol(input.symbol)
   const direction = normalizeDirection(input.side)
+  const positionDirection = input.positionDirection
+    ? normalizeDirection(input.positionDirection)
+    : direction
   const exchangeSide = exchangeSideForDirection(direction)
   const { connector, mode, willUseRealExchange } = input.connector
     ? { connector: input.connector, mode: "live" as LiveOrderMode, willUseRealExchange: true }
     : await createLiveOrderConnector(connection, input.safetyPayload || input as any)
   await setupLiveOrderLeverage(connector, symbol, Number(input.leverage || 1))
   const hedgeMode = String(connection.position_mode || "").toLowerCase().includes("hedge") || String(connection.position_mode || "").toLowerCase().includes("dual")
-  const options = hedgeMode ? { hedgeMode: true, positionSide: direction === "long" ? "LONG" : "SHORT" } : { hedgeMode: false }
+  const options = hedgeMode
+    ? {
+        hedgeMode: true,
+        positionSide: positionDirection === "long" ? "LONG" : "SHORT",
+        // BingX hedge mode encodes the reduce-only intent through the
+        // opposing side plus explicit positionSide; the connector preserves
+        // that safe venue-specific behaviour.
+        reduceOnly: input.reduceOnly === true,
+        clientOrderId: input.clientOrderId,
+      }
+    : {
+        hedgeMode: false,
+        reduceOnly: input.reduceOnly === true,
+        clientOrderId: input.clientOrderId,
+      }
   const result = await connector.placeOrder(symbol, exchangeSide, input.quantity, input.price || 0, input.orderType || "market", options)
   if (!result?.success) {
     const failedOrderId = result?.orderId || result?.order_id || result?.id

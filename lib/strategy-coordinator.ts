@@ -18,6 +18,7 @@
  */
 
 import { initRedis, getSettings, setSettings, getRedisClient } from "@/lib/redis-db"
+import { createHash } from "crypto"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { PositionThresholdManager } from "@/lib/position-threshold-manager"
@@ -78,13 +79,104 @@ import {
   posCountVolumeRatioToSetMultiplier,
 } from "@/lib/pos-count-volume-ratio"
 import { resolveStrategyMemoryGuardLimits } from "@/lib/strategy-memory-guard"
+import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import {
   DEFAULT_BASE_MIN_STEP,
   MAX_BASE_STEP,
   MIN_BASE_STEP,
 } from "@/lib/constants"
 
-const STRATEGY_COOPERATIVE_YIELD_INTERVAL = 512
+/**
+ * Runtime stage snapshots must not duplicate the canonical, verbose Set key
+ * (which intentionally includes the complete configuration lineage).  The
+ * full identity remains in the authoritative indication/config store and in
+ * the in-flight coordinator graph; operational caches and dashboard previews
+ * use this collision-resistant reference instead.
+ */
+function strategySetStorageRef(setKey: unknown): string {
+  return createHash("sha256")
+    .update(String(setKey ?? ""))
+    .digest("base64url")
+    .slice(0, 22)
+}
+
+const RUNTIME_STAGE_SNAPSHOT_MAX_ROWS = 256
+
+type RuntimeStageSnapshotRow = {
+  ref: string
+  parentRef?: string
+  indicationType: string
+  direction: string
+  variant: string
+  avgProfitFactor: number
+  avgDrawdownTime: number
+  avgConfidence: number
+  entryCount: number
+  axisWindows?: StrategySet["axisWindows"]
+  trailing?: Pick<TrailingProfile, "mode" | "startRatio" | "stopRatio" | "stepRatio">
+  previous?: { count: number; profitFactor: number; avgDDT: number }
+}
+
+function projectRuntimeStageRows(sets: readonly StrategySet[]): RuntimeStageSnapshotRow[] {
+  // This is a *reporting* projection, not an evaluation boundary. Every Set
+  // is evaluated and the full config matrix remains independently persisted;
+  // the bounded read model prevents a dashboard cache from retaining the
+  // complete object graph (including verbose lineage strings) every pulse.
+  // Keep references while selecting.  Constructing a projection row hashes
+  // the canonical (and deliberately verbose) set key.  Doing that for every
+  // rejected candidate made the bounded snapshot itself proportional to the
+  // full matrix and could starve health probes under a large coordination
+  // pass.  We now materialize/hash only the retained rows.
+  const top: Array<{ score: number; set: StrategySet }> = []
+  const scoreFor = (set: StrategySet) =>
+    Number(set.avgProfitFactor || 0) * 10_000 + Number(set.avgConfidence || 0) * 100 - Number(set.avgDrawdownTime || 0)
+  for (const set of sets) {
+    const score = scoreFor(set)
+    if (top.length < RUNTIME_STAGE_SNAPSHOT_MAX_ROWS) {
+      top.push({ score, set })
+      continue
+    }
+    let lowest = 0
+    for (let index = 1; index < top.length; index++) {
+      if (top[index].score < top[lowest].score) lowest = index
+    }
+    if (score > top[lowest].score) top[lowest] = { score, set }
+  }
+  return top
+    .sort((left, right) => right.score - left.score)
+    .map(({ set }): RuntimeStageSnapshotRow => ({
+      ref: strategySetStorageRef(set.setKey),
+      ...(set.parentSetKey ? { parentRef: strategySetStorageRef(set.parentSetKey) } : {}),
+      indicationType: String(set.indicationType || ""),
+      direction: String(set.direction || ""),
+      variant: String(set.variant || "default"),
+      avgProfitFactor: Number(set.avgProfitFactor || 0),
+      avgDrawdownTime: Number(set.avgDrawdownTime || 0),
+      avgConfidence: Number(set.avgConfidence || 0),
+      entryCount: Number(set.entryCount || 0),
+      ...(set.axisWindows ? { axisWindows: set.axisWindows } : {}),
+      ...(set.trailingProfile ? {
+        trailing: {
+          mode: set.trailingProfile.mode,
+          startRatio: set.trailingProfile.startRatio,
+          stopRatio: set.trailingProfile.stopRatio,
+          stepRatio: set.trailingProfile.stepRatio,
+        },
+      } : {}),
+      ...(set.prevPos ? {
+        previous: {
+          count: Number(set.prevPos.count || 0),
+          profitFactor: Number(set.prevPos.profitFactor || 0),
+          avgDDT: Number(set.prevPos.avgDDT || 0),
+        },
+      } : {}),
+    }))
+}
+
+// A 280 ms Direct-Trade tick must leave time for control, health and recovery
+// requests even when a single set is expensive to materialise.  64 is a
+// scheduling quantum, not a cap: every candidate is still evaluated.
+const STRATEGY_COOPERATIVE_YIELD_INTERVAL = 64
 
 /**
  * Let timers, health probes, and read-only API handlers run between complete
@@ -2173,10 +2265,9 @@ export class StrategyCoordinator {
    * CPU. This in-process LRU stores the already-parsed StrategySet so a
    * cache hit costs O(1).
    *
-   * Keyed by `fingerprint` directly: fingerprints are deterministic and
-   * already encode {connectionId, symbol, baseConfig, variant, posCtx}
-   * so collisions across connections/symbols are impossible by
-   * construction.
+   * Keyed by a SHA-256-backed fingerprint: it encodes the complete Base
+   * identity without retaining that verbose configuration string in a Redis
+   * hash field for every variant/context combination.
    *
    * Capped at 4 096 entries (≈10 connections × 10 symbols × 40 variants).
    * Eviction is "delete oldest insertion" via Map iteration order.
@@ -2210,8 +2301,9 @@ export class StrategyCoordinator {
 
   // ── Axis-Set LRU ─────────────────────────────────────────────────────────
   // Axis Set objects are pure value objects once the tuner writes sizeDelta
-  // onto the CoordRecord instead of mutating entries[] in-place.  Safe to
-  // reuse across cycles without cloning.  Key = "${parentKey}:${axisKey}:ec${ec}".
+  // onto the CoordRecord instead of mutating entries[] in-place. Safe to
+  // reuse across cycles without cloning. Their cache key uses a compact
+  // parent reference, not the complete serialized configuration identity.
   // Bounded tightly because production workers can be restarted with already-
   // active engines. Keeping tens of thousands of axis objects resident across
   // warmup cycles caused OOM kills before health probes could complete.
@@ -2979,7 +3071,12 @@ export class StrategyCoordinator {
     if (cached && Date.now() - cached.at < 10_000) return cached.value
 
     const mode = process.env.NODE_ENV === "production" ? "prod" : "dev"
-    const fallback = mode === "prod" ? 2 : 1
+    // Base→Main→Real is CPU/heap work inside one authoritative Node process.
+    // A wider Promise pool does not create CPU cores; it overlaps allocations
+    // and can make control/health routes unavailable. Keep the safe default
+    // serial and leave an explicit environment/settings override for hosts
+    // that have measured a beneficial I/O-heavy profile.
+    const fallback = 1
     let configured = fallback
     try {
       const settings = ((await getRedisClient().hgetall("settings:system").catch(() => ({}))) || {}) as Record<string, unknown>
@@ -3616,10 +3713,19 @@ export class StrategyCoordinator {
       }
     }
 
-    // Persist BASE sets — skipped in dev mode.
-    // Each baseSets blob contains full StrategySet objects (~10 KB each).
+    // Persist a compact BASE runtime read model. The full configuration
+    // lineage is already authoritative in the indication/config store and
+    // Base→Main receives the complete in-memory graph in this same cycle.
+    // Serialising that graph again here used to retain tens of MiB per symbol
+    // and made an otherwise healthy production worker miss health probes.
     const baseKey = `strategies:${this.connectionId}:${symbol}:base:sets`
-    await setSettings(baseKey, { sets: baseSets, count: baseSets.length, created: new Date() })
+    await setSettings(baseKey, {
+      formatVersion: 3,
+      runtimeProjection: true,
+      rows: projectRuntimeStageRows(baseSets),
+      count: baseSets.length,
+      created: new Date(),
+    })
 
     // Write Base counts to progression hash so stats API and dashboard read accurate per-stage counts.
     // CRITICAL: Use hincrby (cumulative) not hset (snapshot). Previously each cycle overwrote the
@@ -3850,7 +3956,10 @@ export class StrategyCoordinator {
     } else {
       const baseKey = `strategies:${this.connectionId}:${symbol}:base:sets`
       const stored = await getSettings(baseKey)
-      baseSets = stored?.sets || []
+      // A runtime projection intentionally cannot reconstruct a fresh entry
+      // graph after restart. Fail closed until the next canonical indication
+      // pass rebuilds it; exits/open positions are handled independently.
+      baseSets = stored?.runtimeProjection ? [] : (stored?.sets || [])
     }
 
     const metricsBase = this.METRICS.base
@@ -3922,8 +4031,8 @@ export class StrategyCoordinator {
 
     let scannedBaseSets = 0
     for (const baseSet of baseSets) {
-      if (scannedBaseSets > 0 && scannedBaseSets % 256 === 0) {
-        await new Promise<void>((resolve) => setImmediate(resolve))
+      if (scannedBaseSets > 0 && scannedBaseSets % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
+        await yieldStrategyScheduler()
       }
       scannedBaseSets++
       // ── Min-positions gate + Status tracking (operator spec) ────────────────────
@@ -4016,8 +4125,8 @@ export class StrategyCoordinator {
               //    pure (no side-effects). On a fingerprint match the result is
               //    identical to what was stored last cycle.
               try {
-                const delta = JSON.parse(fpCache[fingerprint]) as Partial<StrategySet> & { _slim?: boolean }
-                if (delta?._slim && delta.setKey) {
+                const delta = JSON.parse(fpCache[fingerprint]) as Partial<StrategySet> & { _slim?: boolean; sourceRef?: string }
+                if (delta?._slim && delta.sourceRef) {
                   // Rebuild full Set from Base + slim delta via buildVariantSet.
                   const rebuilt = await this.buildVariantSet(
                     baseSet,
@@ -4078,8 +4187,10 @@ export class StrategyCoordinator {
               // cycle" on a subsequent cache hit.
               const slimDelta = {
                 _slim:           true,
-                setKey:          built.setKey,
-                parentSetKey:    built.parentSetKey,
+                // The full Set key can be tens of KiB. Redis uses this
+                // cache only as a rebuild marker; identity is encoded in the
+                // SHA-256-backed fingerprint, so retain a short source ref.
+                sourceRef:       strategySetStorageRef(baseSet.setKey),
                 variant:         built.variant,
                 avgProfitFactor: built.avgProfitFactor,
                 avgDrawdownTime: built.avgDrawdownTime,
@@ -4101,10 +4212,15 @@ export class StrategyCoordinator {
     const configuredVariantConcurrency = Number(
       process.env.STRATEGY_VARIANT_BUILD_CONCURRENCY ?? "",
     )
+    // Variant builders are CPU-heavy JavaScript work. A large Promise.all
+    // batch does not use additional CPU cores in Node; it instead starts many
+    // synchronous builders before the event loop can serve health/control
+    // requests. Keep the default cooperative and serial. Hosts with measured
+    // external-I/O overlap can opt in explicitly, but the cap remains small.
     const variantBuildConcurrency =
       Number.isFinite(configuredVariantConcurrency) && configuredVariantConcurrency > 0
-        ? Math.max(1, Math.min(256, Math.floor(configuredVariantConcurrency)))
-        : 64
+        ? Math.max(1, Math.min(16, Math.floor(configuredVariantConcurrency)))
+        : 1
     const results: VariantBuildResult[] = []
     for (let offset = 0; offset < buildTasks.length; offset += variantBuildConcurrency) {
       results.push(...await Promise.all(
@@ -4118,8 +4234,8 @@ export class StrategyCoordinator {
     // ── Process results and populate mainSets ──���────────�����────────────────
     let processedBuildResults = 0
     for (const result of results) {
-      if (processedBuildResults > 0 && processedBuildResults % 512 === 0) {
-        await new Promise<void>((resolve) => setImmediate(resolve))
+      if (processedBuildResults > 0 && processedBuildResults % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
+        await yieldStrategyScheduler()
       }
       processedBuildResults++
       const { baseSet, profile, built, cachedSet } = result
@@ -4346,8 +4462,8 @@ export class StrategyCoordinator {
     const uniqueBaseSetsProduced = new Set<string>()
     let aggregatedMainSets = 0
     for (const set of mainSets) {
-      if (aggregatedMainSets > 0 && aggregatedMainSets % 512 === 0) {
-        await new Promise<void>((resolve) => setImmediate(resolve))
+      if (aggregatedMainSets > 0 && aggregatedMainSets % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
+        await yieldStrategyScheduler()
       }
       aggregatedMainSets++
       // Variant tag — sets always carry an authoritative .variant field;
@@ -4395,16 +4511,17 @@ export class StrategyCoordinator {
     const mainAvgPosPerSet  = n > 0 ? mainEntriesTotal / n : 0
     const mainProfileEntriesTotal = mainProfileEntries
 
-    // Persist MAIN sets — slim format (set-key list only), same approach as Real.
-    // Full Base Set blobs are already in base:sets; Main sets are re-derivable from
-    // coordIndex in the pipeline. Slim key-list cuts the per-symbol write from
-    // ~500 KB (full mainSets blob with entries:[]) to ~N×30 bytes — 16× smaller.
+    // Persist a bounded scalar runtime projection. `mainSets` stays complete
+    // in the current coordinator flow; this key is a restart-safe diagnostic
+    // view rather than an execution source, so it must not duplicate verbose
+    // configuration keys once for every axis/variant.
     const mainKey = `strategies:${this.connectionId}:${symbol}:main:sets`
     await setSettings(mainKey, {
-      setKeys: mainSets.map((s) => s.setKey),
-      count:   mainSets.length,
+      formatVersion: 3,
+      runtimeProjection: true,
+      rows: projectRuntimeStageRows(mainSets),
+      count: mainSets.length,
       created: new Date(),
-      _slim:   true,
     })
     try {
       if (Object.keys(nextFpCache).length > 0) {
@@ -4658,10 +4775,22 @@ export class StrategyCoordinator {
       const CLAIM_TTL_SECONDS = 7 * 24 * 60 * 60
       const createdAtIso = new Date().toISOString()
       const nowMs = Date.now()
-      const writeBatches: Promise<any>[] = []
       let createdCount = 0
 
-      for (const { set, setKey, existingKey } of setMeta) {
+      // A large Real set can contain thousands of independently eligible
+      // paper rows. Starting all claims/writes in one Promise.all creates a
+      // microtask and allocation storm in the Inline Redis deployment, which
+      // prevents health and recovery routes from getting a turn. The pool is
+      // only a scheduling bound: each exact Set is still claimed and written.
+      await mapWithConcurrency(
+        setMeta,
+        concurrencyFromEnv(
+          ["PSEUDO_POSITION_WRITE_CONCURRENCY"],
+          4,
+          16,
+          setMeta.length,
+        ),
+        async ({ set, setKey, existingKey }) => {
         try {
           const avgPF       = set.avgProfitFactor || 1
           const entryPrice  = Math.max(1, avgPF * 100)   // unitless proxy
@@ -4699,36 +4828,31 @@ export class StrategyCoordinator {
             source_set_key: setKey,
           })
           const claimed = await client.set(existingKey, mappingValue("claimed"), { NX: true, EX: CLAIM_TTL_SECONDS }).catch(() => null)
-          if (claimed !== "OK") continue
+          if (claimed !== "OK") return
 
-          writeBatches.push((async () => {
-            try {
-              const pipeline = client.pipeline()
-              pipeline.hset(`pseudo_position:${this.connectionId}:${pseudoPos.id}`, toRedisHash(pseudoPos))
-              pipeline.sadd(`pseudo_positions:${this.connectionId}`, pseudoPos.id)
-              pipeline.set(existingKey, mappingValue("created"), { XX: true, EX: CLAIM_TTL_SECONDS })
-              const results = await pipeline.exec()
-              const failed = results.some((r: any) => r instanceof Error || (Array.isArray(r) && r[0]))
-              if (failed) throw new Error("pseudo-position pipeline returned an error")
-              createdCount++
-            } catch (err) {
-              await Promise.allSettled([
-                client.del(existingKey),
-                client.del(`pseudo_position:${this.connectionId}:${pseudoPos.id}`),
-                client.srem(`pseudo_positions:${this.connectionId}`, pseudoPos.id),
-              ])
-              console.warn(`[StrategyFlow] Failed to create pseudo position for set ${setKey}; released claim for retry:`, err)
-            }
-          })())
+          try {
+            const pipeline = client.pipeline()
+            pipeline.hset(`pseudo_position:${this.connectionId}:${pseudoPos.id}`, toRedisHash(pseudoPos))
+            pipeline.sadd(`pseudo_positions:${this.connectionId}`, pseudoPos.id)
+            pipeline.set(existingKey, mappingValue("created"), { XX: true, EX: CLAIM_TTL_SECONDS })
+            const results = await pipeline.exec()
+            const failed = results.some((r: any) => r instanceof Error || (Array.isArray(r) && r[0]))
+            if (failed) throw new Error("pseudo-position pipeline returned an error")
+            createdCount++
+          } catch (err) {
+            await Promise.allSettled([
+              client.del(existingKey),
+              client.del(`pseudo_position:${this.connectionId}:${pseudoPos.id}`),
+              client.srem(`pseudo_positions:${this.connectionId}`, pseudoPos.id),
+            ])
+            console.warn(`[StrategyFlow] Failed to create pseudo position for set ${setKey}; released claim for retry:`, err)
+          }
         } catch (err) {
           console.warn(`[StrategyFlow] Failed to prep pseudo position for set ${setKey}:`, err)
         }
-      }
-
-      // Final fan-in — all successful claims' related writes execute together.
-      if (writeBatches.length > 0) {
-        await Promise.all(writeBatches)
-      }
+        },
+        { yieldEvery: 1 },
+      )
 
     } catch (error) {
       console.warn(`[v0] Error creating pseudo positions from REAL sets for ${symbol}:`, error)
@@ -6055,7 +6179,11 @@ export class StrategyCoordinator {
       // and legacy full-blob format (sets: StrategySet[]).
       const mainKey = `strategies:${this.connectionId}:${symbol}:main:sets`
       const stored = (await getSettings(mainKey)) as any
-      if (stored?._slim && Array.isArray(stored.setKeys)) {
+      if (stored?.runtimeProjection) {
+        // See createBaseSets: the runtime snapshot is intentionally
+        // non-executable. The next indication cycle rebuilds the exact graph.
+        mainSets = []
+      } else if (stored?._slim && Array.isArray(stored.setKeys)) {
         // Slim format: resolve profile-variant sets from Base sets.
         // Axis sets are not stored in base:sets (they are generated each cycle),
         // so standalone mode omits them — acceptable for diagnostics/tooling.
@@ -6654,26 +6782,17 @@ export class StrategyCoordinator {
       } catch { /* non-critical */ }
     }
 
-    // Persist REAL sets — compact scalar snapshot format v2.
-    // Full Base Set blobs are already persisted at `base:sets` and are the single
-    // authoritative source for entries/quality data. Writing only the qualifying
-    // key list cuts this payload from ~N×2-5 KB to N×~30 bytes per symbol per cycle.
-    // Readers resolve full Set objects via Base sets (one extra read, warm in LRU).
-    //
-    // DEV-MODE THROTTLE: only write every 50th cycle (~15s at 0.3s interval) to
-    // bound InlineLocalRedis Map growth. Each real:sets blob is ~50 KB; at 20
-    // symbols writing every 5th cycle generates ~200 KB/s heap pressure that the
-    // dev GC cannot fully reclaim. Every 50th cycle = ~20 KB/s — well below GC rate.
-    // Dashboard stats read from in-memory progression counters for the live count;
-    // the key list is only needed for structural queries which tolerate stale data.
+    // Persist REAL as a scalar runtime projection for the same reason as
+    // Base/Main. The complete Real set graph remains alive through this
+    // execution pass and the full source configurations remain in their
+    // independent stores; no candidate is dropped from evaluation or dispatch.
     const realKey = `strategies:${this.connectionId}:${symbol}:real:sets`
     await setSettings(realKey, {
-      formatVersion: 2,
-      setKeys: realSets.map((s) => s.setKey),
-      sets: realSets.map(compactStrategySetForStorage),
-      count:   realSets.length,
+      formatVersion: 3,
+      runtimeProjection: true,
+      rows: projectRuntimeStageRows(realSets),
+      count: realSets.length,
       created: new Date(),
-      _slim:   true,
     })
 
     // Count of Main Sets that actually entered PF/DDT evaluation (excludes pos-count
@@ -7372,7 +7491,11 @@ export class StrategyCoordinator {
       const realKey = `strategies:${this.connectionId}:${symbol}:real:sets`
       const stored  = await getSettings(realKey) as any
       if (stored && typeof stored === "object") {
-        if (stored._slim && Array.isArray(stored.setKeys)) {
+        if (stored.runtimeProjection) {
+          // Runtime snapshots are non-executable by design; a fresh canonical
+          // cycle is required after a process restart before new entries.
+          realSets = []
+        } else if (stored._slim && Array.isArray(stored.setKeys)) {
           // ── Compact format v2: derived scalars + parent Base entries ───
           const baseKey  = `strategies:${this.connectionId}:${symbol}:base:sets`
           const baseSt   = await getSettings(baseKey) as any
@@ -7539,11 +7662,12 @@ export class StrategyCoordinator {
     const liveKey = `strategies:${this.connectionId}:${symbol}:live:sets`
     if (!isCurrent()) return cancelled()
     await setSettings(liveKey, {
-      setKeys:    qualifying.map((s) => s.setKey),
-      count:      qualifying.length,
-      created:    new Date(),
+      formatVersion: 3,
+      runtimeProjection: true,
+      rows: projectRuntimeStageRows(qualifying),
+      count: qualifying.length,
+      created: new Date(),
       executable: true,
-      _slim:      true,
     })
     if (!isCurrent()) return cancelled()
 
@@ -8185,14 +8309,24 @@ export class StrategyCoordinator {
         }
 
         if (entryPrice > 0) {
-          // Pseudo-position creation is local Redis work with per-Set idempotency
-          // enforced inside createPosition (one active pseudo position per Set).
-          // Safe to fan out in parallel — no exchange calls, no shared balance.
+          // Pseudo-position creation is local Redis work with per-Set
+          // idempotency. It is not safe to create an unbounded Promise per
+          // qualifying Set: Inline Redis resolves immediately, so a large
+          // candidate matrix becomes one long microtask turn and starves
+          // health/control requests. Bound and cooperatively yield while
+          // still processing every independently qualifying candidate.
           const historicalCandidates = qualifying.filter(
             (set) => set.variant !== "block" && set.variant !== "dca",
           )
-          await Promise.all(
-            historicalCandidates.map(async (set) => {
+          await mapWithConcurrency(
+            historicalCandidates,
+            concurrencyFromEnv(
+              ["PSEUDO_POSITION_WRITE_CONCURRENCY"],
+              4,
+              16,
+              historicalCandidates.length,
+            ),
+            async (set) => {
               if (!isCurrent()) return false
               try {
                 // Axis Sets carry one synthetic representative entry; for SL/TP
@@ -8285,7 +8419,8 @@ export class StrategyCoordinator {
                 console.error(`[v0] [StrategyFlow] ${symbol} LIVE: createPosition error:`, posErr instanceof Error ? posErr.message : String(posErr))
                 return "error" as const
               }
-            }),
+            },
+            { yieldEvery: 1 },
           )
         } else {
           console.warn(`[v0] [StrategyFlow] ${symbol} LIVE: No entry price, skipping position creation`)
@@ -8958,9 +9093,10 @@ export class StrategyCoordinator {
               // Axis Set objects are now pure value objects (the Real-stage tuner
               // writes sizeDelta onto the CoordRecord instead of mutating entries).
               // They can be safely reused across cycles without cloning.
-              // Key encodes every field that varies: parentKey, axisKey, ec.
+              // Key encodes every field that varies, while the verbose parent
+              // config identity stays only on the StrategySet itself.
               const axisLruKey = [
-                parentKey,
+                strategySetStorageRef(parentKey),
                 axisKey,
                 `ec${ec}`,
                 `pf${inheritedPF.toFixed(4)}`,
@@ -9131,12 +9267,13 @@ export class StrategyCoordinator {
     // DCA is an independent adjust Set for each parent Set, not a
     // position-count Set. Do not include live/closed position-count context
     // in its fingerprint or it will be recreated/rebucketed as counts change.
+    const baseRef = strategySetStorageRef(baseSet.setKey)
     if (variant === "dca") {
-      return `${baseSet.setKey}#${variant}#pf=${bPF}#ec=${bEC}`
+      return `${baseRef}#${variant}#pf=${bPF}#ec=${bEC}`
     }
 
     const bCtx = `c${cont}/lw${lW}/ll${lL}/lp${lP}/pp${pP}/pl${pL}`
-    return `${baseSet.setKey}#${variant}#pf=${bPF}#ec=${bEC}#ctx=${bCtx}`
+    return `${baseRef}#${variant}#pf=${bPF}#ec=${bEC}#ctx=${bCtx}`
   }
 
   /**

@@ -24,6 +24,17 @@ function normalizeDirectTradePositionCostPercent(value: unknown): number {
 export const DIRECT_TRADE_TIMEFRAMES = ["1m", "10m", "15m"] as const
 export const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breakout", "relative"] as const
 export const DIRECT_TRADE_EXIT_TACTICS = ["bracket", "momentum_reversal", "relative", "time"] as const
+// Direct-Trade protection is expressed in PositionCost multiples, not as an
+// unrelated fixed price percentage.  With the default PositionCost of 0.1%,
+// the default 4–12 grid therefore evaluates TP targets from 0.4% to 1.2%.
+// Keeping the ratio integral makes the UI, persisted state and set identity
+// unambiguous across a PositionCost change.
+export const DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN = 2
+export const DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX = 12
+export const DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE: [number, number] = [4, 12]
+// Recent closed positions are a stronger gate than the long-history PF.
+// Keep this exported so calculation and runtime use the identical default.
+export const DIRECT_TRADE_RECENT_PF_DEFAULT = 25
 // Each strategy type is deliberately a separate lineage. It may share market
 // data with another type, but never a set key, entry signal, PF/DDT history or
 // order lane.
@@ -115,6 +126,9 @@ export interface DirectTradeSet {
   entryTiming: DirectTradeEntryTiming
   activityVolumeRatio: number
   takeprofit: number
+  // TP multiple relative to this exact set's PositionCost.  `takeprofit`
+  // remains the executable price-percent distance for bracket/trailing code.
+  takeProfitPositionCostRatio: number
   stoploss: number
   trailing: boolean
   trailingMode: DirectTradeTrailingMode
@@ -122,6 +136,8 @@ export interface DirectTradeSet {
   trailStop: number
   autoTrailSensitivity: number | null
   blockCount: number
+  blockVolumeRatio: number
+  // Legacy storage alias retained while existing persisted grids roll over.
   volumeRatio: number
   positionCostPercent: number
   valid: boolean
@@ -165,6 +181,9 @@ export interface DirectTradeEvaluationInput {
   historyHours: number
   volumeRatio: number
   tpRange: number[]
+  // Parallel to tpRange when the caller owns the PositionCost-ratio grid.
+  // Older callers may provide fixed percentages; their ratio is derived.
+  takeProfitPositionCostRatios?: number[]
   slRatios: number[]
   trailOptions: DirectTradeTrailOption[]
   entryTactics: DirectTradeEntryTactic[]
@@ -192,6 +211,49 @@ function finite(value: unknown, fallback = 0): number {
 function round(value: number, places = 4): number {
   const factor = 10 ** places
   return Math.round(value * factor) / factor
+}
+
+export function normaliseDirectTradeTakeProfitRatioRange(
+  value: unknown,
+  fallback: [number, number] = DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
+): [number, number] {
+  if (!Array.isArray(value) || value.length !== 2) return [...fallback] as [number, number]
+  const requestedMinimum = Number(value[0])
+  const requestedMaximum = Number(value[1])
+  const minimum = Math.max(
+    DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN,
+    Math.min(
+      DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX,
+      Math.round(Number.isFinite(requestedMinimum) ? requestedMinimum : fallback[0]),
+    ),
+  )
+  const maximum = Math.max(
+    minimum,
+    Math.min(
+      DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX,
+      Math.round(Number.isFinite(requestedMaximum) ? requestedMaximum : fallback[1]),
+    ),
+  )
+  return [minimum, maximum]
+}
+
+export function buildDirectTradeTakeProfitPositionCostRatios(
+  value: unknown,
+): number[] {
+  const [minimum, maximum] = normaliseDirectTradeTakeProfitRatioRange(value)
+  return Array.from({ length: maximum - minimum + 1 }, (_, index) => minimum + index)
+}
+
+export function directTradeTakeProfitPercent(
+  positionCostPercent: unknown,
+  positionCostRatio: unknown,
+): number {
+  const cost = normalizeDirectTradePositionCostPercent(positionCostPercent)
+  const ratio = Math.max(
+    DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN,
+    Math.min(DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX, Math.round(finite(positionCostRatio, 0))),
+  )
+  return round(cost * ratio)
 }
 
 export function normaliseDirectTradeTimeframes(value: unknown): DirectTradeTimeframe[] {
@@ -763,7 +825,7 @@ function summarizeRecentPositions(simulation: DirectTradeSimulationMetrics) {
 
 function stableSetKey(input: Pick<DirectTradeSet,
   "symbol" | "direction" | "signalDirection" | "strategyType" | "timeframe" | "entryTactic" | "exitTactic" | "entryTiming" |
-  "activityVolumeRatio" | "takeprofit" | "stoploss" | "trailing" | "trailingMode" | "trailStart" | "trailStop" | "autoTrailSensitivity" | "historyHours" | "positionCostPercent"
+  "activityVolumeRatio" | "takeprofit" | "takeProfitPositionCostRatio" | "stoploss" | "trailing" | "trailingMode" | "trailStart" | "trailStop" | "autoTrailSensitivity" | "historyHours" | "positionCostPercent" | "blockCount" | "blockVolumeRatio"
 >): string {
   const numeric = (value: number) => round(value, 4).toFixed(4)
   return [
@@ -779,6 +841,7 @@ function stableSetKey(input: Pick<DirectTradeSet,
     `activity:${numeric(input.activityVolumeRatio)}`,
     `history:${numeric(input.historyHours)}`,
     `cost:${numeric(input.positionCostPercent)}`,
+    `tpCost:${numeric(input.takeProfitPositionCostRatio)}`,
     `tp:${numeric(input.takeprofit)}`,
     `sl:${numeric(input.stoploss)}`,
     `tr:${input.trailing ? 1 : 0}`,
@@ -786,6 +849,8 @@ function stableSetKey(input: Pick<DirectTradeSet,
     `ts:${numeric(input.trailStart)}`,
     `td:${numeric(input.trailStop)}`,
     `ta:${input.autoTrailSensitivity == null ? "none" : numeric(input.autoTrailSensitivity)}`,
+    `block:${Math.max(0, Math.floor(input.blockCount))}`,
+    `blockRatio:${numeric(input.blockVolumeRatio)}`,
   ].join("|")
 }
 
@@ -796,7 +861,7 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
     recentPositionWindow,
     Math.max(3, Math.floor(finite(input.minRecentPositions, recentPositionWindow))),
   )
-  const minRecentProfitFactor = Math.max(0.8, finite(input.minRecentProfitFactor, 10))
+  const minRecentProfitFactor = Math.max(0.8, finite(input.minRecentProfitFactor, DIRECT_TRADE_RECENT_PF_DEFAULT))
   const positionCostPercent = normalizeDirectTradePositionCostPercent(input.positionCostPercent ?? DIRECT_TRADE_POSITION_COST_PERCENT_DEFAULT)
   const result: DirectTradeSet[] = []
   const timeframe = input.timeframeSet.join("+")
@@ -815,7 +880,11 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
     const activeEntry = composed.signals.at(-1) === true
     const activeEntryAt = activeEntry ? composed.candles.at(-1)?.time || null : null
     for (const exitTactic of input.exitTactics) {
-      for (const takeprofit of input.tpRange) {
+      for (const [takeProfitIndex, takeprofit] of input.tpRange.entries()) {
+        const requestedRatio = Number(input.takeProfitPositionCostRatios?.[takeProfitIndex])
+        const takeProfitPositionCostRatio = Number.isFinite(requestedRatio) && requestedRatio > 0
+          ? requestedRatio
+          : takeprofit / positionCostPercent
         for (const slRatio of input.slRatios) {
           const stoploss = takeprofit * slRatio
           for (const trail of input.trailOptions) {
@@ -885,13 +954,18 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               entryTiming: input.entryTiming,
               activityVolumeRatio: input.activityVolumeRatio,
               takeprofit: round(takeprofit),
+              takeProfitPositionCostRatio: round(takeProfitPositionCostRatio),
               stoploss: round(stoploss),
               trailing: trail.trailing,
               trailingMode: trail.mode || (trail.trailing ? "fixed" : "none"),
               trailStart: round(trail.trailStart),
               trailStop: round(trail.trailStop),
               autoTrailSensitivity: trail.mode === "auto" ? round(trail.autoTrailSensitivity ?? 1, 3) : null,
+              // A Block line carries one evaluated count. Its execution
+              // target remains based on the original Base quantity, never on
+              // a preceding block-adjusted quantity.
               blockCount: Math.max(input.blockRange[0], Math.min(input.blockRange[1], Math.round(profitFactor ?? simulation.totalProfit))),
+              blockVolumeRatio: input.volumeRatio,
               volumeRatio: input.volumeRatio,
               positionCostPercent,
               valid,

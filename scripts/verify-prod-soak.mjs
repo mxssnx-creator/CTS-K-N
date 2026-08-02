@@ -795,7 +795,24 @@ async function main() {
   while (Date.now() - startedAt < DURATION_MS) {
     const roundStarted = Date.now()
     const paths = endpointBuilders.map((build) => build())
-    const responses = await Promise.all(paths.map((path) => request(path)))
+    // Keep endpoint identity when a saturated runtime rejects one request.
+    // `Promise.all()` only reports the first array index, which made a broad
+    // dispatcher stall look like a health-route bug and hid the actual busy
+    // route. Settling the same concurrent fan-out preserves the load shape
+    // while giving the recovery review a precise failure set.
+    const settledResponses = await Promise.allSettled(paths.map((path) => request(path)))
+    const endpointFailures = settledResponses
+      .map((result, index) => result.status === "rejected"
+        ? `${paths[index]}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
+        : null)
+      .filter(Boolean)
+    if (endpointFailures.length > 0) {
+      throw new Error(`Endpoint failures in soak round ${rounds + 1}: ${endpointFailures.join(" | ")}`)
+    }
+    const responses = settledResponses.map((result) => {
+      if (result.status !== "fulfilled") throw new Error("unreachable settled response")
+      return result.value
+    })
     rounds++
     requests += responses.length
     latencies.push(...responses.map((response) => response.latencyMs))

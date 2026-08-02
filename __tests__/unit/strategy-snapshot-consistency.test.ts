@@ -36,10 +36,13 @@ describe("coherent strategy snapshots and schema v93", () => {
     expect(source).not.toContain('const redisKey = `progression:${this.connectionId}`')
   })
 
-  test("persists bounded v2 derived scalars and fails closed on unsafe v1", () => {
+  test("persists bounded v3 runtime projections and fails closed after restart", () => {
     const source = read("lib/strategy-coordinator.ts")
-    expect(source).toContain("formatVersion: 2")
-    expect(source).toContain("compactStrategySetForStorage")
+    expect(source).toContain("formatVersion: 3")
+    expect(source).toContain("runtimeProjection: true")
+    expect(source).toContain("projectRuntimeStageRows")
+    expect(source).toContain("strategySetStorageRef")
+    expect(source).toContain("sourceRef")
     expect(source).toContain("hydrateStrategySetSnapshots")
     expect(source).toContain("Legacy v1 stored only Set keys")
   })

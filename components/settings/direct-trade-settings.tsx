@@ -11,10 +11,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { DIRECT_TRADE_MAX_SYMBOLS } from "@/lib/direct-trade-limits"
+import {
+  DIRECT_TRADE_RECENT_PF_DEFAULT,
+  DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
+  DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX,
+  DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN,
+} from "@/lib/direct-trade-coordination"
 
 type DirectTradeState = {
   enabled: boolean
   liveMode: boolean
+  connectionId: string | null
   processingIntervalMs: number
   recalcIntervalMs: number
   symbolCount: number
@@ -32,7 +39,9 @@ type DirectTradeState = {
   entryTiming: "current" | "last_confirmed"
   activityVolumeRatio: number
   maxHoldMinutes: number
+  takeProfitRatioRange: [number, number]
   blockRange: [number, number]
+  blockVolumeRatio: number
   maxTotalPositions: number
   maxPositionsPerSymbol: number
   maxPositionsPerDirection: number
@@ -51,6 +60,7 @@ type DirectTradeState = {
 const DEFAULT_STATE: DirectTradeState = {
   enabled: false,
   liveMode: false,
+  connectionId: null,
   processingIntervalMs: 280,
   recalcIntervalMs: 2 * 60 * 60 * 1000,
   symbolCount: 8,
@@ -68,14 +78,16 @@ const DEFAULT_STATE: DirectTradeState = {
   entryTiming: "current",
   activityVolumeRatio: 1,
   maxHoldMinutes: 120,
+  takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   blockRange: [1, 12],
+  blockVolumeRatio: 1,
   maxTotalPositions: 300,
   maxPositionsPerSymbol: 3,
   maxPositionsPerDirection: 2,
   keepEnabledPosCount: 12,
   deactivatePosCount: 16,
   minProfitFactor: 0.8,
-  minRecentProfitFactor: 10,
+  minRecentProfitFactor: DIRECT_TRADE_RECENT_PF_DEFAULT,
   recentEvaluationPositions: 12,
   maxDrawdownTimeMin: 10,
   prevPosWindow: 25,
@@ -92,6 +104,14 @@ const STRATEGY_TYPES: Array<[string, string]> = [
   ["inverse", "Inverse"],
   ["high_protection", "High Protection"],
 ]
+
+type ConnectionOption = {
+  id: string
+  name?: string
+  exchange?: string
+  is_enabled?: boolean | string | number
+  is_active?: boolean | string | number
+}
 
 function Range({
   label,
@@ -170,6 +190,7 @@ export function DirectTradeSettings() {
   const [state, setState] = useState<DirectTradeState>(DEFAULT_STATE)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [connections, setConnections] = useState<ConnectionOption[]>([])
 
   const request = useCallback(async (body: Record<string, unknown>) => {
     const response = await fetch("/api/trade-engine/direct-trade", {
@@ -186,10 +207,17 @@ export function DirectTradeSettings() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const response = await fetch("/api/trade-engine/direct-trade")
-      const payload = await response.json()
+      const [response, connectionsResponse] = await Promise.all([
+        fetch("/api/trade-engine/direct-trade"),
+        fetch("/api/connections"),
+      ])
+      const [payload, connectionsPayload] = await Promise.all([
+        response.json(),
+        connectionsResponse.json().catch(() => ({})),
+      ])
       if (!response.ok || !payload?.state) throw new Error("Direct-Trade settings could not be loaded")
       setState({ ...DEFAULT_STATE, ...payload.state })
+      setConnections(Array.isArray(connectionsPayload?.connections) ? connectionsPayload.connections.filter((entry: ConnectionOption) => entry?.id) : [])
     } catch (error) {
       toast.error("Direct-Trade settings unavailable", { description: error instanceof Error ? error.message : "Unknown error" })
     } finally {
@@ -228,6 +256,10 @@ export function DirectTradeSettings() {
   }
 
   const setLiveMode = async (liveMode: boolean) => {
+    if (liveMode && !state.connectionId) {
+      toast.error("Select a live exchange connection first")
+      return
+    }
     setSaving(true)
     try {
       await request({ action: "toggle-live", liveMode })
@@ -263,6 +295,18 @@ export function DirectTradeSettings() {
             <div className="flex items-center gap-2 text-xs text-muted-foreground"><ShieldCheck className="h-4 w-4 shrink-0" />Closed-position PF gates never cancel open TP/SL/trailing/time exits.</div>
           </div>
 
+          <div className="max-w-xl space-y-2 rounded-lg border p-4">
+            <Label className="text-xs">Live exchange connection</Label>
+            <Select value={state.connectionId || "__none"} onValueChange={(value) => update("connectionId", value === "__none" ? null : value)}>
+              <SelectTrigger><SelectValue placeholder="Select a connection" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none">No live connection — Paper only</SelectItem>
+                {connections.map((connection) => <SelectItem key={connection.id} value={connection.id}>{connection.name || connection.id} · {connection.exchange || "exchange"}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">Live entries require this explicit target, the installed worker token, a current processor lease and the server’s live-order safety flag.</p>
+          </div>
+
           <section className="space-y-4"><div><h3 className="font-semibold">Runtime and capacity</h3><p className="text-xs text-muted-foreground">Fast indexed pulses; historical recalculation remains separately bounded.</p></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             <Range label="Processing interval" value={state.processingIntervalMs} min={100} max={2_000} step={20} suffix=" ms" onChange={(value) => update("processingIntervalMs", value)} />
             <Range label="Recalculate every" value={recalcMinutes} min={5} max={1_440} step={5} suffix=" min" onChange={(value) => update("recalcIntervalMs", value * 60_000)} />
@@ -284,14 +328,17 @@ export function DirectTradeSettings() {
             <div className="max-w-xs space-y-2"><Label className="text-xs">Entry timing</Label><Select value={state.entryTiming} onValueChange={(value: DirectTradeState["entryTiming"]) => update("entryTiming", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="current">Current causal candle</SelectItem><SelectItem value="last_confirmed">Last confirmed candle</SelectItem></SelectContent></Select></div>
           </div></section>
 
-          <section className="space-y-4"><div><h3 className="font-semibold">Sizing, protection and blocks</h3><p className="text-xs text-muted-foreground">PositionCost is deducted once after an actual close; open rows are maintained separately.</p></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+          <section className="space-y-4"><div><h3 className="font-semibold">Sizing, protection and blocks</h3><p className="text-xs text-muted-foreground">TP is 2–12× PositionCost (default 4–12×); PositionCost is deducted once after an actual close. Block targets use Base + valid blocks × Base × Block ratio.</p></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             <Range label="Minimum volume factor" value={state.minVolFactor} min={0.1} max={3} step={0.1} onChange={(value) => update("minVolFactor", value)} />
             <Range label="PositionCost" value={state.positionCostPercent} min={0.02} max={1} step={0.02} suffix=" %" onChange={(value) => update("positionCostPercent", value)} />
+            <Range label="TP minimum · × PositionCost" value={state.takeProfitRatioRange[0]} min={DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN} max={state.takeProfitRatioRange[1]} step={1} onChange={(value) => update("takeProfitRatioRange", [value, state.takeProfitRatioRange[1]])} />
+            <Range label="TP maximum · × PositionCost" value={state.takeProfitRatioRange[1]} min={state.takeProfitRatioRange[0]} max={DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX} step={1} onChange={(value) => update("takeProfitRatioRange", [state.takeProfitRatioRange[0], value])} />
             <Range label="Normal SL maximum / TP" value={state.maxSlRatio} min={0.25} max={0.75} step={0.25} onChange={(value) => update("maxSlRatio", value)} />
             <Range label="Inverse SL maximum / TP" value={state.inverseMaxSlRatio} min={0.25} max={1.25} step={0.25} onChange={(value) => update("inverseMaxSlRatio", value)} />
             <Range label="SL ratio step" value={state.slRatioStep} min={0.25} max={0.75} step={0.25} onChange={(value) => update("slRatioStep", value)} />
             <Range label="Block minimum" value={state.blockRange[0]} min={0} max={state.blockRange[1]} step={1} onChange={(value) => update("blockRange", [value, state.blockRange[1]])} />
             <Range label="Block maximum" value={state.blockRange[1]} min={state.blockRange[0]} max={120} step={1} onChange={(value) => update("blockRange", [state.blockRange[0], value])} />
+            <Range label="Block increase ratio / valid block" value={state.blockVolumeRatio} min={0.1} max={10} step={0.1} onChange={(value) => update("blockVolumeRatio", value)} />
             <div className="flex items-center justify-between rounded-md border p-3"><div><Label>Trailing protection</Label><p className="text-xs text-muted-foreground">Fixed, Auto and Combination remain independent lanes.</p></div><Switch checked={state.trailingEnabled} onCheckedChange={(value) => update("trailingEnabled", value)} /></div>
           </div></section>
 

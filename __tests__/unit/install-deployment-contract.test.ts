@@ -40,7 +40,7 @@ describe("production installation and Kilo deployment contract", () => {
   })
 
   it("keeps the canonical host installer fail-closed and complete", async () => {
-    const [installer, bootstrap, updater, serviceControl, envExample, remoteRoute, vercelConfig] = await Promise.all([
+    const [installer, bootstrap, updater, serviceControl, envExample, remoteRoute, vercelConfig, credentialRoute, productionInit] = await Promise.all([
       readFile(path.join(process.cwd(), "scripts/install.sh"), "utf8"),
       readFile(path.join(process.cwd(), "scripts/bootstrap-install.sh"), "utf8"),
       readFile(path.join(process.cwd(), "scripts/update.sh"), "utf8"),
@@ -48,6 +48,8 @@ describe("production installation and Kilo deployment contract", () => {
       readFile(path.join(process.cwd(), ".env.example"), "utf8"),
       readFile(path.join(process.cwd(), "app/api/install/remote/route.ts"), "utf8"),
       readFile(path.join(process.cwd(), "vercel.json"), "utf8"),
+      readFile(path.join(process.cwd(), "app/api/system/inject-credentials/route.ts"), "utf8"),
+      readFile(path.join(process.cwd(), "scripts/production-deploy-init.mjs"), "utf8"),
     ])
     expect(installer).toContain('PNPM_VERSION="10.28.1"')
     expect(installer).toContain('DEFAULT_PROJECT_NAME="cts-kn"')
@@ -88,7 +90,11 @@ describe("production installation and Kilo deployment contract", () => {
     )
     expect(installer).toContain("REQUIRE_FRESH_CONTINUITY=1")
     expect(installer).toContain("Site identity changed after restart")
-    expect(installer).not.toContain("FORCE_LIVE=1")
+    expect(installer).toContain("upsert_env FORCE_LIVE 1")
+    expect(installer).toContain("upsert_env FORCE_SIMULATED 0")
+    expect(installer).toContain("upsert_env ALLOW_LIVE_ORDER_PLACEMENT 1")
+    expect(installer).toContain("upsert_env CTS_REQUIRE_LIVE_TRADE_READY 1")
+    expect(installer).toContain("BINGX_API_KEY/SECRET or BYBIT_API_KEY/SECRET")
     expect(installer).toContain("ADMIN_SECRET,\nCRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET")
     expect(installer).toContain("handoff_existing_install_to_bootstrap")
     expect(installer).toContain("clean stop → delete → reinstall flow")
@@ -127,7 +133,13 @@ describe("production installation and Kilo deployment contract", () => {
     expect(remoteRoute).not.toContain('Fast-forwarding the existing checkout')
     expect(envExample).not.toMatch(/^[A-Z_][A-Z0-9_]*=[^\r\n#]*[ \t]+#/m)
     expect(envExample).toContain("ENCRYPTION_KEY=replace_me_encryption_key")
+    expect(envExample).toContain("CTS_REQUIRE_LIVE_TRADE_READY=")
     expect(envExample).toContain("NEXT_PUBLIC_APP_URL=http://localhost:3002\n")
+    expect(credentialRoute).toContain('await injectForConnection("bybit-x03")')
+    expect(credentialRoute).toContain('"bybit-x03": BASE_CONNECTION_CREDENTIALS["bybit-x03"]')
+    expect(productionInit).toContain("async function verifyLiveTradeReadiness()")
+    expect(productionInit).toContain("CTS_REQUIRE_LIVE_TRADE_READY === \"1\"")
+    expect(productionInit).toContain("/api/connections/${encodeURIComponent(connectionId)}/engine-states")
     const vercel = JSON.parse(vercelConfig)
     expect(vercel.installCommand).toBe("corepack pnpm@10.28.1 install --frozen-lockfile")
     expect(vercel.buildCommand).toBe("corepack pnpm@10.28.1 run vercel-build")
@@ -650,7 +662,7 @@ describe("production installation and Kilo deployment contract", () => {
   })
 
   it("runs preflight and install through the SSH/bootstrap boundary with the canonical installer", async () => {
-    const root = await mkdtemp(path.join("/opt", "cts-remote-route-e2e-"))
+    const root = await mkdtemp(path.join(tmpdir(), "cts-remote-route-e2e-"))
     const binDir = path.join(root, "bin")
     const installerFixture = path.join(root, "canonical-installer.sh")
     const capture = path.join(root, "installer-args.txt")
@@ -660,6 +672,7 @@ describe("production installation and Kilo deployment contract", () => {
     const previousBootstrap = process.env.CTS_TEST_BOOTSTRAP
     const previousCapture = process.env.CTS_TEST_CAPTURE
     const previousMode = process.env.CTS_TEST_EXPECT_MODE
+    const previousTestInstallRoot = process.env.CTS_REMOTE_INSTALL_TEST_ROOT
 
     try {
       await execFileSync("mkdir", ["-p", binDir])
@@ -708,6 +721,7 @@ printf '[fixture-installer] canonical contract passed\\n'
         chmod(installerFixture, 0o755),
       ])
       process.env.PATH = `${binDir}:${previousPath || ""}`
+      process.env.CTS_REMOTE_INSTALL_TEST_ROOT = root
       process.env.CTS_TEST_INSTALLER = installerFixture
       process.env.CTS_TEST_BOOTSTRAP = path.join(process.cwd(), "scripts/bootstrap-install.sh")
       process.env.CTS_TEST_CAPTURE = capture
@@ -721,11 +735,10 @@ printf '[fixture-installer] canonical contract passed\\n'
         installDir,
         repoUrl: "https://github.com/mxssnx-creator/CTS-K-N.git",
       }))
-      expect(preflightResponse.status).toBe(200)
-      await expect(preflightResponse.json()).resolves.toMatchObject({
-        success: true,
-        mode: "preflight",
-        preflightPassed: true,
+      const preflightPayload = await preflightResponse.json()
+      expect({ status: preflightResponse.status, payload: preflightPayload }).toMatchObject({
+        status: 200,
+        payload: { success: true, mode: "preflight", preflightPassed: true },
       })
       expect(await readFile(capture, "utf8")).toContain("--preflight-only")
 
@@ -761,6 +774,8 @@ printf '[fixture-installer] canonical contract passed\\n'
       else process.env.CTS_TEST_CAPTURE = previousCapture
       if (previousMode === undefined) delete process.env.CTS_TEST_EXPECT_MODE
       else process.env.CTS_TEST_EXPECT_MODE = previousMode
+      if (previousTestInstallRoot === undefined) delete process.env.CTS_REMOTE_INSTALL_TEST_ROOT
+      else process.env.CTS_REMOTE_INSTALL_TEST_ROOT = previousTestInstallRoot
       await rm(root, { recursive: true, force: true })
     }
   }, 30_000)

@@ -93,6 +93,35 @@ The template is ready. Next steps depend on user requirements:
 2. What features are needed
 3. Design/branding preferences
 
+## Recent Change – Event-driven resilience and Direct Trade (2026-08-02)
+
+- Direct Trade now defines take-profit ranges as integer multipliers of the
+  configured PositionCost: the UI and API accept `2..12` in steps of one and
+  default to `4..12`.  The calculation grid converts each multiplier to its
+  actual price-percent target; it is no longer a disconnected fixed TP list.
+- Block sizing is explicitly non-compounding in Direct Trade and the Main
+  Base→Main→Real→Live pipeline: `target = baseVolume +
+  validBlockCount × baseVolume × blockVolumeRatio`.  The block multiplier is
+  stored independently from the ordinary minimum-position-volume setting and
+  exact config identity includes it, the validated Block count and TP ratio.
+- Settings changes are delivered by processor/lease acknowledgements instead
+  of loop-count timing.  A calculation begun under superseded settings cannot
+  open a new position; it restarts from the acknowledged configuration.
+- CPU-heavy indication families remain bounded and cooperative, with Trend an
+  explicit final barrier.  Snapshot/recovery/inline-Redis paths retain their
+  atomic and crash-safe guarantees without monopolising the Node event loop.
+- `build-next-with-trace-retry.mjs` rejects mixed source revisions, retries a
+  source-drifted build from a fresh fingerprint, and explicitly prepares the
+  standalone static/public assets because its direct `build:next` invocation
+  bypasses npm's normal `postbuild` hook.
+- Verification: full Jest suite `136 suites / 932 tests`; focused Direct
+  Trade/Block/Main/continuity/install/Trend suite `13 suites / 113 tests`;
+  TypeScript and installer shell syntax passed.  A fresh
+  `.next-prod-final2` artifact contains 346 valid traces, root and standalone
+  manifests, static/public assets, and served `/api/health/liveness` while
+  `FORCE_SIMULATED=1` and `FORCE_LIVE=0`.  No exchange credentials or real
+  orders were used for validation.
+
 ## Quick Start Guide
 
 ### To add a new page:
@@ -799,3 +828,39 @@ credentials are present.
 - [x] Direct-Trade pulse processing uses current public market context only to confirm a fresh entry signal, then admits exclusively its fully evaluated historical PF/DDT Set. Paper mode remains the default and private BingX data/orders remain credential-gated.
 - [x] Revalidated focused Direct-Trade/race/prehistory tests (10 tests), TypeScript, ESLint, diff check, full 32-symbol/60-hour matrix (387,072 independent sets; 8.9s; 251MiB), and installer preflight. The full unit suite is 862/863: the sole remaining failure creates its fixture beneath sandbox-read-only `/opt` before the installer starts.
 - [x] Current local dev boot completed schema v93 migration, recovery/self-healing, credentialless BingX engine start, historic bootstrap and realtime handoff with `live_trade=false`; the Direct Trade Statistics UI returned HTTP 200. The container's process-isolated runner prevents completion of multi-request long-running dev/production HTTP harnesses, so no real exchange order or production deployment was claimed from this session.
+
+## Session 2026-08-02 — Direct-Trade self-healing and host coordination
+
+- [x] Added an authorised, deduplicated minute Direct-Trade continuity cron. It observes only durable worker state, creates a short-lived recovery request for required stale workers, and never acquires an order lease or submits an order.
+- [x] Added a root-owned but exchange/Redis-free recovery tick for installed systemd/PM2 targets. It checks app liveness and core/live/Direct cron freshness, uses a process lock plus per-service cooldown, respects an explicit maintenance-stop marker, and restarts only the affected app, scheduler, or Direct-Trade worker.
+- [x] Installer watchdog/heap sizing remains cgroup-aware and the recovery timer is installed at boot and every minute. Direct Trade defaults retain PF 25 and the 280 ms processor interval; an open management row remains exit-managed after new-entry stop and across restart.
+- [x] Prevented a cancelled historical symbol-selection generation from scheduling a later second full historic matrix beside a live engine. Successful generations cancel old retries; canonical selection cancellation queues a single replacement generation.
+- [x] Validated on the release branch with TypeScript, ESLint, 184 focused assertions, scheduler semantic-failure detection, the mocked stale-cron/direct-worker supervisor contract, and a physical paper-only server SIGKILL/restart test covering persisted settings, lease handover and open-position-stage recovery. No exchange orders or credentials were used.
+
+## Session 2026-08-03 — Server live-readiness and 90-hour Direct-Trade validation
+
+- [x] The Linux server installer explicitly clears inherited paper mode and
+  configures guarded live execution (`FORCE_SIMULATED=0`, `FORCE_LIVE=1`,
+  `ALLOW_LIVE_ORDER_PLACEMENT=1`). It now requires a valid BingX or Bybit
+  credential pair and a post-boot live-readiness verification; the check
+  confirms durable coordination and persisted live state but never submits an
+  exchange order.
+- [x] Base credential injection now covers Bybit (`bybit-x03`) alongside
+  BingX and the other base venues. Its status API reports both configured and
+  effective live-ready venue states, and the production initializer fails a
+  required-live server install when no venue is actually executable.
+- [x] The Direct-Trade 90-hour paper matrix now has bounded progress/report
+  checkpoints and uses the exact worker admission limits in its global report:
+  global cap, per-symbol cap, and per-symbol-direction cap. This prevents a
+  synthetic score outlier from making the report claim positions that the
+  worker would refuse.
+- [x] Validation: 137 Jest suites / 936 tests, TypeScript, shell/Node syntax,
+  installer contract and BingX/Bybit credential-injection tests; 32-symbol
+  public BingX quote stress (39 unauthenticated requests, 0 orders, 2.07 MiB
+  heap growth); full 32-symbol × 90-hour forced-paper Direct-Trade matrix
+  (4,257,792 independent Sets, six strategy types, TP 4–12× PositionCost,
+  Block 1–12, 11,069 valid candidates). The capped global selection admitted
+  94 positions across all 32 symbols and honored 3 per symbol / 2 per
+  direction. A fresh Next production build completed 42 pages and 346 traces;
+  its isolated standalone server started, migrated to schema v93 and was ready
+  in 233 ms. No exchange credentials or order requests were used in tests.

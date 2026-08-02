@@ -9,10 +9,11 @@ describe("Trend indication project wiring", () => {
     const sets = source("lib/indication-sets-processor.ts")
     const realtime = source("lib/trade-engine/indication-processor-fixed.ts")
 
-    const optimalRun = sets.indexOf('runType("optimal", () => this.processOptimalSet(symbol, marketData))')
+    const optimalRun = sets.indexOf('{ type: "optimal", enabled: this.optimalEnabled, run: () => this.processOptimalSet(symbol, marketData) }')
     const trendRun = sets.indexOf('runType("trend", () => this.processTrendSet(symbol, marketData))')
     expect(optimalRun).toBeGreaterThan(-1)
     expect(trendRun).toBeGreaterThan(optimalRun)
+    expect(sets).toContain("Trend is intentionally a completion barrier")
     expect(sets).toContain('await this.batchSaveIndications(pendingWrites, "trend")')
     expect(sets).toContain("(!hasExplicitPrices && hasCandles)")
 

@@ -92,13 +92,14 @@ export async function GET(request: NextRequest) {
     // server precisely while the operator is checking progress.
     const { getRedisClient } = await import("@/lib/redis-db")
     const client = getRedisClient()
-    const [startupHash, startupCompletedAtKey, durableSiteId, siteHash, continuityHash, liveRecoveryHash] = await Promise.all([
+    const [startupHash, startupCompletedAtKey, durableSiteId, siteHash, continuityHash, liveRecoveryHash, directTradeContinuityHash] = await Promise.all([
       client.hgetall("system:startup").catch(() => ({} as Record<string, string>)),
       client.get("system:startup:completed_at").catch(() => null),
       client.get("site:unique_instance:id").catch(() => null),
       client.hgetall("site:unique_instance").catch(() => ({} as Record<string, string>)),
       client.hgetall("system:coordination:continuity").catch(() => ({} as Record<string, string>)),
       client.hgetall("system:coordination:live-recovery").catch(() => ({} as Record<string, string>)),
+      client.hgetall("system:coordination:direct-trade-continuity").catch(() => ({} as Record<string, string>)),
     ])
     const startupStatus = String((startupHash as Record<string, string>)?.status || "")
     const instrumentationBootCompletedAt =
@@ -115,10 +116,12 @@ export async function GET(request: NextRequest) {
       null
     const continuityLastTickMs = Number((continuityHash as Record<string, string>)?.last_tick_ms || 0)
     const liveRecoveryLastTickMs = Number((liveRecoveryHash as Record<string, string>)?.last_tick_ms || 0)
+    const directTradeContinuityLastTickMs = Number((directTradeContinuityHash as Record<string, string>)?.last_tick_ms || 0)
     const nowMs = Date.now()
     const tickAge = (value: number) => value > 0 && Number.isFinite(value) ? Math.max(0, nowMs - value) : null
     const continuityAgeMs = tickAge(continuityLastTickMs)
     const liveRecoveryAgeMs = tickAge(liveRecoveryLastTickMs)
+    const directTradeContinuityAgeMs = tickAge(directTradeContinuityLastTickMs)
     const actualKeyCount = await client.dbSize().catch(() => 0)
 
     // Get connection count
@@ -219,6 +222,14 @@ export async function GET(request: NextRequest) {
               last_tick_fresh: liveRecoveryAgeMs !== null && liveRecoveryAgeMs <= 90_000,
               last_tick_source: (liveRecoveryHash as Record<string, string>)?.last_tick_source || null,
               last_tick_result: (liveRecoveryHash as Record<string, string>)?.last_tick_result || null,
+            },
+            direct_trade: {
+              last_tick_at: (directTradeContinuityHash as Record<string, string>)?.last_tick_at || null,
+              last_tick_age_ms: directTradeContinuityAgeMs,
+              last_tick_fresh: directTradeContinuityAgeMs !== null && directTradeContinuityAgeMs <= 90_000,
+              processor_required: (directTradeContinuityHash as Record<string, string>)?.processor_required === "1",
+              processor_healthy: (directTradeContinuityHash as Record<string, string>)?.processor_healthy !== "0",
+              recovery_requested: (directTradeContinuityHash as Record<string, string>)?.recovery_requested === "1",
             },
           },
         },

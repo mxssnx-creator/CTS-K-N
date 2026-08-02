@@ -1,6 +1,9 @@
 import {
   buildTimeframeCombinations,
+  buildDirectTradeTakeProfitPositionCostRatios,
+  directTradeTakeProfitPercent,
   evaluateDirectTradeSets,
+  normaliseDirectTradeTakeProfitRatioRange,
   normaliseDirectTradeStrategyTypes,
   normaliseDirectTradeTimeframes,
   resampleCandles,
@@ -22,6 +25,14 @@ function upwardMinuteSeries(size = 80): DirectTradeCandle[] {
 }
 
 describe("Direct-Trade independent historical coordination", () => {
+  test("uses the 2–12 PositionCost TP contract with a 4× minimum by default", () => {
+    expect(normaliseDirectTradeTakeProfitRatioRange(undefined)).toEqual([4, 12])
+    expect(normaliseDirectTradeTakeProfitRatioRange([0, 99])).toEqual([2, 12])
+    expect(buildDirectTradeTakeProfitPositionCostRatios([2, 5])).toEqual([2, 3, 4, 5])
+    expect(directTradeTakeProfitPercent(0.1, 4)).toBe(0.4)
+    expect(directTradeTakeProfitPercent(0.1, 12)).toBe(1.2)
+  })
+
   test("migrates 5m without pretending it is a 15m candle and creates every selected combination", () => {
     expect(normaliseDirectTradeTimeframes(["1m", "5m", "15m"]).sort()).toEqual(["10m", "15m", "1m"].sort())
     expect(buildTimeframeCombinations(["1m", "10m", "15m"])).toHaveLength(7)
@@ -215,5 +226,35 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(defaultCost.positionCostPercent).toBe(0.1)
     expect(defaultCost.totalPnl).toBeCloseTo(lowCost.totalPnl - lowCost.totalTrades * 0.08, 3)
     expect(defaultCost.recentTotalPnl).toBeCloseTo(lowCost.recentTotalPnl - lowCost.recentPositionCount * 0.08, 3)
+  })
+
+  test("keeps the configured PositionCost TP multiplier in each exact set identity", () => {
+    const candles = upwardMinuteSeries(180)
+    const sets = evaluateDirectTradeSets({
+      symbol: "BTCUSDT",
+      direction: "long",
+      candlesByTimeframe: { "1m": candles },
+      timeframeSet: ["1m"],
+      historyHours: 60,
+      volumeRatio: 1.5,
+      tpRange: [0.4, 0.5],
+      takeProfitPositionCostRatios: [4, 5],
+      slRatios: [0.5],
+      trailOptions: [{ trailing: false, trailStart: 0, trailStop: 0, mode: "none" }],
+      entryTactics: ["breakout"],
+      exitTactics: ["bracket"],
+      entryTiming: "current",
+      activityVolumeRatio: 0,
+      maxHoldMinutes: 20,
+      positionCostPercent: 0.1,
+      blockRange: [3, 3],
+      minProfitFactor: 0.8,
+      maxDrawdownTimeMin: 60,
+    })
+
+    expect(sets.map((set) => set.takeProfitPositionCostRatio)).toEqual([4, 5])
+    expect(sets.map((set) => set.takeprofit)).toEqual([0.4, 0.5])
+    expect(sets.every((set) => set.blockVolumeRatio === 1.5 && set.blockCount === 3)).toBe(true)
+    expect(new Set(sets.map((set) => set.setKey)).size).toBe(2)
   })
 })

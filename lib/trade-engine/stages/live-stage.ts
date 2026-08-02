@@ -117,6 +117,7 @@ import {
 } from "@/lib/signal-trailing"
 import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import { archiveClosedLivePositionAnalytics } from "@/lib/live-position-analytics-archive"
+import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 const LOG_PREFIX = "[v0] [LivePositionStage]"
 const MIN_EXCHANGE_STOP_LOSS_PERCENT = 0.2
@@ -993,8 +994,175 @@ const livePositionDurabilityFingerprints =
   (livePositionDurabilityGlobal.__livePositionDurabilityFingerprints = new Map<string, string>())
 const LIVE_POSITION_DURABILITY_FINGERPRINT_LIMIT = 2_048
 
+// Paper positions can be numerous because every independent strategy set is
+// allowed to remain open until its own terminal condition. Persisting their
+// mark price on every 200ms LivePositions tick used to turn one unchanged
+// lifecycle into hundreds of complete Redis/index writes per second. Keep the
+// close path synchronous and durable, but coalesce display-only mark snapshots
+// to one write per second per position. The current price is still read on
+// every sweep, so TP/SL and max-hold decisions never wait for this cadence.
+const SIMULATED_MARK_PERSIST_INTERVAL_MS = 1_000
+const SIMULATED_POSITION_PROCESS_CONCURRENCY = 12
+// A large Paper book can contain hundreds of independently managed rows.
+// Reading and closing every row on each 200–280 ms LivePositions tick makes
+// an otherwise healthy server spend its entire event loop in lifecycle scans.
+// Keep the positions in their own short-lived Stage read model and rotate a
+// bounded, fair row slice on every tick. A row can therefore never disappear
+// from management: it is revisited within one bounded sweep, while new/closed
+// rows update the Stage cache immediately through savePosition().
+const SIMULATED_POSITION_STAGE_BATCH_SIZE = 96
+const SIMULATED_POSITION_STAGE_BATCH_MAX = 256
+const SIMULATED_POSITION_STAGE_CACHE_MS = 1_000
+const SIMULATED_POSITION_STAGE_CACHE_MAX_CONNECTIONS = 64
+const SIMULATED_MARK_PERSISTENCE_LIMIT = 8_192
+const livePositionRuntimeGlobal = globalThis as typeof globalThis & {
+  __simulatedPositionMarkPersistedAt?: Map<string, number>
+  __simulatedPositionStages?: Map<string, {
+    positions: LivePosition[]
+    cursor: number
+    expiresAt: number
+  }>
+}
+const simulatedPositionMarkPersistedAt =
+  livePositionRuntimeGlobal.__simulatedPositionMarkPersistedAt ??
+  (livePositionRuntimeGlobal.__simulatedPositionMarkPersistedAt = new Map<string, number>())
+const simulatedPositionStages =
+  livePositionRuntimeGlobal.__simulatedPositionStages ??
+  (livePositionRuntimeGlobal.__simulatedPositionStages = new Map())
+
+function trimSimulatedPositionStages(): void {
+  while (simulatedPositionStages.size > SIMULATED_POSITION_STAGE_CACHE_MAX_CONNECTIONS) {
+    const oldest = simulatedPositionStages.keys().next().value
+    if (!oldest) return
+    simulatedPositionStages.delete(oldest)
+  }
+}
+
+async function getSimulatedPositionStageRows(connectionId: string): Promise<LivePosition[]> {
+  const cached = simulatedPositionStages.get(connectionId)
+  if (cached && cached.expiresAt > Date.now()) return cached.positions
+
+  const positions = await getLivePositions(connectionId)
+  simulatedPositionStages.set(connectionId, {
+    positions,
+    cursor: cached?.cursor || 0,
+    expiresAt: Date.now() + SIMULATED_POSITION_STAGE_CACHE_MS,
+  })
+  trimSimulatedPositionStages()
+  return positions
+}
+
+function updateSimulatedPositionStageRow(position: LivePosition): void {
+  const stage = simulatedPositionStages.get(position.connectionId)
+  if (!stage) return
+  const terminal = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
+  const index = stage.positions.findIndex((candidate: LivePosition) => candidate.id === position.id)
+  if (terminal.has(String(position.status || "").toLowerCase())) {
+    if (index >= 0) stage.positions.splice(index, 1)
+  } else if (index >= 0) {
+    stage.positions[index] = position
+  } else {
+    stage.positions.unshift(position)
+  }
+  stage.cursor = stage.positions.length > 0 ? stage.cursor % stage.positions.length : 0
+  stage.expiresAt = Date.now() + SIMULATED_POSITION_STAGE_CACHE_MS
+}
+
+function selectSimulatedPositionStageRows(
+  connectionId: string,
+  positions: readonly LivePosition[],
+): LivePosition[] {
+  if (positions.length <= SIMULATED_POSITION_STAGE_BATCH_SIZE) return [...positions]
+
+  const limit = concurrencyFromEnv(
+    ["SIMULATED_POSITION_STAGE_BATCH_SIZE"],
+    SIMULATED_POSITION_STAGE_BATCH_SIZE,
+    SIMULATED_POSITION_STAGE_BATCH_MAX,
+    positions.length,
+  )
+  const stage = simulatedPositionStages.get(connectionId)
+  const cursor = Math.max(0, Number(stage?.cursor || 0)) % positions.length
+  const rows = Array.from({ length: limit }, (_, offset) => positions[(cursor + offset) % positions.length])
+  if (stage) stage.cursor = (cursor + rows.length) % positions.length
+  return rows
+}
+
+function simulatedPositionPersistenceKey(position: Pick<LivePosition, "connectionId" | "id">): string {
+  return `${position.connectionId}:${position.id}`
+}
+
+function shouldPersistSimulatedMark(
+  position: Pick<LivePosition, "connectionId" | "id">,
+  previousMark: number,
+  currentMark: number,
+  now: number,
+): boolean {
+  if (!Number.isFinite(currentMark) || currentMark <= 0) return false
+  const epsilon = previousMark > 0 ? Math.max(previousMark * 1e-6, 1e-9) : 0
+  if (previousMark > 0 && Math.abs(currentMark - previousMark) <= epsilon) return false
+  const key = simulatedPositionPersistenceKey(position)
+  const lastPersistedAt = simulatedPositionMarkPersistedAt.get(key) || 0
+  return now - lastPersistedAt >= SIMULATED_MARK_PERSIST_INTERVAL_MS
+}
+
+function markSimulatedMarkPersisted(position: Pick<LivePosition, "connectionId" | "id">, now: number): void {
+  const key = simulatedPositionPersistenceKey(position)
+  if (
+    simulatedPositionMarkPersistedAt.size >= SIMULATED_MARK_PERSISTENCE_LIMIT &&
+    !simulatedPositionMarkPersistedAt.has(key)
+  ) {
+    const oldest = simulatedPositionMarkPersistedAt.keys().next().value
+    if (oldest) simulatedPositionMarkPersistedAt.delete(oldest)
+  }
+  simulatedPositionMarkPersistedAt.set(key, now)
+}
+
+function clearSimulatedMarkPersistence(position: Pick<LivePosition, "connectionId" | "id">): void {
+  simulatedPositionMarkPersistedAt.delete(simulatedPositionPersistenceKey(position))
+}
+
 function positionHashKey(connectionId: string, positionId: string): string {
   return `live_positions:${connectionId}:${positionId}`
+}
+
+function livePositionSlotIndexKey(
+  connectionId: string,
+  symbol: string,
+  direction: string,
+  executionSlot: string,
+): string {
+  const normalizedSymbol = String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "")
+  const normalizedDirection = String(direction || "").toLowerCase()
+  const normalizedSlot = String(executionSlot || "default").replace(/[^A-Za-z0-9._-]/g, "_") || "default"
+  return `live:position-slot:${connectionId}:${normalizedSymbol}:${normalizedDirection}:${normalizedSlot}`
+}
+
+function isActiveLiveSlotStatus(status: unknown): boolean {
+  return [
+    "pending",
+    "open",
+    "filled",
+    "partially_filled",
+    "placed",
+    "pending_fill",
+    "placed_unconfirmed",
+    "simulated",
+  ].includes(String(status || "").toLowerCase())
+}
+
+function matchesLiveSlot(
+  position: LivePosition,
+  symbol: string,
+  direction: string,
+  executionSlot: string,
+): boolean {
+  const normalizedSymbol = String(symbol || "").toUpperCase().replace(/[-_]/g, "")
+  return (
+    String(position.symbol || "").toUpperCase().replace(/[-_]/g, "") === normalizedSymbol &&
+    position.direction === direction &&
+    liveExecutionSlot(position) === executionSlot &&
+    isActiveLiveSlotStatus(position.status)
+  )
 }
 
 function livePositionDurabilityFingerprint(position: LivePosition): string {
@@ -1368,6 +1536,29 @@ function signalCapacityKey(connectionId: string): string {
   return `signal:position_capacity:${connectionId}`
 }
 
+// The admission path runs for every independently coordinated Signal source,
+// TP/SL profile and trailing lane. Reading and hydrating the complete shared
+// live-position book for every candidate made a 350-position Paper book grow
+// quadratically. Keep a compact authoritative membership index instead. It is
+// rebuilt once from the complete canonical book after an upgrade or legacy
+// snapshot restore.
+const SIGNAL_POSITION_ADMISSION_INDEX_VERSION = "1"
+
+function signalPositionAdmissionIndexKey(connectionId: string): string {
+  return `signal:positions:${connectionId}`
+}
+
+function signalPositionAdmissionDirectionIndexKey(
+  connectionId: string,
+  direction: "long" | "short",
+): string {
+  return `${signalPositionAdmissionIndexKey(connectionId)}:${direction}`
+}
+
+function signalPositionAdmissionIndexReadyKey(connectionId: string): string {
+  return `signal:positions:${connectionId}:index-version`
+}
+
 function signalAdmissionLockKey(connectionId: string): string {
   return `signal:position_admission:${connectionId}`
 }
@@ -1408,10 +1599,9 @@ async function readPositionsForSignalAdmission(
   client: any,
   connectionId: string,
 ): Promise<LivePosition[]> {
-  // Capacity is connection-wide and must remain authoritative even when a
-  // large Main book places Signal rows beyond the beginning of the shared
-  // open-position index. Read the complete index; bound only Redis batch
-  // concurrency, never the number of positions included in the count.
+  // Upgrade/recovery fallback only: capacity is connection-wide and this
+  // initial rebuild must read the complete canonical book, never a sampled
+  // prefix. The normal admission hot path uses the membership index below.
   const rawIds = (await client.lrange(`live:positions:${connectionId}`, 0, -1)) || []
   const ids = [...new Set((rawIds as unknown[]).map(String).filter(Boolean))]
   if (ids.length === 0) return []
@@ -1463,6 +1653,132 @@ async function readPositionsForSignalAdmission(
   return positions
 }
 
+async function keepSignalAdmissionIndexesDurable(client: any, connectionId: string): Promise<void> {
+  const keys = [
+    signalPositionAdmissionIndexKey(connectionId),
+    signalPositionAdmissionDirectionIndexKey(connectionId, "long"),
+    signalPositionAdmissionDirectionIndexKey(connectionId, "short"),
+    signalPositionAdmissionIndexReadyKey(connectionId),
+  ]
+  await Promise.all(keys.map(async (key) => {
+    if (typeof client.persist === "function") {
+      await client.persist(key).catch(() => 0)
+    } else {
+      await client.expire(key, 30 * 24 * 60 * 60).catch(() => 0)
+    }
+  }))
+}
+
+async function updateSignalAdmissionIndexes(client: any, position: LivePosition): Promise<void> {
+  const indexKey = signalPositionAdmissionIndexKey(position.connectionId)
+  const longKey = signalPositionAdmissionDirectionIndexKey(position.connectionId, "long")
+  const shortKey = signalPositionAdmissionDirectionIndexKey(position.connectionId, "short")
+  const activeSignal = isActiveSignalPosition(position as unknown as Record<string, unknown>)
+  const direction = resolveLivePositionDirection(position)
+
+  if (!activeSignal || !direction) {
+    await Promise.all([
+      client.srem(indexKey, position.id).catch(() => 0),
+      client.srem(longKey, position.id).catch(() => 0),
+      client.srem(shortKey, position.id).catch(() => 0),
+    ])
+    return
+  }
+
+  const ownDirectionKey = signalPositionAdmissionDirectionIndexKey(position.connectionId, direction)
+  const otherDirectionKey = signalPositionAdmissionDirectionIndexKey(
+    position.connectionId,
+    direction === "long" ? "short" : "long",
+  )
+  await Promise.all([
+    client.sadd(indexKey, position.id),
+    client.sadd(ownDirectionKey, position.id),
+    client.srem(otherDirectionKey, position.id).catch(() => 0),
+  ])
+  await keepSignalAdmissionIndexesDurable(client, position.connectionId)
+}
+
+async function rebuildSignalAdmissionIndexes(
+  client: any,
+  connectionId: string,
+): Promise<SignalPositionCapacity> {
+  const positions = await readPositionsForSignalAdmission(client, connectionId)
+  const active = positions.filter((position) =>
+    isActiveSignalPosition(position as unknown as Record<string, unknown>) &&
+    (position.direction === "long" || position.direction === "short"),
+  )
+  const indexKey = signalPositionAdmissionIndexKey(connectionId)
+  const longKey = signalPositionAdmissionDirectionIndexKey(connectionId, "long")
+  const shortKey = signalPositionAdmissionDirectionIndexKey(connectionId, "short")
+  const activeIds = new Set(active.map((position) => position.id))
+  const [indexedIds, indexedLongIds, indexedShortIds] = await Promise.all([
+    client.smembers(indexKey).catch(() => [] as string[]),
+    client.smembers(longKey).catch(() => [] as string[]),
+    client.smembers(shortKey).catch(() => [] as string[]),
+  ])
+  const staleIds = Array.from(new Set([
+    ...indexedIds,
+    ...indexedLongIds,
+    ...indexedShortIds,
+  ].map(String).filter((id) => !activeIds.has(id))))
+  if (staleIds.length > 0) {
+    await Promise.all([
+      client.srem(indexKey, ...staleIds).catch(() => 0),
+      client.srem(longKey, ...staleIds).catch(() => 0),
+      client.srem(shortKey, ...staleIds).catch(() => 0),
+    ])
+  }
+  const longIds = active.filter((position) => position.direction === "long").map((position) => position.id)
+  const shortIds = active.filter((position) => position.direction === "short").map((position) => position.id)
+  if (activeIds.size > 0) await client.sadd(indexKey, ...activeIds)
+  if (longIds.length > 0) await client.sadd(longKey, ...longIds)
+  if (shortIds.length > 0) await client.sadd(shortKey, ...shortIds)
+  await client.set(
+    signalPositionAdmissionIndexReadyKey(connectionId),
+    SIGNAL_POSITION_ADMISSION_INDEX_VERSION,
+  )
+  await keepSignalAdmissionIndexesDurable(client, connectionId)
+  return evaluateSignalPositionCapacity(
+    active as unknown as ReadonlyArray<Record<string, unknown>>,
+    "long",
+    Number.MAX_SAFE_INTEGER,
+  )
+}
+
+async function readSignalAdmissionCapacity(
+  client: any,
+  connectionId: string,
+  configuredLimit: number,
+): Promise<SignalPositionCapacity> {
+  const ready = await client.get(signalPositionAdmissionIndexReadyKey(connectionId)).catch(() => null)
+  if (ready !== SIGNAL_POSITION_ADMISSION_INDEX_VERSION) {
+    const rebuilt = await rebuildSignalAdmissionIndexes(client, connectionId)
+    const limit = normalizeSignalMaxPositions(configuredLimit)
+    return {
+      ...rebuilt,
+      limit,
+      allowed: rebuilt.total < limit,
+      reason: rebuilt.total < limit ? "available" : "total_limit",
+    }
+  }
+
+  const [total, long, short] = await Promise.all([
+    client.scard(signalPositionAdmissionIndexKey(connectionId)).catch(() => 0),
+    client.scard(signalPositionAdmissionDirectionIndexKey(connectionId, "long")).catch(() => 0),
+    client.scard(signalPositionAdmissionDirectionIndexKey(connectionId, "short")).catch(() => 0),
+  ])
+  const limit = normalizeSignalMaxPositions(configuredLimit)
+  const normalizedTotal = Math.max(0, Number(total) || 0)
+  return {
+    allowed: normalizedTotal < limit,
+    reason: normalizedTotal < limit ? "available" : "total_limit",
+    total: normalizedTotal,
+    long: Math.max(0, Number(long) || 0),
+    short: Math.max(0, Number(short) || 0),
+    limit,
+  }
+}
+
 async function persistSignalCapacitySnapshot(
   client: any,
   connectionId: string,
@@ -1499,6 +1815,20 @@ async function reserveSignalPositionCapacity(
   selectionMode: string,
 ): Promise<SignalCapacityReservation> {
   const client = getRedisClient()
+  const candidateDirection = candidate.direction
+  if (candidateDirection !== "long" && candidateDirection !== "short") {
+    return {
+      state: "limit",
+      capacity: {
+        allowed: false,
+        reason: "invalid_direction",
+        total: 0,
+        long: 0,
+        short: 0,
+        limit: normalizeSignalMaxPositions(configuredLimit),
+      },
+    }
+  }
   const lockKey = signalAdmissionLockKey(connectionId)
   const token = `signal-admission:${Date.now()}:${nanoid(8)}`
   const deadline = Date.now() + SIGNAL_ADMISSION_WAIT_MS
@@ -1527,28 +1857,18 @@ async function reserveSignalPositionCapacity(
   }
 
   try {
-    const positions = await readPositionsForSignalAdmission(client, connectionId)
-    const normalizedCandidateSymbol = String(candidate.symbol || "")
-      .toUpperCase()
-      .replace(/[-_]/g, "")
-    const existing = positions.find((position) => {
-      const normalizedPositionSymbol = String(position.symbol || "")
-        .toUpperCase()
-        .replace(/[-_]/g, "")
-      return (
-        isActiveSignalPosition(position as unknown as Record<string, unknown>) &&
-        normalizedPositionSymbol === normalizedCandidateSymbol &&
-        position.direction === candidate.direction &&
-        liveExecutionSlot(position) === liveExecutionSlot(candidate)
-      )
-    })
-    const capacity = evaluateSignalPositionCapacity(
-      positions as unknown as ReadonlyArray<Record<string, unknown>>,
-      candidate.direction,
-      configuredLimit,
+    // A full canonical scan is performed only once when the durable index is
+    // missing (upgrade/restart repair). Thereafter the capacity counters are
+    // O(1), and the exact lane lookup is O(1) via live:position-slot.
+    const capacity = await readSignalAdmissionCapacity(client, connectionId, configuredLimit)
+    const existing = await findOpenLivePositionByDir(
+      connectionId,
+      candidate.symbol,
+      candidateDirection,
+      liveExecutionSlot(candidate),
     )
 
-    if (existing) {
+    if (existing && isActiveSignalPosition(existing as unknown as Record<string, unknown>)) {
       await persistSignalCapacitySnapshot(
         client,
         connectionId,
@@ -1569,13 +1889,18 @@ async function reserveSignalPositionCapacity(
       return { state: "limit", capacity }
     }
 
+    // Write the compact membership first. If this process crashes before the
+    // position snapshot is visible, the next admission only sees a stale
+    // conservative reservation, which it removes during index repair; it can
+    // never over-admit a second physical Signal order in that window.
+    await updateSignalAdmissionIndexes(client, candidate)
     await savePosition(candidate)
     clearPositionCache(connectionId)
     const reservedCapacity: SignalPositionCapacity = {
       ...capacity,
       total: capacity.total + 1,
-      long: capacity.long + (candidate.direction === "long" ? 1 : 0),
-      short: capacity.short + (candidate.direction === "short" ? 1 : 0),
+      long: capacity.long + (candidateDirection === "long" ? 1 : 0),
+      short: capacity.short + (candidateDirection === "short" ? 1 : 0),
       allowed: capacity.total + 1 < capacity.limit,
       reason: capacity.total + 1 < capacity.limit ? "available" : "total_limit",
     }
@@ -1688,9 +2013,9 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
   }
   const posKey = `live_positions:${position.connectionId}:${position.id}`
   const jsonKey = `live:position:${position.id}`
-  const openIndexKey = `live:positions:${position.connectionId}`
-  const closedIndexKey = `live:positions:${position.connectionId}:closed`
-  const terminalStatuses = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
+    const openIndexKey = `live:positions:${position.connectionId}`
+    const closedIndexKey = `live:positions:${position.connectionId}:closed`
+    const terminalStatuses = new Set(["closed", "rejected", "cancelled", "canceled", "error"])
   try {
     const incomingTerminal = terminalStatuses.has(String(position.status || "").toLowerCase())
     if (!incomingTerminal) {
@@ -1709,6 +2034,10 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       ...position,
     } as any)
     await client.set(jsonKey, JSON.stringify(position)).catch(() => null)
+    // Keep the in-process Paper Stage coherent without rereading hundreds of
+    // unrelated rows on the next 280 ms lifecycle tick. The durable hash above
+    // remains authoritative; this is only a short-lived read projection.
+    updateSimulatedPositionStageRow(position)
 
     // Maintain explicit reconciliation indexes from the live-stage hot path, not
     // only from the generic Redis DB helper. Production exchange sync, crash
@@ -1749,7 +2078,22 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
 
     const liveSetIndexKey = `live_set_keys:${position.connectionId}`
     const liveSetLineageKeys = getLivePositionSetLineageKeys(position)
+    const direction = resolveLivePositionDirection(position)
+    const slotIndexKey = direction
+      ? livePositionSlotIndexKey(position.connectionId, position.symbol, direction, liveExecutionSlot(position))
+      : null
+    // Keep Signal capacity independent from the much larger mixed Main book.
+    // This runs after the canonical snapshot write, so an index member always
+    // points at a durable position state; reserveSignalPositionCapacity writes
+    // a conservative pre-reservation before its first save to cover crashes.
+    await updateSignalAdmissionIndexes(client, position)
     if (terminalStatuses.has(String(position.status || "").toLowerCase())) {
+      // Remove only our own slot mapping. A replacement position may have
+      // acquired the same slot after this one moved to terminal state; a plain
+      // DEL would then erase the newer owner's O(1) index.
+      if (slotIndexKey) {
+        await evalLockLua(client, RELEASE_LOCK_LUA, slotIndexKey, [position.id]).catch(() => 0)
+      }
       await moveRedisListMembershipToHead(
         client,
         openIndexKey,
@@ -1804,6 +2148,10 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       )
     } else {
       await upsertRedisListHead(client, openIndexKey, position.id)
+      if (slotIndexKey) {
+        await client.set(slotIndexKey, position.id).catch(() => null)
+        await keepDurable(slotIndexKey)
+      }
       for (const setKey of liveSetLineageKeys) {
         await client.sadd(liveSetIndexKey, setKey).catch(() => 0)
       }
@@ -2192,17 +2540,24 @@ async function findOpenLivePositionByDir(
   side: string,
   executionSlot = "default",
 ): Promise<LivePosition | null> {
-  const { getLivePositions } = await import("@/lib/trade-engine/stages/live-stage")
+  const client = getRedisClient()
+  const slotKey = livePositionSlotIndexKey(connId, symbol, side, executionSlot)
+  const indexedId = await client.get(slotKey).catch(() => null)
+  if (indexedId) {
+    const indexed = await readLivePositionSnapshot(client, connId, String(indexedId)).catch(() => null)
+    if (indexed && matchesLiveSlot(indexed, symbol, side, executionSlot)) return indexed
+    // The index is a performance hint. Clear only the stale ID, preserving a
+    // concurrent replacement that has already claimed this physical slot.
+    await evalLockLua(client, RELEASE_LOCK_LUA, slotKey, [String(indexedId)]).catch(() => 0)
+  }
+
+  // Legacy/recovery fallback: an older snapshot may not have slot indexes.
+  // Repair it after the first bounded full scan so subsequent dispatches are
+  // constant-time without changing the existing matching semantics.
   const positions = await getLivePositions(connId)
-  const norm = String(symbol || "").toUpperCase().replace(/[-_]/g, "")
   for (const p of positions) {
-    const psym = String(p.symbol || "").toUpperCase().replace(/[-_]/g, "")
-    if (
-      psym === norm &&
-      p.direction === side &&
-      liveExecutionSlot(p) === executionSlot &&
-      (p.status === "pending" || p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "simulated")
-    ) {
+    if (matchesLiveSlot(p, symbol, side, executionSlot)) {
+      await client.set(slotKey, p.id).catch(() => null)
       return p
     }
   }
@@ -2218,27 +2573,30 @@ async function findAuthoritativeAdjustmentParent(
   allowBlockParent = false,
   fallbackExecutionSlot?: string,
 ): Promise<LivePosition | null> {
-  const positions = await getLivePositions(connId)
-  const normalized = String(symbol || "").toUpperCase().replace(/[-_]/g, "")
   const matchesParent = (p: LivePosition, slot: string): boolean => {
-    const sameSymbol = String(p.symbol || "").toUpperCase().replace(/[-_]/g, "") === normalized
     const parentVariant =
       p.setVariant !== "dca" &&
       (p.setVariant !== "block" || allowBlockParent)
-    const active = p.status === "open" || p.status === "filled" || p.status === "partially_filled" || (allowSimulated && p.status === "simulated")
+    const active =
+      p.status === "open" ||
+      p.status === "filled" ||
+      p.status === "partially_filled" ||
+      (allowSimulated && p.status === "simulated")
     const venueOwned = allowSimulated || !!(p.orderId || (p.exchangeData as any)?.exchangePositionId)
-    return sameSymbol &&
-      p.direction === direction &&
+    return matchesLiveSlot(p, symbol, direction, slot) &&
       liveExecutionSlot(p) === slot &&
       parentVariant &&
       active &&
       venueOwned &&
       Number(p.executedQuantity || 0) > 0
   }
-  return positions.find((p) => matchesParent(p, executionSlot)) ||
-    (fallbackExecutionSlot && fallbackExecutionSlot !== executionSlot
-      ? positions.find((p) => matchesParent(p, fallbackExecutionSlot)) || null
-      : null)
+  const slots = [executionSlot]
+  if (fallbackExecutionSlot && fallbackExecutionSlot !== executionSlot) slots.push(fallbackExecutionSlot)
+  for (const slot of slots) {
+    const indexed = await findOpenLivePositionByDir(connId, symbol, direction, slot)
+    if (indexed && matchesParent(indexed, slot)) return indexed
+  }
+  return null
 }
 async function fetchCurrentPrice(symbol: string, connId?: string): Promise<number> {
   const { getMarketData, getRedisClient } = await import("@/lib/redis-db")
@@ -9275,7 +9633,15 @@ export async function closeLivePosition(
     if (position.liveLockToken) {
       await releaseLock(connectionId, position.symbol, liveLockDirection(position), position.liveLockToken)
     } else {
-      console.warn(`${LOG_PREFIX} [lock-coordination] close skipped live lock release for ${connectionId}/${position.symbol}/${position.direction} because no owner token is available`)
+      // Simulated/recovered rows can legitimately predate a live admission
+      // lock. Releasing a lock we do not own would be unsafe, but emitting one
+      // warning per close can serialize stdout long enough to starve health
+      // requests under a busy Paper soak. Keep the diagnostic once per lane.
+      logRuntimeWarning(
+        `live-lock-release-missing:${connectionId}:${position.symbol}:${position.direction}`,
+        30_000,
+        `${LOG_PREFIX} [lock-coordination] close skipped live lock release for ${connectionId}/${position.symbol}/${position.direction} because no owner token is available`,
+      )
     }
     if (!wasAlreadyClosed) {
       await incrementMetric(connectionId, "live_positions_closed_count")
@@ -10584,17 +10950,37 @@ export async function reconcileLivePositions(
  */
 export async function processSimulatedPositions(
   connectionId: string,
+  preloadedPositions?: readonly LivePosition[],
 ): Promise<{ processed: number; closed: number; errors: number }> {
   const summary = { processed: 0, closed: 0, errors: 0 }
   try {
     await initRedis()
-    const allOpen = await getLivePositions(connectionId)
-    const sims = allOpen.filter(
+    // syncWithExchange has already read the authoritative open index. Reuse
+    // that snapshot for paper mode instead of immediately reading every hash
+    // and JSON mirror for a second time on the same 200ms tick. The standalone
+    // path keeps a one-second Stage projection so a dense Paper book does not
+    // deserialize its complete row set five times per second.
+    const allOpen = preloadedPositions
+      ? [...preloadedPositions]
+      : await getSimulatedPositionStageRows(connectionId)
+    if (preloadedPositions) {
+      const previous = simulatedPositionStages.get(connectionId)
+      simulatedPositionStages.set(connectionId, {
+        positions: allOpen,
+        cursor: previous?.cursor || 0,
+        expiresAt: Date.now() + SIMULATED_POSITION_STAGE_CACHE_MS,
+      })
+      trimSimulatedPositionStages()
+    }
+    const allSimulated = allOpen.filter(
       (p) => p.status === "simulated" && (p.executedQuantity ?? 0) > 0,
     )
-    if (sims.length === 0) return summary
+    if (allSimulated.length === 0) return summary
+    const sims = selectSimulatedPositionStageRows(connectionId, allSimulated)
 
-    // Pull current prices in one parallel batch (independent Redis reads).
+    // Pull current prices only for this fair Stage slice. Each open row remains
+    // eligible for TP/SL, trailing and max-hold handling; large books simply
+    // rotate through bounded rows instead of starving HTTP/recovery work.
     const uniqueSyms = Array.from(new Set(sims.map((p) => p.symbol)))
     const priceMap = new Map<string, number>()
     await Promise.all(
@@ -10605,15 +10991,18 @@ export async function processSimulatedPositions(
     )
 
     const MAX_HOLD_TIME_MS = resolveMaxHoldMs(connectionId)
-    for (const pos of sims) {
-      summary.processed++
+    type SimulatedDelta = { processed: number; closed: number; errors: number }
+    const processOne = async (pos: LivePosition): Promise<SimulatedDelta> => {
+      const delta: SimulatedDelta = { processed: 1, closed: 0, errors: 0 }
       try {
         const markPrice = priceMap.get(pos.symbol) || pos.averageExecutionPrice || 0
+        const previousMark = Number(pos.exchangeData?.markPrice || 0)
+        const now = Date.now()
         if (markPrice > 0) {
           pos.exchangeData = {
             ...pos.exchangeData,
             markPrice,
-            syncedAt: Date.now(),
+            syncedAt: now,
           }
           // SL/TP cross check (passes connector=null so close skips
           // the exchange-side cancel + closePosition calls).
@@ -10624,8 +11013,11 @@ export async function processSimulatedPositions(
             null,
           )
           if (crossed) {
-            if (crossed !== "close_unconfirmed") summary.closed++
-            continue
+            if (crossed !== "close_unconfirmed") {
+              delta.closed++
+              clearSimulatedMarkPersistence(pos)
+            }
+            return delta
           }
         }
         // Max-hold safety closer.
@@ -10646,21 +11038,50 @@ export async function processSimulatedPositions(
             { positionId: pos.id, heldMs, maxHoldMs: MAX_HOLD_TIME_MS, exitPrice },
           )
           const closeResult = await closeLivePosition(connectionId, pos.id, exitPrice, null, "max_hold_time_exceeded")
-          if (closeResult?.status === "closed") summary.closed++
-          else summary.errors++
-          continue
+          if (closeResult?.status === "closed") {
+            delta.closed++
+            clearSimulatedMarkPersistence(pos)
+          } else delta.errors++
+          return delta
         }
-        // Persist refreshed mark price so the dashboard reads fresh data.
-        if (markPrice > 0) {
+        // Keep the dashboard fresh without writing the complete lifecycle,
+        // indexes and JSON mirror on every sub-second paper tick. This is
+        // intentionally after the close checks: lifecycle changes still use
+        // closeLivePosition immediately and never wait for this throttle.
+        if (shouldPersistSimulatedMark(pos, previousMark, markPrice, now)) {
           await savePosition(pos)
+          markSimulatedMarkPersisted(pos, now)
         }
       } catch (err) {
-        summary.errors++
+        delta.errors++
         console.warn(
           `${LOG_PREFIX} processSimulatedPositions per-pos error for ${pos.id}:`,
           err instanceof Error ? err.message : String(err),
         )
       }
+      return delta
+    }
+
+    // Redis-backed paper lifecycle work can resolve through microtasks without
+    // yielding to the HTTP server.  Use the shared cooperative worker pool so
+    // a large open-position book cannot starve health, cron or control-order
+    // requests while every position still receives an independent lifecycle
+    // evaluation in the same sweep.
+    const deltas = await mapWithConcurrency(
+      sims,
+      concurrencyFromEnv(
+        ["SIMULATED_POSITION_CONCURRENCY"],
+        SIMULATED_POSITION_PROCESS_CONCURRENCY,
+        16,
+        sims.length,
+      ),
+      processOne,
+      { yieldEvery: 1 },
+    )
+    for (const delta of deltas) {
+      summary.processed += delta.processed
+      summary.closed += delta.closed
+      summary.errors += delta.errors
     }
     if (summary.closed > 0) {
       console.log(
@@ -10771,6 +11192,39 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
   }
 
   try {
+    // Paper mode never needs an exchange reconciliation.  More importantly,
+    // repeatedly hydrating every complete live-position hash before the
+    // bounded simulated Stage is selected defeats that Stage's purpose: with
+    // a few hundred independent Paper rows, a 280 ms tick spent most of its
+    // time JSON-parsing the whole book, even though it only managed one fair
+    // slice.  Resolve the execution mode first, then let the Stage cache load
+    // and rotate the book at its one-second cadence.  Close/TP/SL/hold checks
+    // remain independent for every row and terminal saves update the cached
+    // stage immediately.
+    const liveTradeOn = await isLiveTradeEnabledForConnection(connectionId)
+    if (!liveTradeOn) {
+      const simSummary = await processSimulatedPositions(connectionId)
+      logRuntimeInfo(
+        `live:${connectionId}:sync-skip`,
+        30_000,
+        () => {
+          const stagedRows = (simulatedPositionStages.get(connectionId)?.positions || []) as LivePosition[]
+          const statusBreakdown = stagedRows.reduce((acc: Record<string, number>, p: LivePosition) => {
+            const status = String(p.status || "unknown")
+            acc[status] = (acc[status] || 0) + 1
+            return acc
+          }, {} as Record<string, number>)
+          return (
+            `${LOG_PREFIX} [sync-skip] conn=${connectionId} live_trade=false; ` +
+            `skipped private exchange sync, tracked=${stagedRows.length}, ` +
+            `simProcessed=${simSummary.processed}, simClosed=${simSummary.closed}, ` +
+            `statuses=${JSON.stringify(statusBreakdown)}`
+          )
+        },
+      )
+      return
+    }
+
     // Previously each status filter triggered a full getLivePositions() scan,
     // meaning we fetched the same open-positions index from Redis FOUR times
     // just to bucket by status. Load once, then filter in memory.
@@ -10844,35 +11298,6 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
     const openPositions = allOpen.filter(
       (p) => p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "closing" || p.status === "closing_partial",
     )
-
-    // If the operator requested live trading but the transport test failed,
-    // QuickStart leaves the progression running with is_live_trade=0. In that
-    // state the close/sync loop must not poll private exchange endpoints for
-    // positions/open orders; doing so produced continuous "fetch failed" error
-    // spam in dev and could make closed legacy live records look actionable.
-    // Simulated positions still get processed locally below.
-    const liveTradeOn = await isLiveTradeEnabledForConnection(connectionId)
-    if (!liveTradeOn) {
-      const simSummary = await processSimulatedPositions(connectionId)
-      logRuntimeInfo(
-        `live:${connectionId}:sync-skip`,
-        30_000,
-        () => {
-          const statusBreakdown = allOpen.reduce<Record<string, number>>((acc, p) => {
-            const status = String(p.status || "unknown")
-            acc[status] = (acc[status] || 0) + 1
-            return acc
-          }, {})
-          return (
-            `${LOG_PREFIX} [sync-skip] conn=${connectionId} live_trade=false; ` +
-            `skipped private exchange sync, tracked=${allOpen.length}, ` +
-            `simProcessed=${simSummary.processed}, simClosed=${simSummary.closed}, ` +
-            `statuses=${JSON.stringify(statusBreakdown)}`
-          )
-        },
-      )
-      return
-    }
 
     // ── Batch pre-loop fetches in parallel ─────────────────────────────��─
     // Three independent I/O calls are needed before the per-position loop:
