@@ -1,7 +1,7 @@
 From d093913d0d418501ff400825f065f607c88ecec4 Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
 Date: Sat, 1 Aug 2026 20:24:28 -0700
-Subject: [PATCH 1/3] feat: materialize continuous real and live strategy rows
+Subject: [PATCH 1/4] feat: materialize continuous real and live strategy rows
 
 ---
  .../connections/[id]/settings/route.ts        |  22 +-
@@ -1240,7 +1240,7 @@ index ff2a387..d58c4a5 100644
 From c2944a214450cb193f2b46a34ba95192bf419283 Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
 Date: Sat, 1 Aug 2026 20:26:50 -0700
-Subject: [PATCH 2/3] fix: persist direct trade processor snapshots
+Subject: [PATCH 2/4] fix: persist direct trade processor snapshots
 
 ---
  .../direct-trade/calculate/route.ts           |  47 +++++--
@@ -1629,7 +1629,7 @@ index 5133a17..3206ee0 100644
 From 1e6fb0362e23ebb4e54aedefde9b0b339b9a6f99 Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
 Date: Sat, 1 Aug 2026 20:30:58 -0700
-Subject: [PATCH 3/3] fix: coordinate direct trade processor execution
+Subject: [PATCH 3/4] fix: coordinate direct trade processor execution
 
 ---
  components/dashboard/direct-trade-section.tsx |  48 +++-
@@ -2189,6 +2189,567 @@ index f27a62a..2706e9e 100644
          }
        }
      } catch (err) {
+-- 
+2.51.1
+
+
+From 5aae529be7772d15cbb2956a68b1b0c62594ad64 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 1 Aug 2026 20:38:01 -0700
+Subject: [PATCH 4/4] feat: enforce pf floor and row-live defaults
+
+---
+ .../unit/advanced-config-exhaustive.test.ts   |   4 +-
+ .../unit/install-deployment-contract.test.ts  |   2 +-
+ .../unit/main-trade-profit-factor.test.ts     |  30 ++--
+ __tests__/unit/redis-migration-080.test.ts    |  52 +++---
+ .../progression/[id]/stats/route.ts           |   6 +-
+ .../exchange-connection-settings-dialog.tsx   |   2 +-
+ components/settings/types.ts                  |   4 +-
+ lib/detailed-tracking.ts                      |   2 +-
+ lib/indication-sets-processor.ts              |   2 +-
+ lib/main-trade-profit-factor.ts               |   2 +-
+ lib/redis-migrations.ts                       | 167 ++++++++++++++++++
+ lib/strategy-coordinator.ts                   |   2 +-
+ lib/trade-engine/advanced-config.ts           |   4 +-
+ scripts/kilo-deploy-preflight.mjs             |   2 +-
+ 14 files changed, 226 insertions(+), 55 deletions(-)
+
+diff --git a/__tests__/unit/advanced-config-exhaustive.test.ts b/__tests__/unit/advanced-config-exhaustive.test.ts
+index 6fc8f23..790b27b 100644
+--- a/__tests__/unit/advanced-config-exhaustive.test.ts
++++ b/__tests__/unit/advanced-config-exhaustive.test.ts
+@@ -41,14 +41,14 @@ function compactConfig(): AdvancedEngineConfig {
+ describe("advanced compatibility configuration generator", () => {
+   test("uses the canonical stage ratios and exact independent cooldowns", () => {
+     expect(DEFAULT_ADVANCED_CONFIG.strategyEvaluation.mainMinProfitFactor).toEqual({
+-      min: 0.08,
++      min: 0.8,
+       max: 2.7,
+       default: 1.12,
+       step: 0.02,
+     })
+     expect(DEFAULT_ADVANCED_CONFIG.strategyEvaluation.realMinProfitFactor).toBe(1.12)
+     expect(DEFAULT_ADVANCED_CONFIG.indicationEvaluation.timeoutSeconds.default).toBe(0.25)
+-    expect(DEFAULT_ADVANCED_CONFIG.pseudoPosition.timeoutSeconds.default).toBe(3)
++    expect(DEFAULT_ADVANCED_CONFIG.pseudoPosition.timeoutSeconds.default).toBe(1)
+     expect(DEFAULT_ADVANCED_CONFIG.indicationEvaluation.maxPositionsPerDirection.default).toBe(1)
+   })
+ 
+diff --git a/__tests__/unit/install-deployment-contract.test.ts b/__tests__/unit/install-deployment-contract.test.ts
+index 98bcd61..694e4fa 100644
+--- a/__tests__/unit/install-deployment-contract.test.ts
++++ b/__tests__/unit/install-deployment-contract.test.ts
+@@ -368,7 +368,7 @@ describe("production installation and Kilo deployment contract", () => {
+       encoding: "utf8",
+     })
+     expect(output).toContain('"success":true')
+-    expect(output).toContain('"schemaVersion":92')
++    expect(output).toContain('"schemaVersion":93')
+   })
+ 
+   it("passes the complete Kilo runtime, owner, and deploy-credential preflight", () => {
+diff --git a/__tests__/unit/main-trade-profit-factor.test.ts b/__tests__/unit/main-trade-profit-factor.test.ts
+index d747f0e..5805413 100644
+--- a/__tests__/unit/main-trade-profit-factor.test.ts
++++ b/__tests__/unit/main-trade-profit-factor.test.ts
+@@ -15,35 +15,35 @@ import path from "node:path"
+ 
+ describe("Main Trade PositionCost-relative PF ratios", () => {
+   test("uses the exact systemwide range, grid, and stage defaults", () => {
+-    expect(MAIN_TRADE_PF_RATIO_MIN).toBe(0.08)
++    expect(MAIN_TRADE_PF_RATIO_MIN).toBe(0.8)
+     expect(MAIN_TRADE_PF_RATIO_MAX).toBe(2.7)
+     expect(MAIN_TRADE_STAGE_PF_DEFAULTS).toEqual({
+-      base: 0.4,
++      base: 0.8,
+       main: 1.12,
+       real: 1.12,
+       live: 1.12,
+     })
+-    expect(normalizeMainTradePfRatio(0.079)).toBe(0.08)
+-    expect(normalizeMainTradePfRatio(0.111)).toBe(0.12)
++    expect(normalizeMainTradePfRatio(0.079)).toBe(0.8)
++    expect(normalizeMainTradePfRatio(0.811)).toBe(0.82)
+     expect(normalizeMainTradePfRatio(99)).toBe(2.7)
+   })
+ 
+-  test("enforces the Base 0.40 floor without weakening the downstream 0.08 floor", () => {
+-    expect(mainTradeStagePfMin("base")).toBe(0.4)
+-    expect(mainTradeStagePfMin("main")).toBe(0.08)
+-    expect(normalizeMainTradeStagePfRatio("base", 0.08)).toBe(0.4)
+-    expect(normalizeMainTradeStagePfRatio("base", 0.39)).toBe(0.4)
++  test("enforces the systemwide 0.80 stage floor", () => {
++    expect(mainTradeStagePfMin("base")).toBe(0.8)
++    expect(mainTradeStagePfMin("main")).toBe(0.8)
++    expect(normalizeMainTradeStagePfRatio("base", 0.08)).toBe(0.8)
++    expect(normalizeMainTradeStagePfRatio("base", 0.39)).toBe(0.8)
+     expect(normalizeMainTradeStagePfRatio("base", 0.82)).toBe(0.82)
+-    expect(normalizeMainTradeStagePfRatio("main", 0.08)).toBe(0.08)
++    expect(normalizeMainTradeStagePfRatio("main", 0.08)).toBe(0.8)
+   })
+ 
+   test("converts the ratio against PositionCost exactly once", () => {
+-    expect(mainTradePfRatioToMovePct(0.1, 0.1)).toBe(0.1)
+-    expect(mainTradePfRatioToMovePct(0.3, 0.1)).toBe(0.3)
++    expect(mainTradePfRatioToMovePct(0.1, 0.1)).toBe(0.8)
++    expect(mainTradePfRatioToMovePct(0.8, 0.1)).toBe(0.8)
+     expect(mainTradePfRatioToMovePct(1.12, 0.2)).toBe(2.24)
+-    expect(movePctToMainTradePfRatio(0.3, 0.1)).toBe(0.3)
+-    expect(mainTradePfRatioPasses(0.299, 0.1, 0.3)).toBe(false)
+-    expect(mainTradePfRatioPasses(0.3, 0.1, 0.3)).toBe(true)
++    expect(movePctToMainTradePfRatio(0.8, 0.1)).toBe(0.8)
++    expect(mainTradePfRatioPasses(0.799, 0.1, 0.8)).toBe(false)
++    expect(mainTradePfRatioPasses(0.8, 0.1, 0.8)).toBe(true)
+   })
+ 
+   test("keeps classic PF diagnostic separate from the stage ratio", () => {
+diff --git a/__tests__/unit/redis-migration-080.test.ts b/__tests__/unit/redis-migration-080.test.ts
+index 72e6347..d966eb1 100644
+--- a/__tests__/unit/redis-migration-080.test.ts
++++ b/__tests__/unit/redis-migration-080.test.ts
+@@ -153,9 +153,9 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
+ 
+       const migrations = await import("@/lib/redis-migrations")
+       migrations.resetMigrationRunState()
+-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 92 })
++      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 93 })
+ 
+-      expect(await client.get("_schema_version")).toBe("92")
++      expect(await client.get("_schema_version")).toBe("93")
+       expect(new Set(await client.smembers("strategy_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
+       expect(await client.smembers("strategy_active_set_keys:conn-ledger")).toEqual(["set:a"])
+       expect(new Set(await client.smembers("strategy_closed_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
+@@ -184,7 +184,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
+         live_volume_factor: 2.5,
+       })
+       expect(await client.hget("connection_settings:conn-ledger", "posCountsVolumeRatio")).toBe("3")
+-      expect(await client.hget("connection_settings:conn-ledger", "baseProfitFactor")).toBe("0.4")
++      expect(await client.hget("connection_settings:conn-ledger", "baseProfitFactor")).toBe("0.8")
+       expect(await client.hget("connection_settings:conn-ledger", "mainProfitFactor")).toBe("1.12")
+       expect(await client.hget("connection_settings:conn-ledger", "realProfitFactor")).toBe("1.12")
+       expect(await client.hget("connection_settings:conn-ledger", "liveProfitFactor")).toBe("1.12")
+@@ -269,7 +269,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
+       expect(await client.hget("system:database:coordination:performance", "independent_block_profit_factor"))
+         .toBe("default-pf-x-ratio-x-volume-increment-v1")
+       expect(await client.hget("system:database:coordination:performance", "schema_version"))
+-        .toBe("92")
++        .toBe("93")
+     } finally {
+       await rm(dir, { recursive: true, force: true })
+     }
+@@ -333,35 +333,35 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
+ 
+       const migrations = await import("@/lib/redis-migrations")
+       migrations.resetMigrationRunState()
+-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 92 })
++      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 93 })
+ 
+-      expect(await client.hget("connection:conn-stage-floor", "baseProfitFactor")).toBe("0.4")
+-      expect(await client.hget("connection:conn-stage-floor", "base_min_profit_factor")).toBe("0.4")
+-      expect(await client.hget("connection:conn-stage-floor", "mainProfitFactor")).toBe("0.08")
++      expect(await client.hget("connection:conn-stage-floor", "baseProfitFactor")).toBe("0.8")
++      expect(await client.hget("connection:conn-stage-floor", "base_min_profit_factor")).toBe("0.8")
++      expect(await client.hget("connection:conn-stage-floor", "mainProfitFactor")).toBe("0.8")
+       expect(JSON.parse(String(
+         await client.hget("connection:conn-stage-floor", "connection_settings"),
+       ))).toMatchObject({
+-        baseProfitFactor: 0.4,
+-        mainProfitFactor: 0.08,
++        baseProfitFactor: 0.8,
++        mainProfitFactor: 0.8,
+         strategies: {
+           main: {
+-            base: { min_profit_factor: 0.4 },
+-            main: { min_profit_factor: 0.08 },
++            base: { min_profit_factor: 0.8 },
++            main: { min_profit_factor: 0.8 },
+           },
+         },
+       })
+-      expect(await client.hget("connection_settings:conn-stage-floor", "baseProfitFactor")).toBe("0.4")
+-      expect(await client.hget("connection_settings:conn-stage-floor", "base_min_profit_factor")).toBe("0.4")
+-      expect(await client.hget("connection_settings:conn-stage-floor", "mainProfitFactor")).toBe("0.08")
++      expect(await client.hget("connection_settings:conn-stage-floor", "baseProfitFactor")).toBe("0.8")
++      expect(await client.hget("connection_settings:conn-stage-floor", "base_min_profit_factor")).toBe("0.8")
++      expect(await client.hget("connection_settings:conn-stage-floor", "mainProfitFactor")).toBe("0.8")
+       expect(JSON.parse(String(
+         await client.hget("connection_settings:conn-stage-floor", "strategies"),
+       ))).toMatchObject({
+         main: {
+-          base: { min_profit_factor: 0.4 },
+-          main: { min_profit_factor: 0.08 },
++          base: { min_profit_factor: 0.8 },
++          main: { min_profit_factor: 0.8 },
+         },
+         preset: {
+-          base: { min_profit_factor: 0.4 },
++          base: { min_profit_factor: 0.8 },
+         },
+       })
+       expect(JSON.parse(String(await client.get("indications:signal")))).toMatchObject({
+@@ -382,7 +382,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
+     }
+   })
+ 
+-  test("upgrades the schema-89 Base default to 0.40 and preserves independent downstream settings", async () => {
++  test("raises the schema-89 stage floor to 0.80 and preserves higher downstream settings", async () => {
+     const dir = await mkdtemp(join(tmpdir(), "migration-090-default-"))
+     process.env = {
+       ...originalEnv,
+@@ -435,19 +435,19 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
+       migrations.resetMigrationRunState()
+       await expect(migrations.runMigrations()).resolves.toMatchObject({
+         success: true,
+-        version: 92,
++        version: 93,
+       })
+ 
+-      expect(await client.hget("connection:conn-v90", "baseProfitFactor")).toBe("0.4")
++      expect(await client.hget("connection:conn-v90", "baseProfitFactor")).toBe("0.8")
+       expect(await client.hget("connection:conn-v90", "mainProfitFactor")).toBe("1.3")
+-      expect(await client.hget("connection_settings:conn-v90", "baseProfitFactor")).toBe("0.4")
+-      expect(await client.hget("connection_settings:conn-v90", "base_min_profit_factor")).toBe("0.4")
++      expect(await client.hget("connection_settings:conn-v90", "baseProfitFactor")).toBe("0.8")
++      expect(await client.hget("connection_settings:conn-v90", "base_min_profit_factor")).toBe("0.8")
+       expect(await client.hget("connection_settings:conn-v90", "mainProfitFactor")).toBe("1.3")
+       expect(JSON.parse(String(
+         await client.hget("connection_settings:conn-v90", "strategies"),
+       ))).toMatchObject({
+         main: {
+-          base: { enabled: true, is_enabled: true, min_profit_factor: 0.4 },
++          base: { enabled: true, is_enabled: true, min_profit_factor: 0.8 },
+           main: { enabled: true, is_enabled: true, min_profit_factor: 1.3 },
+         },
+         preset: {
+@@ -515,7 +515,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
+       migrations.resetMigrationRunState()
+       await expect(migrations.runMigrations()).resolves.toMatchObject({
+         success: true,
+-        version: 92,
++        version: 93,
+       })
+ 
+       for (const key of [
+@@ -572,7 +572,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
+       migrations.resetMigrationRunState()
+       await expect(migrations.runMigrations()).resolves.toMatchObject({
+         success: true,
+-        version: 92,
++        version: 93,
+       })
+ 
+       expect(await client.hget("connection_settings:conn-v91", "strategyRealSetsSafetyCeiling")).toBe("0")
+diff --git a/app/api/connections/progression/[id]/stats/route.ts b/app/api/connections/progression/[id]/stats/route.ts
+index c2de064..7ec40db 100644
+--- a/app/api/connections/progression/[id]/stats/route.ts
++++ b/app/api/connections/progression/[id]/stats/route.ts
+@@ -2394,7 +2394,11 @@ export async function GET(
+                   statAccumulated: n(dh.stat_accumulated),
+                   statGeneral:     n(dh.stat_general) || stageEvaluated || stratCounts.real || 0,
+                   statCombined:    n(dh.stat_combined) || setsRunningNow || stratCounts.real || 0,
+-                  continuousRealCreated: n(dh.continuous_real_created),
++                  // Row-Real is the explicit continuous result now. Keep the
++                  // historical field as a read fallback for older workers.
++                  continuousRealCreated: n(dh.row_real_created ?? dh.continuous_real_created),
++                  rowRealEvaluated: n(dh.row_real_evaluated),
++                  rowRealRejected: n(dh.row_real_rejected),
+                   // Canonical Real-position view: full Overall Set/position/order
+                   // ledgers, a separate related-Base hedge ledger, Standard vs
+                   // Trailing and Adjust comparisons, plus the current open
+diff --git a/components/settings/exchange-connection-settings-dialog.tsx b/components/settings/exchange-connection-settings-dialog.tsx
+index dbcfb40..c170f54 100644
+--- a/components/settings/exchange-connection-settings-dialog.tsx
++++ b/components/settings/exchange-connection-settings-dialog.tsx
+@@ -489,7 +489,7 @@ export function ExchangeConnectionSettingsDialog({
+                 <h4 className="font-semibold text-base">Live Trade Limits</h4>
+                 <p className="text-xs text-muted-foreground">
+                   PositionCost-relative stage ratios. Base Valid starts at 0.40; Main, Real and Live default to 1.12.
+-                  Downstream values use the canonical 0.08–2.70 grid with 0.02 steps.
++                  Downstream values use the canonical 0.80–2.70 grid with 0.02 steps.
+                 </p>
+ 
+                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+diff --git a/components/settings/types.ts b/components/settings/types.ts
+index 3f04864..8fdb766 100644
+--- a/components/settings/types.ts
++++ b/components/settings/types.ts
+@@ -86,8 +86,8 @@ export interface Settings {
+ 
+   // ── Main Trade PF thresholds per stage (Base/Main/Real/Live) ─────
+   // Operator-tunable via Settings → Strategy → Main → Profit Factor
+-  // PositionCost-relative thresholds on the canonical 0.08..2.70/0.02
+-  // grid. Defaults: Base Valid 0.40; Main/Real/Live 1.12. These are deliberately
++  // PositionCost-relative thresholds on the canonical 0.80..2.70/0.02
++  // grid. Defaults: Base Valid 0.80; Main/Real/Live 1.12. These are deliberately
+   // distinct from realised PF (gross profit / gross loss).
+   baseProfitFactor: number
+   mainProfitFactor: number
+diff --git a/lib/detailed-tracking.ts b/lib/detailed-tracking.ts
+index 72e3cc4..4896b69 100644
+--- a/lib/detailed-tracking.ts
++++ b/lib/detailed-tracking.ts
+@@ -427,7 +427,7 @@ export async function getStrategyTracking(
+   // source + key names + defaults the engine gate uses in
+   // `strategy-coordinator.loadAppPFThresholds` (`mainProfitFactor` /
+   // `realProfitFactor`, connection hash overlaid on global app settings,
+-  // 0.08..2.70 grid, defaults main/real 1.12). The old display read
++  // 0.80..2.70 grid, defaults main/real 1.12). The old display read
+   // `settings.minProfitFactorMain` / `minProfitFactorReal` (legacy keys)
+   // which are NEVER written anywhere — so the dashboard PF
+   // ceiling permanently diverged from the gate the engine enforced.
+diff --git a/lib/indication-sets-processor.ts b/lib/indication-sets-processor.ts
+index 6391c5e..7608155 100644
+--- a/lib/indication-sets-processor.ts
++++ b/lib/indication-sets-processor.ts
+@@ -2164,7 +2164,7 @@ export class IndicationSetsProcessor {
+     const safeCount = Math.max(0, Number(count) || 0)
+     // Outcome samples are stored as decimal market returns (0.01 = 1%).
+     // Convert their rolling signed average to percentage points before
+-    // mapping onto the operator's PositionCost-relative 0.08…2.70 scale.
++    // mapping onto the operator's PositionCost-relative 0.80…2.70 scale.
+     const averageMovePct = safeCount > 0
+       ? ((grossProfit - grossLoss) / safeCount) * 100
+       : 0
+diff --git a/lib/main-trade-profit-factor.ts b/lib/main-trade-profit-factor.ts
+index b4e781f..f68f7c4 100644
+--- a/lib/main-trade-profit-factor.ts
++++ b/lib/main-trade-profit-factor.ts
+@@ -55,7 +55,7 @@ function round(value: number, decimals = 8): number {
+ }
+ 
+ /**
+- * Clamp and snap a stage ratio onto the exact 0.08 + n×0.02 grid.
++ * Clamp and snap a stage ratio onto the exact 0.80 + n×0.02 grid.
+  */
+ export function normalizeMainTradePfRatio(
+   value: unknown,
+diff --git a/lib/redis-migrations.ts b/lib/redis-migrations.ts
+index f0f6464..dab4e54 100644
+--- a/lib/redis-migrations.ts
++++ b/lib/redis-migrations.ts
+@@ -6136,6 +6136,173 @@ const migrations: Migration[] = [
+       await client.set("_schema_version", "91")
+     },
+   },
++  {
++    version: 93,
++    name: "093-pf-floor-and-continuous-row-live-defaults",
++    up: async (client: any) => {
++      const connections = await loadConnectionsForMaintenanceMigration(client)
++      const connectionIds = new Set(
++        connections.map((connection) => String(connection.id || "")).filter(Boolean),
++      )
++      for (const id of await client.smembers("connections").catch(() => [])) {
++        if (id) connectionIds.add(String(id))
++      }
++
++      const stageAliases = {
++        base: ["baseProfitFactor", "base_min_profit_factor"],
++        main: ["mainProfitFactor", "main_min_profit_factor"],
++        real: ["realProfitFactor", "real_min_profit_factor"],
++        live: ["liveProfitFactor", "live_min_profit_factor"],
++      } as const
++      let stagePfValuesUpdated = 0
++      let rowDefaultsUpdated = 0
++
++      const normalizeLiveWindow = (value: unknown): number => {
++        const parsed = Number(value)
++        if (!Number.isFinite(parsed) || parsed <= 0) return 15
++        return Math.min(55, Math.max(5, Math.round(parsed / 5) * 5))
++      }
++      const normalizeDocument = (document: Record<string, any>): boolean => {
++        let changed = false
++        const normalizeStages = (target: Record<string, any>) => {
++          for (const [stage, aliases] of Object.entries(stageAliases) as Array<
++            [keyof typeof stageAliases, readonly string[]]
++          >) {
++            for (const alias of aliases) {
++              if (target[alias] == null) continue
++              const next = normalizeMainTradeStagePfRatio(stage, target[alias])
++              if (Number(target[alias]) !== next) {
++                target[alias] = next
++                stagePfValuesUpdated++
++                changed = true
++              }
++            }
++          }
++        }
++        normalizeStages(document)
++        for (const container of [document, document.strategies]) {
++          if (!container || typeof container !== "object") continue
++          for (const channelName of ["main", "preset"]) {
++            const channel = container[channelName]
++            if (!channel || typeof channel !== "object") continue
++            for (const stage of ["base", "main", "real", "live"] as const) {
++              const row = channel[stage]
++              if (!row || typeof row !== "object" || row.min_profit_factor == null) continue
++              const next = normalizeMainTradeStagePfRatio(stage, row.min_profit_factor)
++              if (Number(row.min_profit_factor) !== next) {
++                row.min_profit_factor = next
++                stagePfValuesUpdated++
++                changed = true
++              }
++            }
++          }
++        }
++
++        const coordination = document.coordination_settings && typeof document.coordination_settings === "object"
++          ? document.coordination_settings
++          : document.coordinationSettings && typeof document.coordinationSettings === "object"
++            ? document.coordinationSettings
++            : document
++        const rowDefaults: Record<string, unknown> = {
++          liveEvalPosCount: normalizeLiveWindow(coordination.liveEvalPosCount),
++          blockRowLiveEnabled: coordination.blockRowLiveEnabled ?? true,
++          blockRowLiveVolumeRatio: coordination.blockRowLiveVolumeRatio ?? coordination.blockVolumeRatio ?? 1,
++          blockRowLiveProfitFactorRatio: coordination.blockRowLiveProfitFactorRatio ?? coordination.blockProfitFactorRatio ?? 0.8,
++          blockRowLiveMaxStack: coordination.blockRowLiveMaxStack ?? coordination.blockMaxStack ?? 10,
++          blockRowLivePauseCountRatio: coordination.blockRowLivePauseCountRatio ?? coordination.blockPauseCountRatio ?? 1,
++          blockOnly: coordination.blockOnly ?? true,
++        }
++        for (const [key, value] of Object.entries(rowDefaults)) {
++          if (coordination[key] !== value) {
++            coordination[key] = value
++            rowDefaultsUpdated++
++            changed = true
++          }
++        }
++        return changed
++      }
++
++      const normalizeHash = async (key: string): Promise<void> => {
++        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
++        if (Object.keys(values).length === 0) return
++        const patch: Record<string, string> = {}
++        for (const [stage, aliases] of Object.entries(stageAliases) as Array<
++          [keyof typeof stageAliases, readonly string[]]
++        >) {
++          const current = aliases.map((alias) => values[alias]).find((value) => value != null && value !== "")
++          if (current == null) continue
++          const next = normalizeMainTradeStagePfRatio(stage, current)
++          for (const alias of aliases) {
++            if (Number(values[alias]) !== next) {
++              patch[alias] = String(next)
++              stagePfValuesUpdated++
++            }
++          }
++        }
++        const flatRowDefaults: Record<string, string> = {
++          liveEvalPosCount: String(normalizeLiveWindow(values.liveEvalPosCount)),
++          blockRowLiveEnabled: values.blockRowLiveEnabled === "false" || values.blockRowLiveEnabled === "0" ? "false" : "true",
++          blockRowLiveVolumeRatio: String(Math.max(0.25, Math.min(3, Number(values.blockRowLiveVolumeRatio) || Number(values.blockVolumeRatio) || 1))),
++          blockRowLiveProfitFactorRatio: String(Math.max(0.2, Math.min(5, Number(values.blockRowLiveProfitFactorRatio) || Number(values.blockProfitFactorRatio) || 0.8))),
++          blockRowLiveMaxStack: String(Math.max(1, Math.min(10, Math.floor(Number(values.blockRowLiveMaxStack) || Number(values.blockMaxStack) || 10)))),
++          blockRowLivePauseCountRatio: String(Math.max(1, Math.min(4, Number(values.blockRowLivePauseCountRatio) || Number(values.blockPauseCountRatio) || 1))),
++          blockOnly: values.blockOnly === "false" || values.blockOnly === "0" ? "false" : "true",
++        }
++        for (const [field, value] of Object.entries(flatRowDefaults)) {
++          if (values[field] !== value) {
++            patch[field] = value
++            rowDefaultsUpdated++
++          }
++        }
++        for (const field of ["connection_settings", "coordination_settings", "coordinationSettings", "strategies"]) {
++          const raw = values[field]
++          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
++          try {
++            const document = JSON.parse(raw) as Record<string, any>
++            if (normalizeDocument(document)) patch[field] = JSON.stringify(document)
++          } catch {
++            // Preserve malformed legacy recovery blobs; canonical flat values
++            // remain the runtime source and a future settings save repairs it.
++          }
++        }
++        if (Object.keys(patch).length > 0) await client.hset(key, patch)
++      }
++
++      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
++        await normalizeHash(key)
++      }
++      for (const id of connectionIds) {
++        for (const key of [
++          `connection:${id}`,
++          `settings:connection:${id}`,
++          `connection_settings:${id}`,
++          `settings:connection_settings:${id}`,
++          `trade_engine_state:${id}`,
++          `settings:trade_engine_state:${id}`,
++        ]) {
++          await normalizeHash(key)
++        }
++      }
++
++      await client.hset("system:database:coordination:performance", {
++        main_trade_pf_range: "0.80-2.70",
++        main_trade_pf_minimum: "0.80",
++        strategy_live_row_window_default: "15",
++        strategy_live_row_window_range: "5-55-step-5",
++        strategy_row_live_block_default: "true",
++        strategy_block_only_default: "true",
++        main_trade_pf_values_updated: String(stagePfValuesUpdated),
++        strategy_row_defaults_updated: String(rowDefaultsUpdated),
++        schema_version: "93",
++        updated_at: new Date().toISOString(),
++      })
++    },
++    down: async (client: any) => {
++      // The raised PF floor and Row-Live defaults are safe to retain on a
++      // rollback; only the migration cursor moves back.
++      await client.set("_schema_version", "92")
++    },
++  },
+ ]
+ 
+ export function getLatestMigrationVersion(): number {
+diff --git a/lib/strategy-coordinator.ts b/lib/strategy-coordinator.ts
+index 92ab678..9d375f1 100644
+--- a/lib/strategy-coordinator.ts
++++ b/lib/strategy-coordinator.ts
+@@ -2223,7 +2223,7 @@ export class StrategyCoordinator {
+    *   - `METRICS.{base|main|real|live}.minProfitFactor` (Set-average
+    *      gate consumed at lines 695/1117/1468)
+    *
+-   * Every value is normalized to the canonical 0.08..2.70 grid (step 0.02).
++   * Every value is normalized to the canonical 0.80..2.70 grid (step 0.02).
+    * Defaults are Base 0.80 and Main/Real/Live 1.12. NaN, negative and
+    * out-of-range legacy values are repaired by the same helper used by the
+    * settings APIs and migrations.
+diff --git a/lib/trade-engine/advanced-config.ts b/lib/trade-engine/advanced-config.ts
+index 51caae4..3e7afe9 100644
+--- a/lib/trade-engine/advanced-config.ts
++++ b/lib/trade-engine/advanced-config.ts
+@@ -49,7 +49,7 @@ export interface PseudoPositionConfig {
+ }
+ 
+ export interface StrategyEvaluationConfig {
+-  // Main strategy: PositionCost-relative PF ratio (0.08-2.70, default: 1.12)
++  // Main strategy: PositionCost-relative PF ratio (0.80-2.70, default: 1.12)
+   mainMinProfitFactor: { min: number; max: number; default: number; step: number }
+   // Real strategy: PositionCost-relative PF ratio (default: 1.12)
+   realMinProfitFactor: number
+@@ -111,7 +111,7 @@ export const DEFAULT_ADVANCED_CONFIG: AdvancedEngineConfig = {
+   },
+ 
+   strategyEvaluation: {
+-    mainMinProfitFactor: { min: 0.08, max: 2.7, default: 1.12, step: 0.02 },
++    mainMinProfitFactor: { min: 0.8, max: 2.7, default: 1.12, step: 0.02 },
+     realMinProfitFactor: 1.12,
+     realMaxDrawdownTimeSeconds: 43200, // 12 hours
+     positionCountsToEvaluate: Array.from({ length: 30 }, (_, index) => index + 1),
+diff --git a/scripts/kilo-deploy-preflight.mjs b/scripts/kilo-deploy-preflight.mjs
+index 9238a98..2dd6c91 100644
+--- a/scripts/kilo-deploy-preflight.mjs
++++ b/scripts/kilo-deploy-preflight.mjs
+@@ -3,7 +3,7 @@
+ import { existsSync, readFileSync } from "node:fs"
+ import process from "node:process"
+ 
+-const REQUIRED_SCHEMA_VERSION = 92
++const REQUIRED_SCHEMA_VERSION = 93
+ const failures = []
+ const checks = []
+ 
 -- 
 2.51.1
 
