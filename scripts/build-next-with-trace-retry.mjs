@@ -211,6 +211,24 @@ function normalizeProviderOutput() {
   return result.status === 0
 }
 
+function prepareStandaloneAssets() {
+  // This wrapper invokes `build:next` directly so it can retry only the
+  // provider build race. That intentionally bypasses npm's `postbuild` hook;
+  // run the same standalone finalizer explicitly so a validated artifact is
+  // also runnable by `node standalone/server.js` outside a provider.
+  const result = spawnSync(
+    process.execPath,
+    ["scripts/prepare-standalone-assets.mjs"],
+    {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: "inherit",
+    },
+  )
+  if (result.error) throw result.error
+  return result.status === 0
+}
+
 for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   console.log(`[next-trace-build] attempt ${attempt}/${maxAttempts}`)
   const sourceBefore = getTrackedSourceState()
@@ -257,8 +275,17 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   if (sourceBefore.fingerprint !== sourceAfter.fingerprint || sourceAfter.conflicts.length > 0) {
     const drift = trackedSourceDrift(sourceBefore, sourceAfter)
     const detail = drift.length > 0 ? `: ${drift.slice(0, 20).join(", ")}` : ""
-    console.error(`[next-trace-build] tracked source changed while Next was compiling; refusing a mixed-revision artifact${detail}`)
-    process.exit(1)
+    // Never validate an artifact assembled from two source revisions. A local
+    // editor, formatter, or generated configuration can legitimately finish
+    // while a long standalone trace build is running, so discard this output
+    // and retry from a fresh source fingerprint. The final attempt still
+    // fails closed if the tree cannot settle.
+    console.warn(`[next-trace-build] tracked source changed while Next was compiling; discarding the mixed-revision artifact${detail}`)
+    if (attempt === maxAttempts) {
+      console.error(`[next-trace-build] source did not stay stable after ${maxAttempts} attempts`)
+      process.exit(1)
+    }
+    continue
   }
 
   // Next 15 can report a late ENOENT/ENOTEMPTY while one of its tracing
@@ -274,9 +301,10 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   }
 
   const normalized = normalizeProviderOutput()
+  const standaloneAssetsPrepared = normalized && prepareStandaloneAssets()
 
   const failures = validateBuild()
-  if (normalized && failures.length === 0) {
+  if (normalized && standaloneAssetsPrepared && failures.length === 0) {
     if (result.status !== 0) {
       console.warn("[next-trace-build] recovered a complete artifact after a late Next filesystem race")
     }
@@ -284,6 +312,7 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     process.exit(0)
   }
   if (!normalized) failures.unshift("provider manifest normalization failed")
+  if (!standaloneAssetsPrepared) failures.unshift("standalone asset preparation failed")
   console.warn(`[next-trace-build] incomplete provider output:\n- ${failures.slice(0, 30).join("\n- ")}`)
   if (attempt === maxAttempts) {
     console.error(`[next-trace-build] failed after ${maxAttempts} attempts`)

@@ -1347,6 +1347,7 @@ export class IndicationProcessor {
       const exactSetIndications = await exactSetProcessor
         .processAllIndicationSets(symbol, {
           ...marketData,
+          __indicationSnapshotMode: typeof asOfMs === "number" ? "historical" : "realtime",
           candles,
           prices: pricesOldestFirst,
           priceOrder: "oldest-first",

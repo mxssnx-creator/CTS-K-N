@@ -7,6 +7,7 @@ export const MINUTE_INTERVAL_MS = 60_000
 export const CRON_PATHS = [
   "/api/cron/server-continuity",
   "/api/cron/sync-live-positions",
+  "/api/cron/direct-trade-continuity",
 ]
 
 function isLoopback(hostname) {
@@ -61,12 +62,26 @@ async function invokePath({ baseUrl, path, secret, timeoutMs, fetchImpl, signal 
       signal: controller.signal,
     })
     const body = await response.text()
+    // A cron route can return HTTP 200 after a bounded partial failure so the
+    // caller receives the diagnostic rather than a platform timeout. Treat
+    // that response as a failed scheduler tick nevertheless: the long-lived
+    // scheduler log and host recovery supervisor must see that the expected
+    // continuity work did not complete.
+    let payload = null
+    try {
+      payload = body ? JSON.parse(body) : null
+    } catch {
+      // Non-JSON success responses remain valid for backwards-compatible
+      // custom cron hooks.
+    }
+    const semanticFailure = payload && typeof payload === "object" &&
+      ((payload).success === false || (payload).degraded === true)
     return {
       path,
-      ok: response.ok,
+      ok: response.ok && !semanticFailure,
       status: response.status,
       durationMs: Date.now() - startedAt,
-      detail: response.ok ? undefined : body.slice(0, 500),
+      detail: response.ok && !semanticFailure ? undefined : body.slice(0, 500),
     }
   } catch (error) {
     return {

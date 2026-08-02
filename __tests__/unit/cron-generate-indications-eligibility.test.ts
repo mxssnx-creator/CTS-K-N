@@ -33,6 +33,30 @@ describe("generate-indications cron connection eligibility", () => {
     expect(stale.skippedFreshOwners).toBe(0)
   })
 
+  test("honours a short cold-start lock lease before the first heartbeat, then recovers it", async () => {
+    const now = Date.now()
+    const values = new Map<string, unknown>([
+      ["engine_is_running:booting", "1"],
+      [`engine_lock:booting`, `worker-token:${now - 10_000}`],
+      ["engine_is_running:abandoned", "1"],
+      [`engine_lock:abandoned`, `worker-token:${now - 121_000}`],
+    ])
+    const client = {
+      get: jest.fn(async (key: string) => values.get(key) ?? null),
+      hgetall: jest.fn(async () => null),
+    }
+
+    const result = await filterCronFallbackConnections(
+      [{ id: "booting" }, { id: "abandoned" }],
+      client,
+      () => false,
+      now,
+    )
+
+    expect(result.eligible.map((connection) => connection.id)).toEqual(["abandoned"])
+    expect(result.skippedFreshOwners).toBe(1)
+  })
+
   test("processes only engine-eligible assigned/enabled connections and valid queued starts", async () => {
     const now = new Date().toISOString()
     const fixtureConnections = [

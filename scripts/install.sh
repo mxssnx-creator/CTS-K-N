@@ -6,7 +6,8 @@
 #
 # The installer is intentionally deterministic:
 #   - production always uses a network Redis backend (local or external)
-#   - exactly one app process and one portable 60-second scheduler are installed
+#   - one app process, one portable 60-second scheduler, and one leased
+#     Direct-Trade worker are installed with coordinated recovery checks
 #   - the complete test/build/migration/deployment contract runs before success
 #   - an existing production build is restored when build or verification fails
 
@@ -94,8 +95,10 @@ Options:
 
 Sensitive values should be supplied in --seed-env-file or the existing env
 file, never as command-line arguments. The installer generates ADMIN_SECRET,
-CRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET when they are absent, but never
-enables FORCE_LIVE automatically.
+CRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET when they are absent. A production
+server install enables the guarded live execution path and succeeds only when
+valid BingX or Bybit credentials, durable order coordination, and persisted
+live-control state are verified; the verification never submits an order.
 
 For a server install or upgrade, prefer scripts/bootstrap-install.sh. When an
 installed CTS runtime is detected, this command delegates to that clean flow.
@@ -312,13 +315,13 @@ uninstall_project() {
   fi
 
   if command -v systemctl >/dev/null 2>&1; then
-    run_root systemctl disable --now "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-redis" 2>/dev/null || true
-    run_root rm -f -- "/etc/systemd/system/$APP_NAME.service" "/etc/systemd/system/$APP_NAME-scheduler.service" "/etc/systemd/system/$APP_NAME-redis.service"
+    run_root systemctl disable --now "$APP_NAME-recovery.timer" "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-redis" 2>/dev/null || true
+    run_root rm -f -- "/etc/systemd/system/$APP_NAME.service" "/etc/systemd/system/$APP_NAME-scheduler.service" "/etc/systemd/system/$APP_NAME-direct-trade.service" "/etc/systemd/system/$APP_NAME-recovery.service" "/etc/systemd/system/$APP_NAME-recovery.timer" "/etc/systemd/system/$APP_NAME-redis.service"
     run_root systemctl daemon-reload 2>/dev/null || true
-    run_root systemctl reset-failed "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-redis" 2>/dev/null || true
+    run_root systemctl reset-failed "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-recovery" "$APP_NAME-redis" 2>/dev/null || true
   fi
   if command -v pm2 >/dev/null 2>&1 && id "$SERVICE_USER" >/dev/null 2>&1; then
-    run_as_service pm2 delete "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-redis" >/dev/null 2>&1 || true
+    run_as_service pm2 delete "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-recovery" "$APP_NAME-redis" >/dev/null 2>&1 || true
     run_as_service pm2 save --force >/dev/null 2>&1 || true
   fi
 
@@ -482,7 +485,11 @@ run_preflight() {
   disk_kb="$(df -Pk "$PROJECT_ROOT" | awk 'NR==2 {print $4}')"
   read -r memory_total_kb memory_available_kb < <(effective_memory_limits_kb)
   (( disk_kb >= 4 * 1024 * 1024 )) || fatal "At least 4 GiB free disk is required"
-  (( memory_available_kb >= 1536 * 1024 )) || fatal "At least 1.5 GiB effective available memory is required"
+  # The relative watchdog reserves memory for the app plus scheduler and
+  # Direct-Trade worker. Keep the preflight threshold aligned with that
+  # aggregate floor so an install cannot pass preflight and fail later while
+  # producing service limits.
+  (( memory_available_kb >= 2048 * 1024 )) || fatal "At least 2 GiB effective available memory is required"
   ok "Capacity: $((disk_kb / 1024 / 1024)) GiB free disk, $((memory_total_kb / 1024 / 1024)) GiB effective limit, $((memory_available_kb / 1024 / 1024)) GiB available"
 
   local port_status=0
@@ -510,7 +517,7 @@ run_preflight() {
     fi
   fi
 
-  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/run-with-env.mjs scripts/start-production.mjs scripts/prepare-standalone-assets.mjs scripts/start.sh scripts/stop.sh scripts/restart.sh scripts/service-control.sh scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
+  for file in package.json pnpm-lock.yaml pnpm-workspace.yaml scripts/run-minute-scheduler.mjs scripts/runtime-recovery.sh scripts/run-with-env.mjs scripts/start-production.mjs scripts/prepare-standalone-assets.mjs scripts/start.sh scripts/stop.sh scripts/restart.sh scripts/service-control.sh scripts/post-deploy-verify.sh scripts/production-deploy-init.mjs; do
     [[ -f "$PROJECT_ROOT/$file" ]] || fatal "Required install artifact is missing: $file"
   done
   bash -n "$PROJECT_ROOT/scripts/install.sh"
@@ -707,11 +714,12 @@ upsert_env() {
 }
 
 configure_cpu_parallelism() {
-  # CTS uses bounded symbol/config worker pools. Keep one process as the
-  # authoritative engine owner (multiple independent engine processes would
-  # duplicate exchange orders), but size the safe pools and Node's libuv pool
-  # from the host's actual CPU capacity so production does not remain pinned
-  # to the old single-worker defaults.
+  # CTS keeps one authoritative Node engine owner. Base→Main→Real calculation
+  # is CPU/heap work on that event loop, so assigning every detected core to a
+  # Promise pool creates allocation contention rather than true parallel CPU.
+  # Keep symbol work serial by default; the libuv pool still scales exchange /
+  # Redis I/O with host CPUs and an operator may explicitly opt into a measured
+  # wider symbol pool in the environment.
   local cpu_count=1 io_pool symbol_pool historic_pool
   if command -v nproc >/dev/null 2>&1; then
     cpu_count="$(nproc 2>/dev/null || printf '1')"
@@ -724,13 +732,8 @@ configure_cpu_parallelism() {
   io_pool=$(( cpu_count * 2 ))
   (( io_pool < 4 )) && io_pool=4
   (( io_pool > 32 )) && io_pool=32
-  symbol_pool=$(( cpu_count > 1 ? cpu_count - 1 : 1 ))
-  # Keep one process as the engine owner, but allow bounded async pools to use
-  # more host CPUs. Eight is the service safety ceiling; explicit env values
-  # remain authoritative when operators need tighter limits.
-  (( symbol_pool > 8 )) && symbol_pool=8
-  (( symbol_pool < 1 )) && symbol_pool=1
-  historic_pool=$symbol_pool
+  symbol_pool=1
+  historic_pool=1
 
   [[ -n "$(env_value CTS_CPU_COUNT)" ]] || upsert_env CTS_CPU_COUNT "$cpu_count"
   [[ -n "$(env_value UV_THREADPOOL_SIZE)" ]] || upsert_env UV_THREADPOOL_SIZE "$io_pool"
@@ -739,7 +742,7 @@ configure_cpu_parallelism() {
   [[ -n "$(env_value PREHISTORIC_SYMBOL_CONCURRENCY)" ]] || upsert_env PREHISTORIC_SYMBOL_CONCURRENCY "$historic_pool"
   [[ -n "$(env_value STRATEGY_FLOW_SYMBOL_CONCURRENCY)" ]] || upsert_env STRATEGY_FLOW_SYMBOL_CONCURRENCY "$symbol_pool"
   [[ -n "$(env_value PRESET_SYMBOL_CONCURRENCY)" ]] || upsert_env PRESET_SYMBOL_CONCURRENCY "$symbol_pool"
-  ok "CPU parallelism: ${cpu_count} cores, ${symbol_pool} symbol workers, libuv pool ${io_pool}"
+  ok "CPU parallelism: ${cpu_count} cores, ${symbol_pool} safe symbol worker, libuv pool ${io_pool} (explicit env may raise workers)"
 }
 
 configure_memory_watchdog() {
@@ -747,15 +750,25 @@ configure_memory_watchdog() {
   # work. The remaining budget is intentionally based on *available* memory,
   # so a server that is already busy never receives the old fixed 5.6 GiB Node
   # heap or a restart threshold it cannot sustain.
-  local total_kb available_kb total_mb available_mb reserve_mb runtime_max_mb runtime_high_mb app_heap_mb scheduler_heap_mb
+  local total_kb available_kb total_mb available_mb reserve_mb process_budget_mb runtime_max_mb runtime_high_mb app_heap_mb scheduler_max_mb scheduler_heap_mb direct_trade_max_mb direct_trade_heap_mb
   read -r total_kb available_kb < <(effective_memory_limits_kb)
   total_mb=$(( total_kb / 1024 ))
   available_mb=$(( available_kb / 1024 ))
   reserve_mb=$(( total_mb / 10 ))
   (( reserve_mb < 256 )) && reserve_mb=256
   (( reserve_mb > 1536 )) && reserve_mb=1536
-  runtime_max_mb=$(( (available_mb - reserve_mb) * 80 / 100 ))
-  (( runtime_max_mb >= 768 )) || fatal "Effective available memory is too low after the CTS runtime reserve"
+  # Keep the aggregate app + scheduler + Direct-Trade worker below the
+  # available-memory budget. Individual service watchdogs therefore cannot
+  # collectively promise more memory than the host/cgroup can provide.
+  process_budget_mb=$(( (available_mb - reserve_mb) * 80 / 100 ))
+  (( process_budget_mb >= 1280 )) || fatal "Effective available memory is too low after the CTS runtime reserve"
+  runtime_max_mb=$(( process_budget_mb * 70 / 100 ))
+  scheduler_max_mb=$(( process_budget_mb * 15 / 100 ))
+  direct_trade_max_mb=$(( process_budget_mb - runtime_max_mb - scheduler_max_mb ))
+  (( scheduler_max_mb < 256 )) && scheduler_max_mb=256
+  (( direct_trade_max_mb < 256 )) && direct_trade_max_mb=256
+  runtime_max_mb=$(( process_budget_mb - scheduler_max_mb - direct_trade_max_mb ))
+  (( runtime_max_mb >= 768 )) || fatal "Effective available memory is too low for the CTS application after worker reserves"
   runtime_high_mb=$(( runtime_max_mb * 88 / 100 ))
   app_heap_mb=$(( runtime_max_mb * 70 / 100 ))
   (( app_heap_mb < 512 )) && app_heap_mb=512
@@ -763,14 +776,20 @@ configure_memory_watchdog() {
   scheduler_heap_mb=$(( app_heap_mb / 4 ))
   (( scheduler_heap_mb < 256 )) && scheduler_heap_mb=256
   (( scheduler_heap_mb > 768 )) && scheduler_heap_mb=768
+  direct_trade_heap_mb=$(( direct_trade_max_mb * 70 / 100 ))
+  (( direct_trade_heap_mb < 192 )) && direct_trade_heap_mb=192
+  (( direct_trade_heap_mb > 1024 )) && direct_trade_heap_mb=1024
 
   upsert_env CTS_EFFECTIVE_MEMORY_MB "$total_mb"
   upsert_env CTS_AVAILABLE_MEMORY_MB "$available_mb"
   upsert_env CTS_NODE_HEAP_MB "$app_heap_mb"
   upsert_env CTS_SCHEDULER_NODE_HEAP_MB "$scheduler_heap_mb"
+  upsert_env CTS_DIRECT_TRADE_NODE_HEAP_MB "$direct_trade_heap_mb"
   upsert_env CTS_RUNTIME_MEMORY_HIGH_MB "$runtime_high_mb"
   upsert_env CTS_RUNTIME_MEMORY_MAX_MB "$runtime_max_mb"
-  ok "Memory watchdog: ${available_mb} MiB available → Node heap ${app_heap_mb} MiB, soft ${runtime_high_mb} MiB, restart ${runtime_max_mb} MiB"
+  upsert_env CTS_SCHEDULER_MEMORY_MAX_MB "$scheduler_max_mb"
+  upsert_env CTS_DIRECT_TRADE_MEMORY_MAX_MB "$direct_trade_max_mb"
+  ok "Memory watchdog: ${available_mb} MiB available → app ${runtime_max_mb} MiB, scheduler ${scheduler_max_mb} MiB, Direct-Trade ${direct_trade_max_mb} MiB"
 }
 
 merge_seed_env() {
@@ -782,7 +801,7 @@ merge_seed_env() {
     [[ "$line" == *=* ]] || fatal "Invalid seed environment line"
     key="${line%%=*}"; value="${line#*=}"
     [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || fatal "Invalid seed environment key: $key"
-    case "$key" in NODE_OPTIONS|PATH|LD_*|BASH_ENV|ENV|SHELL|HOME|FORCE_LIVE|ALLOW_LIVE_ORDER_PLACEMENT) fatal "Blocked seed environment key: $key" ;; esac
+    case "$key" in NODE_OPTIONS|PATH|LD_*|BASH_ENV|ENV|SHELL|HOME|FORCE_LIVE|FORCE_SIMULATED|ALLOW_LIVE_ORDER_PLACEMENT) fatal "Blocked seed environment key: $key" ;; esac
     upsert_env "$key" "$value"
   done < "$SEED_ENV_FILE"
 }
@@ -890,6 +909,14 @@ configure_environment_and_redis() {
     upsert_env DISABLE_IN_PROCESS_CONTINUITY 1
   fi
   upsert_env ALLOW_INLINE_REDIS_LIVE_TRADING 1
+  # A long-lived Linux install is the authoritative live-order owner.  Do not
+  # inherit a paper-only flag from a prior preview build: the control-plane
+  # still requires credentials, a selected Live mode, a worker lease and a
+  # per-request confirmation before any actual exchange call.
+  upsert_env FORCE_SIMULATED 0
+  upsert_env FORCE_LIVE 1
+  upsert_env ALLOW_LIVE_ORDER_PLACEMENT 1
+  upsert_env CTS_REQUIRE_LIVE_TRADE_READY 1
   configure_cpu_parallelism
   configure_memory_watchdog
   upsert_env ENABLE_PRODUCTION_MIGRATIONS 1
@@ -900,22 +927,33 @@ configure_environment_and_redis() {
   upsert_env NEXT_PUBLIC_APP_URL "${NEXT_PUBLIC_APP_URL:-$(env_value NEXT_PUBLIC_APP_URL)}"
   [[ -n "$(env_value NEXT_PUBLIC_APP_URL)" ]] || upsert_env NEXT_PUBLIC_APP_URL "http://127.0.0.1:$APP_PORT"
 
-  local bingx_key="${BINGX_API_KEY:-}"
-  local bingx_secret="${BINGX_API_SECRET:-}"
+  local bingx_key="${BINGX_API_KEY:-$(env_value BINGX_API_KEY)}"
+  local bingx_secret="${BINGX_API_SECRET:-$(env_value BINGX_API_SECRET)}"
+  local bybit_key="${BYBIT_API_KEY:-$(env_value BYBIT_API_KEY)}"
+  local bybit_secret="${BYBIT_API_SECRET:-$(env_value BYBIT_API_SECRET)}"
+  local live_venues=()
   if [[ ${#bingx_key} -ge 10 && ${#bingx_secret} -ge 10 ]]; then
     upsert_env BINGX_API_KEY "$bingx_key"
     upsert_env BINGX_API_SECRET "$bingx_secret"
-  else
-    warn "BINGX_API_KEY/SECRET too short or unset; live trade on bingx-x01 will remain disabled until they are provided"
+    live_venues+=("BingX")
   fi
+  if [[ ${#bybit_key} -ge 10 && ${#bybit_secret} -ge 10 ]]; then
+    upsert_env BYBIT_API_KEY "$bybit_key"
+    upsert_env BYBIT_API_SECRET "$bybit_secret"
+    live_venues+=("Bybit")
+  fi
+  (( ${#live_venues[@]} > 0 )) || fatal "Production server installation requires valid BINGX_API_KEY/SECRET or BYBIT_API_KEY/SECRET for live trading"
+  ok "Live exchange installation is configured for ${live_venues[*]}; readiness is verified without submitting an order"
 
-  local admin_secret cron_secret encryption_key jwt_secret
+  local admin_secret cron_secret encryption_key jwt_secret direct_trade_processor_token
   admin_secret="$(env_value ADMIN_SECRET)"; cron_secret="$(env_value CRON_SECRET)"
   encryption_key="$(env_value ENCRYPTION_KEY)"; jwt_secret="$(env_value JWT_SECRET)"
+  direct_trade_processor_token="$(env_value DIRECT_TRADE_PROCESSOR_TOKEN)"
   if placeholder_secret "$admin_secret"; then upsert_env ADMIN_SECRET "$(openssl rand -hex 32)"; fi
   if placeholder_secret "$cron_secret"; then upsert_env CRON_SECRET "$(openssl rand -hex 32)"; fi
   if placeholder_secret "$encryption_key"; then upsert_env ENCRYPTION_KEY "$(openssl rand -hex 32)"; fi
   if placeholder_secret "$jwt_secret"; then upsert_env JWT_SECRET "$(openssl rand -hex 32)"; fi
+  if placeholder_secret "$direct_trade_processor_token"; then upsert_env DIRECT_TRADE_PROCESSOR_TOKEN "$(openssl rand -hex 32)"; fi
   ok "Network Redis is reachable, AOF/fsync/protected-mode/no-eviction are configured, and secrets/gates are configured"
 }
 
@@ -924,18 +962,20 @@ resolve_runtime() {
     if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then RUNTIME="systemd"; else RUNTIME="pm2"; fi
   fi
   upsert_env CTS_DEPLOYMENT_RUNTIME "$RUNTIME"
-  ok "Runtime owner: $RUNTIME (one app + one external minute scheduler)"
+  ok "Runtime owner: $RUNTIME (one app + one external minute scheduler + one Direct-Trade lease worker)"
 }
 
 stop_runtime() {
+  touch "$RUNTIME_DIR/maintenance-stop"
   if [[ "$RUNTIME" == "systemd" ]] && command -v systemctl >/dev/null 2>&1; then
-    run_root systemctl stop "$APP_NAME-scheduler" "$APP_NAME" "$APP_NAME-redis" 2>/dev/null || true
+    run_root systemctl stop "$APP_NAME-direct-trade" "$APP_NAME-scheduler" "$APP_NAME" "$APP_NAME-redis" 2>/dev/null || true
   elif [[ "$RUNTIME" == "pm2" ]] && command -v pm2 >/dev/null 2>&1; then
-    run_as_service pm2 stop "$APP_NAME-scheduler" "$APP_NAME" "$APP_NAME-redis" >/dev/null 2>&1 || true
+    run_as_service pm2 stop "$APP_NAME-direct-trade" "$APP_NAME-scheduler" "$APP_NAME" "$APP_NAME-recovery" "$APP_NAME-redis" >/dev/null 2>&1 || true
   fi
 }
 
 start_runtime() {
+  rm -f -- "$RUNTIME_DIR/maintenance-stop"
   if [[ "$RUNTIME" == "systemd" ]]; then
     if [[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "npm" ]]; then
       run_root systemctl restart "$APP_NAME-redis"
@@ -943,12 +983,17 @@ start_runtime() {
     run_root systemctl restart "$APP_NAME"
     run_root systemctl reset-failed "$APP_NAME-scheduler" 2>/dev/null || true
     run_root systemctl restart "$APP_NAME-scheduler"
+    run_root systemctl reset-failed "$APP_NAME-direct-trade" 2>/dev/null || true
+    run_root systemctl restart "$APP_NAME-direct-trade"
+    run_root systemctl start "$APP_NAME-recovery.timer" 2>/dev/null || true
   else
     if [[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "npm" ]]; then
       run_as_service pm2 restart "$APP_NAME-redis" --update-env >/dev/null 2>&1 || true
     fi
     run_as_service pm2 restart "$APP_NAME" --update-env >/dev/null 2>&1 || true
     run_as_service pm2 restart "$APP_NAME-scheduler" --update-env >/dev/null 2>&1 || true
+    run_as_service pm2 restart "$APP_NAME-direct-trade" --update-env >/dev/null 2>&1 || true
+    run_as_service pm2 restart "$APP_NAME-recovery" --update-env >/dev/null 2>&1 || true
   fi
 }
 
@@ -1044,14 +1089,16 @@ EOF
 }
 
 write_runtime_wrappers() {
-  local bun_bin node_bin app_heap_mb scheduler_heap_mb
+  local bun_bin node_bin app_heap_mb scheduler_heap_mb direct_trade_heap_mb
   bun_bin="/usr/local/bin/bun"
   [[ -x "$bun_bin" ]] || bun_bin="$(command -v bun)"
   node_bin="$(command -v node)"
   app_heap_mb="$(env_value CTS_NODE_HEAP_MB)"
   scheduler_heap_mb="$(env_value CTS_SCHEDULER_NODE_HEAP_MB)"
+  direct_trade_heap_mb="$(env_value CTS_DIRECT_TRADE_NODE_HEAP_MB)"
   [[ "$app_heap_mb" =~ ^[0-9]+$ ]] || app_heap_mb=1024
   [[ "$scheduler_heap_mb" =~ ^[0-9]+$ ]] || scheduler_heap_mb=256
+  [[ "$direct_trade_heap_mb" =~ ^[0-9]+$ ]] || direct_trade_heap_mb=256
   cat > "$RUNTIME_DIR/start-app.sh" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -1062,7 +1109,20 @@ EOF
 set -Eeuo pipefail
 exec env NODE_OPTIONS="--max-old-space-size=$scheduler_heap_mb --max-semi-space-size=64" ${node_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/run-minute-scheduler.mjs
 EOF
-  chmod 750 "$RUNTIME_DIR/start-app.sh" "$RUNTIME_DIR/start-scheduler.sh"
+  cat > "$RUNTIME_DIR/start-direct-trade.sh" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+exec env NODE_OPTIONS="--max-old-space-size=$direct_trade_heap_mb --max-semi-space-size=64" ${node_bin@Q} scripts/run-with-env.mjs ${ENV_FILE@Q} -- ${node_bin@Q} scripts/direct-trade-processor.mjs --port ${APP_PORT@Q}
+EOF
+  cat > "$RUNTIME_DIR/start-recovery.sh" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+while true; do
+  "$PROJECT_ROOT/scripts/runtime-recovery.sh" --name "$APP_NAME" --port "$APP_PORT" --runtime-dir "$RUNTIME_DIR" --runtime "$RUNTIME" --service-user "$SERVICE_USER" || true
+  sleep 60
+done
+EOF
+  chmod 750 "$RUNTIME_DIR/start-app.sh" "$RUNTIME_DIR/start-scheduler.sh" "$RUNTIME_DIR/start-direct-trade.sh" "$RUNTIME_DIR/start-recovery.sh"
   if [[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "npm" ]]; then
     cat > "$RUNTIME_DIR/start-redis.sh" <<EOF
 #!/usr/bin/env bash
@@ -1087,7 +1147,7 @@ prepare_runtime_permissions() {
     run_root chown -R "$install_owner:$service_group" "$PROJECT_ROOT/$runtime_path"
     run_root chmod -R g+rX "$PROJECT_ROOT/$runtime_path"
   done
-  run_root chmod 750 "$PROJECT_ROOT/scripts/service-control.sh" "$PROJECT_ROOT/scripts/start.sh" "$PROJECT_ROOT/scripts/stop.sh" "$PROJECT_ROOT/scripts/restart.sh"
+  run_root chmod 750 "$PROJECT_ROOT/scripts/runtime-recovery.sh" "$PROJECT_ROOT/scripts/service-control.sh" "$PROJECT_ROOT/scripts/start.sh" "$PROJECT_ROOT/scripts/stop.sh" "$PROJECT_ROOT/scripts/restart.sh"
   run_root chown "$install_owner:$service_group" "$ENV_FILE"
   run_root chmod 640 "$ENV_FILE"
   run_root chown -R "$install_owner:$service_group" "$RUNTIME_DIR" "$PROJECT_ROOT/.next"
@@ -1100,6 +1160,8 @@ prepare_runtime_permissions() {
   run_root chown -R "$SERVICE_USER:$service_group" "$PROJECT_ROOT/logs" "$PROJECT_ROOT/data"
   run_as_service test -r "$PROJECT_ROOT/package.json" || fatal "Service user cannot read the checkout"
   run_as_service test -x "$RUNTIME_DIR/start-app.sh" || fatal "Service user cannot execute the app wrapper"
+  run_as_service test -x "$RUNTIME_DIR/start-direct-trade.sh" || fatal "Service user cannot execute the Direct-Trade wrapper"
+  run_as_service test -x "$RUNTIME_DIR/start-recovery.sh" || fatal "Service user cannot execute the recovery wrapper"
   run_as_service test -r "$ENV_FILE" || fatal "Service user cannot read the production environment"
   run_as_service test -w "$PROJECT_ROOT/.next/cache" || fatal "Service user cannot write the Next runtime cache"
   ok "Runtime artifacts are owned by the unprivileged service identity"
@@ -1111,15 +1173,20 @@ install_systemd_runtime() {
   id "$SERVICE_USER" >/dev/null 2>&1 || fatal "Service user does not exist: $SERVICE_USER"
   local app_unit="/etc/systemd/system/$APP_NAME.service"
   local scheduler_unit="/etc/systemd/system/$APP_NAME-scheduler.service"
+  local direct_trade_unit="/etc/systemd/system/$APP_NAME-direct-trade.service"
+  local recovery_unit="/etc/systemd/system/$APP_NAME-recovery.service"
+  local recovery_timer="/etc/systemd/system/$APP_NAME-recovery.timer"
   local redis_unit="/etc/systemd/system/$APP_NAME-redis.service"
-  local runtime_high_mb runtime_max_mb scheduler_max_mb
+  local runtime_high_mb runtime_max_mb scheduler_max_mb direct_trade_max_mb
   runtime_high_mb="$(env_value CTS_RUNTIME_MEMORY_HIGH_MB)"
   runtime_max_mb="$(env_value CTS_RUNTIME_MEMORY_MAX_MB)"
   [[ "$runtime_high_mb" =~ ^[0-9]+$ ]] || runtime_high_mb=768
   [[ "$runtime_max_mb" =~ ^[0-9]+$ ]] || runtime_max_mb=1024
   (( runtime_max_mb > runtime_high_mb )) || runtime_max_mb=$(( runtime_high_mb + 128 ))
-  scheduler_max_mb=$(( runtime_max_mb / 3 ))
-  (( scheduler_max_mb < 384 )) && scheduler_max_mb=384
+  scheduler_max_mb="$(env_value CTS_SCHEDULER_MEMORY_MAX_MB)"
+  direct_trade_max_mb="$(env_value CTS_DIRECT_TRADE_MEMORY_MAX_MB)"
+  [[ "$scheduler_max_mb" =~ ^[0-9]+$ ]] || scheduler_max_mb=384
+  [[ "$direct_trade_max_mb" =~ ^[0-9]+$ ]] || direct_trade_max_mb=384
 
   if [[ -f "$RUNTIME_DIR/redis.pid" ]]; then
     local bootstrap_pid
@@ -1213,16 +1280,67 @@ MemoryMax=${scheduler_max_mb}M
 [Install]
 WantedBy=multi-user.target
 EOF
+
+  run_root tee "$direct_trade_unit" >/dev/null <<EOF
+[Unit]
+Description=CTS-K-N Direct-Trade leased processor
+After=network-online.target $APP_NAME.service
+Requires=$APP_NAME.service
+
+[Service]
+Type=simple
+User=$SERVICE_USER
+WorkingDirectory=$PROJECT_ROOT
+ExecStart=$RUNTIME_DIR/start-direct-trade.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=45
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryMax=${direct_trade_max_mb}M
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  run_root tee "$recovery_unit" >/dev/null <<EOF
+[Unit]
+Description=CTS-K-N coordinated runtime recovery check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=$PROJECT_ROOT
+ExecStart=$PROJECT_ROOT/scripts/runtime-recovery.sh --name $APP_NAME --port $APP_PORT --runtime-dir $RUNTIME_DIR --runtime systemd --service-user $SERVICE_USER
+TimeoutStartSec=25
+EOF
+  run_root tee "$recovery_timer" >/dev/null <<EOF
+[Unit]
+Description=CTS-K-N minute recovery timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+Persistent=true
+Unit=$APP_NAME-recovery.service
+
+[Install]
+WantedBy=timers.target
+EOF
   run_root systemctl daemon-reload
   if [[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "npm" ]]; then
     run_root systemctl enable "$APP_NAME-redis"
     run_root systemctl restart "$APP_NAME-redis"
   fi
-  run_root systemctl enable "$APP_NAME" "$APP_NAME-scheduler"
+  run_root systemctl enable "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-recovery.timer"
   run_root systemctl restart "$APP_NAME"
   run_root systemctl reset-failed "$APP_NAME-scheduler" 2>/dev/null || true
   run_root systemctl restart "$APP_NAME-scheduler"
-  ok "systemd services enabled for boot and restart-always continuity"
+  run_root systemctl reset-failed "$APP_NAME-direct-trade" 2>/dev/null || true
+  run_root systemctl restart "$APP_NAME-direct-trade"
+  run_root systemctl start "$APP_NAME-recovery.timer"
+  ok "systemd services and minute recovery timer enabled for boot and restart continuity"
 }
 
 install_pm2_runtime() {
@@ -1230,12 +1348,14 @@ install_pm2_runtime() {
   if (( REINSTALL == 1 )) || ! command -v pm2 >/dev/null 2>&1; then
     run_root npm install -g pm2 --no-audit --no-fund --loglevel=error
   fi
-  local home runtime_max_mb scheduler_max_mb
+  local home runtime_max_mb scheduler_max_mb direct_trade_max_mb
   home="$(service_home)"
   runtime_max_mb="$(env_value CTS_RUNTIME_MEMORY_MAX_MB)"
   [[ "$runtime_max_mb" =~ ^[0-9]+$ ]] || runtime_max_mb=1024
-  scheduler_max_mb=$(( runtime_max_mb / 3 ))
-  (( scheduler_max_mb < 384 )) && scheduler_max_mb=384
+  scheduler_max_mb="$(env_value CTS_SCHEDULER_MEMORY_MAX_MB)"
+  direct_trade_max_mb="$(env_value CTS_DIRECT_TRADE_MEMORY_MAX_MB)"
+  [[ "$scheduler_max_mb" =~ ^[0-9]+$ ]] || scheduler_max_mb=384
+  [[ "$direct_trade_max_mb" =~ ^[0-9]+$ ]] || direct_trade_max_mb=384
   if [[ -f "$RUNTIME_DIR/redis.pid" ]]; then
     local bootstrap_pid
     bootstrap_pid="$(cat "$RUNTIME_DIR/redis.pid" 2>/dev/null || true)"
@@ -1246,12 +1366,14 @@ install_pm2_runtime() {
     rm -f -- "$RUNTIME_DIR/redis.pid"
   fi
   run_root install -d -m 0750 -o "$SERVICE_USER" -g "$(id -gn "$SERVICE_USER")" "$home" "$home/.pm2"
-  run_as_service pm2 delete "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-redis" >/dev/null 2>&1 || true
+  run_as_service pm2 delete "$APP_NAME" "$APP_NAME-scheduler" "$APP_NAME-direct-trade" "$APP_NAME-recovery" "$APP_NAME-redis" >/dev/null 2>&1 || true
   if [[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "npm" ]]; then
     run_as_service pm2 start "$RUNTIME_DIR/start-redis.sh" --name "$APP_NAME-redis" --time --restart-delay 3000
   fi
   run_as_service pm2 start "$RUNTIME_DIR/start-app.sh" --name "$APP_NAME" --time --restart-delay 5000 --max-memory-restart "${runtime_max_mb}M"
   run_as_service pm2 start "$RUNTIME_DIR/start-scheduler.sh" --name "$APP_NAME-scheduler" --time --restart-delay 5000 --max-memory-restart "${scheduler_max_mb}M"
+  run_as_service pm2 start "$RUNTIME_DIR/start-direct-trade.sh" --name "$APP_NAME-direct-trade" --time --restart-delay 5000 --max-memory-restart "${direct_trade_max_mb}M"
+  run_as_service pm2 start "$RUNTIME_DIR/start-recovery.sh" --name "$APP_NAME-recovery" --time --restart-delay 5000
   run_as_service pm2 save --force
   run_root env PATH="$PATH" PM2_HOME="$home/.pm2" pm2 startup -u "$SERVICE_USER" --hp "$home"
   ok "PM2 processes and init-system reboot startup are configured"
@@ -1315,9 +1437,11 @@ verify_and_restart() {
     bash "$PROJECT_ROOT/scripts/post-deploy-verify.sh"
 
   if [[ "$RUNTIME" == "systemd" ]]; then
-    run_root systemctl is-active --quiet "$APP_NAME" && run_root systemctl is-active --quiet "$APP_NAME-scheduler" || return 1
+    run_root systemctl is-active --quiet "$APP_NAME" && run_root systemctl is-active --quiet "$APP_NAME-scheduler" \
+      && run_root systemctl is-active --quiet "$APP_NAME-direct-trade" && run_root systemctl is-active --quiet "$APP_NAME-recovery.timer" || return 1
   else
-    run_as_service pm2 describe "$APP_NAME" >/dev/null && run_as_service pm2 describe "$APP_NAME-scheduler" >/dev/null || return 1
+    run_as_service pm2 describe "$APP_NAME" >/dev/null && run_as_service pm2 describe "$APP_NAME-scheduler" >/dev/null \
+      && run_as_service pm2 describe "$APP_NAME-direct-trade" >/dev/null && run_as_service pm2 describe "$APP_NAME-recovery" >/dev/null || return 1
   fi
   return 0
 }
@@ -1386,5 +1510,6 @@ ok "Public access URL: $(public_access_url)"
 ok "Schema, shared Redis, one-minute continuity, engine ownership, and restart persistence are verified"
 info "App service: $APP_NAME"
 info "Scheduler service: $APP_NAME-scheduler"
+info "Direct-Trade processor service: $APP_NAME-direct-trade"
 info "Environment: $ENV_FILE (owner/group-only; secrets were not printed)"
 info "Live exchange support is installed; actual order placement requires valid server environment credentials and the explicit live-control state."

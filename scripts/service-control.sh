@@ -186,11 +186,20 @@ pm2_start_or_restart() {
   fi
 }
 
+# Manual stops are an explicit maintenance action. The recovery supervisor
+# respects this marker so it cannot restart a service the operator stopped.
+if [[ "$ACTION" == "stop" ]]; then
+  run_root touch "$RUNTIME_DIR/maintenance-stop"
+  run_root chmod 600 "$RUNTIME_DIR/maintenance-stop"
+else
+  run_root rm -f -- "$RUNTIME_DIR/maintenance-stop"
+fi
+
 case "$RUNTIME" in
   systemd)
     command -v systemctl >/dev/null 2>&1 || { echo "systemctl is unavailable" >&2; exit 1; }
     if [[ "$ACTION" == "stop" ]]; then
-      run_root systemctl stop "$APP_NAME-scheduler" "$APP_NAME" 2>/dev/null || true
+      run_root systemctl stop "$APP_NAME-direct-trade" "$APP_NAME-scheduler" "$APP_NAME" 2>/dev/null || true
       run_root systemctl stop "$APP_NAME-redis" 2>/dev/null || true
       echo "Stopped $APP_NAME (port $APP_PORT)"
     else
@@ -199,13 +208,19 @@ case "$RUNTIME" in
       fi
       run_root systemctl "$ACTION" "$APP_NAME"
       run_root systemctl "$ACTION" "$APP_NAME-scheduler"
+      if [[ -f "/etc/systemd/system/$APP_NAME-direct-trade.service" ]]; then
+        run_root systemctl "$ACTION" "$APP_NAME-direct-trade"
+      fi
+      if [[ -f "/etc/systemd/system/$APP_NAME-recovery.timer" ]]; then
+        run_root systemctl start "$APP_NAME-recovery.timer"
+      fi
       echo "${ACTION^}ed $APP_NAME on port $APP_PORT"
     fi
     ;;
   pm2)
     command -v pm2 >/dev/null 2>&1 || { echo "pm2 is unavailable" >&2; exit 1; }
     if [[ "$ACTION" == "stop" ]]; then
-      run_as_service pm2 stop "$APP_NAME-scheduler" "$APP_NAME" "$APP_NAME-redis" >/dev/null 2>&1 || true
+      run_as_service pm2 stop "$APP_NAME-direct-trade" "$APP_NAME-scheduler" "$APP_NAME" "$APP_NAME-recovery" "$APP_NAME-redis" >/dev/null 2>&1 || true
       echo "Stopped $APP_NAME (port $APP_PORT)"
     else
       if [[ -x "$RUNTIME_DIR/start-redis.sh" ]]; then
@@ -213,6 +228,12 @@ case "$RUNTIME" in
       fi
       pm2_start_or_restart "$APP_NAME" "$RUNTIME_DIR/start-app.sh"
       pm2_start_or_restart "$APP_NAME-scheduler" "$RUNTIME_DIR/start-scheduler.sh"
+      if [[ -x "$RUNTIME_DIR/start-direct-trade.sh" ]]; then
+        pm2_start_or_restart "$APP_NAME-direct-trade" "$RUNTIME_DIR/start-direct-trade.sh"
+      fi
+      if [[ -x "$RUNTIME_DIR/start-recovery.sh" ]]; then
+        pm2_start_or_restart "$APP_NAME-recovery" "$RUNTIME_DIR/start-recovery.sh"
+      fi
       run_as_service pm2 save --force >/dev/null
       echo "${ACTION^}ed $APP_NAME on port $APP_PORT"
     fi

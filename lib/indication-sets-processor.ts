@@ -190,6 +190,63 @@ type OutcomePerformance = {
   count: number
 }
 
+type ExactSnapshotCacheEntry = {
+  expiresAt: number
+  entries: any[]
+}
+
+// The realtime engine may pulse every 280 ms while exchange candles update at
+// a lower cadence. Rebuilding and re-persisting an unchanged exhaustive grid
+// in every pulse creates CPU/GC pressure without producing a new decision.
+// Keep only a tiny, price-signatured read-through cache. Settings changes are
+// visible within the short TTL and a closed forward outcome explicitly bypasses
+// it, so completed-position PF/DDT is never hidden behind the optimisation.
+const EXACT_SNAPSHOT_CACHE_MAX_AGE_MS = Math.max(
+  100,
+  Math.min(3_000, Number(process.env.INDICATION_EXACT_SNAPSHOT_CACHE_MS || 1_000) || 1_000),
+)
+const EXACT_SNAPSHOT_CACHE_MAX_ENTRIES = 256
+const exactSnapshotCache = new Map<string, ExactSnapshotCacheEntry>()
+
+function exactSnapshotCacheKey(connectionId: string, symbol: string, marketData: any): string {
+  const mode = String(marketData?.__indicationSnapshotMode || "realtime")
+  // A historic replay needs a distinct configuration snapshot for every
+  // simulated candle. Realtime Direct-Trade instead owns its mark/close work
+  // in the independent 280 ms lifecycle Stage; recomputing the exhaustive
+  // entry matrix for every sub-second mark gives no additional protection and
+  // causes a cache-miss storm on feeds that stamp every envelope with `now`.
+  if (mode !== "historical") return `${connectionId}:${symbol}:realtime`
+  const candles = Array.isArray(marketData?.candles) ? marketData.candles : []
+  const tail = candles[candles.length - 1] || {}
+  // `marketData.timestamp` may be the time the processor touched an otherwise
+  // unchanged snapshot. Prefer the actual tail candle timestamp so a 280 ms
+  // scheduling pulse does not defeat the cache by merely carrying a new wall
+  // clock value; fall back to the envelope only when no candle series exists.
+  const timestamp = tail?.timestamp ?? tail?.time ?? marketData?.timestamp ?? ""
+  const price = marketData?.executionPrice ?? marketData?.price ?? marketData?.close ?? tail?.close ?? tail?.price ?? ""
+  return `${connectionId}:${symbol}:historical:${String(timestamp)}:${String(price)}:${candles.length}`
+}
+
+function readExactSnapshotCache(key: string): any[] | null {
+  const entry = exactSnapshotCache.get(key)
+  if (!entry) return null
+  if (entry.expiresAt <= Date.now()) {
+    exactSnapshotCache.delete(key)
+    return null
+  }
+  // The caller may combine this array with direct Signal/Auto rows. Do not
+  // expose the cached array itself to accidental append/splice mutations.
+  return entry.entries.slice()
+}
+
+function writeExactSnapshotCache(key: string, entries: any[]): void {
+  if (exactSnapshotCache.size >= EXACT_SNAPSHOT_CACHE_MAX_ENTRIES && !exactSnapshotCache.has(key)) {
+    const oldest = exactSnapshotCache.keys().next().value
+    if (oldest !== undefined) exactSnapshotCache.delete(oldest)
+  }
+  exactSnapshotCache.set(key, { expiresAt: Date.now() + EXACT_SNAPSHOT_CACHE_MAX_AGE_MS, entries: entries.slice() })
+}
+
 function resolveIndicationDirection(indication: any): "long" | "short" | null {
   if (indication?.direction === "long" || indication?.direction === "short") {
     return indication.direction
@@ -871,7 +928,7 @@ export class IndicationSetsProcessor {
     this.currentCycleEntries = []
     try {
       await this.settingsReady
-      await this.closePendingRealtimeOutcomes(symbol, marketData)
+      const closedForwardOutcomes = await this.closePendingRealtimeOutcomes(symbol, marketData)
       if (!marketData) {
         console.warn(`[v0] [IndicationSets] Invalid market data for ${symbol}`)
         await logProgressionEvent(this.connectionId, "indications_sets", "warning", `Invalid market data for ${symbol}`, {
@@ -891,6 +948,14 @@ export class IndicationSetsProcessor {
         // throttled warning so status/health endpoints remain responsive while
         // history fills naturally.
         return []
+      }
+      const snapshotKey = exactSnapshotCacheKey(this.connectionId, symbol, marketData)
+      // Outcome realization updates the persisted Set PF, so use a fresh grid
+      // on that pulse. Otherwise the current candle/price signature is enough
+      // to reuse the exact same complete configuration rows safely.
+      if (!closedForwardOutcomes) {
+        const cached = readExactSnapshotCache(snapshotKey)
+        if (cached) return cached
       }
       const multiRangeCoordination = calculateMultiRangeCoordination({
         pricesOldestFirst: priceHistory,
@@ -939,31 +1004,42 @@ export class IndicationSetsProcessor {
         }
       }
       const disabledResult = (type: string) => ({ type, total: 0, qualified: 0, configs: 0, disabled: true })
-      const [directionResults, moveResults, activeResults, activeAdvancedResults, optimalResults, commonResults, trendResults] = await Promise.all([
-        this.directionEnabled
-          ? runType("direction", () => this.processDirectionSet(symbol, marketData))
-          : disabledResult("direction"),
-        this.moveEnabled
-          ? runType("move", () => this.processMoveSet(symbol, marketData))
-          : disabledResult("move"),
-        this.activeEnabled
-          ? runType("active", () => this.processActiveSet(symbol, marketData))
-          : disabledResult("active"),
-        this.activeAdvancedEnabled
-          ? runType("active_advanced", () => this.processActiveAdvancedSet(symbol, marketData))
-          : disabledResult("active_advanced"),
-        this.optimalEnabled
-          ? runType("optimal", () => this.processOptimalSet(symbol, marketData))
-          : disabledResult("optimal"),
-        this.commonEnabled
-          ? runType("common", () => this.processCommonSet(symbol, marketData))
-          : disabledResult("common"),
-        // Trend is deliberately last: it is the newest Main indication type
-        // and retains the requested ordering in engine output and Settings.
-        this.trendEnabled
-          ? runType("trend", () => this.processTrendSet(symbol, marketData))
-          : disabledResult("trend"),
-      ])
+      // The per-type calculators are CPU- and allocation-heavy before their
+      // first Redis await. A Promise.all therefore did not gain CPU parallelism
+      // in Node; it constructed seven large candidate graphs at once and could
+      // starve health/control routes under a broad symbol basket. Bound type
+      // work explicitly. Every type/config still runs exactly once and the
+      // setting allows a larger worker only where its I/O profile justifies it.
+      const typeTasks: Array<{ type: string; enabled: boolean; run: () => Promise<any> }> = [
+        { type: "direction", enabled: this.directionEnabled, run: () => this.processDirectionSet(symbol, marketData) },
+        { type: "move", enabled: this.moveEnabled, run: () => this.processMoveSet(symbol, marketData) },
+        { type: "active", enabled: this.activeEnabled, run: () => this.processActiveSet(symbol, marketData) },
+        { type: "active_advanced", enabled: this.activeAdvancedEnabled, run: () => this.processActiveAdvancedSet(symbol, marketData) },
+        { type: "optimal", enabled: this.optimalEnabled, run: () => this.processOptimalSet(symbol, marketData) },
+        { type: "common", enabled: this.commonEnabled, run: () => this.processCommonSet(symbol, marketData) },
+      ]
+      const typeConcurrency = concurrencyFromEnv(
+        ["INDICATION_SET_TYPE_CONCURRENCY"],
+        1,
+        4,
+        typeTasks.length,
+      )
+      const typeResults = await mapWithConcurrency(
+        typeTasks,
+        typeConcurrency,
+        async (task) => task.enabled
+          ? runType(task.type, task.run)
+          : disabledResult(task.type),
+        { yieldEvery: 1 },
+      )
+      // Trend is intentionally a completion barrier, not merely the final
+      // array element. Even where an operator raises the bounded primary-type
+      // concurrency, Trend starts only after all earlier Main indication
+      // families have yielded/persisted their result for this exact snapshot.
+      const trendResults = this.trendEnabled
+        ? await runType("trend", () => this.processTrendSet(symbol, marketData))
+        : disabledResult("trend")
+      const [directionResults, moveResults, activeResults, activeAdvancedResults, optimalResults, commonResults] = typeResults
 
       const duration = Date.now() - startTime
       
@@ -1122,6 +1198,7 @@ export class IndicationSetsProcessor {
       }
       const completed = [...(this.currentCycleEntries || [])]
         .sort((left, right) => String(left.setKey).localeCompare(String(right.setKey)))
+      if (!closedForwardOutcomes) writeExactSnapshotCache(snapshotKey, completed)
       this.currentCycleEntries = null
       return completed
     } catch (error) {
@@ -2203,13 +2280,13 @@ export class IndicationSetsProcessor {
     } catch { /* non-critical */ }
   }
 
-  private async closePendingRealtimeOutcomes(symbol: string, marketData: any): Promise<void> {
-    if (!marketData) return
+  private async closePendingRealtimeOutcomes(symbol: string, marketData: any): Promise<boolean> {
+    if (!marketData) return false
     try {
       const client = await getCachedClient()
       const key = `indication_outcomes_pending:${this.connectionId}:${symbol}`
       const raw: string[] = await client.lrange(key, 0, -1)
-      if (!raw?.length) return
+      if (!raw?.length) return false
       await client.del(key)
 
       // Separate still-pending from newly-closed in a single synchronous pass
@@ -2306,7 +2383,10 @@ export class IndicationSetsProcessor {
       )
 
       await client.expire(key, 86400)
-    } catch { /* non-critical */ }
+      return closedItems.length > 0
+    } catch {
+      return false
+    }
   }
 
   private evaluateForwardOutcome(

@@ -21,6 +21,16 @@ async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
 }
 
+// Historical calculations run inside the API/engine process.  Keep every
+// calculation complete, but return control often enough for health, cron and
+// lease-recovery work to run while an initial long-range bootstrap is active.
+// This is deliberately an environment setting rather than a strategy value:
+// changing it affects scheduling only, never evaluation results.
+const HISTORIC_CALC_YIELD_EVERY = Math.max(
+  16,
+  Math.min(4096, Number.parseInt(process.env.PREHISTORIC_CALC_YIELD_EVERY || "128", 10) || 128),
+)
+
 function groupConfigsByType<T extends { type?: string }>(configs: T[]): Array<[string, T[]]> {
   const grouped = new Map<string, T[]>()
   for (const config of configs) {
@@ -151,13 +161,13 @@ export class ConfigSetProcessor {
     )
     const CONFIG_CONCURRENCY = concurrencyFromEnv(
       ["PREHISTORIC_CONFIG_CONCURRENCY"],
+      2,
       8,
-      16,
     )
     const CONFIG_TYPE_CONCURRENCY = concurrencyFromEnv(
       ["PREHISTORIC_CONFIG_TYPE_CONCURRENCY"],
+      2,
       4,
-      5,
     )
 
     const assertRunActive = () => {
@@ -979,7 +989,7 @@ export class ConfigSetProcessor {
               assertRunActive()
               await yieldToEventLoop()
               assertRunActive()
-              const results = this.calculateIndicationResults(symbol, candles, config)
+              const results = await this.calculateIndicationResults(symbol, candles, config)
               if (results.length === 0) return 0
               assertRunActive()
               if (typeof (this.indicationManager as any).addResults === "function") {
@@ -1015,11 +1025,11 @@ export class ConfigSetProcessor {
    * Calculate indication results for a specific config
    * Uses config parameters to generate signals
    */
-  private calculateIndicationResults(
+  private async calculateIndicationResults(
     symbol: string,
     candles: any[],
     config: IndicationConfig
-  ): IndicationResult[] {
+  ): Promise<IndicationResult[]> {
     const results: IndicationResult[] = []
     const { steps, drawdown_ratio, active_ratio } = config
 
@@ -1062,6 +1072,9 @@ export class ConfigSetProcessor {
         volSum += Math.abs(prices[k] - prev) / prev
         volN++
       }
+      if ((k + 1) % HISTORIC_CALC_YIELD_EVERY === 0) {
+        await yieldToEventLoop()
+      }
     }
     const avgBarVol = volN > 0 ? volSum / volN : 0
     // Threshold = 1.5× the typical bar move, clamped to [0.0002, 0.005].
@@ -1070,6 +1083,9 @@ export class ConfigSetProcessor {
     const signalThreshold = Math.min(0.005, Math.max(0.0002, avgBarVol * 1.5))
 
     for (let i = 0; i <= prices.length - steps; i++) {
+      if ((i + 1) % HISTORIC_CALC_YIELD_EVERY === 0) {
+        await yieldToEventLoop()
+      }
       const windowPrices = prices.slice(i, i + steps)
       const firstHalf = windowPrices.slice(0, Math.floor(steps / 2))
       const secondHalf = windowPrices.slice(Math.floor(steps / 2))
@@ -1174,7 +1190,7 @@ export class ConfigSetProcessor {
               assertRunActive()
               await yieldToEventLoop()
               assertRunActive()
-              const positions = this.calculateStrategyPositions(symbol, candles, config)
+              const positions = await this.calculateStrategyPositions(symbol, candles, config)
               if (positions.length === 0) return 0
               assertRunActive()
               let acceptedPositions = positions
@@ -1281,11 +1297,11 @@ export class ConfigSetProcessor {
    * Calculate pseudo positions for a specific strategy config
    * Simulates trading with the config parameters
    */
-  private calculateStrategyPositions(
+  private async calculateStrategyPositions(
     symbol: string,
     candles: any[],
     config: StrategyConfig
-  ): PseudoPosition[] {
+  ): Promise<PseudoPosition[]> {
     const positions: PseudoPosition[] = []
     const { position_cost_step, takeprofit, stoploss, type } = config
 
@@ -1306,6 +1322,9 @@ export class ConfigSetProcessor {
     let rollingSum = prices.slice(0, position_cost_step).reduce((sum: number, p: any) => sum + p.price, 0)
 
     for (let i = position_cost_step; i < prices.length; i++) {
+      if ((i + 1) % HISTORIC_CALC_YIELD_EVERY === 0) {
+        await yieldToEventLoop()
+      }
       const currentPrice = prices[i].price
       const currentTime = prices[i].time
       const avgPrice = rollingSum / position_cost_step

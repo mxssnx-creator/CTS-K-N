@@ -66,25 +66,25 @@ describe("Direct-Trade historical calculation route", () => {
     const payload = await response.json()
 
     expect(payload.success).toBe(true)
-    // With trailing disabled the default enabled types still stay isolated:
-    // standard (48), Combination (48), inverse (80, up to 1.25× TP) and
-    // high-protection (8). Fixed and Auto Trailing correctly have no lane.
-    expect(payload.configTotal).toBe(184)
+    // With trailing disabled the default 4–12× PositionCost grid keeps every
+    // type isolated: standard (54), Combination (54), inverse (90, up to
+    // 1.25× TP) and high-protection (18). Fixed and Auto remain absent.
+    expect(payload.configTotal).toBe(216)
     expect(payload.executionConfigTotal).toEqual(expect.any(Number))
-    expect(payload.summary).toMatchObject({ historyHours: 60, combinations: 1, evaluatedSets: 184 })
+    expect(payload.summary).toMatchObject({ historyHours: 60, combinations: 1, evaluatedSets: 216 })
     expect(payload.summary.byStrategyType).toMatchObject({
-      standard: { evaluated: 48 },
+      standard: { evaluated: 54 },
       trailing_fixed: { evaluated: 0 },
       trailing_auto: { evaluated: 0 },
-      combination: { evaluated: 48 },
-      inverse: { evaluated: 80 },
-      high_protection: { evaluated: 8 },
+      combination: { evaluated: 54 },
+      inverse: { evaluated: 90 },
+      high_protection: { evaluated: 18 },
     })
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("interval=1m")
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("startTime=")
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
-    expect(persisted).toHaveLength(184)
-    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(184)
+    expect(persisted).toHaveLength(216)
+    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(216)
     expect(persisted.every((config: any) => config.timeframe === "1m" && config.bestMarketExitAnalysisOnly === true)).toBe(true)
     expect(persisted.filter((config: any) => config.strategyType === "inverse").every((config: any) =>
       config.stoploss <= config.takeprofit * 1.25,
@@ -113,20 +113,84 @@ describe("Direct-Trade historical calculation route", () => {
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
 
     expect(payload.success).toBe(true)
-    expect(payload.configTotal).toBe(1024)
+    expect(payload.configTotal).toBe(1188)
     expect(payload.summary.byStrategyType).toMatchObject({
-      standard: { evaluated: 48 },
-      trailing_fixed: { evaluated: 144 },
-      trailing_auto: { evaluated: 144 },
-      combination: { evaluated: 336 },
-      inverse: { evaluated: 320 },
-      high_protection: { evaluated: 32 },
+      standard: { evaluated: 54 },
+      trailing_fixed: { evaluated: 162 },
+      trailing_auto: { evaluated: 162 },
+      combination: { evaluated: 378 },
+      inverse: { evaluated: 360 },
+      high_protection: { evaluated: 72 },
     })
     const byType = (strategyType: string) => persisted.filter((config: any) => config.strategyType === strategyType)
     expect(byType("trailing_fixed").every((config: any) => config.trailingMode === "fixed")).toBe(true)
     expect(byType("trailing_auto").every((config: any) => config.trailingMode === "auto")).toBe(true)
     expect(new Set(byType("combination").map((config: any) => config.trailingMode))).toEqual(new Set(["none", "fixed", "auto"]))
-    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(1024)
+    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(1188)
+  })
+
+  test("applies the configured SL ratio step without omitting the requested protection maximum", async () => {
+    const [{ POST }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/calculate/route"),
+      import("@/lib/redis-db"),
+    ])
+    const response = await POST(new Request("http://localhost/api/trade-engine/direct-trade/calculate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        symbolCount: 1,
+        historyHours: 60,
+        timeframes: ["1m"],
+        strategyTypes: ["standard"],
+        entryTactics: ["breakout"],
+        exitTactics: ["bracket"],
+        trailingEnabled: false,
+        activityVolumeRatio: 0,
+        maxSlRatio: 0.75,
+        slRatioStep: 0.5,
+      }),
+    }) as any)
+    const payload = await response.json()
+    const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
+
+    expect(payload.success).toBe(true)
+    // 9 default TP multiples (4× through 12× PositionCost) × two configured
+    // SL ratios × independently evaluated long/short.
+    expect(payload.configTotal).toBe(36)
+    expect(new Set(persisted.map((config: any) => Number((config.stoploss / config.takeprofit).toFixed(2))))).toEqual(new Set([0.25, 0.75]))
+  })
+
+  test("converts the configured PositionCost TP multiples and keeps Block ratio separate from base volume", async () => {
+    const [{ POST }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/calculate/route"),
+      import("@/lib/redis-db"),
+    ])
+    const response = await POST(new Request("http://localhost/api/trade-engine/direct-trade/calculate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        symbolCount: 1,
+        historyHours: 60,
+        timeframes: ["1m"],
+        strategyTypes: ["standard"],
+        entryTactics: ["breakout"],
+        exitTactics: ["bracket"],
+        trailingEnabled: false,
+        activityVolumeRatio: 0,
+        positionCostPercent: 0.1,
+        takeProfitRatioRange: [4, 6],
+        blockRange: [3, 3],
+        blockVolumeRatio: 1.5,
+      }),
+    }) as any)
+    const payload = await response.json()
+    const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
+
+    expect(payload.success).toBe(true)
+    expect(payload.configTotal).toBe(18)
+    expect(new Set(persisted.map((config: any) => config.takeProfitPositionCostRatio))).toEqual(new Set([4, 5, 6]))
+    expect(new Set(persisted.map((config: any) => config.takeprofit))).toEqual(new Set([0.4, 0.5, 0.6]))
+    expect(persisted.every((config: any) => config.blockCount === 3 && config.blockVolumeRatio === 1.5)).toBe(true)
   })
 
   test("allows one full-grid publisher while a concurrent request receives a retryable conflict", async () => {

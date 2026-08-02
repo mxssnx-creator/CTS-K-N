@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Slider } from "@/components/ui/slider"
 import { DIRECT_TRADE_MAX_SYMBOLS } from "@/lib/direct-trade-limits"
+import { DIRECT_TRADE_RECENT_PF_DEFAULT } from "@/lib/direct-trade-coordination"
 import { Badge } from "@/components/ui/badge"
 import {
   Select,
@@ -125,7 +126,7 @@ const DEFAULT_STATE: DirectTradeState = {
   keepEnabledPosCount: 12,
   deactivatePosCount: 16,
   minProfitFactor: 0.8,
-  minRecentProfitFactor: 10,
+  minRecentProfitFactor: DIRECT_TRADE_RECENT_PF_DEFAULT,
   recentEvaluationPositions: 12,
   maxDrawdownTimeMin: 10,
   prevPosWindow: 25,
@@ -231,7 +232,7 @@ export function DirectTradeSection() {
         setLocalBlock(data.state.blockRange?.[1] > 0)
         setLocalBlockMax(data.state.blockRange?.[1] || 12)
         setLocalMinPF(data.state.minProfitFactor ?? 0.8)
-        setLocalMinRecentPF(data.state.minRecentProfitFactor ?? 10)
+        setLocalMinRecentPF(data.state.minRecentProfitFactor ?? DIRECT_TRADE_RECENT_PF_DEFAULT)
         setLocalRecentEvaluationPositions(data.state.recentEvaluationPositions ?? 12)
         setLocalMaxDDT(data.state.maxDrawdownTimeMin ?? 10)
         setLocalPrevPosWindow(data.state.prevPosWindow ?? 25)

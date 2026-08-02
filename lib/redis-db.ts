@@ -90,6 +90,11 @@ const globalForRedis = globalThis as unknown as {
   // per minute; this small WAL closes that crash window without serializing
   // the complete multi-megabyte database on every engine cycle.
   __redis_live_position_wal_promise?: Promise<boolean>
+  __redis_live_position_wal_batch_scheduled?: Promise<boolean>
+  __redis_live_position_wal_pending?: Map<string, {
+    entry: string
+    candidates: Array<{ dir: string; file: string }>
+  }>
   __redis_live_position_wal_write_counter?: number
   // Global equivalent of the module-scoped `isConnected` flag. Allows fresh
   // Next.js dev route modules (which re-evaluate and get isConnected=false) to
@@ -336,6 +341,22 @@ export class InlineLocalRedis implements RedisClientLike {
     return `${process.pid ?? "browser"}.${counter}.${Date.now()}`
   }
 
+  private hasActiveInlineEngineOwner(): boolean {
+    for (const [key, value] of this.data.strings.entries()) {
+      if (key.startsWith("engine_is_running:") && ["1", "true", "running"].includes(String(value).trim().toLowerCase())) {
+        return true
+      }
+      // The ownership lease is acquired before the manager can publish its
+      // first heartbeat/running flag.  Treat that short bootstrap period as
+      // active too: a minute snapshot or a full keyspace eviction in that gap
+      // can otherwise block the very engine that is meant to establish the
+      // heartbeat.
+      if (key.startsWith("engine_lock:") && String(value).trim()) return true
+    }
+    const globalEngine = this.data.hashes.get("trade_engine:global")
+    return ["running", "starting"].includes(String(globalEngine?.actual_status || "").toLowerCase())
+  }
+
   /** Resolve snapshot path; honours `V0_REDIS_SNAPSHOT_PATH` env override. */
   private async resolveSnapshotPath(): Promise<{ dir: string; file: string } | null> {
     if (typeof process === "undefined" || !process.versions?.node) return null
@@ -401,21 +422,70 @@ export class InlineLocalRedis implements RedisClientLike {
   private *snapshotV2Lines(snapshotVersion: number): Iterable<string> {
     const d = this.data
     yield JSON.stringify({ v: 2, savedAt: Date.now(), mutationVersion: snapshotVersion })
-    for (const [key, value] of d.strings.entries()) yield JSON.stringify(["s", key, value])
-    for (const [key, value] of d.hashes.entries()) yield JSON.stringify(["h", key, value])
-    for (const [key, value] of d.sets.entries()) yield JSON.stringify(["S", key, Array.from(value)])
-    for (const [key, value] of d.lists.entries()) yield JSON.stringify(["l", key, value])
-    for (const [key, value] of d.sorted_sets.entries()) yield JSON.stringify(["z", key, value.entries])
-    for (const [key, value] of d.ttl.entries()) yield JSON.stringify(["t", key, value])
+    // Map iterators include entries inserted after iteration began. The engine
+    // writes new pipeline rows continuously, so iterating the live Maps here
+    // could make a periodic snapshot chase a moving tail indefinitely. Capture
+    // only the key plan at the declared mutation version. Values may change
+    // while it is written; those mutations advance the global version and are
+    // therefore included by the next snapshot instead of being falsely marked
+    // durable by this one.
+    const stringKeys = Array.from(d.strings.keys())
+    const hashKeys = Array.from(d.hashes.keys())
+    const setKeys = Array.from(d.sets.keys())
+    const listKeys = Array.from(d.lists.keys())
+    const sortedSetKeys = Array.from(d.sorted_sets.keys())
+    const ttlKeys = Array.from(d.ttl.keys())
+
+    for (const key of stringKeys) {
+      if (d.strings.has(key)) yield JSON.stringify(["s", key, d.strings.get(key)])
+    }
+    for (const key of hashKeys) {
+      const value = d.hashes.get(key)
+      if (value) yield JSON.stringify(["h", key, value])
+    }
+    for (const key of setKeys) {
+      const value = d.sets.get(key)
+      if (value) yield JSON.stringify(["S", key, Array.from(value)])
+    }
+    for (const key of listKeys) {
+      const value = d.lists.get(key)
+      if (value) yield JSON.stringify(["l", key, value])
+    }
+    for (const key of sortedSetKeys) {
+      const value = d.sorted_sets.get(key)
+      if (value) yield JSON.stringify(["z", key, value.entries])
+    }
+    for (const key of ttlKeys) {
+      if (d.ttl.has(key)) yield JSON.stringify(["t", key, d.ttl.get(key)])
+    }
   }
 
   private async writeSnapshotV2(
     handle: { writeFile(data: string, options?: any): Promise<void> },
     snapshotVersion: number,
   ): Promise<void> {
-    const maxChunkBytes = 1024 * 1024
+    // Keep the buffered string deliberately small. A dense runtime can have
+    // tens of thousands of JSON rows; accumulating a 1 MiB rope before the
+    // next async write made the minute checkpoint monopolise the Node turn.
+    const maxChunkBytes = 64 * 1024
+    // A full local snapshot can contain tens of thousands of strategy and
+    // position keys. Writing it atomically must not monopolise Node's event
+    // loop for an entire minute tick: health, protected cron and control-order
+    // routes need a chance to run while the temp file is being streamed. The
+    // snapshot version still represents the state captured at start; writes
+    // that land while yielding advance the mutation version and are included
+    // by the next snapshot instead of being falsely marked durable.
+    // Inline snapshots can contain a full running Strategy/Direct-Trade
+    // generation. Serialize exactly one persisted row per turn: a recovery
+    // checkpoint must never make the health/cron/control plane wait behind a
+    // large, otherwise valid Paper book. The file remains atomically published
+    // and changes that land meanwhile belong to the next versioned checkpoint.
+    const cooperativeYieldEveryRows = 1
+    const cooperativeYieldAfterMs = 1
     let chunk = ""
     let chunkBytes = 0
+    let rowsSinceYield = 0
+    let lastYieldAt = Date.now()
     for (const line of this.snapshotV2Lines(snapshotVersion)) {
       const framed = `${line}\n`
       const framedBytes = Buffer.byteLength(framed)
@@ -429,6 +499,15 @@ export class InlineLocalRedis implements RedisClientLike {
       } else {
         chunk += framed
         chunkBytes += framedBytes
+      }
+      rowsSinceYield++
+      if (
+        rowsSinceYield >= cooperativeYieldEveryRows ||
+        Date.now() - lastYieldAt >= cooperativeYieldAfterMs
+      ) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        rowsSinceYield = 0
+        lastYieldAt = Date.now()
       }
     }
     if (chunk) await handle.writeFile(chunk, "utf8")
@@ -719,7 +798,11 @@ export class InlineLocalRedis implements RedisClientLike {
     walFile: string,
     fs: typeof import("fs/promises"),
   ): Promise<void> {
-    const MAX_WAL_BYTES = 8 * 1024 * 1024
+    // A complete Paper/Live position row can carry fills, trailing and lineage
+    // diagnostics. Keep enough headroom for a dense restored book so a normal
+    // initial recovery batch is not immediately compacted again for every
+    // following checkpoint. The position cap remains the hard bound.
+    const MAX_WAL_BYTES = 32 * 1024 * 1024
     const MAX_WAL_POSITIONS = 2_048
     const size = Number((await fs.stat(walFile)).size || 0)
     if (size <= MAX_WAL_BYTES) return
@@ -777,40 +860,69 @@ export class InlineLocalRedis implements RedisClientLike {
       position,
     }) + "\n"
 
-    const previous = globalForRedis.__redis_live_position_wal_promise || Promise.resolve(true)
-    const write = previous.catch(() => false).then(async () => {
-      let lastError: unknown = new Error("No writable live-position WAL path")
-      for (const candidate of candidates) {
-        const walFile = `${candidate.file}.live-wal`
-        try {
-          const fs = await import("fs/promises")
-          await fs.mkdir(candidate.dir, { recursive: true })
-          const handle = await fs.open(walFile, "a")
-          try {
-            await handle.writeFile(entry, "utf8")
-            await handle.sync()
-          } finally {
-            await handle.close()
-          }
-          await this.compactLivePositionWalIfNeeded(walFile, fs)
-          globalForRedis.__redis_live_position_wal_write_counter =
-            Number(globalForRedis.__redis_live_position_wal_write_counter || 0) + 1
-          return true
-        } catch (error) {
-          lastError = error
-        }
-      }
-      this.warnRateLimited("live-position WAL append failed", lastError)
-      return false
-    })
-    globalForRedis.__redis_live_position_wal_promise = write
-    try {
-      return await write
-    } finally {
-      if (globalForRedis.__redis_live_position_wal_promise === write) {
-        delete globalForRedis.__redis_live_position_wal_promise
-      }
+    // A restart can restore hundreds of Paper positions at once. Writing and
+    // fsyncing every unchanged row independently serializes hundreds of disk
+    // barriers, holds large closure chains, and can starve health/cron routes
+    // during the exact period self-healing needs them most. Coalesce entries
+    // during one event-loop turn, retaining only the newest checkpoint for an
+    // individual position. Every caller still awaits the resulting batch fsync
+    // before it observes success, so crash recovery remains durable.
+    const pending =
+      globalForRedis.__redis_live_position_wal_pending ??
+      (globalForRedis.__redis_live_position_wal_pending = new Map())
+    pending.set(`${connectionId}\u0000${positionId}`, { entry, candidates })
+
+    let scheduled = globalForRedis.__redis_live_position_wal_batch_scheduled
+    if (!scheduled) {
+      scheduled = new Promise<boolean>((resolve) => {
+        setImmediate(() => {
+          const batch = globalForRedis.__redis_live_position_wal_pending || new Map()
+          globalForRedis.__redis_live_position_wal_pending = new Map()
+          delete globalForRedis.__redis_live_position_wal_batch_scheduled
+
+          const previous = globalForRedis.__redis_live_position_wal_promise || Promise.resolve(true)
+          const write = previous.catch(() => false).then(async () => {
+            const checkpoints = [...batch.values()]
+            if (checkpoints.length === 0) return true
+
+            let lastError: unknown = new Error("No writable live-position WAL path")
+            const batchCandidates = checkpoints[0].candidates
+            const entries = checkpoints.map((checkpoint) => checkpoint.entry).join("")
+            for (const candidate of batchCandidates) {
+              const walFile = `${candidate.file}.live-wal`
+              try {
+                const fs = await import("fs/promises")
+                await fs.mkdir(candidate.dir, { recursive: true })
+                const handle = await fs.open(walFile, "a")
+                try {
+                  await handle.writeFile(entries, "utf8")
+                  await handle.sync()
+                } finally {
+                  await handle.close()
+                }
+                await this.compactLivePositionWalIfNeeded(walFile, fs)
+                globalForRedis.__redis_live_position_wal_write_counter =
+                  Number(globalForRedis.__redis_live_position_wal_write_counter || 0) + checkpoints.length
+                return true
+              } catch (error) {
+                lastError = error
+              }
+            }
+            this.warnRateLimited("live-position WAL batch append failed", lastError)
+            return false
+          })
+          globalForRedis.__redis_live_position_wal_promise = write
+          void write.then(resolve).finally(() => {
+            if (globalForRedis.__redis_live_position_wal_promise === write) {
+              delete globalForRedis.__redis_live_position_wal_promise
+            }
+          })
+        })
+      })
+      globalForRedis.__redis_live_position_wal_batch_scheduled = scheduled
     }
+
+    return await scheduled
   }
 
   private isCleanForSharedRefresh(): boolean {
@@ -1230,6 +1342,17 @@ export class InlineLocalRedis implements RedisClientLike {
       ? Math.max(5_000, Math.min(60_000, Math.floor(configuredInterval)))
       : defaultInterval
     const t = setInterval(() => {
+      // A full inline snapshot is intentionally a quiescent checkpoint. While
+      // an engine is actively producing 280 ms Direct-Trade rows, the durable
+      // live-position WAL records every lifecycle/quantity transition and a
+      // full map walk can starve the shared HTTP control plane. The clean-stop
+      // handler still writes the complete atomic snapshot, and the next idle
+      // interval resumes periodic snapshots. Operators can opt in to the old
+      // eager behaviour only after measuring their filesystem throughput.
+      if (
+        process.env.INLINE_REDIS_SNAPSHOT_WHILE_ENGINE_RUNNING !== "1" &&
+        this.hasActiveInlineEngineOwner()
+      ) return
       this.saveToDisk().catch(() => { /* warned inside saveToDisk */ })
     }, snapshotIntervalMs)
     if (typeof t.unref === "function") t.unref()
@@ -1423,10 +1546,16 @@ export class InlineLocalRedis implements RedisClientLike {
 
     // Keep the once-per-second timer cheap: memoryUsage() and Map.size reads are
     // O(1), while TTL expiry and eviction each scan key maps. Run those full
-    // scans at a slower cadence during normal operation, but bypass the cadence
-    // immediately when memory crosses the configured heap/RSS thresholds.
+    // scans at a slower cadence during normal operation. In particular, a large
+    // *protected* keyspace is not a reason to scan and force a V8 collection on
+    // every timer tick: that used to starve HTTP liveness requests during a
+    // large Direct-Trade replay even while heap/RSS had already stabilised.
+    // Heap/RSS pressure still bypasses the cadence; only capacity pressure is
+    // deferred because it is advisory until it becomes real memory pressure.
     const FULL_CLEANUP_INTERVAL_MS = 15_000
+    const WARM_EVICTION_MIN_INTERVAL_MS = 5_000
     let _lastFullCleanupMs = 0
+    let _lastEvictionMs = 0
 
     // Throttle eviction log output: only print once per 60 s when stuck above
     // the threshold so the server log stays readable.
@@ -1448,12 +1577,29 @@ export class InlineLocalRedis implements RedisClientLike {
         const CMEM = (globalThis as any).__redis_mem_limits as typeof MEM | undefined ?? MEM
 
         // Three-tier pressure response:
-        //   NORMAL  → TTL cleanup only on the slower full-scan cadence
-        //   WARM    → immediately evict + GC when heap/RSS/key pressure is high
-        //   CRITICAL → immediately volatile cleanup + 3× evict passes + GC
+        //   NORMAL              → TTL cleanup only on the slower full-scan cadence
+        //   KEY CAPACITY         → bounded eviction cadence; no forced V8 GC
+        //   HEAP/RSS WARM        → bounded eviction + GC at most every five seconds
+        //   CRITICAL RSS         → immediate volatile cleanup + 3× evict + GC
         const isCritical = rssMB > CMEM.rssHardMB
-        const isWarm     = isCritical || heapUsedMB > CMEM.heapMB || rssMB > CMEM.rssSoftMB || totalKeys > CMEM.maxKeys
-        const shouldRunFullCleanup = isWarm || now - _lastFullCleanupMs >= FULL_CLEANUP_INTERVAL_MS
+        const isMemoryWarm = heapUsedMB > CMEM.heapMB || rssMB > CMEM.rssSoftMB
+        const hasKeyPressure = totalKeys > CMEM.maxKeys
+        const activeEngineOwner = this.hasActiveInlineEngineOwner()
+        // Key-count pressure is advisory while an engine owns the process:
+        // each full-map sweep is synchronous and may otherwise starve all HTTP
+        // control routes while a high-frequency Direct-Trade batch is running.
+        // Heap/RSS pressure remains non-negotiable and still triggers the
+        // bounded reclamation path below.  The next idle minute performs the
+        // deferred cleanup before any restart or background reconciliation.
+        const deferAdvisorySweep = activeEngineOwner && !isMemoryWarm && !isCritical
+        const needsEviction = isCritical || isMemoryWarm || (hasKeyPressure && !deferAdvisorySweep)
+        const evictionIntervalMs = isCritical ? 0 : isMemoryWarm
+          ? WARM_EVICTION_MIN_INTERVAL_MS
+          : FULL_CLEANUP_INTERVAL_MS
+        const evictionDue = needsEviction && now - _lastEvictionMs >= evictionIntervalMs
+        const shouldRunFullCleanup = !deferAdvisorySweep && (
+          isCritical || evictionDue || now - _lastFullCleanupMs >= FULL_CLEANUP_INTERVAL_MS
+        )
 
         if (!shouldRunFullCleanup) return
         _lastFullCleanupMs = now
@@ -1462,7 +1608,8 @@ export class InlineLocalRedis implements RedisClientLike {
         // unless pressure requires immediate cleanup.
         this.cleanupExpiredKeys()
 
-        if (!isWarm) return
+        if (!evictionDue) return
+        _lastEvictionMs = now
 
         if (now - _lastEvictionLogMs > 60_000) {
           _lastEvictionLogMs = now
@@ -1489,7 +1636,13 @@ export class InlineLocalRedis implements RedisClientLike {
           ;(globalThis as any).gc?.()
         } else {
           this.evictOldRecords()
-          ;(globalThis as any).gc?.()
+          // Key count is not heap pressure. A forced full GC for a largely
+          // durable/protected Direct-Trade dataset causes long stop-the-world
+          // pauses without releasing anything, so reserve it for actual
+          // heap/RSS pressure only.
+          if (isMemoryWarm) {
+            ;(globalThis as any).gc?.()
+          }
         }
       } catch {
         // Swallow errors so the cleanup timer never dies
@@ -1825,10 +1978,10 @@ export class InlineLocalRedis implements RedisClientLike {
 
     if (evicted > 10) {
       console.log(`[v0] [Redis Memory] Evicted ${evicted} old records to reduce memory pressure`)
-      // Nudge V8 GC if --expose-gc was passed (dev start script uses it).
-      // After trimming Map entries the GC needs a hint to return the freed
-      // memory to the OS heap rather than keeping it as V8 slack capacity.
-      ;(globalThis as any).gc?.()
+      // Do not force a V8 collection here. This helper also runs for advisory
+      // key-count pressure, where a full collection can pause the entire HTTP
+      // server while protected Direct-Trade state is still retained. The
+      // caller owns GC policy and invokes it only for actual heap/RSS pressure.
     }
     return evicted
   }
@@ -2351,12 +2504,17 @@ export class InlineLocalRedis implements RedisClientLike {
 
   async lpush(key: string, ...values: string[]): Promise<number> {
     const list = this.data.lists.get(key) || []
-    for (const value of values) {
-      list.unshift(value)
-    }
-    this.data.lists.set(key, list)
+    // Redis LPUSH applies values from left to right, so LPUSH key a b leaves
+    // the list as [b, a, ...previous]. Repeating Array#unshift for a historic
+    // batch has O(batch × list) behaviour and, with tens of thousands of
+    // backtest rows, can monopolise the server event loop long enough to make
+    // health/cron/control-order requests time out. Reverse the incoming batch
+    // once and concatenate: same Redis ordering, linear work, and no mutation
+    // of the caller-owned array.
+    const updated = values.length > 0 ? values.slice().reverse().concat(list) : list
+    this.data.lists.set(key, updated)
     if (values.length > 0) this.markDirty()
-    return list.length
+    return updated.length
   }
 
   async rpush(key: string, ...values: string[]): Promise<number> {

@@ -49,6 +49,14 @@ const ALLOWED_ENV_KEYS = new Set([
 
 function buildSshProcessEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { NODE_ENV: process.env.NODE_ENV || "development" }
+  // Unit fixtures replace ssh/git with local deterministic shims. Production
+  // never forwards PATH into the remote-install child environment.
+  if (process.env.NODE_ENV === "test") {
+    if (process.env.PATH) env.PATH = process.env.PATH
+    for (const [key, value] of Object.entries(process.env)) {
+      if (key.startsWith("CTS_TEST_") && typeof value === "string") env[key] = value
+    }
+  }
   for (const [key, value] of Object.entries(process.env)) {
     if (typeof value !== "string") continue
     if (BLOCKED_ENV_KEYS.has(key)) continue
@@ -176,16 +184,33 @@ function validateRuntime(value: unknown): RemoteInstallRuntime {
   return runtime
 }
 
+// The production installer is deliberately confined to /opt. A writable
+// sandbox fixture may opt into a per-test root, but only when NODE_ENV=test;
+// this branch is unreachable in deployed runtimes and never widens the real
+// remote-install surface.
+function testInstallRoot(): string | null {
+  if (process.env.NODE_ENV !== "test") return null
+  const root = String(process.env.CTS_REMOTE_INSTALL_TEST_ROOT || "").trim()
+  if (!root || !root.startsWith("/tmp/") || path.posix.normalize(root) !== root || !/^\/[a-zA-Z0-9._/-]+$/.test(root)) return null
+  return root
+}
+
+function remoteWorkRoot(): string {
+  return testInstallRoot() ? path.posix.join(testInstallRoot()!, ".cts-remote-install-work") : "/opt/cts-k-n-install-work"
+}
+
 function validateInstallDir(value: unknown, projectName: string): string {
   const installDir = assertText(value || `/opt/${projectName}`, "Install directory", 240)
   const normalized = path.posix.normalize(installDir)
+  const testRoot = testInstallRoot()
+  const allowedBase = testRoot ? `${testRoot}/` : "/opt/"
   if (
     !installDir.startsWith("/") ||
     !/^\/[a-zA-Z0-9._/-]+$/.test(installDir) ||
     installDir.includes("//") ||
     normalized !== installDir ||
     DANGEROUS_INSTALL_DIRS.has(installDir) ||
-    !installDir.startsWith("/opt/") ||
+    !installDir.startsWith(allowedBase) ||
     installDir.split("/").filter(Boolean).length < 2
   ) {
     throw new Error("Install directory must be a normalized, dedicated absolute /opt directory")
@@ -317,6 +342,7 @@ function buildRemoteScript(input: ValidatedRemoteInstall) {
   const installerMode = input.mode === "preflight"
     ? "--preflight-only --skip-system-packages --create-service-user --non-interactive"
     : ""
+  const workRoot = remoteWorkRoot()
   return `#!/usr/bin/env bash
 set -Eeuo pipefail
 umask 077
@@ -335,7 +361,7 @@ if [[ "$REINSTALL" == "1" ]]; then REINSTALL_ARG+=(--reinstall); fi
 SKIP_TESTS_ARG=()
 if [[ "${input.skipTests ? "1" : "0"}" == "1" ]]; then SKIP_TESTS_ARG+=(--skip-tests); fi
 SEED_ENV_BASE64=${shellQuote(seedEnvBase64)}
-WORK_ROOT="/opt/cts-k-n-install-work"
+WORK_ROOT=${shellQuote(workRoot)}
 TMP_DIR=""
 SEED_FILE=""
 
@@ -500,7 +526,7 @@ export async function POST(request: Request) {
     const input = validateRequest(body)
     const script = buildRemoteScript(input)
 
-    const localWorkRoot = "/opt/cts-k-n-install-work"
+    const localWorkRoot = remoteWorkRoot()
     await mkdir(localWorkRoot, { recursive: true, mode: 0o700 })
     tempDir = await mkdtemp(path.join(localWorkRoot, "cts-remote-install-"))
     const knownHostsPath = path.join(tempDir, "known_hosts")

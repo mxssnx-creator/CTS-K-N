@@ -167,8 +167,8 @@ function startServer({ engines = false } = {}) {
       FORCE_SIMULATED: "1",
       FORCE_LIVE: "0",
       V0_DEV_SYMBOL_COUNT: engines ? String(productionSoakSymbolCount) : "4",
-      ENGINE_SYMBOL_CONCURRENCY: engines ? (process.env.PREVIEW_ENGINE_SYMBOL_CONCURRENCY || "2") : "1",
-      STRATEGY_FLOW_SYMBOL_CONCURRENCY: engines ? (process.env.PREVIEW_STRATEGY_SYMBOL_CONCURRENCY || "2") : "1",
+      ENGINE_SYMBOL_CONCURRENCY: engines ? (process.env.PREVIEW_ENGINE_SYMBOL_CONCURRENCY || "1") : "1",
+      STRATEGY_FLOW_SYMBOL_CONCURRENCY: engines ? (process.env.PREVIEW_STRATEGY_SYMBOL_CONCURRENCY || "1") : "1",
       PREHISTORIC_SYMBOL_CONCURRENCY: process.env.PREVIEW_PREHISTORIC_SYMBOL_CONCURRENCY || "1",
       MARKET_DATA_LOAD_CONCURRENCY: "1",
       CRON_SYMBOL_LIMIT: engines ? String(productionSoakSymbolCount) : "4",
@@ -182,7 +182,15 @@ function startServer({ engines = false } = {}) {
       ORANGEX_API_KEY: "",
       ORANGEX_API_SECRET: "",
       V0_REDIS_SNAPSHOT_PATH: snapshotPath,
-      NODE_OPTIONS: "--max-old-space-size=5632 --max-semi-space-size=256 --expose-gc",
+      // Keep diagnostic profiler flags opt-in so they can inspect the exact
+      // standalone server without weakening the normal production-preview
+      // memory contract.
+      NODE_OPTIONS: [
+        "--max-old-space-size=5632",
+        "--max-semi-space-size=256",
+        "--expose-gc",
+        process.env.PREVIEW_NODE_OPTIONS || "",
+      ].filter(Boolean).join(" "),
       PORT: String(port),
     },
     stdio: ["ignore", "pipe", "pipe"],

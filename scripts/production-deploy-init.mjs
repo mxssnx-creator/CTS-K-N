@@ -63,11 +63,47 @@ async function initialize() {
 
 async function injectCredentials() {
   try {
-    await request("/api/system/inject-credentials", { method: "POST", timeoutMs: 30_000 })
+    const result = await request("/api/system/inject-credentials", { method: "POST", timeoutMs: 30_000 })
     console.log("[Prod Init] Injected predefined base credentials from environment")
+    return result
   } catch (error) {
-    console.warn(`[Prod Init] Credential injection skipped or failed: ${error instanceof Error ? error.message : String(error)}`)
+    const message = `[Prod Init] Credential injection skipped or failed: ${error instanceof Error ? error.message : String(error)}`
+    if (process.env.CTS_REQUIRE_LIVE_TRADE_READY === "1") throw new Error(message)
+    console.warn(message)
+    return null
   }
+}
+
+async function verifyLiveTradeReadiness() {
+  const required = process.env.CTS_REQUIRE_LIVE_TRADE_READY === "1"
+  const summary = await request("/api/system/inject-credentials", { timeoutMs: 30_000 })
+  const liveConnectionIds = Array.isArray(summary?.liveTradeReady)
+    ? summary.liveTradeReady.filter((value) => typeof value === "string" && value.length > 0)
+    : []
+
+  if (!required && liveConnectionIds.length === 0) return { required, connectionIds: [] }
+  if (liveConnectionIds.length === 0) {
+    throw new Error("No exchange has valid credentials and persisted live trade enabled; configure BINGX_API_KEY/SECRET or BYBIT_API_KEY/SECRET")
+  }
+
+  const states = await Promise.all(liveConnectionIds.map(async (connectionId) => {
+    const state = await request(`/api/connections/${encodeURIComponent(connectionId)}/engine-states`, { timeoutMs: 30_000 })
+    const main = state?.modes?.mainTrade
+    if (
+      state?.success !== true ||
+      main?.effective !== true ||
+      main?.executionMode !== "live" ||
+      main?.credentialsValid !== true ||
+      main?.durableCoordinationReady !== true
+    ) {
+      throw new Error(
+        `Live trading readiness failed for ${connectionId}: ${main?.blockCode || main?.blockReason || "unknown state"}`,
+      )
+    }
+    return connectionId
+  }))
+  console.log(`[Prod Init] Live trade ready for ${states.join(", ")} (no exchange order submitted)`)
+  return { required, connectionIds: states }
 }
 
 async function waitForReadiness(maxAttempts = 45) {
@@ -115,6 +151,7 @@ async function main() {
   const readiness = await waitForReadiness()
   await injectCredentials()
   const core = await verifyCoreApis()
+  const liveTrade = await verifyLiveTradeReadiness()
   if (Number(core.database?.schemaVersion) !== Number(readiness.migrations.current_version)) {
     throw new Error(`Database schema version mismatch: ${core.database?.schemaVersion} != ${readiness.migrations.current_version}`)
   }
@@ -127,6 +164,7 @@ async function main() {
     databaseBackend: core.database.backend,
     sharedRedis: core.database.isSharedConfigured,
     liveOrderCoordinationReady: core.database.liveOrderCoordinationReady === true,
+    liveTradeReady: liveTrade.connectionIds,
     connectionCount: core.connectionCount,
     durationMs: Date.now() - startedAt,
   }, null, 2))

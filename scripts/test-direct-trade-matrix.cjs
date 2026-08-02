@@ -9,14 +9,17 @@
  */
 const {
   buildTimeframeCombinations,
+  buildDirectTradeTakeProfitPositionCostRatios,
+  directTradeTakeProfitPercent,
   evaluateDirectTradeSets,
   resampleCandles,
 } = require("../lib/direct-trade-coordination.ts")
 
 const symbolCount = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_SYMBOLS) || 32))
+const startSymbolIndex = Math.max(0, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_START_SYMBOL) || 0))
 const historyHours = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_HOURS) || 60))
 const minProfitFactor = Math.max(0.8, Number(process.env.DIRECT_TRADE_MATRIX_MIN_PF) || 0.8)
-const minRecentProfitFactor = Math.max(0.8, Number(process.env.DIRECT_TRADE_MATRIX_MIN_RECENT_PF) || 10)
+const minRecentProfitFactor = Math.max(0.8, Number(process.env.DIRECT_TRADE_MATRIX_MIN_RECENT_PF) || 25)
 const recentEvaluationPositions = Math.max(3, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_RECENT_POSITIONS) || 12))
 const positionCostPercent = Math.max(0.02, Math.min(1, Number(process.env.DIRECT_TRADE_MATRIX_POSITION_COST_PERCENT) || 0.1))
 const calibrationRecentPfThresholds = [...new Set(
@@ -29,6 +32,10 @@ const calibrationRecentPfThresholds = [...new Set(
 // production limits or create orders. It models best-first selection across
 // otherwise independent, valid historical candidates.
 const maxSimulatedPositions = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_POSITIONS) || 300))
+const maxPositionsPerSymbol = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_PER_SYMBOL) || 3))
+const maxPositionsPerDirection = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_PER_DIRECTION) || 2))
+const progressEnabled = process.env.DIRECT_TRADE_MATRIX_PROGRESS === "1"
+const reportFile = String(process.env.DIRECT_TRADE_MATRIX_REPORT_FILE || "").trim()
 
 function minuteSeries(symbolIndex) {
   return Array.from({ length: historyHours * 60 }, (_, index) => {
@@ -53,7 +60,7 @@ const recentPfCalibration = Object.fromEntries(calibrationRecentPfThresholds.map
 const uniqueKeys = new Set()
 const byStrategyType = Object.create(null)
 const bySymbol = []
-const bestFirstPositionHeap = []
+const bestFirstCandidatesByLane = new Map()
 
 function createMetrics() {
   return {
@@ -113,30 +120,17 @@ function candidateCompare(left, right) {
 // load test does not retain a multi-million-row config grid merely to report
 // a 300-position capacity check.
 function addBestFirstCandidate(candidate) {
-  if (bestFirstPositionHeap.length < maxSimulatedPositions) {
-    bestFirstPositionHeap.push(candidate)
-    let index = bestFirstPositionHeap.length - 1
-    while (index > 0) {
-      const parent = Math.floor((index - 1) / 2)
-      if (candidateCompare(bestFirstPositionHeap[parent], bestFirstPositionHeap[index]) <= 0) break
-      ;[bestFirstPositionHeap[parent], bestFirstPositionHeap[index]] = [bestFirstPositionHeap[index], bestFirstPositionHeap[parent]]
-      index = parent
-    }
-    return
-  }
-  if (candidateCompare(candidate, bestFirstPositionHeap[0]) <= 0) return
-  bestFirstPositionHeap[0] = candidate
-  let index = 0
-  while (true) {
-    const left = index * 2 + 1
-    const right = left + 1
-    let smallest = index
-    if (left < bestFirstPositionHeap.length && candidateCompare(bestFirstPositionHeap[left], bestFirstPositionHeap[smallest]) < 0) smallest = left
-    if (right < bestFirstPositionHeap.length && candidateCompare(bestFirstPositionHeap[right], bestFirstPositionHeap[smallest]) < 0) smallest = right
-    if (smallest === index) break
-    ;[bestFirstPositionHeap[smallest], bestFirstPositionHeap[index]] = [bestFirstPositionHeap[index], bestFirstPositionHeap[smallest]]
-    index = smallest
-  }
+  // Retain only the candidates that can possibly survive the exact worker
+  // caps. Keeping the best `maxPositionsPerDirection` candidates per
+  // symbol+direction is sufficient because a symbol can never admit more
+  // than that lane's limit; the later global selection enforces the combined
+  // per-symbol and global limits in score order.
+  const laneKey = `${candidate.symbol}|${candidate.direction}`
+  const lane = bestFirstCandidatesByLane.get(laneKey) || []
+  lane.push(candidate)
+  lane.sort((left, right) => candidateCompare(right, left))
+  if (lane.length > maxPositionsPerDirection) lane.length = maxPositionsPerDirection
+  bestFirstCandidatesByLane.set(laneKey, lane)
 }
 
 const fixedTrailOptions = [
@@ -152,8 +146,13 @@ const autoTrailOptions = [0.75, 1, 1.25].map((autoTrailSensitivity) => ({
   autoTrailSensitivity,
 }))
 const noTrailingOption = { trailing: false, trailStart: 0, trailStop: 0, mode: "none" }
+const takeProfitPositionCostRatios = buildDirectTradeTakeProfitPositionCostRatios([4, 12])
+const takeProfitRange = takeProfitPositionCostRatios.map((ratio) =>
+  directTradeTakeProfitPercent(positionCostPercent, ratio),
+)
 
-for (let symbolIndex = 0; symbolIndex < symbolCount; symbolIndex++) {
+for (let localSymbolIndex = 0; localSymbolIndex < symbolCount; localSymbolIndex++) {
+  const symbolIndex = startSymbolIndex + localSymbolIndex
   const minuteCandles = minuteSeries(symbolIndex)
   const candlesByTimeframe = {
     "1m": minuteCandles,
@@ -164,12 +163,12 @@ for (let symbolIndex = 0; symbolIndex < symbolCount; symbolIndex++) {
   for (const timeframeSet of buildTimeframeCombinations(["1m", "10m", "15m"])) {
     for (const direction of ["long", "short"]) {
       const plans = [
-        { strategyType: "standard", signalDirection: direction, tpRange: [0.3, 0.5, 0.8, 1, 1.5, 2, 2.5, 3], slRatios: [0.25, 0.5, 0.75], trailOptions: [noTrailingOption] },
-        { strategyType: "trailing_fixed", signalDirection: direction, tpRange: [0.3, 0.5, 0.8, 1, 1.5, 2, 2.5, 3], slRatios: [0.25, 0.5, 0.75], trailOptions: fixedTrailOptions },
-        { strategyType: "trailing_auto", signalDirection: direction, tpRange: [0.3, 0.5, 0.8, 1, 1.5, 2, 2.5, 3], slRatios: [0.25, 0.5, 0.75], trailOptions: autoTrailOptions },
-        { strategyType: "combination", signalDirection: direction, tpRange: [0.3, 0.5, 0.8, 1, 1.5, 2, 2.5, 3], slRatios: [0.25, 0.5, 0.75], trailOptions: [noTrailingOption, ...fixedTrailOptions, ...autoTrailOptions] },
-        { strategyType: "inverse", signalDirection: direction === "long" ? "short" : "long", tpRange: [0.3, 0.5, 0.8, 1, 1.5, 2, 2.5, 3], slRatios: [0.25, 0.5, 0.75, 1, 1.25], trailOptions: [noTrailingOption, ...fixedTrailOptions] },
-        { strategyType: "high_protection", signalDirection: direction, tpRange: [4, 5, 6, 8], slRatios: [0.75], trailOptions: [noTrailingOption, ...autoTrailOptions] },
+        { strategyType: "standard", signalDirection: direction, tpRange: takeProfitRange, slRatios: [0.25, 0.5, 0.75], trailOptions: [noTrailingOption] },
+        { strategyType: "trailing_fixed", signalDirection: direction, tpRange: takeProfitRange, slRatios: [0.25, 0.5, 0.75], trailOptions: fixedTrailOptions },
+        { strategyType: "trailing_auto", signalDirection: direction, tpRange: takeProfitRange, slRatios: [0.25, 0.5, 0.75], trailOptions: autoTrailOptions },
+        { strategyType: "combination", signalDirection: direction, tpRange: takeProfitRange, slRatios: [0.25, 0.5, 0.75], trailOptions: [noTrailingOption, ...fixedTrailOptions, ...autoTrailOptions] },
+        { strategyType: "inverse", signalDirection: direction === "long" ? "short" : "long", tpRange: takeProfitRange, slRatios: [0.25, 0.5, 0.75, 1, 1.25], trailOptions: [noTrailingOption, ...fixedTrailOptions] },
+        { strategyType: "high_protection", signalDirection: direction, tpRange: takeProfitRange, slRatios: [0.75], trailOptions: [noTrailingOption, ...autoTrailOptions] },
       ]
       for (const plan of plans) {
         const sets = evaluateDirectTradeSets({
@@ -182,6 +181,7 @@ for (let symbolIndex = 0; symbolIndex < symbolCount; symbolIndex++) {
           historyHours,
           volumeRatio: 0.1,
           tpRange: plan.tpRange,
+          takeProfitPositionCostRatios,
           slRatios: plan.slRatios,
           trailOptions: plan.trailOptions,
           entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
@@ -253,6 +253,22 @@ for (let symbolIndex = 0; symbolIndex < symbolCount; symbolIndex++) {
     }
   }
   bySymbol.push({ symbol: `LOAD${symbolIndex}USDT`, metrics: symbolMetrics })
+  // The max-symbol debug matrix intentionally exercises a very large amount
+  // of short-lived Set data. Yield an observable progress checkpoint and, when
+  // explicitly enabled by the harness, collect it at a symbol boundary so the
+  // load test measures engine work rather than delayed V8 reclamation.
+  if (typeof global.gc === "function") global.gc()
+  if (progressEnabled) {
+    console.error(JSON.stringify({
+      test: "direct-trade-matrix-progress",
+      completedSymbols: localSymbolIndex + 1,
+      totalSymbols: symbolCount,
+      evaluatedSets,
+      validSets,
+      elapsedMs: Date.now() - start,
+      heapMiB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+    }))
+  }
 }
 
 if (evaluatedSets === 0 || uniqueKeys.size !== evaluatedSets) {
@@ -283,9 +299,27 @@ const symbolReport = sampleIndices.map((index) => ({
   strategyTypes: Object.fromEntries(Object.entries(bySymbol[index].metrics).map(([type, metrics]) => [type, compactMetrics(metrics)])),
 }))
 
-const bestFirstPositions = [...bestFirstPositionHeap].sort((left, right) => candidateCompare(right, left))
+const bestFirstPaperCandidates = [...bestFirstCandidatesByLane.values()]
+  .flat()
+  .sort((left, right) => candidateCompare(right, left))
+const selectedPerSymbol = new Map()
+const selectedPerLane = new Map()
+const bestFirstPositions = []
+for (const candidate of bestFirstPaperCandidates) {
+  if (bestFirstPositions.length >= maxSimulatedPositions) break
+  const laneKey = `${candidate.symbol}|${candidate.direction}`
+  const symbolCount = selectedPerSymbol.get(candidate.symbol) || 0
+  const directionCount = selectedPerLane.get(laneKey) || 0
+  if (symbolCount >= maxPositionsPerSymbol || directionCount >= maxPositionsPerDirection) continue
+  bestFirstPositions.push(candidate)
+  selectedPerSymbol.set(candidate.symbol, symbolCount + 1)
+  selectedPerLane.set(laneKey, directionCount + 1)
+}
 const positionReport = {
   requestedMax: maxSimulatedPositions,
+  maxPositionsPerSymbol,
+  maxPositionsPerDirection,
+  effectiveCapacity: Math.min(maxSimulatedPositions, symbolCount * maxPositionsPerSymbol),
   selected: bestFirstPositions.length,
   byDirection: {},
   bySymbol: {},
@@ -342,9 +376,11 @@ for (const direction of Object.values(positionReport.byDirection)) {
   delete direction.recentInfinitePF
 }
 
-console.log(JSON.stringify({
+const report = {
   test: "direct-trade-matrix",
   symbols: symbolCount,
+  startSymbolIndex,
+  endSymbolIndex: startSymbolIndex + symbolCount - 1,
   historicHours: historyHours,
   historicalPFMinimum: minProfitFactor,
   recentPositionPFMinimum: minRecentProfitFactor,
@@ -360,6 +396,12 @@ console.log(JSON.stringify({
   byStrategyType: strategyReport,
   sampleSymbols: symbolReport,
   bestFirstPaperPositions: positionReport,
+  // Keep only lane-capped candidates in the machine-readable debug report so
+  // split high-load runs can compute the exact global worker-cap selection.
+  bestFirstPaperCandidates,
   elapsedMs: Date.now() - start,
   heapMiB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
-}))
+}
+const serializedReport = JSON.stringify(report)
+if (reportFile) require("node:fs").writeFileSync(reportFile, `${serializedReport}\n`, "utf8")
+console.log(serializedReport)

@@ -12,6 +12,7 @@ const DIRECT_TRADE_PROCESSOR_KEY = "direct_trade:processor"
 const DIRECT_TRADE_CONFIG_STATUS_KEY = "direct_trade:config-status"
 const DIRECT_TRADE_CALCULATION_KEY = "direct_trade:calculation"
 const DIRECT_TRADE_CALCULATION_PROGRESS_KEY = "direct_trade:calculation-progress"
+const DIRECT_TRADE_RECOVERY_REQUEST_KEY = "direct_trade:processor:recovery-request"
 
 async function getClient() {
   await initRedis()
@@ -21,7 +22,7 @@ async function getClient() {
 export async function GET() {
   try {
     const client = await getClient()
-    const [stateRaw, statsRaw, positionsRaw, openPositionStageRaw, processorRaw, configStatusRaw, calculationRaw, progressRaw] = await Promise.all([
+    const [stateRaw, statsRaw, positionsRaw, openPositionStageRaw, processorRaw, configStatusRaw, calculationRaw, progressRaw, recoveryRequestRaw] = await Promise.all([
       client.get(DIRECT_TRADE_STATE_KEY),
       client.get(DIRECT_TRADE_STATS_KEY),
       client.get(DIRECT_TRADE_POSITIONS_KEY),
@@ -30,6 +31,7 @@ export async function GET() {
       client.get(DIRECT_TRADE_CONFIG_STATUS_KEY),
       client.get(DIRECT_TRADE_CALCULATION_KEY),
       client.get(DIRECT_TRADE_CALCULATION_PROGRESS_KEY),
+      client.get(DIRECT_TRADE_RECOVERY_REQUEST_KEY),
     ])
 
     const state = stateRaw ? JSON.parse(stateRaw) : null
@@ -90,6 +92,18 @@ export async function GET() {
         errorsLast5min: processor.errorsLast5min || 0,
         isHealthy: processor.lastTick && (now - new Date(processor.lastTick).getTime()) < 7000,
       } : null,
+      recovery: recoveryRequestRaw ? (() => {
+        try {
+          const request = JSON.parse(recoveryRequestRaw)
+          return {
+            requested: true,
+            requestedAt: request?.requestedAt || null,
+            reason: request?.reason || "unknown",
+          }
+        } catch {
+          return { requested: true, requestedAt: null, reason: "invalid-recovery-request" }
+        }
+      })() : { requested: false, requestedAt: null, reason: null },
     })
   } catch (error) {
     return NextResponse.json(

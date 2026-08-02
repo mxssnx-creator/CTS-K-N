@@ -2,7 +2,6 @@ import { NextResponse } from "next/server"
 import {
   getLivePositions,
   getClosedLivePositions,
-  calculateLivePositionStats,
 } from "@/lib/trade-engine/stages/live-stage"
 import { initRedis, getRedisClient, getConnection } from "@/lib/redis-db"
 import { getAlternateLivePositionKeys } from "@/lib/live-position-alt-index"
@@ -39,6 +38,102 @@ function normalizePosition(pos: any) {
     isRealExchangeData: source === "real",
     isSimulated: source === "simulated",
   }
+}
+
+/**
+ * The persisted lifecycle record deliberately contains full diagnostic lineage
+ * (fills, set membership, position stages and control-order attempts).  That
+ * record is correct for recovery, but returning it verbatim on a dashboard
+ * poll made a 300-position Paper book serialize the same large nested graphs
+ * several times (`positions`, `realPositions`, `simulatedPositions`).  Keep
+ * the API read model intentionally small; mutations still load the
+ * authoritative record by stable id on the server.
+ */
+function compactExchangeData(raw: unknown): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== "object") return undefined
+  const source = raw as Record<string, unknown>
+  const fields = [
+    "source", "markPrice", "currentPrice", "unrealizedPnl", "unrealizedPnL",
+    "marginUsd", "exchangeOrderId", "exchangePositionId", "orderId", "syncedAt",
+  ]
+  const compact = Object.fromEntries(
+    fields
+      .filter((field) => source[field] !== undefined)
+      .map((field) => [field, source[field]]),
+  )
+  // Do not use the Redis client's expensive `keys()` API in this route.  The
+  // static regression guard intentionally rejects that spelling here too.
+  return Object.values(compact).length > 0 ? compact : undefined
+}
+
+function toLivePositionView(pos: any): Record<string, unknown> {
+  const view: Record<string, unknown> = {
+    id: pos.id,
+    connectionId: pos.connectionId,
+    symbol: pos.symbol,
+    direction: pos.direction,
+    side: pos.side,
+    status: pos.status,
+    statusReason: pos.statusReason,
+    executionMode: pos.executionMode,
+    executionIntent: pos.executionIntent,
+    executionBlockReason: pos.executionBlockReason,
+    dataSource: pos.dataSource,
+    isRealExchangeData: pos.isRealExchangeData,
+    isSimulated: pos.isSimulated,
+    entryPrice: pos.entryPrice,
+    averageExecutionPrice: pos.averageExecutionPrice,
+    markPrice: pos.markPrice,
+    currentPrice: pos.currentPrice ?? pos.current_price,
+    executedQuantity: pos.executedQuantity,
+    totalExecutedQuantity: pos.totalExecutedQuantity,
+    remainingQuantity: pos.remainingQuantity,
+    quantity: pos.quantity,
+    leverage: pos.leverage,
+    marginType: pos.marginType,
+    volumeUsd: pos.volumeUsd,
+    unrealizedPnL: pos.unrealizedPnL,
+    realizedPnL: pos.realizedPnL ?? pos.realized_pnl ?? pos.pnl,
+    unrealizedRoi: pos.unrealizedRoi,
+    liquidationPrice: pos.liquidationPrice,
+    stopLoss: pos.stopLoss,
+    takeProfit: pos.takeProfit,
+    stopLossPrice: pos.stopLossPrice,
+    takeProfitPrice: pos.takeProfitPrice,
+    trailingActive: pos.trailingActive,
+    trailingStopPrice: pos.trailingStopPrice,
+    trailingProfile: pos.trailingProfile && {
+      startRatio: pos.trailingProfile.startRatio,
+      stopRatio: pos.trailingProfile.stopRatio,
+      stepRatio: pos.trailingProfile.stepRatio,
+    },
+    manualProtectionOverride: pos.manualProtectionOverride && {
+      stopLossPrice: pos.manualProtectionOverride.stopLossPrice,
+      takeProfitPrice: pos.manualProtectionOverride.takeProfitPrice,
+      trailingEnabled: pos.manualProtectionOverride.trailingEnabled,
+      trailingDistancePct: pos.manualProtectionOverride.trailingDistancePct,
+      updatedAt: pos.manualProtectionOverride.updatedAt,
+      source: pos.manualProtectionOverride.source,
+    },
+    setVariant: pos.setVariant,
+    setKey: pos.setKey,
+    parentSetKey: pos.parentSetKey,
+    indicationType: pos.indicationType,
+    blockCount: pos.blockCount,
+    dcaStep: pos.dcaStep,
+    orderId: pos.orderId,
+    stopLossOrderId: pos.stopLossOrderId,
+    takeProfitOrderId: pos.takeProfitOrderId,
+    closePrice: pos.closePrice ?? pos.exitPrice,
+    createdAt: pos.createdAt,
+    updatedAt: pos.updatedAt,
+    closedAt: pos.closedAt,
+    exchangeData: compactExchangeData(pos.exchangeData),
+  }
+  for (const [key, value] of Object.entries(view)) {
+    if (value === undefined) delete view[key]
+  }
+  return view
 }
 
 function isMissingNumericValue(value: unknown): boolean {
@@ -174,14 +269,22 @@ export async function GET(request: Request) {
       ? sourceFiltered.filter((p) => p.status === statusFilter)
       : sourceFiltered
 
-    const legacyStats = await calculateLivePositionStats(connectionId).catch(() => ({
-      totalFilled: 0,
-      totalOpen: 0,
-      totalClosed: 0,
-      totalPnL: 0,
+    // We already hold the canonical open/closed read model for this response.
+    // Re-reading every position through calculateLivePositionStats doubled
+    // hydration and amplified heap churn under the 280 ms Paper lifecycle.
+    const allStats = computeStats(all)
+    const legacyStats = {
+      totalFilled: all.filter((p) => p.status === "filled").length,
+      totalOpen: allStats.open,
+      totalClosed: allStats.closed,
+      totalPnL: allStats.effectivePnL,
       averageROI: 0,
-      winRate: 0,
-    }))
+      winRate: allStats.winRate,
+    }
+
+    const positionViews = all.map(toLivePositionView)
+    const viewsById = new Map(positionViews.map((position) => [String(position.id), position]))
+    const viewFor = (position: any) => viewsById.get(String(position.id)) || toLivePositionView(position)
 
     const liveReadiness = evaluateRealTradeReadiness((connection || {}) as Record<string, any>)
     const liveTradeEnabled = liveReadiness.canPlaceRealOrders
@@ -191,9 +294,9 @@ export async function GET(request: Request) {
     return NextResponse.json({
       connectionId,
       sourceFilter,
-      positions: filtered,
-      realPositions,
-      simulatedPositions,
+      positions: filtered.map(viewFor),
+      realPositions: realPositions.map(viewFor),
+      simulatedPositions: simulatedPositions.map(viewFor),
       counts: {
         total: all.length,
         real: realPositions.length,
@@ -210,7 +313,7 @@ export async function GET(request: Request) {
       },
       stats: {
         ...legacyStats,
-        all: computeStats(all),
+        all: allStats,
         real: computeStats(realPositions),
         simulated: computeStats(simulatedPositions),
       },

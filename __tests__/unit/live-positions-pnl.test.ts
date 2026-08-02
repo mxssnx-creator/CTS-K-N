@@ -74,4 +74,36 @@ describe("live positions PnL enrichment", () => {
     expect(body.positions[0].unrealizedPnL).not.toBe(40)
     expect(body.stats.all.totalUnrealizedPnL).toBe(0)
   })
+
+  test("returns a compact read model instead of repeating recovery lineage on every poll", async () => {
+    mockGetLivePositions.mockResolvedValue([
+      {
+        id: "pos-compact",
+        status: "simulated",
+        direction: "long",
+        symbol: "BTCUSDT",
+        averageExecutionPrice: 100,
+        executedQuantity: 1,
+        fills: [{ id: "fill-1", diagnostics: { veryLarge: "x".repeat(2_000) } }],
+        accumulatedSetKeys: ["set-a", "set-b"],
+        partialOrderExecutions: [{ id: "partial-1", details: { veryLarge: "x".repeat(2_000) } }],
+        exchangeData: {
+          markPrice: 101,
+          source: "simulation",
+          internalRecoveryPayload: { veryLarge: "x".repeat(2_000) },
+        },
+        createdAt: 1,
+      },
+    ])
+
+    const response = await GET(new Request("http://localhost/api/trading/live-positions?connection_id=bingx-x01"))
+    const body = await response.json()
+    const row = body.positions[0]
+
+    expect(row).toMatchObject({ id: "pos-compact", symbol: "BTCUSDT", exchangeData: { markPrice: 101 } })
+    expect(row).not.toHaveProperty("fills")
+    expect(row).not.toHaveProperty("accumulatedSetKeys")
+    expect(row).not.toHaveProperty("partialOrderExecutions")
+    expect(row.exchangeData).not.toHaveProperty("internalRecoveryPayload")
+  })
 })

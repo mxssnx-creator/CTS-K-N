@@ -6,6 +6,9 @@ import {
   normaliseDirectTradeStrategyTypes,
   normaliseEntryTactics,
   normaliseExitTactics,
+  normaliseDirectTradeTakeProfitRatioRange,
+  DIRECT_TRADE_RECENT_PF_DEFAULT,
+  DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   type DirectTradeEntryTiming,
   type DirectTradeEntryTactic,
   type DirectTradeExitTactic,
@@ -46,6 +49,9 @@ const DIRECT_TRADE_PROCESSING_INTERVAL_DEFAULT_MS = 280
 export interface DirectTradeState {
   enabled: boolean
   liveMode: boolean
+  // Live Direct-Trade never guesses an exchange target. An explicit
+  // connection is required before an entry may leave the Paper path.
+  connectionId: string | null
   startedAt: string | null
   lastRecalcAt: string | null
   recalcIntervalMs: number
@@ -66,7 +72,13 @@ export interface DirectTradeState {
   entryTiming: DirectTradeEntryTiming
   activityVolumeRatio: number
   maxHoldMinutes: number
+  // Integer multipliers of PositionCost used to build the TP grid. The
+  // default starts at 4× PositionCost and may be configured from 2× to 12×.
+  takeProfitRatioRange: [number, number]
   blockRange: [number, number]
+  // The Block increase ratio is independent from the base position-size
+  // factor. For a base quantity B and N valid Blocks: B + (N × B × ratio).
+  blockVolumeRatio: number
   // Global open-position ceiling. It keeps the requested 300-position paper
   // capacity global instead of accidentally allowing 300 per symbol/lane.
   maxTotalPositions: number
@@ -112,6 +124,7 @@ export interface DirectTradeStats {
 const DEFAULT_STATE: DirectTradeState = {
   enabled: false,
   liveMode: false,
+  connectionId: null,
   startedAt: null,
   lastRecalcAt: null,
   recalcIntervalMs: 2 * 60 * 60 * 1000, // 2 hours
@@ -130,7 +143,9 @@ const DEFAULT_STATE: DirectTradeState = {
   entryTiming: "current",
   activityVolumeRatio: 1,
   maxHoldMinutes: 120,
+  takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   blockRange: [1, 12],
+  blockVolumeRatio: 1,
   maxTotalPositions: 300,
   maxPositionsPerSymbol: 3,
   maxPositionsPerDirection: 2,
@@ -139,7 +154,7 @@ const DEFAULT_STATE: DirectTradeState = {
   keepEnabledPosCount: 12,
   deactivatePosCount: 16,
   minProfitFactor: 0.8,
-  minRecentProfitFactor: 10,
+  minRecentProfitFactor: DIRECT_TRADE_RECENT_PF_DEFAULT,
   recentEvaluationPositions: 12,
   maxDrawdownTimeMin: 10,
   prevPosWindow: 25,
@@ -182,6 +197,9 @@ async function getState(): Promise<DirectTradeState> {
       return {
         ...DEFAULT_STATE,
         ...persisted,
+        liveMode: persisted?.liveMode === true,
+        connectionId: normaliseConnectionId(persisted?.connectionId),
+        symbolOrder: normaliseSymbolOrder(persisted?.symbolOrder),
         // Migrate the former 5m label to the exact 10m aggregation.  Existing
         // live settings remain usable, but all new rows have an honest frame.
         timeframes: normaliseDirectTradeTimeframes(persisted?.timeframes),
@@ -194,9 +212,20 @@ async function getState(): Promise<DirectTradeState> {
         activityVolumeRatio: Math.max(0, Number(persisted?.activityVolumeRatio) || DEFAULT_STATE.activityVolumeRatio),
         positionCostPercent: normalizePositionCostPercent(persisted?.positionCostPercent ?? DEFAULT_STATE.positionCostPercent),
         maxHoldMinutes: Math.max(1, Number(persisted?.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes),
+        takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(
+          persisted?.takeProfitRatioRange,
+          DEFAULT_STATE.takeProfitRatioRange,
+        ),
         maxTotalPositions: clampOpenPositionLimit(persisted?.maxTotalPositions, DEFAULT_STATE.maxTotalPositions),
         slRatioStep: clampStopLossRatioStep(persisted?.slRatioStep, DEFAULT_STATE.slRatioStep),
-        minRecentProfitFactor: Math.max(0.8, Number(persisted?.minRecentProfitFactor) || DEFAULT_STATE.minRecentProfitFactor),
+        // 10 was the former shipped default. Migrate exactly that value to
+        // the new stricter default, while preserving custom choices.
+        minRecentProfitFactor: Math.max(
+          0.8,
+          Number(persisted?.minRecentProfitFactor) === 10
+            ? DIRECT_TRADE_RECENT_PF_DEFAULT
+            : Number(persisted?.minRecentProfitFactor) || DEFAULT_STATE.minRecentProfitFactor,
+        ),
         recentEvaluationPositions: Math.max(3, Math.floor(Number(persisted?.recentEvaluationPositions) || DEFAULT_STATE.recentEvaluationPositions)),
         // Migrate the former hard-coded 500 ms default while preserving an
         // intentional operator-selected interval.
@@ -206,6 +235,7 @@ async function getState(): Promise<DirectTradeState> {
             : persisted?.processingIntervalMs,
         ),
         blockRange: normaliseBlockRange(persisted?.blockRange, DEFAULT_STATE.blockRange),
+        blockVolumeRatio: clampBlockVolumeRatio(persisted?.blockVolumeRatio, DEFAULT_STATE.blockVolumeRatio),
         maxPositionsPerSymbol: Math.max(1, Math.min(300, Math.floor(Number(persisted?.maxPositionsPerSymbol) || DEFAULT_STATE.maxPositionsPerSymbol))),
         maxPositionsPerDirection: Math.max(1, Math.min(300, Math.floor(Number(persisted?.maxPositionsPerDirection) || DEFAULT_STATE.maxPositionsPerDirection))),
         inverseMaxSlRatio: clampInverseStopLossRatio(persisted?.inverseMaxSlRatio),
@@ -248,6 +278,17 @@ function clampProcessingInterval(value: unknown, fallback = DIRECT_TRADE_PROCESS
   return Math.max(100, Math.min(5_000, Math.round(Number.isFinite(raw) ? raw : fallback)))
 }
 
+function normaliseConnectionId(value: unknown): string | null {
+  const id = typeof value === "string" ? value.trim() : ""
+  return /^[A-Za-z0-9._:-]{1,160}$/.test(id) ? id : null
+}
+
+function normaliseSymbolOrder(value: unknown): DirectTradeState["symbolOrder"] {
+  return value === "volume" || value === "volatility"
+    ? value
+    : "volatility_1h"
+}
+
 function clampRecalculationInterval(value: unknown, fallback = 2 * 60 * 60 * 1000): number {
   const raw = Number(value)
   return Math.max(5 * 60_000, Math.min(24 * 60 * 60_000, Math.round(Number.isFinite(raw) ? raw : fallback)))
@@ -255,20 +296,40 @@ function clampRecalculationInterval(value: unknown, fallback = 2 * 60 * 60 * 100
 
 function normaliseBlockRange(value: unknown, fallback: [number, number] = [1, 12]): [number, number] {
   if (!Array.isArray(value) || value.length !== 2) return fallback
-  const minimum = Math.max(0, Math.min(120, Math.floor(Number(value[0]) || fallback[0])))
-  const maximum = Math.max(minimum, Math.min(120, Math.floor(Number(value[1]) || fallback[1])))
+  const requestedMinimum = Number(value[0])
+  const requestedMaximum = Number(value[1])
+  const minimum = Math.max(0, Math.min(120, Math.floor(Number.isFinite(requestedMinimum) ? requestedMinimum : fallback[0])))
+  const maximum = Math.max(minimum, Math.min(120, Math.floor(Number.isFinite(requestedMaximum) ? requestedMaximum : fallback[1])))
   return [minimum, maximum]
+}
+
+function clampBlockVolumeRatio(value: unknown, fallback = 1): number {
+  const raw = Number(value)
+  const clamped = Math.max(0.1, Math.min(10, Number.isFinite(raw) ? raw : fallback))
+  return Number((Math.round(clamped * 10) / 10).toFixed(1))
 }
 
 function boundedArray(value: unknown, maximum: number): any[] {
   return Array.isArray(value) ? value.slice(-maximum) : []
 }
 
+function processorLeaseMs(): number {
+  // The real process lease is intentionally fixed. The short override exists
+  // only for explicitly simulated crash/restart harnesses, never a production
+  // or live-order runtime, so stateful recovery tests remain fast enough to be
+  // run on every release.
+  const requested = Number(process.env.DIRECT_TRADE_TEST_LEASE_MS)
+  if (process.env.FORCE_SIMULATED === "1" && Number.isFinite(requested)) {
+    return Math.max(100, Math.min(DIRECT_TRADE_PROCESSOR_LEASE_MS, Math.floor(requested)))
+  }
+  return DIRECT_TRADE_PROCESSOR_LEASE_MS
+}
+
 async function acquireProcessorLease(client: any, instanceId: string): Promise<boolean> {
   if (!instanceId || instanceId.length > 160) return false
   const created = await client.set(DIRECT_TRADE_PROCESSOR_LEASE_KEY, instanceId, {
     NX: true,
-    PX: DIRECT_TRADE_PROCESSOR_LEASE_MS,
+    PX: processorLeaseMs(),
   }).catch(() => null)
   if (created === "OK" || created === true) return true
 
@@ -279,7 +340,7 @@ async function acquireProcessorLease(client: any, instanceId: string): Promise<b
   if (owner !== instanceId) return false
   const renewed = await client.set(DIRECT_TRADE_PROCESSOR_LEASE_KEY, instanceId, {
     XX: true,
-    PX: DIRECT_TRADE_PROCESSOR_LEASE_MS,
+    PX: processorLeaseMs(),
   }).catch(() => null)
   return renewed === "OK" || renewed === true
 }
@@ -461,9 +522,10 @@ export async function POST(request: NextRequest) {
         ...currentState,
         enabled: true,
         startedAt: currentState.startedAt || new Date().toISOString(),
-        ...(body.liveMode !== undefined ? { liveMode: body.liveMode } : {}),
+        ...(body.liveMode !== undefined ? { liveMode: body.liveMode === true } : {}),
+        ...(body.connectionId !== undefined ? { connectionId: normaliseConnectionId(body.connectionId) } : {}),
         ...(body.symbolCount !== undefined ? { symbolCount: clampDirectTradeSymbolCount(body.symbolCount) } : {}),
-        ...(body.symbolOrder ? { symbolOrder: body.symbolOrder } : {}),
+        ...(body.symbolOrder !== undefined ? { symbolOrder: normaliseSymbolOrder(body.symbolOrder) } : {}),
         ...(body.minVolFactor !== undefined ? { minVolFactor: Math.max(0.1, Number(body.minVolFactor) || 0.1) } : {}),
         ...(body.positionCostPercent !== undefined ? { positionCostPercent: normalizePositionCostPercent(body.positionCostPercent) } : {}),
         ...(body.maxSlRatio !== undefined ? { maxSlRatio: clampStopLossRatio(body.maxSlRatio) } : {}),
@@ -478,7 +540,9 @@ export async function POST(request: NextRequest) {
         ...(body.entryTiming !== undefined ? { entryTiming: body.entryTiming === "last_confirmed" ? "last_confirmed" : "current" as const } : {}),
         ...(body.activityVolumeRatio !== undefined ? { activityVolumeRatio: Math.max(0, Number(body.activityVolumeRatio) || 0) } : {}),
         ...(body.maxHoldMinutes !== undefined ? { maxHoldMinutes: Math.max(1, Number(body.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes) } : {}),
+        ...(body.takeProfitRatioRange !== undefined ? { takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange, currentState.takeProfitRatioRange) } : {}),
         ...(body.blockRange !== undefined ? { blockRange: normaliseBlockRange(body.blockRange, currentState.blockRange) } : {}),
+        ...(body.blockVolumeRatio !== undefined ? { blockVolumeRatio: clampBlockVolumeRatio(body.blockVolumeRatio, currentState.blockVolumeRatio) } : {}),
         ...(body.maxTotalPositions !== undefined ? { maxTotalPositions: clampOpenPositionLimit(body.maxTotalPositions) } : {}),
         ...(body.maxPositionsPerSymbol !== undefined ? { maxPositionsPerSymbol: Math.max(1, Math.min(300, Math.floor(Number(body.maxPositionsPerSymbol) || 1))) } : {}),
         ...(body.maxPositionsPerDirection !== undefined ? { maxPositionsPerDirection: Math.max(1, Math.min(300, Math.floor(Number(body.maxPositionsPerDirection) || 1))) } : {}),
@@ -497,6 +561,9 @@ export async function POST(request: NextRequest) {
         ...(body.evalPosCount !== undefined ? { evalPosCount: Math.max(3, Number(body.evalPosCount) || 3) } : {}),
         ...(body.trailingEnabled !== undefined ? { trailingEnabled: body.trailingEnabled } : {}),
       }
+      if (newState.liveMode && !newState.connectionId) {
+        return NextResponse.json({ error: "Select a live exchange connection before starting Direct-Trade live execution" }, { status: 409 })
+      }
       await setState(newState)
       return NextResponse.json({ success: true, state: newState, message: "Direct-Trade started" })
     }
@@ -508,9 +575,13 @@ export async function POST(request: NextRequest) {
     }
 
     if (body.action === "toggle-live") {
+      const liveMode = body.liveMode !== undefined ? body.liveMode === true : !currentState.liveMode
+      if (liveMode && !currentState.connectionId) {
+        return NextResponse.json({ error: "Select a live exchange connection before enabling Direct-Trade live execution" }, { status: 409 })
+      }
       const newState: DirectTradeState = {
         ...currentState,
-        liveMode: body.liveMode !== undefined ? body.liveMode : !currentState.liveMode,
+        liveMode,
       }
       await setState(newState)
       return NextResponse.json({ success: true, state: newState, message: `Live mode ${newState.liveMode ? "enabled" : "disabled"}` })
@@ -519,8 +590,9 @@ export async function POST(request: NextRequest) {
     if (body.action === "update-config") {
       const newState: DirectTradeState = {
         ...currentState,
+        ...(body.connectionId !== undefined ? { connectionId: normaliseConnectionId(body.connectionId) } : {}),
         ...(body.symbolCount !== undefined ? { symbolCount: clampDirectTradeSymbolCount(body.symbolCount) } : {}),
-        ...(body.symbolOrder !== undefined ? { symbolOrder: body.symbolOrder } : {}),
+        ...(body.symbolOrder !== undefined ? { symbolOrder: normaliseSymbolOrder(body.symbolOrder) } : {}),
         ...(body.minVolFactor !== undefined ? { minVolFactor: Math.max(0.1, Number(body.minVolFactor) || 0.1) } : {}),
         ...(body.positionCostPercent !== undefined ? { positionCostPercent: normalizePositionCostPercent(body.positionCostPercent) } : {}),
         ...(body.maxSlRatio !== undefined ? { maxSlRatio: clampStopLossRatio(body.maxSlRatio) } : {}),
@@ -535,7 +607,9 @@ export async function POST(request: NextRequest) {
         ...(body.entryTiming !== undefined ? { entryTiming: body.entryTiming === "last_confirmed" ? "last_confirmed" : "current" as const } : {}),
         ...(body.activityVolumeRatio !== undefined ? { activityVolumeRatio: Math.max(0, Number(body.activityVolumeRatio) || 0) } : {}),
         ...(body.maxHoldMinutes !== undefined ? { maxHoldMinutes: Math.max(1, Number(body.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes) } : {}),
+        ...(body.takeProfitRatioRange !== undefined ? { takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange, currentState.takeProfitRatioRange) } : {}),
         ...(body.blockRange !== undefined ? { blockRange: normaliseBlockRange(body.blockRange, currentState.blockRange) } : {}),
+        ...(body.blockVolumeRatio !== undefined ? { blockVolumeRatio: clampBlockVolumeRatio(body.blockVolumeRatio, currentState.blockVolumeRatio) } : {}),
         ...(body.maxTotalPositions !== undefined ? { maxTotalPositions: clampOpenPositionLimit(body.maxTotalPositions) } : {}),
         ...(body.maxPositionsPerSymbol !== undefined ? { maxPositionsPerSymbol: Math.max(1, Math.min(300, Math.floor(Number(body.maxPositionsPerSymbol) || 1))) } : {}),
         ...(body.maxPositionsPerDirection !== undefined ? { maxPositionsPerDirection: Math.max(1, Math.min(300, Math.floor(Number(body.maxPositionsPerDirection) || 1))) } : {}),
@@ -598,7 +672,16 @@ export async function POST(request: NextRequest) {
       write.set(DIRECT_TRADE_CONFIG_PERFORMANCE_KEY, JSON.stringify(configPerformance))
       write.set(DIRECT_TRADE_PROCESSOR_KEY, JSON.stringify(processor))
       await write.exec()
-      return NextResponse.json({ success: true, leaseHeld: true, processor })
+      // The owner receives the compact, normalized settings acknowledgement
+      // with the write it already performs. This lets a running worker react
+      // to an operator save on its next sync instead of waiting for a loop
+      // counter to reach an arbitrary polling interval.
+      return NextResponse.json({
+        success: true,
+        leaseHeld: true,
+        processor,
+        state: await getState(),
+      })
     }
 
     return NextResponse.json({ error: "Unknown action" }, { status: 400 })
