@@ -32,8 +32,8 @@ const calibrationRecentPfThresholds = [...new Set(
 // production limits or create orders. It models best-first selection across
 // otherwise independent, valid historical candidates.
 const maxSimulatedPositions = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_POSITIONS) || 300))
-const maxPositionsPerSymbol = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_PER_SYMBOL) || 3))
-const maxPositionsPerDirection = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_PER_DIRECTION) || 2))
+const maxPositionsPerSymbol = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_PER_SYMBOL) || 12))
+const maxPositionsPerDirection = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_PER_DIRECTION) || 6))
 const progressEnabled = process.env.DIRECT_TRADE_MATRIX_PROGRESS === "1"
 const reportFile = String(process.env.DIRECT_TRADE_MATRIX_REPORT_FILE || "").trim()
 
@@ -146,7 +146,7 @@ const autoTrailOptions = [0.75, 1, 1.25].map((autoTrailSensitivity) => ({
   autoTrailSensitivity,
 }))
 const noTrailingOption = { trailing: false, trailStart: 0, trailStop: 0, mode: "none" }
-const takeProfitPositionCostRatios = buildDirectTradeTakeProfitPositionCostRatios([4, 12])
+const takeProfitPositionCostRatios = buildDirectTradeTakeProfitPositionCostRatios([4, 14], 4)
 const takeProfitRange = takeProfitPositionCostRatios.map((ratio) =>
   directTradeTakeProfitPercent(positionCostPercent, ratio),
 )
@@ -386,6 +386,9 @@ const report = {
   recentPositionPFMinimum: minRecentProfitFactor,
   recentEvaluationPositions,
   positionCostPercent,
+  takeProfitRatioRange: [4, 14],
+  takeProfitRatioStep: 4,
+  takeProfitPositionCostRatios,
   evaluatedSets,
   validSets,
   validRatePercent: Number(((validSets / evaluatedSets) * 100).toFixed(3)),
@@ -399,6 +402,10 @@ const report = {
   // Keep only lane-capped candidates in the machine-readable debug report so
   // split high-load runs can compute the exact global worker-cap selection.
   bestFirstPaperCandidates,
+  // The default 32-symbol 90-hour grid remains bounded even when a user
+  // selects every strategy/type: the range is precise, while only the four
+  // 4-step Set values are materialised by default.
+  projectedDefault32SymbolSets: Math.round((evaluatedSets / symbolCount) * 32),
   elapsedMs: Date.now() - start,
   heapMiB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
 }

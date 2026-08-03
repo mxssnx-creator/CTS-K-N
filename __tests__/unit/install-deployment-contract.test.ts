@@ -108,13 +108,19 @@ describe("production installation and Kilo deployment contract", () => {
     expect(bootstrap).toContain("--resolve-only")
     expect(bootstrap).toContain("cts-state")
     expect(bootstrap).toContain("Saved persistent CTS state outside the target directory")
+    expect(bootstrap).toContain("resume_preserved_state_after_failed_clean_install")
+    expect(bootstrap).toContain("Resuming preserved CTS state from failed clean install")
     expect(bootstrap).toContain("remove_existing_install_target")
     expect(bootstrap).toContain('as_root rm -rf -- "$INSTALL_DIR"')
+    expect(bootstrap).toContain("prepare_clean_install_workspace")
+    expect(bootstrap).toContain("Using safe bootstrap workspace outside target directory")
+    expect(bootstrap).toMatch(/prepare_clean_install_workspace\nremove_existing_install_target[\s\S]*git clone --branch/)
     expect(bootstrap).toContain("preserved state remains at $PRESERVED_STATE")
     expect(bootstrap).toContain('[[ "$ENV_FILE" == "$INSTALL_DIR"/*')
     expect(bootstrap).toContain('"$INSTALL_DIR/.cts-runtime/managed-service-user"')
     expect(bootstrap).toMatch(/preserve_existing_install_state\(\) \{[\s\S]*stop_existing_installation\n/)
-    expect(bootstrap).toMatch(/preserve_existing_install_state\nremove_existing_install_target[\s\S]*git clone --branch/)
+    expect(bootstrap).toMatch(/preserve_existing_install_state\nprepare_clean_install_workspace\nremove_existing_install_target[\s\S]*git clone --branch/)
+    expect(bootstrap).toMatch(/resume_preserved_state_after_failed_clean_install\npreserve_existing_install_state\nprepare_clean_install_workspace/)
     expect(updater).toContain("Tracked local changes exist; refusing to overwrite them")
     expect(updater).toContain("discover_saved_install_from_name")
     expect(updater).toContain("Delegating to clean stop → delete → install lifecycle")
@@ -159,6 +165,100 @@ describe("production installation and Kilo deployment contract", () => {
     execFileSync("bash", ["-n", "scripts/service-control.sh"], { cwd: process.cwd() })
     expect(await readFile(path.join(process.cwd(), "pnpm-workspace.yaml"), "utf8"))
       .toContain("onlyBuiltDependencies:")
+  })
+
+  it("moves out of an installed checkout before deletion so the replacement clone can start", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "cts-bootstrap-cwd-"))
+    const target = path.join(root, "opt", "cts-kn")
+    const targetScripts = path.join(target, "scripts")
+    const binDir = path.join(root, "bin")
+    const capture = path.join(root, "clone-cwd.txt")
+    const installerFixture = path.join(root, "install-fixture.sh")
+    try {
+      await Promise.all([
+        mkdir(targetScripts, { recursive: true }),
+        mkdir(binDir, { recursive: true }),
+      ])
+      await Promise.all([
+        writeFile(path.join(target, "package.json"), '{"name":"cts-install-fixture"}\n'),
+        writeFile(path.join(targetScripts, "install.sh"), "#!/usr/bin/env bash\nexit 0\n"),
+        writeFile(path.join(targetScripts, "bootstrap-install.sh"), await readFile(path.join(process.cwd(), "scripts", "bootstrap-install.sh"), "utf8")),
+        writeFile(installerFixture, [
+          "#!/usr/bin/env bash",
+          "set -Eeuo pipefail",
+          "mkdir -p .cts-runtime",
+          "printf 'CTS_INSTALLED_RUNTIME=systemd\\nCTS_INSTALLED_SERVICE_USER=root\\n' > .cts-runtime/install-values.env",
+          "",
+        ].join("\n")),
+        writeFile(path.join(binDir, "git"), [
+          "#!/usr/bin/env bash",
+          "set -Eeuo pipefail",
+          "if [[ \"${1:-}\" == \"clone\" ]]; then",
+          "  [[ \"$PWD\" != \"$CTS_TEST_TARGET\" ]] || { echo 'clone ran from deleted target' >&2; exit 42; }",
+          "  printf '%s\\n' \"$PWD\" > \"$CTS_TEST_CAPTURE\"",
+          "  destination=\"${@: -1}\"",
+          "  mkdir -p \"$destination/scripts\"",
+          "  cp \"$CTS_TEST_INSTALLER\" \"$destination/scripts/install.sh\"",
+          "  chmod 755 \"$destination/scripts/install.sh\"",
+          "  exit 0",
+          "fi",
+          "exit 0",
+          "",
+        ].join("\n")),
+        writeFile(path.join(binDir, "systemctl"), [
+          "#!/usr/bin/env bash",
+          "# The fixture must never inspect or stop the host's CTS services.",
+          "if [[ \"${1:-}\" == \"is-active\" ]]; then exit 3; fi",
+          "exit 0",
+          "",
+        ].join("\n")),
+      ])
+      await Promise.all([
+        chmod(path.join(targetScripts, "bootstrap-install.sh"), 0o755),
+        chmod(installerFixture, 0o755),
+        chmod(path.join(binDir, "git"), 0o755),
+        chmod(path.join(binDir, "systemctl"), 0o755),
+      ])
+      const env = {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH || ""}`,
+        CTS_TEST_TARGET: target,
+        CTS_TEST_CAPTURE: capture,
+        CTS_TEST_INSTALLER: installerFixture,
+      }
+
+      execFileSync("bash", [path.join(targetScripts, "bootstrap-install.sh"),
+        "--dir", target,
+        "--name", "cts-kn",
+        "--port", "3002",
+        "--runtime", "systemd",
+        "--service-user", "root",
+      ], { cwd: target, env, encoding: "utf8", stdio: "pipe" })
+
+      expect(await readFile(capture, "utf8")).not.toBe(`${target}\n`)
+      await expect(readFile(path.join(target, "scripts", "install.sh"), "utf8")).resolves.toContain("CTS_INSTALLED_RUNTIME")
+
+      // This is the exact recovery state left by a clone failure: the old
+      // checkout is gone, but its persistent data was safely archived beside
+      // it. A retry must restore it automatically rather than starting empty.
+      const preservedState = path.join(root, "opt", ".cts-kn.cts-state.20260803T010921Z.1")
+      await mkdir(path.join(preservedState, "data"), { recursive: true })
+      await writeFile(path.join(preservedState, "data", "recovery-marker"), "preserved\n")
+      await rm(target, { recursive: true, force: true })
+
+      execFileSync("bash", [path.join(process.cwd(), "scripts", "bootstrap-install.sh"),
+        "--dir", target,
+        "--name", "cts-kn",
+        "--port", "3002",
+        "--runtime", "systemd",
+        "--service-user", "root",
+      ], { cwd: root, env, encoding: "utf8", stdio: "pipe" })
+
+      await expect(readFile(path.join(target, "data", "recovery-marker"), "utf8")).resolves.toBe("preserved\n")
+      await expect(readFile(path.join(preservedState, "data", "recovery-marker"), "utf8")).rejects.toMatchObject({ code: "ENOENT" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it("resolves bootstrap, update, and service controls from one saved identity", async () => {

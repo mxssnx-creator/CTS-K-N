@@ -15,8 +15,19 @@ import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Slider } from "@/components/ui/slider"
-import { DIRECT_TRADE_MAX_SYMBOLS } from "@/lib/direct-trade-limits"
-import { DIRECT_TRADE_RECENT_PF_DEFAULT } from "@/lib/direct-trade-coordination"
+import {
+  DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
+  DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
+  DIRECT_TRADE_MAX_SYMBOLS,
+} from "@/lib/direct-trade-limits"
+import { mergePendingDirectTradeConfig } from "@/lib/direct-trade-settings-sync"
+import {
+  DIRECT_TRADE_RECENT_PF_DEFAULT,
+  DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
+  DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX,
+  DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN,
+  DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
+} from "@/lib/direct-trade-coordination"
 import { Badge } from "@/components/ui/badge"
 import {
   Select,
@@ -64,6 +75,8 @@ interface DirectTradeState {
   entryTiming: "current" | "last_confirmed"
   activityVolumeRatio: number
   maxHoldMinutes: number
+  takeProfitRatioRange: [number, number]
+  takeProfitRatioStep: number
   blockRange: [number, number]
   maxPositionsPerSymbol: number
   maxPositionsPerDirection: number
@@ -120,9 +133,11 @@ const DEFAULT_STATE: DirectTradeState = {
   entryTiming: "current",
   activityVolumeRatio: 1,
   maxHoldMinutes: 120,
+  takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
+  takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   blockRange: [1, 12],
-  maxPositionsPerSymbol: 3,
-  maxPositionsPerDirection: 2,
+  maxPositionsPerSymbol: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
+  maxPositionsPerDirection: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   keepEnabledPosCount: 12,
   deactivatePosCount: 16,
   minProfitFactor: 0.8,
@@ -180,8 +195,8 @@ export function DirectTradeSection() {
   const [localRecentEvaluationPositions, setLocalRecentEvaluationPositions] = useState(12)
   const [localMaxDDT, setLocalMaxDDT] = useState(10)
   const [localSymbolCount, setLocalSymbolCount] = useState(8)
-  const [localMaxPosPerSymbol, setLocalMaxPosPerSymbol] = useState(3)
-  const [localMaxPosPerDir, setLocalMaxPosPerDir] = useState(2)
+  const [localMaxPosPerSymbol, setLocalMaxPosPerSymbol] = useState(DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL)
+  const [localMaxPosPerDir, setLocalMaxPosPerDir] = useState(DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION)
   const [localTrailing, setLocalTrailing] = useState(true)
   const [localBlock, setLocalBlock] = useState(true)
   const [localBlockMax, setLocalBlockMax] = useState(12)
@@ -193,6 +208,8 @@ export function DirectTradeSection() {
   const [localEntryTiming, setLocalEntryTiming] = useState<"current" | "last_confirmed">("current")
   const [localActivityVolumeRatio, setLocalActivityVolumeRatio] = useState(1)
   const [localMaxHoldMinutes, setLocalMaxHoldMinutes] = useState(120)
+  const [localTakeProfitRatioRange, setLocalTakeProfitRatioRange] = useState<[number, number]>(DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE)
+  const [localTakeProfitRatioStep, setLocalTakeProfitRatioStep] = useState(DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT)
   const [localSymbolOrder, setLocalSymbolOrder] = useState<string>("volatility_1h")
   // Pos Count evaluation windows (for PF/DDT historic coordination calculations)
   const [localPrevPosWindow, setLocalPrevPosWindow] = useState(25)
@@ -203,6 +220,50 @@ export function DirectTradeSection() {
   const [localDeactivatePosCount, setLocalDeactivatePosCount] = useState(16)
 
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingConfigRef = useRef<Record<string, unknown>>({})
+  const pendingConfigKeysRef = useRef(new Set<string>())
+  const configSaveInFlightRef = useRef(false)
+  const flushConfigRef = useRef<(() => Promise<void>) | null>(null)
+  const [savingConfig, setSavingConfig] = useState(false)
+  const [configSaveError, setConfigSaveError] = useState<string | null>(null)
+
+  const applyRemoteState = useCallback((remoteState: DirectTradeState) => {
+    const pendingKeys = pendingConfigKeysRef.current
+    const isPending = (key: string) => pendingKeys.has(key)
+    setState((current) => mergePendingDirectTradeConfig(remoteState, current, pendingKeys))
+    if (!isPending("minVolFactor")) setLocalVolFactor(remoteState.minVolFactor ?? 0.1)
+    if (!isPending("positionCostPercent")) setLocalPositionCost(remoteState.positionCostPercent ?? 0.1)
+    if (!isPending("maxSlRatio")) setLocalMaxSl(remoteState.maxSlRatio ?? 0.75)
+    if (!isPending("inverseMaxSlRatio")) setLocalInverseMaxSl(remoteState.inverseMaxSlRatio ?? 1.25)
+    if (!isPending("symbolCount")) setLocalSymbolCount(remoteState.symbolCount || 8)
+    if (!isPending("maxPositionsPerSymbol")) setLocalMaxPosPerSymbol(remoteState.maxPositionsPerSymbol || DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL)
+    if (!isPending("maxPositionsPerDirection")) setLocalMaxPosPerDir(remoteState.maxPositionsPerDirection || DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION)
+    if (!isPending("timeframes")) setLocalTimeframes(remoteState.timeframes || ["1m", "10m", "15m"])
+    if (!isPending("strategyTypes")) setLocalStrategyTypes(remoteState.strategyTypes || ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"])
+    if (!isPending("historyHours")) setLocalHistoryHours(remoteState.historyHours ?? 60)
+    if (!isPending("entryTactics")) setLocalEntryTactics(remoteState.entryTactics || ["momentum", "mean_reversion", "breakout", "relative"])
+    if (!isPending("exitTactics")) setLocalExitTactics(remoteState.exitTactics || ["bracket", "momentum_reversal", "relative", "time"])
+    if (!isPending("entryTiming")) setLocalEntryTiming(remoteState.entryTiming === "last_confirmed" ? "last_confirmed" : "current")
+    if (!isPending("activityVolumeRatio")) setLocalActivityVolumeRatio(remoteState.activityVolumeRatio ?? 1)
+    if (!isPending("maxHoldMinutes")) setLocalMaxHoldMinutes(remoteState.maxHoldMinutes ?? 120)
+    if (!isPending("takeProfitRatioRange")) setLocalTakeProfitRatioRange(remoteState.takeProfitRatioRange ?? DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE)
+    if (!isPending("takeProfitRatioStep")) setLocalTakeProfitRatioStep(remoteState.takeProfitRatioStep ?? DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT)
+    if (!isPending("symbolOrder")) setLocalSymbolOrder(remoteState.symbolOrder || "volatility_1h")
+    if (!isPending("blockRange")) {
+      setLocalBlock(remoteState.blockRange?.[1] > 0)
+      setLocalBlockMax(remoteState.blockRange?.[1] || 12)
+    }
+    if (!isPending("minProfitFactor")) setLocalMinPF(remoteState.minProfitFactor ?? 0.8)
+    if (!isPending("minRecentProfitFactor")) setLocalMinRecentPF(remoteState.minRecentProfitFactor ?? DIRECT_TRADE_RECENT_PF_DEFAULT)
+    if (!isPending("recentEvaluationPositions")) setLocalRecentEvaluationPositions(remoteState.recentEvaluationPositions ?? 12)
+    if (!isPending("maxDrawdownTimeMin")) setLocalMaxDDT(remoteState.maxDrawdownTimeMin ?? 10)
+    if (!isPending("prevPosWindow")) setLocalPrevPosWindow(remoteState.prevPosWindow ?? 25)
+    if (!isPending("prevPosMinCount")) setLocalPrevPosMinCount(remoteState.prevPosMinCount ?? 5)
+    if (!isPending("evalPosCount")) setLocalEvalPosCount(remoteState.evalPosCount ?? 12)
+    if (!isPending("keepEnabledPosCount")) setLocalKeepEnabledPosCount(remoteState.keepEnabledPosCount ?? 12)
+    if (!isPending("deactivatePosCount")) setLocalDeactivatePosCount(remoteState.deactivatePosCount ?? 16)
+    if (!isPending("trailingEnabled")) setLocalTrailing(remoteState.trailingEnabled !== false)
+  }, [])
 
   // ─── Data Fetching ────────────────────────────────────────────────────────
 
@@ -212,45 +273,17 @@ export function DirectTradeSection() {
       if (!res.ok) return
       const data = await res.json()
       if (data.state) {
-        setState(data.state)
-        setLocalVolFactor(data.state.minVolFactor ?? 0.1)
-        setLocalPositionCost(data.state.positionCostPercent ?? 0.1)
-        setLocalMaxSl(data.state.maxSlRatio ?? 0.75)
-        setLocalInverseMaxSl(data.state.inverseMaxSlRatio ?? 1.25)
-        setLocalSymbolCount(data.state.symbolCount || 8)
-        setLocalMaxPosPerSymbol(data.state.maxPositionsPerSymbol || 3)
-        setLocalMaxPosPerDir(data.state.maxPositionsPerDirection || 2)
-        setLocalTimeframes(data.state.timeframes || ["1m", "10m", "15m"])
-        setLocalStrategyTypes(data.state.strategyTypes || ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"])
-        setLocalHistoryHours(data.state.historyHours ?? 60)
-        setLocalEntryTactics(data.state.entryTactics || ["momentum", "mean_reversion", "breakout", "relative"])
-        setLocalExitTactics(data.state.exitTactics || ["bracket", "momentum_reversal", "relative", "time"])
-        setLocalEntryTiming(data.state.entryTiming === "last_confirmed" ? "last_confirmed" : "current")
-        setLocalActivityVolumeRatio(data.state.activityVolumeRatio ?? 1)
-        setLocalMaxHoldMinutes(data.state.maxHoldMinutes ?? 120)
-        setLocalSymbolOrder(data.state.symbolOrder || "volatility_1h")
-        setLocalBlock(data.state.blockRange?.[1] > 0)
-        setLocalBlockMax(data.state.blockRange?.[1] || 12)
-        setLocalMinPF(data.state.minProfitFactor ?? 0.8)
-        setLocalMinRecentPF(data.state.minRecentProfitFactor ?? DIRECT_TRADE_RECENT_PF_DEFAULT)
-        setLocalRecentEvaluationPositions(data.state.recentEvaluationPositions ?? 12)
-        setLocalMaxDDT(data.state.maxDrawdownTimeMin ?? 10)
-        setLocalPrevPosWindow(data.state.prevPosWindow ?? 25)
-        setLocalPrevPosMinCount(data.state.prevPosMinCount ?? 5)
-        setLocalEvalPosCount(data.state.evalPosCount ?? 12)
-        setLocalKeepEnabledPosCount(data.state.keepEnabledPosCount ?? 12)
-        setLocalDeactivatePosCount(data.state.deactivatePosCount ?? 16)
-        setLocalTrailing(data.state.trailingEnabled !== false)
+        applyRemoteState(data.state)
       }
       if (data.stats) setStats({ ...DEFAULT_STATS, ...data.stats })
       if (data.activeConfigs !== undefined) setActiveConfigs(data.activeConfigs)
       if (data.openPositions !== undefined) setOpenPositions(data.openPositions)
       if (data.closedPositions !== undefined) setClosedPositions(data.closedPositions)
       if (data.disabledConfigs !== undefined) setDisabledConfigs(data.disabledConfigs)
-      if (data.calculationProgress && typeof data.calculationProgress === "object") setCalculationProgress(data.calculationProgress)
+      setCalculationProgress(data.calculationProgress && typeof data.calculationProgress === "object" ? data.calculationProgress : null)
       if (data.processor) setProcessorHealthy(data.processor.isHealthy || false)
     } catch {}
-  }, [])
+  }, [applyRemoteState])
 
   useEffect(() => {
     fetchStatus()
@@ -284,6 +317,8 @@ export function DirectTradeSection() {
           entryTiming: localEntryTiming,
           activityVolumeRatio: localActivityVolumeRatio,
           maxHoldMinutes: localMaxHoldMinutes,
+          takeProfitRatioRange: localTakeProfitRatioRange,
+          takeProfitRatioStep: localTakeProfitRatioStep,
           blockRange: localBlock ? [1, localBlockMax] : [0, 0],
           maxPositionsPerSymbol: localMaxPosPerSymbol,
           maxPositionsPerDirection: localMaxPosPerDir,
@@ -338,6 +373,8 @@ export function DirectTradeSection() {
           entryTiming: localEntryTiming,
           activityVolumeRatio: localActivityVolumeRatio,
           maxHoldMinutes: localMaxHoldMinutes,
+          takeProfitRatioRange: localTakeProfitRatioRange,
+          takeProfitRatioStep: localTakeProfitRatioStep,
           blockRange: localBlock ? [1, localBlockMax] : [0, 0],
           minProfitFactor: localMinPF,
           minRecentProfitFactor: localMinRecentPF,
@@ -354,17 +391,62 @@ export function DirectTradeSection() {
 
   // ─── Debounced Config Save ────────────────────────────────────────────────
 
-  const saveConfig = useCallback(async (updates: Record<string, any>) => {
+  const flushConfig = useCallback(async () => {
+    if (configSaveInFlightRef.current) return
+    const updates = pendingConfigRef.current
+    const updateKeys = Object.keys(updates)
+    if (updateKeys.length === 0) return
+    pendingConfigRef.current = {}
+    configSaveInFlightRef.current = true
+    setSavingConfig(true)
+    try {
+      const response = await fetch("/api/trade-engine/direct-trade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "update-config", ...updates }),
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || payload?.success !== true || !payload?.state) {
+        throw new Error(payload?.error || "Direct-Trade settings were not accepted")
+      }
+      for (const key of updateKeys) {
+        if (!Object.prototype.hasOwnProperty.call(pendingConfigRef.current, key)) {
+          pendingConfigKeysRef.current.delete(key)
+        }
+      }
+      applyRemoteState(payload.state)
+      setConfigSaveError(null)
+    } catch (error) {
+      for (const key of updateKeys) {
+        if (!Object.prototype.hasOwnProperty.call(pendingConfigRef.current, key)) {
+          pendingConfigKeysRef.current.delete(key)
+        }
+      }
+      setConfigSaveError(error instanceof Error ? error.message : "Direct-Trade settings could not be saved")
+      void fetchStatus()
+    } finally {
+      configSaveInFlightRef.current = false
+      setSavingConfig(false)
+      if (Object.keys(pendingConfigRef.current).length > 0) {
+        void flushConfigRef.current?.()
+      }
+    }
+  }, [applyRemoteState, fetchStatus])
+
+  flushConfigRef.current = flushConfig
+
+  const saveConfig = useCallback((updates: Record<string, unknown>) => {
+    Object.assign(pendingConfigRef.current, updates)
+    for (const key of Object.keys(updates)) pendingConfigKeysRef.current.add(key)
+    setState((current) => ({ ...current, ...(updates as Partial<DirectTradeState>) }))
+    setConfigSaveError(null)
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
-    saveTimeoutRef.current = setTimeout(async () => {
-      try {
-        await fetch("/api/trade-engine/direct-trade", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "update-config", ...updates }),
-        })
-      } catch {}
-    }, 350)
+    saveTimeoutRef.current = setTimeout(() => void flushConfig(), 350)
+  }, [flushConfig])
+
+  useEffect(() => () => {
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+    void flushConfigRef.current?.()
   }, [])
 
   // ─── Render Helpers ───────────────────────────────────────────────────────
@@ -401,6 +483,8 @@ export function DirectTradeSection() {
               <Activity className="h-3 w-3 mr-1" /> Processor OK
             </Badge>
           )}
+          {savingConfig && <Badge variant="outline" className="text-xs">Saving settings…</Badge>}
+          {configSaveError && <Badge variant="outline" className="text-xs text-red-600 border-red-300" title={configSaveError}>Settings save failed</Badge>}
         </div>
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" onClick={() => setExpanded(!expanded)}>
@@ -516,6 +600,40 @@ export function DirectTradeSection() {
                 <p className="text-[10px] text-muted-foreground/70 leading-tight">Deducted once from every closed historical, simulated, and live Direct-Trade result; never added to open-position PF/DDT.</p>
               </div>
 
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">TP Set range · × PositionCost</span>
+                  <span className="font-mono font-medium">{localTakeProfitRatioRange[0]}–{localTakeProfitRatioRange[1]} · step {localTakeProfitRatioStep}</span>
+                </div>
+                <Slider
+                  aria-label="Direct-Trade take-profit PositionCost range"
+                  value={localTakeProfitRatioRange}
+                  min={DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN}
+                  max={DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX}
+                  step={1}
+                  minStepsBetweenThumbs={0}
+                  onValueChange={(next) => {
+                    const minimum = Math.max(DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN, Math.min(DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX, Math.round(next[0] ?? localTakeProfitRatioRange[0])))
+                    const maximum = Math.max(minimum, Math.min(DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX, Math.round(next[1] ?? localTakeProfitRatioRange[1])))
+                    const range: [number, number] = [minimum, maximum]
+                    setLocalTakeProfitRatioRange(range)
+                    saveConfig({ takeProfitRatioRange: range })
+                  }}
+                />
+                <Slider
+                  aria-label="Direct-Trade take-profit Set-creation step"
+                  value={[localTakeProfitRatioStep]}
+                  min={1}
+                  max={20}
+                  step={1}
+                  onValueChange={([value]) => {
+                    setLocalTakeProfitRatioStep(value)
+                    saveConfig({ takeProfitRatioStep: value })
+                  }}
+                />
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">The two handles accept every 2–22× ratio. Only every configured Set step plus the upper handle is materialised, preserving the selected boundary without multiplying the grid unnecessarily.</p>
+              </div>
+
               {/* Symbol Count */}
               <div className="space-y-1">
                 <div className="flex justify-between text-xs">
@@ -564,7 +682,7 @@ export function DirectTradeSection() {
                 <Slider
                   value={[localMaxPosPerSymbol]}
                   min={1}
-                  max={20}
+                  max={300}
                   step={1}
                   onValueChange={([v]) => {
                     setLocalMaxPosPerSymbol(v)
@@ -582,7 +700,7 @@ export function DirectTradeSection() {
                 <Slider
                   value={[localMaxPosPerDir]}
                   min={1}
-                  max={5}
+                  max={300}
                   step={1}
                   onValueChange={([v]) => {
                     setLocalMaxPosPerDir(v)

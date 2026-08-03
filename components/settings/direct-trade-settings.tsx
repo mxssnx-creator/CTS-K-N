@@ -10,12 +10,17 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
-import { DIRECT_TRADE_MAX_SYMBOLS } from "@/lib/direct-trade-limits"
+import {
+  DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
+  DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
+  DIRECT_TRADE_MAX_SYMBOLS,
+} from "@/lib/direct-trade-limits"
 import {
   DIRECT_TRADE_RECENT_PF_DEFAULT,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN,
+  DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
 } from "@/lib/direct-trade-coordination"
 
 type DirectTradeState = {
@@ -40,6 +45,7 @@ type DirectTradeState = {
   activityVolumeRatio: number
   maxHoldMinutes: number
   takeProfitRatioRange: [number, number]
+  takeProfitRatioStep: number
   blockRange: [number, number]
   blockVolumeRatio: number
   maxTotalPositions: number
@@ -79,11 +85,12 @@ const DEFAULT_STATE: DirectTradeState = {
   activityVolumeRatio: 1,
   maxHoldMinutes: 120,
   takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
+  takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
   maxTotalPositions: 300,
-  maxPositionsPerSymbol: 3,
-  maxPositionsPerDirection: 2,
+  maxPositionsPerSymbol: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
+  maxPositionsPerDirection: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   keepEnabledPosCount: 12,
   deactivatePosCount: 16,
   minProfitFactor: 0.8,
@@ -328,11 +335,29 @@ export function DirectTradeSettings() {
             <div className="max-w-xs space-y-2"><Label className="text-xs">Entry timing</Label><Select value={state.entryTiming} onValueChange={(value: DirectTradeState["entryTiming"]) => update("entryTiming", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="current">Current causal candle</SelectItem><SelectItem value="last_confirmed">Last confirmed candle</SelectItem></SelectContent></Select></div>
           </div></section>
 
-          <section className="space-y-4"><div><h3 className="font-semibold">Sizing, protection and blocks</h3><p className="text-xs text-muted-foreground">TP is 2–12× PositionCost (default 4–12×); PositionCost is deducted once after an actual close. Block targets use Base + valid blocks × Base × Block ratio.</p></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+          <section className="space-y-4"><div><h3 className="font-semibold">Sizing, protection and blocks</h3><p className="text-xs text-muted-foreground">TP handles span 2–22× PositionCost (default 4–14×); Set creation uses the independently configurable TP step, default 4, so the full matrix remains bounded. PositionCost is deducted once after an actual close. Block targets use Base + valid blocks × Base × Block ratio.</p></div><div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             <Range label="Minimum volume factor" value={state.minVolFactor} min={0.1} max={3} step={0.1} onChange={(value) => update("minVolFactor", value)} />
             <Range label="PositionCost" value={state.positionCostPercent} min={0.02} max={1} step={0.02} suffix=" %" onChange={(value) => update("positionCostPercent", value)} />
-            <Range label="TP minimum · × PositionCost" value={state.takeProfitRatioRange[0]} min={DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN} max={state.takeProfitRatioRange[1]} step={1} onChange={(value) => update("takeProfitRatioRange", [value, state.takeProfitRatioRange[1]])} />
-            <Range label="TP maximum · × PositionCost" value={state.takeProfitRatioRange[1]} min={state.takeProfitRatioRange[0]} max={DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX} step={1} onChange={(value) => update("takeProfitRatioRange", [state.takeProfitRatioRange[0], value])} />
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <Label className="text-xs">TP Set range · × PositionCost</Label>
+                <span className="font-mono text-xs tabular-nums text-muted-foreground">{state.takeProfitRatioRange[0]}–{state.takeProfitRatioRange[1]}</span>
+              </div>
+              <Slider
+                aria-label="Direct-Trade take-profit PositionCost range"
+                value={state.takeProfitRatioRange}
+                min={DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN}
+                max={DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX}
+                step={1}
+                minStepsBetweenThumbs={0}
+                onValueChange={(next) => {
+                  const minimum = Math.max(DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN, Math.min(DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX, Math.round(next[0] ?? state.takeProfitRatioRange[0])))
+                  const maximum = Math.max(minimum, Math.min(DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX, Math.round(next[1] ?? state.takeProfitRatioRange[1])))
+                  update("takeProfitRatioRange", [minimum, maximum])
+                }}
+              />
+            </div>
+            <Range label="TP Set-creation step · × PositionCost" value={state.takeProfitRatioStep} min={1} max={20} step={1} onChange={(value) => update("takeProfitRatioStep", value)} />
             <Range label="Normal SL maximum / TP" value={state.maxSlRatio} min={0.25} max={0.75} step={0.25} onChange={(value) => update("maxSlRatio", value)} />
             <Range label="Inverse SL maximum / TP" value={state.inverseMaxSlRatio} min={0.25} max={1.25} step={0.25} onChange={(value) => update("inverseMaxSlRatio", value)} />
             <Range label="SL ratio step" value={state.slRatioStep} min={0.25} max={0.75} step={0.25} onChange={(value) => update("slRatioStep", value)} />

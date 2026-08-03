@@ -122,6 +122,31 @@ The template is ready. Next steps depend on user requirements:
   `FORCE_SIMULATED=1` and `FORCE_LIVE=0`.  No exchange credentials or real
   orders were used for validation.
 
+## Recent Change – Direct-Trade bounded TP grid and installer recovery (2026-08-03)
+
+- Direct Trade now uses a two-handle TP range slider from `2..22×`
+  PositionCost (unit handle steps), with defaults `4..14×`.  A separate
+  Set-creation stride defaults to `4`, materialising `4, 8, 12, 14` while
+  always retaining the selected upper boundary.  This makes the full
+  32-symbol/90-hour default grid `1,892,352` independent configurations,
+  below the four-million operating budget.
+- The TP stride is persisted, reported in calculation summaries, passed to
+  the calculation route, and included in the Direct-Trade processor's
+  fingerprint.  Changing it invalidates the prior grid before it can create
+  an entry.
+- Default admission capacity is `12` positions per symbol and `6` per
+  direction.  Exact legacy default state `3/2` upgrades to the new defaults;
+  mixed custom capacity settings remain untouched.
+- Clean server bootstrap moves to a safe sibling working directory before it
+  removes an old checkout, avoiding Git's deleted-current-directory failure.
+  If a clone fails after state was archived, the next bootstrap automatically
+  restores the newest archive for the exact target.
+- Validation: 138 Jest suites / 941 tests, TypeScript and shell/Node syntax,
+  migration and installer recovery contracts, install preflight, and the
+  segmented 32-symbol/90-hour paper matrix (6,243 valid historical
+  candidates; global 300-position selection respects `12` per symbol and
+  `6` per direction). No exchange order or authenticated trading call ran.
+
 ## Quick Start Guide
 
 ### To add a new page:

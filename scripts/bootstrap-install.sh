@@ -111,6 +111,7 @@ EXISTING_ENV_FILE=""
 EXISTING_ENV_MANAGED=""
 EXISTING_MANAGED_SERVICE_USER=0
 PRESERVED_STATE=""
+CLEAN_INSTALL_WORK_DIR=""
 
 discover_install_dir_from_name() {
   (( INSTALL_DIR_SET == 0 )) || return 0
@@ -285,12 +286,60 @@ preserve_existing_install_state() {
   echo "Saved persistent CTS state outside the target directory: $PRESERVED_STATE" >&2
 }
 
+# A failed clean install deliberately leaves the state archive beside the
+# removed target.  The most common recovery action is to run this bootstrap
+# command again; requiring an operator to find and move that archive would
+# turn an otherwise safe failure into an apparent data loss.  When there is
+# no target checkout, resume the newest archive for this *exact* target name.
+# The archive name is timestamped, so lexical glob order is chronological.
+resume_preserved_state_after_failed_clean_install() {
+  [[ ! -e "$INSTALL_DIR" && -z "$PRESERVED_STATE" ]] || return 0
+  local parent base candidate latest=""
+  parent="$(dirname "$INSTALL_DIR")"
+  base="$(basename "$INSTALL_DIR")"
+  shopt -s nullglob
+  for candidate in "$parent/.${base}.cts-state."*; do
+    [[ -d "$candidate" ]] || continue
+    latest="$candidate"
+  done
+  shopt -u nullglob
+  [[ -n "$latest" ]] || return 0
+  PRESERVED_STATE="$latest"
+  echo "Resuming preserved CTS state from failed clean install: $PRESERVED_STATE" >&2
+}
+
 remove_existing_install_target() {
   [[ -e "$INSTALL_DIR" ]] || return 0
   assert_cts_checkout
   as_root rm -rf -- "$INSTALL_DIR"
   [[ ! -e "$INSTALL_DIR" ]] || { echo "Target directory was not removed: $INSTALL_DIR" >&2; exit 1; }
   echo "Removed stopped CTS-K-N target directory: $INSTALL_DIR" >&2
+}
+
+# bootstrap-install.sh is often launched from the checkout it is about to
+# replace (for example: `cd /opt/cts-kn && bash scripts/bootstrap-install.sh`).
+# A shell retains that current working directory even after `rm -rf` removes
+# it.  Git then fails before cloning with "Unable to read current working
+# directory".  Move the coordinator into a dedicated sibling directory before
+# deletion so the clean lifecycle is independent of its launch location.
+prepare_clean_install_workspace() {
+  local parent base requested
+  parent="$(dirname "$INSTALL_DIR")"
+  base="$(basename "$INSTALL_DIR")"
+  requested="${CTS_BOOTSTRAP_WORK_DIR:-$parent/.${base}.bootstrap-work}"
+  valid_absolute_path "$requested" \
+    || { echo "CTS_BOOTSTRAP_WORK_DIR must be a safe absolute non-root path" >&2; exit 2; }
+  [[ "$requested" != "$INSTALL_DIR" && "$requested" != "$INSTALL_DIR"/* ]] \
+    || { echo "CTS_BOOTSTRAP_WORK_DIR must be outside the installation target" >&2; exit 2; }
+  CLEAN_INSTALL_WORK_DIR="$requested"
+  as_root install -d -m 0750 "$CLEAN_INSTALL_WORK_DIR"
+  # Make the coordinator usable for a non-root invocation after sudo created
+  # it, while the checkout itself is still owned by the caller after clone.
+  as_root chown "$(id -u):$(id -g)" "$CLEAN_INSTALL_WORK_DIR" 2>/dev/null || true
+  cd "$CLEAN_INSTALL_WORK_DIR"
+  [[ "$PWD" != "$INSTALL_DIR" && "$PWD" != "$INSTALL_DIR"/* ]] \
+    || { echo "Refusing to delete target from inside itself: $INSTALL_DIR" >&2; exit 1; }
+  echo "Using safe bootstrap workspace outside target directory: $CLEAN_INSTALL_WORK_DIR" >&2
 }
 
 restore_install_state_into_clone() {
@@ -433,7 +482,9 @@ if ! command -v git >/dev/null 2>&1; then
   fi
 fi
 
+resume_preserved_state_after_failed_clean_install
 preserve_existing_install_state
+prepare_clean_install_workspace
 remove_existing_install_target
 as_root mkdir -p "$(dirname "$INSTALL_DIR")"
 as_root git clone --branch "$BRANCH" --single-branch --depth=1 "$REPOSITORY" "$INSTALL_DIR"

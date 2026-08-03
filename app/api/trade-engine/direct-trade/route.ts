@@ -1,13 +1,19 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getSettings, setSettings, getRedisClient, initRedis } from "@/lib/redis-db"
-import { clampDirectTradeSymbolCount } from "@/lib/direct-trade-limits"
+import {
+  clampDirectTradeSymbolCount,
+  DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
+  DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
+} from "@/lib/direct-trade-limits"
 import {
   normaliseDirectTradeTimeframes,
   normaliseDirectTradeStrategyTypes,
   normaliseEntryTactics,
   normaliseExitTactics,
   normaliseDirectTradeTakeProfitRatioRange,
+  normaliseDirectTradeTakeProfitRatioStep,
   DIRECT_TRADE_RECENT_PF_DEFAULT,
+  DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   type DirectTradeEntryTiming,
   type DirectTradeEntryTactic,
@@ -73,8 +79,11 @@ export interface DirectTradeState {
   activityVolumeRatio: number
   maxHoldMinutes: number
   // Integer multipliers of PositionCost used to build the TP grid. The
-  // default starts at 4× PositionCost and may be configured from 2× to 12×.
+  // default starts at 4× PositionCost and may be configured from 2× to 22×.
   takeProfitRatioRange: [number, number]
+  // The selected range uses unit handles; this is the sparse Set-generation
+  // stride, kept separate so a 32-symbol matrix remains bounded.
+  takeProfitRatioStep: number
   blockRange: [number, number]
   // The Block increase ratio is independent from the base position-size
   // factor. For a base quantity B and N valid Blocks: B + (N × B × ratio).
@@ -144,11 +153,12 @@ const DEFAULT_STATE: DirectTradeState = {
   activityVolumeRatio: 1,
   maxHoldMinutes: 120,
   takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
+  takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
   maxTotalPositions: 300,
-  maxPositionsPerSymbol: 3,
-  maxPositionsPerDirection: 2,
+  maxPositionsPerSymbol: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
+  maxPositionsPerDirection: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   processingIntervalMs: DIRECT_TRADE_PROCESSING_INTERVAL_DEFAULT_MS,
   // Evaluation defaults
   keepEnabledPosCount: 12,
@@ -194,6 +204,10 @@ async function getState(): Promise<DirectTradeState> {
     const raw = await client.get(DIRECT_TRADE_STATE_KEY)
     if (raw) {
       const persisted = JSON.parse(raw)
+      // Upgrade only the exact former default pair. Any mixed values remain
+      // deliberate operator capacity choices.
+      const hasLegacyCapacityDefaults = Number(persisted?.maxPositionsPerSymbol) === 3
+        && Number(persisted?.maxPositionsPerDirection) === 2
       return {
         ...DEFAULT_STATE,
         ...persisted,
@@ -212,9 +226,20 @@ async function getState(): Promise<DirectTradeState> {
         activityVolumeRatio: Math.max(0, Number(persisted?.activityVolumeRatio) || DEFAULT_STATE.activityVolumeRatio),
         positionCostPercent: normalizePositionCostPercent(persisted?.positionCostPercent ?? DEFAULT_STATE.positionCostPercent),
         maxHoldMinutes: Math.max(1, Number(persisted?.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes),
-        takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(
-          persisted?.takeProfitRatioRange,
-          DEFAULT_STATE.takeProfitRatioRange,
+        // The former 4–12 range was the shipped default, not an intentional
+        // cap. Upgrade that exact legacy default to the new 4–14 contract;
+        // any other persisted range remains the operator's explicit choice.
+        takeProfitRatioRange: Array.isArray(persisted?.takeProfitRatioRange)
+          && Number(persisted.takeProfitRatioRange[0]) === 4
+          && Number(persisted.takeProfitRatioRange[1]) === 12
+          ? DEFAULT_STATE.takeProfitRatioRange
+          : normaliseDirectTradeTakeProfitRatioRange(
+            persisted?.takeProfitRatioRange,
+            DEFAULT_STATE.takeProfitRatioRange,
+          ),
+        takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(
+          persisted?.takeProfitRatioStep,
+          DEFAULT_STATE.takeProfitRatioStep,
         ),
         maxTotalPositions: clampOpenPositionLimit(persisted?.maxTotalPositions, DEFAULT_STATE.maxTotalPositions),
         slRatioStep: clampStopLossRatioStep(persisted?.slRatioStep, DEFAULT_STATE.slRatioStep),
@@ -236,8 +261,12 @@ async function getState(): Promise<DirectTradeState> {
         ),
         blockRange: normaliseBlockRange(persisted?.blockRange, DEFAULT_STATE.blockRange),
         blockVolumeRatio: clampBlockVolumeRatio(persisted?.blockVolumeRatio, DEFAULT_STATE.blockVolumeRatio),
-        maxPositionsPerSymbol: Math.max(1, Math.min(300, Math.floor(Number(persisted?.maxPositionsPerSymbol) || DEFAULT_STATE.maxPositionsPerSymbol))),
-        maxPositionsPerDirection: Math.max(1, Math.min(300, Math.floor(Number(persisted?.maxPositionsPerDirection) || DEFAULT_STATE.maxPositionsPerDirection))),
+        maxPositionsPerSymbol: hasLegacyCapacityDefaults
+          ? DEFAULT_STATE.maxPositionsPerSymbol
+          : Math.max(1, Math.min(300, Math.floor(Number(persisted?.maxPositionsPerSymbol) || DEFAULT_STATE.maxPositionsPerSymbol))),
+        maxPositionsPerDirection: hasLegacyCapacityDefaults
+          ? DEFAULT_STATE.maxPositionsPerDirection
+          : Math.max(1, Math.min(300, Math.floor(Number(persisted?.maxPositionsPerDirection) || DEFAULT_STATE.maxPositionsPerDirection))),
         inverseMaxSlRatio: clampInverseStopLossRatio(persisted?.inverseMaxSlRatio),
       }
     }
@@ -541,6 +570,7 @@ export async function POST(request: NextRequest) {
         ...(body.activityVolumeRatio !== undefined ? { activityVolumeRatio: Math.max(0, Number(body.activityVolumeRatio) || 0) } : {}),
         ...(body.maxHoldMinutes !== undefined ? { maxHoldMinutes: Math.max(1, Number(body.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes) } : {}),
         ...(body.takeProfitRatioRange !== undefined ? { takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange, currentState.takeProfitRatioRange) } : {}),
+        ...(body.takeProfitRatioStep !== undefined ? { takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep, currentState.takeProfitRatioStep) } : {}),
         ...(body.blockRange !== undefined ? { blockRange: normaliseBlockRange(body.blockRange, currentState.blockRange) } : {}),
         ...(body.blockVolumeRatio !== undefined ? { blockVolumeRatio: clampBlockVolumeRatio(body.blockVolumeRatio, currentState.blockVolumeRatio) } : {}),
         ...(body.maxTotalPositions !== undefined ? { maxTotalPositions: clampOpenPositionLimit(body.maxTotalPositions) } : {}),
@@ -608,6 +638,7 @@ export async function POST(request: NextRequest) {
         ...(body.activityVolumeRatio !== undefined ? { activityVolumeRatio: Math.max(0, Number(body.activityVolumeRatio) || 0) } : {}),
         ...(body.maxHoldMinutes !== undefined ? { maxHoldMinutes: Math.max(1, Number(body.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes) } : {}),
         ...(body.takeProfitRatioRange !== undefined ? { takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange, currentState.takeProfitRatioRange) } : {}),
+        ...(body.takeProfitRatioStep !== undefined ? { takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep, currentState.takeProfitRatioStep) } : {}),
         ...(body.blockRange !== undefined ? { blockRange: normaliseBlockRange(body.blockRange, currentState.blockRange) } : {}),
         ...(body.blockVolumeRatio !== undefined ? { blockVolumeRatio: clampBlockVolumeRatio(body.blockVolumeRatio, currentState.blockVolumeRatio) } : {}),
         ...(body.maxTotalPositions !== undefined ? { maxTotalPositions: clampOpenPositionLimit(body.maxTotalPositions) } : {}),

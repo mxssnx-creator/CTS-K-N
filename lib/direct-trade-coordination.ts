@@ -26,12 +26,15 @@ export const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breako
 export const DIRECT_TRADE_EXIT_TACTICS = ["bracket", "momentum_reversal", "relative", "time"] as const
 // Direct-Trade protection is expressed in PositionCost multiples, not as an
 // unrelated fixed price percentage.  With the default PositionCost of 0.1%,
-// the default 4–12 grid therefore evaluates TP targets from 0.4% to 1.2%.
+// the default 4–14 grid therefore evaluates TP targets from 0.4% to 1.4%.
 // Keeping the ratio integral makes the UI, persisted state and set identity
 // unambiguous across a PositionCost change.
 export const DIRECT_TRADE_TAKE_PROFIT_RATIO_MIN = 2
-export const DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX = 12
-export const DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE: [number, number] = [4, 12]
+export const DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX = 22
+export const DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE: [number, number] = [4, 14]
+// The range control remains single-ratio precise, while a sparse default Set
+// stride keeps the full 32-symbol matrix below four million configurations.
+export const DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT = 4
 // Recent closed positions are a stronger gate than the long-history PF.
 // Keep this exported so calculation and runtime use the identical default.
 export const DIRECT_TRADE_RECENT_PF_DEFAULT = 25
@@ -237,11 +240,23 @@ export function normaliseDirectTradeTakeProfitRatioRange(
   return [minimum, maximum]
 }
 
+export function normaliseDirectTradeTakeProfitRatioStep(
+  value: unknown,
+  fallback = DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
+): number {
+  const requested = Math.round(finite(value, fallback))
+  return Math.max(1, Math.min(20, requested))
+}
+
 export function buildDirectTradeTakeProfitPositionCostRatios(
   value: unknown,
+  step: unknown = DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
 ): number[] {
   const [minimum, maximum] = normaliseDirectTradeTakeProfitRatioRange(value)
-  return Array.from({ length: maximum - minimum + 1 }, (_, index) => minimum + index)
+  const increment = normaliseDirectTradeTakeProfitRatioStep(step)
+  const ratios = Array.from({ length: Math.floor((maximum - minimum) / increment) + 1 }, (_, index) => minimum + index * increment)
+  if (ratios[ratios.length - 1] !== maximum) ratios.push(maximum)
+  return ratios
 }
 
 export function directTradeTakeProfitPercent(
