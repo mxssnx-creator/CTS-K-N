@@ -4,6 +4,7 @@ import {
   directTradeTakeProfitPercent,
   evaluateDirectTradeSets,
   normaliseDirectTradeTakeProfitRatioRange,
+  normaliseDirectTradeTakeProfitRatioStep,
   normaliseDirectTradeStrategyTypes,
   normaliseDirectTradeTimeframes,
   resampleCandles,
@@ -25,12 +26,15 @@ function upwardMinuteSeries(size = 80): DirectTradeCandle[] {
 }
 
 describe("Direct-Trade independent historical coordination", () => {
-  test("uses the 2–12 PositionCost TP contract with a 4× minimum by default", () => {
-    expect(normaliseDirectTradeTakeProfitRatioRange(undefined)).toEqual([4, 12])
-    expect(normaliseDirectTradeTakeProfitRatioRange([0, 99])).toEqual([2, 12])
-    expect(buildDirectTradeTakeProfitPositionCostRatios([2, 5])).toEqual([2, 3, 4, 5])
+  test("uses the 2–22 PositionCost TP contract with a 4–14 default and sparse Set stride", () => {
+    expect(normaliseDirectTradeTakeProfitRatioRange(undefined)).toEqual([4, 14])
+    expect(normaliseDirectTradeTakeProfitRatioRange([0, 99])).toEqual([2, 22])
+    expect(normaliseDirectTradeTakeProfitRatioStep(undefined)).toBe(4)
+    expect(normaliseDirectTradeTakeProfitRatioStep(0)).toBe(1)
+    expect(buildDirectTradeTakeProfitPositionCostRatios([2, 5], 1)).toEqual([2, 3, 4, 5])
+    expect(buildDirectTradeTakeProfitPositionCostRatios([4, 14])).toEqual([4, 8, 12, 14])
     expect(directTradeTakeProfitPercent(0.1, 4)).toBe(0.4)
-    expect(directTradeTakeProfitPercent(0.1, 12)).toBe(1.2)
+    expect(directTradeTakeProfitPercent(0.1, 22)).toBe(2.2)
   })
 
   test("migrates 5m without pretending it is a 15m candle and creates every selected combination", () => {

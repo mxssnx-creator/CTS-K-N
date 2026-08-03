@@ -66,25 +66,25 @@ describe("Direct-Trade historical calculation route", () => {
     const payload = await response.json()
 
     expect(payload.success).toBe(true)
-    // With trailing disabled the default 4–12× PositionCost grid keeps every
-    // type isolated: standard (54), Combination (54), inverse (90, up to
-    // 1.25× TP) and high-protection (18). Fixed and Auto remain absent.
-    expect(payload.configTotal).toBe(216)
+    // The 4–14× range uses its default Set-creation step of four, therefore
+    // materialising 4, 8, 12 and 14 while preserving both selected bounds.
+    // Fixed and Auto remain absent when trailing is disabled.
+    expect(payload.configTotal).toBe(96)
     expect(payload.executionConfigTotal).toEqual(expect.any(Number))
-    expect(payload.summary).toMatchObject({ historyHours: 60, combinations: 1, evaluatedSets: 216 })
+    expect(payload.summary).toMatchObject({ historyHours: 60, combinations: 1, evaluatedSets: 96 })
     expect(payload.summary.byStrategyType).toMatchObject({
-      standard: { evaluated: 54 },
+      standard: { evaluated: 24 },
       trailing_fixed: { evaluated: 0 },
       trailing_auto: { evaluated: 0 },
-      combination: { evaluated: 54 },
-      inverse: { evaluated: 90 },
-      high_protection: { evaluated: 18 },
+      combination: { evaluated: 24 },
+      inverse: { evaluated: 40 },
+      high_protection: { evaluated: 8 },
     })
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("interval=1m")
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("startTime=")
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
-    expect(persisted).toHaveLength(216)
-    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(216)
+    expect(persisted).toHaveLength(96)
+    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(96)
     expect(persisted.every((config: any) => config.timeframe === "1m" && config.bestMarketExitAnalysisOnly === true)).toBe(true)
     expect(persisted.filter((config: any) => config.strategyType === "inverse").every((config: any) =>
       config.stoploss <= config.takeprofit * 1.25,
@@ -113,20 +113,20 @@ describe("Direct-Trade historical calculation route", () => {
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
 
     expect(payload.success).toBe(true)
-    expect(payload.configTotal).toBe(1188)
+    expect(payload.configTotal).toBe(528)
     expect(payload.summary.byStrategyType).toMatchObject({
-      standard: { evaluated: 54 },
-      trailing_fixed: { evaluated: 162 },
-      trailing_auto: { evaluated: 162 },
-      combination: { evaluated: 378 },
-      inverse: { evaluated: 360 },
-      high_protection: { evaluated: 72 },
+      standard: { evaluated: 24 },
+      trailing_fixed: { evaluated: 72 },
+      trailing_auto: { evaluated: 72 },
+      combination: { evaluated: 168 },
+      inverse: { evaluated: 160 },
+      high_protection: { evaluated: 32 },
     })
     const byType = (strategyType: string) => persisted.filter((config: any) => config.strategyType === strategyType)
     expect(byType("trailing_fixed").every((config: any) => config.trailingMode === "fixed")).toBe(true)
     expect(byType("trailing_auto").every((config: any) => config.trailingMode === "auto")).toBe(true)
     expect(new Set(byType("combination").map((config: any) => config.trailingMode))).toEqual(new Set(["none", "fixed", "auto"]))
-    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(1188)
+    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(528)
   })
 
   test("applies the configured SL ratio step without omitting the requested protection maximum", async () => {
@@ -154,9 +154,9 @@ describe("Direct-Trade historical calculation route", () => {
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
 
     expect(payload.success).toBe(true)
-    // 9 default TP multiples (4× through 12× PositionCost) × two configured
+    // Four default TP Set ratios (4, 8, 12, 14× PositionCost) × two configured
     // SL ratios × independently evaluated long/short.
-    expect(payload.configTotal).toBe(36)
+    expect(payload.configTotal).toBe(16)
     expect(new Set(persisted.map((config: any) => Number((config.stoploss / config.takeprofit).toFixed(2))))).toEqual(new Set([0.25, 0.75]))
   })
 
@@ -179,6 +179,7 @@ describe("Direct-Trade historical calculation route", () => {
         activityVolumeRatio: 0,
         positionCostPercent: 0.1,
         takeProfitRatioRange: [4, 6],
+        takeProfitRatioStep: 1,
         blockRange: [3, 3],
         blockVolumeRatio: 1.5,
       }),

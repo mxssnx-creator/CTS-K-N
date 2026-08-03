@@ -29,6 +29,7 @@ import {
   buildDirectTradeTakeProfitPositionCostRatios,
   directTradeTakeProfitPercent,
   normaliseDirectTradeTakeProfitRatioRange,
+  normaliseDirectTradeTakeProfitRatioStep,
   DIRECT_TRADE_RECENT_PF_DEFAULT,
   type DirectTradeEntryTiming,
   type DirectTradeStrategyType,
@@ -74,6 +75,7 @@ interface CalculationRequest {
   maxHoldMinutes?: number
   positionCostPercent?: number
   takeProfitRatioRange?: [number, number]
+  takeProfitRatioStep?: number
   blockVolumeRatio?: number
   recalculate?: boolean
 }
@@ -116,6 +118,9 @@ function createCalculationSummaryAccumulator(details: {
   minRecentProfitFactor: number
   recentEvaluationPositions: number
   positionCostPercent: number
+  takeProfitRatioRange: [number, number]
+  takeProfitRatioStep: number
+  takeProfitPositionCostRatios: number[]
   activityVolumeRatio: number
   maxHoldMinutes: number
 }) {
@@ -271,6 +276,7 @@ export async function POST(request: NextRequest) {
     const positionCostPercent = normalizePositionCostPercent(body.positionCostPercent ?? POSITION_COST_PERCENT_DEFAULT)
     const takeProfitPositionCostRatios = buildDirectTradeTakeProfitPositionCostRatios(
       normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange),
+      normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep),
     )
     const takeProfitRange = takeProfitPositionCostRatios.map((ratio) =>
       directTradeTakeProfitPercent(positionCostPercent, ratio),
@@ -365,6 +371,9 @@ export async function POST(request: NextRequest) {
       minRecentProfitFactor,
       recentEvaluationPositions,
       positionCostPercent,
+      takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange),
+      takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep),
+      takeProfitPositionCostRatios,
       activityVolumeRatio,
       maxHoldMinutes,
     })

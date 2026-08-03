@@ -133,12 +133,13 @@ let state = {
   entryTiming: "current",
   activityVolumeRatio: 1,
   maxHoldMinutes: 120,
-  takeProfitRatioRange: [4, 12],
+  takeProfitRatioRange: [4, 14],
+  takeProfitRatioStep: 4,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
   maxTotalPositions: 300,
-  maxPositionsPerSymbol: 3,
-  maxPositionsPerDirection: 2,
+  maxPositionsPerSymbol: 12,
+  maxPositionsPerDirection: 6,
   processingIntervalMs: 280,
   recalcIntervalMs: 2 * 60 * 60 * 1000,
   // Evaluation settings
@@ -350,6 +351,7 @@ function calculationInputsSignature(input = state) {
     minVolFactor: input.minVolFactor,
     positionCostPercent: input.positionCostPercent,
     takeProfitRatioRange: input.takeProfitRatioRange,
+    takeProfitRatioStep: input.takeProfitRatioStep,
     maxSlRatio: input.maxSlRatio,
     slRatioStep: input.slRatioStep,
     inverseMaxSlRatio: input.inverseMaxSlRatio,
@@ -396,6 +398,7 @@ async function recalculateConfigs() {
       timeframes: state.timeframes,
       strategyTypes: state.strategyTypes,
       takeProfitRatioRange: state.takeProfitRatioRange,
+      takeProfitRatioStep: state.takeProfitRatioStep,
       blockRange: state.blockRange,
       blockVolumeRatio: state.blockVolumeRatio,
       trailingEnabled: state.trailingEnabled,
@@ -904,6 +907,7 @@ function applyRemoteState(nextState, source = "load") {
         activityVolumeRatio: prev.activityVolumeRatio,
         maxHoldMinutes: prev.maxHoldMinutes,
         takeProfitRatioRange: prev.takeProfitRatioRange,
+        takeProfitRatioStep: prev.takeProfitRatioStep,
         blockVolumeRatio: prev.blockVolumeRatio,
         maxSlRatio: prev.maxSlRatio,
         slRatioStep: prev.slRatioStep,
@@ -927,6 +931,7 @@ function applyRemoteState(nextState, source = "load") {
         activityVolumeRatio: state.activityVolumeRatio,
         maxHoldMinutes: state.maxHoldMinutes,
         takeProfitRatioRange: state.takeProfitRatioRange,
+        takeProfitRatioStep: state.takeProfitRatioStep,
         blockVolumeRatio: state.blockVolumeRatio,
         maxSlRatio: state.maxSlRatio,
         slRatioStep: state.slRatioStep,
@@ -936,7 +941,7 @@ function applyRemoteState(nextState, source = "load") {
         trailingEnabled: state.trailingEnabled,
       })
   if (evaluationInputsChanged) {
-    log("info", `Config change detected by ${source}: volFactor=${state.minVolFactor}, tp=${state.takeProfitRatioRange.join("-")}×cost, blockRatio=${state.blockVolumeRatio}, minPF=${state.minProfitFactor}`)
+    log("info", `Config change detected by ${source}: volFactor=${state.minVolFactor}, tp=${state.takeProfitRatioRange.join("-")}×cost step=${state.takeProfitRatioStep}, blockRatio=${state.blockVolumeRatio}, minPF=${state.minProfitFactor}`)
     // Settings are authoritative immediately. Rebuild the entire historic
     // grid on the next owned tick instead of trading stale configurations.
     lastRecalcAt = 0

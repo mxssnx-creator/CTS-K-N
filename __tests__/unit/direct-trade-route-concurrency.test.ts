@@ -65,6 +65,8 @@ describe("Direct-Trade API state and processor lease", () => {
         maxDrawdownTimeMin: 99,
         trailingEnabled: false,
         keepEnabledPosCount: 99,
+        maxPositionsPerSymbol: 999,
+        maxPositionsPerDirection: 999,
       }) as any)
       const payload = await response.json()
 
@@ -78,6 +80,10 @@ describe("Direct-Trade API state and processor lease", () => {
         maxDrawdownTimeMin: 99,
         trailingEnabled: false,
         keepEnabledPosCount: 99,
+        maxPositionsPerSymbol: 300,
+        maxPositionsPerDirection: 300,
+        takeProfitRatioRange: [4, 14],
+        takeProfitRatioStep: 4,
         strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
       })
 
@@ -108,6 +114,46 @@ describe("Direct-Trade API state and processor lease", () => {
 
       const totalCap = await POST(post({ action: "update-config", maxTotalPositions: 999 }) as any)
       expect((await totalCap.json()).state.maxTotalPositions).toBe(300)
+    } finally {
+      await redis.del(...DIRECT_KEYS)
+    }
+  })
+
+  test("migrates only former Direct-Trade defaults to the expanded TP and capacity contract", async () => {
+    const [{ GET }, { getRedisClient }] = await Promise.all([
+      import("@/app/api/trade-engine/direct-trade/route"),
+      import("@/lib/redis-db"),
+    ])
+    const redis = getRedisClient()
+    await redis.del(...DIRECT_KEYS)
+
+    try {
+      await redis.set("direct_trade:state", JSON.stringify({
+        takeProfitRatioRange: [4, 12],
+        maxPositionsPerSymbol: 3,
+        maxPositionsPerDirection: 2,
+      }))
+      const migrated = await (await GET()).json()
+      expect(migrated.state).toMatchObject({
+        takeProfitRatioRange: [4, 14],
+        takeProfitRatioStep: 4,
+        maxPositionsPerSymbol: 12,
+        maxPositionsPerDirection: 6,
+      })
+
+      await redis.set("direct_trade:state", JSON.stringify({
+        takeProfitRatioRange: [2, 22],
+        takeProfitRatioStep: 1,
+        maxPositionsPerSymbol: 5,
+        maxPositionsPerDirection: 2,
+      }))
+      const custom = await (await GET()).json()
+      expect(custom.state).toMatchObject({
+        takeProfitRatioRange: [2, 22],
+        takeProfitRatioStep: 1,
+        maxPositionsPerSymbol: 5,
+        maxPositionsPerDirection: 2,
+      })
     } finally {
       await redis.del(...DIRECT_KEYS)
     }
