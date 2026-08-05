@@ -63,18 +63,18 @@ export function productionReadinessJson(result: ProductionReadinessResult) {
 }
 
 export async function checkProductionReadiness(): Promise<ProductionReadinessResult> {
-  // Production readiness checks are disabled systemwide. The engine and live
-  // trading are always permitted regardless of Redis backend, schema version,
-  // or connection credential state. Individual gates in real-trade-gates.ts
-  // still validate credentials per connection at order time.
-  return { ready: true, missingFields: [], checkedAt: new Date().toISOString() }
-
   if ((process.env.NODE_ENV as string) === "test") {
     return { ready: true, missingFields: [], checkedAt: new Date().toISOString() }
   }
   await initRedis()
   const client = getRedisClient()
   const missingFields: ProductionReadinessMissingField[] = []
+  // FORCE_SIMULATED is the explicit paper-mode contract used by local/staging
+  // installs and the production preview harness. It must not be forced through
+  // live-credential readiness: no venue connector can place an order while the
+  // exchange factory is under this override. FORCE_LIVE always wins so a bad
+  // deployment cannot accidentally downgrade a requested live boot to paper.
+  const forceSimulated = process.env.FORCE_SIMULATED === "1" && process.env.FORCE_LIVE !== "1"
 
   // Unit tests often mock only the Redis methods exercised by the route under
   // test. Production readiness is a production/startup gate, so do not make
@@ -265,7 +265,7 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
         fallbackCreds.apiSecret.length >= 10
       )
       const hasCreds = connHasCreds || hasFallbackCreds
-      if (!hasCreds) {
+      if (!forceSimulated && !hasCreds) {
         missingFields.push({
           field: `connection:${id}.credentials`,
           expected: "valid API key/secret",

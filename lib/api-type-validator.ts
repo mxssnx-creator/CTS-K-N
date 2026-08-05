@@ -234,7 +234,13 @@ export function getApiPath(exchange: string, apiType: string): string {
   // Pionex
   if (exch === "pionex") {
     if (apiType === "spot") return "/api/v1"
-    if (apiType === "perpetual") return "/perpetualapi/v1"
+    if (apiType === "perpetual" || apiType === "perpetual_futures" || apiType === "futures") return "/uapi/v1"
+  }
+
+  // OrangeX current OpenAPI JSON-RPC endpoint. The old /v1 REST-shaped
+  // paths are not the production trading contract.
+  if (exch === "orangex") {
+    return "/api/v1"
   }
 
   // Default

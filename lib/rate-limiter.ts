@@ -187,13 +187,18 @@ export class RateLimiter {
           // has a slot and is about to make the actual exchange call.
           let result: any
           if (request.executeTimeoutMs && request.executeTimeoutMs > 0) {
-            const timeoutPromise = new Promise<never>((_, rej) =>
-              setTimeout(
+            let timeoutId: ReturnType<typeof setTimeout> | undefined
+            const timeoutPromise = new Promise<never>((_, rej) => {
+              timeoutId = setTimeout(
                 () => rej(new Error(`Execute timeout after ${request.executeTimeoutMs}ms`)),
                 request.executeTimeoutMs,
-              ),
-            )
-            result = await Promise.race([request.execute(), timeoutPromise])
+              )
+            })
+            try {
+              result = await Promise.race([request.execute(), timeoutPromise])
+            } finally {
+              if (timeoutId) clearTimeout(timeoutId)
+            }
           } else {
             result = await request.execute()
           }

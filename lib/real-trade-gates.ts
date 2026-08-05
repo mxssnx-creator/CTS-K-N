@@ -14,6 +14,7 @@ export type RealTradeBlockCode =
   | "forced_simulation"
   | "credentials_missing"
   | "explicit_block"
+  | "placement_disabled"
   | "shared_redis_required"
 
 export interface RealTradeReadiness {
@@ -30,6 +31,15 @@ export interface RealTradeReadiness {
 
 function truthy(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true"
+}
+
+/**
+ * Resolve the process-level paper override once for every execution path.
+ * FORCE_LIVE is the explicit operator override and therefore wins if both
+ * variables are accidentally present in a server environment.
+ */
+export function isForcedSimulation(): boolean {
+  return process.env.FORCE_SIMULATED === "1" && process.env.FORCE_LIVE !== "1"
 }
 
 function hasSharedRedisConfig(): boolean {
@@ -161,7 +171,7 @@ export function evaluateRealTradeReadiness(
   // toggle. This is used by dev/soak/preview runners and prevents a stale
   // snapshot's live request from creating one rejected record and warning per
   // candidate instead of exercising the intended simulated lifecycle.
-  const forceSimulated = process.env.FORCE_SIMULATED === "1" && process.env.FORCE_LIVE !== "1"
+  const forceSimulated = isForcedSimulation()
   if (forceSimulated) {
     return {
       intent,
@@ -205,6 +215,12 @@ export function evaluateRealTradeReadiness(
   } else if (infrastructureReason) {
     blockCode = "shared_redis_required"
     blockReason = infrastructureReason
+  } else if (
+    process.env.NODE_ENV === "production" &&
+    process.env.ALLOW_LIVE_ORDER_PLACEMENT !== "1"
+  ) {
+    blockCode = "placement_disabled"
+    blockReason = "Live trading is disabled on this production server because ALLOW_LIVE_ORDER_PLACEMENT is not set to 1"
   }
 
   const canPlaceRealOrders = blockCode === null

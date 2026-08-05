@@ -1,6 +1,11 @@
 // Plain `crypto` — Edge build aliases this to `false` via `next.config.mjs`.
 import * as crypto from "crypto"
-import { BaseExchangeConnector, type ExchangeConnectorResult, type ExchangeCredentials } from "./base-connector"
+import {
+  BaseExchangeConnector,
+  type ExchangeConnectorResult,
+  type ExchangeCredentials,
+  type PlaceOrderOptions,
+} from "./base-connector"
 import { safeParseResponse } from "@/lib/safe-response-parser"
 
 export class PionexConnector extends BaseExchangeConnector {
@@ -9,6 +14,89 @@ export class PionexConnector extends BaseExchangeConnector {
   }
   private getBaseUrl(): string {
     return "https://api.pionex.com"
+  }
+
+  /**
+   * Pionex has separate spot and futures contracts.  The connection
+   * predefinitions use both `perpetual` and `perpetual_futures`; normalize
+   * them at the connector boundary so no futures call can accidentally fall
+   * through to the old spot API.
+   */
+  private isFuturesApi(): boolean {
+    const apiType = String(this.credentials.apiType || "").toLowerCase()
+    const contractType = String(this.credentials.contractType || "").toLowerCase()
+    return apiType !== "spot" && (
+      apiType === "perpetual" ||
+      apiType === "perpetual_futures" ||
+      apiType === "futures" ||
+      contractType.includes("perpetual")
+    )
+  }
+
+  private isHedgeMode(options?: PlaceOrderOptions): boolean {
+    if (typeof options?.hedgeMode === "boolean") return options.hedgeMode
+    const mode = String(this.credentials.positionMode || "").toLowerCase()
+    return mode.includes("hedge") || mode.includes("dual") || mode.includes("openclose")
+  }
+
+  private normalizeFuturesSymbol(symbol: string): string {
+    const raw = String(symbol || "").trim().toUpperCase().replace(/\//g, "_").replace(/-/g, "_")
+    if (raw.endsWith("_PERP")) return raw
+    if (raw.endsWith("_PERPETUAL")) return `${raw.slice(0, -10)}_PERP`
+    if (raw.includes("_")) return `${raw}_PERP`
+    const quote = ["USDT", "USDC", "USD"].find((candidate) => raw.endsWith(candidate))
+    if (quote) return `${raw.slice(0, -quote.length)}_${quote}_PERP`
+    return raw
+  }
+
+  private futuresQuery(params: Record<string, string>): string {
+    return Object.keys(params)
+      .sort()
+      .map((key) => `${key}=${encodeURIComponent(params[key])}`)
+      .join("&")
+  }
+
+  /** Signed Pionex UAPI request. Timestamp/signature are built after the
+   * rate-limit slot is acquired, preventing stale signatures under load. */
+  private async futuresRequest<T = any>(
+    method: string,
+    path: string,
+    params: Record<string, string> = {},
+    body?: Record<string, unknown>,
+  ): Promise<T> {
+    const bodyString = body ? JSON.stringify(body) : undefined
+    let signedParams: Record<string, string> = {}
+    const urlBuilder = () => {
+      signedParams = { ...params, timestamp: Date.now().toString() }
+      return `${this.getBaseUrl()}${path}?${this.futuresQuery(signedParams)}`
+    }
+    const optionsBuilder = () => {
+      const signature = this.generateSignature(method, path, signedParams, bodyString)
+      return {
+        method,
+        headers: {
+          "PIONEX-KEY": this.credentials.apiKey,
+          "PIONEX-SIGNATURE": signature,
+          ...(bodyString ? { "Content-Type": "application/json" } : {}),
+        },
+        ...(bodyString ? { body: bodyString } : {}),
+      } satisfies RequestInit
+    }
+
+    const response = await this.rateLimitedFetch(urlBuilder, optionsBuilder)
+    const data = await safeParseResponse(response)
+    const failed = !response.ok || data.error || data.result === false ||
+      (data.code !== undefined && String(data.code) !== "0")
+    if (failed) {
+      throw new Error(String(data.message || data.msg || data.error || `Pionex HTTP ${response.status}`))
+    }
+    return data.data as T
+  }
+
+  private futuresRows(data: any, key: string): any[] {
+    if (Array.isArray(data)) return data
+    if (Array.isArray(data?.[key])) return data[key]
+    return []
   }
 
   getCapabilities(): string[] {
@@ -57,6 +145,31 @@ export class PionexConnector extends BaseExchangeConnector {
   }
 
   async getBalance(): Promise<ExchangeConnectorResult> {
+    if (this.isFuturesApi()) {
+      try {
+        const data = await this.futuresRequest<any>("GET", "/uapi/v1/account/balances")
+        const balanceData = this.futuresRows(data, "balances")
+        const balances = balanceData.map((balance: any) => {
+          const asset = String(balance.asset ?? balance.coin ?? "")
+          const free = Number(balance.free ?? balance.available ?? 0)
+          const locked = Number(balance.locked ?? balance.frozen ?? 0)
+          return { asset, free, locked, total: free + locked }
+        }).filter((balance: any) => balance.asset)
+        const usdtBalance = balances.find((balance: any) => balance.asset === "USDT")?.free || 0
+        return {
+          success: true,
+          balance: Number(usdtBalance),
+          balances,
+          capabilities: this.getCapabilities(),
+          logs: this.logs,
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        this.logError(`Connection error: ${message}`)
+        throw error
+      }
+    }
+
     const timestamp = Date.now().toString()
     const baseUrl = this.getBaseUrl()
     const method = "GET"
@@ -126,10 +239,39 @@ export class PionexConnector extends BaseExchangeConnector {
     side: "buy" | "sell",
     quantity: number,
     price?: number,
-    orderType: "limit" | "market" = "limit"
+    orderType: "limit" | "market" = "limit",
+    options: PlaceOrderOptions = {},
   ): Promise<{ success: boolean; orderId?: string; error?: string }> {
     try {
       this.log(`Placing ${orderType} ${side} order: ${quantity} ${symbol}`)
+
+      if (this.isFuturesApi()) {
+        const futuresSymbol = this.normalizeFuturesSymbol(symbol)
+        const hedgeMode = this.isHedgeMode(options)
+        const body: Record<string, unknown> = {
+          symbol: futuresSymbol,
+          positionSide: hedgeMode
+            ? (options.positionSide || (side === "buy" ? "LONG" : "SHORT"))
+            : "BOTH",
+          side: side.toUpperCase(),
+          type: orderType === "market" ? "MARKET_QTY" : "LIMIT",
+          size: String(quantity),
+        }
+        if (orderType === "limit") {
+          if (!Number.isFinite(price) || Number(price) <= 0) {
+            throw new Error("Pionex limit orders require a positive price")
+          }
+          body.price = String(price)
+        }
+        if (!hedgeMode && options.reduceOnly === true) body.reduceOnly = true
+        if (options.clientOrderId) {
+          body.clientOrderId = options.clientOrderId.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 64)
+        }
+        const data = await this.futuresRequest<any>("POST", "/uapi/v1/trade/order", {}, body)
+        const orderId = data?.orderId == null ? undefined : String(data.orderId)
+        this.log(`✓ Futures order accepted: ${orderId || "unconfirmed"}`)
+        return { success: true, orderId }
+      }
 
       const baseUrl = this.getBaseUrl()
       const timestamp = Date.now().toString()
@@ -179,9 +321,42 @@ export class PionexConnector extends BaseExchangeConnector {
     }
   }
 
+  /**
+   * The current documented Pionex futures UAPI exposes regular LIMIT,
+   * MARKET_QTY, IOC, FOK and POSTONLY orders, but not a conditional-order
+   * request in the same contract. Never emulate a stop with a resting limit:
+   * that can execute immediately or open the opposite position. The engine's
+   * system-side trigger/close path remains the safe fallback and this explicit
+   * result lets it keep the position unarmed instead of recording fake venue
+   * protection.
+   */
+  async placeStopOrder(
+    symbol: string,
+    _closeSide: "buy" | "sell",
+    _quantity: number,
+    _triggerPrice: number,
+    _kind: "stop_loss" | "take_profit",
+    _options: PlaceOrderOptions = {},
+  ): Promise<{ success: boolean; orderId?: string; error?: string }> {
+    if (!this.isFuturesApi()) return super.placeStopOrder(symbol, _closeSide, _quantity, _triggerPrice, _kind, _options)
+    return {
+      success: false,
+      error: "Pionex futures UAPI has no documented conditional order endpoint; system-side protection remains active",
+    }
+  }
+
   async cancelOrder(symbol: string, orderId: string): Promise<{ success: boolean; error?: string }> {
     try {
       this.log(`Cancelling order ${orderId} for ${symbol}`)
+
+      if (this.isFuturesApi()) {
+        await this.futuresRequest("DELETE", "/uapi/v1/trade/order", {}, {
+          symbol: this.normalizeFuturesSymbol(symbol),
+          orderId: String(orderId),
+        })
+        this.log("✓ Futures order cancelled successfully")
+        return { success: true }
+      }
 
       const baseUrl = this.getBaseUrl()
       const timestamp = Date.now().toString()
@@ -227,6 +402,13 @@ export class PionexConnector extends BaseExchangeConnector {
     try {
       this.log(`Fetching order ${orderId} for ${symbol}`)
 
+      if (this.isFuturesApi()) {
+        return await this.futuresRequest("GET", "/uapi/v1/trade/order", {
+          symbol: this.normalizeFuturesSymbol(symbol),
+          orderId: String(orderId),
+        })
+      }
+
       const baseUrl = this.getBaseUrl()
       const timestamp = Date.now().toString()
       const method = "GET"
@@ -258,6 +440,13 @@ export class PionexConnector extends BaseExchangeConnector {
   async getOpenOrders(symbol?: string): Promise<any[]> {
     try {
       this.log(`Fetching open orders${symbol ? ` for ${symbol}` : ""}`)
+
+      if (this.isFuturesApi()) {
+        const data = await this.futuresRequest<any>("GET", "/uapi/v1/trade/openOrders", symbol
+          ? { symbol: this.normalizeFuturesSymbol(symbol) }
+          : {})
+        return this.futuresRows(data, "orders")
+      }
 
       const baseUrl = this.getBaseUrl()
       const timestamp = Date.now().toString()
@@ -294,6 +483,14 @@ export class PionexConnector extends BaseExchangeConnector {
     try {
       this.log(`Fetching order history${symbol ? ` for ${symbol}` : ""} (limit: ${limit})`)
 
+      if (this.isFuturesApi()) {
+        const data = await this.futuresRequest<any>("GET", "/uapi/v1/trade/historyOrders", {
+          ...(symbol ? { symbol: this.normalizeFuturesSymbol(symbol) } : {}),
+          limit: String(Math.max(1, Math.min(500, Math.trunc(limit)))),
+        })
+        return this.futuresRows(data, "orders")
+      }
+
       const baseUrl = this.getBaseUrl()
       const timestamp = Date.now().toString()
       const method = "GET"
@@ -326,12 +523,55 @@ export class PionexConnector extends BaseExchangeConnector {
   }
 
   async getPositions(symbol?: string): Promise<any[]> {
+    if (this.isFuturesApi()) {
+      try {
+        const data = await this.futuresRequest<any>("GET", "/uapi/v1/account/positions", symbol
+          ? { symbol: this.normalizeFuturesSymbol(symbol) }
+          : {})
+        return this.futuresRows(data, "positions")
+          .map((position: any) => {
+            const rawSize = Number(position.netSize ?? position.positionAmt ?? position.size ?? 0)
+            const explicitSide = String(position.positionSide || "").toUpperCase()
+            const side: "long" | "short" = explicitSide === "SHORT" || rawSize < 0 ? "short" : "long"
+            const contracts = Math.abs(rawSize || Number(position.sizeLong ?? position.sizeShort ?? 0))
+            if (!Number.isFinite(contracts) || contracts <= 0) return null
+            const isolatedModeValue = position.isolatedMode ?? position.marginType ?? "CROSS"
+            const isolatedMode = String(isolatedModeValue).toUpperCase()
+            return {
+              ...position,
+              symbol: String(position.symbol || symbol || ""),
+              side,
+              contracts,
+              contractSize: 1,
+              currentPrice: Number(position.markPrice ?? position.currentPrice ?? 0),
+              markPrice: Number(position.markPrice ?? 0),
+              entryPrice: Number(position.avgPrice ?? position.entryPrice ?? position.averagePrice ?? 0),
+              leverage: Number(position.leverage ?? 1),
+              marginType: isolatedModeValue === true || isolatedMode.includes("ISOLATED") ? "isolated" : "cross",
+              unrealizedPnl: Number(position.unrealizedPnL ?? position.unRealizedProfit ?? position.floatingProfitLoss ?? 0),
+              realizedPnl: Number(position.realizedPnL ?? position.realizedProfit ?? 0),
+              liquidationPrice: Number(position.liquidationPrice ?? 0),
+              timestamp: Number(position.updateTime ?? position.updatedTime ?? Date.now()),
+              positionSide: explicitSide || (side === "long" ? "LONG" : "SHORT"),
+            }
+          })
+          .filter(Boolean)
+      } catch (error) {
+        this.logError(`✗ Failed to fetch futures positions: ${error instanceof Error ? error.message : String(error)}`)
+        return []
+      }
+    }
+
     // Pionex only supports spot trading, no positions/futures
     this.log("Positions not available for Pionex (spot trading only)")
     return []
   }
 
-  async getPosition(symbol: string, _direction?: "long" | "short"): Promise<any> {
+  async getPosition(symbol: string, direction?: "long" | "short"): Promise<any> {
+    if (this.isFuturesApi()) {
+      const positions = await this.getPositions(symbol)
+      return positions.find((position: any) => !direction || position.side === direction) || null
+    }
     return null
   }
 
@@ -340,10 +580,33 @@ export class PionexConnector extends BaseExchangeConnector {
     leverage?: number,
     marginType?: "cross" | "isolated"
   ): Promise<{ success: boolean; error?: string }> {
+    if (this.isFuturesApi()) {
+      if (leverage !== undefined) {
+        const leverageResult = await this.setLeverage(symbol, leverage)
+        if (!leverageResult.success) return leverageResult
+      }
+      if (marginType !== undefined) return this.setMarginType(symbol, marginType)
+      return { success: true }
+    }
     return { success: false, error: "Positions not supported on Pionex" }
   }
 
   async closePosition(symbol: string, positionSide?: "long" | "short"): Promise<{ success: boolean; error?: string }> {
+    if (this.isFuturesApi()) {
+      try {
+        const position = await this.getPosition(symbol, positionSide)
+        const quantity = Number(position?.contracts || 0)
+        if (!position || !Number.isFinite(quantity) || quantity <= 0) return { success: true }
+        const closeSide = position.side === "long" ? "sell" : "buy"
+        return await this.placeOrder(symbol, closeSide, quantity, undefined, "market", {
+          hedgeMode: this.isHedgeMode(),
+          positionSide: position.side === "long" ? "LONG" : "SHORT",
+          reduceOnly: !this.isHedgeMode(),
+        })
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    }
     return { success: false, error: "Positions not supported on Pionex" }
   }
 
@@ -463,14 +726,46 @@ export class PionexConnector extends BaseExchangeConnector {
   }
 
   async setLeverage(symbol: string, leverage: number): Promise<{ success: boolean; error?: string }> {
+    if (this.isFuturesApi()) {
+      try {
+        await this.futuresRequest("POST", "/uapi/v1/account/leverage", {}, {
+          symbol: this.normalizeFuturesSymbol(symbol),
+          leverage: String(Math.max(1, Math.trunc(leverage))),
+        })
+        return { success: true }
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    }
     return { success: false, error: "Leverage not supported on Pionex (spot trading only)" }
   }
 
   async setMarginType(symbol: string, marginType: "cross" | "isolated"): Promise<{ success: boolean; error?: string }> {
+    if (this.isFuturesApi()) {
+      try {
+        await this.futuresRequest("POST", "/uapi/v1/trade/isolatedMode", {}, {
+          symbol: this.normalizeFuturesSymbol(symbol),
+          isolatedMode: marginType === "isolated" ? "ISOLATED" : "CROSS",
+        })
+        return { success: true }
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    }
     return { success: false, error: "Margin trading not supported on Pionex (spot trading only)" }
   }
 
   async setPositionMode(hedgeMode: boolean): Promise<{ success: boolean; error?: string }> {
+    if (this.isFuturesApi()) {
+      try {
+        await this.futuresRequest("POST", "/uapi/v1/account/positionMode", {}, {
+          positionMode: hedgeMode ? "OPENCLOSE" : "BUYSELL",
+        })
+        return { success: true }
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    }
     return { success: false, error: "Position mode not supported on Pionex (spot trading only)" }
   }
 
@@ -479,9 +774,10 @@ export class PionexConnector extends BaseExchangeConnector {
       this.log(`Fetching ticker for ${symbol}`)
 
       const baseUrl = this.getBaseUrl()
+      const marketSymbol = this.isFuturesApi() ? this.normalizeFuturesSymbol(symbol) : symbol
       const timestamp = Date.now().toString()
       const method = "GET"
-      const path = `/api/v1/market/ticker?symbol=${symbol}`
+      const path = `/api/v1/market/tickers?symbol=${marketSymbol}`
       const params: Record<string, string> = { timestamp }
       const signature = this.generateSignature(method, path, params)
 
@@ -498,10 +794,21 @@ export class PionexConnector extends BaseExchangeConnector {
         return null
       }
 
-      const ticker = data.data
-      const bid = Number.parseFloat(ticker.bid || ticker.bidPrice || "0")
-      const ask = Number.parseFloat(ticker.ask || ticker.askPrice || "0")
-      const last = Number.parseFloat(ticker.last || ticker.lastPrice || "0")
+      const rows = Array.isArray(data.data)
+        ? data.data
+        : Array.isArray(data.data?.tickers)
+          ? data.data.tickers
+          : Array.isArray(data.data?.items)
+            ? data.data.items
+            : []
+      const ticker = rows.find((row: any) => String(row?.symbol || "").toUpperCase() === marketSymbol) ||
+        (rows.length === 0 && data.data && typeof data.data === "object" && !Array.isArray(data.data)
+          ? data.data
+          : null)
+      if (!ticker) return null
+      const bid = Number.parseFloat(ticker.bid || ticker.bidPrice || ticker.bestBidPrice || "0")
+      const ask = Number.parseFloat(ticker.ask || ticker.askPrice || ticker.bestAskPrice || "0")
+      const last = Number.parseFloat(ticker.last || ticker.lastPrice || ticker.close || "0")
 
       this.log(`✓ Ticker fetched: bid=${bid}, ask=${ask}, last=${last}`)
       return { bid, ask, last }
@@ -526,6 +833,7 @@ export class PionexConnector extends BaseExchangeConnector {
       }
 
       const baseUrl = this.getBaseUrl()
+      const marketSymbol = this.isFuturesApi() ? this.normalizeFuturesSymbol(symbol) : symbol
       const timestamp = Date.now().toString()
       const method = "GET"
       
@@ -537,7 +845,7 @@ export class PionexConnector extends BaseExchangeConnector {
       }
       const interval = intervalMap[timeframe] || "1m"
       
-      const path = `/api/v1/market/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
+      const path = `/api/v1/market/klines?symbol=${marketSymbol}&interval=${interval}&limit=${limit}`
       const params: Record<string, string> = { timestamp }
       const signature = this.generateSignature(method, path, params)
 
@@ -555,14 +863,22 @@ export class PionexConnector extends BaseExchangeConnector {
         return null
       }
 
-      const candles = data.data.map((c: any) => ({
-        timestamp: Number.parseInt(c.time),
-        open: Number.parseFloat(c.open),
-        high: Number.parseFloat(c.high),
-        low: Number.parseFloat(c.low),
-        close: Number.parseFloat(c.close),
-        volume: Number.parseFloat(c.volume)
-      }))
+      const rows = Array.isArray(data.data) ? data.data : data.data?.klines || []
+      const candles = rows.map((c: any) => {
+        const rawTimestamp = Number(c.time ?? c.timestamp ?? c[0])
+        return {
+          timestamp: rawTimestamp < 10_000_000_000 ? rawTimestamp * 1000 : rawTimestamp,
+          open: Number.parseFloat(c.open ?? c[1]),
+          high: Number.parseFloat(c.high ?? c[2]),
+          low: Number.parseFloat(c.low ?? c[3]),
+          close: Number.parseFloat(c.close ?? c[4]),
+          volume: Number.parseFloat(c.volume ?? c[5]),
+        }
+      }).filter((c: any) =>
+        Number.isFinite(c.timestamp) &&
+        [c.open, c.high, c.low, c.close, c.volume].every((value) => Number.isFinite(value)) &&
+        c.close > 0,
+      )
 
       this.log(`✓ OHLCV fetched: ${candles.length} candles`)
       return candles
@@ -585,11 +901,16 @@ export class PionexConnector extends BaseExchangeConnector {
   ): Promise<Array<{ timestamp: number; open: number; high: number; low: number; close: number; volume: number }> | null> {
     try {
       const baseUrl = this.getBaseUrl()
-      const url = `${baseUrl}/api/v1/market/trades?symbol=${symbol}&limit=500`
+      const marketSymbol = this.isFuturesApi() ? this.normalizeFuturesSymbol(symbol) : symbol
+      const url = `${baseUrl}/api/v1/market/trades?symbol=${marketSymbol}&limit=500`
       const resp = await this.rateLimitedFetch(url)
       if (!resp.ok) return null
       const data = await resp.json()
-      const rows = Array.isArray(data?.data) ? data.data : []
+      const rows = Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data?.data?.trades)
+          ? data.data.trades
+          : []
       if (rows.length === 0) return []
       const { aggregateTradesTo1sOHLCV } = await import("./aggregate-1s")
       const trades = rows.map((r: any) => ({

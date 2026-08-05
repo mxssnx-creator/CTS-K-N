@@ -254,6 +254,39 @@ export async function getHistoricCandlesForRange(
 }
 
 /**
+ * Load the newest bounded candle tail from the chunked history index.
+ *
+ * The hot `market_data:{symbol}:candles` key intentionally contains only a
+ * small realtime tail. Stage coordination still needs the complete 90-minute
+ * warmup, so readers must obtain that window from the canonical chunks instead
+ * of forcing the loader to duplicate thousands of candles in every hot key.
+ */
+export async function getHistoricCandleTail(symbol: string, limit: number): Promise<any[]> {
+  const requested = Math.max(0, Math.floor(Number(limit) || 0))
+  if (requested === 0) return []
+
+  const ranges = await loadHistoricChunkRanges(symbol)
+  if (ranges.length === 0) {
+    const legacy = await getParsedCandlesCached(symbol)
+    return legacy.slice(-requested)
+  }
+
+  let first = ranges.length - 1
+  let remaining = requested
+  while (first > 0 && remaining > 0) {
+    remaining -= Math.max(1, Number(ranges[first].count) || 0)
+    if (remaining > 0) first--
+  }
+
+  const rawChunks = await getRedisClient().lrange(
+    `market_data:${symbol}:history:chunks`,
+    first,
+    ranges.length - 1,
+  )
+  return normalizeHistoricCandles(Array.isArray(rawChunks) ? rawChunks : []).slice(-requested)
+}
+
+/**
  * Load a small replay window around the last processed timestamp. The single
  * contiguous LRANGE is intentionally wide enough for warmup and lookahead but
  * never includes unrelated prehistoric chunks.

@@ -20,6 +20,7 @@ describe("Main Trade Engine live execution readiness", () => {
     ALLOW_INLINE_REDIS_LIVE_TRADING: process.env.ALLOW_INLINE_REDIS_LIVE_TRADING,
     FORCE_SIMULATED: process.env.FORCE_SIMULATED,
     FORCE_LIVE: process.env.FORCE_LIVE,
+    ALLOW_LIVE_ORDER_PLACEMENT: process.env.ALLOW_LIVE_ORDER_PLACEMENT,
   }
 
   beforeEach(() => {
@@ -32,6 +33,7 @@ describe("Main Trade Engine live execution readiness", () => {
     delete process.env.ALLOW_INLINE_REDIS_LIVE_TRADING
     delete process.env.FORCE_SIMULATED
     delete process.env.FORCE_LIVE
+    delete process.env.ALLOW_LIVE_ORDER_PLACEMENT
   })
 
   afterAll(() => {
@@ -198,5 +200,47 @@ describe("Main Trade Engine live execution readiness", () => {
       blockCode: "explicit_block",
       blockReason: "Connection test failed: invalid signature",
     })
+  })
+
+  test("blocks production live entries unless the server placement gate is enabled", () => {
+    const previousNodeEnv = process.env.NODE_ENV
+    try {
+      Object.defineProperty(process.env, "NODE_ENV", {
+        value: "production",
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      })
+      process.env.REDIS_URL = "redis://shared-test"
+      delete process.env.ALLOW_LIVE_ORDER_PLACEMENT
+
+      expect(evaluateRealTradeReadiness({
+        ...credentialed,
+        is_live_trade: "1",
+        live_trade_requested: "1",
+      })).toMatchObject({
+        canPlaceRealOrders: false,
+        executionMode: "blocked",
+        blockCode: "placement_disabled",
+      })
+
+      process.env.ALLOW_LIVE_ORDER_PLACEMENT = "1"
+      expect(evaluateRealTradeReadiness({
+        ...credentialed,
+        is_live_trade: "1",
+        live_trade_requested: "1",
+      })).toMatchObject({
+        canPlaceRealOrders: true,
+        executionMode: "live",
+        blockCode: null,
+      })
+    } finally {
+      Object.defineProperty(process.env, "NODE_ENV", {
+        value: previousNodeEnv,
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      })
+    }
   })
 })

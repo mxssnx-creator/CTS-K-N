@@ -248,7 +248,7 @@ export abstract class BaseExchangeConnector {
    */
   protected async rateLimitedFetch(
     url: string | (() => string),
-    options?: RequestInit,
+    options?: RequestInit | (() => RequestInit),
   ): Promise<Response> {
     // this.timeout is enforced via the rate-limiter's executeTimeoutMs parameter.
     // The timeout starts at dispatch time (when the request leaves the queue and
@@ -260,6 +260,7 @@ export abstract class BaseExchangeConnector {
         // Resolve the URL INSIDE the rate-limit slot so lazily-built signed
         // URLs carry a timestamp from send time, not queue-entry time.
         const resolvedUrl = typeof url === "function" ? url() : url
+        const resolvedOptions = typeof options === "function" ? options() : options
 
         const controller = new AbortController()
         // The rate-limiter's executeTimeoutMs fires Promise.race at this.timeout
@@ -268,7 +269,7 @@ export abstract class BaseExchangeConnector {
         const timeoutId = setTimeout(() => controller.abort(), this.timeout)
         try {
           const response = await fetch(resolvedUrl, {
-            ...options,
+            ...resolvedOptions,
             signal: controller.signal,
           })
           clearTimeout(timeoutId)

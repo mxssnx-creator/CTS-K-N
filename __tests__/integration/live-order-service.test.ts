@@ -8,7 +8,15 @@ const setStore = new Map<string, Set<string>>()
 
 jest.mock("@/lib/redis-db", () => ({
   initRedis: jest.fn(async () => undefined),
-  getConnection: jest.fn(async (id: string) => ({ id, exchange: "mock", api_key: "key", api_secret: "secret", is_testnet: "1" })),
+  getConnection: jest.fn(async (id: string) => ({
+    id,
+    exchange: "mock",
+    api_key: "1234567890",
+    api_secret: "secret12345",
+    is_testnet: "1",
+    is_live_trade: "1",
+    live_trade_requested: "1",
+  })),
   getMarketData: jest.fn(async () => ({ latest: { close: 100 } })),
   savePosition: jest.fn(async (position: any) => {
     kvStore.set(`live:position:${position.id}`, JSON.stringify(position))
@@ -255,6 +263,54 @@ describe("live-order-service integration accounting", () => {
       quantity: 1,
       connection: { id: "conn-invalid-side" },
     })).rejects.toThrow("Order side must be long, short, buy, or sell")
+  })
+
+  test("routes a supplied connector to paper mode when the persisted Live switch is off", async () => {
+    const previousNodeEnv = process.env.NODE_ENV
+    const suppliedConnector = {
+      setLeverage: jest.fn(async () => ({ success: true })),
+      placeOrder: jest.fn(async () => ({
+        success: true,
+        orderId: "must-not-be-sent",
+        status: "filled",
+        filledQty: 1,
+        filledPrice: 100,
+      })),
+    }
+    try {
+      Object.defineProperty(process.env, "NODE_ENV", {
+        value: "development",
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      })
+      const { placeLiveOrder } = await import("@/lib/live-order-service")
+      const result = await placeLiveOrder({
+        connectionId: "conn-paper-switch",
+        symbol: "BTCUSDT",
+        side: "long",
+        quantity: 1,
+        connector: suppliedConnector,
+        connection: {
+          id: "conn-paper-switch",
+          exchange: "mock",
+          api_key: "1234567890",
+          api_secret: "secret12345",
+          is_live_trade: "0",
+          live_trade_requested: "0",
+        },
+      })
+
+      expect(result).toMatchObject({ success: true, mode: "simulated" })
+      expect(suppliedConnector.placeOrder).not.toHaveBeenCalled()
+    } finally {
+      Object.defineProperty(process.env, "NODE_ENV", {
+        value: previousNodeEnv,
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      })
+    }
   })
 
   test("FORCE_SIMULATED remains usable for isolated production progression tests", async () => {

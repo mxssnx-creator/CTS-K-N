@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { initRedis, getRedisClient } from "@/lib/redis-db"
 import { BASE_CONNECTION_CREDENTIALS } from "@/lib/base-connection-credentials"
+import { authorizeAdminBearer } from "@/lib/admin-auth"
 
 export const dynamic = "force-dynamic"
 
@@ -9,7 +10,14 @@ export const dynamic = "force-dynamic"
  * 
  * Injects predefined real API credentials into canonical base connections.
  */
-export async function POST() {
+export async function POST(request: Request) {
+  const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+  if (!authorization.ok) {
+    return NextResponse.json(
+      { success: false, error: authorization.error },
+      { status: authorization.status },
+    )
+  }
   try {
     await initRedis()
     const client = getRedisClient()
@@ -48,6 +56,8 @@ export async function POST() {
               is_live_trade: "1",
               live_trade_requested: "1",
               live_trade_enabled: "1",
+              live_trade_blocked_reason: "",
+              live_trade_block_code: "",
             }
           : {}),
         updated_at: new Date().toISOString(),
@@ -87,7 +97,14 @@ export async function POST() {
   }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const authorization = authorizeAdminBearer(request.headers.get("authorization"))
+  if (!authorization.ok) {
+    return NextResponse.json(
+      { success: false, error: authorization.error },
+      { status: authorization.status },
+    )
+  }
   try {
     await initRedis()
     const client = getRedisClient()

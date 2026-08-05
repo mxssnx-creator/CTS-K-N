@@ -41,6 +41,17 @@ export const fetchCache = "force-no-store"
 // Fallback symbols if no market data is available in Redis
 const FALLBACK_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
+function isExpectedHistoricHandoff(error: unknown): boolean {
+  const candidate = error as { name?: unknown; message?: unknown } | null
+  const name = String(candidate?.name || "")
+  const message = String(candidate?.message || error || "")
+  return (
+    name === "PrehistoricProcessingCancelledError" ||
+    name === "PrehistoricRunSupersededError" ||
+    /Historic (?:processing|run).*superseded/i.test(message)
+  )
+}
+
 // In-memory cache for the most volatile symbol per exchange (60s TTL)
 const volatileSymbolCache = new Map<string, { symbol: string; ts: number }>()
 const CACHE_TTL = 60_000
@@ -801,6 +812,18 @@ export async function GET(request: Request) {
       timestamp: Date.now(),
     })
   } catch (error) {
+    if (isExpectedHistoricHandoff(error)) {
+      // A newer canonical-symbol/settings generation owns the next historic
+      // run. This is a normal distributed handoff, not a failed cron tick;
+      // returning 200 keeps the minute scheduler from raising a false alarm.
+      console.info("[v0] [CronIndications] Historic generation superseded; handing off to the newer owner")
+      return NextResponse.json({
+        success: true,
+        skipped: true,
+        reason: "historic_generation_superseded",
+        timestamp: Date.now(),
+      })
+    }
     console.error("[v0] [CronIndications] Error:", error)
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

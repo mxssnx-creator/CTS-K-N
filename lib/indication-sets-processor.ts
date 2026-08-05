@@ -198,24 +198,71 @@ type ExactSnapshotCacheEntry = {
 // The realtime engine may pulse every 280 ms while exchange candles update at
 // a lower cadence. Rebuilding and re-persisting an unchanged exhaustive grid
 // in every pulse creates CPU/GC pressure without producing a new decision.
-// Keep only a tiny, price-signatured read-through cache. Settings changes are
-// visible within the short TTL and a closed forward outcome explicitly bypasses
-// it, so completed-position PF/DDT is never hidden behind the optimisation.
+// Keep a bounded, market-signatured read-through cache. Settings changes clear
+// it explicitly. A closed forward outcome patches the affected exact rows in
+// the cached snapshot instead of forcing the whole Cartesian grid to run again.
 const EXACT_SNAPSHOT_CACHE_MAX_AGE_MS = Math.max(
   100,
-  Math.min(3_000, Number(process.env.INDICATION_EXACT_SNAPSHOT_CACHE_MS || 1_000) || 1_000),
+  Math.min(30_000, Number(process.env.INDICATION_EXACT_SNAPSHOT_CACHE_MS || 30_000) || 30_000),
 )
 const EXACT_SNAPSHOT_CACHE_MAX_ENTRIES = 256
 const exactSnapshotCache = new Map<string, ExactSnapshotCacheEntry>()
+
+function stableNumber(value: unknown): string {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed.toPrecision(15) : ""
+}
+
+function realtimeMarketSignature(marketData: any): string {
+  const candles = Array.isArray(marketData?.candles) ? marketData.candles : []
+  const prices = Array.isArray(marketData?.prices) ? marketData.prices : []
+  let hash = 0x811c9dc5
+  const mix = (value: unknown): void => {
+    const text = String(value ?? "")
+    for (let index = 0; index < text.length; index++) {
+      hash ^= text.charCodeAt(index)
+      hash = Math.imul(hash, 0x01000193)
+    }
+    hash ^= 0xff
+    hash = Math.imul(hash, 0x01000193)
+  }
+
+  if (candles.length > 0) {
+    for (const candle of candles) {
+      mix(stableNumber(candle?.open ?? candle?.o))
+      mix(stableNumber(candle?.high ?? candle?.h))
+      mix(stableNumber(candle?.low ?? candle?.l))
+      mix(stableNumber(candle?.close ?? candle?.c ?? candle?.price))
+      mix(stableNumber(candle?.volume ?? candle?.v))
+    }
+  } else {
+    for (const price of prices) mix(stableNumber(price))
+  }
+
+  // Do not include a per-pulse mark/execution price in the exhaustive-grid
+  // identity. The Row-Real graph is driven by the persisted candle history;
+  // the live stage independently uses the current mark for sizing and entry.
+  // Including that mark here turns a 280 ms realtime pulse into a full matrix
+  // rebuild even when no candle has changed.
+  const currentPrice = stableNumber(
+    candles[candles.length - 1]?.close ??
+      prices[prices.length - 1] ??
+      marketData?.close,
+  )
+  return `${candles.length || prices.length}:${currentPrice}:${(hash >>> 0).toString(36)}`
+}
 
 function exactSnapshotCacheKey(connectionId: string, symbol: string, marketData: any): string {
   const mode = String(marketData?.__indicationSnapshotMode || "realtime")
   // A historic replay needs a distinct configuration snapshot for every
   // simulated candle. Realtime Direct-Trade instead owns its mark/close work
-  // in the independent 280 ms lifecycle Stage; recomputing the exhaustive
-  // entry matrix for every sub-second mark gives no additional protection and
-  // causes a cache-miss storm on feeds that stamp every envelope with `now`.
-  if (mode !== "historical") return `${connectionId}:${symbol}:realtime`
+  // in the independent 280 ms lifecycle Stage; the exact matrix only needs to
+  // be rebuilt when the actual market-data values change. The signature avoids
+  // cache misses caused by feeds that stamp an otherwise unchanged envelope
+  // with a new wall-clock timestamp on every pulse.
+  if (mode !== "historical") {
+    return `${connectionId}:${symbol}:realtime:${realtimeMarketSignature(marketData)}`
+  }
   const candles = Array.isArray(marketData?.candles) ? marketData.candles : []
   const tail = candles[candles.length - 1] || {}
   // `marketData.timestamp` may be the time the processor touched an otherwise
@@ -240,11 +287,36 @@ function readExactSnapshotCache(key: string): any[] | null {
 }
 
 function writeExactSnapshotCache(key: string, entries: any[]): void {
+  // Keep one current realtime snapshot per (connection, symbol). A changing
+  // market signature must replace the previous object graph immediately rather
+  // than retaining every price tick until the global entry cap is reached.
+  const realtimeMarker = ":realtime:"
+  const realtimeIndex = key.indexOf(realtimeMarker)
+  if (realtimeIndex >= 0) {
+    const scope = key.slice(0, realtimeIndex + realtimeMarker.length)
+    for (const existingKey of exactSnapshotCache.keys()) {
+      if (existingKey !== key && existingKey.startsWith(scope)) {
+        exactSnapshotCache.delete(existingKey)
+      }
+    }
+  }
   if (exactSnapshotCache.size >= EXACT_SNAPSHOT_CACHE_MAX_ENTRIES && !exactSnapshotCache.has(key)) {
     const oldest = exactSnapshotCache.keys().next().value
     if (oldest !== undefined) exactSnapshotCache.delete(oldest)
   }
   exactSnapshotCache.set(key, { expiresAt: Date.now() + EXACT_SNAPSHOT_CACHE_MAX_AGE_MS, entries: entries.slice() })
+}
+
+/** Invalidate exact realtime snapshots after a connection/global settings save. */
+export function invalidateExactSnapshotCache(connectionId?: string): void {
+  if (!connectionId) {
+    exactSnapshotCache.clear()
+    return
+  }
+  const prefix = `${connectionId}:`
+  for (const key of exactSnapshotCache.keys()) {
+    if (key.startsWith(prefix)) exactSnapshotCache.delete(key)
+  }
 }
 
 function resolveIndicationDirection(indication: any): "long" | "short" | null {
@@ -414,6 +486,8 @@ export class IndicationSetsProcessor {
   private outcomeSlippagePct = 0.0006
   private outcomeAttachmentConcurrency = DEFAULT_OUTCOME_ATTACHMENT_CONCURRENCY
   private readonly settingsReady: Promise<void>
+  /** Exact Set keys whose pending outcome was closed during the current call. */
+  private recentlyClosedOutcomeSetKeys = new Set<string>()
 
   constructor(connectionId: string) {
     this.connectionId = connectionId
@@ -950,12 +1024,18 @@ export class IndicationSetsProcessor {
         return []
       }
       const snapshotKey = exactSnapshotCacheKey(this.connectionId, symbol, marketData)
-      // Outcome realization updates the persisted Set PF, so use a fresh grid
-      // on that pulse. Otherwise the current candle/price signature is enough
-      // to reuse the exact same complete configuration rows safely.
-      if (!closedForwardOutcomes) {
-        const cached = readExactSnapshotCache(snapshotKey)
-        if (cached) return cached
+      // Outcome realization updates only the affected persisted Set rows. Keep
+      // the complete exact snapshot and patch those rows in-place; rerunning
+      // every configured combination on every close creates a write/GC storm
+      // when several positions mature on the same candle.
+      const cached = readExactSnapshotCache(snapshotKey)
+      if (cached) {
+        const refreshed = closedForwardOutcomes
+          ? await this.refreshCachedOutcomeRows(cached)
+          : cached
+        writeExactSnapshotCache(snapshotKey, refreshed)
+        this.currentCycleEntries = null
+        return refreshed
       }
       const multiRangeCoordination = calculateMultiRangeCoordination({
         pricesOldestFirst: priceHistory,
@@ -1198,13 +1278,56 @@ export class IndicationSetsProcessor {
       }
       const completed = [...(this.currentCycleEntries || [])]
         .sort((left, right) => String(left.setKey).localeCompare(String(right.setKey)))
-      if (!closedForwardOutcomes) writeExactSnapshotCache(snapshotKey, completed)
+      writeExactSnapshotCache(snapshotKey, completed)
       this.currentCycleEntries = null
       return completed
     } catch (error) {
       console.error(`[v0] [IndicationSets] Failed to process sets for ${symbol}:`, error)
       this.currentCycleEntries = null
       return []
+    }
+  }
+
+  /**
+   * Refresh only the exact rows whose pending forward outcome was closed.
+   *
+   * The current-cycle cache is the authoritative exhaustive row list for the
+   * unchanged market signature. Reading the newest entry from each affected
+   * Redis LIST carries the realized PF/DDT metadata forward without rebuilding
+   * unrelated indicator configurations.
+   */
+  private async refreshCachedOutcomeRows(entries: any[]): Promise<any[]> {
+    const setKeys = Array.from(this.recentlyClosedOutcomeSetKeys)
+    if (setKeys.length === 0) return entries
+
+    try {
+      const client = await getCachedClient()
+      const updates = await mapWithConcurrency(
+        setKeys,
+        concurrencyFromEnv(["INDICATION_OUTCOME_REFRESH_CONCURRENCY"], 8, 20, setKeys.length),
+        async (setKey) => {
+          const latest = (await this.readIndicationSetEntries(client, setKey)).at(-1)
+          return [setKey, latest] as const
+        },
+        { yieldEvery: 1 },
+      )
+      const bySetKey = new Map<string, any>()
+      for (const [setKey, latest] of updates) {
+        if (latest && typeof latest === "object") bySetKey.set(setKey, latest)
+      }
+      return entries.map((entry) => {
+        const update = bySetKey.get(String(entry?.setKey || ""))
+        if (!update) return entry
+        return {
+          ...entry,
+          profitFactor: update.profitFactor,
+          metadata: update.metadata,
+        }
+      })
+    } catch {
+      return entries
+    } finally {
+      this.recentlyClosedOutcomeSetKeys.clear()
     }
   }
 
@@ -1665,60 +1788,75 @@ export class IndicationSetsProcessor {
       return { type: "common", total: 0, qualified: 0, configs: 0 }
     }
 
-    const calculated = await StepBasedIndicators.calculateAllAsync(
+    const candidates: IndicationCandidate[] = []
+    let total = 0
+    let qualified = 0
+    const configuredBatchSize = Number(process.env.COMMON_INDICATION_BATCH_SIZE)
+    const batchSize = Number.isFinite(configuredBatchSize)
+      ? Math.max(32, Math.min(512, Math.floor(configuredBatchSize)))
+      : 256
+    const flushCandidates = async (): Promise<void> => {
+      if (candidates.length === 0) return
+      const batch = candidates.splice(0, candidates.length)
+      const pendingWrites = await this.attachQualifiedCandidates(symbol, marketData, batch)
+      qualified += pendingWrites.length
+      if (pendingWrites.length > 0) await this.batchSaveIndications(pendingWrites, "common")
+    }
+
+    await StepBasedIndicators.forEachConfigurationAsync(
       candles,
       this.commonSettings.coordination.timeframesMinutes,
       enabledTypes,
       this.commonSettings,
-    )
-    const candidates: IndicationCandidate[] = []
-    let total = 0
-    for (const [timeframeRaw, timeframe] of Object.entries(calculated)) {
-      const timeframeMinutes = Number(timeframeRaw)
-      for (const configuration of timeframe.configurations) {
-        total++
-        const result = configuration.indicators[configuration.type]
-        if (!result || result.direction === "neutral") continue
-        const direction = result.direction
-        const parameterValues = configuration.parameters[configuration.type] || {}
-        const fingerprint = encodeURIComponent(JSON.stringify(parameterValues))
-        const config = {
-          indicatorType: configuration.type,
-          timeframeMinutes,
-          parameters: parameterValues,
-        }
-        candidates.push({
-          setKey:
-            `indication_set:${this.connectionId}:${symbol}:common:${direction}` +
-            `:${configuration.type}:tf${timeframeMinutes}:p${fingerprint}`,
-          indication: {
-            profitFactor: 0,
-            signalScore: result.strength,
-            rawSignalStrength: Math.abs(result.signal),
-            confidence: result.strength,
-            direction,
-            metadata: {
+      async (configurations, timeframeMinutes) => {
+        for (const configuration of configurations) {
+          total++
+          const result = configuration.indicators[configuration.type]
+          if (!result || result.direction === "neutral") continue
+          const direction = result.direction
+          const parameterValues = configuration.parameters[configuration.type] || {}
+          const fingerprint = encodeURIComponent(JSON.stringify(parameterValues))
+          const config = {
+            indicatorType: configuration.type,
+            timeframeMinutes,
+            parameters: parameterValues,
+          }
+          candidates.push({
+            setKey:
+              `indication_set:${this.connectionId}:${symbol}:common:${direction}` +
+              `:${configuration.type}:tf${timeframeMinutes}:p${fingerprint}`,
+            indication: {
+              profitFactor: 0,
+              signalScore: result.strength,
+              rawSignalStrength: Math.abs(result.signal),
+              confidence: result.strength,
               direction,
-              commonIndicatorType: configuration.type,
-              timeframeMinutes,
-              parameters: parameterValues,
-              value: result.value,
-              signal: result.signal,
-              details: result.details,
+              metadata: {
+                direction,
+                commonIndicatorType: configuration.type,
+                timeframeMinutes,
+                parameters: parameterValues,
+                value: result.value,
+                signal: result.signal,
+                details: result.details,
+              },
             },
-          },
-          config,
-        })
-      }
-    }
-
-    const pendingWrites = await this.attachQualifiedCandidates(symbol, marketData, candidates)
-    if (pendingWrites.length > 0) await this.batchSaveIndications(pendingWrites, "common")
+            config,
+          })
+          if (candidates.length >= batchSize) await flushCandidates()
+        }
+        // Also flush a short batch when the current configuration block was
+        // mostly neutral, so no timeframe retains an unnecessary tail graph.
+        await flushCandidates()
+      },
+      32,
+    )
+    await flushCandidates()
     return {
       type: "common",
       total,
-      qualified: pendingWrites.length,
-      configs: pendingWrites.length,
+      qualified,
+      configs: qualified,
     }
   }
 
@@ -2260,6 +2398,7 @@ export class IndicationSetsProcessor {
     try {
       const client = await getCachedClient()
       const key = `indication_outcomes_pending:${this.connectionId}:${symbol}`
+      const guardKey = `indication_outcomes_pending_guard:${this.connectionId}:${symbol}`
       const pending = {
         setKey,
         direction: indication.direction,
@@ -2267,7 +2406,11 @@ export class IndicationSetsProcessor {
         rawSignalStrength: indication.rawSignalStrength,
         openedAt: Date.now(),
       }
-      await client.rpush(key, JSON.stringify(pending))
+      // An unchanged realtime snapshot needs one forward-observation slot per
+      // exact Set, not one duplicate slot per pulse. The durable guard keeps
+      // this idempotent across processor instances and workers.
+      const added = await client.sadd(guardKey, setKey)
+      if (Number(added) !== 1) return
       // Per-symbol pending-outcome list cap. In dev this was the single biggest
       // in-memory Redis family (~150 KB/symbol × symbols = multiple MB restored
       // into the InlineLocalRedis Map every boot). 1000 pending signals/symbol is
@@ -2275,12 +2418,20 @@ export class IndicationSetsProcessor {
       // outcomes. Production keeps the full 1000-entry window.
       // Scale with symbol count: 30 per symbol in dev (e.g. 300 for 10 symbols).
       const pendingCap = 1000
+      const currentLength = Number(await client.llen(key)) || 0
+      if (currentLength >= pendingCap) {
+        await client.srem(guardKey, setKey).catch(() => 0)
+        return
+      }
+      await client.rpush(key, JSON.stringify(pending))
       await client.ltrim(key, -pendingCap, -1)
       await client.expire(key, 86400)
+      await client.expire(guardKey, 86400)
     } catch { /* non-critical */ }
   }
 
   private async closePendingRealtimeOutcomes(symbol: string, marketData: any): Promise<boolean> {
+    this.recentlyClosedOutcomeSetKeys.clear()
     if (!marketData) return false
     try {
       const client = await getCachedClient()
@@ -2365,6 +2516,7 @@ export class IndicationSetsProcessor {
             }
           }
           if (!patched) return
+          this.recentlyClosedOutcomeSetKeys.add(setKey)
 
           // Preserve LIST-backed indication_set:* keys when closing pending
           // realtime outcomes. DEL + RPUSH recreates the key as a Redis LIST
@@ -2382,6 +2534,11 @@ export class IndicationSetsProcessor {
         },
       )
 
+      if (closedItems.length > 0) {
+        const guardKey = `indication_outcomes_pending_guard:${this.connectionId}:${symbol}`
+        await client.srem(guardKey, ...Array.from(bySetKey.keys())).catch(() => 0)
+        await client.expire(guardKey, 86400).catch(() => 0)
+      }
       await client.expire(key, 86400)
       return closedItems.length > 0
     } catch {

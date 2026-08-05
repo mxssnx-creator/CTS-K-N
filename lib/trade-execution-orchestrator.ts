@@ -1,9 +1,10 @@
-import { getRedisClient, initRedis } from "@/lib/redis-db"
+import { getRedisClient, getConnection, initRedis } from "@/lib/redis-db"
 import { dbCoordinator } from "@/lib/database-coordinator"
 import { ExchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { IndicatorCalculator } from "@/lib/indicators/calculator"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { getMaxLeverageForConnection } from "@/lib/leverage-policy"
+import { placeLiveOrder } from "@/lib/live-order-service"
 
 /**
  * Trade Execution Orchestrator
@@ -55,7 +56,9 @@ export class TradeExecutionOrchestrator {
       )
 
       // Step 1: Validate connection
-      const connector = ExchangeConnectorFactory.getConnector(connectionId)
+      const connection = await getConnection(connectionId)
+      const connector = ExchangeConnectorFactory.getConnector(connectionId) ||
+        await ExchangeConnectorFactory.getInstance().getOrCreateConnector(connectionId)
       if (!connector) {
         throw new Error(`Connector not found for ${connectionId}`)
       }
@@ -100,7 +103,7 @@ export class TradeExecutionOrchestrator {
       this.log(`  Calculated size: ${size}`)
 
       // Step 6: Place order with retry logic
-      const orderResult = await this.placeOrderWithRetry(connector, symbol, "buy", size)
+      const orderResult = await this.placeOrderWithRetry(connectionId, connection, symbol, "long", size)
 
       if (!orderResult.success) {
         return {
@@ -131,35 +134,38 @@ export class TradeExecutionOrchestrator {
       // `getMaxLeverageForConnection`; the venue still applies its own
       // per-symbol bracket via setLeverage downstream so this is safe.
       const maxLeverage = await getMaxLeverageForConnection(connectionId)
+      const filled = orderResult.fill?.filled === true
       const newPosition = {
         id: `pos_${Date.now()}`,
         connectionId,
         symbol,
         side: "long" as const,
         size,
-        entryPrice: orderResult.entryPrice || 0,
-        currentPrice: orderResult.entryPrice || 0,
+        entryPrice: orderResult.entryPrice || orderResult.fill?.filledPrice || 0,
+        currentPrice: orderResult.entryPrice || orderResult.fill?.filledPrice || 0,
         unrealizedPnl: 0,
         leverage: maxLeverage,
-        status: "open",
+        status: filled ? "open" : "placed",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }
 
-      await dbCoordinator.storePosition(connectionId, symbol, newPosition)
+      if (filled) await dbCoordinator.storePosition(connectionId, symbol, newPosition)
 
       // Step 9: Record trade
-      await dbCoordinator.recordTrade(connectionId, {
-        id: `trade_${Date.now()}`,
-        connectionId,
-        symbol,
-        side: "long",
-        entryPrice: orderResult.entryPrice || 0,
-        size,
-        signalConfidence: signal.confidence,
-        orderId: orderResult.orderId,
-        createdAt: new Date().toISOString(),
-      })
+      if (filled) {
+        await dbCoordinator.recordTrade(connectionId, {
+          id: `trade_${Date.now()}`,
+          connectionId,
+          symbol,
+          side: "long",
+          entryPrice: orderResult.entryPrice || orderResult.fill?.filledPrice || 0,
+          size: orderResult.fill?.filledQty || size,
+          signalConfidence: signal.confidence,
+          orderId: orderResult.orderId,
+          createdAt: new Date().toISOString(),
+        })
+      }
 
       const duration = Date.now() - startTime
       this.log(`✓ Buy signal executed in ${duration}ms: ${symbol} x${size} @ ${orderResult.entryPrice}`)
@@ -192,7 +198,9 @@ export class TradeExecutionOrchestrator {
       this.log(`Executing sell signal for ${symbol} (confidence: ${signal.confidence.toFixed(2)})`)
 
       // Step 1: Get connector
-      const connector = ExchangeConnectorFactory.getConnector(connectionId)
+      const connection = await getConnection(connectionId)
+      const connector = ExchangeConnectorFactory.getConnector(connectionId) ||
+        await ExchangeConnectorFactory.getInstance().getOrCreateConnector(connectionId)
       if (!connector) {
         throw new Error(`Connector not found for ${connectionId}`)
       }
@@ -209,8 +217,13 @@ export class TradeExecutionOrchestrator {
       this.log(`  Closing position: ${position.size} @ ${position.entryPrice}`)
 
       // Step 3: Close position with retry — use inverted direction
-      const closeSide = position.direction === "short" ? "buy" : "sell"
-      const closeResult = await this.closePositionWithRetry(connector, symbol, closeSide, position.size)
+      const closeResult = await this.closePositionWithRetry(
+        connectionId,
+        connection,
+        symbol,
+        position.direction === "short" ? "short" : "long",
+        position.size,
+      )
 
       if (!closeResult.success) {
         return {
@@ -232,7 +245,7 @@ export class TradeExecutionOrchestrator {
         connectionId,
         symbol,
         side: "close",
-        exitPrice: closeResult.exitPrice || 0,
+        exitPrice: closeResult.exitPrice || closeResult.fill?.filledPrice || 0,
         size: position.size,
         pnl: closeResult.pnl || 0,
         orderId: closeResult.orderId,
@@ -258,23 +271,45 @@ export class TradeExecutionOrchestrator {
   }
 
   /**
-   * Place order with exponential backoff retry
+   * Place through the shared idempotent order boundary. A single submission is
+   * intentional: retrying an unknown exchange response can duplicate a market
+   * order. Reconciliation owns observation/retry after the durable client ID.
    */
   private async placeOrderWithRetry(
-    connector: any,
+    connectionId: string,
+    connection: any,
     symbol: string,
-    side: "buy" | "sell",
+    direction: "long" | "short",
     size: number,
-    maxAttempts: number = 3
+    maxAttempts: number = 1,
   ): Promise<any> {
+    const clientOrderId = `legacy-entry-${connectionId}-${symbol}-${Date.now()}`
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         this.log(`  Placing order (attempt ${attempt}/${maxAttempts})...`)
 
-        const result = await connector.placeOrder(symbol, side, size, undefined, "market")
+        const result = await placeLiveOrder({
+          connectionId,
+          connection,
+          symbol,
+          side: direction,
+          quantity: size,
+          orderType: "market",
+          persistPosition: false,
+          updateCounters: false,
+          source: "legacy-trade-execution-orchestrator",
+          clientOrderId,
+          safetyPayload: {
+            confirmLiveOrderPlacement: true,
+            source: "legacy-trade-execution-orchestrator",
+          },
+        })
 
         if (result.success) {
-          return result
+          return {
+            ...result,
+            entryPrice: result.fill?.filledPrice || 0,
+          }
         }
 
         this.log(`  Order attempt ${attempt} failed: ${result.error}`)
@@ -301,18 +336,47 @@ export class TradeExecutionOrchestrator {
   }
 
   /**
-   * Close position with retry
+   * Close through the shared reduce-only order boundary. Unknown exchange
+   * responses are left for reconciliation instead of being blindly retried.
    */
-  private async closePositionWithRetry(connector: any, symbol: string, side: string, size: number, maxAttempts: number = 3): Promise<any> {
-    const closeSide = side || "sell"
+  private async closePositionWithRetry(
+    connectionId: string,
+    connection: any,
+    symbol: string,
+    positionDirection: "long" | "short",
+    size: number,
+    maxAttempts: number = 1,
+  ): Promise<any> {
+    const clientOrderId = `legacy-close-${connectionId}-${symbol}-${Date.now()}`
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        this.log(`  Closing position (attempt ${attempt}/${maxAttempts}, side=${closeSide})...`)
+        this.log(`  Closing position (attempt ${attempt}/${maxAttempts}, direction=${positionDirection})...`)
 
-        const result = await connector.placeOrder(symbol, closeSide, size, undefined, "market")
+        const result = await placeLiveOrder({
+          connectionId,
+          connection,
+          symbol,
+          side: positionDirection === "long" ? "short" : "long",
+          positionDirection,
+          quantity: size,
+          orderType: "market",
+          reduceOnly: true,
+          persistPosition: false,
+          updateCounters: false,
+          source: "legacy-trade-execution-orchestrator-close",
+          clientOrderId,
+          safetyPayload: {
+            confirmLiveOrderPlacement: true,
+            source: "legacy-trade-execution-orchestrator-close",
+          },
+        })
 
         if (result.success) {
-          return result
+          return {
+            ...result,
+            exitPrice: result.fill?.filledPrice || 0,
+            pnl: 0,
+          }
         }
 
         if (attempt < maxAttempts) {

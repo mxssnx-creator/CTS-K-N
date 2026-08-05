@@ -1542,6 +1542,16 @@ export async function GET(
     // occurred when a single-symbol standalone key was compared against
     // the cross-symbol active sum.
     const activeStratEvaluated: Record<string, number> = { base: 0, main: 0, real: 0 }
+    // Presence is separate from value. A stage can be authoritatively zero
+    // when its current symbol snapshot has no running rows; treating zero as
+    // "missing" falls back to the last-symbol standalone key and mixes two
+    // different scopes (for example Real=305 with Real evaluated=304).
+    const activeStratStageSeen: Record<string, boolean> = {
+      base: false,
+      main: false,
+      real: false,
+      live: false,
+    }
     let activeMainInput = 0
     let activeMainPassedParents = 0
     let activeMainRelatedCreated = 0
@@ -1612,6 +1622,7 @@ export async function GET(
             continue
           }
           if (suffix in activeStratByStage) {
+            activeStratStageSeen[suffix] = true
             activeStratByStage[suffix] += numVal
             if (numVal > 0) activeSetsStratByStage[suffix] += 1
           }
@@ -1656,7 +1667,7 @@ export async function GET(
         // It MUST NOT be used as the current count — prefer fromActive (cross-symbol live snapshot)
         // or fromKey (last-symbol standalone, 24h TTL). Fall back to 0 when both are absent so
         // the dashboard shows "no data yet" instead of an inflated lifetime cumulative.
-        stratCounts[type] = fromActive > 0 ? fromActive
+        stratCounts[type] = activeStratStageSeen[type] ? fromActive
                           : fromKey   > 0 ? fromKey
                           : 0
         // Prefer cross-symbol activeStratEvaluated (from strategies_active hash

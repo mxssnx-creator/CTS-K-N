@@ -10,11 +10,11 @@ export type BaseConnectionCredentials = {
 const ENV_ALIASES: Record<BaseConnectionId, { key: string[]; secret: string[] }> = {
   "bingx-x01": {
     key: ["BINGX_API_KEY", "BINGX_APIKEY", "NEXT_BINGX_API_KEY"],
-    secret: ["BINGX_API_SECRET", "BINGX_SECRET", "NEXT_BINGX_API_SECRET"],
+    secret: ["BINGX_API_SECRET", "BINGX_SECRET_KEY", "BINGX_SECRET", "NEXT_BINGX_API_SECRET"],
   },
   "bybit-x03": {
     key: ["BYBIT_API_KEY", "BYBIT_APIKEY", "NEXT_BYBIT_API_KEY"],
-    secret: ["BYBIT_API_SECRET", "BYBIT_SECRET", "NEXT_BYBIT_API_SECRET"],
+    secret: ["BYBIT_API_SECRET", "BYBIT_SECRET_KEY", "BYBIT_SECRET", "NEXT_BYBIT_API_SECRET"],
   },
   "pionex-x01": {
     key: ["PIONEX_API_KEY", "NEXT_PIONEX_API_KEY"],

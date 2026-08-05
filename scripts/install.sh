@@ -97,8 +97,9 @@ Sensitive values should be supplied in --seed-env-file or the existing env
 file, never as command-line arguments. The installer generates ADMIN_SECRET,
 CRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET when they are absent. A production
 server install enables the guarded live execution path and succeeds only when
-valid BingX or Bybit credentials, durable order coordination, and persisted
-live-control state are verified; the verification never submits an order.
+valid credentials for at least one supported exchange (BingX, Bybit, Pionex, or
+OrangeX), durable order coordination, and persisted live-control state are
+verified; the verification never submits an order.
 
 For a server install or upgrade, prefer scripts/bootstrap-install.sh. When an
 installed CTS runtime is detected, this command delegates to that clean flow.
@@ -927,10 +928,14 @@ configure_environment_and_redis() {
   upsert_env NEXT_PUBLIC_APP_URL "${NEXT_PUBLIC_APP_URL:-$(env_value NEXT_PUBLIC_APP_URL)}"
   [[ -n "$(env_value NEXT_PUBLIC_APP_URL)" ]] || upsert_env NEXT_PUBLIC_APP_URL "http://127.0.0.1:$APP_PORT"
 
-  local bingx_key="${BINGX_API_KEY:-$(env_value BINGX_API_KEY)}"
-  local bingx_secret="${BINGX_API_SECRET:-$(env_value BINGX_API_SECRET)}"
-  local bybit_key="${BYBIT_API_KEY:-$(env_value BYBIT_API_KEY)}"
-  local bybit_secret="${BYBIT_API_SECRET:-$(env_value BYBIT_API_SECRET)}"
+  local bingx_key="${BINGX_API_KEY:-${BINGX_APIKEY:-$(env_value BINGX_API_KEY)}}"
+  local bingx_secret="${BINGX_API_SECRET:-${BINGX_SECRET_KEY:-${BINGX_SECRET:-$(env_value BINGX_API_SECRET)}}}"
+  local bybit_key="${BYBIT_API_KEY:-${BYBIT_APIKEY:-$(env_value BYBIT_API_KEY)}}"
+  local bybit_secret="${BYBIT_API_SECRET:-${BYBIT_SECRET_KEY:-${BYBIT_SECRET:-$(env_value BYBIT_API_SECRET)}}}"
+  local pionex_key="${PIONEX_API_KEY:-$(env_value PIONEX_API_KEY)}"
+  local pionex_secret="${PIONEX_API_SECRET:-$(env_value PIONEX_API_SECRET)}"
+  local orangex_key="${ORANGEX_API_KEY:-$(env_value ORANGEX_API_KEY)}"
+  local orangex_secret="${ORANGEX_API_SECRET:-$(env_value ORANGEX_API_SECRET)}"
   local live_venues=()
   if [[ ${#bingx_key} -ge 10 && ${#bingx_secret} -ge 10 ]]; then
     upsert_env BINGX_API_KEY "$bingx_key"
@@ -942,7 +947,17 @@ configure_environment_and_redis() {
     upsert_env BYBIT_API_SECRET "$bybit_secret"
     live_venues+=("Bybit")
   fi
-  (( ${#live_venues[@]} > 0 )) || fatal "Production server installation requires valid BINGX_API_KEY/SECRET or BYBIT_API_KEY/SECRET for live trading"
+  if [[ ${#pionex_key} -ge 10 && ${#pionex_secret} -ge 10 ]]; then
+    upsert_env PIONEX_API_KEY "$pionex_key"
+    upsert_env PIONEX_API_SECRET "$pionex_secret"
+    live_venues+=("Pionex")
+  fi
+  if [[ ${#orangex_key} -ge 10 && ${#orangex_secret} -ge 10 ]]; then
+    upsert_env ORANGEX_API_KEY "$orangex_key"
+    upsert_env ORANGEX_API_SECRET "$orangex_secret"
+    live_venues+=("OrangeX")
+  fi
+  (( ${#live_venues[@]} > 0 )) || fatal "Production server installation requires valid credentials for at least one supported exchange: BINGX_API_KEY/SECRET, BYBIT_API_KEY/SECRET, PIONEX_API_KEY/SECRET, or ORANGEX_API_KEY/SECRET"
   ok "Live exchange installation is configured for ${live_venues[*]}; readiness is verified without submitting an order"
 
   local admin_secret cron_secret encryption_key jwt_secret direct_trade_processor_token
@@ -1430,7 +1445,8 @@ verify_and_restart() {
   if [[ -n "$before_id" && "$before_id" == "$after_id" ]]; then
     ok "Durable site identity survived restart"
   else
-    warn "Site identity changed after restart (previous=${before_id:-"(empty)"} current=${after_id:-"(empty)"}) — continuing on non-fatal backend warning"
+    warn "Site identity changed after restart (previous=${before_id:-"(empty)"} current=${after_id:-"(empty)"})"
+    return 1
   fi
   node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
     env REQUIRE_SHARED_PERSISTENCE="$([[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "inline-snapshot" ]] && echo 0 || echo 1)" REQUIRE_FRESH_CONTINUITY=1 DEPLOYMENT_URL="$base_url" \

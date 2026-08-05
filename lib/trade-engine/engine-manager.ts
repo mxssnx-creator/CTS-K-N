@@ -353,7 +353,10 @@ import { IndicationSetsProcessor } from "@/lib/indication-sets-processor"
 import { getEngineTimings } from "@/lib/engine-timings"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { clearRuntimeLogThrottle, logRuntimeInfo } from "@/lib/runtime-log-throttle"
-import { loadMarketDataForEngine } from "@/lib/market-data-loader"
+import {
+  ENGINE_STAGE_HISTORY_CANDLES,
+  loadMarketDataForEngine,
+} from "@/lib/market-data-loader"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { engineMonitor } from "@/lib/engine-performance-monitor"
 import { ConfigSetProcessor } from "./config-set-processor"
@@ -970,7 +973,11 @@ export class TradeEngineManager {
       // A realtime tail can be created before the cold-history loader finishes.
       // Requiring the history marker prevents that one-candle tail from making
       // the remaining startup path believe a symbol is fully bootstrapped.
-      const loaded = await loadMarketDataForEngine(symbols, { requireHistory: true, connectionId: this.connectionId })
+      const loaded = await loadMarketDataForEngine(symbols, {
+        requireHistory: true,
+        minimumHistoryCandles: ENGINE_STAGE_HISTORY_CANDLES,
+        connectionId: this.connectionId,
+      })
       if (loaded === 0) {
         console.warn(`[v0] [Engine] No market data loaded for symbols: ${symbols.join(", ")}`)
       }
@@ -4046,7 +4053,11 @@ export class TradeEngineManager {
         try {
           const { loadMarketDataForEngine } = await import("@/lib/market-data-loader")
           await withCycleDeadline(
-            loadMarketDataForEngine(symbols, { requireHistory: true, connectionId: this.connectionId }),
+            loadMarketDataForEngine(symbols, {
+              requireHistory: true,
+              minimumHistoryCandles: ENGINE_STAGE_HISTORY_CANDLES,
+              connectionId: this.connectionId,
+            }),
             `Prehistoric ${connId} loadMarketData`,
             CYCLE_DEADLINE_MS,
           )
@@ -5033,7 +5044,11 @@ export class TradeEngineManager {
       if (heartbeatCount % 3 === 0) {
         try {
           const symbols = await this.getSymbols()
-          const loaded = await loadMarketDataForEngine(symbols, { requireHistory: true, connectionId: this.connectionId })
+          const loaded = await loadMarketDataForEngine(symbols, {
+            requireHistory: true,
+            minimumHistoryCandles: ENGINE_STAGE_HISTORY_CANDLES,
+            connectionId: this.connectionId,
+          })
           if (loaded > 0) {
             logRuntimeInfo(
               `engine:${this.connectionId}:market-refresh`,
