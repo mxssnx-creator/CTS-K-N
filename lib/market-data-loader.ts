@@ -28,6 +28,7 @@
 
 import { getClient, initRedis, getAllConnections, getConnection } from "@/lib/redis-db"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
+import { isForcedSimulation } from "@/lib/real-trade-gates"
 
 export interface MarketDataCandle {
   timestamp: number
@@ -49,6 +50,8 @@ export interface MarketData {
 export interface LoadMarketDataOptions {
   /** Require the chunked prehistoric index in addition to the realtime tail. */
   requireHistory?: boolean
+  /** Minimum candle count required before a history cache is reusable. */
+  minimumHistoryCandles?: number
   /** Use this exact persisted connection (and its current credentials/mode). */
   connectionId?: string
 }
@@ -56,6 +59,29 @@ export interface LoadMarketDataOptions {
 const REALTIME_CANDLE_TAIL = 300
 const HISTORIC_CHUNK_SIZE = 2_000
 const MARKET_DATA_TTL_SECONDS = 24 * 60 * 60
+// The indication grid contains inclusive ranges through 90 samples by
+// default. A 5-candle pre-startup placeholder is useful for a ticker, but it
+// is not a valid prehistoric cache and must never make the Main/Real stages
+// skip their bootstrap history.
+const DEFAULT_MINIMUM_HISTORY_CANDLES = 90
+
+// Main/Real coordinates are calculated on one-minute closes even though the
+// engine's canonical market-data feed is 1s.  Keep one authoritative minimum
+// here so startup, realtime indication processing, and cache validation agree:
+// 90 one-minute bars require 5,400 one-second samples.
+export const ENGINE_STAGE_HISTORY_MINUTES = 90
+export const ENGINE_STAGE_HISTORY_CANDLES = ENGINE_STAGE_HISTORY_MINUTES * 60
+
+function syntheticMarketDataAllowed(): boolean {
+  // Synthetic candles are a paper/test fixture only.  A live process must
+  // remain entry-gated when the venue cannot provide enough real history; it
+  // must never silently trade on generated prices.
+  return (
+    isForcedSimulation() ||
+    process.env.NODE_ENV !== "production" ||
+    (process.env.ALLOW_PROD_SIMULATED === "1" && process.env.FORCE_LIVE !== "1")
+  )
+}
 
 async function writeHistoricCandleChunks(
   client: any,
@@ -153,6 +179,11 @@ async function fetchRealMarketData(
   connectionId?: string,
 ): Promise<{ candles: MarketDataCandle[]; source: string } | null> {
   try {
+    // Explicit paper/preview mode must be deterministic and must not spend a
+    // cold-start budget on an exchange request that cannot produce an order or
+    // venue-backed history. The normal production path still resolves its
+    // configured connector and uses real public market data when available.
+    if (isForcedSimulation()) return null
     // Engine-owned calls always supply connectionId. Resolve it from Redis on
     // every connector-factory lookup so a settings/credential/testnet update
     // invalidates the cached fingerprint and the next cycle uses the CURRENT
@@ -231,7 +262,11 @@ export async function loadMarketDataForEngine(
 ): Promise<number> {
   const requestedSymbols = symbols.length > 0 ? symbols : DEFAULT_ENGINE_MARKET_SYMBOLS
   const uniqueSymbols = Array.from(new Set(requestedSymbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean)))
-  const flightKey = `${options.connectionId || "auto"}:${options.requireHistory ? "history" : "tail"}:${uniqueSymbols.join("|")}`
+  const minimumHistoryCandles = Math.max(
+    1,
+    Math.floor(Number(options.minimumHistoryCandles) || DEFAULT_MINIMUM_HISTORY_CANDLES),
+  )
+  const flightKey = `${options.connectionId || "auto"}:${options.requireHistory ? `history:${minimumHistoryCandles}` : "tail"}:${uniqueSymbols.join("|")}`
 
   // Coalesce concurrent calls — the second caller joins the first
   // promise for the exact same symbol set and receives the same result,
@@ -248,6 +283,7 @@ export async function loadMarketDataForEngine(
     // Default symbols if none provided — matches the production set seeded by
     // migrations (ordered by 1h volatility per standing directive).
     let targetSymbols = uniqueSymbols
+    let cachedSymbolCount = 0
 
     // ── Dev-mode cache short-circuit ──────────────────────────────────
     // Next.js dev hot-reload can call this dozens of times per minute from
@@ -258,15 +294,42 @@ export async function loadMarketDataForEngine(
     // throttle the "already cached" log.
     {
       const cacheKeys = targetSymbols.flatMap((symbol) => options.requireHistory
-        ? [`market_data:${symbol}:1s`, `market_data:${symbol}:history:meta`]
+        ? [
+            `market_data:${symbol}:1s`,
+            `market_data:${symbol}:history:meta`,
+            `market_data:${symbol}:candles`,
+          ]
         : [`market_data:${symbol}:1s`])
       const cachedValues = cacheKeys.length > 0
         ? (await (client as any).mget(...cacheKeys)) as (string | null)[]
         : []
-      const keysPerSymbol = options.requireHistory ? 2 : 1
+      const keysPerSymbol = options.requireHistory ? 3 : 1
       const missingSymbols = targetSymbols.filter((_, index) => {
         const offset = index * keysPerSymbol
-        return !cachedValues[offset] || (options.requireHistory && !cachedValues[offset + 1])
+        if (!cachedValues[offset]) return true
+        if (!options.requireHistory) return false
+        const metadataRaw = cachedValues[offset + 1]
+        const candlesRaw = cachedValues[offset + 2]
+        if (!metadataRaw || !candlesRaw) return true
+        try {
+          const metadata = JSON.parse(metadataRaw)
+          const candleCount = Number(metadata?.candleCount)
+          const ranges = Array.isArray(metadata?.ranges) ? metadata.ranges : []
+          const candles = JSON.parse(candlesRaw)
+          const envelope = JSON.parse(cachedValues[offset] as string)
+          const hotTailMinimum = Math.min(REALTIME_CANDLE_TAIL, minimumHistoryCandles)
+          return (
+            !Number.isFinite(candleCount) ||
+            candleCount < minimumHistoryCandles ||
+            ranges.length === 0 ||
+            !Array.isArray(candles) ||
+            candles.length < hotTailMinimum ||
+            !Array.isArray(envelope?.candles) ||
+            envelope.candles.length < hotTailMinimum
+          )
+        } catch {
+          return true
+        }
       })
       if (missingSymbols.length === 0) {
         const now = Date.now()
@@ -274,10 +337,14 @@ export async function loadMarketDataForEngine(
           __lastDevCacheHitLogAt = now
           console.log(`[v0] [MarketData] ${targetSymbols.length} requested symbols already cached; skipping reload`)
         }
-        return 0
+        // The return value is the number of symbols with a usable cache, not
+        // merely the number of symbols written during this invocation. A
+        // restart must not interpret a valid cache hit as "no market data".
+        return targetSymbols.length
       }
       targetSymbols = missingSymbols
-      console.log(`[v0] [MarketData] ${cachedValues.length - missingSymbols.length}/${cachedValues.length} requested symbols cached; loading ${missingSymbols.length} missing`)
+      cachedSymbolCount = requestedSymbols.length - missingSymbols.length
+      console.log(`[v0] [MarketData] ${cachedSymbolCount}/${requestedSymbols.length} requested symbols cached; loading ${missingSymbols.length} missing`)
     }
 
     // Base prices for fallback synthetic data. Used when the live exchange
@@ -323,22 +390,46 @@ export async function loadMarketDataForEngine(
         let candles: MarketDataCandle[]
         let source: string
 
-        if (realData && realData.candles.length > 0) {
+        const requiredCandles = options.requireHistory ? minimumHistoryCandles : 1
+        if (realData && realData.candles.length >= requiredCandles) {
           candles = realData.candles
           source = realData.source
           realDataCount++
         } else {
-          // Fall back to synthetic 1s data — same shape so downstream
-          // doesn't care. We don't generate 86k synthetic buckets; a
-          // 250-bucket sample is enough for cold-boot decoration
-          // before real data arrives via the engine's own loader.
+          if (realData && realData.candles.length > 0) {
+            console.warn(
+              `[v0] [MarketData] ${symbol}: venue returned only ${realData.candles.length} ` +
+                `candle(s), requires ${requiredCandles}; refusing partial history`,
+            )
+          }
+          if (!syntheticMarketDataAllowed()) {
+            console.warn(
+              `[v0] [MarketData] ${symbol}: no complete real history and synthetic ` +
+                `fallback is disabled; entry processing remains gated`,
+            )
+            return
+          }
+          // Fall back to synthetic 1s data only in an explicit paper/test
+          // mode.  Generate the complete stage window, not a 250-sample tail:
+          // 250 seconds collapse to only about five one-minute bars and make
+          // Row-Real/Row-Live appear valid while their configured 90-minute
+          // coordinate range is actually unevaluable.
           const basePrice = basePrices[symbol] || 100
-          candles = generateSyntheticCandles(symbol, basePrice, 250)
+          candles = generateSyntheticCandles(
+            symbol,
+            basePrice,
+            Math.max(250, minimumHistoryCandles),
+          )
           source = "synthetic"
           syntheticCount++
           console.log(`[v0] [MarketData] ⚠ Using synthetic data for ${symbol} (exchange 1s fetch failed)`)
         }
 
+        // Keep only a bounded realtime tail in the hot keys. The complete
+        // fetched window is stored in the chunk index below; stage readers
+        // load the exact warmup range from chunks when they need it. This
+        // avoids duplicating 5,400+ candle objects in both hot values for
+        // every symbol while preserving full historical coverage.
         const realtimeCandles = candles.slice(-REALTIME_CANDLE_TAIL)
         const marketData: MarketData = {
           symbol,
@@ -420,7 +511,7 @@ export async function loadMarketDataForEngine(
 
     console.log(`[v0] [MarketData] ✅ Loaded ${loaded}/${targetSymbols.length} symbols`)
     console.log(`[v0] [MarketData]    Real data: ${realDataCount} | Synthetic: ${syntheticCount}`)
-    return loaded
+    return loaded + cachedSymbolCount
   } catch (error) {
     console.error("[v0] [MarketData] Failed to load market data:", error)
     return 0

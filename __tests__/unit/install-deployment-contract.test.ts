@@ -94,7 +94,7 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain("upsert_env FORCE_SIMULATED 0")
     expect(installer).toContain("upsert_env ALLOW_LIVE_ORDER_PLACEMENT 1")
     expect(installer).toContain("upsert_env CTS_REQUIRE_LIVE_TRADE_READY 1")
-    expect(installer).toContain("BINGX_API_KEY/SECRET or BYBIT_API_KEY/SECRET")
+    expect(installer).toContain("BINGX_API_KEY/SECRET, BYBIT_API_KEY/SECRET, PIONEX_API_KEY/SECRET, or ORANGEX_API_KEY/SECRET")
     expect(installer).toContain("ADMIN_SECRET,\nCRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET")
     expect(installer).toContain("handoff_existing_install_to_bootstrap")
     expect(installer).toContain("clean stop → delete → reinstall flow")

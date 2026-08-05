@@ -65,4 +65,13 @@ describe("RateLimiter queue liveness", () => {
     expect(started).toEqual([0, 1, 2])
     expect(limiter.getStats()).toMatchObject({ queueLength: 0, activeRequests: 0 })
   })
+
+  test("clears the per-request timeout after a fast request completes", async () => {
+    jest.useFakeTimers()
+    const limiter = new RateLimiter("timeout-cleanup-test")
+    const result = await limiter.execute(async () => "ok", undefined, 40_000)
+
+    expect(result).toBe("ok")
+    expect(jest.getTimerCount()).toBe(0)
+  })
 })

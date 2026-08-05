@@ -1963,7 +1963,7 @@ async function processSignalIndicationsUncached(
   if (
     process.env.NODE_ENV === "test" &&
     !options.fetchImpl &&
-    process.env.FORCE_SIMULATED !== "1"
+    !(process.env.FORCE_SIMULATED === "1" && process.env.FORCE_LIVE !== "1")
   ) return []
 
   const sourceCursor = options.sourceCursor ?? await client

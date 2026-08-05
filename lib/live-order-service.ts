@@ -1,6 +1,7 @@
 import { createExchangeConnector, exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { getLiveOrderSafetyFailure } from "@/lib/live-order-safety"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
+import { evaluateRealTradeReadiness, hasUsableLiveCredentials, isForcedSimulation } from "@/lib/real-trade-gates"
 import { getConnection, getMarketData, getRedisClient, initRedis, savePosition } from "@/lib/redis-db"
 import { liveOrdersBySymbolKey } from "@/lib/live-order-counter-keys"
 import type { ExchangeConnection } from "@/lib/types"
@@ -87,6 +88,7 @@ export async function loadLiveOrderConnection(connectionId: string): Promise<any
   }
   if (!connection || Object.keys(connection).length === 0) throw new Error(`Connection ${connectionId} not found`)
   return {
+    ...connection,
     id: connectionId,
     name: connection.name || connectionId,
     exchange: connection.exchange || "unknown",
@@ -102,12 +104,56 @@ export async function loadLiveOrderConnection(connectionId: string): Promise<any
     connection_library: connection.connection_library || "",
     is_live_trade: connection.is_live_trade,
     live_trade_enabled: connection.live_trade_enabled,
+    live_trade_requested: connection.live_trade_requested,
+    live_trade_blocked_reason: connection.live_trade_blocked_reason,
+    is_preset_trade: connection.is_preset_trade,
+    preset_trade_enabled: connection.preset_trade_enabled,
+    preset_trade_requested: connection.preset_trade_requested,
+    preset_trade_blocked_reason: connection.preset_trade_blocked_reason,
+    is_signal_trade: connection.is_signal_trade,
+    signal_trade_enabled: connection.signal_trade_enabled,
+    signal_trade_requested: connection.signal_trade_requested,
+    signal_trade_blocked_reason: connection.signal_trade_blocked_reason,
   }
 }
 
+type LiveTradeIntent = "main" | "preset" | "signal"
+
+function resolveLiveTradeIntent(payload: Record<string, any>): LiveTradeIntent {
+  const explicit = String(payload.liveTradeIntent || payload.live_trade_intent || "").toLowerCase()
+  if (explicit === "preset" || explicit === "signal") return explicit
+  const source = String(payload.source || "").toLowerCase()
+  if (source.includes("preset")) return "preset"
+  if (source.includes("signal")) return "signal"
+  return "main"
+}
+
+function isDirectTradePayload(payload: Record<string, any>): boolean {
+  return payload.directTrade === true || payload.direct_trade === true || String(payload.source || "").toLowerCase().startsWith("direct-trade-")
+}
+
+function resolveEntryReadiness(connection: any, payload: Record<string, any>) {
+  // Direct Trade has its own Redis state/lease gate at the API boundary. It
+  // must not be coupled to Main/Preset/Signal switches, while still using the
+  // process-wide placement safety gate below.
+  // Reduce-only actions belong to an already-owned position lifecycle and are
+  // intentionally allowed to finish after an operator disables new entries.
+  // Test doubles also intentionally bypass deployment readiness; they never
+  // receive a production connector.
+  if (process.env.NODE_ENV === "test" || payload.reduceOnly === true || isDirectTradePayload(payload)) return null
+  const readiness = evaluateRealTradeReadiness(connection, resolveLiveTradeIntent(payload))
+  if (readiness.canPlaceRealOrders || readiness.executionMode === "simulation") return readiness
+  throw Object.assign(new Error(readiness.blockReason || "Live trade entry is not ready"), {
+    statusCode: 409,
+    mode: "blocked_live_trade",
+    blockCode: readiness.blockCode,
+  })
+}
+
 export async function createLiveOrderConnector(connection: any, payload: Record<string, any> = {}): Promise<{ connector: any; mode: LiveOrderMode; willUseRealExchange: boolean }> {
-  const forceSim = process.env.FORCE_SIMULATED === "1"
-  const willUseRealExchange = !forceSim && !!connection.api_key && !!connection.api_secret
+  const entryReadiness = resolveEntryReadiness(connection, payload)
+  const forceSim = isForcedSimulation() || entryReadiness?.executionMode === "simulation"
+  const willUseRealExchange = !forceSim && hasUsableLiveCredentials(connection)
   if (willUseRealExchange) {
     const safetyFailure = getLiveOrderSafetyFailure(payload)
     if (safetyFailure) throw Object.assign(new Error(safetyFailure), { statusCode: 403, mode: "blocked_live_order_safety" })
@@ -289,9 +335,25 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     ? normalizeDirection(input.positionDirection)
     : direction
   const exchangeSide = exchangeSideForDirection(direction)
-  const { connector, mode, willUseRealExchange } = input.connector
+  const orderPayload: Record<string, any> = {
+    ...(input.safetyPayload || {}),
+    ...input,
+    liveTradeIntent: resolveLiveTradeIntent(input as any),
+    reduceOnly: input.reduceOnly === true,
+  }
+  const entryReadiness = resolveEntryReadiness(connection, orderPayload)
+  // A caller-supplied connector is an optimization, not a readiness bypass.
+  // When the canonical entry decision is paper, discard that connector and
+  // create the simulated adapter so development/legacy callers cannot turn a
+  // disabled persisted Live switch into a real venue request.
+  const useProvidedConnector = Boolean(input.connector) && entryReadiness?.executionMode !== "simulation"
+  const { connector, mode, willUseRealExchange } = useProvidedConnector
     ? { connector: input.connector, mode: "live" as LiveOrderMode, willUseRealExchange: true }
-    : await createLiveOrderConnector(connection, input.safetyPayload || input as any)
+    : await createLiveOrderConnector(connection, orderPayload)
+  if (input.connector && willUseRealExchange) {
+    const safetyFailure = getLiveOrderSafetyFailure(orderPayload)
+    if (safetyFailure) throw Object.assign(new Error(safetyFailure), { statusCode: 403, mode: "blocked_live_order_safety" })
+  }
   await setupLiveOrderLeverage(connector, symbol, Number(input.leverage || 1))
   const hedgeMode = String(connection.position_mode || "").toLowerCase().includes("hedge") || String(connection.position_mode || "").toLowerCase().includes("dual")
   const options = hedgeMode

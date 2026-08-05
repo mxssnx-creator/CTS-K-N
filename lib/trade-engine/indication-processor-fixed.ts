@@ -10,6 +10,12 @@
 
 const _INDICATION_BUILD_VERSION = "5.0.1"
 const _BUILD_TIMESTAMP = 1712361660000 // Updated to force rebuild at 13:21
+import {
+  ENGINE_STAGE_HISTORY_CANDLES,
+  ENGINE_STAGE_HISTORY_MINUTES,
+} from "@/lib/market-data-loader"
+
+const MINIMUM_STAGE_HISTORY_CANDLES = ENGINE_STAGE_HISTORY_CANDLES
 
 // Log exactly once per process (guarded by a globalThis flag so HMR reloads are silent)
 if (!(globalThis as any).__IND_PROC_LOGGED__) {
@@ -65,7 +71,10 @@ if (!(globalThis as any).__MAP_PATCHED__) {
 // Patch to make the shared cache available globally for old cached code
 ;(globalThis as any).__INDICATION_PROCESSOR_CACHE__ = SHARED_MARKET_DATA_CACHE
 
-import { IndicationSetsProcessor } from "@/lib/indication-sets-processor"
+import {
+  IndicationSetsProcessor,
+  invalidateExactSnapshotCache,
+} from "@/lib/indication-sets-processor"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { trackIndicationStats } from "@/lib/statistics-tracker"
 import { StepBasedIndicators } from "@/lib/step-based-indicators"
@@ -104,6 +113,7 @@ import {
   readStoredIndicationProfile,
 } from "@/lib/active-indication-profile"
 import { logRuntimeWarning } from "@/lib/runtime-log-throttle"
+import { getHistoricCandleTail } from "./market-data-cache"
 
 // Pre-import modules at module load time (not per-call)
 import { initRedis, getRedisClient, getMarketData, saveIndication, getSettings, getAppSettings, storeIndications } from "@/lib/redis-db"
@@ -149,6 +159,129 @@ function moduleCacheSet(key: string, value: { data: any; timestamp: number }) {
 const MODULE_SETTINGS_CACHE_MAX_ENTRIES = 256
 const MODULE_SETTINGS_CACHE = new Map<string, { data: any; timestamp: number }>()
 
+type StepIndicatorSummarySnapshot = Awaited<
+  ReturnType<typeof StepBasedIndicators.calculateSummariesAsync>
+>
+type StepIndicatorSummaryCacheEntry = {
+  data: StepIndicatorSummarySnapshot
+  timestamp: number
+}
+
+// Auto alignment only consumes the aggregate indicator summary. Keeping that
+// summary separate from the exhaustive Set graph prevents every realtime
+// pulse from retaining a second Cartesian result tree. The key is based on
+// the actual candle series and Common settings, never on the transient mark.
+const STEP_SUMMARY_CACHE_MAX_ENTRIES = 256
+const STEP_SUMMARY_CACHE_TTL_MS = Math.max(
+  250,
+  Math.min(10_000, Number(process.env.INDICATION_STEP_SUMMARY_CACHE_MS || 2_000) || 2_000),
+)
+const STEP_SUMMARY_CACHE = new Map<string, StepIndicatorSummaryCacheEntry>()
+const STEP_SUMMARY_FLIGHTS = new Map<string, Promise<StepIndicatorSummarySnapshot>>()
+
+function stepSummaryMarketSignature(candles: any[]): string {
+  let hash = 0x811c9dc5
+  const mix = (value: unknown): void => {
+    const text = String(value ?? "")
+    for (let index = 0; index < text.length; index++) {
+      hash ^= text.charCodeAt(index)
+      hash = Math.imul(hash, 0x01000193)
+    }
+    hash ^= 0xff
+    hash = Math.imul(hash, 0x01000193)
+  }
+  for (const candle of candles) {
+    mix(candle?.timestamp ?? candle?.time ?? candle?.t)
+    mix(candle?.open ?? candle?.o)
+    mix(candle?.high ?? candle?.h)
+    mix(candle?.low ?? candle?.l)
+    mix(candle?.close ?? candle?.c ?? candle?.price)
+    mix(candle?.volume ?? candle?.v)
+  }
+  return `${candles.length}:${(hash >>> 0).toString(36)}`
+}
+
+function stepSummaryCacheKey(
+  connectionId: string,
+  symbol: string,
+  candles: any[],
+  timeframes: number[],
+  settings: any,
+): string {
+  let settingsSignature = ""
+  try {
+    settingsSignature = JSON.stringify({
+      commonIndicatorTypes: settings?.commonIndicatorTypes || [],
+      commonSettings: settings?.commonSettings || {},
+      timeframes,
+    })
+  } catch {
+    settingsSignature = String(settings?.commonIndicatorTypes || "")
+  }
+  return `${connectionId}:${symbol}:${stepSummaryMarketSignature(candles)}:${settingsSignature}`
+}
+
+function readStepSummaryCache(key: string): StepIndicatorSummarySnapshot | null {
+  const entry = STEP_SUMMARY_CACHE.get(key)
+  if (!entry) return null
+  if (Date.now() - entry.timestamp >= STEP_SUMMARY_CACHE_TTL_MS) {
+    STEP_SUMMARY_CACHE.delete(key)
+    return null
+  }
+  // Refresh insertion order for bounded LRU-like behavior.
+  STEP_SUMMARY_CACHE.delete(key)
+  STEP_SUMMARY_CACHE.set(key, entry)
+  return entry.data
+}
+
+function writeStepSummaryCache(key: string, data: StepIndicatorSummarySnapshot): void {
+  if (STEP_SUMMARY_CACHE.size >= STEP_SUMMARY_CACHE_MAX_ENTRIES && !STEP_SUMMARY_CACHE.has(key)) {
+    const oldest = STEP_SUMMARY_CACHE.keys().next().value
+    if (oldest !== undefined) STEP_SUMMARY_CACHE.delete(oldest)
+  }
+  STEP_SUMMARY_CACHE.delete(key)
+  STEP_SUMMARY_CACHE.set(key, { data, timestamp: Date.now() })
+}
+
+async function getStepIndicatorSummariesCached(
+  connectionId: string,
+  symbol: string,
+  candles: any[],
+  timeframes: number[],
+  settings: any,
+): Promise<StepIndicatorSummarySnapshot> {
+  const key = stepSummaryCacheKey(connectionId, symbol, candles, timeframes, settings)
+  const cached = readStepSummaryCache(key)
+  if (cached) return cached
+  const existing = STEP_SUMMARY_FLIGHTS.get(key)
+  if (existing) return existing
+
+  const flight = StepBasedIndicators.calculateSummariesAsync(
+    candles,
+    timeframes,
+    settings?.commonIndicatorTypes,
+    settings?.commonSettings,
+  ).then((data) => {
+    writeStepSummaryCache(key, data)
+    return data
+  }).finally(() => {
+    STEP_SUMMARY_FLIGHTS.delete(key)
+  })
+  STEP_SUMMARY_FLIGHTS.set(key, flight)
+  return flight
+}
+
+function invalidateStepSummaryCache(connectionId?: string): void {
+  if (!connectionId) {
+    STEP_SUMMARY_CACHE.clear()
+    return
+  }
+  const prefix = `${connectionId}:`
+  for (const key of STEP_SUMMARY_CACHE.keys()) {
+    if (key.startsWith(prefix)) STEP_SUMMARY_CACHE.delete(key)
+  }
+}
+
 function moduleSettingsCacheSet(
   connectionId: string,
   value: { data: any; timestamp: number },
@@ -171,9 +304,13 @@ function moduleSettingsCacheSet(
 export function invalidateIndicationSettingsCache(connectionId?: string): void {
   if (connectionId) {
     MODULE_SETTINGS_CACHE.delete(connectionId)
+    invalidateStepSummaryCache(connectionId)
+    invalidateExactSnapshotCache(connectionId)
     return
   }
   MODULE_SETTINGS_CACHE.clear()
+  invalidateStepSummaryCache()
+  invalidateExactSnapshotCache()
 }
 
 /**
@@ -492,13 +629,14 @@ export class IndicationProcessor {
 
   /**
    * Get all candles for a symbol - tries multiple Redis keys in priority order:
-   * 1. market_data:{symbol}:candles  → JSON array of 250 candles (from loadMarketDataForEngine)
-   * 2. market_data:{symbol}:1m       → JSON object with .candles array
+   * 1. market_data:{symbol}:candles  → bounded realtime tail; chunk history is
+   *    loaded when the stage warmup requires more candles
+   * 2. market_data:{symbol}:1s       → JSON object with the same hot tail
    * 3. market_data:{symbol}          → single hash entry (fallback, 1 data point)
    *
    * Parsed candles are cached per-symbol with 200ms TTL (matching the
    * market-data-cache TTL) so repeated processIndication calls in the same
-   * cycle fan-out don't re-parse the same 250-candle JSON array.
+   * cycle fan-out don't re-parse the same hot-tail JSON array.
    */
   private _parsedCandlesCache = new Map<string, { candles: any[]; ts: number }>()
   private static readonly _PARSED_CANDLES_TTL_MS = 200
@@ -521,6 +659,14 @@ export class IndicationProcessor {
         // Redis returns strings; parse directly without re-stringify
         const candles = typeof candlesRaw === "string" ? JSON.parse(candlesRaw) : candlesRaw
         if (Array.isArray(candles) && candles.length > 0) {
+          if (candles.length < MINIMUM_STAGE_HISTORY_CANDLES) {
+            const historicTail = await getHistoricCandleTail(symbol, MINIMUM_STAGE_HISTORY_CANDLES)
+            if (historicTail.length >= MINIMUM_STAGE_HISTORY_CANDLES) {
+              this._parsedCandlesCache.set(symbol, { candles: historicTail, ts: Date.now() })
+              this.logCandleCountIfChanged(symbol, "history-chunks", historicTail.length)
+              return historicTail
+            }
+          }
           this._parsedCandlesCache.set(symbol, { candles, ts: Date.now() })
           this.logCandleCountIfChanged(symbol, "candles-array", candles.length)
           return candles
@@ -783,7 +929,11 @@ export class IndicationProcessor {
         const { loadMarketDataForEngine } = await import("@/lib/market-data-loader")
         // Indicators need a rolling window, not merely a one-candle realtime
         // tail that may have been written by the minute scheduler first.
-        await loadMarketDataForEngine([symbol], { requireHistory: true, connectionId: this.connectionId })
+        await loadMarketDataForEngine([symbol], {
+          requireHistory: true,
+          minimumHistoryCandles: MINIMUM_STAGE_HISTORY_CANDLES,
+          connectionId: this.connectionId,
+        })
         if (!isCurrent()) return []
         SHARED_MARKET_DATA_CACHE.delete(symbol)
         
@@ -826,11 +976,54 @@ export class IndicationProcessor {
         }
       }
 
-      // Get candles. In replay mode (asOfMs set), slice to <= asOfMs so
+      // Get candles. A realtime ticker can exist before the full history
+      // loader has completed (pre-startup deliberately seeds a tiny price
+      // tail). Never let that latest-data cache hit make Row-Real/Row-Live
+      // process a partial grid: ensure the configured minimum history first,
+      // then invalidate both parsed and latest snapshots so every downstream
+      // stage sees the same refreshed candle set.
+      let candles = await this.getHistoricalCandles(symbol)
+      if (candles.length < MINIMUM_STAGE_HISTORY_CANDLES) {
+        const { loadMarketDataForEngine } = await import("@/lib/market-data-loader")
+        await loadMarketDataForEngine([symbol], {
+          requireHistory: true,
+          minimumHistoryCandles: MINIMUM_STAGE_HISTORY_CANDLES,
+          connectionId: this.connectionId,
+        })
+        this._parsedCandlesCache.delete(symbol)
+        SHARED_MARKET_DATA_CACHE.delete(symbol)
+        candles = await this.getHistoricalCandles(symbol)
+        if (candles.length >= MINIMUM_STAGE_HISTORY_CANDLES) {
+          const client = getRedisClient()
+          const refreshed =
+            (await client.get(`market_data:${symbol}:1s`)) ??
+            (await client.get(`market_data:${symbol}:1m`))
+          if (refreshed) {
+            try {
+              const parsed = typeof refreshed === "string" ? JSON.parse(refreshed) : refreshed
+              const latest = Array.isArray(parsed?.candles) ? parsed.candles.at(-1) : null
+              if (latest) {
+                marketData = {
+                  ...marketData,
+                  symbol,
+                  price: latest.close,
+                  open: latest.open,
+                  high: latest.high,
+                  low: latest.low,
+                  close: latest.close,
+                  volume: latest.volume,
+                  timestamp: new Date(Number(latest.timestamp)).toISOString(),
+                }
+              }
+            } catch { /* keep the already-valid ticker snapshot */ }
+          }
+        }
+      }
+
+      // In replay mode (asOfMs set), slice to <= asOfMs so
       // the "current" candle is the one at the simulated point in time.
       // Sub-ms duplicate timestamps are tolerated — the slice keeps every
       // candle <= asOfMs and the last one becomes the "live" snapshot.
-      let candles = await this.getHistoricalCandles(symbol)
       if (!isCurrent()) return []
       if (candles.length === 0) {
         candles.push(marketData)
@@ -852,15 +1045,33 @@ export class IndicationProcessor {
       }
 
       const pricesOldestFirst = oneMinuteClosesOldestFirst(candles)
+      // Stage coordination is defined on one-minute closes. A 1s tail with
+      // only a few minutes of coverage must not fall through to the direct
+      // candle indication path: that would create apparently valid
+      // Row-Real/Row-Live sets from an unevaluable 90-minute window and could
+      // admit an order before its configured history exists. Phase 2 still
+      // runs in the shared pipeline so already-open positions remain managed.
+      if (pricesOldestFirst.length < ENGINE_STAGE_HISTORY_MINUTES) {
+        logRuntimeWarning(
+          `indication-processor:${this.connectionId}:${symbol}:stage-history-gate`,
+          60_000,
+          () =>
+            `[v0] [IndicationProcessor] ${symbol}: stage history gate ` +
+              `has ${pricesOldestFirst.length}/${ENGINE_STAGE_HISTORY_MINUTES} one-minute bars; ` +
+              `entry indications remain closed until complete history is available`,
+        )
+        return []
+      }
       const coordinatedTimeframes = parseNumericSettingList(
         indicationSettings.commonCoordination?.timeframesMinutes,
         [1, 5, 15, 30],
       ).map((value) => Math.max(1, Math.round(value)))
-      const stepIndicators = await StepBasedIndicators.calculateAllAsync(
+      const stepIndicators = await getStepIndicatorSummariesCached(
+        this.connectionId,
+        symbol,
         candles,
         coordinatedTimeframes,
-        indicationSettings.commonIndicatorTypes,
-        indicationSettings.commonSettings,
+        indicationSettings,
       )
       const defaultMultiRangeCoordination = calculateMultiRangeCoordination({
         pricesOldestFirst,

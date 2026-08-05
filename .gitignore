@@ -27,6 +27,7 @@ node_modules
 .next-release-check/
 .next-prod/
 .next-prod-final/
+.next-prod-release-final/
 .next-audit/
 .v0-dev/
 .v0-prod/

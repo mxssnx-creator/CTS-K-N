@@ -21,6 +21,7 @@ describe("production base-connection credential injection", () => {
       BINGX_API_SECRET: "bingx-live-secret-1234567890",
       BYBIT_API_KEY: "bybit-live-key-1234567890",
       BYBIT_API_SECRET: "bybit-live-secret-1234567890",
+      ADMIN_SECRET: "inject-test-admin-secret-1234567890",
     }
   })
 
@@ -36,12 +37,15 @@ describe("production base-connection credential injection", () => {
       import("@/lib/redis-db"),
     ])
 
-    const injected = await (await POST()).json()
+    const request = new Request("http://localhost/api/system/inject-credentials", {
+      headers: { Authorization: "Bearer inject-test-admin-secret-1234567890" },
+    })
+    const injected = await (await POST(request)).json()
     expect(injected.success).toBe(true)
     expect(injected.results["bingx-x01"]).toContain("live trade enabled")
     expect(injected.results["bybit-x03"]).toContain("live trade enabled")
 
-    const status = await (await GET()).json()
+    const status = await (await GET(request)).json()
     expect(status.liveTradeReady).toEqual(expect.arrayContaining(["bingx-x01", "bybit-x03"]))
     expect(status.database["bingx-x01"]).toMatchObject({ hasCredentials: true, liveTradeEnabled: true })
     expect(status.database["bybit-x03"]).toMatchObject({ hasCredentials: true, liveTradeEnabled: true })
@@ -53,6 +57,16 @@ describe("production base-connection credential injection", () => {
       live_trade_requested: "1",
       connection_method: "library",
       connection_library: "sdk",
+    })
+  })
+
+  it("rejects credential injection without the admin bearer token", async () => {
+    const { POST } = await import("@/app/api/system/inject-credentials/route")
+    const response = await POST(new Request("http://localhost/api/system/inject-credentials"))
+    expect(response.status).toBe(401)
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      error: "Unauthorized",
     })
   })
 })

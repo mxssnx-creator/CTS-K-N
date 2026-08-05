@@ -2332,6 +2332,63 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(result.status).not.toBe("simulated")
   })
 
+  test("does not add Block quantity to an existing exchange position after Live is switched off", async () => {
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const parentSetKey = "BTCUSDT:direction:long#live-toggle-parent"
+    const parent = await executeLivePosition(connection.id, {
+      id: "live-toggle-parent",
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long",
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      parentSetKey: "BTCUSDT:direction:long",
+      setKey: parentSetKey,
+      setVariant: "default",
+      status: "pending",
+      timestamp: Date.now(),
+    } as any, recordingConnector)
+    expect(parent.status).toBe("open")
+    expect(parent.executedQuantity).toBeCloseTo(0.01, 12)
+    expect(placeOrder).toHaveBeenCalledTimes(1)
+
+    connection.is_live_trade = "0"
+    connection.live_trade_requested = "0"
+    const block = await executeLivePosition(connection.id, {
+      id: "live-toggle-block",
+      connectionId: connection.id,
+      symbol: "BTCUSDT",
+      direction: "long",
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      parentSetKey: "BTCUSDT:direction:long",
+      setKey: `${parentSetKey}#block:1`,
+      setVariant: "block",
+      blockCount: 1,
+      blockVolumeRatio: 1,
+      blockVolumeIncrementRatio: 1,
+      blockBaseVolumeMultiplier: 1,
+      blockCalculatedVolumeMultiplier: 1,
+      status: "pending",
+      timestamp: Date.now(),
+    } as any, recordingConnector)
+
+    expect(block.id).toBe(parent.id)
+    expect(block.status).toBe("open")
+    expect(block.executedQuantity).toBeCloseTo(parent.executedQuantity, 12)
+    expect(placeOrder).toHaveBeenCalledTimes(1)
+    expect(block.statusReason).toContain("adjustment deferred")
+    expect(block.progression).toEqual(expect.arrayContaining([
+      expect.objectContaining({ step: "accumulate_blocked_live_off", success: false }),
+    ]))
+  })
+
   test("rejects an invalid runtime direction before any exchange or control-order call", async () => {
     const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
     const result = await executeLivePosition(connection.id, {

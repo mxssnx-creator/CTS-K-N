@@ -1,5 +1,4 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getBaseConnectionCredentials } from "@/lib/base-connection-credentials"
 import { isTruthyFlag } from "@/lib/boolean-utils"
 import { getDeploymentRuntimeLabel, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 
@@ -58,33 +57,6 @@ export async function GET(request: NextRequest) {
     // Get migration status
     const migrationStatus = await getMigrationStatus()
     const stats = await getRedisStats()
-    
-    // AUTO-INJECT: Ensure canonical predefined credentials are persisted in base connections.
-    const { apiKey: bingxKey, apiSecret: bingxSecret } = getBaseConnectionCredentials("bingx-x01")
-    if (bingxKey.length > 10 && bingxSecret.length > 10) {
-      const { getRedisClient } = await import("@/lib/redis-db")
-      const redisClient = getRedisClient()
-      const existingConn = await redisClient.hgetall("connection:bingx-x01")
-      const existsInConnectionsSet = await redisClient.sismember("connections", "bingx-x01")
-      // Only update if credentials are missing or different
-      // Note: Don't check api_key.length — valid credentials vary by exchange
-       if (existsInConnectionsSet && existingConn && Object.keys(existingConn).length > 0 &&
-         (!existingConn.api_key || existingConn.api_key !== bingxKey)) {
-         const dashboardEnabled = existingConn?.is_enabled_dashboard === "1" || existingConn?.is_enabled_dashboard === "true"
-         await redisClient.hset("connection:bingx-x01", {
-           api_key: bingxKey,
-           api_secret: bingxSecret,
-           is_active_inserted: (existingConn?.is_active_inserted as string) || "0",
-           is_enabled: (existingConn?.is_enabled as string) || "1",
-           is_enabled_dashboard: (existingConn?.is_enabled_dashboard as string) || "0",
-           is_active: dashboardEnabled ? "1" : "0",
-           connection_method: "library",
-           connection_library: "sdk",
-            updated_at: new Date().toISOString(),
-          })
-         console.log("[v0] [Init] Auto-injected BingX predefined credentials")
-      }
-    }
     
     // Get the exact key cardinality without materializing every key. This
     // endpoint is polled during historic/max-symbol processing, where

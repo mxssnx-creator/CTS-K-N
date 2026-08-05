@@ -6,6 +6,7 @@
 
 import type { BaseExchangeConnector, ExchangeCredentials } from "./base-connector"
 import { EXCHANGE_API_TYPES } from "@/lib/connection-predefinitions"
+import { hasUsableLiveCredentials, isForcedSimulation } from "@/lib/real-trade-gates"
 
 // Perpetual-type equivalents - these all mean the same thing across exchanges
 const PERP_TYPES = new Set(["perpetual", "perpetual_futures", "perp", "swap", "futures"])
@@ -58,16 +59,13 @@ export async function createExchangeConnector(
   // DEV/TEST: prefer simulated connector when API key is a placeholder or
   // FORCE_SIMULATED is explicitly set. The explicit safety override applies
   // uniformly to every exchange, including BingX.
-  const forceSim = process.env.FORCE_SIMULATED === "1"
+  const forceSim = isForcedSimulation()
   const allowProdSim = process.env.ALLOW_PROD_SIMULATED === "1"
   const isProduction = process.env.NODE_ENV === "production"
-  const keyStr = String(credentials.apiKey || "")
-  const secretStr = String(credentials.apiSecret || "")
-  const hasRealCredentials =
-    keyStr.length >= 10 &&
-    secretStr.length >= 10 &&
-    !/PLACEHOLDER|00998877|^test/i.test(keyStr) &&
-    !/PLACEHOLDER|00998877|^test/i.test(secretStr)
+  const hasRealCredentials = hasUsableLiveCredentials({
+    api_key: credentials.apiKey,
+    api_secret: credentials.apiSecret,
+  })
   const shouldUseSim = forceSim || (!hasRealCredentials && (!isProduction || allowProdSim))
   if (shouldUseSim) {
     try {

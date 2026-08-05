@@ -690,92 +690,114 @@ export class PresetCoordinationEngine {
     // Calculate position size based on configuration
     const positionSize = 100 // Default, should be configurable
 
-    // Store real trade record
-    await sql`
-      INSERT INTO preset_real_trades (
-        id, connection_id, preset_type_id, configuration_set_id,
-        coordination_result_id, symbol, direction,
-        entry_price, quantity, leverage,
-        indication_type, takeprofit_factor, stoploss_ratio,
-        trailing_enabled, trail_start, trail_stop,
-        status, opened_at, created_at
-      ) VALUES (
-        ${this.generateId()}, ${this.connectionId}, ${this.presetTypeId},
-        ${result.configuration_set_id}, ${result.id},
-        ${result.symbol}, ${signal.direction},
-        ${currentPrice}, ${positionSize}, 1,
-        ${result.indication_type}, ${result.takeprofit_factor}, ${result.stoploss_ratio},
-        ${result.trailing_enabled}, ${result.trail_start}, ${result.trail_stop},
-        'open', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-      )
-    `
-
     try {
-      // Get connection settings to check if live trading is enabled
+      // Read the same persisted connection used by the active engine. This
+      // legacy coordinator is retained for backwards compatibility, but it
+      // must never use the old synthetic ExchangeAPI (which returned fake
+      // order IDs instead of submitting or tracking a venue order).
       const [connection] = await sql<any>`
         SELECT * FROM connections WHERE id = ${this.connectionId}
       `
 
-      if (connection?.is_live_trade || connection?.is_preset_trade) {
-        const { createExchangeAPI } = await import("@/lib/exchanges")
-        const exchangeAPI = createExchangeAPI({
-          id: connection.id,
-          name: connection.name,
-          exchange: connection.exchange,
-          apiKey: connection.api_key,
-          apiSecret: connection.api_secret,
-          testnet: connection.is_testnet ?? false,
-          status: "connected",
-          connectionMethod: connection.connection_method || "rest",
-        })
+      const presetEnabled = connection?.is_preset_trade === true ||
+        connection?.is_preset_trade === 1 ||
+        connection?.is_preset_trade === "1" ||
+        connection?.preset_trade_requested === true ||
+        connection?.preset_trade_requested === 1 ||
+        connection?.preset_trade_requested === "1"
+      if (!presetEnabled) return
 
-        // Calculate TP and SL prices
-        const isLong = signal.direction === "long"
-        const tpPrice = isLong
-          ? currentPrice * (1 + result.takeprofit_factor / 100)
-          : currentPrice * (1 - result.takeprofit_factor / 100)
-        const slPrice = isLong
-          ? currentPrice * (1 - result.stoploss_ratio / 100)
-          : currentPrice * (1 + result.stoploss_ratio / 100)
+      const { placeLiveOrder } = await import("@/lib/live-order-service")
+      const orderResult = await placeLiveOrder({
+        connectionId: this.connectionId,
+        connection: {
+          ...connection,
+          id: connection.id || this.connectionId,
+          api_key: connection.api_key || connection.apiKey || "",
+          api_secret: connection.api_secret || connection.apiSecret || "",
+        },
+        symbol: result.symbol,
+        side: signal.direction,
+        positionDirection: signal.direction,
+        quantity: positionSize,
+        leverage: 1,
+        orderType: "market",
+        source: "preset-coordination",
+        safetyPayload: {
+          confirmLiveOrderPlacement: true,
+          presetTrade: true,
+        },
+        // The preset SQL ledger owns this legacy row; the shared order service
+        // still owns connector safety and authoritative fill parsing.
+        persistPosition: false,
+        updateCounters: false,
+      })
 
-        const orderResult = await exchangeAPI.placeOrder({
-          symbol: result.symbol,
-          side: isLong ? "buy" : "sell",
-          type: "market",
-          quantity: positionSize,
-          leverage: 1,
-          takeProfit: tpPrice,
-          stopLoss: slPrice,
-        })
-
-        console.log(`[v0] Exchange order placed: ${orderResult.orderId}`)
-
-        // Mirror to exchange position manager for tracking
-        const { ExchangePositionManager } = await import("@/lib/exchange-position-manager")
-        const positionManager = new ExchangePositionManager(this.connectionId)
-
-        await positionManager.mirrorToExchange({
-          connectionId: this.connectionId,
-          realPseudoPositionId: result.id,
-          exchangeId: orderResult.orderId,
-          symbol: result.symbol,
-          side: signal.direction,
-          entryPrice: currentPrice,
-          quantity: positionSize,
-          volumeUsd: positionSize * currentPrice,
-          leverage: 1,
-          takeprofit: tpPrice,
-          stoploss: slPrice,
-          trailingEnabled: result.trailing_enabled,
-          trailStart: result.trail_start ?? undefined,
-          trailStop: result.trail_stop ?? undefined,
-          tradeMode: "preset",
-          indicationType: result.indication_type,
-        })
+      if (!orderResult?.success || orderResult.mode !== "live") {
+        throw new Error(orderResult?.error || `Preset live order was not executed in live mode (${orderResult?.mode || "unknown"})`)
       }
+
+      const fillPrice = Number(orderResult.fill?.filledPrice || currentPrice) || currentPrice
+      const tradeId = this.generateId()
+      await sql`
+        INSERT INTO preset_real_trades (
+          id, connection_id, preset_type_id, configuration_set_id,
+          coordination_result_id, symbol, direction,
+          entry_price, quantity, leverage,
+          indication_type, takeprofit_factor, stoploss_ratio,
+          trailing_enabled, trail_start, trail_stop,
+          status, opened_at, created_at
+        ) VALUES (
+          ${tradeId}, ${this.connectionId}, ${this.presetTypeId},
+          ${result.configuration_set_id}, ${result.id},
+          ${result.symbol}, ${signal.direction},
+          ${fillPrice}, ${Number(orderResult.fill?.filledQty || positionSize)}, 1,
+          ${result.indication_type}, ${result.takeprofit_factor}, ${result.stoploss_ratio},
+          ${result.trailing_enabled}, ${result.trail_start}, ${result.trail_stop},
+          'open', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+      `
+
+      console.log(`[v0] Preset exchange order placed: ${orderResult.orderId}`)
+
+      // Calculate TP and SL prices from the authoritative fill, not the
+      // pre-submit ticker. This keeps protection and reporting aligned after
+      // slippage or a delayed market fill.
+      const isLong = signal.direction === "long"
+      const tpPrice = isLong
+        ? fillPrice * (1 + result.takeprofit_factor / 100)
+        : fillPrice * (1 - result.takeprofit_factor / 100)
+      const slPrice = isLong
+        ? fillPrice * (1 - result.stoploss_ratio / 100)
+        : fillPrice * (1 + result.stoploss_ratio / 100)
+
+      // Mirror to exchange position manager for tracking
+      const { ExchangePositionManager } = await import("@/lib/exchange-position-manager")
+      const positionManager = new ExchangePositionManager(this.connectionId)
+
+      await positionManager.mirrorToExchange({
+        connectionId: this.connectionId,
+        realPseudoPositionId: result.id,
+        exchangeId: orderResult.orderId,
+        symbol: result.symbol,
+        side: signal.direction,
+        entryPrice: fillPrice,
+        quantity: Number(orderResult.fill?.filledQty || positionSize),
+        volumeUsd: Number(orderResult.fill?.filledQty || positionSize) * fillPrice,
+        leverage: 1,
+        takeprofit: tpPrice,
+        stoploss: slPrice,
+        trailingEnabled: result.trailing_enabled,
+        trailStart: result.trail_start ?? undefined,
+        trailStop: result.trail_stop ?? undefined,
+        tradeMode: "preset",
+        indicationType: result.indication_type,
+      })
     } catch (error) {
       console.error("[v0] Failed to open position on exchange:", error)
-      // Continue - the pseudo position is still tracked
+      // Do not write a real-trade ledger row when the venue order did not
+      // succeed. The pseudo position remains the paper/strategy record and
+      // can be reconciled independently.
     }
   }
 

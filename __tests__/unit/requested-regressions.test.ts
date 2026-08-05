@@ -77,7 +77,7 @@ describe("requested regression guardrails", () => {
     expect(safety).toContain('confirmLiveOrderPlacement === true')
     expect(safety).toContain('I understand this places real exchange orders')
     expect(placeOrder).toContain('placeLiveOrder')
-    expect(liveOrderService).toContain('const willUseRealExchange = !forceSim && !!connection.api_key && !!connection.api_secret')
+    expect(liveOrderService).toContain('const willUseRealExchange = !forceSim && hasUsableLiveCredentials(connection)')
     expect(liveOrderService).toContain('getLiveOrderSafetyFailure(payload)')
     expect(liveOrderService).toContain('mode: "blocked_live_order_safety"')
     expect(liveOrderService).toContain('mode: "live"')
@@ -1114,8 +1114,8 @@ describe("requested regression guardrails", () => {
     const engine = read("lib/trade-engine/engine-manager.ts")
     const indication = read("lib/trade-engine/indication-processor-fixed.ts")
 
-    expect(engine.match(/loadMarketDataForEngine\(symbols, \{ requireHistory: true, connectionId: this\.connectionId \}\)/g)?.length).toBeGreaterThanOrEqual(3)
-    expect(indication).toContain("loadMarketDataForEngine([symbol], { requireHistory: true, connectionId: this.connectionId })")
+    expect(engine.match(/loadMarketDataForEngine\(symbols, \{[\s\S]*?minimumHistoryCandles: ENGINE_STAGE_HISTORY_CANDLES[\s\S]*?connectionId: this\.connectionId[\s\S]*?\}\)/g)?.length).toBeGreaterThanOrEqual(3)
+    expect(indication).toContain("minimumHistoryCandles: MINIMUM_STAGE_HISTORY_CANDLES")
     expect(engine).not.toContain('client.get("market_data:BTCUSDT:1s")')
   })
 
@@ -1486,8 +1486,8 @@ describe("requested regression guardrails", () => {
       const hgetall = jest.fn().mockResolvedValue({
         name: "Test Connection",
         exchange: "bingx",
-        api_key: "test-api-key",
-        api_secret: "test-api-secret",
+        api_key: "valid-api-key-12345",
+        api_secret: "valid-api-secret-12345",
         api_passphrase: "test-passphrase",
         api_type: "swap",
         contract_type: "perpetual",
@@ -1959,6 +1959,9 @@ describe("requested regression guardrails", () => {
     expect(strategy).toContain("skipLiveDispatch,")
     expect(strategy).toContain("isCurrent,")
     expect(pipeline).toContain("shouldContinue?: () => boolean")
+    expect(cron).toContain("isExpectedHistoricHandoff")
+    expect(cron).toContain('reason: "historic_generation_superseded"')
+    expect(cron).not.toContain("[v0] [CronIndications] Error: Error [PrehistoricProcessingCancelledError]")
   })
 
   test("current statistics and indication entrypoints never substitute samples or random values", () => {
@@ -2209,10 +2212,12 @@ describe("requested regression guardrails", () => {
     expect(simulatedSweep).toContain("TP/SL, trailing and max-hold handling")
 
     const exchangeSync = liveStage.slice(liveStage.indexOf("export async function syncWithExchange"))
-    expect(exchangeSync.indexOf("const liveTradeOn = await isLiveTradeEnabledForConnection(connectionId)")).toBeGreaterThan(-1)
-    expect(exchangeSync.indexOf("const liveTradeOn = await isLiveTradeEnabledForConnection(connectionId)")).toBeLessThan(
-      exchangeSync.indexOf("const allOpenRaw = await getLivePositions(connectionId)"),
-    )
+    const liveGateIndex = exchangeSync.indexOf("const liveTradeOn = await isLiveTradeEnabledForConnection(connectionId)")
+    const lifecycleGateIndex = exchangeSync.indexOf("const hasOwnedExchangeLifecycle = lifecycleRows.some")
+    const allOpenIndex = exchangeSync.indexOf("const allOpenRaw =")
+    expect(liveGateIndex).toBeGreaterThan(-1)
+    expect(lifecycleGateIndex).toBeGreaterThan(liveGateIndex)
+    expect(allOpenIndex).toBeGreaterThan(lifecycleGateIndex)
     expect(exchangeSync).toContain("const simSummary = await processSimulatedPositions(connectionId)")
   })
 
@@ -2278,6 +2283,13 @@ describe("requested regression guardrails", () => {
     expect(readiness).toContain('"Global coordinator requires shared Redis"')
     expect(readiness).toContain('"shared_persistence_required"')
     expect(envExample).toContain("ALLOW_PROD_INLINE_REDIS=1")
+  })
+
+  test("production readiness exempts credentials only under the explicit paper-mode override", () => {
+    const readiness = read("lib/production-readiness.ts")
+    expect(readiness).toContain('const forceSimulated = process.env.FORCE_SIMULATED === "1" && process.env.FORCE_LIVE !== "1"')
+    expect(readiness).toContain("if (!forceSimulated && !hasCreds)")
+    expect(readiness).toContain("FORCE_LIVE always wins")
   })
 
   test("simulated live-stage orders use the idempotent fill/entry counter path", () => {
@@ -2361,11 +2373,15 @@ describe("requested regression guardrails", () => {
     const setProcessor = read("lib/indication-sets-processor.ts")
 
     expect(setProcessor).toContain("EXACT_SNAPSHOT_CACHE_MAX_AGE_MS")
-    expect(setProcessor).toContain('if (mode !== "historical") return `${connectionId}:${symbol}:realtime`')
+    expect(setProcessor).toContain("function realtimeMarketSignature")
+    expect(setProcessor).toContain('if (mode !== "historical")')
+    expect(setProcessor).toContain("invalidateExactSnapshotCache")
     expect(setProcessor).toContain("exactSnapshotCacheKey(this.connectionId, symbol, marketData)")
     expect(setProcessor).toContain("const closedForwardOutcomes = await this.closePendingRealtimeOutcomes")
-    expect(setProcessor).toContain("if (!closedForwardOutcomes) {")
-    expect(setProcessor).toContain("if (!closedForwardOutcomes) writeExactSnapshotCache(snapshotKey, completed)")
+    expect(setProcessor).toContain("const refreshed = closedForwardOutcomes")
+    expect(setProcessor).toContain("refreshCachedOutcomeRows(cached)")
+    expect(setProcessor).toContain("writeExactSnapshotCache(snapshotKey, refreshed)")
+    expect(setProcessor).toContain("writeExactSnapshotCache(snapshotKey, completed)")
     expect(setProcessor).toContain("private async closePendingRealtimeOutcomes(symbol: string, marketData: any): Promise<boolean>")
     const indicationProcessor = read("lib/trade-engine/indication-processor-fixed.ts")
     expect(indicationProcessor).toContain('__indicationSnapshotMode: typeof asOfMs === "number" ? "historical" : "realtime"')
@@ -2593,7 +2609,8 @@ describe("requested regression guardrails", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
 
     expect(gates).toContain("getRealTradeBlockReason")
-    expect(gates).not.toContain('process.env.NODE_ENV === "production"')
+    expect(gates).toContain('process.env.NODE_ENV === "production"')
+    expect(gates).toContain('process.env.ALLOW_LIVE_ORDER_PLACEMENT !== "1"')
     expect(gates).toContain("hasDurableLiveCoordination()")
     expect(gates).toContain("!hasSharedRedisConfig() &&")
     expect(gates).toContain("ALLOW_INLINE_REDIS_LIVE_TRADING")
@@ -3353,6 +3370,14 @@ describe("requested regression guardrails", () => {
     expect(coordinator).toContain("const mainInputCount = baseValidCount")
     expect(coordinator).toContain("row_valid:   String(baseValidCount)")
     expect(coordinator).not.toContain("if (pf < this.PF_BASE_MIN) continue")
+  })
+
+  test("strategy stage stats keep authoritative zero snapshots separate from last-symbol fallbacks", () => {
+    const route = read("app/api/connections/progression/[id]/stats/route.ts")
+
+    expect(route).toContain("const activeStratStageSeen: Record<string, boolean>")
+    expect(route).toContain("activeStratStageSeen[suffix] = true")
+    expect(route).toContain("stratCounts[type] = activeStratStageSeen[type] ? fromActive")
   })
 
 })

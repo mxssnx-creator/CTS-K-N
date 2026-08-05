@@ -90,4 +90,30 @@ describe("Common technical indicators", () => {
     expect(result["1"].indicators.obv).toBeDefined()
     expect(result["1"].indicators.stochastic).toBeDefined()
   })
+
+  test("streaming summaries exactly match the exhaustive aggregate", async () => {
+    const source = candles(Array.from({ length: 180 }, (_, index) =>
+      100 + Math.sin(index / 7) * 2 + index * 0.03,
+    ))
+    const enabled = ["ma", "rsi", "macd", "bollinger", "stochastic", "obv"] as const
+    const exhaustive = await StepBasedIndicators.calculateAllAsync(
+      source,
+      [1, 5, 15],
+      enabled,
+      DEFAULT_COMMON_INDICATION_SETTINGS,
+      8,
+    )
+    const streaming = await StepBasedIndicators.calculateSummariesAsync(
+      source,
+      [1, 5, 15],
+      enabled,
+      DEFAULT_COMMON_INDICATION_SETTINGS,
+      8,
+    )
+
+    for (const timeframe of ["1", "5", "15"]) {
+      expect(streaming[timeframe].indicators).toEqual(exhaustive[timeframe].indicators)
+      expect(streaming[timeframe].summary).toEqual(exhaustive[timeframe].summary)
+    }
+  })
 })

@@ -16,6 +16,8 @@ import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { buildProgressionScope } from "@/lib/progression-scope"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { getHistoricCandlesForRange } from "./market-data-cache"
+import { ENGINE_STAGE_HISTORY_CANDLES } from "@/lib/market-data-loader"
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
@@ -318,6 +320,18 @@ export class ConfigSetProcessor {
         const candlesRaw = await client.get(`market_data:${symbol}:candles`)
         if (candlesRaw) {
           candles = JSON.parse(candlesRaw)
+        }
+
+        // The hot candles key is deliberately bounded. Load only the
+        // requested prehistoric interval from canonical chunks so a cold
+        // production start keeps the full range without duplicating it in the
+        // realtime envelope.
+        if (candles.length < 1 || candles.length < ENGINE_STAGE_HISTORY_CANDLES) {
+          const chunkCandles = await getHistoricCandlesForRange(symbol, {
+            startMs: effectiveStart.getTime(),
+            endMs: effectiveEnd.getTime(),
+          })
+          if (chunkCandles.length > candles.length) candles = chunkCandles
         }
 
         // ── Fallback read switched from `:1m` → `:1s` (spec §7.3) ───

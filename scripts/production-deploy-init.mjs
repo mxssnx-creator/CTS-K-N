@@ -19,11 +19,13 @@ function resolveBaseUrl() {
 const BASE_URL = resolveBaseUrl()
 
 async function request(pathname, { method = "GET", body, timeoutMs = 30_000 } = {}) {
+  const adminSecret = String(process.env.ADMIN_SECRET || "").trim()
   const response = await fetch(new URL(pathname, BASE_URL), {
     method,
     cache: "no-store",
     headers: {
       Accept: "application/json",
+      ...(adminSecret ? { Authorization: `Bearer ${adminSecret}` } : {}),
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -83,7 +85,7 @@ async function verifyLiveTradeReadiness() {
 
   if (!required && liveConnectionIds.length === 0) return { required, connectionIds: [] }
   if (liveConnectionIds.length === 0) {
-    throw new Error("No exchange has valid credentials and persisted live trade enabled; configure BINGX_API_KEY/SECRET or BYBIT_API_KEY/SECRET")
+    throw new Error("No exchange has valid credentials and persisted live trade enabled; configure credentials for BingX, Bybit, Pionex, or OrangeX")
   }
 
   const states = await Promise.all(liveConnectionIds.map(async (connectionId) => {

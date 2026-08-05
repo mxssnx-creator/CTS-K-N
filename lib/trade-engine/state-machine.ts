@@ -12,6 +12,7 @@ import { createExchangeConnector } from "@/lib/exchange-connectors"
 import { positionTracker, LivePosition, OrderRecord } from "@/lib/positions/position-tracker"
 import { indicatorCalculator, PriceData } from "@/lib/indicators/calculator"
 import { getRedisClient, getConnection } from "@/lib/redis-db"
+import { placeLiveOrder } from "@/lib/live-order-service"
 // shim: existing code uses redisDb.set; map to InlineLocalRedis instance.
 const redisDb = {
   set: (key: string, val: string, opts?: { ex?: number }) =>
@@ -186,7 +187,7 @@ export class TradeEngineStateMachine {
       this.state = "evaluating"
 
       await Promise.allSettled(
-        this.config.symbols.map((symbol) => this.evaluateAndTrade(symbol, connector)),
+        this.config.symbols.map((symbol) => this.evaluateAndTrade(symbol, connector, connData)),
       )
 
       this.state = "monitoring"
@@ -199,7 +200,7 @@ export class TradeEngineStateMachine {
   /**
    * Evaluate indicators and execute trading logic
    */
-  private async evaluateAndTrade(symbol: string, connector: any): Promise<void> {
+  private async evaluateAndTrade(symbol: string, connector: any, connection?: any): Promise<void> {
     if (!this.config) return
 
     try {
@@ -210,9 +211,9 @@ export class TradeEngineStateMachine {
       const signals = await indicatorCalculator.evaluateSignals(symbol, priceData, this.config.indicators)
 
       if (signals.signal === "buy" && signals.strength > 0.5) {
-        await this.executeBuySignal(symbol, connector, signals.strength)
+        await this.executeBuySignal(symbol, connector, signals.strength, connection)
       } else if (signals.signal === "sell" && signals.strength > 0.5) {
-        await this.executeSellSignal(symbol, connector, signals.strength)
+        await this.executeSellSignal(symbol, connector, signals.strength, connection)
       }
     } catch (error) {
       console.error(`[v0] [TradeEngine] Failed to evaluate ${symbol}:`, error)
@@ -222,7 +223,7 @@ export class TradeEngineStateMachine {
   /**
    * Execute buy signal
    */
-  private async executeBuySignal(symbol: string, connector: any, strength: number): Promise<void> {
+  private async executeBuySignal(symbol: string, connector: any, strength: number, connection?: any): Promise<void> {
     if (!this.config) return
 
     try {
@@ -253,7 +254,23 @@ export class TradeEngineStateMachine {
 
       // Place order
       const quantity = Math.round((availableRisk / 100) * strength * 1000) / 1000
-      const result = await connector.placeOrder(symbol, "buy", quantity, undefined, "market")
+      const result = await placeLiveOrder({
+        connectionId: this.config.connectionId,
+        connection,
+        symbol,
+        side: "long",
+        quantity,
+        leverage: this.config.riskManagement.maxLeveragePerPosition,
+        orderType: "market",
+        persistPosition: false,
+        updateCounters: false,
+        source: "legacy-trade-engine-state-machine",
+        clientOrderId: `legacy-state-entry-${this.config.connectionId}-${symbol}-${Date.now()}`,
+        safetyPayload: {
+          confirmLiveOrderPlacement: true,
+          source: "legacy-trade-engine-state-machine",
+        },
+      })
 
       if (result.success) {
         // Record order
@@ -263,11 +280,11 @@ export class TradeEngineStateMachine {
           symbol,
           side: "buy",
           quantity,
-          price: 0, // Will be filled
+          price: result.fill?.filledPrice || 0,
           order_type: "market",
           status: "pending",
-          filled_quantity: 0,
-          filled_price: 0,
+          filled_quantity: result.fill?.filledQty || quantity,
+          filled_price: result.fill?.filledPrice || 0,
           timestamp: Date.now(),
         }
 
@@ -285,7 +302,7 @@ export class TradeEngineStateMachine {
   /**
    * Execute sell signal
    */
-  private async executeSellSignal(symbol: string, connector: any, strength: number): Promise<void> {
+  private async executeSellSignal(symbol: string, connector: any, strength: number, connection?: any): Promise<void> {
     if (!this.config) return
 
     try {
@@ -300,7 +317,24 @@ export class TradeEngineStateMachine {
       }
 
       // Close position
-      const result = await connector.closePosition(symbol)
+      const result = await placeLiveOrder({
+        connectionId: this.config.connectionId,
+        connection,
+        symbol,
+        side: "short",
+        positionDirection: "long",
+        quantity: Number(position.quantity || 0),
+        orderType: "market",
+        reduceOnly: true,
+        persistPosition: false,
+        updateCounters: false,
+        source: "legacy-trade-engine-state-machine-close",
+        clientOrderId: `legacy-state-close-${this.config.connectionId}-${symbol}-${Date.now()}`,
+        safetyPayload: {
+          confirmLiveOrderPlacement: true,
+          source: "legacy-trade-engine-state-machine-close",
+        },
+      })
 
       if (result.success) {
         await positionTracker.removePosition(this.config.connectionId, symbol)

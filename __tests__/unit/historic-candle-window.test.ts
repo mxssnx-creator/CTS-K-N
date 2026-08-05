@@ -22,7 +22,11 @@ jest.mock("@/lib/redis-db", () => ({
   getMarketData: jest.fn(async () => null),
 }))
 
-import { getHistoricCandlesForRange, getHistoricCandleWindow } from "@/lib/trade-engine/market-data-cache"
+import {
+  getHistoricCandlesForRange,
+  getHistoricCandleTail,
+  getHistoricCandleWindow,
+} from "@/lib/trade-engine/market-data-cache"
 
 describe("historic chunk window", () => {
   beforeEach(() => {
@@ -56,5 +60,12 @@ describe("historic chunk window", () => {
     expect(redis.lrange).toHaveBeenNthCalledWith(1, "market_data:BTCUSDT:history:chunks", 1, 1)
     expect(redis.lrange).toHaveBeenNthCalledWith(2, "market_data:BTCUSDT:history:chunks", 2, 2)
     expect(redis.lrange).toHaveBeenCalledTimes(2)
+  })
+
+  test("loads a bounded warmup tail from canonical chunks", async () => {
+    const result = await getHistoricCandleTail("BTCUSDT", 3)
+
+    expect(result.map((c) => c.timestamp)).toEqual([4000, 5000, 6000])
+    expect(redis.lrange).toHaveBeenCalledWith("market_data:BTCUSDT:history:chunks", 1, 2)
   })
 })

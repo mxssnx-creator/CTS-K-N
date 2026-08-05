@@ -57,7 +57,6 @@ const start = Date.now()
 let evaluatedSets = 0
 let validSets = 0
 const recentPfCalibration = Object.fromEntries(calibrationRecentPfThresholds.map((threshold) => [threshold, 0]))
-const uniqueKeys = new Set()
 const byStrategyType = Object.create(null)
 const bySymbol = []
 const bestFirstCandidatesByLane = new Map()
@@ -153,6 +152,11 @@ const takeProfitRange = takeProfitPositionCostRatios.map((ratio) =>
 
 for (let localSymbolIndex = 0; localSymbolIndex < symbolCount; localSymbolIndex++) {
   const symbolIndex = startSymbolIndex + localSymbolIndex
+  // Validate identity within one symbol and release it at the boundary. A
+  // global Set of the full matrix made the harness retain millions of long
+  // strings and obscured the runtime's actual memory behaviour.
+  const symbolUniqueKeys = new Set()
+  let symbolEvaluatedSets = 0
   const minuteCandles = minuteSeries(symbolIndex)
   const candlesByTimeframe = {
     "1m": minuteCandles,
@@ -198,6 +202,7 @@ for (let localSymbolIndex = 0; localSymbolIndex < symbolCount; localSymbolIndex+
           maxDrawdownTimeMin: 10,
         })
         evaluatedSets += sets.length
+        symbolEvaluatedSets += sets.length
         validSets += sets.filter((set) => set.valid).length
         const allTypeMetrics = byStrategyType[plan.strategyType] || (byStrategyType[plan.strategyType] = createMetrics())
         const symbolTypeMetrics = symbolMetrics[plan.strategyType] || (symbolMetrics[plan.strategyType] = createMetrics())
@@ -248,10 +253,14 @@ for (let localSymbolIndex = 0; localSymbolIndex < symbolCount; localSymbolIndex+
             })
           }
         }
-        for (const set of sets) uniqueKeys.add(set.setKey)
+        for (const set of sets) symbolUniqueKeys.add(set.setKey)
       }
     }
   }
+  if (symbolUniqueKeys.size !== symbolEvaluatedSets) {
+    throw new Error(`Independent set integrity failed for LOAD${symbolIndex}USDT: ${symbolUniqueKeys.size}/${symbolEvaluatedSets} unique keys`)
+  }
+  symbolUniqueKeys.clear()
   bySymbol.push({ symbol: `LOAD${symbolIndex}USDT`, metrics: symbolMetrics })
   // The max-symbol debug matrix intentionally exercises a very large amount
   // of short-lived Set data. Yield an observable progress checkpoint and, when
@@ -271,9 +280,7 @@ for (let localSymbolIndex = 0; localSymbolIndex < symbolCount; localSymbolIndex+
   }
 }
 
-if (evaluatedSets === 0 || uniqueKeys.size !== evaluatedSets) {
-  throw new Error(`Independent set integrity failed: ${uniqueKeys.size}/${evaluatedSets} unique keys`)
-}
+if (evaluatedSets === 0) throw new Error("Independent set integrity failed: no sets were evaluated")
 
 function compactMetrics(metrics) {
   return {

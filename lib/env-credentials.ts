@@ -23,7 +23,7 @@ function cwdFile(name: string): string {
 }
 
 const BINGX_KEY_ALIASES = ["BINGX_API_KEY", "BINGX_APIKEY", "NEXT_BINGX_API_KEY"]
-const BINGX_SECRET_ALIASES = ["BINGX_API_SECRET", "BINGX_SECRET", "NEXT_BINGX_API_SECRET"]
+const BINGX_SECRET_ALIASES = ["BINGX_API_SECRET", "BINGX_SECRET_KEY", "BINGX_SECRET", "NEXT_BINGX_API_SECRET"]
 
 let parsedDotenv: Record<string, string> | null = null
 

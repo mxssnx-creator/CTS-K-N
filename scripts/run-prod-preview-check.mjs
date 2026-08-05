@@ -25,10 +25,15 @@ const soakSymbols = [
   "ICPUSDT", "HBARUSDT",
 ].slice(0, productionSoakSymbolCount)
 
-// A prior interrupted invocation can leave the PID-derived snapshot behind.
-// Every harness run must begin from a clean database so restart persistence is
-// proven within this invocation instead of inheriting yesterday's result.
-rmSync(snapshotPath, { force: true })
+// A prior interrupted invocation can leave the PID-derived snapshot and its
+// companion live-position WAL behind. Every harness run must begin from a
+// clean database so restart persistence is proven within this invocation
+// instead of inheriting yesterday's result. The WAL is intentionally separate
+// from the snapshot because production uses it for crash recovery; omitting it
+// here silently resurrects the previous run's Paper book on PID reuse.
+for (const path of [snapshotPath, `${snapshotPath}.live-wal`]) {
+  rmSync(path, { force: true })
+}
 
 function keepTail(chunk) {
   outputTail = `${outputTail}${String(chunk)}`.slice(-12_000)

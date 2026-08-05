@@ -49,6 +49,7 @@ import {
 import {
   isConnectionLiveTradeEnabled,
   isConnectionPresetTradeEnabled,
+  isConnectionSignalTradeEnabled,
   isTruthyFlag,
 } from "@/lib/connection-state-utils"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
@@ -311,7 +312,8 @@ function computeSetAwareSL(
 async function isLiveTradeEnabledForConnection(connectionId: string): Promise<boolean> {
   const connection = (await getConnection(connectionId).catch(() => null)) || {}
   return evaluateRealTradeReadiness(connection as Record<string, any>).canPlaceRealOrders ||
-    evaluateRealTradeReadiness(connection as Record<string, any>, "preset").canPlaceRealOrders
+    evaluateRealTradeReadiness(connection as Record<string, any>, "preset").canPlaceRealOrders ||
+    evaluateRealTradeReadiness(connection as Record<string, any>, "signal").canPlaceRealOrders
 }
 
 // ── Exchange call timeouts ────────────────────────────────────────────────
@@ -804,6 +806,28 @@ function isSystemTrackedLivePosition(position: Partial<LivePosition> | any, conn
     systemTrackingId.startsWith(`sys-${connectionId}-`) &&
     systemTrackingId.length > `sys-${connectionId}-`.length &&
     connectionTrackingId === makeConnectionTrackingId(connectionId)
+  )
+}
+
+function isExchangeLifecyclePosition(position: Partial<LivePosition> | any, connectionId: string): boolean {
+  if (!isSystemTrackedLivePosition(position, connectionId)) return false
+  if (String(position?.status || "").toLowerCase() === "simulated") return false
+  const status = String(position?.status || "").toLowerCase()
+  const openStatus = new Set([
+    "open",
+    "filled",
+    "partially_filled",
+    "placed",
+    "pending_fill",
+    "placed_unconfirmed",
+    "closing",
+    "closing_partial",
+  ])
+  return openStatus.has(status) && (
+    Number(position?.executedQuantity ?? position?.quantity ?? 0) > 0 ||
+    status === "placed" ||
+    status === "pending_fill" ||
+    status === "placed_unconfirmed"
   )
 }
 
@@ -3043,7 +3067,14 @@ async function accumulateIntoSimulatedPosition(
   return existing
 }
 
-async function accumulateIntoLivePosition(connId: string, existing: LivePosition, real: any, price: number, connector: any): Promise<LivePosition> {
+async function accumulateIntoLivePosition(
+  connId: string,
+  existing: LivePosition,
+  real: any,
+  price: number,
+  connector: any,
+  allowNewExchangeMutation = true,
+): Promise<LivePosition> {
   // Block and DCA are adjustment-only variants: they add an independently
   // calculated leg to an authoritative parent instead of opening competing
   // exchange positions for the same symbol/direction.
@@ -3169,6 +3200,23 @@ async function accumulateIntoLivePosition(connId: string, existing: LivePosition
       }
       existing.pendingAccumulation = undefined
       await savePosition(existing)
+    }
+
+    // Live OFF is an entry/mutation gate, not a license to reinterpret an
+    // already confirmed venue position as paper. A pending accumulation is
+    // still recovered above (and its protection is re-armed), but after that
+    // boundary no new quantity may be submitted until the operator enables
+    // the corresponding live intent again.
+    if (!allowNewExchangeMutation) {
+      pushStep(
+        existing,
+        "accumulate_blocked_live_off",
+        false,
+        "Live Trade is disabled; existing exchange quantity remains tracked and no new adjustment order is sent",
+      )
+      existing.statusReason = "Live Trade disabled — exchange position tracked; adjustment deferred"
+      await savePosition(existing)
+      return existing
     }
 
     // Admission checks run only after a durable pending order was recovered
@@ -4094,9 +4142,21 @@ async function reconcileCombinedPosCountTarget(
   const targetSetRatios = { ...(realPosition.posCountsSetRatios || {}) }
   const delta = resolveCombinedPosCountDelta(Number(existing.executedQuantity || 0), targetQuantity)
   if (delta.action === "increase") {
-    return existing.status === "simulated" || !liveExecutionEnabled
-      ? accumulateIntoSimulatedPosition(connectionId, existing, realPosition, price)
-      : accumulateIntoLivePosition(connectionId, existing, realPosition, price, connector)
+    if (existing.status === "simulated") {
+      return accumulateIntoSimulatedPosition(connectionId, existing, realPosition, price)
+    }
+    // A real venue position must never be converted into a simulated one
+    // merely because the operator switched new Live entries off. Let the
+    // live accumulator recover any durable pending submission, then defer
+    // only the new quantity mutation.
+    return accumulateIntoLivePosition(
+      connectionId,
+      existing,
+      realPosition,
+      price,
+      connector,
+      liveExecutionEnabled,
+    )
   }
   if (delta.action === "reduce") {
     return reduceCombinedPosCountPosition(connectionId, existing, targetQuantity, targetMemberKeys, targetSetRatios, price, connector)
@@ -6855,7 +6915,14 @@ export async function executeLivePosition(
           return accumulateIntoSimulatedPosition(connectionId, existing, realPosition, adjustmentPrice)
         }
         if (await abortSuperseded()) return livePosition
-        return accumulateIntoLivePosition(connectionId, existing, realPosition, adjustmentPrice, exchangeConnector)
+        return accumulateIntoLivePosition(
+          connectionId,
+          existing,
+          realPosition,
+          adjustmentPrice,
+          exchangeConnector,
+          isLiveTradeEnabled,
+        )
       }
     }
 
@@ -10276,18 +10343,19 @@ export async function reconcileLivePositions(
       } catch { /* processSimulatedPositions is self-defensive */ }
     }
 
-    // QuickStart intentionally keeps the engine progression running when the
-    // BingX connection test fails, but writes is_live_trade=0 so no private
-    // exchange endpoints should be touched. The sync loop already had this
-    // guard; the reconcile path also needs it because the coordinator can call
-    // reconcile directly every 30s. Without this, dev mode kept polling
-    // getPositions/getOpenOrders and spammed "fetch failed" after a blocked
-    // quickstart.
-    if (!(await isLiveTradeEnabledForConnection(connectionId))) {
-      if (!skipOrphanAdoption) {
-        await orphanCloseExpiredPositions(connectionId, null, summary)
-      }
+    // Entry permission and lifecycle ownership are independent. Turning every
+    // live-entry toggle off must prevent new orders, but it must not stop the
+    // exchange reconciliation of positions this process already owns. Those
+    // rows still need mark/PnL updates, protection healing and authoritative
+    // terminal-close detection. Only skip private polling when there is no
+    // connector capable of doing it.
+    const liveTradeOn = await isLiveTradeEnabledForConnection(connectionId)
+    if (!liveTradeOn && (!exchangeConnector || typeof exchangeConnector.getPositions !== "function")) {
+      if (!skipOrphanAdoption) await orphanCloseExpiredPositions(connectionId, null, summary)
       return summary
+    }
+    if (!liveTradeOn) {
+      console.log(`${LOG_PREFIX} [reconcile] entry permission is off; continuing lifecycle sync for system-owned positions only`)
     }
 
     // ── Step 4+ from reconcileLivePositions ───────────���────────────────────
@@ -11202,7 +11270,13 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
     // remain independent for every row and terminal saves update the cached
     // stage immediately.
     const liveTradeOn = await isLiveTradeEnabledForConnection(connectionId)
-    if (!liveTradeOn) {
+    const lifecycleRows = liveTradeOn
+      ? []
+      : await getLivePositions(connectionId).catch(() => [] as LivePosition[])
+    const hasOwnedExchangeLifecycle = lifecycleRows.some((position) =>
+      isExchangeLifecyclePosition(position, connectionId),
+    )
+    if (!liveTradeOn && !hasOwnedExchangeLifecycle) {
       const simSummary = await processSimulatedPositions(connectionId)
       logRuntimeInfo(
         `live:${connectionId}:sync-skip`,
@@ -11224,11 +11298,17 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
       )
       return
     }
+    if (!liveTradeOn) {
+      console.log(
+        `${LOG_PREFIX} [sync] entry permission is off; continuing exchange lifecycle sync for ` +
+        `${lifecycleRows.filter((position) => isExchangeLifecyclePosition(position, connectionId)).length} system-owned position(s)`,
+      )
+    }
 
     // Previously each status filter triggered a full getLivePositions() scan,
     // meaning we fetched the same open-positions index from Redis FOUR times
     // just to bucket by status. Load once, then filter in memory.
-    const allOpenRaw = await getLivePositions(connectionId)
+    const allOpenRaw = liveTradeOn ? await getLivePositions(connectionId) : lifecycleRows
 
     // ── Self-heal: purge terminal positions stuck in the open index ─────
     // A historical bug in redis-db savePosition() re-added rejected/cancelled/
