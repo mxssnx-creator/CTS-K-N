@@ -7,6 +7,7 @@ import { IndicationConfigManager } from "@/lib/indication-config-manager"
 import { StrategyConfigManager } from "@/lib/strategy-config-manager"
 import { getCanonicalSymbolSelection } from "@/lib/trade-engine/symbol-selection-ownership"
 import { runIndStratCycle } from "@/lib/trade-engine/shared-ind-strat-pipeline"
+import { incrementHistoricAggregateOnce } from "@/lib/redis-idempotent-list"
 
 function source(path: string): string {
   return readFileSync(join(process.cwd(), path), "utf8")
@@ -89,8 +90,8 @@ describe("historic runtime generation stability", () => {
     const client = getRedisClient()
     const indicationKey = `indication:${connectionId}:config:${configId}:results`
     const strategyKey = `strategy:${connectionId}:config:${configId}:positions`
-    const indicationDedupeKey = `${indicationKey}:historic_dedupe:epoch-1:BTCUSDT`
-    const strategyDedupeKey = `${strategyKey}:historic_dedupe:epoch-1:BTCUSDT`
+    const indicationDedupeKey = `${indicationKey}:historic_complete:epoch-1:BTCUSDT`
+    const strategyDedupeKey = `${strategyKey}:historic_complete:epoch-1:BTCUSDT`
     try {
       await client.del(indicationKey, strategyKey, indicationDedupeKey, strategyDedupeKey)
       const indicationManager = new IndicationConfigManager(connectionId)
@@ -131,8 +132,8 @@ describe("historic runtime generation stability", () => {
     const client = getRedisClient()
     const indicationKey = `indication:${connectionId}:config:${configId}:results`
     const strategyKey = `strategy:${connectionId}:config:${configId}:positions`
-    const indicationDedupeKey = `${indicationKey}:historic_dedupe:${scope}`
-    const strategyDedupeKey = `${strategyKey}:historic_dedupe:${scope}`
+    const indicationDedupeKey = `${indicationKey}:historic_complete:${scope}`
+    const strategyDedupeKey = `${strategyKey}:historic_complete:${scope}`
     const indicationManager = new IndicationConfigManager(connectionId)
     const strategyManager = new StrategyConfigManager(connectionId)
     const indication = {
@@ -177,7 +178,7 @@ describe("historic runtime generation stability", () => {
     const scope = "epoch-interruption:BTCUSDT"
     const client = getRedisClient()
     const key = `indication:${connectionId}:config:${configId}:results`
-    const dedupeKey = `${key}:historic_dedupe:${scope}`
+    const dedupeKey = `${key}:historic_complete:${scope}`
     const manager = new IndicationConfigManager(connectionId)
     const indication = {
       timestamp: "2026-07-26T11:00:00.000Z",
@@ -198,6 +199,41 @@ describe("historic runtime generation stability", () => {
     }
   })
 
+  test("historic aggregates are complete and incremented exactly once per config batch", async () => {
+    const connectionId = `historic-aggregate-${Date.now()}`
+    const markerKey = `historic:aggregate-marker:${connectionId}:strategy:cfg-1:epoch-1:BTCUSDT`
+    const aggregateKey = `historic:aggregate:${connectionId}:strategies:epoch-1`
+    const client = getRedisClient()
+    try {
+      await client.del(markerKey, aggregateKey)
+      const results = await Promise.all(
+        Array.from({ length: 8 }, () => incrementHistoricAggregateOnce(
+          client as any,
+          markerKey,
+          aggregateKey,
+          [
+            { field: "position_count", value: 3 },
+            { field: "closed_count", value: 2 },
+            { field: "gross_profit", value: 1.25 },
+            { field: "gross_loss", value: 0.5 },
+          ],
+          3600,
+        )),
+      )
+
+      expect(results.filter(Boolean)).toHaveLength(1)
+      await expect(client.hgetall(aggregateKey)).resolves.toMatchObject({
+        position_count: "3",
+        closed_count: "2",
+        gross_profit: "1.25",
+        gross_loss: "0.5",
+      })
+      await expect(client.get(markerKey)).resolves.toBe("1")
+    } finally {
+      await client.del(markerKey, aggregateKey)
+    }
+  })
+
   test("superseded and failed historic runs stay gated and retry real work", () => {
     const manager = source("lib/trade-engine/engine-manager.ts")
     const processor = source("lib/trade-engine/config-set-processor.ts")
@@ -205,6 +241,11 @@ describe("historic runtime generation stability", () => {
     expect(manager).toContain("PrehistoricRunSupersededError")
     expect(manager).toContain("prehistoricBootstrapGeneration")
     expect(manager).toContain("requestPrehistoricRecoordination")
+    expect(manager).toContain("return 20 * 60_000")
+    expect(manager).toContain("preserveProgressOnRetry")
+    expect(manager).toContain("sameSelectionRetry")
+    expect(processor).toContain("hasCompleteAggregate")
+    expect(processor).toContain("historicAggregateKey(this.connectionId, \"strategies\"")
     expect(manager).toContain('prehistoric_bootstrap_status: "retry_wait"')
     expect(manager).toContain("entry_processors_gated: true")
     expect(manager).not.toContain("prehistoric failure fallback")
