@@ -1,4 +1,9 @@
 const APPEND_UNIQUE_LIST_ENTRIES_LUA = `
+-- A historic call submits one complete config+symbol+generation batch.
+-- A scalar completion marker is sufficient; a per-row SET grows with the
+-- complete history even though the visible LIST is intentionally bounded.
+if redis.call('GET', KEYS[2]) then return {} end
+
 local acceptedIndexes = {}
 local acceptedEntries = {}
 local persistedEntries = {}
@@ -8,8 +13,7 @@ for _, entry in ipairs(currentEntries) do
 end
 for i = 3, #ARGV do
   local entry = ARGV[i]
-  local claimed = redis.call('SADD', KEYS[2], entry)
-  if claimed == 1 and not persistedEntries[entry] then
+  if not persistedEntries[entry] then
     table.insert(acceptedIndexes, i - 2)
     table.insert(acceptedEntries, entry)
     persistedEntries[entry] = true
@@ -18,19 +22,28 @@ end
 if #acceptedEntries > 0 then
   local appendResult = redis.pcall('LPUSH', KEYS[1], unpack(acceptedEntries))
   if type(appendResult) == 'table' and appendResult.err then
-    redis.call('SREM', KEYS[2], unpack(acceptedEntries))
     return redis.error_reply(appendResult.err)
   end
   redis.call('LTRIM', KEYS[1], 0, tonumber(ARGV[1]) - 1)
 end
-redis.call('EXPIRE', KEYS[2], tonumber(ARGV[2]))
+redis.call('SET', KEYS[2], '1', 'EX', tonumber(ARGV[2]))
 return acceptedIndexes
+`
+
+const INCREMENT_HISTORIC_AGGREGATE_LUA = `
+if redis.call('GET', KEYS[1]) then return 0 end
+for i = 2, #ARGV, 2 do
+  redis.call('HINCRBYFLOAT', KEYS[2], ARGV[i], ARGV[i + 1])
+end
+redis.call('EXPIRE', KEYS[2], tonumber(ARGV[1]))
+redis.call('SET', KEYS[1], '1', 'EX', tonumber(ARGV[1]))
+return 1
 `
 
 type RedisListClient = {
   eval?: (script: string, options: { keys: string[]; arguments: string[] }) => Promise<unknown>
+  get?: (key: string) => Promise<string | null>
   lrange: (key: string, start: number, stop: number) => Promise<string[]>
-  smembers: (key: string) => Promise<string[]>
   multi: () => {
     [key: string]: any
     exec: () => Promise<any[]>
@@ -73,14 +86,14 @@ function normalizeAcceptedIndexes(value: unknown, entryCount: number): number[] 
 }
 
 /**
- * Append only entries not yet persisted for this historic generation.
+ * Append one complete historic batch exactly once.
  *
  * Network Redis uses one server-side Lua operation, so no process interruption
- * or competing worker can interleave between the dedupe claim, list append,
- * trim, and TTL refresh. The local in-memory backend has no EVAL surface; its
- * single-process fallback is serialized per key and checks the actual list
- * before writing, which also heals an interruption between a list append and
- * ledger update.
+ * or competing worker can interleave between the completion marker, list
+ * append, trim, and TTL refresh. The local in-memory backend has no EVAL
+ * surface; its fallback is serialized per marker and checks the actual list
+ * before writing, which heals an interruption after LPUSH but before the
+ * marker was committed.
  */
 export async function appendUniqueListEntries(
   client: RedisListClient,
@@ -106,11 +119,15 @@ export async function appendUniqueListEntries(
   }
 
   return withLocalKeyLock(dedupeKey, async () => {
-    const [listEntries, ledgerEntries] = await Promise.all([
+    const markerPromise = typeof client.get === "function"
+      ? client.get(dedupeKey).catch(() => null)
+      : Promise.resolve(null)
+    const [listEntries, marker] = await Promise.all([
       client.lrange(listKey, 0, -1).catch(() => []),
-      client.smembers(dedupeKey).catch(() => []),
+      markerPromise,
     ])
-    const persisted = new Set([...listEntries, ...ledgerEntries])
+    if (marker) return []
+    const persisted = new Set(listEntries)
     const acceptedIndexes: number[] = []
     const acceptedEntries: string[] = []
     for (let index = 0; index < entries.length; index++) {
@@ -120,13 +137,12 @@ export async function appendUniqueListEntries(
       acceptedIndexes.push(index)
       acceptedEntries.push(entry)
     }
-    if (acceptedEntries.length === 0) return []
-
     const pipeline = client.multi()
-    pipeline.lpush(listKey, ...acceptedEntries)
-    pipeline.ltrim(listKey, 0, boundedMax - 1)
-    pipeline.sadd(dedupeKey, ...acceptedEntries)
-    pipeline.expire(dedupeKey, boundedTtl)
+    if (acceptedEntries.length > 0) {
+      pipeline.lpush(listKey, ...acceptedEntries)
+      pipeline.ltrim(listKey, 0, boundedMax - 1)
+    }
+    pipeline.set(dedupeKey, "1", { EX: boundedTtl })
     const results = await pipeline.exec()
     for (const result of results || []) {
       if (result instanceof Error) throw result
@@ -135,5 +151,57 @@ export async function appendUniqueListEntries(
       }
     }
     return acceptedIndexes
+  })
+}
+
+export interface HistoricAggregateIncrement {
+  field: string
+  value: number
+}
+
+/**
+ * Atomically add one config/symbol batch to a generation aggregate exactly
+ * once. Complete counts and PF sums therefore remain independent from the
+ * bounded detail-row retention.
+ */
+export async function incrementHistoricAggregateOnce(
+  client: RedisListClient,
+  markerKey: string,
+  aggregateKey: string,
+  increments: readonly HistoricAggregateIncrement[],
+  ttlSeconds: number,
+): Promise<boolean> {
+  const boundedTtl = Math.max(60, Math.floor(ttlSeconds))
+  const normalized = increments.filter((item) =>
+    item && typeof item.field === "string" && item.field.length > 0 && Number.isFinite(item.value),
+  )
+
+  if (typeof client.eval === "function") {
+    const args = [String(boundedTtl)]
+    for (const item of normalized) args.push(item.field, String(item.value))
+    const result = await client.eval(INCREMENT_HISTORIC_AGGREGATE_LUA, {
+      keys: [markerKey, aggregateKey],
+      arguments: args,
+    })
+    return Number(result) === 1
+  }
+
+  return withLocalKeyLock(markerKey, async () => {
+    const marker = typeof client.get === "function"
+      ? await client.get(markerKey).catch(() => null)
+      : null
+    if (marker) return false
+    const pipeline = client.multi()
+    for (const item of normalized) pipeline.hincrbyfloat(aggregateKey, item.field, item.value)
+    pipeline.expire(aggregateKey, boundedTtl)
+    pipeline.set(markerKey, "1", { EX: boundedTtl })
+    const results = await pipeline.exec()
+    for (const result of results || []) {
+      if (result instanceof Error) throw result
+      if (Array.isArray(result) && result[0]) {
+        throw result[0] instanceof Error ? result[0] : new Error(String(result[0]))
+      }
+    }
+    return true
   })
 }

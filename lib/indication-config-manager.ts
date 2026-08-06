@@ -195,7 +195,10 @@ export class IndicationConfigManager {
       (r) => `${r.timestamp}|${r.symbol}|${r.value}|${r.signal}`,
     )
     if (dedupeScope) {
-      const dedupeKey = `${key}:historic_dedupe:${dedupeScope.replace(/[^A-Za-z0-9._:-]/g, "_")}`
+      // A scalar completion marker is sufficient for this complete batch.
+      // Keeping one Redis Set member per historic result made memory grow
+      // with the full matrix while the visible result list is bounded.
+      const dedupeKey = `${key}:historic_complete:${dedupeScope.replace(/[^A-Za-z0-9._:-]/g, "_")}`
       const acceptedIndexes = await appendUniqueListEntries(
         client,
         key,

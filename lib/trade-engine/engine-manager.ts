@@ -499,7 +499,11 @@ function parsePrehistoricBootstrapDeadlineMs(): number {
   // pipeline forever. If it exceeds this deadline the background promise is
   // rejected into the bounded retry path. Entry processing remains gated while
   // exit-only live-position recovery keeps existing exposure protected.
-  return process.env.NODE_ENV === "production" ? 10 * 60_000 : 20 * 60_000
+  // Exhaustive indication + strategy matrices are intentionally complete.
+  // Twenty minutes is a stuck-worker safety boundary, not a result cap; the
+  // worker itself yields cooperatively and publishes completion only after
+  // every configured symbol has finished.
+  return 20 * 60_000
 }
 
 const PREHISTORIC_BOOTSTRAP_DEADLINE_MS = parsePrehistoricBootstrapDeadlineMs()
@@ -1820,7 +1824,11 @@ export class TradeEngineManager {
           { bootstrapGeneration, engineEpoch: generationEpoch, reason },
         )
         await withCycleDeadline(
-          this.loadPrehistoricData({ shouldContinue, bootstrapGeneration }),
+          this.loadPrehistoricData({
+            shouldContinue,
+            bootstrapGeneration,
+            preserveProgressOnRetry: /^retry\b/i.test(reason),
+          }),
           `Engine ${this.connectionId} prehistoric bootstrap`,
           PREHISTORIC_BOOTSTRAP_DEADLINE_MS,
         )
@@ -1981,6 +1989,7 @@ export class TradeEngineManager {
   private async loadPrehistoricData(run: {
     shouldContinue: () => boolean
     bootstrapGeneration: number
+    preserveProgressOnRetry?: boolean
   }): Promise<void> {
     // Default: 8-HOUR look-back, 1-second timeframe interval.
     // User can override via `app_settings.prehistoric_range_hours` (1-50h, step 1).
@@ -2044,14 +2053,10 @@ export class TradeEngineManager {
 
       // Store canonical range metadata so dashboard can display timeframe details
       const redisClient = getRedisClient()
-      // SINGLE-WRITER RESET (fixes "0/N" stall): the run-start is the ONLY
-      // place that resets the prehistoric progress counters. Clear the stale
-      // dedup SET (it has an 86400 TTL so a prior partial run could otherwise
-      // leak survivors into this run's scard-derived count) and the legacy
-      // flat counter, then seed symbols_processed=0 + symbols_total here.
-      // From this point ConfigSetProcessor is the SOLE incremental writer of
-      // symbols_processed (always derived from scard of the SET it owns), so
-      // the displayed count can never disagree with symbols_total.
+      // SINGLE-WRITER RESET (fixes "0/N" stall): a genuinely new selection or
+      // settings generation owns the reset. A retry of the same generation
+      // must retain already completed symbols; otherwise a long but healthy
+      // matrix can appear to move backwards when its safety waiter retries.
       const initialSelection = await getCanonicalSymbolSelection(this.connectionId)
       const writerSelectionEpoch = initialSelection?.epoch || ""
       this.prehistoricTargetSelectionEpoch = writerSelectionEpoch
@@ -2062,9 +2067,21 @@ export class TradeEngineManager {
       }
       const canonicalSymbolsTotal = await canonicalTotalForSymbols(this.connectionId, symbols)
       assertCurrentRun()
-      await redisClient.del(`${buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey}:symbols`).catch(() => {})
+      const progressionScope = buildProgressionScope(this.connectionId, this.currentEngineType)
+      const prehistoricSymbolsKey = `${progressionScope.prehistoricKey}:symbols`
+      const previousProgress = await redisClient.hgetall(progressionScope.prehistoricKey).catch(() => ({} as Record<string, string>))
+      const sameSelectionRetry =
+        run.preserveProgressOnRetry === true &&
+        previousProgress.symbol_selection_epoch === writerSelectionEpoch &&
+        Number(previousProgress.symbols_total || canonicalSymbolsTotal) === canonicalSymbolsTotal
+      if (!sameSelectionRetry) {
+        await redisClient.del(prehistoricSymbolsKey).catch(() => {})
+      }
       assertCurrentRun()
-      await redisClient.hset(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, {
+      const retainedProcessedSymbols = sameSelectionRetry
+        ? Math.min(canonicalSymbolsTotal, Number(await redisClient.scard(prehistoricSymbolsKey).catch(() => 0)) || 0)
+        : 0
+      await redisClient.hset(progressionScope.prehistoricKey, {
         range_start: prehistoricStart.toISOString(),
         range_end: prehistoricEnd.toISOString(),
         range_hours: String(rangeHours),
@@ -2073,9 +2090,9 @@ export class TradeEngineManager {
         is_complete: "0",
         ...(ownsCurrentSelection ? {
           symbol_selection_epoch: writerSelectionEpoch,
-          symbols_processed: "0",
+          symbols_processed: String(retainedProcessedSymbols),
           symbols_total: String(canonicalSymbolsTotal),
-          prehistoric_symbols_processed_count: "0",
+          prehistoric_symbols_processed_count: String(retainedProcessedSymbols),
         } : {}),
         started_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),

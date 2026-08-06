@@ -18,6 +18,7 @@ import { buildProgressionScope } from "@/lib/progression-scope"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { getHistoricCandlesForRange } from "./market-data-cache"
 import { ENGINE_STAGE_HISTORY_CANDLES } from "@/lib/market-data-loader"
+import { incrementHistoricAggregateOnce } from "@/lib/redis-idempotent-list"
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
@@ -42,6 +43,80 @@ function groupConfigsByType<T extends { type?: string }>(configs: T[]): Array<[s
     else grouped.set(type, [config])
   }
   return Array.from(grouped.entries())
+}
+
+interface HistoricPricePoint {
+  price: number
+  timestamp: string
+}
+
+interface HistoricPriceSeries {
+  points: HistoricPricePoint[]
+  prices: number[]
+  averageBarVolatility: number
+}
+
+function normalizeHistoricTimestamp(value: unknown): number {
+  if (typeof value === "number" || (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value)))) {
+    let numeric = Number(value)
+    if (Number.isFinite(numeric) && numeric > 0) {
+      // Exchange payloads use both epoch seconds and epoch milliseconds.
+      if (numeric < 100_000_000_000) numeric *= 1000
+      return numeric
+    }
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value)
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
+  }
+  return 0
+}
+
+function buildHistoricPriceSeries(candles: readonly any[]): HistoricPriceSeries {
+  const points: HistoricPricePoint[] = []
+  for (const candle of candles || []) {
+    const price = Number(candle?.close ?? candle?.price ?? candle?.last ?? 0)
+    const timestamp = normalizeHistoricTimestamp(
+      candle?.timestamp ?? candle?.time ?? candle?.openTime,
+    )
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(timestamp) || timestamp <= 0) continue
+    points.push({ price, timestamp: new Date(timestamp).toISOString() })
+  }
+
+  const prices = points.map((point) => point.price)
+  let volatilitySum = 0
+  let volatilityCount = 0
+  for (let index = 1; index < prices.length; index++) {
+    const previous = prices[index - 1]
+    if (previous > 0) {
+      volatilitySum += Math.abs(prices[index] - previous) / previous
+      volatilityCount++
+    }
+  }
+
+  return {
+    points,
+    prices,
+    averageBarVolatility: volatilityCount > 0 ? volatilitySum / volatilityCount : 0,
+  }
+}
+
+function historicGenerationFromScope(scope: string): string {
+  const separator = scope.lastIndexOf(":")
+  return (separator > 0 ? scope.slice(0, separator) : scope).replace(/[^A-Za-z0-9._-]/g, "_")
+}
+
+function historicAggregateKey(connectionId: string, kind: "indications" | "strategies", generation: string): string {
+  return `historic:aggregate:${connectionId}:${kind}:${generation}`
+}
+
+function historicAggregateMarkerKey(
+  connectionId: string,
+  kind: "indication" | "strategy",
+  configId: string,
+  scope: string,
+): string {
+  return `historic:aggregate-marker:${connectionId}:${kind}:${configId}:${scope.replace(/[^A-Za-z0-9._:-]/g, "_")}`
 }
 
 export interface ProcessingResult {
@@ -409,6 +484,7 @@ export class ConfigSetProcessor {
           }
         } catch { /* non-critical */ }
         const hadProcessedIntervals = processedIntervals.size > 0
+        const processedIntervalsBefore = processedIntervals.size
 
         // --- Step through time range interval by interval, processing only missing ones ---
         let currentTs = effectiveStart.getTime()
@@ -455,7 +531,8 @@ export class ConfigSetProcessor {
           }
         }
 
-        totalIntervalsProcessed += symbolIntervalCount
+        const newlyProcessedIntervals = Math.max(0, processedIntervals.size - processedIntervalsBefore)
+        totalIntervalsProcessed += newlyProcessedIntervals
         missingIntervalsLoaded += symbolMissingCount
 
         // A caught-up symbol must not re-run its entire candle window. The old
@@ -489,7 +566,7 @@ export class ConfigSetProcessor {
           const distinctProcessed = clampProcessedToTotal(await client.scard(prehistoricSymbolsKey).catch(() => 0), canonicalSymbolsTotal)
           await Promise.all([
             hincrProgressHash("prehistoric_candles_processed", combinedCandles.length),
-            hincrProgressHash("prehistoric_intervals_processed", symbolIntervalCount),
+            hincrProgressHash("prehistoric_intervals_processed", newlyProcessedIntervals),
             hincrProgressHash("prehistoric_missing_loaded", symbolMissingCount),
             mirrorProgressHash({
               prehistoric_symbols_processed_count: String(distinctProcessed),
@@ -505,6 +582,10 @@ export class ConfigSetProcessor {
 
         // --- Run indications + strategies in parallel for this symbol ---
         const tCalcStart = Date.now()
+        const historicSeries = buildHistoricPriceSeries(combinedCandles)
+        const historicGeneration = historicGenerationFromScope(
+          `${writerSelectionEpoch || this.epoch}:${symbol}`,
+        )
         const [indicationResults, strategyPositions] = await Promise.all([
           combinedCandles.length > 0
             ? this.processIndicationConfigs(
@@ -515,6 +596,8 @@ export class ConfigSetProcessor {
                 CONFIG_TYPE_CONCURRENCY,
                 assertRunActive,
                 `${writerSelectionEpoch || this.epoch}:${symbol}`,
+                historicSeries,
+                historicGeneration,
               )
             : Promise.resolve(0),
           combinedCandles.length > 0
@@ -526,6 +609,8 @@ export class ConfigSetProcessor {
                 CONFIG_TYPE_CONCURRENCY,
                 assertRunActive,
                 `${writerSelectionEpoch || this.epoch}:${symbol}`,
+                historicSeries,
+                historicGeneration,
               )
             : Promise.resolve(0),
         ])
@@ -536,7 +621,7 @@ export class ConfigSetProcessor {
         // point leaves the interval eligible for a correct retry instead of
         // silently skipping partially generated output.
         try {
-          await client.set(processedKey, JSON.stringify([...processedIntervals]), { EX: 90000 })
+          await client.set(processedKey, JSON.stringify([...processedIntervals]), { EX: 7 * 24 * 60 * 60 })
         } catch (checkpointError) {
           throw new Error(
             `Failed to checkpoint historic intervals for ${symbol}: ${
@@ -576,7 +661,7 @@ export class ConfigSetProcessor {
           // Shared totals must be atomic under parallel symbol workers. An
           // absolute HSET could finish out of order and regress a newer total.
           client.hincrby(prehistoricKey, "candles_loaded", combinedCandles.length),
-          client.hincrby(prehistoricKey, "intervals_processed", symbolIntervalCount),
+          client.hincrby(prehistoricKey, "intervals_processed", newlyProcessedIntervals),
           client.hincrby(prehistoricKey, "missing_intervals", symbolMissingCount),
           client.hset(prehistoricKey, { symbols_processed: String(distinctProcessed) }),
           // Bump the canonical `prehistoric_cycles_completed` counter and
@@ -747,22 +832,38 @@ export class ConfigSetProcessor {
       let negAbsSum = 0
       let resultCount = 0
       const tStart = Date.now()
-      // Cap concurrency on the hot prehistoric path — for very large
-      // strategy config counts we don't want to fan out an unbounded
-      // number of LRANGE commands at once.
-      const PF_SCAN_CONCURRENCY = 16
-      const configAggregates = await mapWithConcurrency(
-        strategyConfigs,
-        PF_SCAN_CONCURRENCY,
-        async (cfg) => {
-          assertRunActive()
-          let configPosSum = 0
-          let configNegAbsSum = 0
-          let configResultCount = 0
-          try {
-            const setKey = `strategy:${this.connectionId}:config:${cfg.id}:positions`
-            const entries = (await client.lrange(setKey, 0, StrategyConfigManager.MAX_POSITIONS - 1)) || []
-            for (const entry of entries) {
+      // The aggregate is generated while every config batch is persisted and
+      // is not subject to the bounded 250-row diagnostic retention. Prefer it
+      // for PF/counts; only old data created before the aggregate existed uses
+      // the bounded-list compatibility scan below.
+      const aggregateGeneration = historicGenerationFromScope(
+        `${writerSelectionEpoch || this.epoch}:all`,
+      )
+      const aggregateSnapshot = await client
+        .hgetall(historicAggregateKey(this.connectionId, "strategies", aggregateGeneration))
+        .catch(() => ({} as Record<string, string>))
+      const hasCompleteAggregate = Object.prototype.hasOwnProperty.call(aggregateSnapshot, "closed_count")
+
+      if (hasCompleteAggregate) {
+        posSum = Number(aggregateSnapshot.gross_profit) || 0
+        negAbsSum = Number(aggregateSnapshot.gross_loss) || 0
+        resultCount = Number(aggregateSnapshot.closed_count) || 0
+      } else {
+        // Compatibility only: cap concurrency on the fallback path so an
+        // older snapshot cannot create an unbounded LRANGE fan-out.
+        const PF_SCAN_CONCURRENCY = 16
+        const configAggregates = await mapWithConcurrency(
+          strategyConfigs,
+          PF_SCAN_CONCURRENCY,
+          async (cfg) => {
+            assertRunActive()
+            let configPosSum = 0
+            let configNegAbsSum = 0
+            let configResultCount = 0
+            try {
+              const setKey = `strategy:${this.connectionId}:config:${cfg.id}:positions`
+              const entries = (await client.lrange(setKey, 0, StrategyConfigManager.MAX_POSITIONS - 1)) || []
+              for (const entry of entries) {
                 if (!entry) continue
                 // ── Closed-only gate (spec: "Main Sets / Pos Coord ones must
                 //    evaluate previous CLOSED pseudo positions, not opened ones") ──
@@ -801,24 +902,25 @@ export class ConfigSetProcessor {
                 else if (resultPct < 0) configNegAbsSum += Math.abs(resultPct)
                 configResultCount++
             }
-          } catch (err) {
-            if (err instanceof PrehistoricProcessingCancelledError) throw err
-            console.warn(
-              `[v0] [ConfigSetProcessor] PF scan failed for ${cfg.id}:`,
-              err instanceof Error ? err.message : String(err),
-            )
-          }
-          return {
-            posSum: configPosSum,
-            negAbsSum: configNegAbsSum,
-            resultCount: configResultCount,
-          }
-        },
-      )
-      for (const aggregate of configAggregates) {
-        posSum += aggregate.posSum
-        negAbsSum += aggregate.negAbsSum
-        resultCount += aggregate.resultCount
+            } catch (err) {
+              if (err instanceof PrehistoricProcessingCancelledError) throw err
+              console.warn(
+                `[v0] [ConfigSetProcessor] PF scan failed for ${cfg.id}:`,
+                err instanceof Error ? err.message : String(err),
+              )
+            }
+            return {
+              posSum: configPosSum,
+              negAbsSum: configNegAbsSum,
+              resultCount: configResultCount,
+            }
+          },
+        )
+        for (const aggregate of configAggregates) {
+          posSum += aggregate.posSum
+          negAbsSum += aggregate.negAbsSum
+          resultCount += aggregate.resultCount
+        }
       }
       await assertCurrentSelection()
 
@@ -985,50 +1087,97 @@ export class ConfigSetProcessor {
     typeConcurrency: number,
     assertRunActive: () => void = () => {},
     dedupeScope = "",
+    historicSeries?: HistoricPriceSeries,
+    historicGeneration = "",
   ): Promise<number> {
     if (configs.length === 0) return 0
 
     const configTypeGroups = groupConfigsByType(configs)
     const activeTypeConcurrency = Math.max(1, Math.min(typeConcurrency, configTypeGroups.length))
-    const perTypeConcurrency = Math.max(1, Math.floor(concurrency / activeTypeConcurrency))
+    const perTypeConcurrency = Math.max(1, Math.ceil(concurrency / activeTypeConcurrency))
+    const client = getRedisClient()
+    const aggregateKey = historicGeneration
+      ? historicAggregateKey(this.connectionId, "indications", historicGeneration)
+      : ""
     const perTypeResults = await mapWithConcurrency(
       configTypeGroups,
       activeTypeConcurrency,
       async ([type, typeConfigs]) => {
-        const perConfigResults = await mapWithConcurrency(
-          typeConfigs,
+        // Configs with identical calculation parameters share one pure
+        // calculation, but every config still receives its own persisted rows
+        // and remains independently counted.
+        const calculationGroups = new Map<string, IndicationConfig[]>()
+        for (const config of typeConfigs) {
+          const key = [
+            config.type,
+            Number(config.steps),
+            Number(config.drawdown_ratio),
+            Number(config.active_ratio),
+            Number(config.last_part_ratio),
+          ].join("|")
+          const bucket = calculationGroups.get(key)
+          if (bucket) bucket.push(config)
+          else calculationGroups.set(key, [config])
+        }
+        const perCalculationResults = await mapWithConcurrency(
+          [...calculationGroups.values()],
           perTypeConcurrency,
-          async (config) => {
+          async (calculationConfigs) => {
             try {
               assertRunActive()
               await yieldToEventLoop()
               assertRunActive()
-              const results = await this.calculateIndicationResults(symbol, candles, config)
+              const results = await this.calculateIndicationResults(
+                symbol,
+                candles,
+                calculationConfigs[0],
+                historicSeries,
+              )
               if (results.length === 0) return 0
-              assertRunActive()
-              if (typeof (this.indicationManager as any).addResults === "function") {
-                const added = await (this.indicationManager as any).addResults(
-                  config.id,
-                  results,
-                  dedupeScope,
-                )
-                return Number.isFinite(Number(added)) ? Number(added) : results.length
-              } else {
-                // Fallback: fire in parallel instead of sequential awaits.
-                await Promise.all(results.map((r) => this.indicationManager.addResult(config.id, r)))
-              }
-              return results.length
+              const persistedCounts = await mapWithConcurrency(
+                calculationConfigs,
+                perTypeConcurrency,
+                async (config) => {
+                  assertRunActive()
+                  if (typeof (this.indicationManager as any).addResults === "function") {
+                    const added = await (this.indicationManager as any).addResults(
+                      config.id,
+                      results,
+                      dedupeScope,
+                    )
+                    if (historicGeneration) {
+                      await incrementHistoricAggregateOnce(
+                        client as any,
+                        historicAggregateMarkerKey(this.connectionId, "indication", config.id, dedupeScope),
+                        aggregateKey,
+                        [
+                          { field: "result_count", value: results.length },
+                          { field: "buy_count", value: results.filter((result) => result.signal === "buy").length },
+                          { field: "sell_count", value: results.filter((result) => result.signal === "sell").length },
+                          { field: "neutral_count", value: results.filter((result) => result.signal === "neutral").length },
+                        ],
+                        7 * 24 * 60 * 60,
+                      )
+                    }
+                    return Number.isFinite(Number(added)) ? Number(added) : results.length
+                  }
+                  await Promise.all(results.map((result) => this.indicationManager.addResult(config.id, result)))
+                  return results.length
+                },
+                { yieldEvery: 1 },
+              )
+              return persistedCounts.reduce((sum, count) => sum + count, 0)
             } catch (error) {
               if (error instanceof PrehistoricProcessingCancelledError) throw error
               console.error(
-                `[v0] [ConfigSetProcessor] ✗ indication config ${config.id} (${type}):`,
+                `[v0] [ConfigSetProcessor] ✗ indication group ${calculationConfigs[0]?.id || "unknown"} (${type}):`,
                 error instanceof Error ? error.message : String(error),
               )
               return 0
             }
           },
         )
-        return perConfigResults.reduce((sum, n) => sum + n, 0)
+        return perCalculationResults.reduce((sum, n) => sum + n, 0)
       },
     )
 
@@ -1042,22 +1191,19 @@ export class ConfigSetProcessor {
   private async calculateIndicationResults(
     symbol: string,
     candles: any[],
-    config: IndicationConfig
+    config: IndicationConfig,
+    historicSeries?: HistoricPriceSeries,
   ): Promise<IndicationResult[]> {
     const results: IndicationResult[] = []
-    const { steps, drawdown_ratio, active_ratio } = config
+    const { steps, drawdown_ratio, active_ratio, last_part_ratio } = config
 
     if (!candles || candles.length < steps) {
       return results
     }
 
-    const pricePoints = candles
-      .map((c: any) => ({
-        price: parseFloat(c.close || c.price || 0),
-        timestamp: c?.timestamp || c?.time || new Date().toISOString(),
-      }))
-      .filter((p: any) => p.price > 0)
-    const prices = pricePoints.map((p: any) => p.price)
+    const series = historicSeries ?? buildHistoricPriceSeries(candles)
+    const pricePoints = series.points
+    const prices = series.prices
 
     if (prices.length < steps) {
       return results
@@ -1078,19 +1224,7 @@ export class ConfigSetProcessor {
     // to exceed a fraction of it, clamped to a sane band. On live data this
     // resolves close to the original 0.5%; on flat synthetic data it drops
     // proportionally so meaningful relative moves still register.
-    let volSum = 0
-    let volN = 0
-    for (let k = 1; k < prices.length; k++) {
-      const prev = prices[k - 1]
-      if (prev > 0) {
-        volSum += Math.abs(prices[k] - prev) / prev
-        volN++
-      }
-      if ((k + 1) % HISTORIC_CALC_YIELD_EVERY === 0) {
-        await yieldToEventLoop()
-      }
-    }
-    const avgBarVol = volN > 0 ? volSum / volN : 0
+    const avgBarVol = series.averageBarVolatility
     // Threshold = 1.5× the typical bar move, clamped to [0.0002, 0.005].
     // Upper clamp preserves the legacy 0.5% ceiling for high-volatility data;
     // lower clamp keeps a noise floor so a dead-flat series still gates out.
@@ -1101,8 +1235,16 @@ export class ConfigSetProcessor {
         await yieldToEventLoop()
       }
       const windowPrices = prices.slice(i, i + steps)
-      const firstHalf = windowPrices.slice(0, Math.floor(steps / 2))
-      const secondHalf = windowPrices.slice(Math.floor(steps / 2))
+      const requestedLastPart = Number(last_part_ratio)
+      const lastPartRatio = Number.isFinite(requestedLastPart)
+        ? Math.max(0.1, Math.min(0.9, requestedLastPart))
+        : 0.5
+      const lastPartLength = steps >= 4
+        ? Math.max(2, Math.min(steps - 2, Math.round(steps * lastPartRatio)))
+        : Math.floor(steps / 2)
+      const splitIndex = Math.max(1, steps - lastPartLength)
+      const firstHalf = windowPrices.slice(0, splitIndex)
+      const secondHalf = windowPrices.slice(splitIndex)
 
       if (firstHalf.length < 2 || secondHalf.length < 2) continue
 
@@ -1157,6 +1299,8 @@ export class ConfigSetProcessor {
     typeConcurrency: number,
     assertRunActive: () => void = () => {},
     dedupeScope = "",
+    historicSeries?: HistoricPriceSeries,
+    historicGeneration = "",
   ): Promise<number> {
     if (configs.length === 0) return 0
 
@@ -1188,56 +1332,103 @@ export class ConfigSetProcessor {
       Number.isFinite(configuredPositionCostPct) && configuredPositionCostPct > 0
         ? configuredPositionCostPct
         : 0.1
+    const aggregateClient = getRedisClient()
+    const aggregateKey = historicGeneration
+      ? historicAggregateKey(this.connectionId, "strategies", historicGeneration)
+      : ""
 
     const configTypeGroups = groupConfigsByType(configs)
     const activeTypeConcurrency = Math.max(1, Math.min(typeConcurrency, configTypeGroups.length))
-    const perTypeConcurrency = Math.max(1, Math.floor(concurrency / activeTypeConcurrency))
+    const perTypeConcurrency = Math.max(1, Math.ceil(concurrency / activeTypeConcurrency))
     const perTypeCounts = await mapWithConcurrency(
       configTypeGroups,
       activeTypeConcurrency,
       async ([type, typeConfigs]) => {
-        const perConfigCounts = await mapWithConcurrency(
-          typeConfigs,
+        // Strategy configs with identical simulation parameters share the
+        // expensive price walk. Persistence remains one independent batch per
+        // config, preserving config identity and all direction/row counts.
+        const calculationGroups = new Map<string, StrategyConfig[]>()
+        for (const config of typeConfigs) {
+          const key = [
+            config.type,
+            Number(config.position_cost_step),
+            Number(config.takeprofit),
+            Number(config.stoploss),
+            Boolean(config.trailing),
+          ].join("|")
+          const bucket = calculationGroups.get(key)
+          if (bucket) bucket.push(config)
+          else calculationGroups.set(key, [config])
+        }
+        const perCalculationCounts = await mapWithConcurrency(
+          [...calculationGroups.values()],
           perTypeConcurrency,
-          async (config) => {
+          async (calculationConfigs) => {
             try {
               assertRunActive()
               await yieldToEventLoop()
               assertRunActive()
-              const positions = await this.calculateStrategyPositions(symbol, candles, config)
+              const positions = await this.calculateStrategyPositions(
+                symbol,
+                candles,
+                calculationConfigs[0],
+                historicSeries,
+              )
               if (positions.length === 0) return 0
-              assertRunActive()
-              let acceptedPositions = positions
-              if (typeof (this.strategyManager as any).addPositionsWithAccepted === "function") {
-                const batch = await (this.strategyManager as any).addPositionsWithAccepted(
-                  config.id,
-                  positions,
-                  dedupeScope,
-                )
-                acceptedPositions = Array.isArray(batch?.accepted) ? batch.accepted : positions
-              } else if (typeof (this.strategyManager as any).addPositions === "function") {
-                await (this.strategyManager as any).addPositions(config.id, positions, dedupeScope)
-              } else {
-                await Promise.all(positions.map((p) => this.strategyManager.addPosition(config.id, p)))
-              }
-              assertRunActive()
+              const persistedCounts = await mapWithConcurrency(
+                calculationConfigs,
+                perTypeConcurrency,
+                async (config) => {
+                  assertRunActive()
+                  let acceptedPositions = positions
+                  if (typeof (this.strategyManager as any).addPositionsWithAccepted === "function") {
+                    const batch = await (this.strategyManager as any).addPositionsWithAccepted(
+                      config.id,
+                      positions,
+                      dedupeScope,
+                    )
+                    acceptedPositions = Array.isArray(batch?.accepted) ? batch.accepted : positions
+                  } else if (typeof (this.strategyManager as any).addPositions === "function") {
+                    await (this.strategyManager as any).addPositions(config.id, positions, dedupeScope)
+                  } else {
+                    await Promise.all(positions.map((p) => this.strategyManager.addPosition(config.id, p)))
+                  }
+                  assertRunActive()
 
-              // ── Mirror closed positions into pos_history (systemwide fix) ──
-              // Compose every closed historic position into ONE pipeline so
-              // the per-config cost is one round-trip regardless of fill
-              // count. Open prehistoric tails (the trailing in-position row
-              // emitted at end-of-range) are excluded — recordPosClosed
-              // semantically means "one closed trade observed", and
-              // including open tails would over-count the count/wins/loss
-              // accumulators feeding the Main gate.
-              const closed = acceptedPositions.filter((p: PseudoPosition) => p.status === "closed")
-              if (closed.length > 0) {
-                try {
-                  const pipeline = piClient.multi()
-                  for (const p of closed) {
-                    const direction = p.direction === "short" ? "short" : "long"
-                    const indicationType = p.indication_type || config.type || "unknown"
-                    const resultPct = Number(p.result) || 0
+                  const closed = positions.filter((p: PseudoPosition) => p.status === "closed")
+                  const grossProfit = closed.reduce((sum, position) => sum + Math.max(0, Number(position.result) || 0), 0)
+                  const grossLoss = closed.reduce((sum, position) => sum + Math.max(0, -(Number(position.result) || 0)), 0)
+                  if (historicGeneration) {
+                    await incrementHistoricAggregateOnce(
+                      aggregateClient as any,
+                      historicAggregateMarkerKey(this.connectionId, "strategy", config.id, dedupeScope),
+                      aggregateKey,
+                      [
+                        { field: "position_count", value: positions.length },
+                        { field: "closed_count", value: closed.length },
+                        { field: "open_count", value: positions.length - closed.length },
+                        { field: "winning_count", value: closed.filter((position) => (Number(position.result) || 0) > 0).length },
+                        { field: "losing_count", value: closed.filter((position) => (Number(position.result) || 0) < 0).length },
+                        { field: "gross_profit", value: grossProfit },
+                        { field: "gross_loss", value: grossLoss },
+                        { field: "pnl_sum", value: grossProfit - grossLoss },
+                      ],
+                      7 * 24 * 60 * 60,
+                    )
+                  }
+
+                  // ── Mirror closed positions into pos_history ─────────────
+                  // Use only positions accepted by the idempotent list write;
+                  // a retry may calculate the same rows but must not duplicate
+                  // directional history or inflate Main/Real gates.
+                  const acceptedClosed = acceptedPositions.filter((p: PseudoPosition) => p.status === "closed")
+                  if (acceptedClosed.length > 0) {
+                    try {
+                      const pipeline = piClient.multi()
+                      for (const p of acceptedClosed) {
+                        const direction = p.direction === "short" ? "short" : "long"
+                        const indicationType = p.indication_type || config.type || "unknown"
+                        const resultPct = Number(p.result) || 0
                     // Per-position drawdown TIME = how long the trade was held
                     // (entry → exit), in minutes. Both fields are either epoch-ms
                     // numbers or ISO strings (see the prices[].time origin), so we
@@ -1262,45 +1453,44 @@ export class ConfigSetProcessor {
                     const exitMs = toMs(p.exit_time)
                     const drawdownMinutes =
                       entryMs > 0 && exitMs > entryMs ? (exitMs - entryMs) / 60000 : 0
-                    recordPosClosed({
-                      connectionId: this.connectionId,
-                      symbol: p.symbol || symbol,
-                      indicationType,
-                      direction,
-                      pnl: resultPct,
-                      pnlPct: resultPct,
-                      positionCostPct,
-                      drawdownMinutes,
-                      // Prehistoric backtest positions don't track quantity,
-                      // so position cost is not available. Live positions in
-                      // pseudo-position-manager pass both entryPrice and quantity.
-                      entryPrice: p.entry_price,
-                      pipeline,
-                    })
+                        recordPosClosed({
+                          connectionId: this.connectionId,
+                          symbol: p.symbol || symbol,
+                          indicationType,
+                          direction,
+                          pnl: resultPct,
+                          pnlPct: resultPct,
+                          positionCostPct,
+                          drawdownMinutes,
+                          entryPrice: p.entry_price,
+                          pipeline,
+                        })
+                      }
+                      await (pipeline as any).exec()
+                    } catch (piErr) {
+                      console.warn(
+                        `[v0] [ConfigSetProcessor] pos_history mirror failed for ${config.id}:`,
+                        piErr instanceof Error ? piErr.message : String(piErr),
+                      )
+                    }
                   }
-                  await (pipeline as any).exec()
-                } catch (piErr) {
-                  // Non-critical — pos_history is observability/gate metadata.
-                  // We never let it block the prehistoric run.
-                  console.warn(
-                    `[v0] [ConfigSetProcessor] pos_history mirror failed for ${config.id}:`,
-                    piErr instanceof Error ? piErr.message : String(piErr),
-                  )
-                }
-              }
 
-              return acceptedPositions.length
+                  return acceptedPositions.length
+                },
+                { yieldEvery: 1 },
+              )
+              return persistedCounts.reduce((sum, count) => sum + count, 0)
             } catch (error) {
               if (error instanceof PrehistoricProcessingCancelledError) throw error
               console.error(
-                `[v0] [ConfigSetProcessor] ✗ strategy config ${config.id} (${type}):`,
+                `[v0] [ConfigSetProcessor] ✗ strategy group ${calculationConfigs[0]?.id || "unknown"} (${type}):`,
                 error instanceof Error ? error.message : String(error),
               )
               return 0
             }
           },
         )
-        return perConfigCounts.reduce((sum, n) => sum + n, 0)
+        return perCalculationCounts.reduce((sum, n) => sum + n, 0)
       },
     )
 
@@ -1314,7 +1504,8 @@ export class ConfigSetProcessor {
   private async calculateStrategyPositions(
     symbol: string,
     candles: any[],
-    config: StrategyConfig
+    config: StrategyConfig,
+    historicSeries?: HistoricPriceSeries,
   ): Promise<PseudoPosition[]> {
     const positions: PseudoPosition[] = []
     const { position_cost_step, takeprofit, stoploss, type } = config
@@ -1323,10 +1514,10 @@ export class ConfigSetProcessor {
       return positions
     }
 
-    const prices = candles.map((c: any) => ({
-      price: parseFloat(c.close || c.price || 0),
-      time: c.timestamp || c.time || new Date().toISOString(),
-    })).filter((p: any) => p.price > 0)
+    const prices = (historicSeries ?? buildHistoricPriceSeries(candles)).points.map((point) => ({
+      price: point.price,
+      time: point.timestamp,
+    }))
 
     let inPosition = false
     let entryPrice = 0
