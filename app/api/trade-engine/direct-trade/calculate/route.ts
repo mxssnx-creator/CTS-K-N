@@ -585,6 +585,16 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error("[Direct-Trade] Calculate error:", error)
+    if (calculationLease?.client) {
+      await calculationLease.client.set(DIRECT_TRADE_CALCULATION_PROGRESS_KEY, JSON.stringify({
+        status: "error",
+        completedSymbols: 0,
+        totalSymbols: 0,
+        evaluatedSets: 0,
+        error: error instanceof Error ? error.message : String(error),
+        failedAt: new Date().toISOString(),
+      })).catch(() => undefined)
+    }
     return NextResponse.json({ error: "Calculation failed", details: String(error) }, { status: 500 })
   } finally {
     if (leaseRenewalTimer) clearInterval(leaseRenewalTimer)

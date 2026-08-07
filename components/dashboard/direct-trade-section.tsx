@@ -186,6 +186,7 @@ export function DirectTradeSection() {
   const [processorHealthy, setProcessorHealthy] = useState(false)
   const [loading, setLoading] = useState(false)
   const [calculating, setCalculating] = useState(false)
+  const [calculationError, setCalculationError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(true)
   const [optionsExpanded, setOptionsExpanded] = useState(false)
 
@@ -346,25 +347,32 @@ export function DirectTradeSection() {
   }
 
   const handleToggleLive = async () => {
+    const nextLiveMode = !state.liveMode
+    setState((current) => ({ ...current, liveMode: nextLiveMode }))
     try {
       const res = await fetch("/api/trade-engine/direct-trade", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "toggle-live",
-          liveMode: !state.liveMode,
+          liveMode: nextLiveMode,
           connectionId: selectedConnectionId ?? state.connectionId,
         }),
       })
       const data = await res.json()
-      if (data.state) setState(data.state)
-    } catch {}
+      if (!res.ok || !data.state) throw new Error(data.error || "Live mode update failed")
+      setState(data.state)
+    } catch {
+      setState((current) => ({ ...current, liveMode: !nextLiveMode }))
+    }
   }
 
   const handleRecalculate = async () => {
+    if (calculating) return
     setCalculating(true)
+    setCalculationError(null)
     try {
-      await fetch("/api/trade-engine/direct-trade/calculate", {
+      const response = await fetch("/api/trade-engine/direct-trade/calculate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -393,9 +401,16 @@ export function DirectTradeSection() {
           trailingEnabled: localTrailing,
         }),
       })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) {
+        throw new Error(payload?.error || `Direct-Trade calculation failed (${response.status})`)
+      }
       await fetchStatus()
-    } catch {}
-    setCalculating(false)
+    } catch (error) {
+      setCalculationError(error instanceof Error ? error.message : "Direct-Trade calculation failed")
+    } finally {
+      setCalculating(false)
+    }
   }
 
   // ─── Debounced Config Save ────────────────────────────────────────────────
@@ -552,6 +567,38 @@ export function DirectTradeSection() {
           {calculationProgress?.status === "running" && (
             <div className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
               Calculating independently: <span className="font-mono text-foreground">{calculationProgress.completedSymbols || 0}/{calculationProgress.totalSymbols || 0}</span> symbols · <span className="font-mono text-foreground">{(calculationProgress.evaluatedSets || 0).toLocaleString()}</span> sets indexed
+            </div>
+          )}
+
+          {(calculating || calculationProgress || calculationError) && (
+            <div
+              role="status"
+              aria-live="polite"
+              className={`rounded-md border px-3 py-2 text-xs ${
+                calculationError
+                  ? "border-destructive/40 bg-destructive/5 text-destructive"
+                  : calculationProgress?.status === "ready"
+                    ? "border-green-500/30 bg-green-500/5 text-green-700 dark:text-green-300"
+                    : "border-primary/20 bg-primary/5 text-muted-foreground"
+              }`}
+            >
+              {calculationError ? (
+                <span>Calculation failed: {calculationError}</span>
+              ) : calculating && !calculationProgress ? (
+                <span>Starting Direct-Trade calculation…</span>
+              ) : calculationProgress?.status === "running" ? (
+                <span>
+                  Calculating independently: <span className="font-mono text-foreground">
+                    {calculationProgress.completedSymbols || 0}/{calculationProgress.totalSymbols || 0}
+                  </span> symbols · <span className="font-mono text-foreground">
+                    {(calculationProgress.evaluatedSets || 0).toLocaleString()}
+                  </span> sets indexed
+                </span>
+              ) : calculationProgress?.status === "ready" ? (
+                <span>Direct-Trade calculation ready · {(calculationProgress.evaluatedSets || 0).toLocaleString()} sets indexed</span>
+              ) : (
+                <span>Direct-Trade calculation status: {calculationProgress?.status || "queued"}</span>
+              )}
             </div>
           )}
 
