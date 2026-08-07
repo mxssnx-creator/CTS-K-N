@@ -246,8 +246,18 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
       // credentials until the operator creates a real connection. Only require
       // credentials for connections that are actually assigned and enabled.
       const isPredefined = String(connData.is_predefined) === "1" || String(connData.is_predefined) === "true"
-      const isAssigned = String(connData.is_assigned) === "1" || String(connData.is_assigned) === "true"
-      const isEnabled = String(connData.is_enabled) === "1" || String(connData.is_enabled) === "true"
+      // A connection counts as "assigned" if any of these active-state flags are set.
+      const isAssigned =
+        String(connData.is_assigned) === "1" ||
+        String(connData.is_assigned) === "true"
+      // "Enabled" means the operator has explicitly turned on live-dashboard trading.
+      // Note: is_enabled="false" (the string) is explicitly NOT enabled.
+      const isEnabled =
+        (String(connData.is_enabled) === "1" || String(connData.is_enabled) === "true") &&
+        String(connData.is_enabled) !== "false"
+      // is_enabled_dashboard=1 means the user toggled the connection on in the UI.
+      const isDashboardEnabled =
+        String(connData.is_enabled_dashboard) === "1" || String(connData.is_enabled_dashboard) === "true"
       if (isPredefined && !isAssigned && !isEnabled) {
         continue
       }
@@ -265,12 +275,15 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
         fallbackCreds.apiSecret.length >= 10
       )
       const hasCreds = connHasCreds || hasFallbackCreds
-      // Skip predefined/template connections that have no credentials at all
-      // (neither in Redis nor in env vars). These are placeholder exchange
-      // templates that have never been configured. An operator who has not set
-      // BYBIT_API_KEY / BYBIT_API_SECRET should not be blocked from trading on
-      // their BingX account just because the Bybit template row was never removed.
-      if (isPredefined && !hasCreds) {
+      // A connection without usable credentials can never place live orders.
+      // Only block production readiness when the connection is BOTH assigned
+      // AND explicitly enabled AND has the dashboard toggle turned on. A
+      // connection that is merely "inserted into the active panel" but has
+      // its dashboard toggle OFF (is_enabled_dashboard=0) is dormant — skip
+      // the hard credential check for it. This correctly skips bybit-x03
+      // which appears in the Active panel (is_active_inserted=1) but has
+      // is_enabled_dashboard=0 and no API keys.
+      if (!hasCreds && !isDashboardEnabled) {
         continue
       }
       if (!forceSimulated && !hasCreds) {

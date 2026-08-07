@@ -6743,12 +6743,14 @@ if (!hasExisting) {
     const pinnedSymbols = existingForcedSymbols.slice(0, devSymCount)
 
     let devSymPayload: Record<string, string>
-    if (pinnedSymbols.length > 0 || devSymCount === 1) {
+    if ((pinnedSymbols.length >= devSymCount || devSymCount === 1) && pinnedSymbols.length > 0) {
       // Preserve an explicit operator/QuickStart basket across subsequent
-      // initRedis calls and dev HMR module reloads. V0_DEV_SYMBOL_COUNT remains
-      // a ceiling; it must never turn a fixed basket back into a rotating
-      // volatility selection and materialize unrelated symbol keys.
-      const resolvedPinned = pinnedSymbols.length > 0 ? pinnedSymbols : ["BTCUSDT"]
+      // initRedis calls and dev HMR module reloads, ONLY when the stored basket
+      // already meets the requested symbol count. If the operator set
+      // V0_DEV_SYMBOL_COUNT=8 but the stored basket has fewer symbols (e.g. was
+      // seeded with 1 before the env var was set), fall through to the dynamic
+      // multi-symbol path below so the engine gets the correct count on next boot.
+      const resolvedPinned = pinnedSymbols
       devSymPayload = {
         force_symbols:            JSON.stringify(resolvedPinned),
         symbol_count:             String(resolvedPinned.length),
