@@ -16,9 +16,12 @@ interface MemorySnapshot {
 class MemoryManager {
   private static instance: MemoryManager
   private snapshots: MemorySnapshot[] = []
-  private gcInterval: NodeJS.Timer | null = null
+  private gcInterval: NodeJS.Timeout | null = null
   private maxHeapMB = 1024
   private warningThreshold = 0.85
+  private emergencyThreshold = 0.95
+  private initialized = false
+  private pressure: "normal" | "warning" | "emergency" = "normal"
 
   private constructor() {}
 
@@ -33,12 +36,15 @@ class MemoryManager {
    * Initialize memory monitoring and GC management
    */
   initialize(maxHeapMB: number = 1024) {
-    this.maxHeapMB = maxHeapMB
+    if (this.initialized) return
+    this.initialized = true
+    this.maxHeapMB = Math.max(256, maxHeapMB)
 
-    // Force GC every 5 minutes
+    // Sample frequently enough to catch a runaway cycle, but never create
+    // duplicate timers when startup is called by both dev and production paths.
     this.gcInterval = setInterval(() => {
       this.checkAndGC()
-    }, 5 * 60 * 1000)
+    }, 60 * 1000)
 
     // Mark interval as non-blocking
     if (typeof (this.gcInterval as any).unref === "function") {
@@ -55,13 +61,22 @@ class MemoryManager {
    */
   getUsage() {
     const mem = process.memoryUsage()
+    const heapTotal = Math.max(mem.heapTotal, 1)
     return {
       heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
-      heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+      heapTotal: Math.round(heapTotal / 1024 / 1024),
       rss: Math.round(mem.rss / 1024 / 1024),
       external: Math.round(mem.external / 1024 / 1024),
-      percentUsed: Math.round((mem.heapUsed / mem.heapTotal) * 100),
+      percentUsed: Math.round((mem.heapUsed / heapTotal) * 100),
     }
+  }
+
+  getPressure(): "normal" | "warning" | "emergency" {
+    return this.pressure
+  }
+
+  shouldThrottleNewWork(): boolean {
+    return this.pressure !== "normal"
   }
 
   /**
@@ -70,6 +85,12 @@ class MemoryManager {
   private checkAndGC() {
     const usage = this.getUsage()
     const warningLevel = Math.round(this.maxHeapMB * this.warningThreshold)
+    const emergencyLevel = Math.round(this.maxHeapMB * this.emergencyThreshold)
+    this.pressure = usage.heapUsed >= emergencyLevel
+      ? "emergency"
+      : usage.heapUsed >= warningLevel
+        ? "warning"
+        : "normal"
 
     if (usage.heapUsed > warningLevel) {
       console.log(`[v0] [Memory] WARNING: High memory usage (${usage.heapUsed}MB / ${this.maxHeapMB}MB)`)
@@ -131,9 +152,11 @@ class MemoryManager {
    */
   destroy() {
     if (this.gcInterval) {
-      clearInterval(this.gcInterval as any)
+      clearInterval(this.gcInterval)
       this.gcInterval = null
     }
+    this.initialized = false
+    this.pressure = "normal"
   }
 }
 

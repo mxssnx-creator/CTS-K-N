@@ -2,6 +2,7 @@ import { MIN_VOLUME_FACTOR } from "@/lib/constants"
 import { publishEngineEvent } from "@/lib/engine-event-bus"
 import { hasStrategyAffectingChange, hasSymbolAffectingChange, isGenericConnectionSettingsReload } from "@/lib/trade-engine/settings-change-fields"
 import { buildPrehistoricGateKeys, buildProgressionScope } from "@/lib/progression-scope"
+import { getMemoryManager } from "@/lib/memory-manager"
 import {
   parseSignalCandidateRanks,
   rankSignalSymbolsBestFirst,
@@ -335,6 +336,9 @@ function getCyclePauseMsSync(): number {
   } else if (now - _cyclePauseMsFetchedAt > CYCLE_PAUSE_HARD_REFRESH_MS) {
     refreshCyclePauseMsAsync()
   }
+  const pressure = getMemoryManager().getPressure()
+  if (pressure === "emergency") return Math.min(CYCLE_PAUSE_MAX, _cyclePauseMsCached * 4)
+  if (pressure === "warning") return Math.min(CYCLE_PAUSE_MAX, _cyclePauseMsCached * 2)
   return _cyclePauseMsCached
 }
 
@@ -1288,7 +1292,7 @@ export class TradeEngineManager {
       // place that gracefully tears down the engine because we
       // discovered we no longer own it.
       this.startLockExtender()
-      // ── Live settings-reload watcher ───���─────────────────────────
+      // ── Live settings-reload watcher ───�����─────────────────────────
       // Picks up operator edits to connection settings and applies
       // them WITHOUT requiring a manual restart. See `applyPendingSettingsChange`.
       this.startSettingsWatcher()
@@ -2498,8 +2502,10 @@ export class TradeEngineManager {
     // Prime immediately and refresh every 3s
     void refreshPrehistoricDone()
 
+    let indicationProcessing = false
     const tick = async () => {
       if (
+        indicationProcessing ||
         !this.isRunning ||
         !this.liveProgressionsArmed ||
         entryGeneration !== this.entryProcessingGeneration
@@ -2518,6 +2524,7 @@ export class TradeEngineManager {
         // Ignore Redis errors - continue with cycle
       }
 
+      indicationProcessing = true
       const startTime = Date.now()
       lastRealtimeStartedAt = startTime
       // Local abort flag — when true, the finally block will NOT schedule the next cycle.
@@ -2549,9 +2556,12 @@ export class TradeEngineManager {
         }
 
         const configuredSymbolsPerTick = Number(process.env.REALTIME_PIPELINE_SYMBOLS_PER_TICK)
-        const symbolsPerTick = Number.isFinite(configuredSymbolsPerTick)
+        const configuredSymbolsPerTickLimit = Number.isFinite(configuredSymbolsPerTick)
           ? Math.max(1, Math.min(8, Math.floor(configuredSymbolsPerTick)))
           : 1
+        const symbolsPerTick = getMemoryManager().shouldThrottleNewWork()
+          ? 1
+          : configuredSymbolsPerTickLimit
         const symbols = Array.from(
           { length: Math.min(symbolsPerTick, configuredSymbols.length) },
           (_, offset) => configuredSymbols[(realtimeSymbolCursor + offset) % configuredSymbols.length],
@@ -3041,6 +3051,7 @@ export class TradeEngineManager {
         console.error("[v0] Indication processor error:", error)
       } finally {
         lastRealtimeCompletedAt = Date.now()
+        indicationProcessing = false
         // Preserve start-to-start cadence plus a short post-completion breath.
         if (!aborted) scheduleNext(producedIndications)
       }
