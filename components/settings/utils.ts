@@ -168,7 +168,7 @@ export const initialSettings: Settings = {
 
   useMainSymbols: false,
   numberOfSymbolsToSelect: 8,
-  symbolOrderType: "volume24h",
+  symbolOrderType: "volatility_1h",
 
   // Indication
   indication_time_interval: 1,

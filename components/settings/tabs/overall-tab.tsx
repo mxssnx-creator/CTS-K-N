@@ -447,7 +447,7 @@ export function OverallTab({
                   <div className="space-y-2">
                     <Label>Symbol Order Type</Label>
                     <Select
-                      value={settings.symbolOrderType || "volume24h"}
+                      value={settings.symbolOrderType || "volatility_1h"}
                       onValueChange={(value) => handleSettingChange("symbolOrderType", value)}
                     >
                       <SelectTrigger>
@@ -457,7 +457,8 @@ export function OverallTab({
                         <SelectItem value="volume24h">24h Volume (Highest First)</SelectItem>
                         <SelectItem value="marketCap">Market Cap (Largest First)</SelectItem>
                         <SelectItem value="priceChange24h">24h Price Change</SelectItem>
-                        <SelectItem value="volatility">Volatility (Most Volatile)</SelectItem>
+                        <SelectItem value="volatility_1h">1h Volatility (Most Volatile)</SelectItem>
+                        <SelectItem value="volatility">24h Volatility</SelectItem>
                         <SelectItem value="trades24h">24h Trades (Most Active)</SelectItem>
                         <SelectItem value="alphabetical">Alphabetical (A-Z)</SelectItem>
                       </SelectContent>
