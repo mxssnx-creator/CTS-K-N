@@ -102,6 +102,14 @@ export async function GET(
       indication_avg_duration_ms: indAvg,
       strategy_avg_duration_ms: stratAvg,
       realtime_avg_duration_ms: rtAvg,
+      metrics: {
+        indicationCycleCount: indCycles,
+        strategyCycleCount: stratCycles,
+        realtimeCycleCount: realtimeCycles,
+        indicationAvgDuration: indAvg,
+        strategyAvgDuration: stratAvg,
+        realtimeAvgDuration: rtAvg,
+      },
       health: {
         overall: overallHealthy ? "healthy" : "degraded",
         components: {
