@@ -61,9 +61,11 @@ export async function ensureDefaultExchangesExist() {
     const client = getRedisClient()
     const alreadySeeded = await client.get(SEED_MARKER_KEY)
     if (alreadySeeded === "1") {
-      seedingCompleted = true
-      console.log("[v0] [BaseSeed] Skipping - persisted seed marker found")
-      return { success: true, skipped: true, marker: true }
+      // Do not return here: an earlier boot may have run before the exchange
+      // credentials were available. Continue through the idempotent repair
+      // pass so the canonical connection can receive newly configured env
+      // credentials without resetting operator state.
+      console.log("[v0] [BaseSeed] Persisted seed marker found; checking credential repairs")
     }
 
     let removedLegacy = 0

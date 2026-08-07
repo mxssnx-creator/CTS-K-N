@@ -957,8 +957,11 @@ configure_environment_and_redis() {
     upsert_env ORANGEX_API_SECRET "$orangex_secret"
     live_venues+=("OrangeX")
   fi
-  (( ${#live_venues[@]} > 0 )) || fatal "Production server installation requires valid credentials for at least one supported exchange: BINGX_API_KEY/SECRET, BYBIT_API_KEY/SECRET, PIONEX_API_KEY/SECRET, or ORANGEX_API_KEY/SECRET"
-  ok "Live exchange installation is configured for ${live_venues[*]}; readiness is verified without submitting an order"
+  if (( ${#live_venues[@]} > 0 )); then
+    ok "Live exchange installation is configured for ${live_venues[*]}; readiness is verified without submitting an order"
+  else
+    warn "No exchange credentials were supplied during installation; the server will install in simulation mode until credentials are configured"
+  fi
 
   local admin_secret cron_secret encryption_key jwt_secret direct_trade_processor_token
   admin_secret="$(env_value ADMIN_SECRET)"; cron_secret="$(env_value CRON_SECRET)"
