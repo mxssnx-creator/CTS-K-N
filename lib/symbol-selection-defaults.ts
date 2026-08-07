@@ -10,7 +10,9 @@ export function getExplicitLocalSymbolCap(
   env: Record<string, string | undefined> = process.env,
 ): number | null {
   const raw = String(env.V0_DEV_SYMBOL_COUNT ?? "").trim()
-  if (!raw) return null
+  // Keep the local InlineLocalRedis preview bounded when no env vars are
+  // supplied. Operators can raise the cap explicitly with V0_DEV_SYMBOL_COUNT.
+  if (!raw) return env.NODE_ENV === "development" ? 1 : null
   const parsed = Number(raw)
   if (!Number.isFinite(parsed) || parsed < 1) return null
   return Math.max(1, Math.min(1_000, Math.floor(parsed)))

@@ -1288,7 +1288,7 @@ export class TradeEngineManager {
       // place that gracefully tears down the engine because we
       // discovered we no longer own it.
       this.startLockExtender()
-      // ── Live settings-reload watcher ─────────────────────────────
+      // ── Live settings-reload watcher ───���─────────────────────────
       // Picks up operator edits to connection settings and applies
       // them WITHOUT requiring a manual restart. See `applyPendingSettingsChange`.
       this.startSettingsWatcher()
@@ -1663,7 +1663,7 @@ export class TradeEngineManager {
       )
     }
 
-    // ── Release the cross-process progression lock ─────────────────
+    // ── Release the cross-process progression lock ────���────────────
     // Compare-and-delete: never deletes a slot we no longer own.
     // Best-effort — Redis problems must not block stop(). If we fail
     // to release, the lock's TTL (LOCK_TTL_SEC) provides the fallback
@@ -4675,7 +4675,18 @@ export class TradeEngineManager {
               60_000,
               `[v0] [getSymbols] ${this.connectionId}: using force_symbols (${forceSymbols.length} symbols)`,
             )
-            return forceSymbols.map(String).filter(Boolean)
+            const forcedResolved = forceSymbols.map(String).filter(Boolean)
+            const localForcedCap = (resolve as any)._devCap
+            const effectiveForced =
+              typeof localForcedCap === "number" && localForcedCap >= 1
+                ? forcedResolved.slice(0, localForcedCap)
+                : forcedResolved
+            logRuntimeInfo(
+              `engine:${this.connectionId}:force-symbols-effective`,
+              60_000,
+              `[v0] [getSymbols] ${this.connectionId}: effective force_symbols (${effectiveForced.length} symbols)`,
+            )
+            return effectiveForced
           }
 
           // ── Secondary: self-written symbols from previous engine start ─────
