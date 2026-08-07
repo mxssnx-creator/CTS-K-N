@@ -7349,10 +7349,15 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
     let currentVersion = versionStr ? parseInt(versionStr as string) : 0
     const finalVersion = Math.max(...migrations.map((m) => m.version))
 
-    console.warn(`[v0] [Migrations] Current: v${currentVersion}, Target: v${finalVersion}`)
-
     // Get migrations that need to run (version > currentVersion)
     let pendingMigrations = migrations.filter((m) => m.version > currentVersion)
+
+    // Only log the Current→Target line when there is actually work to do.
+    // Logging it unconditionally fires on every module reload (every API
+    // request in dev) and floods the console with noise when schema is current.
+    if (pendingMigrations.length > 0) {
+      console.warn(`[v0] [Migrations] Current: v${currentVersion}, Target: v${finalVersion}`)
+    }
     
     if (pendingMigrations.length === 0) {
       // Suppress the "already at latest" line after the first occurrence

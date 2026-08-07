@@ -265,6 +265,14 @@ export async function checkProductionReadiness(): Promise<ProductionReadinessRes
         fallbackCreds.apiSecret.length >= 10
       )
       const hasCreds = connHasCreds || hasFallbackCreds
+      // Skip predefined/template connections that have no credentials at all
+      // (neither in Redis nor in env vars). These are placeholder exchange
+      // templates that have never been configured. An operator who has not set
+      // BYBIT_API_KEY / BYBIT_API_SECRET should not be blocked from trading on
+      // their BingX account just because the Bybit template row was never removed.
+      if (isPredefined && !hasCreds) {
+        continue
+      }
       if (!forceSimulated && !hasCreds) {
         missingFields.push({
           field: `connection:${id}.credentials`,
