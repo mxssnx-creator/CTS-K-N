@@ -178,6 +178,30 @@ interface CurrentStrategyRows {
   live: { total: number; mirrored: number; active: number; mirroredRatio: number }
 }
 
+interface RuntimeTelemetry {
+  capturedAt?: string
+  concurrency?: {
+    cpuCount?: number
+    cpuSource?: string
+    symbolConcurrency?: number
+    historicSymbolConcurrency?: number
+    calculationConcurrency?: number
+    indicationTypeConcurrency?: number
+    ioConcurrency?: number
+    load1m?: number
+  }
+  memory?: {
+    rssMB?: number
+    heapUsedMB?: number
+    heapTotalMB?: number
+  }
+  eventLoop?: {
+    utilizationPct?: number
+    delayP95Ms?: number
+    delayMaxMs?: number
+  }
+}
+
 function aggregateProfitFactorMetrics(metrics: ProfitFactorMetric[]): ProfitFactorMetric {
   const totals = metrics.reduce((result, metric) => ({
     trades: result.trades + metric.trades,
@@ -270,6 +294,7 @@ export default function StatisticsPage() {
   const [tradeHistory, setTradeHistory] = useState<TradeHistoryRow[]>([])
   const [settings, setSettings] = useState<any>(null)
   const [currentStrategyRows, setCurrentStrategyRows] = useState<CurrentStrategyRows | null>(null)
+  const [runtimeTelemetry, setRuntimeTelemetry] = useState<RuntimeTelemetry | null>(null)
   const [performanceAnalytics, setPerformanceAnalytics] = useState<LiveTradingAnalytics | null>(null)
   const [performanceConnectionCount, setPerformanceConnectionCount] = useState(0)
   const [reloadGeneration, setReloadGeneration] = useState(0)
@@ -318,6 +343,7 @@ export default function StatisticsPage() {
           setPositions([])
           setTradeHistory([])
           setCurrentStrategyRows(null)
+          setRuntimeTelemetry(null)
           setPerformanceAnalytics(null)
           setPerformanceConnectionCount(0)
           setAnalyticsEngine(engine)
@@ -354,6 +380,10 @@ export default function StatisticsPage() {
             const rowSnapshots = responses
               .map((payload) => payload.progression?.strategyRows)
               .filter(Boolean)
+            const runtimeSnapshot = responses
+              .map((payload) => payload.progression?.runtime)
+              .find(Boolean) as RuntimeTelemetry | undefined
+            setRuntimeTelemetry(runtimeSnapshot || null)
             if (rowSnapshots.length > 0) {
               const sum = (path: [string, string]) => rowSnapshots.reduce(
                 (total, snapshot) => total + (Number(snapshot?.[path[0]]?.[path[1]]) || 0),
@@ -552,6 +582,7 @@ export default function StatisticsPage() {
             setTradeHistory([])
             setPerformanceAnalytics(null)
             setPerformanceConnectionCount(0)
+            setRuntimeTelemetry(null)
           }
         }
       } catch (error) {
@@ -1122,6 +1153,62 @@ export default function StatisticsPage() {
             </div>
           ) : (
             <div className="text-sm text-muted-foreground">No fresh stage-row snapshot is available for the selected connection scope.</div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Cpu className="h-4 w-4 text-primary" />
+            Runtime &amp; Processing Coordination
+          </CardTitle>
+          <CardDescription>
+            Measured from the authoritative engine owner. These diagnostics describe scheduling and responsiveness; they do not alter PF, stage eligibility or order decisions.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {runtimeTelemetry ? (
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border bg-muted/10 p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">CPU / lanes</div>
+                <div className="mt-1 text-sm font-semibold tabular-nums">
+                  {runtimeTelemetry.concurrency?.cpuCount || 0} CPUs · {runtimeTelemetry.concurrency?.symbolConcurrency || 0} symbols
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  calc {runtimeTelemetry.concurrency?.calculationConcurrency || 0} · types {runtimeTelemetry.concurrency?.indicationTypeConcurrency || 0} · I/O {runtimeTelemetry.concurrency?.ioConcurrency || 0}
+                </div>
+              </div>
+              <div className="rounded-lg border bg-muted/10 p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Event loop</div>
+                <div className="mt-1 text-sm font-semibold tabular-nums">
+                  {Number(runtimeTelemetry.eventLoop?.utilizationPct || 0).toFixed(1)}% utilized
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  p95 delay {Number(runtimeTelemetry.eventLoop?.delayP95Ms || 0).toFixed(1)}ms · max {Number(runtimeTelemetry.eventLoop?.delayMaxMs || 0).toFixed(1)}ms
+                </div>
+              </div>
+              <div className="rounded-lg border bg-muted/10 p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Memory</div>
+                <div className="mt-1 text-sm font-semibold tabular-nums">
+                  {Number(runtimeTelemetry.memory?.rssMB || 0).toFixed(1)} MB RSS
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  heap {Number(runtimeTelemetry.memory?.heapUsedMB || 0).toFixed(1)} / {Number(runtimeTelemetry.memory?.heapTotalMB || 0).toFixed(1)} MB
+                </div>
+              </div>
+              <div className="rounded-lg border bg-muted/10 p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Load / source</div>
+                <div className="mt-1 text-sm font-semibold tabular-nums">
+                  load {Number(runtimeTelemetry.concurrency?.load1m || 0).toFixed(2)}
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  {runtimeTelemetry.concurrency?.cpuSource || "unknown"} · captured {runtimeTelemetry.capturedAt ? new Date(runtimeTelemetry.capturedAt).toLocaleTimeString() : "—"}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground">No runtime telemetry is available for the selected connection scope.</div>
           )}
         </CardContent>
       </Card>

@@ -380,19 +380,22 @@ import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { DEFAULT_SYMBOL_COUNT, getExplicitLocalSymbolCap } from "@/lib/symbol-selection-defaults"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
 
 /**
  * Main realtime symbol work overlaps Redis/market-data waits with a small,
  * ordered worker pool. Base→Main→Real creates a large in-memory graph and is
  * CPU-heavy in single-threaded Node, so wider fan-out increases RSS and tail
- * latency instead of throughput. Default one keeps the single authoritative
- * Node owner responsive; operators that have measured safe I/O overlap can
- * raise ENGINE_SYMBOL_CONCURRENCY/REALTIME_SYMBOL_CONCURRENCY up to eight.
+ * latency instead of throughput. The default is derived from
+ * availableParallelism with control-plane reserve: nine logical CPUs yield
+ * two lanes. Operators that have measured safe I/O overlap can raise
+ * ENGINE_SYMBOL_CONCURRENCY/REALTIME_SYMBOL_CONCURRENCY up to eight.
  */
 function getSymbolConcurrency(symbolCount: number): number {
+  const runtime = getRuntimeConcurrencyProfile(symbolCount)
   const configured = concurrencyFromEnv(
     ["ENGINE_SYMBOL_CONCURRENCY", "REALTIME_SYMBOL_CONCURRENCY"],
-    1,
+    runtime.symbolConcurrency,
     8,
     symbolCount,
   )
@@ -406,9 +409,10 @@ function getSymbolConcurrency(symbolCount: number): number {
 }
 
 function getReplaySymbolConcurrency(symbolCount: number): number {
+  const runtime = getRuntimeConcurrencyProfile(symbolCount)
   return concurrencyFromEnv(
     ["PREHISTORIC_REPLAY_SYMBOL_CONCURRENCY"],
-    1,
+    runtime.historicSymbolConcurrency,
     2,
     symbolCount,
   )

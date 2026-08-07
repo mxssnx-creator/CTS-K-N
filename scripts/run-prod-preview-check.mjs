@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process"
 import { existsSync, rmSync } from "node:fs"
+import { availableParallelism } from "node:os"
 import process from "node:process"
 
 const port = Number(process.env.PORT || 3102)
@@ -24,6 +25,8 @@ const soakSymbols = [
   "TRXUSDT", "ETCUSDT", "FILUSDT", "AAVEUSDT", "RUNEUSDT", "FETUSDT",
   "ICPUSDT", "HBARUSDT",
 ].slice(0, productionSoakSymbolCount)
+const detectedParallelism = Math.max(1, Number(availableParallelism()) || 1)
+const defaultPreviewConcurrency = String(Math.max(1, Math.min(4, Math.floor((detectedParallelism + 1) / 4))))
 
 // A prior interrupted invocation can leave the PID-derived snapshot and its
 // companion live-position WAL behind. Every harness run must begin from a
@@ -172,9 +175,9 @@ function startServer({ engines = false } = {}) {
       FORCE_SIMULATED: "1",
       FORCE_LIVE: "0",
       V0_DEV_SYMBOL_COUNT: engines ? String(productionSoakSymbolCount) : "4",
-      ENGINE_SYMBOL_CONCURRENCY: engines ? (process.env.PREVIEW_ENGINE_SYMBOL_CONCURRENCY || "1") : "1",
-      STRATEGY_FLOW_SYMBOL_CONCURRENCY: engines ? (process.env.PREVIEW_STRATEGY_SYMBOL_CONCURRENCY || "1") : "1",
-      PREHISTORIC_SYMBOL_CONCURRENCY: process.env.PREVIEW_PREHISTORIC_SYMBOL_CONCURRENCY || "1",
+      ENGINE_SYMBOL_CONCURRENCY: engines ? (process.env.PREVIEW_ENGINE_SYMBOL_CONCURRENCY || defaultPreviewConcurrency) : "1",
+      STRATEGY_FLOW_SYMBOL_CONCURRENCY: engines ? (process.env.PREVIEW_STRATEGY_SYMBOL_CONCURRENCY || defaultPreviewConcurrency) : "1",
+      PREHISTORIC_SYMBOL_CONCURRENCY: process.env.PREVIEW_PREHISTORIC_SYMBOL_CONCURRENCY || defaultPreviewConcurrency,
       MARKET_DATA_LOAD_CONCURRENCY: "1",
       CRON_SYMBOL_LIMIT: engines ? String(productionSoakSymbolCount) : "4",
       CRON_SECRET: PREVIEW_CRON_SECRET,

@@ -618,7 +618,31 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
       await client.expire(hashKey, 86400)
     }
 
-    await writeHistoricCandleChunks(client, symbol, candles)
+    // `market_data:{symbol}:candles` and `:1s` intentionally contain only a
+    // realtime tail. A periodic refresh therefore must not replace the
+    // canonical prehistoric chunk index with ~300 seconds of data: doing so
+    // silently reduced a valid 90-minute stage window to 4–5 one-minute bars
+    // and made realtime lose the previous position/set context. Only a
+    // complete refresh may replace the history index; partial refreshes keep
+    // the last complete index and update the hot/latest keys above.
+    if (candles.length >= ENGINE_STAGE_HISTORY_CANDLES) {
+      await writeHistoricCandleChunks(client, symbol, candles)
+    } else {
+      const existingMetaRaw = await client.get(`market_data:${symbol}:history:meta`).catch(() => null)
+      let existingCandleCount = 0
+      try {
+        const metadata = typeof existingMetaRaw === "string" ? JSON.parse(existingMetaRaw) : existingMetaRaw
+        existingCandleCount = Number(metadata?.candleCount) || 0
+      } catch {
+        existingCandleCount = 0
+      }
+      if (existingCandleCount < ENGINE_STAGE_HISTORY_CANDLES) {
+        console.warn(
+          `[v0] [MarketData] ${symbol}: partial refresh has ${candles.length} candles; ` +
+            `preserving the incomplete/absent prehistoric index until a complete load is available`,
+        )
+      }
+    }
 
     console.log(`[v0] [MarketData] ✓ Updated ${symbol} with ${source} data`)
     return source !== "synthetic"

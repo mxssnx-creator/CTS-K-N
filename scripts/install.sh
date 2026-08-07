@@ -718,9 +718,9 @@ configure_cpu_parallelism() {
   # CTS keeps one authoritative Node engine owner. Base→Main→Real calculation
   # is CPU/heap work on that event loop, so assigning every detected core to a
   # Promise pool creates allocation contention rather than true parallel CPU.
-  # Keep symbol work serial by default; the libuv pool still scales exchange /
-  # Redis I/O with host CPUs and an operator may explicitly opt into a measured
-  # wider symbol pool in the environment.
+  # Use a conservative CPU-aware pool: on the measured 9-core host this selects
+  # two lanes, which beat four and eight in the 16-symbol exhaustive benchmark
+  # while preserving control-plane responsiveness.
   local cpu_count=1 io_pool symbol_pool historic_pool
   if command -v nproc >/dev/null 2>&1; then
     cpu_count="$(nproc 2>/dev/null || printf '1')"
@@ -733,8 +733,10 @@ configure_cpu_parallelism() {
   io_pool=$(( cpu_count * 2 ))
   (( io_pool < 4 )) && io_pool=4
   (( io_pool > 32 )) && io_pool=32
-  symbol_pool=1
-  historic_pool=1
+  symbol_pool=$(( (cpu_count + 1) / 4 ))
+  (( symbol_pool < 1 )) && symbol_pool=1
+  (( symbol_pool > 4 )) && symbol_pool=4
+  historic_pool="$symbol_pool"
 
   [[ -n "$(env_value CTS_CPU_COUNT)" ]] || upsert_env CTS_CPU_COUNT "$cpu_count"
   [[ -n "$(env_value UV_THREADPOOL_SIZE)" ]] || upsert_env UV_THREADPOOL_SIZE "$io_pool"

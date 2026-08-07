@@ -88,6 +88,78 @@ export async function trackIndicationStats(
 }
 
 /**
+ * Record a complete indication snapshot with one aggregate write group per
+ * type. The snapshot remains exhaustive: count, value sum, confidence sum and
+ * latest sample are all derived from every row. Only the transport fan-out is
+ * collapsed, avoiding thousands of Redis promises when the exact Set matrix
+ * is handed to the realtime strategy stage.
+ */
+export async function trackIndicationStatsBatch(
+  connectionId: string,
+  symbol: string,
+  indications: ReadonlyArray<{
+    type?: unknown
+    value?: unknown
+    confidence?: unknown
+  }>,
+): Promise<void> {
+  try {
+    await initRedis()
+    const client = getRedisClient()
+    const byType = new Map<string, {
+      count: number
+      valueSum: number
+      confidenceSum: number
+      latest: { symbol: string; value: number; confidence: number; timestamp: number }
+    }>()
+    for (const indication of indications) {
+      const type = metricType(String(indication?.type || "unknown"))
+      const value = safeMetric(indication?.value)
+      const confidence = safeMetric(indication?.confidence)
+      const current = byType.get(type) || {
+        count: 0,
+        valueSum: 0,
+        confidenceSum: 0,
+        latest: { symbol, value: 0, confidence: 0, timestamp: 0 },
+      }
+      current.count++
+      current.valueSum += value
+      current.confidenceSum += confidence
+      current.latest = { symbol, value, confidence, timestamp: Date.now() }
+      byType.set(type, current)
+    }
+    if (byType.size === 0) return
+
+    const writes: Promise<any>[] = []
+    const hourlyKey = rollupKey("indications", connectionId)
+    const production = process.env.NODE_ENV !== "development"
+    for (const [type, aggregate] of byType) {
+      const latestJson = JSON.stringify(aggregate.latest)
+      writes.push(
+        client.hincrby(hourlyKey, `${type}:count`, aggregate.count),
+        client.hincrbyfloat(hourlyKey, `${type}:value_sum`, aggregate.valueSum),
+        client.hincrbyfloat(hourlyKey, `${type}:confidence_sum`, aggregate.confidenceSum),
+        client.hset(hourlyKey, `${type}:latest`, latestJson),
+      )
+      if (production) {
+        const typeCountKey = `indications:${connectionId}:${type}:count`
+        writes.push(
+          client.incrby(typeCountKey, aggregate.count),
+          client.expire(typeCountKey, 86400),
+          client.incrby(`indications:${connectionId}:count`, aggregate.count),
+          client.set(`indications:${connectionId}:${type}:latest`, latestJson),
+          client.expire(`indications:${connectionId}:${type}:latest`, 3600),
+        )
+      }
+    }
+    writes.push(client.expire(hourlyKey, STATISTICS_ROLLUP_RETENTION_SECONDS))
+    await Promise.all(writes)
+  } catch (error) {
+    console.error(`[v0] [Stats] Failed to track indication batch in Redis:`, error instanceof Error ? error.message : error)
+  }
+}
+
+/**
  * Track strategy statistics - called after strategy evaluation
  * Records strategy type, counts, and metrics to database for statistics
  */

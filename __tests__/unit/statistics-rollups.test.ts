@@ -57,6 +57,7 @@ import {
   getIndicationStats,
   getStrategyStats,
   trackIndicationStats,
+  trackIndicationStatsBatch,
   trackStrategyStats,
 } from "@/lib/statistics-tracker"
 
@@ -98,5 +99,21 @@ describe("bounded hourly statistics rollups", () => {
         avg_drawdown_time: 8,
       }),
     ])
+  })
+
+  test("batch indication aggregation preserves complete per-type counts and sums", async () => {
+    await trackIndicationStatsBatch("bingx-x01", "BTCUSDT", [
+      { type: "Trend", value: 2, confidence: 0.5 },
+      { type: "Trend", value: 4, confidence: 0.75 },
+      { type: "Move", value: 1, confidence: 0.9 },
+    ])
+
+    const stats = await getIndicationStats("bingx-x01", 24)
+    expect(stats).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "trend", count: 2, avg_value: 3, avg_confidence: 0.625 }),
+      expect.objectContaining({ type: "move", count: 1, avg_value: 1, avg_confidence: 0.9 }),
+    ]))
+    expect(mockStrings.get("indications:bingx-x01:trend:count")).toBe("2")
+    expect(mockStrings.get("indications:bingx-x01:move:count")).toBe("1")
   })
 })

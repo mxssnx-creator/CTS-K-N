@@ -127,6 +127,28 @@ const DEFAULT_COMMON_INDICATION_TIMEOUT_MS = 1_000
 
 const DEFAULT_OUTCOME_ATTACHMENT_CONCURRENCY = 20
 
+// `attachQualifiedCandidates` evaluates a complete indication/config matrix
+// before it can publish the current Set snapshot. Inline Redis and already
+// resolved promises otherwise keep the work in the microtask queue, so a
+// minute-boundary rebuild can monopolize the HTTP event loop even though the
+// work is nominally async. Yield after a small, complete candidate batch; this
+// changes scheduling only and never drops or samples a configuration.
+const INDICATION_CANDIDATE_YIELD_INTERVAL = Math.max(
+  4,
+  Math.min(
+    256,
+    Number.parseInt(process.env.INDICATION_CANDIDATE_YIELD_EVERY || "16", 10) || 16,
+  ),
+)
+
+async function yieldIndicationScheduler(): Promise<void> {
+  if (typeof setImmediate === "function") {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    return
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+}
+
 const RECORD_OUTCOME_SAMPLE_SCRIPT = `
 local sampleKey = KEYS[1]
 local statsKey = KEYS[2]
@@ -228,6 +250,32 @@ function realtimeMarketSignature(marketData: any): string {
   }
 
   if (candles.length > 0) {
+    // The exhaustive Main/Real grid is coordinated on one-minute closes.
+    // Hash only completed minute buckets so a 1-second mark/tick does not
+    // rebuild and persist thousands of identical Set rows. The current
+    // partial minute remains available to the live/pseudo-position path.
+    const minuteBuckets = new Map<number, any>()
+    let timestamped = 0
+    for (const candle of candles) {
+      const rawTimestamp = Number(candle?.timestamp ?? candle?.time ?? candle?.t)
+      if (!Number.isFinite(rawTimestamp) || rawTimestamp <= 0) continue
+      const timestamp = rawTimestamp < 10_000_000_000 ? rawTimestamp * 1000 : rawTimestamp
+      timestamped++
+      minuteBuckets.set(Math.floor(timestamp / 60_000), candle)
+    }
+    if (timestamped > 0) {
+      const orderedBuckets = [...minuteBuckets.entries()].sort(([left], [right]) => left - right)
+      const completedBuckets = orderedBuckets.length > 1 ? orderedBuckets.slice(0, -1) : orderedBuckets
+      for (const [minute, candle] of completedBuckets) {
+        mix(minute)
+        mix(stableNumber(candle?.close ?? candle?.c ?? candle?.price))
+        mix(stableNumber(candle?.volume ?? candle?.v))
+      }
+      const lastCompletedMinute = completedBuckets.at(-1)?.[0] ?? -1
+      return `${orderedBuckets.length}:${lastCompletedMinute}:${(hash >>> 0).toString(36)}`
+    }
+    // Legacy/no-timestamp feeds have no safe minute boundary. Preserve their
+    // content-sensitive behavior rather than incorrectly reusing a stale grid.
     for (const candle of candles) {
       mix(stableNumber(candle?.open ?? candle?.o))
       mix(stableNumber(candle?.high ?? candle?.h))
@@ -238,18 +286,7 @@ function realtimeMarketSignature(marketData: any): string {
   } else {
     for (const price of prices) mix(stableNumber(price))
   }
-
-  // Do not include a per-pulse mark/execution price in the exhaustive-grid
-  // identity. The Row-Real graph is driven by the persisted candle history;
-  // the live stage independently uses the current mark for sizing and entry.
-  // Including that mark here turns a 280 ms realtime pulse into a full matrix
-  // rebuild even when no candle has changed.
-  const currentPrice = stableNumber(
-    candles[candles.length - 1]?.close ??
-      prices[prices.length - 1] ??
-      marketData?.close,
-  )
-  return `${candles.length || prices.length}:${currentPrice}:${(hash >>> 0).toString(36)}`
+  return `${candles.length || prices.length}:legacy:${(hash >>> 0).toString(36)}`
 }
 
 function exactSnapshotCacheKey(connectionId: string, symbol: string, marketData: any): string {
@@ -335,17 +372,31 @@ function resolveIndicationDirection(indication: any): "long" | "short" | null {
   return signedValue === undefined ? null : signedValue > 0 ? "long" : "short"
 }
 
-async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T, index: number) => Promise<R>): Promise<R[]> {
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>,
+  yieldEvery = 0,
+): Promise<R[]> {
   if (items.length === 0) return []
 
   const concurrency = Math.max(1, Math.min(Math.floor(limit) || 1, items.length))
   const results = new Array<R>(items.length)
   let nextIndex = 0
+  let completed = 0
 
   async function worker(): Promise<void> {
     while (nextIndex < items.length) {
       const index = nextIndex++
       results[index] = await mapper(items[index], index)
+      completed++
+      // Count globally rather than per worker. With the default attachment
+      // pool of 20, a per-worker interval would otherwise allow 20×16
+      // candidates through one microtask burst before the first macrotask
+      // yield, which is still enough to starve API/control requests.
+      if (yieldEvery > 0 && completed % yieldEvery === 0) {
+        await yieldIndicationScheduler()
+      }
     }
   }
 
@@ -1336,68 +1387,73 @@ export class IndicationSetsProcessor {
     marketData: any,
     candidates: IndicationCandidate[],
   ): Promise<IndicationCandidate[]> {
-    const attached = await mapLimit(candidates, this.outcomeAttachmentConcurrency, async (candidate) => {
-      const profitFactor = await this.attachOutcomeBackedProfitFactor(
-        symbol,
-        marketData,
-        candidate.setKey,
-        candidate.indication,
-      )
-      if (profitFactor < this.baseMinimumPfRatio) return null
+    const attached = await mapLimit(
+      candidates,
+      this.outcomeAttachmentConcurrency,
+      async (candidate) => {
+        const profitFactor = await this.attachOutcomeBackedProfitFactor(
+          symbol,
+          marketData,
+          candidate.setKey,
+          candidate.indication,
+        )
+        if (profitFactor < this.baseMinimumPfRatio) return null
 
       // The cooldown is claimed only AFTER a valid evaluation. Its key is the
       // exact durable Set identity, which already includes connection, symbol,
       // indicator type, complete parameters and direction. This means a valid
       // MACD/Long tuple cannot throttle RSI, another MACD tuple, or Short.
-      const client = await getCachedClient()
-      const type = String(candidate.setKey.split(":")[3] || "")
-      const commonType = String(candidate.config?.indicatorType || "")
-      const direction =
-        candidate.indication?.direction === "short" ? "short" : "long"
-      const indicationName =
-        commonType ||
-        String(candidate.indication?.metadata?.name || type || "unknown")
-      const configuredCommonTimeoutSeconds = Number(
-        (this.commonSettings?.[commonType] as any)?.timeout,
-      )
-      const configuredCommonIntervalSeconds = Number(
-        (this.commonSettings?.[commonType] as any)?.interval,
-      )
-      const timeoutMs = type === "common"
-        ? Math.max(
-            0,
-            this.indicationIntervalMsByType.common,
-            Math.round(
-              Math.max(
-                Number.isFinite(configuredCommonTimeoutSeconds)
-                  ? configuredCommonTimeoutSeconds
-                  : DEFAULT_COMMON_INDICATION_TIMEOUT_MS / 1_000,
-                Number.isFinite(configuredCommonIntervalSeconds)
-                  ? configuredCommonIntervalSeconds
-                  : DEFAULT_COMMON_INDICATION_TIMEOUT_MS / 1_000,
-              ) * 1_000,
-            ),
-          )
-        : Math.max(
-            0,
-            this.indicationTimeoutMsByType[type] ?? this.indicationTimeoutMs,
-            this.indicationIntervalMsByType[type] ?? this.indicationTimeoutMs,
-          )
-      if (timeoutMs <= 0) return candidate
-      const admitted = await client.set(
-        indicationValidatedCooldownKey({
-          connectionId: this.connectionId,
-          symbol,
-          type,
-          name: indicationName,
-          direction,
-          config: candidate.config,
-        }),
-        String(Date.now()),
-        { NX: true, PX: timeoutMs },
-      ).catch(() => null)
-      return admitted ? candidate : null
-    })
+        const client = await getCachedClient()
+        const type = String(candidate.setKey.split(":")[3] || "")
+        const commonType = String(candidate.config?.indicatorType || "")
+        const direction =
+          candidate.indication?.direction === "short" ? "short" : "long"
+        const indicationName =
+          commonType ||
+          String(candidate.indication?.metadata?.name || type || "unknown")
+        const configuredCommonTimeoutSeconds = Number(
+          (this.commonSettings?.[commonType] as any)?.timeout,
+        )
+        const configuredCommonIntervalSeconds = Number(
+          (this.commonSettings?.[commonType] as any)?.interval,
+        )
+        const timeoutMs = type === "common"
+          ? Math.max(
+              0,
+              this.indicationIntervalMsByType.common,
+              Math.round(
+                Math.max(
+                  Number.isFinite(configuredCommonTimeoutSeconds)
+                    ? configuredCommonTimeoutSeconds
+                    : DEFAULT_COMMON_INDICATION_TIMEOUT_MS / 1_000,
+                  Number.isFinite(configuredCommonIntervalSeconds)
+                    ? configuredCommonIntervalSeconds
+                    : DEFAULT_COMMON_INDICATION_TIMEOUT_MS / 1_000,
+                ) * 1_000,
+              ),
+            )
+          : Math.max(
+              0,
+              this.indicationTimeoutMsByType[type] ?? this.indicationTimeoutMs,
+              this.indicationIntervalMsByType[type] ?? this.indicationTimeoutMs,
+            )
+        if (timeoutMs <= 0) return candidate
+        const admitted = await client.set(
+          indicationValidatedCooldownKey({
+            connectionId: this.connectionId,
+            symbol,
+            type,
+            name: indicationName,
+            direction,
+            config: candidate.config,
+          }),
+          String(Date.now()),
+          { NX: true, PX: timeoutMs },
+        ).catch(() => null)
+        return admitted ? candidate : null
+      },
+      INDICATION_CANDIDATE_YIELD_INTERVAL,
+    )
 
     return attached.filter((candidate): candidate is IndicationCandidate => candidate !== null)
   }

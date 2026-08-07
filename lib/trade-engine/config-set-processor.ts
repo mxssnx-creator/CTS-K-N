@@ -19,6 +19,7 @@ import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrenc
 import { getHistoricCandlesForRange } from "./market-data-cache"
 import { ENGINE_STAGE_HISTORY_CANDLES } from "@/lib/market-data-loader"
 import { incrementHistoricAggregateOnce } from "@/lib/redis-idempotent-list"
+import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
@@ -224,6 +225,7 @@ export class ConfigSetProcessor {
     // Default fallback — 8 hours, matches engine-manager DEFAULT_RANGE_HOURS.
     const effectiveStart = rangeStart ?? new Date(now.getTime() - 8 * 60 * 60 * 1000)
     const intervalMs = timeframeSec * 1000
+    const runtimeConcurrency = getRuntimeConcurrencyProfile(symbols.length)
 
     // Bounded nested budgets. The former defaults (8 symbols × 8 types ×
     // 24 configs, twice for indication+strategy) could schedule hundreds of
@@ -232,18 +234,18 @@ export class ConfigSetProcessor {
     // config budget across active types.
     const SYMBOL_CONCURRENCY = concurrencyFromEnv(
       ["PREHISTORIC_SYMBOL_CONCURRENCY"],
-      2,
+      runtimeConcurrency.historicSymbolConcurrency,
       4,
       symbols.length,
     )
     const CONFIG_CONCURRENCY = concurrencyFromEnv(
       ["PREHISTORIC_CONFIG_CONCURRENCY"],
-      2,
+      runtimeConcurrency.calculationConcurrency,
       8,
     )
     const CONFIG_TYPE_CONCURRENCY = concurrencyFromEnv(
       ["PREHISTORIC_CONFIG_TYPE_CONCURRENCY"],
-      2,
+      runtimeConcurrency.indicationTypeConcurrency,
       4,
     )
 
@@ -1094,7 +1096,10 @@ export class ConfigSetProcessor {
 
     const configTypeGroups = groupConfigsByType(configs)
     const activeTypeConcurrency = Math.max(1, Math.min(typeConcurrency, configTypeGroups.length))
-    const perTypeConcurrency = Math.max(1, Math.ceil(concurrency / activeTypeConcurrency))
+    // Floor the nested budget so type fan-out can never multiply beyond the
+    // configured calculation budget. Every type/config still runs exactly
+    // once; only the scheduler's in-flight ceiling changes.
+    const perTypeConcurrency = Math.max(1, Math.floor(concurrency / activeTypeConcurrency))
     const client = getRedisClient()
     const aggregateKey = historicGeneration
       ? historicAggregateKey(this.connectionId, "indications", historicGeneration)
@@ -1339,7 +1344,7 @@ export class ConfigSetProcessor {
 
     const configTypeGroups = groupConfigsByType(configs)
     const activeTypeConcurrency = Math.max(1, Math.min(typeConcurrency, configTypeGroups.length))
-    const perTypeConcurrency = Math.max(1, Math.ceil(concurrency / activeTypeConcurrency))
+    const perTypeConcurrency = Math.max(1, Math.floor(concurrency / activeTypeConcurrency))
     const perTypeCounts = await mapWithConcurrency(
       configTypeGroups,
       activeTypeConcurrency,

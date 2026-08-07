@@ -4,6 +4,7 @@
  */
 
 import { getRedisClient, initRedis } from "@/lib/redis-db"
+import { getRuntimeTelemetry } from "@/lib/runtime-telemetry"
 
 
 async function scanKeys(client: any, pattern: string, limit = 500): Promise<string[]> {
@@ -236,6 +237,7 @@ class EnginePerformanceMonitor {
     return {
       connectionId,
       timestamp: new Date().toISOString(),
+      runtime: getRuntimeTelemetry(symbols.length),
       processors: {
         indications: indicationMetrics,
         strategies: strategyMetrics,
