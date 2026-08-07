@@ -564,12 +564,6 @@ export function DirectTradeSection() {
             </div>
           </div>
 
-          {calculationProgress?.status === "running" && (
-            <div className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
-              Calculating independently: <span className="font-mono text-foreground">{calculationProgress.completedSymbols || 0}/{calculationProgress.totalSymbols || 0}</span> symbols · <span className="font-mono text-foreground">{(calculationProgress.evaluatedSets || 0).toLocaleString()}</span> sets indexed
-            </div>
-          )}
-
           {(calculating || calculationProgress || calculationError) && (
             <div
               role="status"
