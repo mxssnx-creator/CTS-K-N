@@ -6737,13 +6737,23 @@ if (!hasExisting) {
     const existingBootHashes = await Promise.all(
       devHashes.map((key) => client.hgetall(key).catch(() => ({}))),
     )
-    const existingForcedSymbols = existingBootHashes
-      .map((values) => parseBootSymbols((values as Record<string, string>)?.force_symbols))
-      .find((symbols) => symbols.length > 0) || []
+    const existingBootConfig = existingBootHashes
+      .map((values) => values as Record<string, string>)
+      .find((values) => parseBootSymbols(values?.force_symbols).length > 0) || {}
+    const existingForcedSymbols = parseBootSymbols(existingBootConfig.force_symbols)
+    const existingSymbolOrder = String(existingBootConfig.symbol_order || "").trim().toLowerCase()
     const pinnedSymbols = existingForcedSymbols.slice(0, devSymCount)
+    // A force_symbols basket is only operator-explicit when symbol_order is
+    // empty. Older boot/migration code persisted default fixtures as a forced
+    // basket while also declaring volatility_1h; preserving those stale values
+    // bypasses dynamic ranking and can restart with the wrong symbols.
+    const hasExplicitOperatorBasket =
+      existingSymbolOrder === "" &&
+      existingForcedSymbols.length > 0 &&
+      existingForcedSymbols.length <= devSymCount
 
     let devSymPayload: Record<string, string>
-    if ((pinnedSymbols.length >= devSymCount || devSymCount === 1) && pinnedSymbols.length > 0) {
+    if (hasExplicitOperatorBasket && (pinnedSymbols.length >= devSymCount || devSymCount === 1)) {
       // Preserve an explicit operator/QuickStart basket across subsequent
       // initRedis calls and dev HMR module reloads, ONLY when the stored basket
       // already meets the requested symbol count. If the operator set
