@@ -606,12 +606,16 @@ export async function POST(request: NextRequest) {
 
     if (body.action === "toggle-live") {
       const liveMode = body.liveMode !== undefined ? body.liveMode === true : !currentState.liveMode
-      if (liveMode && !currentState.connectionId) {
+      const connectionId = body.connectionId !== undefined
+        ? normaliseConnectionId(body.connectionId)
+        : currentState.connectionId
+      if (liveMode && !connectionId) {
         return NextResponse.json({ error: "Select a live exchange connection before enabling Direct-Trade live execution" }, { status: 409 })
       }
       const newState: DirectTradeState = {
         ...currentState,
         liveMode,
+        ...(connectionId !== undefined ? { connectionId } : {}),
       }
       await setState(newState)
       return NextResponse.json({ success: true, state: newState, message: `Live mode ${newState.liveMode ? "enabled" : "disabled"}` })

@@ -586,7 +586,16 @@ async function handlePost(request: Request) {
     // wins over `symbolCount`.
     const rawSymbols = body.symbols
     const explicitSymbols = readFirstMeaningful(body, ["symbols", "force_symbols"])
-    const existingSymbols = readFirstMeaningful(existingQuickStartSettings, ["symbols", "force_symbols", "active_symbols"])
+    // When the caller passes an explicit symbolCount (or symbols as a number),
+    // they want N freshly auto-picked symbols — NOT the single symbol that may
+    // be cached in Redis as active_symbols. Ignore the stored active_symbols in
+    // that case so the auto-picker runs for the correct count.
+    const explicitCountInBody =
+      (typeof rawSymbols === "number" && Number.isFinite(rawSymbols) && rawSymbols > 0) ||
+      (typeof body.symbolCount === "number" && Number.isFinite(body.symbolCount) && body.symbolCount > 0)
+    const existingSymbols = explicitCountInBody
+      ? undefined
+      : readFirstMeaningful(existingQuickStartSettings, ["symbols", "force_symbols", "active_symbols"])
     let symbols = parseStoredSymbols(explicitSymbols ?? existingSymbols)
     // requestedCount controls the eventual auto-pick count when no
     // explicit symbols are provided. Allow any count >= 1 without artificial caps.
@@ -598,6 +607,7 @@ async function handlePost(request: Request) {
     if (typeof rawSymbols === "number" && Number.isFinite(rawSymbols) && rawSymbols > 0) {
       // Allow explicit requests up to 1000 symbols (will be capped by exchange API)
       requestedCount = Math.max(1, Math.min(1000, Math.floor(rawSymbols)))
+      symbols = [] // force auto-pick for this count
     } else if (
       typeof body.symbolCount === "number" &&
       Number.isFinite(body.symbolCount) &&
@@ -605,6 +615,7 @@ async function handlePost(request: Request) {
     ) {
       // Allow explicit requests up to 1000 symbols
       requestedCount = Math.max(1, Math.min(1000, Math.floor(body.symbolCount)))
+      symbols = [] // force auto-pick for this count
     }
     // The auto-pick branches honour `requestedCount` so a caller that
     // posts `{ symbolCount: 2 }` (or `symbols: 2`) gets two symbols, not

@@ -1786,8 +1786,8 @@ export function ActiveConnectionCard({
           },
         )
       }
-      return tiles.map(({ label, value, title, tone }) => (
-        <div key={label} className="flex items-center gap-1 text-[10px]" title={title}>
+      return tiles.map(({ label, value, title, tone }, tileIndex) => (
+        <div key={`${label}-${tileIndex}`} className="flex items-center gap-1 text-[10px]" title={title}>
           <span className="text-muted-foreground">{label}</span>
           <span className={`font-semibold tabular-nums ${tone ?? ""}`}>{value}</span>
         </div>
@@ -1801,8 +1801,8 @@ export function ActiveConnectionCard({
         title: "Main Trade is disabled; enable Main, Signal, or Preset to show that engine's overview stats.",
         tone: "text-muted-foreground",
       })
-      return tiles.map(({ label, value, title, tone }) => (
-        <div key={label} className="flex items-center gap-1 text-[10px]" title={title}>
+      return tiles.map(({ label, value, title, tone }, tileIndex) => (
+        <div key={`${label}-${tileIndex}`} className="flex items-center gap-1 text-[10px]" title={title}>
           <span className="text-muted-foreground">{label}</span>
           <span className={`font-semibold tabular-nums ${tone ?? ""}`}>{value}</span>
         </div>
@@ -1959,8 +1959,8 @@ export function ActiveConnectionCard({
           tone: "text-muted-foreground",
         })
       }
-      return tiles.map(({ label, value, title, tone }) => (
-        <div key={label} className="flex items-center gap-1 text-[10px]" title={title}>
+      return tiles.map(({ label, value, title, tone }, tileIndex) => (
+        <div key={`${label}-${tileIndex}`} className="flex items-center gap-1 text-[10px]" title={title}>
           <span className="text-muted-foreground">{label}</span>
           <span className={`font-semibold tabular-nums ${tone ?? ""}`}>{value}</span>
         </div>
@@ -2099,8 +2099,8 @@ export function ActiveConnectionCard({
       )
     }
 
-    return tiles.map(({ label, value, title, tone }) => (
-      <div key={label} className="flex items-center gap-1 text-[10px]" title={title}>
+    return tiles.map(({ label, value, title, tone }, tileIndex) => (
+      <div key={`${label}-${tileIndex}`} className="flex items-center gap-1 text-[10px]" title={title}>
         <span className="text-muted-foreground">{label}</span>
         <span className={`font-semibold tabular-nums ${tone ?? ""}`}>
           {typeof value === "number" && value >= 1000

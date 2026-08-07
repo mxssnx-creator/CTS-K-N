@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { getActiveConnectionsForEngine, getRedisClient, initRedis } from "@/lib/redis-db"
 import { SystemLogger } from "@/lib/system-logger"
+import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 
 function isEnabledFlag(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true"
@@ -140,7 +141,7 @@ export async function GET() {
     const engineStatuses = await Promise.all(
       activeConnections.map(async (conn) => {
         try {
-          const [runtimeState, settingsState, status] = await Promise.all([
+          const [runtimeState, settingsState, status, progression] = await Promise.all([
             withTimeout(
               client.hgetall(`trade_engine_state:${conn.id}`).catch(() => ({} as Record<string, string>)),
               750,
@@ -152,7 +153,23 @@ export async function GET() {
               {} as Record<string, string>,
             ),
             withTimeout(coordinator.getEngineStatus(conn.id), 1200, null),
+            withTimeout(
+              client.hgetall(`progression:${conn.id}`).catch(() => ({} as Record<string, string>)),
+              750,
+              {} as Record<string, string>,
+            ),
           ])
+          const liveOrderReadiness = evaluateRealTradeReadiness(conn, "main")
+          const orderMetrics = {
+            attempted: Number(progression.live_orders_attempted_count || 0),
+            placed: Number(progression.live_orders_placed_count || 0),
+            filled: Number(progression.live_orders_filled_count || 0),
+            failed: Number(progression.live_orders_failed_count || 0),
+            simulated: Number(progression.live_orders_simulated_count || 0),
+            openPositionsCreated: Number(progression.live_positions_created_count || 0),
+            openPositionsClosed: Number(progression.live_positions_closed_count || 0),
+            volumeUsd: Number(progression.live_volume_usd_total || 0),
+          }
           // A newly compiled Next route can have a coordinator facade without
           // the worker that owns the engine. Merge that facade with both Redis
           // read models instead of replacing them: otherwise a small
@@ -215,6 +232,18 @@ export async function GET() {
             isEnabled: isEnabledFlag(conn.is_enabled_dashboard),
             isActive: isEnabledFlag(conn.is_active_inserted) || isEnabledFlag(conn.is_assigned) || isEnabledFlag(conn.is_dashboard_inserted),
             isLiveTrading: isEnabledFlag(conn.is_live_trade),
+            liveOrderReadiness: {
+              intent: liveOrderReadiness.intent,
+              requested: liveOrderReadiness.requested,
+              enabled: liveOrderReadiness.enabled,
+              credentialsValid: liveOrderReadiness.credentialsValid,
+              durableCoordinationReady: liveOrderReadiness.durableCoordinationReady,
+              canPlaceRealOrders: liveOrderReadiness.canPlaceRealOrders,
+              executionMode: liveOrderReadiness.executionMode,
+              blockCode: liveOrderReadiness.blockCode,
+              blockReason: liveOrderReadiness.blockReason,
+            },
+            orderMetrics,
             isEngineRunning: isRunning,
             engineStatus,
           }

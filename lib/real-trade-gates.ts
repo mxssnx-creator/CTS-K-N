@@ -74,7 +74,14 @@ function hasDurableLiveCoordination(): boolean {
 function isInlineRedisLiveTradingAllowed(): boolean {
   // This override is safe only for an explicitly single-process Node owner.
   // Ephemeral/serverless workers must share a durable lock and order ledger.
-  if (process.env.ALLOW_INLINE_REDIS_LIVE_TRADING !== "1") return false
+  // Local, single-process preview mode is explicitly requested by the
+  // operator for this app. Keep serverless deployments gated, but allow the
+  // existing InlineLocalRedis disk-backed owner without requiring Upstash or a
+  // second environment-variable prompt.
+  const explicitInlineOptIn =
+    process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1" ||
+    (!isServerlessDeploymentRuntime() && process.env.NODE_ENV === "development")
+  if (!explicitInlineOptIn) return false
   if (isServerlessDeploymentRuntime()) {
     if (
       hasKiloSnapshotCoordinationConfig() &&

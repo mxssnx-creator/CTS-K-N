@@ -644,7 +644,7 @@ const initialSettings: Settings = {
 
   useMainSymbols: false,
   numberOfSymbolsToSelect: 8,
-  symbolOrderType: "volume24h",
+  symbolOrderType: "volatility_1h",
 
   // Indication
   indication_time_interval: 1,
@@ -1035,7 +1035,7 @@ export default function SettingsPage() {
     // FIX: Ensure quoteAsset default is applied
     quoteAsset: initialSettings.quoteAsset ?? "USDT",
     // FIX: Ensure symbolOrderType default is applied
-    symbolOrderType: initialSettings.symbolOrderType ?? "volume24h",
+    symbolOrderType: initialSettings.symbolOrderType ?? "volatility_1h",
     // FIX: Ensure min_volume_enforcement default is applied
     min_volume_enforcement: initialSettings.min_volume_enforcement ?? false, // Now defaults to false in initialSettings
     // Apply defaults for new indicator ranges

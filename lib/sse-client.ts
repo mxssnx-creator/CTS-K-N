@@ -120,7 +120,8 @@ export class SSEClient {
           'settings-update',
           'engine-status',
           'processing-progress',
-          'error',
+          // `error` is the browser EventSource transport event, not a
+          // JSON-named SSE payload. It is handled by onerror below.
           'history',
           'connection.updated',
           'settings.recoordinated',

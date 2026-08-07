@@ -725,6 +725,18 @@ export function QuickstartSection() {
             startingGraceTimerRef.current = null
           }
         }
+        // Sync symbolCount picker from the server's active progression so the
+        // SYMBOLS control always reflects what's actually running, not stale
+        // localStorage from a previous session.
+        const serverSymCount = Number(s.metadata?.activeProgression?.symbol_count)
+        if (Number.isFinite(serverSymCount) && serverSymCount > 0) {
+          setSymbolCount(prev => {
+            if (prev !== serverSymCount) {
+              try { localStorage.setItem("qs:symbolCount", String(serverSymCount)) } catch {}
+            }
+            return serverSymCount
+          })
+        }
       }
       if (s.metadata?.engineRunning === false && !startingRef.current && !startingGraceRef.current) setIsRunning(false)
     } catch { /* non-critical */ }
@@ -1262,7 +1274,7 @@ export function QuickstartSection() {
           trip and hot-reload into the running engine. */}
       <QuickstartOptionsBar />
 
-      {/* ── compact header bar ─────────────────────────────────────────────── */}
+      {/* ── compact header bar ───���─────────────────────────────────────────── */}
       <div className="flex items-center gap-2 px-3 py-2 bg-primary/5 border-b border-primary/10">
         {/* status dot + label */}
         <StatusDot active={stats.engineRunning || isRunning} />
@@ -1301,7 +1313,7 @@ export function QuickstartSection() {
       </div>
 
       <div className="p-2.5 space-y-2">
-        {/* ── action row ───────────────────────────────────��─────────────── */}
+        {/* ── action row ──���────────────────────────────────��─────────────── */}
         <div className="flex flex-wrap items-center gap-1.5">
           <Button
             size="sm"

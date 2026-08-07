@@ -6737,18 +6737,30 @@ if (!hasExisting) {
     const existingBootHashes = await Promise.all(
       devHashes.map((key) => client.hgetall(key).catch(() => ({}))),
     )
-    const existingForcedSymbols = existingBootHashes
-      .map((values) => parseBootSymbols((values as Record<string, string>)?.force_symbols))
-      .find((symbols) => symbols.length > 0) || []
+    const existingBootConfig = existingBootHashes
+      .map((values) => values as Record<string, string>)
+      .find((values) => parseBootSymbols(values?.force_symbols).length > 0) || {}
+    const existingForcedSymbols = parseBootSymbols(existingBootConfig.force_symbols)
+    const existingSymbolOrder = String(existingBootConfig.symbol_order || "").trim().toLowerCase()
     const pinnedSymbols = existingForcedSymbols.slice(0, devSymCount)
+    // A force_symbols basket is only operator-explicit when symbol_order is
+    // empty. Older boot/migration code persisted default fixtures as a forced
+    // basket while also declaring volatility_1h; preserving those stale values
+    // bypasses dynamic ranking and can restart with the wrong symbols.
+    const hasExplicitOperatorBasket =
+      existingSymbolOrder === "" &&
+      existingForcedSymbols.length > 0 &&
+      existingForcedSymbols.length <= devSymCount
 
     let devSymPayload: Record<string, string>
-    if (pinnedSymbols.length > 0 || devSymCount === 1) {
+    if (hasExplicitOperatorBasket && (pinnedSymbols.length >= devSymCount || devSymCount === 1)) {
       // Preserve an explicit operator/QuickStart basket across subsequent
-      // initRedis calls and dev HMR module reloads. V0_DEV_SYMBOL_COUNT remains
-      // a ceiling; it must never turn a fixed basket back into a rotating
-      // volatility selection and materialize unrelated symbol keys.
-      const resolvedPinned = pinnedSymbols.length > 0 ? pinnedSymbols : ["BTCUSDT"]
+      // initRedis calls and dev HMR module reloads, ONLY when the stored basket
+      // already meets the requested symbol count. If the operator set
+      // V0_DEV_SYMBOL_COUNT=8 but the stored basket has fewer symbols (e.g. was
+      // seeded with 1 before the env var was set), fall through to the dynamic
+      // multi-symbol path below so the engine gets the correct count on next boot.
+      const resolvedPinned = pinnedSymbols
       devSymPayload = {
         force_symbols:            JSON.stringify(resolvedPinned),
         symbol_count:             String(resolvedPinned.length),
@@ -7349,10 +7361,15 @@ async function runMigrationsInternal(): Promise<MigrationRunResult> {
     let currentVersion = versionStr ? parseInt(versionStr as string) : 0
     const finalVersion = Math.max(...migrations.map((m) => m.version))
 
-    console.warn(`[v0] [Migrations] Current: v${currentVersion}, Target: v${finalVersion}`)
-
     // Get migrations that need to run (version > currentVersion)
     let pendingMigrations = migrations.filter((m) => m.version > currentVersion)
+
+    // Only log the Current→Target line when there is actually work to do.
+    // Logging it unconditionally fires on every module reload (every API
+    // request in dev) and floods the console with noise when schema is current.
+    if (pendingMigrations.length > 0) {
+      console.warn(`[v0] [Migrations] Current: v${currentVersion}, Target: v${finalVersion}`)
+    }
     
     if (pendingMigrations.length === 0) {
       // Suppress the "already at latest" line after the first occurrence
