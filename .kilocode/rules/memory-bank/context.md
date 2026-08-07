@@ -45,6 +45,7 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 - [x] Fix: Production readiness checks now verify base connections have valid API credentials for live trading
 - [x] Fix: `checkProductionReadiness` no longer returns 503 when preset BASE_CONNECTION_IDS (bybit-x03, pionex-x01, orangex-x01) are absent — missing connections are simply skipped; only connections that exist and have stale/invalid credentials block readiness
 - [x] Removed all static/hardcoded exchange credentials; production reads credentials only from protected server environment variables and remains fail-closed when they are absent
+- [x] Direct Trade now binds Start and Live-mode toggles to the selected exchange connection, so the selected BingX connection is persisted before live execution can be enabled
 - [x] Restored durable live-order infrastructure gates for multi-process/serverless deployments while preserving an explicit single-owner Inline Redis override
 - [x] Fix: `system:database:health` metadata mismatches in production readiness are now warnings instead of hard failures so fresh boots with unpopulated health hash can still start
 - [x] Fix: Missing `connection_settings:{id}` hash for active/main connections is now a warning instead of hard failure, allowing operators to enable connections before opening the settings dialog

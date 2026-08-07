@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Card } from "@/components/ui/card"
+import { useExchange } from "@/lib/exchange-context"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Slider } from "@/components/ui/slider"
@@ -58,6 +59,7 @@ import {
 interface DirectTradeState {
   enabled: boolean
   liveMode: boolean
+  connectionId: string | null
   startedAt: string | null
   processingIntervalMs: number
   symbolCount: number
@@ -116,6 +118,7 @@ interface DirectTradeStats {
 const DEFAULT_STATE: DirectTradeState = {
   enabled: false,
   liveMode: false,
+  connectionId: null,
   startedAt: null,
   processingIntervalMs: 280,
   symbolCount: 8,
@@ -172,6 +175,7 @@ const DEFAULT_STATS: DirectTradeStats = {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function DirectTradeSection() {
+  const { selectedConnectionId } = useExchange()
   const [state, setState] = useState<DirectTradeState>(DEFAULT_STATE)
   const [stats, setStats] = useState<DirectTradeStats>(DEFAULT_STATS)
   const [activeConfigs, setActiveConfigs] = useState(0)
@@ -303,6 +307,7 @@ export function DirectTradeSection() {
         body: JSON.stringify({
           action,
           liveMode: state.liveMode,
+          connectionId: selectedConnectionId ?? state.connectionId,
           symbolCount: localSymbolCount,
           symbolOrder: localSymbolOrder,
           minVolFactor: localVolFactor,
@@ -345,7 +350,11 @@ export function DirectTradeSection() {
       const res = await fetch("/api/trade-engine/direct-trade", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "toggle-live", liveMode: !state.liveMode }),
+        body: JSON.stringify({
+          action: "toggle-live",
+          liveMode: !state.liveMode,
+          connectionId: selectedConnectionId ?? state.connectionId,
+        }),
       })
       const data = await res.json()
       if (data.state) setState(data.state)
