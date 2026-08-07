@@ -44,6 +44,11 @@ describe("bounded engine concurrency", () => {
     expect(clampConcurrency("invalid", 2, 4, 1)).toBe(1)
   })
 
+  test("supports a hard two-worker main-trade budget", () => {
+    expect(clampConcurrency("99", 2, 2, 12)).toBe(2)
+    expect(clampConcurrency(1, 2, 2, 12)).toBe(1)
+  })
+
   test("same-size indication replacements invalidate the strategy cache", () => {
     const before = buildStrategyIndicationFingerprint([
       { id: "a", timestamp: "2026-07-15T10:00:00.000Z" },
