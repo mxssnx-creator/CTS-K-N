@@ -961,11 +961,11 @@ configure_environment_and_redis() {
     upsert_env CTS_LIVE_TRADING_CONFIGURED 1
     ok "Live exchange installation is configured for ${live_venues[*]}; readiness is verified without submitting an order"
   else
-    # Keep installation and the live-capable runtime healthy without inventing
-    # credentials. Real exchange calls remain fail-closed until credentials are
-    # supplied and the existing runtime readiness gates pass.
-    upsert_env CTS_LIVE_TRADING_CONFIGURED 0
-    warn "No exchange credentials were supplied; installation continues with live trading capability enabled but real orders blocked until credentials are configured"
+    # Always install the live-capable runtime. Do not invent or hardcode API
+    # credentials: the existing readiness gates continue to block real orders
+    # until valid credentials are supplied through the environment or UI.
+    upsert_env CTS_LIVE_TRADING_CONFIGURED 1
+    ok "Live trading installation is enabled; credentials will be validated by runtime readiness gates"
   fi
 
   local admin_secret cron_secret encryption_key jwt_secret direct_trade_processor_token
