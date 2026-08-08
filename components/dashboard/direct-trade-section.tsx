@@ -475,8 +475,8 @@ export function DirectTradeSection() {
 
   // ─── Render Helpers ───────────────────────────────────────────────────────
 
-  const formatPF = (pf: number | null, infinite = false) => infinite ? "∞" : (pf ?? 0) > 0 ? (pf ?? 0).toFixed(2) : "—"
-  const formatDDT = (ddt: number) => ddt > 0 ? `${ddt.toFixed(1)}m` : "—"
+  const formatPF = (pf: number | null, infinite = false) => infinite ? "∞" : pf == null ? "—" : pf.toFixed(2)
+  const formatDDT = (ddt: number) => ddt > 0 ? `${ddt.toFixed(1)}m` : "0.0m"
   const formatPnl = (pnl: number) => {
     if (pnl === 0) return "0.00%"
     return `${pnl > 0 ? "+" : ""}${pnl.toFixed(3)}%`

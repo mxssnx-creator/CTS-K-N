@@ -136,8 +136,15 @@ export function PresetTradeStats({ filter, positions }: PresetTradeStatsProps) {
       })
     }
 
-    // Sort by profit factor
-    stats.sort((a, b) => b.profit_factor - a.profit_factor)
+    // Sort by profit factor (Infinity sorts higher than any finite value)
+    stats.sort((a, b) => {
+      const infA = !Number.isFinite(a.profit_factor)
+      const infB = !Number.isFinite(b.profit_factor)
+      if (infA && infB) return 0
+      if (infA) return -1
+      if (infB) return 1
+      return b.profit_factor - a.profit_factor
+    })
     setPresetStats(stats)
   }
 
@@ -207,11 +214,11 @@ export function PresetTradeStats({ filter, positions }: PresetTradeStatsProps) {
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={presetStats}>
+              <BarChart data={presetStats.map((s) => ({ ...s, profit_factor: Number.isFinite(s.profit_factor) ? s.profit_factor : 999 }))}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="preset_name" angle={-45} textAnchor="end" height={100} />
                 <YAxis />
-                <Tooltip formatter={(value: number) => [formatSampledMetric(value, 1), "PF"]} />
+                <Tooltip formatter={(value: number) => [formatSampledMetric(value === 999 ? Infinity : value, 1), "PF"]} />
                 <Bar dataKey="profit_factor" fill="#3b82f6" />
               </BarChart>
             </ResponsiveContainer>

@@ -114,7 +114,7 @@ export async function GET() {
 }
 
 function calculateRollingPF(positions: any[]): { pf: number | null; pfInfinite: boolean; ddt: number; pnl: number } {
-  if (!positions.length) return { pf: 0, pfInfinite: false, ddt: 0, pnl: 0 }
+  if (!positions.length) return { pf: null, pfInfinite: false, ddt: 0, pnl: 0 }
   const wins = positions.filter((p) => (p.pnl || 0) > 0)
   const losses = positions.filter((p) => (p.pnl || 0) <= 0)
   const totalProfit = wins.reduce((s, p) => s + (p.pnl || 0), 0)

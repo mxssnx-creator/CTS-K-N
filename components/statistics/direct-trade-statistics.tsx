@@ -208,7 +208,7 @@ export function DirectTradeStatistics() {
         <Card className="p-4">
           <h2 className="text-sm font-medium">Rolling execution result</h2>
           <div className="mt-3 space-y-2 text-sm">
-            <ResultRow label="All closed positions PF" value={stats.profitFactor ? Number(stats.profitFactor).toFixed(2) : "—"} />
+            <ResultRow label="All closed positions PF" value={stats.profitFactor != null ? Number(stats.profitFactor).toFixed(2) : "—"} />
             <ResultRow label="Win / loss" value={`${stats.winCount || 0} / ${stats.lossCount || 0}`} />
             <ResultRow label="Last 12 positions" value={`PF ${stats.last12Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last12Pos?.ddt?.toFixed(1) || "0.0"}m`} />
             <ResultRow label="Last 25 positions" value={`PF ${stats.last25Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last25Pos?.ddt?.toFixed(1) || "0.0"}m`} />
