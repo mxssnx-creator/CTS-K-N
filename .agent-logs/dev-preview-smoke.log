@@ -1,0 +1,7 @@
+{
+  "success": true,
+  "mode": "development-paper-engine-smoke",
+  "symbols": 12,
+  "nodeHeapLimitMb": 12288,
+  "realExchangeOrdersSubmitted": 0
+}
