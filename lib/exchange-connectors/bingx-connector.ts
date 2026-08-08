@@ -2447,12 +2447,25 @@ export class BingXConnector extends BaseExchangeConnector {
         return `${baseUrl}${historyPath}?${queryString}&signature=${signature}`
       }
 
-      const toRow = (r: any) => ({
-        id: r.id ?? r.a ?? null,
-        timestamp: Number(r.time ?? r.T ?? r.timestamp),
-        price: Number(r.price ?? r.p),
-        quantity: Number(r.qty ?? r.q ?? r.quoteQty ?? 0),
-      })
+      // BingX's trade-id field name is inconsistent across endpoints and is
+      // returned as a numeric STRING, not a number — e.g. swap "recent
+      // trades" (`/openApi/swap/v2/quote/trades`) uses `fillId: "7283905"`
+      // while swap `historicalTrades` uses `id: "7283962"`. Coercing with
+      // `Number()` and checking `Number.isFinite` (not `typeof === "number"`)
+      // is required, otherwise every row's id resolves to `null`, `minId`
+      // never becomes a number, and the pagination loop below never runs a
+      // single iteration — silently capping coverage at whatever the single
+      // unsigned seed call returned (~100 trades on swap).
+      const toRow = (r: any) => {
+        const rawId = r.id ?? r.a ?? r.fillId ?? r.tradeId ?? null
+        const id = rawId === null ? null : Number(rawId)
+        return {
+          id: Number.isFinite(id) ? (id as number) : null,
+          timestamp: Number(r.time ?? r.T ?? r.timestamp),
+          price: Number(r.price ?? r.p),
+          quantity: Number(r.qty ?? r.q ?? r.quoteQty ?? 0),
+        }
+      }
 
       // Seed the cursor from the most recent trade so the first backward
       // page starts right below it.
@@ -2464,10 +2477,13 @@ export class BingXConnector extends BaseExchangeConnector {
 
       const allRows: ReturnType<typeof toRow>[] = [...seedRows]
       let minId = seedRows.reduce(
-        (min: number | null, r: any) => (typeof r.id === "number" && (min === null || r.id < min) ? r.id : min),
+        (min: number | null, r) => (typeof r.id === "number" && (min === null || r.id < min) ? r.id : min),
         null as number | null,
       )
-      let oldestTs = Math.min(...seedRows.map((r: any) => r.timestamp).filter((t: number) => Number.isFinite(t)))
+      let oldestTs = Math.min(...seedRows.map((r) => r.timestamp).filter((t: number) => Number.isFinite(t)))
+      if (minId === null) {
+        this.log(`getOHLCV1s(${symbol}): seed rows have no usable trade id; cannot page backward, returning ${seedRows.length}-row seed only`)
+      }
 
       // Page backward with fromId until coverage reaches startMs, the
       // exchange runs out of history, or we hit the safety cap. Bounded at
