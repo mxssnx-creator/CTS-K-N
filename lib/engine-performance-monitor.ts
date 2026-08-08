@@ -134,16 +134,12 @@ class EnginePerformanceMonitor {
     const now = Date.now()
     const lastMinute = now - 60000
     const recentCycles = (await client.lrange(cycleKey, 0, this.MAX_HISTORY as number))
-      .reduce((count: number, raw: string) => {
-        try {
-          const cycle = JSON.parse(raw) as CycleMetrics
-          if (!cycle.timestamp || typeof cycle.timestamp !== "string") return count
-          return new Date(cycle.timestamp).getTime() > lastMinute ? count + 1 : count
-        } catch {
-          // A corrupt historical metric must not break the hot cycle path.
-          return count
-        }
-      }, 0)
+      .map((c: string) => JSON.parse(c))
+      .filter((c: CycleMetrics) => {
+        if (!c.timestamp || typeof c.timestamp !== 'string') return false
+        return new Date(c.timestamp).getTime() > lastMinute
+      })
+      .length
 
     const flatHash: Record<string, string> = {
       processor_name: processorName,

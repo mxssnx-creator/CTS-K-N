@@ -20,7 +20,6 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 
 ## Recently Completed
 
-- [x] Server installer continues when Jest tests or exchange credentials are unavailable; it stays live-capable while real order placement remains fail-closed and records `CTS_LIVE_TRADING_CONFIGURED`
 - [x] Base Next.js 16 setup with App Router
 - [x] TypeScript configuration with strict mode
 - [x] Tailwind CSS 4 integration

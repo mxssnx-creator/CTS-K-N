@@ -230,15 +230,10 @@ export class ConfigSetProcessor {
     // large calculations at once. These pools still overlap independent I/O
     // and config work, but cap outer fan-out and divide each domain's total
     // config budget across active types.
-    // Main-trade prehistoric processing is deliberately limited to two
-    // symbols at a time. The env override can lower the budget, but never
-    // raise it: this protects memory, Redis pressure, and exchange-adjacent
-    // preprocessing when the selected symbol set is large.
-    const MAIN_TRADE_PREHISTORIC_SYMBOL_CONCURRENCY = 2
     const SYMBOL_CONCURRENCY = concurrencyFromEnv(
       ["PREHISTORIC_SYMBOL_CONCURRENCY"],
-      MAIN_TRADE_PREHISTORIC_SYMBOL_CONCURRENCY,
-      MAIN_TRADE_PREHISTORIC_SYMBOL_CONCURRENCY,
+      2,
+      4,
       symbols.length,
     )
     const CONFIG_CONCURRENCY = concurrencyFromEnv(
@@ -1422,7 +1417,7 @@ export class ConfigSetProcessor {
                     )
                   }
 
-                  // ── Mirror closed positions into pos_history ──��──────────
+                  // ── Mirror closed positions into pos_history ─────────────
                   // Use only positions accepted by the idempotent list write;
                   // a retry may calculate the same rows but must not duplicate
                   // directional history or inflate Main/Real gates.
