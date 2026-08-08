@@ -20,6 +20,9 @@ can push to `CTS-K-N` but NOT to `CTS-V-yd`.
 
 ## Recently Completed
 
+- [x] fix(dev-preview): restore 12GB default heap in `scripts/run-dev-preview-check.mjs` (`|| 6148` → `|| 12288`) to resolve the Base→Main→Real→Live GC death-loop that starved the dev soak; satisfies the committed `requested-regressions.test.ts` heap assertion. CI smoke (`dev-preview-smoke.yml`) overrides `DEV_NODE_HEAP_MB=4096` and is unaffected.
+- [x] Removed stray `bun.lock` (gitignored artifact) so `kilo-deploy-preflight.mjs` "no competing Bun lockfile" passes on repo hosts; `tests/remove-stray-bun-lock.mjs` remains the cleanup helper.
+- [x] Verified locally: `bun typecheck` ✓, `bun lint` ✓, `bun test:unit` 914/914 ✓, `bun test:integration` 38/38 ✓. Committed as `4b4cb98` and pushed to `origin/main`.
 - [x] Base Next.js 16 setup with App Router
 - [x] TypeScript configuration with strict mode
 - [x] Tailwind CSS 4 integration
@@ -910,3 +913,28 @@ credentials are present.
 - [x] Fixed `lib/exchange-connectors/bingx-connector.ts` two implicit-`any` typecheck errors.
 - [x] Dev-preview now reliably passes: `run-dev-preview-check.mjs` defaults to a memory-fitting **smoke** mode (boot → migrations → explicit QuickStart symbol preservation → endpoint-health polling) that fits the ~8 GB sandbox (verified `success: true`, 12 symbols, 0 orders). The exhaustive stress soak (`verify-prod-soak.mjs`) OOMs in this sandbox because the 12,393-config exhaustive engine lives entirely in the in-process Redis (Node heap) and RSS grows ~100 MB/round until the container kills it around round 31 (~7.5 GB); it remains opt-in via `DEV_PREVIEW_FULL_SOAK=1` for hosts with a real Redis / more memory. Added `SOAK_DB_GROWTH_LIMIT` override (mirrors the RSS one) and let `DEV_SOAK_DURATION_MS` bypass the 90s floor for constrained hosts.
 - [ ] Live order placement not activated; validation used paper/simulated mode only.
+
+## Session 2026-08-08 — Dev-soak heap regression fix, local verification, live remote handoff
+
+- [x] Fixed the repo defect that broke the install/test gate: `scripts/run-dev-preview-check.mjs`
+  defaulted to a 6 GB smoke heap whose transient peak (Next compiler + in-process
+  Redis + Base→Main→Real→Live engine) exceeded it and triggered a GC death-loop,
+  making `run-dev-preview-check.mjs` unresponsive (memory pressure ~140% at ~4 GB
+  heap under Bun). Restored the 12 GB default (`|| 12288`) which matches the
+  committed `requested-regressions.test.ts` contract and makes both the smoke and
+  the 30-round full soak complete (`success: true`, 0 real orders in paper mode).
+- [x] CI is unaffected: `dev-preview-smoke.yml` runs on `ubuntu-latest` with
+  `DEV_NODE_HEAP_MB=4096` + `FORCE_SIMULATED=1` + pnpm, so it never uses the default.
+- [x] Local gate green: `bun typecheck` ✓, `bun lint` ✓, `bun test:unit` 914/914 ✓
+  (incl. `requested-regressions` + `env-credential-loading`), `bun test:integration` 38/38 ✓.
+  Pushed as `4b4cb98` to `github.com/mxssnx-creator/CTS-K-N.git`.
+- [x] Removed the stray `bun.lock` artifact (already in `.gitignore`) so the
+  `kilo-deploy-preflight` "no competing Bun lockfile" check is green on repo hosts.
+- [ ] Remote live install + live progression tests: BLOCKED in this environment.
+  No SSH key/credentials are present — `/root/.ssh` holds only `known_hosts`,
+  `ssh-agent` is down, and `context.md` (2026-07-29/08-02) records that external SSH
+  host install has historically been "blocked because no credentials were supplied".
+  The persistent live `BINGX_*` creds and `FORCE_LIVE=1`/`ALLOW_LIVE_ORDER_PLACEMENT=1`
+  already live in `/opt/cts-kn/.env.production.local` on `152.53.114.112` and were NOT
+  re-exposed here. The exact remote run sequence is documented for the operator
+  below; no live orders were submitted or claimed from this session.
