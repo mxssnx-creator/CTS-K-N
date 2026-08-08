@@ -6625,11 +6625,19 @@ if (!hasExisting) {
       // present so the engine can pick symbols on the first tick. We never seed
       // a static symbol list here.
       const hasOrder = String(existing["symbol_order"] ?? "").length > 0
+      const hasExplicitPin =
+        typeof existing["force_symbols"] === "string" &&
+        existing["force_symbols"].trim() !== "" &&
+        existing["force_symbols"].trim() !== "[]"
       const needsSelectionRepair =
         !hasOrder || !existing["symbol_count"] || !existing["live_volume_factor"] || !existing["position_mode"]
       if (cfg.autoActive && cfg.exchange === "bingx" && needsSelectionRepair) {
         const patchData: Record<string,string> = {}
-        if (!hasOrder) patchData["symbol_order"] = "volatility_1h"
+        // An explicit operator QuickStart basket (force_symbols, no
+        // symbol_order) is authoritative. Do NOT seed symbol_order=volatility_1h
+        // over it — that would make the later dev-boot guard treat the pin as a
+        // stale migration fixture and clear force_symbols on the next boot.
+        if (!hasOrder && !hasExplicitPin) patchData["symbol_order"] = "volatility_1h"
         if (!existing["symbol_count"]) patchData["symbol_count"] = DEFAULT_SYMBOL_COUNT
         if (!existing["live_volume_factor"]) patchData["live_volume_factor"] = "1"
         if (!existing["signal_volume_factor"]) patchData["signal_volume_factor"] = "1"
@@ -6649,16 +6657,20 @@ if (!hasExisting) {
 
         // Push the selection config to the setSettings-prefixed keys that
         // getSymbols() reads — without a static symbol list, so the dynamic
-        // volatility branch runs on the first engine tick.
-        await client.hset(`settings:trade_engine_state:${cfg.id}`, {
-          symbol_count:             DEFAULT_SYMBOL_COUNT,
-          symbol_order:             "volatility_1h",
-          config_set_symbols_total: DEFAULT_SYMBOL_COUNT,
-        }).catch(() => {})
-        await client.hset(`settings:connection:${cfg.id}`, {
-          symbol_count: DEFAULT_SYMBOL_COUNT,
-          symbol_order: "volatility_1h",
-        }).catch(() => {})
+        // volatility branch runs on the first engine tick. Skip when an explicit
+        // operator force_symbols basket is present so we don't shadow the pin
+        // with symbol_order=volatility_1h (the dev-boot guard would then clear it).
+        if (!hasExplicitPin) {
+          await client.hset(`settings:trade_engine_state:${cfg.id}`, {
+            symbol_count:             DEFAULT_SYMBOL_COUNT,
+            symbol_order:             "volatility_1h",
+            config_set_symbols_total: DEFAULT_SYMBOL_COUNT,
+          }).catch(() => {})
+          await client.hset(`settings:connection:${cfg.id}`, {
+            symbol_count: DEFAULT_SYMBOL_COUNT,
+            symbol_order: "volatility_1h",
+          }).catch(() => {})
+        }
       }
     }
 

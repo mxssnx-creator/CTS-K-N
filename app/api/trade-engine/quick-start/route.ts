@@ -604,7 +604,13 @@ async function handlePost(request: Request) {
     let requestedCount = Number.isFinite(savedSymbolCount) && savedSymbolCount > 0
       ? Math.max(1, Math.min(1000, Math.floor(savedSymbolCount)))
       : QUICKSTART_DEFAULT_SYMBOL_COUNT
-    if (typeof rawSymbols === "number" && Number.isFinite(rawSymbols) && rawSymbols > 0) {
+    if (parseStoredSymbols(explicitSymbols).length > 0) {
+      // An explicit symbol array on body.symbols / body.force_symbols wins over
+      // symbolCount. When both are sent, symbolCount is only a hint; we keep the
+      // exact ordered basket the caller requested instead of auto-picking.
+      symbols = parseStoredSymbols(explicitSymbols)
+      requestedCount = symbols.length
+    } else if (typeof rawSymbols === "number" && Number.isFinite(rawSymbols) && rawSymbols > 0) {
       // Allow explicit requests up to 1000 symbols (will be capped by exchange API)
       requestedCount = Math.max(1, Math.min(1000, Math.floor(rawSymbols)))
       symbols = [] // force auto-pick for this count

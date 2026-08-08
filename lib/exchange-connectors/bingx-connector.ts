@@ -2477,10 +2477,10 @@ export class BingXConnector extends BaseExchangeConnector {
 
       const allRows: ReturnType<typeof toRow>[] = [...seedRows]
       let minId = seedRows.reduce(
-        (min: number | null, r) => (typeof r.id === "number" && (min === null || r.id < min) ? r.id : min),
+        (min: number | null, r: ReturnType<typeof toRow>) => (typeof r.id === "number" && (min === null || r.id < min) ? r.id : min),
         null as number | null,
       )
-      let oldestTs = Math.min(...seedRows.map((r) => r.timestamp).filter((t: number) => Number.isFinite(t)))
+      let oldestTs = Math.min(...seedRows.map((r: ReturnType<typeof toRow>) => r.timestamp).filter((t: number) => Number.isFinite(t)))
       if (minId === null) {
         this.log(`getOHLCV1s(${symbol}): seed rows have no usable trade id; cannot page backward, returning ${seedRows.length}-row seed only`)
       }

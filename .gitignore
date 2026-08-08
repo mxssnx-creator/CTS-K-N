@@ -35,3 +35,6 @@ node_modules
 .wrangler/
 bun.lock
 .cts-runtime/
+
+# Local workspace scratch dir (never commit)
+workspace/
