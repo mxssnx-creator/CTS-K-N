@@ -32,11 +32,15 @@ export function EngineAutoInitializer() {
       seedingRef.current = true
 
       try {
-        const allowAggressiveBrowserBootstrap =
-          process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_ALLOW_BROWSER_BOOTSTRAP === "1"
+        // Browser bootstrap is an explicit operator opt-in. Development mode
+        // must not start the full progression/indication pipeline merely because
+        // a dashboard tab was opened: that path creates large strategy/indication
+        // datasets and can exhaust a local workstation during debugging.
+        const allowAggressiveBrowserBootstrap = process.env.NEXT_PUBLIC_ALLOW_BROWSER_BOOTSTRAP === "1"
+        const allowDevCoordinatorBootstrap = process.env.NEXT_PUBLIC_DEV_AUTOSTART_COORDINATOR === "1"
 
         console.log(
-          `[v0] [EngineAutoInitializer] Checking server initialization status (aggressive=${allowAggressiveBrowserBootstrap})...`,
+          `[v0] [EngineAutoInitializer] Checking server initialization status (aggressive=${allowAggressiveBrowserBootstrap}, coordinator=${allowDevCoordinatorBootstrap})...`,
         )
 
         if (allowAggressiveBrowserBootstrap) {
@@ -47,6 +51,11 @@ export function EngineAutoInitializer() {
           await fetch("/api/trade-engine/auto-start", { method: "POST", cache: "no-store" }).catch(() => {})
           console.log("[v0] [EngineAutoInitializer] ✅ Aggressive browser bootstrap requested")
           return
+        }
+
+        if (allowDevCoordinatorBootstrap) {
+          await fetch("/api/trade-engine/auto-start", { method: "POST", cache: "no-store" }).catch(() => {})
+          console.log("[v0] [EngineAutoInitializer] ✅ Coordinator-only bootstrap requested")
         }
 
         // Production should normally be booted by Next.js instrumentation and

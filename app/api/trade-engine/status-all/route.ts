@@ -189,12 +189,15 @@ export async function GET() {
             const ts = Date.parse(statusHeartbeat)
             return Number.isFinite(ts) && Date.now() - ts < 120_000
           })()
-          const isRunning = !globallyPaused && !operatorStopped && (
-            globallyRunning ||
-            statusText === "running" ||
-            heartbeatFresh ||
-            isEnabledFlag((redisStatus as Record<string, unknown> | null | undefined)?.engine_ready)
-          )
+          // Desired operator intent and persisted readiness flags are not proof
+          // that this process currently owns a running manager. In local debug
+          // mode (and after a worker restart), Redis can retain `running` from
+          // the previous owner while the coordinator has no local manager.
+          // Report actual ownership first; only a fresh worker heartbeat can
+          // represent a remote durable owner.
+          const localManagerRunning = coordinator.isEngineRunning(conn.id)
+          const remoteWorkerRunning = heartbeatFresh && statusText === "running"
+          const isRunning = !globallyPaused && !operatorStopped && (localManagerRunning || remoteWorkerRunning)
           const configuredSymbols = parseSymbols(conn.force_symbols || conn.active_symbols || conn.symbols)
           const coordinatorSymbols = parseSymbols(status?.symbols || status?.active_symbols || status?.force_symbols)
           const runtimeSymbols = parseSymbols(
