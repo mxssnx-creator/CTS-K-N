@@ -32,13 +32,15 @@ const devSoakSymbolCount = maxSymbolsRequested
 const devSoakDurationMs = process.env.DEV_SOAK_DURATION_MS
   ? Number(process.env.DEV_SOAK_DURATION_MS)
   : Math.max(90_000, 60_000 + devSoakSymbolCount * 10_000)
-// The regular interactive dev command intentionally stays at 4 GiB. A long
-// HMR soak compiles every operations/statistics route and retains those module
-// graphs for the whole run, so allow the dedicated debug harness to use the
-// same larger heap class as scripts/dev-debug.js without changing production.
+// The regular interactive dev command intentionally stays at 4 GiB. The
+// default dev-preview path is the memory-fitting smoke mode for constrained
+// hosts (the exhaustive stress soak is opt-in via DEV_PREVIEW_FULL_SOAK=1),
+// so default to a heap that fits an ~8 GiB container with headroom for the
+// Next compiler workers and the in-process Redis. The full soak / a larger
+// host can raise it with DEV_NODE_HEAP_MB.
 const devNodeHeapMb = Math.max(
   4096,
-  Math.min(12288, Number(process.env.DEV_NODE_HEAP_MB || 12288)),
+  Math.min(12288, Number(process.env.DEV_NODE_HEAP_MB || 6144)),
 )
 let outputTail = ""
 

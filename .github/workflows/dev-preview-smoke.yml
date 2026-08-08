@@ -1,0 +1,47 @@
+name: Dev Preview Smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: dev-preview-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Light, memory-fitting smoke: 1 symbol validates boot -> migrations ->
+      # explicit QuickStart symbol preservation -> endpoint health without the
+      # unbounded key growth that exhausts an in-process Redis on small runners.
+      DEV_SOAK_SYMBOL_COUNT: "1"
+      DEV_NODE_HEAP_MB: "4096"
+      FORCE_SIMULATED: "1"
+      FORCE_LIVE: "0"
+      ALLOW_PROD_SIMULATED: "1"
+      BINGX_API_KEY: ""
+      BINGX_API_SECRET: ""
+      BYBIT_API_KEY: ""
+      BYBIT_API_SECRET: ""
+      PIONEX_API_KEY: ""
+      PIONEX_API_SECRET: ""
+      ORANGEX_API_KEY: ""
+      ORANGEX_API_SECRET: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run dev-preview smoke verifier
+        run: node scripts/run-dev-preview-check.mjs
