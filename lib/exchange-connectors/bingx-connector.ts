@@ -2407,6 +2407,15 @@ export class BingXConnector extends BaseExchangeConnector {
    * Both endpoints return trades ascending by `id`/time. We seed the
    * cursor from the most recent trade id, then walk `fromId` backward
    * until we cover `startMs` or hit the iteration/row cap.
+   *
+   * IMPORTANT: unlike the "recent trades" endpoints, BingX's
+   * historical-trades endpoints are signed — every request needs a
+   * `timestamp` + HMAC-SHA256 `signature` over the sorted query string,
+   * or BingX rejects it. An unsigned call to these endpoints fails
+   * silently (non-OK response), which previously made pagination break
+   * after the very first page and left coverage stuck at whatever the
+   * single unsigned "recent trades" seed call happened to return
+   * (~100 candles on swap) — nowhere near the 5,400-sample gate.
    */
   async getOHLCV1s(
     symbol: string,
@@ -2424,11 +2433,19 @@ export class BingXConnector extends BaseExchangeConnector {
       const recentEndpoint = isSpot
         ? `/openApi/spot/v1/market/trades?symbol=${bingxSymbol}&limit=500`
         : `/openApi/swap/v2/quote/trades?symbol=${bingxSymbol}&limit=500`
-      const historyEndpointBase = isSpot
-        ? `/openApi/market/his/v1/trade?symbol=${bingxSymbol}`
-        : `/openApi/swap/v1/market/historicalTrades?symbol=${bingxSymbol}`
+      const historyPath = isSpot ? "/openApi/market/his/v1/trade" : "/openApi/swap/v1/market/historicalTrades"
       const pageLimit = isSpot ? 500 : 100
       const headers = { "X-BX-APIKEY": this.credentials.apiKey }
+      const buildSignedHistoryUrl = (fromId: number): string => {
+        const params: Record<string, any> = {
+          symbol: bingxSymbol,
+          limit: pageLimit,
+          fromId,
+          timestamp: this.getTimestamp(),
+        }
+        const { signature, queryString } = this.signParams(params)
+        return `${baseUrl}${historyPath}?${queryString}&signature=${signature}`
+      }
 
       const toRow = (r: any) => ({
         id: r.id ?? r.a ?? null,
@@ -2467,10 +2484,17 @@ export class BingXConnector extends BaseExchangeConnector {
       ) {
         iterations++
         const fromId = Math.max(0, minId - pageLimit)
-        const pageUrl = `${baseUrl}${historyEndpointBase}&fromId=${fromId}&limit=${pageLimit}`
+        const pageUrl = buildSignedHistoryUrl(fromId)
         const resp = await this.rateLimitedFetch(pageUrl, { headers })
-        if (!resp.ok) break
+        if (!resp.ok) {
+          this.log(`getOHLCV1s(${symbol}): historical-trades page ${iterations} failed (HTTP ${resp.status}); stopping backfill with ${allRows.length} rows`)
+          break
+        }
         const data = await resp.json()
+        if (data && data.code !== undefined && !this.isBingXSuccess(data.code)) {
+          this.log(`getOHLCV1s(${symbol}): historical-trades page ${iterations} rejected (code=${data.code} msg=${data.msg}); stopping backfill with ${allRows.length} rows`)
+          break
+        }
         const rows = (Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []).map(toRow)
         if (rows.length === 0) break
         allRows.push(...rows)
