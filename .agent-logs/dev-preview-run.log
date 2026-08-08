@@ -1,0 +1,425 @@
+[run-dev-preview-check] failed: The operation was aborted due to timeout
+[run-dev-preview-check] server tail:
+   ▲ Next.js 15.5.18
+   - Local:        http://127.0.0.1:3103
+   - Network:      http://127.0.0.1:3103
+   - Environments: .env.development.local
+   - Experiments (use with caution):
+     · serverActions
+
+ ✓ Starting...
+ ○ Compiling /instrumentation ...
+ ✓ Compiled /instrumentation in 9.5s (1939 modules)
+[v0] [Instrumentation] register() — beginning deterministic server boot...
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Startup] ========================================
+[v0] [Startup] Beginning pre-startup sequence...
+[v0] [Startup] ========================================
+
+[v0] [Startup] Step 1/8: Initializing Redis...
+[v0] [Migrations] Current: v0, Target: v93
+[v0] [Migrations] Running 93 pending migrations as a combined batch...
+[v0] [Migrations] Running: 001-initial-schema (v1)
+[v0] Migration 001: Initial schema created
+[v0] [Migrations] ✓ Completed: 001-initial-schema (schema now v1)
+[v0] [Migrations] Running: 002-connection-management (v2)
+[v0] Migration 002: Connection management structure created
+[v0] [Migrations] ✓ Completed: 002-connection-management (schema now v2)
+[v0] [Migrations] Running: 003-trade-positions-schema (v3)
+[v0] Migration 003: Trade and position schemas created
+[v0] [Migrations] ✓ Completed: 003-trade-positions-schema (schema now v3)
+[v0] [Migrations] Running: 004-preset-strategy-management (v4)
+[v0] Migration 004: Preset and strategy management created
+[v0] [Migrations] ✓ Completed: 004-preset-strategy-management (schema now v4)
+[v0] [Migrations] Running: 005-user-authentication (v5)
+[v0] Migration 005: User authentication system created
+[v0] [Migrations] ✓ Completed: 005-user-authentication (schema now v5)
+[v0] [Migrations] Running: 006-monitoring-logging (v6)
+[v0] Migration 006: Monitoring and logging system created
+[v0] [Migrations] ✓ Completed: 006-monitoring-logging (schema now v6)
+[v0] [Migrations] Running: 007-cache-optimization (v7)
+[v0] Migration 007: Cache optimization created
+[v0] [Migrations] ✓ Completed: 007-cache-optimization (schema now v7)
+[v0] [Migrations] Running: 008-performance-optimizations (v8)
+[v0] Migration 008: Performance optimizations configured
+[v0] [Migrations] ✓ Completed: 008-performance-optimizations (schema now v8)
+[v0] [Migrations] Running: 009-backup-recovery (v9)
+[v0] Migration 009: Backup and recovery system created
+[v0] [Migrations] ✓ Completed: 009-backup-recovery (schema now v9)
+[v0] [Migrations] Running: 010-settings-and-metadata (v10)
+[v0] Migration 010: Settings and metadata finalized
+[v0] [Migrations] ✓ Completed: 010-settings-and-metadata (schema now v10)
+[v0] [Migrations] Running: 011-seed-predefined-connections (v11)
+[v0] Migration 011: Seeded 11/11 predefined template connections
+[v0] [Migrations] ✓ Completed: 011-seed-predefined-connections (schema now v11)
+[v0] [Migrations] Running: 012-finalize-dashboard-connections (v12)
+[v0] Migration 012: Initializing connections (base templates set to predefined=1, disabled)
+[v0] Migration 012: ✓ bybit-x03 -> predefined=1, inserted=0, enabled=0 (template)
+[v0] Migration 012: ✓ bingx-x01 -> predefined=1, inserted=0, enabled=0 (template)
+[v0] Migration 012: ✓ pionex-x01 -> predefined=1, inserted=0, enabled=0 (template)
+[v0] Migration 012: ✓ orangex-x01 -> predefined=1, inserted=0, enabled=0 (template)
+[v0] Migration 012: COMPLETE - 4 base templates, 7 other templates (all disabled)
+[v0] [Migrations] ✓ Completed: 012-finalize-dashboard-connections (schema now v12)
+[v0] [Migrations] Running: 013-risk-management-and-engines (v13)
+[v0] Migration 013: Risk management settings and engine controls added
+[v0] [Migrations] ✓ Completed: 013-risk-management-and-engines (schema now v13)
+[v0] [Migrations] Running: 014-update-bingx-credentials (v14)
+[v0] Migration 014: Cleared test credentials, real credentials preserved
+[v0] [Migrations] ✓ Completed: 014-update-bingx-credentials (schema now v14)
+[v0] [Migrations] Running: 015-fix-connection-inserted-enabled-states (v15)
+[v0] Migration 015: bybit-x03 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: bingx-x01 -> inserted=1, enabled=1, active_inserted=1, dashboard_enabled=0 (base connection)
+[v0] Migration 015: binance-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: okx-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: gateio-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: kucoin-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: mexc-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: bitget-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: pionex-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: orangex-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: huobi-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: Fixed 1 base connections, 10 template connections
+[v0] [Migrations] ✓ Completed: 015-fix-connection-inserted-enabled-states (schema now v15)
+[v0] [Migrations] Running: 016-active-connections-independent-state (v16)
+[v0] Migration 016: Ensuring predefined templates state for 11 connections
+[v0] Migration 016: ✓ bingx-x01 -> inserted=1, enabled=1, dashboard_enabled=0 (base connection)
+[v0] Migration 016: COMPLETE - 1 templates verified, 0 user connections updated
+[v0] [Migrations] ✓ Completed: 016-active-connections-independent-state (schema now v16)
+[v0] [Migrations] Running: 017-cleanup-base-connections-to-bybit-bingx-only (v17)
+[v0] Migration 017: ✓ bybit-x03 -> corrected to template-only state
+[v0] Migration 017: ✓ bingx-x01 -> corrected to base connection state
+[v0] Migration 017: ✓ binance-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ okx-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ gateio-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ kucoin-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ mexc-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ bitget-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ pionex-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ orangex-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ huobi-x01 -> corrected to template-only state
+[v0] Migration 017: COMPLETE - 1 base connections, 10 templates cleaned up
+[v0] [Migrations] ✓ Completed: 017-cleanup-base-connections-to-bybit-bingx-only (schema now v17)
+[v0] [Migrations] Running: 018-remove-auto-assignment-from-main-connections (v18)
+[v0] Migration 018: COMPLETE - fixed 0 connections that were auto-assigned
+[v0] [Migrations] ✓ Completed: 018-remove-auto-assignment-from-main-connections (schema now v18)
+[v0] [Migrations] Running: 019-tombstone-skipped-version (v19)
+[v0] Migration 019: tombstone — version 19 was intentionally skipped
+[v0] [Migrations] ✓ Completed: 019-tombstone-skipped-version (schema now v19)
+[v0] [Migrations] Running: 020-phase3-database-consolidation (v20)
+[v0] Migration 020: PHASE 3 - Database consolidation starting...
+[v0] Migration 020: ✓ Consolidated 11 progression structures
+[v0] Migration 020: ✓ Created 11 connection indexes
+[v0] Migration 020: COMPLETE - Database consolidation done
+[v0] [Migrations] ✓ Completed: 020-phase3-database-consolidation (schema now v20)
+[v0] [Migrations] Running: 021-restore-dashboard-enabled-for-auto-active-base-connections (v21)
+[v0] Migration 021: no-op (auto-enable removed; operator must enable connections manually)
+[v0] [Migrations] ✓ Completed: 021-restore-dashboard-enabled-for-auto-active-base-connections (schema now v21)
+[v0] [Migrations] Running: 022-comprehensive-data-structure-consistency (v22)
+[v0] Migration 022: Starting comprehensive data structure validation...
+[v0] Migration 022: Found 0 position history keys
+[v0] Migration 022: Found 0 axis position accumulation keys
+[v0] Migration 022: Found 0 hedge net target keys
+[v0] Migration 022: COMPLETE
+  - Fixed: 0 keys/structures
+  - Validated: 0 keys
+[v0] Migration 022: Data structure consistency check finished
+[v0] [Migrations] ✓ Completed: 022-comprehensive-data-structure-consistency (schema now v22)
+[v0] [Migrations] Running: 023-eval-knob-hash-defaults (v23)
+[v0] Migration 023: Seeded eval-knob defaults for 11 connections (44 fields written)
+[v0] [Migrations] ✓ Completed: 023-eval-knob-hash-defaults (schema now v23)
+[v0] [Migrations] Running: 024-ddt-window-unify-and-stage-thresholds (v24)
+[v0] Migration 024: unified PF/DDT window — stripped ddtCapPositions from 0 connections, seeded 3 app-level DDT-threshold defaults
+[v0] [Migrations] ✓ Completed: 024-ddt-window-unify-and-stage-thresholds (schema now v24)
+[v0] [Migrations] Running: 025-initialize-progression-state-hashes (v25)
+[v0] Migration 025: initialized progression state for 11 connections (defaults for missing fields, preserved existing counters)
+[v0] [Migrations] ✓ Completed: 025-initialize-progression-state-hashes (schema now v25)
+[v0] [Migrations] Running: 026-per-connection-pf-ddt-leverage-defaults (v26)
+[v0] Migration 026: seeded per-connection PF/DDT/leverage defaults for 11 connections (132 fields written)
+[v0] [Migrations] ✓ Completed: 026-per-connection-pf-ddt-leverage-defaults (schema now v26)
+[v0] [Migrations] Running: 027-engine-timings-defaults-in-settings-system (v27)
+[v0] Migration 027: seeded 13 engine-timing defaults into settings:system
+[v0] [Migrations] ✓ Completed: 027-engine-timings-defaults-in-settings-system (schema now v27)
+[v0] [Migrations] Running: 028-pin-live-sync-interval-and-min-step (v28)
+[v0] Migration 028: pinned live_sync_interval_ms=200 in settings:system; seeded minStep=5 into 11/11 connection_settings hashes
+[v0] [Migrations] ✓ Completed: 028-pin-live-sync-interval-and-min-step (schema now v28)
+[v0] [Migrations] Running: 029-leverage-policy-defaults-in-app-settings (v29)
+[v0] Migration 029: seeded useMaximalLeverage/leveragePercentage into app_settings and 0/11 connection_settings hashes
+[v0] [Migrations] ✓ Completed: 029-leverage-policy-defaults-in-app-settings (schema now v29)
+[v0] [Migrations] Running: 030-coordination-variant-axis-block-defaults (v30)
+[v0] Migration 030: seeded coordination defaults into app_settings and 11/11 connection_settings hashes
+[v0] [Migrations] ✓ Completed: 030-coordination-variant-axis-block-defaults (schema now v30)
+[v0] [Migrations] Running: 031-bingx-x01-live-trade-test-defaults (v31)
+[v0] Migration 031: bingx-x01 live-trade test defaults seeded (is_live_trade=kept, symbols=BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT, exchangePositionCost=0.02)
+[v0] [Migrations] ✓ Completed: 031-bingx-x01-live-trade-test-defaults (schema now v31)
+[v0] [Migrations] Running: 032-tombstone-skipped-version (v32)
+[v0] Migration 032: tombstone — version 32 was intentionally skipped (033 superseded in-progress draft)
+[v0] [Migrations] ✓ Completed: 032-tombstone-skipped-version (schema now v32)
+[v0] [Migrations] Running: 033-bingx-x01-force-15-symbols (v33)
+[v0] Migration 033: bingx-x01 force_symbols set to 15 symbols: BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,ATOMUSDT,LTCUSDT,UNIUSDT,NEARUSDT,MATICUSDT
+[v0] [Migrations] ✓ Completed: 033-bingx-x01-force-15-symbols (schema now v33)
+[v0] [Migrations] Running: 034-operator-spec-defaults (v34)
+[v0] Migration 034: operator-spec defaults applied (pf=1.0/1.2/1.2, live_volume_factor=2.2, variantBlock/Trailing=true, correct hashes)
+[v0] [Migrations] ✓ Completed: 034-operator-spec-defaults (schema now v34)
+[v0] [Migrations] Running: 035-bingx-x01-force-20-symbols (v35)
+[v0] Migration 035: bingx-x01 force_symbols set to 20 symbols: BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,ATOMUSDT,LTCUSDT,UNIUSDT,NEARUSDT,MATICUSDT,AAVEUSDT,SUIUSDT,APTUSDT,ARBUSDT,OPUSDT
+[v0] [Migrations] ✓ Completed: 035-bingx-x01-force-20-symbols (schema now v35)
+[v0] [Migrations] Running: 036-bingx-x01-active-inserted (v36)
+[v0] Migration 036: patched bingx-x01 is_active_inserted=1
+[v0] [Migrations] ✓ Completed: 036-bingx-x01-active-inserted (schema now v36)
+[v0] [Migrations] Running: 037-bingx-x01-enabled-dashboard (v37)
+[v0] Migration 037: seeded bingx-x01 is_enabled_dashboard=1
+[v0] [Migrations] ✓ Completed: 037-bingx-x01-enabled-dashboard (schema now v37)
+[v0] [Migrations] Running: 038-maticusdt-to-polusdt (v38)
+[v0] Migration 038: bingx-x01 force_symbols updated (MATICUSDT→POLUSDT: true): BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,ATOMUSDT,LTCUSDT,UNIUSDT,NEARUSDT,POLUSDT,AAVEUSDT,SUIUSDT,APTUSDT,ARBUSDT,OPUSDT
+[v0] [Migrations] ✓ Completed: 038-maticusdt-to-polusdt (schema now v38)
+[v0] [Migrations] Running: 039-polusdt-settings-hashes (v39)
+[v0] Migration 039: force_symbols written to settings: hashes — BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,ATOMUSDT,LTCUSDT,UNIUSDT,NEARUSDT,POLUSDT,AAVEUSDT,SUIUSDT,APTUSDT,ARBUSDT,OPUSDT
+[v0] [Migrations] ✓ Completed: 039-polusdt-settings-hashes (schema now v39)
+[v0] [Migrations] Running: 040-canonical-bingx-x01-state (v40)
+[v0] Migration 040: canonical bingx-x01 state applied — 20 symbols (POLUSDT), pf=1.0/1.2/1.2, live_volume_factor=2.2
+[v0] [Migrations] ✓ Completed: 040-canonical-bingx-x01-state (schema now v40)
+[v0] [Migrations] Running: 041-fix-volume-and-prehistoric-gate (v41)
+[v0] Migration 041: set live_volume_factor=2.2 on connection:bingx-x01
+[v0] Migration 041: cleared prehistoric_loaded gate + progress tracker for bingx-x01
+[v0] [Migrations] ✓ Completed: 041-fix-volume-and-prehistoric-gate (schema now v41)
+[v0] [Migrations] Running: 042-minimal-volume-factor-defaults (v42)
+[v0] Migration 042: normalized 125 legacy/default volume-factor fields across 25 connection/settings records to 0.1
+[v0] [Migrations] ✓ Completed: 042-minimal-volume-factor-defaults (schema now v42)
+[v0] [Migrations] Running: 043-reserved-schema-continuity (v43)
+[v0] Migration 043: no-op schema continuity marker
+[v0] [Migrations] ✓ Completed: 043-reserved-schema-continuity (schema now v43)
+[v0] [Migrations] Running: 044-reserved-schema-continuity (v44)
+[v0] Migration 044: no-op schema continuity marker
+[v0] [Migrations] ✓ Completed: 044-reserved-schema-continuity (schema now v44)
+[v0] [Migrations] Running: 045-rebuild-connection-list-cache (v45)
+[v0] Migration 045: rebuilt all_connections from 11 connection hashes
+[v0] [Migrations] ✓ Completed: 045-rebuild-connection-list-cache (schema now v45)
+[v0] [Migrations] Running: 046-volume-step-ratio-defaults (v46)
+[v0] Migration 046: seeded volume_step_ratio=0.6 defaults
+[v0] [Migrations] ✓ Completed: 046-volume-step-ratio-defaults (schema now v46)
+[v0] [Migrations] Running: 047-clear-stale-engine-restart-flags (v47)
+[v0] Migration 047: cleared stale restart flags from 0 trade-engine state hashes
+[v0] [Migrations] ✓ Completed: 047-clear-stale-engine-restart-flags (schema now v47)
+[v0] [Migrations] Running: 048-clear-stale-engine-reload-flags (v48)
+[v0] Migration 048: cleared orphaned reload flags from 0 trade-engine state hashes
+[v0] [Migrations] ✓ Completed: 048-clear-stale-engine-reload-flags (schema now v48)
+[v0] [Migrations] Running: 049-strip-template-connection-overhead (v49)
+[v0] Migration 049: stripped 10 overhead keys from 10 template connections
+[v0] [Migrations] ✓ Completed: 049-strip-template-connection-overhead (schema now v49)
+[v0] [Migrations] Running: 050-3-symbol-mode (v50)
+[v0] Migration 050: dev 3-symbol mode applied (BTCUSDT,ETHUSDT,SOLUSDT)
+[v0] [Migrations] ✓ Completed: 050-3-symbol-mode (schema now v50)
+[v0] [Migrations] Running: 051-bingx-x01-operational-state (v51)
+[v0] Migration 051: bingx-x01 operational state fixed (vol=2.2, is_live_trade=1, is_assigned=1)
+[v0] [Migrations] ✓ Completed: 051-bingx-x01-operational-state (schema now v51)
+[v0] [Migrations] Running: 052-bingx-x01-enable-live-trade (v52)
+[v0] Migration 052: bingx-x01 is_live_trade=1 live_trade_enabled=1
+[v0] [Migrations] ✓ Completed: 052-bingx-x01-enable-live-trade (schema now v52)
+[v0] [Migrations] Running: 053-1-symbol-btcusdt-pin (v53)
+[v0] Migration 053: dev 1-symbol OOM-survival mode applied (BTCUSDT)
+[v0] [Migrations] ✓ Completed: 053-1-symbol-btcusdt-pin (schema now v53)
+[v0] [Migrations] Running: 054-dual-connection-always-inited (v54)
+[v0] Migration 054: dual-connection bootstrap — bybit-x03 wiped for fresh seed, bingx-x01 flags ensured
+[v0] [Migrations] ✓ Completed: 054-dual-connection-always-inited (schema now v54)
+[v0] [Migrations] Running: 055-default-volume-0.1-and-6-symbols-by-volatility (v55)
+[v0] Migration 055: defaults updated — volume_factor=0.1, symbol_count=12 symbol_order=volatility_1h; cleared force/active symbol overrides
+[v0] [Migrations] ✓ Completed: 055-default-volume-0.1-and-6-symbols-by-volatility (schema now v55)
+[v0] [Migrations] Running: 056-normalize-variant-toggles (v56)
+[v0] Migration 056: normalized variant toggles (dca OFF by default) — app_settings seeded [none]; bingx-x01 seeded [none]; bybit-x03 seeded [none]
+[v0] [Migrations] ✓ Completed: 056-normalize-variant-toggles (schema now v56)
+[v0] [Migrations] Running: 057-symbol-count-repin (v57)
+[v0] Migration 057: dev multi-symbol repin — symbol_count=12 volatility_1h
+[v0] [Migrations] ✓ Completed: 057-symbol-count-repin (schema now v57)
+[v0] [Migrations] Running: 058-indication-tracking-fields (v58)
+[v0] Migration 058: seeded indication_sets_total/at_limit on 0/11 progression hashes
+[v0] [Migrations] ✓ Completed: 058-indication-tracking-fields (schema now v58)
+[v0] [Migrations] Running: 059-multi-symbol-support (v59)
+[v0] Migration 059: dev 12-symbol volatility_1h
+[v0] [Migrations] ✓ Completed: 059-multi-symbol-support (schema now v59)
+[v0] [Migrations] Running: 060-purge-ghost-connection-hashes (v60)
+[v0] Migration 060: deleted ghost key connection:bybit-x03
+[v0] Migration 060: purged 1 ghost connection hashes
+[v0] [Migrations] ✓ Completed: 060-purge-ghost-connection-hashes (schema now v60)
+[v0] [Migrations] Running: 061-purge-multi-symbol-stale-state (v61)
+[v0] Migration 061: purged 1 stale multi-symbol keys (kept BTCUSDT)
+[v0] [Migrations] ✓ Completed: 061-purge-multi-symbol-stale-state (schema now v61)
+[v0] [Migrations] Running: 062-separate-main-assignment-from-processing (v62)
+[v0] Migration 062: separated assignment from processing; backfilled 0 legacy active-only row(s), indexed 1 processing-enabled row(s)
+[v0] [Migrations] ✓ Completed: 062-separate-main-assignment-from-processing (schema now v62)
+[v0] [Migrations] Running: 063-reset-legacy-indication-snapshots (v63)
+[v0] Migration 063: reset 0 legacy/stale indication snapshot key(s)
+[v0] [Migrations] ✓ Completed: 063-reset-legacy-indication-snapshots (schema now v63)
+[v0] [Migrations] Running: 064-split-raw-and-set-indication-snapshots (v64)
+[v0] Migration 064: cleared 0 conflicting raw/set indication snapshot key(s)
+[v0] [Migrations] ✓ Completed: 064-split-raw-and-set-indication-snapshots (schema now v64)
+[v0] [Migrations] Running: 065-dev-prod-database-health-metadata (v65)
+[v0] Migration 065: recorded development database health metadata at schema v93
+[v0] [Migrations] ✓ Completed: 065-dev-prod-database-health-metadata (schema now v65)
+[v0] [Migrations] Running: 066-bingx-sdk-fast-order-default (v66)
+[v0] Migration 066: bingx-x01 uses the bingx-api library fast path by default
+[v0] [Migrations] ✓ Completed: 066-bingx-sdk-fast-order-default (schema now v66)
+[v0] [Migrations] Running: 067-strategy-flow-concurrency-performance-defaults (v67)
+[v0] Migration 067: seeded DB-backed strategy-flow concurrency defaults for dev/prod
+[v0] [Migrations] ✓ Completed: 067-strategy-flow-concurrency-performance-defaults (schema now v67)
+[v0] [Migrations] Running: 068-4-symbol-live-trade-defaults (v68)
+[v0] Migration 068: missing 4-symbol/live-trade defaults filled without overwriting operator settings
+[v0] [Migrations] ✓ Completed: 068-4-symbol-live-trade-defaults (schema now v68)
+[v0] [Migrations] Running: 069-sync-exchange-position-cost-keys (v69)
+[v0] [Migrations] ✓ Completed: 069-sync-exchange-position-cost-keys (schema now v69)
+[v0] [Migrations] Running: 070-stable-site-instance-and-portable-minute-continuity (v70)
+[v0] [Migrations] ✓ Completed: 070-stable-site-instance-and-portable-minute-continuity (schema now v70)
+[v0] [Migrations] Running: 071-unified-database-maintenance-and-secondary-indexes (v71)
+[v0] [Migrations] ✓ Completed: 071-unified-database-maintenance-and-secondary-indexes (schema now v71)
+[v0] [Migrations] Running: 072-subsecond-live-coordination-profile (v72)
+[v0] Migration 072: applied sub-second Live/Strategy coordination defaults without replacing custom timing values
+[v0] [Migrations] ✓ Completed: 072-subsecond-live-coordination-profile (schema now v72)
+[v0] [Migrations] Running: 073-balanced-multisymbol-strategy-budgets (v73)
+[v0] Migration 073: applied balanced 12-symbol Strategy budgets without replacing custom values
+[v0] [Migrations] ✓ Completed: 073-balanced-multisymbol-strategy-budgets (schema now v73)
+[v0] [Migrations] Running: 074-trend-indication-adaptive-base-ranges (v74)
+[v0] Migration 074: seeded Trend indication and adaptive Base TP defaults without replacing operator values
+[v0] [Migrations] ✓ Completed: 074-trend-indication-adaptive-base-ranges (schema now v74)
+[v0] [Migrations] Running: 075-bound-high-frequency-statistics-storage (v75)
+[v0] Migration 075: removed 0 legacy high-frequency statistic rows
+[v0] [Migrations] ✓ Completed: 075-bound-high-frequency-statistics-storage (schema now v75)
+[v0] [Migrations] Running: 076-dynamic-symbol-selection-default-one (v76)
+[v0] Migration 076: defaulted dynamic selection to one symbol; normalized=1
+[v0] [Migrations] ✓ Completed: 076-dynamic-symbol-selection-default-one (schema now v76)
+[v0] [Migrations] Running: 077-indexed-current-indication-snapshots (v77)
+[v0] Migration 077: indexed 0 current indication symbol snapshots
+[v0] [Migrations] ✓ Completed: 077-indexed-current-indication-snapshots (schema now v77)
+[v0] [Migrations] Running: 078-coherent-strategy-set-snapshots (v78)
+[v0] Migration 078: removed stale fields=0, unsafe Real/Live snapshots=0
+[v0] [Migrations] ✓ Completed: 078-coherent-strategy-set-snapshots (schema now v78)
+[v0] [Migrations] Running: 079-repair-hourly-statistics-rollups (v79)
+[v0] Migration 079: removed 0 post-075 high-frequency statistic rows
+[v0] [Migrations] ✓ Completed: 079-repair-hourly-statistics-rollups (schema now v79)
+[v0] [Migrations] Running: 080-index-exact-strategy-set-ledgers-and-minute-snapshots (v80)
+[v0] Migration 080: indexed exact=0, active=0, closed=0
+[v0] [Migrations] ✓ Completed: 080-index-exact-strategy-set-ledgers-and-minute-snapshots (schema now v80)
+[v0] [Migrations] Running: 081-seed-independent-block-profit-factor-ratio (v81)
+[v0] Migration 081: seeded independent Block PF ratio in 42 settings hashes
+[v0] [Migrations] ✓ Completed: 081-seed-independent-block-profit-factor-ratio (schema now v81)
+[v0] [Migrations] Running: 082-normalize-live-minimum-ratio-and-position-cost (v82)
+[v0] Migration 082: positionCost=189, volumeRatio=376, posCounts=63
+[v0] [Migrations] ✓ Completed: 082-normalize-live-minimum-ratio-and-position-cost (schema now v82)
+[v0] [Migrations] Running: 083-enforce-identity-live-volume-ratios (v83)
+[v0] Migration 083: normalized=23, identity defaults seeded=9
+[v0] [Migrations] ✓ Completed: 083-enforce-identity-live-volume-ratios (schema now v83)
+[v0] [Migrations] Running: 084-freeze-base-volume-coordination-at-identity (v84)
+[v0] Migration 084: base normalized=0, seeded=63, nested=0
+[v0] [Migrations] ✓ Completed: 084-freeze-base-volume-coordination-at-identity (schema now v84)
+[v0] [Migrations] Running: 085-main-trade-position-cost-ratio-four-stage (v85)
+[v0] [Migrations] ✓ Completed: 085-main-trade-position-cost-ratio-four-stage (schema now v85)
+[v0] [Migrations] Running: 086-exhaustive-indication-base-and-block-only-defaults (v86)
+[v0] [Migrations] ✓ Completed: 086-exhaustive-indication-base-and-block-only-defaults (schema now v86)
+[v0] [Migrations] Running: 087-signal-bootstrap-direction-lanes-and-strategy-rows (v87)
+[v0] [Migrations] ✓ Completed: 087-signal-bootstrap-direction-lanes-and-strategy-rows (schema now v87)
+[v0] [Migrations] Running: 088-repair-exhaustive-indications-signal-capacity-and-stage-caps (v88)
+[v0] [Migrations] ✓ Completed: 088-repair-exhaustive-indications-signal-capacity-and-stage-caps (schema now v88)
+[v0] [Migrations] Running: 089-signal-full-source-cycle-and-base-pf-floor (v89)
+[v0] [Migrations] ✓ Completed: 089-signal-full-source-cycle-and-base-pf-floor (schema now v89)
+[v0] [Migrations] Running: 090-base-valid-and-signal-admission-contract (v90)
+[v0] [Migrations] ✓ Completed: 090-base-valid-and-signal-admission-contract (schema now v90)
+[v0] [Migrations] Running: 091-unlimited-stage-rows-cadence-and-block-work-scheduler (v91)
+[v0] [Migrations] ✓ Completed: 091-unlimited-stage-rows-cadence-and-block-work-scheduler (schema now v91)
+[v0] [Migrations] Running: 092-exact-indication-cadence-and-unlimited-preset-types (v92)
+[v0] [Migrations] ✓ Completed: 092-exact-indication-cadence-and-unlimited-preset-types (schema now v92)
+[v0] [Migrations] Running: 093-pf-floor-and-continuous-row-live-defaults (v93)
+[v0] [Migrations] ✓ Completed: 093-pf-floor-and-continuous-row-live-defaults (schema now v93)
+[v0] [Migrations] ✓ Successfully migrated v0 -> v93
+[v0] [Migrations] 93 migrations executed
+[v0] [Migrations] ✓ Verification: Schema version is now 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Migrations] ✓ Ensured 1 base connections; injected credentials for 0
+[v0] [Redis Memory] Volatile startup cleanup (initRedis): deleted 4 keys, preserved 241
+[v0] [Startup] ✓ Redis initialized
+[v0] [Startup] ✓ Volatile runtime cleanup complete (deleted 0, preserved 0)
+
+[v0] [Startup] Migration status — current=v93 target=v93 UP TO DATE (Already at latest version 93)
+[v0] [Memory] Manager initialized (max: 1024MB, warning: 85%)
+[v0] [Startup] Step 2/8: Seeding default settings and market data...
+[v0] [PreStartup] Seeded 20 trading symbols for bingx-x01
+[v0] [PreStartup] seedMarketData: seeded placeholder prices for 5 symbols
+[v0] [Startup] ✓ Settings + market data seed complete
+
+[v0] [Startup] Step 3/8: Validating database integrity...
+[v0] [DB Validate] Database validation complete: {
+  valid: true,
+  errors: [],
+  repairs: [],
+  stats: {
+    connections: 11,
+    trades: 0,
+    positions: 0,
+    marketData: 5,
+    settings: 58
+  }
+}
+[v0] [Startup] ✓ Database validation passed
+
+[v0] [Startup] Step 4/8: Loading base connections...
+[v0] [Startup] ✓ Loaded 11 base connections
+
+[v0] [Startup] Step 5/8: Verifying consolidated database structures (15s deadline)...
+[v0] [DB] Starting database consolidation...
+[v0] [DB] ✓ Database consolidation complete
+[v0] [Startup] ✓ Database maintenance completed
+
+[v0] [Startup] ✓ Production coverage repair scheduled in background
+[v0] [Startup] Step 6/8: Initializing engine coordinator...
+[v0] GlobalTradeEngineCoordinator initialized with advanced coordination
+[v0] Starting event-triggered trade engine health monitoring (refresh + stall watchdog)
+[v0] Global trade engine coordinator auto-initialized
+[v0] [Startup] ✓ Engine coordinator initialized
+
+[v0] [Startup] Initializing global trade engine boot metadata...
+[v0] [Startup] ✓ Global trade engine boot metadata initialized
+
+[v0] [Startup] Step 7/8: Scheduling orphaned engine state cleanup...
+[v0] [Startup] Cleaning up orphaned progress...
+[v0] [Startup] ✓ Cleanup scheduled
+
+[v0] [Startup] Step 8/8: Scheduling stranded position reconciliation...
+[v0] [Startup] ✓ Reconciliation scheduled
+
+[v0] [Startup] ========================================
+[v0] [Startup] ✓ Pre-startup sequence complete
+[v0] [Startup] ========================================
+[v0] [Startup] Ready for user interaction
+[v0] [Startup] Engines resume when operator intent is running or unattended default allows continuity
+[v0] [Startup] User must enable/start connections in Dashboard
+[v0] [Startup] ========================================
+
+[v0] [Startup] ✓ Boot complete — migrations: UP TO DATE (v93/93); production coverage repair + orphan cleanup + stranded-position reconciliation scheduled
+[v0] [Startup] ✓ Cleaned up 0 orphaned progress flags
+[v0] [Migrations] Running full coverage repair (containers, indexes, global zeros)
+[v0] [Instrumentation] trade-engine auto-start disabled by DISABLE_TRADE_ENGINE_AUTOSTART=1
+[v0] [Instrumentation] background trade-engine auto-start skipped; explicit UI actions and continuity sweeps can start/reconcile engines
+[v0] [Continuity] Server runner active (minute coordination + 15s live recovery)
+[v0] [Instrumentation] ✓ Server boot complete
+[v0] [2026-08-08T02:02:32.778Z] WARNING: Invalid API type - Exchange 'simulated' is not recognized. Supported exchanges: bybit, bingx, binance, okx, gateio, kucoin, mexc, bitget, pionex, orangex, huobi, kraken, coinbase
+[v0] [2026-08-08T02:02:32.778Z] WARNING: Invalid contract type - Exchange 'simulated' contract types not defined
+[v0] [LivePositionStage] [sync-skip] conn=bingx-x01 live_trade=false; skipped private exchange sync, tracked=0, simProcessed=0, simClosed=0, statuses={}
+[v0] [LivePositionStage] [reconcile] entry permission is off; continuing lifecycle sync for system-owned positions only
+[v0] [Migrations] [PROD-COVERAGE] Complete coverage repair finished for 11 connections (prehistoric containers + logistics + per-progress uniqueness; no fake completion/live positions)
+ ✓ Ready in 12.1s
+ ○ Compiling /api/health/liveness ...
+ ✓ Compiled /api/health/liveness in 10.8s (634 modules)
+ GET /api/health/liveness 200 in 239ms
+ ✓ Compiled /api/connections in 485ms (636 modules)
+ GET /api/connections 200 in 686ms
+ ✓ Compiled /api/health in 211ms (638 modules)
+ GET /api/health 200 in 345ms
+ ✓ Compiled /api/system/init-status in 288ms (641 modules)
+ GET /api/system/init-status 200 in 494ms
+ ○ Compiling /api/system/status ...
+ ✓ Compiled /api/system/status in 1904ms (643 modules)
+[v0] [LivePositionStage] [reconcile] entry permission is off; continuing lifecycle sync for system-owned positions only
+[v0] ConnectionCoordinator initialized with 11 connections from Redis
+ GET /api/system/status 200 in 7466ms
+[?25h
+

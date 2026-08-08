@@ -1,0 +1,1779 @@
+[prod-soak] round=1 rss=4160628KiB heap=1995399KiB keys=13654 cycles=22 score=12 signal=0 sources=0/0 signalPos=0 trailingPos=0
+[prod-soak] round=10 rss=5143372KiB heap=3034596KiB keys=21970 cycles=98 score=12 signal=0 sources=0/0 signalPos=0 trailingPos=0
+[prod-soak:cycles] {"monitoring":{"indications":{"running":true,"cycleCount":0,"resultsCount":19503},"strategies":{"running":true,"cycleCount":0,"resultsCount":131},"realtime":{"running":true,"cycleCount":98,"resultsCount":17}},"services":{"tradeEngine":true,"indicationsEngine":true,"strategiesEngine":true,"websocket":true},"stats":{"indication":0,"indicationLive":0,"strategy":0,"strategyLive":0,"realtime":0,"realtimeLive":0},"activeProgression":{"key":"progression:bingx-x01:main","engineType":"main","epoch":"1786155073777"},"progression":{"indication_cycle_count":"0","indication_live_cycle_count":"0","strategy_cycle_count":"0","strategy_live_cycle_count":"0","realtime_cycle_count":"0","realtime_live_cycle_count":"0","live_positions_cycle_count":"99"},"realtime":{}}
+[prod-soak] round=20 rss=6282892KiB heap=3821253KiB keys=31168 cycles=184 score=12 signal=0 sources=0/0 signalPos=0 trailingPos=0
+[prod-soak:cycles] {"monitoring":{"indications":{"running":true,"cycleCount":0,"resultsCount":19503},"strategies":{"running":true,"cycleCount":0,"resultsCount":131},"realtime":{"running":true,"cycleCount":184,"resultsCount":17}},"services":{"tradeEngine":true,"indicationsEngine":true,"strategiesEngine":true,"websocket":true},"stats":{"indication":0,"indicationLive":0,"strategy":0,"strategyLive":0,"realtime":0,"realtimeLive":0},"activeProgression":{"key":"progression:bingx-x01:main","engineType":"main","epoch":"1786155073777"},"progression":{"indication_cycle_count":"0","indication_live_cycle_count":"0","strategy_cycle_count":"0","strategy_live_cycle_count":"0","realtime_cycle_count":"0","realtime_live_cycle_count":"0","live_positions_cycle_count":"186"},"realtime":{}}
+[prod-soak] round=30 rss=7527044KiB heap=4811667KiB keys=39640 cycles=269 score=12 signal=0 sources=0/0 signalPos=0 trailingPos=0
+[prod-soak:cycles] {"monitoring":{"indications":{"running":true,"cycleCount":0,"resultsCount":19573},"strategies":{"running":true,"cycleCount":0,"resultsCount":99},"realtime":{"running":true,"cycleCount":269,"resultsCount":17}},"services":{"tradeEngine":true,"indicationsEngine":true,"strategiesEngine":true,"websocket":true},"stats":{"indication":0,"indicationLive":0,"strategy":0,"strategyLive":0,"realtime":0,"realtimeLive":0},"activeProgression":{"key":"progression:bingx-x01:main","engineType":"main","epoch":"1786155073777"},"progression":{"indication_cycle_count":"0","indication_live_cycle_count":"0","strategy_cycle_count":"0","strategy_live_cycle_count":"0","realtime_cycle_count":"0","realtime_live_cycle_count":"0","live_positions_cycle_count":"271"},"realtime":{}}
+[verify-prod-soak] failed: Error: Endpoint failures in soak round 31: /api/health: GET /api/health failed after 8309ms: TypeError: fetch failed | /api/system/init-status: GET /api/system/init-status failed after 8308ms: TypeError: fetch failed | /api/system/status: GET /api/system/status failed after 8309ms: TypeError: fetch failed | /api/system/monitoring: GET /api/system/monitoring failed after 8308ms: TypeError: fetch failed | /api/trade-engine/status-all: GET /api/trade-engine/status-all failed after 8308ms: TypeError: fetch failed | /api/indications/config-counts: GET /api/indications/config-counts failed after 8308ms: TypeError: fetch failed | /api/connections/progression/bingx-x01/stats: GET /api/connections/progression/bingx-x01/stats failed after 8308ms: TypeError: fetch failed | /api/trading/trade-history?connection_id=bingx-x01&limit=500: GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 failed after 8308ms: TypeError: fetch failed | /api/logistics/queue?connectionId=bingx-x01: GET /api/logistics/queue?connectionId=bingx-x01 failed after 8308ms: TypeError: fetch failed | /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500: GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 failed after 8308ms: TypeError: fetch failed | /api/preset-optimizer?connectionId=bingx-x01: GET /api/preset-optimizer?connectionId=bingx-x01 failed after 8307ms: TypeError: fetch failed | /api/connections/bingx-x01/engine-states: GET /api/connections/bingx-x01/engine-states failed after 8299ms: TypeError: fetch failed
+    at main (file:///workspace/6995fed7-bbea-4273-9cb0-04a70d5daeb4/sessions/agent_af460052-46bf-49b9-9d1c-04ac2d1dba00/scripts/verify-prod-soak.mjs:810:13)
+[run-dev-preview-check] .next manifests remained valid at failure
+[run-dev-preview-check] failed: Development soak verifier exited code=1 signal=none
+[run-dev-preview-check] server tail:
+inserted=0, enabled=0 (template)
+[v0] Migration 012: COMPLETE - 4 base templates, 7 other templates (all disabled)
+[v0] [Migrations] ✓ Completed: 012-finalize-dashboard-connections (schema now v12)
+[v0] [Migrations] Running: 013-risk-management-and-engines (v13)
+[v0] Migration 013: Risk management settings and engine controls added
+[v0] [Migrations] ✓ Completed: 013-risk-management-and-engines (schema now v13)
+[v0] [Migrations] Running: 014-update-bingx-credentials (v14)
+[v0] Migration 014: Cleared test credentials, real credentials preserved
+[v0] [Migrations] ✓ Completed: 014-update-bingx-credentials (schema now v14)
+[v0] [Migrations] Running: 015-fix-connection-inserted-enabled-states (v15)
+[v0] Migration 015: bybit-x03 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: bingx-x01 -> inserted=1, enabled=1, active_inserted=1, dashboard_enabled=0 (base connection)
+[v0] Migration 015: binance-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: okx-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: gateio-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: kucoin-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: mexc-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: bitget-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: pionex-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: orangex-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: huobi-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: Fixed 1 base connections, 10 template connections
+[v0] [Migrations] ✓ Completed: 015-fix-connection-inserted-enabled-states (schema now v15)
+[v0] [Migrations] Running: 016-active-connections-independent-state (v16)
+[v0] Migration 016: Ensuring predefined templates state for 11 connections
+[v0] Migration 016: ✓ bingx-x01 -> inserted=1, enabled=1, dashboard_enabled=0 (base connection)
+[v0] Migration 016: COMPLETE - 1 templates verified, 0 user connections updated
+[v0] [Migrations] ✓ Completed: 016-active-connections-independent-state (schema now v16)
+[v0] [Migrations] Running: 017-cleanup-base-connections-to-bybit-bingx-only (v17)
+[v0] Migration 017: ✓ bybit-x03 -> corrected to template-only state
+[v0] Migration 017: ✓ bingx-x01 -> corrected to base connection state
+[v0] Migration 017: ✓ binance-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ okx-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ gateio-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ kucoin-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ mexc-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ bitget-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ pionex-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ orangex-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ huobi-x01 -> corrected to template-only state
+[v0] Migration 017: COMPLETE - 1 base connections, 10 templates cleaned up
+[v0] [Migrations] ✓ Completed: 017-cleanup-base-connections-to-bybit-bingx-only (schema now v17)
+[v0] [Migrations] Running: 018-remove-auto-assignment-from-main-connections (v18)
+[v0] Migration 018: COMPLETE - fixed 0 connections that were auto-assigned
+[v0] [Migrations] ✓ Completed: 018-remove-auto-assignment-from-main-connections (schema now v18)
+[v0] [Migrations] Running: 019-tombstone-skipped-version (v19)
+[v0] Migration 019: tombstone — version 19 was intentionally skipped
+[v0] [Migrations] ✓ Completed: 019-tombstone-skipped-version (schema now v19)
+[v0] [Migrations] Running: 020-phase3-database-consolidation (v20)
+[v0] Migration 020: PHASE 3 - Database consolidation starting...
+[v0] Migration 020: ✓ Consolidated 11 progression structures
+[v0] Migration 020: ✓ Created 11 connection indexes
+[v0] Migration 020: COMPLETE - Database consolidation done
+[v0] [Migrations] ✓ Completed: 020-phase3-database-consolidation (schema now v20)
+[v0] [Migrations] Running: 021-restore-dashboard-enabled-for-auto-active-base-connections (v21)
+[v0] Migration 021: no-op (auto-enable removed; operator must enable connections manually)
+[v0] [Migrations] ✓ Completed: 021-restore-dashboard-enabled-for-auto-active-base-connections (schema now v21)
+[v0] [Migrations] Running: 022-comprehensive-data-structure-consistency (v22)
+[v0] Migration 022: Starting comprehensive data structure validation...
+[v0] Migration 022: Found 0 position history keys
+[v0] Migration 022: Found 0 axis position accumulation keys
+[v0] Migration 022: Found 0 hedge net target keys
+[v0] Migration 022: COMPLETE
+  - Fixed: 0 keys/structures
+  - Validated: 0 keys
+[v0] Migration 022: Data structure consistency check finished
+[v0] [Migrations] ✓ Completed: 022-comprehensive-data-structure-consistency (schema now v22)
+[v0] [Migrations] Running: 023-eval-knob-hash-defaults (v23)
+[v0] Migration 023: Seeded eval-knob defaults for 11 connections (44 fields written)
+[v0] [Migrations] ✓ Completed: 023-eval-knob-hash-defaults (schema now v23)
+[v0] [Migrations] Running: 024-ddt-window-unify-and-stage-thresholds (v24)
+[v0] Migration 024: unified PF/DDT window — stripped ddtCapPositions from 0 connections, seeded 3 app-level DDT-threshold defaults
+[v0] [Migrations] ✓ Completed: 024-ddt-window-unify-and-stage-thresholds (schema now v24)
+[v0] [Migrations] Running: 025-initialize-progression-state-hashes (v25)
+[v0] Migration 025: initialized progression state for 11 connections (defaults for missing fields, preserved existing counters)
+[v0] [Migrations] ✓ Completed: 025-initialize-progression-state-hashes (schema now v25)
+[v0] [Migrations] Running: 026-per-connection-pf-ddt-leverage-defaults (v26)
+[v0] Migration 026: seeded per-connection PF/DDT/leverage defaults for 11 connections (132 fields written)
+[v0] [Migrations] ✓ Completed: 026-per-connection-pf-ddt-leverage-defaults (schema now v26)
+[v0] [Migrations] Running: 027-engine-timings-defaults-in-settings-system (v27)
+[v0] Migration 027: seeded 13 engine-timing defaults into settings:system
+[v0] [Migrations] ✓ Completed: 027-engine-timings-defaults-in-settings-system (schema now v27)
+[v0] [Migrations] Running: 028-pin-live-sync-interval-and-min-step (v28)
+[v0] Migration 028: pinned live_sync_interval_ms=200 in settings:system; seeded minStep=5 into 11/11 connection_settings hashes
+[v0] [Migrations] ✓ Completed: 028-pin-live-sync-interval-and-min-step (schema now v28)
+[v0] [Migrations] Running: 029-leverage-policy-defaults-in-app-settings (v29)
+[v0] Migration 029: seeded useMaximalLeverage/leveragePercentage into app_settings and 0/11 connection_settings hashes
+[v0] [Migrations] ✓ Completed: 029-leverage-policy-defaults-in-app-settings (schema now v29)
+[v0] [Migrations] Running: 030-coordination-variant-axis-block-defaults (v30)
+[v0] Migration 030: seeded coordination defaults into app_settings and 11/11 connection_settings hashes
+[v0] [Migrations] ✓ Completed: 030-coordination-variant-axis-block-defaults (schema now v30)
+[v0] [Migrations] Running: 031-bingx-x01-live-trade-test-defaults (v31)
+[v0] Migration 031: bingx-x01 live-trade test defaults seeded (is_live_trade=kept, symbols=BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT, exchangePositionCost=0.02)
+[v0] [Migrations] ✓ Completed: 031-bingx-x01-live-trade-test-defaults (schema now v31)
+[v0] [Migrations] Running: 032-tombstone-skipped-version (v32)
+[v0] Migration 032: tombstone — version 32 was intentionally skipped (033 superseded in-progress draft)
+[v0] [Migrations] ✓ Completed: 032-tombstone-skipped-version (schema now v32)
+[v0] [Migrations] Running: 033-bingx-x01-force-15-symbols (v33)
+[v0] Migration 033: bingx-x01 force_symbols set to 15 symbols: BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,ATOMUSDT,LTCUSDT,UNIUSDT,NEARUSDT,MATICUSDT
+[v0] [Migrations] ✓ Completed: 033-bingx-x01-force-15-symbols (schema now v33)
+[v0] [Migrations] Running: 034-operator-spec-defaults (v34)
+[v0] Migration 034: operator-spec defaults applied (pf=1.0/1.2/1.2, live_volume_factor=2.2, variantBlock/Trailing=true, correct hashes)
+[v0] [Migrations] ✓ Completed: 034-operator-spec-defaults (schema now v34)
+[v0] [Migrations] Running: 035-bingx-x01-force-20-symbols (v35)
+[v0] Migration 035: bingx-x01 force_symbols set to 20 symbols: BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,ATOMUSDT,LTCUSDT,UNIUSDT,NEARUSDT,MATICUSDT,AAVEUSDT,SUIUSDT,APTUSDT,ARBUSDT,OPUSDT
+[v0] [Migrations] ✓ Completed: 035-bingx-x01-force-20-symbols (schema now v35)
+[v0] [Migrations] Running: 036-bingx-x01-active-inserted (v36)
+[v0] Migration 036: patched bingx-x01 is_active_inserted=1
+[v0] [Migrations] ✓ Completed: 036-bingx-x01-active-inserted (schema now v36)
+[v0] [Migrations] Running: 037-bingx-x01-enabled-dashboard (v37)
+[v0] Migration 037: seeded bingx-x01 is_enabled_dashboard=1
+[v0] [Migrations] ✓ Completed: 037-bingx-x01-enabled-dashboard (schema now v37)
+[v0] [Migrations] Running: 038-maticusdt-to-polusdt (v38)
+[v0] Migration 038: bingx-x01 force_symbols updated (MATICUSDT→POLUSDT: true): BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,ATOMUSDT,LTCUSDT,UNIUSDT,NEARUSDT,POLUSDT,AAVEUSDT,SUIUSDT,APTUSDT,ARBUSDT,OPUSDT
+[v0] [Migrations] ✓ Completed: 038-maticusdt-to-polusdt (schema now v38)
+[v0] [Migrations] Running: 039-polusdt-settings-hashes (v39)
+[v0] Migration 039: force_symbols written to settings: hashes — BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,ATOMUSDT,LTCUSDT,UNIUSDT,NEARUSDT,POLUSDT,AAVEUSDT,SUIUSDT,APTUSDT,ARBUSDT,OPUSDT
+[v0] [Migrations] ✓ Completed: 039-polusdt-settings-hashes (schema now v39)
+[v0] [Migrations] Running: 040-canonical-bingx-x01-state (v40)
+[v0] Migration 040: canonical bingx-x01 state applied — 20 symbols (POLUSDT), pf=1.0/1.2/1.2, live_volume_factor=2.2
+[v0] [Migrations] ✓ Completed: 040-canonical-bingx-x01-state (schema now v40)
+[v0] [Migrations] Running: 041-fix-volume-and-prehistoric-gate (v41)
+[v0] Migration 041: set live_volume_factor=2.2 on connection:bingx-x01
+[v0] Migration 041: cleared prehistoric_loaded gate + progress tracker for bingx-x01
+[v0] [Migrations] ✓ Completed: 041-fix-volume-and-prehistoric-gate (schema now v41)
+[v0] [Migrations] Running: 042-minimal-volume-factor-defaults (v42)
+[v0] Migration 042: normalized 125 legacy/default volume-factor fields across 25 connection/settings records to 0.1
+[v0] [Migrations] ✓ Completed: 042-minimal-volume-factor-defaults (schema now v42)
+[v0] [Migrations] Running: 043-reserved-schema-continuity (v43)
+[v0] Migration 043: no-op schema continuity marker
+[v0] [Migrations] ✓ Completed: 043-reserved-schema-continuity (schema now v43)
+[v0] [Migrations] Running: 044-reserved-schema-continuity (v44)
+[v0] Migration 044: no-op schema continuity marker
+[v0] [Migrations] ✓ Completed: 044-reserved-schema-continuity (schema now v44)
+[v0] [Migrations] Running: 045-rebuild-connection-list-cache (v45)
+[v0] Migration 045: rebuilt all_connections from 11 connection hashes
+[v0] [Migrations] ✓ Completed: 045-rebuild-connection-list-cache (schema now v45)
+[v0] [Migrations] Running: 046-volume-step-ratio-defaults (v46)
+[v0] Migration 046: seeded volume_step_ratio=0.6 defaults
+[v0] [Migrations] ✓ Completed: 046-volume-step-ratio-defaults (schema now v46)
+[v0] [Migrations] Running: 047-clear-stale-engine-restart-flags (v47)
+[v0] Migration 047: cleared stale restart flags from 0 trade-engine state hashes
+[v0] [Migrations] ✓ Completed: 047-clear-stale-engine-restart-flags (schema now v47)
+[v0] [Migrations] Running: 048-clear-stale-engine-reload-flags (v48)
+[v0] Migration 048: cleared orphaned reload flags from 0 trade-engine state hashes
+[v0] [Migrations] ✓ Completed: 048-clear-stale-engine-reload-flags (schema now v48)
+[v0] [Migrations] Running: 049-strip-template-connection-overhead (v49)
+[v0] Migration 049: stripped 10 overhead keys from 10 template connections
+[v0] [Migrations] ✓ Completed: 049-strip-template-connection-overhead (schema now v49)
+[v0] [Migrations] Running: 050-3-symbol-mode (v50)
+[v0] Migration 050: dev 3-symbol mode applied (BTCUSDT,ETHUSDT,SOLUSDT)
+[v0] [Migrations] ✓ Completed: 050-3-symbol-mode (schema now v50)
+[v0] [Migrations] Running: 051-bingx-x01-operational-state (v51)
+[v0] Migration 051: bingx-x01 operational state fixed (vol=2.2, is_live_trade=1, is_assigned=1)
+[v0] [Migrations] ✓ Completed: 051-bingx-x01-operational-state (schema now v51)
+[v0] [Migrations] Running: 052-bingx-x01-enable-live-trade (v52)
+[v0] Migration 052: bingx-x01 is_live_trade=1 live_trade_enabled=1
+[v0] [Migrations] ✓ Completed: 052-bingx-x01-enable-live-trade (schema now v52)
+[v0] [Migrations] Running: 053-1-symbol-btcusdt-pin (v53)
+[v0] Migration 053: dev 1-symbol OOM-survival mode applied (BTCUSDT)
+[v0] [Migrations] ✓ Completed: 053-1-symbol-btcusdt-pin (schema now v53)
+[v0] [Migrations] Running: 054-dual-connection-always-inited (v54)
+[v0] Migration 054: dual-connection bootstrap — bybit-x03 wiped for fresh seed, bingx-x01 flags ensured
+[v0] [Migrations] ✓ Completed: 054-dual-connection-always-inited (schema now v54)
+[v0] [Migrations] Running: 055-default-volume-0.1-and-6-symbols-by-volatility (v55)
+[v0] Migration 055: defaults updated — volume_factor=0.1, symbol_count=12 symbol_order=volatility_1h; cleared force/active symbol overrides
+[v0] [Migrations] ✓ Completed: 055-default-volume-0.1-and-6-symbols-by-volatility (schema now v55)
+[v0] [Migrations] Running: 056-normalize-variant-toggles (v56)
+[v0] Migration 056: normalized variant toggles (dca OFF by default) — app_settings seeded [none]; bingx-x01 seeded [none]; bybit-x03 seeded [none]
+[v0] [Migrations] ✓ Completed: 056-normalize-variant-toggles (schema now v56)
+[v0] [Migrations] Running: 057-symbol-count-repin (v57)
+[v0] Migration 057: dev multi-symbol repin — symbol_count=12 volatility_1h
+[v0] [Migrations] ✓ Completed: 057-symbol-count-repin (schema now v57)
+[v0] [Migrations] Running: 058-indication-tracking-fields (v58)
+[v0] Migration 058: seeded indication_sets_total/at_limit on 0/11 progression hashes
+[v0] [Migrations] ✓ Completed: 058-indication-tracking-fields (schema now v58)
+[v0] [Migrations] Running: 059-multi-symbol-support (v59)
+[v0] Migration 059: dev 12-symbol volatility_1h
+[v0] [Migrations] ✓ Completed: 059-multi-symbol-support (schema now v59)
+[v0] [Migrations] Running: 060-purge-ghost-connection-hashes (v60)
+[v0] Migration 060: deleted ghost key connection:bybit-x03
+[v0] Migration 060: purged 1 ghost connection hashes
+[v0] [Migrations] ✓ Completed: 060-purge-ghost-connection-hashes (schema now v60)
+[v0] [Migrations] Running: 061-purge-multi-symbol-stale-state (v61)
+[v0] Migration 061: purged 1 stale multi-symbol keys (kept BTCUSDT)
+[v0] [Migrations] ✓ Completed: 061-purge-multi-symbol-stale-state (schema now v61)
+[v0] [Migrations] Running: 062-separate-main-assignment-from-processing (v62)
+[v0] Migration 062: separated assignment from processing; backfilled 0 legacy active-only row(s), indexed 1 processing-enabled row(s)
+[v0] [Migrations] ✓ Completed: 062-separate-main-assignment-from-processing (schema now v62)
+[v0] [Migrations] Running: 063-reset-legacy-indication-snapshots (v63)
+[v0] Migration 063: reset 0 legacy/stale indication snapshot key(s)
+[v0] [Migrations] ✓ Completed: 063-reset-legacy-indication-snapshots (schema now v63)
+[v0] [Migrations] Running: 064-split-raw-and-set-indication-snapshots (v64)
+[v0] Migration 064: cleared 0 conflicting raw/set indication snapshot key(s)
+[v0] [Migrations] ✓ Completed: 064-split-raw-and-set-indication-snapshots (schema now v64)
+[v0] [Migrations] Running: 065-dev-prod-database-health-metadata (v65)
+[v0] Migration 065: recorded development database health metadata at schema v93
+[v0] [Migrations] ✓ Completed: 065-dev-prod-database-health-metadata (schema now v65)
+[v0] [Migrations] Running: 066-bingx-sdk-fast-order-default (v66)
+[v0] Migration 066: bingx-x01 uses the bingx-api library fast path by default
+[v0] [Migrations] ✓ Completed: 066-bingx-sdk-fast-order-default (schema now v66)
+[v0] [Migrations] Running: 067-strategy-flow-concurrency-performance-defaults (v67)
+[v0] Migration 067: seeded DB-backed strategy-flow concurrency defaults for dev/prod
+[v0] [Migrations] ✓ Completed: 067-strategy-flow-concurrency-performance-defaults (schema now v67)
+[v0] [Migrations] Running: 068-4-symbol-live-trade-defaults (v68)
+[v0] Migration 068: missing 4-symbol/live-trade defaults filled without overwriting operator settings
+[v0] [Migrations] ✓ Completed: 068-4-symbol-live-trade-defaults (schema now v68)
+[v0] [Migrations] Running: 069-sync-exchange-position-cost-keys (v69)
+[v0] [Migrations] ✓ Completed: 069-sync-exchange-position-cost-keys (schema now v69)
+[v0] [Migrations] Running: 070-stable-site-instance-and-portable-minute-continuity (v70)
+[v0] [Migrations] ✓ Completed: 070-stable-site-instance-and-portable-minute-continuity (schema now v70)
+[v0] [Migrations] Running: 071-unified-database-maintenance-and-secondary-indexes (v71)
+[v0] [Migrations] ✓ Completed: 071-unified-database-maintenance-and-secondary-indexes (schema now v71)
+[v0] [Migrations] Running: 072-subsecond-live-coordination-profile (v72)
+[v0] Migration 072: applied sub-second Live/Strategy coordination defaults without replacing custom timing values
+[v0] [Migrations] ✓ Completed: 072-subsecond-live-coordination-profile (schema now v72)
+[v0] [Migrations] Running: 073-balanced-multisymbol-strategy-budgets (v73)
+[v0] Migration 073: applied balanced 12-symbol Strategy budgets without replacing custom values
+[v0] [Migrations] ✓ Completed: 073-balanced-multisymbol-strategy-budgets (schema now v73)
+[v0] [Migrations] Running: 074-trend-indication-adaptive-base-ranges (v74)
+[v0] Migration 074: seeded Trend indication and adaptive Base TP defaults without replacing operator values
+[v0] [Migrations] ✓ Completed: 074-trend-indication-adaptive-base-ranges (schema now v74)
+[v0] [Migrations] Running: 075-bound-high-frequency-statistics-storage (v75)
+[v0] Migration 075: removed 0 legacy high-frequency statistic rows
+[v0] [Migrations] ✓ Completed: 075-bound-high-frequency-statistics-storage (schema now v75)
+[v0] [Migrations] Running: 076-dynamic-symbol-selection-default-one (v76)
+[v0] Migration 076: defaulted dynamic selection to one symbol; normalized=1
+[v0] [Migrations] ✓ Completed: 076-dynamic-symbol-selection-default-one (schema now v76)
+[v0] [Migrations] Running: 077-indexed-current-indication-snapshots (v77)
+[v0] Migration 077: indexed 0 current indication symbol snapshots
+[v0] [Migrations] ✓ Completed: 077-indexed-current-indication-snapshots (schema now v77)
+[v0] [Migrations] Running: 078-coherent-strategy-set-snapshots (v78)
+[v0] Migration 078: removed stale fields=0, unsafe Real/Live snapshots=0
+[v0] [Migrations] ✓ Completed: 078-coherent-strategy-set-snapshots (schema now v78)
+[v0] [Migrations] Running: 079-repair-hourly-statistics-rollups (v79)
+[v0] Migration 079: removed 0 post-075 high-frequency statistic rows
+[v0] [Migrations] ✓ Completed: 079-repair-hourly-statistics-rollups (schema now v79)
+[v0] [Migrations] Running: 080-index-exact-strategy-set-ledgers-and-minute-snapshots (v80)
+[v0] Migration 080: indexed exact=0, active=0, closed=0
+[v0] [Migrations] ✓ Completed: 080-index-exact-strategy-set-ledgers-and-minute-snapshots (schema now v80)
+[v0] [Migrations] Running: 081-seed-independent-block-profit-factor-ratio (v81)
+[v0] Migration 081: seeded independent Block PF ratio in 42 settings hashes
+[v0] [Migrations] ✓ Completed: 081-seed-independent-block-profit-factor-ratio (schema now v81)
+[v0] [Migrations] Running: 082-normalize-live-minimum-ratio-and-position-cost (v82)
+[v0] Migration 082: positionCost=189, volumeRatio=376, posCounts=63
+[v0] [Migrations] ✓ Completed: 082-normalize-live-minimum-ratio-and-position-cost (schema now v82)
+[v0] [Migrations] Running: 083-enforce-identity-live-volume-ratios (v83)
+[v0] Migration 083: normalized=23, identity defaults seeded=9
+[v0] [Migrations] ✓ Completed: 083-enforce-identity-live-volume-ratios (schema now v83)
+[v0] [Migrations] Running: 084-freeze-base-volume-coordination-at-identity (v84)
+[v0] Migration 084: base normalized=0, seeded=63, nested=0
+[v0] [Migrations] ✓ Completed: 084-freeze-base-volume-coordination-at-identity (schema now v84)
+[v0] [Migrations] Running: 085-main-trade-position-cost-ratio-four-stage (v85)
+[v0] [Migrations] ✓ Completed: 085-main-trade-position-cost-ratio-four-stage (schema now v85)
+[v0] [Migrations] Running: 086-exhaustive-indication-base-and-block-only-defaults (v86)
+[v0] [Migrations] ✓ Completed: 086-exhaustive-indication-base-and-block-only-defaults (schema now v86)
+[v0] [Migrations] Running: 087-signal-bootstrap-direction-lanes-and-strategy-rows (v87)
+[v0] [Migrations] ✓ Completed: 087-signal-bootstrap-direction-lanes-and-strategy-rows (schema now v87)
+[v0] [Migrations] Running: 088-repair-exhaustive-indications-signal-capacity-and-stage-caps (v88)
+[v0] [Migrations] ✓ Completed: 088-repair-exhaustive-indications-signal-capacity-and-stage-caps (schema now v88)
+[v0] [Migrations] Running: 089-signal-full-source-cycle-and-base-pf-floor (v89)
+[v0] [Migrations] ✓ Completed: 089-signal-full-source-cycle-and-base-pf-floor (schema now v89)
+[v0] [Migrations] Running: 090-base-valid-and-signal-admission-contract (v90)
+[v0] [Migrations] ✓ Completed: 090-base-valid-and-signal-admission-contract (schema now v90)
+[v0] [Migrations] Running: 091-unlimited-stage-rows-cadence-and-block-work-scheduler (v91)
+[v0] [Migrations] ✓ Completed: 091-unlimited-stage-rows-cadence-and-block-work-scheduler (schema now v91)
+[v0] [Migrations] Running: 092-exact-indication-cadence-and-unlimited-preset-types (v92)
+[v0] [Migrations] ✓ Completed: 092-exact-indication-cadence-and-unlimited-preset-types (schema now v92)
+[v0] [Migrations] Running: 093-pf-floor-and-continuous-row-live-defaults (v93)
+[v0] [Migrations] ✓ Completed: 093-pf-floor-and-continuous-row-live-defaults (schema now v93)
+[v0] [Migrations] ✓ Verification: Schema version is now 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Migrations] ✓ Ensured 1 base connections; injected credentials for 0
+[v0] [Redis Memory] Volatile startup cleanup (initRedis): deleted 4 keys, preserved 241
+[v0] [Migrations] ✓ Successfully migrated v0 -> v93
+[v0] [Migrations] 93 migrations executed
+ ✓ Compiled /api/settings/connections/[id]/settings in 417ms (665 modules)
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+ GET /api/settings/connections/bingx-x01/settings 200 in 1663ms
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ ✓ Compiled /api/trading/trade-history in 300ms (669 modules)
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 445ms
+ ✓ Compiled /api/logistics/queue in 269ms (673 modules)
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 407ms
+ ○ Compiling /api/trading/live-positions ...
+ ✓ Compiled /api/trading/live-positions in 1749ms (677 modules)
+ GET /api/trading/live-positions?connection_id=bingx-x01 200 in 1979ms
+ ✓ Compiled /api/exchange/live-summary in 355ms (679 modules)
+ GET /api/exchange/live-summary?connection_id=bingx-x01 200 in 477ms
+ ○ Compiling /api/preset-optimizer ...
+ ✓ Compiled /api/preset-optimizer in 1420ms (681 modules)
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 1560ms
+ ✓ Compiled /api/connections/[id]/engine-states in 409ms (683 modules)
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+ GET /api/connections/bingx-x01/engine-states 200 in 1436ms
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [LivePositionStage] [sync-skip] conn=bingx-x01 live_trade=false; skipped private exchange sync, tracked=0, simProcessed=0, simClosed=0, statuses={} [1 repetitive messages coalesced]
+[v0] [LivePositionStage] [reconcile] entry permission is off; continuing lifecycle sync for system-owned positions only
+ ○ Compiling /api/settings/indications/signal ...
+ ✓ Compiled /api/settings/indications/signal in 1372ms (685 modules)
+ GET /api/settings/indications/signal?connectionId=bingx-x01 200 in 1532ms
+ ✓ Compiled /api/indications/signals/status in 338ms (687 modules)
+ GET /api/indications/signals/status?connectionId=bingx-x01 200 in 468ms
+ ✓ Compiled /api/statistics/indications in 382ms (690 modules)
+ GET /api/statistics/indications?connectionId=bingx-x01 200 in 616ms
+ ○ Compiling /api/settings/connections/[id]/toggle-dashboard ...
+ ✓ Compiled /api/settings/connections/[id]/toggle-dashboard in 544ms (694 modules)
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Toggle] Toggling BingX X01 (bingx-x01):
+[v0] [Toggle]   Before: main_assigned=true, main_enabled=true
+[v0] [Toggle] Already enabled - no explicit enable in request, engine state untouched
+ POST /api/settings/connections/bingx-x01/toggle-dashboard 200 in 1758ms
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ ✓ Compiled /api/debug/progression-dump in 368ms (697 modules)
+ GET /api/debug/progression-dump?id=bingx-x01 200 in 590ms
+ ○ Compiling /api/positions/[id] ...
+ ✓ Compiled /api/positions/[id] in 1897ms (699 modules)
+ GET /api/positions/__dev_soak_warmup__?connection_id=bingx-x01 404 in 2635ms
+ ○ Compiling /live-trading ...
+[v0] [LivePositionStage] [reconcile] entry permission is off; continuing lifecycle sync for system-owned positions only
+ ✓ Compiled /live-trading in 9.7s (1439 modules)
+ GET /live-trading 200 in 10880ms
+ ✓ Compiled in 1212ms (429 modules)
+ ○ Compiling /settings/indications/signal ...
+ ✓ Compiled /settings/indications/signal in 1192ms (1447 modules)
+ GET /settings/indications/signal 200 in 1742ms
+ ○ Compiling /statistics ...
+ ✓ Compiled /statistics in 9.8s (3473 modules)
+ GET /statistics 200 in 10547ms
+[v0] [ConfigSetProcessor] Initializing config sets for bingx-x01
+[v0] [ConfigSetProcessor] Creating default indication configs...
+[v0] [ConfigSetProcessor] Created 12393 indication configs
+[v0] [ConfigSetProcessor] Creating default strategy configs...
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_1 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_2 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_3 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_4 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_5 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_6 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_7 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_8 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_9 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_10 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_11 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_12 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_13 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_14 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_15 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_16 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_17 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_18 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_19 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_20 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_21 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_22 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_23 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_24 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_25 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_26 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_27 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_28 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_29 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_30 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_31 for bingx-x01
+[v0] [StrategyConfigManager] Created config strat_bingx-x01_32 for bingx-x01
+[v0] [ConfigSetProcessor] Created 32 strategy configs
+[v0] [CronIndications] Historic generation superseded; handing off to the newer owner
+ ○ Compiling /statistics/indications/common ...
+[v0] [LivePositionStage] [sync-skip] conn=bingx-x01 live_trade=false; skipped private exchange sync, tracked=0, simProcessed=0, simClosed=0, statuses={} [1 repetitive messages coalesced]
+[v0] [LivePositionStage] [reconcile] entry permission is off; continuing lifecycle sync for system-owned positions only
+ ✓ Compiled /statistics/indications/common in 4.8s (3493 modules)
+ GET /statistics/indications/common 200 in 4678ms
+ ○ Compiling /statistics/indications/signal ...
+ ✓ Compiled /statistics/indications/signal in 1830ms (3495 modules)
+ GET /statistics/indications/signal 200 in 1704ms
+ GET /api/connections 200 in 143ms
+ ○ Compiling /api/trade-engine/quick-start ...
+ ✓ Compiled /api/trade-engine/quick-start in 1140ms (3504 modules)
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [QuickStart] v2: === QUICKSTART ENABLE ===
+[v0] [QuickStart] v2: Scanning 11 connections...
+[v0] [INFO] [quickstart_scan] Scanning 11 connections {"action":"enable","totalConnections":11,"timestamp":"2026-08-08T02:11:13.572Z"}
+[v0] [QuickStart] v2: Requested connection bingx-x01 is not usable for QuickStart — falling back to auto-discovery
+[v0] [QuickStart] v2: Found BingX X01 (bingx-x01) on bingx
+[v0] [INFO] [quickstart_started] QuickStart enable flow initiated {"connectionId":"bingx-x01","connectionName":"BingX X01","exchange":"bingx","hasCredentials":false}
+[v0] [QuickStart] v2: [1/4] Testing connection...
+[v0] [QuickStart] v2: [1/4] SKIPPED - No API credentials configured
+[v0] [WARNING] [quickstart_test_skipped] Test skipped - no credentials {"message":"Add API key and secret in Settings to enable trading"}
+[v0] [QuickStart] v2: [2/4] Configuring symbol...
+[v0] [QuickStart] v2: [2/4] Final symbol: BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT, BNBUSDT, DOGEUSDT, ADAUSDT, AVAXUSDT, LINKUSDT, DOTUSDT, ATOMUSDT, LTCUSDT
+[v0] [INFO] [quickstart_symbols] Trading symbols configured {"symbols":["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","ATOMUSDT","LTCUSDT"],"count":12}
+[v0] [QuickStart] v2: [3/4] Updating connection state...
+[v0] [SettingsCoordinator] Dirty flag set for bingx-x01: key=settings:dirty:bingx-x01, fields=[is_active,is_live_trade,live_trade_enabled,live_trade_requested,active_symbols,force_symbols,symbol_count,dev_symbol_count_override,connection_settings.symbols,connection_settings.force_symbols,connection_settings.active_symbols,connection_settings.is_live_trade,connection_settings.live_trade_enabled,connection_settings.live_trade_requested,connection_settings.mainProfitFactor,connection_settings.realProfitFactor,connection_settings.main_min_profit_factor,connection_settings.real_min_profit_factor,connection_settings.block_only,connection_settings.variant_trailing,connection_settings.variant_block,connection_settings.variant_dca,connection_settings.control_orders,connection_settings.prevPosMinCount,connection_settings.mainEvalPosCount,connection_settings.realEvalPosCount]
+[v0] [SettingsCoordinator] Change event for bingx-x01: type=reload, fields=[is_active,is_live_trade,live_trade_enabled,live_trade_requested,active_symbols,force_symbols,symbol_count,dev_symbol_count_override,connection_settings.symbols,connection_settings.force_symbols,connection_settings.active_symbols,connection_settings.is_live_trade,connection_settings.live_trade_enabled,connection_settings.live_trade_requested,connection_settings.mainProfitFactor,connection_settings.realProfitFactor,connection_settings.main_min_profit_factor,connection_settings.real_min_profit_factor,connection_settings.block_only,connection_settings.variant_trailing,connection_settings.variant_block,connection_settings.variant_dca,connection_settings.control_orders,connection_settings.prevPosMinCount,connection_settings.mainEvalPosCount,connection_settings.realEvalPosCount]
+[v0] [Coordinator] Processing queued refresh request for bingx-x01: refresh (state_switch_version=true, reason=settings_reload:is_active,is_live_trade,live_trade_enabled,live_trade_requested,active_symbols,force_symbols)
+[v0] [Coordinator] Refresh request for bingx-x01 is not local; leaving queued for owner
+[v0] [Coordinator] Processing queued refresh request for bingx-x01: refresh (state_switch_version=true, reason=settings_reload:is_active,is_live_trade,live_trade_enabled,live_trade_requested,active_symbols,force_symbols)
+[v0] [Coordinator] Refresh request for bingx-x01 is not local; leaving queued for owner
+[v0] [Coordinator] Processing queued refresh request for bingx-x01: refresh (state_switch_version=true, reason=settings_reload:is_active,is_live_trade,live_trade_enabled,live_trade_requested,active_symbols,force_symbols)
+[v0] [Coordinator] Refresh request for bingx-x01 is not local; leaving queued for owner
+[v0] ConnectionCoordinator initialized with 11 connections from Redis
+[v0] [Progression] Re-coordination needed for bingx-x01: symbols changed (stored=20 vs live=12). Stopping previous progress and starting fresh for actual state.
+[v0] [Progression] Archived old progression for bingx-x01 (oldEpoch=1786155004003) → progression:bingx-x01:main:history:1786155004003
+[v0] [Progression] Started new progression for bingx-x01 (session=1, epoch=1786155073705)
+[v0] [POST /api/trade-engine/quick-start] Symbol basket settings changed for bingx-x01 → epoch bumped and progression recoordinated (changed:true, reason:symbols changed (stored=20 vs live=12))
+[v0] [POST /api/trade-engine/quick-start] Recoordinate: starting engine for bingx-x01 (was stopped, now should run, global intent=running)
+[v0] [Coordinator] === START MISSING ENGINES ===
+[v0] [Coordinator] Missing engines check: shouldBeRunning=1, currentlyRunning=0
+[v0] [Coordinator] START: BingX X01 (bingx) without credentials — running Main/strategy pipeline only; exchange order placement remains credential-gated
+[v0] [WARNING] [engine_starting_without_credentials] Coordinator starting engine without credentials; live order placement remains blocked {"connectionId":"bingx-x01","connectionName":"BingX X01","exchange":"bingx"}
+[v0] [Coordinator] START: BingX X01 (bingx)
+[v0] [INFO] [engine_starting] Coordinator starting engine {"connectionId":"bingx-x01","connectionName":"BingX X01","exchange":"bingx"}
+[v0] [STARTUP LOCK] Acquired progression lock for bingx-x01 (epoch=1786155073777)
+[v0] Starting TradeEngine for connection: bingx-x01
+[v0] Initializing TradeEngine for connection: bingx-x01
+[v0] TradeEngineManager initialized
+[v0] TradeEngine initialized for connection: bingx-x01
+[v0] [Progression] Activated coordinated progression for bingx-x01 (session=1, epoch=1786155073777)
+[v0] [Engine] Using existing unique progression for bingx-x01 (session=1, epoch=1786155073777)
+[v0] [Progression] bingx-x01: initializing @ 5% - Starting engine components
+[v0] [INFO] [initializing] Engine initialization started 
+[v0] [Engine State] Updated trade_engine_state:bingx-x01: status=running
+[v0] [Engine Flag] engine_is_running:bingx-x01=1
+[v0] [Progression] bingx-x01: market_data @ 8% - Loading market data...
+[v0] [getSymbols] bingx-x01: using force_symbols (12 symbols)
+[v0] [getSymbols] bingx-x01: effective force_symbols (12 symbols)
+[v0] [Engine] Progression solidified for bingx-x01: symbols=12, hash=ADAUSDT|ATOMUSDT... (epoch=1786155073777)
+[v0] [MarketData] 0/12 requested symbols cached; loading 12 missing
+[v0] [MarketData] Loading 1s market data for 12 symbols (1-day window, parallel)...
+[v0] [MarketData] Will try to fetch REAL 1s intervals from exchanges first...
+[v0] [MarketData] ⚠ Using synthetic data for BTCUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ BTCUSDT: $64709.18 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for ETHUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ ETHUSDT: $3476.52 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for SOLUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ SOLUSDT: $164.17 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for XRPUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ XRPUSDT: $0.55 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for BNBUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ BNBUSDT: $620.09 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for DOGEUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ DOGEUSDT: $0.18 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for ADAUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ ADAUSDT: $0.91 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for AVAXUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ AVAXUSDT: $39.93 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for LINKUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ LINKUSDT: $18.03 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for DOTUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ DOTUSDT: $9.47 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for ATOMUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ ATOMUSDT: $10.96 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for LTCUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ LTCUSDT: $94.85 (synthetic) (5400 intervals)
+[v0] [MarketData] ✅ Loaded 12/12 symbols
+[v0] [MarketData]    Real data: 0 | Synthetic: 12
+[v0] [Engine bingx-x01] startup/restart recovery — arming exit-only LivePositions recovery before historic bootstrap.
+[v0] [Progression] bingx-x01: prehistoric_data @ 15% - Loading historical data (background)...
+[v0] [INFO] [engine_started] Engine boot complete — exit recovery active; entry processors await historic completion {"symbols":12,"indicationInterval":1,"strategyInterval":10,"realtimeInterval":0.3,"prehistoricCached":false}
+[v0] [INFO] [engine_started] Trade engine manager started {"symbols":12,"phases":6,"entryProcessorsActive":false,"exitRecoveryActive":true,"config":{"connectionId":"bingx-x01","allowInProcessStart":true,"forceLocalTakeover":true,"engine_type":"main","indicat
+[v0] [STARTUP LOCK] TradeEngine successfully started for connection: bingx-x01
+[v0] [STARTUP LOCK] Removed bingx-x01 from startup lock
+[v0] [INFO] [engine_started] Main Trade Engine started for progression {"connectionId":"bingx-x01","engineType":"main","config":{"connectionId":"bingx-x01","allowInProcessStart":true,"forceLocalTakeover":true,"engine_type":"main","indicationInterval":1,"strategyInterval"
+[v0] [Coordinator] === START MISSING ENGINES COMPLETE: started=1 ===
+[v0] [Prehistoric] ▶ scan: 12 symbols | range=8h | timeframe=1s
+[v0] [ConfigSetProcessor] Initializing config sets for bingx-x01
+[v0] [ProductionReadiness] trade_engine:global missing status — allowing startup path to initialize runtime intent
+[v0] [AutoStart] Processing queued refresh request for bingx-x01: refresh (state_switch_version=true, reason=settings_reload:is_active,is_live_trade,live_trade_enabled,live_trade_requested,active_symbols,force_symbols)
+[v0] [Engine bingx-x01] applying settings change type=reload fields=[is_active,is_live_trade,live_trade_enabled,live_trade_requested,active_symbols,force_symbols,symbol_count,dev_symbol_count_override,connection_settings.symbols,connection_settings.force_symbols,connection_settings.active_symbols,connection_settings.is_live_trade,connection_settings.live_trade_enabled,connection_settings.live_trade_requested,connection_settings.mainProfitFactor,connection_settings.realProfitFactor,connection_settings.main_min_profit_factor,connection_settings.real_min_profit_factor,connection_settings.block_only,connection_settings.variant_trailing,connection_settings.variant_block,connection_settings.variant_dca,connection_settings.control_orders,connection_settings.prevPosMinCount,connection_settings.mainEvalPosCount,connection_settings.realEvalPosCount]
+[v0] [Engine bingx-x01] hot-reload refreshed active-symbol cache (12 symbols)
+[v0] [Engine bingx-x01] hot-reload applied (settingsVersion=1, volume_factor=1, invalidatedCaches=[indicationProcessor.connectionSettings,engine.timings,engine.symbols,strategy.flowThrottle,strategyCoordinator.PFThresholds,strategyCoordinator.DDTThresholds,strategyCoordinator.trailingSettings,strategyCoordinator.minStepSettings,strategyCoordinator.coordinationSettings,realtime.prevSetCache,pseudoPosition.activePositions,liveStage.systemCloseOnly], changedFields=[is_active,is_live_trade,live_trade_enabled,live_trade_requested,active_symbols,force_symbols,symbol_count,dev_symbol_count_override,connection_settings.symbols,connection_settings.force_symbols,connection_settings.active_symbols,connection_settings.is_live_trade,connection_settings.live_trade_enabled,connection_settings.live_trade_requested,connection_settings.mainProfitFactor,connection_settings.realProfitFactor,connection_settings.main_min_profit_factor,connection_settings.real_min_profit_factor,connection_settings.block_only,connection_settings.variant_trailing,connection_settings.variant_block,connection_settings.variant_dca,connection_settings.control_orders,connection_settings.prevPosMinCount,connection_settings.mainEvalPosCount,connection_settings.realEvalPosCount])
+[v0] [Engine bingx-x01] immediate strategy re-evaluation deferred until historic bootstrap completes (settings-hot-reload)
+[v0] [Coordinator] === START MISSING ENGINES ===
+[v0] [Coordinator] Missing engines check: shouldBeRunning=1, currentlyRunning=1
+[v0] [Coordinator] === START MISSING ENGINES COMPLETE: started=0 ===
+[v0] [ConfigSetProcessor] Found 12393 existing indication configs
+[v0] [ConfigSetProcessor] Found 32 existing strategy configs
+[v0] [ConfigSetProcessor] ▶ prehistoric start | symbols=12 canonicalTotal=12 | range=2026-08-07T18:11:13.936Z → 2026-08-08T02:11:13.936Z | timeframe=1s | symbolConcurrency=1 | configTypeConcurrency=2 | configConcurrency=2
+[v0] [ConfigSetProcessor] loaded exhaustive bootstrap grids: 12393 indication configs, 32 strategy configs (in 108ms)
+[v0] [QuickStart] v2: [3/4] Connection state updated (assigned+enabled, live_volume_factor=1).
+[v0] [INFO] [quickstart_recoordination_requested] QuickStart atomically committed connection/settings and requested durable recoordination {"changedFields":["is_active","is_live_trade","live_trade_enabled","live_trade_requested","active_symbols","force_symbols","symbol_count","dev_symbol_count_override","connection_settings.symbols","con
+[v0] [INFO] [quickstart_minimal_volume] QuickStart resolved live_volume_factor=1 for this connection {"live_volume_factor":"1","volume_factor_live":"1","note":"QuickStart preserves existing per-connection sizing settings unless the request body explicitly overrides them; safe defaults are only used o
+[v0] [INFO] [quickstart_recoordination_applied] QuickStart durable settings recoordination applied locally {"changedFields":["is_active","is_live_trade","live_trade_enabled","live_trade_requested","active_symbols","force_symbols","symbol_count","dev_symbol_count_override","connection_settings.symbols","con
+[v0] [QuickStart] v2: [3/4] Stored symbols in trade_engine_state: BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT, BNBUSDT, DOGEUSDT, ADAUSDT, AVAXUSDT, LINKUSDT, DOTUSDT, ATOMUSDT, LTCUSDT
+[v0] [INFO] [quickstart_updated] Connection state updated {"symbols":["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","ATOMUSDT","LTCUSDT"],"isAssigned":true,"isMainEnabled":true,"testPassed":false,"live
+[v0] [QuickStart] v2: [4/4] Starting Global Trade Engine Coordinator first...
+[v0] [QuickStart] v2: Pre-start cleanup complete — engine_is_running flag cleared for bingx-x01
+[v0] [STARTUP LOCK] Engine already running locally for bingx-x01, keeping existing owner token
+[v0] [QuickStart] v2 ✓ Global Coordinator intent committed and boot dispatched (fire-and-forget)
+[v0] [QuickStart] v2: [4/4] Connection is explicitly enabled - initializing Main Engine...
+[v0] [STARTUP LOCK] Engine already running locally for bingx-x01, keeping existing owner token
+[v0] [INFO] [quickstart_complete] QuickStart completed successfully {"testPassed":false,"symbols":["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","BNBUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","ATOMUSDT","LTCUSDT"],"totalDuration":2073}
+[v0] [QuickStart] v2 ✓ Main Engine started for BingX X01 (async)
+[v0] [INFO] [engine_started] Main Trade Engine started via QuickStart {"connectionId":"bingx-x01","connectionName":"BingX X01","exchange":"bingx","testPassed":false}
+[v0] [QuickStart] v2: === QUICKSTART COMPLETE ===
+[v0] [QuickStart] v2: Connection: BingX X01
+[v0] [QuickStart] v2: Test: FAILED
+[v0] [QuickStart] v2: Symbols: BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT, BNBUSDT, DOGEUSDT, ADAUSDT, AVAXUSDT, LINKUSDT, DOTUSDT, ATOMUSDT, LTCUSDT
+[v0] [QuickStart] v2: Duration: 2074ms
+[v0] [Coordinator] === REFRESH ENGINES START (START ONLY) ===
+[v0] [QuickStart] v2: === COMPREHENSIVE STATS ===
+[v0] [QuickStart] v2: Symbols: 12, Prehistoric: 0
+[v0] [QuickStart] v2: Indications - Direction: 0, Move: 0, Active: 0, Active Advanced: 0, Optimal: 0, Auto: 0, Signal: 0, Trend: 0
+[v0] [QuickStart] v2: Pseudo Positions - Base: 0, Main: 0, Real: 0
+[v0] [QuickStart] v2: Live Positions: 0, Cycle Duration: 0ms
+[v0] [Coordinator] State: enabled=1, running=1
+[v0] [Coordinator] === REFRESH COMPLETE: started=0, stopped=0 (engines not stopped per user control policy), skipped=0 ===
+ POST /api/trade-engine/quick-start 200 in 3751ms
+[v0] [INFO] [engine_started] Prehistoric bootstrap running — entry processors gated until completion 
+ ○ Compiling /api/trade-engine/start-all ...
+ ✓ Compiled /api/trade-engine/start-all in 1996ms (3506 modules)
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [STARTUP LOCK] Engine already running locally for bingx-x01, keeping existing owner token
+[v0] [STARTUP LOCK] Engine already running locally for bingx-x01, keeping existing owner token
+[v0] [STARTUP LOCK] Engine already running locally for bingx-x01, keeping existing owner token
+[v0] [STARTUP LOCK] Engine already running locally for bingx-x01, keeping existing owner token
+ POST /api/trade-engine/start-all 200 in 2374ms
+ POST /api/trade-engine/start-all 200 in 2369ms
+ POST /api/trade-engine/start-all 200 in 2353ms
+ POST /api/trade-engine/start-all 200 in 2378ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 148ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 72ms
+ GET /api/settings 200 in 147ms
+ GET /api/settings/connections/bingx-x01/settings 200 in 308ms
+ GET /api/health 200 in 368ms
+ GET /api/system/init-status 200 in 640ms
+[v0] ConnectionCoordinator initialized with 11 connections from Redis
+ GET /api/system/status 200 in 669ms
+ GET /api/system/monitoring 200 in 779ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 781ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 774ms
+ GET /api/indications/config-counts 200 in 827ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 837ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 1018ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 1053ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 1245ms
+ GET /api/connections/bingx-x01/engine-states 200 in 1391ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+ GET /api/health 200 in 716ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/system/init-status 200 in 974ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 985ms
+ GET /api/system/monitoring 200 in 1007ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 1018ms
+ GET /api/indications/config-counts 200 in 1066ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 1058ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 1037ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 1050ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 1059ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 1161ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/connections/bingx-x01/engine-states 200 in 1324ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+ GET /api/health 200 in 533ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+ GET /api/system/init-status 200 in 832ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 841ms
+ GET /api/system/monitoring 200 in 853ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 860ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 864ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 872ms
+ GET /api/indications/config-counts 200 in 880ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 895ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 904ms
+ GET /api/connections/bingx-x01/engine-states 200 in 959ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 1048ms
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+ GET /api/health 200 in 529ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 709ms
+ GET /api/system/init-status 200 in 714ms
+ GET /api/system/monitoring 200 in 731ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 738ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 728ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 732ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 741ms
+ GET /api/indications/config-counts 200 in 764ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 756ms
+ GET /api/connections/bingx-x01/engine-states 200 in 767ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 856ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 367ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/system/init-status 200 in 545ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 549ms
+ GET /api/system/monitoring 200 in 560ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 567ms
+ GET /api/indications/config-counts 200 in 578ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 581ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 587ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 595ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 599ms
+ GET /api/connections/bingx-x01/engine-states 200 in 593ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 673ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 435ms
+ GET /api/system/init-status 200 in 562ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 569ms
+ GET /api/system/monitoring 200 in 579ms
+ GET /api/indications/config-counts 200 in 586ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 591ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 594ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 599ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 606ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 612ms
+ GET /api/connections/bingx-x01/engine-states 200 in 646ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 722ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 355ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/system/init-status 200 in 490ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 497ms
+ GET /api/system/monitoring 200 in 515ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 522ms
+ GET /api/indications/config-counts 200 in 528ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 532ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 537ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 543ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 547ms
+ GET /api/connections/bingx-x01/engine-states 200 in 586ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 670ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 424ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 571ms
+ GET /api/system/init-status 200 in 587ms
+ GET /api/system/monitoring 200 in 591ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 598ms
+ GET /api/indications/config-counts 200 in 606ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 611ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 617ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 626ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 636ms
+ GET /api/connections/bingx-x01/engine-states 200 in 678ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 762ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 439ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/system/init-status 200 in 598ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 606ms
+ GET /api/system/monitoring 200 in 625ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 635ms
+ GET /api/indications/config-counts 200 in 642ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 645ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 652ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 662ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 654ms
+ GET /api/connections/bingx-x01/engine-states 200 in 702ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 813ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [LivePositionStage] [sync-skip] conn=bingx-x01 live_trade=false; skipped private exchange sync, tracked=0, simProcessed=0, simClosed=0, statuses={} [96 repetitive messages coalesced]
+ GET /api/health 200 in 410ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/system/init-status 200 in 614ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 619ms
+ GET /api/system/monitoring 200 in 636ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 643ms
+ GET /api/indications/config-counts 200 in 651ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 655ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 659ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 667ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 672ms
+ GET /api/connections/bingx-x01/engine-states 200 in 720ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 802ms
+ GET /api/debug/progression-dump?id=bingx-x01 200 in 209ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 422ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/system/init-status 200 in 550ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 556ms
+ GET /api/system/monitoring 200 in 567ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 572ms
+ GET /api/indications/config-counts 200 in 577ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 580ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 585ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 592ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 597ms
+ GET /api/connections/bingx-x01/engine-states 200 in 606ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 697ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 445ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/system/init-status 200 in 674ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 680ms
+ GET /api/system/monitoring 200 in 692ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 695ms
+ GET /api/indications/config-counts 200 in 701ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 706ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 710ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 721ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 706ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 782ms
+ GET /api/connections/bingx-x01/engine-states 200 in 891ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 507ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/system/init-status 200 in 674ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 682ms
+ GET /api/system/monitoring 200 in 710ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 720ms
+ GET /api/indications/config-counts 200 in 726ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 730ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 735ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 743ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 749ms
+ GET /api/connections/bingx-x01/engine-states 200 in 797ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 893ms
+[v0] [MarketData] 12 requested symbols already cached; skipping reload
+[v0] [Heartbeat] Market data refreshed for 12 symbols
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+ GET /api/health 200 in 418ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/system/init-status 200 in 596ms
+ GET /api/system/monitoring 200 in 609ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 607ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 620ms
+ GET /api/indications/config-counts 200 in 608ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 608ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 613ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 623ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 630ms
+ GET /api/connections/bingx-x01/engine-states 200 in 672ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 770ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 527ms
+ GET /api/system/init-status 200 in 809ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 817ms
+ GET /api/system/monitoring 200 in 834ms
+ GET /api/indications/config-counts 200 in 841ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 850ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 854ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 859ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 869ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 877ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 905ms
+ GET /api/connections/bingx-x01/engine-states 200 in 1000ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 540ms
+ GET /api/system/init-status 200 in 691ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 697ms
+ GET /api/system/monitoring 200 in 716ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 723ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 721ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 725ms
+ GET /api/indications/config-counts 200 in 738ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 741ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 746ms
+ GET /api/connections/bingx-x01/engine-states 200 in 751ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 848ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 390ms
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/system/init-status 200 in 536ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 542ms
+ GET /api/system/monitoring 200 in 556ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 564ms
+ GET /api/indications/config-counts 200 in 570ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 564ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 569ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 578ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 584ms
+ GET /api/connections/bingx-x01/engine-states 200 in 639ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 741ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 401ms
+ GET /api/system/init-status 200 in 544ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 550ms
+ GET /api/system/monitoring 200 in 562ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 568ms
+ GET /api/indications/config-counts 200 in 574ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 577ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 581ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 587ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 592ms
+ GET /api/connections/bingx-x01/engine-states 200 in 653ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 1236ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 0 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Running: 001-initial-schema (v1)
+[v0] Migration 001: Initial schema created
+[v0] [Migrations] ✓ Completed: 001-initial-schema (schema now v1)
+[v0] [Migrations] Running: 002-connection-management (v2)
+[v0] Migration 002: Connection management structure created
+[v0] [Migrations] ✓ Completed: 002-connection-management (schema now v2)
+[v0] [Migrations] Running: 003-trade-positions-schema (v3)
+[v0] Migration 003: Trade and position schemas created
+[v0] [Migrations] ✓ Completed: 003-trade-positions-schema (schema now v3)
+[v0] [Migrations] Running: 004-preset-strategy-management (v4)
+[v0] Migration 004: Preset and strategy management created
+[v0] [Migrations] ✓ Completed: 004-preset-strategy-management (schema now v4)
+[v0] [Migrations] Running: 005-user-authentication (v5)
+[v0] Migration 005: User authentication system created
+[v0] [Migrations] ✓ Completed: 005-user-authentication (schema now v5)
+[v0] [Migrations] Running: 006-monitoring-logging (v6)
+[v0] Migration 006: Monitoring and logging system created
+[v0] [Migrations] ✓ Completed: 006-monitoring-logging (schema now v6)
+[v0] [Migrations] Running: 007-cache-optimization (v7)
+[v0] Migration 007: Cache optimization created
+[v0] [Migrations] ✓ Completed: 007-cache-optimization (schema now v7)
+[v0] [Migrations] Running: 008-performance-optimizations (v8)
+[v0] Migration 008: Performance optimizations configured
+[v0] [Migrations] ✓ Completed: 008-performance-optimizations (schema now v8)
+[v0] [Migrations] Running: 009-backup-recovery (v9)
+[v0] Migration 009: Backup and recovery system created
+[v0] [Migrations] ✓ Completed: 009-backup-recovery (schema now v9)
+[v0] [Migrations] Running: 010-settings-and-metadata (v10)
+[v0] Migration 010: Settings and metadata finalized
+[v0] [Migrations] ✓ Completed: 010-settings-and-metadata (schema now v10)
+[v0] [Migrations] Running: 011-seed-predefined-connections (v11)
+[v0] Migration 011: Seeded 11/11 predefined template connections
+[v0] [Migrations] ✓ Completed: 011-seed-predefined-connections (schema now v11)
+[v0] [Migrations] Running: 012-finalize-dashboard-connections (v12)
+[v0] Migration 012: Initializing connections (base templates set to predefined=1, disabled)
+[v0] Migration 012: ✓ bybit-x03 -> predefined=1, inserted=0, enabled=0 (template)
+[v0] Migration 012: ✓ bingx-x01 -> predefined=1, inserted=0, enabled=0 (template)
+[v0] Migration 012: ✓ pionex-x01 -> predefined=1, inserted=0, enabled=0 (template)
+[v0] Migration 012: ✓ orangex-x01 -> predefined=1, inserted=0, enabled=0 (template)
+[v0] Migration 012: COMPLETE - 4 base templates, 7 other templates (all disabled)
+[v0] [Migrations] ✓ Completed: 012-finalize-dashboard-connections (schema now v12)
+[v0] [Migrations] Running: 013-risk-management-and-engines (v13)
+[v0] Migration 013: Risk management settings and engine controls added
+[v0] [Migrations] ✓ Completed: 013-risk-management-and-engines (schema now v13)
+[v0] [Migrations] Running: 014-update-bingx-credentials (v14)
+[v0] Migration 014: Cleared test credentials, real credentials preserved
+[v0] [Migrations] ✓ Completed: 014-update-bingx-credentials (schema now v14)
+[v0] [Migrations] Running: 015-fix-connection-inserted-enabled-states (v15)
+[v0] Migration 015: bybit-x03 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: bingx-x01 -> inserted=1, enabled=1, active_inserted=1, dashboard_enabled=0 (base connection)
+[v0] Migration 015: binance-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: okx-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: gateio-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: kucoin-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: mexc-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: bitget-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: pionex-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: orangex-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: huobi-x01 -> inserted=0, enabled=0 (template only)
+[v0] Migration 015: Fixed 1 base connections, 10 template connections
+[v0] [Migrations] ✓ Completed: 015-fix-connection-inserted-enabled-states (schema now v15)
+[v0] [Migrations] Running: 016-active-connections-independent-state (v16)
+[v0] Migration 016: Ensuring predefined templates state for 11 connections
+[v0] Migration 016: ✓ bingx-x01 -> inserted=1, enabled=1, dashboard_enabled=0 (base connection)
+[v0] Migration 016: COMPLETE - 1 templates verified, 0 user connections updated
+[v0] [Migrations] ✓ Completed: 016-active-connections-independent-state (schema now v16)
+[v0] [Migrations] Running: 017-cleanup-base-connections-to-bybit-bingx-only (v17)
+[v0] Migration 017: ✓ bybit-x03 -> corrected to template-only state
+[v0] Migration 017: ✓ bingx-x01 -> corrected to base connection state
+[v0] Migration 017: ✓ binance-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ okx-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ gateio-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ kucoin-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ mexc-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ bitget-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ pionex-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ orangex-x01 -> corrected to template-only state
+[v0] Migration 017: ✓ huobi-x01 -> corrected to template-only state
+[v0] Migration 017: COMPLETE - 1 base connections, 10 templates cleaned up
+[v0] [Migrations] ✓ Completed: 017-cleanup-base-connections-to-bybit-bingx-only (schema now v17)
+[v0] [Migrations] Running: 018-remove-auto-assignment-from-main-connections (v18)
+[v0] Migration 018: COMPLETE - fixed 0 connections that were auto-assigned
+[v0] [Migrations] ✓ Completed: 018-remove-auto-assignment-from-main-connections (schema now v18)
+[v0] [Migrations] Running: 019-tombstone-skipped-version (v19)
+[v0] Migration 019: tombstone — version 19 was intentionally skipped
+[v0] [Migrations] ✓ Completed: 019-tombstone-skipped-version (schema now v19)
+[v0] [Migrations] Running: 020-phase3-database-consolidation (v20)
+[v0] Migration 020: PHASE 3 - Database consolidation starting...
+[v0] Migration 020: ✓ Consolidated 11 progression structures
+[v0] Migration 020: ✓ Created 11 connection indexes
+[v0] Migration 020: COMPLETE - Database consolidation done
+[v0] [Migrations] ✓ Completed: 020-phase3-database-consolidation (schema now v20)
+[v0] [Migrations] Running: 021-restore-dashboard-enabled-for-auto-active-base-connections (v21)
+[v0] Migration 021: no-op (auto-enable removed; operator must enable connections manually)
+[v0] [Migrations] ✓ Completed: 021-restore-dashboard-enabled-for-auto-active-base-connections (schema now v21)
+[v0] [Migrations] Running: 022-comprehensive-data-structure-consistency (v22)
+[v0] Migration 022: Starting comprehensive data structure validation...
+[v0] Migration 022: Found 0 position history keys
+[v0] Migration 022: Found 0 axis position accumulation keys
+[v0] Migration 022: Found 0 hedge net target keys
+[v0] Migration 022: COMPLETE
+  - Fixed: 0 keys/structures
+  - Validated: 0 keys
+[v0] Migration 022: Data structure consistency check finished
+[v0] [Migrations] ✓ Completed: 022-comprehensive-data-structure-consistency (schema now v22)
+[v0] [Migrations] Running: 023-eval-knob-hash-defaults (v23)
+[v0] Migration 023: Seeded eval-knob defaults for 11 connections (44 fields written)
+[v0] [Migrations] ✓ Completed: 023-eval-knob-hash-defaults (schema now v23)
+[v0] [Migrations] Running: 024-ddt-window-unify-and-stage-thresholds (v24)
+[v0] Migration 024: unified PF/DDT window — stripped ddtCapPositions from 0 connections, seeded 3 app-level DDT-threshold defaults
+[v0] [Migrations] ✓ Completed: 024-ddt-window-unify-and-stage-thresholds (schema now v24)
+[v0] [Migrations] Running: 025-initialize-progression-state-hashes (v25)
+[v0] Migration 025: initialized progression state for 11 connections (defaults for missing fields, preserved existing counters)
+[v0] [Migrations] ✓ Completed: 025-initialize-progression-state-hashes (schema now v25)
+[v0] [Migrations] Running: 026-per-connection-pf-ddt-leverage-defaults (v26)
+[v0] Migration 026: seeded per-connection PF/DDT/leverage defaults for 11 connections (132 fields written)
+[v0] [Migrations] ✓ Completed: 026-per-connection-pf-ddt-leverage-defaults (schema now v26)
+[v0] [Migrations] Running: 027-engine-timings-defaults-in-settings-system (v27)
+[v0] Migration 027: seeded 13 engine-timing defaults into settings:system
+[v0] [Migrations] ✓ Completed: 027-engine-timings-defaults-in-settings-system (schema now v27)
+[v0] [Migrations] Running: 028-pin-live-sync-interval-and-min-step (v28)
+[v0] Migration 028: pinned live_sync_interval_ms=200 in settings:system; seeded minStep=5 into 11/11 connection_settings hashes
+[v0] [Migrations] ✓ Completed: 028-pin-live-sync-interval-and-min-step (schema now v28)
+[v0] [Migrations] Running: 029-leverage-policy-defaults-in-app-settings (v29)
+[v0] Migration 029: seeded useMaximalLeverage/leveragePercentage into app_settings and 0/11 connection_settings hashes
+[v0] [Migrations] ✓ Completed: 029-leverage-policy-defaults-in-app-settings (schema now v29)
+[v0] [Migrations] Running: 030-coordination-variant-axis-block-defaults (v30)
+[v0] Migration 030: seeded coordination defaults into app_settings and 11/11 connection_settings hashes
+[v0] [Migrations] ✓ Completed: 030-coordination-variant-axis-block-defaults (schema now v30)
+[v0] [Migrations] Running: 031-bingx-x01-live-trade-test-defaults (v31)
+[v0] Migration 031: bingx-x01 live-trade test defaults seeded (is_live_trade=kept, symbols=BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT, exchangePositionCost=0.02)
+[v0] [Migrations] ✓ Completed: 031-bingx-x01-live-trade-test-defaults (schema now v31)
+[v0] [Migrations] Running: 032-tombstone-skipped-version (v32)
+[v0] Migration 032: tombstone — version 32 was intentionally skipped (033 superseded in-progress draft)
+[v0] [Migrations] ✓ Completed: 032-tombstone-skipped-version (schema now v32)
+[v0] [Migrations] Running: 033-bingx-x01-force-15-symbols (v33)
+[v0] Migration 033: bingx-x01 force_symbols set to 15 symbols: BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,ATOMUSDT,LTCUSDT,UNIUSDT,NEARUSDT,MATICUSDT
+[v0] [Migrations] ✓ Completed: 033-bingx-x01-force-15-symbols (schema now v33)
+[v0] [Migrations] Running: 034-operator-spec-defaults (v34)
+[v0] Migration 034: operator-spec defaults applied (pf=1.0/1.2/1.2, live_volume_factor=2.2, variantBlock/Trailing=true, correct hashes)
+[v0] [Migrations] ✓ Completed: 034-operator-spec-defaults (schema now v34)
+[v0] [Migrations] Running: 035-bingx-x01-force-20-symbols (v35)
+[v0] Migration 035: bingx-x01 force_symbols set to 20 symbols: BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,ATOMUSDT,LTCUSDT,UNIUSDT,NEARUSDT,MATICUSDT,AAVEUSDT,SUIUSDT,APTUSDT,ARBUSDT,OPUSDT
+[v0] [Migrations] ✓ Completed: 035-bingx-x01-force-20-symbols (schema now v35)
+[v0] [Migrations] Running: 036-bingx-x01-active-inserted (v36)
+[v0] Migration 036: patched bingx-x01 is_active_inserted=1
+[v0] [Migrations] ✓ Completed: 036-bingx-x01-active-inserted (schema now v36)
+[v0] [Migrations] Running: 037-bingx-x01-enabled-dashboard (v37)
+[v0] Migration 037: seeded bingx-x01 is_enabled_dashboard=1
+[v0] [Migrations] ✓ Completed: 037-bingx-x01-enabled-dashboard (schema now v37)
+[v0] [Migrations] Running: 038-maticusdt-to-polusdt (v38)
+[v0] Migration 038: bingx-x01 force_symbols updated (MATICUSDT→POLUSDT: true): BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,ATOMUSDT,LTCUSDT,UNIUSDT,NEARUSDT,POLUSDT,AAVEUSDT,SUIUSDT,APTUSDT,ARBUSDT,OPUSDT
+[v0] [Migrations] ✓ Completed: 038-maticusdt-to-polusdt (schema now v38)
+[v0] [Migrations] Running: 039-polusdt-settings-hashes (v39)
+[v0] Migration 039: force_symbols written to settings: hashes — BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,ATOMUSDT,LTCUSDT,UNIUSDT,NEARUSDT,POLUSDT,AAVEUSDT,SUIUSDT,APTUSDT,ARBUSDT,OPUSDT
+[v0] [Migrations] ✓ Completed: 039-polusdt-settings-hashes (schema now v39)
+[v0] [Migrations] Running: 040-canonical-bingx-x01-state (v40)
+[v0] Migration 040: canonical bingx-x01 state applied — 20 symbols (POLUSDT), pf=1.0/1.2/1.2, live_volume_factor=2.2
+[v0] [Migrations] ✓ Completed: 040-canonical-bingx-x01-state (schema now v40)
+[v0] [Migrations] Running: 041-fix-volume-and-prehistoric-gate (v41)
+[v0] Migration 041: set live_volume_factor=2.2 on connection:bingx-x01
+[v0] Migration 041: cleared prehistoric_loaded gate + progress tracker for bingx-x01
+[v0] [Migrations] ✓ Completed: 041-fix-volume-and-prehistoric-gate (schema now v41)
+[v0] [Migrations] Running: 042-minimal-volume-factor-defaults (v42)
+[v0] Migration 042: normalized 125 legacy/default volume-factor fields across 25 connection/settings records to 0.1
+[v0] [Migrations] ✓ Completed: 042-minimal-volume-factor-defaults (schema now v42)
+[v0] [Redis Persistence] Restored 12911 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Migrations] Current: v0, Target: v93
+[v0] [Migrations] Running 93 pending migrations as a combined batch...
+[v0] [Migrations] ✓ Successfully migrated v0 -> v93
+[v0] [Migrations] 93 migrations executed
+ GET /api/health 200 in 454ms
+[v0] [Migrations] Running: 043-reserved-schema-continuity (v43)
+[v0] Migration 043: no-op schema continuity marker
+[v0] [Migrations] ✓ Completed: 043-reserved-schema-continuity (schema now v43)
+[v0] [Migrations] Running: 044-reserved-schema-continuity (v44)
+[v0] Migration 044: no-op schema continuity marker
+[v0] [Migrations] ✓ Completed: 044-reserved-schema-continuity (schema now v44)
+[v0] [Migrations] Running: 045-rebuild-connection-list-cache (v45)
+[v0] Migration 045: rebuilt all_connections from 11 connection hashes
+[v0] [Migrations] ✓ Completed: 045-rebuild-connection-list-cache (schema now v45)
+[v0] [Migrations] Running: 046-volume-step-ratio-defaults (v46)
+[v0] Migration 046: seeded volume_step_ratio=0.6 defaults
+[v0] [Migrations] ✓ Completed: 046-volume-step-ratio-defaults (schema now v46)
+[v0] [Migrations] Running: 047-clear-stale-engine-restart-flags (v47)
+[v0] Migration 047: cleared stale restart flags from 0 trade-engine state hashes
+[v0] [Migrations] ✓ Completed: 047-clear-stale-engine-restart-flags (schema now v47)
+[v0] [Migrations] Running: 048-clear-stale-engine-reload-flags (v48)
+[v0] Migration 048: cleared orphaned reload flags from 0 trade-engine state hashes
+[v0] [Migrations] ✓ Completed: 048-clear-stale-engine-reload-flags (schema now v48)
+[v0] [Migrations] Running: 049-strip-template-connection-overhead (v49)
+[v0] Migration 049: stripped 10 overhead keys from 10 template connections
+[v0] [Migrations] ✓ Completed: 049-strip-template-connection-overhead (schema now v49)
+[v0] [Migrations] Running: 050-3-symbol-mode (v50)
+[v0] Migration 050: dev 3-symbol mode applied (BTCUSDT,ETHUSDT,SOLUSDT)
+[v0] [Migrations] ✓ Completed: 050-3-symbol-mode (schema now v50)
+[v0] [Migrations] Running: 051-bingx-x01-operational-state (v51)
+[v0] Migration 051: bingx-x01 operational state fixed (vol=2.2, is_live_trade=1, is_assigned=1)
+[v0] [Migrations] ✓ Completed: 051-bingx-x01-operational-state (schema now v51)
+[v0] [Migrations] Running: 052-bingx-x01-enable-live-trade (v52)
+[v0] Migration 052: bingx-x01 is_live_trade=1 live_trade_enabled=1
+[v0] [Migrations] ✓ Completed: 052-bingx-x01-enable-live-trade (schema now v52)
+[v0] [Migrations] Running: 053-1-symbol-btcusdt-pin (v53)
+[v0] Migration 053: dev 1-symbol OOM-survival mode applied (BTCUSDT)
+[v0] [Migrations] ✓ Completed: 053-1-symbol-btcusdt-pin (schema now v53)
+[v0] [Migrations] Running: 054-dual-connection-always-inited (v54)
+[v0] Migration 054: dual-connection bootstrap — bybit-x03 wiped for fresh seed, bingx-x01 flags ensured
+[v0] [Migrations] ✓ Completed: 054-dual-connection-always-inited (schema now v54)
+[v0] [Migrations] Running: 055-default-volume-0.1-and-6-symbols-by-volatility (v55)
+[v0] Migration 055: defaults updated — volume_factor=0.1, symbol_count=12 symbol_order=volatility_1h; cleared force/active symbol overrides
+[v0] [Migrations] ✓ Completed: 055-default-volume-0.1-and-6-symbols-by-volatility (schema now v55)
+[v0] [Migrations] Running: 056-normalize-variant-toggles (v56)
+[v0] Migration 056: normalized variant toggles (dca OFF by default) — app_settings seeded [none]; bingx-x01 seeded [none]; bybit-x03 seeded [none]
+[v0] [Migrations] ✓ Completed: 056-normalize-variant-toggles (schema now v56)
+[v0] [Migrations] Running: 057-symbol-count-repin (v57)
+[v0] Migration 057: dev multi-symbol repin — symbol_count=12 volatility_1h
+[v0] [Migrations] ✓ Completed: 057-symbol-count-repin (schema now v57)
+[v0] [Migrations] Running: 058-indication-tracking-fields (v58)
+[v0] Migration 058: seeded indication_sets_total/at_limit on 0/11 progression hashes
+[v0] [Migrations] ✓ Completed: 058-indication-tracking-fields (schema now v58)
+[v0] [Migrations] Running: 059-multi-symbol-support (v59)
+[v0] Migration 059: dev 12-symbol volatility_1h
+[v0] [Migrations] ✓ Completed: 059-multi-symbol-support (schema now v59)
+[v0] [Migrations] Running: 060-purge-ghost-connection-hashes (v60)
+[v0] Migration 060: deleted ghost key connection:bybit-x03
+[v0] Migration 060: purged 1 ghost connection hashes
+[v0] [Migrations] ✓ Completed: 060-purge-ghost-connection-hashes (schema now v60)
+[v0] [Migrations] Running: 061-purge-multi-symbol-stale-state (v61)
+[v0] Migration 061: purged 1 stale multi-symbol keys (kept BTCUSDT)
+[v0] [Migrations] ✓ Completed: 061-purge-multi-symbol-stale-state (schema now v61)
+[v0] [Migrations] Running: 062-separate-main-assignment-from-processing (v62)
+[v0] Migration 062: separated assignment from processing; backfilled 0 legacy active-only row(s), indexed 1 processing-enabled row(s)
+[v0] [Migrations] ✓ Completed: 062-separate-main-assignment-from-processing (schema now v62)
+[v0] [Migrations] Running: 063-reset-legacy-indication-snapshots (v63)
+[v0] Migration 063: reset 0 legacy/stale indication snapshot key(s)
+[v0] [Migrations] ✓ Completed: 063-reset-legacy-indication-snapshots (schema now v63)
+[v0] [Migrations] Running: 064-split-raw-and-set-indication-snapshots (v64)
+[v0] Migration 064: cleared 0 conflicting raw/set indication snapshot key(s)
+[v0] [Migrations] ✓ Completed: 064-split-raw-and-set-indication-snapshots (schema now v64)
+[v0] [Migrations] Running: 065-dev-prod-database-health-metadata (v65)
+[v0] Migration 065: recorded development database health metadata at schema v93
+[v0] [Migrations] ✓ Completed: 065-dev-prod-database-health-metadata (schema now v65)
+[v0] [Migrations] Running: 066-bingx-sdk-fast-order-default (v66)
+[v0] Migration 066: bingx-x01 uses the bingx-api library fast path by default
+[v0] [Migrations] ✓ Completed: 066-bingx-sdk-fast-order-default (schema now v66)
+[v0] [Migrations] Running: 067-strategy-flow-concurrency-performance-defaults (v67)
+[v0] Migration 067: seeded DB-backed strategy-flow concurrency defaults for dev/prod
+[v0] [Migrations] ✓ Completed: 067-strategy-flow-concurrency-performance-defaults (schema now v67)
+[v0] [Migrations] Running: 068-4-symbol-live-trade-defaults (v68)
+[v0] Migration 068: missing 4-symbol/live-trade defaults filled without overwriting operator settings
+[v0] [Migrations] ✓ Completed: 068-4-symbol-live-trade-defaults (schema now v68)
+[v0] [Migrations] Running: 069-sync-exchange-position-cost-keys (v69)
+[v0] [Migrations] ✓ Completed: 069-sync-exchange-position-cost-keys (schema now v69)
+[v0] [Migrations] Running: 070-stable-site-instance-and-portable-minute-continuity (v70)
+[v0] [Migrations] ✓ Completed: 070-stable-site-instance-and-portable-minute-continuity (schema now v70)
+[v0] [Migrations] Running: 071-unified-database-maintenance-and-secondary-indexes (v71)
+[v0] [Migrations] ✓ Completed: 071-unified-database-maintenance-and-secondary-indexes (schema now v71)
+[v0] [Migrations] Running: 072-subsecond-live-coordination-profile (v72)
+[v0] Migration 072: applied sub-second Live/Strategy coordination defaults without replacing custom timing values
+[v0] [Migrations] ✓ Completed: 072-subsecond-live-coordination-profile (schema now v72)
+[v0] [Migrations] Running: 073-balanced-multisymbol-strategy-budgets (v73)
+[v0] Migration 073: applied balanced 12-symbol Strategy budgets without replacing custom values
+[v0] [Migrations] ✓ Completed: 073-balanced-multisymbol-strategy-budgets (schema now v73)
+[v0] [Migrations] Running: 074-trend-indication-adaptive-base-ranges (v74)
+[v0] Migration 074: seeded Trend indication and adaptive Base TP defaults without replacing operator values
+[v0] [Migrations] ✓ Completed: 074-trend-indication-adaptive-base-ranges (schema now v74)
+[v0] [Migrations] Running: 075-bound-high-frequency-statistics-storage (v75)
+[v0] Migration 075: removed 0 legacy high-frequency statistic rows
+[v0] [Migrations] ✓ Completed: 075-bound-high-frequency-statistics-storage (schema now v75)
+[v0] [Migrations] Running: 076-dynamic-symbol-selection-default-one (v76)
+[v0] Migration 076: defaulted dynamic selection to one symbol; normalized=1
+[v0] [Migrations] ✓ Completed: 076-dynamic-symbol-selection-default-one (schema now v76)
+[v0] [Migrations] Running: 077-indexed-current-indication-snapshots (v77)
+[v0] Migration 077: indexed 0 current indication symbol snapshots
+[v0] [Migrations] ✓ Completed: 077-indexed-current-indication-snapshots (schema now v77)
+[v0] [Migrations] Running: 078-coherent-strategy-set-snapshots (v78)
+[v0] Migration 078: removed stale fields=0, unsafe Real/Live snapshots=0
+[v0] [Migrations] ✓ Completed: 078-coherent-strategy-set-snapshots (schema now v78)
+[v0] [Migrations] Running: 079-repair-hourly-statistics-rollups (v79)
+[v0] Migration 079: removed 0 post-075 high-frequency statistic rows
+[v0] [Migrations] ✓ Completed: 079-repair-hourly-statistics-rollups (schema now v79)
+[v0] [Migrations] Running: 080-index-exact-strategy-set-ledgers-and-minute-snapshots (v80)
+[v0] Migration 080: indexed exact=0, active=0, closed=0
+[v0] [Migrations] ✓ Completed: 080-index-exact-strategy-set-ledgers-and-minute-snapshots (schema now v80)
+[v0] [Migrations] Running: 081-seed-independent-block-profit-factor-ratio (v81)
+[v0] Migration 081: seeded independent Block PF ratio in 42 settings hashes
+[v0] [Migrations] ✓ Completed: 081-seed-independent-block-profit-factor-ratio (schema now v81)
+[v0] [Migrations] Running: 082-normalize-live-minimum-ratio-and-position-cost (v82)
+[v0] Migration 082: positionCost=189, volumeRatio=376, posCounts=63
+[v0] [Migrations] ✓ Completed: 082-normalize-live-minimum-ratio-and-position-cost (schema now v82)
+[v0] [Migrations] Running: 083-enforce-identity-live-volume-ratios (v83)
+[v0] Migration 083: normalized=23, identity defaults seeded=9
+[v0] [Migrations] ✓ Completed: 083-enforce-identity-live-volume-ratios (schema now v83)
+[v0] [Migrations] Running: 084-freeze-base-volume-coordination-at-identity (v84)
+[v0] Migration 084: base normalized=0, seeded=63, nested=0
+[v0] [Migrations] ✓ Completed: 084-freeze-base-volume-coordination-at-identity (schema now v84)
+[v0] [Migrations] Running: 085-main-trade-position-cost-ratio-four-stage (v85)
+[v0] [Migrations] ✓ Completed: 085-main-trade-position-cost-ratio-four-stage (schema now v85)
+[v0] [Migrations] Running: 086-exhaustive-indication-base-and-block-only-defaults (v86)
+[v0] [Migrations] ✓ Completed: 086-exhaustive-indication-base-and-block-only-defaults (schema now v86)
+[v0] [Migrations] Running: 087-signal-bootstrap-direction-lanes-and-strategy-rows (v87)
+[v0] [Migrations] ✓ Completed: 087-signal-bootstrap-direction-lanes-and-strategy-rows (schema now v87)
+[v0] [Migrations] Running: 088-repair-exhaustive-indications-signal-capacity-and-stage-caps (v88)
+[v0] [Migrations] ✓ Completed: 088-repair-exhaustive-indications-signal-capacity-and-stage-caps (schema now v88)
+[v0] [Migrations] Running: 089-signal-full-source-cycle-and-base-pf-floor (v89)
+[v0] [Migrations] ✓ Completed: 089-signal-full-source-cycle-and-base-pf-floor (schema now v89)
+[v0] [Migrations] Running: 090-base-valid-and-signal-admission-contract (v90)
+[v0] [Migrations] ✓ Completed: 090-base-valid-and-signal-admission-contract (schema now v90)
+[v0] [Migrations] Running: 091-unlimited-stage-rows-cadence-and-block-work-scheduler (v91)
+[v0] [Migrations] ✓ Completed: 091-unlimited-stage-rows-cadence-and-block-work-scheduler (schema now v91)
+[v0] [Migrations] Running: 092-exact-indication-cadence-and-unlimited-preset-types (v92)
+[v0] [Migrations] ✓ Completed: 092-exact-indication-cadence-and-unlimited-preset-types (schema now v92)
+[v0] [Migrations] Running: 093-pf-floor-and-continuous-row-live-defaults (v93)
+[v0] [Migrations] ✓ Completed: 093-pf-floor-and-continuous-row-live-defaults (schema now v93)
+[v0] [Migrations] ✓ Verification: Schema version is now 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Migrations] ✓ Ensured 1 base connections; injected credentials for 0
+[v0] [Redis Memory] Volatile startup cleanup (initRedis): deleted 4 keys, preserved 241
+ GET /api/system/init-status 200 in 602ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 607ms
+ GET /api/system/monitoring 200 in 631ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 637ms
+ GET /api/indications/config-counts 200 in 646ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 651ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 658ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 670ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 675ms
+ GET /api/connections/bingx-x01/engine-states 200 in 734ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 832ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 399ms
+ GET /api/system/init-status 200 in 575ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 584ms
+ GET /api/system/monitoring 200 in 600ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 611ms
+ GET /api/indications/config-counts 200 in 621ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 625ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 632ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 648ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 654ms
+ GET /api/connections/bingx-x01/engine-states 200 in 709ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 807ms
+ GET /api/debug/progression-dump?id=bingx-x01 200 in 142ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 298ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 455ms
+ GET /api/system/monitoring 200 in 469ms
+ GET /api/system/init-status 200 in 476ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 483ms
+ GET /api/indications/config-counts 200 in 487ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 484ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 489ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 499ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 505ms
+ GET /api/connections/bingx-x01/engine-states 200 in 581ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 690ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 403ms
+ GET /api/system/init-status 200 in 561ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 567ms
+ GET /api/system/monitoring 200 in 595ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 605ms
+ GET /api/indications/config-counts 200 in 613ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 617ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 623ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 636ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 643ms
+ GET /api/connections/bingx-x01/engine-states 200 in 702ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 804ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 368ms
+ GET /api/system/init-status 200 in 532ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 539ms
+ GET /api/system/monitoring 200 in 552ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 549ms
+ GET /api/indications/config-counts 200 in 557ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 563ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 571ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 577ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 591ms
+ GET /api/connections/bingx-x01/engine-states 200 in 666ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 782ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [ConfigSetProcessor] Initializing config sets for bingx-x01
+[v0] [ConfigSetProcessor] Found 12393 existing indication configs
+[v0] [ConfigSetProcessor] Found 32 existing strategy configs
+[v0] [CronIndications] Historic generation superseded; handing off to the newer owner
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 824ms
+ GET /api/system/init-status 200 in 979ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 988ms
+ GET /api/system/monitoring 200 in 1004ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 1011ms
+ GET /api/indications/config-counts 200 in 1018ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 1023ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 1028ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 1038ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 1044ms
+ GET /api/connections/bingx-x01/engine-states 200 in 1130ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 1241ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [LivePositionStage] [sync-skip] conn=bingx-x01 live_trade=false; skipped private exchange sync, tracked=0, simProcessed=0, simClosed=0, statuses={} [126 repetitive messages coalesced]
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 491ms
+ GET /api/system/init-status 200 in 678ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 688ms
+ GET /api/system/monitoring 200 in 717ms
+ GET /api/indications/config-counts 200 in 728ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 737ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 742ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 749ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 765ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 772ms
+ GET /api/connections/bingx-x01/engine-states 200 in 809ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 922ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 384ms
+ GET /api/system/init-status 200 in 580ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 586ms
+ GET /api/system/monitoring 200 in 599ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 606ms
+ GET /api/indications/config-counts 200 in 612ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 615ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 620ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 632ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 636ms
+ GET /api/connections/bingx-x01/engine-states 200 in 705ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 820ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 331ms
+ GET /api/system/init-status 200 in 465ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 471ms
+ GET /api/system/monitoring 200 in 485ms
+ GET /api/indications/config-counts 200 in 492ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 499ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 502ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 507ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 521ms
+ GET /api/connections/bingx-x01/engine-states 200 in 592ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 631ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 704ms
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 400ms
+ GET /api/system/init-status 200 in 547ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 554ms
+ GET /api/system/monitoring 200 in 577ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 583ms
+ GET /api/indications/config-counts 200 in 588ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 592ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 598ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 608ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 612ms
+ GET /api/connections/bingx-x01/engine-states 200 in 657ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 755ms
+[v0] [getSymbols] bingx-x01: using force_symbols (12 symbols) [2 repetitive messages coalesced]
+[v0] [getSymbols] bingx-x01: effective force_symbols (12 symbols) [2 repetitive messages coalesced]
+[v0] [MarketData] 7/12 requested symbols cached; loading 5 missing
+[v0] [MarketData] Loading 1s market data for 5 symbols (1-day window, parallel)...
+[v0] [MarketData] Will try to fetch REAL 1s intervals from exchanges first...
+[v0] [MarketData] ⚠ Using synthetic data for BTCUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ BTCUSDT: $65260.69 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for ETHUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ ETHUSDT: $3485.58 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for SOLUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ SOLUSDT: $165.18 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for XRPUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ XRPUSDT: $0.55 (synthetic) (5400 intervals)
+[v0] [MarketData] ⚠ Using synthetic data for BNBUSDT (exchange 1s fetch failed)
+[v0] [MarketData] ✓ BNBUSDT: $622.98 (synthetic) (5400 intervals)
+[v0] [MarketData] ✅ Loaded 5/5 symbols
+[v0] [MarketData]    Real data: 0 | Synthetic: 5
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 431ms
+ GET /api/system/init-status 200 in 688ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 695ms
+ GET /api/system/monitoring 200 in 713ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 724ms
+ GET /api/indications/config-counts 200 in 732ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 734ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 742ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 763ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 772ms
+ GET /api/connections/bingx-x01/engine-states 200 in 861ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 986ms
+[v0] [WARNING] [prehistoric_recoordination] Symbol/settings generation changed; old historic work cancelled and replacement queued {"reason":"canonical symbol selection changed during historic bootstrap","engineEpoch":1786155073777,"bootstrapGeneration":2}
+[v0] [WARNING] [prehistoric_bootstrap_superseded] Historic bootstrap stopped because a newer settings/symbol generation took ownership {"bootstrapGeneration":1,"engineEpoch":1786155073777,"reason":"startup"}
+[v0] [Progression] bingx-x01: prehistoric_data @ 15% - Prehistoric calc starting — queued settings recoordination [2 repetitive messages coalesced]
+[v0] [Prehistoric] ▶ scan: 12 symbols | range=8h | timeframe=1s
+[v0] [ConfigSetProcessor] Initializing config sets for bingx-x01
+[v0] [ConfigSetProcessor] Found 12393 existing indication configs
+[v0] [ConfigSetProcessor] Found 32 existing strategy configs
+[v0] [ConfigSetProcessor] ▶ prehistoric start | symbols=12 canonicalTotal=12 | range=2026-08-07T18:12:16.059Z → 2026-08-08T02:12:16.059Z | timeframe=1s | symbolConcurrency=1 | configTypeConcurrency=2 | configConcurrency=2
+[v0] [ConfigSetProcessor] loaded exhaustive bootstrap grids: 12393 indication configs, 32 strategy configs (in 144ms)
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+[v0] IndicationProcessor v5.0.1 loaded at 1712361660000
+[v0] [Redis Memory] VM=12221MB usable=10721MB → heapTrigger=6433MB rssSoft=7719MB rssHard=8791MB maxKeys=51255
+[v0] Global Trade Engine V4.2.0 loading with cache patch...
+[v0] Global Trade Engine V5.2.0 loaded
+[v0] [Redis Persistence] Restored 241 keys from /tmp/cts-dev-preview-4039.json
+[v0] [Migrations] Already at latest version 93
+[v0] [Boot] Pinned symbol_count=12 (volatility_1h) across all key namespaces
+ GET /api/health 200 in 475ms
+ GET /api/system/init-status 200 in 642ms
+[v0] ConnectionCoordinator already initialized
+ GET /api/system/status 200 in 652ms
+ GET /api/system/monitoring 200 in 669ms
+[v0] Fetching all trade engine statuses
+[v0] Engine status: 1/1 running
+ GET /api/trade-engine/status-all 200 in 676ms
+ GET /api/indications/config-counts 200 in 681ms
+ GET /api/trading/trade-history?connection_id=bingx-x01&limit=500 200 in 683ms
+ GET /api/logistics/queue?connectionId=bingx-x01 200 in 675ms
+ GET /api/trading/live-positions?connection_id=bingx-x01&closedLimit=500 200 in 693ms
+ GET /api/preset-optimizer?connectionId=bingx-x01 200 in 701ms
+ GET /api/connections/bingx-x01/engine-states 200 in 784ms
+ GET /api/connections/progression/bingx-x01/stats 200 in 912ms
+ GET /api/debug/progression-dump?id=bingx-x01 200 in 257ms
+[?25h
+
