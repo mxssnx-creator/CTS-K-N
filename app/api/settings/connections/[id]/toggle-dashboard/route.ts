@@ -15,7 +15,7 @@ import { SystemLogger } from "@/lib/system-logger"
 // POST toggle connection active status (inserted/enabled) - INDEPENDENT from Settings
 // When enabling, also triggers engine start for this connection
 export const dynamic = "force-dynamic"
-export const maxDuration = 15
+export const maxDuration = 300
 
 async function queueCoordinatorRefresh(connectionId: string, action: "start" | "stop", reason: string, stateSwitchVersion?: string) {
   const payload = {

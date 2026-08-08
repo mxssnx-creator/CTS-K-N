@@ -503,12 +503,14 @@ async function handlePost(request: Request) {
     // Step 1: Test connection (only if credentials exist)
     console.log(`${LOG_PREFIX}: [1/4] Testing connection...`)
     let testPassed = false
+    let testSkipped = false
     let testError = ""
     let testBalance = null
     let testDuration = 0
     
     if (!hasCredentials) {
       console.log(`${LOG_PREFIX}: [1/4] SKIPPED - No API credentials configured`)
+      testSkipped = true
       testError = "No API credentials configured. Add credentials in Settings to enable trading."
       await logProgressionEvent(connectionId, "quickstart_test_skipped", "warning", "Test skipped - no credentials", {
         message: "Add API key and secret in Settings to enable trading",
@@ -1457,8 +1459,11 @@ async function handlePost(request: Request) {
           exchange: exchangeName,
           symbols,
           testPassed,
+          testSkipped,
           detail: testPassed 
             ? "Starting Main Trade Engine..."
+            : testSkipped
+            ? "Connection test skipped (no credentials). Engine starting in simulation mode."
             : `Connection test failed: ${testError}. Fix credentials and retry.`,
           updated_at: new Date().toISOString(),
         })
@@ -1542,25 +1547,27 @@ async function handlePost(request: Request) {
     
     // Store in global quickstart state
     await client.set("quickstart:last_run", JSON.stringify({
-      connectionId,
-      connectionName: connection.name,
-      exchange: exchangeName,
-      testPassed,
-      testError: testError || undefined,
-      symbols,
-      timestamp: new Date().toISOString(),
+       connectionId,
+       connectionName: connection.name,
+       exchange: exchangeName,
+       testPassed,
+       testSkipped,
+       testError: testError || undefined,
+       symbols,
+       timestamp: new Date().toISOString(),
     }), { EX: 86400 })
     
-    await logProgressionEvent(connectionId, "quickstart_complete", "info", "QuickStart completed successfully", {
-      testPassed,
-      symbols,
-      totalDuration: Date.now() - startTime,
-    })
+     await logProgressionEvent(connectionId, "quickstart_complete", "info", "QuickStart completed successfully", {
+       testPassed,
+       testSkipped,
+       symbols,
+       totalDuration: Date.now() - startTime,
+     })
     
     const totalDuration = Date.now() - startTime
     console.log(`${LOG_PREFIX}: === QUICKSTART COMPLETE ===`)
     console.log(`${LOG_PREFIX}: Connection: ${connection.name}`)
-    console.log(`${LOG_PREFIX}: Test: ${testPassed ? "PASSED" : "FAILED"}`)
+    console.log(`${LOG_PREFIX}: Test: ${testPassed ? "PASSED" : testSkipped ? "SKIPPED - no credentials" : "FAILED"}`)
     console.log(`${LOG_PREFIX}: Symbols: ${symbols.join(", ")}`)
     console.log(`${LOG_PREFIX}: Duration: ${totalDuration}ms`)
     
@@ -1735,6 +1742,7 @@ async function handlePost(request: Request) {
         exchange: exchangeName,
         symbols,
         testPassed,
+        testSkipped,
         testError: testError || undefined,
         testBalance,
         liveTradeRequested,

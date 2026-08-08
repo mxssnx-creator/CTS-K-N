@@ -81,6 +81,25 @@ async function request(pathname, {
   return { json, latencyMs: Date.now() - started }
 }
 
+async function requestWithRetry(pathname, options = {}, maxRetries = 3) {
+  let lastError
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await request(pathname, options)
+    } catch (error) {
+      lastError = error
+      if (error instanceof Error && error.message && error.message.includes("fetch failed")) {
+        if (attempt < maxRetries) {
+          await sleep(Math.min(10_000, attempt * 3_000))
+          continue
+        }
+      }
+      throw error
+    }
+  }
+  throw lastError
+}
+
 function finiteNonNegative(value, label) {
   if (value == null) return 0
   const number = Number(value)
@@ -1160,7 +1179,7 @@ async function main() {
   if (START_SIMULATED_ENGINE && process.env.VERIFY_CONNECTION_TOGGLE !== "0") {
     const finalBeforeToggle = progression.at(-1)
     const togglePath = `/api/settings/connections/${encodeURIComponent(connectionId)}/toggle-dashboard`
-    const disabled = (await request(togglePath, {
+    const disabled = (await requestWithRetry(togglePath, {
       method: "POST",
       body: { enabled: false },
       timeoutMs: 120_000,
@@ -1181,7 +1200,7 @@ async function main() {
       throw new Error(`Detailed Logs did not show disabled lifecycle: ${disabledMonitor.status}`)
     }
 
-    const reenabled = (await request(togglePath, {
+    const reenabled = (await requestWithRetry(togglePath, {
       method: "POST",
       body: { enabled: true },
       timeoutMs: 120_000,
