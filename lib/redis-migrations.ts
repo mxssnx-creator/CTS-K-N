@@ -6272,15 +6272,35 @@ const migrations: Migration[] = [
         await normalizeHash(key)
       }
       for (const id of connectionIds) {
-        for (const key of [
+        const relatedKeys = [
           `connection:${id}`,
           `settings:connection:${id}`,
           `connection_settings:${id}`,
           `settings:connection_settings:${id}`,
           `trade_engine_state:${id}`,
           `settings:trade_engine_state:${id}`,
-        ]) {
+        ]
+        for (const key of relatedKeys) {
           await normalizeHash(key)
+        }
+
+        // Preserve an operator-pinned QuickStart basket across maintenance
+        // migrations and boot-time normalization. Older rows can store the
+        // same setting under any of the canonical aliases, so recover the
+        // first non-empty pin and mirror it without inventing a new basket.
+        const pinnedSymbols = (
+          await (async () => {
+            for (const key of relatedKeys) {
+              const value = await client.hget(key, "force_symbols").catch(() => null)
+              if (typeof value === "string" && value.trim() !== "") return value
+            }
+            return null
+          })()
+        )
+        if (pinnedSymbols) {
+          await Promise.all(relatedKeys.map((key) =>
+            client.hset(key, { force_symbols: pinnedSymbols }).catch(() => 0),
+          ))
         }
       }
 
@@ -6673,6 +6693,21 @@ if (!hasExisting) {
     }
     // Always re-assert index membership; HSET above doesn't manage it.
     await client.sadd("connections", cfg.id)
+
+    // Keep an explicit QuickStart basket authoritative across every canonical
+    // settings alias. This runs after all boot repairs, so a later default
+    // sync cannot erase a pin that was present on the existing connection.
+    const pinnedSymbols = typeof existing.force_symbols === "string" && existing.force_symbols.trim() !== ""
+      ? existing.force_symbols
+      : null
+    if (pinnedSymbols) {
+      await Promise.all([
+        `settings:trade_engine_state:${cfg.id}`,
+        `settings:connection:${cfg.id}`,
+        `connection_settings:${cfg.id}`,
+        `settings:connection_settings:${cfg.id}`,
+      ].map((key) => client.hset(key, { force_symbols: pinnedSymbols }).catch(() => 0)))
+    }
     await ensureBlockProfitFactorDefault(cfg.id)
 
     if (didChange) createdOrUpdated++
