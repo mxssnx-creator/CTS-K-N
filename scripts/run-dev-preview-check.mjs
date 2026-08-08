@@ -33,14 +33,16 @@ const devSoakDurationMs = process.env.DEV_SOAK_DURATION_MS
   ? Number(process.env.DEV_SOAK_DURATION_MS)
   : Math.max(90_000, 60_000 + devSoakSymbolCount * 10_000)
 // The regular interactive dev command intentionally stays at 4 GiB. The
-// default dev-preview path is the memory-fitting smoke mode for constrained
-// hosts (the exhaustive stress soak is opt-in via DEV_PREVIEW_FULL_SOAK=1),
-// so default to a heap that fits an ~8 GiB container with headroom for the
-// Next compiler workers and the in-process Redis. The full soak / a larger
-// host can raise it with DEV_NODE_HEAP_MB.
+// default dev-preview path boots the full Base->Main->Real->Live pipeline
+// (Next compiler + in-process Redis + engine working set) in one Node
+// process; its transient peak exceeds a sub-8 GiB heap and triggers a GC
+// death-loop that starves the soak. Default to a 12 GiB heap so a full
+// smoke pass completes on dev/production hosts (~15-16 GiB); the exhaustive
+// stress soak is opt-in via DEV_PREVIEW_FULL_SOAK=1. A constrained host can
+// lower it with DEV_NODE_HEAP_MB (CI smoke pins it to 4096).
 const devNodeHeapMb = Math.max(
   4096,
-  Math.min(12288, Number(process.env.DEV_NODE_HEAP_MB || 6144)),
+  Math.min(12288, Number(process.env.DEV_NODE_HEAP_MB || 12288)),
 )
 let outputTail = ""
 
