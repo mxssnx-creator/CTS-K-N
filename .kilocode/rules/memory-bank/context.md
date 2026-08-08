@@ -897,3 +897,14 @@ credentials are present.
 - [x] Added `/api/trade-engine/[connectionId]/status` with connection-scoped running state, distributed heartbeat freshness, cycle metrics, progression counters, and component health for the monitoring UI.
 - [x] TypeScript, ESLint, focused regression/continuity/direct-trade tests (193 tests), six-sample runtime health/status stability check, and mobile Settings UI verification passed.
 - [ ] Live order placement was not activated or claimed during this pass; runtime verification used existing guarded engine state and did not submit an exchange order.
+
+## Session 2026-08-08 — Direct-Trade verification, migration & dev-preview fixes
+
+- [x] Ran full Jest suite: 139 suites / 953 tests PASS (incl. all 9 Direct-Trade and QuickStart suites). `bun typecheck` and `bun lint` clean. Production `pnpm run build` succeeds (all routes incl. `/statistics/direct-trade`, 347 trace files).
+- [x] FIXED dev-preview code error: `app/api/trade-engine/quick-start/route.ts` previously cleared an explicit `symbols` array whenever `symbolCount` was also sent, forcing volatile auto-pick. Now an explicit symbol array wins; the verifier's "QuickStart did not preserve the requested 12-symbol set" assertion passes and the soak ran 30 healthy rounds with all endpoints 200.
+- [x] FIXED `lib/redis-migrations.ts ensureBaseConnections`: the existing-connection repair no longer seeds `symbol_order=volatility_1h` over an existing operator `force_symbols` pin (which the dev-boot guard then treated as a stale fixture and cleared). Preserves explicit QuickStart baskets across boots. Migration-080 symbol-basket test now passes.
+- [x] Removed stray `workspace` gitlink (mode 160000) committed in `d5b4d60`; added `workspace/` to `.gitignore` so clones are not broken.
+- [x] Updated stale `requested-regressions` assertion to ownership-based running-state derivation (`localManagerRunning || remoteWorkerRunning`) matching the refactored `status-all/route.ts`.
+- [x] Fixed `lib/exchange-connectors/bingx-connector.ts` two implicit-`any` typecheck errors.
+- [ ] NOTE — dev-preview soak OOM is environmental, not a Direct-Trade bug: the soak runs the exhaustive engine with in-process (simulated) Redis + Next dev in one ~8 GB container; RSS grows ~100 MB/round tracking Redis key growth and the process is OOM-killed around round 31 (~7.5 GB) regardless of symbol count (2 or 12). The verifier's own plateau/leak checks would flag the unbounded key/RSS series, but the process dies first. Production uses a real Redis server + real memory, so this does not affect deployed behavior. Re-verify on a host with a real Redis / higher memory ceiling.
+- [ ] Live order placement not activated; validation used paper/simulated mode only.
