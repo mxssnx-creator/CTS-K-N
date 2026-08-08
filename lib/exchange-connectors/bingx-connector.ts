@@ -2393,12 +2393,29 @@ export class BingXConnector extends BaseExchangeConnector {
   }
 
   /**
-   * ── 1-second OHLCV (spec §7) ─────���────────────────────────────────
+   * ── 1-second OHLCV (spec §7) ─────────────────────────────────────────
    *
-   * Aggregates from BingX trade history. Spot uses
-   * `/openApi/spot/v1/market/trades`, swap uses
-   * `/openApi/swap/v2/quote/trades`. Both cap at ~500 trades and
-   * return newest-first. Coverage is best-effort.
+   * Aggregates from BingX trade history. A single "recent trades" call
+   * (`/openApi/spot/v1/market/trades` or `/openApi/swap/v2/quote/trades`)
+   * caps at ~500 rows — on a liquid symbol that can be as little as a few
+   * seconds of coverage, which can NEVER satisfy the 90-minute
+   * (`ENGINE_STAGE_HISTORY_MINUTES`) bootstrap gate. To actually backfill
+   * real coverage we page backward in time using the `fromId` cursor on
+   * the historical-trades endpoints:
+   *   - swap: `/openApi/swap/v1/market/historicalTrades` (max 100/page)
+   *   - spot: `/openApi/market/his/v1/trade` (max 500/page)
+   * Both endpoints return trades ascending by `id`/time. We seed the
+   * cursor from the most recent trade id, then walk `fromId` backward
+   * until we cover `startMs` or hit the iteration/row cap.
+   *
+   * IMPORTANT: unlike the "recent trades" endpoints, BingX's
+   * historical-trades endpoints are signed — every request needs a
+   * `timestamp` + HMAC-SHA256 `signature` over the sorted query string,
+   * or BingX rejects it. An unsigned call to these endpoints fails
+   * silently (non-OK response), which previously made pagination break
+   * after the very first page and left coverage stuck at whatever the
+   * single unsigned "recent trades" seed call happened to return
+   * (~100 candles on swap) — nowhere near the 5,400-sample gate.
    */
   async getOHLCV1s(
     symbol: string,
@@ -2412,23 +2429,106 @@ export class BingXConnector extends BaseExchangeConnector {
       if (apiType !== "spot" && !symbol.includes("-")) {
         bingxSymbol = symbol.replace("USDT", "-USDT").replace("USDC", "-USDC")
       }
-      const endpoint = apiType === "spot"
+      const isSpot = apiType === "spot"
+      const recentEndpoint = isSpot
         ? `/openApi/spot/v1/market/trades?symbol=${bingxSymbol}&limit=500`
         : `/openApi/swap/v2/quote/trades?symbol=${bingxSymbol}&limit=500`
-      const resp = await this.rateLimitedFetch(`${baseUrl}${endpoint}`, {
-        headers: { "X-BX-APIKEY": this.credentials.apiKey },
-      })
-      if (!resp.ok) return null
-      const data = await resp.json()
-      const rows = Array.isArray(data?.data) ? data.data : []
-      if (rows.length === 0) return []
+      const historyPath = isSpot ? "/openApi/market/his/v1/trade" : "/openApi/swap/v1/market/historicalTrades"
+      const pageLimit = isSpot ? 500 : 100
+      const headers = { "X-BX-APIKEY": this.credentials.apiKey }
+      const buildSignedHistoryUrl = (fromId: number): string => {
+        const params: Record<string, any> = {
+          symbol: bingxSymbol,
+          limit: pageLimit,
+          fromId,
+          timestamp: this.getTimestamp(),
+        }
+        const { signature, queryString } = this.signParams(params)
+        return `${baseUrl}${historyPath}?${queryString}&signature=${signature}`
+      }
+
+      // BingX's trade-id field name is inconsistent across endpoints and is
+      // returned as a numeric STRING, not a number — e.g. swap "recent
+      // trades" (`/openApi/swap/v2/quote/trades`) uses `fillId: "7283905"`
+      // while swap `historicalTrades` uses `id: "7283962"`. Coercing with
+      // `Number()` and checking `Number.isFinite` (not `typeof === "number"`)
+      // is required, otherwise every row's id resolves to `null`, `minId`
+      // never becomes a number, and the pagination loop below never runs a
+      // single iteration — silently capping coverage at whatever the single
+      // unsigned seed call returned (~100 trades on swap).
+      const toRow = (r: any) => {
+        const rawId = r.id ?? r.a ?? r.fillId ?? r.tradeId ?? null
+        const id = rawId === null ? null : Number(rawId)
+        return {
+          id: Number.isFinite(id) ? (id as number) : null,
+          timestamp: Number(r.time ?? r.T ?? r.timestamp),
+          price: Number(r.price ?? r.p),
+          quantity: Number(r.qty ?? r.q ?? r.quoteQty ?? 0),
+        }
+      }
+
+      // Seed the cursor from the most recent trade so the first backward
+      // page starts right below it.
+      const seedResp = await this.rateLimitedFetch(`${baseUrl}${recentEndpoint}`, { headers })
+      if (!seedResp.ok) return null
+      const seedData = await seedResp.json()
+      const seedRows = (Array.isArray(seedData?.data) ? seedData.data : []).map(toRow)
+      if (seedRows.length === 0) return []
+
+      const allRows: ReturnType<typeof toRow>[] = [...seedRows]
+      let minId = seedRows.reduce(
+        (min: number | null, r) => (typeof r.id === "number" && (min === null || r.id < min) ? r.id : min),
+        null as number | null,
+      )
+      let oldestTs = Math.min(...seedRows.map((r) => r.timestamp).filter((t: number) => Number.isFinite(t)))
+      if (minId === null) {
+        this.log(`getOHLCV1s(${symbol}): seed rows have no usable trade id; cannot page backward, returning ${seedRows.length}-row seed only`)
+      }
+
+      // Page backward with fromId until coverage reaches startMs, the
+      // exchange runs out of history, or we hit the safety cap. Bounded at
+      // 90 pages (≈9,000 rows on swap) so a dead/illiquid symbol can't spin
+      // forever waiting for coverage that will never come.
+      const maxIterations = 90
+      let iterations = 0
+      while (
+        typeof minId === "number" &&
+        minId > 0 &&
+        Number.isFinite(oldestTs) &&
+        oldestTs > startMs &&
+        iterations < maxIterations
+      ) {
+        iterations++
+        const fromId = Math.max(0, minId - pageLimit)
+        const pageUrl = buildSignedHistoryUrl(fromId)
+        const resp = await this.rateLimitedFetch(pageUrl, { headers })
+        if (!resp.ok) {
+          this.log(`getOHLCV1s(${symbol}): historical-trades page ${iterations} failed (HTTP ${resp.status}); stopping backfill with ${allRows.length} rows`)
+          break
+        }
+        const data = await resp.json()
+        if (data && data.code !== undefined && !this.isBingXSuccess(data.code)) {
+          this.log(`getOHLCV1s(${symbol}): historical-trades page ${iterations} rejected (code=${data.code} msg=${data.msg}); stopping backfill with ${allRows.length} rows`)
+          break
+        }
+        const rows = (Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []).map(toRow)
+        if (rows.length === 0) break
+        allRows.push(...rows)
+        const pageMinId = rows.reduce(
+          (min: number | null, r: any) => (typeof r.id === "number" && (min === null || r.id < min) ? r.id : min),
+          null as number | null,
+        )
+        const pageOldestTs = Math.min(...rows.map((r: any) => r.timestamp).filter((t: number) => Number.isFinite(t)))
+        // Guard against a cursor that fails to advance (misbehaving page).
+        if (pageMinId === null || pageMinId >= minId) break
+        minId = pageMinId
+        if (Number.isFinite(pageOldestTs)) oldestTs = Math.min(oldestTs, pageOldestTs)
+      }
+
       const { aggregateTradesTo1sOHLCV } = await import("./aggregate-1s")
-      const trades = rows.map((r: any) => ({
-        // BingX uses `time` (spot) or `T` (swap) as timestamp; price `price`/`p`; qty `qty`/`q`/`quoteQty`.
-        timestamp: Number(r.time ?? r.T ?? r.timestamp),
-        price: Number(r.price ?? r.p),
-        quantity: Number(r.qty ?? r.q ?? r.quoteQty ?? 0),
-      }))
+      const trades = allRows
+        .filter((r) => Number.isFinite(r.timestamp) && Number.isFinite(r.price))
+        .map((r) => ({ timestamp: r.timestamp, price: r.price, quantity: r.quantity }))
       return aggregateTradesTo1sOHLCV(trades, startMs, endMs)
     } catch {
       return null

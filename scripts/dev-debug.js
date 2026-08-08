@@ -19,6 +19,16 @@ const env = {
   DEBUG_MODE: '1',
   LOG_LEVEL: verbose ? 'debug' : 'info',
   NEXT_TELEMETRY_DISABLED: '1',
+  // Keep dashboard debugging read-only unless the operator explicitly opts in.
+  NEXT_PUBLIC_ALLOW_BROWSER_BOOTSTRAP: process.env.NEXT_PUBLIC_ALLOW_BROWSER_BOOTSTRAP || '0',
+  NEXT_PUBLIC_DEV_AUTOSTART_COORDINATOR: process.env.NEXT_PUBLIC_DEV_AUTOSTART_COORDINATOR || '1',
+  // Keep the coordinator and continuity runner alive in debug mode so the
+  // progression pipeline can be exercised. Browser bootstrap remains disabled,
+  // preventing every dashboard refresh from reseeding the full dataset.
+  DISABLE_TRADE_ENGINE_AUTOSTART: process.env.DISABLE_TRADE_ENGINE_AUTOSTART || '0',
+  DISABLE_IN_PROCESS_CONTINUITY: process.env.DISABLE_IN_PROCESS_CONTINUITY || '0',
+  // Local coordinator debugging must never submit exchange orders.
+  ALLOW_LIVE_ORDER_PLACEMENT: '0',
 }
 
 console.log('[dev-debug] Starting Next.js in debug mode...')
