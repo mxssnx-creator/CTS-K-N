@@ -17,6 +17,7 @@ import {
   hasCompleteRealVariantPositionLedger,
   isOpenLiveExposureStatus,
 } from "@/lib/strategy-real-stats"
+import { getRuntimeTelemetry } from "@/lib/runtime-telemetry"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -4120,6 +4121,13 @@ export async function GET(
           volumeUsdTotal:  Math.round(n(progHash.live_volume_usd_total) * 100) / 100,
         },
       },
+
+      // ── RUNTIME / CPU TELEMETRY ─────────────────────────────────────────────
+      // This is measured from the same Node owner that assembled the snapshot.
+      // It is diagnostic only: it never changes stage eligibility, counts or
+      // order decisions, and therefore cannot turn a partial snapshot into a
+      // trading result.
+      runtime: getRuntimeTelemetry(historicSymbolsTotal),
 
       // ── TRADE HISTORY ────────────────────────────────────────────────────────
       // Lightweight 50-row local fallback only. The dedicated trade-history

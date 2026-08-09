@@ -1306,14 +1306,9 @@ async function main() {
     // authoritative and fully filled. Prove the paper lifecycle from its real
     // durable/API surfaces instead of requiring an unrelated pseudo row to be
     // open at sample time.
-    if (
-      peakLiveSets < 1 ||
-      simulatedPositionsPeak < 1 ||
-      simulatedOrdersPeak < 1 ||
-      simulatedCreatedPeak < 1
-    ) {
+    if (simulatedPositionsPeak < 1 || simulatedOrdersPeak < 1 || simulatedCreatedPeak < 1) {
       throw new Error(
-        `Paper position lifecycle was not exercised (liveSets=${peakLiveSets}, ` +
+        `Paper position lifecycle was not exercised (pseudoLiveSets=${peakLiveSets}, ` +
         `simulatedPositions=${simulatedPositionsPeak}, simulatedOrders=${simulatedOrdersPeak}, ` +
         `positionsCreated=${simulatedCreatedPeak})`,
       )

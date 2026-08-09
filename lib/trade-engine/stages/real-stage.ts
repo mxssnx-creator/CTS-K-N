@@ -8,6 +8,7 @@ import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { getMaxLeverageForExchange } from "@/lib/leverage-policy"
 import type { MainPosition } from "./main-stage"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
 import type { SignalRisk } from "@/lib/signal-indication"
 import type { SignalExecutionLane, TrailingProfile } from "@/lib/signal-trailing"
 import {
@@ -155,7 +156,12 @@ export async function evaluateToRealPositions(
   try {
     const evaluated = await mapWithConcurrency(
       mainPositions,
-      concurrencyFromEnv(["REAL_POSITION_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"], 4, 8, mainPositions.length),
+      concurrencyFromEnv(
+        ["REAL_POSITION_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"],
+        getRuntimeConcurrencyProfile(mainPositions.length).calculationConcurrency,
+        8,
+        mainPositions.length,
+      ),
       async (mainPos): Promise<RealPosition | null> => {
       // Check ratio criteria
       const profitRatio = calculateProfitabilityRatio(mainPos)
