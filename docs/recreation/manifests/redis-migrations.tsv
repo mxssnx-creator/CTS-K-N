@@ -89,3 +89,6 @@ version	name	source
 88	088-repair-exhaustive-indications-signal-capacity-and-stage-caps	lib/redis-migrations.ts
 89	089-signal-full-source-cycle-and-base-pf-floor	lib/redis-migrations.ts
 90	090-base-valid-and-signal-admission-contract	lib/redis-migrations.ts
+91	091-unlimited-stage-rows-cadence-and-block-work-scheduler	lib/redis-migrations.ts
+92	092-exact-indication-cadence-and-unlimited-preset-types	lib/redis-migrations.ts
+93	093-pf-floor-and-continuous-row-live-defaults	lib/redis-migrations.ts

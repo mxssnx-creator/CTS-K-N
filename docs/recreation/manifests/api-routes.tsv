@@ -1,17 +1,17 @@
 route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/additional/chat-history	GET	additional	force-dynamic		none-detected	app/api/additional/chat-history/route.ts
 /api/additional/chat-history/stats	GET	additional	force-dynamic		none-detected	app/api/additional/chat-history/stats/route.ts
-/api/admin/check-tables	GET	admin	force-dynamic		none-detected	app/api/admin/check-tables/route.ts
-/api/admin/clear-progressions	POST	admin	force-dynamic		session	app/api/admin/clear-progressions/route.ts
-/api/admin/enable-live-trading	GET,POST	admin	force-dynamic	60	cron	app/api/admin/enable-live-trading/route.ts
-/api/admin/end-test-progress	GET,POST	admin	force-dynamic		none-detected	app/api/admin/end-test-progress/route.ts
-/api/admin/force-reinit	POST	admin	force-dynamic		none-detected	app/api/admin/force-reinit/route.ts
-/api/admin/init-database-direct	POST	admin	force-dynamic		none-detected	app/api/admin/init-database-direct/route.ts
+/api/admin/check-tables	GET	admin	force-dynamic		admin	app/api/admin/check-tables/route.ts
+/api/admin/clear-progressions	POST	admin	force-dynamic		admin,session	app/api/admin/clear-progressions/route.ts
+/api/admin/enable-live-trading	GET,POST	admin	force-dynamic	60	admin	app/api/admin/enable-live-trading/route.ts
+/api/admin/end-test-progress	GET,POST	admin	force-dynamic		admin	app/api/admin/end-test-progress/route.ts
+/api/admin/force-reinit	POST	admin	force-dynamic		admin	app/api/admin/force-reinit/route.ts
+/api/admin/init-database-direct	POST	admin	force-dynamic		admin	app/api/admin/init-database-direct/route.ts
 /api/admin/live-order-smoke	POST	admin	force-dynamic	60	admin	app/api/admin/live-order-smoke/route.ts
 /api/admin/migrations/status	GET	admin	force-dynamic		none-detected	app/api/admin/migrations/status/route.ts
-/api/admin/reinit-db	POST	admin	force-dynamic		none-detected	app/api/admin/reinit-db/route.ts
-/api/admin/reset-and-init	POST	admin	force-dynamic		none-detected	app/api/admin/reset-and-init/route.ts
-/api/admin/run-migrations	POST	admin	force-dynamic		none-detected	app/api/admin/run-migrations/route.ts
+/api/admin/reinit-db	POST	admin	force-dynamic		admin	app/api/admin/reinit-db/route.ts
+/api/admin/reset-and-init	POST	admin	force-dynamic		admin	app/api/admin/reset-and-init/route.ts
+/api/admin/run-migrations	POST	admin	force-dynamic		admin	app/api/admin/run-migrations/route.ts
 /api/alerts	DELETE,GET,POST	alerts	force-dynamic		none-detected	app/api/alerts/route.ts
 /api/audit-logs	GET	audit-logs	force-dynamic		none-detected	app/api/audit-logs/route.ts
 /api/auth/login	POST	auth	force-dynamic		session	app/api/auth/login/route.ts
@@ -35,6 +35,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/connections/status	GET	connections	force-dynamic	30	none-detected	app/api/connections/status/route.ts
 /api/connections/status/[id]	GET	connections	force-dynamic	30	none-detected	app/api/connections/status/[id]/route.ts
 /api/connections/validation/[id]	GET	connections	force-dynamic		none-detected	app/api/connections/validation/[id]/route.ts
+/api/cron/direct-trade-continuity	GET,POST	cron	force-dynamic		cron	app/api/cron/direct-trade-continuity/route.ts
 /api/cron/generate-indications	GET,POST	cron	force-dynamic	60	cron	app/api/cron/generate-indications/route.ts
 /api/cron/schedule-indications	GET,POST	cron	force-dynamic	60	cron	app/api/cron/schedule-indications/route.ts
 /api/cron/server-continuity	GET,POST	cron	force-dynamic	60	cron	app/api/cron/server-continuity/route.ts
@@ -187,7 +188,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/settings/connections/[id]/symbols	GET	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/symbols/route.ts
 /api/settings/connections/[id]/test	POST	settings	force-dynamic	120	none-detected	app/api/settings/connections/[id]/test/route.ts
 /api/settings/connections/[id]/toggle	POST	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/toggle/route.ts
-/api/settings/connections/[id]/toggle-dashboard	POST,PUT	settings	force-dynamic	15	none-detected	app/api/settings/connections/[id]/toggle-dashboard/route.ts
+/api/settings/connections/[id]/toggle-dashboard	POST,PUT	settings	force-dynamic	300	none-detected	app/api/settings/connections/[id]/toggle-dashboard/route.ts
 /api/settings/connections/[id]/volume	GET,POST	settings	force-dynamic		none-detected	app/api/settings/connections/[id]/volume/route.ts
 /api/settings/connections/active	GET	settings	force-dynamic		none-detected	app/api/settings/connections/active/route.ts
 /api/settings/connections/add-to-active	POST	settings	force-dynamic		none-detected	app/api/settings/connections/add-to-active/route.ts
@@ -230,7 +231,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/system/init-status	GET	system	force-dynamic		session	app/api/system/init-status/route.ts
 /api/system/initialize	POST	system	force-dynamic		none-detected	app/api/system/initialize/route.ts
 /api/system/initialize-defaults	GET,POST	system	force-dynamic		none-detected	app/api/system/initialize-defaults/route.ts
-/api/system/inject-credentials	GET,POST	system	force-dynamic		none-detected	app/api/system/inject-credentials/route.ts
+/api/system/inject-credentials	GET,POST	system	force-dynamic		admin	app/api/system/inject-credentials/route.ts
 /api/system/integration-test	GET	system	force-dynamic		none-detected	app/api/system/integration-test/route.ts
 /api/system/log	POST	system	force-dynamic		none-detected	app/api/system/log/route.ts
 /api/system/migration-status	GET	system	force-dynamic		none-detected	app/api/system/migration-status/route.ts
@@ -247,10 +248,16 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/testing/engine/[step]	POST	testing	force-dynamic		none-detected	app/api/testing/engine/[step]/route.ts
 /api/testing/place-order	POST	testing	force-dynamic		admin	app/api/testing/place-order/route.ts
 /api/tracking/overview	GET	tracking	force-dynamic		none-detected	app/api/tracking/overview/route.ts
+/api/trade-engine/[connectionId]/status	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/[connectionId]/status/route.ts
 /api/trade-engine/auto-setup	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/auto-setup/route.ts
 /api/trade-engine/auto-start	GET,POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/auto-start/route.ts
 /api/trade-engine/detailed-logs	GET	trade-engine	force-dynamic	15	none-detected	app/api/trade-engine/detailed-logs/route.ts
 /api/trade-engine/diagnostic	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/diagnostic/route.ts
+/api/trade-engine/direct-trade	GET,POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/direct-trade/route.ts
+/api/trade-engine/direct-trade/calculate	POST	trade-engine	force-dynamic	300	none-detected	app/api/trade-engine/direct-trade/calculate/route.ts
+/api/trade-engine/direct-trade/order	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/direct-trade/order/route.ts
+/api/trade-engine/direct-trade/pulse	GET	trade-engine	force-dynamic	60	none-detected	app/api/trade-engine/direct-trade/pulse/route.ts
+/api/trade-engine/direct-trade/status	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/direct-trade/status/route.ts
 /api/trade-engine/emergency-stop	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/emergency-stop/route.ts
 /api/trade-engine/enable-symbols	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/enable-symbols/route.ts
 /api/trade-engine/fix-testnet	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/fix-testnet/route.ts
@@ -264,7 +271,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/trade-engine/pnl-stats	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/pnl-stats/route.ts
 /api/trade-engine/prehistoric-progress	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/prehistoric-progress/route.ts
 /api/trade-engine/progression	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/progression/route.ts
-/api/trade-engine/quick-start	POST	trade-engine	force-dynamic		session	app/api/trade-engine/quick-start/route.ts
+/api/trade-engine/quick-start	POST	trade-engine	force-dynamic	300	session	app/api/trade-engine/quick-start/route.ts
 /api/trade-engine/quick-start/ready	GET	trade-engine	force-dynamic		none-detected	app/api/trade-engine/quick-start/ready/route.ts
 /api/trade-engine/restart	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/restart/route.ts
 /api/trade-engine/resume	POST	trade-engine	force-dynamic		none-detected	app/api/trade-engine/resume/route.ts
