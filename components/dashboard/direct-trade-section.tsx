@@ -80,6 +80,8 @@ interface DirectTradeState {
   takeProfitRatioRange: [number, number]
   takeProfitRatioStep: number
   blockRange: [number, number]
+  blockVolumeRatio: number
+  blockProfitFactorRatio: number
   maxPositionsPerSymbol: number
   maxPositionsPerDirection: number
   keepEnabledPosCount: number
@@ -139,6 +141,8 @@ const DEFAULT_STATE: DirectTradeState = {
   takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   blockRange: [1, 12],
+  blockVolumeRatio: 1,
+  blockProfitFactorRatio: 0.8,
   maxPositionsPerSymbol: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
   maxPositionsPerDirection: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   keepEnabledPosCount: 12,
@@ -326,6 +330,8 @@ export function DirectTradeSection() {
           takeProfitRatioRange: localTakeProfitRatioRange,
           takeProfitRatioStep: localTakeProfitRatioStep,
           blockRange: localBlock ? [1, localBlockMax] : [0, 0],
+          blockVolumeRatio: state.blockVolumeRatio,
+          blockProfitFactorRatio: state.blockProfitFactorRatio,
           maxPositionsPerSymbol: localMaxPosPerSymbol,
           maxPositionsPerDirection: localMaxPosPerDir,
           keepEnabledPosCount: localKeepEnabledPosCount,
@@ -393,6 +399,8 @@ export function DirectTradeSection() {
           takeProfitRatioRange: localTakeProfitRatioRange,
           takeProfitRatioStep: localTakeProfitRatioStep,
           blockRange: localBlock ? [1, localBlockMax] : [0, 0],
+          blockVolumeRatio: state.blockVolumeRatio,
+          blockProfitFactorRatio: state.blockProfitFactorRatio,
           minProfitFactor: localMinPF,
           minRecentProfitFactor: localMinRecentPF,
           recentEvaluationPositions: localRecentEvaluationPositions,

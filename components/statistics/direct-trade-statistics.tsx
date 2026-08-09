@@ -44,6 +44,25 @@ type DirectConfig = {
   recentWinRate?: number
   recentTotalPnl?: number
   recentAvgDrawdownTimeMin?: number
+  blockCount?: number
+  blockProfitFactorRatio?: number
+  blockValid?: boolean
+  blockDeactivationReason?: string | null
+  blockObservedProfitFactor?: number | null
+  blockObservedProfitFactorInfinite?: boolean
+  blockNormalProfitFactor?: number
+  blockMinimumProfitFactor?: number
+  blockConfiguredMinimumProfitFactor?: number
+  blockProfitFactorDifference?: number
+  blockProfitFactorToMinimumDifference?: number
+  blockComparisonAvailable?: boolean
+  blockProfitFactorWindow?: number
+  blockProfitFactorSampleCount?: number
+  blockAvgDrawdownTimeMin?: number
+  blockMaxDrawdownTimeMin?: number
+  blockTotalPnl?: number
+  blockVolumeIncrementRatio?: number
+  blockCalculatedVolumeMultiplier?: number
 }
 
 type Status = {
@@ -67,6 +86,22 @@ type Status = {
     byEntryTactic?: Record<string, { evaluated: number; valid: number }>
     byExitTactic?: Record<string, { evaluated: number; valid: number }>
     byStrategyType?: Record<string, { evaluated: number; valid: number }>
+    blockEnabled?: boolean
+    blockEvaluatedSets?: number
+    blockValidSets?: number
+    blockDeactivatedSets?: number
+    byBlockCount?: Record<string, {
+      evaluated: number
+      valid: number
+      disabled: number
+      observedPfCount?: number
+      infinitePf?: number
+      meanObservedPF: number
+      meanMinimumPF: number
+      meanProfitFactorDifference: number
+      meanProfitFactorToMinimumDifference: number
+      totalPnl: number
+    }>
   }
   processor?: { isHealthy?: boolean; lastTick?: string; errorsLast5min?: number } | null
 }
@@ -143,6 +178,8 @@ export function DirectTradeStatistics() {
   const visibleRows = configs
   const stats = status.stats || {}
   const calculation = status.calculation || {}
+  const blockRows = Object.entries(calculation.byBlockCount || {})
+    .sort(([left], [right]) => Number(left) - Number(right))
 
   return (
     <div className="space-y-5">
@@ -166,6 +203,21 @@ export function DirectTradeStatistics() {
           <Metric label="Valid / executable" value={`${calculation.validSets || 0} / ${calculation.evaluatedSets || 0}`} icon={<ShieldCheck className="h-4 w-4" />} />
           <Metric label="TF combinations" value={String(calculation.combinations || 0)} icon={<Activity className="h-4 w-4" />} />
           <Metric label="Simulated PnL" value={formatPnl(stats.totalPnl)} emphasis={Number(stats.totalPnl) >= 0} icon={<Target className="h-4 w-4" />} />
+        </div>
+      </Card>
+
+      <Card className="overflow-hidden p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div><h2 className="text-sm font-medium">Independent Block Count PF / DDT ledger</h2><p className="text-xs text-muted-foreground">Each count uses the same causal last-position window; PF floors and projected volume are count-specific.</p></div>
+          <Badge variant={calculation.blockEnabled ? "default" : "secondary"}>{calculation.blockEnabled ? "Block enabled" : "Block disabled"}</Badge>
+        </div>
+        <div className="mb-3 grid gap-2 sm:grid-cols-3">
+          <Metric label="Block evaluations" value={String(calculation.blockEvaluatedSets || 0)} icon={<BarChart3 className="h-4 w-4" />} />
+          <Metric label="Block valid / executable" value={`${calculation.blockValidSets || 0} / ${calculation.blockEvaluatedSets || 0}`} icon={<ShieldCheck className="h-4 w-4" />} />
+          <Metric label="Block disabled" value={String(calculation.blockDeactivatedSets || 0)} icon={<Activity className="h-4 w-4" />} />
+        </div>
+        <div className="overflow-auto rounded-md border">
+          <table className="w-full min-w-[1020px] text-xs"><thead className="bg-muted/95 text-muted-foreground"><tr><th className="p-2 text-right">Count</th><th className="p-2 text-right">Evaluated</th><th className="p-2 text-right">Valid</th><th className="p-2 text-right">Disabled</th><th className="p-2 text-right">Observed PF</th><th className="p-2 text-right">Minimum PF</th><th className="p-2 text-right">PF vs Base</th><th className="p-2 text-right">PF vs Floor</th><th className="p-2 text-right">Projected PnL</th></tr></thead><tbody>{blockRows.map(([count, row]) => <tr key={count} className="border-t"><td className="p-2 text-right font-mono">{count}</td><td className="p-2 text-right font-mono">{row.evaluated}</td><td className="p-2 text-right font-mono text-emerald-600">{row.valid}</td><td className="p-2 text-right font-mono text-muted-foreground">{row.disabled}</td><td className="p-2 text-right font-mono">{row.meanObservedPF > 0 ? row.meanObservedPF.toFixed(2) : "—"}</td><td className="p-2 text-right font-mono">{row.meanMinimumPF.toFixed(2)}</td><td className={`p-2 text-right font-mono ${row.meanProfitFactorDifference >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{row.meanProfitFactorDifference >= 0 ? "+" : ""}{row.meanProfitFactorDifference.toFixed(2)}</td><td className={`p-2 text-right font-mono ${row.meanProfitFactorToMinimumDifference >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{row.meanProfitFactorToMinimumDifference >= 0 ? "+" : ""}{row.meanProfitFactorToMinimumDifference.toFixed(2)}</td><td className="p-2 text-right font-mono">{row.totalPnl.toFixed(2)}%</td></tr>)}</tbody></table>
         </div>
       </Card>
 
@@ -203,7 +255,7 @@ export function DirectTradeStatistics() {
               <tbody>{visibleRows.map((config) => <tr key={config.setKey} className="border-t"><td className="p-2 font-mono"><div>{config.symbol} <span className="text-muted-foreground">{config.direction}</span></div><div className="text-muted-foreground">{config.timeframe}</div></td><td className="p-2"><div>{config.strategyType.replaceAll("_", " ")}{config.strategyType === "inverse" && <span className="text-muted-foreground"> ← {config.signalDirection}</span>}</div><div className="text-muted-foreground">{config.entryTactic.replace("_", " ")} · {config.exitTactic.replace("_", " ")}</div></td><td className="p-2 text-right font-mono">{displayPf(config)}</td><td className="p-2 text-right font-mono"><div>{displayRecentPf(config)}</div><div className="text-[10px] text-muted-foreground">{config.recentPositionCount || 0}/12 · {Number(config.recentAvgDrawdownTimeMin || 0).toFixed(1)}m</div></td><td className="p-2 text-right font-mono">{config.maxDrawdownTimeMin.toFixed(1)}m</td><td className={`p-2 text-right font-mono ${config.totalPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{formatPnl(config.totalPnl)}</td><td className="p-2 text-right font-mono text-muted-foreground">{Number(config.positionCostPercent || 0.1).toFixed(2)}%</td><td className="p-2 text-right font-mono text-muted-foreground">{formatPnl(config.bestMarketExitPnl)}</td><td className="p-2 text-right"><Badge variant={config.valid ? "default" : "secondary"} className="text-[10px]">{config.valid ? "valid" : config.deactivationReason || "inactive"}</Badge></td></tr>)}</tbody>
             </table>
           </div>
-          <p className="mt-2 text-[11px] text-muted-foreground">All PnL/PF values are net of the displayed one-time position cost. * Best market exit is a hindsight-only quality metric and never a live execution target.</p>
+          <p className="mt-2 text-[11px] text-muted-foreground">All Base PnL/PF values are net of the displayed one-time position cost. Block target: {visibleRows[0]?.blockCount || 0} · PF floor {Number(visibleRows[0]?.blockMinimumProfitFactor || 0).toFixed(2)} · volume {Number(visibleRows[0]?.blockCalculatedVolumeMultiplier || 1).toFixed(2)}×. * Best market exit is hindsight-only.</p>
         </Card>
         <Card className="p-4">
           <h2 className="text-sm font-medium">Rolling execution result</h2>

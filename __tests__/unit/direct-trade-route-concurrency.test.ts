@@ -67,6 +67,7 @@ describe("Direct-Trade API state and processor lease", () => {
         keepEnabledPosCount: 99,
         maxPositionsPerSymbol: 999,
         maxPositionsPerDirection: 999,
+        blockProfitFactorRatio: 99,
       }) as any)
       const payload = await response.json()
 
@@ -82,6 +83,7 @@ describe("Direct-Trade API state and processor lease", () => {
         keepEnabledPosCount: 99,
         maxPositionsPerSymbol: 300,
         maxPositionsPerDirection: 300,
+        blockProfitFactorRatio: 5,
         takeProfitRatioRange: [4, 14],
         takeProfitRatioStep: 4,
         strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],

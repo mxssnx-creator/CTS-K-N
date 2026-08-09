@@ -183,7 +183,7 @@ describe("Direct-Trade independent historical coordination", () => {
       entryTiming: "current",
       activityVolumeRatio: 0,
       maxHoldMinutes: 20,
-      blockRange: [1, 12],
+      blockRange: [0, 0],
       minProfitFactor: 0.8,
       minRecentProfitFactor: 10,
       recentPositionWindow: 12,
@@ -260,5 +260,47 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(sets.map((set) => set.takeprofit)).toEqual([0.4, 0.5])
     expect(sets.every((set) => set.blockVolumeRatio === 1.5 && set.blockCount === 3)).toBe(true)
     expect(new Set(sets.map((set) => set.setKey)).size).toBe(2)
+  })
+
+  test("keeps Block Count 1..N PF/volume ledgers independent from the Base row", () => {
+    const candles = upwardMinuteSeries(180)
+    const common = {
+      symbol: "BTCUSDT",
+      direction: "long" as const,
+      candlesByTimeframe: { "1m": candles },
+      timeframeSet: ["1m"] as const,
+      historyHours: 48,
+      volumeRatio: 0.5,
+      tpRange: [0.3],
+      takeProfitPositionCostRatios: [3],
+      slRatios: [0.5],
+      trailOptions: [{ trailing: false, trailStart: 0, trailStop: 0, mode: "none" as const }],
+      entryTactics: ["breakout"] as const,
+      exitTactics: ["bracket"] as const,
+      entryTiming: "current" as const,
+      activityVolumeRatio: 0,
+      maxHoldMinutes: 20,
+      minProfitFactor: 0.8,
+      blockProfitFactorRatio: 0.8,
+      minRecentProfitFactor: 0.8,
+      recentPositionWindow: 3,
+      minRecentPositions: 3,
+      maxDrawdownTimeMin: 60,
+    }
+    const withBlock = evaluateDirectTradeSets({ ...common, blockRange: [1, 3] })[0]
+    const withoutBlock = evaluateDirectTradeSets({ ...common, blockRange: [0, 0] })[0]
+
+    expect(withBlock.blockEvaluations.map((entry) => entry.blockCount)).toEqual([1, 2, 3])
+    expect(new Set(withBlock.blockEvaluations.map((entry) => entry.blockSetKey)).size).toBe(3)
+    expect(withBlock.blockEvaluations.every((entry) => entry.blockSetKey.endsWith(`#block:${entry.blockCount}`))).toBe(true)
+    expect(withBlock.blockEvaluations.map((entry) => entry.blockVolumeIncrementRatio)).toEqual([0.5, 1, 1.5])
+    expect(withBlock.blockEvaluations.map((entry) => entry.blockCalculatedVolumeMultiplier)).toEqual([1.5, 2, 2.5])
+    expect(withBlock.blockEvaluations.map((entry) => entry.blockConfiguredMinimumProfitFactor)).toEqual([0.32, 0.64, 0.96])
+    expect(withBlock.blockEvaluations.every((entry) => entry.blockProfitFactorWindow === 3)).toBe(true)
+    expect(withBlock.blockCount).toBe(3)
+    expect(withBlock.blockTotalPnl).toBeCloseTo(withBlock.totalPnl * 2.5, 3)
+    expect(withoutBlock.blockEvaluations).toEqual([])
+    expect(withoutBlock.blockCount).toBe(0)
+    expect(withoutBlock.blockCalculatedVolumeMultiplier).toBe(1)
   })
 })

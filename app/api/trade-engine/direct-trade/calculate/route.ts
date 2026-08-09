@@ -77,6 +77,7 @@ interface CalculationRequest {
   takeProfitRatioRange?: [number, number]
   takeProfitRatioStep?: number
   blockVolumeRatio?: number
+  blockProfitFactorRatio?: number
   recalculate?: boolean
 }
 
@@ -123,6 +124,9 @@ function createCalculationSummaryAccumulator(details: {
   takeProfitPositionCostRatios: number[]
   activityVolumeRatio: number
   maxHoldMinutes: number
+  blockRange: [number, number]
+  blockVolumeRatio: number
+  blockProfitFactorRatio: number
 }) {
   const countBy = <T extends string>(entries: T[]): Record<T, { evaluated: number; valid: number }> => {
     const output = {} as Record<T, { evaluated: number; valid: number }>
@@ -136,6 +140,20 @@ function createCalculationSummaryAccumulator(details: {
   let evaluatedSets = 0
   let validSets = 0
   let totalScore = 0
+  let blockEvaluatedSets = 0
+  let blockValidSets = 0
+  const byBlockCount: Record<string, {
+    evaluated: number
+    valid: number
+    disabled: number
+    observedPfSum: number
+    observedPfCount: number
+    infinitePf: number
+    minimumPfSum: number
+    differenceSum: number
+    marginSum: number
+    totalPnl: number
+  }> = {}
   const append = (config: EvaluatedDirectTradeConfig) => {
     const timeframe = byTimeframe[config.timeframe] || (byTimeframe[config.timeframe] = { evaluated: 0, valid: 0 })
     evaluatedSets++
@@ -151,6 +169,32 @@ function createCalculationSummaryAccumulator(details: {
     if (config.valid) byExitTactic[config.exitTactic].valid++
     byStrategyType[config.strategyType].evaluated++
     if (config.valid) byStrategyType[config.strategyType].valid++
+    for (const block of config.blockEvaluations || []) {
+      blockEvaluatedSets++
+      if (block.valid) blockValidSets++
+      const count = byBlockCount[String(block.blockCount)] || (byBlockCount[String(block.blockCount)] = {
+        evaluated: 0,
+        valid: 0,
+        disabled: 0,
+        observedPfSum: 0,
+        observedPfCount: 0,
+        infinitePf: 0,
+        minimumPfSum: 0,
+        differenceSum: 0,
+        marginSum: 0,
+        totalPnl: 0,
+      })
+      count.evaluated++
+      count.valid += block.valid ? 1 : 0
+      count.disabled += block.valid ? 0 : 1
+      count.observedPfSum += block.blockObservedProfitFactor ?? 0
+      count.observedPfCount += block.blockObservedProfitFactorInfinite ? 0 : Number.isFinite(Number(block.blockObservedProfitFactor)) ? 1 : 0
+      count.infinitePf += block.blockObservedProfitFactorInfinite ? 1 : 0
+      count.minimumPfSum += block.blockMinimumProfitFactor
+      count.differenceSum += block.blockProfitFactorDifference
+      count.marginSum += block.blockProfitFactorToMinimumDifference
+      count.totalPnl += block.blockTotalPnl
+    }
   }
   return {
     append,
@@ -160,6 +204,17 @@ function createCalculationSummaryAccumulator(details: {
       evaluatedSets,
       validSets,
       deactivatedSets: evaluatedSets - validSets,
+      blockEnabled: details.blockRange[1] > 0,
+      blockEvaluatedSets,
+      blockValidSets,
+      blockDeactivatedSets: blockEvaluatedSets - blockValidSets,
+      byBlockCount: Object.fromEntries(Object.entries(byBlockCount).map(([blockCount, value]) => [blockCount, {
+        ...value,
+        meanObservedPF: value.observedPfCount > 0 ? value.observedPfSum / value.observedPfCount : null,
+        meanMinimumPF: value.evaluated > 0 ? value.minimumPfSum / value.evaluated : 0,
+        meanProfitFactorDifference: value.evaluated > 0 ? value.differenceSum / value.evaluated : 0,
+        meanProfitFactorToMinimumDifference: value.evaluated > 0 ? value.marginSum / value.evaluated : 0,
+      }])),
       avgScore: evaluatedSets > 0 ? totalScore / evaluatedSets : 0,
       byTimeframe,
       byEntryTactic,
@@ -175,7 +230,14 @@ type StatisticsRow = Pick<EvaluatedDirectTradeConfig,
   "totalTrades" | "maxDrawdownTimeMin" | "score" | "totalPnl" | "bestMarketExitPnl" | "positionCostPercent" |
   "lastPositionPnl" | "lastPositionBestMarketExitPnl" | "lastPositionDrawdownTimeMin" | "lastPositionExitReason" |
   "recentPositionCount" | "recentProfitFactor" | "recentProfitFactorInfinite" | "recentWinRate" |
-  "recentTotalPnl" | "recentAvgDrawdownTimeMin"
+  "recentTotalPnl" | "recentAvgDrawdownTimeMin" | "blockCount" | "blockProfitFactorRatio" |
+  "blockValid" | "blockDeactivationReason" | "blockObservedProfitFactor" |
+  "blockObservedProfitFactorInfinite" | "blockNormalProfitFactor" | "blockMinimumProfitFactor" |
+  "blockConfiguredMinimumProfitFactor" | "blockProfitFactorDifference" | "blockComparisonAvailable" |
+  "blockProfitFactorToMinimumDifference" |
+  "blockProfitFactorWindow" | "blockProfitFactorSampleCount" | "blockAvgDrawdownTimeMin" |
+  "blockMaxDrawdownTimeMin" | "blockTotalPnl" | "blockVolumeIncrementRatio" |
+  "blockCalculatedVolumeMultiplier"
 >
 
 function statisticsFilterKey(timeframe: string, direction: string, state: string, strategyType = "all"): string {
@@ -282,6 +344,7 @@ export async function POST(request: NextRequest) {
       directTradeTakeProfitPercent(positionCostPercent, ratio),
     )
     const blockVolumeRatio = Math.max(0.1, Math.min(10, numberOr(body.blockVolumeRatio, 1)))
+    const blockProfitFactorRatio = Math.max(0.2, Math.min(5, numberOr(body.blockProfitFactorRatio, 0.8)))
 
     // A manual dashboard refresh and the long-running processor can arrive at
     // the same time. The complete grid is an atomic snapshot, so only one
@@ -376,6 +439,9 @@ export async function POST(request: NextRequest) {
       takeProfitPositionCostRatios,
       activityVolumeRatio,
       maxHoldMinutes,
+      blockRange,
+      blockVolumeRatio,
+      blockProfitFactorRatio,
     })
     const statisticsAccumulator = createStatisticsIndexAccumulator()
     const configStoreWriter = await createDirectTradeConfigStoreWriter(client)
@@ -396,7 +462,15 @@ export async function POST(request: NextRequest) {
         }
         nextConfigIndex++
       }
-      await configStoreWriter.append(rows)
+      // Count 1..N is fully aggregated above and the selected Block lane is
+      // already present on the stored row. Do not duplicate a large nested
+      // object twelve times inside every Redis config; the compact calculation
+      // summary owns the complete count-indexed audit view.
+      await configStoreWriter.append(rows.map((config) => {
+        if (!config.blockEvaluations?.length) return config
+        const { blockEvaluations: _blockEvaluations, ...compact } = config
+        return compact as EvaluatedDirectTradeConfig
+      }))
     }
     // CPU-bound set evaluation is deterministic JavaScript. Sequential symbol
     // draining avoids retaining four symbol grids at once; public history is
@@ -491,6 +565,7 @@ export async function POST(request: NextRequest) {
                   maxHoldMinutes,
                   positionCostPercent,
                   blockRange,
+                  blockProfitFactorRatio,
                   minProfitFactor,
                   minRecentProfitFactor,
                   recentPositionWindow: recentEvaluationPositions,

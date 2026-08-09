@@ -4,8 +4,9 @@
  *
  * This is paper-only and deterministic: it does not use credentials, Redis,
  * exchange endpoints, or order routes. Both blockRange paths are evaluated
- * against the same candles and exact strategy matrix. PF/DDT are invariant
- * under Block sizing; scaled PnL and target volume are reported separately.
+ * against the same candles and exact strategy matrix. The Base market PF/DDT
+ * remains causal and comparable, while the Block Count 1..N PF floors,
+ * eligibility and volume-weighted PnL are reported from their own ledger.
  */
 const {
   buildTimeframeCombinations,
@@ -68,6 +69,18 @@ function createMetrics() {
     byStrategyType: {},
     byBlockCount: {},
     ddtBuckets: {},
+    blockLedger: {
+      evaluated: 0,
+      valid: 0,
+      observedPfTotal: 0,
+      observedPfCount: 0,
+      infinitePf: 0,
+      minimumPfTotal: 0,
+      differenceTotal: 0,
+      marginTotal: 0,
+      totalPnl: 0,
+      byCount: {},
+    },
   }
 }
 
@@ -112,6 +125,48 @@ function recordSet(metrics, set, scale) {
   countStats.scaledPnl += (Number(set.totalPnl) || 0) * scale
 }
 
+function recordBlockLedger(metrics, set) {
+  for (const block of set.blockEvaluations || []) {
+    const ledger = metrics.blockLedger
+    ledger.evaluated++
+    if (block.valid) ledger.valid++
+    if (block.blockObservedProfitFactorInfinite) ledger.infinitePf++
+    else if (Number.isFinite(Number(block.blockObservedProfitFactor))) {
+      ledger.observedPfCount++
+      ledger.observedPfTotal += Number(block.blockObservedProfitFactor)
+    }
+    ledger.minimumPfTotal += Number(block.blockMinimumProfitFactor) || 0
+    ledger.differenceTotal += Number(block.blockProfitFactorDifference) || 0
+    ledger.marginTotal += Number(block.blockProfitFactorToMinimumDifference) || 0
+    ledger.totalPnl += Number(block.blockTotalPnl) || 0
+    const count = ledger.byCount[String(block.blockCount)] || (ledger.byCount[String(block.blockCount)] = {
+      evaluated: 0,
+      valid: 0,
+      disabled: 0,
+      observedPfTotal: 0,
+      observedPfCount: 0,
+      infinitePf: 0,
+      minimumPfTotal: 0,
+      differenceTotal: 0,
+      marginTotal: 0,
+      totalPnl: 0,
+      maxDdtMin: 0,
+    })
+    count.evaluated++
+    count.valid += block.valid ? 1 : 0
+    count.disabled += block.valid ? 0 : 1
+    count.observedPfTotal += Number(block.blockObservedProfitFactor) || 0
+    count.observedPfCount += !block.blockObservedProfitFactorInfinite
+      && Number.isFinite(Number(block.blockObservedProfitFactor)) ? 1 : 0
+    count.infinitePf += block.blockObservedProfitFactorInfinite ? 1 : 0
+    count.minimumPfTotal += Number(block.blockMinimumProfitFactor) || 0
+    count.differenceTotal += Number(block.blockProfitFactorDifference) || 0
+    count.marginTotal += Number(block.blockProfitFactorToMinimumDifference) || 0
+    count.totalPnl += Number(block.blockTotalPnl) || 0
+    count.maxDdtMin = Math.max(count.maxDdtMin, Number(block.blockMaxDrawdownTimeMin) || 0)
+  }
+}
+
 function compactMetrics(metrics) {
   const buckets = Object.fromEntries(Object.entries(metrics.ddtBuckets)
     .sort(([left], [right]) => Number(left.split("-")[0]) - Number(right.split("-")[0]))
@@ -134,6 +189,20 @@ function compactMetrics(metrics) {
     maxDDTMinutes: Number(value.maxDdtMin.toFixed(3)),
     scaledPnl: Number(value.scaledPnl.toFixed(3)),
   }]))
+  const blockLedgerByCount = Object.fromEntries(Object.entries(metrics.blockLedger.byCount)
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([key, value]) => [key, {
+      evaluated: value.evaluated,
+      valid: value.valid,
+      disabled: value.disabled,
+      meanObservedPF: value.observedPfCount > 0 ? Number((value.observedPfTotal / value.observedPfCount).toFixed(3)) : null,
+      infinitePF: value.infinitePf,
+      meanMinimumPF: value.evaluated > 0 ? Number((value.minimumPfTotal / value.evaluated).toFixed(3)) : 0,
+      meanProfitFactorDifference: value.evaluated > 0 ? Number((value.differenceTotal / value.evaluated).toFixed(3)) : 0,
+      meanProfitFactorToMinimumDifference: value.evaluated > 0 ? Number((value.marginTotal / value.evaluated).toFixed(3)) : 0,
+      projectedPnl: Number(value.totalPnl.toFixed(3)),
+      maximumDDTMinutes: Number(value.maxDdtMin.toFixed(3)),
+    }]))
   return {
     evaluated: metrics.evaluated,
     valid: metrics.valid,
@@ -148,6 +217,19 @@ function compactMetrics(metrics) {
     disabledByReason: metrics.disabledByReason,
     byStrategyType,
     byBlockCount,
+    blockLedger: {
+      evaluated: metrics.blockLedger.evaluated,
+      valid: metrics.blockLedger.valid,
+      disabled: metrics.blockLedger.evaluated - metrics.blockLedger.valid,
+      validRatePercent: metrics.blockLedger.evaluated > 0 ? Number((metrics.blockLedger.valid / metrics.blockLedger.evaluated * 100).toFixed(3)) : 0,
+      meanObservedPF: metrics.blockLedger.observedPfCount > 0 ? Number((metrics.blockLedger.observedPfTotal / metrics.blockLedger.observedPfCount).toFixed(3)) : null,
+      infinitePF: metrics.blockLedger.infinitePf,
+      meanMinimumPF: metrics.blockLedger.evaluated > 0 ? Number((metrics.blockLedger.minimumPfTotal / metrics.blockLedger.evaluated).toFixed(3)) : 0,
+      meanProfitFactorDifference: metrics.blockLedger.evaluated > 0 ? Number((metrics.blockLedger.differenceTotal / metrics.blockLedger.evaluated).toFixed(3)) : 0,
+      meanProfitFactorToMinimumDifference: metrics.blockLedger.evaluated > 0 ? Number((metrics.blockLedger.marginTotal / metrics.blockLedger.evaluated).toFixed(3)) : 0,
+      projectedPnl: Number(metrics.blockLedger.totalPnl.toFixed(3)),
+      byCount: blockLedgerByCount,
+    },
     ddtMaximumByFourHourBucket: buckets,
   }
 }
@@ -227,7 +309,7 @@ function runMode(blockEnabled) {
               if (increment <= 0 || scale !== 1 + increment) throw new Error(`Block sizing invariant failed for ${set.setKey}`)
             }
             keys.add(set.setKey)
-            const fingerprintKey = set.setKey.replace(/\|block:\d+\|blockRatio:[^|]+$/, "")
+            const fingerprintKey = set.setKey.replace(/\|block:\d+\|blockRatio:[^|]+\|blockPfRatio:[^|]+$/, "")
             fingerprints.set(fingerprintKey, {
               profitFactor: set.profitFactor,
               profitFactorInfinite: Boolean(set.profitFactorInfinite),
@@ -236,6 +318,7 @@ function runMode(blockEnabled) {
               valid: Boolean(set.valid),
             })
             recordSet(metrics, set, scale)
+            recordBlockLedger(metrics, set)
           }
         }
       }
@@ -268,8 +351,7 @@ for (const [key, without] of withoutBlock.fingerprints) {
     || without.profitFactor !== withEntry.profitFactor
     || without.profitFactorInfinite !== withEntry.profitFactorInfinite
     || without.averageDDTMinutes !== withEntry.averageDDTMinutes
-    || without.maximumDDTMinutes !== withEntry.maximumDDTMinutes
-    || without.valid !== withEntry.valid) {
+    || without.maximumDDTMinutes !== withEntry.maximumDDTMinutes) {
     identityMismatches++
   }
 }
@@ -307,9 +389,9 @@ const result = {
     countThresholds: blockCountThresholds,
     countFormula: "target = base + base × count × volumeRatio",
     pfFormula: "minimum = defaultPF × blockPFRatio × (count × volumeRatio)",
-    independentCountPfDdtLedger: false,
-    pfRatioAppliedToEligibility: false,
-    note: "Direct-Trade currently stores one selected BlockCount per historical set; Main/Real owns independent Count-1..N PF/DDT ledgers.",
+    independentCountPfDdtLedger: true,
+    pfRatioAppliedToEligibility: true,
+    note: "Direct-Trade stores one selected execution row plus independent Count-1..N PF/DDT ledger entries; the selected row uses the largest qualifying count.",
   },
   withoutBlock: {
     metrics: withoutBlock.metrics,
@@ -317,6 +399,7 @@ const result = {
     elapsedMs: withoutBlock.elapsedMs,
     disabledStrategyConfigs: withoutBlock.metrics.disabled,
     blockConfigsDisabledBySwitch: blockRows,
+    blockLedger: withoutBlock.metrics.blockLedger,
   },
   withBlock: {
     metrics: withBlock.metrics,
@@ -324,6 +407,7 @@ const result = {
     elapsedMs: withBlock.elapsedMs,
     disabledStrategyConfigs: blockEnabledDisabled,
     blockConfigsDisabledBySwitch: 0,
+    blockLedger: withBlock.metrics.blockLedger,
   },
   blockComparison: {
     blockRows,
@@ -333,7 +417,7 @@ const result = {
     baseConfigDisabledWithBlock: withBlock.metrics.disabled,
     disabledConfigDelta: blockEnabledDisabled - withoutBlock.metrics.disabled,
     identityMismatches,
-    note: "PF/DDT use the same historical percentage-result stream; Block sizing changes target/scaled PnL, not PF or drawdown time.",
+    note: "Base PF/DDT remains comparable because percentage returns are volume-invariant; Block Count PF eligibility differs through its independent count-specific minimum PF, while projected PnL and target volume use the non-compounding multiplier.",
   },
   generatedAt: new Date().toISOString(),
 }

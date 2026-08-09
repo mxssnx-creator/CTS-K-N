@@ -88,6 +88,8 @@ export interface DirectTradeState {
   // The Block increase ratio is independent from the base position-size
   // factor. For a base quantity B and N valid Blocks: B + (N × B × ratio).
   blockVolumeRatio: number
+  // Independent PF floor multiplier for each Block count.
+  blockProfitFactorRatio: number
   // Global open-position ceiling. It keeps the requested 300-position paper
   // capacity global instead of accidentally allowing 300 per symbol/lane.
   maxTotalPositions: number
@@ -156,6 +158,7 @@ const DEFAULT_STATE: DirectTradeState = {
   takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
+  blockProfitFactorRatio: 0.8,
   maxTotalPositions: 300,
   maxPositionsPerSymbol: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
   maxPositionsPerDirection: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
@@ -265,6 +268,7 @@ async function getState(): Promise<DirectTradeState> {
         ),
         blockRange: normaliseBlockRange(persisted?.blockRange, DEFAULT_STATE.blockRange),
         blockVolumeRatio: clampBlockVolumeRatio(persisted?.blockVolumeRatio, DEFAULT_STATE.blockVolumeRatio),
+        blockProfitFactorRatio: clampBlockProfitFactorRatio(persisted?.blockProfitFactorRatio, DEFAULT_STATE.blockProfitFactorRatio),
         maxPositionsPerSymbol: hasLegacyCapacityDefaults
           ? DEFAULT_STATE.maxPositionsPerSymbol
           : Math.max(1, Math.min(300, Math.floor(Number(persisted?.maxPositionsPerSymbol) || DEFAULT_STATE.maxPositionsPerSymbol))),
@@ -340,6 +344,12 @@ function clampBlockVolumeRatio(value: unknown, fallback = 1): number {
   const raw = Number(value)
   const clamped = Math.max(0.1, Math.min(10, Number.isFinite(raw) ? raw : fallback))
   return Number((Math.round(clamped * 10) / 10).toFixed(1))
+}
+
+function clampBlockProfitFactorRatio(value: unknown, fallback = 0.8): number {
+  const raw = Number(value)
+  const clamped = Math.max(0.2, Math.min(5, Number.isFinite(raw) ? raw : fallback))
+  return Number(clamped.toFixed(2))
 }
 
 function boundedArray(value: unknown, maximum: number): any[] {
@@ -577,6 +587,7 @@ export async function POST(request: NextRequest) {
         ...(body.takeProfitRatioStep !== undefined ? { takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep, currentState.takeProfitRatioStep) } : {}),
         ...(body.blockRange !== undefined ? { blockRange: normaliseBlockRange(body.blockRange, currentState.blockRange) } : {}),
         ...(body.blockVolumeRatio !== undefined ? { blockVolumeRatio: clampBlockVolumeRatio(body.blockVolumeRatio, currentState.blockVolumeRatio) } : {}),
+        ...(body.blockProfitFactorRatio !== undefined ? { blockProfitFactorRatio: clampBlockProfitFactorRatio(body.blockProfitFactorRatio, currentState.blockProfitFactorRatio) } : {}),
         ...(body.maxTotalPositions !== undefined ? { maxTotalPositions: clampOpenPositionLimit(body.maxTotalPositions) } : {}),
         ...(body.maxPositionsPerSymbol !== undefined ? { maxPositionsPerSymbol: Math.max(1, Math.min(300, Math.floor(Number(body.maxPositionsPerSymbol) || 1))) } : {}),
         ...(body.maxPositionsPerDirection !== undefined ? { maxPositionsPerDirection: Math.max(1, Math.min(300, Math.floor(Number(body.maxPositionsPerDirection) || 1))) } : {}),
@@ -649,6 +660,7 @@ export async function POST(request: NextRequest) {
         ...(body.takeProfitRatioStep !== undefined ? { takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep, currentState.takeProfitRatioStep) } : {}),
         ...(body.blockRange !== undefined ? { blockRange: normaliseBlockRange(body.blockRange, currentState.blockRange) } : {}),
         ...(body.blockVolumeRatio !== undefined ? { blockVolumeRatio: clampBlockVolumeRatio(body.blockVolumeRatio, currentState.blockVolumeRatio) } : {}),
+        ...(body.blockProfitFactorRatio !== undefined ? { blockProfitFactorRatio: clampBlockProfitFactorRatio(body.blockProfitFactorRatio, currentState.blockProfitFactorRatio) } : {}),
         ...(body.maxTotalPositions !== undefined ? { maxTotalPositions: clampOpenPositionLimit(body.maxTotalPositions) } : {}),
         ...(body.maxPositionsPerSymbol !== undefined ? { maxPositionsPerSymbol: Math.max(1, Math.min(300, Math.floor(Number(body.maxPositionsPerSymbol) || 1))) } : {}),
         ...(body.maxPositionsPerDirection !== undefined ? { maxPositionsPerDirection: Math.max(1, Math.min(300, Math.floor(Number(body.maxPositionsPerDirection) || 1))) } : {}),

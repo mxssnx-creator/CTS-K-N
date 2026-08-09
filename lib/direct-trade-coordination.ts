@@ -63,6 +63,7 @@ export type DirectTradeStrategyType = typeof DIRECT_TRADE_STRATEGY_TYPES[number]
 export type DirectTradeEntryTiming = "current" | "last_confirmed"
 export type DirectTradeDirection = "long" | "short"
 export type DirectTradeTrailingMode = "none" | "fixed" | "auto"
+export type DirectTradeDeactivationReason = "warming" | "recent_warming" | "pf" | "recent_pf" | "win_rate" | "ddt" | null
 
 export interface DirectTradeTrailOption {
   trailing: boolean
@@ -94,6 +95,44 @@ export interface DirectTradeSimTrade {
   bestMarketExitPnlPercent: number
   drawdownTimeMin: number
   exitReason: "tp" | "sl" | "trailing" | "momentum_reversal" | "relative_reversal" | "timeout"
+}
+
+/**
+ * One independent historical Block lane.  The market path and last-position
+ * window are the same causal path as the parent Set, but the count owns its
+ * own volume multiplier, minimum-PF floor, eligibility and projected volume
+ * PnL.  Keeping these rows nested avoids materialising a second 12× copy of
+ * the complete Direct-Trade config grid in Redis while preserving Count 1..N
+ * identity and statistics.
+ */
+export interface DirectTradeBlockEvaluation {
+  /** Exact count lineage key; the parent config remains separately addressable. */
+  blockSetKey: string
+  blockCount: number
+  blockVolumeRatio: number
+  blockVolumeIncrementRatio: number
+  blockCalculatedVolumeMultiplier: number
+  blockProfitFactorRatio: number
+  blockDefaultMinimumProfitFactor: number
+  blockConfiguredMinimumProfitFactor: number
+  blockNormalProfitFactor: number
+  blockMinimumProfitFactor: number
+  blockObservedProfitFactor: number | null
+  blockObservedProfitFactorInfinite: boolean
+  blockProfitFactorDifference: number
+  /** Observed finite PF (or zero for infinite/unproven) minus this count's floor. */
+  blockProfitFactorToMinimumDifference: number
+  blockComparisonAvailable: boolean
+  blockProfitFactorWindow: number
+  blockProfitFactorSampleCount: number
+  blockAvgDrawdownTimeMin: number
+  blockMaxDrawdownTimeMin: number
+  blockTotalPnl: number
+  blockRecentProfitFactor: number | null
+  blockRecentProfitFactorInfinite: boolean
+  blockRecentPositionCount: number
+  valid: boolean
+  deactivationReason: DirectTradeDeactivationReason
 }
 
 interface DirectTradeSimulationMetrics {
@@ -144,7 +183,7 @@ export interface DirectTradeSet {
   volumeRatio: number
   positionCostPercent: number
   valid: boolean
-  deactivationReason: "warming" | "recent_warming" | "pf" | "recent_pf" | "win_rate" | "ddt" | null
+  deactivationReason: DirectTradeDeactivationReason
   profitFactor: number | null
   profitFactorInfinite: boolean
   winRate: number
@@ -167,6 +206,27 @@ export interface DirectTradeSet {
   recentWinRate: number
   recentTotalPnl: number
   recentAvgDrawdownTimeMin: number
+  /** Block setting used by this exact selected lane. */
+  blockProfitFactorRatio: number
+  /** Count-specific historical PF/DDT lanes; empty when Block is disabled. */
+  blockEvaluations: DirectTradeBlockEvaluation[]
+  blockValid: boolean
+  blockDeactivationReason: DirectTradeDeactivationReason
+  blockObservedProfitFactor: number | null
+  blockObservedProfitFactorInfinite: boolean
+  blockNormalProfitFactor: number
+  blockMinimumProfitFactor: number
+  blockConfiguredMinimumProfitFactor: number
+  blockProfitFactorDifference: number
+  blockProfitFactorToMinimumDifference: number
+  blockComparisonAvailable: boolean
+  blockProfitFactorWindow: number
+  blockProfitFactorSampleCount: number
+  blockAvgDrawdownTimeMin: number
+  blockMaxDrawdownTimeMin: number
+  blockTotalPnl: number
+  blockVolumeIncrementRatio: number
+  blockCalculatedVolumeMultiplier: number
   // Hindsight-only analytic: it is never used as a live order target.
   bestMarketExitAnalysisOnly: true
   // Current, causal entry state. The processor may never turn a historic-only
@@ -197,6 +257,7 @@ export interface DirectTradeEvaluationInput {
   positionCostPercent?: number
   blockRange: [number, number]
   minProfitFactor: number
+  blockProfitFactorRatio?: number
   minRecentProfitFactor?: number
   recentPositionWindow?: number
   minRecentPositions?: number
@@ -841,6 +902,7 @@ function summarizeRecentPositions(simulation: DirectTradeSimulationMetrics) {
 function stableSetKey(input: Pick<DirectTradeSet,
   "symbol" | "direction" | "signalDirection" | "strategyType" | "timeframe" | "entryTactic" | "exitTactic" | "entryTiming" |
   "activityVolumeRatio" | "takeprofit" | "takeProfitPositionCostRatio" | "stoploss" | "trailing" | "trailingMode" | "trailStart" | "trailStop" | "autoTrailSensitivity" | "historyHours" | "positionCostPercent" | "blockCount" | "blockVolumeRatio"
+  | "blockProfitFactorRatio"
 >): string {
   const numeric = (value: number) => round(value, 4).toFixed(4)
   return [
@@ -866,6 +928,7 @@ function stableSetKey(input: Pick<DirectTradeSet,
     `ta:${input.autoTrailSensitivity == null ? "none" : numeric(input.autoTrailSensitivity)}`,
     `block:${Math.max(0, Math.floor(input.blockCount))}`,
     `blockRatio:${numeric(input.blockVolumeRatio)}`,
+    `blockPfRatio:${numeric(input.blockProfitFactorRatio)}`,
   ].join("|")
 }
 
@@ -956,6 +1019,113 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
                     : null
             const scoreBase = profitFactorInfinite ? simulation.totalProfit : (profitFactor ?? 0)
             const score = scoreBase * winRate * (1 + Math.max(0, totalPnl) / 100) / (1 + avgDdt / Math.max(1, input.maxDrawdownTimeMin))
+            const blockProfitFactorRatio = Math.max(
+              0.2,
+              Math.min(5, finite(input.blockProfitFactorRatio, 0.8)),
+            )
+            const blockEnabled = input.blockRange[1] > 0
+            const blockMinimum = blockEnabled
+              ? Math.max(1, Math.min(12, Math.floor(finite(input.blockRange[0], 1))))
+              : 0
+            const blockMaximum = blockEnabled
+              ? Math.max(blockMinimum, Math.min(12, Math.floor(finite(input.blockRange[1], 12))))
+              : 0
+            const blockNormalProfitFactor = Number.isFinite(Number(profitFactor))
+              ? Number(profitFactor)
+              : input.minProfitFactor
+            const blockEvaluations: DirectTradeBlockEvaluation[] = blockEnabled
+              ? Array.from({ length: blockMaximum - blockMinimum + 1 }, (_, offset) => {
+                  const blockCount = blockMinimum + offset
+                  const blockVolumeIncrementRatio = blockCount * input.volumeRatio
+                  const blockCalculatedVolumeMultiplier = 1 + blockVolumeIncrementRatio
+                  const blockConfiguredMinimumProfitFactor = input.minProfitFactor
+                    * blockProfitFactorRatio
+                    * blockVolumeIncrementRatio
+                  const blockMinimumProfitFactor = Math.max(
+                    blockConfiguredMinimumProfitFactor,
+                    blockNormalProfitFactor,
+                  )
+                  // A Block lane needs a finite loss denominator before it is
+                  // allowed to emit.  The normal Base gate may expose an
+                  // infinite PF for a no-loss sample, but treating that as a
+                  // Block pass would let an unproven high-volume count skip
+                  // its independent risk check.
+                  const blockPfPasses = !profitFactorInfinite
+                    && profitFactor != null
+                    && profitFactor >= blockMinimumProfitFactor
+                  const blockValid = hasSample
+                    && recentHasSample
+                    && blockPfPasses
+                    && recentPfPasses
+                    && winRate >= 0.4
+                    && maxDdt <= input.maxDrawdownTimeMin
+                  const blockDeactivationReason: DirectTradeDeactivationReason = !hasSample
+                    ? "warming"
+                    : !recentHasSample
+                      ? "recent_warming"
+                      : !blockPfPasses
+                        ? "pf"
+                        : !recentPfPasses
+                          ? "recent_pf"
+                          : winRate < 0.4
+                            ? "win_rate"
+                            : maxDdt > input.maxDrawdownTimeMin
+                              ? "ddt"
+                              : null
+                  return {
+                    blockSetKey: "",
+                    blockCount,
+                    blockVolumeRatio: input.volumeRatio,
+                    blockVolumeIncrementRatio: round(blockVolumeIncrementRatio, 4),
+                    blockCalculatedVolumeMultiplier: round(blockCalculatedVolumeMultiplier, 4),
+                    blockProfitFactorRatio,
+                    blockDefaultMinimumProfitFactor: round(input.minProfitFactor, 4),
+                    blockConfiguredMinimumProfitFactor: round(blockConfiguredMinimumProfitFactor, 4),
+                    blockNormalProfitFactor: round(blockNormalProfitFactor, 3),
+                    blockMinimumProfitFactor: round(blockMinimumProfitFactor, 3),
+                    blockObservedProfitFactor: profitFactor == null ? null : round(profitFactor, 3),
+                    blockObservedProfitFactorInfinite: profitFactorInfinite,
+                    blockProfitFactorDifference: round(
+                      (profitFactorInfinite ? 0 : (profitFactor ?? 0)) - blockNormalProfitFactor,
+                      3,
+                    ),
+                    blockProfitFactorToMinimumDifference: round(
+                      (profitFactorInfinite ? 0 : (profitFactor ?? 0)) - blockMinimumProfitFactor,
+                      3,
+                    ),
+                    blockComparisonAvailable: hasSample,
+                    blockProfitFactorWindow: recentPositionWindow,
+                    blockProfitFactorSampleCount: simulation.totalTrades,
+                    blockAvgDrawdownTimeMin: round(avgDdt, 1),
+                    blockMaxDrawdownTimeMin: round(maxDdt, 1),
+                    blockTotalPnl: round(totalPnl * blockCalculatedVolumeMultiplier),
+                    blockRecentProfitFactor: recent.recentProfitFactor,
+                    blockRecentProfitFactorInfinite: recent.recentProfitFactorInfinite,
+                    blockRecentPositionCount: recent.recentPositionCount,
+                    valid: blockValid,
+                    deactivationReason: blockDeactivationReason,
+                  }
+                })
+              : []
+            // One Direct-Trade order lane carries one concrete target, while
+            // every Count 1..N lane remains available for audit/statistics.
+            // Prefer the largest qualified count; if none qualifies keep the
+            // largest configured count visible as the disabled diagnosis.
+            let selectedBlock: DirectTradeBlockEvaluation | null = null
+            if (blockEnabled) {
+              for (const candidate of blockEvaluations) {
+                if (!selectedBlock
+                  || Number(candidate.valid) > Number(selectedBlock.valid)
+                  || (candidate.valid === selectedBlock.valid && candidate.blockCount > selectedBlock.blockCount)) {
+                  selectedBlock = candidate
+                }
+              }
+            }
+            const selectedValid = blockEnabled ? Boolean(selectedBlock?.valid) : valid
+            const selectedDeactivationReason = blockEnabled
+              ? selectedBlock?.deactivationReason || null
+              : deactivationReason
+            const selectedBlockCount = selectedBlock?.blockCount || 0
             const base: Omit<DirectTradeSet, "setKey"> = {
               symbol: input.symbol,
               direction: input.direction,
@@ -976,15 +1146,14 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               trailStart: round(trail.trailStart),
               trailStop: round(trail.trailStop),
               autoTrailSensitivity: trail.mode === "auto" ? round(trail.autoTrailSensitivity ?? 1, 3) : null,
-              // A Block line carries one evaluated count. Its execution
-              // target remains based on the original Base quantity, never on
-              // a preceding block-adjusted quantity.
-              blockCount: Math.max(input.blockRange[0], Math.min(input.blockRange[1], Math.round(profitFactor ?? simulation.totalProfit))),
+              // The selected Block target is anchored to the immutable Base
+              // quantity. Earlier Count fills never compound this target.
+              blockCount: selectedBlockCount,
               blockVolumeRatio: input.volumeRatio,
               volumeRatio: input.volumeRatio,
               positionCostPercent,
-              valid,
-              deactivationReason,
+              valid: selectedValid,
+              deactivationReason: selectedDeactivationReason,
               profitFactor: profitFactor == null ? null : round(profitFactor, 3),
               profitFactorInfinite,
               winRate: round(winRate * 100, 1),
@@ -995,6 +1164,25 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               totalPnl: round(totalPnl),
               bestMarketExitPnl: round(bestMarketExitPnl),
               ...recent,
+              blockProfitFactorRatio,
+              blockEvaluations,
+              blockValid: selectedValid,
+              blockDeactivationReason: selectedDeactivationReason,
+              blockObservedProfitFactor: selectedBlock?.blockObservedProfitFactor ?? null,
+              blockObservedProfitFactorInfinite: selectedBlock?.blockObservedProfitFactorInfinite ?? false,
+              blockNormalProfitFactor: selectedBlock?.blockNormalProfitFactor ?? 0,
+              blockMinimumProfitFactor: selectedBlock?.blockMinimumProfitFactor ?? 0,
+              blockConfiguredMinimumProfitFactor: selectedBlock?.blockConfiguredMinimumProfitFactor ?? 0,
+              blockProfitFactorDifference: selectedBlock?.blockProfitFactorDifference ?? 0,
+              blockProfitFactorToMinimumDifference: selectedBlock?.blockProfitFactorToMinimumDifference ?? 0,
+              blockComparisonAvailable: selectedBlock?.blockComparisonAvailable ?? false,
+              blockProfitFactorWindow: selectedBlock?.blockProfitFactorWindow ?? 0,
+              blockProfitFactorSampleCount: selectedBlock?.blockProfitFactorSampleCount ?? 0,
+              blockAvgDrawdownTimeMin: selectedBlock?.blockAvgDrawdownTimeMin ?? 0,
+              blockMaxDrawdownTimeMin: selectedBlock?.blockMaxDrawdownTimeMin ?? 0,
+              blockTotalPnl: selectedBlock?.blockTotalPnl ?? round(totalPnl),
+              blockVolumeIncrementRatio: selectedBlock?.blockVolumeIncrementRatio ?? 0,
+              blockCalculatedVolumeMultiplier: selectedBlock?.blockCalculatedVolumeMultiplier ?? 1,
               bestMarketExitAnalysisOnly: true,
               entrySignalKey: directTradeEntrySignalKey({
                 symbol: input.symbol,
@@ -1009,7 +1197,16 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               activeEntry,
               activeEntryAt,
             }
-            result.push({ ...base, setKey: stableSetKey(base) })
+            const setKey = stableSetKey(base)
+            const blockLineageKey = stableSetKey({ ...base, blockCount: 0 })
+            result.push({
+              ...base,
+              blockEvaluations: base.blockEvaluations.map((block) => ({
+                ...block,
+                blockSetKey: `${blockLineageKey}#block:${block.blockCount}`,
+              })),
+              setKey,
+            })
           }
         }
       }
