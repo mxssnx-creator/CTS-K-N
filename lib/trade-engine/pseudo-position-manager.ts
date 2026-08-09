@@ -1069,16 +1069,24 @@ export class PseudoPositionManager {
       // terminal; open positions and strategy ledgers are untouched.
       const closedIndexLength = Number(await client.llen(closedIndexKey).catch(() => 0)) || 0
       if (closedIndexLength > PseudoPositionManager.CLOSED_INDEX_MAX_ROWS + 100) {
-        const staleIds = await client
-          .lrange(closedIndexKey, PseudoPositionManager.CLOSED_INDEX_MAX_ROWS, -1)
-          .catch(() => [])
-        const trim = client.multi()
-        trim.ltrim(closedIndexKey, 0, PseudoPositionManager.CLOSED_INDEX_MAX_ROWS - 1)
-        for (const staleId of Array.isArray(staleIds) ? staleIds : []) {
-          trim.zrem(closedTimeIndexKey, String(staleId))
-          trim.del(this.positionKey(String(staleId)))
+        // Read/delete the overflow in bounded pages before trimming the
+        // compatibility list. This keeps a pathological legacy ring from
+        // creating one giant Redis multi or one giant JS array.
+        for (let offset = PseudoPositionManager.CLOSED_INDEX_MAX_ROWS; offset < closedIndexLength; offset += 500) {
+          const staleIds = await client
+            .lrange(closedIndexKey, offset, Math.min(closedIndexLength - 1, offset + 499))
+            .catch(() => [])
+          const trim = client.multi()
+          for (const staleId of Array.isArray(staleIds) ? staleIds : []) {
+            trim.zrem(closedTimeIndexKey, String(staleId))
+            trim.del(this.positionKey(String(staleId)))
+          }
+          await trim.exec().catch(() => undefined)
+          await new Promise<void>((resolve) => setImmediate(resolve))
         }
-        await trim.exec().catch(() => undefined)
+        await client
+          .ltrim(closedIndexKey, 0, PseudoPositionManager.CLOSED_INDEX_MAX_ROWS - 1)
+          .catch(() => undefined)
       }
 
       await syncPseudoStrategyEntryLedger(

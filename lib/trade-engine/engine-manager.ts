@@ -1844,8 +1844,13 @@ export class TradeEngineManager {
       replacementClient.del(replacementDone.legacy),
       replacementClient.del(replacementFirstPass.scoped),
       replacementClient.del(replacementFirstPass.legacy),
-      ...replacementMarkers.map((key) => replacementClient.del(key)),
     ])
+    for (let offset = 0; offset < replacementMarkers.length; offset += 500) {
+      await Promise.allSettled(
+        replacementMarkers.slice(offset, offset + 500).map((key) => replacementClient.del(key)),
+      )
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
 
     if (!this.prehistoricBootstrapInFlight) {
       this.prehistoricReloadQueued = false

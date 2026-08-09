@@ -1185,7 +1185,12 @@ export class ConfigSetProcessor {
                     }
                     return Number.isFinite(Number(added)) ? Number(added) : results.length
                   }
-                  await Promise.all(results.map((result) => this.indicationManager.addResult(config.id, result)))
+                  await mapWithConcurrency(
+                    results,
+                    Math.max(1, Math.min(16, perTypeConcurrency)),
+                    (result) => this.indicationManager.addResult(config.id, result),
+                    { yieldEvery: 16 },
+                  )
                   return results.length
                 },
                 { yieldEvery: 1 },
@@ -1415,7 +1420,12 @@ export class ConfigSetProcessor {
                   } else if (typeof (this.strategyManager as any).addPositions === "function") {
                     await (this.strategyManager as any).addPositions(config.id, positions, dedupeScope)
                   } else {
-                    await Promise.all(positions.map((p) => this.strategyManager.addPosition(config.id, p)))
+                    await mapWithConcurrency(
+                      positions,
+                      Math.max(1, Math.min(16, perTypeConcurrency)),
+                      (position) => this.strategyManager.addPosition(config.id, position),
+                      { yieldEvery: 16 },
+                    )
                   }
                   assertRunActive()
 
@@ -1689,11 +1699,14 @@ export class ConfigSetProcessor {
     // Fan out the per-config stats reads — each is an independent
     // Redis lookup and the sequential pattern serialised N round-trips
     // on dashboards that frequently call this for the top-N panel.
-    const all = await Promise.all(
-      configs.map(async (config) => {
+    const all = await mapWithConcurrency(
+      configs,
+      concurrencyFromEnv(["STRATEGY_STATS_READ_CONCURRENCY"], 4, 8, configs.length),
+      async (config) => {
         const stats = await this.strategyManager.getStats(config.id)
         return { config, stats }
-      }),
+      },
+      { yieldEvery: 1 },
     )
     return all
       .filter((r) => r.stats.totalPositions > 0)

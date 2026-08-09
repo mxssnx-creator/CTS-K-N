@@ -103,10 +103,12 @@ DIRECT_TRADE_MATRIX_REPORT_FILE	test-or-operator-tool	no	no	1	scripts/test-direc
 DIRECT_TRADE_MATRIX_START_SYMBOL	test-or-operator-tool	no	no	1	scripts/test-direct-trade-matrix.cjs
 DIRECT_TRADE_MATRIX_SYMBOLS	test-or-operator-tool	no	no	1	scripts/test-direct-trade-matrix.cjs
 DIRECT_TRADE_PROCESSOR_TOKEN	application-runtime	yes	yes	4	.env.example,__tests__/unit/direct-trade-control-order-route.test.ts,app/api/trade-engine/direct-trade/order/route.ts,scripts/direct-trade-processor.mjs
+DIRECT_TRADE_RECOVERY_DEBUG	test-or-operator-tool	no	no	1	scripts/run-direct-trade-recovery-soak.mjs
 DIRECT_TRADE_RECOVERY_LEASE_WAIT_MS	test-or-operator-tool	no	no	1	scripts/test-direct-trade-recovery-scenarios.mjs
 DIRECT_TRADE_RECOVERY_NODE_OPTIONS	test-or-operator-tool	no	no	1	scripts/run-direct-trade-recovery-soak.mjs
 DIRECT_TRADE_RECOVERY_PHASE	test-or-operator-tool	no	no	1	scripts/test-direct-trade-recovery-scenarios.mjs
 DIRECT_TRADE_RECOVERY_PORT	test-or-operator-tool	no	no	1	scripts/run-direct-trade-recovery-soak.mjs
+DIRECT_TRADE_RECOVERY_RESTART_PORT	test-or-operator-tool	no	no	1	scripts/run-direct-trade-recovery-soak.mjs
 DIRECT_TRADE_SYNTHETIC_MARKET_DATA	application-runtime	no	no	1	lib/direct-trade-market-history.ts
 DIRECT_TRADE_TEST_LEASE_MS	application-runtime	no	no	1	app/api/trade-engine/direct-trade/route.ts
 DISABLE_API_STRATEGY_FLOW	application-runtime	no	no	3	__tests__/unit/requested-regressions.test.ts,app/api/cron/generate-indications/route.ts,lib/trade-engine/shared-ind-strat-pipeline.ts
