@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const originalCwd = process.cwd()
@@ -15,13 +16,26 @@ function restoreEnv(): void {
   else process.env.BINGX_API_SECRET = originalSecret
 }
 
+async function importCredentialLoaderWithoutServerDotenv() {
+  const isolatedCwd = mkdtempSync(join(tmpdir(), "cts-env-credentials-"))
+  const previousCwd = process.cwd()
+  try {
+    process.chdir(isolatedCwd)
+    jest.resetModules()
+    return await import("@/lib/base-connection-credentials")
+  } finally {
+    process.chdir(previousCwd)
+    rmSync(isolatedCwd, { recursive: true, force: true })
+  }
+}
+
 test("loads bingx-x01 credentials from server environment variables", async () => {
   process.env.NODE_ENV = "production"
   delete process.env.BINGX_API_KEY
   delete process.env.BINGX_API_SECRET
   process.env.BINGX_API_KEY = "env-key-override-1234567890"
   process.env.BINGX_API_SECRET = "env-secret-override-1234567890"
-  const { getBaseConnectionCredentials } = await import("@/lib/base-connection-credentials")
+  const { getBaseConnectionCredentials } = await importCredentialLoaderWithoutServerDotenv()
   expect(getBaseConnectionCredentials("bingx-x01")).toEqual({
     apiKey: "env-key-override-1234567890",
     apiSecret: "env-secret-override-1234567890",
@@ -33,7 +47,7 @@ test("returns empty credentials when no server environment credential is present
   process.env.NODE_ENV = "production"
   delete process.env.BINGX_API_KEY
   delete process.env.BINGX_API_SECRET
-  const { getBaseConnectionCredentials } = await import("@/lib/base-connection-credentials")
+  const { getBaseConnectionCredentials } = await importCredentialLoaderWithoutServerDotenv()
   const creds = getBaseConnectionCredentials("bingx-x01")
   expect(creds.apiKey).toBe("")
   expect(creds.apiSecret).toBe("")

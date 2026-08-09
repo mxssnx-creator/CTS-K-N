@@ -174,6 +174,7 @@ describe("production installation and Kilo deployment contract", () => {
     const targetScripts = path.join(target, "scripts")
     const binDir = path.join(root, "bin")
     const capture = path.join(root, "clone-cwd.txt")
+    const installArgs = path.join(root, "install-args.txt")
     const installerFixture = path.join(root, "install-fixture.sh")
     try {
       await Promise.all([
@@ -187,6 +188,7 @@ describe("production installation and Kilo deployment contract", () => {
         writeFile(installerFixture, [
           "#!/usr/bin/env bash",
           "set -Eeuo pipefail",
+          "printf '%s\\n' \"$@\" > \"$CTS_TEST_INSTALL_ARGS\"",
           "mkdir -p .cts-runtime",
           "printf 'CTS_INSTALLED_RUNTIME=systemd\\nCTS_INSTALLED_SERVICE_USER=root\\n' > .cts-runtime/install-values.env",
           "",
@@ -223,9 +225,10 @@ describe("production installation and Kilo deployment contract", () => {
       const env = {
         ...process.env,
         PATH: `${binDir}:${process.env.PATH || ""}`,
-        CTS_TEST_TARGET: target,
-        CTS_TEST_CAPTURE: capture,
-        CTS_TEST_INSTALLER: installerFixture,
+          CTS_TEST_TARGET: target,
+          CTS_TEST_CAPTURE: capture,
+          CTS_TEST_INSTALL_ARGS: installArgs,
+          CTS_TEST_INSTALLER: installerFixture,
       }
 
       execFileSync("bash", [path.join(targetScripts, "bootstrap-install.sh"),
@@ -245,17 +248,26 @@ describe("production installation and Kilo deployment contract", () => {
       const preservedState = path.join(root, "opt", ".cts-kn.cts-state.20260803T010921Z.1")
       await mkdir(path.join(preservedState, "data"), { recursive: true })
       await writeFile(path.join(preservedState, "data", "recovery-marker"), "preserved\n")
+      await writeFile(path.join(preservedState, "install-values.env"), [
+        "CTS_INSTALLED_APP_NAME=desk-alpha",
+        "CTS_INSTALLED_APP_PORT=4312",
+        "CTS_INSTALLED_RUNTIME=systemd",
+        "CTS_INSTALLED_SERVICE_USER=root",
+        `CTS_INSTALLED_PROJECT_ROOT=${target}`,
+        `CTS_INSTALLED_ENV_FILE=${target}/.env.production.local`,
+        "CTS_INSTALLED_ENV_MANAGED=0",
+        "CTS_INSTALLED_REPOSITORY=https://example.test/cts-kn.git",
+        "CTS_INSTALLED_BRANCH=release/recovery",
+        "",
+      ].join("\n"))
       await rm(target, { recursive: true, force: true })
 
       execFileSync("bash", [path.join(process.cwd(), "scripts", "bootstrap-install.sh"),
         "--dir", target,
-        "--name", "cts-kn",
-        "--port", "3002",
-        "--runtime", "systemd",
-        "--service-user", "root",
       ], { cwd: root, env, encoding: "utf8", stdio: "pipe" })
 
       await expect(readFile(path.join(target, "data", "recovery-marker"), "utf8")).resolves.toBe("preserved\n")
+      await expect(readFile(installArgs, "utf8")).resolves.toContain("--name\ndesk-alpha\n--port\n4312\n--runtime\nsystemd\n--service-user\nroot\n")
       await expect(readFile(path.join(preservedState, "data", "recovery-marker"), "utf8")).rejects.toMatchObject({ code: "ENOENT" })
     } finally {
       await rm(root, { recursive: true, force: true })
