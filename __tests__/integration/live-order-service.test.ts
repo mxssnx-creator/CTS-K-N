@@ -103,6 +103,39 @@ describe("live-order-service integration accounting", () => {
     })
   })
 
+  test("Direct-Trade live order reconciles exchange-only acknowledgements before recording the fill", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    const connector = {
+      setLeverage: jest.fn(async () => ({ success: true })),
+      placeOrder: jest.fn(async () => ({ success: true, orderId: "exchange-ack-only" })),
+      getOrder: jest.fn(async () => ({
+        orderId: "exchange-ack-only",
+        status: "filled",
+        filledQty: 1.5,
+        filledPrice: 101.25,
+      })),
+    }
+
+    const result = await placeLiveOrder({
+      connectionId: "conn-direct-live",
+      symbol: "BTCUSDT",
+      side: "long",
+      quantity: 2,
+      price: 101,
+      connector,
+      connection: { id: "conn-direct-live", position_mode: "one_way" },
+    })
+
+    expect(result.success).toBe(true)
+    expect(connector.getOrder).toHaveBeenCalledWith("BTCUSDT", "exchange-ack-only")
+    expect(result.fill).toMatchObject({ filled: true, filledQty: 1.5, filledPrice: 101.25 })
+    expect(JSON.parse([...kvStore.values()][0])).toMatchObject({
+      executedQuantity: 1.5,
+      averageExecutionPrice: 101.25,
+      status: "open",
+    })
+  })
+
 
   test("exchange order ids make live progression accounting idempotent", async () => {
     const { placeLiveOrder } = await import("@/lib/live-order-service")

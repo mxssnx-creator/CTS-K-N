@@ -132,11 +132,13 @@ describe("Direct-Trade API state and processor lease", () => {
         takeProfitRatioRange: [4, 12],
         maxPositionsPerSymbol: 3,
         maxPositionsPerDirection: 2,
+        historyHours: 60,
       }))
       const migrated = await (await GET()).json()
       expect(migrated.state).toMatchObject({
         takeProfitRatioRange: [4, 14],
         takeProfitRatioStep: 4,
+        historyHours: 48,
         maxPositionsPerSymbol: 12,
         maxPositionsPerDirection: 6,
       })

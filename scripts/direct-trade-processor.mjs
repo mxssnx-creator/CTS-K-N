@@ -4,7 +4,7 @@
  *
  * Runs indefinitely with a 280ms tick interval. Self-healing, rate-limit aware,
  * async-optimized. Evaluates independent configs from the configured historic
- * range (60h by default) every 2h, manages
+ * range (48h by default) every 2h, manages
  * multiple positions per symbol/direction/timeframe independently.
  *
  * Usage: node scripts/direct-trade-processor.mjs [--port 3002]
@@ -28,6 +28,13 @@ const PORT = process.env.PORT ?? (
 )
 const BASE = `http://localhost:${PORT}`
 const PROCESSOR_TOKEN = process.env.DIRECT_TRADE_PROCESSOR_TOKEN || ""
+// Live Direct-Trade must prove an exact historic warmup before the realtime
+// pulse/order loop is allowed to run. This is intentionally independent from
+// the operator's paper/backtest range.
+const DIRECT_TRADE_LIVE_HISTORY_HOURS = Math.max(
+  1,
+  Math.floor(Number(process.env.DIRECT_TRADE_LIVE_HISTORY_HOURS) || 48),
+)
 
 // ─── Rate Limiter ─────────────────────────────────────────────────────────────
 
@@ -127,7 +134,7 @@ let state = {
   inverseMaxSlRatio: 1.25,
   timeframes: ["1m", "10m", "15m"],
   strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
-  historyHours: 60,
+  historyHours: 48,
   entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
@@ -162,6 +169,7 @@ let executionConfigsBySignal = new Map()
 let activeSignalKeys = new Set()
 let lastSignalPulseAt = 0
 let calculationVersion = null
+let calculationHistoryHours = null
 let positions = []
 // Per-config performance tracking. The full candidate identity prevents TP,
 // SL, trailing and Block variants from sharing a false PF/DDT history.
@@ -232,6 +240,12 @@ function resolveBlockSizing(config, baseQuantity) {
     blockAddedQuantity,
     targetBlockQuantity: baseQuantity + blockAddedQuantity,
   }
+}
+
+function requiredCalculationHistoryHours(input = state) {
+  return input?.liveMode
+    ? DIRECT_TRADE_LIVE_HISTORY_HOURS
+    : Math.max(1, Number(input?.historyHours) || 48)
 }
 
 function indexExecutionConfigs() {
@@ -344,7 +358,7 @@ function evaluateConfigPerformance(key) {
 
 // ─── Config Calculation ───────────────────────────────────────────────────────
 
-function calculationInputsSignature(input = state) {
+function calculationInputsSignature(input = state, historyHoursOverride = null) {
   return JSON.stringify({
     symbolCount: input.symbolCount,
     symbolOrder: input.symbolOrder,
@@ -364,7 +378,7 @@ function calculationInputsSignature(input = state) {
     minRecentProfitFactor: input.minRecentProfitFactor,
     recentEvaluationPositions: input.recentEvaluationPositions,
     maxDrawdownTimeMin: input.maxDrawdownTimeMin,
-    historyHours: input.historyHours,
+    historyHours: historyHoursOverride == null ? input.historyHours : historyHoursOverride,
     entryTactics: input.entryTactics,
     exitTactics: input.exitTactics,
     entryTiming: input.entryTiming,
@@ -375,11 +389,12 @@ function calculationInputsSignature(input = state) {
 
 async function recalculateConfigs() {
   log("info", "Recalculating optimal configs...")
-  // The complete 60h maximum-symbol grid can legitimately outlive the short
+  // The complete 48h maximum-symbol grid can legitimately outlive the short
   // processor lease. Use one serial, abortable acknowledgement loop while
   // the request is in flight: unlike setInterval it never overlaps Redis/API
   // writes if a previous acknowledgement is slow.
-  const calculationInputs = calculationInputsSignature()
+  const requestedHistoryHours = requiredCalculationHistoryHours()
+  const calculationInputs = calculationInputsSignature(state, requestedHistoryHours)
   const keepaliveAbort = new AbortController()
   const leaseKeepalive = (async () => {
     while (await waitForAbortableDelay(2_000, keepaliveAbort.signal)) {
@@ -406,7 +421,9 @@ async function recalculateConfigs() {
       minRecentProfitFactor: state.minRecentProfitFactor,
       recentEvaluationPositions: state.recentEvaluationPositions,
       maxDrawdownTimeMin: state.maxDrawdownTimeMin,
-      historyHours: state.historyHours,
+      // Live mode has an exact pre-entry warmup contract. The persisted paper
+      // range remains untouched, but the live generation itself is 48h.
+      historyHours: requestedHistoryHours,
       entryTactics: state.entryTactics,
       exitTactics: state.exitTactics,
       entryTiming: state.entryTiming,
@@ -415,7 +432,7 @@ async function recalculateConfigs() {
     }, 300_000)
 
     if (result.success && processorLeaseHeld) {
-      if (calculationInputs !== calculationInputsSignature()) {
+      if (calculationInputs !== calculationInputsSignature(state, requiredCalculationHistoryHours())) {
         // A settings acknowledgement arrived while this long historical grid
         // was evaluating. Do not open an entry from the now-stale generation;
         // the next owned pulse starts the exact new grid.
@@ -424,6 +441,7 @@ async function recalculateConfigs() {
         return false
       }
       calculationVersion = result.summary?.calculatedAt || result.timestamp || calculationVersion
+      calculationHistoryHours = Number(result.summary?.historyHours) || requestedHistoryHours
       lastRecalcAt = Date.now()
       // The API stores the full grid in chunks. Active candidates are loaded
       // after the causal pulse below, never as one multi-million-row payload.
@@ -889,6 +907,15 @@ function applyRemoteState(nextState, source = "load") {
   if (Number.isFinite(persistedRecalcAt) && persistedRecalcAt > 0) {
     lastRecalcAt = persistedRecalcAt
   }
+  if (state.liveMode && !prev.liveMode) {
+    // Entering live mode is a hard lifecycle boundary. Force a new exact
+    // 48-hour calculation and a new causal pulse before any live entry can be
+    // considered, even if the paper generation was just calculated.
+    lastRecalcAt = 0
+    calculationHistoryHours = null
+    lastSignalPulseAt = 0
+    log("info", `Live mode requested; exact ${DIRECT_TRADE_LIVE_HISTORY_HOURS}h historic warmup required before realtime processing`)
+  }
   // A persisted acknowledgement is an event from the state owner. Compare
   // only calculation inputs: UI-only status updates never cause a rebuild.
   const evaluationInputsChanged = JSON.stringify({
@@ -957,6 +984,10 @@ async function loadState(includeExecution = false) {
       applyRemoteState(result.state, "load")
     }
     const remoteCalculationVersion = result?.calculation?.calculatedAt || null
+    const remoteCalculationHistoryHours = Number(result?.calculation?.historyHours)
+    calculationHistoryHours = Number.isFinite(remoteCalculationHistoryHours) && remoteCalculationHistoryHours > 0
+      ? remoteCalculationHistoryHours
+      : null
     if (!includeExecution && remoteCalculationVersion && remoteCalculationVersion !== calculationVersion) {
       calculationVersion = remoteCalculationVersion
       await refreshActiveSignals()
@@ -1044,6 +1075,9 @@ async function processTick() {
   tickCount++
 
   // 1. Check if recalculation needed (every 2h)
+  if (state.liveMode && calculationHistoryHours !== requiredCalculationHistoryHours()) {
+    lastRecalcAt = 0
+  }
   let calculationFresh = true
   if (Date.now() - lastRecalcAt > state.recalcIntervalMs) {
     calculationFresh = await recalculateConfigs()
@@ -1091,7 +1125,11 @@ async function mainLoop() {
   // Acquire the single-writer lease before generating configs or touching a
   // position. A second process becomes a passive standby instead of doubling
   // entries, closes, or dashboard counts.
-  if (state.enabled && await ensureProcessorLease() && !calculationVersion) {
+  if (
+    state.enabled &&
+    await ensureProcessorLease() &&
+    (!calculationVersion || calculationHistoryHours !== requiredCalculationHistoryHours())
+  ) {
     await recalculateConfigs()
   }
 
@@ -1106,7 +1144,7 @@ async function mainLoop() {
       }
 
       // Current market eligibility is refreshed independently from the full
-      // 60h calculation. It is cheap, bounded by public API backpressure, and
+      // 48h calculation. It is cheap, bounded by public API backpressure, and
       // keeps 1m/10m/15m entry decisions continuous between two full rebuilds.
       if (state.enabled && Date.now() - lastSignalPulseAt >= 60_000) {
         await refreshActiveSignals()

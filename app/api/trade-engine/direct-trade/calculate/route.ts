@@ -267,7 +267,7 @@ export async function POST(request: NextRequest) {
     const minRecentProfitFactor = Math.max(0.8, numberOr(body.minRecentProfitFactor, DIRECT_TRADE_RECENT_PF_DEFAULT))
     const recentEvaluationPositions = Math.max(3, Math.floor(numberOr(body.recentEvaluationPositions, 12)))
     const maxDrawdownTimeMin = Math.max(1, numberOr(body.maxDrawdownTimeMin, 10))
-    const historyHours = Math.max(1, numberOr(body.historyHours, 60))
+    const historyHours = Math.max(1, numberOr(body.historyHours, 48))
     const entryTactics = normaliseEntryTactics(body.entryTactics)
     const exitTactics = normaliseExitTactics(body.exitTactics)
     const entryTiming: DirectTradeEntryTiming = body.entryTiming === "last_confirmed" ? "last_confirmed" : "current"

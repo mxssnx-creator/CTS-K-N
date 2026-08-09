@@ -10,14 +10,14 @@
  * Environment:
  *   DIRECT_TRADE_BASE_URL=http://127.0.0.1:3000
  *   DIRECT_TRADE_DEV_SYMBOLS=32
- *   DIRECT_TRADE_DEV_HISTORY_HOURS=80
+ *   DIRECT_TRADE_DEV_HISTORY_HOURS=48
  *   DIRECT_TRADE_DEV_SOAK_ROUNDS=5
  *   DIRECT_TRADE_DEV_SOAK_INTERVAL_MS=60000
  */
 
 const baseUrl = (process.env.DIRECT_TRADE_BASE_URL || "http://127.0.0.1:3000").replace(/\/$/, "")
 const symbolCount = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_DEV_SYMBOLS) || 32))
-const historyHours = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_DEV_HISTORY_HOURS) || 80))
+const historyHours = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_DEV_HISTORY_HOURS) || 48))
 const rounds = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_DEV_SOAK_ROUNDS) || 5))
 const intervalMs = Math.max(250, Math.floor(Number(process.env.DIRECT_TRADE_DEV_SOAK_INTERVAL_MS) || 60_000))
 const strategyTypes = ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"]

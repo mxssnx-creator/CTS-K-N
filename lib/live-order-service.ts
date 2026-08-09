@@ -76,6 +76,58 @@ export function parseOrderFill(result: any, fallbackQuantity = 0, fallbackPrice 
   return { filled, filledQty, filledPrice, status }
 }
 
+async function hydrateExchangeOrderResult(
+  connector: any,
+  symbol: string,
+  orderId: string,
+  result: any,
+): Promise<any> {
+  const initial = parseOrderFill(result)
+  // Some exchange create-order endpoints return only an order id for a market
+  // order. Direct-Trade must not record a guessed fill when the connector can
+  // cheaply reconcile that id. Keep the query bounded so a slow venue cannot
+  // stall the 280ms control loop indefinitely.
+  if (
+    initial.filledQty > 0 ||
+    initial.filledPrice > 0 ||
+    typeof connector?.getOrder !== "function" ||
+    !orderId
+  ) return result
+
+  try {
+    const queried = await new Promise<any>((resolve) => {
+      let settled = false
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        resolve(null)
+      }, 2_500)
+      Promise.resolve()
+        .then(() => connector.getOrder(symbol, orderId))
+        .then((value) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(value)
+        })
+        .catch(() => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(null)
+        })
+    })
+    if (queried && typeof queried === "object") {
+      return { ...result, ...queried, orderId: result.orderId || queried.orderId || orderId }
+    }
+  } catch {
+    // The create acknowledgement remains authoritative when the bounded
+    // reconciliation read is unavailable; callers retain the requested
+    // quantity fallback and the next exchange reconciliation can repair it.
+  }
+  return result
+}
+
 export async function loadLiveOrderConnection(connectionId: string): Promise<any> {
   await initRedis()
   let connection: any = null
@@ -371,7 +423,7 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
         reduceOnly: input.reduceOnly === true,
         clientOrderId: input.clientOrderId,
       }
-  const result = await connector.placeOrder(symbol, exchangeSide, input.quantity, input.price || 0, input.orderType || "market", options)
+  let result = await connector.placeOrder(symbol, exchangeSide, input.quantity, input.price || 0, input.orderType || "market", options)
   if (!result?.success) {
     const failedOrderId = result?.orderId || result?.order_id || result?.id
     if (input.updateCounters !== false) {
@@ -387,6 +439,9 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     return { success: false, error: result?.error || "Failed to place order", mode, raw: result }
   }
   const exchangeOrderId = result.orderId || result.order_id || result.id
+  if (willUseRealExchange && exchangeOrderId) {
+    result = await hydrateExchangeOrderResult(connector, symbol, String(exchangeOrderId), result)
+  }
   const orderId = exchangeOrderId || "N/A"
   const fill = parseOrderFill(result, input.quantity, input.price || 0)
   let position: any = null

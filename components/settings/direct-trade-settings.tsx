@@ -78,7 +78,7 @@ const DEFAULT_STATE: DirectTradeState = {
   inverseMaxSlRatio: 1.25,
   timeframes: ["1m", "10m", "15m"],
   strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
-  historyHours: 60,
+  historyHours: 48,
   entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",

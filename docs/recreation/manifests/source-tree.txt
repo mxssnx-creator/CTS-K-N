@@ -1297,7 +1297,9 @@ scripts/start.sh
 scripts/stop.sh
 scripts/stress-bingx-public-32.mjs
 scripts/test-4-part.mjs
+scripts/test-direct-trade-block-comparison.cjs
 scripts/test-direct-trade-dev-soak.mjs
+scripts/test-direct-trade-live-preflight.mjs
 scripts/test-direct-trade-matrix.cjs
 scripts/test-direct-trade-position-lifecycle.mjs
 scripts/test-direct-trade-recovery-scenarios.mjs

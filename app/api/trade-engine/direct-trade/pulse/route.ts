@@ -33,7 +33,7 @@ async function mapWithConcurrency<T, R>(values: T[], concurrency: number, mapper
 
 /**
  * One-minute live signal pulse. It refreshes causal market activity for the
- * already-evaluated independent sets without repeating the 60h TP/SL/trailing
+ * already-evaluated independent sets without repeating the 48h TP/SL/trailing
  * backtest or transferring its complete result grid to a worker/browser.
  */
 export async function GET() {
@@ -62,7 +62,7 @@ export async function GET() {
     const activityVolumeRatio = Math.max(0, Number(state?.activityVolumeRatio ?? calculation?.activityVolumeRatio) || 0)
     // 15m needs 14 prior closed candles; four hours gives the pulse sufficient
     // context plus an alignment margin while historical evaluation stays at its
-    // operator-selected range (60h default).
+    // operator-selected range (48h default).
     const groups = await mapWithConcurrency(symbols, 4, async (symbol) => {
       const minutes = await fetchBingXMinuteHistory(symbol, 4)
       const candlesByTimeframe = {

@@ -146,7 +146,7 @@ const DEFAULT_STATE: DirectTradeState = {
   inverseMaxSlRatio: 1.25,
   timeframes: ["1m", "10m", "15m"],
   strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
-  historyHours: 60,
+  historyHours: 48,
   entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
@@ -222,7 +222,11 @@ async function getState(): Promise<DirectTradeState> {
         exitTactics: normaliseExitTactics(persisted?.exitTactics),
         entryTiming: persisted?.entryTiming === "last_confirmed" ? "last_confirmed" : "current",
         recalcIntervalMs: clampRecalculationInterval(persisted?.recalcIntervalMs, DEFAULT_STATE.recalcIntervalMs),
-        historyHours: Math.max(1, Number(persisted?.historyHours) || DEFAULT_STATE.historyHours),
+        // Migrate the former shipped 60h default to the unified 48h default;
+        // any other persisted value remains an explicit operator choice.
+        historyHours: Number(persisted?.historyHours) === 60
+          ? DEFAULT_STATE.historyHours
+          : Math.max(1, Number(persisted?.historyHours) || DEFAULT_STATE.historyHours),
         activityVolumeRatio: Math.max(0, Number(persisted?.activityVolumeRatio) || DEFAULT_STATE.activityVolumeRatio),
         positionCostPercent: normalizePositionCostPercent(persisted?.positionCostPercent ?? DEFAULT_STATE.positionCostPercent),
         maxHoldMinutes: Math.max(1, Number(persisted?.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes),

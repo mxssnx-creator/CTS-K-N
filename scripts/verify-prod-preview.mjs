@@ -184,7 +184,7 @@ async function main() {
   if (directTrade.state && (
     !Array.isArray(directTrade.state.timeframes) ||
     !["1m", "10m", "15m"].every((timeframe) => directTrade.state.timeframes.includes(timeframe)) ||
-    Number(directTrade.state.historyHours) < 60 ||
+    Number(directTrade.state.historyHours) < 48 ||
     Number(directTrade.state.minVolFactor) < 0.1
   )) {
     throw new Error(`Direct-Trade default coordination settings invalid: ${JSON.stringify(directTrade.state)}`)
@@ -294,7 +294,7 @@ async function main() {
     cronProtectionMode,
     continuityFresh: continuity.last_tick_fresh === true,
     continuitySource: continuity.last_tick_source || null,
-    directTradeHistoryHours: directTrade.state?.historyHours || 60,
+    directTradeHistoryHours: directTrade.state?.historyHours || 48,
     directTradeTimeframes: directTrade.state?.timeframes || ["1m", "10m", "15m"],
     directTradeStatisticRows: directTradeStatistics.rows.length,
     directTradePulseSignals: directTradePulse.signalsEvaluated,

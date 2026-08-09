@@ -130,7 +130,7 @@ const DEFAULT_STATE: DirectTradeState = {
   inverseMaxSlRatio: 1.25,
   timeframes: ["1m", "10m", "15m"],
   strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
-  historyHours: 60,
+  historyHours: 48,
   entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
@@ -245,7 +245,7 @@ export function DirectTradeSection() {
     if (!isPending("maxPositionsPerDirection")) setLocalMaxPosPerDir(remoteState.maxPositionsPerDirection || DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION)
     if (!isPending("timeframes")) setLocalTimeframes(remoteState.timeframes || ["1m", "10m", "15m"])
     if (!isPending("strategyTypes")) setLocalStrategyTypes(remoteState.strategyTypes || ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"])
-    if (!isPending("historyHours")) setLocalHistoryHours(remoteState.historyHours ?? 60)
+    if (!isPending("historyHours")) setLocalHistoryHours(remoteState.historyHours ?? 48)
     if (!isPending("entryTactics")) setLocalEntryTactics(remoteState.entryTactics || ["momentum", "mean_reversion", "breakout", "relative"])
     if (!isPending("exitTactics")) setLocalExitTactics(remoteState.exitTactics || ["bracket", "momentum_reversal", "relative", "time"])
     if (!isPending("entryTiming")) setLocalEntryTiming(remoteState.entryTiming === "last_confirmed" ? "last_confirmed" : "current")
@@ -924,7 +924,7 @@ export function DirectTradeSection() {
                     saveConfig({ historyHours: value })
                   }}
                 />
-                <p className="text-[10px] text-muted-foreground/70 leading-tight">Default 60h; the public kline transport is paged until this range is fully covered.</p>
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">Default 48h; the public kline transport is paged until this range is fully covered.</p>
               </div>
 
               <div className="space-y-2">

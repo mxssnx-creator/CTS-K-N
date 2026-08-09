@@ -12,6 +12,8 @@ operator-tool	components/test-live-orders.tsx
 operator-tool	scripts/autotest-drift.mjs
 operator-tool	scripts/diagnose-stats.mjs
 operator-tool	scripts/test-4-part.mjs
+operator-tool	scripts/test-direct-trade-block-comparison.cjs
+operator-tool	scripts/test-direct-trade-live-preflight.mjs
 operator-tool	scripts/test-direct-trade-matrix.cjs
 operator-tool	scripts/test-direct-trade-position-lifecycle.mjs
 operator-tool	scripts/test-direct-trade-recovery-scenarios.mjs
