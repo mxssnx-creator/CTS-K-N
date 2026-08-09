@@ -76,7 +76,7 @@ import {
   invalidateExactSnapshotCache,
 } from "@/lib/indication-sets-processor"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
-import { trackIndicationStats } from "@/lib/statistics-tracker"
+import { trackIndicationStatsBatch } from "@/lib/statistics-tracker"
 import { StepBasedIndicators } from "@/lib/step-based-indicators"
 import {
   DEFAULT_COMMON_INDICATION_SETTINGS,
@@ -559,6 +559,28 @@ function timestampMs(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function mergeHistoricTailWithRealtime(
+  historicTail: any[],
+  realtimeTail: any[],
+): any[] {
+  const byTimestamp = new Map<number, any>()
+  const withoutTimestamp: any[] = []
+  for (const candle of [...historicTail, ...realtimeTail]) {
+    const timestamp = timestampMs(candle?.timestamp ?? candle?.time ?? candle?.t)
+    if (timestamp === null) {
+      withoutTimestamp.push(candle)
+      continue
+    }
+    // The realtime tail is applied second, so a newly refreshed close wins
+    // over the stale copy at the end of the persisted historic chunk.
+    byTimestamp.set(timestamp, candle)
+  }
+  return [
+    ...[...byTimestamp.entries()].sort(([left], [right]) => left - right).map(([, candle]) => candle),
+    ...withoutTimestamp,
+  ]
+}
+
 /** Collapse arbitrary-frequency candles to deterministic one-minute closes. */
 function oneMinuteClosesOldestFirst(candles: any[]): number[] {
   const rows = candles
@@ -571,12 +593,15 @@ function oneMinuteClosesOldestFirst(candles: any[]): number[] {
   if (rows.length === 0) return []
 
   const allTimestamped = rows.every((row) => row.timestamp !== null)
-  if (!allTimestamped) return rows.map((row) => row.price).slice(-61)
+  // The stage contract requires a complete 90-minute one-minute window.
+  // The old 61-row cap made the Main/Real gate mathematically impossible
+  // even when the canonical 1-second history contained all 5,400 samples.
+  if (!allTimestamped) return rows.map((row) => row.price).slice(-ENGINE_STAGE_HISTORY_MINUTES)
 
   rows.sort((left, right) => Number(left.timestamp) - Number(right.timestamp) || left.index - right.index)
   const byMinute = new Map<number, number>()
   for (const row of rows) byMinute.set(Math.floor(Number(row.timestamp) / 60_000), row.price)
-  return Array.from(byMinute.values()).slice(-61)
+  return Array.from(byMinute.values()).slice(-ENGINE_STAGE_HISTORY_MINUTES)
 }
 
 export class IndicationProcessor {
@@ -662,9 +687,10 @@ export class IndicationProcessor {
           if (candles.length < MINIMUM_STAGE_HISTORY_CANDLES) {
             const historicTail = await getHistoricCandleTail(symbol, MINIMUM_STAGE_HISTORY_CANDLES)
             if (historicTail.length >= MINIMUM_STAGE_HISTORY_CANDLES) {
-              this._parsedCandlesCache.set(symbol, { candles: historicTail, ts: Date.now() })
-              this.logCandleCountIfChanged(symbol, "history-chunks", historicTail.length)
-              return historicTail
+              const merged = mergeHistoricTailWithRealtime(historicTail, candles)
+              this._parsedCandlesCache.set(symbol, { candles: merged, ts: Date.now() })
+              this.logCandleCountIfChanged(symbol, "history-chunks", merged.length)
+              return merged
             }
           }
           this._parsedCandlesCache.set(symbol, { candles, ts: Date.now() })
@@ -1611,21 +1637,12 @@ export class IndicationProcessor {
       // indications every cycle — which is what made the per-type counts
       // look identical (and Auto stuck at 0) in recent versions.
       //
-      // We fan out one `trackIndicationStats` call per indication in parallel
-      // so a busy cycle (10–12 indications) pays a single Redis round-trip
-      // window instead of N sequential ones.
+      // The exact Set snapshot can contain thousands of rows. Aggregate by
+      // type first; every row still contributes to count/value/confidence,
+      // while the transport uses one bounded write group per type instead of
+      // one Redis promise fan-out per row.
       if (indications.length > 0) {
-        await Promise.all(
-          indications.map((ind) =>
-            trackIndicationStats(
-              this.connectionId,
-              symbol,
-              ind.type,
-              Number(ind.value) || 0,
-              Number(ind.confidence) || 0,
-            ).catch(() => { /* non-critical stats path */ }),
-          ),
-        )
+        await trackIndicationStatsBatch(this.connectionId, symbol, indications)
       }
       if (!isCurrent()) return []
 

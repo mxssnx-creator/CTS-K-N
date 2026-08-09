@@ -7,6 +7,7 @@
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import type { BasePosition } from "./base-stage"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
 
 const LOG_PREFIX = "[v0] [MainPositionStage]"
 
@@ -69,7 +70,12 @@ export async function evaluateToMainPositions(
     const groups = Object.entries(grouped)
     const evaluated = await mapWithConcurrency(
       groups,
-      concurrencyFromEnv(["MAIN_POSITION_SYMBOL_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"], 4, 8, groups.length),
+      concurrencyFromEnv(
+        ["MAIN_POSITION_SYMBOL_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"],
+        getRuntimeConcurrencyProfile(groups.length).calculationConcurrency,
+        8,
+        groups.length,
+      ),
       async ([key, positions]): Promise<MainPosition | null> => {
       const [symbol, direction] = key.split(":")
 

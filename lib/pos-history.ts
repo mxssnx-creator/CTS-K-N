@@ -1232,6 +1232,14 @@ function pipelineValue(raw: unknown): unknown {
   return Array.isArray(raw) && raw.length === 2 ? raw[1] : raw
 }
 
+async function yieldLedgerBatch(): Promise<void> {
+  if (typeof setImmediate === "function") {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    return
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+}
+
 /**
  * Candidate-specific exact-Set ledger lookup. Main uses this after calculating
  * its bounded Set-key list, so the hot path reads only fields that can be
@@ -1268,6 +1276,7 @@ export async function getStrategySetLedgerBatch(
         if (active > 0) snapshot.active[setKey] = active
         if (closed > 0) snapshot.closed[setKey] = closed
       })
+      if (start + batchSize < unique.length) await yieldLedgerBatch()
     }
     return snapshot
   } catch {
@@ -1337,6 +1346,7 @@ export async function getStrategySetWindowBatch(
           : raw) as string[] | undefined
         out.set(setKey, derivePosWindowStats(Array.isArray(records) ? records : [], winN))
       })
+      if (start + batchSize < unique.length) await yieldLedgerBatch()
     }
   } catch {
     // Missing per-Set history is a normal bootstrap state.

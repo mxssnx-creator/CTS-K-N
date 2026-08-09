@@ -174,9 +174,17 @@ function projectRuntimeStageRows(sets: readonly StrategySet[]): RuntimeStageSnap
 }
 
 // A 280 ms Direct-Trade tick must leave time for control, health and recovery
-// requests even when a single set is expensive to materialise.  64 is a
-// scheduling quantum, not a cap: every candidate is still evaluated.
-const STRATEGY_COOPERATIVE_YIELD_INTERVAL = 64
+// requests even when a single set is expensive to materialise. This is a
+// scheduling quantum, not a cap: every candidate is still evaluated. The
+// default keeps each synchronous slice short on the measured 9-core host;
+// operators can tune it for a known workload without changing calculations.
+const STRATEGY_COOPERATIVE_YIELD_INTERVAL = Math.max(
+  4,
+  Math.min(
+    256,
+    Number.parseInt(process.env.STRATEGY_COOPERATIVE_YIELD_EVERY || "16", 10) || 16,
+  ),
+)
 
 /**
  * Let timers, health probes, and read-only API handlers run between complete
@@ -185,7 +193,17 @@ const STRATEGY_COOPERATIVE_YIELD_INTERVAL = 64
  * Base/Main/Real pass from starving the server event loop.
  */
 function yieldStrategyScheduler(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0))
+  return new Promise((resolve) => {
+    // setImmediate resumes after the poll phase, so queued health/stats and
+    // Redis I/O callbacks can run before the next CPU batch. A timer-only
+    // chain can keep re-entering the timers phase during an exhaustive matrix
+    // and still starve control requests even though it technically yields.
+    if (typeof setImmediate === "function") {
+      setImmediate(resolve)
+    } else {
+      setTimeout(resolve, 0)
+    }
+  })
 }
 
 export function normalizeStrategyDirection(...values: unknown[]): "long" | "short" | null {

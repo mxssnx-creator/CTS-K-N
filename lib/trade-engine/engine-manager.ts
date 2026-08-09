@@ -380,19 +380,22 @@ import { buildProgressionFingerprint, buildProgressionFingerprintSettings } from
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { DEFAULT_SYMBOL_COUNT, getExplicitLocalSymbolCap } from "@/lib/symbol-selection-defaults"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
 
 /**
  * Main realtime symbol work overlaps Redis/market-data waits with a small,
  * ordered worker pool. Base→Main→Real creates a large in-memory graph and is
  * CPU-heavy in single-threaded Node, so wider fan-out increases RSS and tail
- * latency instead of throughput. Default one keeps the single authoritative
- * Node owner responsive; operators that have measured safe I/O overlap can
- * raise ENGINE_SYMBOL_CONCURRENCY/REALTIME_SYMBOL_CONCURRENCY up to eight.
+ * latency instead of throughput. The default is derived from
+ * availableParallelism with control-plane reserve: nine logical CPUs yield
+ * two lanes. Operators that have measured safe I/O overlap can raise
+ * ENGINE_SYMBOL_CONCURRENCY/REALTIME_SYMBOL_CONCURRENCY up to eight.
  */
 function getSymbolConcurrency(symbolCount: number): number {
+  const runtime = getRuntimeConcurrencyProfile(symbolCount)
   const configured = concurrencyFromEnv(
     ["ENGINE_SYMBOL_CONCURRENCY", "REALTIME_SYMBOL_CONCURRENCY"],
-    1,
+    runtime.symbolConcurrency,
     8,
     symbolCount,
   )
@@ -406,9 +409,10 @@ function getSymbolConcurrency(symbolCount: number): number {
 }
 
 function getReplaySymbolConcurrency(symbolCount: number): number {
+  const runtime = getRuntimeConcurrencyProfile(symbolCount)
   return concurrencyFromEnv(
     ["PREHISTORIC_REPLAY_SYMBOL_CONCURRENCY"],
-    1,
+    runtime.historicSymbolConcurrency,
     2,
     symbolCount,
   )
@@ -543,6 +547,34 @@ function withCycleDeadline<T>(work: Promise<T>, label: string, ms: number = CYCL
         reject(e)
       },
     )
+  })
+}
+
+/**
+ * Observe a slow exhaustive CPU cycle without cancelling its work.
+ *
+ * Realtime indication/strategy passes evaluate every configured type, config,
+ * set and stage. A Promise.race timeout cannot cancel the underlying work; it
+ * only makes the owner believe the pass failed, which permits a second pass to
+ * overlap and creates duplicate counters or stale lifecycle state. Keep the
+ * hard deadline for potentially hung external I/O, but use a diagnostic timer
+ * for complete CPU-owned matrices so the original promise remains authoritative
+ * until every candidate has finished.
+ */
+function withCycleDiagnostic<T>(work: Promise<T>, label: string, ms: number = CYCLE_DEADLINE_MS): Promise<T> {
+  let warned = false
+  const timer = setTimeout(() => {
+    warned = true
+    console.warn(`[v0] [CycleDiagnostic] ${label} exceeded ${ms}ms; continuing exhaustive work without retry`)
+  }, ms)
+  if (typeof (timer as any).unref === "function") {
+    try { (timer as any).unref() } catch { /* non-Node runtime */ }
+  }
+  return work.finally(() => {
+    clearTimeout(timer)
+    if (warned) {
+      console.info(`[v0] [CycleDiagnostic] ${label} completed after the slow-cycle threshold`)
+    }
   })
 }
 
@@ -2672,10 +2704,10 @@ export class TradeEngineManager {
         // Process indications for every symbol in parallel — but with a
         // memory-aware concurrency cap so dense watchlists
         // don't saturate the Redis pipeline or starve the event loop.
-        // Wrapped in `withCycleDeadline` so a single hung await inside
-        // any `processIndication` call (Redis stall / network black-hole)
-        // can never wedge the loop — the deadline fires, the tick falls
-        // through to `finally`, and `scheduleNext` re-arms.
+        // Observed with `withCycleDiagnostic`, not a rejecting deadline. A
+        // complete CPU-owned matrix may exceed the slow-cycle threshold; the
+        // original promise remains authoritative until every symbol/config
+        // finishes, so a second pass cannot overlap the same generation.
         //
         // Per-symbol failures are converted into an empty-indications
         // sentinel AND an entry in `failedSymbols` so we can surface
@@ -2709,7 +2741,7 @@ export class TradeEngineManager {
             entryGeneration === this.entryProcessingGeneration &&
             cycleSettingsVersion === this.settingsVersion,
         }
-        const pipelineResults = await withCycleDeadline(
+        const pipelineResults = await withCycleDiagnostic(
           mapWithConcurrency(symbols, getSymbolConcurrency(symbols.length), (symbol) =>
             runIndStratCycle(this.connectionId, symbol, "realtime", pipelineDeps).catch(async (err) => {
               const msg = err instanceof Error ? err.message : String(err)
@@ -3199,9 +3231,9 @@ export class TradeEngineManager {
         }
 
         const symbols = await this.prioritizeSignalSymbols(await this.getSymbols())
-        // Per-cycle deadline — see `withCycleDeadline` rationale at the
-        // top of this file. Guards against a single hung
-        // `processStrategy(symbol)` blocking the entire strategy loop.
+        // This is an exhaustive CPU-owned matrix. Observe slow cycles without
+        // rejecting the promise: a hard deadline would leave the underlying
+        // work running and permit duplicate strategy generations to overlap.
         // Bounded fan-out (`mapWithConcurrency`) caps in-flight tasks at
         // the memory-aware symbol limit so dense watchlists don't saturate Redis or
         // stall the event loop.
@@ -3211,7 +3243,7 @@ export class TradeEngineManager {
         // counts stay correct, and the failing symbol is logged so the
         // operator can see a chronic per-symbol breakage.
         const strategyFailedSymbols: { symbol: string; error: string }[] = []
-        const strategyResults = await withCycleDeadline(
+        const strategyResults = await withCycleDiagnostic(
           mapWithConcurrency(symbols, getSymbolConcurrency(symbols.length), (symbol) =>
             this.strategyProcessor.processStrategy(symbol).catch((err) => {
               const msg = err instanceof Error ? err.message : String(err)
