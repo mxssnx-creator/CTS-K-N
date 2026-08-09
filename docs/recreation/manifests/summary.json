@@ -4,7 +4,7 @@
   "sourceTreeBeforeHandoffCommit": "44c81e1f73107cbaed596e5dca9b7da39f8b60f2",
   "sourceRevisionTimestamp": "2026-08-09T21:59:18+02:00",
   "workingTreeChangesIncluded": true,
-  "workingTreeStatusEntryCount": 11,
+  "workingTreeStatusEntryCount": 13,
   "nodeRequirement": ">=20.16",
   "packageManager": "pnpm@10.28.1",
   "framework": {

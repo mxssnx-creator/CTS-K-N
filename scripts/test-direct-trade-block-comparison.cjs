@@ -341,7 +341,8 @@ function runMode(blockEnabled) {
 
 const withoutBlock = runMode(false)
 const withBlock = runMode(true)
-const blockRows = withBlock.metrics.evaluated
+const selectedBaseRows = withBlock.metrics.evaluated
+const independentLedgerRows = withBlock.metrics.blockLedger.evaluated
 const blockEnabledValid = withBlock.metrics.valid
 const blockEnabledDisabled = withBlock.metrics.disabled
 let identityMismatches = 0
@@ -398,7 +399,7 @@ const result = {
     uniqueSetKeys: withoutBlock.uniqueSetKeys,
     elapsedMs: withoutBlock.elapsedMs,
     disabledStrategyConfigs: withoutBlock.metrics.disabled,
-    blockConfigsDisabledBySwitch: blockRows,
+    blockConfigsDisabledBySwitch: selectedBaseRows,
     blockLedger: withoutBlock.metrics.blockLedger,
   },
   withBlock: {
@@ -410,9 +411,12 @@ const result = {
     blockLedger: withBlock.metrics.blockLedger,
   },
   blockComparison: {
-    blockRows,
-    blockRowsValid: blockEnabledValid,
-    blockRowsDisabled: blockEnabledDisabled,
+    selectedBaseRows,
+    selectedBaseRowsValid: blockEnabledValid,
+    selectedBaseRowsDisabled: blockEnabledDisabled,
+    independentLedgerRows,
+    independentLedgerValid: withBlock.metrics.blockLedger.valid,
+    independentLedgerDisabled: withBlock.metrics.blockLedger.disabled,
     baseConfigDisabledWithoutBlock: withoutBlock.metrics.disabled,
     baseConfigDisabledWithBlock: withBlock.metrics.disabled,
     disabledConfigDelta: blockEnabledDisabled - withoutBlock.metrics.disabled,
