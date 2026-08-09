@@ -720,11 +720,19 @@ configure_cpu_parallelism() {
   # Promise pool creates allocation contention rather than true parallel CPU.
   # Use a conservative CPU-aware pool: on the measured 9-core host this selects
   # two lanes, which beat four and eight in the 16-symbol exhaustive benchmark
-  # while preserving control-plane responsiveness.
-  local cpu_count=1 io_pool symbol_pool historic_pool
-  if command -v nproc >/dev/null 2>&1; then
+  # while preserving control-plane responsiveness. Cgroup v2 is authoritative
+  # when present; nproc/procfs are fallbacks for bare-metal hosts.
+  local cpu_count=1 io_pool symbol_pool historic_pool quota period cgroup_detected=0
+  if [[ -r /sys/fs/cgroup/cpu.max ]]; then
+    read -r quota period < /sys/fs/cgroup/cpu.max || true
+    if [[ "${quota:-max}" != "max" && "${quota:-}" =~ ^[0-9]+$ && "${period:-}" =~ ^[0-9]+$ && "$period" -gt 0 ]]; then
+      cpu_count=$(( (quota + period - 1) / period ))
+      cgroup_detected=1
+    fi
+  fi
+  if (( cgroup_detected == 0 )) && command -v nproc >/dev/null 2>&1; then
     cpu_count="$(nproc 2>/dev/null || printf '1')"
-  elif [[ -r /proc/cpuinfo ]]; then
+  elif (( cgroup_detected == 0 )) && [[ -r /proc/cpuinfo ]]; then
     cpu_count="$(grep -c '^processor' /proc/cpuinfo 2>/dev/null || printf '1')"
   fi
   [[ "$cpu_count" =~ ^[0-9]+$ ]] || cpu_count=1

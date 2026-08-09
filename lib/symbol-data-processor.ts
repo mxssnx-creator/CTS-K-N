@@ -6,6 +6,8 @@
 import { getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
 import { EngineProgressManager, getProgressManager } from "./engine-progress-manager"
 import { getPrehistoricProgressTracker } from "./prehistoric-progress-tracker"
+import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { runtimeParallelism } from "@/lib/runtime-parallelism"
 
 export interface SymbolDataResult {
   symbol: string
@@ -114,8 +116,17 @@ export class SymbolDataProcessor {
     const tracker = getPrehistoricProgressTracker(this.connectionId)
     await tracker.initialize(symbols)
 
-    const promises = symbols.map(symbol => this.loadPrehistoricData(symbol, exchange))
-    const results = await Promise.all(promises)
+    const results = await mapWithConcurrency(
+      symbols,
+      concurrencyFromEnv(
+        ["PREHISTORIC_SYMBOL_CONCURRENCY", "SYMBOL_DATA_LOAD_CONCURRENCY"],
+        runtimeParallelism().io,
+        8,
+        symbols.length,
+      ),
+      (symbol) => this.loadPrehistoricData(symbol, exchange),
+      { yieldEvery: 1 },
+    )
 
     const totalCandles = results.reduce((sum, r) => sum + r.candles, 0)
     const totalErrors = results.reduce((sum, r) => sum + r.errors, 0)

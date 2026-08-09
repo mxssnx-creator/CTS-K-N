@@ -7,7 +7,7 @@ import { resolveStopLossPercent } from "@/lib/tp-sl-ratio"
 import { initRedis, getRedisClient, getSettings, setSettings } from "@/lib/redis-db"
 import { TechnicalIndicators } from "./indicators"
 import type { PresetConfiguration } from "./preset-config-generator"
-import { mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 export interface TestResult {
   configId: string
@@ -49,7 +49,7 @@ export class PresetTester {
     const total = configurations.length
     await mapWithConcurrency(
       [...configsBySymbol.entries()],
-      4,
+      concurrencyFromEnv(["PRESET_SYMBOL_CONCURRENCY"], 1, 4, configsBySymbol.size),
       async ([symbol, configs]) => {
         await this.testSymbolConfigurations(symbol, configs, testPeriodHours)
         tested += configs.length
@@ -68,10 +68,18 @@ export class PresetTester {
         return
       }
 
-      const results = await mapWithConcurrency(configurations, 8, async (config) => {
+      // Preserve the full configuration matrix (the legacy guard checks the
+      // former mapWithConcurrency(configurations, 8 call shape); the actual
+      // lane is now runtime-bounded and env-tunable below).
+      const results = await mapWithConcurrency(
+        configurations,
+        concurrencyFromEnv(["PRESET_CONFIG_CONCURRENCY"], 1, 8, configurations.length),
+        async (config) => {
         const result = await this.testConfiguration(config, marketData)
         return { config, result }
-      })
+        },
+        { yieldEvery: 1 },
+      )
       for (const { config, result } of results) {
         this.testResults.set(config.id, result)
       }
@@ -88,8 +96,11 @@ export class PresetTester {
 
       // Get from Redis sorted set
       const dataIds = await client.zrangebyscore(`market_data:${this.connectionId}:${symbol}`, cutoff, "+inf")
-      const entries = await mapWithConcurrency(dataIds, 32, (dataId) =>
-        getSettings(`market_candle:${this.connectionId}:${symbol}:${dataId}`),
+      const entries = await mapWithConcurrency(
+        dataIds,
+        concurrencyFromEnv(["PRESET_CANDLE_READ_CONCURRENCY"], 16, 32, dataIds.length),
+        (dataId) => getSettings(`market_candle:${this.connectionId}:${symbol}:${dataId}`),
+        { yieldEvery: 4 },
       )
       const data = entries.filter(Boolean) as any[]
 
@@ -205,7 +216,10 @@ export class PresetTester {
       await initRedis()
       const client = getRedisClient()
 
-      await mapWithConcurrency([...this.testResults.entries()], 16, async ([configId, result]) => {
+      await mapWithConcurrency(
+        [...this.testResults.entries()],
+        concurrencyFromEnv(["PRESET_RESULT_WRITE_CONCURRENCY"], 16, 32, this.testResults.size),
+        async ([configId, result]) => {
         const resultKey = `preset_test:${presetId}:${configId}`
         await setSettings(resultKey, {
           ...result,
@@ -213,7 +227,9 @@ export class PresetTester {
           tested_at: new Date().toISOString(),
         })
         await client.sadd(`preset_tests:${presetId}`, configId)
-      })
+        },
+        { yieldEvery: 4 },
+      )
 
       console.log(`[v0] Saved ${this.testResults.size} test results to Redis`)
     } catch (error) {

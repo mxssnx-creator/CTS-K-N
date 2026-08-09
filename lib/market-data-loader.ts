@@ -29,6 +29,7 @@
 import { getClient, initRedis, getAllConnections, getConnection } from "@/lib/redis-db"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { isForcedSimulation } from "@/lib/real-trade-gates"
+import { workloadConcurrency } from "@/lib/runtime-parallelism"
 
 export interface MarketDataCandle {
   timestamp: number
@@ -380,7 +381,7 @@ export async function loadMarketDataForEngine(
     // We bound concurrency to avoid hammering exchange APIs with
     // 15+ simultaneous REST calls — pick the lower of the symbol
     // count and 6 (conservative under public rate limits).
-    const SYMBOL_CONCURRENCY = Math.max(1, Math.min(targetSymbols.length, 6))
+    const SYMBOL_CONCURRENCY = workloadConcurrency("io", targetSymbols.length, undefined, 8)
     let nextIdx = 0
     const loadOne = async (symbol: string): Promise<void> => {
       try {

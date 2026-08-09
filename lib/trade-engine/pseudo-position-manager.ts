@@ -194,6 +194,7 @@ export class PseudoPositionManager {
     return `pseudo_positions:${this.connectionId}:closed_time_index`
   }
   private static readonly CLOSED_INDEX_TTL = 7 * 24 * 60 * 60 // 7 days
+  private static readonly CLOSED_INDEX_MAX_ROWS = 500
 
   /** Redis set of active v2 exact-lane identities (plus legacy members until
    * their positions close). Exact identity includes symbol, complete
@@ -1061,6 +1062,24 @@ export class PseudoPositionManager {
       }
 
       await pipeline.exec()
+
+      // Keep the compatibility closed-id list bounded. The sorted time index
+      // remains the authoritative recent-window reader, while this ring is
+      // retained for older consumers. Delete only rows that are already
+      // terminal; open positions and strategy ledgers are untouched.
+      const closedIndexLength = Number(await client.llen(closedIndexKey).catch(() => 0)) || 0
+      if (closedIndexLength > PseudoPositionManager.CLOSED_INDEX_MAX_ROWS + 100) {
+        const staleIds = await client
+          .lrange(closedIndexKey, PseudoPositionManager.CLOSED_INDEX_MAX_ROWS, -1)
+          .catch(() => [])
+        const trim = client.multi()
+        trim.ltrim(closedIndexKey, 0, PseudoPositionManager.CLOSED_INDEX_MAX_ROWS - 1)
+        for (const staleId of Array.isArray(staleIds) ? staleIds : []) {
+          trim.zrem(closedTimeIndexKey, String(staleId))
+          trim.del(this.positionKey(String(staleId)))
+        }
+        await trim.exec().catch(() => undefined)
+      }
 
       await syncPseudoStrategyEntryLedger(
         this.connectionId,

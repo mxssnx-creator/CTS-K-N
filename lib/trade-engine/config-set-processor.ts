@@ -20,6 +20,7 @@ import { getHistoricCandlesForRange } from "./market-data-cache"
 import { ENGINE_STAGE_HISTORY_CANDLES } from "@/lib/market-data-loader"
 import { incrementHistoricAggregateOnce } from "@/lib/redis-idempotent-list"
 import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
+import { scanRedisKeys } from "@/lib/redis-scan"
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
@@ -1071,6 +1072,24 @@ export class ConfigSetProcessor {
       emitEngineStageAck(this.connectionId, "base_sets", "ack", "Base set stage completed", { totalStrategyPositions })
       emitEngineStageAck(this.connectionId, "main_sets", "ack", "Main set stage completed", { totalStrategyPositions })
       emitEngineStageAck(this.connectionId, "real_sets", "ack", "Real set stage completed", { totalStrategyPositions })
+
+      // Aggregate marker keys are idempotency guards for the active historic
+      // generation only. The durable aggregates and Set ledgers have already
+      // been written, so remove the guards after a complete generation to
+      // prevent one marker key per config/symbol from becoming permanent DB
+      // growth during repeated realtime/recoordination cycles.
+      const markerClient = getRedisClient()
+      const markerKeys = await scanRedisKeys(
+        markerClient,
+        `historic:aggregate-marker:${this.connectionId}:*`,
+        { count: 500 },
+      ).catch(() => [])
+      for (let offset = 0; offset < markerKeys.length; offset += 500) {
+        await Promise.allSettled(
+          markerKeys.slice(offset, offset + 500).map((key) => markerClient.del(key)),
+        )
+        await yieldToEventLoop()
+      }
     }
 
     return result
