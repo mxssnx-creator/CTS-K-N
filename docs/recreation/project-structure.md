@@ -60,7 +60,7 @@ CTS-K-N/
   preflight/install UI.
 - `app/api/settings/**`: canonical settings writers/readers.
 - `app/api/connections/progression/[id]/stats/route.ts`: aggregate dashboard
-  contract, including Count1..10 Block PF statistics.
+  contract, including Count1..12 Block PF statistics.
 - `app/api/cron/server-continuity/route.ts` and
   `app/api/cron/sync-live-positions/route.ts`: portable scheduled ownership.
 - `app/api/install/remote/route.ts`: authenticated SSH production installer

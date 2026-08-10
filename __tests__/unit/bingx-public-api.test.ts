@@ -6,7 +6,7 @@ describe("BingX public API host failover", () => {
 
   beforeEach(() => {
     process.env.BINGX_PUBLIC_ORIGIN = "https://open-api.bingx.com"
-    process.env.BINGX_PUBLIC_FALLBACK_ORIGIN = "https://open-api.bingx.pro"
+    process.env.BINGX_PUBLIC_FALLBACK_ORIGIN = "https://testnet-open-api.bingx.com"
     resetBingXPublicOriginForTests()
   })
 
@@ -32,9 +32,19 @@ describe("BingX public API host failover", () => {
 
     expect(seen).toEqual([
       "https://open-api.bingx.com",
-      "https://open-api.bingx.pro",
-      "https://open-api.bingx.pro",
+      "https://testnet-open-api.bingx.com",
+      "https://testnet-open-api.bingx.com",
     ])
+  })
+
+  test("ignores an unverified fallback origin before fetch", async () => {
+    process.env.BINGX_PUBLIC_FALLBACK_ORIGIN = "https://open-api.bingx.pro"
+    const fetchImpl = jest.fn(async () => { throw new Error("primary unavailable") }) as typeof fetch
+
+    await expect(fetchBingXPublic("/openApi/swap/v2/quote/ticker", {}, { fetchImpl })).rejects.toThrow("primary unavailable")
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(String(fetchImpl.mock.calls[0][0])).toContain("open-api.bingx.com")
+    expect(String(fetchImpl.mock.calls[0][0])).not.toContain("open-api.bingx.pro")
   })
 
   test("refuses trade paths and write methods before fetch", async () => {

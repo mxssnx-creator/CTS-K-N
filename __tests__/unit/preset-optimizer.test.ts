@@ -63,7 +63,7 @@ describe("preset optimizer", () => {
       autoSelect: true,
       blockEnabled: true,
       blockVolumeRatio: 1,
-      blockMaxStack: 10,
+      blockMaxStack: 12,
       blockPauseCountRatio: 1,
       blockActiveRealEnabled: true,
       blockActiveLiveEnabled: true,

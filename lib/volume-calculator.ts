@@ -7,7 +7,7 @@
  *   - Ratio 1.0 (default): Base volume for live trading (system internal default)
  *   - Ratio > 1.0: Higher volumes for strategy evaluations and optimizations
  *   - Channel/base ratios below 1.0 are normalized to identity 1.0
- *   - Final calculated quantity = base_notional * ratios * system safety scalar
+ *   - Final calculated quantity = base_notional * ratios, then venue floors
  *   - Strategy internal calculations use higher ratios
  * 
  * Features:
@@ -16,7 +16,7 @@
  *   - ONLY used by ExchangePositionManager
  *   - Base/Main/Real pseudo positions use counts and ratios (no absolute volumes)
  *   - Per-engine volume factors (main_volume_factor, preset_volume_factor) apply to live orders
- *   - The shared system safety scalar applies to every calculated quantity
+ *   - The shared system ratio is identity and never silently changes quantity
  * 
  * Redis-native: All data stored in Redis via redis-db
  */
@@ -33,23 +33,35 @@ import {
 } from "@/lib/constants"
 import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
+import {
+  normalizeExchangeQuantityRules,
+  resolveExecutableQuantity,
+} from "@/lib/order-quantity"
 
 interface VolumeCalculationParams {
   baseVolumeFactor?: number
   positionsAverage?: number
   riskPercentage?: number
   maxLeverage?: number
+  /** Legacy pure input: fraction of balance (0.001 = 0.1%). */
   positionCost?: number
+  /** Canonical operator input: UI percent (0.1 = 0.1%). */
+  positionCostPercent?: number
+  /** Explicit fraction form for callers that already converted percent/100. */
+  positionCostFraction?: number
   accountBalance: number
   currentPrice: number
   leverage?: number
   exchangeMinVolume?: number
+  exchangeMinNotionalUsdt?: number
+  quantityStep?: number
+  quantityPrecision?: number
 
   // ── LIVE-only channel factor (pseudo positions retain channel identity) ──
   //
   // RATIO-BASED VOLUME SYSTEM:
-  //   - Channel ratio 1.0 = identity before the global safety scalar
-  //   - Live exchange volume = base_notional * ratio * channel factor * safety scalar
+  //   - Channel ratio 1.0 = identity
+  //   - Live exchange volume = base_notional * ratio * channel factor
   //   - Strategy internal calcs can use higher ratios for optimization
   //
   // Which Trade Engine is asking for sizing? Determines which volume-
@@ -58,9 +70,7 @@ interface VolumeCalculationParams {
   // The Strategy stack (Base/Main/Real pseudo positions) is RATIO-based
   // and count-driven per spec — it MUST NOT receive a Main/Preset/Signal
   // channel multiplier. Strategy callers leave `tradeMode` undefined and
-  // keep that channel path at identity. The global system safety scalar is
-  // deliberately applied later to every calculated quantity, including
-  // pseudo/strategy calculations, so all paths use the same 50% basis.
+  // keep that channel path at identity.
   //
   //   - `"main"`   → multiply by `mainVolumeFactor`   (a.k.a. live_volume_factor)
   //   - `"preset"` → multiply by `presetVolumeFactor` (a.k.a. preset_volume_factor)
@@ -113,6 +123,7 @@ interface VolumeCalculationResult {
   /** Raw sizing inputs echoed for live-stage risk validation and diagnostics. */
   accountBalance?: number
   positionCost?: number
+  positionCostPercent?: number
   positionsAverage?: number
   liveEngineFactor?: number
   signalVolumeFactor?: number
@@ -121,8 +132,11 @@ interface VolumeCalculationResult {
   volumeStepRatio?: number
   volumeBalanceAnchor?: number
   volumeBalanceEffective?: number
-  /** Global post-factor execution scalar (0.5 = 50% of prior calculated size). */
+  /** Global post-factor execution scalar; canonical identity is 1.0. */
   systemVolumeFactor?: number
+  quantityStep?: number
+  quantityPrecision?: number
+  exchangeMinQuantity?: number
 }
 
 
@@ -234,10 +248,15 @@ export class VolumeCalculator {
       riskPercentage,
       maxLeverage,
       positionCost,
+      positionCostPercent,
+      positionCostFraction,
       accountBalance,
       currentPrice,
       leverage = 1,
       exchangeMinVolume = 0,
+      exchangeMinNotionalUsdt = 0,
+      quantityStep,
+      quantityPrecision,
       tradeMode,
       mainVolumeFactor,
       presetVolumeFactor,
@@ -247,18 +266,39 @@ export class VolumeCalculator {
       allowUnboundedVariantMultiplier = false,
     } = params
 
+    // Keep the unit conversion at the boundary. Internally all sizing uses a
+    // fraction of balance, while settings and stats use UI percent values.
+    // This prevents the common 0.1-versus-0.001 mistake from changing live
+    // volume by 100x when a caller crosses an engine boundary.
+    const resolvedPositionCostFraction = (() => {
+      const explicitFraction = Number(positionCostFraction)
+      if (Number.isFinite(explicitFraction) && explicitFraction > 0) return explicitFraction
+      const percent = Number(positionCostPercent)
+      if (Number.isFinite(percent) && percent > 0) return percent / 100
+      const legacyFraction = Number(positionCost)
+      return Number.isFinite(legacyFraction) && legacyFraction > 0 ? legacyFraction : 0
+    })()
+    const resolvedPositionCostPercent = resolvedPositionCostFraction * 100
+    const systemVolumeFactor = Number(SYSTEM_VOLUME_FACTOR_MULTIPLIER)
+
+    const quantityRules = normalizeExchangeQuantityRules({
+      quantityStep,
+      quantityPrecision,
+      minQuantity: exchangeMinVolume,
+      minNotionalUsdt: exchangeMinNotionalUsdt,
+    })
+
     // ── Resolve the engine-specific channel factor (Live-only) ────
     //
     // RATIO-BASED SYSTEM:
-    //   - Default channel ratio = 1.0 (before the global safety scalar)
-    //   - Live orders = base_notional * channel factor * variant * safety scalar
-    //   - Strategy calcs retain channel identity but share the safety scalar
+    //   - Default channel ratio = 1.0
+    //   - Live orders = base_notional * channel factor * variant
+    //   - Strategy calcs retain channel identity and use the same ratio basis
     //
     // Only applied when the CALLER explicitly identifies as a Live trade
     // engine via `tradeMode`. The Strategy stack (Base/Main/Real pseudo
     // positions) never sets `tradeMode`, so it always sees a 1.0 channel
-    // identity multiplier here. This keeps pseudo positions ratio-based while
-    // the separate global scalar consistently halves final quantities.
+    // identity multiplier here.
     //
     // Ratio multipliers:
     //   - 1.0 = identity (default, no engine scaling)
@@ -297,7 +337,14 @@ export class VolumeCalculator {
       currentPrice > 0
         ? VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD / currentPrice
         : 0
-    const effectiveMin = Math.max(exchangeMinVolume || 0, universalMinFromNotional)
+    const exchangeNotionalMinVolume = currentPrice > 0 && exchangeMinNotionalUsdt > 0
+      ? exchangeMinNotionalUsdt / currentPrice
+      : 0
+    const effectiveMin = Math.max(
+      exchangeMinVolume || 0,
+      exchangeNotionalMinVolume,
+      universalMinFromNotional,
+    )
 
     /**
      * Final clamp: never return less than `effectiveMin`, never NaN,
@@ -320,14 +367,14 @@ export class VolumeCalculator {
       return { final: safeRaw, adjusted: false }
     }
 
-    if (positionCost) {
+    if (resolvedPositionCostFraction > 0) {
       // ── positions_average + engine factor wired into positionCost ─────
       //
       // Previous formula:
       //   pos_usd = (balance × positionCost) / posAvg
       //
-      // Final formula (with channel factor and system safety scalar):
-      //   pos_usd = (balance × positionCost × liveEngineFactor × variant) / posAvg × 0.5
+      // Final formula (with channel and variant ratios):
+      //   pos_usd = balance × positionCost × liveEngineFactor × variant / posAvg
       //
       // With positionCost expressed as a fraction of balance (the
       // calling site already converts `pct/100`), the denominator
@@ -341,8 +388,7 @@ export class VolumeCalculator {
       //
       // Strategy / pseudo-position calls leave `tradeMode` undefined, so
       // `liveEngineFactor === 1`. They intentionally do not receive a
-      // Main/Preset channel factor, but do receive the shared 0.5 safety
-      // scalar so their estimates and execution quantities remain aligned.
+      // Main/Preset channel factor.
       // ── Adjust-type / Position-Count variant multiplier ───────────────
       // Ordinary Block/DCA variants stay bounded. Only a caller that has
       // resolved one physical combined Position-Count target may opt in to a
@@ -359,16 +405,25 @@ export class VolumeCalculator {
       const variantMult = clampVariant(sizeMultiplier)
 
       const posAvg = positionsAverage && positionsAverage > 0 ? positionsAverage : 1
-      // Live execution is venue-minimum based. Ratio 1 means exactly one
-      // exchange-minimum order; higher ratios scale that minimum. The
-      // position-cost formula remains the pseudo/strategy reference and is
-      // deliberately not allowed to inflate a default live order.
-      const positionCostNotionalUsd = (accountBalance * positionCost) / posAvg
-      const positionSizeUsd = applySystemVolumeFactor(tradeMode
-        ? (effectiveMin * currentPrice * liveEngineFactor * variantMult)
-        : (positionCostNotionalUsd * variantMult))
+      const positionCostNotionalUsd = (accountBalance * resolvedPositionCostFraction) / posAvg
+      // The ratio-derived notional is authoritative in every mode. Exchange
+      // minimums are floors only; they must never replace the requested base
+      // notional, otherwise Main/Preset ratios become indistinguishable from
+      // a minimum order and Block/DCA scaling is lost.
+      const positionSizeUsd = applySystemVolumeFactor(
+        positionCostNotionalUsd * liveEngineFactor * variantMult,
+      )
       const calculatedVolume = currentPrice > 0 ? positionSizeUsd / currentPrice : 0
-      const { final, adjusted, reason } = clampUp(calculatedVolume)
+      const { final: clampedFinal, adjusted: clampedAdjusted, reason: clampReason } = clampUp(calculatedVolume)
+      const executable = resolveExecutableQuantity(
+        clampedFinal,
+        currentPrice,
+        quantityRules,
+        { universalMinNotionalUsdt: VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD },
+      )
+      const final = executable.quantity
+      const adjusted = clampedAdjusted || executable.adjusted
+      const reason = [clampReason, executable.reason].filter(Boolean).join("; ") || undefined
 
       // Surface multiplier provenance in the adjustment reason only when
       // the factor actually changed sizing (≠ 1.0) to avoid log spam.
@@ -384,12 +439,15 @@ export class VolumeCalculator {
         variantMult !== 1
           ? `variant size multiplier ${variantMult.toFixed(2)}x applied (Block/DCA adjust-type)`
           : undefined
+      const systemReason = systemVolumeFactor !== 1
+        ? `system volume factor ${systemVolumeFactor.toFixed(2)}x applied`
+        : undefined
       const composedReason = [
         adjusted ? reason : undefined,
         factorReason,
         signalFactorReason,
         variantReason,
-        `system volume factor ${SYSTEM_VOLUME_FACTOR_MULTIPLIER.toFixed(2)}x applied`,
+        systemReason,
       ].filter(Boolean).join(" | ") || undefined
 
       return {
@@ -398,20 +456,22 @@ export class VolumeCalculator {
         volume: final,
         volumeUsd: final * currentPrice,
         leverage,
-        // The shared safety scalar is intentionally non-identity, so every
-        // quantity returned by this calculator is an adjusted quantity.
-        volumeAdjusted: true,
+        volumeAdjusted: adjusted || Boolean(factorReason || signalFactorReason || variantReason || systemReason),
         adjustmentReason: composedReason,
         intendedNotionalUsd: positionSizeUsd,
         exchangeMinNotionalUsd: effectiveMin * currentPrice,
         accountBalance,
-        positionCost,
+        positionCost: resolvedPositionCostFraction,
+        positionCostPercent: resolvedPositionCostPercent,
         positionsAverage: posAvg,
         liveEngineFactor,
         signalVolumeFactor: effectiveSignalVolumeFactor,
         sizeMultiplier: variantMult,
         exchangeMinVolume: effectiveMin,
-        systemVolumeFactor: SYSTEM_VOLUME_FACTOR_MULTIPLIER,
+        systemVolumeFactor,
+        quantityStep: quantityRules.quantityStep,
+        quantityPrecision: quantityRules.quantityPrecision,
+        exchangeMinQuantity: quantityRules.minQuantity,
       }
     }
 
@@ -443,7 +503,16 @@ export class VolumeCalculator {
     const positionSize = adjustedRisk / (riskPercentage / 100)
     const rawVolume = positionSize / (currentPrice * calculatedLeverage)
 
-    const { final, adjusted, reason } = clampUp(rawVolume)
+    const { final: clampedFinal, adjusted: clampedAdjusted, reason: clampReason } = clampUp(rawVolume)
+    const executable = resolveExecutableQuantity(
+      clampedFinal,
+      currentPrice,
+      quantityRules,
+      { universalMinNotionalUsdt: VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD },
+    )
+    const final = executable.quantity
+    const adjusted = clampedAdjusted || executable.adjusted
+    const reason = [clampReason, executable.reason].filter(Boolean).join("; ") || undefined
 
     return {
       calculatedVolume: rawVolume,
@@ -452,26 +521,30 @@ export class VolumeCalculator {
       volumeUsd: final * currentPrice,
       leverage: calculatedLeverage,
       positionSize,
-      // The shared safety scalar is intentionally non-identity, so every
-      // quantity returned by this calculator is an adjusted quantity.
-      volumeAdjusted: true,
+      volumeAdjusted: adjusted || liveEngineFactor !== 1 || riskVariantMultiplier !== 1 || systemVolumeFactor !== 1,
       adjustmentReason: [
         reason,
         liveEngineFactor !== 1 ? `live channel ratio ${liveEngineFactor.toFixed(2)}x applied` : undefined,
         riskVariantMultiplier !== 1 ? `variant ratio ${riskVariantMultiplier.toFixed(2)}x applied` : undefined,
-        `system volume factor ${SYSTEM_VOLUME_FACTOR_MULTIPLIER.toFixed(2)}x applied`,
+        systemVolumeFactor !== 1
+          ? `system volume factor ${systemVolumeFactor.toFixed(2)}x applied`
+          : undefined,
       ].filter(Boolean).join(" | ") || undefined,
       riskAmount: adjustedRisk,
       intendedNotionalUsd: rawVolume * currentPrice,
       exchangeMinNotionalUsd: effectiveMin * currentPrice,
       accountBalance,
-      positionCost,
+      positionCost: resolvedPositionCostFraction || undefined,
+      positionCostPercent: resolvedPositionCostPercent || undefined,
       positionsAverage,
       liveEngineFactor,
       signalVolumeFactor: effectiveSignalVolumeFactor,
       sizeMultiplier: riskVariantMultiplier,
         exchangeMinVolume: effectiveMin,
-        systemVolumeFactor: SYSTEM_VOLUME_FACTOR_MULTIPLIER,
+        systemVolumeFactor,
+        quantityStep: quantityRules.quantityStep,
+        quantityPrecision: quantityRules.quantityPrecision,
+        exchangeMinQuantity: quantityRules.minQuantity,
     }
   }
 
@@ -672,7 +745,6 @@ export class VolumeCalculator {
   ): Promise<VolumeCalculationResult> {
     try {
       await initRedis()
-      const client = getRedisClient()
 
       // Get settings from Redis via the mirror-aware reader. The volume
       // calculator needs `exchangePositionCost`/`positionCost`,
@@ -715,7 +787,6 @@ export class VolumeCalculator {
         settings.exchange_position_cost ??
         POSITION_COST_PERCENT_DEFAULT
       const clampedPositionCostPercent = normalizePositionCostPercent(positionCostRaw)
-      const positionCost = clampedPositionCostPercent / 100
 
       // ── Positions-average resolution ─────────────────────────────────
       const positionsAverage = (() => {
@@ -794,12 +865,30 @@ export class VolumeCalculator {
         : { sizingBalance: accountBalance, anchorBalance: accountBalance }
 
       const result = this.calculatePositionVolume({
-        positionCost,
+        positionCostPercent: clampedPositionCostPercent,
         positionsAverage,
         accountBalance: steppedBalance.sizingBalance,
         currentPrice,
         leverage: maxLeverage,
         exchangeMinVolume,
+        exchangeMinNotionalUsdt: Number(
+          tradingPair?.min_notional_usdt ??
+          tradingPair?.minNotionalUsdt ??
+          tradingPair?.min_notional ??
+          tradingPair?.minNotional ??
+          0,
+        ) || 0,
+        quantityStep: Number(
+          tradingPair?.quantity_step ??
+          tradingPair?.quantityStep ??
+          tradingPair?.step_size ??
+          0,
+        ) || undefined,
+        quantityPrecision: Number(
+          tradingPair?.quantity_precision ??
+          tradingPair?.quantityPrecision ??
+          0,
+        ) || undefined,
         tradeMode: resolvedMode,
         mainVolumeFactor,
         presetVolumeFactor,
@@ -849,6 +938,7 @@ export class VolumeCalculator {
         exchange_min_notional_usd: calculation.exchangeMinNotionalUsd,
         account_balance: calculation.accountBalance,
         position_cost: calculation.positionCost,
+        position_cost_percent: calculation.positionCostPercent,
         positions_average: calculation.positionsAverage,
         live_engine_factor: calculation.liveEngineFactor,
         signal_volume_factor: calculation.signalVolumeFactor,
@@ -856,6 +946,9 @@ export class VolumeCalculator {
         volume_step_ratio: calculation.volumeStepRatio,
         volume_balance_anchor: calculation.volumeBalanceAnchor,
         volume_balance_effective: calculation.volumeBalanceEffective,
+        quantity_step: calculation.quantityStep,
+        quantity_precision: calculation.quantityPrecision,
+        exchange_min_quantity: calculation.exchangeMinQuantity,
         created_at: new Date().toISOString(),
       }))
 

@@ -21,6 +21,8 @@ PORT_SET=0
 RUNTIME_SET=0
 SERVICE_USER_SET=0
 ENV_FILE_SET=0
+REPOSITORY_SET=0
+BRANCH_SET=0
 UNINSTALL=0
 RESOLVE_ONLY=0
 INSTALL_ARGS=()
@@ -31,6 +33,8 @@ INSTALL_ARGS=()
 [[ -n "${CTS_RUNTIME:-}" ]] && RUNTIME_SET=1
 [[ -n "${CTS_SERVICE_USER:-}" ]] && SERVICE_USER_SET=1
 [[ -n "${CTS_ENV_FILE:-}" ]] && ENV_FILE_SET=1
+[[ -n "${CTS_REPOSITORY:-}" ]] && REPOSITORY_SET=1
+[[ -n "${CTS_BRANCH:-}" ]] && BRANCH_SET=1
 
 usage() {
   cat <<'EOF'
@@ -61,8 +65,8 @@ SKIP_TESTS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir) INSTALL_DIR="${2:?--dir requires a value}"; INSTALL_DIR_SET=1; shift 2 ;;
-    --branch) BRANCH="${2:?--branch requires a value}"; shift 2 ;;
-    --repository) REPOSITORY="${2:?--repository requires a value}"; shift 2 ;;
+    --branch) BRANCH="${2:?--branch requires a value}"; BRANCH_SET=1; shift 2 ;;
+    --repository) REPOSITORY="${2:?--repository requires a value}"; REPOSITORY_SET=1; shift 2 ;;
     --name) PROJECT_NAME="${2:?--name requires a value}"; PROJECT_NAME_SET=1; shift 2 ;;
     --port) PORT="${2:?--port requires a value}"; PORT_SET=1; shift 2 ;;
     --runtime) RUNTIME="${2:?--runtime requires a value}"; RUNTIME_SET=1; shift 2 ;;
@@ -109,6 +113,8 @@ EXISTING_SERVICE_USER=""
 EXISTING_PROJECT_ROOT=""
 EXISTING_ENV_FILE=""
 EXISTING_ENV_MANAGED=""
+EXISTING_REPOSITORY=""
+EXISTING_BRANCH=""
 EXISTING_MANAGED_SERVICE_USER=0
 PRESERVED_STATE=""
 CLEAN_INSTALL_WORK_DIR=""
@@ -195,6 +201,14 @@ read_existing_install_values() {
       CTS_INSTALLED_ENV_MANAGED)
         [[ "$value" =~ ^[01]$ ]] && EXISTING_ENV_MANAGED="$value"
         ;;
+      CTS_INSTALLED_REPOSITORY)
+        [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *[[:space:]]* ]] \
+          && EXISTING_REPOSITORY="$value"
+        ;;
+      CTS_INSTALLED_BRANCH)
+        [[ "$value" =~ ^[A-Za-z0-9._/-]+$ && "$value" != *".."* && "$value" != *"//"* ]] \
+          && EXISTING_BRANCH="$value"
+        ;;
     esac
   done < "$values_file"
   [[ ! -f "$INSTALL_DIR/.cts-runtime/managed-service-user" ]] \
@@ -206,6 +220,8 @@ read_existing_install_values() {
   if (( RUNTIME_SET == 0 )) && [[ -n "$EXISTING_RUNTIME" ]]; then RUNTIME="$EXISTING_RUNTIME"; fi
   if (( SERVICE_USER_SET == 0 )) && [[ -n "$EXISTING_SERVICE_USER" ]]; then SERVICE_USER="$EXISTING_SERVICE_USER"; fi
   if (( ENV_FILE_SET == 0 )) && [[ -n "$EXISTING_ENV_FILE" ]]; then ENV_FILE="$EXISTING_ENV_FILE"; fi
+  if (( REPOSITORY_SET == 0 )) && [[ -n "$EXISTING_REPOSITORY" ]]; then REPOSITORY="$EXISTING_REPOSITORY"; fi
+  if (( BRANCH_SET == 0 )) && [[ -n "$EXISTING_BRANCH" ]]; then BRANCH="$EXISTING_BRANCH"; fi
 }
 
 assert_cts_checkout() {
@@ -266,6 +282,10 @@ preserve_existing_install_state() {
   if [[ "$ENV_FILE" == "$INSTALL_DIR"/* && -f "$ENV_FILE" ]]; then
     as_root cp -a -- "$ENV_FILE" "$PRESERVED_STATE/environment"
   fi
+  if [[ -f "$INSTALL_DIR/.cts-runtime/install-values.env" ]]; then
+    as_root cp -a -- "$INSTALL_DIR/.cts-runtime/install-values.env" \
+      "$PRESERVED_STATE/install-values.env"
+  fi
   if [[ -n "$SEED_ENV_FILE" && "$SEED_ENV_FILE" == "$INSTALL_DIR"/* ]]; then
     [[ -r "$SEED_ENV_FILE" ]] || { echo "Seed env file is not readable: $SEED_ENV_FILE" >&2; exit 1; }
     as_root cp -a -- "$SEED_ENV_FILE" "$PRESERVED_STATE/seed-env"
@@ -306,6 +326,54 @@ resume_preserved_state_after_failed_clean_install() {
   [[ -n "$latest" ]] || return 0
   PRESERVED_STATE="$latest"
   echo "Resuming preserved CTS state from failed clean install: $PRESERVED_STATE" >&2
+}
+
+read_preserved_install_values() {
+  [[ -n "$PRESERVED_STATE" && -r "$PRESERVED_STATE/install-values.env" ]] || return 0
+  local values_file="$PRESERVED_STATE/install-values.env" key value
+  while IFS='=' read -r key value || [[ -n "$key" ]]; do
+    [[ -z "$key" || "$key" == \#* ]] && continue
+    case "$key" in
+      CTS_INSTALLED_APP_NAME)
+        valid_name "$value" && EXISTING_APP_NAME="$value"
+        ;;
+      CTS_INSTALLED_APP_PORT)
+        valid_port "$value" && EXISTING_APP_PORT="$value"
+        ;;
+      CTS_INSTALLED_RUNTIME)
+        [[ "$value" =~ ^(systemd|pm2)$ ]] && EXISTING_RUNTIME="$value"
+        ;;
+      CTS_INSTALLED_SERVICE_USER)
+        valid_user "$value" && EXISTING_SERVICE_USER="$value"
+        ;;
+      CTS_INSTALLED_PROJECT_ROOT)
+        EXISTING_PROJECT_ROOT="$value"
+        ;;
+      CTS_INSTALLED_ENV_FILE)
+        [[ "$value" == /* && "$value" != "/" ]] && EXISTING_ENV_FILE="$value"
+        ;;
+      CTS_INSTALLED_ENV_MANAGED)
+        [[ "$value" =~ ^[01]$ ]] && EXISTING_ENV_MANAGED="$value"
+        ;;
+      CTS_INSTALLED_REPOSITORY)
+        [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *[[:space:]]* ]] \
+          && EXISTING_REPOSITORY="$value"
+        ;;
+      CTS_INSTALLED_BRANCH)
+        [[ "$value" =~ ^[A-Za-z0-9._/-]+$ && "$value" != *".."* && "$value" != *"//"* ]] \
+          && EXISTING_BRANCH="$value"
+        ;;
+    esac
+  done < "$values_file"
+
+  if (( PROJECT_NAME_SET == 0 )) && [[ -n "$EXISTING_APP_NAME" ]]; then PROJECT_NAME="$EXISTING_APP_NAME"; fi
+  if (( PORT_SET == 0 )) && [[ -n "$EXISTING_APP_PORT" ]]; then PORT="$EXISTING_APP_PORT"; fi
+  if (( RUNTIME_SET == 0 )) && [[ -n "$EXISTING_RUNTIME" ]]; then RUNTIME="$EXISTING_RUNTIME"; fi
+  if (( SERVICE_USER_SET == 0 )) && [[ -n "$EXISTING_SERVICE_USER" ]]; then SERVICE_USER="$EXISTING_SERVICE_USER"; fi
+  if (( ENV_FILE_SET == 0 )) && [[ -n "$EXISTING_ENV_FILE" ]]; then ENV_FILE="$EXISTING_ENV_FILE"; fi
+  if (( REPOSITORY_SET == 0 )) && [[ -n "$EXISTING_REPOSITORY" ]]; then REPOSITORY="$EXISTING_REPOSITORY"; fi
+  if (( BRANCH_SET == 0 )) && [[ -n "$EXISTING_BRANCH" ]]; then BRANCH="$EXISTING_BRANCH"; fi
+  [[ ! -f "$PRESERVED_STATE/managed-service-user" ]] || EXISTING_MANAGED_SERVICE_USER=1
 }
 
 remove_existing_install_target() {
@@ -391,9 +459,7 @@ clean_install_failure() {
   if (( status != 0 )) && [[ -n "$PRESERVED_STATE" && -d "$PRESERVED_STATE" ]]; then
     set +e
     echo "Clean installation failed after the target was removed; preserved state remains at $PRESERVED_STATE" >&2
-    if [[ -x "$INSTALL_DIR/scripts/service-control.sh" ]]; then
-      as_root bash "$INSTALL_DIR/scripts/service-control.sh" stop || true
-    fi
+    echo "Retry with bootstrap-install.sh --dir '$INSTALL_DIR' so the archived state can be restored." >&2
   fi
   exit "$status"
 }
@@ -410,6 +476,10 @@ if [[ -z "$INSTALL_DIR" ]]; then INSTALL_DIR="$INSTALL_SEARCH_ROOT/$PROJECT_NAME
 # Name-only installs without a registered systemd unit still resolve through
 # <search-root>/<name>. Read that directory's saved identity before defaults.
 read_existing_install_values
+# If a prior clean install removed the target before clone/install completed,
+# load its archived identity before final defaults and validation are applied.
+resume_preserved_state_after_failed_clean_install
+read_preserved_install_values
 if [[ -z "$SERVICE_USER" ]]; then
   if valid_user "$PROJECT_NAME"; then SERVICE_USER="$PROJECT_NAME"; else SERVICE_USER="cts-kn"; fi
 fi

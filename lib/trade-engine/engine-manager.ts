@@ -362,6 +362,7 @@ import { engineMonitor } from "@/lib/engine-performance-monitor"
 import { ConfigSetProcessor } from "./config-set-processor"
 import { StrategyCoordinator } from "@/lib/strategy-coordinator"
 import { prefetchMarketDataBatch, getHistoricCandleWindow } from "./market-data-cache"
+import { scanRedisKeys } from "@/lib/redis-scan"
 import {
   // ── Cross-process progression ownership (spec §"no multiple started
   // progressions per connection, no switching"). The lock guarantees a
@@ -1043,16 +1044,28 @@ export class TradeEngineManager {
         // production auto-start as robust as an explicit QuickStart while
         // preserving the fast path when data is truly present.
         try {
-          const [doneFlag, firstPass, isComplete, pfSample, storedSelectionEpoch] = await Promise.all([
+          const cacheScope = buildProgressionScope(this.connectionId, this.currentEngineType)
+          const [doneFlag, firstPass, isComplete, pfSample, storedSelectionEpoch, storedSymbolsProcessed, storedSymbolsTotal, persistedSymbols] = await Promise.all([
             readPrehistoricGate(redisClient, this.connectionId, this.currentEngineType, "done"),
             readPrehistoricGate(redisClient, this.connectionId, this.currentEngineType, "firstpass:done"),
-            redisClient.hget(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, "is_complete"),
-            redisClient.hget(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, "historic_avg_profit_factor"),
-            redisClient.hget(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, "symbol_selection_epoch"),
+            redisClient.hget(cacheScope.prehistoricKey, "is_complete"),
+            redisClient.hget(cacheScope.prehistoricKey, "historic_avg_profit_factor"),
+            redisClient.hget(cacheScope.prehistoricKey, "symbol_selection_epoch"),
+            redisClient.hget(cacheScope.prehistoricKey, "symbols_processed"),
+            redisClient.hget(cacheScope.prehistoricKey, "symbols_total"),
+            redisClient.smembers(`${cacheScope.prehistoricKey}:symbols`).catch(() => []),
           ])
           const symbolsForCheck = await this.getSymbols()
           const currentSelection = await getCanonicalSymbolSelection(this.connectionId)
           const hasSymbols = symbolsForCheck.length > 0
+          const currentBasket = symbolsForCheck.map(String).sort()
+          const persistedBasket = Array.isArray(persistedSymbols) ? persistedSymbols.map(String).sort() : []
+          const canonicalBasketMatches = !hasSymbols || (
+            Number(storedSymbolsProcessed || 0) === symbolsForCheck.length &&
+            Number(storedSymbolsTotal || 0) === symbolsForCheck.length &&
+            persistedBasket.length === currentBasket.length &&
+            persistedBasket.every((symbol, index) => symbol === currentBasket[index])
+          )
           // STRICT verification in ALL environments: the production bypass of
           // the PF-sample check existed only to protect the (now removed)
           // fake fast-path that stamped flags without data. A cache marker
@@ -1063,6 +1076,7 @@ export class TradeEngineManager {
             firstPass &&
             isComplete === "1" &&
             (pfSample != null || !hasSymbols) &&
+            canonicalBasketMatches &&
             (
               !currentSelection?.epoch ||
               storedSelectionEpoch === currentSelection.epoch
@@ -1071,11 +1085,11 @@ export class TradeEngineManager {
             console.warn(
               `[v0] [Engine ${this.connectionId}] Stale prehistoric cache marker (done/firstpass/complete/PF missing or empty) — FORCING full prehistoric reload. This fixes production "stuck prehistoric / low keys / no activity" after deploys/migrations.`,
             )
-            const cacheScope = buildProgressionScope(this.connectionId, this.currentEngineType)
             await Promise.all([
               redisClient.del(prehistoricCacheKey).catch(() => {}),
               redisClient.del(cacheScope.prehistoricLoadedKey).catch(() => {}),
               redisClient.del(`${cacheScope.prehistoricLoadedKey}:verified`).catch(() => {}),
+              redisClient.del(`${cacheScope.prehistoricKey}:symbols`).catch(() => {}),
             ])
             // Clear incremental checkpoints so continuous prehistoric progression
             // will replay the entire configured window instead of thinking it is caught up.
@@ -1097,10 +1111,22 @@ export class TradeEngineManager {
               .hset(buildProgressionScope(this.connectionId, this.currentEngineType).prehistoricKey, {
                 is_complete: "0",
                 symbols_processed: "0",
+                symbols_total: "0",
                 updated_at: new Date().toISOString(),
                 data_source: "forced-reload",
               })
               .catch(() => {})
+            const staleAggregateMarkers = await scanRedisKeys(
+              redisClient,
+              `historic:aggregate-marker:${this.connectionId}:*`,
+              { count: 500 },
+            ).catch(() => [])
+            for (let offset = 0; offset < staleAggregateMarkers.length; offset += 500) {
+              await Promise.allSettled(
+                staleAggregateMarkers.slice(offset, offset + 500).map((key) => redisClient.del(key)),
+              )
+              await new Promise<void>((resolve) => setImmediate(resolve))
+            }
             cacheHit = false
             prehistoricCached = null
           } else {
@@ -1131,6 +1157,7 @@ export class TradeEngineManager {
             redisClient.hset(cacheScope.prehistoricKey, {
               is_complete: "0",
               symbols_processed: "0",
+              symbols_total: "0",
               updated_at: new Date().toISOString(),
               data_source: "cache-verification-failed",
             }),
@@ -1790,6 +1817,40 @@ export class TradeEngineManager {
         { reason, engineEpoch: this.epoch, bootstrapGeneration: this.prehistoricBootstrapGeneration },
       ).catch(() => undefined),
     ])
+
+    // Revoke every old completion gate before the replacement generation
+    // starts. Realtime may continue its exit-only recovery loop, but it must
+    // not see the previous basket as a valid entry-processing cache.
+    const replacementClient = getRedisClient()
+    const replacementScope = buildProgressionScope(this.connectionId, this.currentEngineType)
+    const replacementDone = buildPrehistoricGateKeys(this.connectionId, this.currentEngineType, "done")
+    const replacementFirstPass = buildPrehistoricGateKeys(this.connectionId, this.currentEngineType, "firstpass:done")
+    const replacementMarkers = await scanRedisKeys(
+      replacementClient,
+      `historic:aggregate-marker:${this.connectionId}:*`,
+      { count: 500 },
+    ).catch(() => [])
+    await Promise.allSettled([
+      replacementClient.del(`prehistoric_loaded:${this.connectionId}`),
+      replacementClient.del(replacementScope.prehistoricLoadedKey),
+      replacementClient.del(`${replacementScope.prehistoricKey}:symbols`),
+      replacementClient.hset(replacementScope.prehistoricKey, {
+        is_complete: "0",
+        symbols_processed: "0",
+        symbols_total: "0",
+        updated_at: now,
+      }),
+      replacementClient.del(replacementDone.scoped),
+      replacementClient.del(replacementDone.legacy),
+      replacementClient.del(replacementFirstPass.scoped),
+      replacementClient.del(replacementFirstPass.legacy),
+    ])
+    for (let offset = 0; offset < replacementMarkers.length; offset += 500) {
+      await Promise.allSettled(
+        replacementMarkers.slice(offset, offset + 500).map((key) => replacementClient.del(key)),
+      )
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
 
     if (!this.prehistoricBootstrapInFlight) {
       this.prehistoricReloadQueued = false

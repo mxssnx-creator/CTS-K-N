@@ -253,12 +253,12 @@ export function resolveNextDcaStep(args: {
  * Higher ratios (>1.0) = larger volumes for aggregation
  * Lower ratios (<1.0) = smaller volumes for conservative testing
  * 
- * Final quantities = baseQuantity * ratio * shared system safety scalar
+ * Final quantities = baseQuantity * ratio; venue rules are applied at submit
  * Strategy internal calculations can use higher ratios for optimization
  * 
  * @param baseQuantity - Base quantity at ratio 1.0 (system default)
  * @param volumeMultiplier - Ratio multiplier (default 1.0 for system baseline)
- * @returns quantity = baseQuantity * volumeMultiplier * system safety scalar
+ * @returns quantity = baseQuantity * volumeMultiplier
  */
 export function calculateDcaAddQuantity(baseQuantity: number, volumeMultiplier: number): number {
   if (!Number.isFinite(baseQuantity) || baseQuantity <= 0) return 0

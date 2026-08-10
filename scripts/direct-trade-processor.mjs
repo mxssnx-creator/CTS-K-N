@@ -4,7 +4,7 @@
  *
  * Runs indefinitely with a 280ms tick interval. Self-healing, rate-limit aware,
  * async-optimized. Evaluates independent configs from the configured historic
- * range (60h by default) every 2h, manages
+ * range (48h by default) every 2h, manages
  * multiple positions per symbol/direction/timeframe independently.
  *
  * Usage: node scripts/direct-trade-processor.mjs [--port 3002]
@@ -28,6 +28,13 @@ const PORT = process.env.PORT ?? (
 )
 const BASE = `http://localhost:${PORT}`
 const PROCESSOR_TOKEN = process.env.DIRECT_TRADE_PROCESSOR_TOKEN || ""
+// Live Direct-Trade must prove an exact historic warmup before the realtime
+// pulse/order loop is allowed to run. This is intentionally independent from
+// the operator's paper/backtest range.
+const DIRECT_TRADE_LIVE_HISTORY_HOURS = Math.max(
+  1,
+  Math.floor(Number(process.env.DIRECT_TRADE_LIVE_HISTORY_HOURS) || 48),
+)
 
 // ─── Rate Limiter ─────────────────────────────────────────────────────────────
 
@@ -127,7 +134,7 @@ let state = {
   inverseMaxSlRatio: 1.25,
   timeframes: ["1m", "10m", "15m"],
   strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
-  historyHours: 60,
+  historyHours: 48,
   entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
@@ -137,6 +144,7 @@ let state = {
   takeProfitRatioStep: 4,
   blockRange: [1, 12],
   blockVolumeRatio: 1,
+  blockProfitFactorRatio: 0.8,
   maxTotalPositions: 300,
   maxPositionsPerSymbol: 12,
   maxPositionsPerDirection: 6,
@@ -162,6 +170,7 @@ let executionConfigsBySignal = new Map()
 let activeSignalKeys = new Set()
 let lastSignalPulseAt = 0
 let calculationVersion = null
+let calculationHistoryHours = null
 let positions = []
 // Per-config performance tracking. The full candidate identity prevents TP,
 // SL, trailing and Block variants from sharing a false PF/DDT history.
@@ -171,6 +180,10 @@ let stats = {
   totalOrders: 0,
   totalFilled: 0,
   totalPnl: 0,
+  totalPnlUsdt: 0,
+  totalGrossPnlUsdt: 0,
+  profitFactorUsdt: null,
+  profitFactorUsdtInfinite: false,
   winCount: 0,
   lossCount: 0,
   profitFactor: null,
@@ -179,6 +192,7 @@ let stats = {
   currentDrawdownTimeMin: 0,
   lastPositionAt: null,
   pnlHistory: [],
+  blockStatsByCount: {},
 }
 
 let lastRecalcAt = 0
@@ -194,6 +208,48 @@ let lastStateRefreshAt = 0
 let lastStandbyWarningAt = 0
 let stateDirty = false
 let tickInFlight = false
+
+const BINGX_PUBLIC_HOSTS = new Set([
+  "open-api.bingx.com",
+  "testnet-open-api.bingx.com",
+])
+
+function syntheticDirectTradePrice(symbol) {
+  const seed = [...String(symbol || "")].reduce((total, character) => total + character.charCodeAt(0), 0)
+  const minute = Math.floor(Date.now() / 60_000)
+  const price = 100
+    + Math.sin((minute + seed * 3) / (13 + seed % 7)) * (1.2 + (seed % 5) * 0.2)
+    + Math.cos((minute + seed) / (37 + seed % 11)) * 0.75
+  return Number(price.toFixed(8))
+}
+
+/**
+ * Read the current public price without allowing paper runs to touch an
+ * exchange.  The processor is a plain Node worker, so it cannot import the
+ * Next-only BingX public helper directly; keep the same host allow-list here.
+ * There is deliberately no automatic fallback to an unverified host.
+ */
+async function readDirectTradeTicker(symbol) {
+  if (process.env.DIRECT_TRADE_SYNTHETIC_MARKET_DATA === "1") {
+    return syntheticDirectTradePrice(symbol)
+  }
+
+  const origin = String(process.env.BINGX_PUBLIC_ORIGIN || "https://open-api.bingx.com")
+  const url = new URL(
+    `/openApi/swap/v2/quote/ticker?symbol=${encodeURIComponent(String(symbol).replace(/USDT$/, "-USDT"))}`,
+    origin,
+  )
+  if (url.protocol !== "https:" || !BINGX_PUBLIC_HOSTS.has(url.hostname)) {
+    throw new Error(`Refusing unverified BingX public host: ${url.origin}`)
+  }
+
+  await rateLimiter.acquire()
+  const response = await fetch(url, { signal: AbortSignal.timeout(3_000) })
+  if (response.status === 429) rateLimiter.backoff(2_000)
+  if (!response.ok) return 0
+  const payload = await response.json()
+  return Number(payload?.data?.lastPrice || payload?.data?.c || 0) || 0
+}
 
 function configKey(config) {
   if (typeof config?.setKey === "string" && config.setKey) return config.setKey
@@ -214,6 +270,7 @@ function configKey(config) {
     `ta:${config.autoTrailSensitivity == null ? "none" : numeric(config.autoTrailSensitivity)}`,
     `b:${Math.max(0, Math.floor(Number(config.blockCount) || 0))}`,
     `br:${numeric(config.blockVolumeRatio ?? config.volumeRatio)}`,
+    `bpf:${numeric(config.blockProfitFactorRatio ?? state.blockProfitFactorRatio)}`,
   ].join("|")
 }
 
@@ -232,6 +289,12 @@ function resolveBlockSizing(config, baseQuantity) {
     blockAddedQuantity,
     targetBlockQuantity: baseQuantity + blockAddedQuantity,
   }
+}
+
+function requiredCalculationHistoryHours(input = state) {
+  return input?.liveMode
+    ? DIRECT_TRADE_LIVE_HISTORY_HOURS
+    : Math.max(1, Number(input?.historyHours) || 48)
 }
 
 function indexExecutionConfigs() {
@@ -344,7 +407,7 @@ function evaluateConfigPerformance(key) {
 
 // ─── Config Calculation ───────────────────────────────────────────────────────
 
-function calculationInputsSignature(input = state) {
+function calculationInputsSignature(input = state, historyHoursOverride = null) {
   return JSON.stringify({
     symbolCount: input.symbolCount,
     symbolOrder: input.symbolOrder,
@@ -359,12 +422,13 @@ function calculationInputsSignature(input = state) {
     strategyTypes: input.strategyTypes,
     blockRange: input.blockRange,
     blockVolumeRatio: input.blockVolumeRatio,
+    blockProfitFactorRatio: input.blockProfitFactorRatio,
     trailingEnabled: input.trailingEnabled,
     minProfitFactor: input.minProfitFactor,
     minRecentProfitFactor: input.minRecentProfitFactor,
     recentEvaluationPositions: input.recentEvaluationPositions,
     maxDrawdownTimeMin: input.maxDrawdownTimeMin,
-    historyHours: input.historyHours,
+    historyHours: historyHoursOverride == null ? input.historyHours : historyHoursOverride,
     entryTactics: input.entryTactics,
     exitTactics: input.exitTactics,
     entryTiming: input.entryTiming,
@@ -375,11 +439,12 @@ function calculationInputsSignature(input = state) {
 
 async function recalculateConfigs() {
   log("info", "Recalculating optimal configs...")
-  // The complete 60h maximum-symbol grid can legitimately outlive the short
+  // The complete 48h maximum-symbol grid can legitimately outlive the short
   // processor lease. Use one serial, abortable acknowledgement loop while
   // the request is in flight: unlike setInterval it never overlaps Redis/API
   // writes if a previous acknowledgement is slow.
-  const calculationInputs = calculationInputsSignature()
+  const requestedHistoryHours = requiredCalculationHistoryHours()
+  const calculationInputs = calculationInputsSignature(state, requestedHistoryHours)
   const keepaliveAbort = new AbortController()
   const leaseKeepalive = (async () => {
     while (await waitForAbortableDelay(2_000, keepaliveAbort.signal)) {
@@ -401,12 +466,15 @@ async function recalculateConfigs() {
       takeProfitRatioStep: state.takeProfitRatioStep,
       blockRange: state.blockRange,
       blockVolumeRatio: state.blockVolumeRatio,
+      blockProfitFactorRatio: state.blockProfitFactorRatio,
       trailingEnabled: state.trailingEnabled,
       minProfitFactor: state.minProfitFactor,
       minRecentProfitFactor: state.minRecentProfitFactor,
       recentEvaluationPositions: state.recentEvaluationPositions,
       maxDrawdownTimeMin: state.maxDrawdownTimeMin,
-      historyHours: state.historyHours,
+      // Live mode has an exact pre-entry warmup contract. The persisted paper
+      // range remains untouched, but the live generation itself is 48h.
+      historyHours: requestedHistoryHours,
       entryTactics: state.entryTactics,
       exitTactics: state.exitTactics,
       entryTiming: state.entryTiming,
@@ -415,7 +483,7 @@ async function recalculateConfigs() {
     }, 300_000)
 
     if (result.success && processorLeaseHeld) {
-      if (calculationInputs !== calculationInputsSignature()) {
+      if (calculationInputs !== calculationInputsSignature(state, requiredCalculationHistoryHours())) {
         // A settings acknowledgement arrived while this long historical grid
         // was evaluating. Do not open an entry from the now-stale generation;
         // the next owned pulse starts the exact new grid.
@@ -424,6 +492,7 @@ async function recalculateConfigs() {
         return false
       }
       calculationVersion = result.summary?.calculatedAt || result.timestamp || calculationVersion
+      calculationHistoryHours = Number(result.summary?.historyHours) || requestedHistoryHours
       lastRecalcAt = Date.now()
       // The API stores the full grid in chunks. Active candidates are loaded
       // after the causal pulse below, never as one multi-million-row payload.
@@ -498,6 +567,19 @@ async function openPosition(config) {
     maxHoldMinutes: state.maxHoldMinutes,
     blockCount: config.blockCount,
     blockVolumeRatio: config.blockVolumeRatio ?? config.volumeRatio ?? state.blockVolumeRatio,
+    blockProfitFactorRatio: config.blockProfitFactorRatio ?? state.blockProfitFactorRatio,
+    entrySignalKey: config.entrySignalKey || null,
+    blockAddedCount: 0,
+    blockLastPulseAt: 0,
+    blockRealizedVolumeMultiplier: 1,
+    blockLegs: [],
+    baseEntryNotionalUsdt: 0,
+    initialEntryNotionalUsdt: 0,
+    initialQuantity: 0,
+    partialCloseQuantity: 0,
+    partialEntryNotionalUsdt: 0,
+    partialGrossPnlUsdt: 0,
+    closeAttempt: 0,
     positionCostPercent: Math.max(0.02, Math.min(1, Number(config.positionCostPercent) || Number(state.positionCostPercent) || 0.1)),
     status: "open",
     openedAt: new Date().toISOString(),
@@ -518,24 +600,23 @@ async function openPosition(config) {
   // sizing. The exchange result remains authoritative for the recorded fill.
   let marketPrice = 0
   try {
-    await rateLimiter.acquire()
-    const ticker = await fetch(
-      `https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol=${config.symbol.replace(/USDT$/, "-USDT")}`,
-      { signal: AbortSignal.timeout(3000) }
-    ).then((r) => r.json()).catch(() => null)
-    marketPrice = Number(ticker?.data?.lastPrice || ticker?.data?.c || 0)
-  } catch {}
+    marketPrice = await readDirectTradeTicker(config.symbol)
+  } catch (error) {
+    log("warn", `Ticker read blocked for ${config.symbol}`, error?.message || error)
+  }
   if (!marketPrice) return null
   const baseQuantity = (state.minVolFactor * 5 * 0.5) / marketPrice // 50% system safety factor
   const blockSizing = resolveBlockSizing(config, baseQuantity)
-  // One physical Direct-Trade row carries the absolute target. The original
-  // base never compounds: B + (validBlockCount × B × blockIncreaseRatio).
+  // Direct-Trade Block uses one base fill followed by causal, one-ratio add-on
+  // fills. The historical simulator follows the same path. Keeping the full
+  // target only as metadata prevents a Block PF from becoming a copied Base PF
+  // while preserving the non-compounding formula B + (count × B × ratio).
   position.blockCount = blockSizing.blockCount
   position.blockVolumeRatio = blockSizing.blockVolumeRatio
   position.blockBaseQuantity = blockSizing.blockBaseQuantity
   position.blockAddedQuantity = blockSizing.blockAddedQuantity
   position.targetBlockQuantity = blockSizing.targetBlockQuantity
-  position.quantity = blockSizing.targetBlockQuantity
+  position.quantity = blockSizing.blockBaseQuantity
 
   if (state.liveMode) {
     // The installed worker token and its current Redis lease are both checked
@@ -553,14 +634,28 @@ async function openPosition(config) {
         connectionId: state.connectionId,
         symbol: config.symbol,
         positionDirection: config.direction,
-        quantity: position.quantity,
+        quantity: blockSizing.blockBaseQuantity,
         price: marketPrice,
         leverage: 10,
       })
 
       if (orderResult?.success) {
-        position.entryPrice = orderResult.fill?.filledPrice || orderResult.details?.avgPrice || marketPrice
-        position.quantity = orderResult.fill?.filledQty || orderResult.quantity || 0
+        const exchangeEntryPrice = Number(orderResult.fill?.filledPrice || orderResult.details?.avgPrice)
+        // Never use the requested quantity as an exchange fill.  A successful
+        // acknowledgement can still be pending/partial; booking the request
+        // here would create a phantom position and leave the residual venue
+        // order untracked.
+        const exchangeFilledQuantity = Number(orderResult.fill?.filledQty || orderResult.details?.filledQty)
+        if (!Number.isFinite(exchangeEntryPrice) || exchangeEntryPrice <= 0
+          || !Number.isFinite(exchangeFilledQuantity) || exchangeFilledQuantity <= 0) {
+          log("warn", `Open response for ${config.symbol} had no authoritative fill price/quantity`)
+          return null
+        }
+        position.entryPrice = exchangeEntryPrice
+        position.quantity = exchangeFilledQuantity
+        position.blockBaseQuantity = exchangeFilledQuantity
+        position.blockAddedQuantity = exchangeFilledQuantity * blockSizing.blockCount * blockSizing.blockVolumeRatio
+        position.targetBlockQuantity = exchangeFilledQuantity + position.blockAddedQuantity
         position.orderId = orderResult.orderId
         stats.totalOrders++
         stats.totalFilled++
@@ -582,6 +677,23 @@ async function openPosition(config) {
 
   if (!position.entryPrice) return null
 
+  position.blockLegs = [{
+    setKey: `${position.configKey}#block:0`,
+    blockCount: 0,
+    quantity: position.quantity,
+    entryPrice: position.entryPrice,
+    volumeRatio: position.blockVolumeRatio,
+    volumeMultiplier: 1,
+    addedAt: Date.now(),
+  }]
+  position.baseEntryNotionalUsdt = Number((position.entryPrice * position.quantity).toFixed(8))
+  position.entryNotionalUsdt = position.baseEntryNotionalUsdt
+  position.initialEntryNotionalUsdt = position.baseEntryNotionalUsdt
+  position.initialQuantity = position.quantity
+  // The entry signal that opened the base leg cannot also create the first
+  // add-on. The next fresh pulse is the earliest causal Block event.
+  position.blockLastPulseAt = lastSignalPulseAt
+
   // Set initial SL/TP prices
   if (config.direction === "long") {
     position.highWatermark = position.entryPrice
@@ -597,6 +709,127 @@ async function openPosition(config) {
   stateDirty = true
   log("info", `Opened ${position.mode} ${config.direction} ${config.symbol} @ ${position.entryPrice.toFixed(4)} (TF:${config.timeframe} TP:${config.takeprofit}% SL:${config.stoploss}%)`)
   return position
+}
+
+function executionConfigForPosition(position) {
+  const candidates = executionConfigs.length > 0 ? executionConfigs : activeExecutionConfigs
+  return candidates.find((config) => {
+    if (configKey(config) !== position.configKey) return false
+    return !position.entrySignalKey || config.entrySignalKey === position.entrySignalKey
+  }) || null
+}
+
+async function addDirectTradeBlockLeg(position, config) {
+  const maximumCount = Math.max(0, Math.floor(Number(position.blockCount) || 0))
+  if (!config || maximumCount <= 0 || position.status !== "open") return false
+  if (!position.entrySignalKey || !activeSignalKeys.has(position.entrySignalKey)) return false
+  if (!lastSignalPulseAt || Date.now() - lastSignalPulseAt > 90_000) return false
+  if (Number(position.blockLastPulseAt) === lastSignalPulseAt) return false
+
+  const currentAddedCount = Math.max(
+    0,
+    Math.floor(Number(position.blockAddedCount) || (Array.isArray(position.blockLegs)
+      ? position.blockLegs.filter((leg) => Number(leg?.blockCount) > 0).length
+      : 0)),
+  )
+  const nextCount = currentAddedCount + 1
+  position.blockLastPulseAt = lastSignalPulseAt
+  if (nextCount > maximumCount) return false
+
+  const baseQuantity = Number(position.blockBaseQuantity) || 0
+  const volumeRatio = Math.max(0.1, Math.min(10, Number(position.blockVolumeRatio) || Number(state.blockVolumeRatio) || 1))
+  const requestedQuantity = baseQuantity * volumeRatio
+  const marketPrice = Number(position.lastObservedPrice) || 0
+  if (!(baseQuantity > 0) || !(requestedQuantity > 0) || !(marketPrice > 0)) return false
+
+  let filledPrice = marketPrice
+  let filledQuantity = requestedQuantity
+  let orderId = null
+  if (position.mode === "live") {
+    try {
+      if (!state.connectionId || !PROCESSOR_TOKEN) {
+        log("error", `Block add for ${position.symbol} blocked: missing live connection or worker token`)
+        return false
+      }
+      const orderResult = await apiCall("/api/trade-engine/direct-trade/order", "POST", {
+        kind: "open",
+        instanceId: processorInstanceId,
+        positionId: position.id,
+        controlId: `dtblk_${String(position.id).slice(-32)}_${nextCount}`.slice(0, 48),
+        connectionId: state.connectionId,
+        symbol: position.symbol,
+        positionDirection: position.direction,
+        quantity: requestedQuantity,
+        price: marketPrice,
+        leverage: 10,
+      })
+      if (!orderResult?.success) {
+        log("warn", `Block add rejected for ${position.symbol} Count ${nextCount}`, orderResult?.error)
+        return false
+      }
+      filledPrice = Number(orderResult.fill?.filledPrice || orderResult.details?.avgPrice)
+      filledQuantity = Number(orderResult.fill?.filledQty || orderResult.details?.filledQty)
+      orderId = orderResult.orderId || null
+      if (!(filledPrice > 0) || !(filledQuantity > 0)) {
+        log("warn", `Block add for ${position.symbol} Count ${nextCount} had no authoritative fill`)
+        return false
+      }
+    } catch (err) {
+      if (err.message?.includes("429")) rateLimiter.backoff(3000)
+      log("error", `Block add error for ${position.symbol} Count ${nextCount}`, err.message)
+      trackError()
+      return false
+    }
+  }
+
+  const existingLegs = Array.isArray(position.blockLegs) ? position.blockLegs : []
+  const currentNotional = existingLegs.reduce(
+    (sum, leg) => sum + Math.abs(Number(leg?.entryPrice) || 0) * Math.abs(Number(leg?.quantity) || 0),
+    0,
+  ) || Math.abs(Number(position.entryPrice) || 0) * Math.abs(Number(position.quantity) || 0)
+  const currentQuantity = Math.abs(Number(position.quantity) || 0)
+  const nextQuantity = currentQuantity + filledQuantity
+  position.quantity = nextQuantity
+  position.entryNotionalUsdt = Number((currentNotional + filledPrice * filledQuantity).toFixed(8))
+  position.initialEntryNotionalUsdt = position.entryNotionalUsdt
+  position.initialQuantity = (Number(position.initialQuantity) || currentQuantity) + filledQuantity
+  position.blockAddedCount = nextCount
+  position.blockRealizedVolumeMultiplier = baseQuantity > 0 ? Number((nextQuantity / baseQuantity).toFixed(6)) : 1
+  position.blockAddedQuantity = baseQuantity * nextCount * volumeRatio
+  position.targetBlockQuantity = baseQuantity * (1 + maximumCount * volumeRatio)
+  position.blockLegs = [
+    ...existingLegs,
+    {
+      setKey: `${position.configKey}#block:${nextCount}`,
+      blockCount: nextCount,
+      quantity: filledQuantity,
+      entryPrice: filledPrice,
+      baseQuantity,
+      volumeRatio,
+      volumeIncrementRatio: nextCount * volumeRatio,
+      volumeMultiplier: 1 + nextCount * volumeRatio,
+      targetBlockQuantity: baseQuantity * (1 + nextCount * volumeRatio),
+      orderId,
+      addedAt: Date.now(),
+    },
+  ]
+  stats.totalOrders++
+  stats.totalFilled++
+  stateDirty = true
+  log("info", `Added ${position.mode} Block Count ${nextCount}/${maximumCount} ${position.direction} ${position.symbol} @ ${filledPrice.toFixed(4)} qty ${filledQuantity}`)
+  return true
+}
+
+async function processDirectTradeBlockAdds() {
+  const openBlockPositions = positions.filter((position) => {
+    return position.status === "open"
+      && Number(position.blockCount) > 0
+      && Number(position.blockAddedCount || 0) < Number(position.blockCount)
+  })
+  for (const position of openBlockPositions) {
+    const config = executionConfigForPosition(position)
+    await addDirectTradeBlockLeg(position, config)
+  }
 }
 
 function autoTrailingRuntimeParameters(pos) {
@@ -616,6 +849,55 @@ function relativeExitRuntime(pos, currentPrice) {
   }
   return pos.lowWatermark <= pos.entryPrice * (1 - activation / 100)
     && currentPrice >= pos.lowWatermark * (1 + retracement / 100)
+}
+
+function rebuildRealizedNotionalStats() {
+  const closed = positions.filter((position) => position.status === "closed")
+  const aggregate = (rows) => {
+    let totalPnlUsdt = 0
+    let totalGrossPnlUsdt = 0
+    let profitUsdt = 0
+    let lossUsdt = 0
+    for (const position of rows) {
+      const entryNotional = Math.abs(Number(position.entryPrice) || 0) * Math.abs(Number(position.quantity) || 0)
+      const net = Number.isFinite(Number(position.realizedPnlUsdt))
+        ? Number(position.realizedPnlUsdt)
+        : entryNotional > 0 ? entryNotional * (Number(position.pnl) || 0) / 100 : NaN
+      const gross = Number.isFinite(Number(position.grossPnlUsdt))
+        ? Number(position.grossPnlUsdt)
+        : entryNotional > 0 ? entryNotional * (Number(position.grossPnl) || 0) / 100 : NaN
+      if (!Number.isFinite(net)) continue
+      totalPnlUsdt += net
+      if (Number.isFinite(gross)) totalGrossPnlUsdt += gross
+      if (net > 0) profitUsdt += net
+      else lossUsdt += Math.abs(net)
+    }
+    return {
+      totalPnlUsdt: Number(totalPnlUsdt.toFixed(8)),
+      totalGrossPnlUsdt: Number(totalGrossPnlUsdt.toFixed(8)),
+      profitFactorUsdt: lossUsdt > 0 ? Number((profitUsdt / lossUsdt).toFixed(6)) : null,
+      profitFactorUsdtInfinite: lossUsdt === 0 && profitUsdt > 0,
+    }
+  }
+  const all = aggregate(closed)
+  stats.totalPnlUsdt = all.totalPnlUsdt
+  stats.totalGrossPnlUsdt = all.totalGrossPnlUsdt
+  stats.profitFactorUsdt = all.profitFactorUsdt
+  stats.profitFactorUsdtInfinite = all.profitFactorUsdtInfinite
+  const byCount = {}
+  for (const position of closed) {
+    const count = Math.max(0, Math.floor(Number(position.blockCount) || 0))
+    const key = String(count)
+    const rows = byCount[key] || (byCount[key] = [])
+    rows.push(position)
+  }
+  stats.blockStatsByCount = Object.fromEntries(Object.entries(byCount).map(([count, rows]) => [count, {
+    blockCount: Number(count),
+    closed: rows.length,
+    ...aggregate(rows),
+    volumeRatio: Number(rows.at(-1)?.blockVolumeRatio) || Number(state.blockVolumeRatio) || 1,
+    meanQuantity: rows.length > 0 ? Number((rows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0) / rows.length).toFixed(12)) : 0,
+  }]))
 }
 
 function momentumReversalRuntime(pos, currentPrice) {
@@ -638,18 +920,10 @@ async function checkAndClosePositions() {
   // the venue request rate bounded while avoiding a 32-symbol serial delay.
   await Promise.all(symbols.map(async (symbol) => {
     try {
-      await rateLimiter.acquire()
-      const bingxSym = symbol.replace(/USDT$/, "-USDT")
-      const res = await fetch(
-        `https://open-api.bingx.com/openApi/swap/v2/quote/ticker?symbol=${bingxSym}`,
-        { signal: AbortSignal.timeout(3000) }
-      )
-      if (res.ok) {
-        const data = await res.json()
-        prices[symbol] = Number(data?.data?.lastPrice || data?.data?.c || 0)
-      }
+      prices[symbol] = await readDirectTradeTicker(symbol)
     } catch (err) {
       if (String(err).includes("429")) rateLimiter.backoff(2000)
+      log("warn", `Ticker read blocked for ${symbol}`, err?.message || err)
     }
   }))
 
@@ -737,14 +1011,8 @@ async function checkAndClosePositions() {
 }
 
 async function closePosition(pos, exitPrice, reason) {
-  const grossPnl = pos.direction === "long"
-    ? ((exitPrice - pos.entryPrice) / pos.entryPrice) * 100
-    : ((pos.entryPrice - exitPrice) / pos.entryPrice) * 100
-  // The configured 0.1% position cost is applied once, at the only point
-  // where a result becomes realised. Open rows remain managed independently
-  // and cannot influence PF/DDT or deactivation before they close.
-  const positionCostPercent = Math.max(0.02, Math.min(1, Number(pos.positionCostPercent) || Number(state.positionCostPercent) || 0.1))
-  const pnl = grossPnl - positionCostPercent
+  let realizedExitPrice = Number(exitPrice)
+  let realizedQuantity = Math.abs(Number(pos.quantity) || 0)
 
   // A live close is authoritative only after the exchange accepts it. Keep
   // the local row open on failure so the next leased tick retries instead of
@@ -752,22 +1020,76 @@ async function closePosition(pos, exitPrice, reason) {
   if (pos.mode === "live" && pos.orderId) {
     try {
       await rateLimiter.acquire()
+      pos.closeAttempt = Math.max(0, Math.floor(Number(pos.closeAttempt) || 0)) + 1
       const closeResult = await apiCall("/api/trade-engine/direct-trade/order", "POST", {
         kind: "close",
         instanceId: processorInstanceId,
         positionId: pos.id,
-        controlId: `dtclose_${pos.id}`.slice(0, 48),
+        controlId: `dtclose_${pos.id}_${pos.closeAttempt}`.slice(0, 48),
         connectionId: pos.connectionId || state.connectionId,
         symbol: pos.symbol,
         positionDirection: pos.direction,
         quantity: pos.quantity,
-        price: exitPrice,
+        price: realizedExitPrice,
         leverage: 10,
       })
       if (!closeResult?.success) {
         log("warn", `Close order rejected for ${pos.symbol}`, closeResult?.error)
         return false
       }
+      const exchangePrice = Number(closeResult.fill?.filledPrice || closeResult.details?.avgPrice || closeResult.avgPrice)
+      const exchangeQuantity = Number(closeResult.fill?.filledQty || closeResult.details?.filledQty)
+      // A successful live close must carry an exchange-confirmed execution
+      // price. Never book a ticker estimate as realised PnL. Quantity is
+      // likewise replaced only when the exchange reports a positive fill.
+      if (!Number.isFinite(exchangePrice) || exchangePrice <= 0
+        || !Number.isFinite(exchangeQuantity) || exchangeQuantity <= 0) {
+        log("warn", `Close response for ${pos.symbol} had no authoritative fill price`)
+        return false
+      }
+      realizedExitPrice = exchangePrice
+      if (exchangeQuantity < realizedQuantity * 0.999999) {
+        const currentLegs = Array.isArray(pos.blockLegs) && pos.blockLegs.length > 0
+          ? pos.blockLegs
+          : [{ entryPrice: pos.entryPrice, quantity: pos.quantity }]
+        const currentQuantity = currentLegs.reduce((sum, leg) => sum + Math.abs(Number(leg?.quantity) || 0), 0)
+        const filledQuantity = Math.min(exchangeQuantity, currentQuantity)
+        if (!(currentQuantity > 0) || !(filledQuantity > 0)) return false
+        const closeFraction = Math.min(1, filledQuantity / currentQuantity)
+        let partialEntryNotionalUsdt = 0
+        let partialGrossPnlUsdt = 0
+        const remainingLegs = []
+        for (const leg of currentLegs) {
+          const entryPrice = Number(leg?.entryPrice) || 0
+          const quantity = Math.abs(Number(leg?.quantity) || 0)
+          const closedQuantity = quantity * closeFraction
+          const remainingQuantity = quantity - closedQuantity
+          if (entryPrice > 0 && closedQuantity > 0) {
+            partialEntryNotionalUsdt += entryPrice * closedQuantity
+            partialGrossPnlUsdt += (pos.direction === "long"
+              ? realizedExitPrice - entryPrice
+              : entryPrice - realizedExitPrice) * closedQuantity
+          }
+          if (remainingQuantity > Math.max(1e-12, quantity * 1e-9)) {
+            remainingLegs.push({ ...leg, quantity: remainingQuantity })
+          }
+        }
+        pos.blockLegs = remainingLegs
+        pos.quantity = Math.max(0, currentQuantity - filledQuantity)
+        pos.partialCloseQuantity = (Number(pos.partialCloseQuantity) || 0) + filledQuantity
+        pos.partialEntryNotionalUsdt = (Number(pos.partialEntryNotionalUsdt) || 0) + partialEntryNotionalUsdt
+        pos.partialGrossPnlUsdt = (Number(pos.partialGrossPnlUsdt) || 0) + partialGrossPnlUsdt
+        pos.lastPartialClosePrice = realizedExitPrice
+        pos.lastPartialCloseAt = new Date().toISOString()
+        pos.closeState = "closing_partial"
+        pos.blockRealizedVolumeMultiplier = Number(pos.blockBaseQuantity) > 0
+          ? Number(((Number(pos.initialQuantity) || currentQuantity) / Number(pos.blockBaseQuantity)).toFixed(6))
+          : 1
+        stateDirty = true
+        log("warn", `Partial close ${pos.mode} ${pos.direction} ${pos.symbol}: ${filledQuantity.toFixed(12)} filled, ${pos.quantity.toFixed(12)} remaining`)
+        return false
+      }
+      realizedQuantity = Math.min(exchangeQuantity, realizedQuantity)
     } catch (err) {
       log("error", `Close order failed for ${pos.symbol}`, err.message)
       trackError()
@@ -775,13 +1097,60 @@ async function closePosition(pos, exitPrice, reason) {
     }
   }
 
+  const positionLegs = Array.isArray(pos.blockLegs) && pos.blockLegs.length > 0
+    ? pos.blockLegs
+    : [{ entryPrice: pos.entryPrice, quantity: pos.quantity }]
+  const entryNotionalUsdt = positionLegs.reduce(
+    (sum, leg) => sum + Math.abs(Number(leg?.entryPrice) || 0) * Math.abs(Number(leg?.quantity) || 0),
+    0,
+  )
+  const grossPnlUsdtFromLegs = positionLegs.reduce((sum, leg) => {
+    const entryPrice = Number(leg?.entryPrice) || 0
+    const quantity = Math.abs(Number(leg?.quantity) || 0)
+    if (!(entryPrice > 0) || !(quantity > 0)) return sum
+    const priceMove = pos.direction === "long"
+      ? realizedExitPrice - entryPrice
+      : entryPrice - realizedExitPrice
+    return sum + priceMove * quantity
+  }, 0)
+  const totalEntryNotionalUsdt = (Number(pos.partialEntryNotionalUsdt) || 0) + entryNotionalUsdt
+  const totalGrossPnlUsdt = (Number(pos.partialGrossPnlUsdt) || 0) + grossPnlUsdtFromLegs
+  const baseEntryNotionalUsdt = Number(pos.baseEntryNotionalUsdt) > 0
+    ? Number(pos.baseEntryNotionalUsdt)
+    : totalEntryNotionalUsdt
+  const totalPositionVolumeMultiplier = baseEntryNotionalUsdt > 0
+    ? totalEntryNotionalUsdt / baseEntryNotionalUsdt
+    : 1
+  const grossPnl = baseEntryNotionalUsdt > 0
+    ? (totalGrossPnlUsdt / baseEntryNotionalUsdt) * 100
+    : pos.direction === "long"
+      ? ((realizedExitPrice - pos.entryPrice) / pos.entryPrice) * 100
+      : ((pos.entryPrice - realizedExitPrice) / pos.entryPrice) * 100
+  // The configured PositionCost is charged against every realised leg's
+  // notional. This keeps staged Block PnL/PF on the same ratio basis as the
+  // historical simulation instead of charging one cost to a multi-leg book.
+  const positionCostPercent = Math.max(0.02, Math.min(1, Number(pos.positionCostPercent) || Number(state.positionCostPercent) || 0.1))
+  const positionCostUsdt = totalEntryNotionalUsdt * (positionCostPercent / 100)
+  const realizedPnlUsdt = totalGrossPnlUsdt - positionCostUsdt
+  const pnl = baseEntryNotionalUsdt > 0
+    ? (realizedPnlUsdt / baseEntryNotionalUsdt) * 100
+    : grossPnl - positionCostPercent
+
   pos.status = "closed"
-  pos.exitPrice = exitPrice
+  pos.exitPrice = realizedExitPrice
+  pos.quantity = (Number(pos.partialCloseQuantity) || 0) + realizedQuantity
+  pos.remainingQuantity = 0
   pos.closedAt = new Date().toISOString()
   pos.exitReason = reason
   pos.grossPnl = Number(grossPnl.toFixed(4))
   pos.positionCostPercent = positionCostPercent
   pos.pnl = Number(pnl.toFixed(4))
+  pos.entryNotionalUsdt = Number(totalEntryNotionalUsdt.toFixed(8))
+  pos.grossPnlUsdt = Number(totalGrossPnlUsdt.toFixed(8))
+  pos.realizedPnlUsdt = Number(realizedPnlUsdt.toFixed(8))
+  pos.blockRealizedVolumeMultiplier = Number(pos.blockBaseQuantity) > 0
+    ? Number(totalPositionVolumeMultiplier.toFixed(6))
+    : 1
 
   // Update stats
   stats.totalPnl += pos.pnl
@@ -803,6 +1172,7 @@ async function closePosition(pos, exitPrice, reason) {
   })
   // Keep last 500 entries
   if (stats.pnlHistory.length > 500) stats.pnlHistory = stats.pnlHistory.slice(-500)
+  rebuildRealizedNotionalStats()
 
   // Track per-config performance for keep-enabled evaluation
   const positionConfigKey = pos.configKey || configKey(pos)
@@ -834,7 +1204,7 @@ async function closePosition(pos, exitPrice, reason) {
     configStatus.set(positionConfigKey, { ...status, updatedAt: pos.closedAt })
   }
   stateDirty = true
-  log("info", `Closed ${pos.mode} ${pos.direction} ${pos.symbol} @ ${exitPrice.toFixed(4)} | PnL: ${pos.pnl > 0 ? "+" : ""}${pos.pnl.toFixed(3)}% | Reason: ${reason} | Total PnL: ${stats.totalPnl.toFixed(3)}% | Config[${positionConfigKey}] history: ${perfArr.length}`)
+  log("info", `Closed ${pos.mode} ${pos.direction} ${pos.symbol} @ ${realizedExitPrice.toFixed(4)} | PnL: ${pos.pnl > 0 ? "+" : ""}${pos.pnl.toFixed(3)}% (${pos.realizedPnlUsdt.toFixed(4)} USDT) | Reason: ${reason} | Total PnL: ${stats.totalPnl.toFixed(3)}% | Config[${positionConfigKey}] history: ${perfArr.length}`)
   return true
 }
 
@@ -889,6 +1259,15 @@ function applyRemoteState(nextState, source = "load") {
   if (Number.isFinite(persistedRecalcAt) && persistedRecalcAt > 0) {
     lastRecalcAt = persistedRecalcAt
   }
+  if (state.liveMode && !prev.liveMode) {
+    // Entering live mode is a hard lifecycle boundary. Force a new exact
+    // 48-hour calculation and a new causal pulse before any live entry can be
+    // considered, even if the paper generation was just calculated.
+    lastRecalcAt = 0
+    calculationHistoryHours = null
+    lastSignalPulseAt = 0
+    log("info", `Live mode requested; exact ${DIRECT_TRADE_LIVE_HISTORY_HOURS}h historic warmup required before realtime processing`)
+  }
   // A persisted acknowledgement is an event from the state owner. Compare
   // only calculation inputs: UI-only status updates never cause a rebuild.
   const evaluationInputsChanged = JSON.stringify({
@@ -909,6 +1288,7 @@ function applyRemoteState(nextState, source = "load") {
         takeProfitRatioRange: prev.takeProfitRatioRange,
         takeProfitRatioStep: prev.takeProfitRatioStep,
         blockVolumeRatio: prev.blockVolumeRatio,
+        blockProfitFactorRatio: prev.blockProfitFactorRatio,
         maxSlRatio: prev.maxSlRatio,
         slRatioStep: prev.slRatioStep,
         inverseMaxSlRatio: prev.inverseMaxSlRatio,
@@ -933,6 +1313,7 @@ function applyRemoteState(nextState, source = "load") {
         takeProfitRatioRange: state.takeProfitRatioRange,
         takeProfitRatioStep: state.takeProfitRatioStep,
         blockVolumeRatio: state.blockVolumeRatio,
+        blockProfitFactorRatio: state.blockProfitFactorRatio,
         maxSlRatio: state.maxSlRatio,
         slRatioStep: state.slRatioStep,
         inverseMaxSlRatio: state.inverseMaxSlRatio,
@@ -957,6 +1338,10 @@ async function loadState(includeExecution = false) {
       applyRemoteState(result.state, "load")
     }
     const remoteCalculationVersion = result?.calculation?.calculatedAt || null
+    const remoteCalculationHistoryHours = Number(result?.calculation?.historyHours)
+    calculationHistoryHours = Number.isFinite(remoteCalculationHistoryHours) && remoteCalculationHistoryHours > 0
+      ? remoteCalculationHistoryHours
+      : null
     if (!includeExecution && remoteCalculationVersion && remoteCalculationVersion !== calculationVersion) {
       calculationVersion = remoteCalculationVersion
       await refreshActiveSignals()
@@ -970,6 +1355,7 @@ async function loadState(includeExecution = false) {
     }
     if (result?.stats && typeof result.stats === "object") stats = { ...stats, ...result.stats }
     if (Array.isArray(result?.positions)) positions = result.positions
+    rebuildRealizedNotionalStats()
     if (result?.configPerformance && typeof result.configPerformance === "object") {
       configPerformance = new Map(Object.entries(result.configPerformance))
     }
@@ -1044,6 +1430,9 @@ async function processTick() {
   tickCount++
 
   // 1. Check if recalculation needed (every 2h)
+  if (state.liveMode && calculationHistoryHours !== requiredCalculationHistoryHours()) {
+    lastRecalcAt = 0
+  }
   let calculationFresh = true
   if (Date.now() - lastRecalcAt > state.recalcIntervalMs) {
     calculationFresh = await recalculateConfigs()
@@ -1051,6 +1440,11 @@ async function processTick() {
 
   // 2. Check and close existing positions
   await checkAndClosePositions()
+
+  // 2b. Advance each open Direct-Trade Block lane at most once per fresh
+  // signal pulse. This mirrors the historical staged-add simulation and keeps
+  // live ratio volume causal instead of sending the entire target at entry.
+  await processDirectTradeBlockAdds()
 
   // Existing positions remain protected above, but a stale or failed
   // historical generation may never create a new Direct-Trade entry.
@@ -1091,7 +1485,11 @@ async function mainLoop() {
   // Acquire the single-writer lease before generating configs or touching a
   // position. A second process becomes a passive standby instead of doubling
   // entries, closes, or dashboard counts.
-  if (state.enabled && await ensureProcessorLease() && !calculationVersion) {
+  if (
+    state.enabled &&
+    await ensureProcessorLease() &&
+    (!calculationVersion || calculationHistoryHours !== requiredCalculationHistoryHours())
+  ) {
     await recalculateConfigs()
   }
 
@@ -1106,7 +1504,7 @@ async function mainLoop() {
       }
 
       // Current market eligibility is refreshed independently from the full
-      // 60h calculation. It is cheap, bounded by public API backpressure, and
+      // 48h calculation. It is cheap, bounded by public API backpressure, and
       // keeps 1m/10m/15m entry decisions continuous between two full rebuilds.
       if (state.enabled && Date.now() - lastSignalPulseAt >= 60_000) {
         await refreshActiveSignals()

@@ -194,6 +194,7 @@ export class PseudoPositionManager {
     return `pseudo_positions:${this.connectionId}:closed_time_index`
   }
   private static readonly CLOSED_INDEX_TTL = 7 * 24 * 60 * 60 // 7 days
+  private static readonly CLOSED_INDEX_MAX_ROWS = 500
 
   /** Redis set of active v2 exact-lane identities (plus legacy members until
    * their positions close). Exact identity includes symbol, complete
@@ -471,10 +472,9 @@ export class PseudoPositionManager {
         const positionCostPercent = parseFloat(
           String(settings.exchangePositionCost ?? settings.positionCost ?? "0.1")
         )
-        const positionCost =
-          (Number.isFinite(positionCostPercent) && positionCostPercent > 0
-            ? Math.max(0.02, Math.min(1.0, positionCostPercent))
-            : 0.02) / 100
+        const canonicalPositionCostPercent = Number.isFinite(positionCostPercent) && positionCostPercent > 0
+          ? Math.max(0.02, Math.min(1.0, positionCostPercent))
+          : 0.02
         const positionsAverage = (() => {
           const raw = parseFloat(String(settings.positions_average ?? "2"))
           return Number.isFinite(raw) && raw > 0 ? raw : 2
@@ -492,7 +492,7 @@ export class PseudoPositionManager {
           ? parseFloat(tradingPair.min_order_size)
           : undefined
         const calculated = VolumeCalculator.calculatePositionVolume({
-          positionCost,
+          positionCostPercent: canonicalPositionCostPercent,
           positionsAverage,
           accountBalance,
           currentPrice: params.entryPrice,
@@ -501,10 +501,7 @@ export class PseudoPositionManager {
         })
         return {
           ...calculated,
-          positionCostPercent:
-            Number.isFinite(positionCostPercent) && positionCostPercent > 0
-              ? Math.max(0.02, Math.min(1.0, positionCostPercent))
-              : 0.02,
+          positionCostPercent: canonicalPositionCostPercent,
         }
       })()
 
@@ -1061,6 +1058,32 @@ export class PseudoPositionManager {
       }
 
       await pipeline.exec()
+
+      // Keep the compatibility closed-id list bounded. The sorted time index
+      // remains the authoritative recent-window reader, while this ring is
+      // retained for older consumers. Delete only rows that are already
+      // terminal; open positions and strategy ledgers are untouched.
+      const closedIndexLength = Number(await client.llen(closedIndexKey).catch(() => 0)) || 0
+      if (closedIndexLength > PseudoPositionManager.CLOSED_INDEX_MAX_ROWS + 100) {
+        // Read/delete the overflow in bounded pages before trimming the
+        // compatibility list. This keeps a pathological legacy ring from
+        // creating one giant Redis multi or one giant JS array.
+        for (let offset = PseudoPositionManager.CLOSED_INDEX_MAX_ROWS; offset < closedIndexLength; offset += 500) {
+          const staleIds = await client
+            .lrange(closedIndexKey, offset, Math.min(closedIndexLength - 1, offset + 499))
+            .catch(() => [])
+          const trim = client.multi()
+          for (const staleId of Array.isArray(staleIds) ? staleIds : []) {
+            trim.zrem(closedTimeIndexKey, String(staleId))
+            trim.del(this.positionKey(String(staleId)))
+          }
+          await trim.exec().catch(() => undefined)
+          await new Promise<void>((resolve) => setImmediate(resolve))
+        }
+        await client
+          .ltrim(closedIndexKey, 0, PseudoPositionManager.CLOSED_INDEX_MAX_ROWS - 1)
+          .catch(() => undefined)
+      }
 
       await syncPseudoStrategyEntryLedger(
         this.connectionId,

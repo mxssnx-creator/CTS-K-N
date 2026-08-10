@@ -30,6 +30,7 @@ import {
 } from "@/lib/main-trade-profit-factor"
 import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "@/lib/pos-count-volume-ratio"
 import { mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { BLOCK_COUNT_MAX } from "@/lib/block-count-state"
 
 /**
  * Fan out a "settings_changed" progression log event AND a settings-
@@ -105,6 +106,7 @@ const CHANNEL_VOLUME_FACTOR_KEYS = [
   "signal_trade_volume_factor",
   "signalVolumeFactor",
 ] as const
+const BLOCK_STACK_KEYS = ["blockMaxStack", "blockRowLiveMaxStack", "presetBlockMaxStack"] as const
 
 function normalizePositionCostSettings<T extends Record<string, any>>(settings: T): T {
   const normalized: Record<string, any> = { ...settings }
@@ -130,6 +132,13 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
     normalized[key] = Number.isFinite(value)
       ? Math.max(1, Math.min(10, value))
       : 1
+  }
+  for (const key of BLOCK_STACK_KEYS) {
+    if (normalized[key] === undefined || normalized[key] === null || normalized[key] === "") continue
+    const value = Number(normalized[key])
+    normalized[key] = Number.isFinite(value)
+      ? Math.max(1, Math.min(BLOCK_COUNT_MAX, Math.floor(value)))
+      : BLOCK_COUNT_MAX
   }
   if (normalized.trendTimeframesMinutes !== undefined) {
     normalized.trendTimeframesMinutes = normalizeTrendTimeframesMinutes(
@@ -220,14 +229,14 @@ function getDefaultSettings(): Record<string, any> {
     blockVolumeRatio: 1,
     blockProfitFactorRatio: 0.8,
     presetBlockProfitFactorRatio: 0.8,
-    blockMaxStack: 10,
+    blockMaxStack: 12,
     blockPauseCountRatio: 1,
     blockActiveRealEnabled: true,
     blockActiveLiveEnabled: true,
     blockRowLiveEnabled: true,
     blockRowLiveVolumeRatio: 1,
     blockRowLiveProfitFactorRatio: 0.8,
-    blockRowLiveMaxStack: 10,
+    blockRowLiveMaxStack: 12,
     blockRowLivePauseCountRatio: 1,
     directionEnabled: true,
     moveEnabled: true,
@@ -285,7 +294,7 @@ function getDefaultSettings(): Record<string, any> {
     presetMaxCandlesPerRun: 6000,
     presetBlockEnabled: true,
     presetBlockVolumeRatio: 1,
-    presetBlockMaxStack: 10,
+    presetBlockMaxStack: 12,
     presetBlockPauseCountRatio: 1,
     presetBlockActiveRealEnabled: true,
     presetBlockActiveLiveEnabled: true,

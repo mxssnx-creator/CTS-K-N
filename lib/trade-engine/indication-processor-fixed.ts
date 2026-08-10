@@ -582,7 +582,7 @@ function mergeHistoricTailWithRealtime(
 }
 
 /** Collapse arbitrary-frequency candles to deterministic one-minute closes. */
-function oneMinuteClosesOldestFirst(candles: any[]): number[] {
+export function oneMinuteClosesOldestFirst(candles: any[]): number[] {
   const rows = candles
     .map((candle: any, index: number) => ({
       price: Number(candle?.close ?? candle?.c ?? candle?.price),

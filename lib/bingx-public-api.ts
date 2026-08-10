@@ -1,19 +1,30 @@
 const DEFAULT_PRIMARY_ORIGIN = "https://open-api.bingx.com"
-const DEFAULT_FALLBACK_ORIGIN = "https://open-api.bingx.pro"
+const VERIFIED_PUBLIC_HOSTS = new Set([
+  "open-api.bingx.com",
+  "testnet-open-api.bingx.com",
+])
 
 let preferredOrigin = DEFAULT_PRIMARY_ORIGIN
 
 function configuredOrigins(): string[] {
-  return [...new Set([
-    process.env.BINGX_PUBLIC_ORIGIN || DEFAULT_PRIMARY_ORIGIN,
-    process.env.BINGX_PUBLIC_FALLBACK_ORIGIN || DEFAULT_FALLBACK_ORIGIN,
-  ].map((value) => new URL(value).origin))]
+  const configured = [process.env.BINGX_PUBLIC_ORIGIN || DEFAULT_PRIMARY_ORIGIN]
+  if (process.env.BINGX_PUBLIC_FALLBACK_ORIGIN) configured.push(process.env.BINGX_PUBLIC_FALLBACK_ORIGIN)
+  return [...new Set(configured.flatMap((value) => {
+    try {
+      const origin = new URL(value).origin
+      return VERIFIED_PUBLIC_HOSTS.has(new URL(origin).hostname) ? [origin] : []
+    } catch {
+      return []
+    }
+  }))]
 }
 
 function publicUrl(pathname: string | URL, origin: string): URL {
   const input = pathname instanceof URL ? pathname : new URL(pathname, origin)
   const url = new URL(`${input.pathname}${input.search}`, origin)
-  if (url.protocol !== "https:") throw new Error(`Refusing non-HTTPS BingX endpoint: ${url}`)
+  if (url.protocol !== "https:" || !VERIFIED_PUBLIC_HOSTS.has(url.hostname)) {
+    throw new Error(`Refusing unverified BingX public host: ${url.origin}`)
+  }
   if (!url.pathname.includes("/quote/") || url.pathname.includes("/trade/") || url.pathname.includes("/user/")) {
     throw new Error(`Refusing non-public BingX endpoint: ${url.pathname}`)
   }

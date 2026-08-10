@@ -88,7 +88,7 @@ export interface CoordinationSettings {
   // round(blockCount × blockPauseCountRatio).
   blockVolumeRatio: number // 0.25..3.0 per spec band (UI clamps; engine re-clamps)
   blockProfitFactorRatio: number // 0.2..5.0 × default PF × count volume increment
-  blockMaxStack:    number // 1..10 block sizes processed independently
+  blockMaxStack:    number // 1..12 block sizes processed independently
   strategyBlockMaterializationBatchSize: number // 64..10000, rotating work batch
   blockPauseCountRatio: number // 1..4, step 0.5
   blockActiveRealEnabled: boolean // active real-position Block overlay, default true
@@ -215,7 +215,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   },
   blockVolumeRatio: 1.0,
   blockProfitFactorRatio: 0.8,
-  blockMaxStack:    10,
+  blockMaxStack:    12,
   strategyBlockMaterializationBatchSize: 1024,
   blockPauseCountRatio: 1.0,
   blockActiveRealEnabled: true,
@@ -223,7 +223,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockRowLiveEnabled: true,
   blockRowLiveVolumeRatio: 1.0,
   blockRowLiveProfitFactorRatio: 0.8,
-  blockRowLiveMaxStack: 10,
+  blockRowLiveMaxStack: 12,
   blockRowLivePauseCountRatio: 1.0,
   blockOnly: true,
   trailingVariants: [...DEFAULT_TRAILING_VARIANTS],
@@ -1034,7 +1034,7 @@ export function StrategyCoordinationSection({
                 <Slider
                   value={[value.blockRowLiveMaxStack]}
                   min={1}
-                  max={10}
+                  max={12}
                   step={1}
                   onValueChange={([next]) => onChange({ ...value, blockRowLiveMaxStack: next })}
                   disabled={!value.variants.block || !value.blockRowLiveEnabled}
@@ -1071,18 +1071,18 @@ export function StrategyCoordinationSection({
                 <Label className="text-sm font-semibold">Max Stack</Label>
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   Number of independent Block sizes processed in parallel.
-                  Default 10 emits all block counts 1 through 10. Engine clamps to 1–10.
+                  Default 12 emits all block counts 1 through 12. Engine clamps to 1–12.
                 </p>
               </div>
               <Badge variant="outline" className="text-[10px] tabular-nums">
-                1–10
+                1–12
               </Badge>
             </div>
             <div className="flex items-center gap-3 pt-1">
               <Slider
                 value={[value.blockMaxStack]}
                 min={1}
-                max={10}
+                max={12}
                 step={1}
                 onValueChange={(v) =>
                   onChange({ ...value, blockMaxStack: v[0] })

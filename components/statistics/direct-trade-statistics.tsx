@@ -44,12 +44,35 @@ type DirectConfig = {
   recentWinRate?: number
   recentTotalPnl?: number
   recentAvgDrawdownTimeMin?: number
+  blockCount?: number
+  blockProfitFactorRatio?: number
+  blockValid?: boolean
+  blockDeactivationReason?: string | null
+  blockObservedProfitFactor?: number | null
+  blockObservedProfitFactorInfinite?: boolean
+  blockNormalProfitFactor?: number
+  blockMinimumProfitFactor?: number
+  blockConfiguredMinimumProfitFactor?: number
+  blockProfitFactorDifference?: number
+  blockProfitFactorToMinimumDifference?: number
+  blockComparisonAvailable?: boolean
+  blockProfitFactorWindow?: number
+  blockProfitFactorSampleCount?: number
+  blockAvgDrawdownTimeMin?: number
+  blockMaxDrawdownTimeMin?: number
+  blockTotalPnl?: number
+  blockVolumeIncrementRatio?: number
+  blockCalculatedVolumeMultiplier?: number
+  blockRealizedVolumeMultiplier?: number
 }
 
 type Status = {
   stats?: {
     totalPnl?: number
+    totalPnlUsdt?: number
     profitFactor?: number
+    profitFactorPercent?: number
+    statsPnlBasis?: "usdt" | "percent"
     winCount?: number
     lossCount?: number
     last12Pos?: { pf: number; ddt: number; pnl: number }
@@ -67,6 +90,46 @@ type Status = {
     byEntryTactic?: Record<string, { evaluated: number; valid: number }>
     byExitTactic?: Record<string, { evaluated: number; valid: number }>
     byStrategyType?: Record<string, { evaluated: number; valid: number }>
+    blockEnabled?: boolean
+    blockEvaluatedSets?: number
+    blockValidSets?: number
+    blockDeactivatedSets?: number
+    baseProfitFactor?: number | null
+    baseProfitFactorInfinite?: boolean
+    selectedBlockProfitFactor?: number | null
+    selectedBlockProfitFactorInfinite?: boolean
+    selectedBlockCount?: number
+    selectedBlockPnl?: number
+    blockLedgerProfitFactor?: number | null
+    blockLedgerProfitFactorInfinite?: boolean
+    pfBasis?: string
+    takeProfitRatioAverage?: number
+    takeProfitPercentAverage?: number
+    baseGrossProfit?: number
+    baseGrossLoss?: number
+    baseNetProfit?: number
+    baseNetLoss?: number
+    selectedBlockGrossProfit?: number
+    selectedBlockGrossLoss?: number
+    selectedBlockNetProfit?: number
+    selectedBlockNetLoss?: number
+    blockLedgerGrossProfit?: number
+    blockLedgerGrossLoss?: number
+    byBlockCount?: Record<string, {
+      evaluated: number
+      valid: number
+      disabled: number
+      observedPfCount?: number
+      infinitePf?: number
+      meanObservedPF: number
+      meanMinimumPF: number
+      meanProfitFactorDifference: number
+      meanProfitFactorToMinimumDifference: number
+      totalPnl: number
+      aggregateObservedPF?: number | null
+      aggregateObservedPFInfinite?: boolean
+      meanRealizedVolumeMultiplier?: number
+    }>
   }
   processor?: { isHealthy?: boolean; lastTick?: string; errorsLast5min?: number } | null
 }
@@ -84,6 +147,11 @@ function displayPf(config: DirectConfig): string {
 function displayRecentPf(config: DirectConfig): string {
   if (!config.recentPositionCount) return "—"
   return config.recentProfitFactorInfinite ? "∞" : config.recentProfitFactor == null ? "—" : config.recentProfitFactor.toFixed(2)
+}
+
+function displayAggregatePf(value: number | null | undefined, infinite = false): string {
+  if (infinite) return "∞"
+  return value == null || !Number.isFinite(Number(value)) ? "—" : Number(value).toFixed(2)
 }
 
 function formatPnl(value: number | undefined): string {
@@ -143,6 +211,8 @@ export function DirectTradeStatistics() {
   const visibleRows = configs
   const stats = status.stats || {}
   const calculation = status.calculation || {}
+  const blockRows = Object.entries(calculation.byBlockCount || {})
+    .sort(([left], [right]) => Number(left) - Number(right))
 
   return (
     <div className="space-y-5">
@@ -166,6 +236,31 @@ export function DirectTradeStatistics() {
           <Metric label="Valid / executable" value={`${calculation.validSets || 0} / ${calculation.evaluatedSets || 0}`} icon={<ShieldCheck className="h-4 w-4" />} />
           <Metric label="TF combinations" value={String(calculation.combinations || 0)} icon={<Activity className="h-4 w-4" />} />
           <Metric label="Simulated PnL" value={formatPnl(stats.totalPnl)} emphasis={Number(stats.totalPnl) >= 0} icon={<Target className="h-4 w-4" />} />
+        </div>
+      </Card>
+
+      <Card className="overflow-hidden p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div><h2 className="text-sm font-medium">Independent Block Count PF / DDT ledger</h2><p className="text-xs text-muted-foreground">Each count uses the same causal last-position window; PF floors and projected volume are count-specific.</p></div>
+          <Badge variant={calculation.blockEnabled ? "default" : "secondary"}>{calculation.blockEnabled ? "Block enabled" : "Block disabled"}</Badge>
+        </div>
+        <div className="mb-3 grid gap-2 sm:grid-cols-3">
+          <Metric label="Block evaluations" value={String(calculation.blockEvaluatedSets || 0)} icon={<BarChart3 className="h-4 w-4" />} />
+          <Metric label="Block valid / executable" value={`${calculation.blockValidSets || 0} / ${calculation.blockEvaluatedSets || 0}`} icon={<ShieldCheck className="h-4 w-4" />} />
+          <Metric label="Block disabled" value={String(calculation.blockDeactivatedSets || 0)} icon={<Activity className="h-4 w-4" />} />
+        </div>
+        <div className="mb-3 grid gap-2 sm:grid-cols-3 lg:grid-cols-8">
+          <Metric label="Base aggregate PF" value={displayAggregatePf(calculation.baseProfitFactor, calculation.baseProfitFactorInfinite)} icon={<Target className="h-4 w-4" />} />
+          <Metric label={`Selected Block PF${calculation.selectedBlockCount ? ` (n=${calculation.selectedBlockCount})` : ""}`} value={displayAggregatePf(calculation.selectedBlockProfitFactor, calculation.selectedBlockProfitFactorInfinite)} icon={<Target className="h-4 w-4" />} />
+          <Metric label="All-count Block PF" value={displayAggregatePf(calculation.blockLedgerProfitFactor, calculation.blockLedgerProfitFactorInfinite)} icon={<Target className="h-4 w-4" />} />
+          <Metric label="Base net + / −" value={`${formatPnl(calculation.baseNetProfit ?? calculation.baseGrossProfit)} / ${formatPnl(-(calculation.baseNetLoss ?? calculation.baseGrossLoss ?? 0))}`} icon={<BarChart3 className="h-4 w-4" />} />
+          <Metric label="Block net + / −" value={`${formatPnl(calculation.selectedBlockNetProfit ?? calculation.selectedBlockGrossProfit)} / ${formatPnl(-(calculation.selectedBlockNetLoss ?? calculation.selectedBlockGrossLoss ?? 0))}`} icon={<BarChart3 className="h-4 w-4" />} />
+          <Metric label="Selected Block PnL" value={formatPnl(calculation.selectedBlockPnl)} emphasis={Number(calculation.selectedBlockPnl) >= 0} icon={<Activity className="h-4 w-4" />} />
+          <Metric label="TP ratio mean*" value={`${Number(calculation.takeProfitRatioAverage || 0).toFixed(2)}×`} icon={<Target className="h-4 w-4" />} />
+          <Metric label="TP % mean*" value={`${Number(calculation.takeProfitPercentAverage || 0).toFixed(3)}%`} icon={<Target className="h-4 w-4" />} />
+        </div>
+        <div className="overflow-auto rounded-md border">
+          <table className="w-full min-w-[1240px] text-xs"><thead className="bg-muted/95 text-muted-foreground"><tr><th className="p-2 text-right">Count</th><th className="p-2 text-right">Evaluated</th><th className="p-2 text-right">Valid</th><th className="p-2 text-right">Disabled</th><th className="p-2 text-right">Observed PF</th><th className="p-2 text-right">Aggregate PF</th><th className="p-2 text-right">Minimum PF</th><th className="p-2 text-right">PF vs Base</th><th className="p-2 text-right">PF vs Floor</th><th className="p-2 text-right">Realized Vol</th><th className="p-2 text-right">Projected PnL</th></tr></thead><tbody>{blockRows.map(([count, row]) => <tr key={count} className="border-t"><td className="p-2 text-right font-mono">{count}</td><td className="p-2 text-right font-mono">{row.evaluated}</td><td className="p-2 text-right font-mono text-emerald-600">{row.valid}</td><td className="p-2 text-right font-mono text-muted-foreground">{row.disabled}</td><td className="p-2 text-right font-mono">{row.meanObservedPF > 0 ? row.meanObservedPF.toFixed(2) : "—"}</td><td className="p-2 text-right font-mono">{displayAggregatePf(row.aggregateObservedPF, row.aggregateObservedPFInfinite)}</td><td className="p-2 text-right font-mono">{row.meanMinimumPF.toFixed(2)}</td><td className={`p-2 text-right font-mono ${row.meanProfitFactorDifference >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{row.meanProfitFactorDifference >= 0 ? "+" : ""}{row.meanProfitFactorDifference.toFixed(2)}</td><td className={`p-2 text-right font-mono ${row.meanProfitFactorToMinimumDifference >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{row.meanProfitFactorToMinimumDifference >= 0 ? "+" : ""}{row.meanProfitFactorToMinimumDifference.toFixed(2)}</td><td className="p-2 text-right font-mono">{Number(row.meanRealizedVolumeMultiplier || 0).toFixed(2)}×</td><td className="p-2 text-right font-mono">{row.totalPnl.toFixed(2)}%</td></tr>)}</tbody></table>
         </div>
       </Card>
 
@@ -203,12 +298,14 @@ export function DirectTradeStatistics() {
               <tbody>{visibleRows.map((config) => <tr key={config.setKey} className="border-t"><td className="p-2 font-mono"><div>{config.symbol} <span className="text-muted-foreground">{config.direction}</span></div><div className="text-muted-foreground">{config.timeframe}</div></td><td className="p-2"><div>{config.strategyType.replaceAll("_", " ")}{config.strategyType === "inverse" && <span className="text-muted-foreground"> ← {config.signalDirection}</span>}</div><div className="text-muted-foreground">{config.entryTactic.replace("_", " ")} · {config.exitTactic.replace("_", " ")}</div></td><td className="p-2 text-right font-mono">{displayPf(config)}</td><td className="p-2 text-right font-mono"><div>{displayRecentPf(config)}</div><div className="text-[10px] text-muted-foreground">{config.recentPositionCount || 0}/12 · {Number(config.recentAvgDrawdownTimeMin || 0).toFixed(1)}m</div></td><td className="p-2 text-right font-mono">{config.maxDrawdownTimeMin.toFixed(1)}m</td><td className={`p-2 text-right font-mono ${config.totalPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{formatPnl(config.totalPnl)}</td><td className="p-2 text-right font-mono text-muted-foreground">{Number(config.positionCostPercent || 0.1).toFixed(2)}%</td><td className="p-2 text-right font-mono text-muted-foreground">{formatPnl(config.bestMarketExitPnl)}</td><td className="p-2 text-right"><Badge variant={config.valid ? "default" : "secondary"} className="text-[10px]">{config.valid ? "valid" : config.deactivationReason || "inactive"}</Badge></td></tr>)}</tbody>
             </table>
           </div>
-          <p className="mt-2 text-[11px] text-muted-foreground">All PnL/PF values are net of the displayed one-time position cost. * Best market exit is a hindsight-only quality metric and never a live execution target.</p>
+          <p className="mt-2 text-[11px] text-muted-foreground">PF basis: summed positive/negative ratio-weighted net PnL ({calculation.pfBasis || "aggregate_ratio_weighted_net_pnl"}); it is not an average of row PFs or TP ratios. The TP means (*) are diagnostics only. Target volume: {visibleRows[0]?.blockCount || 0} · {Number(visibleRows[0]?.blockCalculatedVolumeMultiplier || 1).toFixed(2)}×; realized average: {Number(visibleRows[0]?.blockRealizedVolumeMultiplier || 1).toFixed(2)}×. Best market exit is hindsight-only.</p>
         </Card>
         <Card className="p-4">
           <h2 className="text-sm font-medium">Rolling execution result</h2>
           <div className="mt-3 space-y-2 text-sm">
             <ResultRow label="All closed positions PF" value={stats.profitFactor != null ? Number(stats.profitFactor).toFixed(2) : "—"} />
+            <ResultRow label="Realized PnL (exchange notional)" value={stats.totalPnlUsdt != null ? `${Number(stats.totalPnlUsdt).toFixed(4)} USDT` : "—"} />
+            <ResultRow label="PF basis" value={stats.statsPnlBasis === "usdt" ? "exchange notional" : "percentage fallback"} />
             <ResultRow label="Win / loss" value={`${stats.winCount || 0} / ${stats.lossCount || 0}`} />
             <ResultRow label="Last 12 positions" value={`PF ${stats.last12Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last12Pos?.ddt?.toFixed(1) || "0.0"}m`} />
             <ResultRow label="Last 25 positions" value={`PF ${stats.last25Pos?.pf?.toFixed(2) || "—"} · DDT ${stats.last25Pos?.ddt?.toFixed(1) || "0.0"}m`} />

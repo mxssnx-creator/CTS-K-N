@@ -1305,14 +1305,32 @@ export class BingXConnector extends BaseExchangeConnector {
           )
           const sdkOrderId = this.extractSdkOrderId(sdkData)
           if (this.isBingXSuccess(sdkData?.code) && sdkOrderId) {
+            this.sdkLastError = ""
+            this.markOperationTransport("placeStopOrder", "bingx-api")
             this.log(`✓ ${orderType} placed via SDK: ${sdkOrderId} @ ${stopStr}`)
             return { success: true, orderId: sdkOrderId, orderPrice: stopRounded, stopPrice: stopRounded }
           }
           if (sdkData && !this.isBingXSuccess(sdkData.code)) {
             throw new Error(`${sdkData.code}: ${sdkData.msg || sdkData.message || "SDK stop order rejected"}`)
           }
+          if (this.isBingXSuccess(sdkData?.code) && !sdkOrderId) {
+            // A successful SDK acknowledgement without an order id is
+            // delivery-ambiguous.  Retrying the same SL/TP through REST can
+            // create a second protection order, so leave the durable pending
+            // client id for reconciliation instead of submitting again.
+            throw new Error("SDK_ACK_WITHOUT_ORDER_ID: reconcile control order by clientOrderId before retry")
+          }
         } catch (sdkErr) {
           this.recordSdkFallback("placeStopOrder", sdkErr)
+          const sdkMessage = sdkErr instanceof Error ? sdkErr.message : String(sdkErr)
+          if (/SDK_ACK_WITHOUT_ORDER_ID|timeout|timed out|aborted|socket|network|fetch failed|ECONNRESET/i.test(sdkMessage)) {
+            return {
+              success: false,
+              error: options.clientOrderId
+                ? `Ambiguous bingx-api control acknowledgement for clientOrderId=${options.clientOrderId}; REST retry suppressed to prevent a duplicate protection order (${sdkMessage})`
+                : `Ambiguous bingx-api control acknowledgement; REST retry suppressed to prevent a duplicate protection order (${sdkMessage})`,
+            }
+          }
         }
       }
 

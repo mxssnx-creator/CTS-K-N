@@ -55,7 +55,6 @@ function hasBingxCredentials() {
 async function fetchBingxTickers() {
   const origins = [
     'https://open-api.bingx.com',
-    'https://open-api.bingx.pro',
   ]
   const paths = [
     '/openApi/swap/v2/quote/ticker',

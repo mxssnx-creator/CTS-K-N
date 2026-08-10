@@ -18,6 +18,7 @@ import {
   isOpenLiveExposureStatus,
 } from "@/lib/strategy-real-stats"
 import { getRuntimeTelemetry } from "@/lib/runtime-telemetry"
+import { BLOCK_COUNT_MAX } from "@/lib/block-count-state"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -1801,7 +1802,7 @@ export async function GET(
     }
 
     // ── Independent Block Count ProfitFactor evaluation ────────────────
-    // Each symbol writer publishes Count 1..10 as a current snapshot. Fold
+    // Each symbol writer publishes Count 1..12 as a current snapshot. Fold
     // only the active symbol basket and keep every count separate; averaging
     // Count 1 with Count 2 would recreate the shared-state bug this ledger is
     // designed to prevent.
@@ -1916,7 +1917,7 @@ export async function GET(
       const symbol = match[1].toUpperCase()
       if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol)) continue
       const countValue = Math.floor(Number(match[2]))
-      if (countValue < 1 || countValue > 10) continue
+      if (countValue < 1 || countValue > BLOCK_COUNT_MAX) continue
       const key = `${symbol}|${countValue}`
       const row = blockPfPerSymbolCount.get(key) || { count: countValue }
       row[match[3]] = match[3] === "avg_pf_difference"
@@ -1949,7 +1950,7 @@ export async function GET(
     blockActiveOverlayEvaluation.avgConfiguredMinimumProfitFactor = nf(activeWeighted("avg_configured_min_pf"), 3)
     blockActiveOverlayEvaluation.avgMinimumProfitFactor = nf(activeWeighted("avg_min_pf"), 3)
     blockActiveOverlayEvaluation.avgProfitFactorDifference = sf(activeWeighted("avg_pf_difference"), 3)
-    const blockCountProfitFactorStats = Array.from({ length: 10 }, (_, index) => {
+    const blockCountProfitFactorStats = Array.from({ length: BLOCK_COUNT_MAX }, (_, index) => {
       const countValue = index + 1
       const rows = Array.from(blockPfPerSymbolCount.values()).filter((row) => row.count === countValue)
       const rowCalculated = (row: Record<string, number>): number =>
@@ -2046,7 +2047,7 @@ export async function GET(
           : {}
         for (const [rawCount, countRaw] of Object.entries(counts)) {
           const countValue = Math.floor(Number(rawCount))
-          if (countValue < 1 || countValue > 10) continue
+          if (countValue < 1 || countValue > BLOCK_COUNT_MAX) continue
           const countRow = countRaw && typeof countRaw === "object" && !Array.isArray(countRaw)
             ? countRaw as Record<string, any>
             : {}

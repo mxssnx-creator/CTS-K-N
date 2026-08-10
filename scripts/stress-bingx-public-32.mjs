@@ -8,8 +8,12 @@
  */
 
 const PRIMARY_ORIGIN = process.env.BINGX_PUBLIC_ORIGIN || "https://open-api.bingx.com"
-const FALLBACK_ORIGIN = process.env.BINGX_PUBLIC_FALLBACK_ORIGIN || "https://open-api.bingx.pro"
-const ORIGINS = [...new Set([PRIMARY_ORIGIN, FALLBACK_ORIGIN])]
+const VERIFIED_PUBLIC_HOSTS = new Set(["open-api.bingx.com", "testnet-open-api.bingx.com"])
+const configuredFallback = process.env.BINGX_PUBLIC_FALLBACK_ORIGIN || ""
+const ORIGINS = [...new Set([PRIMARY_ORIGIN, configuredFallback].filter((origin) => {
+  try { return VERIFIED_PUBLIC_HOSTS.has(new URL(origin).hostname) }
+  catch { return false }
+}))]
 const SYMBOL_COUNT = Math.max(1, Math.min(32, Number(process.env.BINGX_STRESS_SYMBOL_COUNT) || 32))
 const CONCURRENCY = Math.max(1, Math.min(8, Number(process.env.BINGX_STRESS_CONCURRENCY) || 6))
 const TICKER_ROUNDS = Math.max(2, Math.min(20, Number(process.env.BINGX_STRESS_TICKER_ROUNDS) || 6))
@@ -20,7 +24,7 @@ let preferredOriginIndex = 0
 
 function publicQuoteUrl(pathname, origin = ORIGINS[preferredOriginIndex]) {
   const url = new URL(pathname, origin)
-  if (url.protocol !== "https:") throw new Error(`Refusing non-HTTPS endpoint: ${url}`)
+  if (url.protocol !== "https:" || !VERIFIED_PUBLIC_HOSTS.has(url.hostname)) throw new Error(`Refusing unverified BingX public host: ${url.origin}`)
   if (!url.pathname.includes("/quote/") || url.pathname.includes("/trade/") || url.pathname.includes("/user/")) {
     throw new Error(`Refusing non-public BingX endpoint: ${url.pathname}`)
   }

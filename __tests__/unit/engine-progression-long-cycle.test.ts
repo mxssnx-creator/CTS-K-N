@@ -78,7 +78,9 @@ describe("engine progression values over long multi-cycle development", () => {
         })
         expect(Number.isFinite(value.calculatedVolume)).toBe(true)
         expect(Number.isFinite(value.finalVolume)).toBe(true)
-        expect(value.calculatedVolume).toBeCloseTo(0.05 * engineFactor * strategy.multiplier * SYSTEM_VOLUME_FACTOR_MULTIPLIER, 11)
+        // Ratio-derived position cost is the requested quantity; the venue
+        // minimum is exposed separately through finalVolume.
+        expect(value.calculatedVolume).toBeCloseTo(0.01 * engineFactor * strategy.multiplier * SYSTEM_VOLUME_FACTOR_MULTIPLIER, 11)
         expect(value.finalVolume).toBeGreaterThanOrEqual(0.05)
       }
 

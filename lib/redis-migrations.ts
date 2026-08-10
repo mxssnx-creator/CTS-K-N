@@ -36,6 +36,7 @@ import {
   INDICATION_PROFILE_TYPES,
 } from "./active-indication-profile"
 import { DEFAULT_BASE_MIN_STEP } from "./constants"
+import { BLOCK_COUNT_MAX } from "./block-count-state"
 
 /**
  * Reset the in-process migration guards.
@@ -1757,7 +1758,7 @@ const migrations: Migration[] = [
     //   axes:      all disabled by default, including pause-axis; maxWindow seeded to spec defaults
     //   variants:  trailing=true, block=true, dca=false, pause=true
     //   axes:      all disabled by default, maxWindow seeded to spec defaults
-    //   block knobs: blockVolumeRatio=1.0, blockMaxStack=10
+    //   block knobs: blockVolumeRatio=1.0, blockMaxStack=12
     //
     // Also seeds app_settings so global fallback works the same way.
     name: "030-coordination-variant-axis-block-defaults",
@@ -1782,7 +1783,7 @@ const migrations: Migration[] = [
         axisPauseMaxWindow: "8",
         // Block strategy tuning
         blockVolumeRatio: "1.0",
-        blockMaxStack:    "10",
+        blockMaxStack:    "12",
         blockPauseCountRatio: "1.0",
         blockActiveRealEnabled: "true",
         blockActiveLiveEnabled: "true",
@@ -2108,7 +2109,7 @@ const migrations: Migration[] = [
         variantPauseEnabled:    "true",
         // Block knobs
         blockVolumeRatio:     "1.0",
-        blockMaxStack:        "10",
+        blockMaxStack:        "12",
         blockPauseCountRatio: "1.0",
         blockActiveRealEnabled: "true",
         blockActiveLiveEnabled: "true",
@@ -2491,7 +2492,7 @@ const migrations: Migration[] = [
         variantDcaEnabled:      "false",
         variantPauseEnabled:    "true",
         blockVolumeRatio:       "1.0",
-        blockMaxStack:          "10",
+        blockMaxStack:          "12",
         blockPauseCountRatio: "1.0",
         blockActiveRealEnabled: "true",
         blockActiveLiveEnabled: "true",
@@ -3134,7 +3135,7 @@ const migrations: Migration[] = [
         variantBlockEnabled:    "true",
         variantDcaEnabled:      "false", // spec: DCA OFF by default
         blockVolumeRatio:       "1.0",
-        blockMaxStack:          "10",
+        blockMaxStack:          "12",
         blockPauseCountRatio: "1.0",
         blockActiveRealEnabled: "true",
         blockActiveLiveEnabled: "true",
@@ -6208,7 +6209,7 @@ const migrations: Migration[] = [
           blockRowLiveEnabled: coordination.blockRowLiveEnabled ?? true,
           blockRowLiveVolumeRatio: coordination.blockRowLiveVolumeRatio ?? coordination.blockVolumeRatio ?? 1,
           blockRowLiveProfitFactorRatio: coordination.blockRowLiveProfitFactorRatio ?? coordination.blockProfitFactorRatio ?? 0.8,
-          blockRowLiveMaxStack: coordination.blockRowLiveMaxStack ?? coordination.blockMaxStack ?? 10,
+          blockRowLiveMaxStack: coordination.blockRowLiveMaxStack ?? coordination.blockMaxStack ?? 12,
           blockRowLivePauseCountRatio: coordination.blockRowLivePauseCountRatio ?? coordination.blockPauseCountRatio ?? 1,
           blockOnly: coordination.blockOnly ?? true,
         }
@@ -6244,7 +6245,7 @@ const migrations: Migration[] = [
           blockRowLiveEnabled: values.blockRowLiveEnabled === "false" || values.blockRowLiveEnabled === "0" ? "false" : "true",
           blockRowLiveVolumeRatio: String(Math.max(0.25, Math.min(3, Number(values.blockRowLiveVolumeRatio) || Number(values.blockVolumeRatio) || 1))),
           blockRowLiveProfitFactorRatio: String(Math.max(0.2, Math.min(5, Number(values.blockRowLiveProfitFactorRatio) || Number(values.blockProfitFactorRatio) || 0.8))),
-          blockRowLiveMaxStack: String(Math.max(1, Math.min(10, Math.floor(Number(values.blockRowLiveMaxStack) || Number(values.blockMaxStack) || 10)))),
+          blockRowLiveMaxStack: String(Math.max(1, Math.min(BLOCK_COUNT_MAX, Math.floor(Number(values.blockRowLiveMaxStack) || Number(values.blockMaxStack) || BLOCK_COUNT_MAX)))),
           blockRowLivePauseCountRatio: String(Math.max(1, Math.min(4, Number(values.blockRowLivePauseCountRatio) || Number(values.blockPauseCountRatio) || 1))),
           blockOnly: values.blockOnly === "false" || values.blockOnly === "0" ? "false" : "true",
         }
@@ -6321,6 +6322,101 @@ const migrations: Migration[] = [
       // The raised PF floor and Row-Live defaults are safe to retain on a
       // rollback; only the migration cursor moves back.
       await client.set("_schema_version", "92")
+    },
+  },
+  {
+    version: 94,
+    name: "094-expand-block-count-defaults-to-canonical-twelve",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const connectionIds = new Set(
+        connections.map((connection) => String(connection.id || "")).filter(Boolean),
+      )
+      for (const id of await client.smembers("connections").catch(() => [])) {
+        if (id) connectionIds.add(String(id))
+      }
+
+      const stackKeys = ["blockMaxStack", "blockRowLiveMaxStack", "presetBlockMaxStack"] as const
+      let hashesUpdated = 0
+      let fieldsUpdated = 0
+      const normalizeStack = (raw: unknown): number => {
+        const parsed = Number(raw)
+        if (!Number.isFinite(parsed) || parsed < 1) return BLOCK_COUNT_MAX
+        // `10` was the old seeded default in migrations 030/034/056. Treat it
+        // as that legacy default while preserving any other operator-selected
+        // value, then expose the new canonical 1..12 range everywhere.
+        const legacyOrCurrent = Math.floor(parsed) === 10 ? BLOCK_COUNT_MAX : Math.floor(parsed)
+        return Math.max(1, Math.min(BLOCK_COUNT_MAX, legacyOrCurrent))
+      }
+      const normalizeDocument = (value: unknown): boolean => {
+        if (!value || typeof value !== "object") return false
+        let changed = false
+        for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+          if ((stackKeys as readonly string[]).includes(key) && Number(child) !== normalizeStack(child)) {
+            ;(value as Record<string, unknown>)[key] = normalizeStack(child)
+            fieldsUpdated++
+            changed = true
+          } else if (child && typeof child === "object" && normalizeDocument(child)) {
+            changed = true
+          }
+        }
+        return changed
+      }
+      const keys = new Set<string>([
+        "app_settings",
+        "settings:app_settings",
+        "settings:all_settings",
+      ])
+      for (const id of connectionIds) {
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) keys.add(key)
+      }
+      for (const key of keys) {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        if (Object.keys(values).length === 0) continue
+        const patch: Record<string, string> = {}
+        for (const field of stackKeys) {
+          if (values[field] == null || values[field] === "") continue
+          const normalized = normalizeStack(values[field])
+          if (values[field] !== String(normalized)) {
+            patch[field] = String(normalized)
+            fieldsUpdated++
+          }
+        }
+        for (const field of ["connection_settings", "coordination_settings", "coordinationSettings", "strategies"]) {
+          const raw = values[field]
+          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+          try {
+            const document = JSON.parse(raw) as Record<string, unknown>
+            if (normalizeDocument(document)) patch[field] = JSON.stringify(document)
+          } catch {
+            // Leave malformed legacy recovery blobs untouched; flat values are
+            // still normalized and a later settings save can repair the blob.
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, patch)
+          hashesUpdated++
+        }
+      }
+      await client.hset("system:database:coordination:performance", {
+        block_count_min: "1",
+        block_count_max: String(BLOCK_COUNT_MAX),
+        block_count_default: String(BLOCK_COUNT_MAX),
+        block_count_hashes_updated: String(hashesUpdated),
+        block_count_fields_updated: String(fieldsUpdated),
+        schema_version: "94",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      await client.set("_schema_version", "93")
     },
   },
 ]

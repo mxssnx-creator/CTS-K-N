@@ -100,7 +100,7 @@ live intent until the account is flat and the hardened live smoke is authorized.
 - Dashboard/settings/presets/install pages render and APIs match manifests.
 - Settings changes persist, confirm recoordination and affect next computation.
 - Previous/Last/Continuous/Pause Sets are independently counted.
-- Block Count1..10 and PF thresholds are independent and observable.
+- Block Count1..12 and PF thresholds are independent and observable.
 - DCA settings affect the next stable step and attach to the same parent.
 - Standard/Block/DCA paper pipeline matches ordered live lineage.
 - Engine/scheduler survive restart with same site identity/state.

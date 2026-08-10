@@ -5,6 +5,7 @@ import { evaluateRealTradeReadiness, hasUsableLiveCredentials, isForcedSimulatio
 import { getConnection, getMarketData, getRedisClient, initRedis, savePosition } from "@/lib/redis-db"
 import { liveOrdersBySymbolKey } from "@/lib/live-order-counter-keys"
 import type { ExchangeConnection } from "@/lib/types"
+import { resolveExecutableQuantity } from "@/lib/order-quantity"
 
 export const LIVE_ORDER_REDIS_KEYS = {
   orderIntent: "settings:orders (via getSettings/setSettings('orders'))",
@@ -42,6 +43,42 @@ export interface PlaceLiveOrderInput {
   clientOrderId?: string
 }
 
+async function resolveSubmittedQuantity(input: PlaceLiveOrderInput, symbol: string): Promise<{
+  quantity: number
+  requestedQuantity: number
+  adjusted: boolean
+  reason?: string
+}> {
+  // Read the pair hash directly here instead of adding another high-level
+  // Redis dependency to the order service. This keeps paper/test adapters and
+  // older connector mocks compatible while using the same persisted metadata
+  // as VolumeCalculator in production.
+  let pair: Record<string, unknown> | null = null
+  try {
+    const client = getRedisClient() as any
+    if (typeof client?.hgetall === "function") {
+      pair = await client.hgetall(`settings:trading_pair:${symbol}`)
+    }
+  } catch {
+    pair = null
+  }
+  let marketPrice = Number(input.price) || 0
+  if (!(marketPrice > 0) && input.reduceOnly !== true) {
+    const market = await getMarketData(symbol, "1m").catch(() => null as any)
+    const latest = market && (market.latest || (Array.isArray(market) ? market[market.length - 1] : null))
+    marketPrice = Number(latest?.close ?? latest?.[4] ?? latest?.price ?? 0) || 0
+  }
+  return resolveExecutableQuantity(
+    input.quantity,
+    marketPrice,
+    pair,
+    {
+      reduceOnly: input.reduceOnly === true,
+      universalMinNotionalUsdt: input.reduceOnly === true ? 0 : 5,
+    },
+  )
+}
+
 export interface ParsedFill {
   filled: boolean
   filledQty: number
@@ -69,11 +106,71 @@ export function exchangeSideForDirection(direction: LiveOrderDirection): "buy" |
 }
 
 export function parseOrderFill(result: any, fallbackQuantity = 0, fallbackPrice = 0): ParsedFill {
-  const filledQty = Number(result?.filledQty ?? result?.executedQty ?? result?.cumQty ?? result?.quantity ?? 0) || 0
-  const filledPrice = Number(result?.filledPrice ?? result?.avgPrice ?? result?.averagePrice ?? result?.price ?? 0) || fallbackPrice || 0
+  // `quantity` and `price` describe the submitted order on several venues;
+  // they are not execution facts.  Only explicit execution fields may enter
+  // live accounting.  The fallback arguments remain simulation-only and are
+  // supplied by the caller when the deterministic paper adapter is used.
+  const filledQty = Number(result?.filledQty ?? result?.executedQty ?? result?.cumQty ?? 0) || 0
+  const filledPrice = Number(result?.filledPrice ?? result?.avgPrice ?? result?.averagePrice ?? 0) || fallbackPrice || 0
   const status = String(result?.status ?? (filledQty > 0 ? "filled" : "placed")).toLowerCase()
   const filled = filledQty > 0 && (status.includes("fill") || filledQty >= (Number(fallbackQuantity) || 0) * 0.99)
   return { filled, filledQty, filledPrice, status }
+}
+
+async function hydrateExchangeOrderResult(
+  connector: any,
+  symbol: string,
+  orderId: string,
+  result: any,
+): Promise<any> {
+  const reportedFilledQty = Number(result?.filledQty ?? result?.executedQty ?? result?.cumQty ?? 0) || 0
+  const reportedFilledPrice = Number(result?.filledPrice ?? result?.avgPrice ?? result?.averagePrice ?? 0) || 0
+  // Some exchange create-order endpoints return only an order id for a market
+  // order. Direct-Trade must not record a guessed fill when the connector can
+  // cheaply reconcile that id. Keep the query bounded so a slow venue cannot
+  // stall the 280ms control loop indefinitely.
+  if (
+    // A market acknowledgement can contain an executed quantity without its
+    // authoritative average price (or vice versa).  Do not accept either
+    // partial shape as complete live accounting: the next query must provide
+    // both fields before Direct-Trade can calculate a position/PF result.
+    (reportedFilledQty > 0 && reportedFilledPrice > 0) ||
+    typeof connector?.getOrder !== "function" ||
+    !orderId
+  ) return result
+
+  try {
+    const queried = await new Promise<any>((resolve) => {
+      let settled = false
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        resolve(null)
+      }, 2_500)
+      Promise.resolve()
+        .then(() => connector.getOrder(symbol, orderId))
+        .then((value) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(value)
+        })
+        .catch(() => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(null)
+        })
+    })
+    if (queried && typeof queried === "object") {
+      return { ...result, ...queried, orderId: result.orderId || queried.orderId || orderId }
+    }
+  } catch {
+    // The create acknowledgement remains authoritative when the bounded
+    // reconciliation read is unavailable; live accounting stays pending
+    // rather than inventing the requested quantity or price.
+  }
+  return result
 }
 
 export async function loadLiveOrderConnection(connectionId: string): Promise<any> {
@@ -292,13 +389,13 @@ export async function recordLiveOrderProgression(
 }
 
 export async function persistLiveOrderPosition(input: { connectionId: string; symbol: string; direction: LiveOrderDirection; quantity: number; leverage?: number; fill: ParsedFill; orderId?: string; existingPosition?: any; livePositionId?: string; status?: string }): Promise<any> {
-  let fillPrice = input.fill.filledPrice || 0
-  if (!fillPrice) {
-    const md = await getMarketData(input.symbol, "1m").catch(() => null as any)
-    const latest = md && (md.latest || (Array.isArray(md) ? md[md.length - 1] : null))
-    fillPrice = latest ? Number(latest.close ?? latest[4] ?? latest.price ?? 0) || 0 : 0
-  }
-  const execQty = input.fill.filledQty || input.quantity || 0
+  // A live position must never be valued from a ticker fallback.  A ticker is
+  // an observation, not an exchange execution, and using it creates phantom
+  // fills/PF and can strand a pending order after a response-only ack.  The
+  // shared simulation adapter supplies its own deterministic fill instead.
+  const fillPrice = Number(input.fill.filledPrice) > 0 ? Number(input.fill.filledPrice) : 0
+  const execQty = Number(input.fill.filledQty) > 0 ? Number(input.fill.filledQty) : 0
+  const hasAuthoritativeFill = execQty > 0 && fillPrice > 0
   const now = Date.now()
   const livePos = {
     ...(input.existingPosition || {}),
@@ -316,8 +413,8 @@ export async function persistLiveOrderPosition(input: { connectionId: string; sy
     volumeUsd: (execQty || 0) * (fillPrice || 0),
     leverage: input.leverage || 1,
     marginType: input.existingPosition?.marginType || "cross",
-    status: input.status || (execQty > 0 ? "open" : "placed"),
-    fills: execQty > 0 ? [{ timestamp: now, quantity: execQty, price: fillPrice || 0, fee: 0, feeAsset: "" }] : [],
+    status: input.status || (hasAuthoritativeFill ? "open" : "placed"),
+    fills: hasAuthoritativeFill ? [{ timestamp: now, quantity: execQty, price: fillPrice, fee: 0, feeAsset: "" }] : [],
     progression: input.existingPosition?.progression || [],
     createdAt: input.existingPosition?.createdAt || now,
     updatedAt: now,
@@ -331,13 +428,18 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
   const connection = input.connection || await loadLiveOrderConnection(input.connectionId)
   const symbol = normalizeOrderSymbol(input.symbol)
   const direction = normalizeDirection(input.side)
+  const submitted = await resolveSubmittedQuantity(input, symbol)
+  if (!(submitted.quantity > 0)) {
+    throw new Error(`Could not resolve an executable quantity for ${symbol}: ${input.quantity}`)
+  }
+  const submittedInput = { ...input, quantity: submitted.quantity }
   const positionDirection = input.positionDirection
     ? normalizeDirection(input.positionDirection)
     : direction
   const exchangeSide = exchangeSideForDirection(direction)
   const orderPayload: Record<string, any> = {
     ...(input.safetyPayload || {}),
-    ...input,
+    ...submittedInput,
     liveTradeIntent: resolveLiveTradeIntent(input as any),
     reduceOnly: input.reduceOnly === true,
   }
@@ -371,7 +473,7 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
         reduceOnly: input.reduceOnly === true,
         clientOrderId: input.clientOrderId,
       }
-  const result = await connector.placeOrder(symbol, exchangeSide, input.quantity, input.price || 0, input.orderType || "market", options)
+  let result = await connector.placeOrder(symbol, exchangeSide, submitted.quantity, input.price || 0, input.orderType || "market", options)
   if (!result?.success) {
     const failedOrderId = result?.orderId || result?.order_id || result?.id
     if (input.updateCounters !== false) {
@@ -384,21 +486,55 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
         failedOrderId ? `${symbol}:${direction}:${failedOrderId}:failed` : undefined,
       )
     }
-    return { success: false, error: result?.error || "Failed to place order", mode, raw: result }
+    return {
+      success: false,
+      error: result?.error || "Failed to place order",
+      mode,
+      requestedQuantity: submitted.requestedQuantity,
+      submittedQuantity: submitted.quantity,
+      quantityAdjusted: submitted.adjusted,
+      quantityAdjustmentReason: submitted.reason,
+      raw: result,
+    }
   }
   const exchangeOrderId = result.orderId || result.order_id || result.id
+  if (willUseRealExchange && exchangeOrderId) {
+    result = await hydrateExchangeOrderResult(connector, symbol, String(exchangeOrderId), result)
+  }
   const orderId = exchangeOrderId || "N/A"
-  const fill = parseOrderFill(result, input.quantity, input.price || 0)
+  // In live mode neither the requested quantity nor the requested limit/mark
+  // price is an execution.  Keep those fallbacks for simulation only; live
+  // Direct-Trade must receive both fields from the exchange or remain
+  // pending/unfilled for reconciliation.
+  const fill = willUseRealExchange
+    ? parseOrderFill(result, 0, 0)
+    : parseOrderFill(result, submitted.quantity, input.price || 0)
   let position: any = null
   if (!willUseRealExchange) {
-    if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: input.quantity, leverage: input.leverage, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId, status: "simulated" })
+    if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: submitted.quantity, leverage: input.leverage, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId, status: "simulated" })
     if (input.updateCounters !== false) await recordLiveOrderProgression(input.connectionId, symbol, direction, "simulated", position?.volumeUsd || (fill.filledQty * fill.filledPrice), exchangeOrderId ? `${symbol}:${direction}:${exchangeOrderId}:simulated` : undefined)
   } else {
-    if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: input.quantity, leverage: input.leverage, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId })
+    if (input.persistPosition !== false) position = await persistLiveOrderPosition({ connectionId: input.connectionId, symbol, direction, quantity: submitted.quantity, leverage: input.leverage, fill, orderId, existingPosition: input.existingPosition, livePositionId: input.livePositionId })
     if (input.updateCounters !== false) {
       await recordLiveOrderProgression(input.connectionId, symbol, direction, "placed", 0, exchangeOrderId ? `${symbol}:${direction}:${exchangeOrderId}:placed` : undefined)
       if ((position?.executedQuantity || fill.filledQty) > 0) await recordLiveOrderProgression(input.connectionId, symbol, direction, "filled", position?.volumeUsd || (fill.filledQty * fill.filledPrice), exchangeOrderId ? `${symbol}:${direction}:${exchangeOrderId}:filled` : undefined)
     }
   }
-  return { success: true, mode, orderId, symbol, side: exchangeSide, direction, quantity: input.quantity, leverage: input.leverage || 1, fill, position, details: result }
+  return {
+    success: true,
+    mode,
+    orderId,
+    symbol,
+    side: exchangeSide,
+    direction,
+    quantity: submitted.quantity,
+    requestedQuantity: submitted.requestedQuantity,
+    submittedQuantity: submitted.quantity,
+    quantityAdjusted: submitted.adjusted,
+    quantityAdjustmentReason: submitted.reason,
+    leverage: input.leverage || 1,
+    fill,
+    position,
+    details: result,
+  }
 }

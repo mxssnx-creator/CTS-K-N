@@ -153,9 +153,9 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 93 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 94 })
 
-      expect(await client.get("_schema_version")).toBe("93")
+      expect(await client.get("_schema_version")).toBe("94")
       expect(new Set(await client.smembers("strategy_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
       expect(await client.smembers("strategy_active_set_keys:conn-ledger")).toEqual(["set:a"])
       expect(new Set(await client.smembers("strategy_closed_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
@@ -269,7 +269,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(await client.hget("system:database:coordination:performance", "independent_block_profit_factor"))
         .toBe("default-pf-x-ratio-x-volume-increment-v1")
       expect(await client.hget("system:database:coordination:performance", "schema_version"))
-        .toBe("93")
+        .toBe("94")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -333,7 +333,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 93 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 94 })
 
       expect(await client.hget("connection:conn-stage-floor", "baseProfitFactor")).toBe("0.8")
       expect(await client.hget("connection:conn-stage-floor", "base_min_profit_factor")).toBe("0.8")
@@ -435,7 +435,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 93,
+        version: 94,
       })
 
       expect(await client.hget("connection:conn-v90", "baseProfitFactor")).toBe("0.8")
@@ -515,7 +515,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 93,
+        version: 94,
       })
 
       for (const key of [
@@ -572,7 +572,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 93,
+        version: 94,
       })
 
       expect(await client.hget("connection_settings:conn-v91", "strategyRealSetsSafetyCeiling")).toBe("0")
