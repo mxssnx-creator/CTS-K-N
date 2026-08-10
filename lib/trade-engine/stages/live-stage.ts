@@ -35,6 +35,7 @@ import { nanoid } from "@/lib/trade-engine/pseudo-position-manager"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { VolumeCalculator } from "@/lib/volume-calculator"
+import { resolveExecutableQuantity } from "@/lib/order-quantity"
 import { SystemLogger } from "@/lib/system-logger"
 import type { RealPosition } from "./real-stage"
 import { getEngineTimings } from "@/lib/engine-timings"
@@ -119,6 +120,16 @@ import {
 import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import { archiveClosedLivePositionAnalytics } from "@/lib/live-position-analytics-archive"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+
+async function loadExchangeQuantityRules(symbol: string): Promise<Record<string, unknown> | null> {
+  try {
+    const client = getRedisClient() as any
+    if (typeof client?.hgetall !== "function") return null
+    return await client.hgetall(`settings:trading_pair:${symbol}`)
+  } catch {
+    return null
+  }
+}
 
 const LOG_PREFIX = "[v0] [LivePositionStage]"
 const MIN_EXCHANGE_STOP_LOSS_PERCENT = 0.2
@@ -3235,7 +3246,7 @@ async function accumulateIntoLivePosition(
       return existing
     }
 
-    const plan = await resolveAccumulationPlan(connId, existing, real, price)
+    let plan = await resolveAccumulationPlan(connId, existing, real, price)
     if (!plan) {
       pushStep(existing, "accumulate_skip", false, `${real?.setVariant || "adjustment"} trigger/quantity not ready`)
       await savePosition(existing)
@@ -3267,6 +3278,30 @@ async function accumulateIntoLivePosition(
       pushStep(existing, "accumulate_skip", false, `${real?.setVariant || "adjustment"} trigger/quantity not ready`)
       await savePosition(existing)
       return existing
+    }
+
+    // Accumulation targets are ratio deltas, but the venue still owns the
+    // quantity grid. Round an entry/add-on up to the persisted pair step and
+    // minimum without applying the universal entry notional a second time.
+    // The resulting quantity is written into pending state and therefore is
+    // also the quantity used for the actual order and later reconciliation.
+    const accumulationExecutable = resolveExecutableQuantity(
+      plan.addQty,
+      price,
+      await loadExchangeQuantityRules(String(real?.symbol || existing.symbol || "")),
+      { universalMinNotionalUsdt: 0 },
+    )
+    if (!(accumulationExecutable.quantity > 0)) {
+      pushStep(existing, "accumulate_skip", false, "ratio delta does not produce an executable exchange quantity")
+      await savePosition(existing)
+      return existing
+    }
+    if (accumulationExecutable.adjusted) {
+      plan = {
+        ...plan,
+        addQty: accumulationExecutable.quantity,
+      }
+      pushStep(existing, "accumulation_quantity_normalized", true, `${accumulationExecutable.requestedQuantity} → ${plan.addQty} (${accumulationExecutable.reason || "exchange quantity rules"})`)
     }
     const accumulationSetKey = plan.variant === "dca" && plan.dcaStep
       ? buildDcaStepSetKey(String(real?.setKey || "dca"), plan.dcaStep)
@@ -3912,10 +3947,23 @@ async function reduceCombinedPosCountPosition(
       return position
     }
 
+    const reductionExecutable = resolveExecutableQuantity(
+      delta.quantity,
+      price,
+      await loadExchangeQuantityRules(position.symbol),
+      { reduceOnly: true },
+    )
+    if (!(reductionExecutable.quantity > 0)) {
+      pushStep(position, "poscounts_reduce_wait", true, "ratio reduction is below the exchange quantity step")
+      await savePosition(position)
+      return position
+    }
+    const reductionQuantity = reductionExecutable.quantity
+
     const clientOrderId = makeDurableClientOrderId("pc-reduce", position)
     position.pendingReduction = {
       clientOrderId,
-      requestedQuantity: delta.quantity,
+      requestedQuantity: reductionQuantity,
       targetQuantity,
       positionQuantityBefore: currentQuantity,
       targetMemberKeys: [...new Set(targetMemberKeys)],
@@ -3923,7 +3971,7 @@ async function reduceCombinedPosCountPosition(
       appliedFilledQuantity: 0,
       submittedAt: Date.now(),
     }
-    pushStep(position, "poscounts_reduction_prepared", true, `clientOrderId=${clientOrderId} qty=${delta.quantity}`)
+    pushStep(position, "poscounts_reduction_prepared", true, `clientOrderId=${clientOrderId} qty=${reductionQuantity}`)
     await savePosition(position)
     await persistCriticalLiveState(`poscounts-reduce:${position.id}`)
 
@@ -3932,7 +3980,7 @@ async function reduceCombinedPosCountPosition(
       response = await connector.placeOrder(
         position.symbol,
         side,
-        delta.quantity,
+        reductionQuantity,
         undefined,
         "market",
         {

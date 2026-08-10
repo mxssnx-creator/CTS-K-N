@@ -12,12 +12,12 @@ import {
 export const MIN_VOLUME_FACTOR = 1
 export const MAX_VOLUME_FACTOR = 10
 export const BASE_VOLUME_RATIO = 1.0
-// A global execution-safety scalar applied after every configured factor and
-// adjustment lane. It halves calculated quantities without mutating stored
-// operator settings, so a factor of 1.0 now produces 50% of the former size.
-// Venue minimum-order floors remain authoritative and can prevent a further
-// reduction for already-minimum orders.
-export const SYSTEM_VOLUME_FACTOR_MULTIPLIER = 0.5
+// Canonical ratio identity for the shared volume path. A configured ratio of
+// 1.0 must remain 1.0 all the way to the venue; hidden post-ratio scalars make
+// ratio comparisons and persisted stats lie about the quantity being traded.
+// Keep the export for snapshot/backward compatibility, but make its meaning
+// explicit: it is an identity multiplier, not an implicit safety haircut.
+export const SYSTEM_VOLUME_FACTOR_MULTIPLIER = 1
 
 export function applySystemVolumeFactor(value: unknown): number {
   const parsed = Number(value)

@@ -63,6 +63,7 @@ export type DirectTradeStrategyType = typeof DIRECT_TRADE_STRATEGY_TYPES[number]
 export type DirectTradeEntryTiming = "current" | "last_confirmed"
 export type DirectTradeDirection = "long" | "short"
 export type DirectTradeTrailingMode = "none" | "fixed" | "auto"
+export type DirectTradeDeactivationReason = "warming" | "recent_warming" | "pf" | "recent_pf" | "win_rate" | "ddt" | null
 
 export interface DirectTradeTrailOption {
   trailing: boolean
@@ -96,7 +97,53 @@ export interface DirectTradeSimTrade {
   exitReason: "tp" | "sl" | "trailing" | "momentum_reversal" | "relative_reversal" | "timeout"
 }
 
-interface DirectTradeSimulationMetrics {
+/**
+ * One independent historical Block lane.  The market path and last-position
+ * window are the same causal path as the parent Set, but the count owns its
+ * own volume multiplier, minimum-PF floor, eligibility and projected volume
+ * PnL.  Keeping these rows nested avoids materialising a second 12× copy of
+ * the complete Direct-Trade config grid in Redis while preserving Count 1..N
+ * identity and statistics.
+ */
+export interface DirectTradeBlockEvaluation {
+  /** Exact count lineage key; the parent config remains separately addressable. */
+  blockSetKey: string
+  blockCount: number
+  blockVolumeRatio: number
+  blockVolumeIncrementRatio: number
+  blockCalculatedVolumeMultiplier: number
+  /** Average multiplier actually realised by causal Block adds. */
+  blockRealizedVolumeMultiplier: number
+  blockProfitFactorRatio: number
+  blockDefaultMinimumProfitFactor: number
+  blockConfiguredMinimumProfitFactor: number
+  blockNormalProfitFactor: number
+  blockMinimumProfitFactor: number
+  blockObservedProfitFactor: number | null
+  blockObservedProfitFactorInfinite: boolean
+  blockProfitFactorDifference: number
+  /** Observed finite PF (or zero for infinite/unproven) minus this count's floor. */
+  blockProfitFactorToMinimumDifference: number
+  blockComparisonAvailable: boolean
+  blockProfitFactorWindow: number
+  blockProfitFactorSampleCount: number
+  blockAvgDrawdownTimeMin: number
+  blockMaxDrawdownTimeMin: number
+  blockTotalPnl: number
+  /** Ratio-weighted net-PNL components used for an aggregate Block PF. */
+  blockGrossProfit: number
+  blockGrossLoss: number
+  /** Explicit names; the gross fields remain compatibility aliases. */
+  blockNetProfit: number
+  blockNetLoss: number
+  blockRecentProfitFactor: number | null
+  blockRecentProfitFactorInfinite: boolean
+  blockRecentPositionCount: number
+  valid: boolean
+  deactivationReason: DirectTradeDeactivationReason
+}
+
+interface DirectTradeSimulationMetricsBase {
   totalTrades: number
   wins: number
   totalProfit: number
@@ -105,11 +152,18 @@ interface DirectTradeSimulationMetrics {
   bestMarketExitPnl: number
   totalDrawdownTimeMin: number
   maxDrawdownTimeMin: number
+  totalVolumeMultiplier: number
+  maxVolumeMultiplier: number
   // A fixed, tiny window keeps fresh-position diagnostics available without
   // retaining full simulated trade arrays for every independent set.
   recentPositions: Array<Pick<DirectTradeSimTrade,
     "pnlPercent" | "bestMarketExitPnlPercent" | "drawdownTimeMin" | "exitReason"
   >>
+}
+
+interface DirectTradeSimulationMetrics extends DirectTradeSimulationMetricsBase {
+  /** All Block counts derived from one shared causal candle pass. */
+  blockLadders?: DirectTradeSimulationMetricsBase[]
 }
 
 export interface DirectTradeSet {
@@ -144,7 +198,7 @@ export interface DirectTradeSet {
   volumeRatio: number
   positionCostPercent: number
   valid: boolean
-  deactivationReason: "warming" | "recent_warming" | "pf" | "recent_pf" | "win_rate" | "ddt" | null
+  deactivationReason: DirectTradeDeactivationReason
   profitFactor: number | null
   profitFactorInfinite: boolean
   winRate: number
@@ -153,6 +207,12 @@ export interface DirectTradeSet {
   maxDrawdownTimeMin: number
   score: number
   totalPnl: number
+  /** Compatibility aliases for ratio-weighted net-PNL components. */
+  grossProfit: number
+  grossLoss: number
+  /** Positive/negative net PNL sums used by the canonical aggregate PF. */
+  netProfit: number
+  netLoss: number
   bestMarketExitPnl: number
   // Fresh-position diagnostics are an independent historical last-position
   // gate. They complement complete-history PF/DDT checks so a stale winner is
@@ -167,6 +227,32 @@ export interface DirectTradeSet {
   recentWinRate: number
   recentTotalPnl: number
   recentAvgDrawdownTimeMin: number
+  /** Block setting used by this exact selected lane. */
+  blockProfitFactorRatio: number
+  /** Count-specific historical PF/DDT lanes; empty when Block is disabled. */
+  blockEvaluations: DirectTradeBlockEvaluation[]
+  blockValid: boolean
+  blockDeactivationReason: DirectTradeDeactivationReason
+  blockObservedProfitFactor: number | null
+  blockObservedProfitFactorInfinite: boolean
+  blockNormalProfitFactor: number
+  blockMinimumProfitFactor: number
+  blockConfiguredMinimumProfitFactor: number
+  blockProfitFactorDifference: number
+  blockProfitFactorToMinimumDifference: number
+  blockComparisonAvailable: boolean
+  blockProfitFactorWindow: number
+  blockProfitFactorSampleCount: number
+  blockAvgDrawdownTimeMin: number
+  blockMaxDrawdownTimeMin: number
+  blockTotalPnl: number
+  blockGrossProfit: number
+  blockGrossLoss: number
+  blockNetProfit: number
+  blockNetLoss: number
+  blockVolumeIncrementRatio: number
+  blockCalculatedVolumeMultiplier: number
+  blockRealizedVolumeMultiplier: number
   // Hindsight-only analytic: it is never used as a live order target.
   bestMarketExitAnalysisOnly: true
   // Current, causal entry state. The processor may never turn a historic-only
@@ -183,6 +269,8 @@ export interface DirectTradeEvaluationInput {
   timeframeSet: DirectTradeTimeframe[]
   historyHours: number
   volumeRatio: number
+  /** Canonical Block ratio; volumeRatio is retained as the legacy alias. */
+  blockVolumeRatio?: number
   tpRange: number[]
   // Parallel to tpRange when the caller owns the PositionCost-ratio grid.
   // Older callers may provide fixed percentages; their ratio is derived.
@@ -197,6 +285,7 @@ export interface DirectTradeEvaluationInput {
   positionCostPercent?: number
   blockRange: [number, number]
   minProfitFactor: number
+  blockProfitFactorRatio?: number
   minRecentProfitFactor?: number
   recentPositionWindow?: number
   minRecentPositions?: number
@@ -214,6 +303,11 @@ function finite(value: unknown, fallback = 0): number {
 function round(value: number, places = 4): number {
   const factor = 10 ** places
   return Math.round(value * factor) / factor
+}
+
+function positiveRatio(value: unknown, fallback: number): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
 export function normaliseDirectTradeTakeProfitRatioRange(
@@ -269,6 +363,38 @@ export function directTradeTakeProfitPercent(
     Math.min(DIRECT_TRADE_TAKE_PROFIT_RATIO_MAX, Math.round(finite(positionCostRatio, 0))),
   )
   return round(cost * ratio)
+}
+
+/**
+ * Canonical Direct-Trade PF calculation.
+ *
+ * The numerator/denominator are the positive and negative *net* PNL
+ * contributions of every closed, ratio-weighted simulated position.  PF is
+ * therefore `sum(positive net PNL) / sum(abs(negative net PNL))`; it is never
+ * an arithmetic average of row PFs and never derived from the arithmetic
+ * average of the configured TP ratio range.
+ */
+export function calculateDirectTradeProfitFactor(
+  positivePnl: unknown,
+  negativePnl: unknown,
+): { profit: number; loss: number; profitFactor: number | null; profitFactorInfinite: boolean } {
+  const profit = Math.max(0, finite(positivePnl, 0))
+  const loss = Math.max(0, finite(negativePnl, 0))
+  const profitFactorInfinite = loss === 0 && profit > 0
+  return {
+    profit,
+    loss,
+    profitFactor: loss > 0 ? profit / loss : profitFactorInfinite ? null : 0,
+    profitFactorInfinite,
+  }
+}
+
+/** Diagnostic only: the TP grid average is reported separately from PF. */
+export function averageDirectTradeTakeProfitRatio(ratios: readonly number[]): number {
+  const valid = ratios.filter((ratio) => Number.isFinite(Number(ratio)) && Number(ratio) > 0)
+  return valid.length > 0
+    ? round(valid.reduce((sum, ratio) => sum + Number(ratio), 0) / valid.length, 4)
+    : 0
 }
 
 export function normaliseDirectTradeTimeframes(value: unknown): DirectTradeTimeframe[] {
@@ -636,8 +762,10 @@ function simulateTrades(
   maxHoldMinutes: number,
   recentPositionWindow: number,
   positionCostPercent: number,
+  blockCount = 0,
+  blockVolumeRatio = 1,
 ): DirectTradeSimulationMetrics {
-  const metrics: DirectTradeSimulationMetrics = {
+  const createMetrics = (): DirectTradeSimulationMetricsBase => ({
     totalTrades: 0,
     wins: 0,
     totalProfit: 0,
@@ -646,9 +774,49 @@ function simulateTrades(
     bestMarketExitPnl: 0,
     totalDrawdownTimeMin: 0,
     maxDrawdownTimeMin: 0,
+    totalVolumeMultiplier: 0,
+    maxVolumeMultiplier: 0,
     recentPositions: [],
+  })
+  const metrics: DirectTradeSimulationMetrics = createMetrics()
+  if (blockCount > 0) {
+    metrics.blockLadders = Array.from({ length: blockCount }, createMetrics)
   }
   const maxHoldCandles = Math.max(1, Math.ceil(maxHoldMinutes / timeframeInMinutes))
+  const record = (
+    target: DirectTradeSimulationMetricsBase,
+    legs: Array<{ price: number; weight: number }>,
+    currentExitPrice: number,
+    currentBestMarketExitPrice: number,
+    currentDrawdownTimeMin: number,
+    exitReason: DirectTradeSimTrade["exitReason"],
+  ) => {
+    const totalLegWeight = legs.reduce((sum, leg) => sum + leg.weight, 0)
+    const grossPnlPercent = legs.reduce((sum, leg) => sum + leg.weight * (direction === "long"
+      ? ((currentExitPrice - leg.price) / leg.price) * 100
+      : ((leg.price - currentExitPrice) / leg.price) * 100), 0)
+    const grossBestMarketExitPnlPercent = legs.reduce((sum, leg) => sum + leg.weight * (direction === "long"
+      ? ((currentBestMarketExitPrice - leg.price) / leg.price) * 100
+      : ((leg.price - currentBestMarketExitPrice) / leg.price) * 100), 0)
+    const pnlPercent = grossPnlPercent - positionCostPercent * totalLegWeight
+    const bestMarketExitPnlPercent = grossBestMarketExitPnlPercent - positionCostPercent * totalLegWeight
+    const drawdownTimeMin = currentDrawdownTimeMin
+    target.totalTrades++
+    target.totalVolumeMultiplier += totalLegWeight
+    target.maxVolumeMultiplier = Math.max(target.maxVolumeMultiplier, totalLegWeight)
+    target.totalPnl += pnlPercent
+    target.bestMarketExitPnl += bestMarketExitPnlPercent
+    target.totalDrawdownTimeMin += drawdownTimeMin
+    target.maxDrawdownTimeMin = Math.max(target.maxDrawdownTimeMin, drawdownTimeMin)
+    if (pnlPercent > 0) {
+      target.wins++
+      target.totalProfit += pnlPercent
+    } else {
+      target.totalLoss += Math.abs(pnlPercent)
+    }
+    target.recentPositions.push({ pnlPercent, bestMarketExitPnlPercent, drawdownTimeMin, exitReason })
+    if (target.recentPositions.length > recentPositionWindow) target.recentPositions.shift()
+  }
   let index = 14
   while (index < candles.length - 1) {
     if (!signals[index]) {
@@ -667,6 +835,14 @@ function simulateTrades(
     let drawdownStart: number | null = null
     let trailingArmed = false
     let lastIndex = index
+    // Block history is a causal multi-leg simulation. Each later qualifying
+    // signal adds one independent ratio-sized leg at that candle's close;
+    // the parent exit remains shared, exactly as the physical exchange
+    // position is shared. This prevents Block PF from being a copied Base PF
+    // while retaining the immutable non-compounding target metadata.
+    const entryLegs: Array<{ price: number; weight: number }> = [
+      { price: entryPrice, weight: 1 },
+    ]
     const tpPrice = direction === "long"
       ? entryPrice * (1 + takeprofit / 100)
       : entryPrice * (1 - takeprofit / 100)
@@ -761,6 +937,11 @@ function simulateTrades(
         exitReason = "timeout"
         break
       }
+      // Add only after every causal exit check for this candle has passed;
+      // a close candle cannot also create a new Block leg.
+      if (blockCount > 0 && signals[cursor] && entryLegs.length <= blockCount) {
+        entryLegs.push({ price: candle.close, weight: blockVolumeRatio })
+      }
     }
     if (exitTime === entry.time) {
       const final = candles[lastIndex]
@@ -778,35 +959,23 @@ function simulateTrades(
         ? Math.max(bestMarketExitPrice, candles[cursor].high)
         : Math.min(bestMarketExitPrice, candles[cursor].low)
     }
-    const grossPnlPercent = direction === "long"
-      ? ((exitPrice - entryPrice) / entryPrice) * 100
-      : ((entryPrice - exitPrice) / entryPrice) * 100
-    const grossBestMarketExitPnlPercent = direction === "long"
-      ? ((bestMarketExitPrice - entryPrice) / entryPrice) * 100
-      : ((entryPrice - bestMarketExitPrice) / entryPrice) * 100
+    const drawdownTimeMin = maxDrawdownMs / 60_000
     // One complete position cost is realised only at closure. Open positions
     // never enter PF/DDT or a configuration's historical eligibility.
-    const pnlPercent = grossPnlPercent - positionCostPercent
-    const bestMarketExitPnlPercent = grossBestMarketExitPnlPercent - positionCostPercent
-    const drawdownTimeMin = maxDrawdownMs / 60_000
-    metrics.totalTrades++
-    metrics.totalPnl += pnlPercent
-    metrics.bestMarketExitPnl += bestMarketExitPnlPercent
-    metrics.totalDrawdownTimeMin += drawdownTimeMin
-    metrics.maxDrawdownTimeMin = Math.max(metrics.maxDrawdownTimeMin, drawdownTimeMin)
-    if (pnlPercent > 0) {
-      metrics.wins++
-      metrics.totalProfit += pnlPercent
-    } else {
-      metrics.totalLoss += Math.abs(pnlPercent)
+    record(metrics, entryLegs, exitPrice, bestMarketExitPrice, drawdownTimeMin, exitReason)
+    if (metrics.blockLadders) {
+      for (let ladderIndex = 0; ladderIndex < metrics.blockLadders.length; ladderIndex++) {
+        // Count n owns the base leg plus the first n causal add-on legs.
+        record(
+          metrics.blockLadders[ladderIndex],
+          entryLegs.slice(0, ladderIndex + 2),
+          exitPrice,
+          bestMarketExitPrice,
+          drawdownTimeMin,
+          exitReason,
+        )
+      }
     }
-    metrics.recentPositions.push({
-      pnlPercent,
-      bestMarketExitPnlPercent,
-      drawdownTimeMin,
-      exitReason,
-    })
-    if (metrics.recentPositions.length > recentPositionWindow) metrics.recentPositions.shift()
     // An exited candle cannot simultaneously open the next independent
     // historical position; move past it to avoid overlapping backtest rows.
     index = Math.max(index + 1, lastIndex + 1)
@@ -814,13 +983,14 @@ function simulateTrades(
   return metrics
 }
 
-function summarizeRecentPositions(simulation: DirectTradeSimulationMetrics) {
+function summarizeRecentPositions(simulation: DirectTradeSimulationMetricsBase) {
   const recent = simulation.recentPositions
   const last = recent.at(-1) || null
   const totalProfit = recent.reduce((sum, position) => sum + Math.max(0, position.pnlPercent), 0)
   const totalLoss = recent.reduce((sum, position) => sum + Math.max(0, -position.pnlPercent), 0)
-  const profitFactorInfinite = totalLoss === 0 && totalProfit > 0
-  const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : profitFactorInfinite ? null : 0
+  const recentPf = calculateDirectTradeProfitFactor(totalProfit, totalLoss)
+  const profitFactorInfinite = recentPf.profitFactorInfinite
+  const profitFactor = recentPf.profitFactor
   const wins = recent.filter((position) => position.pnlPercent > 0).length
   return {
     lastPositionPnl: last ? round(last.pnlPercent) : null,
@@ -841,6 +1011,7 @@ function summarizeRecentPositions(simulation: DirectTradeSimulationMetrics) {
 function stableSetKey(input: Pick<DirectTradeSet,
   "symbol" | "direction" | "signalDirection" | "strategyType" | "timeframe" | "entryTactic" | "exitTactic" | "entryTiming" |
   "activityVolumeRatio" | "takeprofit" | "takeProfitPositionCostRatio" | "stoploss" | "trailing" | "trailingMode" | "trailStart" | "trailStop" | "autoTrailSensitivity" | "historyHours" | "positionCostPercent" | "blockCount" | "blockVolumeRatio"
+  | "blockProfitFactorRatio"
 >): string {
   const numeric = (value: number) => round(value, 4).toFixed(4)
   return [
@@ -866,6 +1037,7 @@ function stableSetKey(input: Pick<DirectTradeSet,
     `ta:${input.autoTrailSensitivity == null ? "none" : numeric(input.autoTrailSensitivity)}`,
     `block:${Math.max(0, Math.floor(input.blockCount))}`,
     `blockRatio:${numeric(input.blockVolumeRatio)}`,
+    `blockPfRatio:${numeric(input.blockProfitFactorRatio)}`,
   ].join("|")
 }
 
@@ -878,6 +1050,7 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
   )
   const minRecentProfitFactor = Math.max(0.8, finite(input.minRecentProfitFactor, DIRECT_TRADE_RECENT_PF_DEFAULT))
   const positionCostPercent = normalizeDirectTradePositionCostPercent(input.positionCostPercent ?? DIRECT_TRADE_POSITION_COST_PERCENT_DEFAULT)
+  const blockVolumeRatio = Math.max(0.1, Math.min(10, positiveRatio(input.blockVolumeRatio, positiveRatio(input.volumeRatio, 1))))
   const result: DirectTradeSet[] = []
   const timeframe = input.timeframeSet.join("+")
   const strategyType = input.strategyType || "standard"
@@ -920,10 +1093,9 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               recentPositionWindow,
               positionCostPercent,
             )
-            const profitFactorInfinite = simulation.totalLoss === 0 && simulation.totalProfit > 0
-            const profitFactor = simulation.totalLoss > 0
-              ? simulation.totalProfit / simulation.totalLoss
-              : profitFactorInfinite ? null : 0
+            const simulationPf = calculateDirectTradeProfitFactor(simulation.totalProfit, simulation.totalLoss)
+            const profitFactorInfinite = simulationPf.profitFactorInfinite
+            const profitFactor = simulationPf.profitFactor
             const winRate = simulation.totalTrades > 0 ? simulation.wins / simulation.totalTrades : 0
             const avgDdt = simulation.totalTrades > 0 ? simulation.totalDrawdownTimeMin / simulation.totalTrades : 0
             const maxDdt = simulation.maxDrawdownTimeMin
@@ -956,6 +1128,163 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
                     : null
             const scoreBase = profitFactorInfinite ? simulation.totalProfit : (profitFactor ?? 0)
             const score = scoreBase * winRate * (1 + Math.max(0, totalPnl) / 100) / (1 + avgDdt / Math.max(1, input.maxDrawdownTimeMin))
+            const blockProfitFactorRatio = Math.max(
+              0.2,
+              Math.min(5, finite(input.blockProfitFactorRatio, 0.8)),
+            )
+            const blockEnabled = input.blockRange[1] > 0
+            const blockMinimum = blockEnabled
+              ? Math.max(1, Math.min(12, Math.floor(finite(input.blockRange[0], 1))))
+              : 0
+            const blockMaximum = blockEnabled
+              ? Math.max(blockMinimum, Math.min(12, Math.floor(finite(input.blockRange[1], 12))))
+              : 0
+            const blockNormalProfitFactor = Number.isFinite(Number(profitFactor))
+              ? Number(profitFactor)
+              : input.minProfitFactor
+            // One shared max-count candle pass produces Count 1..N ladder
+            // metrics. Re-running the same market path once per count made a
+            // 12-count matrix roughly 12× slower without adding information.
+            const blockLadderSimulation = blockEnabled
+              ? simulateTrades(
+                  composed.candles,
+                  composed.signals,
+                  input.direction,
+                  takeprofit,
+                  stoploss,
+                  trail.trailing,
+                  trail.mode || (trail.trailing ? "fixed" : "none"),
+                  trail.trailStart,
+                  trail.trailStop,
+                  trail.autoTrailSensitivity ?? null,
+                  exitTactic,
+                  composed.minutes,
+                  input.maxHoldMinutes,
+                  recentPositionWindow,
+                  positionCostPercent,
+                  blockMaximum,
+                  blockVolumeRatio,
+                )
+              : null
+            const blockEvaluations: DirectTradeBlockEvaluation[] = blockEnabled
+              ? Array.from({ length: blockMaximum - blockMinimum + 1 }, (_, offset) => {
+                  const blockCount = blockMinimum + offset
+                  const blockSimulation = blockLadderSimulation?.blockLadders?.[blockCount - 1] || simulation
+            const blockPf = calculateDirectTradeProfitFactor(blockSimulation.totalProfit, blockSimulation.totalLoss)
+            const blockProfitFactorInfinite = blockPf.profitFactorInfinite
+            const blockProfitFactor = blockPf.profitFactor
+                  const blockWinRate = blockSimulation.totalTrades > 0
+                    ? blockSimulation.wins / blockSimulation.totalTrades
+                    : 0
+                  const blockAvgDdt = blockSimulation.totalTrades > 0
+                    ? blockSimulation.totalDrawdownTimeMin / blockSimulation.totalTrades
+                    : 0
+                  const blockRecent = summarizeRecentPositions(blockSimulation)
+                  const blockHasSample = blockSimulation.totalTrades >= minTrades
+                  const blockRecentHasSample = blockRecent.recentPositionCount >= minRecentPositions
+                  const blockRecentPfPasses = blockRecentHasSample
+                    && blockRecent.recentProfitFactor != null
+                    && blockRecent.recentProfitFactor >= minRecentProfitFactor
+                  const blockVolumeIncrementRatio = blockCount * blockVolumeRatio
+                  const blockCalculatedVolumeMultiplier = 1 + blockVolumeIncrementRatio
+                  const blockConfiguredMinimumProfitFactor = input.minProfitFactor
+                    * blockProfitFactorRatio
+                    * blockVolumeIncrementRatio
+                  const blockMinimumProfitFactor = Math.max(
+                    blockConfiguredMinimumProfitFactor,
+                    blockNormalProfitFactor,
+                  )
+                  // A Block lane needs a finite loss denominator before it is
+                  // allowed to emit.  The normal Base gate may expose an
+                  // infinite PF for a no-loss sample, but treating that as a
+                  // Block pass would let an unproven high-volume count skip
+                  // its independent risk check.
+                  const blockPfPasses = !blockProfitFactorInfinite
+                    && blockProfitFactor != null
+                    && blockProfitFactor >= blockMinimumProfitFactor
+                  const blockValid = blockHasSample
+                    && blockRecentHasSample
+                    && blockPfPasses
+                    && blockRecentPfPasses
+                    && blockWinRate >= 0.4
+                    && blockSimulation.maxDrawdownTimeMin <= input.maxDrawdownTimeMin
+                  const blockDeactivationReason: DirectTradeDeactivationReason = !blockHasSample
+                    ? "warming"
+                    : !blockRecentHasSample
+                      ? "recent_warming"
+                      : !blockPfPasses
+                        ? "pf"
+                        : !blockRecentPfPasses
+                          ? "recent_pf"
+                          : blockWinRate < 0.4
+                            ? "win_rate"
+                            : blockSimulation.maxDrawdownTimeMin > input.maxDrawdownTimeMin
+                              ? "ddt"
+                              : null
+                  return {
+                    blockSetKey: "",
+                    blockCount,
+                    blockVolumeRatio,
+                    blockVolumeIncrementRatio: round(blockVolumeIncrementRatio, 4),
+                    blockCalculatedVolumeMultiplier: round(blockCalculatedVolumeMultiplier, 4),
+                    blockRealizedVolumeMultiplier: round(
+                      blockSimulation.totalTrades > 0
+                        ? blockSimulation.totalVolumeMultiplier / blockSimulation.totalTrades
+                        : 1,
+                      4,
+                    ),
+                    blockProfitFactorRatio,
+                    blockDefaultMinimumProfitFactor: round(input.minProfitFactor, 4),
+                    blockConfiguredMinimumProfitFactor: round(blockConfiguredMinimumProfitFactor, 4),
+                    blockNormalProfitFactor: round(blockNormalProfitFactor, 3),
+                    blockMinimumProfitFactor: round(blockMinimumProfitFactor, 3),
+                    blockObservedProfitFactor: blockProfitFactor == null ? null : round(blockProfitFactor, 3),
+                    blockObservedProfitFactorInfinite: blockProfitFactorInfinite,
+                    blockProfitFactorDifference: round(
+                      (blockProfitFactorInfinite ? 0 : (blockProfitFactor ?? 0)) - blockNormalProfitFactor,
+                      3,
+                    ),
+                    blockProfitFactorToMinimumDifference: round(
+                      (blockProfitFactorInfinite ? 0 : (blockProfitFactor ?? 0)) - blockMinimumProfitFactor,
+                      3,
+                    ),
+                    blockComparisonAvailable: blockHasSample,
+                    blockProfitFactorWindow: recentPositionWindow,
+                    blockProfitFactorSampleCount: blockSimulation.totalTrades,
+                    blockAvgDrawdownTimeMin: round(blockAvgDdt, 1),
+                    blockMaxDrawdownTimeMin: round(blockSimulation.maxDrawdownTimeMin, 1),
+                    blockTotalPnl: round(blockSimulation.totalPnl),
+                    blockGrossProfit: round(blockSimulation.totalProfit),
+                    blockGrossLoss: round(blockSimulation.totalLoss),
+                    blockNetProfit: round(blockSimulation.totalProfit),
+                    blockNetLoss: round(blockSimulation.totalLoss),
+                    blockRecentProfitFactor: blockRecent.recentProfitFactor,
+                    blockRecentProfitFactorInfinite: blockRecent.recentProfitFactorInfinite,
+                    blockRecentPositionCount: blockRecent.recentPositionCount,
+                    valid: blockValid,
+                    deactivationReason: blockDeactivationReason,
+                  }
+                })
+              : []
+            // One Direct-Trade order lane carries one concrete target, while
+            // every Count 1..N lane remains available for audit/statistics.
+            // Prefer the largest qualified count; if none qualifies keep the
+            // largest configured count visible as the disabled diagnosis.
+            let selectedBlock: DirectTradeBlockEvaluation | null = null
+            if (blockEnabled) {
+              for (const candidate of blockEvaluations) {
+                if (!selectedBlock
+                  || Number(candidate.valid) > Number(selectedBlock.valid)
+                  || (candidate.valid === selectedBlock.valid && candidate.blockCount > selectedBlock.blockCount)) {
+                  selectedBlock = candidate
+                }
+              }
+            }
+            const selectedValid = blockEnabled ? Boolean(selectedBlock?.valid) : valid
+            const selectedDeactivationReason = blockEnabled
+              ? selectedBlock?.deactivationReason || null
+              : deactivationReason
+            const selectedBlockCount = selectedBlock?.blockCount || 0
             const base: Omit<DirectTradeSet, "setKey"> = {
               symbol: input.symbol,
               direction: input.direction,
@@ -976,15 +1305,14 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               trailStart: round(trail.trailStart),
               trailStop: round(trail.trailStop),
               autoTrailSensitivity: trail.mode === "auto" ? round(trail.autoTrailSensitivity ?? 1, 3) : null,
-              // A Block line carries one evaluated count. Its execution
-              // target remains based on the original Base quantity, never on
-              // a preceding block-adjusted quantity.
-              blockCount: Math.max(input.blockRange[0], Math.min(input.blockRange[1], Math.round(profitFactor ?? simulation.totalProfit))),
-              blockVolumeRatio: input.volumeRatio,
-              volumeRatio: input.volumeRatio,
+              // The selected Block target is anchored to the immutable Base
+              // quantity. Earlier Count fills never compound this target.
+              blockCount: selectedBlockCount,
+              blockVolumeRatio,
+              volumeRatio: blockVolumeRatio,
               positionCostPercent,
-              valid,
-              deactivationReason,
+              valid: selectedValid,
+              deactivationReason: selectedDeactivationReason,
               profitFactor: profitFactor == null ? null : round(profitFactor, 3),
               profitFactorInfinite,
               winRate: round(winRate * 100, 1),
@@ -993,8 +1321,36 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               maxDrawdownTimeMin: round(maxDdt, 1),
               score: round(score),
               totalPnl: round(totalPnl),
+              grossProfit: round(simulation.totalProfit),
+              grossLoss: round(simulation.totalLoss),
+              netProfit: round(simulation.totalProfit),
+              netLoss: round(simulation.totalLoss),
               bestMarketExitPnl: round(bestMarketExitPnl),
               ...recent,
+              blockProfitFactorRatio,
+              blockEvaluations,
+              blockValid: selectedValid,
+              blockDeactivationReason: selectedDeactivationReason,
+              blockObservedProfitFactor: selectedBlock?.blockObservedProfitFactor ?? null,
+              blockObservedProfitFactorInfinite: selectedBlock?.blockObservedProfitFactorInfinite ?? false,
+              blockNormalProfitFactor: selectedBlock?.blockNormalProfitFactor ?? 0,
+              blockMinimumProfitFactor: selectedBlock?.blockMinimumProfitFactor ?? 0,
+              blockConfiguredMinimumProfitFactor: selectedBlock?.blockConfiguredMinimumProfitFactor ?? 0,
+              blockProfitFactorDifference: selectedBlock?.blockProfitFactorDifference ?? 0,
+              blockProfitFactorToMinimumDifference: selectedBlock?.blockProfitFactorToMinimumDifference ?? 0,
+              blockComparisonAvailable: selectedBlock?.blockComparisonAvailable ?? false,
+              blockProfitFactorWindow: selectedBlock?.blockProfitFactorWindow ?? 0,
+              blockProfitFactorSampleCount: selectedBlock?.blockProfitFactorSampleCount ?? 0,
+              blockAvgDrawdownTimeMin: selectedBlock?.blockAvgDrawdownTimeMin ?? 0,
+              blockMaxDrawdownTimeMin: selectedBlock?.blockMaxDrawdownTimeMin ?? 0,
+              blockTotalPnl: selectedBlock?.blockTotalPnl ?? round(totalPnl),
+              blockGrossProfit: selectedBlock?.blockGrossProfit ?? round(simulation.totalProfit),
+              blockGrossLoss: selectedBlock?.blockGrossLoss ?? round(simulation.totalLoss),
+              blockNetProfit: selectedBlock?.blockNetProfit ?? round(simulation.totalProfit),
+              blockNetLoss: selectedBlock?.blockNetLoss ?? round(simulation.totalLoss),
+              blockVolumeIncrementRatio: selectedBlock?.blockVolumeIncrementRatio ?? 0,
+              blockCalculatedVolumeMultiplier: selectedBlock?.blockCalculatedVolumeMultiplier ?? 1,
+              blockRealizedVolumeMultiplier: selectedBlock?.blockRealizedVolumeMultiplier ?? 1,
               bestMarketExitAnalysisOnly: true,
               entrySignalKey: directTradeEntrySignalKey({
                 symbol: input.symbol,
@@ -1009,7 +1365,16 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
               activeEntry,
               activeEntryAt,
             }
-            result.push({ ...base, setKey: stableSetKey(base) })
+            const setKey = stableSetKey(base)
+            const blockLineageKey = stableSetKey({ ...base, blockCount: 0 })
+            result.push({
+              ...base,
+              blockEvaluations: base.blockEvaluations.map((block) => ({
+                ...block,
+                blockSetKey: `${blockLineageKey}#block:${block.blockCount}`,
+              })),
+              setKey,
+            })
           }
         }
       }

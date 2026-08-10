@@ -21,6 +21,9 @@ node_modules
 .v0-data/redis-snapshot.json.corrupt-*
 .v0-data/redis-snapshot.json.*.tmp
 
+# Redis/reference snapshots can contain connection metadata or credentials.
+refis*
+
 # Build outputs and local runtime snapshots (never commit)
 .next/
 .next-release/
@@ -38,3 +41,9 @@ bun.lock
 
 # Local workspace scratch dir (never commit)
 workspace/
+
+# Local recovery artifacts and test logs are retained in the persistent
+# workspace but are not source-release inputs.
+.agent-logs/
+.codex-backups/
+.normalizer-test/

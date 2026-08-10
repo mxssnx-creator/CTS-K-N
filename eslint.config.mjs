@@ -1,42 +1,29 @@
-import nextPlugin from "@next/eslint-plugin-next"
 import tsParser from "@typescript-eslint/parser"
 
+// Keep the repository on ESLint's flat-config format (ESLint 9).  The
+// recovered workspace previously lacked this file, which made `pnpm lint`
+// fail before parsing a single source file.  TypeScript/TSX files use the
+// project-independent parser so linting also works during clean installs.
 export default [
   {
     ignores: [
+      "node_modules/**",
       ".next/**",
       ".next-*/**",
       ".open-next/**",
       ".wrangler/**",
-      ".cts-runtime/**",
-      "node_modules/**",
-      "dist/**",
-      "build/**",
       "coverage/**",
-      "backups/**",
-      "**/*.tmp",
-      "**/*_backup*",
-      "**/*.backup-experimental",
-      ".turbopack-cache-bust.ts",
-      "next-env.d.ts",
+      "dist/**",
     ],
   },
   {
-    files: ["**/*.{js,jsx,mjs,cjs,ts,tsx}"],
-    ...nextPlugin.flatConfig.recommended,
-    ...nextPlugin.flatConfig.coreWebVitals,
+    files: ["**/*.{js,mjs,cjs,ts,tsx}"],
     languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
       parser: tsParser,
       parserOptions: {
-        ecmaVersion: "latest",
-        sourceType: "module",
         ecmaFeatures: { jsx: true },
-        project: false,
-      },
-    },
-    settings: {
-      next: {
-        rootDir: ["./"],
       },
     },
   },

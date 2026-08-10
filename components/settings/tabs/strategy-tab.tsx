@@ -95,7 +95,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
   const presetBlockEnabled = settings.presetBlockEnabled !== false
   const presetBlockVolumeRatio = Number(settings.presetBlockVolumeRatio ?? settings.blockVolumeRatio ?? 1)
   const presetBlockProfitFactorRatio = Number(settings.presetBlockProfitFactorRatio ?? settings.blockProfitFactorRatio ?? 0.8)
-  const presetBlockMaxStack = Number(settings.presetBlockMaxStack ?? settings.blockMaxStack ?? 10)
+  const presetBlockMaxStack = Number(settings.presetBlockMaxStack ?? settings.blockMaxStack ?? 12)
   const presetBlockPauseCountRatio = Number(settings.presetBlockPauseCountRatio ?? settings.blockPauseCountRatio ?? 1)
   const presetBlockActiveRealEnabled = settings.presetBlockActiveRealEnabled ?? settings.blockActiveRealEnabled ?? true
   const presetBlockActiveLiveEnabled = settings.presetBlockActiveLiveEnabled ?? settings.blockActiveLiveEnabled ?? true
@@ -736,7 +736,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       label="Independent Block counts"
                       value={presetBlockMaxStack}
                       min={1}
-                      max={10}
+                      max={12}
                       step={1}
                       onChange={(value) => updatePresetBlockSetting("presetBlockMaxStack", "blockMaxStack", value)}
                     />
@@ -774,7 +774,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                     </div>
                   </div>
                   <div className="grid grid-cols-3 gap-2 text-[11px]">
-                    {[1, 2, Math.max(3, Math.min(10, Math.floor(presetBlockMaxStack)))].map((count, index) => (
+                    {[1, 2, Math.max(3, Math.min(12, Math.floor(presetBlockMaxStack)))].map((count, index) => (
                       <div key={`${count}-${index}`} className="rounded border bg-muted/20 p-2 text-center tabular-nums">
                         Block {count}: {(1 + count * presetBlockVolumeRatio).toFixed(2)}× total
                       </div>

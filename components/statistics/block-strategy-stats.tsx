@@ -359,7 +359,7 @@ export function BlockStrategyStats({ positions, comparisonWindow = 50 }: BlockSt
               <div>
                 <div className="text-sm text-muted-foreground">Max Stack / Analysis Window</div>
                 <div className="text-lg font-bold">
-                  {Number(settings.blockMaxStack ?? 10)} / {comparisonWindow} positions
+                  {Number(settings.blockMaxStack ?? 12)} / {comparisonWindow} positions
                 </div>
               </div>
             </div>

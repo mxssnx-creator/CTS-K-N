@@ -27,7 +27,7 @@ its supported bound), not the axis maximum.
 | Field | Range/default | Effect |
 | --- | --- | --- |
 | `variantBlockEnabled` | boolean, default on | emits/clears all Block paths |
-| `blockMaxStack` | 1..10, default 10 | independent counts evaluated |
+| `blockMaxStack` | 1..12, default 12 | independent counts evaluated |
 | `blockVolumeRatio` | 0.25..3.0, default 1.0 | additive increment per count |
 | `blockProfitFactorRatio` | 0.2..5.0, default 0.8 | scales count-specific PF floor |
 | `blockPauseCountRatio` | bounded count multiplier | exact post-close cooldown |

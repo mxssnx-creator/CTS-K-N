@@ -81,7 +81,7 @@ Latest executable evidence:
 
 ## Strategy correctness evidence
 
-- Block Count 1..10 are exact independent Set keys with independent result
+- Block Count 1..12 are exact independent Set keys with independent result
   windows, minimum-sample activation, PF decisions, active retention, pause
   state, stats, and migration coverage.
 - The count floor is calculated without presentation rounding as

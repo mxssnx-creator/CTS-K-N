@@ -190,7 +190,7 @@ request is observed.
 - [x] Formula: `total = baseQty + ((baseQty × ratio) × blockCount)`.
 - [x] Sequential Count orders submit only the remaining delta to that target.
 - [x] Non-consecutive counts retain independent volume metadata.
-- [x] Count range is clamped to `1..10` (default `10`).
+- [x] Count range is clamped to `1..12` (default `12`).
 - [x] Ratio is clamped to `0.25..3.0` (default `1.0`).
 - [x] PF ratio is clamped to `0.2..5.0` (default `0.8`).
 - [x] Count 1..N each use an exact Set key, own PF/DDT window, own minimum PF,

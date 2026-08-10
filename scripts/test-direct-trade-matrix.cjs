@@ -2,7 +2,7 @@
 /*
  * Deterministic max-symbol Direct-Trade evaluator load and reporting test.
  *
- * It uses a configurable synthetic 1m market path (60h by default), then evaluates the complete
+ * It uses a configurable synthetic 1m market path (48h by default), then evaluates the complete
  * 1m/10m/15m combination matrix and every default-enabled Direct-Trade
  * strategy lineage for every requested symbol. No network, Redis,
  * credentials, or order endpoint is touched.
@@ -17,7 +17,7 @@ const {
 
 const symbolCount = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_SYMBOLS) || 32))
 const startSymbolIndex = Math.max(0, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_START_SYMBOL) || 0))
-const historyHours = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_HOURS) || 60))
+const historyHours = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_HOURS) || 48))
 const minProfitFactor = Math.max(0.8, Number(process.env.DIRECT_TRADE_MATRIX_MIN_PF) || 0.8)
 const minRecentProfitFactor = Math.max(0.8, Number(process.env.DIRECT_TRADE_MATRIX_MIN_RECENT_PF) || 25)
 const recentEvaluationPositions = Math.max(3, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_RECENT_POSITIONS) || 12))

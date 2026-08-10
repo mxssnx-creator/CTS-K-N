@@ -28,6 +28,8 @@ import {
   resampleCandles,
   buildDirectTradeTakeProfitPositionCostRatios,
   directTradeTakeProfitPercent,
+  calculateDirectTradeProfitFactor,
+  averageDirectTradeTakeProfitRatio,
   normaliseDirectTradeTakeProfitRatioRange,
   normaliseDirectTradeTakeProfitRatioStep,
   DIRECT_TRADE_RECENT_PF_DEFAULT,
@@ -37,7 +39,7 @@ import {
 } from "@/lib/direct-trade-coordination"
 
 export const dynamic = "force-dynamic"
-// A 32-symbol, 60-hour public-history refresh is a real full-grid operation.
+// A 32-symbol, 48-hour public-history refresh is a real full-grid operation.
 // Give long-lived/compatible deployment runtimes enough wall time to page the
 // exchange without silently truncating the requested independent evaluation.
 export const maxDuration = 300
@@ -77,6 +79,7 @@ interface CalculationRequest {
   takeProfitRatioRange?: [number, number]
   takeProfitRatioStep?: number
   blockVolumeRatio?: number
+  blockProfitFactorRatio?: number
   recalculate?: boolean
 }
 
@@ -123,6 +126,9 @@ function createCalculationSummaryAccumulator(details: {
   takeProfitPositionCostRatios: number[]
   activityVolumeRatio: number
   maxHoldMinutes: number
+  blockRange: [number, number]
+  blockVolumeRatio: number
+  blockProfitFactorRatio: number
 }) {
   const countBy = <T extends string>(entries: T[]): Record<T, { evaluated: number; valid: number }> => {
     const output = {} as Record<T, { evaluated: number; valid: number }>
@@ -136,10 +142,48 @@ function createCalculationSummaryAccumulator(details: {
   let evaluatedSets = 0
   let validSets = 0
   let totalScore = 0
+  let baseGrossProfit = 0
+  let baseGrossLoss = 0
+  let baseNetProfit = 0
+  let baseNetLoss = 0
+  let selectedBlockGrossProfit = 0
+  let selectedBlockGrossLoss = 0
+  let selectedBlockNetProfit = 0
+  let selectedBlockNetLoss = 0
+  let selectedBlockPnl = 0
+  let selectedBlockCount = 0
+  let selectedBlockRealizedVolumeTotal = 0
+  let blockLedgerGrossProfit = 0
+  let blockLedgerGrossLoss = 0
+  let blockLedgerNetProfit = 0
+  let blockLedgerNetLoss = 0
+  let blockEvaluatedSets = 0
+  let blockValidSets = 0
+  const byBlockCount: Record<string, {
+    evaluated: number
+    valid: number
+    disabled: number
+    observedPfSum: number
+    observedPfCount: number
+    infinitePf: number
+    minimumPfSum: number
+    differenceSum: number
+    marginSum: number
+    totalPnl: number
+    grossProfitSum: number
+    grossLossSum: number
+    netProfitSum: number
+    netLossSum: number
+    realizedVolumeSum: number
+  }> = {}
   const append = (config: EvaluatedDirectTradeConfig) => {
     const timeframe = byTimeframe[config.timeframe] || (byTimeframe[config.timeframe] = { evaluated: 0, valid: 0 })
     evaluatedSets++
     totalScore += config.score
+    baseGrossProfit += Number(config.grossProfit) || 0
+    baseGrossLoss += Number(config.grossLoss) || 0
+    baseNetProfit += Number(config.netProfit ?? config.grossProfit) || 0
+    baseNetLoss += Number(config.netLoss ?? config.grossLoss) || 0
     timeframe.evaluated++
     if (config.valid) {
       validSets++
@@ -151,6 +195,58 @@ function createCalculationSummaryAccumulator(details: {
     if (config.valid) byExitTactic[config.exitTactic].valid++
     byStrategyType[config.strategyType].evaluated++
     if (config.valid) byStrategyType[config.strategyType].valid++
+    for (const block of config.blockEvaluations || []) {
+      blockEvaluatedSets++
+      if (block.valid) blockValidSets++
+      const count = byBlockCount[String(block.blockCount)] || (byBlockCount[String(block.blockCount)] = {
+        evaluated: 0,
+        valid: 0,
+        disabled: 0,
+        observedPfSum: 0,
+        observedPfCount: 0,
+        infinitePf: 0,
+        minimumPfSum: 0,
+        differenceSum: 0,
+        marginSum: 0,
+        totalPnl: 0,
+        grossProfitSum: 0,
+        grossLossSum: 0,
+        netProfitSum: 0,
+        netLossSum: 0,
+        realizedVolumeSum: 0,
+      })
+      count.evaluated++
+      count.valid += block.valid ? 1 : 0
+      count.disabled += block.valid ? 0 : 1
+      count.observedPfSum += block.blockObservedProfitFactor ?? 0
+      count.observedPfCount += block.blockObservedProfitFactorInfinite ? 0 : Number.isFinite(Number(block.blockObservedProfitFactor)) ? 1 : 0
+      count.infinitePf += block.blockObservedProfitFactorInfinite ? 1 : 0
+      count.minimumPfSum += block.blockMinimumProfitFactor
+      count.differenceSum += block.blockProfitFactorDifference
+      count.marginSum += block.blockProfitFactorToMinimumDifference
+      count.totalPnl += block.blockTotalPnl
+      count.grossProfitSum += Number(block.blockGrossProfit) || 0
+      count.grossLossSum += Number(block.blockGrossLoss) || 0
+      count.netProfitSum += Number(block.blockNetProfit ?? block.blockGrossProfit) || 0
+      count.netLossSum += Number(block.blockNetLoss ?? block.blockGrossLoss) || 0
+      count.realizedVolumeSum += Number(block.blockRealizedVolumeMultiplier) || 0
+      blockLedgerGrossProfit += Number(block.blockGrossProfit) || 0
+      blockLedgerGrossLoss += Number(block.blockGrossLoss) || 0
+      blockLedgerNetProfit += Number(block.blockNetProfit ?? block.blockGrossProfit) || 0
+      blockLedgerNetLoss += Number(block.blockNetLoss ?? block.blockGrossLoss) || 0
+    }
+    const selectedBlock = config.blockCount > 0
+      ? (config.blockEvaluations || []).find((block) => block.blockCount === config.blockCount)
+      : null
+    if (selectedBlock) {
+      selectedBlockCount++
+      selectedBlockGrossProfit += Number(selectedBlock.blockGrossProfit) || 0
+      selectedBlockGrossLoss += Number(selectedBlock.blockGrossLoss) || 0
+      selectedBlockNetProfit += Number(selectedBlock.blockNetProfit ?? selectedBlock.blockGrossProfit) || 0
+      selectedBlockNetLoss += Number(selectedBlock.blockNetLoss ?? selectedBlock.blockGrossLoss) || 0
+      selectedBlockPnl += Number(selectedBlock.blockTotalPnl) || 0
+      selectedBlockRealizedVolumeTotal += Number(selectedBlock.blockRealizedVolumeMultiplier) || 0
+    }
   }
   return {
     append,
@@ -160,6 +256,59 @@ function createCalculationSummaryAccumulator(details: {
       evaluatedSets,
       validSets,
       deactivatedSets: evaluatedSets - validSets,
+      blockEnabled: details.blockRange[1] > 0,
+      blockEvaluatedSets,
+      blockValidSets,
+      blockDeactivatedSets: blockEvaluatedSets - blockValidSets,
+      // PF is the aggregate ratio of summed positive/negative net PNL
+      // components. Averaging per-row PF values or averaging the TP ratio
+      // range is not a portfolio statistic.
+      pfBasis: "aggregate_ratio_weighted_net_pnl",
+      takeProfitRatioAverage: averageDirectTradeTakeProfitRatio(details.takeProfitPositionCostRatios),
+      takeProfitPercentAverage: details.takeProfitPositionCostRatios.length > 0
+        ? details.takeProfitPositionCostRatios.reduce((sum, ratio) => sum + directTradeTakeProfitPercent(details.positionCostPercent, ratio), 0) / details.takeProfitPositionCostRatios.length
+        : 0,
+      baseGrossProfit,
+      baseGrossLoss,
+      baseNetProfit,
+      baseNetLoss,
+      ...(() => {
+        const pf = calculateDirectTradeProfitFactor(baseNetProfit, baseNetLoss)
+        return { baseProfitFactor: pf.profitFactor, baseProfitFactorInfinite: pf.profitFactorInfinite }
+      })(),
+      selectedBlockGrossProfit,
+      selectedBlockGrossLoss,
+      selectedBlockNetProfit,
+      selectedBlockNetLoss,
+      ...(() => {
+        const pf = calculateDirectTradeProfitFactor(selectedBlockNetProfit, selectedBlockNetLoss)
+        return { selectedBlockProfitFactor: pf.profitFactor, selectedBlockProfitFactorInfinite: pf.profitFactorInfinite }
+      })(),
+      selectedBlockCount,
+      selectedBlockPnl,
+      selectedBlockMeanRealizedVolumeMultiplier: selectedBlockCount > 0
+        ? selectedBlockRealizedVolumeTotal / selectedBlockCount
+        : 0,
+      blockLedgerGrossProfit,
+      blockLedgerGrossLoss,
+      blockLedgerNetProfit,
+      blockLedgerNetLoss,
+      ...(() => {
+        const pf = calculateDirectTradeProfitFactor(blockLedgerNetProfit, blockLedgerNetLoss)
+        return { blockLedgerProfitFactor: pf.profitFactor, blockLedgerProfitFactorInfinite: pf.profitFactorInfinite }
+      })(),
+      byBlockCount: Object.fromEntries(Object.entries(byBlockCount).map(([blockCount, value]) => [blockCount, {
+        ...value,
+        meanObservedPF: value.observedPfCount > 0 ? value.observedPfSum / value.observedPfCount : null,
+        aggregateObservedPF: value.netLossSum > 0 ? value.netProfitSum / value.netLossSum : null,
+        aggregateObservedPFInfinite: value.netLossSum === 0 && value.netProfitSum > 0,
+        meanRealizedVolumeMultiplier: value.evaluated > 0
+          ? value.realizedVolumeSum / value.evaluated
+          : 0,
+        meanMinimumPF: value.evaluated > 0 ? value.minimumPfSum / value.evaluated : 0,
+        meanProfitFactorDifference: value.evaluated > 0 ? value.differenceSum / value.evaluated : 0,
+        meanProfitFactorToMinimumDifference: value.evaluated > 0 ? value.marginSum / value.evaluated : 0,
+      }])),
       avgScore: evaluatedSets > 0 ? totalScore / evaluatedSets : 0,
       byTimeframe,
       byEntryTactic,
@@ -175,7 +324,14 @@ type StatisticsRow = Pick<EvaluatedDirectTradeConfig,
   "totalTrades" | "maxDrawdownTimeMin" | "score" | "totalPnl" | "bestMarketExitPnl" | "positionCostPercent" |
   "lastPositionPnl" | "lastPositionBestMarketExitPnl" | "lastPositionDrawdownTimeMin" | "lastPositionExitReason" |
   "recentPositionCount" | "recentProfitFactor" | "recentProfitFactorInfinite" | "recentWinRate" |
-  "recentTotalPnl" | "recentAvgDrawdownTimeMin"
+  "recentTotalPnl" | "recentAvgDrawdownTimeMin" | "blockCount" | "blockProfitFactorRatio" |
+  "blockValid" | "blockDeactivationReason" | "blockObservedProfitFactor" |
+  "blockObservedProfitFactorInfinite" | "blockNormalProfitFactor" | "blockMinimumProfitFactor" |
+  "blockConfiguredMinimumProfitFactor" | "blockProfitFactorDifference" | "blockComparisonAvailable" |
+  "blockProfitFactorToMinimumDifference" |
+  "blockProfitFactorWindow" | "blockProfitFactorSampleCount" | "blockAvgDrawdownTimeMin" |
+  "blockMaxDrawdownTimeMin" | "blockTotalPnl" | "blockVolumeIncrementRatio" |
+  "blockCalculatedVolumeMultiplier" | "blockRealizedVolumeMultiplier"
 >
 
 function statisticsFilterKey(timeframe: string, direction: string, state: string, strategyType = "all"): string {
@@ -267,7 +423,7 @@ export async function POST(request: NextRequest) {
     const minRecentProfitFactor = Math.max(0.8, numberOr(body.minRecentProfitFactor, DIRECT_TRADE_RECENT_PF_DEFAULT))
     const recentEvaluationPositions = Math.max(3, Math.floor(numberOr(body.recentEvaluationPositions, 12)))
     const maxDrawdownTimeMin = Math.max(1, numberOr(body.maxDrawdownTimeMin, 10))
-    const historyHours = Math.max(1, numberOr(body.historyHours, 60))
+    const historyHours = Math.max(1, numberOr(body.historyHours, 48))
     const entryTactics = normaliseEntryTactics(body.entryTactics)
     const exitTactics = normaliseExitTactics(body.exitTactics)
     const entryTiming: DirectTradeEntryTiming = body.entryTiming === "last_confirmed" ? "last_confirmed" : "current"
@@ -282,6 +438,7 @@ export async function POST(request: NextRequest) {
       directTradeTakeProfitPercent(positionCostPercent, ratio),
     )
     const blockVolumeRatio = Math.max(0.1, Math.min(10, numberOr(body.blockVolumeRatio, 1)))
+    const blockProfitFactorRatio = Math.max(0.2, Math.min(5, numberOr(body.blockProfitFactorRatio, 0.8)))
 
     // A manual dashboard refresh and the long-running processor can arrive at
     // the same time. The complete grid is an atomic snapshot, so only one
@@ -376,6 +533,9 @@ export async function POST(request: NextRequest) {
       takeProfitPositionCostRatios,
       activityVolumeRatio,
       maxHoldMinutes,
+      blockRange,
+      blockVolumeRatio,
+      blockProfitFactorRatio,
     })
     const statisticsAccumulator = createStatisticsIndexAccumulator()
     const configStoreWriter = await createDirectTradeConfigStoreWriter(client)
@@ -396,7 +556,15 @@ export async function POST(request: NextRequest) {
         }
         nextConfigIndex++
       }
-      await configStoreWriter.append(rows)
+      // Count 1..N is fully aggregated above and the selected Block lane is
+      // already present on the stored row. Do not duplicate a large nested
+      // object twelve times inside every Redis config; the compact calculation
+      // summary owns the complete count-indexed audit view.
+      await configStoreWriter.append(rows.map((config) => {
+        if (!config.blockEvaluations?.length) return config
+        const { blockEvaluations: _blockEvaluations, ...compact } = config
+        return compact as EvaluatedDirectTradeConfig
+      }))
     }
     // CPU-bound set evaluation is deterministic JavaScript. Sequential symbol
     // draining avoids retaining four symbol grids at once; public history is
@@ -480,6 +648,7 @@ export async function POST(request: NextRequest) {
                   timeframeSet,
                   historyHours,
                   volumeRatio: blockVolumeRatio,
+                  blockVolumeRatio,
                   tpRange: plan.tpRange,
                   takeProfitPositionCostRatios,
                   slRatios: plan.slRatios,
@@ -491,6 +660,7 @@ export async function POST(request: NextRequest) {
                   maxHoldMinutes,
                   positionCostPercent,
                   blockRange,
+                  blockProfitFactorRatio,
                   minProfitFactor,
                   minRecentProfitFactor,
                   recentPositionWindow: recentEvaluationPositions,

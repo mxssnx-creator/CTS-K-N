@@ -30,6 +30,7 @@ import {
 } from "@/lib/sets-compaction"
 import { getCanonicalConnectionSettingsOverlay, overlayNonEmpty } from "@/lib/connection-settings-overlay"
 import {
+  BLOCK_COUNT_MAX,
   calculateBlockMinimumProfitFactor,
   calculateBlockVolumeIncrementRatio,
   calculateBlockVolumeMultiplier,
@@ -2128,14 +2129,14 @@ export class StrategyCoordinator {
     },
     blockVolumeRatio: 1.0,
     blockProfitFactorRatio: 0.8,
-    blockMaxStack:    10,
+    blockMaxStack:    12,
     blockPauseCountRatio: 1.0,
     blockActiveRealEnabled: true,
     blockActiveLiveEnabled: true,
     blockRowLiveEnabled: true,
     blockRowLiveVolumeRatio: 1.0,
     blockRowLiveProfitFactorRatio: 0.8,
-    blockRowLiveMaxStack: 10,
+    blockRowLiveMaxStack: 12,
     blockRowLivePauseCountRatio: 1.0,
     blockOnly: true,
     /**
@@ -2723,7 +2724,7 @@ export class StrategyCoordinator {
       }
       const bms = Number(s.blockMaxStack)
       if (Number.isFinite(bms) && bms >= 1) {
-        this._coordinationSettings.blockMaxStack = Math.min(10, Math.max(1, Math.floor(bms)))
+        this._coordinationSettings.blockMaxStack = Math.min(BLOCK_COUNT_MAX, Math.max(1, Math.floor(bms)))
       }
       const bpcr = Number(s.blockPauseCountRatio)
       if (Number.isFinite(bpcr) && bpcr > 0) {
@@ -2745,7 +2746,7 @@ export class StrategyCoordinator {
         : this._coordinationSettings.blockProfitFactorRatio
       const rowBms = Number(s.blockRowLiveMaxStack)
       this._coordinationSettings.blockRowLiveMaxStack = Number.isFinite(rowBms) && rowBms >= 1
-        ? Math.min(10, Math.max(1, Math.floor(rowBms)))
+        ? Math.min(BLOCK_COUNT_MAX, Math.max(1, Math.floor(rowBms)))
         : this._coordinationSettings.blockMaxStack
       const rowBpcr = Number(s.blockRowLivePauseCountRatio)
       this._coordinationSettings.blockRowLivePauseCountRatio = Number.isFinite(rowBpcr) && rowBpcr > 0
@@ -4940,7 +4941,7 @@ export class StrategyCoordinator {
       }
     }
 
-    const maxStack = Math.max(1, Math.min(10, this._coordinationSettings.blockMaxStack | 0))
+    const maxStack = Math.max(1, Math.min(BLOCK_COUNT_MAX, this._coordinationSettings.blockMaxStack | 0))
     const ratio = this._coordinationSettings.blockVolumeRatio
     const profitFactorRatio = this._coordinationSettings.blockProfitFactorRatio
     const pauseRatio = this._coordinationSettings.blockPauseCountRatio
@@ -5347,7 +5348,7 @@ export class StrategyCoordinator {
         lanes: {},
       }),
     }
-    for (let blockCount = 1; blockCount <= 10; blockCount++) {
+    for (let blockCount = 1; blockCount <= BLOCK_COUNT_MAX; blockCount++) {
       const prefix = `s:${symbol}:c:${blockCount}`
       for (const field of [
         "evaluated",
@@ -5411,7 +5412,7 @@ export class StrategyCoordinator {
       return []
     }
 
-    const maxStack = Math.max(1, Math.min(10, this._coordinationSettings.blockMaxStack | 0))
+    const maxStack = Math.max(1, Math.min(BLOCK_COUNT_MAX, this._coordinationSettings.blockMaxStack | 0))
     const volumeRatio = this._coordinationSettings.blockVolumeRatio
     const profitFactorRatio = this._coordinationSettings.blockProfitFactorRatio
     const pauseRatio = this._coordinationSettings.blockPauseCountRatio
@@ -5440,7 +5441,7 @@ export class StrategyCoordinator {
       8,
       Math.min(128, Math.floor(1_024 / Math.max(1, maxStack))),
     )
-    const countStats = Array.from({ length: 10 }, (_, index) => ({
+    const countStats = Array.from({ length: BLOCK_COUNT_MAX }, (_, index) => ({
       count: index + 1,
       calculated: 0,
       evaluated: 0,
@@ -5736,7 +5737,7 @@ export class StrategyCoordinator {
     if (sources.length === 0) return []
 
     const normalizedSymbol = blockLaneSymbol(symbol)
-    const maxStack = Math.max(1, Math.min(10, this._coordinationSettings.blockMaxStack | 0))
+    const maxStack = Math.max(1, Math.min(BLOCK_COUNT_MAX, this._coordinationSettings.blockMaxStack | 0))
     const volumeRatio = this._coordinationSettings.blockVolumeRatio
     const profitFactorRatio = this._coordinationSettings.blockProfitFactorRatio
     const pauseRatio = this._coordinationSettings.blockPauseCountRatio
@@ -7955,6 +7956,16 @@ export class StrategyCoordinator {
               blockOnly: this._coordinationSettings.blockOnly,
             })
 
+            // Evaluation remains complete above; only physical exchange/paper
+            // execution is bounded. This keeps every indication/strategy
+            // result and statistic intact while preventing a large symbol
+            // basket from issuing an unbounded burst of Redis/order work.
+            const dispatchBudget = Math.max(
+              1,
+              Math.min(128, Number.parseInt(process.env.LIVE_DISPATCH_PER_CYCLE || "16", 10) || 16),
+            )
+            if (dispatchSets.length > dispatchBudget) dispatchSets.length = dispatchBudget
+
             const dispatchOrder = (set: StrategySet): number => {
               if (set.variant === "block") return 1
               if (set.variant === "dca") return 2
@@ -7966,6 +7977,7 @@ export class StrategyCoordinator {
             let filled = 0
             let rejected = 0
             let errored = 0
+            const physicallyExecutedSets: StrategySet[] = []
 
             for (const set of dispatchSets) {
               if (!isCurrent()) return cancelled()
@@ -8201,9 +8213,19 @@ export class StrategyCoordinator {
                 if (!isCurrent()) return cancelled()
 
                 if (!liveResult) continue
-                if (liveResult.status === "open" || liveResult.status === "filled" || liveResult.status === "partially_filled") {
+                // Simulation is an immediate, fully-filled execution. Keep it
+                // on the same accounting path as an exchange fill so the
+                // paper position, active Set snapshot, and progression stats
+                // cannot disagree (ordersSimulated > 0 while Live Active=0).
+                if (
+                  liveResult.status === "open" ||
+                  liveResult.status === "filled" ||
+                  liveResult.status === "partially_filled" ||
+                  liveResult.status === "simulated"
+                ) {
                   filled++
                   placed++
+                  physicallyExecutedSets.push(set)
                 } else if (liveResult.status === "placed" || liveResult.status === "pending_fill" || liveResult.status === "placed_unconfirmed") {
                   placed++
                 } else if (liveResult.status === "rejected") {
@@ -8238,6 +8260,64 @@ export class StrategyCoordinator {
               console.log(
                 `[v0] [StrategyFlow] ${symbol} LIVE summary — placed=${placed} filled=${filled} rejected=${rejected} errored=${errored} (throttled)`
               )
+            }
+
+            // The active snapshot above is intentionally calculated before
+            // dispatch so evaluation remains independent from execution. A
+            // newly confirmed paper/exchange position nevertheless becomes
+            // active in this same cycle and must be visible immediately to
+            // the stats API. Add only confirmed physical executions, refresh
+            // the short-lived lineage cache, and overwrite the Live active
+            // fields with the post-dispatch truth. This keeps the first poll
+            // after an order monotonic and prevents the verifier/UI from
+            // observing simulated positions with zero active Live Sets.
+            if (physicallyExecutedSets.length > 0) {
+              for (const executedSet of physicallyExecutedSets) {
+                for (const key of [
+                  executedSet.setKey,
+                  executedSet.parentSetKey,
+                  executedSet.rowSourceSetKey,
+                  executedSet.rowEvaluationKey,
+                ]) {
+                  const normalized = String(key || "").trim()
+                  if (normalized) activeStrategyKeys.add(normalized)
+                }
+              }
+              this._liveSetKeysCache = null
+              this._activeKeysCache.set(symbol, {
+                keys: new Set(activeStrategyKeys),
+                cycleAt: Date.now(),
+              })
+              const postDispatchCounts = coordinateActiveRealLiveCounts(
+                rowRealSets.length > 0 ? rowRealSets : realSets,
+                allQualifying,
+                activeStrategyKeys,
+                rowRealSets.length || realEvaluatedCount,
+              )
+              const postDispatchLiveRunningNow = postDispatchCounts.live
+              try {
+                const client = getRedisClient()
+                const liveDetailKey = `strategy_detail:${this.connectionId}:live`
+                await Promise.all([
+                  client.hset(`strategies_active:${this.connectionId}`, {
+                    [`${symbol}:real`]: String(postDispatchCounts.real),
+                    [`${symbol}:live`]: String(postDispatchLiveRunningNow),
+                    [`${symbol}:live:evaluated`]: String(postDispatchCounts.liveEvaluated),
+                    [`${symbol}:snapshot:ts`]: String(Date.now()),
+                  }),
+                  client.hset(liveDetailKey, {
+                    row_active: String(postDispatchLiveRunningNow),
+                    sets_running_now: String(postDispatchLiveRunningNow),
+                    sets_with_open_positions: String(postDispatchLiveRunningNow),
+                    [`s:${symbol}:running`]: String(postDispatchLiveRunningNow),
+                    [`s:${symbol}:row_active`]: String(postDispatchLiveRunningNow),
+                    updated_at: String(Date.now()),
+                  }),
+                ])
+              } catch {
+                // The durable position/write counters remain authoritative;
+                // the next cycle will retry the active snapshot repair.
+              }
             }
         } else {
           console.warn(`[v0] [StrategyFlow] ${symbol} LIVE: live_trade=true but connector not available`)
@@ -9204,7 +9284,7 @@ export class StrategyCoordinator {
         // ── Block gate: setting-driven; actual block counts are completed-pos
         // overlays generated at Real stage, not open-position gates. ────────
         //
-        // The cap (`blockMaxStack`) is operator-controlled (defaults to 10).
+        // The cap (`blockMaxStack`) is operator-controlled (defaults to 12).
         // Each blockCount 1..blockMaxStack is emitted independently as a
         // independent Real-stage Set over every eligible selected Set.
         gate: () => true,

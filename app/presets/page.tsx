@@ -631,7 +631,7 @@ export default function PresetsPage() {
               <div className={draft.blockEnabled ? "grid gap-2 md:grid-cols-2 xl:grid-cols-4" : "grid gap-2 md:grid-cols-2 xl:grid-cols-4 pointer-events-none"}>
                 <NumberField label="Volume ratio" value={draft.blockVolumeRatio} min={0.25} max={3} step={0.05} onChange={(value) => setDraft({ ...draft, blockVolumeRatio: value })} />
                 <SliderField label="ProfitFactor factor" value={draft.blockProfitFactorRatio} min={0.2} max={5} step={0.1} onChange={(value) => setDraft({ ...draft, blockProfitFactorRatio: value })} />
-                <NumberField label="Independent counts" value={draft.blockMaxStack} min={1} max={10} step={1} onChange={(value) => setDraft({ ...draft, blockMaxStack: value })} />
+                <NumberField label="Independent counts" value={draft.blockMaxStack} min={1} max={12} step={1} onChange={(value) => setDraft({ ...draft, blockMaxStack: value })} />
                 <NumberField label="Post-profit pause ratio" value={draft.blockPauseCountRatio} min={1} max={4} step={0.5} onChange={(value) => setDraft({ ...draft, blockPauseCountRatio: value })} />
               </div>
               <div className="flex flex-wrap gap-4">
@@ -645,7 +645,7 @@ export default function PresetsPage() {
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-2 text-[10px] tabular-nums">
-                {[1, 2, Math.max(3, Math.min(10, Math.floor(draft.blockMaxStack)))].map((count, index) => (
+                {[1, 2, Math.max(3, Math.min(12, Math.floor(draft.blockMaxStack)))].map((count, index) => (
                   <div key={`${count}-${index}`} className="rounded border bg-muted/20 px-2 py-1.5 text-center">
                     Block {count}: {formatNumber(1 + count * draft.blockVolumeRatio, 2)}× total
                   </div>

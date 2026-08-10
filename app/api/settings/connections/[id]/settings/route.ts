@@ -38,6 +38,7 @@ import {
   POS_COUNT_VOLUME_RATIO_MAX,
   POS_COUNT_VOLUME_RATIO_MIN,
 } from "@/lib/pos-count-volume-ratio"
+import { BLOCK_COUNT_MAX } from "@/lib/block-count-state"
 
 const FALLBACK_SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -481,9 +482,9 @@ export async function GET(
       ),
       blockMaxStack: Math.floor(asBoundedNumber(
         firstDefined(storedCoord.blockMaxStack, settings.blockMaxStack),
-        10,
+        BLOCK_COUNT_MAX,
         1,
-        10,
+        BLOCK_COUNT_MAX,
       )),
       strategyBlockMaterializationBatchSize: Math.floor(asBoundedNumber(
         firstDefined(
@@ -1037,7 +1038,7 @@ export async function PATCH(
       const bpfr = Number(coord.blockProfitFactorRatio ?? coord.blockProfitFactor)
       if (Number.isFinite(bpfr) && bpfr > 0) flatKnobs.blockProfitFactorRatio = String(Math.max(0.2, Math.min(5.0, bpfr)))
       const bms = Number(coord.blockMaxStack)
-      if (Number.isFinite(bms) && bms >= 1) flatKnobs.blockMaxStack = String(Math.min(10, Math.max(1, Math.floor(bms))))
+      if (Number.isFinite(bms) && bms >= 1) flatKnobs.blockMaxStack = String(Math.min(BLOCK_COUNT_MAX, Math.max(1, Math.floor(bms))))
       const blockBatch = Number(coord.strategyBlockMaterializationBatchSize)
       if (Number.isFinite(blockBatch) && blockBatch >= 64) {
         flatKnobs.strategyBlockMaterializationBatchSize = String(
@@ -1054,7 +1055,7 @@ export async function PATCH(
       const rowLivePf = Number(coord.blockRowLiveProfitFactorRatio)
       if (Number.isFinite(rowLivePf) && rowLivePf > 0) flatKnobs.blockRowLiveProfitFactorRatio = String(Math.max(0.2, Math.min(5, rowLivePf)))
       const rowLiveStack = Number(coord.blockRowLiveMaxStack)
-      if (Number.isFinite(rowLiveStack) && rowLiveStack >= 1) flatKnobs.blockRowLiveMaxStack = String(Math.max(1, Math.min(10, Math.floor(rowLiveStack))))
+      if (Number.isFinite(rowLiveStack) && rowLiveStack >= 1) flatKnobs.blockRowLiveMaxStack = String(Math.max(1, Math.min(BLOCK_COUNT_MAX, Math.floor(rowLiveStack))))
       const rowLivePause = Number(coord.blockRowLivePauseCountRatio)
       if (Number.isFinite(rowLivePause) && rowLivePause > 0) flatKnobs.blockRowLivePauseCountRatio = String(Math.max(1, Math.min(4, Math.round(rowLivePause * 2) / 2)))
       if (typeof coord.blockOnly === "boolean") {

@@ -72,6 +72,9 @@ describe("Direct-Trade historical calculation route", () => {
     expect(payload.configTotal).toBe(96)
     expect(payload.executionConfigTotal).toEqual(expect.any(Number))
     expect(payload.summary).toMatchObject({ historyHours: 60, combinations: 1, evaluatedSets: 96 })
+    expect(payload.summary).toMatchObject({ blockEnabled: true, blockEvaluatedSets: 96 * 12 })
+    expect(payload.summary.byBlockCount["1"]).toMatchObject({ evaluated: 96 })
+    expect(payload.summary.byBlockCount["12"]).toMatchObject({ evaluated: 96 })
     expect(payload.summary.byStrategyType).toMatchObject({
       standard: { evaluated: 24 },
       trailing_fixed: { evaluated: 0 },
@@ -85,6 +88,7 @@ describe("Direct-Trade historical calculation route", () => {
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
     expect(persisted).toHaveLength(96)
     expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(96)
+    expect(persisted.every((config: any) => config.blockEvaluations === undefined)).toBe(true)
     expect(persisted.every((config: any) => config.timeframe === "1m" && config.bestMarketExitAnalysisOnly === true)).toBe(true)
     expect(persisted.filter((config: any) => config.strategyType === "inverse").every((config: any) =>
       config.stoploss <= config.takeprofit * 1.25,

@@ -70,11 +70,25 @@ export async function GET() {
       last12h: calculateTimePF(closedPositions, now - 12 * 60 * 60 * 1000),
       last48h: calculateTimePF(closedPositions, now - 48 * 60 * 60 * 1000),
     }
+    const allRolling = calculateRollingPF(closedPositions)
+    const responseStats = stats
+      ? {
+          ...stats,
+          ...rollingStats,
+          ...(closedPositions.length > 0 ? {
+            profitFactorPercent: stats.profitFactor,
+            profitFactor: allRolling.pf,
+            profitFactorInfinite: allRolling.pfInfinite,
+            totalPnlUsdt: allRolling.pnlUsdt,
+            statsPnlBasis: allRolling.basis,
+          } : {}),
+        }
+      : { ...rollingStats, ...allRolling }
 
     return NextResponse.json({
       success: true,
       state,
-      stats: stats ? { ...stats, ...rollingStats } : rollingStats,
+      stats: responseStats,
       activeConfigs: Math.max(0, Number(calculation?.evaluatedSets) || executionConfigs.length),
       validConfigs: Math.max(0, Number(calculation?.validSets) || executionConfigs.length),
       evaluatedConfigs: Math.max(0, Number(calculation?.evaluatedSets) || executionConfigs.length),
@@ -113,20 +127,45 @@ export async function GET() {
   }
 }
 
-function calculateRollingPF(positions: any[]): { pf: number | null; pfInfinite: boolean; ddt: number; pnl: number } {
-  if (!positions.length) return { pf: null, pfInfinite: false, ddt: 0, pnl: 0 }
-  const wins = positions.filter((p) => (p.pnl || 0) > 0)
-  const losses = positions.filter((p) => (p.pnl || 0) <= 0)
-  const totalProfit = wins.reduce((s, p) => s + (p.pnl || 0), 0)
-  const totalLoss = Math.abs(losses.reduce((s, p) => s + (p.pnl || 0), 0))
+function calculateRollingPF(positions: any[]): {
+  pf: number | null
+  pfInfinite: boolean
+  ddt: number
+  pnl: number
+  pnlUsdt: number
+  basis: "usdt" | "percent"
+} {
+  if (!positions.length) return { pf: null, pfInfinite: false, ddt: 0, pnl: 0, pnlUsdt: 0, basis: "percent" }
+  const percentValue = (position: any) => Number(position.pnl) || 0
+  const hasCompleteNotional = positions.every((position) => {
+    if (Number.isFinite(Number(position.realizedPnlUsdt))) return true
+    return Number(position.entryPrice) > 0 && Number(position.quantity) > 0 && Number.isFinite(Number(position.pnl))
+  })
+  const value = (position: any) => {
+    if (!hasCompleteNotional) return percentValue(position)
+    if (Number.isFinite(Number(position.realizedPnlUsdt))) return Number(position.realizedPnlUsdt)
+    return Math.abs(Number(position.entryPrice) * Number(position.quantity)) * percentValue(position) / 100
+  }
+  const wins = positions.filter((p) => value(p) > 0)
+  const losses = positions.filter((p) => value(p) <= 0)
+  const totalProfit = wins.reduce((s, p) => s + value(p), 0)
+  const totalLoss = Math.abs(losses.reduce((s, p) => s + value(p), 0))
   const pfInfinite = totalLoss === 0 && totalProfit > 0
   const pf = totalLoss > 0 ? totalProfit / totalLoss : 0
   const avgDdt = positions.reduce((s, p) => s + (p.drawdownTimeMin || 0), 0) / positions.length
-  const totalPnl = positions.reduce((s, p) => s + (p.pnl || 0), 0)
-  return { pf: pfInfinite ? null : Number(pf.toFixed(3)), pfInfinite, ddt: Number(avgDdt.toFixed(1)), pnl: Number(totalPnl.toFixed(4)) }
+  const totalPnl = positions.reduce((s, p) => s + percentValue(p), 0)
+  const totalPnlUsdt = hasCompleteNotional ? positions.reduce((s, p) => s + value(p), 0) : 0
+  return {
+    pf: pfInfinite ? null : Number(pf.toFixed(3)),
+    pfInfinite,
+    ddt: Number(avgDdt.toFixed(1)),
+    pnl: Number(totalPnl.toFixed(4)),
+    pnlUsdt: Number(totalPnlUsdt.toFixed(8)),
+    basis: hasCompleteNotional ? "usdt" : "percent",
+  }
 }
 
-function calculateTimePF(positions: any[], since: number): { pf: number | null; pfInfinite: boolean; ddt: number; pnl: number } {
+function calculateTimePF(positions: any[], since: number): ReturnType<typeof calculateRollingPF> {
   const filtered = positions.filter((p) => new Date(p.closedAt || p.exitTime || 0).getTime() >= since)
   return calculateRollingPF(filtered)
 }

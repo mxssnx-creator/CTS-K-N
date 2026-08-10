@@ -82,18 +82,18 @@ describe("system-wide Base volume identity", () => {
     })
   })
 
-  test("legacy TradingEngine retains Base identity and applies the global 50% execution scalar", () => {
+  test("legacy TradingEngine retains Base identity without a hidden execution scalar", () => {
     const engine = new TradingEngine()
     engine.setBaseVolumeFactor(7)
     expect(engine.calculateVolume(2)).toEqual({
       base: 2,
-      adjusted: 1,
-      factor: 0.5,
+      adjusted: 2,
+      factor: 1,
     })
     expect(engine.calculateVolume(2, 1.5)).toEqual({
       base: 2,
-      adjusted: 1.5,
-      factor: 0.75,
+      adjusted: 3,
+      factor: 1.5,
     })
   })
 
@@ -243,7 +243,7 @@ describe("system-wide Base volume identity", () => {
       expectedEngine: 2,
       expectedSignal: 1,
       expectedVariant: 1,
-      expectedCalculated: 0.1,
+      expectedCalculated: 2,
     },
     {
       name: "main signal block target",
@@ -256,7 +256,7 @@ describe("system-wide Base volume identity", () => {
       expectedEngine: 3,
       expectedSignal: 1.5,
       expectedVariant: 5,
-      expectedCalculated: 0.75,
+      expectedCalculated: 15,
     },
     {
       name: "main combined Position-Count aggregate above legacy ceiling",
@@ -270,7 +270,7 @@ describe("system-wide Base volume identity", () => {
       expectedEngine: 1,
       expectedSignal: 1,
       expectedVariant: 6,
-      expectedCalculated: 0.3,
+      expectedCalculated: 6,
     },
     {
       name: "preset ignores signal channel",
@@ -283,7 +283,7 @@ describe("system-wide Base volume identity", () => {
       expectedEngine: 2.5,
       expectedSignal: 1,
       expectedVariant: 2,
-      expectedCalculated: 0.25,
+      expectedCalculated: 5,
     },
   ])("position-cost matrix keeps Base identity for $name", ({
     tradeMode,

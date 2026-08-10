@@ -28,11 +28,15 @@ export interface BlockLegState {
   addedAt: number
 }
 
+/** Canonical independent Block count range used by Direct-Trade and stages. */
+export const BLOCK_COUNT_MIN = 1
+export const BLOCK_COUNT_MAX = 12
+
 export function parseBlockCount(setKey: unknown): number | null {
   const match = String(setKey || "").match(/#block:(?:(?:active|set):)?(\d+)(?:$|[#:_-])/i)
   if (!match) return null
   const count = Math.floor(Number(match[1]))
-  return Number.isFinite(count) && count >= 1 && count <= 10 ? count : null
+  return Number.isFinite(count) && count >= BLOCK_COUNT_MIN && count <= BLOCK_COUNT_MAX ? count : null
 }
 
 function positive(raw: unknown, fallback: number): number {
@@ -78,7 +82,7 @@ export function resolveMirroredActiveBlockCount(input: {
   }
   const real = input.includeReal ? normalize(input.realCount) : 0
   const live = input.includeLive ? normalize(input.liveCount) : 0
-  const maximum = Math.max(1, Math.min(10, normalize(input.maxStack) || 1))
+  const maximum = Math.max(BLOCK_COUNT_MIN, Math.min(BLOCK_COUNT_MAX, normalize(input.maxStack) || BLOCK_COUNT_MIN))
   return Math.min(maximum, Math.max(real, live))
 }
 

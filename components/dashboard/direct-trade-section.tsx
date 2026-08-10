@@ -80,6 +80,8 @@ interface DirectTradeState {
   takeProfitRatioRange: [number, number]
   takeProfitRatioStep: number
   blockRange: [number, number]
+  blockVolumeRatio: number
+  blockProfitFactorRatio: number
   maxPositionsPerSymbol: number
   maxPositionsPerDirection: number
   keepEnabledPosCount: number
@@ -98,10 +100,13 @@ interface DirectTradeStats {
   totalOrders: number
   totalFilled: number
   totalPnl: number
+  totalPnlUsdt?: number
   winCount: number
   lossCount: number
   profitFactor: number | null
   profitFactorInfinite?: boolean
+  profitFactorPercent?: number
+  statsPnlBasis?: "usdt" | "percent"
   maxDrawdownTimeMin: number
   currentDrawdownTimeMin: number
   lastPositionAt: string | null
@@ -130,7 +135,7 @@ const DEFAULT_STATE: DirectTradeState = {
   inverseMaxSlRatio: 1.25,
   timeframes: ["1m", "10m", "15m"],
   strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
-  historyHours: 60,
+  historyHours: 48,
   entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
@@ -139,6 +144,8 @@ const DEFAULT_STATE: DirectTradeState = {
   takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   blockRange: [1, 12],
+  blockVolumeRatio: 1,
+  blockProfitFactorRatio: 0.8,
   maxPositionsPerSymbol: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL,
   maxPositionsPerDirection: DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION,
   keepEnabledPosCount: 12,
@@ -207,7 +214,7 @@ export function DirectTradeSection() {
   const [localBlockMax, setLocalBlockMax] = useState(12)
   const [localTimeframes, setLocalTimeframes] = useState<string[]>(["1m", "10m", "15m"])
   const [localStrategyTypes, setLocalStrategyTypes] = useState<string[]>(["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"])
-  const [localHistoryHours, setLocalHistoryHours] = useState(60)
+  const [localHistoryHours, setLocalHistoryHours] = useState(48)
   const [localEntryTactics, setLocalEntryTactics] = useState<string[]>(["momentum", "mean_reversion", "breakout", "relative"])
   const [localExitTactics, setLocalExitTactics] = useState<string[]>(["bracket", "momentum_reversal", "relative", "time"])
   const [localEntryTiming, setLocalEntryTiming] = useState<"current" | "last_confirmed">("current")
@@ -245,7 +252,7 @@ export function DirectTradeSection() {
     if (!isPending("maxPositionsPerDirection")) setLocalMaxPosPerDir(remoteState.maxPositionsPerDirection || DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_DIRECTION)
     if (!isPending("timeframes")) setLocalTimeframes(remoteState.timeframes || ["1m", "10m", "15m"])
     if (!isPending("strategyTypes")) setLocalStrategyTypes(remoteState.strategyTypes || ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"])
-    if (!isPending("historyHours")) setLocalHistoryHours(remoteState.historyHours ?? 60)
+    if (!isPending("historyHours")) setLocalHistoryHours(remoteState.historyHours ?? 48)
     if (!isPending("entryTactics")) setLocalEntryTactics(remoteState.entryTactics || ["momentum", "mean_reversion", "breakout", "relative"])
     if (!isPending("exitTactics")) setLocalExitTactics(remoteState.exitTactics || ["bracket", "momentum_reversal", "relative", "time"])
     if (!isPending("entryTiming")) setLocalEntryTiming(remoteState.entryTiming === "last_confirmed" ? "last_confirmed" : "current")
@@ -326,6 +333,8 @@ export function DirectTradeSection() {
           takeProfitRatioRange: localTakeProfitRatioRange,
           takeProfitRatioStep: localTakeProfitRatioStep,
           blockRange: localBlock ? [1, localBlockMax] : [0, 0],
+          blockVolumeRatio: state.blockVolumeRatio,
+          blockProfitFactorRatio: state.blockProfitFactorRatio,
           maxPositionsPerSymbol: localMaxPosPerSymbol,
           maxPositionsPerDirection: localMaxPosPerDir,
           keepEnabledPosCount: localKeepEnabledPosCount,
@@ -393,6 +402,8 @@ export function DirectTradeSection() {
           takeProfitRatioRange: localTakeProfitRatioRange,
           takeProfitRatioStep: localTakeProfitRatioStep,
           blockRange: localBlock ? [1, localBlockMax] : [0, 0],
+          blockVolumeRatio: state.blockVolumeRatio,
+          blockProfitFactorRatio: state.blockProfitFactorRatio,
           minProfitFactor: localMinPF,
           minRecentProfitFactor: localMinRecentPF,
           recentEvaluationPositions: localRecentEvaluationPositions,
@@ -924,7 +935,7 @@ export function DirectTradeSection() {
                     saveConfig({ historyHours: value })
                   }}
                 />
-                <p className="text-[10px] text-muted-foreground/70 leading-tight">Default 60h; the public kline transport is paged until this range is fully covered.</p>
+                <p className="text-[10px] text-muted-foreground/70 leading-tight">Default 48h; the public kline transport is paged until this range is fully covered.</p>
               </div>
 
               <div className="space-y-2">
@@ -1148,6 +1159,7 @@ export function DirectTradeSection() {
                 <div className={`font-mono font-bold ${pnlColor(stats.totalPnl)}`}>
                   {formatPnl(stats.totalPnl)}
                 </div>
+                <div className="text-[10px] text-muted-foreground">{stats.totalPnlUsdt != null ? `${Number(stats.totalPnlUsdt).toFixed(4)} USDT` : "percentage basis"}</div>
               </div>
               <div className="bg-muted/40 rounded p-2">
                 <div className="text-muted-foreground">Profit Factor</div>

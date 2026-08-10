@@ -45,6 +45,8 @@ describe("independent Block count lifecycle", () => {
     expect(parseBlockCount("move:long#block:7")).toBe(7)
     expect(parseBlockCount("move:long#block:active:4")).toBe(4)
     expect(parseBlockCount("move:long#block:set:6")).toBe(6)
+    expect(parseBlockCount("move:long#block:12")).toBe(12)
+    expect(parseBlockCount("move:long#block:13")).toBeNull()
     expect(parseBlockCount("move:long#default")).toBeNull()
   })
 

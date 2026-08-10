@@ -229,25 +229,40 @@ function prepareStandaloneAssets() {
   return result.status === 0
 }
 
+function cleanBuildOutput() {
+  // A failed Next trace can leave an export subtree behind while the child
+  // process is still unwinding. Always rebuild the explicit .next* target
+  // from a clean boundary so retry #2 cannot inherit a mixed artifact.
+  const result = spawnSync(
+    process.execPath,
+    ["scripts/clean-next-dist.mjs"],
+    { cwd: process.cwd(), env: process.env, stdio: "inherit" },
+  )
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(`could not clean ${distDir} before build attempt`)
+}
+
 for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   console.log(`[next-trace-build] attempt ${attempt}/${maxAttempts}`)
+  cleanBuildOutput()
   const sourceBefore = getTrackedSourceState()
   if (sourceBefore.conflicts.length > 0) {
     console.error(`[next-trace-build] refusing to build tracked merge markers: ${sourceBefore.conflicts.join(", ")}`)
     process.exit(1)
   }
-  const inheritedPnpm = process.env.npm_execpath && existsSync(process.env.npm_execpath)
-    ? process.env.npm_execpath
-    : null
-  const command = inheritedPnpm ? process.execPath : "corepack"
-  const args = inheritedPnpm
-    ? [inheritedPnpm, "run", "build:next"]
-    : ["pnpm@10.28.1", "run", "build:next"]
+  // Keep the provider's pinned Corepack invocation as the single build
+  // contract. `build:next` already points at Next's executable, while this
+  // wrapper owns the clean boundary, retry, child-group settlement, and final
+  // trace validation around it.
+  const command = process.env.COREPACK_BIN || "corepack"
+  const args = ["pnpm@10.28.1", "run", "build:next"]
   const result = await runBuild(
     command,
     args,
     {
       ...process.env,
+      NODE_OPTIONS: process.env.NODE_OPTIONS ||
+        `--max-old-space-size=${process.env.CTS_NODE_HEAP_MB || "5632"} --max-semi-space-size=256 --expose-gc`,
       COREPACK_HOME: process.env.COREPACK_HOME || join(tmpdir(), "cts-corepack-cache"),
     },
   )
