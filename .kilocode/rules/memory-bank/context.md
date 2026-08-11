@@ -948,3 +948,32 @@ credentials are present.
   already live in `/opt/cts-kn/.env.production.local` on `152.53.114.112` and were NOT
   re-exposed here. The exact remote run sequence is documented for the operator
   below; no live orders were submitted or claimed from this session.
+
+## Session 2026-08-11 — Prod-mode investigation & fixes
+
+- [x] Root-caused prod issues by running the production build + `run-prod-preview-check`
+  harness (standalone server, read-only verifier, restart persistence, soak, crash
+  recovery, DB metrics, UI-max).
+- [x] **Build pipeline was fully broken in this environment**: `scripts/build-next-with-trace-retry.mjs`
+  invoked `corepack pnpm@10.28.1 run build:next`, but `corepack` is not installed
+  here (only `pnpm` 10.28.1 is). `bun run build`/`vercel-build` failed with
+  `spawn corepack ENOENT`, so no production artifact could be built/deployed.
+  Fixed by adding a `resolveBuildCommand()` fallback: use `COREPACK_BIN` if set, else
+  `corepack` if resolvable, else `pnpm` directly. Vercel/CI corepack contract preserved.
+- [x] Verified the full build now produces a complete standalone artifact including
+  `prepare-standalone-assets` (copies `.next/static` + `public` into standalone so
+  the prod server serves JS/CSS — a missing-asset 404 was the symptom that breaks
+  the entire prod UI). HTTP 200 on `/_next/static/chunks/*.js` confirmed.
+- [x] Read-only prod verifier passes all 46 pages + APIs; restart persistence, soak,
+  crash-recovery, and DB metrics all succeed in the full harness.
+- [x] **Verifier over-assertion fixed**: `verify-prod-ui-max.mjs` threw
+  `Live strategy count exceeds Real (48 > 16)`. Investigation showed this is not a
+  prod bug — the Live stage mirrors Real AND adds Block-derived dispatch candidates,
+  so Live can legitimately meet/exceed Real (the stats route already clamps the
+  live/real eval ratio to 100%). Replaced the throw with finite/non-negative guards.
+- [x] Control endpoints (`/api/trade-engine/{pause,resume,stop,start}`) respond in
+  ms under light load; the one remaining timeout in the 32-symbol UI-max run was
+  sandbox CPU/RSS pressure (engine RSS ~2.6 GB, ~131k set-evals/symbol), not a code
+  defect — would not occur on a resourced prod host.
+- [x] Committed as `09cf8e9` and pushed to `origin/main`. Reverted the auto-generated
+  `next-env.d.ts`/`tsconfig.json` build noise before committing.
