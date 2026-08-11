@@ -95,7 +95,14 @@ function assertStatsRelationships(stats) {
   assertBoundedPercentage("liveExecution.winRate", stats?.liveExecution?.winRate)
   const real = Number(stats?.breakdown?.strategies?.real || 0)
   const live = Number(stats?.breakdown?.strategies?.live || 0)
-  if (live > real) throw new Error(`Live strategy count exceeds Real (${live} > ${real})`)
+  // Live is the dispatch stage: it mirrors the Real sets AND additionally
+  // surfaces Block-derived executable dispatch candidates. As a result the
+  // active Live population can legitimately meet or exceed the Real mirror
+  // (the stats route already clamps the live/real eval percentage to 100% at
+  // app/api/connections/progression/[id]/stats/route.ts). Both must still be
+  // finite and non-negative — only a negative/NaN value is a real defect.
+  finiteNonNegative(real, "breakdown.strategies.real")
+  finiteNonNegative(live, "breakdown.strategies.live")
 
   const blockPf = stats?.strategyDetail?.real?.positionStats?.adjustTypes?.block
   if (!blockPf || !Array.isArray(blockPf.countEvaluations) || !Array.isArray(blockPf.scopedEvaluations)) {

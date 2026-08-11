@@ -254,8 +254,23 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   // contract. `build:next` already points at Next's executable, while this
   // wrapper owns the clean boundary, retry, child-group settlement, and final
   // trace validation around it.
-  const command = process.env.COREPACK_BIN || "corepack"
-  const args = ["pnpm@10.28.1", "run", "build:next"]
+  //
+  // Some local/CI runtimes (e.g. bun-managed sandboxes) ship `pnpm` directly
+  // but omit `corepack`. Fall back to the locally-installed `pnpm` when
+  // Corepack is not resolvable so the production build still succeeds here,
+  // while Vercel and other Corepack-enabled providers keep the pinned
+  // `pnpm@10.28.1` contract unchanged.
+  function resolveBuildCommand() {
+    if (process.env.COREPACK_BIN) {
+      return { command: process.env.COREPACK_BIN, args: ["pnpm@10.28.1", "run", "build:next"] }
+    }
+    const corepackProbe = spawnSync("corepack", ["--version"], { stdio: "ignore" })
+    if (corepackProbe.error?.code !== "ENOENT") {
+      return { command: "corepack", args: ["pnpm@10.28.1", "run", "build:next"] }
+    }
+    return { command: "pnpm", args: ["run", "build:next"] }
+  }
+  const { command, args } = resolveBuildCommand()
   const result = await runBuild(
     command,
     args,
