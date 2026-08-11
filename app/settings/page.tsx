@@ -93,6 +93,7 @@ interface Settings {
   dcaTakeProfitMode: DcaTakeProfitMode
   dcaBreakevenProfitPct: number
   dcaCooldownSeconds: number
+  dcaMaxPositionVolumeRatio: number
   arrangementType: string
   numberOfSymbolsToSelect: number
   quoteAsset: string
@@ -546,6 +547,7 @@ const initialSettings: Settings = {
   dcaTakeProfitMode: DEFAULT_DCA_PROFILE.takeProfitMode,
   dcaBreakevenProfitPct: DEFAULT_DCA_PROFILE.breakevenProfitPct,
   dcaCooldownSeconds: DEFAULT_DCA_PROFILE.cooldownSeconds,
+  dcaMaxPositionVolumeRatio: DEFAULT_DCA_PROFILE.maxPositionVolumeRatio,
   block_enabled: true,
   dca_enabled: false,
 

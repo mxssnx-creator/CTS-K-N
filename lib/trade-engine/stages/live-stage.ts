@@ -2756,7 +2756,13 @@ async function resolveAccumulationPlan(
     })
     if (!next) return null
     const baseQuantity = Number(existing.initialExecutedQuantity ?? existing.executedQuantity ?? 0)
-    const addQty = calculateDcaAddQuantity(baseQuantity, next.volumeMultiplier)
+    const addQty = calculateDcaAddQuantity(
+      baseQuantity,
+      next.volumeMultiplier,
+      Number(existing.executedQuantity ?? existing.quantity ?? baseQuantity),
+      dcaProfile.maxPositionVolumeRatio,
+    )
+    if (!(addQty > 0)) return null
     return {
       addQty,
       variant: "dca",

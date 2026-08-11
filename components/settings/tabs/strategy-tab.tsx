@@ -510,6 +510,18 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       </div>
                     </div>
 
+                    <div className="space-y-2">
+                      <div className="flex justify-between"><Label>Maximum total position</Label><span className="text-xs">{Number(settings.dcaMaxPositionVolumeRatio ?? DEFAULT_DCA_PROFILE.maxPositionVolumeRatio).toFixed(1)}×</span></div>
+                      <Slider
+                        min={1.4}
+                        max={5}
+                        step={0.1}
+                        value={[Number(settings.dcaMaxPositionVolumeRatio ?? DEFAULT_DCA_PROFILE.maxPositionVolumeRatio)]}
+                        onValueChange={([value]) => handleSettingChange("dcaMaxPositionVolumeRatio", Number(value.toFixed(1)))}
+                      />
+                      <p className="text-xs text-muted-foreground">Includes the initial fill; 5× is the hard 500% system ceiling.</p>
+                    </div>
+
                     {(settings.dcaTakeProfitMode || DEFAULT_DCA_PROFILE.takeProfitMode) === "breakeven_plus" && (
                       <div className="space-y-2">
                         <div className="flex justify-between"><Label>Breakeven profit</Label><span className="text-xs">{Number(settings.dcaBreakevenProfitPct ?? DEFAULT_DCA_PROFILE.breakevenProfitPct).toFixed(2)}%</span></div>

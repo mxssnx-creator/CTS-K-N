@@ -13,6 +13,7 @@ import {
 } from "@/lib/direct-trade-config-store"
 import { fetchBingXMinuteHistory } from "@/lib/direct-trade-market-history"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
+import { DEFAULT_DCA_PROFILE, normalizeDcaProfile, type DcaProfile } from "@/lib/dca-strategy"
 import {
   createRedisLockToken,
   releaseOwnedRedisLock,
@@ -80,6 +81,7 @@ interface CalculationRequest {
   takeProfitRatioStep?: number
   blockVolumeRatio?: number
   blockProfitFactorRatio?: number
+  dcaProfile?: unknown
   recalculate?: boolean
 }
 
@@ -186,6 +188,7 @@ function createCalculationSummaryAccumulator(details: {
   blockRange: [number, number]
   blockVolumeRatio: number
   blockProfitFactorRatio: number
+  dcaProfile: DcaProfile
 }) {
   const countBy = <T extends string>(entries: T[]): Record<T, CalculationAxisBucket> => {
     const output = {} as Record<T, CalculationAxisBucket>
@@ -517,6 +520,7 @@ export async function POST(request: NextRequest) {
     )
     const blockVolumeRatio = Math.max(0.1, Math.min(10, numberOr(body.blockVolumeRatio, 1)))
     const blockProfitFactorRatio = Math.max(0.2, Math.min(5, numberOr(body.blockProfitFactorRatio, 0.8)))
+    const dcaProfile = normalizeDcaProfile(body.dcaProfile ?? DEFAULT_DCA_PROFILE)
 
     // A manual dashboard refresh and the long-running processor can arrive at
     // the same time. The complete grid is an atomic snapshot, so only one
@@ -614,6 +618,7 @@ export async function POST(request: NextRequest) {
       blockRange,
       blockVolumeRatio,
       blockProfitFactorRatio,
+      dcaProfile,
     })
     const statisticsAccumulator = createStatisticsIndexAccumulator()
     const configStoreWriter = await createDirectTradeConfigStoreWriter(client)
@@ -639,7 +644,6 @@ export async function POST(request: NextRequest) {
       // object twelve times inside every Redis config; the compact calculation
       // summary owns the complete count-indexed audit view.
       await configStoreWriter.append(rows.map((config) => {
-        if (!config.blockEvaluations?.length) return config
         const { blockEvaluations: _blockEvaluations, ...compact } = config
         return compact as EvaluatedDirectTradeConfig
       }))
@@ -653,9 +657,9 @@ export async function POST(request: NextRequest) {
         const minuteCandles = await fetchBingXMinuteHistory(symbol, historyHours)
         if (minuteCandles.length >= 30) {
           const candlesByTimeframe = {
-            "1m": minuteCandles,
-            "10m": resampleCandles(minuteCandles, 10),
+            "5m": resampleCandles(minuteCandles, 5),
             "15m": resampleCandles(minuteCandles, 15),
+            "30m": resampleCandles(minuteCandles, 30),
           } as const
           for (const timeframeSet of timeframeSets) {
             for (const direction of ["long", "short"] as const) {
@@ -678,7 +682,7 @@ export async function POST(request: NextRequest) {
           if (strategyTypes.includes("combination")) {
             // Formerly named Complex: retain independent config identities for
             // every normal, fixed and adaptive trailing leg, while each set
-            // uses its selected 1m/10m/15m coordination combination.
+            // uses its selected 5m/15m/30m coordination combination.
             plans.push({
               strategyType: "combination",
               signalDirection: direction,
@@ -715,7 +719,19 @@ export async function POST(request: NextRequest) {
                 ? [noTrailingOption, ...autoTrailOptions]
                 : [noTrailingOption],
             })
-              }
+          }
+          if (strategyTypes.includes("dca")) {
+            // The optimized DCA lineage has one hard protection value derived
+            // from its final adverse step plus a 0.35% safety distance. The
+            // evaluator applies that exact floor to every selected TP target.
+            plans.push({
+              strategyType: "dca",
+              signalDirection: direction,
+              tpRange: takeProfitRange,
+              slRatios: [1],
+              trailOptions: [noTrailingOption],
+            })
+          }
               for (const plan of plans) {
                 const evaluated = evaluateDirectTradeSets({
                   symbol,
@@ -739,6 +755,7 @@ export async function POST(request: NextRequest) {
                   positionCostPercent,
                   blockRange,
                   blockProfitFactorRatio,
+                  dcaProfile,
                   minProfitFactor,
                   minRecentProfitFactor,
                   recentPositionWindow: recentEvaluationPositions,

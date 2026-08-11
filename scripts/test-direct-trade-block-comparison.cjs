@@ -284,7 +284,7 @@ function buildPlans() {
   const autoTrailOptions = [0.75, 1, 1.25].map((autoTrailSensitivity) => ({
     trailing: true, trailStart: 0.5, trailStop: 0.3, mode: "auto", autoTrailSensitivity,
   }))
-  const ratios = buildDirectTradeTakeProfitPositionCostRatios([4, 14], 4)
+  const ratios = buildDirectTradeTakeProfitPositionCostRatios([4, 8], 2)
   const tpRange = ratios.map((ratio) => directTradeTakeProfitPercent(positionCostPercent, ratio))
   return { ratios, tpRange, noTrailingOption, fixedTrailOptions, autoTrailOptions }
 }
@@ -295,14 +295,14 @@ function runMode(blockEnabled) {
   const fingerprints = new Map()
   const startedAt = Date.now()
   const plans = buildPlans()
-  const timeframeSets = buildTimeframeCombinations(["1m", "10m", "15m"])
+  const timeframeSets = buildTimeframeCombinations(["5m", "15m", "30m"])
   for (let localSymbol = 0; localSymbol < symbolCount; localSymbol++) {
     const symbolIndex = startSymbolIndex + localSymbol
     const minuteCandles = minuteSeries(symbolIndex)
     const candlesByTimeframe = {
-      "1m": minuteCandles,
-      "10m": resampleCandles(minuteCandles, 10),
+      "5m": resampleCandles(minuteCandles, 5),
       "15m": resampleCandles(minuteCandles, 15),
+      "30m": resampleCandles(minuteCandles, 30),
     }
     for (const timeframeSet of timeframeSets) {
       for (const direction of ["long", "short"]) {
@@ -313,6 +313,7 @@ function runMode(blockEnabled) {
           { strategyType: "combination", signalDirection: direction, slRatios: [0.25, 0.5, 0.75], trailOptions: [plans.noTrailingOption, ...plans.fixedTrailOptions, ...plans.autoTrailOptions] },
           { strategyType: "inverse", signalDirection: direction === "long" ? "short" : "long", slRatios: [0.25, 0.5, 0.75, 1, 1.25], trailOptions: [plans.noTrailingOption, ...plans.fixedTrailOptions] },
           { strategyType: "high_protection", signalDirection: direction, slRatios: [0.75], trailOptions: [plans.noTrailingOption, ...plans.autoTrailOptions] },
+          { strategyType: "dca", signalDirection: direction, slRatios: [1], trailOptions: [plans.noTrailingOption] },
         ]
         for (const plan of plansForDirection) {
           const sets = evaluateDirectTradeSets({
@@ -349,7 +350,7 @@ function runMode(blockEnabled) {
               if (increment <= 0 || scale !== 1 + increment) throw new Error(`Block sizing invariant failed for ${set.setKey}`)
             }
             keys.add(set.setKey)
-            const fingerprintKey = set.setKey.replace(/\|block:\d+\|blockRatio:[^|]+\|blockPfRatio:[^|]+$/, "")
+            const fingerprintKey = set.setKey.replace(/\|block:\d+\|blockRatio:[^|]+\|blockPfRatio:[^|]+(?=\|dca:)/, "")
             fingerprints.set(fingerprintKey, {
               profitFactor: set.profitFactor,
               profitFactorInfinite: Boolean(set.profitFactorInfinite),
@@ -421,8 +422,8 @@ const result = {
   startSymbolIndex,
   historyMinutes,
   historyHours,
-  timeframeSets: buildTimeframeCombinations(["1m", "10m", "15m"]).length,
-  strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
+  timeframeSets: buildTimeframeCombinations(["5m", "15m", "30m"]).length,
+  strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"],
   positionCostPercent,
   minProfitFactor,
   minRecentProfitFactor,

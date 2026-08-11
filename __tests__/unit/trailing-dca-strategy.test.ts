@@ -3,6 +3,7 @@ import {
   adverseMovePct,
   buildDcaStepSetKey,
   calculateDcaAddQuantity,
+  calculateDcaPositionVolumeRatio,
   calculateDcaTakeProfitPrice,
   mergeDcaProfileSources,
   normalizeDcaProfile,
@@ -61,12 +62,13 @@ describe("DCA profile and progression", () => {
       dcaCooldownSeconds: "45",
     })
     expect(profile).toEqual({
-      maxSteps: 4,
-      stepVolumeMultipliers: [1.5, 2.5, 2.3, 2.5],
+      maxSteps: 2,
+      stepVolumeMultipliers: [1.5, 2.5, 0, 0],
       stepDistancesPct: [1, 1, 3, 3],
       takeProfitMode: "breakeven_plus",
       breakevenProfitPct: 0.35,
       cooldownSeconds: 45,
+      maxPositionVolumeRatio: 5,
     })
   })
 
@@ -91,7 +93,7 @@ describe("DCA profile and progression", () => {
       },
     )
 
-    expect(merged.stepVolumeMultipliers).toEqual([0.4, 1.1, 1.2, 1.6])
+    expect(merged.stepVolumeMultipliers).toEqual([0.4, 1.1, 1.2, 1.3])
     expect(merged.stepDistancesPct).toEqual([0.5, 1.25, 1.5, 2])
     expect(merged.cooldownSeconds).toBe(0)
   })
@@ -146,6 +148,21 @@ describe("DCA profile and progression", () => {
     expect(calculateDcaAddQuantity(2, 1.5)).toBe(3)
     expect(calculateDcaAddQuantity(2, 2.5)).toBe(5)
     expect(calculateDcaAddQuantity(0, 2.5)).toBe(0)
+  })
+
+  test("caps cumulative DCA exposure at a total 5x position ratio", () => {
+    const base = 2
+    expect(calculateDcaAddQuantity(base, 2.5, 8, 5)).toBe(2)
+    expect(calculateDcaAddQuantity(base, 1, 10, 5)).toBe(0)
+    expect(calculateDcaPositionVolumeRatio(base, 10)).toBe(5)
+
+    const normalized = normalizeDcaProfile({
+      dcaMaxPositionVolumeRatio: 5,
+      dcaStepVolumeMultipliers: [2.5, 2.5, 2.5, 2.5],
+    })
+    expect(normalized.maxSteps).toBe(2)
+    expect(normalized.stepVolumeMultipliers).toEqual([2.5, 1.5, 0, 0])
+    expect(normalized.stepVolumeMultipliers.reduce((sum, value) => sum + value, 1)).toBe(5)
   })
 
   test("derives average, first-entry, and breakeven-plus targets", () => {

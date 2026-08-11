@@ -187,6 +187,7 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "dcaTakeProfitMode",
   "dcaBreakevenProfitPct",
   "dcaCooldownSeconds",
+  "dcaMaxPositionVolumeRatio",
   "useSystemCloseOnly",
   "use_system_close_only",
   "leveragePercentage",
@@ -348,7 +349,7 @@ export async function GET(
           "blockVolumeRatio", "blockProfitFactorRatio", "blockMaxStack",
           "strategyBlockMaterializationBatchSize", "blockPauseCountRatio",
           "blockRowLiveVolumeRatio", "blockRowLiveProfitFactorRatio", "blockRowLiveMaxStack", "blockRowLivePauseCountRatio",
-          "posCountsVolumeRatio", "dcaMaxSteps", "dcaBreakevenProfitPct", "dcaCooldownSeconds",
+          "posCountsVolumeRatio", "dcaMaxSteps", "dcaBreakevenProfitPct", "dcaCooldownSeconds", "dcaMaxPositionVolumeRatio",
           // PF / DDT / stage thresholds
           "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
           "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
@@ -528,6 +529,7 @@ export async function GET(
       dcaTakeProfitMode: dca.takeProfitMode,
       dcaBreakevenProfitPct: dca.breakevenProfitPct,
       dcaCooldownSeconds: dca.cooldownSeconds,
+      dcaMaxPositionVolumeRatio: dca.maxPositionVolumeRatio,
     }
     settings.coordination_settings = coordinationSettings
     settings.coordinationSettings = coordinationSettings
@@ -1084,6 +1086,7 @@ export async function PATCH(
       flatKnobs.dcaTakeProfitMode = dca.takeProfitMode
       flatKnobs.dcaBreakevenProfitPct = String(dca.breakevenProfitPct)
       flatKnobs.dcaCooldownSeconds = String(dca.cooldownSeconds)
+      flatKnobs.dcaMaxPositionVolumeRatio = String(dca.maxPositionVolumeRatio)
     }
 
     const vfl = Number(

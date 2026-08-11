@@ -317,6 +317,7 @@ function getDefaultSettings(): Record<string, any> {
     dcaTakeProfitMode: DEFAULT_DCA_PROFILE.takeProfitMode,
     dcaBreakevenProfitPct: DEFAULT_DCA_PROFILE.breakevenProfitPct,
     dcaCooldownSeconds: DEFAULT_DCA_PROFILE.cooldownSeconds,
+    dcaMaxPositionVolumeRatio: DEFAULT_DCA_PROFILE.maxPositionVolumeRatio,
     positionCost: POSITION_COST_PERCENT_DEFAULT,
     exchangePositionCost: POSITION_COST_PERCENT_DEFAULT,
     trendEnabled: true,
