@@ -148,14 +148,38 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         max_positions_per_direction: "3",
         max_positions_per_range: "2",
       })
+      const historicConfigBase = {
+        connectionId: "conn-ledger",
+        steps: 10,
+        drawdown_ratio: 0.1,
+        active_ratio: 0.7,
+        last_part_ratio: 0.3,
+        enabled: true,
+        createdAt: "2026-08-10T00:00:00.000Z",
+      }
+      const leaderConfigKey = "indication:conn-ledger:config:cfg-a"
+      const aliasConfigKey = "indication:conn-ledger:config:cfg-z"
+      await client.sadd("indication:conn-ledger:configs:index", leaderConfigKey, aliasConfigKey)
+      await client.set(leaderConfigKey, JSON.stringify({
+        ...historicConfigBase,
+        id: "cfg-a",
+        type: "EMA",
+      }))
+      await client.set(aliasConfigKey, JSON.stringify({
+        ...historicConfigBase,
+        id: "cfg-z",
+        type: "RSI",
+      }))
+      await client.rpush(`${leaderConfigKey}:results`, "leader-row")
+      await client.rpush(`${aliasConfigKey}:results`, "duplicate-row")
       await client.set("_schema_version", "79")
       await client.set("_migrations_run", "true")
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 94 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 96 })
 
-      expect(await client.get("_schema_version")).toBe("94")
+      expect(await client.get("_schema_version")).toBe("96")
       expect(new Set(await client.smembers("strategy_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
       expect(await client.smembers("strategy_active_set_keys:conn-ledger")).toEqual(["set:a"])
       expect(new Set(await client.smembers("strategy_closed_set_keys:conn-ledger"))).toEqual(new Set(["set:a", "set:b"]))
@@ -220,6 +244,20 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
         await client.hget("connection_settings:conn-ledger", "activeThresholds"),
       ))).toEqual([0.5, 1, 1.5, 2, 2.5])
       expect(JSON.parse(String(
+        await client.hget("connection_settings:conn-ledger", "activeOutbreakRanges"),
+      ))).toEqual([3, 5, 10])
+      expect(JSON.parse(String(
+        await client.hget("connection_settings:conn-ledger", "activeStopLossPositionCostRatios"),
+      ))).toEqual([2, 3, 5])
+      expect(JSON.parse(String(
+        await client.hget("connection_settings:conn-ledger", "activeMarketExitSituations"),
+      ))).toEqual(["momentum", "range_extension", "activity_fade"])
+      expect(JSON.parse(String(await client.get("indications:main"))).active).toMatchObject({
+        outbreak_ranges: [3, 5, 10],
+        stop_loss_position_cost_ratios: [2, 3, 5],
+        market_exit_situations: ["momentum", "range_extension", "activity_fade"],
+      })
+      expect(JSON.parse(String(
         await client.hget("connection_settings:conn-ledger", "trendTimeframesMinutes"),
       ))).toEqual([1, 5, 15, 30])
       expect(await client.hget("settings:active_indications:conn-ledger", "direction_timeout")).toBe("0.25")
@@ -269,7 +307,14 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       expect(await client.hget("system:database:coordination:performance", "independent_block_profit_factor"))
         .toBe("default-pf-x-ratio-x-volume-increment-v1")
       expect(await client.hget("system:database:coordination:performance", "schema_version"))
-        .toBe("94")
+        .toBe("96")
+      expect(await client.hget("system:database:coordination:performance", "active_processing_order"))
+        .toBe("primary-active-trend")
+      expect(await client.get(`${aliasConfigKey}:results:ref`)).toBe("cfg-a")
+      expect(await client.lrange(`${leaderConfigKey}:results`, 0, -1)).toEqual(["leader-row"])
+      expect(await client.llen(`${aliasConfigKey}:results`)).toBe(0)
+      expect(await client.hget("system:database:coordination:performance", "historic_indication_detail_storage"))
+        .toBe("shared-identical-calculation-v1")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -333,7 +378,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 94 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 96 })
 
       expect(await client.hget("connection:conn-stage-floor", "baseProfitFactor")).toBe("0.8")
       expect(await client.hget("connection:conn-stage-floor", "base_min_profit_factor")).toBe("0.8")
@@ -435,7 +480,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 94,
+        version: 96,
       })
 
       expect(await client.hget("connection:conn-v90", "baseProfitFactor")).toBe("0.8")
@@ -515,7 +560,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 94,
+        version: 96,
       })
 
       for (const key of [
@@ -572,7 +617,7 @@ describe("migrations 080–089 exact Set indexes and current engine defaults", (
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({
         success: true,
-        version: 94,
+        version: 96,
       })
 
       expect(await client.hget("connection_settings:conn-v91", "strategyRealSetsSafetyCeiling")).toBe("0")

@@ -3,7 +3,7 @@ export const dynamic = "force-dynamic"
 
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { AlertTriangle, BarChart3, MapPin, RefreshCw, ShieldAlert, TrendingUp, Waves } from "lucide-react"
+import { AlertTriangle, BarChart3, RefreshCw, ShieldAlert, TrendingUp, Waves } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -112,21 +112,17 @@ export default function TrackingPage() {
   }, [visibleItems])
 
   return (
-    <main className="flex flex-col flex-1 overflow-auto p-6">
-      <div className="space-y-6">
-        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+    <div className="page-section space-y-5">
+        <div className="flex flex-col gap-4 rounded-xl border bg-card/70 p-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h1 className="flex items-center gap-2 text-3xl font-bold">
-              <MapPin className="h-8 w-8" />
-              Tracking
-            </h1>
-            <p className="mt-1 text-muted-foreground">
-              Overview, progression, error handling, and operational tracking across logistics and live processing.
+            <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-muted-foreground">Tracking scope</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Filter authoritative progression and execution records without pausing automatic refresh.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <Select value={selectedConnection} onValueChange={setSelectedConnection}>
-              <SelectTrigger className="w-[260px]">
+              <SelectTrigger className="w-full sm:w-[260px]">
                 <SelectValue placeholder="Select connection" />
               </SelectTrigger>
               <SelectContent>
@@ -331,7 +327,6 @@ export default function TrackingPage() {
             </Card>
           </TabsContent>
         </Tabs>
-      </div>
-    </main>
+    </div>
   )
 }

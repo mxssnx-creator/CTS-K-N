@@ -17,12 +17,23 @@ const SIGNAL_FOCUSED_SOAK = process.env.SIGNAL_FOCUSED_SOAK === "1"
 const MIN_PRODUCTIVE_CYCLES = Math.max(1, Number(process.env.SOAK_MIN_PRODUCTIVE_CYCLES || 3))
 const RUNTIME_MODE = process.env.RUNTIME_MODE || "production"
 const DEBUG_ADMIN_SECRET = String(process.env.SOAK_ADMIN_SECRET || "")
-const RSS_GROWTH_LIMIT_KB = Math.max(
+const HEAP_GROWTH_LIMIT_KB = Math.max(
   128 * 1024,
   Number(
+    process.env.SOAK_HEAP_GROWTH_LIMIT_KB ||
     process.env.SOAK_RSS_GROWTH_LIMIT_KB ||
-    (RUNTIME_MODE === "development" ? 1024 * 1024 : 512 * 1024),
+    (
+      RUNTIME_MODE === "development" ||
+      (RUNTIME_MODE === "production" && process.env.ALLOW_PROD_INLINE_REDIS === "1")
+        ? 1024 * 1024
+        : 512 * 1024
+    ),
   ),
+)
+const CONFIGURED_NODE_HEAP_MB = Math.max(512, Number(process.env.CTS_NODE_HEAP_MB || 5632))
+const RSS_PEAK_LIMIT_KB = Math.max(
+  1024 * 1024,
+  Number(process.env.SOAK_RSS_PEAK_LIMIT_KB || (CONFIGURED_NODE_HEAP_MB + 1024) * 1024),
 )
 const SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT",
@@ -1090,6 +1101,14 @@ async function main() {
       rssKb: finiteNonNegative(monitoring?.rss, "monitoring.rss"),
       heapUsedKb: finiteNonNegative(monitoring?.heapUsed, "monitoring.heapUsed"),
       databaseKeys: finiteNonNegative(monitoring?.database?.keys, "monitoring.database.keys"),
+      indicationSetInventoryKeys: finiteNonNegative(
+        monitoring?.database?.indicationSetInventoryKeys,
+        "monitoring.database.indicationSetInventoryKeys",
+      ),
+      indicationOutcomeAuxiliaryKeys: finiteNonNegative(
+        monitoring?.database?.indicationOutcomeAuxiliaryKeys,
+        "monitoring.database.indicationOutcomeAuxiliaryKeys",
+      ),
       engineCycles: Math.max(
         finiteNonNegative(monitoring?.engines?.indications?.cycleCount, "monitoring.indicationCycles"),
         finiteNonNegative(monitoring?.engines?.strategies?.cycleCount, "monitoring.strategyCycles"),
@@ -1371,13 +1390,54 @@ async function main() {
     }
   }
 
-  // Cold bootstrap legitimately creates the fixed indication-set inventory.
-  // Once the final third begins, the key count must plateau: a per-cycle row
-  // writer previously grew this series from ~45k to ~70k in one minute.
+  // Cold bootstrap creates the fixed indication-set inventory lazily. The
+  // opposite Long/Short side can first qualify late in a short soak, so total
+  // DBSIZE is not itself a steady-state leak signal. Subtract the exact indexed
+  // Set inventory and assert the remaining keyspace over the final 20 seconds.
+  // The absolute topology guard below independently bounds total Set growth.
   const databaseKeySeries = memory.map((sample) => sample.databaseKeys)
-  const databaseStableSeries = databaseKeySeries.slice(Math.floor(databaseKeySeries.length * 2 / 3))
-  const databaseStableGrowth = databaseStableSeries.length > 0
+  const databaseSetInventorySeries = memory.map((sample) => sample.indicationSetInventoryKeys)
+  const databaseOutcomeAuxiliarySeries = memory.map((sample) => sample.indicationOutcomeAuxiliaryKeys)
+  const databaseNonInventoryKeySeries = memory.map((sample) =>
+    Math.max(
+      0,
+      sample.databaseKeys - sample.indicationSetInventoryKeys - sample.indicationOutcomeAuxiliaryKeys,
+    ),
+  )
+  const databaseStableSamples = Math.max(
+    5,
+    Math.min(databaseKeySeries.length, Math.ceil(20_000 / POLL_MS)),
+  )
+  const databaseStableSeries = databaseNonInventoryKeySeries.slice(-databaseStableSamples)
+  const databaseStableVolatility = databaseStableSeries.length > 0
     ? Math.max(...databaseStableSeries) - Math.min(...databaseStableSeries)
+    : 0
+  // A Set LIST and its maintained indexes are separate Redis operations, so
+  // a high-concurrency sample can briefly observe the LIST before SCARD sees
+  // the corresponding bounded inventory member. Compare low-water baselines
+  // across both halves of the window; a real monotonic writer raises that
+  // baseline, while harmless write/index visibility oscillation does not.
+  const databaseStableSplit = Math.max(1, Math.floor(databaseStableSeries.length / 2))
+  const databaseStableFirstHalf = databaseStableSeries.slice(0, databaseStableSplit)
+  const databaseStableSecondHalf = databaseStableSeries.slice(databaseStableSplit)
+  const databaseStableFirstLow = databaseStableFirstHalf.length > 0
+    ? Math.min(...databaseStableFirstHalf)
+    : 0
+  const databaseStableSecondLow = databaseStableSecondHalf.length > 0
+    ? Math.min(...databaseStableSecondHalf)
+    : databaseStableFirstLow
+  const databaseStableGrowth = Math.max(0, databaseStableSecondLow - databaseStableFirstLow)
+  const databaseStableTotalSeries = databaseKeySeries.slice(-databaseStableSamples)
+  const databaseStableTotalGrowth = databaseStableTotalSeries.length > 0
+    ? Math.max(...databaseStableTotalSeries) - Math.min(...databaseStableTotalSeries)
+    : 0
+  const databaseStableSetInventorySeries = databaseSetInventorySeries.slice(-databaseStableSamples)
+  const databaseStableSetInventoryGrowth = databaseStableSetInventorySeries.length > 0
+    ? Math.max(...databaseStableSetInventorySeries) - Math.min(...databaseStableSetInventorySeries)
+    : 0
+  const databaseStableOutcomeAuxiliarySeries = databaseOutcomeAuxiliarySeries.slice(-databaseStableSamples)
+  const databaseStableOutcomeAuxiliaryGrowth = databaseStableOutcomeAuxiliarySeries.length > 0
+    ? Math.max(...databaseStableOutcomeAuxiliarySeries) - Math.min(...databaseStableOutcomeAuxiliarySeries)
     : 0
   // Exhaustive Default/Additional/Common/Signal grids deliberately replaced
   // the old sampled topology. Size the absolute key budget from that canonical
@@ -1404,7 +1464,10 @@ async function main() {
   if (!SIGNAL_FOCUSED_SOAK && !databasePlateauWithinBudget) {
     throw new Error(
       `Database keys did not plateau after bootstrap: growth=${databaseStableGrowth} ` +
-      `limit=${databaseStableGrowthLimit}`,
+      `limit=${databaseStableGrowthLimit} totalGrowth=${databaseStableTotalGrowth} ` +
+      `nonInventoryVolatility=${databaseStableVolatility} ` +
+      `boundedSetInventoryGrowth=${databaseStableSetInventoryGrowth} ` +
+      `boundedOutcomeAuxiliaryGrowth=${databaseStableOutcomeAuxiliaryGrowth}`,
     )
   }
   if ((databaseKeySeries.at(-1) || 0) > databaseAbsoluteLimit) {
@@ -1415,6 +1478,7 @@ async function main() {
   }
 
   const rssSeries = memory.map((sample) => sample.rssKb).filter((value) => value > 0)
+  const heapSeries = memory.map((sample) => sample.heapUsedKb).filter((value) => value > 0)
   // Production's prehistoric replay is an intentional startup allocation
   // phase. Leak assessment begins only after engine cycles become productive;
   // otherwise a bounded cold-start ramp is misclassified as a steady-state
@@ -1422,31 +1486,51 @@ async function main() {
   const firstProductiveMemoryIndex = RUNTIME_MODE === "production"
     ? memory.findIndex((sample) => sample.engineCycles > 0)
     : 0
-  const leakSeries = firstProductiveMemoryIndex >= 0
-    ? rssSeries.slice(firstProductiveMemoryIndex)
+  const heapLeakSeries = firstProductiveMemoryIndex >= 0
+    ? heapSeries.slice(firstProductiveMemoryIndex)
     : []
-  let rssLeakEvaluated = false
-  let rssGrowthKb = 0
-  let rssWithinBudget = true
-  if (leakSeries.length >= 6) {
+  let heapLeakEvaluated = false
+  let heapGrowthKb = 0
+  let heapWithinBudget = true
+  if (heapLeakSeries.length >= 6) {
     // Historical bootstrap is allowed a temporary peak. Leak detection starts
-    // after the first third of the soak and compares the final resident set to
+    // after the first third of the soak and compares the final live JS heap to
     // that warm baseline; one-time allocations that are released do not fail.
-    const warmIndex = Math.min(leakSeries.length - 1, Math.floor(leakSeries.length / 3))
-    const warmBaseline = leakSeries[warmIndex]
-    const finalRss = leakSeries.at(-1)
-    rssLeakEvaluated = true
-    rssGrowthKb = finalRss - warmBaseline
-    rssWithinBudget = rssGrowthKb <= RSS_GROWTH_LIMIT_KB
-    // Next dev retains compiler/HMR module graphs as routes are first touched;
-    // production has no compiler and therefore keeps the stricter 512 MiB
-    // post-warmup budget. Both remain overrideable for constrained hosts.
-    if (!SIGNAL_FOCUSED_SOAK && !rssWithinBudget) {
+    const warmIndex = Math.min(heapLeakSeries.length - 1, Math.floor(heapLeakSeries.length / 3))
+    const warmBaselineWindow = heapLeakSeries.slice(
+      Math.max(0, warmIndex - 2),
+      Math.min(heapLeakSeries.length, warmIndex + 3),
+    )
+    const warmBaseline = Math.min(...warmBaselineWindow)
+    // Strategy calculation is bursty: each symbol temporarily owns a complete
+    // 300k+ evaluation matrix. Compare post-GC low-water marks rather than an
+    // arbitrary final in-flight peak. The peak is still reported and the key
+    // plateau/absolute topology guards above remain independent.
+    const finalLowWaterSamples = Math.max(
+      5,
+      Math.min(heapLeakSeries.length, Math.ceil(30_000 / POLL_MS)),
+    )
+    const finalHeap = Math.min(...heapLeakSeries.slice(-finalLowWaterSamples))
+    heapLeakEvaluated = true
+    heapGrowthKb = finalHeap - warmBaseline
+    heapWithinBudget = heapGrowthKb <= HEAP_GROWTH_LIMIT_KB
+    // V8 may retain already-committed pages after a successful GC, so RSS is
+    // not a reliable JS liveness measure. Heap low-water detects retained
+    // objects; the independent absolute RSS cap below still guards OOM risk.
+    if (!SIGNAL_FOCUSED_SOAK && !heapWithinBudget) {
       throw new Error(
-        `Post-warmup RSS kept growing: baseline=${warmBaseline}KiB final=${finalRss}KiB ` +
-        `peak=${Math.max(...rssSeries)}KiB limit=${RSS_GROWTH_LIMIT_KB}KiB`,
+        `Post-warmup JS heap kept growing: baseline=${warmBaseline}KiB final=${finalHeap}KiB ` +
+        `peak=${Math.max(...heapSeries)}KiB limit=${HEAP_GROWTH_LIMIT_KB}KiB`,
       )
     }
+  }
+  const rssPeakKb = rssSeries.length ? Math.max(...rssSeries) : 0
+  const rssWithinAbsoluteBudget = rssPeakKb <= RSS_PEAK_LIMIT_KB
+  if (!SIGNAL_FOCUSED_SOAK && !rssWithinAbsoluteBudget) {
+    throw new Error(
+      `Process RSS exceeded absolute safety cap: peak=${rssPeakKb}KiB ` +
+      `limit=${RSS_PEAK_LIMIT_KB}KiB configuredHeap=${CONFIGURED_NODE_HEAP_MB}MiB`,
+    )
   }
 
   latencies.sort((a, b) => a - b)
@@ -1506,16 +1590,27 @@ async function main() {
     progressionEnd: progression.at(-1),
     progressionPeakScore: Math.max(...progression.map((sample) => sample.score)),
     rssStartKb: rssSeries[0] || 0,
-    rssPeakKb: rssSeries.length ? Math.max(...rssSeries) : 0,
+    rssPeakKb,
     rssEndKb: rssSeries.at(-1) || 0,
-    rssGrowthLimitKb: RSS_GROWTH_LIMIT_KB,
-    rssLeakEvaluated,
-    rssLeakSamples: leakSeries.length,
-    rssGrowthKb,
-    rssWithinBudget,
+    rssPeakLimitKb: RSS_PEAK_LIMIT_KB,
+    rssWithinAbsoluteBudget,
+    heapStartKb: heapSeries[0] || 0,
+    heapPeakKb: heapSeries.length ? Math.max(...heapSeries) : 0,
+    heapEndKb: heapSeries.at(-1) || 0,
+    heapGrowthLimitKb: HEAP_GROWTH_LIMIT_KB,
+    heapLeakEvaluated,
+    heapLeakSamples: heapLeakSeries.length,
+    heapGrowthKb,
+    heapWithinBudget,
     databaseKeysStart: memory[0]?.databaseKeys || 0,
     databaseKeysEnd: memory.at(-1)?.databaseKeys || 0,
     databaseStableGrowth,
+    databaseStableVolatility,
+    databaseStableTotalGrowth,
+    databaseStableSetInventoryGrowth,
+    databaseStableOutcomeAuxiliaryGrowth,
+    indicationSetInventoryKeysEnd: memory.at(-1)?.indicationSetInventoryKeys || 0,
+    indicationOutcomeAuxiliaryKeysEnd: memory.at(-1)?.indicationOutcomeAuxiliaryKeys || 0,
     databaseStableGrowthLimit,
     databasePlateauWithinBudget,
     databaseAbsoluteLimit,

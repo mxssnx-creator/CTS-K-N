@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { verifyAuth } from "@/lib/auth"
 import { isKiloDeploymentRuntime } from "@/lib/deployment-runtime"
-import { getRealTradeInfrastructureBlockReason } from "@/lib/real-trade-gates"
+import { getRealTradeInfrastructureBlockReason, isForcedSimulation } from "@/lib/real-trade-gates"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -28,10 +28,14 @@ function isSameOriginBrowserRequest(request: Request): boolean {
 export async function POST(request: Request) {
   const auth = await verifyAuth(request)
   const authenticatedAdmin = auth.authenticated && auth.user?.role === "admin"
+  const realExchangeOrderingBlocked =
+    isForcedSimulation() ||
+    (process.env.NODE_ENV === "production" && process.env.ALLOW_LIVE_ORDER_PLACEMENT !== "1") ||
+    getRealTradeInfrastructureBlockReason().length > 0
   const safePaperPulse =
     !authenticatedAdmin &&
     isSameOriginBrowserRequest(request) &&
-    getRealTradeInfrastructureBlockReason().length > 0
+    realExchangeOrderingBlocked
   if (!authenticatedAdmin && !safePaperPulse) {
     return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 })
   }

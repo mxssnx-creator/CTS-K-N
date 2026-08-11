@@ -16,6 +16,14 @@ function normalizeScanResult(result: any): { cursor: string; keys: string[] } {
   }
 }
 
+async function yieldScanScheduler(): Promise<void> {
+  if (typeof setImmediate === "function") {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    return
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+}
+
 /**
  * Non-blocking key iteration shared by migrations, validation, and recovery.
  * KEYS remains only as a compatibility fallback for minimal test doubles or
@@ -38,6 +46,7 @@ export async function scanRedisKeys(
   const keys: string[] = []
   let cursor = "0"
   const visited = new Set<string>()
+  let pages = 0
   do {
     if (visited.has(cursor)) break
     visited.add(cursor)
@@ -46,6 +55,11 @@ export async function scanRedisKeys(
     )
     cursor = result.cursor
     keys.push(...result.keys.slice(0, Math.max(0, limit - keys.length)))
+    pages++
+    // Network Redis naturally returns through the I/O poll phase. The inline
+    // adapter resolves immediately, so explicitly yield between bounded page
+    // groups to keep liveness, order control, and recovery requests responsive.
+    if (cursor !== "0" && pages % 8 === 0) await yieldScanScheduler()
   } while (cursor !== "0" && keys.length < limit)
 
   return keys
@@ -60,6 +74,7 @@ export async function countRedisKeys(client: any, pattern: string): Promise<numb
   let total = 0
   let cursor = "0"
   const visited = new Set<string>()
+  let pages = 0
   do {
     if (visited.has(cursor)) break
     visited.add(cursor)
@@ -68,6 +83,8 @@ export async function countRedisKeys(client: any, pattern: string): Promise<numb
     )
     cursor = result.cursor
     total += result.keys.length
+    pages++
+    if (cursor !== "0" && pages % 8 === 0) await yieldScanScheduler()
   } while (cursor !== "0")
   return total
 }

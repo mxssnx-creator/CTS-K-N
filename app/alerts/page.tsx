@@ -1,597 +1,267 @@
 "use client"
-export const dynamic = "force-dynamic"
 
-
-import { useState, useEffect } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { AlertTriangle, Bell, CheckCircle2, History, Info, RefreshCw, ShieldAlert } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { Switch } from "@/components/ui/switch"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
-import {
-  Bell,
-  Plus,
-  Trash2,
-  TrendingUp,
-  TrendingDown,
-  AlertTriangle,
-  CheckCircle,
-  Clock,
-  DollarSign,
-} from "lucide-react"
-import { CreateAlertDialog } from "@/components/alerts/create-alert-dialog"
-import { AlertHistoryTable } from "@/components/alerts/alert-history-table"
-import { NotificationSettings } from "@/components/alerts/notification-settings"
-import type { PriceAlert, PositionAlert, SystemAlert, AlertHistory } from "@/lib/types"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { PageLoading, PageState } from "@/components/page-scaffold"
+import { toast } from "@/lib/simple-toast"
+
+interface MonitoringAlert {
+  id: string
+  level: "critical" | "warning" | "info"
+  category: string
+  message: string
+  timestamp: string
+  acknowledged: boolean
+  acknowledgedAt?: string | null
+}
+
+interface MonitoringResponse {
+  success: boolean
+  alerts: MonitoringAlert[]
+  count: number
+  unacknowledgedCount: number
+  criticalCount: number
+  warningCount: number
+  infoCount: number
+}
+
+interface DeliveryAlert {
+  id: string
+  severity: "info" | "warning" | "error" | "critical"
+  title: string
+  message: string
+  source: string
+  timestamp: string
+}
+
+interface DeliveryResponse {
+  alerts: DeliveryAlert[]
+  stats?: Record<string, number>
+  total: number
+}
+
+function severityClasses(level: string): string {
+  if (level === "critical" || level === "error") {
+    return "border-destructive/30 bg-destructive/8 text-destructive"
+  }
+  if (level === "warning") {
+    return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+  }
+  return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+}
+
+function SeverityIcon({ level }: { level: string }) {
+  if (level === "critical" || level === "error") return <ShieldAlert className="h-4 w-4" />
+  if (level === "warning") return <AlertTriangle className="h-4 w-4" />
+  return <Info className="h-4 w-4" />
+}
 
 export default function AlertsPage() {
-  const [activeTab, setActiveTab] = useState("price")
-  const [hasRealConnections, setHasRealConnections] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
-  const [priceAlerts, setPriceAlerts] = useState<PriceAlert[]>([])
-  const [positionAlerts, setPositionAlerts] = useState<PositionAlert[]>([])
-  const [systemAlerts, setSystemAlerts] = useState<SystemAlert[]>([])
-  const [alertHistory, setAlertHistory] = useState<AlertHistory[]>([])
-  const [showCreateDialog, setShowCreateDialog] = useState(false)
+  const [monitoring, setMonitoring] = useState<MonitoringResponse | null>(null)
+  const [delivery, setDelivery] = useState<DeliveryResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const inFlight = useRef(false)
+  const abortController = useRef<AbortController | null>(null)
 
-  useEffect(() => {
-    const checkConnections = async () => {
-      try {
-        const response = await fetch("/api/settings/connections")
-        const data = await response.json()
-        const activeConnections = data.connections?.filter((c: any) => c.is_enabled) || []
-        setHasRealConnections(activeConnections.length > 0)
+  const loadAlerts = useCallback(async (background = false) => {
+    if (inFlight.current) return
+    inFlight.current = true
+    if (background) setRefreshing(true)
+    abortController.current = new AbortController()
 
-        if (activeConnections.length === 0) {
-          setPriceAlerts([
-            {
-              id: "pa-1",
-              symbol: "BTCUSDT",
-              condition: "above",
-              price: 95000,
-              current_price: 92450,
-              is_enabled: true,
-              created_at: new Date().toISOString(),
-              triggered_at: null,
-            },
-            {
-              id: "pa-2",
-              symbol: "ETHUSDT",
-              condition: "below",
-              price: 3200,
-              current_price: 3450,
-              is_enabled: true,
-              created_at: new Date().toISOString(),
-              triggered_at: null,
-            },
-            {
-              id: "pa-3",
-              symbol: "SOLUSDT",
-              condition: "above",
-              price: 200,
-              current_price: 185,
-              is_enabled: false,
-              created_at: new Date().toISOString(),
-              triggered_at: null,
-            },
-          ])
+    try {
+      const [monitoringResult, deliveryResult] = await Promise.allSettled([
+        fetch("/api/monitoring/alerts", { cache: "no-store", signal: abortController.current.signal }),
+        fetch("/api/alerts?limit=100", { cache: "no-store", signal: abortController.current.signal }),
+      ])
 
-          setPositionAlerts([
-            {
-              id: "poa-1",
-              position_id: "pos-123",
-              symbol: "BTCUSDT",
-              alert_type: "profit_target",
-              threshold: 5.0,
-              current_value: 3.2,
-              is_enabled: true,
-              created_at: new Date().toISOString(),
-              triggered_at: null,
-            },
-            {
-              id: "poa-2",
-              position_id: "pos-456",
-              symbol: "ETHUSDT",
-              alert_type: "stop_loss",
-              threshold: -2.0,
-              current_value: -1.5,
-              is_enabled: true,
-              created_at: new Date().toISOString(),
-              triggered_at: null,
-            },
-            {
-              id: "poa-3",
-              position_id: "pos-789",
-              symbol: "BNBUSDT",
-              alert_type: "time_limit",
-              threshold: 24,
-              current_value: 18,
-              is_enabled: true,
-              created_at: new Date().toISOString(),
-              triggered_at: null,
-            },
-          ])
+      let updated = false
+      const failures: string[] = []
 
-          setSystemAlerts([
-            {
-              id: "sa-1",
-              alert_type: "connection_lost",
-              exchange: "Bybit",
-              connection_id: "bybit-x03",
-              severity: "high",
-              message: "Connection to Bybit X03 lost",
-              is_resolved: false,
-              created_at: new Date(Date.now() - 3600000).toISOString(),
-              resolved_at: null,
-            },
-            {
-              id: "sa-2",
-              alert_type: "high_drawdown",
-              exchange: "BingX",
-              connection_id: "bingx-x01",
-              severity: "medium",
-              message: "Portfolio drawdown exceeded 15%",
-              is_resolved: true,
-              created_at: new Date(Date.now() - 7200000).toISOString(),
-              resolved_at: new Date(Date.now() - 3600000).toISOString(),
-            },
-          ])
-
-          setAlertHistory([
-            {
-              id: "ah-1",
-              alert_type: "price",
-              symbol: "BTCUSDT",
-              message: "BTC price reached $94,500 (above $94,000)",
-              triggered_at: new Date(Date.now() - 1800000).toISOString(),
-              acknowledged: true,
-            },
-            {
-              id: "ah-2",
-              alert_type: "position",
-              symbol: "ETHUSDT",
-              message: "Position profit reached 5% target",
-              triggered_at: new Date(Date.now() - 3600000).toISOString(),
-              acknowledged: true,
-            },
-            {
-              id: "ah-3",
-              alert_type: "system",
-              symbol: null,
-              message: "Trade engine started successfully",
-              triggered_at: new Date(Date.now() - 7200000).toISOString(),
-              acknowledged: false,
-            },
-          ])
+      if (monitoringResult.status === "fulfilled" && monitoringResult.value.ok) {
+        const payload = await monitoringResult.value.json() as MonitoringResponse
+        if (payload.success) {
+          setMonitoring(payload)
+          updated = true
+        } else {
+          failures.push("monitoring alerts")
         }
-      } catch (error) {
-        console.error("Failed to check connections:", error)
-      } finally {
-        setIsLoading(false)
+      } else {
+        failures.push("monitoring alerts")
       }
-    }
 
-    checkConnections()
+      if (deliveryResult.status === "fulfilled" && deliveryResult.value.ok) {
+        setDelivery(await deliveryResult.value.json() as DeliveryResponse)
+        updated = true
+      } else {
+        failures.push("delivery history")
+      }
+
+      setError(failures.length > 0 ? `Unavailable: ${failures.join(", ")}` : null)
+      if (updated) setLastUpdated(new Date())
+    } catch (loadError) {
+      if (!(loadError instanceof DOMException && loadError.name === "AbortError")) {
+        setError(loadError instanceof Error ? loadError.message : "Failed to load alerts")
+      }
+    } finally {
+      inFlight.current = false
+      setLoading(false)
+      setRefreshing(false)
+    }
   }, [])
 
-  const handleTogglePriceAlert = (id: string, enabled: boolean) => {
-    setPriceAlerts((prev) => prev.map((alert) => (alert.id === id ? { ...alert, is_enabled: enabled } : alert)))
-  }
+  useEffect(() => {
+    void loadAlerts()
+    const interval = window.setInterval(() => void loadAlerts(true), 10_000)
+    return () => {
+      abortController.current?.abort()
+      window.clearInterval(interval)
+    }
+  }, [loadAlerts])
 
-  const handleDeletePriceAlert = (id: string) => {
-    setPriceAlerts((prev) => prev.filter((alert) => alert.id !== id))
-  }
+  const acknowledge = async (alertId: string) => {
+    try {
+      const response = await fetch("/api/monitoring/alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alertId }),
+      })
+      const payload = await response.json()
+      if (!response.ok || !payload.success) throw new Error(payload.error || "Acknowledgement failed")
 
-  const handleTogglePositionAlert = (id: string, enabled: boolean) => {
-    setPositionAlerts((prev) => prev.map((alert) => (alert.id === id ? { ...alert, is_enabled: enabled } : alert)))
-  }
-
-  const handleDeletePositionAlert = (id: string) => {
-    setPositionAlerts((prev) => prev.filter((alert) => alert.id !== id))
-  }
-
-  const handleResolveSystemAlert = (id: string) => {
-    setSystemAlerts((prev) =>
-      prev.map((alert) =>
-        alert.id === id ? { ...alert, is_resolved: true, resolved_at: new Date().toISOString() } : alert,
-      ),
-    )
-  }
-
-  const formatPrice = (price: number) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 2,
-    }).format(price)
-  }
-
-  const getSeverityColor = (severity: string) => {
-    switch (severity) {
-      case "high":
-        return "bg-red-500"
-      case "medium":
-        return "bg-yellow-500"
-      case "low":
-        return "bg-blue-500"
-      default:
-        return "bg-gray-500"
+      setMonitoring((current) => current ? {
+        ...current,
+        unacknowledgedCount: Math.max(0, current.unacknowledgedCount - 1),
+        alerts: current.alerts.map((alert) => alert.id === alertId
+          ? { ...alert, acknowledged: true, acknowledgedAt: payload.acknowledgedAt }
+          : alert),
+      } : current)
+      toast.success("Alert acknowledged")
+    } catch (ackError) {
+      toast.error(ackError instanceof Error ? ackError.message : "Acknowledgement failed")
     }
   }
 
-  const activeAlertsCount =
-    priceAlerts.filter((a) => a.is_enabled).length +
-    positionAlerts.filter((a) => a.is_enabled).length +
-    systemAlerts.filter((a) => !a.is_resolved).length
-
-  if (isLoading) {
+  if (loading) {
     return (
-      <div className="flex flex-col flex-1 overflow-auto">
-        <div className="p-6">
-          <div className="text-center py-12">
-            <div className="text-muted-foreground">Loading alerts...</div>
-          </div>
-        </div>
+      <div className="page-section">
+        <PageLoading label="Loading real operational alerts…" />
       </div>
     )
   }
 
+  const activeAlerts = monitoring?.alerts ?? []
+  const deliveryAlerts = delivery?.alerts ?? []
+
   return (
-    <div className="flex flex-col flex-1 overflow-auto">
-      <div className="p-6 space-y-6">
-        {!hasRealConnections && (
-          <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-yellow-500" />
-              <div>
-                <div className="font-semibold text-yellow-700 dark:text-yellow-400">Using Mock Data</div>
-                <div className="text-sm text-yellow-600 dark:text-yellow-500">
-                  No active exchange connections found. Enable a connection in Settings to see real alerts.
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-              Alert Management
-            </h1>
-            <p className="text-muted-foreground mt-1">Monitor price movements, positions, and system events</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <Badge variant="outline" className="text-lg px-4 py-2">
-              <Bell className="h-4 w-4 mr-2" />
-              {activeAlertsCount} Active
-            </Badge>
-            <Button onClick={() => setShowCreateDialog(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              Create Alert
-            </Button>
-          </div>
+    <div className="page-section space-y-5">
+      <div className="flex flex-col gap-3 rounded-xl border bg-card/70 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-muted-foreground">Operational alert stream</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Values come from Redis-backed monitoring and the current process alert manager; no demo alerts are substituted.
+          </p>
         </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-blue-500/10 rounded-lg">
-                  <DollarSign className="h-5 w-5 text-blue-500" />
-                </div>
-                <div>
-                  <div className="text-2xl font-bold">{priceAlerts.filter((a) => a.is_enabled).length}</div>
-                  <div className="text-sm text-muted-foreground">Price Alerts</div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-green-500/10 rounded-lg">
-                  <TrendingUp className="h-5 w-5 text-green-500" />
-                </div>
-                <div>
-                  <div className="text-2xl font-bold">{positionAlerts.filter((a) => a.is_enabled).length}</div>
-                  <div className="text-sm text-muted-foreground">Position Alerts</div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-red-500/10 rounded-lg">
-                  <AlertTriangle className="h-5 w-5 text-red-500" />
-                </div>
-                <div>
-                  <div className="text-2xl font-bold">{systemAlerts.filter((a) => !a.is_resolved).length}</div>
-                  <div className="text-sm text-muted-foreground">System Alerts</div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-purple-500/10 rounded-lg">
-                  <Clock className="h-5 w-5 text-purple-500" />
-                </div>
-                <div>
-                  <div className="text-2xl font-bold">{alertHistory.length}</div>
-                  <div className="text-sm text-muted-foreground">Total Triggered</div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-5">
-            <TabsTrigger value="price">Price Alerts</TabsTrigger>
-            <TabsTrigger value="position">Position Alerts</TabsTrigger>
-            <TabsTrigger value="system">System Alerts</TabsTrigger>
-            <TabsTrigger value="history">History</TabsTrigger>
-            <TabsTrigger value="settings">Settings</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="price" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Price Alerts</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {priceAlerts.length === 0 ? (
-                    <div className="text-center py-8 text-muted-foreground">
-                      <Bell className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                      <p>No price alerts configured</p>
-                    </div>
-                  ) : (
-                    priceAlerts.map((alert) => (
-                      <Card key={alert.id}>
-                        <CardContent className="p-4">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-4 flex-1">
-                              <div className="flex items-center gap-2">
-                                {alert.condition === "above" ? (
-                                  <TrendingUp className="h-5 w-5 text-green-500" />
-                                ) : (
-                                  <TrendingDown className="h-5 w-5 text-red-500" />
-                                )}
-                                <div>
-                                  <div className="font-semibold">{alert.symbol}</div>
-                                  <div className="text-sm text-muted-foreground">
-                                    Alert when price goes {alert.condition} {formatPrice(alert.price)}
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-6 ml-auto">
-                                <div>
-                                  <div className="text-xs text-muted-foreground">Current Price</div>
-                                  <div className="font-medium">{formatPrice(alert.current_price)}</div>
-                                </div>
-                                <div>
-                                  <div className="text-xs text-muted-foreground">Distance</div>
-                                  <div className="font-medium">
-                                    {(((alert.price - alert.current_price) / alert.current_price) * 100).toFixed(2)}%
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-3 ml-6">
-                              <Switch
-                                checked={alert.is_enabled}
-                                onCheckedChange={(checked) => handleTogglePriceAlert(alert.id, checked)}
-                              />
-                              <AlertDialog>
-                                <AlertDialogTrigger asChild>
-                                  <Button variant="ghost" size="sm">
-                                    <Trash2 className="h-4 w-4 text-red-500" />
-                                  </Button>
-                                </AlertDialogTrigger>
-                                <AlertDialogContent>
-                                  <AlertDialogHeader>
-                                    <AlertDialogTitle>Delete Alert</AlertDialogTitle>
-                                    <AlertDialogDescription>
-                                      Are you sure you want to delete this price alert for {alert.symbol}?
-                                    </AlertDialogDescription>
-                                  </AlertDialogHeader>
-                                  <AlertDialogFooter>
-                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                    <AlertDialogAction onClick={() => handleDeletePriceAlert(alert.id)}>
-                                      Delete
-                                    </AlertDialogAction>
-                                  </AlertDialogFooter>
-                                </AlertDialogContent>
-                              </AlertDialog>
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="position" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Position Alerts</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {positionAlerts.length === 0 ? (
-                    <div className="text-center py-8 text-muted-foreground">
-                      <Bell className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                      <p>No position alerts configured</p>
-                    </div>
-                  ) : (
-                    positionAlerts.map((alert) => (
-                      <Card key={alert.id}>
-                        <CardContent className="p-4">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-4 flex-1">
-                              <div>
-                                <div className="font-semibold">{alert.symbol}</div>
-                                <div className="text-sm text-muted-foreground">
-                                  {alert.alert_type === "profit_target" && `Profit Target: ${alert.threshold}%`}
-                                  {alert.alert_type === "stop_loss" && `Stop Loss: ${alert.threshold}%`}
-                                  {alert.alert_type === "time_limit" && `Time Limit: ${alert.threshold}h`}
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-6 ml-auto">
-                                <div>
-                                  <div className="text-xs text-muted-foreground">Current</div>
-                                  <div className="font-medium">
-                                    {alert.alert_type === "time_limit"
-                                      ? `${alert.current_value}h`
-                                      : `${alert.current_value}%`}
-                                  </div>
-                                </div>
-                                <Badge
-                                  variant={
-                                    alert.alert_type === "profit_target"
-                                      ? "default"
-                                      : alert.alert_type === "stop_loss"
-                                        ? "destructive"
-                                        : "secondary"
-                                  }
-                                >
-                                  {alert.alert_type.replace("_", " ")}
-                                </Badge>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-3 ml-6">
-                              <Switch
-                                checked={alert.is_enabled}
-                                onCheckedChange={(checked) => handleTogglePositionAlert(alert.id, checked)}
-                              />
-                              <AlertDialog>
-                                <AlertDialogTrigger asChild>
-                                  <Button variant="ghost" size="sm">
-                                    <Trash2 className="h-4 w-4 text-red-500" />
-                                  </Button>
-                                </AlertDialogTrigger>
-                                <AlertDialogContent>
-                                  <AlertDialogHeader>
-                                    <AlertDialogTitle>Delete Alert</AlertDialogTitle>
-                                    <AlertDialogDescription>
-                                      Are you sure you want to delete this position alert?
-                                    </AlertDialogDescription>
-                                  </AlertDialogHeader>
-                                  <AlertDialogFooter>
-                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                    <AlertDialogAction onClick={() => handleDeletePositionAlert(alert.id)}>
-                                      Delete
-                                    </AlertDialogAction>
-                                  </AlertDialogFooter>
-                                </AlertDialogContent>
-                              </AlertDialog>
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="system" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>System Alerts</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {systemAlerts.length === 0 ? (
-                    <div className="text-center py-8 text-muted-foreground">
-                      <CheckCircle className="h-12 w-12 mx-auto mb-4 opacity-50 text-green-500" />
-                      <p>No system alerts - all systems operational</p>
-                    </div>
-                  ) : (
-                    systemAlerts.map((alert) => (
-                      <Card key={alert.id}>
-                        <CardContent className="p-4">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-4 flex-1">
-                              <div className={`h-3 w-3 rounded-full ${getSeverityColor(alert.severity)}`} />
-                              <div>
-                                <div className="font-semibold">
-                                  {alert.exchange} - {alert.connection_id}
-                                </div>
-                                <div className="text-sm text-muted-foreground">{alert.message}</div>
-                                <div className="text-xs text-muted-foreground mt-1">
-                                  {new Date(alert.created_at).toLocaleString()}
-                                </div>
-                              </div>
-
-                              <div className="ml-auto">
-                                {alert.is_resolved ? (
-                                  <Badge variant="outline" className="bg-green-500/10 text-green-600">
-                                    <CheckCircle className="h-3 w-3 mr-1" />
-                                    Resolved
-                                  </Badge>
-                                ) : (
-                                  <Badge variant="destructive">Active</Badge>
-                                )}
-                              </div>
-                            </div>
-
-                            {!alert.is_resolved && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => handleResolveSystemAlert(alert.id)}
-                                className="ml-6"
-                              >
-                                Mark Resolved
-                              </Button>
-                            )}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="history">
-            <AlertHistoryTable history={alertHistory} />
-          </TabsContent>
-
-          <TabsContent value="settings">
-            <NotificationSettings />
-          </TabsContent>
-        </Tabs>
-
-        <CreateAlertDialog open={showCreateDialog} onOpenChange={setShowCreateDialog} />
+        <Button variant="outline" size="sm" onClick={() => void loadAlerts(true)} disabled={refreshing}>
+          <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+          Refresh
+        </Button>
       </div>
+
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/8 p-3 text-sm text-amber-700 dark:text-amber-300" role="status">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          {error}. Existing data remains visible where available.
+        </div>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <Card><CardContent className="p-4"><div className="text-2xl font-semibold tabular-nums">{monitoring?.count ?? 0}</div><div className="text-xs text-muted-foreground">Active conditions</div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="text-2xl font-semibold tabular-nums text-destructive">{monitoring?.criticalCount ?? 0}</div><div className="text-xs text-muted-foreground">Critical</div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="text-2xl font-semibold tabular-nums text-amber-600 dark:text-amber-400">{monitoring?.warningCount ?? 0}</div><div className="text-xs text-muted-foreground">Warnings</div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="text-2xl font-semibold tabular-nums text-sky-600 dark:text-sky-400">{monitoring?.infoCount ?? 0}</div><div className="text-xs text-muted-foreground">Information</div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="text-2xl font-semibold tabular-nums text-primary">{monitoring?.unacknowledgedCount ?? 0}</div><div className="text-xs text-muted-foreground">Unacknowledged</div></CardContent></Card>
+      </div>
+
+      <Tabs defaultValue="active" className="space-y-4">
+        <TabsList className="grid h-auto w-full grid-cols-2 sm:w-[26rem]">
+          <TabsTrigger value="active">
+            <Bell className="mr-2 h-4 w-4" />
+            Active conditions
+          </TabsTrigger>
+          <TabsTrigger value="history">
+            <History className="mr-2 h-4 w-4" />
+            Delivery history
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="active" className="space-y-3">
+          {activeAlerts.length === 0 ? (
+            <PageState
+              icon={CheckCircle2}
+              compact
+              title="No active alert conditions"
+              description="Monitoring currently reports no failed-order, inactive-connection, high-error-rate, or configuration alert."
+            />
+          ) : activeAlerts.map((alert) => (
+            <Card key={alert.id} className={alert.acknowledged ? "opacity-70" : undefined}>
+              <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center">
+                <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border ${severityClasses(alert.level)}`}>
+                  <SeverityIcon level={alert.level} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline" className={severityClasses(alert.level)}>{alert.level}</Badge>
+                    <Badge variant="secondary">{alert.category}</Badge>
+                    {alert.acknowledged && <Badge variant="outline"><CheckCircle2 className="mr-1 h-3 w-3" />Acknowledged</Badge>}
+                  </div>
+                  <p className="mt-2 text-sm text-foreground">{alert.message}</p>
+                  <p className="mt-1 text-[10px] font-mono text-muted-foreground">{new Date(alert.timestamp).toLocaleString()}</p>
+                </div>
+                {!alert.acknowledged && (
+                  <Button variant="outline" size="sm" onClick={() => void acknowledge(alert.id)}>
+                    <CheckCircle2 className="h-4 w-4" />
+                    Acknowledge
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+        </TabsContent>
+
+        <TabsContent value="history">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Current process delivery history</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {deliveryAlerts.length === 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">No alerts have been emitted by this application process.</p>
+              ) : deliveryAlerts.map((alert) => (
+                <div key={alert.id} className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3 sm:flex-row sm:items-start">
+                  <Badge variant="outline" className={severityClasses(alert.severity)}>{alert.severity}</Badge>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium">{alert.title}</div>
+                    <p className="mt-1 text-xs text-muted-foreground">{alert.message}</p>
+                    <p className="mt-1 text-[10px] font-mono text-muted-foreground">{alert.source} · {new Date(alert.timestamp).toLocaleString()}</p>
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+
+      <p className="text-center text-[10px] font-mono uppercase tracking-[0.12em] text-muted-foreground">
+        Last successful refresh: {lastUpdated ? lastUpdated.toLocaleTimeString() : "—"}
+      </p>
     </div>
   )
 }

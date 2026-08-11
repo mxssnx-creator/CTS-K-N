@@ -20,6 +20,7 @@ node_modules
 .v0-data/redis-snapshot.json
 .v0-data/redis-snapshot.json.corrupt-*
 .v0-data/redis-snapshot.json.*.tmp
+.v0-data/redis-snapshot.json.live-wal*
 
 # Redis/reference snapshots can contain connection metadata or credentials.
 refis*

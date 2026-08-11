@@ -1,6 +1,6 @@
 import type React from "react"
-import { DashboardShell } from "@/components/dashboard-shell"
+import { SectionShell } from "@/components/section-shell"
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  return <DashboardShell>{children}</DashboardShell>
+  return <SectionShell showScope={false}>{children}</SectionShell>
 }

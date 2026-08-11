@@ -51,6 +51,7 @@
     "test:stress-32": "NODE_OPTIONS='--expose-gc --max-old-space-size=1024' node scripts/stress-bingx-public-32.mjs",
     "test:stress-bingx-5": "BINGX_STRESS_SYMBOL_COUNT=5 BINGX_STRESS_TICKER_ROUNDS=3 NODE_OPTIONS='--expose-gc --max-old-space-size=1024' node scripts/stress-bingx-public-32.mjs",
     "test:direct-trade:matrix": "NODE_OPTIONS='--max-old-space-size=2048' node -r ts-node/register scripts/test-direct-trade-matrix.cjs",
+    "test:direct-trade:async-scale": "node scripts/benchmark-direct-trade-symbol-coordination.cjs",
     "test:direct-trade:block": "node -r ts-node/register scripts/test-direct-trade-block-comparison.cjs",
     "test:direct-trade:live-preflight": "node scripts/test-direct-trade-live-preflight.mjs",
     "test:direct-trade:80h": "DIRECT_TRADE_MATRIX_HOURS=80 NODE_OPTIONS='--max-old-space-size=2048' node -r ts-node/register scripts/test-direct-trade-matrix.cjs",

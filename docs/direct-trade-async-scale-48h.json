@@ -1,0 +1,372 @@
+{
+  "test": "direct-trade-48h-symbol-coordination",
+  "runtime": {
+    "node": "v24.14.0",
+    "availableParallelism": 8,
+    "totalMemoryMiB": 22458,
+    "freeMemoryMiBAtFinish": 16865,
+    "workerHeapLimitMiB": 1536
+  },
+  "correctness": {
+    "allSpecsComplete": true,
+    "deterministicAcrossConcurrency": true,
+    "bySymbolCount": [
+      {
+        "symbols": 1,
+        "expectedEvaluatedSets": 59136,
+        "expectedValidSets": 14,
+        "variants": 1,
+        "identical": true
+      },
+      {
+        "symbols": 2,
+        "expectedEvaluatedSets": 118272,
+        "expectedValidSets": 129,
+        "variants": 2,
+        "identical": true
+      },
+      {
+        "symbols": 3,
+        "expectedEvaluatedSets": 177408,
+        "expectedValidSets": 422,
+        "variants": 2,
+        "identical": true
+      },
+      {
+        "symbols": 4,
+        "expectedEvaluatedSets": 236544,
+        "expectedValidSets": 500,
+        "variants": 2,
+        "identical": true
+      },
+      {
+        "symbols": 8,
+        "expectedEvaluatedSets": 473088,
+        "expectedValidSets": 802,
+        "variants": 3,
+        "identical": true
+      },
+      {
+        "symbols": 16,
+        "expectedEvaluatedSets": 946176,
+        "expectedValidSets": 1645,
+        "variants": 3,
+        "identical": true
+      }
+    ],
+    "noNetworkRedisCredentialsOrOrders": true
+  },
+  "results": [
+    {
+      "symbols": 1,
+      "concurrency": 1,
+      "historicHours": 48,
+      "evaluatedSets": 59136,
+      "expectedSetsPerSymbol": 59136,
+      "validSets": 14,
+      "wallMs": 15545,
+      "millisecondsPerSymbol": 15545,
+      "setsPerSecond": 3804,
+      "childElapsedMs": {
+        "minimum": 10393,
+        "maximum": 10393,
+        "mean": 10393
+      },
+      "childHeapMiB": {
+        "maximum": 404,
+        "sum": 404
+      },
+      "maximumParentEventLoopDelayMs": 206.17
+    },
+    {
+      "symbols": 2,
+      "concurrency": 1,
+      "historicHours": 48,
+      "evaluatedSets": 118272,
+      "expectedSetsPerSymbol": 59136,
+      "validSets": 129,
+      "wallMs": 19826,
+      "millisecondsPerSymbol": 9913,
+      "setsPerSecond": 5965,
+      "childElapsedMs": {
+        "minimum": 7683,
+        "maximum": 8396,
+        "mean": 8040
+      },
+      "childHeapMiB": {
+        "maximum": 444,
+        "sum": 831
+      },
+      "maximumParentEventLoopDelayMs": 25.64
+    },
+    {
+      "symbols": 2,
+      "concurrency": 2,
+      "historicHours": 48,
+      "evaluatedSets": 118272,
+      "expectedSetsPerSymbol": 59136,
+      "validSets": 129,
+      "wallMs": 8143,
+      "millisecondsPerSymbol": 4071,
+      "setsPerSecond": 14524,
+      "childElapsedMs": {
+        "minimum": 5418,
+        "maximum": 6280,
+        "mean": 5849
+      },
+      "childHeapMiB": {
+        "maximum": 402,
+        "sum": 792
+      },
+      "maximumParentEventLoopDelayMs": 5.84
+    },
+    {
+      "symbols": 3,
+      "concurrency": 1,
+      "historicHours": 48,
+      "evaluatedSets": 177408,
+      "expectedSetsPerSymbol": 59136,
+      "validSets": 422,
+      "wallMs": 27511,
+      "millisecondsPerSymbol": 9170,
+      "setsPerSecond": 6449,
+      "childElapsedMs": {
+        "minimum": 5800,
+        "maximum": 9239,
+        "mean": 6959
+      },
+      "childHeapMiB": {
+        "maximum": 474,
+        "sum": 1138
+      },
+      "maximumParentEventLoopDelayMs": 212.84
+    },
+    {
+      "symbols": 3,
+      "concurrency": 3,
+      "historicHours": 48,
+      "evaluatedSets": 177408,
+      "expectedSetsPerSymbol": 59136,
+      "validSets": 422,
+      "wallMs": 9536,
+      "millisecondsPerSymbol": 3179,
+      "setsPerSecond": 18605,
+      "childElapsedMs": {
+        "minimum": 6618,
+        "maximum": 7310,
+        "mean": 6973
+      },
+      "childHeapMiB": {
+        "maximum": 446,
+        "sum": 1255
+      },
+      "maximumParentEventLoopDelayMs": 6.3
+    },
+    {
+      "symbols": 4,
+      "concurrency": 1,
+      "historicHours": 48,
+      "evaluatedSets": 236544,
+      "expectedSetsPerSymbol": 59136,
+      "validSets": 500,
+      "wallMs": 43504,
+      "millisecondsPerSymbol": 10876,
+      "setsPerSecond": 5437,
+      "childElapsedMs": {
+        "minimum": 5953,
+        "maximum": 15139,
+        "mean": 8903
+      },
+      "childHeapMiB": {
+        "maximum": 435,
+        "sum": 1687
+      },
+      "maximumParentEventLoopDelayMs": 250.82
+    },
+    {
+      "symbols": 4,
+      "concurrency": 4,
+      "historicHours": 48,
+      "evaluatedSets": 236544,
+      "expectedSetsPerSymbol": 59136,
+      "validSets": 500,
+      "wallMs": 11096,
+      "millisecondsPerSymbol": 2774,
+      "setsPerSecond": 21318,
+      "childElapsedMs": {
+        "minimum": 7172,
+        "maximum": 8511,
+        "mean": 7960
+      },
+      "childHeapMiB": {
+        "maximum": 411,
+        "sum": 1592
+      },
+      "maximumParentEventLoopDelayMs": 11.51
+    },
+    {
+      "symbols": 8,
+      "concurrency": 4,
+      "historicHours": 48,
+      "evaluatedSets": 473088,
+      "expectedSetsPerSymbol": 59136,
+      "validSets": 802,
+      "wallMs": 29842,
+      "millisecondsPerSymbol": 3730,
+      "setsPerSecond": 15853,
+      "childElapsedMs": {
+        "minimum": 8674,
+        "maximum": 13088,
+        "mean": 10659
+      },
+      "childHeapMiB": {
+        "maximum": 469,
+        "sum": 3218
+      },
+      "maximumParentEventLoopDelayMs": 315.46
+    },
+    {
+      "symbols": 8,
+      "concurrency": 7,
+      "historicHours": 48,
+      "evaluatedSets": 473088,
+      "expectedSetsPerSymbol": 59136,
+      "validSets": 802,
+      "wallMs": 30865,
+      "millisecondsPerSymbol": 3858,
+      "setsPerSecond": 15328,
+      "childElapsedMs": {
+        "minimum": 7309,
+        "maximum": 14833,
+        "mean": 13027
+      },
+      "childHeapMiB": {
+        "maximum": 457,
+        "sum": 2975
+      },
+      "maximumParentEventLoopDelayMs": 315.83
+    },
+    {
+      "symbols": 8,
+      "concurrency": 8,
+      "historicHours": 48,
+      "evaluatedSets": 473088,
+      "expectedSetsPerSymbol": 59136,
+      "validSets": 802,
+      "wallMs": 24401,
+      "millisecondsPerSymbol": 3050,
+      "setsPerSecond": 19388,
+      "childElapsedMs": {
+        "minimum": 12202,
+        "maximum": 14409,
+        "mean": 13065
+      },
+      "childHeapMiB": {
+        "maximum": 462,
+        "sum": 3053
+      },
+      "maximumParentEventLoopDelayMs": 237.87
+    },
+    {
+      "symbols": 16,
+      "concurrency": 4,
+      "historicHours": 48,
+      "evaluatedSets": 946176,
+      "expectedSetsPerSymbol": 59136,
+      "validSets": 1645,
+      "wallMs": 53614,
+      "millisecondsPerSymbol": 3351,
+      "setsPerSecond": 17648,
+      "childElapsedMs": {
+        "minimum": 6882,
+        "maximum": 13176,
+        "mean": 9823
+      },
+      "childHeapMiB": {
+        "maximum": 458,
+        "sum": 5559
+      },
+      "maximumParentEventLoopDelayMs": 243.5
+    },
+    {
+      "symbols": 16,
+      "concurrency": 7,
+      "historicHours": 48,
+      "evaluatedSets": 946176,
+      "expectedSetsPerSymbol": 59136,
+      "validSets": 1645,
+      "wallMs": 43781,
+      "millisecondsPerSymbol": 2736,
+      "setsPerSecond": 21612,
+      "childElapsedMs": {
+        "minimum": 9287,
+        "maximum": 12228,
+        "mean": 11162
+      },
+      "childHeapMiB": {
+        "maximum": 463,
+        "sum": 5099
+      },
+      "maximumParentEventLoopDelayMs": 166.74
+    },
+    {
+      "symbols": 16,
+      "concurrency": 8,
+      "historicHours": 48,
+      "evaluatedSets": 946176,
+      "expectedSetsPerSymbol": 59136,
+      "validSets": 1645,
+      "wallMs": 44859,
+      "millisecondsPerSymbol": 2804,
+      "setsPerSecond": 21092,
+      "childElapsedMs": {
+        "minimum": 12201,
+        "maximum": 19975,
+        "mean": 15487
+      },
+      "childHeapMiB": {
+        "maximum": 542,
+        "sum": 5715
+      },
+      "maximumParentEventLoopDelayMs": 324.21
+    }
+  ],
+  "fastestBySymbolCount": [
+    {
+      "symbols": 1,
+      "concurrency": 1,
+      "wallMs": 15545,
+      "setsPerSecond": 3804
+    },
+    {
+      "symbols": 2,
+      "concurrency": 2,
+      "wallMs": 8143,
+      "setsPerSecond": 14524
+    },
+    {
+      "symbols": 3,
+      "concurrency": 3,
+      "wallMs": 9536,
+      "setsPerSecond": 18605
+    },
+    {
+      "symbols": 4,
+      "concurrency": 4,
+      "wallMs": 11096,
+      "setsPerSecond": 21318
+    },
+    {
+      "symbols": 8,
+      "concurrency": 8,
+      "wallMs": 24401,
+      "setsPerSecond": 19388
+    },
+    {
+      "symbols": 16,
+      "concurrency": 7,
+      "wallMs": 43781,
+      "setsPerSecond": 21612
+    }
+  ]
+}

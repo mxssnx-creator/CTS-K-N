@@ -210,6 +210,12 @@ interface Settings {
   indicationFactorMultipliers: number[] | string
   activeThresholds: number[] | string
   activeTimeRatios: number[] | string
+  activeOutbreakRanges: number[] | string
+  activeNoiseFilter: number
+  activeVolatilityWeight: number
+  activeStopLossPositionCostRatios: number[] | string
+  activeTakeProfitMultipliers: number[] | string
+  activeMarketExitSituations: string[] | string
   activeAdvancedEnabled: boolean
   activeAdvancedActivityRatios: number[] | string
   activeAdvancedMinPositions: number
@@ -747,6 +753,12 @@ const initialSettings: Settings = {
   indicationFactorMultipliers: [0.9, 1, 1.1],
   activeThresholds: [0.5, 1, 1.5, 2, 2.5],
   activeTimeRatios: [0.5, 1],
+  activeOutbreakRanges: [3, 5, 10],
+  activeNoiseFilter: 0.05,
+  activeVolatilityWeight: 0.3,
+  activeStopLossPositionCostRatios: [2, 3, 5],
+  activeTakeProfitMultipliers: [1.25, 1.5, 1],
+  activeMarketExitSituations: ["momentum", "range_extension", "activity_fade"],
   activeAdvancedEnabled: true,
   activeAdvancedActivityRatios: [0.5, 1, 1.5, 2, 2.5, 3],
   activeAdvancedMinPositions: 3,

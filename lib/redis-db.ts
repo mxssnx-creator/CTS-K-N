@@ -30,6 +30,24 @@ import {
 const REDIS_DB_VERSION = "3.0.0"
 void REDIS_DB_VERSION
 
+function isKiloLocalPreviewRuntime(): boolean {
+  if (
+    process.env.KILO_LOCAL_PREVIEW_INLINE_REDIS !== "1" ||
+    process.env.ALLOW_INLINE_REDIS_LIVE_TRADING === "1" ||
+    !(
+      process.env.KILO_DEPLOYMENT === "1" ||
+      String(process.env.CTS_DEPLOYMENT_RUNTIME || "").toLowerCase() === "kilo-deploy"
+    )
+  ) return false
+  try {
+    const appUrl = String(process.env.NEXT_PUBLIC_APP_URL || process.env.DEPLOYMENT_URL || "")
+    const hostname = new URL(appUrl).hostname
+    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1"
+  } catch {
+    return false
+  }
+}
+
 interface SortedSetEntry {
   score: number
   member: string
@@ -249,6 +267,28 @@ export interface RedisClientLike {
 
 export class InlineLocalRedis implements RedisClientLike {
   private data: RedisData
+  /**
+   * Active SCAN cursors for the in-process Redis adapter.
+   *
+   * Redis cursors are opaque. Keeping the backing Map iterators here lets one
+   * cursor visit each key once instead of rebuilding and filtering the whole
+   * keyspace for every page. The previous implementation was O(keys × pages)
+   * and could monopolise the HTTP event loop for several seconds while a
+   * historic-generation marker cleanup was running.
+   */
+  private scanSessions = new Map<string, {
+    pattern: string
+    regex: RegExp
+    iterators: Array<Iterator<string>>
+    collectionIndex: number
+    remaining: number
+    seen: Set<string>
+    page: number
+    expiresAt: number
+  }>()
+  private scanSessionCounter = 0
+  private ttlCleanupIterator: Iterator<[string, number]> | null = null
+  private ttlCleanupRemaining = 0
 
   constructor() {
     // Use global storage for persistence across hot reloads
@@ -283,8 +323,11 @@ export class InlineLocalRedis implements RedisClientLike {
     // Run cleanup every 60 seconds to remove expired keys
     this.startTTLCleanup();
     
-    // Schedule an atomic disk snapshot at least once per minute.
-    this.startPersistence();
+    // Schedule an atomic disk snapshot at least once per minute. Workerd has
+    // no writable host filesystem; its explicit loopback-only acceptance mode
+    // keeps state in this one disposable isolate and must not spawn a failing
+    // fsync loop. Public deployments cannot satisfy this narrow predicate.
+    if (!isKiloLocalPreviewRuntime()) this.startPersistence()
   }
 
   // ──────────────────────────────────────────────────────────────────────
@@ -842,6 +885,15 @@ export class InlineLocalRedis implements RedisClientLike {
   }
 
   async persistLivePositionCheckpoint(position: Record<string, unknown>): Promise<boolean> {
+    if (isKiloLocalPreviewRuntime()) {
+      // Workerd has no host filesystem. The disposable, loopback-only Kilo
+      // acceptance runtime is forced to simulation and explicitly forbidden
+      // from live exchange placement, so its in-isolate Redis row is the whole
+      // paper checkpoint. Public Kilo deployments cannot enter this branch and
+      // still require the managed database/shared persistence contract.
+      this.markPersisted(this.mutationVersion())
+      return true
+    }
     if (hasKiloManagedDatabaseConfig()) return false
     const connectionId = String(position?.connectionId || position?.connection_id || "").trim()
     const positionId = String(position?.id || "").trim()
@@ -1190,6 +1242,10 @@ export class InlineLocalRedis implements RedisClientLike {
   }
 
   async saveToDisk(): Promise<boolean> {
+    if (isKiloLocalPreviewRuntime()) {
+      this.markPersisted(this.mutationVersion())
+      return true
+    }
     // The same source module may be bundled/evaluated independently by several
     // Next route chunks in one process. Coordinate through globalThis so those
     // copies cannot write/rename the same snapshot concurrently.
@@ -1585,6 +1641,12 @@ export class InlineLocalRedis implements RedisClientLike {
         const isMemoryWarm = heapUsedMB > CMEM.heapMB || rssMB > CMEM.rssSoftMB
         const hasKeyPressure = totalKeys > CMEM.maxKeys
         const activeEngineOwner = this.hasActiveInlineEngineOwner()
+        // Expiry is cheaper and more urgent than LRU/capacity eviction. Process
+        // one bounded TTL slice even while the engine owns the process so
+        // one-second indication cooldowns cannot remain counted in dbSize,
+        // snapshots, and heap until the engine stops. The iterator captures a
+        // finite cycle budget and therefore never chases continuous writes.
+        this.cleanupExpiredKeys(10_000)
         // Key-count pressure is advisory while an engine owns the process:
         // each full-map sweep is synchronous and may otherwise starve all HTTP
         // control routes while a high-frequency Direct-Trade batch is running.
@@ -1604,8 +1666,7 @@ export class InlineLocalRedis implements RedisClientLike {
         if (!shouldRunFullCleanup) return
         _lastFullCleanupMs = now
 
-        // Expired-key cleanup scans the TTL map, so avoid doing it every second
-        // unless pressure requires immediate cleanup.
+        // Finish any remaining TTL entries before a slower full eviction pass.
         this.cleanupExpiredKeys()
 
         if (!evictionDue) return
@@ -1690,16 +1751,45 @@ export class InlineLocalRedis implements RedisClientLike {
     }
   }
 
-  private cleanupExpiredKeys(): number {
+  private cleanupExpiredKeys(limit = Number.MAX_SAFE_INTEGER): number {
     const now = Date.now()
     const ttlMap = this.data.ttl
     if (!ttlMap) return 0
-    
+
+    const bounded = Number.isFinite(limit) && limit < Number.MAX_SAFE_INTEGER
+      ? Math.max(1, Math.floor(limit))
+      : Number.MAX_SAFE_INTEGER
+    let iterator: Iterator<[string, number]>
+    if (bounded === Number.MAX_SAFE_INTEGER) {
+      iterator = ttlMap.entries()
+      this.ttlCleanupIterator = null
+      this.ttlCleanupRemaining = 0
+    } else {
+      if (!this.ttlCleanupIterator || this.ttlCleanupRemaining <= 0) {
+        this.ttlCleanupIterator = ttlMap.entries()
+        this.ttlCleanupRemaining = ttlMap.size
+      }
+      iterator = this.ttlCleanupIterator
+    }
+
     let cleaned = 0
-    for (const [key, expireAt] of ttlMap.entries()) {
+    let examined = 0
+    while (examined < bounded) {
+      if (bounded !== Number.MAX_SAFE_INTEGER && this.ttlCleanupRemaining <= 0) {
+        this.ttlCleanupIterator = null
+        break
+      }
+      const next = iterator.next()
+      if (next.done) {
+        if (bounded !== Number.MAX_SAFE_INTEGER) this.ttlCleanupIterator = null
+        this.ttlCleanupRemaining = 0
+        break
+      }
+      examined++
+      if (bounded !== Number.MAX_SAFE_INTEGER) this.ttlCleanupRemaining--
+      const [key, expireAt] = next.value
       if (now >= expireAt) {
         this.deleteKey(key)
-        ttlMap.delete(key)
         cleaned++
       }
     }
@@ -2639,10 +2729,7 @@ export class InlineLocalRedis implements RedisClientLike {
   }
 
   private matchKeys(pattern: string): string[] {
-    const regexPattern = pattern
-      .replace(/\*/g, ".*")
-      .replace(/\?/g, ".")
-    const regex = new RegExp(`^${regexPattern}$`)
+    const regex = this.scanPatternRegex(pattern)
 
     const uniqueKeys = new Set<string>()
     const keyCollections = [
@@ -2661,6 +2748,13 @@ export class InlineLocalRedis implements RedisClientLike {
     }
 
     return Array.from(uniqueKeys)
+  }
+
+  private scanPatternRegex(pattern: string): RegExp {
+    const regexPattern = pattern
+      .replace(/\*/g, ".*")
+      .replace(/\?/g, ".")
+    return new RegExp(`^${regexPattern}$`)
   }
 
   async keys(pattern: string): Promise<string[]> {
@@ -2708,12 +2802,83 @@ export class InlineLocalRedis implements RedisClientLike {
 
   async scan(cursor: string | number, ...args: any[]): Promise<[string, string[]]> {
     const options = normalizeScanOptions(args)
-    const offset = Math.max(0, Number(cursor) || 0)
     const count = Math.max(1, Number(options.COUNT || 10))
-    const all = this.matchKeys(options.MATCH || "*")
-    const keys = all.slice(offset, offset + count)
-    const next = offset + count >= all.length ? "0" : String(offset + count)
-    return [next, keys]
+    const pattern = String(options.MATCH || "*")
+    const now = Date.now()
+
+    // Abandoned cursors must not retain Map iterators indefinitely. A complete
+    // application scan advances much faster than this; the TTL only protects
+    // callers that intentionally stop after a bounded result limit.
+    for (const [id, existing] of this.scanSessions) {
+      if (existing.expiresAt <= now) this.scanSessions.delete(id)
+    }
+
+    const cursorToken = String(cursor ?? "0")
+    // Return a changing opaque token on every page, like Redis does. The
+    // numeric prefix identifies the iterator session; the suffix prevents
+    // generic SCAN guards from treating a healthy multi-page scan as a stuck
+    // repeated cursor when several sparse pages contain no matches.
+    let cursorId = cursorToken === "0" ? "0" : cursorToken.split(".", 1)[0]
+    let session = cursorId === "0" ? undefined : this.scanSessions.get(cursorId)
+    if (!session || session.pattern !== pattern) {
+      cursorId = String(++this.scanSessionCounter)
+      const collections = [
+        this.data.strings,
+        this.data.hashes,
+        this.data.sets,
+        this.data.lists,
+        this.data.sorted_sets,
+      ]
+      session = {
+        pattern,
+        regex: this.scanPatternRegex(pattern),
+        iterators: collections.map((collection) => collection.keys()),
+        collectionIndex: 0,
+        // Capture a finite upper bound. JavaScript Map iterators can observe
+        // appended entries; without a budget, a continuously-writing engine
+        // could keep one diagnostic scan alive forever.
+        remaining: collections.reduce((sum, collection) => sum + collection.size, 0),
+        seen: new Set<string>(),
+        page: 0,
+        expiresAt: now + 30_000,
+      }
+      if (this.scanSessions.size >= 64) {
+        const oldest = this.scanSessions.keys().next().value
+        if (oldest !== undefined) this.scanSessions.delete(oldest)
+      }
+      this.scanSessions.set(cursorId, session)
+    }
+
+    const keys: string[] = []
+    let examined = 0
+    while (
+      examined < count &&
+      session.remaining > 0 &&
+      session.collectionIndex < session.iterators.length
+    ) {
+      const iterator = session.iterators[session.collectionIndex]
+      const next = iterator.next()
+      if (next.done) {
+        session.collectionIndex++
+        continue
+      }
+
+      examined++
+      session.remaining--
+      const key = String(next.value)
+      if (session.seen.has(key)) continue
+      session.seen.add(key)
+      if (!this.isExpired(key) && session.regex.test(key)) keys.push(key)
+    }
+
+    session.expiresAt = now + 30_000
+    const complete = session.remaining <= 0 || session.collectionIndex >= session.iterators.length
+    if (complete) {
+      this.scanSessions.delete(cursorId)
+      return ["0", keys]
+    }
+    session.page++
+    return [`${cursorId}.${session.page}`, keys]
   }
 
   async zadd(key: string, score: number, member: string): Promise<number> {

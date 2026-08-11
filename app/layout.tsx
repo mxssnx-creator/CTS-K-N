@@ -6,16 +6,23 @@ import { EngineAutoInitializer } from "@/components/engine-auto-initializer"
 
 // Build timestamp: 2026-04-10T13:07
 export const metadata: Metadata = {
-  title: "CTS-K-N",
-  description: "Trading control",
+  title: {
+    default: "CTS-K-N Control Plane",
+    template: "%s · CTS-K-N",
+  },
+  description: "Multi-exchange trading, progression, execution, and observability control plane.",
+  applicationName: "CTS-K-N",
+  category: "finance",
 }
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
-  themeColor: "#1a1a2e",
+  viewportFit: "cover",
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f3f7f8" },
+    { media: "(prefers-color-scheme: dark)", color: "#08131f" },
+  ],
 }
 
 export default function RootLayout({
@@ -40,7 +47,7 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className="font-sans antialiased">
+      <body className="min-h-dvh bg-background font-sans text-foreground antialiased">
         <EngineAutoInitializer />
         <Providers>
           <IndicationGeneratorProvider>

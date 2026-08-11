@@ -1,68 +1,82 @@
 "use client"
 
-import { useTheme } from "next-themes"
-import { Moon, Sun, Palette, Circle, Waves } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { useEffect, useState } from "react"
+import { useTheme } from "next-themes"
+import { Check, Circle, Moon, Palette, Sun, Waves } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+
+const themeOptions = [
+  { id: "light", label: "Control Light", description: "Balanced operational contrast", icon: Sun },
+  { id: "dark", label: "Night Operations", description: "Low-glare dark control room", icon: Moon },
+  { id: "white", label: "Clear White", description: "High-clarity neutral workspace", icon: Sun },
+  { id: "grey", label: "Tactical Grey", description: "Muted analytical surfaces", icon: Palette },
+  { id: "blackwhite", label: "Monochrome", description: "Pure black-and-white hierarchy", icon: Circle },
+  { id: "whiteactive", label: "Signal Blue", description: "Bright active-monitoring palette", icon: Waves },
+] as const
 
 export function ThemeSwitcher() {
   const { theme, setTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
 
-  // Prevent hydration mismatch by only rendering after mount
   useEffect(() => {
     setMounted(true)
   }, [])
 
   if (!mounted) {
     return (
-      <Button variant="ghost" size="icon" className="h-9 w-9">
-        <Sun className="h-4 w-4" />
-        <span className="sr-only">Toggle theme</span>
+      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Choose color theme" disabled>
+        <Sun className="h-3.5 w-3.5" />
+        <span className="sr-only">Choose color theme</span>
       </Button>
     )
   }
 
+  const activeTheme = themeOptions.find((option) => option.id === theme) ?? themeOptions[0]
+  const ActiveIcon = activeTheme.icon
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="h-9 w-9">
-          {theme === "dark" && <Moon className="h-4 w-4" />}
-          {theme === "light" && <Sun className="h-4 w-4" />}
-          {theme === "white" && <Sun className="h-4 w-4" />}
-          {theme === "grey" && <Palette className="h-4 w-4" />}
-          {theme === "blackwhite" && <Circle className="h-4 w-4" />}
-          {theme === "whiteactive" && <Waves className="h-4 w-4" />}
-          {!["dark", "light", "white", "grey", "blackwhite", "whiteactive"].includes(theme || "") && <Sun className="h-4 w-4" />}
-          <span className="sr-only">Toggle theme</span>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+          aria-label={`Color theme: ${activeTheme.label}`}
+          title={`Color theme: ${activeTheme.label}`}
+        >
+          <ActiveIcon className="h-3.5 w-3.5" />
+          <span className="sr-only">Choose color theme</span>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem onClick={() => setTheme("light")}>
-          <Sun className="mr-2 h-4 w-4" />
-          <span>Light</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setTheme("dark")}>
-          <Moon className="mr-2 h-4 w-4" />
-          <span>Dark</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setTheme("white")}>
-          <Sun className="mr-2 h-4 w-4" />
-          <span>White</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setTheme("grey")}>
-          <Palette className="mr-2 h-4 w-4" />
-          <span>Grey</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setTheme("blackwhite")}>
-          <Circle className="mr-2 h-4 w-4" />
-          <span>BlackWhite</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setTheme("whiteactive")}>
-          <Waves className="mr-2 h-4 w-4" />
-          <span>WhiteActive</span>
-        </DropdownMenuItem>
+      <DropdownMenuContent align="end" className="w-64">
+        <DropdownMenuLabel>Color environment</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {themeOptions.map((option) => {
+          const Icon = option.icon
+          const isActive = option.id === activeTheme.id
+          return (
+            <DropdownMenuItem
+              key={option.id}
+              onSelect={() => setTheme(option.id)}
+              className="items-start gap-2 py-2"
+            >
+              <Icon className="mt-0.5 h-4 w-4 shrink-0" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">{option.label}</span>
+                <span className="block text-xs text-muted-foreground">{option.description}</span>
+              </span>
+              <Check className={`mt-0.5 h-4 w-4 shrink-0 ${isActive ? "opacity-100" : "opacity-0"}`} />
+            </DropdownMenuItem>
+          )
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
   )

@@ -10,11 +10,11 @@ import { Button } from "@/components/ui/button"
 
 export default function VolumeCorrectionsPage() {
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="page-section space-y-6">
+      <div className="flex flex-col gap-3 rounded-xl border bg-card/70 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Volume Calculation Corrections</h1>
-          <p className="text-muted-foreground mt-2">
+          <h2 className="text-base font-semibold">Canonical calculation contract</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
             Understanding the correct architecture for pseudo positions and volume calculations
           </p>
         </div>

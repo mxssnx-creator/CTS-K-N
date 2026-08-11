@@ -37,16 +37,44 @@ const statsSlowDiagnosticAt = new Map<string, number>()
 // type so scopes never bleed into one another.
 const STATS_RESPONSE_CACHE_TTL_MS = 3_000
 const STATS_RESPONSE_CACHE_MAX_ENTRIES = 64
-const statsResponseCache = new Map<string, { expiresAt: number; response: Response }>()
-const statsResponseInFlight = new Map<string, Promise<Response>>()
+type StatsResponseSnapshot = {
+  body: string
+  headers: Array<[string, string]>
+  status: number
+  statusText: string
+}
+const statsResponseCache = new Map<string, { expiresAt: number; snapshot: StatsResponseSnapshot }>()
+const statsResponseInFlight = new Map<string, Promise<StatsResponseSnapshot>>()
 
 function statsResponseCacheKey(request: NextRequest, connectionId: string): string {
   const params = request.nextUrl?.searchParams || new URL(request.url || "http://localhost").searchParams
   return `${connectionId}:${params.get("engineType") || params.get("engine_type") || "main"}`
 }
 
-function cacheStatsResponse(key: string, response: Response): void {
-  if (!response.ok) return
+function responseFromStatsSnapshot(snapshot: StatsResponseSnapshot): Response {
+  // Cloudflare Workers bind Response bodies to the request I/O context that
+  // created them. Keeping a Response in a module-level cache and cloning it
+  // from a later request fails with an internal Workerd error. Only immutable,
+  // serialisable data may cross that boundary; create a fresh Response in the
+  // current request for every cache hit and in-flight waiter.
+  return new Response(snapshot.body, {
+    headers: snapshot.headers,
+    status: snapshot.status,
+    statusText: snapshot.statusText,
+  })
+}
+
+async function snapshotStatsResponse(response: Response): Promise<StatsResponseSnapshot> {
+  return {
+    body: await response.text(),
+    headers: Array.from(response.headers.entries()),
+    status: response.status,
+    statusText: response.statusText,
+  }
+}
+
+function cacheStatsResponse(key: string, snapshot: StatsResponseSnapshot): void {
+  if (snapshot.status < 200 || snapshot.status >= 300) return
   while (statsResponseCache.size >= STATS_RESPONSE_CACHE_MAX_ENTRIES && !statsResponseCache.has(key)) {
     const oldest = statsResponseCache.keys().next().value
     if (oldest === undefined) break
@@ -54,7 +82,7 @@ function cacheStatsResponse(key: string, response: Response): void {
   }
   statsResponseCache.set(key, {
     expiresAt: Date.now() + STATS_RESPONSE_CACHE_TTL_MS,
-    response: response.clone(),
+    snapshot,
   })
 }
 
@@ -533,11 +561,11 @@ export async function GET(
   const { id: connectionId } = await params
   const responseCacheKey = statsResponseCacheKey(request, connectionId)
   const cached = statsResponseCache.get(responseCacheKey)
-  if (cached && cached.expiresAt > Date.now()) return cached.response.clone()
+  if (cached && cached.expiresAt > Date.now()) return responseFromStatsSnapshot(cached.snapshot)
   if (cached) statsResponseCache.delete(responseCacheKey)
 
   const inFlight = statsResponseInFlight.get(responseCacheKey)
-  if (inFlight) return (await inFlight).clone()
+  if (inFlight) return responseFromStatsSnapshot(await inFlight)
 
   const requestStartedAt = Date.now()
   // Exhaustive stage snapshots can legitimately take longer while a large
@@ -4319,12 +4347,12 @@ export async function GET(
     }
   }
 
-  const responsePromise = mainLogic()
+  const responsePromise = mainLogic().then(snapshotStatsResponse)
   statsResponseInFlight.set(responseCacheKey, responsePromise)
   try {
-    const response = await responsePromise
-    cacheStatsResponse(responseCacheKey, response)
-    return response
+    const snapshot = await responsePromise
+    cacheStatsResponse(responseCacheKey, snapshot)
+    return responseFromStatsSnapshot(snapshot)
   } finally {
     if (statsResponseInFlight.get(responseCacheKey) === responsePromise) {
       statsResponseInFlight.delete(responseCacheKey)

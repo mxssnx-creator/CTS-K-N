@@ -49,33 +49,33 @@ export default function ChatHistoryPage() {
   }
 
   return (
-    <div className="flex-1 space-y-3 p-4 pt-4">
+    <div className="page-section space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold tracking-tight">Chat History</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-muted-foreground">Local archive summary</h2>
         <div className="flex gap-1 text-xs text-muted-foreground">
           <Download className="h-3 w-3" />
           <span>{loading ? "..." : stats?.totalMessages || 0} msgs</span>
         </div>
       </div>
 
-      <div className="grid gap-2 grid-cols-3">
-        <div className="rounded-md border px-3 py-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="rounded-lg border bg-card px-4 py-3 shadow-sm">
           <div className="text-xs text-muted-foreground">Total</div>
           <div className="text-lg font-bold">{loading ? "..." : stats?.totalMessages || 0}</div>
         </div>
-        <div className="rounded-md border px-3 py-2">
+        <div className="rounded-lg border bg-card px-4 py-3 shadow-sm">
           <div className="text-xs text-muted-foreground">Inputs</div>
           <div className="text-lg font-bold">{loading ? "..." : stats?.userMessages || 0}</div>
         </div>
-        <div className="rounded-md border px-3 py-2">
+        <div className="rounded-lg border bg-card px-4 py-3 shadow-sm">
           <div className="text-xs text-muted-foreground">Outputs</div>
           <div className="text-lg font-bold">{loading ? "..." : stats?.assistantMessages || 0}</div>
         </div>
       </div>
 
-      <div className="rounded-md border p-3">
+      <div className="rounded-lg border bg-card p-4 shadow-sm">
         <div className="text-sm font-medium mb-2">Export</div>
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row">
           <Button size="sm" variant="outline" onClick={() => handleDownload("combined")} className="flex-1 text-xs h-8">
             <Download className="h-3 w-3 mr-1" /> Combined
           </Button>
@@ -89,7 +89,7 @@ export default function ChatHistoryPage() {
       </div>
 
       {stats && (
-        <div className="rounded-md border px-3 py-2 flex justify-between text-xs">
+        <div className="flex flex-wrap justify-between gap-2 rounded-lg border bg-card px-4 py-3 text-xs shadow-sm">
           <span className="text-muted-foreground">Range:</span>
           <span className="font-mono">{new Date(stats.dateRange.start).toLocaleDateString()} - {new Date(stats.dateRange.end).toLocaleDateString()}</span>
         </div>

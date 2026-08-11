@@ -33,10 +33,15 @@ const env = {
 
 console.log('[dev-debug] Starting Next.js in debug mode...')
 console.log(`[dev-debug] Log level: ${env.LOG_LEVEL}`)
+const host = process.env.DEV_HOST || '0.0.0.0'
+console.log(`[dev-debug] Host: ${host}`)
 console.log('[dev-debug] Port: 3002')
 
 const nextBin = path.join(process.cwd(), 'node_modules', '.bin', 'next')
-const args = ['dev', '-p', '3002']
+// Passing the host explicitly prevents Next.js from enumerating network
+// interfaces during startup. Some hardened Linux containers deny the
+// uv_interface_addresses syscall even though binding a listener is allowed.
+const args = ['dev', '-H', host, '-p', '3002']
 
 const proc = spawn(nextBin, args, {
   env,

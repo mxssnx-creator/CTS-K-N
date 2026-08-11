@@ -51,6 +51,9 @@ child.once("error", (error) => {
   process.exitCode = 1
 })
 child.once("exit", (code, signal) => {
+  console.log(
+    `[production-start] runtime exited code=${code ?? "none"} signal=${signal || "none"}`,
+  )
   if (signal) {
     process.exitCode = signal === "SIGTERM" || signal === "SIGINT" ? 0 : 1
     return

@@ -36,6 +36,7 @@ const maxPositionsPerSymbol = Math.max(1, Math.floor(Number(process.env.DIRECT_T
 const maxPositionsPerDirection = Math.max(1, Math.floor(Number(process.env.DIRECT_TRADE_MATRIX_MAX_PER_DIRECTION) || 6))
 const progressEnabled = process.env.DIRECT_TRADE_MATRIX_PROGRESS === "1"
 const reportFile = String(process.env.DIRECT_TRADE_MATRIX_REPORT_FILE || "").trim()
+const summaryOnly = process.env.DIRECT_TRADE_MATRIX_SUMMARY_ONLY === "1"
 
 function minuteSeries(symbolIndex) {
   return Array.from({ length: historyHours * 60 }, (_, index) => {
@@ -418,4 +419,12 @@ const report = {
 }
 const serializedReport = JSON.stringify(report)
 if (reportFile) require("node:fs").writeFileSync(reportFile, `${serializedReport}\n`, "utf8")
-console.log(serializedReport)
+console.log(summaryOnly ? JSON.stringify({
+  test: report.test,
+  symbols: report.symbols,
+  historicHours: report.historicHours,
+  evaluatedSets: report.evaluatedSets,
+  validSets: report.validSets,
+  elapsedMs: report.elapsedMs,
+  heapMiB: report.heapMiB,
+}) : serializedReport)

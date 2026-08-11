@@ -11,14 +11,7 @@ export default function RealtimePage() {
   const connectionId = selectedConnectionId || ""
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold">Real-time Monitoring</h1>
-        <p className="text-muted-foreground">
-          Measured exchange/engine market data and position tracking
-        </p>
-      </div>
-
+    <div className="page-section space-y-5">
       <div className="grid gap-6 md:grid-cols-2">
         <MarketDataMonitor connectionId={connectionId} />
         <PositionMonitor connectionId={connectionId} />

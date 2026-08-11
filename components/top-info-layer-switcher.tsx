@@ -38,8 +38,14 @@ export function TopInfoLayerSwitcher() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="h-9 w-9" aria-label="Choose top info layer">
-          <CircuitBoard className="h-4 w-4" />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+          aria-label="Choose top information layer"
+          title="Choose top information layer"
+        >
+          <CircuitBoard className="h-3.5 w-3.5" />
           <span className="sr-only">Top info layer</span>
         </Button>
       </DropdownMenuTrigger>

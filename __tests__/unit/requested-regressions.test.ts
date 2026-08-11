@@ -436,6 +436,8 @@ describe("requested regression guardrails", () => {
     expect(processor).not.toContain('pipe.hincrby(w5Key,  "move"')
     expect(cron).toContain("runIndStratCycle(connectionId, symbol, \"realtime\"")
     expect(cron).toContain("ensureCurrentMarketDataCandle(symbol, client)")
+    expect(cron).toContain("if (isForcedSimulation()) return FALLBACK_SYMBOLS[0]")
+    expect(cron).toContain("if (isForcedSimulation()) return null")
     expect(tracking).toContain("aggregateWindowByType")
     expect(tracking).toContain("prefer the per-symbol snapshot")
     expect(tracking).toContain("if (idx <= 0 && hasSymbolField[type]) continue")
@@ -783,7 +785,9 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("private static readonly _AXIS_LRU_MAX = (() =>")
     expect(source).toContain("STRATEGY_VARIANT_BUILD_CONCURRENCY")
     expect(source).toContain("const buildTasks: Array<() => Promise<VariantBuildResult>>")
-    expect(source).toContain(".map((task) => task())")
+    expect(source).toContain("mapWithConcurrency(")
+    expect(source).toContain("(task) => task()")
+    expect(source).toContain("{ yieldEvery: STRATEGY_COOPERATIVE_YIELD_INTERVAL }")
     expect(source).toContain("await yieldStrategyScheduler()")
     expect(source).not.toContain("const results = await Promise.all(buildTasks)")
     expect(source).toContain("._lastRealSets[symbol] = liveSets")
@@ -1106,7 +1110,9 @@ describe("requested regression guardrails", () => {
     expect(soak).toContain("totalPossibleSets * 4 + SYMBOLS.length * 500")
     expect(soak).toContain("openPositions?.pseudo?.runningSets")
     expect(soak).toContain("strategyDetail?.real?.positionStats")
-    expect(soak).toContain('RUNTIME_MODE === "development" ? 1024 * 1024 : 512 * 1024')
+    expect(soak).toContain('RUNTIME_MODE === "production" && process.env.ALLOW_PROD_INLINE_REDIS === "1"')
+    expect(soak).toContain('? 1024 * 1024')
+    expect(soak).toContain(': 512 * 1024')
     expect(soak).toContain('memory.findIndex((sample) => sample.engineCycles > 0)')
     expect(soak).toContain("A real exchange position appeared during safe paper soak")
     expect(soak).toContain("Live mirrored row exceeds its Real-row input")
@@ -1484,8 +1490,12 @@ describe("requested regression guardrails", () => {
   ])("testing place-order forwards Redis is_testnet %s as connector isTestnet=%s", async (isTestnetFlag, expectedIsTestnet) => {
     jest.resetModules()
     const previousAdminSecret = process.env.ADMIN_SECRET
+    const previousForceSimulated = process.env.FORCE_SIMULATED
     const testAdminSecret = "test-admin-secret-32-characters"
     process.env.ADMIN_SECRET = testAdminSecret
+    // This test exercises a fully mocked connector path. Keep it independent
+    // from a process-level paper-mode override used by outer CI/soak runners.
+    delete process.env.FORCE_SIMULATED
 
     try {
       const hgetall = jest.fn().mockResolvedValue({
@@ -1548,6 +1558,8 @@ describe("requested regression guardrails", () => {
     } finally {
       if (previousAdminSecret === undefined) delete process.env.ADMIN_SECRET
       else process.env.ADMIN_SECRET = previousAdminSecret
+      if (previousForceSimulated === undefined) delete process.env.FORCE_SIMULATED
+      else process.env.FORCE_SIMULATED = previousForceSimulated
     }
   })
 
@@ -2280,10 +2292,13 @@ describe("requested regression guardrails", () => {
     const envExample = read(".env.example")
 
     expect(redisDb).toContain("function isProdInlineRedisAllowed()")
+    expect(redisDb).toContain("function isKiloLocalPreviewRuntime()")
+    expect(redisDb).toContain("if (!isKiloLocalPreviewRuntime()) this.startPersistence()")
     expect(redisDb).toContain('return process.env.ALLOW_PROD_INLINE_REDIS !== "0"')
     expect(redisDb).toContain('process.env.ALLOW_PROD_INLINE_REDIS = "1"')
     expect(redisDb).toContain("ALLOW_INLINE_REDIS_LIVE_TRADING")
     expect(readiness).toContain('process.env.ALLOW_PROD_INLINE_REDIS !== "0"')
+    expect(readiness).toContain("!kiloLocalPreviewInlineAllowed")
     expect(readiness).toContain("ALLOW_PROD_INLINE_REDIS=0")
     expect(readiness).toContain('"Global coordinator requires shared Redis"')
     expect(readiness).toContain('"shared_persistence_required"')
@@ -2504,6 +2519,17 @@ describe("requested regression guardrails", () => {
     expect(statsRoute).toContain("slowDiagnostic.unref?.()")
     expect(statsRoute).toContain("finally {")
     expect(statsRoute).toContain("clearTimeout(slowDiagnostic)")
+  })
+
+  test("progression stats cache never carries request-bound Response objects across Workerd requests", () => {
+    const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
+
+    expect(statsRoute).toContain("type StatsResponseSnapshot")
+    expect(statsRoute).toContain("responseFromStatsSnapshot")
+    expect(statsRoute).toContain("snapshotStatsResponse")
+    expect(statsRoute).toContain("body: await response.text()")
+    expect(statsRoute).not.toContain("response: response.clone()")
+    expect(statsRoute).not.toContain("cached.response.clone()")
   })
 
   test("real-stage active block overlays reuse per-cycle direction indexes", () => {
@@ -3295,6 +3321,8 @@ describe("requested regression guardrails", () => {
     expect(dashboardPulse).toContain('"authenticated-dashboard-fallback"')
     expect(dashboardPulse).toContain('"same-origin-paper-dashboard-fallback"')
     expect(dashboardPulse).toContain('getRealTradeInfrastructureBlockReason().length > 0')
+    expect(dashboardPulse).toContain("isForcedSimulation()")
+    expect(dashboardPulse).toContain('process.env.ALLOW_LIVE_ORDER_PLACEMENT !== "1"')
     expect(dashboardPulse).toContain('request.headers.get("x-cts-dashboard-pulse") === "1"')
     expect(dashboardPulse).toContain('!fetchSite || fetchSite === "same-origin"')
     expect(dashboardPulse).toContain('requestHostname.endsWith(".kiloapps.io")')

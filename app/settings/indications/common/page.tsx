@@ -139,13 +139,13 @@ export default function CommonIndicationsSettingsPage() {
   const coordination = settings.coordination
 
   return (
-    <div className="space-y-4 p-3 sm:p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="page-section space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card/70 p-4">
         <div>
-          <h1 className="flex items-center gap-2 text-xl font-semibold">
+          <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.14em] text-muted-foreground">
             <BarChart3 className="h-5 w-5 text-primary" />
-            Common indicators
-          </h1>
+            Configuration actions
+          </h2>
           <p className="text-xs text-muted-foreground">
             One durable contract for official technical indicators, presets and short-range coordination.
           </p>

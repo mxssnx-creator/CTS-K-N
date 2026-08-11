@@ -6,7 +6,7 @@ import { SignalIndicationSettings } from "@/components/settings/signal-indicatio
 
 export default function SignalIndicationsSettingsPage() {
   return (
-    <div className="space-y-4 p-3 sm:p-4">
+    <div className="page-section space-y-4">
       <SignalIndicationSettings />
     </div>
   )

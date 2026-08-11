@@ -103,9 +103,8 @@ export default function MigratePage() {
   }
 
   return (
-    <div className="p-6">
-      <Card className="p-6 max-w-2xl mx-auto">
-        <h1 className="text-2xl font-bold mb-4">Database Migrations</h1>
+    <div className="page-section">
+      <Card className="mx-auto max-w-3xl p-6">
         <p className="text-muted-foreground mb-6">
           Click the button below to run all database migrations and create missing tables.
         </p>

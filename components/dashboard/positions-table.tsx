@@ -22,7 +22,7 @@ interface Position {
 
 interface PositionsTableProps {
   positions: Position[]
-  onClosePosition: (id: number) => void
+  onClosePosition?: (id: number) => void
 }
 
 export function PositionsTable({ positions, onClosePosition }: PositionsTableProps) {
@@ -44,7 +44,7 @@ export function PositionsTable({ positions, onClosePosition }: PositionsTablePro
         </div>
       </CardHeader>
       <CardContent>
-        <div className="rounded-md border">
+        <div className="overflow-x-auto rounded-md border">
           <Table>
             <TableHeader>
               <TableRow>
@@ -101,9 +101,18 @@ export function PositionsTable({ positions, onClosePosition }: PositionsTablePro
                       <TableCell>{position.take_profit ? `$${position.take_profit.toFixed(2)}` : "-"}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">{formatDate(position.opened_at)}</TableCell>
                       <TableCell className="text-right">
-                        <Button size="sm" variant="ghost" onClick={() => onClosePosition(position.id)}>
-                          <X className="h-4 w-4" />
-                        </Button>
+                        {onClosePosition ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => onClosePosition(position.id)}
+                            aria-label={`Close ${position.symbol} position`}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">Read only</span>
+                        )}
                       </TableCell>
                     </TableRow>
                   )

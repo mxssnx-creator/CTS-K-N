@@ -4,24 +4,20 @@ import { Info } from "lucide-react"
 
 export default function AdditionalPage() {
   return (
-    <div className="flex-1 space-y-4 p-4 md:p-8 pt-6">
-      <div className="flex items-center justify-between space-y-2">
-        <h2 className="text-3xl font-bold tracking-tight">Additional Features</h2>
-      </div>
-
+    <div className="page-section space-y-4">
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Info className="h-5 w-5" />
             About Additional Features
           </CardTitle>
-          <CardDescription>Experimental and supplementary features for CTS v3.1</CardDescription>
+          <CardDescription>Supplementary operational references and workspace tools</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="rounded-lg border p-4 space-y-2">
             <h3 className="font-semibold">What is this section?</h3>
             <p className="text-sm text-muted-foreground">
-              The Additional section contains experimental features, tools, and pages that supplement the core CTS v3.1
+              The Reference section contains isolated tools and documentation that supplement the core CTS-K-N
               trading system without modifying or replacing any main functionality.
             </p>
           </div>
@@ -29,25 +25,23 @@ export default function AdditionalPage() {
           <div className="rounded-lg border p-4 space-y-2">
             <h3 className="font-semibold">Core System Protection</h3>
             <p className="text-sm text-muted-foreground">
-              All features in this section are isolated from the main trading system. The core navigation pages
-              (Overview, Live Trading, Presets, Settings, etc.) remain unchanged and fully functional.
+              Features in this section do not mutate the running engine unless an individual page explicitly exposes
+              an authenticated control. Core execution and progression continue independently.
             </p>
           </div>
 
           <div className="rounded-lg border p-4 space-y-2">
             <h3 className="font-semibold">Adding New Features</h3>
             <p className="text-sm text-muted-foreground">
-              To add a new feature, create a page under{" "}
+              Reference tools are implemented under{" "}
               <code className="text-xs bg-muted px-1 py-0.5 rounded">/app/additional/</code>
-              and update the <code className="text-xs bg-muted px-1 py-0.5 rounded">additionalItems</code> array in
-              <code className="text-xs bg-muted px-1 py-0.5 rounded">components/app-sidebar.tsx</code>.
+              and registered in the sidebar so every visible destination has a real route and a consistent shell.
             </p>
           </div>
 
           <div className="rounded-lg bg-muted p-4 space-y-2">
             <p className="text-xs text-muted-foreground font-mono">
-              No additional features have been added yet. This section will appear in the sidebar navigation once items
-              are added to the additionalItems array.
+              Available now: local chat-history export and the systemwide volume-ratio calculation reference.
             </p>
           </div>
         </CardContent>

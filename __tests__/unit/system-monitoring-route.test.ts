@@ -11,6 +11,8 @@ describe("system monitoring route", () => {
       client.del(`progression:${connectionId}:main`),
       client.del(`settings:trade_engine_state:${connectionId}:main`),
       client.del(`realtime:${connectionId}`),
+      client.del(`indication_sets:index:${connectionId}`),
+      client.del(`indication_sets:outcome_keys:index:${connectionId}`),
       client.srem("connections", connectionId),
       client.srem("connections:main:enabled", connectionId),
     ])
@@ -39,6 +41,12 @@ describe("system monitoring route", () => {
         realtime_cycle_count: "13",
       }),
       client.hset(`realtime:${connectionId}`, { cycle_count: "13" }),
+      client.sadd(`indication_sets:index:${connectionId}`, "indication-set-a", "indication-set-b"),
+      client.sadd(
+        `indication_sets:outcome_keys:index:${connectionId}`,
+        "indication-set-a:outcomes",
+        "indication-set-a:outcome_stats",
+      ),
     ])
 
     const response = await GET()
@@ -50,5 +58,7 @@ describe("system monitoring route", () => {
     expect(body.engines.strategies.cycleCount).toBeGreaterThanOrEqual(9)
     expect(body.engines.realtime.cycleCount).toBeGreaterThanOrEqual(17)
     expect(body.database.requestsPerSecond).toBeGreaterThan(0)
+    expect(body.database.indicationSetInventoryKeys).toBeGreaterThanOrEqual(2)
+    expect(body.database.indicationOutcomeAuxiliaryKeys).toBeGreaterThanOrEqual(2)
   })
 })

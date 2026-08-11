@@ -859,7 +859,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
 
                     {/* Position-Count (Pis) Sets coordination ratio */}
                     <div className="space-y-2 md:col-span-3">
-                      <Label>Position-Count (Pis) Coordination Ratio</Label>
+                      <Label>Position-Count (Pis) Sets Volume Ratio</Label>
                       <div className="flex items-center gap-3">
                         <Slider
                           min={POS_COUNT_VOLUME_RATIO_MIN}

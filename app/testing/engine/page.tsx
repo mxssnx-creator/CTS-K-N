@@ -139,7 +139,7 @@ export default function EngineTestingPage() {
   }
 
   return (
-    <div className="flex flex-col h-screen">
+    <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader 
         title="Engine Testing" 
         description="Test trading engine with live position placement and management"

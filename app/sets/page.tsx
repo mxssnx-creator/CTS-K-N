@@ -21,6 +21,7 @@ import {
   getIndicatorDefaults,
   type IndicationParameterRange,
 } from "@/lib/indication-range-calculator"
+import { PageLoading, PageState } from "@/components/page-scaffold"
 
 export default function SetsPage() {
   const [sets, setSets] = useState<PresetConfigurationSet[]>([])
@@ -174,11 +175,11 @@ export default function SetsPage() {
   }
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="page-section space-y-5">
+      <div className="flex flex-col gap-3 rounded-xl border bg-card/70 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Configuration Sets</h1>
-          <p className="text-muted-foreground mt-1">Manage configuration sets for preset coordination</p>
+          <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-muted-foreground">Set registry</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Persisted preset definitions remain independent and uncapped.</p>
         </div>
         <Button onClick={handleCreate}>
           <Plus className="h-4 w-4 mr-2" />
@@ -186,7 +187,23 @@ export default function SetsPage() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {loading && <PageLoading label="Loading configuration sets…" />}
+
+      {!loading && sets.length === 0 && (
+        <PageState
+          icon={Settings}
+          title="No configuration sets"
+          description="Create the first persisted set to configure indication, TP, SL, trailing, and evaluation ranges."
+          action={(
+            <Button onClick={handleCreate}>
+              <Plus className="h-4 w-4" />
+              Create Set
+            </Button>
+          )}
+        />
+      )}
+
+      {!loading && sets.length > 0 && <div className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
         {sets.map((set) => (
           <Card key={set.id} className="hover:shadow-lg transition-shadow">
             <CardHeader className="pb-3">
@@ -251,7 +268,7 @@ export default function SetsPage() {
             </CardContent>
           </Card>
         ))}
-      </div>
+      </div>}
 
       {sets.length === 0 && !loading && (
         <Card>

@@ -161,6 +161,7 @@ function checkMemoryAndTriggerGC(): void {
   try {
     const memUsage = process.memoryUsage()
     const heapUsedMB = Math.round(memUsage.heapUsed / 1024 / 1024)
+    const now = Date.now()
 
     // Update high water mark
     if (!globalThis.__memory_monitor__) globalThis.__memory_monitor__ = {}
@@ -168,23 +169,33 @@ function checkMemoryAndTriggerGC(): void {
       globalThis.__memory_monitor__.highWaterMark = heapUsedMB
     }
 
-    // Compare against the ACTUAL V8 heap limit, not the transient current
-    // allocation (heapTotal). heapTotal grows over time, so the old check
-    // (heapUsed > heapTotal * 0.8) fired GC constantly even when gigabytes of
-    // headroom remained — and under runtimes that ignore NODE_OPTIONS (e.g.
-    // launching the server via Bun) it produced a self-defeating GC death-loop
-    // that starved the engine cycle. Trigger GC only when we genuinely approach
-    // the configured heap ceiling.
-    const heapLimitMB = Math.round(((getHeapStatistics?.()?.heap_size_limit || memUsage.heapTotal) / 1024 / 1024))
-    if (heapUsedMB > heapLimitMB * 0.8) {
+    // Prefer the explicit launch contract. The bundler-safe fallback below is
+    // intentionally approximate, but `heapTotal * 4` can grow beyond the real
+    // --max-old-space-size and suppress collection entirely on large hosts.
+    const configuredHeapMB = Number(process.env.CTS_NODE_HEAP_MB || 5632)
+    const heapLimitMB = Number.isFinite(configuredHeapMB) && configuredHeapMB > 0
+      ? configuredHeapMB
+      : Math.round(((getHeapStatistics?.()?.heap_size_limit || memUsage.heapTotal) / 1024 / 1024))
+    const lastGC = Number(globalThis.__memory_monitor__.lastGC || 0)
+    const urgent = heapUsedMB > heapLimitMB * 0.8
+    // Complete strategy matrices intentionally allocate hundreds of thousands
+    // of short-lived rows. On a high-RAM host V8 otherwise retains those pages
+    // for several cycles because there is no allocation pressure near its hard
+    // limit. One maintenance collection at most every 30 seconds bounds RSS
+    // without putting GC in the per-symbol calculation path.
+    const maintenanceThresholdMB = Math.max(1024, Math.min(2048, heapLimitMB * 0.45))
+    const maintenanceDue = heapUsedMB > maintenanceThresholdMB && now - lastGC >= 30_000
+    if (urgent || maintenanceDue) {
       if (global.gc) {
         global.gc()
-        globalThis.__memory_monitor__.lastGC = Date.now()
+        globalThis.__memory_monitor__.lastGC = now
       }
-      console.warn(
-        `[v0] Memory pressure: ${heapUsedMB}MB / ${heapLimitMB}MB ` +
-        `(${Math.round((heapUsedMB / heapLimitMB) * 100)}%) - GC triggered`
-      )
+      if (urgent) {
+        console.warn(
+          `[v0] Memory pressure: ${heapUsedMB}MB / ${heapLimitMB}MB ` +
+          `(${Math.round((heapUsedMB / heapLimitMB) * 100)}%) - GC triggered`,
+        )
+      }
     }
   } catch (err) {
     // Silently ignore memory check errors
@@ -362,7 +373,10 @@ import { engineMonitor } from "@/lib/engine-performance-monitor"
 import { ConfigSetProcessor } from "./config-set-processor"
 import { StrategyCoordinator } from "@/lib/strategy-coordinator"
 import { prefetchMarketDataBatch, getHistoricCandleWindow } from "./market-data-cache"
-import { scanRedisKeys } from "@/lib/redis-scan"
+import {
+  clearHistoricAggregateMarkers,
+  clearHistoricListCompletionMarkers,
+} from "@/lib/redis-idempotent-list"
 import {
   // ── Cross-process progression ownership (spec §"no multiple started
   // progressions per connection, no switching"). The lock guarantees a
@@ -1116,20 +1130,21 @@ export class TradeEngineManager {
                 data_source: "forced-reload",
               })
               .catch(() => {})
-            const staleAggregateMarkers = await scanRedisKeys(
-              redisClient,
-              `historic:aggregate-marker:${this.connectionId}:*`,
-              { count: 500 },
-            ).catch(() => [])
-            for (let offset = 0; offset < staleAggregateMarkers.length; offset += 500) {
-              await Promise.allSettled(
-                staleAggregateMarkers.slice(offset, offset + 500).map((key) => redisClient.del(key)),
-              )
-              await new Promise<void>((resolve) => setImmediate(resolve))
-            }
+            await Promise.all([
+              clearHistoricAggregateMarkers(redisClient, this.connectionId).catch(() => 0),
+              clearHistoricListCompletionMarkers(redisClient, this.connectionId).catch(() => 0),
+            ])
             cacheHit = false
             prehistoricCached = null
           } else {
+            // A process may have stopped after publishing the complete cache
+            // but before the processor's final marker cleanup. Compact
+            // generation Sets make this O(1) in current releases; the helper
+            // also removes legacy scalar markers cooperatively.
+            await Promise.all([
+              clearHistoricAggregateMarkers(redisClient, this.connectionId).catch(() => 0),
+              clearHistoricListCompletionMarkers(redisClient, this.connectionId).catch(() => 0),
+            ])
             await setSettings(`trade_engine_state:${this.connectionId}`, {
               prehistoric_data_loaded: true,
               prehistoric_data_source: "verified-cache",
@@ -1825,11 +1840,10 @@ export class TradeEngineManager {
     const replacementScope = buildProgressionScope(this.connectionId, this.currentEngineType)
     const replacementDone = buildPrehistoricGateKeys(this.connectionId, this.currentEngineType, "done")
     const replacementFirstPass = buildPrehistoricGateKeys(this.connectionId, this.currentEngineType, "firstpass:done")
-    const replacementMarkers = await scanRedisKeys(
-      replacementClient,
-      `historic:aggregate-marker:${this.connectionId}:*`,
-      { count: 500 },
-    ).catch(() => [])
+    await Promise.all([
+      clearHistoricAggregateMarkers(replacementClient, this.connectionId).catch(() => 0),
+      clearHistoricListCompletionMarkers(replacementClient, this.connectionId).catch(() => 0),
+    ])
     await Promise.allSettled([
       replacementClient.del(`prehistoric_loaded:${this.connectionId}`),
       replacementClient.del(replacementScope.prehistoricLoadedKey),
@@ -1845,12 +1859,6 @@ export class TradeEngineManager {
       replacementClient.del(replacementFirstPass.scoped),
       replacementClient.del(replacementFirstPass.legacy),
     ])
-    for (let offset = 0; offset < replacementMarkers.length; offset += 500) {
-      await Promise.allSettled(
-        replacementMarkers.slice(offset, offset + 500).map((key) => replacementClient.del(key)),
-      )
-      await new Promise<void>((resolve) => setImmediate(resolve))
-    }
 
     if (!this.prehistoricBootstrapInFlight) {
       this.prehistoricReloadQueued = false

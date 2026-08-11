@@ -131,6 +131,56 @@ describe("InlineLocalRedis compatibility and persistence", () => {
     ])
   })
 
+  it("scans a large mixed keyspace incrementally without duplicates", async () => {
+    const redis = new InlineLocalRedis()
+    for (let index = 0; index < 240; index++) {
+      await redis.set(`historic:aggregate-marker:conn:${index}`, "1")
+      await redis.hset(`unrelated:hash:${index}`, { value: String(index) })
+    }
+
+    const collected: string[] = []
+    let cursor = "0"
+    let pages = 0
+    do {
+      const [next, keys] = await redis.scan(
+        cursor,
+        "MATCH",
+        "historic:aggregate-marker:conn:*",
+        "COUNT",
+        17,
+      )
+      cursor = next
+      collected.push(...keys)
+      pages++
+    } while (cursor !== "0")
+
+    expect(pages).toBeGreaterThan(1)
+    expect(collected).toHaveLength(240)
+    expect(new Set(collected).size).toBe(240)
+    expect(collected).toEqual(expect.arrayContaining([
+      "historic:aggregate-marker:conn:0",
+      "historic:aggregate-marker:conn:239",
+    ]))
+  })
+
+  it("reclaims expired TTL keys in bounded engine-safe slices", async () => {
+    jest.useFakeTimers()
+    jest.setSystemTime(new Date("2026-08-11T00:00:00.000Z"))
+    const redis = new InlineLocalRedis()
+    for (let index = 0; index < 25; index++) {
+      await redis.set(`cooldown:${index}`, "1", { PX: 500 })
+    }
+    expect(await redis.dbSize()).toBe(25)
+
+    jest.advanceTimersByTime(1_000)
+    expect((redis as any).cleanupExpiredKeys(7)).toBe(7)
+    expect(await redis.dbSize()).toBe(18)
+    expect((redis as any).cleanupExpiredKeys(7)).toBe(7)
+    expect(await redis.dbSize()).toBe(11)
+    expect((redis as any).cleanupExpiredKeys(20)).toBe(11)
+    expect(await redis.dbSize()).toBe(0)
+  })
+
   it("moves an existing list member to the head without leaving duplicates", async () => {
     const redis = new InlineLocalRedis()
     await redis.rpush("open:index", "position-a", "position-b", "position-a")
@@ -487,6 +537,25 @@ describe("InlineLocalRedis compatibility and persistence", () => {
     expect(source).toContain("const defaultInterval = 60_000")
     expect(source).toContain("Math.max(5_000, Math.min(60_000, Math.floor(configuredInterval)))")
     expect(source).toContain("if (evicted > 0) this.markDirty()")
+  })
+
+  it("keeps paper live-position checkpoints in memory in loopback-only Kilo Workerd preview", async () => {
+    process.env.KILO_LOCAL_PREVIEW_INLINE_REDIS = "1"
+    process.env.KILO_DEPLOYMENT = "1"
+    process.env.CTS_DEPLOYMENT_RUNTIME = "kilo-deploy"
+    process.env.NEXT_PUBLIC_APP_URL = "http://127.0.0.1:8787"
+    process.env.ALLOW_INLINE_REDIS_LIVE_TRADING = "0"
+
+    const redis = new InlineLocalRedis()
+    await redis.set("paper:checkpoint:mutation", "1")
+    await expect(redis.persistLivePositionCheckpoint({
+      id: "paper-live-position-1",
+      connectionId: "bingx-x01",
+      status: "simulated",
+    })).resolves.toBe(true)
+
+    expect((globalThis as any).__redis_live_position_wal_pending).toBeUndefined()
+    expect((globalThis as any).__redis_live_position_wal_write_counter).toBeUndefined()
   })
 
   it("keeps sorted sets ordered while updating duplicate members and slicing score ranges", async () => {

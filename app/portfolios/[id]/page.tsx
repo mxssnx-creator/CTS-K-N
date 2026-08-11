@@ -10,6 +10,8 @@ import { PositionsTable } from "@/components/dashboard/positions-table"
 import { Button } from "@/components/ui/button"
 import { ArrowLeft } from "lucide-react"
 import Link from "next/link"
+import { PageLoading, PageState } from "@/components/page-scaffold"
+import { AlertTriangle } from "lucide-react"
 
 export default function PortfolioDetailPage() {
   const params = useParams()
@@ -74,43 +76,44 @@ export default function PortfolioDetailPage() {
     }
   }
 
-  const handleClosePosition = async (positionId: number) => {
-    console.log("[v0] Closing position:", positionId)
-  }
-
   if (loading) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <p className="text-muted-foreground">Loading portfolio...</p>
+      <div className="page-section">
+        <PageLoading label="Loading portfolio detail…" />
       </div>
     )
   }
 
   return (
-    <div className="flex flex-col flex-1 overflow-auto">
-      <div className="p-6 space-y-6">
-        <div className="flex items-center gap-4">
+    <div className="page-section space-y-5">
+        <div className="flex items-center gap-3 rounded-xl border bg-card/70 p-3">
           <Link href="/portfolios">
-            <Button variant="ghost" size="icon">
+            <Button variant="ghost" size="icon" aria-label="Back to portfolios">
               <ArrowLeft className="h-5 w-5" />
             </Button>
           </Link>
           <div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-              Portfolio Details
-            </h1>
-            <p className="text-muted-foreground mt-1">Performance metrics and risk management</p>
+            <h2 className="text-sm font-semibold">Portfolio #{Number.isFinite(portfolioId) ? portfolioId : "—"}</h2>
+            <p className="text-xs text-muted-foreground">Performance metrics and persisted risk limits</p>
           </div>
         </div>
 
-        {metrics && <PortfolioMetrics metrics={metrics} />}
+        {(!Number.isSafeInteger(portfolioId) || portfolioId <= 0) && (
+          <PageState
+            icon={AlertTriangle}
+            tone="warning"
+            title="Invalid portfolio identifier"
+            description="Choose a portfolio from the portfolio overview to open a valid detail route."
+          />
+        )}
+
+        {Number.isSafeInteger(portfolioId) && portfolioId > 0 && metrics && <PortfolioMetrics metrics={metrics} />}
 
         {riskLimits && (
           <RiskSettings portfolioId={portfolioId} currentLimits={riskLimits} onUpdate={handleUpdateRiskLimits} />
         )}
 
-        <PositionsTable positions={positions} onClosePosition={handleClosePosition} />
-      </div>
+        {Number.isSafeInteger(portfolioId) && portfolioId > 0 && <PositionsTable positions={positions} />}
     </div>
   )
 }

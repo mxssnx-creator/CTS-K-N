@@ -205,6 +205,12 @@ function startServer({ engines = false } = {}) {
   })
   child.stdout.on("data", keepTail)
   child.stderr.on("data", keepTail)
+  child.once("exit", (code, signal) => {
+    keepTail(
+      `[production-start] child exited code=${code ?? "none"} ` +
+      `signal=${signal || "none"} engines=${engines ? "enabled" : "disabled"}\n`,
+    )
+  })
   return child
 }
 

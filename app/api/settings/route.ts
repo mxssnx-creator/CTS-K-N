@@ -31,6 +31,12 @@ import {
 import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "@/lib/pos-count-volume-ratio"
 import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 import { BLOCK_COUNT_MAX } from "@/lib/block-count-state"
+import {
+  ACTIVE_MARKET_EXIT_SITUATIONS,
+  DEFAULT_ACTIVE_OUTBREAK_RANGES,
+  DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS,
+  DEFAULT_ACTIVE_TAKE_PROFIT_MULTIPLIERS,
+} from "@/lib/active-outbreak-indication"
 
 /**
  * Fan out a "settings_changed" progression log event AND a settings-
@@ -253,6 +259,12 @@ function getDefaultSettings(): Record<string, any> {
     indicationFactorMultipliers: [0.9, 1, 1.1],
     activeThresholds: [0.5, 1, 1.5, 2, 2.5],
     activeTimeRatios: [0.5, 1],
+    activeOutbreakRanges: [...DEFAULT_ACTIVE_OUTBREAK_RANGES],
+    activeNoiseFilter: 0.05,
+    activeVolatilityWeight: 0.3,
+    activeStopLossPositionCostRatios: [...DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS],
+    activeTakeProfitMultipliers: [...DEFAULT_ACTIVE_TAKE_PROFIT_MULTIPLIERS],
+    activeMarketExitSituations: [...ACTIVE_MARKET_EXIT_SITUATIONS],
     activeAdvancedActivityRatios: [0.5, 1, 1.5, 2, 2.5, 3],
     activeAdvancedMinPositions: 3,
     activeAdvancedContinuationRatio: 0.6,

@@ -1,5 +1,10 @@
 jest.mock("next/server", () => ({
-  NextResponse: { json: (body: unknown, init?: unknown) => ({ body, init }) },
+  NextResponse: {
+    json: (body: unknown, init?: ResponseInit) => new Response(JSON.stringify(body), {
+      ...init,
+      headers: { "content-type": "application/json", ...(init?.headers || {}) },
+    }),
+  },
 }))
 
 const hgetall = jest.fn(async (key: string) => {
@@ -158,8 +163,9 @@ const { GET } = require("@/app/api/connections/progression/[id]/stats/route")
 describe("progression stats order aggregation", () => {
   it("uses one aggregation for mixed canonical and legacy rows in rows and direction totals", async () => {
     const response = await GET({} as Request, { params: Promise.resolve({ id: "conn-1" }) })
-    expect(response.body.error).toBeUndefined()
-    const live = response.body.liveExecution
+    const body = await response.json()
+    expect(body.error).toBeUndefined()
+    const live = body.liveExecution
 
     expect(live.ordersByDirection).toEqual({
       long: { placed: 7, filled: 5, failed: 2 },
@@ -190,7 +196,7 @@ describe("progression stats order aggregation", () => {
     ])
 
     expect(
-      response.body.strategyDetail.real.positionStats.adjustTypes.block.activeOverlayEvaluation,
+      body.strategyDetail.real.positionStats.adjustTypes.block.activeOverlayEvaluation,
     ).toMatchObject({
       evaluated: 4,
       calculated: 4,
@@ -212,7 +218,7 @@ describe("progression stats order aggregation", () => {
       strategyEnabled: true,
     })
     expect(
-      response.body.strategyDetail.real.positionStats.adjustTypes.block.countEvaluations,
+      body.strategyDetail.real.positionStats.adjustTypes.block.countEvaluations,
     ).toEqual([
       expect.objectContaining({
         count: 1,
@@ -230,7 +236,7 @@ describe("progression stats order aggregation", () => {
       }),
     ])
     expect(
-      response.body.strategyDetail.real.positionStats.adjustTypes.block.scopedEvaluations,
+      body.strategyDetail.real.positionStats.adjustTypes.block.scopedEvaluations,
     ).toEqual([
       expect.objectContaining({
         symbol: "BTCUSDT",

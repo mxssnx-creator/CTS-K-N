@@ -84,6 +84,14 @@ import {
   getCanonicalConnectionSettingsOverlay,
   overlayNonEmpty,
 } from "@/lib/connection-settings-overlay"
+import {
+  ACTIVE_MARKET_EXIT_SITUATIONS,
+  calculateActiveOutbreak,
+  DEFAULT_ACTIVE_OUTBREAK_RANGES,
+  DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS,
+  DEFAULT_ACTIVE_TAKE_PROFIT_MULTIPLIERS,
+  type ActiveMarketExitSituation,
+} from "@/lib/active-outbreak-indication"
 
 // Default limits per indication type (independently configurable)
 const DEFAULT_LIMITS = {
@@ -157,6 +165,7 @@ async function yieldIndicationScheduler(): Promise<void> {
 const RECORD_OUTCOME_SAMPLE_SCRIPT = `
 local sampleKey = KEYS[1]
 local statsKey = KEYS[2]
+local outcomeIndexKey = KEYS[3]
 local sampleJson = ARGV[1]
 local sampleProfit = tonumber(ARGV[2]) or 0
 local sampleLoss = tonumber(ARGV[3]) or 0
@@ -206,6 +215,7 @@ else
 end
 
 redis.call("HSET", statsKey, "grossProfit", tostring(grossProfit), "grossLoss", tostring(grossLoss), "count", tostring(count))
+redis.call("SADD", outcomeIndexKey, sampleKey, statsKey)
 return { tostring(grossProfit), tostring(grossLoss), tostring(count) }
 `
 
@@ -503,6 +513,16 @@ export class IndicationSetsProcessor {
   private factorMultipliers: number[] = [0.9, 1.0, 1.1]
   private activeThresholds: number[] = [0.5, 1.0, 1.5, 2.0, 2.5]
   private activeTimeRatios: number[] = [0.5, 1.0]
+  private activeOutbreakRanges: number[] = [...DEFAULT_ACTIVE_OUTBREAK_RANGES]
+  private activeNoiseFilter = 0.05
+  private activeVolatilityWeight = 0.3
+  private activeStopLossPositionCostRatios: number[] = [
+    ...DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS,
+  ]
+  private activeTakeProfitMultipliers: number[] = [...DEFAULT_ACTIVE_TAKE_PROFIT_MULTIPLIERS]
+  private activeMarketExitSituations: ActiveMarketExitSituation[] = [
+    ...ACTIVE_MARKET_EXIT_SITUATIONS,
+  ]
   private activeAdvancedActivityRatios: number[] = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
   private activeAdvancedMinPositions = 3
   private activeAdvancedContinuationRatio = 0.6
@@ -753,6 +773,30 @@ export class IndicationSetsProcessor {
         this.factorMultipliers = this.parseNumericList(settings.indicationFactorMultipliers, this.factorMultipliers)
         this.activeThresholds = this.parseNumericList(settings.activeThresholds, this.activeThresholds)
         this.activeTimeRatios = this.parseNumericList(settings.activeTimeRatios, this.activeTimeRatios)
+        this.activeOutbreakRanges = this.parsePositiveNumericList(
+          settings.activeOutbreakRanges ?? settings.activeMomentumWindows,
+          this.activeOutbreakRanges,
+        ).map((value) => Math.max(2, Math.round(value)))
+        this.activeNoiseFilter = Math.max(
+          0,
+          Math.min(5, this.parseNonNegativeNumber(settings.activeNoiseFilter, this.activeNoiseFilter)),
+        )
+        this.activeVolatilityWeight = Math.max(
+          0,
+          Math.min(1, this.parseNonNegativeNumber(settings.activeVolatilityWeight, this.activeVolatilityWeight)),
+        )
+        this.activeStopLossPositionCostRatios = this.parsePositiveNumericList(
+          settings.activeStopLossPositionCostRatios,
+          this.activeStopLossPositionCostRatios,
+        )
+        this.activeTakeProfitMultipliers = this.parsePositiveNumericList(
+          settings.activeTakeProfitMultipliers,
+          this.activeTakeProfitMultipliers,
+        )
+        this.activeMarketExitSituations = this.parseActiveMarketExitSituations(
+          settings.activeMarketExitSituations,
+          this.activeMarketExitSituations,
+        )
         const activeAdvanced = settings.active_advanced || settings.activeAdvanced || {}
         this.activeAdvancedActivityRatios = this.parseRangeObject(
           activeAdvanced.activity_ratios ||
@@ -1013,6 +1057,23 @@ export class IndicationSetsProcessor {
     return parsed.length > 0 ? Array.from(new Set(parsed)) : fallback
   }
 
+  private parseActiveMarketExitSituations(
+    raw: unknown,
+    fallback: ActiveMarketExitSituation[],
+  ): ActiveMarketExitSituation[] {
+    const source = Array.isArray(raw)
+      ? raw
+      : typeof raw === "string"
+        ? raw.split(/[\s,|]+/)
+        : []
+    const parsed = [...new Set(source
+      .map((value) => String(value).trim())
+      .filter((value): value is ActiveMarketExitSituation =>
+        ACTIVE_MARKET_EXIT_SITUATIONS.includes(value as ActiveMarketExitSituation),
+      ))]
+    return parsed.length > 0 ? parsed : fallback
+  }
+
   private parseNegativeNumericList(raw: any, fallback: number[]): number[] {
     const parsed = this.parseNumericList(raw, fallback)
       .map((value) => (value > 0 ? -value : value))
@@ -1149,7 +1210,6 @@ export class IndicationSetsProcessor {
       const typeTasks: Array<{ type: string; enabled: boolean; run: () => Promise<any> }> = [
         { type: "direction", enabled: this.directionEnabled, run: () => this.processDirectionSet(symbol, marketData) },
         { type: "move", enabled: this.moveEnabled, run: () => this.processMoveSet(symbol, marketData) },
-        { type: "active", enabled: this.activeEnabled, run: () => this.processActiveSet(symbol, marketData) },
         { type: "active_advanced", enabled: this.activeAdvancedEnabled, run: () => this.processActiveAdvancedSet(symbol, marketData) },
         { type: "optimal", enabled: this.optimalEnabled, run: () => this.processOptimalSet(symbol, marketData) },
         { type: "common", enabled: this.commonEnabled, run: () => this.processCommonSet(symbol, marketData) },
@@ -1168,14 +1228,20 @@ export class IndicationSetsProcessor {
           : disabledResult(task.type),
         { yieldEvery: 1 },
       )
-      // Trend is intentionally a completion barrier, not merely the final
-      // array element. Even where an operator raises the bounded primary-type
-      // concurrency, Trend starts only after all earlier Main indication
-      // families have yielded/persisted their result for this exact snapshot.
+      // Active/Outbreak is an explicit completion barrier immediately before
+      // Trend. The fast outbreak family can use the completed primary market
+      // observations while never racing the final, slower multi-timeframe
+      // Trend family. Raising primary-type concurrency does not change this
+      // deterministic workflow order.
+      const activeResults = this.activeEnabled
+        ? await runType("active", () => this.processActiveSet(symbol, marketData))
+        : disabledResult("active")
+      // Trend is intentionally the final completion barrier, not merely the
+      // final element in a Promise array.
       const trendResults = this.trendEnabled
         ? await runType("trend", () => this.processTrendSet(symbol, marketData))
         : disabledResult("trend")
-      const [directionResults, moveResults, activeResults, activeAdvancedResults, optimalResults, commonResults] = typeResults
+      const [directionResults, moveResults, activeAdvancedResults, optimalResults, commonResults] = typeResults
 
       const duration = Date.now() - startTime
       
@@ -1652,43 +1718,90 @@ export class IndicationSetsProcessor {
    */
   private async processActiveSet(symbol: string, marketData: any): Promise<any> {
     const thresholds = this.activeThresholds
+    const outbreakRanges = this.activeOutbreakRanges
     const drawdownRatios = this.drawdownRatios
     const activeTimeRatios = this.activeTimeRatios
     const lastPartRatios = this.lastPartRatios
     const factorMultipliers = this.factorMultipliers
     let qualified = 0
     let total = 0
+    let evaluated = 0
     const candidates: IndicationCandidate[] = []
 
-    for (const threshold of thresholds) {
-      for (const drawdownRatio of drawdownRatios) {
-        for (const activeTimeRatio of activeTimeRatios) {
-          for (const lastPartRatio of lastPartRatios) {
-            for (const factorMultiplier of factorMultipliers) {
-              try {
-                const indication = this.calculateActiveIndication(marketData, {
-                  threshold,
-                  drawdownRatio,
-                  activeTimeRatio,
-                  lastPartRatio,
-                  factorMultiplier,
-                })
-                if (indication) {
-                  total++
-                  const direction = resolveIndicationDirection(indication)
-                  if (!direction) continue
-                  indication.direction = direction
-                  const setKey =
-                    `indication_set:${this.connectionId}:${symbol}:active:${direction}` +
-                    `:t${threshold}:dd${drawdownRatio}:ar${activeTimeRatio}:lp${lastPartRatio}:f${factorMultiplier}`
-                  candidates.push({
-                    setKey,
-                    indication,
-                    config: { threshold, drawdownRatio, activeTimeRatio, lastPartRatio, factorMultiplier },
+    for (const outbreakRange of outbreakRanges) {
+      for (const threshold of thresholds) {
+        for (const drawdownRatio of drawdownRatios) {
+          for (const activeTimeRatio of activeTimeRatios) {
+            for (const lastPartRatio of lastPartRatios) {
+              for (const factorMultiplier of factorMultipliers) {
+                try {
+                  const indication = this.calculateActiveIndication(marketData, {
+                    outbreakRange,
+                    threshold,
+                    drawdownRatio,
+                    activeTimeRatio,
+                    lastPartRatio,
+                    factorMultiplier,
                   })
+                  if (indication) {
+                    const direction = resolveIndicationDirection(indication)
+                    if (!direction) continue
+                    indication.direction = direction
+                    // Range 10 was the historic Active window. Preserve its
+                    // durable key byte-for-byte; additional position ranges get
+                    // an explicit suffix and therefore independent history.
+                    const rangeSuffix = outbreakRange === 10 ? "" : `:r${outbreakRange}`
+                    const baseSetKey =
+                      `indication_set:${this.connectionId}:${symbol}:active:${direction}` +
+                      `:t${threshold}:dd${drawdownRatio}:ar${activeTimeRatio}:lp${lastPartRatio}:f${factorMultiplier}` +
+                      rangeSuffix
+                    const profiles = Array.isArray(indication.metadata?.activeOutbreak?.protectionProfiles)
+                      ? indication.metadata.activeOutbreak.protectionProfiles
+                      : []
+                    for (let profileIndex = 0; profileIndex < profiles.length; profileIndex++) {
+                      const activeProtection = profiles[profileIndex]
+                      // Keep the first profile on the historic key and append
+                      // exact protection identities for every additional SL ×
+                      // TP-market-exit situation. Existing history therefore
+                      // remains addressable while the expanded matrix is fully
+                      // independent.
+                      const setKey = profileIndex === 0
+                        ? baseSetKey
+                        : `${baseSetKey}:protection:${activeProtection.id}`
+                      total++
+                      candidates.push({
+                        setKey,
+                        indication: {
+                          ...indication,
+                          metadata: {
+                            ...indication.metadata,
+                            activeProtection,
+                          },
+                        },
+                        config: {
+                          threshold,
+                          outbreakRange,
+                          previousActivityRatio: activeTimeRatio,
+                          drawdownRatio,
+                          activeTimeRatio,
+                          lastPartRatio,
+                          factorMultiplier,
+                          activeProtectionProfileId: activeProtection.id,
+                          activeStopLossPct: activeProtection.stopLossPct,
+                          activeTakeProfitPct: activeProtection.takeProfitPct,
+                          activeMarketExitSituation: activeProtection.marketExitSituation,
+                          activeOrderExitType: activeProtection.orderExitType,
+                        },
+                      })
+                    }
+                  }
+                } catch (error) {
+                  console.error(`[v0] [IndicationSets] Active config error:`, error)
                 }
-              } catch (error) {
-                console.error(`[v0] [IndicationSets] Active config error:`, error)
+                evaluated++
+                if (evaluated % INDICATION_CANDIDATE_YIELD_INTERVAL === 0) {
+                  await yieldIndicationScheduler()
+                }
               }
             }
           }
@@ -1697,38 +1810,59 @@ export class IndicationSetsProcessor {
     }
 
     const coordinated = marketData?.__multiRangeCoordination as MultiRangeCoordination | undefined
+    const coordinatedTemplate = coordinated?.direction === "long" || coordinated?.direction === "short"
+      ? candidates.find((candidate) =>
+          resolveIndicationDirection(candidate.indication) === coordinated.direction &&
+          candidate.indication?.metadata?.activeOutbreak,
+        )
+      : undefined
     if (
       coordinated?.passed &&
       coordinated.activityAgreement >= 0.5 &&
-      (coordinated.direction === "long" || coordinated.direction === "short")
+      (coordinated.direction === "long" || coordinated.direction === "short") &&
+      coordinatedTemplate
     ) {
-      total++
       const direction = coordinated.direction
       const stepKey = coordinated.passedRangeSteps.join("-") || "none"
-      candidates.push({
-        setKey:
+      const protectionProfiles = coordinatedTemplate.indication.metadata.activeOutbreak.protectionProfiles || []
+      for (let profileIndex = 0; profileIndex < protectionProfiles.length; profileIndex++) {
+        const activeProtection = protectionProfiles[profileIndex]
+        total++
+        const baseSetKey =
           `indication_set:${this.connectionId}:${symbol}:active:${direction}` +
-          `:multi_range:steps${stepKey}`,
-        indication: {
-          profitFactor: 0,
-          signalScore: 1 + coordinated.score * 0.8,
-          rawSignalStrength: coordinated.score,
-          confidence: coordinated.activityAgreement,
-          direction,
-          metadata: {
+          `:multi_range:steps${stepKey}`
+        candidates.push({
+          setKey: profileIndex === 0
+            ? baseSetKey
+            : `${baseSetKey}:protection:${activeProtection.id}`,
+          indication: {
+            profitFactor: 0,
+            signalScore: 1 + coordinated.score * 0.8,
+            rawSignalStrength: coordinated.score,
+            confidence: coordinated.activityAgreement,
             direction,
-            mode: "multi_range",
-            sameMarketMoveRequired: true,
-            postDirectionChangeOnly: false,
-            multiRangeCoordination: coordinated,
+            metadata: {
+              direction,
+              mode: "active_outbreak_multi_range",
+              sameMarketMoveRequired: true,
+              postDirectionChangeOnly: false,
+              multiRangeCoordination: coordinated,
+              activeOutbreak: coordinatedTemplate.indication.metadata.activeOutbreak,
+              activeProtection,
+            },
           },
-        },
-        config: {
-          mode: "multi_range",
-          rangeSteps: this.defaultCoordination.rangeSteps,
-          ranges: this.defaultCoordination.timeframesMinutes,
-        },
-      })
+          config: {
+            mode: "active_outbreak_multi_range",
+            rangeSteps: this.defaultCoordination.rangeSteps,
+            ranges: this.defaultCoordination.timeframesMinutes,
+            activeProtectionProfileId: activeProtection.id,
+            activeStopLossPct: activeProtection.stopLossPct,
+            activeTakeProfitPct: activeProtection.takeProfitPct,
+            activeMarketExitSituation: activeProtection.marketExitSituation,
+            activeOrderExitType: activeProtection.orderExitType,
+          },
+        })
+      }
     }
 
     const pendingWrites = await this.attachQualifiedCandidates(symbol, marketData, candidates)
@@ -2222,7 +2356,12 @@ export class IndicationSetsProcessor {
     setKey: string,
     indication: any,
   ): Promise<number> {
-    const outcome = this.evaluateForwardOutcome(marketData, indication.direction)
+    const outcome = this.evaluateForwardOutcome(
+      marketData,
+      indication.direction,
+      undefined,
+      indication?.metadata?.activeProtection,
+    )
     if (outcome.completed) {
       const sample = {
         profit: Math.max(outcome.pnlPct, 0),
@@ -2273,6 +2412,8 @@ export class IndicationSetsProcessor {
     const client = await getCachedClient()
     const key = `${setKey}:outcomes`
     const statsKey = `${setKey}:outcome_stats`
+    const connectionId = String(setKey.split(":")[1] || this.connectionId)
+    const outcomeIndexKey = `indication_sets:outcome_keys:index:${connectionId}`
     const cap = 1000
     const serializedSample = JSON.stringify(sample)
     const sampleProfit = this.toOutcomeAmount(sample?.profit)
@@ -2283,7 +2424,7 @@ export class IndicationSetsProcessor {
       | undefined
     if (typeof evalLua === "function") {
       const result = await evalLua.call(client, RECORD_OUTCOME_SAMPLE_SCRIPT, {
-        keys: [key, statsKey],
+        keys: [key, statsKey, outcomeIndexKey],
         arguments: [serializedSample, String(sampleProfit), String(sampleLoss), String(cap)],
       })
       const grossProfit = Number(result?.[0] ?? 0)
@@ -2292,13 +2433,23 @@ export class IndicationSetsProcessor {
       return this.outcomePerformanceFromStats(grossProfit, grossLoss, count)
     }
 
-    return this.recordOutcomeSampleWithWatch(client, key, statsKey, serializedSample, sampleProfit, sampleLoss, cap)
+    return this.recordOutcomeSampleWithWatch(
+      client,
+      key,
+      statsKey,
+      outcomeIndexKey,
+      serializedSample,
+      sampleProfit,
+      sampleLoss,
+      cap,
+    )
   }
 
   private async recordOutcomeSampleWithWatch(
     client: any,
     key: string,
     statsKey: string,
+    outcomeIndexKey: string,
     serializedSample: string,
     sampleProfit: number,
     sampleLoss: number,
@@ -2320,6 +2471,7 @@ export class IndicationSetsProcessor {
           const tx = client.multi()
           tx.rpush(key, serializedSample)
           if (evictCount > 0) tx.ltrim(key, -cap, -1)
+          tx.sadd(outcomeIndexKey, key, statsKey)
           const execResult = await tx.exec()
           if (!canWatch || execResult !== null) {
             return this.repairOutcomeStatsFromSamples(client, key, statsKey)
@@ -2352,6 +2504,7 @@ export class IndicationSetsProcessor {
           grossLoss: String(grossLoss),
           count: String(count),
         })
+        tx.sadd(outcomeIndexKey, key, statsKey)
         const execResult = await tx.exec()
         if (!canWatch || execResult !== null) {
             return this.outcomePerformanceFromStats(grossProfit, grossLoss, count)
@@ -2470,6 +2623,9 @@ export class IndicationSetsProcessor {
         direction: indication.direction,
         signalScore: indication.signalScore,
         rawSignalStrength: indication.rawSignalStrength,
+        ...(indication?.metadata?.activeProtection && {
+          activeProtection: indication.metadata.activeProtection,
+        }),
         openedAt: Date.now(),
       }
       // An unchanged realtime snapshot needs one forward-observation slot per
@@ -2517,6 +2673,7 @@ export class IndicationSetsProcessor {
           marketData,
           pending.direction,
           Number(pending.openedAt),
+          pending.activeProtection,
         )
         if (!closed.completed) {
           stillPending.push(item)
@@ -2616,14 +2773,23 @@ export class IndicationSetsProcessor {
     marketData: any,
     direction: "long" | "short",
     openedAt?: number,
+    activeProtection?: { takeProfitPct?: unknown; stopLossPct?: unknown; marketExitSituation?: unknown },
   ): any {
     const candles = this.getForwardCandles(marketData, openedAt)
     if (candles.length < 2) return { completed: false, reason: "insufficient_forward_candles" }
     const entry = Number(marketData.executionPrice ?? candles[1].open ?? candles[1].close ?? candles[1].price)
     if (!Number.isFinite(entry) || entry <= 0) return { completed: false, reason: "invalid_entry_price" }
     const cost = this.outcomeTakerFeePct * 2 + this.outcomeSlippagePct
-    const tp = direction === "long" ? entry * (1 + this.outcomeTakeProfitPct) : entry * (1 - this.outcomeTakeProfitPct)
-    const sl = direction === "long" ? entry * (1 - this.outcomeStopLossPct) : entry * (1 + this.outcomeStopLossPct)
+    const configuredTakeProfitPct = Number(activeProtection?.takeProfitPct)
+    const configuredStopLossPct = Number(activeProtection?.stopLossPct)
+    const takeProfitRatio = Number.isFinite(configuredTakeProfitPct) && configuredTakeProfitPct > 0
+      ? configuredTakeProfitPct / 100
+      : this.outcomeTakeProfitPct
+    const stopLossRatio = Number.isFinite(configuredStopLossPct) && configuredStopLossPct > 0
+      ? configuredStopLossPct / 100
+      : this.outcomeStopLossPct
+    const tp = direction === "long" ? entry * (1 + takeProfitRatio) : entry * (1 - takeProfitRatio)
+    const sl = direction === "long" ? entry * (1 - stopLossRatio) : entry * (1 + stopLossRatio)
     const horizon = Math.min(candles.length - 1, Math.max(1, Math.floor(this.outcomeHorizonCandles)))
     let exit = Number(candles[horizon].close ?? candles[horizon].price ?? candles[horizon].open)
     let reason = "horizon"
@@ -2636,7 +2802,20 @@ export class IndicationSetsProcessor {
       if (direction === "short" && high >= sl) { exit = sl; reason = "stop_loss"; break }
     }
     const gross = direction === "long" ? (exit - entry) / entry : (entry - exit) / entry
-    return { completed: true, entry, exit, reason, pnlPct: gross - cost, costPct: cost, horizonCandles: horizon }
+    return {
+      completed: true,
+      entry,
+      exit,
+      reason,
+      pnlPct: gross - cost,
+      costPct: cost,
+      horizonCandles: horizon,
+      takeProfitPct: takeProfitRatio * 100,
+      stopLossPct: stopLossRatio * 100,
+      ...(activeProtection?.marketExitSituation ? {
+        marketExitSituation: String(activeProtection.marketExitSituation),
+      } : {}),
+    }
   }
 
   private getForwardCandles(marketData: any, openedAt?: number): any[] {
@@ -2767,6 +2946,7 @@ export class IndicationSetsProcessor {
   private calculateActiveIndication(
     marketData: any,
     config: {
+      outbreakRange: number
       threshold: number
       drawdownRatio: number
       activeTimeRatio: number
@@ -2774,43 +2954,54 @@ export class IndicationSetsProcessor {
       factorMultiplier: number
     },
   ): any {
-    const { threshold, drawdownRatio, activeTimeRatio, lastPartRatio, factorMultiplier } = config
-    const prices = this.getPriceHistory(marketData, 10)
-    if (!prices || prices.length < 2) return null
-
-    const oldestPrice = prices[0]
-    const newestPrice = prices[prices.length - 1]
-    const signedPriceChange = ((newestPrice - oldestPrice) / oldestPrice) * 100
-    const priceChange = Math.abs(signedPriceChange)
-
-    if (priceChange >= threshold) {
-      const normalizedChange = priceChange / Math.max(threshold, 0.1)
-      const estimatedDrawdown = Math.max(0.1, normalizedChange / Math.max(drawdownRatio, 0.1))
-      const activeTimeScore = normalizedChange * activeTimeRatio
-      const tailWeight = 1 + lastPartRatio
-      const signalScore = 1.0 + ((priceChange / 100) * factorMultiplier * tailWeight) - (estimatedDrawdown * 0.01)
-      return {
-        profitFactor: 0,
-        signalScore,
-        rawSignalStrength: signalScore,
-        confidence: Math.min(1.0, priceChange / threshold / 2),
-        direction: signedPriceChange >= 0 ? "long" : "short",
-        metadata: {
-          direction: signedPriceChange >= 0 ? "long" : "short",
-          signedPriceChange,
-          priceChange,
-          threshold,
-          drawdownRatio,
-          activeTimeRatio,
-          lastPartRatio,
-          factorMultiplier,
-          estimatedDrawdown,
-          activeTimeScore,
+    const {
+      outbreakRange,
+      threshold,
+      drawdownRatio,
+      activeTimeRatio,
+      lastPartRatio,
+      factorMultiplier,
+    } = config
+    const prices = this.getPriceHistory(marketData, outbreakRange * 2 + 1)
+    if (!prices) return null
+    const signal = calculateActiveOutbreak({
+      pricesOldestFirst: prices,
+      range: outbreakRange,
+      thresholdPct: threshold,
+      previousActivityRatio: activeTimeRatio,
+      noiseFilterPct: this.activeNoiseFilter,
+      drawdownRatio,
+      lastPartRatio,
+      factorMultiplier,
+      volatilityWeight: this.activeVolatilityWeight,
+      positionCostPct: this.trendPositionCostPct,
+      stopLossPositionCostRatios: this.activeStopLossPositionCostRatios,
+      takeProfitMultipliers: this.activeTakeProfitMultipliers,
+      marketExitSituations: this.activeMarketExitSituations,
+    })
+    if (!signal) return null
+    return {
+      profitFactor: 0,
+      signalScore: signal.signalScore,
+      rawSignalStrength: signal.rawSignalStrength,
+      confidence: signal.confidence,
+      direction: signal.direction,
+      metadata: {
+        direction: signal.direction,
+        mode: "active_outbreak",
+        threshold,
+        outbreakRange,
+        drawdownRatio,
+        activeTimeRatio,
+        previousActivityRatio: activeTimeRatio,
+        lastPartRatio,
+        factorMultiplier,
+        activeOutbreak: {
+          ...signal.metrics,
+          protectionProfiles: signal.protectionProfiles,
         },
-      }
+      },
     }
-
-    return null
   }
 
   private calculateActiveAdvancedIndication(
@@ -2970,6 +3161,7 @@ export class IndicationSetsProcessor {
     // misleading progress and permanently empty sets for the widest ranges.
     return Math.max(
       10,
+      ...this.activeOutbreakRanges.map((range) => range * 2 + 1),
       ...this.directionMoveRanges.map((range) => range * 2),
       ...this.optimalRanges.map((range) => range * 3),
       ...this.trendTimeframesMinutes.map((minutes) => minutes + 1),

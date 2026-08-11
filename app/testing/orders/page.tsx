@@ -1,10 +1,14 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { AlertCircle, CheckCircle2, XCircle, Play, RefreshCw, Loader2, Send } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
+import { LIVE_ORDER_CONFIRMATION_PHRASE } from "@/lib/live-order-safety"
 
 interface TestResult {
   testName: string
@@ -43,6 +47,9 @@ export default function OrderTestingPage() {
   const [loading, setLoading] = useState(false)
   const [report, setReport] = useState<TestReport | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [adminSecret, setAdminSecret] = useState("")
+  const [confirmationText, setConfirmationText] = useState("")
+  const [liveAcknowledged, setLiveAcknowledged] = useState(false)
   
   // Quick order placement state
   const [placingOrder, setPlacingOrder] = useState(false)
@@ -51,6 +58,17 @@ export default function OrderTestingPage() {
   const [leverage, setLeverage] = useState(20)
   const [volume, setVolume] = useState(0.001)
   const [placedOrders, setPlacedOrders] = useState<PlacedOrder[]>([])
+  const liveRequestReady = adminSecret.trim().length >= 16 &&
+    liveAcknowledged && confirmationText === LIVE_ORDER_CONFIRMATION_PHRASE
+
+  const readFailure = async (response: Response): Promise<string> => {
+    try {
+      const payload = await response.json()
+      return payload.error || payload.message || `HTTP ${response.status}`
+    } catch {
+      return `HTTP ${response.status}`
+    }
+  }
 
   const runTests = async () => {
     setLoading(true)
@@ -58,12 +76,19 @@ export default function OrderTestingPage() {
     try {
       const response = await fetch("/api/test/live-orders-test", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ connectionId }),
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${adminSecret}`,
+        },
+        body: JSON.stringify({
+          connectionId,
+          liveOrderConfirmation: confirmationText,
+          confirmLiveOrderPlacement: liveAcknowledged,
+        }),
       })
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
+        throw new Error(await readFailure(response))
       }
 
       const data = await response.json()
@@ -81,18 +106,23 @@ export default function OrderTestingPage() {
     try {
       const response = await fetch("/api/testing/place-order", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${adminSecret}`,
+        },
         body: JSON.stringify({
           connectionId,
           symbol: orderSymbol,
           side: orderSide,
           quantity: volume,
           leverage,
+          liveOrderConfirmation: confirmationText,
+          confirmLiveOrderPlacement: liveAcknowledged,
         }),
       })
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
+        throw new Error(await readFailure(response))
       }
 
       const result = await response.json()
@@ -107,7 +137,7 @@ export default function OrderTestingPage() {
           timestamp: Date.now(),
           success: true,
         }
-        setPlacedOrders([newOrder, ...placedOrders])
+        setPlacedOrders((current) => [newOrder, ...current])
         setError(null)
       } else {
         setError(result.error || "Failed to place order")
@@ -128,15 +158,58 @@ export default function OrderTestingPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      <div>
-        <h1 className="text-3xl font-bold">Order Testing Suite</h1>
-        <p className="text-gray-600 mt-2">Comprehensive testing for order placement, cancellation, and lifecycle management</p>
-      </div>
+    <div className="page-section flex flex-col gap-5">
+      <Alert variant="destructive" className="border-destructive/35 bg-destructive/5">
+        <AlertCircle className="h-4 w-4" />
+        <AlertDescription>
+          This page can place real exchange orders. The server must explicitly enable live placement, and every request requires admin authentication plus the exact confirmation phrase.
+        </AlertDescription>
+      </Alert>
 
-      <Card className="border-blue-200 bg-blue-50">
+      <Card>
         <CardHeader>
-          <CardTitle className="text-blue-900">Quick Order Placement</CardTitle>
+          <CardTitle className="text-sm">Live-test authorization</CardTitle>
+          <CardDescription>Credentials remain in this page state and are not stored by the interface.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 lg:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor="order-test-admin-secret">Admin secret</Label>
+            <Input
+              id="order-test-admin-secret"
+              type="password"
+              autoComplete="off"
+              value={adminSecret}
+              onChange={(event) => setAdminSecret(event.target.value)}
+              placeholder="Server ADMIN_SECRET"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="order-test-confirmation">Confirmation phrase</Label>
+            <Input
+              id="order-test-confirmation"
+              value={confirmationText}
+              onChange={(event) => setConfirmationText(event.target.value)}
+              placeholder={LIVE_ORDER_CONFIRMATION_PHRASE}
+              autoComplete="off"
+            />
+          </div>
+          <label className="flex items-start gap-3 rounded-lg border bg-muted/25 p-3 text-sm lg:col-span-2">
+            <Checkbox
+              checked={liveAcknowledged}
+              onCheckedChange={(checked) => setLiveAcknowledged(checked === true)}
+              aria-label="Acknowledge real order execution"
+            />
+            <span>
+              <span className="block font-medium">I authorize supervised real-order testing</span>
+              <span className="block text-xs text-muted-foreground">Orders and protective controls can affect the selected live exchange account.</span>
+            </span>
+          </label>
+        </CardContent>
+      </Card>
+
+      <Card className="border-sky-500/25 bg-sky-500/5">
+        <CardHeader>
+          <CardTitle>Quick Order Placement</CardTitle>
           <CardDescription>Place orders with max leverage and minimal volume</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -148,7 +221,7 @@ export default function OrderTestingPage() {
                 value={connectionId}
                 onChange={(e) => setConnectionId(e.target.value)}
                 placeholder="bingx-x01"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md mt-1"
+                className="w-full px-3 py-2 border border-input bg-background rounded-md mt-1"
                 disabled={placingOrder}
               />
             </div>
@@ -159,7 +232,7 @@ export default function OrderTestingPage() {
                 value={orderSymbol}
                 onChange={(e) => setOrderSymbol(e.target.value)}
                 placeholder="BTC/USDT"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md mt-1"
+                className="w-full px-3 py-2 border border-input bg-background rounded-md mt-1"
                 disabled={placingOrder}
               />
             </div>
@@ -168,7 +241,7 @@ export default function OrderTestingPage() {
               <select
                 value={orderSide}
                 onChange={(e) => setOrderSide(e.target.value as "buy" | "sell")}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md mt-1"
+                className="w-full px-3 py-2 border border-input bg-background rounded-md mt-1"
                 disabled={placingOrder}
               >
                 <option value="buy">Buy</option>
@@ -186,7 +259,7 @@ export default function OrderTestingPage() {
                 className="w-full mt-1"
                 disabled={placingOrder}
               />
-              <div className="text-xs text-gray-600 mt-1">Min volume will adjust leverage if needed</div>
+              <div className="text-xs text-muted-foreground mt-1">Min volume will adjust leverage if needed</div>
             </div>
             <div>
               <label className="text-sm font-medium">Volume (Coins): {volume}</label>
@@ -197,15 +270,15 @@ export default function OrderTestingPage() {
                 step="0.0001"
                 min="0.0001"
                 max="1"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md mt-1"
+                className="w-full px-3 py-2 border border-input bg-background rounded-md mt-1"
                 disabled={placingOrder}
               />
             </div>
             <div className="flex items-end">
               <Button
                 onClick={placeOrderWithMaxLeverageMinVolume}
-                disabled={placingOrder}
-                className="w-full gap-2 bg-blue-600 hover:bg-blue-700"
+                disabled={placingOrder || !liveRequestReady || !connectionId.trim() || !orderSymbol.trim() || volume <= 0}
+                className="w-full gap-2"
               >
                 {placingOrder ? (
                   <>
@@ -233,14 +306,14 @@ export default function OrderTestingPage() {
           <CardContent>
             <div className="space-y-3">
               {placedOrders.map((order, idx) => (
-                <div key={idx} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+                <div key={idx} className="border border-border rounded-lg p-3 bg-muted/25">
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="font-semibold text-sm">{order.symbol} - {order.side.toUpperCase()}</p>
-                      <p className="text-xs text-gray-600">
+                      <p className="text-xs text-muted-foreground">
                         Qty: {order.quantity} | Leverage: {order.leverage}x | Order ID: {order.orderId}
                       </p>
-                      <p className="text-xs text-gray-500">{new Date(order.timestamp).toLocaleTimeString()}</p>
+                      <p className="text-xs text-muted-foreground">{new Date(order.timestamp).toLocaleTimeString()}</p>
                     </div>
                     <CheckCircle2 className="w-5 h-5 text-green-600" />
                   </div>
@@ -264,11 +337,11 @@ export default function OrderTestingPage() {
               value={connectionId}
               onChange={(e) => setConnectionId(e.target.value)}
               placeholder="Enter connection ID"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md mt-1"
+              className="w-full px-3 py-2 border border-input bg-background rounded-md mt-1"
               disabled={loading}
             />
           </div>
-          <Button onClick={runTests} disabled={loading} className="gap-2">
+          <Button onClick={runTests} disabled={loading || !liveRequestReady || !connectionId.trim()} className="gap-2">
             {loading ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -282,7 +355,7 @@ export default function OrderTestingPage() {
             )}
           </Button>
           {report && (
-            <Button variant="outline" onClick={runTests} disabled={loading} className="gap-2">
+            <Button variant="outline" onClick={runTests} disabled={loading || !liveRequestReady || !connectionId.trim()} className="gap-2">
               <RefreshCw className="w-4 h-4" />
               Retry
             </Button>
@@ -308,21 +381,21 @@ export default function OrderTestingPage() {
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-4 gap-4">
-                <div className="text-center p-4 bg-gray-50 rounded-lg">
+                <div className="text-center p-4 bg-muted/25 rounded-lg">
                   <div className="text-3xl font-bold">{report.summary.totalTests}</div>
-                  <div className="text-sm text-gray-600">Total Tests</div>
+                  <div className="text-sm text-muted-foreground">Total Tests</div>
                 </div>
-                <div className="text-center p-4 bg-green-50 rounded-lg">
+                <div className="text-center p-4 bg-emerald-500/10 rounded-lg">
                   <div className="text-3xl font-bold text-green-600">{report.summary.passed}</div>
-                  <div className="text-sm text-gray-600">Passed</div>
+                  <div className="text-sm text-muted-foreground">Passed</div>
                 </div>
-                <div className="text-center p-4 bg-red-50 rounded-lg">
+                <div className="text-center p-4 bg-destructive/10 rounded-lg">
                   <div className="text-3xl font-bold text-red-600">{report.summary.failed}</div>
-                  <div className="text-sm text-gray-600">Failed</div>
+                  <div className="text-sm text-muted-foreground">Failed</div>
                 </div>
-                <div className="text-center p-4 bg-blue-50 rounded-lg">
+                <div className="text-center p-4 bg-sky-500/10 rounded-lg">
                   <div className="text-3xl font-bold text-blue-600">{report.summary.successRate.toFixed(1)}%</div>
-                  <div className="text-sm text-gray-600">Success Rate</div>
+                  <div className="text-sm text-muted-foreground">Success Rate</div>
                 </div>
               </div>
             </CardContent>
@@ -336,15 +409,15 @@ export default function OrderTestingPage() {
             <CardContent>
               <div className="space-y-4">
                 {report.tests.map((test, idx) => (
-                  <div key={idx} className="border border-gray-200 rounded-lg p-4">
+                  <div key={idx} className="border border-border rounded-lg p-4">
                     <div className="flex items-start gap-3">
                       <div className="mt-1">{getStatusIcon(test.success)}</div>
                       <div className="flex-1">
                         <h3 className="font-semibold flex items-center gap-2">
                           {test.testName}
-                          <span className="text-sm text-gray-500">({test.duration}ms)</span>
+                          <span className="text-sm text-muted-foreground">({test.duration}ms)</span>
                         </h3>
-                        <p className="text-sm text-gray-700 mt-1">{test.details}</p>
+                        <p className="text-sm text-foreground mt-1">{test.details}</p>
                         {test.error && (
                           <p className="text-sm text-red-600 mt-2">Error: {test.error}</p>
                         )}
@@ -356,7 +429,7 @@ export default function OrderTestingPage() {
             </CardContent>
           </Card>
 
-          <Card className="bg-blue-50 border-blue-200">
+          <Card className="bg-sky-500/10 border-sky-500/30">
             <CardHeader>
               <CardTitle>Test Information</CardTitle>
             </CardHeader>
@@ -365,13 +438,13 @@ export default function OrderTestingPage() {
                 <strong>Test Suite:</strong> Comprehensive order lifecycle testing including market orders, limit orders, stop loss orders, control order creation/cancellation, and position management.
               </p>
               <p>
-                <strong>Minimum Balance:</strong> Tests adapt to available balance. Market orders require {`>= 10`} USDT. Tests use minimal quantities to work with low balances.
+                <strong>Quantity:</strong> The server normalizes the requested quantity against exchange precision and minimum-order rules; rejected constraints remain visible in the result.
               </p>
               <p>
-                <strong>Exchange Support:</strong> Full support for BingX, Bybit, Binance, OKX, Pionex, OrangeX - each with native order types and features.
+                <strong>Exchange scope:</strong> The selected configured connector determines which native order and protection capabilities are exercised.
               </p>
               <p>
-                <strong>Fixed Issues:</strong> Critical BingX symbol conversion bug fixed (slash format handling). Order placement now working across all supported exchanges.
+                <strong>Safety:</strong> Authentication, server enablement, request confirmation, order IDs, cancellations, and protection checks are reported independently; a partial pass is never presented as complete success.
               </p>
             </CardContent>
           </Card>
@@ -379,9 +452,9 @@ export default function OrderTestingPage() {
       )}
 
       {!report && !loading && (
-        <Card className="bg-gray-50">
+        <Card className="bg-muted/25">
           <CardContent className="pt-6">
-            <p className="text-gray-600 text-center">Click "Run Tests" to start the comprehensive order testing suite.</p>
+            <p className="text-muted-foreground text-center">Click "Run Tests" to start the comprehensive order testing suite.</p>
           </CardContent>
         </Card>
       )}
