@@ -4,6 +4,23 @@
 
 **Project Status**: ✅ Active production trading system with validated release branches
 
+## Mandatory Continuity Workflow
+
+- Treat the current CTS source tree as durable project state: never begin a risky
+  recovery, dependency, migration, soak, deployment, or Git operation without a
+  validated source checkpoint.
+- Create a credential-free, restorable workspace archive before risky steps and
+  after every completed functional block.  Exclude build output, runtime state,
+  local logs, dependency directories, Git metadata, and environment/credential
+  files; validate both archive readability and SHA-256.
+- Commit and push each coherent, tested checkpoint when GitHub authentication is
+  available.  If publishing is temporarily blocked, continue only with durable
+  archives and record the exact Git blocker; publish the queued checkpoints as
+  soon as authentication is restored.
+- This workflow is project-wide and must be continued in every new CTS chat so a
+  hang, scratch cleanup, process crash, or context switch cannot erase work.
+
+
 The starter template was replaced with the full CTS-V-yd trading system
 (strategy engine, analytics UI, API routes, tests). The code now lives in
 this repo's `main` branch and is pushed to `origin/main` on
