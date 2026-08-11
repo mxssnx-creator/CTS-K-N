@@ -39,6 +39,10 @@ import {
   POS_COUNT_VOLUME_RATIO_MIN,
 } from "@/lib/pos-count-volume-ratio"
 import { BLOCK_COUNT_MAX } from "@/lib/block-count-state"
+import {
+  CANONICAL_FORCED_SYMBOLS,
+  withCanonicalForcedSymbols,
+} from "@/lib/forced-symbols"
 
 const FALLBACK_SYMBOLS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -579,7 +583,13 @@ export async function PUT(
     enforceCombinedStrategyPipeline(mergedSettings)
     const hasSymbols = Array.isArray(body.symbols)
     if (hasSymbols) {
-      const symbols = body.symbols.map(String).map((symbol: string) => symbol.trim()).filter(Boolean)
+      const requestedCount = Number(
+        incomingSettings.symbol_count ?? body.symbol_count ?? body.symbols.length,
+      )
+      const symbols = withCanonicalForcedSymbols(
+        body.symbols,
+        Number.isFinite(requestedCount) ? requestedCount : Number.POSITIVE_INFINITY,
+      )
       mergedSettings.symbols = symbols
       mergedSettings.force_symbols = symbols
       mergedSettings.active_symbols = symbols
@@ -709,6 +719,18 @@ export async function PATCH(
     const incomingIndicationChannels = requestSettings.indication_channels
     const settings: Record<string, any> = { ...requestSettings }
     delete settings.indication_channels
+    if (settings.symbol_count !== undefined) {
+      const requestedCount = Number(settings.symbol_count)
+      settings.symbol_count = Number.isFinite(requestedCount)
+        ? Math.max(CANONICAL_FORCED_SYMBOLS.length, Math.min(32, Math.floor(requestedCount)))
+        : CANONICAL_FORCED_SYMBOLS.length
+    }
+    if (Array.isArray(settings.symbols)) {
+      settings.symbols = withCanonicalForcedSymbols(
+        settings.symbols,
+        settings.symbol_count ?? Math.max(settings.symbols.length, CANONICAL_FORCED_SYMBOLS.length),
+      )
+    }
     const settingsVersion = `${id}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`
     const updatedAt = new Date().toISOString()
 
@@ -873,7 +895,9 @@ export async function PATCH(
     if (touchedSymbols) {
       try {
         const rawCount = Number(merged.symbol_count)
-        const count = Number.isFinite(rawCount) && rawCount > 0 ? Math.max(1, Math.min(32, Math.floor(rawCount))) : 15
+        const count = Number.isFinite(rawCount) && rawCount > 0
+          ? Math.max(CANONICAL_FORCED_SYMBOLS.length, Math.min(32, Math.floor(rawCount)))
+          : 15
         const manualList = Array.isArray(merged.symbols)
           ? (merged.symbols as unknown[]).filter((s): s is string => typeof s === "string" && s.length > 0)
           : []
@@ -881,17 +905,19 @@ export async function PATCH(
         let resolved: string[] = []
         let resolutionSource: "live" | "fallback" | "manual" = incomingSymbolsAreFallback ? "fallback" : "live"
         if (operatorConfirmedSymbols && manualList.length > 0) {
-          resolved = manualList.length > count ? manualList.slice(0, count) : manualList
+          resolved = withCanonicalForcedSymbols(manualList, count)
           resolutionSource = incomingSymbolsAreFallback ? "fallback" : "manual"
         } else {
           const exchange = String((connection as Record<string, unknown>).exchange || "bingx").toLowerCase()
           const sort = normaliseSort(finalSymbolOrder)
           try {
             const { symbols: topSymbols } = await fetchTopSymbols(exchange, count, sort)
-            resolved = topSymbols
-              .map((s) => s.symbol)
-              .filter((s): s is string => typeof s === "string" && s.length > 0)
-              .slice(0, count)
+            resolved = withCanonicalForcedSymbols(
+              topSymbols
+                .map((s) => s.symbol)
+                .filter((s): s is string => typeof s === "string" && s.length > 0),
+              count,
+            )
           } catch (fetchErr) {
             console.warn(
               "[v0] [Settings] top-symbols auto-resolve failed:",
@@ -902,11 +928,11 @@ export async function PATCH(
           // Auto ranking modes must re-query the venue instead of silently
           // becoming a fixed manual list after the first dialog save.
           if (resolved.length === 0 && manualList.length > 0) {
-            resolved = manualList.slice(0, count)
+            resolved = withCanonicalForcedSymbols(manualList, count)
             resolutionSource = "fallback"
           }
           if (resolved.length === 0) {
-            resolved = FALLBACK_SYMBOLS.slice(0, count)
+            resolved = withCanonicalForcedSymbols(FALLBACK_SYMBOLS, count)
             resolutionSource = "fallback"
           }
         }

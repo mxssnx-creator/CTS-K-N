@@ -1,5 +1,7 @@
+import { CANONICAL_FORCED_SYMBOLS } from "@/lib/forced-symbols"
+
 /** Canonical operator-neutral symbol-selection defaults. */
-export const DEFAULT_SYMBOL_COUNT = 1
+export const DEFAULT_SYMBOL_COUNT = CANONICAL_FORCED_SYMBOLS.length
 export const DEFAULT_SYMBOL_ORDER = "volatility_1h" as const
 
 /**
@@ -12,10 +14,10 @@ export function getExplicitLocalSymbolCap(
   const raw = String(env.V0_DEV_SYMBOL_COUNT ?? "").trim()
   // Keep the local InlineLocalRedis preview bounded when no env vars are
   // supplied. Operators can raise the cap explicitly with V0_DEV_SYMBOL_COUNT.
-  if (!raw) return env.NODE_ENV === "development" ? 1 : null
+  if (!raw) return env.NODE_ENV === "development" ? CANONICAL_FORCED_SYMBOLS.length : null
   const parsed = Number(raw)
   if (!Number.isFinite(parsed) || parsed < 1) return null
-  return Math.max(1, Math.min(1_000, Math.floor(parsed)))
+  return Math.max(CANONICAL_FORCED_SYMBOLS.length, Math.min(1_000, Math.floor(parsed)))
 }
 
 export function getDefaultSymbolCount(

@@ -557,7 +557,7 @@ describe("requested regression guardrails", () => {
 
     expect(source).toContain("dev_symbol_count_override")
     expect(source).toContain("getExplicitLocalSymbolCap")
-    expect(defaults).toContain("DEFAULT_SYMBOL_COUNT = 1")
+    expect(defaults).toContain("DEFAULT_SYMBOL_COUNT = CANONICAL_FORCED_SYMBOLS.length")
     expect(source).toContain('never short-circuit to ["BTCUSDT"] here')
     expect(source).not.toContain('if (devCap === 1) return ["BTCUSDT"]')
   })
@@ -1023,11 +1023,11 @@ describe("requested regression guardrails", () => {
     const source = read("lib/trade-engine/engine-manager.ts")
     const defaults = read("lib/symbol-selection-defaults.ts")
 
-    expect(source).toContain("effectiveForceSymbols = effectiveForceSymbols.slice(0, devCap)")
+    expect(source).toContain("effectiveForceSymbols = withCanonicalForcedSymbols(effectiveForceSymbols, devCap)")
     expect(source).toContain("localSymbolCapActive")
     expect(source).toContain("getExplicitLocalSymbolCap")
     expect(defaults).toContain("env.V0_DEV_SYMBOL_COUNT")
-    expect(source).toContain("force_symbols=[BTC,ETH,...] vs cache=[BTC] invalidates")
+    expect(source).toContain("Compare the same effective symbol list")
   })
 
   test("local symbol cap preserves operator-selected symbols before slicing", () => {

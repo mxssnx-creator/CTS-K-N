@@ -6,6 +6,7 @@ import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
 } from "@/lib/main-trade-profit-factor"
+import { canonicalForcedBaseSymbols } from "@/lib/forced-symbols"
 
 export const EXCHANGE_MAX_POSITIONS: Record<string, number> = {
   bybit: 500,
@@ -164,7 +165,7 @@ export const initialSettings: Settings = {
   presetEngineEnabled: true,
 
   mainSymbols: ["BTC", "ETH", "BNB", "XRP", "ADA", "SOL"],
-  forcedSymbols: ["XRP", "BCH"],
+  forcedSymbols: canonicalForcedBaseSymbols(),
 
   useMainSymbols: false,
   numberOfSymbolsToSelect: 8,

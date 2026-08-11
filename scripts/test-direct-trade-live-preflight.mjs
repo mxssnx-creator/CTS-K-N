@@ -111,7 +111,7 @@ async function main() {
 
   try {
     await waitForServer()
-    const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"].slice(0, symbolCount)
+    const symbols = ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"].slice(0, Math.max(4, symbolCount))
     const started = await request("/api/trade-engine/direct-trade", {
       method: "POST",
       body: JSON.stringify({

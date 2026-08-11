@@ -25,6 +25,7 @@ import InstallManager from "@/components/settings/install-manager"
 import { LogsViewer } from "@/components/settings/logs-viewer"
 import { StatisticsOverview } from "@/components/settings/statistics-overview"
 import { SettingsEditorDialog } from "@/components/settings/settings-editor-dialog"
+import { CANONICAL_FORCED_BASE_SYMBOLS } from "@/lib/forced-symbols"
 
 interface OverallTabProps {
   settings: AppSettings
@@ -564,32 +565,15 @@ export function OverallTab({
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {(settings.forcedSymbols || ["XRP", "BCH"]).map((symbol: string) => (
+                    {CANONICAL_FORCED_BASE_SYMBOLS.map((symbol: string) => (
                       <Badge key={symbol} variant="default" className="flex items-center gap-1 px-3 py-1">
                         {symbol}
-                        <button
-                          onClick={() => removeForcedSymbol(symbol)}
-                          className="ml-1 hover:text-destructive"
-                          type="button"
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
                       </Badge>
                     ))}
                   </div>
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="Add symbol (e.g., MATIC)"
-                      value={newForcedSymbol}
-                      onChange={(e) => setNewForcedSymbol(e.target.value.toUpperCase())}
-                      onKeyDown={(e) => e.key === "Enter" && addForcedSymbol()}
-                      className="max-w-[200px]"
-                    />
-                    <Button variant="outline" size="sm" onClick={addForcedSymbol}>
-                      <Plus className="h-4 w-4 mr-1" />
-                      Add
-                    </Button>
-                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Locked mandatory basket. Dynamic selections may add symbols but cannot remove these four.
+                  </p>
                 </div>
               </div>
             </CardContent>

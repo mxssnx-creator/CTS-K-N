@@ -57,8 +57,8 @@ describe("historic runtime generation stability", () => {
 
       await expect(getCanonicalSymbolSelection(connectionId)).resolves.toEqual({
         epoch: "epoch-force",
-        symbols: ["BTCUSDT", "ETHUSDT"],
-        total: 2,
+        symbols: ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT", "ETHUSDT"],
+        total: 5,
       })
     } finally {
       await client.del(settingsKey)

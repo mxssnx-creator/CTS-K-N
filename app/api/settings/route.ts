@@ -37,6 +37,10 @@ import {
   DEFAULT_ACTIVE_STOP_LOSS_POSITION_COST_RATIOS,
   DEFAULT_ACTIVE_TAKE_PROFIT_MULTIPLIERS,
 } from "@/lib/active-outbreak-indication"
+import {
+  canonicalForcedBaseSymbols,
+  canonicalForcedSymbols,
+} from "@/lib/forced-symbols"
 
 /**
  * Fan out a "settings_changed" progression log event AND a settings-
@@ -116,6 +120,11 @@ const BLOCK_STACK_KEYS = ["blockMaxStack", "blockRowLiveMaxStack", "presetBlockM
 
 function normalizePositionCostSettings<T extends Record<string, any>>(settings: T): T {
   const normalized: Record<string, any> = { ...settings }
+  // The operator-required base basket is immutable across old/new setting
+  // aliases. Dynamic and connection-local symbols may extend it elsewhere,
+  // but settings writes can never remove or reorder these four symbols.
+  normalized.forcedSymbols = canonicalForcedBaseSymbols()
+  normalized.forced_symbols = canonicalForcedSymbols()
   if (Object.prototype.hasOwnProperty.call(normalized, "minStep")) {
     normalized.minStep = normalizeBaseMinStep(normalized.minStep)
   }
@@ -181,8 +190,9 @@ function getDefaultSettings(): Record<string, any> {
     max_open_positions: 10,
     max_drawdown_percent: 20,
     daily_loss_limit: 1000,
-    main_symbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT"],
-    forced_symbols: [],
+    main_symbols: canonicalForcedSymbols(),
+    forcedSymbols: canonicalForcedBaseSymbols(),
+    forced_symbols: canonicalForcedSymbols(),
     database_type: "redis",
     // Canonical prehistoric range (1-50h, step 1, default 8). Must be seeded
     // here so fresh installs pick it up on first GET /api/settings — otherwise
@@ -386,6 +396,12 @@ async function handleGet() {
       }
     }
 
+    const canonicalSettings = normalizePositionCostSettings(settings as Record<string, any>)
+    if (JSON.stringify(settings) !== JSON.stringify(canonicalSettings)) {
+      settings = canonicalSettings
+      await setAppSettings(canonicalSettings)
+    }
+
     return NextResponse.json({ settings })
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : "Unknown error"
@@ -418,7 +434,11 @@ async function handlePost(request: Request) {
     // next bypass-cache read.
     const normalizedBody = normalizePositionCostSettings(body)
     const mergedSettings = normalizePositionCostSettings({ ...existingSettings, ...normalizedBody })
-    const changedKeys = changedSettingKeys(existingSettings, mergedSettings, Object.keys(normalizedBody))
+    const changedKeys = changedSettingKeys(
+      existingSettings,
+      mergedSettings,
+      [...new Set([...Object.keys(normalizedBody), "forcedSymbols", "forced_symbols"])],
+    )
     if (changedKeys.length > 0) {
       await setAppSettings(mergedSettings)
       // Bust the in-process compaction config cache only for a real change.
@@ -463,7 +483,11 @@ async function handlePut(request: Request) {
     const existingSettings = (await getAppSettings({ bypassCache: true })) || {}
     const mergedSettings = normalizePositionCostSettings({ ...existingSettings, ...incoming })
 
-    const putChangedKeys = changedSettingKeys(existingSettings, mergedSettings, Object.keys(incoming || {}))
+    const putChangedKeys = changedSettingKeys(
+      existingSettings,
+      mergedSettings,
+      [...new Set([...Object.keys(incoming || {}), "forcedSymbols", "forced_symbols"])],
+    )
     if (putChangedKeys.length > 0) {
       await setAppSettings(mergedSettings)
       invalidateCompactionCache()

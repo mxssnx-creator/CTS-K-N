@@ -11,6 +11,7 @@ import {
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
 } from "@/lib/main-trade-profit-factor"
 import { POS_COUNT_VOLUME_RATIO_DEFAULT } from "@/lib/pos-count-volume-ratio"
+import { canonicalForcedBaseSymbols } from "@/lib/forced-symbols"
 export const dynamic = "force-dynamic"
 import { useState, useEffect } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -648,7 +649,7 @@ const initialSettings: Settings = {
    databaseLimitPerDay: 0, // Unlimited per day (0 = unlimited)
 
    mainSymbols: ["BTC", "ETH", "BNB", "XRP", "ADA", "SOL"],
-  forcedSymbols: ["XRP", "BCH"],
+  forcedSymbols: canonicalForcedBaseSymbols(),
 
   useMainSymbols: false,
   numberOfSymbolsToSelect: 8,

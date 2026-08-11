@@ -84,9 +84,9 @@ describe("Direct-Trade API state and processor lease", () => {
         maxPositionsPerSymbol: 300,
         maxPositionsPerDirection: 300,
         blockProfitFactorRatio: 5,
-        takeProfitRatioRange: [4, 14],
-        takeProfitRatioStep: 4,
-        strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection"],
+        takeProfitRatioRange: [4, 8],
+        takeProfitRatioStep: 2,
+        strategyTypes: ["standard", "trailing_fixed", "trailing_auto", "combination", "inverse", "high_protection", "dca"],
       })
 
       const persisted = await (await GET()).json()
@@ -112,7 +112,7 @@ describe("Direct-Trade API state and processor lease", () => {
       expect((await updated.json()).state.symbolCount).toBe(32)
 
       const minimum = await POST(post({ action: "update-config", symbolCount: 0 }) as any)
-      expect((await minimum.json()).state.symbolCount).toBe(1)
+      expect((await minimum.json()).state.symbolCount).toBe(4)
 
       const totalCap = await POST(post({ action: "update-config", maxTotalPositions: 999 }) as any)
       expect((await totalCap.json()).state.maxTotalPositions).toBe(300)
@@ -138,8 +138,8 @@ describe("Direct-Trade API state and processor lease", () => {
       }))
       const migrated = await (await GET()).json()
       expect(migrated.state).toMatchObject({
-        takeProfitRatioRange: [4, 14],
-        takeProfitRatioStep: 4,
+        takeProfitRatioRange: [4, 8],
+        takeProfitRatioStep: 2,
         historyHours: 48,
         maxPositionsPerSymbol: 12,
         maxPositionsPerDirection: 6,

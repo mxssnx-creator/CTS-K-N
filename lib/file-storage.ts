@@ -2,6 +2,7 @@ import fs from "fs"
 import path from "path"
 import { DEFAULT_MAIN_INDICATION_SETTINGS } from "@/lib/main-indication-settings"
 import { DEFAULT_COMMON_INDICATION_SETTINGS } from "@/lib/common-indicator-config"
+import { canonicalForcedBaseSymbols } from "@/lib/forced-symbols"
 
 const DATA_DIR =
   process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME
@@ -608,7 +609,7 @@ function getDefaultSettings(): Settings {
     },
 
     mainSymbols: ["BTC", "ETH", "BNB", "XRP", "ADA", "SOL", "DOGE", "LTC", "BCH", "LINK"],
-    forcedSymbols: ["XRP", "BCH"], // Always included regardless of settings
+    forcedSymbols: canonicalForcedBaseSymbols(), // Immutable mandatory basket
 
     // Overall / Connection
     default_margin_type: "cross",

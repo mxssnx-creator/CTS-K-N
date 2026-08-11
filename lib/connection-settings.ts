@@ -12,6 +12,7 @@ import { notifySettingsChanged } from "./settings-coordinator"
 import { recoordinateAfterSettingsChange } from "./connection-recoordinator"
 import { toRedisFlag } from "./boolean-utils"
 import { normalizeIdentityVolumeFactor } from "./constants"
+import { CANONICAL_FORCED_SYMBOLS, withCanonicalForcedSymbols } from "./forced-symbols"
 
 function deepMergeSettings(
   current: ConnectionSettings,
@@ -98,6 +99,17 @@ function stringifyHashValue(value: unknown): string | undefined {
   return String(value)
 }
 
+function parseSymbolSettingsList(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value
+  if (typeof value !== "string") return value == null ? [] : [value]
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : [parsed]
+  } catch {
+    return value.split(",").map((symbol) => symbol.trim()).filter(Boolean)
+  }
+}
+
 function extractEngineSettingsMirror(settings: Record<string, unknown>): Record<string, string> {
   const flat: Record<string, string> = {}
 
@@ -129,15 +141,19 @@ function extractEngineSettingsMirror(settings: Record<string, unknown>): Record<
 
   const symbolCount = Number(settings.symbol_count ?? settings.symbolCount)
   if (Number.isFinite(symbolCount) && symbolCount > 0) {
-    flat.symbol_count = String(Math.floor(symbolCount))
+    flat.symbol_count = String(Math.max(CANONICAL_FORCED_SYMBOLS.length, Math.floor(symbolCount)))
   }
 
   const forceSymbols = settings.force_symbols ?? settings.symbols
-  const forceSymbolsValue = stringifyHashValue(forceSymbols)
-  if (forceSymbolsValue !== undefined) {
+  if (forceSymbols !== undefined && forceSymbols !== null) {
+    const normalizedForceSymbols = withCanonicalForcedSymbols(
+      parseSymbolSettingsList(forceSymbols),
+      Number.isFinite(symbolCount) && symbolCount > 0 ? symbolCount : Number.POSITIVE_INFINITY,
+    )
+    const forceSymbolsValue = JSON.stringify(normalizedForceSymbols)
     flat.force_symbols = forceSymbolsValue
     if (settings.symbols !== undefined) flat.symbols = forceSymbolsValue
-    if (Array.isArray(forceSymbols) && forceSymbols.length > 0) flat.symbol_count = String(forceSymbols.length)
+    flat.symbol_count = String(normalizedForceSymbols.length)
   }
 
   if (settings.is_live_trade !== undefined) flat.is_live_trade = toRedisFlag(settings.is_live_trade)

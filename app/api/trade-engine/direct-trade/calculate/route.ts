@@ -14,6 +14,7 @@ import {
 import { fetchBingXMinuteHistory } from "@/lib/direct-trade-market-history"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
 import { DEFAULT_DCA_PROFILE, normalizeDcaProfile, type DcaProfile } from "@/lib/dca-strategy"
+import { CANONICAL_FORCED_SYMBOLS, withCanonicalForcedSymbols } from "@/lib/forced-symbols"
 import {
   createRedisLockToken,
   releaseOwnedRedisLock,
@@ -481,7 +482,10 @@ export async function POST(request: NextRequest) {
   let leaseRenewalTimer: ReturnType<typeof setInterval> | undefined
   try {
     const body: CalculationRequest = await request.json().catch(() => ({}))
-    const symbolCount = clampDirectTradeSymbolCount(body.symbolCount)
+    const symbolCount = Math.max(
+      CANONICAL_FORCED_SYMBOLS.length,
+      clampDirectTradeSymbolCount(body.symbolCount),
+    )
     const symbolOrder: SortKey = body.symbolOrder || "volatility_1h"
     // 0.1 is the smallest supported Direct-Trade volume factor. This default
     // intentionally applies to simulation and live execution alike.
@@ -561,7 +565,10 @@ export async function POST(request: NextRequest) {
     }, 15_000)
 
     const top = await fetchTopSymbols("bingx", symbolCount, symbolOrder)
-    const symbols = top.symbols.slice(0, symbolCount).map((ticker) => ticker.symbol)
+    const symbols = withCanonicalForcedSymbols(
+      top.symbols.slice(0, symbolCount).map((ticker) => ticker.symbol),
+      symbolCount,
+    )
     if (symbols.length === 0) return NextResponse.json({ error: "No symbols available" }, { status: 400 })
     const calculationStartedAt = new Date().toISOString()
     let completedSymbols = 0

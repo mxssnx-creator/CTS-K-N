@@ -70,39 +70,43 @@ describe("Direct-Trade historical calculation route", () => {
     // The optimized 4–8× range uses a Set-creation step of two, materialising
     // 4, 6 and 8. Fixed and Auto remain absent when trailing is disabled;
     // DCA remains its own non-Block lineage.
-    expect(payload.configTotal).toBe(78)
+    expect(payload.configTotal).toBe(312)
     expect(payload.executionConfigTotal).toEqual(expect.any(Number))
-    expect(payload.summary).toMatchObject({ historyHours: 60, combinations: 1, evaluatedSets: 78 })
-    expect(payload.summary).toMatchObject({ blockEnabled: true, blockEvaluatedSets: 72 * 12 })
-    expect(payload.summary.byBlockCount["1"]).toMatchObject({ evaluated: 72 })
-    expect(payload.summary.byBlockCount["12"]).toMatchObject({ evaluated: 72 })
+    expect(payload.summary).toMatchObject({ historyHours: 60, combinations: 1, evaluatedSets: 312 })
+    expect(payload.summary).toMatchObject({
+      symbols: ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"],
+      blockEnabled: true,
+      blockEvaluatedSets: 72 * 12 * 4,
+    })
+    expect(payload.summary.byBlockCount["1"]).toMatchObject({ evaluated: 288 })
+    expect(payload.summary.byBlockCount["12"]).toMatchObject({ evaluated: 288 })
     expect(payload.summary.byStrategyType).toMatchObject({
-      standard: { evaluated: 18 },
+      standard: { evaluated: 72 },
       trailing_fixed: { evaluated: 0 },
       trailing_auto: { evaluated: 0 },
-      combination: { evaluated: 18 },
-      inverse: { evaluated: 30 },
-      high_protection: { evaluated: 6 },
-      dca: { evaluated: 6 },
+      combination: { evaluated: 72 },
+      inverse: { evaluated: 120 },
+      high_protection: { evaluated: 24 },
+      dca: { evaluated: 24 },
     })
     expect(payload.summary.byDirection).toMatchObject({
-      long: { evaluated: 39 },
-      short: { evaluated: 39 },
+      long: { evaluated: 156 },
+      short: { evaluated: 156 },
     })
     expect(payload.summary.byStopLossRatio).toMatchObject({
-      "0.25": { evaluated: 18 },
-      "0.5": { evaluated: 18 },
-      "0.75": { evaluated: 24 },
-      "1": { evaluated: 6 },
-      "1.25": { evaluated: 6 },
+      "0.25": { evaluated: 72 },
+      "0.5": { evaluated: 72 },
+      "0.75": { evaluated: 96 },
+      "1": { evaluated: 24 },
+      "1.25": { evaluated: 24 },
     })
     expect(payload.summary.byTakeProfitPositionCostRatio).toMatchObject({
-      "4": { evaluated: 26 },
-      "6": { evaluated: 26 },
-      "8": { evaluated: 26 },
+      "4": { evaluated: 104 },
+      "6": { evaluated: 104 },
+      "8": { evaluated: 104 },
     })
     expect(payload.summary.byExitTactic.bracket).toMatchObject({
-      evaluated: 78,
+      evaluated: 312,
       disabled: payload.summary.byExitTactic.bracket.evaluated - payload.summary.byExitTactic.bracket.valid,
       totalPnl: expect.any(Number),
       netProfit: expect.any(Number),
@@ -112,8 +116,8 @@ describe("Direct-Trade historical calculation route", () => {
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("interval=1m")
     expect(fetchBingXPublicMock.mock.calls[0][0]).toContain("startTime=")
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
-    expect(persisted).toHaveLength(78)
-    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(78)
+    expect(persisted).toHaveLength(312)
+    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(312)
     expect(persisted.every((config: any) => config.blockEvaluations === undefined)).toBe(true)
     expect(persisted.every((config: any) => config.timeframe === "5m" && config.bestMarketExitAnalysisOnly === true)).toBe(true)
     expect(persisted.every((config: any) =>
@@ -148,21 +152,21 @@ describe("Direct-Trade historical calculation route", () => {
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
 
     expect(payload.success).toBe(true)
-    expect(payload.configTotal).toBe(402)
+    expect(payload.configTotal).toBe(1608)
     expect(payload.summary.byStrategyType).toMatchObject({
-      standard: { evaluated: 18 },
-      trailing_fixed: { evaluated: 54 },
-      trailing_auto: { evaluated: 54 },
-      combination: { evaluated: 126 },
-      inverse: { evaluated: 120 },
-      high_protection: { evaluated: 24 },
-      dca: { evaluated: 6 },
+      standard: { evaluated: 72 },
+      trailing_fixed: { evaluated: 216 },
+      trailing_auto: { evaluated: 216 },
+      combination: { evaluated: 504 },
+      inverse: { evaluated: 480 },
+      high_protection: { evaluated: 96 },
+      dca: { evaluated: 24 },
     })
     const byType = (strategyType: string) => persisted.filter((config: any) => config.strategyType === strategyType)
     expect(byType("trailing_fixed").every((config: any) => config.trailingMode === "fixed")).toBe(true)
     expect(byType("trailing_auto").every((config: any) => config.trailingMode === "auto")).toBe(true)
     expect(new Set(byType("combination").map((config: any) => config.trailingMode))).toEqual(new Set(["none", "fixed", "auto"]))
-    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(402)
+    expect(new Set(persisted.map((config: any) => config.setKey)).size).toBe(1608)
   })
 
   test("applies the configured SL ratio step without omitting the requested protection maximum", async () => {
@@ -192,7 +196,7 @@ describe("Direct-Trade historical calculation route", () => {
     expect(payload.success).toBe(true)
     // Three optimized TP Set ratios (4, 6, 8× PositionCost) × two configured
     // SL ratios × independently evaluated long/short.
-    expect(payload.configTotal).toBe(12)
+    expect(payload.configTotal).toBe(48)
     expect(new Set(persisted.map((config: any) => Number((config.stoploss / config.takeprofit).toFixed(2))))).toEqual(new Set([0.25, 0.75]))
   })
 
@@ -224,7 +228,7 @@ describe("Direct-Trade historical calculation route", () => {
     const persisted = JSON.parse((await getRedisClient().get("direct_trade:configs")) || "[]")
 
     expect(payload.success).toBe(true)
-    expect(payload.configTotal).toBe(18)
+    expect(payload.configTotal).toBe(72)
     expect(new Set(persisted.map((config: any) => config.takeProfitPositionCostRatio))).toEqual(new Set([4, 5, 6]))
     expect(new Set(persisted.map((config: any) => config.takeprofit))).toEqual(new Set([0.4, 0.5, 0.6]))
     expect(persisted.every((config: any) => config.blockCount === 3 && config.blockVolumeRatio === 1.5)).toBe(true)

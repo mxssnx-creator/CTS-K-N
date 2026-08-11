@@ -1,3 +1,5 @@
+import { canonicalForcedSymbols } from "./forced-symbols"
+
 export const EXCHANGE_CONFIGS = {
   bybit: {
     id: "bybit",
@@ -133,9 +135,9 @@ export const EXCHANGE_CONFIGS = {
   },
 }
 
-export const DEFAULT_SYMBOLS = ["BCHUSDT", "XRPUSDT", "ETHUSDT", "LINKUSDT", "DOGEUSDT", "HUSDT"]
+export const DEFAULT_SYMBOLS = canonicalForcedSymbols()
 
-export const FORCED_SYMBOLS = ["XRPUSDT", "BCHUSDT"]
+export const FORCED_SYMBOLS = canonicalForcedSymbols()
 
 export const INDICATION_RANGES = {
   min: 2,

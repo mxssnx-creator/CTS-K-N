@@ -10,6 +10,7 @@ import { getPredefinedAsExchangeConnections } from "@/lib/connection-predefiniti
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { setSettings } from "@/lib/redis-db"
+import { canonicalForcedSymbols } from "@/lib/forced-symbols"
 
 export interface ProductionSeedOptions {
   seedSettings?: boolean
@@ -88,8 +89,8 @@ async function seedDefaultSettings(): Promise<void> {
       max_open_positions: 10,
       max_drawdown_percent: 20,
       daily_loss_limit: 1000,
-      main_symbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT"],
-      forced_symbols: [],
+      main_symbols: canonicalForcedSymbols(),
+      forced_symbols: canonicalForcedSymbols(),
       database_type: "redis",
       restApiDelayMs: 50,
       publicRequestDelayMs: 20,
