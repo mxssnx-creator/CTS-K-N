@@ -82,6 +82,10 @@ import {
 import { resolveStrategyMemoryGuardLimits } from "@/lib/strategy-memory-guard"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
 import {
+  getRuntimeCapabilityConcurrency,
+  getRuntimeConcurrencyProfile,
+} from "@/lib/runtime-concurrency-profile"
+import {
   DEFAULT_BASE_MIN_STEP,
   MAX_BASE_STEP,
   MIN_BASE_STEP,
@@ -3183,7 +3187,7 @@ export class StrategyCoordinator {
     // and can make control/health routes unavailable. Keep the safe default
     // serial and leave an explicit environment/settings override for hosts
     // that have measured a beneficial I/O-heavy profile.
-    const fallback = 1
+    const fallback = getRuntimeConcurrencyProfile(8).calculationConcurrency
     let configured = fallback
     try {
       const settings = ((await getRedisClient().hgetall("settings:system").catch(() => ({}))) || {}) as Record<string, unknown>
@@ -3228,25 +3232,37 @@ export class StrategyCoordinator {
     // with an env override for larger workers. This keeps API/control
     // interactivity responsive while still allowing production to process
     // multiple symbols per pass.
-    const queue = [...items]
     const configuredConcurrency = await this.getStrategyFlowSymbolConcurrency()
     const symbolConcurrency = Math.max(
       1,
       Math.min(
         Number.isFinite(configuredConcurrency) ? configuredConcurrency : 1,
         4,
-        queue.length,
+        items.length,
       ),
     )
-    const workers = Array.from({ length: symbolConcurrency }, async () => {
-      while (queue.length > 0) {
-        const item = queue.shift()
-        if (!item) break
-        out[item.symbol] = await this.executeStrategyFlow(item.symbol, item.indications, isPrehistoric, ctx, skipLiveDispatch)
-        await new Promise<void>((resolve) => setImmediate(resolve))
-      }
-    })
-    await Promise.all(workers)
+    const evaluated = await mapWithConcurrency(
+      items,
+      symbolConcurrency,
+      async (item) => ({
+        symbol: item.symbol,
+        evaluations: await this.executeStrategyFlow(
+          item.symbol,
+          item.indications,
+          isPrehistoric,
+          ctx,
+          skipLiveDispatch,
+        ),
+      }),
+      {
+        yieldEvery: 1,
+        getConcurrency: () => Math.min(
+          symbolConcurrency,
+          getRuntimeCapabilityConcurrency("cpu", items.length),
+        ),
+      },
+    )
+    for (const result of evaluated) out[result.symbol] = result.evaluations
     return out
   }
 

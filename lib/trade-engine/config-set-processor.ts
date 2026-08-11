@@ -15,7 +15,11 @@ import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSele
 import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { buildProgressionScope } from "@/lib/progression-scope"
-import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
+import {
+  concurrencyFromEnv,
+  createAdaptiveConcurrencyLimiter,
+  mapWithConcurrency,
+} from "@/lib/bounded-concurrency"
 import { getHistoricCandlesForRange } from "./market-data-cache"
 import { ENGINE_STAGE_HISTORY_CANDLES } from "@/lib/market-data-loader"
 import {
@@ -23,7 +27,12 @@ import {
   clearHistoricListCompletionMarkers,
   incrementHistoricAggregateOnce,
 } from "@/lib/redis-idempotent-list"
-import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
+import {
+  getRuntimeCapabilityConcurrency,
+  getRuntimeConcurrencyProfile,
+} from "@/lib/runtime-concurrency-profile"
+
+type HistoricCalculationRunner = <T>(task: () => Promise<T>) => Promise<T>
 
 async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
@@ -299,6 +308,18 @@ export class ConfigSetProcessor {
       ),
       32,
     )
+    // Indication and strategy calculations are launched as independent async
+    // branches for each symbol. One shared limiter keeps their combined CPU
+    // use inside the current host capability instead of allowing each nested
+    // pool to consume the full budget independently.
+    const calculationLimiter = createAdaptiveConcurrencyLimiter(
+      CONFIG_CONCURRENCY,
+      () => Math.min(
+        CONFIG_CONCURRENCY,
+        getRuntimeCapabilityConcurrency("cpu", Number.POSITIVE_INFINITY),
+      ),
+    )
+    const runCalculation: HistoricCalculationRunner = (task) => calculationLimiter.run(task)
 
     const assertRunActive = () => {
       if (options.shouldContinue && !options.shouldContinue()) {
@@ -663,6 +684,7 @@ export class ConfigSetProcessor {
                 `${writerSelectionEpoch || this.epoch}:${symbol}`,
                 historicSeries,
                 historicGeneration,
+                runCalculation,
               )
             : Promise.resolve(0),
           combinedCandles.length > 0
@@ -677,6 +699,7 @@ export class ConfigSetProcessor {
                 `${writerSelectionEpoch || this.epoch}:${symbol}`,
                 historicSeries,
                 historicGeneration,
+                runCalculation,
               )
             : Promise.resolve(0),
         ])
@@ -824,7 +847,13 @@ export class ConfigSetProcessor {
 
     // Ordered cursor-based pool: no O(n) queue.shift() churn and no unbounded
     // Promise fan-out. Per-symbol errors remain isolated inside processOneSymbol.
-    await mapWithConcurrency(symbols, SYMBOL_CONCURRENCY, processOneSymbol)
+    await mapWithConcurrency(symbols, SYMBOL_CONCURRENCY, processOneSymbol, {
+      yieldEvery: 1,
+      getConcurrency: () => Math.min(
+        SYMBOL_CONCURRENCY,
+        getRuntimeCapabilityConcurrency("mixed", symbols.length),
+      ),
+    })
     await assertCurrentSelection()
 
     const duration = Date.now() - startTime
@@ -1167,6 +1196,7 @@ export class ConfigSetProcessor {
     dedupeScope = "",
     historicSeries?: HistoricPriceSeries,
     historicGeneration = "",
+    runCalculation: HistoricCalculationRunner = (task) => task(),
   ): Promise<number> {
     if (calculationGroups.length === 0) return 0
 
@@ -1183,12 +1213,12 @@ export class ConfigSetProcessor {
           await yieldToEventLoop()
           assertRunActive()
           const referenceConfig = calculationConfigs[0]
-          const results = await this.calculateIndicationResults(
+          const results = await runCalculation(() => this.calculateIndicationResults(
             symbol,
             candles,
             referenceConfig,
             historicSeries,
-          )
+          ))
           if (results.length === 0) return 0
           let buyCount = 0
           let sellCount = 0
@@ -1254,6 +1284,13 @@ export class ConfigSetProcessor {
           )
           return 0
         }
+      },
+      {
+        yieldEvery: 1,
+        getConcurrency: () => Math.min(
+          concurrency,
+          getRuntimeCapabilityConcurrency("cpu", calculationGroups.length),
+        ),
       },
     )
 
@@ -1381,6 +1418,7 @@ export class ConfigSetProcessor {
     dedupeScope = "",
     historicSeries?: HistoricPriceSeries,
     historicGeneration = "",
+    runCalculation: HistoricCalculationRunner = (task) => task(),
   ): Promise<number> {
     if (configs.length === 0) return 0
 
@@ -1452,12 +1490,12 @@ export class ConfigSetProcessor {
               assertRunActive()
               await yieldToEventLoop()
               assertRunActive()
-              const positions = await this.calculateStrategyPositions(
+              const positions = await runCalculation(() => this.calculateStrategyPositions(
                 symbol,
                 candles,
                 calculationConfigs[0],
                 historicSeries,
-              )
+              ))
               if (positions.length === 0) return 0
               const persistedCounts = await mapWithConcurrency(
                 calculationConfigs,
@@ -1578,8 +1616,22 @@ export class ConfigSetProcessor {
               return 0
             }
           },
+          {
+            yieldEvery: 1,
+            getConcurrency: () => Math.min(
+              perTypeConcurrency,
+              getRuntimeCapabilityConcurrency("cpu", calculationGroups.size),
+            ),
+          },
         )
         return perCalculationCounts.reduce((sum, n) => sum + n, 0)
+      },
+      {
+        yieldEvery: 1,
+        getConcurrency: () => Math.min(
+          activeTypeConcurrency,
+          getRuntimeCapabilityConcurrency("mixed", configTypeGroups.length),
+        ),
       },
     )
 

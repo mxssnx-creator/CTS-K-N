@@ -37,7 +37,6 @@ function rounded(value: number, digits = 1): number {
  */
 export function getRuntimeTelemetry(itemCount = Number.POSITIVE_INFINITY) {
   const capturedAt = new Date().toISOString()
-  const concurrency = getRuntimeConcurrencyProfile(itemCount)
   let memory = { rssMB: 0, heapUsedMB: 0, heapTotalMB: 0, externalMB: 0, arrayBuffersMB: 0 }
   let eventLoop = { utilizationPct: 0, delayP50Ms: 0, delayP95Ms: 0, delayMaxMs: 0 }
 
@@ -71,6 +70,12 @@ export function getRuntimeTelemetry(itemCount = Number.POSITIVE_INFINITY) {
     // Workerd currently provides perf_hooks stubs that may throw. Keep the
     // supported memory/concurrency fields and publish zero event-loop values.
   }
+
+  const concurrency = getRuntimeConcurrencyProfile(itemCount, process.env, {
+    rssMB: memory.rssMB,
+    eventLoopUtilizationPct: eventLoop.utilizationPct,
+    eventLoopDelayP95Ms: eventLoop.delayP95Ms,
+  })
 
   return {
     capturedAt,

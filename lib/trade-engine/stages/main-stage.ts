@@ -7,7 +7,10 @@
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import type { BasePosition } from "./base-stage"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
-import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
+import {
+  getRuntimeCapabilityConcurrency,
+  getRuntimeConcurrencyProfile,
+} from "@/lib/runtime-concurrency-profile"
 
 const LOG_PREFIX = "[v0] [MainPositionStage]"
 
@@ -68,14 +71,15 @@ export async function evaluateToMainPositions(
     const grouped = groupBySymbolAndDirection(basePositions)
 
     const groups = Object.entries(grouped)
+    const mainConcurrency = concurrencyFromEnv(
+      ["MAIN_POSITION_SYMBOL_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"],
+      getRuntimeConcurrencyProfile(groups.length).calculationConcurrency,
+      8,
+      groups.length,
+    )
     const evaluated = await mapWithConcurrency(
       groups,
-      concurrencyFromEnv(
-        ["MAIN_POSITION_SYMBOL_CONCURRENCY", "ENGINE_SYMBOL_CONCURRENCY"],
-        getRuntimeConcurrencyProfile(groups.length).calculationConcurrency,
-        8,
-        groups.length,
-      ),
+      mainConcurrency,
       async ([key, positions]): Promise<MainPosition | null> => {
       const [symbol, direction] = key.split(":")
 
@@ -135,6 +139,13 @@ export async function evaluateToMainPositions(
         )}, trend=${trendScore.toFixed(2)}, vol=${volatility.toFixed(2)})`
       )
       return mainPosition
+      },
+      {
+        yieldEvery: 1,
+        getConcurrency: () => Math.min(
+          mainConcurrency,
+          getRuntimeCapabilityConcurrency("mixed", groups.length),
+        ),
       },
     )
     for (const position of evaluated) if (position) mainPositions.push(position)

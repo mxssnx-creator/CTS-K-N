@@ -408,19 +408,12 @@ import { getRuntimeConcurrencyProfile } from "@/lib/runtime-concurrency-profile"
  */
 function getSymbolConcurrency(symbolCount: number): number {
   const runtime = getRuntimeConcurrencyProfile(symbolCount)
-  const configured = concurrencyFromEnv(
+  return concurrencyFromEnv(
     ["ENGINE_SYMBOL_CONCURRENCY", "REALTIME_SYMBOL_CONCURRENCY"],
     runtime.symbolConcurrency,
     8,
     symbolCount,
   )
-  try {
-    const limits = (globalThis as any).__redis_mem_limits as { rssSoftMB?: number } | undefined
-    const softLimit = Number(limits?.rssSoftMB)
-    const rssMB = process.memoryUsage().rss / 1024 / 1024
-    if (Number.isFinite(softLimit) && softLimit > 0 && rssMB >= softLimit * 0.9) return 1
-  } catch { /* keep configured concurrency */ }
-  return configured
 }
 
 function getReplaySymbolConcurrency(symbolCount: number): number {
